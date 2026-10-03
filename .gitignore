@@ -1,0 +1,21 @@
+# ESP-IDF build output
+build/
+build-*/
+sdkconfig
+sdkconfig.old
+managed_components/
+dependencies.lock
+
+# Host test / tool caches
+.cache/
+compile_commands.json
+__pycache__/
+
+# Editor / local
+.vscode/
+.idea/
+*.swp
+.claude/settings.local.json
+
+# Local commit message draft
+COMMIT_MSG

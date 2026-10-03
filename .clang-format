@@ -1,0 +1,70 @@
+---
+Language: Cpp
+BasedOnStyle: LLVM
+
+# Indentation
+IndentWidth: 8
+ContinuationIndentWidth: 8
+UseTab: Never
+TabWidth: 8
+
+# Access modifiers indented one level from class
+AccessModifierOffset: -8
+IndentAccessModifiers: true
+
+# Braces
+BreakBeforeBraces: Attach
+BraceWrapping:
+  AfterClass: false
+  AfterControlStatement: Never
+  AfterFunction: false
+  AfterNamespace: false
+  AfterStruct: false
+  AfterEnum: false
+  BeforeElse: true
+  SplitEmptyFunction: false
+  SplitEmptyRecord: false
+
+# Columns
+ColumnLimit: 120
+
+# Namespace
+NamespaceIndentation: All
+
+# Short forms
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: true
+AllowShortBlocksOnASingleLine: Empty
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortEnumsOnASingleLine: false
+AllowShortLambdasOnASingleLine: Inline
+
+# Alignment
+AlignConsecutiveDeclarations: Consecutive
+AlignConsecutiveAssignments: None
+AlignAfterOpenBracket: Align
+AlignOperands: Align
+AlignTrailingComments: true
+
+# Pointer/Reference alignment
+PointerAlignment: Right
+ReferenceAlignment: Right
+
+# Includes
+SortIncludes: Never
+
+# Spaces
+SpaceAfterCStyleCast: false
+SpaceBeforeParens: ControlStatements
+SpaceInEmptyBlock: false
+SpacesInAngles: Never
+SpacesInParentheses: false
+
+# Other
+Cpp11BracedListStyle: true
+FixNamespaceComments: false
+IndentCaseLabels: true
+MaxEmptyLinesToKeep: 2
+ReflowComments: false
+...
