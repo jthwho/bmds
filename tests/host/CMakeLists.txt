@@ -1,0 +1,30 @@
+# BMDS host unit tests (plain CMake, no ESP-IDF).
+#
+#   cmake -S tests/host -B build-host
+#   cd build-host && build && ctest --output-on-failure
+
+cmake_minimum_required(VERSION 3.22)
+project(bmds_host_tests LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS ON)
+
+set(BMDS_ROOT ${CMAKE_CURRENT_LIST_DIR}/../..)
+
+add_subdirectory(${BMDS_ROOT}/components/bmds_core ${CMAKE_BINARY_DIR}/bmds_core)
+
+add_executable(bmds_host_tests
+        main.cpp
+        error.cpp
+        result.cpp
+        stringview.cpp
+        span.cpp
+        memspace.cpp)
+target_include_directories(bmds_host_tests PRIVATE ${BMDS_ROOT}/thirdparty/doctest)
+target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS)
+target_link_libraries(bmds_host_tests PRIVATE bmds_core)
+bmds_target_options(bmds_host_tests)
+
+enable_testing()
+add_test(NAME bmds_host_tests COMMAND bmds_host_tests)

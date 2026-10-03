@@ -1,0 +1,20 @@
+menu "BMDS board"
+
+    choice BMDS_BOARD
+        prompt "Target board"
+        default BMDS_BOARD_OLIMEX_ESP32P4_PC
+        help
+            The board BMDS is built for. Selects the board definition
+            (components/bmds_board/boards/<board>/) that holds all pin
+            assignments and hardware facts.
+
+        config BMDS_BOARD_OLIMEX_ESP32P4_PC
+            bool "Olimex ESP32-P4-PC"
+            depends on IDF_TARGET_ESP32P4
+    endchoice
+
+    config BMDS_BOARD_DIR
+        string
+        default "olimex_esp32p4_pc" if BMDS_BOARD_OLIMEX_ESP32P4_PC
+
+endmenu

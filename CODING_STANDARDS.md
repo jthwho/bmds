@@ -369,6 +369,8 @@ Additional embedded rules:
 `Error` is a lightweight enum-based class (fits in a register) with codes such as `Ok`, `Invalid`, `NoMem`, `Timeout`, `WouldBlock`, `Busy`, `NotExist`, `Exists`, `NotSupported`, `IoError`, `NoSpace`, `Full`, `Empty`.
 
 - `isOk()` / `isError()` for checks.
+- `Error` and `Result<T>` are `[[nodiscard]]`: ignoring a returned error is a compile error. Discard explicitly with `(void)` only when that is genuinely correct.
+- `Result<T>` is built with `makeResult(value)` / `makeError<T>(err)`; there is intentionally no implicit `Error` → `Result<T>` conversion (an unscoped `Error::Code` would silently convert to an integral `T`).
 - `name()` / `desc()` for text (strings live in rodata).
 - `Error::fromEspErr(esp_err_t)` and `Error::syserr()` (from `errno`) to translate lower-layer errors.
 
@@ -436,7 +438,7 @@ All kernel logging goes through the BMDS logger macros, which sit on top of (or 
 | `bmdsWarn(fmt, ...)` | Recoverable, worth investigating. |
 | `bmdsErr(fmt, ...)` | Failed operations / correctness problems. |
 
-- Files that use `bmdsDebug()` register a module after the includes: `BMDS_DEBUG(SdCard)`.
+- Files that use `bmdsDebug()` register a module after the includes: `BMDS_DEBUG(SdCard)`. Registration costs no constructor: the module descriptor is placed in rodata by the linker and only a one-byte enable flag lives in RAM.
 - **Capture all relevant state** in the message — paths, error descriptions, sizes, IDs.
 - **Identify the instance**: `ClassName(%p): message` (add the name if the object has one: `Task(%p 'shell'): started`).
 - **Never log from an ISR** or on a hot path's success path.

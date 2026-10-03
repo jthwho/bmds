@@ -1,0 +1,26 @@
+menu "BMDS kernel"
+
+    config BMDS_ASSERT
+        bool "Enable BMDS_ASSERT checks"
+        default y
+        help
+            Compile in BMDS_ASSERT invariant checks. A failed assert panics
+            with a backtrace. Disabling saves a little flash and CPU.
+
+    config BMDS_DEBUG_LOG
+        bool "Compile in bmdsDebug() logging"
+        default y
+        help
+            Compile in per-module debug logging. Modules are still off at
+            runtime until enabled. Disabling removes all debug log strings
+            and the module registry.
+
+    config BMDS_LOG_LINE_MAX
+        int "Maximum log line length"
+        default 160
+        range 64 1024
+        help
+            Size of the on-stack buffer a log line is formatted into.
+            Longer lines are truncated.
+
+endmenu

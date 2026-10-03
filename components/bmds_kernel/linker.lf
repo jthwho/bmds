@@ -1,0 +1,19 @@
+# Debug-module registry: every BMDS_DEBUG(Module) object is placed in the
+# .bmds_debug input section and collected into one contiguous array in flash rodata,
+# bounded by _bmds_debug_start / _bmds_debug_end. This gives a registry with
+# no global constructors. (Not dram0_data: on the ESP32-P4 that placement is
+# emitted twice in the linker script, so SURROUND symbols get defined twice.)
+
+[sections:bmds_debug]
+entries:
+    .bmds_debug
+
+[scheme:bmds_debug_default]
+entries:
+    bmds_debug -> flash_rodata
+
+[mapping:bmds_debug]
+archive: *
+entries:
+    * (bmds_debug_default);
+        bmds_debug -> flash_rodata KEEP() SURROUND(bmds_debug)

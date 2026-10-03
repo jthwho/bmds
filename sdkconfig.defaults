@@ -1,0 +1,28 @@
+# BMDS checked-in configuration defaults.
+# `sdkconfig` is generated from this file and is not checked in.
+
+CONFIG_IDF_TARGET="esp32p4"
+
+# --- Flash and partitions -----------------------------------------------
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# --- PSRAM (32 MB on the ESP32-P4NRW32 module) ---------------------------
+# 200 MHz requires IDF_EXPERIMENTAL_FEATURES; revisit in Phase 4 (framebuffer).
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_SPEED_80M=y
+# The boot-time PSRAM memory test costs ~1.3 s of every boot.
+CONFIG_SPIRAM_MEMTEST=n
+
+# --- Console: USB-Serial/JTAG on the USB-C connector ----------------------
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# --- Compiler -------------------------------------------------------------
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_COMPILER_CXX_EXCEPTIONS=n
+CONFIG_COMPILER_CXX_RTTI=n
+
+# --- FreeRTOS -------------------------------------------------------------
+# 1 ms tick so timeoutMs values are honoured at millisecond granularity.
+CONFIG_FREERTOS_HZ=1000

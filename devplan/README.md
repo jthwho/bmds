@@ -3,6 +3,7 @@
 Design notes and implementation plans for BMDS subsystems. Write a plan here **before** implementing a non-trivial subsystem, and keep it up to date as the implementation changes.
 
 - [`roadmap.md`](roadmap.md) — phased plan and progress checklist.
+- [`foundation.md`](foundation.md) — Phase 0: project skeleton, core types, board definition, logging, boot.
 
 ## Plan Document Template
 

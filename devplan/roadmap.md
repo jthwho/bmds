@@ -4,14 +4,16 @@ Phases are ordered so that each one makes the next faster to build. Each phase g
 
 ## Phase 0 — Foundation
 
-- [ ] ESP-IDF project skeleton (`CMakeLists.txt`, `main/`, `sdkconfig.defaults`, `partitions.csv`), builds for `esp32p4`.
-- [ ] Compiler flags: C++20, `-fno-exceptions`, `-fno-rtti`, warnings-as-errors for BMDS components.
-- [ ] `bmds_core` skeleton: `config.h`, namespace macros, `Error`, `Result<T>`, `StringView`, `Span`.
-- [ ] Host test harness (doctest, plain CMake) running `bmds_core` tests.
-- [ ] `bmds_board`: Olimex ESP32-P4-PC board definition from the schematic; `MemSpace` mapping. Fill in `docs/HARDWARE.md`.
-- [ ] Logging macros (`bmdsDebug/Info/Warn/Err`, per-module debug registration).
-- [ ] Boot sequence: `app_main()` → BMDS init stages, with boot timing and memory usage report.
-- [ ] Baseline size report recorded (RAM/IRAM/flash) for future comparison.
+Plan: [`foundation.md`](foundation.md). Complete; verified on hardware.
+
+- [x] ESP-IDF project skeleton (`CMakeLists.txt`, `main/`, `sdkconfig.defaults`, `partitions.csv`), builds for `esp32p4`.
+- [x] Compiler flags: C++20, `-fno-exceptions`, `-fno-rtti`, warnings-as-errors for BMDS components.
+- [x] `bmds_core` skeleton: `config.h`, namespace macros, `Error`, `Result<T>`, `StringView`, `Span`.
+- [x] Host test harness (doctest, plain CMake) running `bmds_core` tests.
+- [x] `bmds_board`: Olimex ESP32-P4-PC board definition from the schematic; `MemSpace` mapping. Fill in `docs/HARDWARE.md`.
+- [x] Logging macros (`bmdsDebug/Info/Warn/Err`, per-module debug registration).
+- [x] Boot sequence: `app_main()` → BMDS init stages, with boot timing and memory usage report.
+- [x] Baseline size report recorded (RAM/IRAM/flash) for future comparison.
 
 ## Phase 1 — Serial Shell
 

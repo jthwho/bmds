@@ -62,6 +62,8 @@ sdk/                    Userspace SDK (C headers, crt0, linker script, examples)
 tests/host/             Host-side doctest unit tests (plain CMake)
 tests/target/           On-target tests
 tools/                  Host tools (program upload, image builders, ...)
+cmake/                  Shared CMake helpers (BMDS compile flags)
+thirdparty/             Vendored third-party code (doctest)
 docs/                   Project documentation
 devplan/                Design notes and plans per subsystem
 ```

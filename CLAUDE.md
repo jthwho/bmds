@@ -40,10 +40,10 @@ Read before working:
 ## Commands
 
 ```bash
-idf.py build                                  # firmware
+idf.py build                                  # firmware (first configure; then `cd build && build`)
 idf.py -p "$ESPPORT" flash                    # flash (ask before flashing if the user hasn't said to)
 idf.py size / idf.py size-components          # resource usage
-cmake -S tests/host -B build-host && cmake --build build-host -j && ctest --test-dir build-host --output-on-failure   # host tests
+cmake -S tests/host -B build-host -G Ninja; cd build-host && build && ctest --output-on-failure   # host tests
 ```
 
 `idf.py monitor` is interactive; to capture serial output non-interactively, use a bounded read of the port (e.g. a short Python/pyserial script with a timeout) instead.
@@ -60,4 +60,5 @@ cmake -S tests/host -B build-host && cmake --build build-host -j && ctest --test
 - **Never commit unless the user explicitly says to.** The user verifies changes before committing.
 - Instead, write the proposed message to `COMMIT_MSG` in the repo root (git-ignored).
 - Format: one-line summary, blank line, then **at most two paragraphs** of detail focused on what changed and any hard-won details.
+- Wrap every line of `COMMIT_MSG` at **100 characters** (summary line included).
 - **Never** add a `Co-Authored-By` (or any attribution) line.

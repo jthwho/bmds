@@ -1,7 +1,5 @@
 # Building BMDS
 
-> **Status:** the build skeleton doesn't exist yet. This document describes the intended workflow and will be updated as the project structure lands.
-
 ## Prerequisites
 
 - **ESP-IDF v6.1** (currently developed against a v6.1-dev checkout at `~/esp/esp-idf`).
@@ -35,13 +33,20 @@ Exit the monitor with `Ctrl-]`.
 
 ## Host Unit Tests
 
-Hardware-independent code (`bmds_core` and other pure logic) is tested on the host with doctest:
+Hardware-independent code (`bmds_core` and other pure logic) is tested on the host with doctest (vendored in `thirdparty/doctest/`, so no network access is needed). Use the `build` wrapper rather than a raw parallel build:
 
 ```bash
-cmake -S tests/host -B build-host
-cmake --build build-host -j
-ctest --test-dir build-host --output-on-failure
+cmake -S tests/host -B build-host -G Ninja
+cd build-host && build && ctest --output-on-failure
 ```
+
+## Configuration
+
+`sdkconfig.defaults` is checked in; `sdkconfig` is generated and ignored. BMDS options are under **BMDS board** and **BMDS kernel** in `idf.py menuconfig`:
+
+- `BMDS_BOARD` selects the board definition.
+- `BMDS_ASSERT` and `BMDS_DEBUG_LOG` compile in asserts and `bmdsDebug()`.
+- `BMDS_LOG_LINE_MAX` sets the maximum log line length.
 
 ## Size Tracking
 
@@ -51,3 +56,5 @@ Resource usage is a first-class concern. Check the impact of changes with:
 idf.py size
 idf.py size-components
 ```
+
+The baseline is recorded in `devplan/foundation.md`.
