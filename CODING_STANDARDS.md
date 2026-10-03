@@ -132,6 +132,8 @@ BMDS classes fall into three categories with different ownership, copying, and l
 
 Values or containers of values — the majority of classes. Copyable, no identity, not internally thread-safe.
 
+Exception: **allocating containers (`String`, `List<T>`) are move-only.** A copy would allocate and could fail, and constructors can't report failure. Copy explicitly with `clone()`, which returns `Result<T>`. Every operation that may allocate returns `Error` (`NoMem`, leaving the object unchanged).
+
 | Category | Storage | SharedPtr support | Examples |
 |---|---|---|---|
 | **Simple** | Direct members | None | `Point`, `Size2Du32`, `Rect2Di32`, `Rational`, `FourCC`, `Duration`, `Color` |

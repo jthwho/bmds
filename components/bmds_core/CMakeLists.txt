@@ -4,8 +4,10 @@
 # component and as a plain CMake library by the host tests (tests/host).
 
 set(BMDS_CORE_SRCS
+        src/arena.cpp
         src/bytering.cpp
-        src/error.cpp)
+        src/error.cpp
+        src/string.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 

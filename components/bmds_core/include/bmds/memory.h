@@ -25,9 +25,15 @@ struct MemStats {
 /**
  * @brief Raw MemSpace-aware allocation.
  *
- * The primitive under `Buffer` and the containers. Prefer those (or RAII
- * owners) over calling this directly. The space-to-heap mapping comes from
- * the board definition. Spaces overlap physically (e.g. `InternalDma` is
+ * The primitive under `Buffer` and the containers (`String`, `List`,
+ * `Arena`). Prefer those (or RAII owners) over calling this directly.
+ *
+ * Declared in `bmds_core` and defined by the platform, like
+ * `Detail::assertFailed()`: the kernel on the target (heap capabilities
+ * from the board definition), the test harness on the host (malloc, with
+ * failure injection).
+ *
+ * Spaces overlap physically (e.g. `InternalDma` is
  * part of `Internal`), so their statistics are not additive.
  *
  * Allocation is not permitted in ISRs or on hot paths.

@@ -1,6 +1,6 @@
 # Shell Language and Standard I/O
 
-Status: **design, not started.** Proposed as Phase 1b. File redirection, globbing and scripts on disk land with Phase 2; external programs in pipelines land with Phase 3.
+Status: **in progress** (Phase 1b). Step 1 (containers) done. File redirection, globbing and scripts on disk land with Phase 2; external programs in pipelines land with Phase 3.
 
 ## 1. Goal
 
@@ -114,7 +114,13 @@ line editor ─► Lexer ─► Parser ─► AST ─► Executor ─► Command
   - AST and expansion temporaries are allocated from a **bump arena** in `Psram` (64 KB chunks, grown on demand), released wholesale after each top-level command.
   - **Function definitions are stored as source text** and reparsed on call. That is simpler than keeping AST lifetimes and costs nothing that matters at shell speeds.
   - Variables live in a `Psram` hash table owned by the shell, with a scope stack for `local`.
-- **Strings and lists.** The interpreter needs real dynamic strings. This is the point to add `String` and `List<T>` to `bmds_core`, as already planned in ARCHITECTURE: `MemSpace`-aware, default `Psram` for the shell, host-tested. Prerequisite work item 1.
+- **Strings and lists** (step 1, done). `bmds_core` now has `String`, `List<T>` and `Arena`, all `MemSpace`-aware (default `Psram`) and host-tested:
+  - **Allocation failure is reported, never hidden.** Every operation that may allocate returns `Error` (`NoMem`, object unchanged). The containers are **move-only**: a copy is an allocation, so it is explicit (`clone()` returns `Result`). Constructors never allocate. A runaway script (`x=$x$x` in a loop) ends with "out of memory" in that command rather than a reboot.
+  - **`String`** is 24 bytes on the target and stores up to 15 bytes inline (most shell words never touch the heap). Longer text grows by half again in 16-byte block steps. Operations whose argument is a view of the same string (`s.append(s)`) are safe. Read-only operations stay on `StringView`.
+  - **`List<T>`** is contiguous (converts to `Span`), owns no block while empty, supports move-only `T`, and keeps `emplace` atomic: the new element is built in the new block before the old ones move, so arguments may refer to existing elements.
+  - **`Arena`** is a chunked bump allocator with `mark()`/`rewind()`, `reset()` (keeps one chunk) and lazy first allocation. It only accepts trivially destructible objects.
+  - **`Memory` moved to `bmds_core` as a link seam** (declared there, defined by the platform, like `assertFailed`): the kernel defines it on the target; the host tests define it with allocation counting (leak checks) and failure injection (every `NoMem` path is tested). The host tests also pass under ASan/UBSan.
+  - Measured on the target: `String` 1.5 KB, `Arena` 0.6 KB of code; `List` is header-only.
 - **Stack.**
   - The parser and executor recurse, so the shell task stack moves to **16 KB in `Psram`**. That frees the current 4 KB of internal RAM.
   - Nesting depth and function recursion are bounded (`CONFIG_BMDS_SHELL_MAX_DEPTH`, 64 and 100), and exceeding either is an error rather than a stack overflow.
@@ -141,7 +147,7 @@ line editor ─► Lexer ─► Parser ─► AST ─► Executor ─► Command
 
 | Item | Flash | RAM |
 |---|---|---|
-| `String`/`List`/arena | ~3 KB | — |
+| `String`/`List`/arena | 2.1 KB measured (`List` header-only) | — |
 | Streams, pipes, fd tables, worker pool | ~5 KB | per pipe: 4 KB `Psram` ring; per worker: 8 KB `Psram` stack + ~350 B internal TCB |
 | Lexer + parser | ~12 KB | AST in the `Psram` arena |
 | Executor + expansion + arithmetic | ~15 KB | variables in `Psram` |

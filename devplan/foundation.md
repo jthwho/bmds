@@ -39,7 +39,7 @@ Provide the skeleton everything else is built on:
   - Macros: `bmdsDebug/Info/Warn/Err`, `BMDS_DEBUG(Module)`.
   - `Log::setLevel()`.
   - `Log::debugModules()` and `Log::findDebugModule()`; the Phase 1 `log` command will use these.
-- `bmds/memory.h`: `Memory::alloc/allocAligned/free/stats(MemSpace)`.
+- `bmds/memory.h`: `Memory::alloc/allocAligned/free/stats(MemSpace)`. (Phase 1b moved the declaration to `bmds_core` so the containers can allocate; the definition stays here.)
 - `bmds/boot.h`: `Boot::run()`, called from `app_main()`.
 
 ## 3. Design

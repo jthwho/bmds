@@ -28,9 +28,9 @@ Plan: [`shell.md`](shell.md). Complete; verified on hardware.
 
 ## Phase 1b — Shell Language, Standard I/O, Terminal Model (proposed)
 
-Plans: [`shell-language.md`](shell-language.md), [`terminal.md`](terminal.md). Not started.
+Plans: [`shell-language.md`](shell-language.md), [`terminal.md`](terminal.md). In progress.
 
-- [ ] `String`, `List<T>` and an arena allocator in `bmds_core`.
+- [x] `String`, `List<T>` and an arena allocator in `bmds_core`.
 - [ ] Standard I/O: `Stream`, refcounted fd tables, pipes, memory/null streams; Ctrl-C interrupts.
 - [ ] Commands use stdin/stdout/stderr; pipelines (concurrent stages, workers with PSRAM stacks); fd redirection.
 - [ ] Shell language (bash subset): lexer, parser, executor; variables, expansion, `$(…)`, `$((…))`, `if`/`while`/`until`/`for`/`case`, functions, language built-ins, `PS1`/`PS2`, completion.

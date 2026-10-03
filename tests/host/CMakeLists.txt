@@ -18,15 +18,19 @@ add_subdirectory(${BMDS_ROOT}/components/bmds_shell ${CMAKE_BINARY_DIR}/bmds_she
 
 add_executable(bmds_host_tests
         main.cpp
+        hostmemory.cpp
+        arena.cpp
         args.cpp
         bytering.cpp
         error.cpp
         lineeditor.cpp
+        list.cpp
         memspace.cpp
         result.cpp
         shell.cpp
         span.cpp
         staticobject.cpp
+        string.cpp
         stringview.cpp)
 target_include_directories(bmds_host_tests PRIVATE ${BMDS_ROOT}/thirdparty/doctest)
 target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS)
