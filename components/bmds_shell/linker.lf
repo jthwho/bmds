@@ -1,0 +1,18 @@
+# Shell command table: BMDS_SHELL_COMMAND places each Command in its own input
+# section, .bmds_cmd.<name>. They are collected sorted by section name -- and so by
+# command name -- into one contiguous array in flash rodata, bounded by
+# _bmds_cmd_start / _bmds_cmd_end. The shell binary-searches it.
+
+[sections:bmds_cmd]
+entries:
+    .bmds_cmd+
+
+[scheme:bmds_cmd_default]
+entries:
+    bmds_cmd -> flash_rodata
+
+[mapping:bmds_cmd]
+archive: *
+entries:
+    * (bmds_cmd_default);
+        bmds_cmd -> flash_rodata KEEP() SORT(name) SURROUND(bmds_cmd)

@@ -7,19 +7,19 @@
  */
 
 #include <cstdint>
-#include <esp_app_desc.h>
-#include <esp_chip_info.h>
+#include <esp_log.h>
 #include <esp_log_timestamp.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-#include <sdkconfig.h>
-#include <bmds/board.h>
+#include <bmds/assert.h>
 #include <bmds/boot.h>
 #include <bmds/error.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
-#include <bmds/version.h>
+#include <bmds/semaphore.h>
+#include <bmds/staticobject.h>
+#include <bmds/system.h>
 
 BMDS_DEBUG(Boot)
 
@@ -27,10 +27,15 @@ BMDS_NAMESPACE_BEGIN
 
 namespace {
 
-        struct Stage {
-                        const char *name;
-                        Error (*init)();
-        };
+        using Stage = Boot::Stage;
+
+        // Released once the boot report is out. Each waiter takes it and puts
+        // it straight back, so any number of tasks pass. (Not an event group:
+        // those pull in the FreeRTOS timer task, about 2.8 KB of internal RAM.)
+        constinit StaticObject<Semaphore> bootDone;
+
+        // Most stages a boot can have (kernel + system); sizes the timing array.
+        constexpr size_t MaxStages = 16;
 
         Error initMemory() {
                 // Every MemSpace the board maps must have backing memory; a
@@ -56,14 +61,11 @@ namespace {
         constexpr size_t StageCount = sizeof(Stages) / sizeof(Stages[0]);
 
         void printBanner() {
-                const esp_app_desc_t *app = esp_app_get_description();
-                esp_chip_info_t       chip;
-                esp_chip_info(&chip);
-                bmdsInfo("BMDS %s (build %s, ESP-IDF %s)", VersionString, app->version, app->idf_ver);
-                bmdsInfo("Board: %s", board().name);
-                bmdsInfo("Chip: ESP32-P4 rev v%u.%u, %u cores @ %u MHz", static_cast<unsigned>(chip.revision / 100),
-                         static_cast<unsigned>(chip.revision % 100), static_cast<unsigned>(chip.cores),
-                         static_cast<unsigned>(CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ));
+                const SystemInfo info = System::info();
+                bmdsInfo("BMDS %s (build %s, ESP-IDF %s)", info.bmdsVersion, info.buildVersion, info.idfVersion);
+                bmdsInfo("Board: %s", info.boardName);
+                bmdsInfo("Chip: ESP32-P4 rev v%u.%u, %u cores @ %u MHz", info.chipRevMajor, info.chipRevMinor,
+                         info.cores, info.cpuMhz);
                 return;
         }
 
@@ -81,25 +83,32 @@ namespace {
 
 } // namespace
 
-void Boot::run() {
+void Boot::run(Span<const Stage> systemStages) {
         const int64_t startUs = esp_timer_get_time();
+        bootDone.create(1, 0);
+        const Error logErr = Log::init();
         printBanner();
+        if (logErr.isError()) bmdsWarn("Boot: log history unavailable: %s", logErr.desc());
 
-        int64_t stageUs[StageCount];
+        const size_t stageCount = StageCount + systemStages.size();
+        BMDS_ASSERT(stageCount <= MaxStages);
+        int64_t stageUs[MaxStages];
         size_t  failed = 0;
-        for (size_t i = 0; i < StageCount; ++i) {
+        for (size_t i = 0; i < stageCount; ++i) {
+                const Stage  &stage = i < StageCount ? Stages[i] : systemStages[i - StageCount];
                 const int64_t t0 = esp_timer_get_time();
-                const Error   err = Stages[i].init();
+                const Error   err = stage.init();
                 stageUs[i] = esp_timer_get_time() - t0;
                 if (err.isError()) {
-                        bmdsErr("Boot: stage '%s' failed: %s", Stages[i].name, err.desc());
+                        bmdsErr("Boot: stage '%s' failed: %s", stage.name, err.desc());
                         ++failed;
                 }
         }
 
         const int64_t endUs = esp_timer_get_time();
-        for (size_t i = 0; i < StageCount; ++i) {
-                bmdsInfo("Stage %-10s %8lu us", Stages[i].name, static_cast<unsigned long>(stageUs[i]));
+        for (size_t i = 0; i < stageCount; ++i) {
+                const Stage &stage = i < StageCount ? Stages[i] : systemStages[i - StageCount];
+                bmdsInfo("Stage %-10s %8lu us", stage.name, static_cast<unsigned long>(stageUs[i]));
         }
         bmdsInfo("BMDS init %lu us; %lu ms since reset; %u stage(s) failed",
                  static_cast<unsigned long>(endUs - startUs), static_cast<unsigned long>(esp_log_timestamp()),
@@ -108,7 +117,19 @@ void Boot::run() {
         bmdsInfo("Debug modules registered: %u", static_cast<unsigned>(Log::debugModules().size()));
         bmdsInfo("Main task stack high water: %u bytes free",
                  static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+
+        // IDF's "Returned from app_main()" would follow the shell prompt; the
+        // boot report above already says boot is done.
+        esp_log_level_set("main_task", ESP_LOG_WARN);
+        bootDone->release();
         return;
+}
+
+Error Boot::waitUntilComplete(unsigned int timeoutMs) {
+        if (!bootDone.isCreated()) return Error::InvalidState;
+        const Error err = bootDone->acquire(timeoutMs);
+        if (err.isOk()) bootDone->release();
+        return err;
 }
 
 BMDS_NAMESPACE_END

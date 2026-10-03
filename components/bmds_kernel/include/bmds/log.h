@@ -17,13 +17,19 @@
  *
  * Format strings must be literals (checked at compile time, kept in flash).
  * Never log from an ISR or on a hot path's success path.
+ *
+ * Every line is kept in a history ring (`CONFIG_BMDS_LOG_HISTORY_BYTES`, in
+ * PSRAM) and handed to the sink, normally the serial console. ESP-IDF's own
+ * `ESP_LOG*` output is redirected through the same path.
  */
 
 #pragma once
 
 #include <cstdarg>
+#include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
+#include <bmds/error.h>
 #include <bmds/span.h>
 #include <bmds/stringview.h>
 
@@ -63,10 +69,36 @@ static_assert(sizeof(DebugModule) % alignof(DebugModule) == 0, "DebugModule must
  * @brief Kernel log output.
  *
  * @par Thread Safety
- * Thread-safe. Not ISR-safe.
+ * Thread-safe after `init()`. Not ISR-safe.
  */
 class Log {
         public:
+                /**
+                 * @brief Receives complete log text (one or more `'\n'`-terminated lines).
+                 *
+                 * Called with the log lock held, so lines arrive in order. Must
+                 * not log, and should bound its blocking (drop output rather than
+                 * stall the caller).
+                 */
+                using Sink = void (*)(const char *text, size_t lengthBytes);
+
+                /**
+                 * @brief Creates the log lock and history, and redirects ESP-IDF logging.
+                 *
+                 * Called first by `Boot::run()`. Before this, lines go straight to
+                 * stdout without locking (only the boot task is running).
+                 * @return `Error::Ok`, or `Error::NoMem` if the history could not
+                 *         be allocated (logging still works, without history).
+                 */
+                static Error init();
+
+                /**
+                 * @brief Sets where log output goes; null restores stdout.
+                 *
+                 * The sink is called for lines written after this returns.
+                 */
+                static void setSink(Sink sink);
+
                 /**
                  * @brief Writes one log line.
                  *
@@ -79,7 +111,8 @@ class Log {
                  * @param file   Source file name.
                  * @param line   Source line.
                  * @param fmt    printf-style format string.
-                 * @nonblocking (apart from the console output lock)
+                 * @blocking Bounded: waits for the log lock and the sink (the serial
+                 *           console drops output after a short timeout).
                  */
                 static void write(LogLevel level, const char *module, const char *file, int line, const char *fmt, ...)
                         BMDS_PRINTF_FORMAT(5, 6);
@@ -87,6 +120,27 @@ class Log {
                 /** @brief `va_list` form of `write()`. */
                 static void writeV(LogLevel level, const char *module, const char *file, int line, const char *fmt,
                                    va_list args);
+
+                /**
+                 * @brief Writes preformatted text to the history and the sink.
+                 *
+                 * For text that already carries its own line format, such as
+                 * redirected ESP-IDF log lines.
+                 */
+                static void writeRaw(const char *text, size_t lengthBytes);
+
+                /**
+                 * @brief Copies the log history, oldest first.
+                 *
+                 * When the history has wrapped or @p dst is smaller than it, the
+                 * copy starts at the first complete line that fits.
+                 * @param dst Destination.
+                 * @return The number of bytes copied.
+                 */
+                static size_t copyHistory(Span<char> dst);
+
+                /** @brief Returns the history capacity in bytes (0 if there is none). */
+                static size_t historyCapacity();
 
                 /** @brief Returns the minimum level written by `bmdsInfo/Warn/Err`. */
                 static LogLevel level() { return _level; }

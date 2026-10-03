@@ -1,0 +1,18 @@
+menu "BMDS shell"
+
+    config BMDS_SHELL_STACK_BYTES
+        int "Shell task stack size (bytes)"
+        default 4096
+        range 2048 65536
+        help
+            Stack of each shell task, in internal RAM. Commands run on it.
+            Check the 'tasks' command's stack_free column before shrinking.
+
+    config BMDS_SHELL_PRIORITY
+        int "Shell task priority"
+        default 2
+        range 1 24
+        help
+            FreeRTOS priority of shell tasks. Commands run at this priority.
+
+endmenu

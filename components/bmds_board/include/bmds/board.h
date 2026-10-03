@@ -168,14 +168,15 @@ struct Board {
                 uint32_t      psramBytes = 0;                ///< PSRAM size (0 = none).
                 BoardMemSpace memSpaces[MemSpaceCount] = {}; ///< Indexed by `MemSpace`.
                 BoardI2cBus   i2c[BoardI2cCount] = {};       ///< Indexed by `BoardI2c`.
-                BoardUart     uart = {};                     ///< Auxiliary serial UART.
-                GpioLine      statusLed = {};                ///< User LED (asserted = lit).
-                GpioLine      userButton = {};               ///< User button (asserted = pressed).
-                BoardSdCard   sdCard = {};                   ///< microSD.
-                BoardDisplay  display = {};                  ///< Display output.
-                BoardUsbHost  usbHost = {};                  ///< USB host.
-                BoardEthernet ethernet = {};                 ///< Ethernet.
-                BoardAudio    audio = {};                    ///< Audio.
+                bool          usbSerialJtag = false; ///< USB-Serial/JTAG is wired to a connector (the console port).
+                BoardUart     uart = {};             ///< Auxiliary serial UART.
+                GpioLine      statusLed = {};        ///< User LED (asserted = lit).
+                GpioLine      userButton = {};       ///< User button (asserted = pressed).
+                BoardSdCard   sdCard = {};           ///< microSD.
+                BoardDisplay  display = {};          ///< Display output.
+                BoardUsbHost  usbHost = {};          ///< USB host.
+                BoardEthernet ethernet = {};         ///< Ethernet.
+                BoardAudio    audio = {};            ///< Audio.
 
                 /** @brief Returns the heap mapping for @p space. */
                 constexpr const BoardMemSpace &memSpace(MemSpace space) const {

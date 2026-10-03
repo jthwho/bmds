@@ -17,17 +17,31 @@ Plan: [`foundation.md`](foundation.md). Complete; verified on hardware.
 
 ## Phase 1 — Serial Shell
 
-- [ ] Console abstraction (a terminal endpoint: read/write bytes, size, capabilities).
-- [ ] Serial console on USB-Serial/JTAG.
-- [ ] Line editor: editing keys, history, (later) completion.
-- [ ] Shell core: command registration (rodata table), argument parsing, exit codes.
-- [ ] Built-ins: `help`, `version`, `uptime`, `mem` (per-MemSpace usage), `tasks`, `log` (levels/modules), `reboot`.
+Plan: [`shell.md`](shell.md). Complete; verified on hardware.
+
+- [x] Console abstraction (a terminal endpoint: read/write bytes, size, capabilities).
+- [x] Serial console on USB-Serial/JTAG.
+- [x] Line editor: editing keys, history. (Completion is deferred to Phase 2, when there are paths to complete.)
+- [x] Shell core: command registration (rodata table), argument parsing, exit codes.
+- [x] Built-ins: `help`, `version`, `uptime`, `mem` (per-MemSpace usage), `tasks`, `log` (levels/modules), `reboot`.
+- [x] Log history (`log show`), since a USB serial port misses the boot messages.
+
+## Phase 1b — Shell Language, Standard I/O, Terminal Model (proposed)
+
+Plans: [`shell-language.md`](shell-language.md), [`terminal.md`](terminal.md). Not started.
+
+- [ ] `String`, `List<T>` and an arena allocator in `bmds_core`.
+- [ ] Standard I/O: `Stream`, refcounted fd tables, pipes, memory/null streams; Ctrl-C interrupts.
+- [ ] Commands use stdin/stdout/stderr; pipelines (concurrent stages, workers with PSRAM stacks); fd redirection.
+- [ ] Shell language (bash subset): lexer, parser, executor; variables, expansion, `$(…)`, `$((…))`, `if`/`while`/`until`/`for`/`case`, functions, language built-ins, `PS1`/`PS2`, completion.
+- [ ] Terminal model: 24-bit color, SGR with depth downgrade, VT parser, UTF-8, `term` built-in, colored prompt and log levels.
 
 ## Phase 2 — Storage
 
 - [ ] SD card driver (SDMMC host), card detect, hot-plug handling.
 - [ ] Filesystem (FAT, for PC interchange) and VFS mount points.
 - [ ] Shell: `ls`, `cd`, `pwd`, `cat`, `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `df`, `hexdump`.
+- [ ] Shell: file redirection, globbing, file tests, `source`, `/sd/autoexec.sh`, path completion.
 - [ ] File transfer over serial (push files from host to SD without removing the card).
 
 ## Phase 3 — Programs
@@ -35,7 +49,7 @@ Plan: [`foundation.md`](foundation.md). Complete; verified on hardware.
 - [ ] Design: syscall mechanism, executable format, memory layout (`docs/ABI.md` open questions resolved).
 - [ ] Userspace SDK v1: C headers, crt0, linker script, host build (CMake toolchain file / Makefile template).
 - [ ] Loader: load from SD, relocate, run, return exit code; clean up on exit.
-- [ ] Syscall table v1: console I/O, file I/O, memory, time, exit, args.
+- [ ] Syscall table v1: fd-based I/O (stdin/stdout/stderr, `read/write/close/dup2/isatty`), terminal info/modes, file I/O, memory, time, exit, args, environment.
 - [ ] ABI lock tests.
 - [ ] Shell: run programs by name, `PATH`-like search.
 - [ ] Push-and-run over serial (host tool sends a program, device runs it — no reflash).
@@ -45,7 +59,7 @@ Plan: [`foundation.md`](foundation.md). Complete; verified on hardware.
 
 - [ ] DSI-to-HDMI bridge bring-up; mode selection.
 - [ ] Framebuffer in PSRAM (DMA-capable), double buffering policy.
-- [ ] Text console: bitmap font rendering, scrolling, cursor, color attributes, ANSI/VT subset.
+- [ ] Text console: `TerminalScreen` (VT subset, 24-bit color cells) + bitmap font renderer with damage tracking (`terminal.md`).
 - [ ] Shell instance on the HDMI console (output only until Phase 5).
 
 ## Phase 5 — Input

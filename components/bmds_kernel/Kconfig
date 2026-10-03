@@ -23,4 +23,12 @@ menu "BMDS kernel"
             Size of the on-stack buffer a log line is formatted into.
             Longer lines are truncated.
 
+    config BMDS_LOG_HISTORY_BYTES
+        int "Log history size (bytes, PSRAM)"
+        default 8192
+        range 0 1048576
+        help
+            Size of the ring that keeps recent log text for 'log show'.
+            Allocated from PSRAM at boot. 0 disables the history.
+
 endmenu

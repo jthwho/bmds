@@ -13,17 +13,24 @@ set(CMAKE_CXX_EXTENSIONS ON)
 set(BMDS_ROOT ${CMAKE_CURRENT_LIST_DIR}/../..)
 
 add_subdirectory(${BMDS_ROOT}/components/bmds_core ${CMAKE_BINARY_DIR}/bmds_core)
+add_subdirectory(${BMDS_ROOT}/components/bmds_console ${CMAKE_BINARY_DIR}/bmds_console)
+add_subdirectory(${BMDS_ROOT}/components/bmds_shell ${CMAKE_BINARY_DIR}/bmds_shell)
 
 add_executable(bmds_host_tests
         main.cpp
+        args.cpp
+        bytering.cpp
         error.cpp
+        lineeditor.cpp
+        memspace.cpp
         result.cpp
-        stringview.cpp
+        shell.cpp
         span.cpp
-        memspace.cpp)
+        staticobject.cpp
+        stringview.cpp)
 target_include_directories(bmds_host_tests PRIVATE ${BMDS_ROOT}/thirdparty/doctest)
 target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS)
-target_link_libraries(bmds_host_tests PRIVATE bmds_core)
+target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_console bmds_shell)
 bmds_target_options(bmds_host_tests)
 
 enable_testing()

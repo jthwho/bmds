@@ -26,3 +26,5 @@ CONFIG_COMPILER_CXX_RTTI=n
 # --- FreeRTOS -------------------------------------------------------------
 # 1 ms tick so timeoutMs values are honoured at millisecond granularity.
 CONFIG_FREERTOS_HZ=1000
+# The shell `tasks` command (uxTaskGetSystemState). A few bytes per task.
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y

@@ -4,6 +4,9 @@ Design notes and implementation plans for BMDS subsystems. Write a plan here **b
 
 - [`roadmap.md`](roadmap.md) — phased plan and progress checklist.
 - [`foundation.md`](foundation.md) — Phase 0: project skeleton, core types, board definition, logging, boot.
+- [`shell.md`](shell.md) — Phase 1: console abstraction, USB-Serial/JTAG console, line editor, shell, built-ins, log history.
+- [`shell-language.md`](shell-language.md) — Phase 1b: stdin/stdout/stderr, pipes, redirection, the bash-subset shell language.
+- [`terminal.md`](terminal.md) — Phase 1b/4: ANSI/VT and 24-bit color as first-class, terminal modes, HDMI screen model.
 
 ## Plan Document Template
 

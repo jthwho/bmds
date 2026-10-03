@@ -489,5 +489,5 @@ Kernel-internal C code (rare — mostly glue) may use the latest C standard the 
 - **Build system**: ESP-IDF (CMake); host tests use plain CMake.
 - **Compiler flags**: `-fno-exceptions -fno-rtti`; warnings are treated as errors in BMDS components.
 - **Forward declare** in headers to minimize include chains (compile time and host-testability).
-- **No global constructors** in the kernel. Use `constexpr`, rodata, or explicit init functions called from the boot sequence.
+- **No global constructors** in the kernel. Use `constexpr`, rodata, or explicit init functions called from the boot sequence. A kernel singleton that needs runtime construction (it holds a `Mutex`, say) lives in a `constinit StaticObject<T>` and is built by `create()` from its boot stage.
 - **Explicit `return;`** at the end of void functions.

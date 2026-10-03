@@ -4,17 +4,29 @@
  *
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
+ *
+ * ESP-IDF entry point. This is where the system is composed: the kernel boot
+ * sequence runs its own stages, then the ones listed here.
  */
 
 #include <bmds/boot.h>
+#include <bmds/shell.h>
+#include <bmds/usbserialconsole.h>
 
-/**
- * @brief ESP-IDF application entry point.
- *
- * Hands off to the BMDS boot sequence. When it returns, the IDF main task
- * exits and its stack is reclaimed; BMDS services run in their own tasks.
- */
+namespace {
+
+        bmds::Error startSerialShell() {
+                return bmds::Shell::spawn(bmds::UsbSerialConsole::instance(), "shell");
+        }
+
+        constexpr bmds::Boot::Stage SystemStages[] = {
+                {"console", bmds::UsbSerialConsole::init},
+                {"shell", startSerialShell},
+        };
+
+} // namespace
+
 extern "C" void app_main(void) {
-        bmds::Boot::run();
+        bmds::Boot::run(SystemStages);
         return;
 }

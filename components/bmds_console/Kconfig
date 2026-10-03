@@ -1,0 +1,22 @@
+menu "BMDS console"
+
+    config BMDS_USJ_TX_BYTES
+        int "USB-Serial/JTAG console output buffer (bytes, power of two)"
+        default 1024
+        range 128 65536
+        help
+            Output ring buffer of the USB-Serial/JTAG console, in PSRAM.
+            The host drains about 64 bytes per millisecond while the serial
+            port is open. Must be a power of two.
+
+    config BMDS_USJ_RX_BYTES
+        int "USB-Serial/JTAG console input buffer (bytes, power of two)"
+        default 1024
+        range 64 65536
+        help
+            Input ring buffer of the USB-Serial/JTAG console, in PSRAM. It
+            holds input that arrives while a command runs (e.g. a paste);
+            there is no flow control, so input beyond it is dropped. Must be
+            a power of two.
+
+endmenu
