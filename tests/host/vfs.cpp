@@ -590,7 +590,7 @@ TEST_CASE("mount and umount") {
         CHECK(out("umount /ram0/p0", bmds::Shell::ExitFailure) == "umount: /ram0/p0: not mounted\n");
         CHECK(out("mount /dev/ram0p0 /data") == "");
         CHECK(out("mount") == "/dev/ram0p0 on /data type fat32\n");
-        CHECK(out("mount /dev/ram0p0 /again", bmds::Shell::ExitFailure) == "mount: /again: Resource is busy\n");
+        CHECK(out("mount /dev/ram0p0 /again", bmds::Shell::ExitFailure) == "mount: /again: Device or resource busy\n");
         CHECK(out("mount /dev/nope /x", bmds::Shell::ExitFailure) == "mount: /dev/nope: not a block device\n");
         CHECK(out("mount /dev/ram0p0", bmds::Shell::ExitUsage) == "usage: mount [DEVICE PATH]\n");
         CHECK(out("umount /data") == "");

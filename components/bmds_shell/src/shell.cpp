@@ -51,6 +51,10 @@ Error Shell::init() {
         if (err.isOk()) err = _state.vars.set("PS1", "bmds> ");
         if (err.isOk()) err = _state.vars.set("PS2", "> ");
         if (err.isOk()) err = _state.vars.set("IFS", " \t\n");
+        // The current directory starts at the root; `cd` alone goes $HOME.
+        if (err.isOk()) err = _state.cwd.assign("/");
+        if (err.isOk()) err = _state.vars.set("PWD", "/");
+        if (err.isOk()) err = _state.vars.set("HOME", "/");
         // What programs look at to decide on escape sequences and colors.
         if (err.isOk()) err = _state.vars.set("TERM", "xterm-256color");
         if (err.isOk()) err = _state.vars.addFlags("TERM", Variables::Exported);
@@ -109,7 +113,19 @@ void Shell::renderPrompt(StringView ps, String &out) {
                         case 'h':
                         case 'H': (void)raw.append(var("HOSTNAME", "bmds")); break;
                         case 'u': (void)raw.append(var("USER", "user")); break;
-                        case 'w': (void)raw.append(var("PWD", "/")); break;
+                        case 'w': {
+                                // As bash: $HOME and below shown as ~.
+                                const StringView pwd = var("PWD", "/");
+                                const StringView home = var("HOME", "");
+                                if (home.size() > 1 && pwd.startsWith(home) &&
+                                    (pwd.size() == home.size() || pwd[home.size()] == '/')) {
+                                        (void)raw.append('~');
+                                        (void)raw.append(pwd.mid(home.size()));
+                                } else {
+                                        (void)raw.append(pwd);
+                                }
+                                break;
+                        }
                         case 'W': {
                                 const StringView pwd = var("PWD", "/");
                                 const size_t     slash = pwd.lastIndexOf('/');

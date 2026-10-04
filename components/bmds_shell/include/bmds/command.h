@@ -37,6 +37,8 @@
 #include <bmds/result.h>
 #include <bmds/span.h>
 #include <bmds/stringview.h>
+#include <bmds/timezone.h>
+#include <bmds/vfs.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -152,6 +154,51 @@ class CommandContext {
                  * rule). Output sent anyway is still fitted by the console.
                  */
                 ColorDepth colorDepth();
+
+                /** @brief An input a command reads: a file, or its standard input. */
+                class Input {
+                        public:
+                                Input() = default;
+
+                                /** @brief Returns true once opened. */
+                                bool isOpen() const { return _handle != nullptr; }
+
+                                /** @brief Reads from the input (`EndOfFile` at its end). */
+                                Result<size_t> read(WritableByteSpan buf) {
+                                        if (_handle == nullptr) return makeError<size_t>(Error::BadDescriptor);
+                                        return _handle->read(buf, WaitForever);
+                                }
+
+                        private:
+                                friend class CommandContext;
+                                FileHandle::Ptr _file;             // Owned, for a file.
+                                FileHandle     *_handle = nullptr; // What is read: the file, or fd 0.
+                };
+
+                /**
+                 * @brief Returns how commands describe @p err: POSIX's `strerror`
+                 *        wording for file errors ("No such file or directory",
+                 *        "Is a directory", ...), as the GNU tools print it; else `desc()`.
+                 */
+                static const char *errorText(Error err);
+
+                /**
+                 * @brief Returns the zone to show times in: `$TZ` if set (UTC if it
+                 *        doesn't parse, as glibc does), else the kernel's.
+                 */
+                TimeZone displayZone() const;
+
+                /** @brief Returns the shell's current directory. */
+                StringView cwd() const;
+
+                /** @brief Returns the VFS's view of this command: the cwd and the terminal. */
+                Vfs::Context vfs() const;
+
+                /**
+                 * @brief Opens @p path for reading into @p input; `-` is standard input.
+                 * @return `Ok`, or the VFS's error (not reported: the caller prints it).
+                 */
+                Error openInput(StringView path, Input &input);
 
                 /** @brief Returns true after Ctrl-C, or once stdout is a broken pipe. */
                 bool isInterrupted() const;

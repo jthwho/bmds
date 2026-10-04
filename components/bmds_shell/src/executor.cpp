@@ -161,6 +161,7 @@ Result<ShellState> ShellState::clone() const {
         }
         copy.options = options;
         copy.lastStatus = lastStatus;
+        if (err.isOk()) err = copy.cwd.assign(cwd.view());
         return Result<ShellState>(std::move(copy), err);
 }
 

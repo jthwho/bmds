@@ -1,6 +1,6 @@
 # Storage: SD Card, Filesystem, Files in the Shell
 
-Status: **steps 1, 2a, 2b done** (SD driver with hot-plug; the clock; FatFs, the VFS, numbered devices and partitions, a run-time mount table with automatic mounting and `mount`/`umount`); steps 3-5 not started (Phase 2).
+Status: **steps 1-3 done** (SD driver with hot-plug; the clock; FatFs, the VFS, numbered devices and partitions, a run-time mount table with automatic mounting; the file commands); steps 4-5 not started (Phase 2).
 
 ## 1. Goal
 
@@ -130,19 +130,22 @@ namespace Partitions   { read(device, out); attach(device); detach(device); }   
 
 ## 5. Shell
 
-### Commands (formats are an interface: proposals here, fixed when they ship)
+### Commands (formats are an interface: fixed as shipped in step 3)
 
-| Command | Notes |
+Errors are `command: path: reason`, with POSIX's `strerror` wording ("No such file or directory", "Is a directory", ...: `CommandContext::errorText()`), as the GNU tools print them. Each shell has its own current directory (`ShellState::cwd`, copied into subshells and pipeline stages like the rest of the state), which commands resolve paths against (`CommandContext::vfs()`).
+
+| Command | As shipped |
 |---|---|
-| `ls [-l] [-a] [-1] [path...]` | Columns at the terminal width (`COLUMNS`), one per line into a pipe. `-l`: `<type><r><w>  <size>  <yyyy-mm-dd hh:mm>  <name>`, e.g. `-rw-     1234  2026-10-03 14:02  notes.txt`, `drw-        0  …  docs/`. `-a` shows dot and hidden/system files. Colored by type when `colorDepth()` allows. |
-| `cd [dir]`, `pwd` | Built-ins: `PWD`, `OLDPWD`, `cd -`; `cd` alone goes to `$HOME` (`/sd0/p0`). |
-| `cat`, `head`, `wc`, `grep` | Take file arguments (they read stdin today). |
-| `cp [-r] src... dst`, `mv src... dst` | `mv` within a volume renames. |
-| `rm [-r] [-f] path...`, `mkdir [-p] dir...`, `rmdir dir...`, `touch file...` | |
-| `df [-h]` | `Filesystem  Size  Used  Avail  Use%  Mounted on`, as coreutils prints it. |
-| `hexdump [-C] [file]` | `-C` is the canonical hex+ASCII layout. |
+| `cd [dir \| -]`, `pwd` | Set `PWD` and `OLDPWD`; `cd` alone goes to `$HOME` (`/sd0/p0` on the target), `cd -` to `$OLDPWD` and prints it. Errors: `cd: x: Not a directory`, `cd: HOME not set`, `cd: too many arguments`. The prompt's `\w` shows `$HOME` and below as `~`, as bash does; the target's prompt is `bmds:\w> `. |
+| `ls [-la1] [path]...` | Names sorted case-insensitively; directories end in `/`. On a terminal, columns filled top to bottom at the width of `$COLUMNS` (else the console's); one per line otherwise or with `-1`. `-l`: `<type>r<w>-  <size>  <yyyy-mm-dd hh:mm>  <name>`, e.g. `-rw-     32495  2025-04-30 12:45  bcm2710-rpi-2-b.dtb`; type `d`, `-` or `c` (device); `w` is `-` for read-only files; sizes right-aligned to the widest; time in `$TZ` (else the kernel zone), blank when unknown. `-a`: names starting with `.` and hidden or system files too. Directories blue, devices yellow when colors are allowed. GNU's order: the files named, then each directory, with `path:` headers when there are several; status 2 if a path can't be reached. |
+| `cat`, `head`, `wc`, `grep` | Take file arguments (`-`, or none, is stdin). `head` with several files prints `==> name <==` headers; `wc` prints a row per file and a `total` row, columns as wide as the largest number (stdin alone keeps 7-wide columns); `grep` prefixes `name:` with several files, and its status is 2 when a file can't be read. |
+| `cp [-r] source... target` | Into `target` if it is a directory (required with several sources). Refuses copying a file onto itself or a directory into itself; a directory without `-r` is `x: Is a directory (not copied without -r)`. 32 KB `PsramDma` buffer, so whole sectors go straight to DMA. |
+| `mv source... target` | Renames within a filesystem (replacing a file in the way, not a directory); across filesystems copies, then removes the original. |
+| `rm [-rf] path...`, `mkdir [-p] dir...`, `rmdir dir...`, `touch file...` | `rm -r` removes trees (mount points are `Device or resource busy`); `-f` ignores missing files. `mkdir -p` makes parents and accepts existing directories. Nothing can be created outside a mounted filesystem (`Permission denied`). `touch` creates, or sets the time to now. |
+| `df [-h]` | Coreutils' layout: `Filesystem     1K-blocks  Used Available Use% Mounted on`, or with `-h` `Size Used Avail` in powers of 1024 (one decimal below 10, rounded up); columns sized to fit; `Use%` rounded up. |
+| `hexdump [-C] [file]` | The canonical hex+ASCII layout, with runs of identical lines shown as one `*` and the final offset at the end. Plain `hexdump` prints the same (the classic 16-bit-word format is not implemented). |
 | `sd [bench [megabytes]]` | Card info, one `Key: value` line each: `Card:` name and type (SDSC/SDHC/SDXC/MMC), `Capacity:` GB and sectors, `Bus:` width and clock, `Maker:` CID manufacturer, OEM, revision, serial, date. No card (or an unusable one): a message on stderr, status 1. `bench` reads from the start of the card, direct and through the bounce buffer, in 64 KB and 512 B requests, and prints MB/s. |
-| `mkfs [-t fat32\|exfat] /dev/sd0[pN]` | Formats a whole card (a new partition table with one partition) or one partition (asks for `-y` to confirm). |
+| `mkfs [-t auto\|fat32\|exfat] -y DEVICE` | Without `-y`: `mkfs: this erases everything on /dev/sd0; run again with -y to go ahead`, status 1. A whole device (`/dev/sd0`) is ejected, gets a new partition table with one partition, and is mounted again (`/sd0/p0`); a partition (`/dev/sd0p0`) is unmounted, formatted alone and mounted at its default path. Prints the resulting mounts as `mount` does. |
 | `mount`, `mount DEVICE PATH`, `umount PATH` | Without arguments, the mounts, one per line, as on Unix: `/dev/sd0p0 on /sd0/p0 type exfat`. With them, mount or unmount by hand. |
 
 ### Language
@@ -169,7 +172,7 @@ namespace Partitions   { read(device, out); attach(device); detach(device); }   
 | 1 | `BlockDevice`, `RamBlockDevice`; `SdCard` (LDO 4, power, card detect, hot-plug task, high speed, bounce buffer); `Error::NoMedia`; `sd` command; a read benchmark (`sd bench`). |
 | 2a | The system clock ([`time.md`](time.md)): `Clock`, `TimeZone`, the reset record, `date`, `clock`. **Done.** |
 | 2b | FatFs vendored (`thirdparty/fatfs`, our `ffconf.h`, port in `fatfsport.cpp`); `bmds_fs` VFS, files, `Directory`; the block device registry (`sd0`), partition tables (`sd0p0`), the run-time mount table, automatic mounting (`/sd0/p0`), `mount`/`umount`; `/dev` nodes; `Error::NoFilesystem`; host tests on `RamBlockDevice`. **Done.** |
-| 3 | Shell: `cd pwd ls cat cp mv rm mkdir rmdir touch df hexdump mkfs`; text commands on files. |
+| 3 | Shell: `cd pwd ls cat cp mv rm mkdir rmdir touch df hexdump mkfs`; text commands on files; a current directory per shell; the VFS as a boot stage. **Done.** |
 | 4 | Language: file redirection, globbing, tilde, file tests, `source`/`.`/`sh`, `autoexec.sh`, path completion. |
 | 5 | `rz`/`sz` (YMODEM); 4 KB RX ring. |
 
@@ -188,6 +191,10 @@ namespace Partitions   { read(device, out); attach(device); detach(device); }   
 Step 1 measured on the board (32 GB SDHC, 4-bit, 40 MHz): sequential reads of 64 KB **16.3 MB/s direct**, 6.9 MB/s through the 4 KB bounce buffer; 512 B requests 1.3 MB/s on either path (about 0.38 ms of command overhead each, which is also what limits the bounce path: a larger bounce buffer moves more per command). The card is ready 120 ms after boot (50 ms debounce, 30 ms power cycle, init). Card init uses about 1.8 KB of the storage task's stack.
 
 Step 1 measured: the image grew by 58 KB (200 → 258 KB flash), internal RAM free at boot fell by 2.9 KB (610,895 → 607,983 bytes).
+
+Step 3 verified on the board: the read commands on the Raspberry Pi card; then `mkfs -t exfat -y /dev/sd0` (a 30 GB exFAT partition, mounted again at `/sd0/p0`), and `mkdir -p`, `touch`, `cp -r`, `mv`, `rm -r`, `rmdir` and long UTF-8 names (`Grüße aus Zürich ✓ 日本.txt`) on it. Write throughput and pulling a card during a write wait for redirection (step 4), the first way to put data into a file.
+
+Step 3 measured: the image grew by 40.6 KB (342.7 → 383.2 KB), now that the commands use all of FatFs: `bmds_fs` is 35 KB in all (FatFs about 28 KB, in line with the 30 KB estimate; `f_mkfs` alone 4.5 KB), the shell grew 13.5 KB. No new internal RAM.
 
 Step 2b measured: the image grew by 10.9 KB (331.7 → 342.7 KB); the linker still drops the FatFs functions nothing calls yet (reading, writing, `f_mkfs`), so step 3's commands will show its real size. Internal RAM: 1,044 bytes of `.bss`: FatFs's open-object table (`FF_FS_LOCK 16`) 256 B, the device registry (16 entries) 320 B, the mount table 288 B, the partition pool, the volume pool and the storage lock. Moving the registry and mount table to `Psram` at boot would save about 600 B (an open item). Per mounted volume the `FATFS` object (~600 B) is `Psram`; per open file ~600 B and per open directory ~1 KB, `Psram`.
 

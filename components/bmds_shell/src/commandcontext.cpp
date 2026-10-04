@@ -7,6 +7,7 @@
  */
 
 #include <cstdio>
+#include <bmds/clock.h>
 #include <bmds/console.h>
 #include <bmds/executor.h>
 #include <bmds/shell.h>
@@ -17,6 +18,54 @@ Result<size_t> CommandContext::read(WritableByteSpan buf) {
         FileHandle *in = _fds.handle(FdTable::Stdin);
         if (in == nullptr) return makeError<size_t>(Error::BadDescriptor);
         return in->read(buf, WaitForever);
+}
+
+const char *CommandContext::errorText(Error err) {
+        switch (err.code()) {
+                case Error::NotExist: return "No such file or directory";
+                case Error::IsDir: return "Is a directory";
+                case Error::NotDir: return "Not a directory";
+                case Error::Exists: return "File exists";
+                case Error::NotEmpty: return "Directory not empty";
+                case Error::PermissionDenied: return "Permission denied";
+                case Error::NoSpace: return "No space left on device";
+                case Error::NoMedia: return "No medium found";
+                case Error::Busy: return "Device or resource busy";
+                case Error::ReadOnly: return "Read-only file system";
+                case Error::TooManyOpen: return "Too many open files";
+                case Error::Invalid: return "Invalid argument";
+                case Error::IoError: return "Input/output error";
+                default: return err.desc();
+        }
+}
+
+TimeZone CommandContext::displayZone() const {
+        const String *tz = _executor != nullptr ? _executor->state().vars.value("TZ") : nullptr;
+        if (tz == nullptr) return Clock::timeZone();
+        const Result<TimeZone> zone = TimeZone::parse(tz->view());
+        return zone.error().isOk() ? zone.value() : TimeZone();
+}
+
+StringView CommandContext::cwd() const {
+        if (_executor == nullptr || _executor->state().cwd.isEmpty()) return StringView("/");
+        return _executor->state().cwd.view();
+}
+
+Vfs::Context CommandContext::vfs() const {
+        return Vfs::Context{cwd(), &_shell.console()};
+}
+
+Error CommandContext::openInput(StringView path, Input &input) {
+        input = Input();
+        if (path == "-") {
+                input._handle = _fds.handle(FdTable::Stdin);
+                return input._handle != nullptr ? Error() : Error(Error::BadDescriptor);
+        }
+        auto [file, err] = Vfs::open(path, Vfs::Read, vfs());
+        if (err.isError()) return err;
+        input._file = std::move(file);
+        input._handle = input._file.get();
+        return Error();
 }
 
 Error CommandContext::write(int fd, ByteSpan data) {

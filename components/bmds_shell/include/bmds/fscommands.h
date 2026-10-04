@@ -26,6 +26,12 @@ namespace FsCommands {
         /** @brief `umount PATH`: unmount. */
         int umount(CommandContext &ctx);
 
+        /** @brief `df [-h]`: size and free space of the mounts. */
+        int df(CommandContext &ctx);
+
+        /** @brief `mkfs [-t auto|fat32|exfat] -y DEVICE`: format, then mount. */
+        int mkfs(CommandContext &ctx);
+
 } // namespace FsCommands
 
 BMDS_NAMESPACE_END

@@ -26,6 +26,7 @@ add_executable(bmds_host_tests
         bytering.cpp
         error.cpp
         fdtable.cpp
+        files.cpp
         interactive.cpp
         interrupt.cpp
         language.cpp

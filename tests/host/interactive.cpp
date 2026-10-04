@@ -69,6 +69,14 @@ TEST_CASE("prompts") {
         CHECK(f.run("USER=me HOSTNAME=box PWD=/sd/work") == "");
         (void)f.shell->execute("export USER=me HOSTNAME=box PWD=/sd/work");
         CHECK(f.prompt("\\u@\\h:\\w \\W\\$ ") == "me@box:/sd/work work$ ");
+        // $HOME and below show as ~, as in bash (not a mere prefix of a name).
+        (void)f.shell->execute("HOME=/sd");
+        CHECK(f.prompt("\\w") == "~/work");
+        (void)f.shell->execute("PWD=/sd");
+        CHECK(f.prompt("\\w") == "~");
+        (void)f.shell->execute("PWD=/sdx");
+        CHECK(f.prompt("\\w") == "/sdx");
+        (void)f.shell->execute("PWD=/sd/work");
         CHECK(f.prompt("\\[\\e[1m\\]bold\\[\\e[0m\\]> ") == "\x1b[1mbold\x1b[0m> ");
         CHECK(f.prompt("$(echo sub) ${USER} \\\\ \\101\\n") == "sub me \\ A\n");
         // A prompt whose expansion fails is shown as is, and leaves no flow behind.

@@ -13,6 +13,7 @@
 #include <bmds/shell.h>
 #include <bmds/storage.h>
 #include <bmds/usbserialconsole.h>
+#include <bmds/vfs.h>
 
 namespace {
 
@@ -22,6 +23,7 @@ namespace {
 
         constexpr bmds::Boot::Stage SystemStages[] = {
                 {"console", bmds::UsbSerialConsole::init},
+                {"vfs", bmds::Vfs::init},
                 {"storage", bmds::Storage::init},
                 {"shell", startSerialShell},
         };

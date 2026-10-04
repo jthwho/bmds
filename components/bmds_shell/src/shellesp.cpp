@@ -57,8 +57,12 @@ Error Shell::spawn(Console &console, const char *name) {
         auto *session = ::new (mem) Session(console);
         Error err = session->shell.init();
         if (err.isOk()) err = session->shell.state().vars.set("BMDS_VERSION", System::info().bmdsVersion);
-        // A colored prompt; the console fits the color to its terminal.
-        if (err.isOk()) err = session->shell.state().vars.set("PS1", "\\[\\e[1;32m\\]bmds\\[\\e[0m\\]> ");
+        // The first partition of the first SD card (what /sd0/p0/autoexec.sh will live on).
+        if (err.isOk()) err = session->shell.state().vars.set("HOME", "/sd0/p0");
+        // A colored prompt with the directory; the console fits the color to its terminal.
+        if (err.isOk())
+                err = session->shell.state().vars.set(
+                        "PS1", "\\[\\e[1;32m\\]bmds\\[\\e[0m\\]:\\[\\e[1;34m\\]\\w\\[\\e[0m\\]> ");
         if (err.isError()) {
                 session->~Session();
                 Memory::free(mem);

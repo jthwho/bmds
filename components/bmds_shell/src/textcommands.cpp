@@ -6,8 +6,8 @@
  * See LICENSE file in the project root folder for license information.
  *
  * Text built-ins. Output formats follow the GNU tools these are named after
- * and are userspace interfaces: they only ever grow. Reading files arrives
- * with storage (Phase 2); until then they filter stdin.
+ * and are userspace interfaces: they only ever grow. They read the files
+ * named (`-`, or none, is stdin).
  */
 
 #include <cstdint>
@@ -24,14 +24,17 @@ namespace {
 
         constexpr size_t ReadChunkBytes = 256;
 
+        // Files are read in bigger pieces than pipes.
+        constexpr size_t FileChunkBytes = 2048;
+
         bool isSpace(char c) {
                 return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
         }
 
-        // Reads stdin a line at a time.
+        // Reads an input a line at a time.
         class LineReader {
                 public:
-                        explicit LineReader(CommandContext &ctx) : _ctx(ctx) {}
+                        LineReader(CommandContext &ctx, CommandContext::Input &input) : _ctx(ctx), _input(input) {}
 
                         /**
                          * Reads the next line into @p line, without its newline.
@@ -43,7 +46,7 @@ namespace {
                                 for (;;) {
                                         if (_pos == _len) {
                                                 if (_ctx.isInterrupted()) return Error::Interrupted;
-                                                auto [n, err] = _ctx.read(WritableByteSpan(_buf));
+                                                auto [n, err] = _input.read(WritableByteSpan(_buf));
                                                 if (err == Error::EndOfFile || err == Error::BadDescriptor)
                                                         return any ? Error(Error::Ok) : Error(Error::EndOfFile);
                                                 if (err.isError()) return err;
@@ -66,10 +69,11 @@ namespace {
                         }
 
                 private:
-                        CommandContext &_ctx;
-                        uint8_t         _buf[ReadChunkBytes];
-                        size_t          _pos = 0;
-                        size_t          _len = 0;
+                        CommandContext        &_ctx;
+                        CommandContext::Input &_input;
+                        uint8_t                _buf[ReadChunkBytes];
+                        size_t                 _pos = 0;
+                        size_t                 _len = 0;
         };
 
         // Reports a read error (other than Ctrl-C) and picks the exit code.
@@ -91,14 +95,25 @@ namespace {
                 return true;
         }
 
-        // Files are Phase 2; `-` means stdin.
-        bool onlyStdin(CommandContext &ctx, Args files) {
-                for (const char *f : files) {
-                        if (StringView(f) == "-") continue;
-                        ctx.eprintf("%s: %s: No such file or directory\n", ctx.command().name, f);
-                        return false;
+        // The inputs named by @p files, stdin when there are none. Calls
+        // @p fn(name, input) for each that opens (reporting the others) and
+        // stops early if it returns false. Returns false if any failed to open.
+        template <typename Fn> bool forEachInput(CommandContext &ctx, Args files, Fn &&fn) {
+                static char *const Stdin[] = {const_cast<char *>("-")};
+                const Args         names = files.isEmpty() ? Args(Stdin) : files;
+                bool               ok = true;
+                for (const char *name : names) {
+                        if (ctx.isInterrupted()) break;
+                        CommandContext::Input input;
+                        const Error           err = ctx.openInput(name, input);
+                        if (err.isError()) {
+                                ctx.eprintf("%s: %s: %s\n", ctx.command().name, name, CommandContext::errorText(err));
+                                ok = false;
+                                continue;
+                        }
+                        if (!fn(StringView(name), input)) break;
                 }
-                return true;
+                return ok;
         }
 
         // `\x` escapes of echo -e. Returns false at `\c` (stop all output).
@@ -206,15 +221,23 @@ int TextCommands::echo(CommandContext &ctx) {
 }
 
 int TextCommands::cat(CommandContext &ctx) {
-        if (!onlyStdin(ctx, ctx.args().mid(1))) return Shell::ExitFailure;
-        uint8_t buf[ReadChunkBytes];
-        for (;;) {
-                if (ctx.isInterrupted()) return Shell::ExitInterrupted;
-                auto [n, err] = ctx.read(WritableByteSpan(buf));
-                if (err == Error::EndOfFile) return Shell::ExitSuccess;
-                if (err.isError()) return readFailed(ctx, err);
-                (void)ctx.write(FdTable::Stdout, ByteSpan(buf, n));
-        }
+        uint8_t    buf[FileChunkBytes];
+        Error      failed;
+        const bool opened = forEachInput(ctx, ctx.args().mid(1), [&](StringView, CommandContext::Input &input) {
+                for (;;) {
+                        if (ctx.isInterrupted()) return false;
+                        auto [n, err] = input.read(WritableByteSpan(buf));
+                        if (err == Error::EndOfFile) return true;
+                        if (err.isError()) {
+                                failed = err;
+                                return false;
+                        }
+                        (void)ctx.write(FdTable::Stdout, ByteSpan(buf, n));
+                }
+        });
+        if (failed.isError()) return readFailed(ctx, failed);
+        if (ctx.isInterrupted()) return Shell::ExitInterrupted;
+        return opened ? Shell::ExitSuccess : Shell::ExitFailure;
 }
 
 int TextCommands::head(CommandContext &ctx) {
@@ -226,17 +249,31 @@ int TextCommands::head(CommandContext &ctx) {
                 if (!parseCount(value, count)) return ctx.usage();
                 ++i;
         }
-        if (!onlyStdin(ctx, args.mid(i))) return Shell::ExitFailure;
-        LineReader reader(ctx);
+        const Args files = args.mid(i);
         String     line;
-        for (unsigned long n = 0; n < count; ++n) {
-                Error err = reader.next(line);
-                if (err == Error::EndOfFile) break;
-                if (err.isError()) return readFailed(ctx, err);
-                if (line.append('\n').isError()) return readFailed(ctx, Error::NoMem);
-                ctx.print(line);
-        }
-        return ctx.isInterrupted() ? Shell::ExitInterrupted : Shell::ExitSuccess;
+        Error      failed;
+        bool       first = true;
+        const bool opened = forEachInput(ctx, files, [&](StringView name, CommandContext::Input &input) {
+                // GNU: with several files, a header before each.
+                if (files.size() > 1)
+                        ctx.printf("%s==> %.*s <==\n", first ? "" : "\n", static_cast<int>(name.size()), name.data());
+                first = false;
+                LineReader reader(ctx, input);
+                for (unsigned long n = 0; n < count; ++n) {
+                        Error err = reader.next(line);
+                        if (err == Error::EndOfFile) break;
+                        if (err.isOk() && line.append('\n').isError()) err = Error::NoMem;
+                        if (err.isError()) {
+                                failed = err;
+                                return false;
+                        }
+                        ctx.print(line);
+                }
+                return true;
+        });
+        if (failed.isError()) return readFailed(ctx, failed);
+        if (ctx.isInterrupted()) return Shell::ExitInterrupted;
+        return opened ? Shell::ExitSuccess : Shell::ExitFailure;
 }
 
 int TextCommands::wc(CommandContext &ctx) {
@@ -256,42 +293,79 @@ int TextCommands::wc(CommandContext &ctx) {
                         }
                 }
         }
-        if (!onlyStdin(ctx, args.mid(i))) return Shell::ExitFailure;
         if (!lines && !words && !bytes) lines = words = bytes = true;
+        const Args files = args.mid(i);
 
-        unsigned long nl = 0, nw = 0, nc = 0;
-        bool          inWord = false;
-        uint8_t       buf[ReadChunkBytes];
-        for (;;) {
-                if (ctx.isInterrupted()) return Shell::ExitInterrupted;
-                auto [n, err] = ctx.read(WritableByteSpan(buf));
-                if (err == Error::EndOfFile) break;
-                if (err.isError()) return readFailed(ctx, err);
-                nc += n;
-                for (size_t k = 0; k < n; ++k) {
-                        const char c = static_cast<char>(buf[k]);
-                        if (c == '\n') ++nl;
-                        if (isSpace(c)) {
-                                inWord = false;
-                        } else if (!inWord) {
-                                inWord = true;
-                                ++nw;
+        struct Counts {
+                        unsigned long values[3] = {}; // lines, words, bytes
+        };
+        // Up to this many per-file rows are kept, to size the columns once.
+        constexpr size_t MaxRows = 64;
+        Counts           rows[MaxRows];
+        const char      *names[MaxRows] = {};
+        size_t           rowCount = 0;
+        Counts           total;
+        Error            failed;
+        uint8_t          buf[FileChunkBytes];
+        const bool       opened = forEachInput(ctx, files, [&](StringView name, CommandContext::Input &input) {
+                Counts c;
+                bool   inWord = false;
+                for (;;) {
+                        if (ctx.isInterrupted()) return false;
+                        auto [n, err] = input.read(WritableByteSpan(buf));
+                        if (err == Error::EndOfFile) break;
+                        if (err.isError()) {
+                                failed = err;
+                                return false;
+                        }
+                        c.values[2] += n;
+                        for (size_t k = 0; k < n; ++k) {
+                                const char ch = static_cast<char>(buf[k]);
+                                if (ch == '\n') ++c.values[0];
+                                if (isSpace(ch)) {
+                                        inWord = false;
+                                } else if (!inWord) {
+                                        inWord = true;
+                                        ++c.values[1];
+                                }
                         }
                 }
+                for (int k = 0; k < 3; ++k) total.values[k] += c.values[k];
+                if (rowCount == MaxRows) return false;
+                rows[rowCount] = c;
+                names[rowCount++] = name.data();
+                return true;
+        });
+        if (failed.isError()) return readFailed(ctx, failed);
+        if (ctx.isInterrupted()) return Shell::ExitInterrupted;
+
+        const bool wanted[3] = {lines, words, bytes};
+        const int  selected = int(lines) + int(words) + int(bytes);
+        // GNU: stdin alone gets 7-wide columns when several counts are shown
+        // (one count is bare); named files get columns as wide as the
+        // largest number printed.
+        int width = selected == 1 ? 0 : 7;
+        if (!files.isEmpty()) {
+                width = 1;
+                for (int k = 0; k < 3; ++k) {
+                        int digits = 1;
+                        for (unsigned long v = total.values[k]; v >= 10; v /= 10) ++digits;
+                        if (wanted[k] && digits > width) width = digits;
+                }
         }
-        // GNU: one count alone is printed bare; several are padded to 7 columns.
-        const int     selected = int(lines) + int(words) + int(bytes);
-        const int     width = selected == 1 ? 0 : 7;
-        String        out;
-        unsigned long values[3] = {nl, nw, nc};
-        bool          wanted[3] = {lines, words, bytes};
-        for (int k = 0; k < 3; ++k) {
-                if (!wanted[k]) continue;
-                (void)out.appendf(out.isEmpty() ? "%*lu" : " %*lu", width, values[k]);
-        }
-        (void)out.append('\n');
-        ctx.print(out);
-        return Shell::ExitSuccess;
+        auto printRow = [&](const Counts &c, const char *name) {
+                String out;
+                for (int k = 0; k < 3; ++k) {
+                        if (!wanted[k]) continue;
+                        (void)out.appendf(out.isEmpty() ? "%*lu" : " %*lu", width, c.values[k]);
+                }
+                if (!files.isEmpty()) (void)out.appendf(" %s", name);
+                (void)out.append('\n');
+                ctx.print(out);
+        };
+        for (size_t r = 0; r < rowCount; ++r) printRow(rows[r], names[r]);
+        if (files.size() > 1) printRow(total, "total");
+        return opened ? Shell::ExitSuccess : Shell::ExitFailure;
 }
 
 int TextCommands::grep(CommandContext &ctx) {
@@ -317,7 +391,7 @@ int TextCommands::grep(CommandContext &ctx) {
         }
         if (i >= args.size()) return ctx.usage();
         const StringView pattern = args[i++];
-        if (!onlyStdin(ctx, args.mid(i))) return Shell::ExitUsage;
+        const Args       files = args.mid(i);
         if (!fixed) {
                 Error err = Regex::check(pattern);
                 if (err == Error::NotSupported) {
@@ -330,58 +404,84 @@ int TextCommands::grep(CommandContext &ctx) {
                 }
         }
 
-        LineReader    reader(ctx);
         String        line;
-        unsigned long lineNo = 0, selected = 0;
-        for (;;) {
-                Error err = reader.next(line);
-                if (err == Error::EndOfFile) break;
-                if (err.isError()) return err == Error::Interrupted ? Shell::ExitInterrupted : Shell::ExitUsage;
-                ++lineNo;
-                bool match = false;
-                if (fixed) {
-                        if (!ignoreCase) {
-                                match = line.view().contains(pattern);
-                        } else {
-                                // Case-folding fixed search: try each position.
-                                for (size_t s = 0; !match && s + pattern.size() <= line.size(); ++s) {
-                                        size_t k = 0;
-                                        while (k < pattern.size()) {
-                                                char a = line[s + k], b = pattern[k];
-                                                if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
-                                                if (b >= 'A' && b <= 'Z') b = static_cast<char>(b - 'A' + 'a');
-                                                if (a != b) break;
-                                                ++k;
-                                        }
-                                        match = k == pattern.size();
-                                }
+        unsigned long selected = 0;
+        bool          quit = false;
+        Error         failed;
+        const bool    named = files.size() > 1; // GNU: "file:" before each line with several files
+        const bool    opened = forEachInput(ctx, files, [&](StringView name, CommandContext::Input &input) {
+                LineReader    reader(ctx, input);
+                unsigned long lineNo = 0;
+                unsigned long fileSelected = 0;
+                for (;;) {
+                        Error err = reader.next(line);
+                        if (err == Error::EndOfFile) break;
+                        if (err.isError()) {
+                                failed = err;
+                                return false;
                         }
-                } else {
-                        match = Regex::search(pattern, line, ignoreCase);
+                        ++lineNo;
+                        bool match = false;
+                        if (fixed) {
+                                if (!ignoreCase) {
+                                        match = line.view().contains(pattern);
+                                } else {
+                                        // Case-folding fixed search: try each position.
+                                        for (size_t s = 0; !match && s + pattern.size() <= line.size(); ++s) {
+                                                size_t k = 0;
+                                                while (k < pattern.size()) {
+                                                        char a = line[s + k], b = pattern[k];
+                                                        if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
+                                                        if (b >= 'A' && b <= 'Z') b = static_cast<char>(b - 'A' + 'a');
+                                                        if (a != b) break;
+                                                        ++k;
+                                                }
+                                                match = k == pattern.size();
+                                        }
+                                }
+                        } else {
+                                match = Regex::search(pattern, line, ignoreCase);
+                        }
+                        if (match == invert) continue;
+                        ++selected;
+                        ++fileSelected;
+                        if (quiet) {
+                                quit = true;
+                                return false;
+                        }
+                        if (countOnly) continue;
+                        String out;
+                        if (named) (void)out.appendf("%.*s:", static_cast<int>(name.size()), name.data());
+                        if (numbers) (void)out.appendf("%lu:", lineNo);
+                        if (out.append(line).isError() || out.append('\n').isError()) {
+                                failed = Error::NoMem;
+                                return false;
+                        }
+                        ctx.print(out);
+                        if (ctx.isInterrupted()) return false;
                 }
-                if (match == invert) continue;
-                ++selected;
-                if (quiet) return Shell::ExitSuccess;
-                if (countOnly) continue;
-                if (numbers) {
-                        String prefixed;
-                        if (prefixed.appendf("%lu:", lineNo).isError() || prefixed.append(line).isError())
-                                return readFailed(ctx, Error::NoMem);
-                        line = std::move(prefixed);
+                if (countOnly) {
+                        if (named) ctx.printf("%.*s:", static_cast<int>(name.size()), name.data());
+                        ctx.printf("%lu\n", fileSelected);
                 }
-                if (line.append('\n').isError()) return readFailed(ctx, Error::NoMem);
-                ctx.print(line);
-                if (ctx.isInterrupted()) return Shell::ExitInterrupted;
+                return true;
+        });
+        if (quit) return Shell::ExitSuccess;
+        if (ctx.isInterrupted() || failed == Error::Interrupted) return Shell::ExitInterrupted;
+        // GNU: 2 for trouble (a file that couldn't be read), else 0 if anything matched.
+        if (failed.isError()) {
+                ctx.eprintf("grep: %s\n", failed.desc());
+                return Shell::ExitUsage;
         }
-        if (countOnly) ctx.printf("%lu\n", selected);
+        if (!opened) return Shell::ExitUsage;
         return selected > 0 ? Shell::ExitSuccess : Shell::ExitFailure;
 }
 
-BMDS_SHELL_COMMAND(cat, TextCommands::cat, "[-]", "Copy standard input to standard output")
+BMDS_SHELL_COMMAND(cat, TextCommands::cat, "[file]...", "Copy files (or standard input) to standard output")
 BMDS_SHELL_COMMAND(echo, TextCommands::echo, "[-neE] [word]...", "Print the words, separated by spaces")
-BMDS_SHELL_COMMAND(grep, TextCommands::grep, "[-civnqF] pattern",
-                   "Print the lines of standard input that match a basic regular expression")
-BMDS_SHELL_COMMAND(head, TextCommands::head, "[-n count]", "Print the first lines of standard input (10)")
-BMDS_SHELL_COMMAND(wc, TextCommands::wc, "[-lwc]", "Count lines, words and bytes of standard input")
+BMDS_SHELL_COMMAND(grep, TextCommands::grep, "[-civnqF] pattern [file]...",
+                   "Print the lines of files (or standard input) that match a basic regular expression")
+BMDS_SHELL_COMMAND(head, TextCommands::head, "[-n count] [file]...", "Print the first lines of files (10)")
+BMDS_SHELL_COMMAND(wc, TextCommands::wc, "[-lwc] [file]...", "Count lines, words and bytes of files")
 
 BMDS_NAMESPACE_END

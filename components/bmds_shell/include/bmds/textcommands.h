@@ -6,7 +6,8 @@
  * See LICENSE file in the project root folder for license information.
  *
  * The text built-ins (`echo`, `cat`, `head`, `wc`, `grep`): pure code that
- * reads stdin and writes stdout, so they are also built for the host tests.
+ * reads files or stdin and writes stdout, so they are also built for the
+ * host tests.
  * They are registered with BMDS_SHELL_COMMAND in textcommands.cpp; the
  * declarations here let the host tests build their own command table.
  */
@@ -20,11 +21,11 @@ BMDS_NAMESPACE_BEGIN
 
 namespace TextCommands {
 
-        int cat(CommandContext &ctx);  ///< `cat [-]`: copy stdin to stdout.
+        int cat(CommandContext &ctx);  ///< `cat [file]...`: copy files (`-`, or none: stdin) to stdout.
         int echo(CommandContext &ctx); ///< `echo [-neE] [word]...`, as bash's.
-        int grep(CommandContext &ctx); ///< `grep [-civnqF] pattern`: select lines of stdin.
-        int head(CommandContext &ctx); ///< `head [-n count]`: the first lines of stdin.
-        int wc(CommandContext &ctx);   ///< `wc [-lwc]`: count lines, words, bytes of stdin.
+        int grep(CommandContext &ctx); ///< `grep [-civnqF] pattern [file]...`: select lines.
+        int head(CommandContext &ctx); ///< `head [-n count] [file]...`: the first lines.
+        int wc(CommandContext &ctx);   ///< `wc [-lwc] [file]...`: count lines, words, bytes.
 
 } // namespace TextCommands
 

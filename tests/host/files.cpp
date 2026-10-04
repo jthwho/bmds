@@ -1,0 +1,273 @@
+/**
+ * @file      files.cpp
+ * @copyright Jason Howard. All rights reserved.
+ *
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file in the project root folder for license information.
+ *
+ * The file commands, through the shell, on RAM disks.
+ */
+
+#include <doctest.h>
+
+#include <memory>
+#include <string>
+#include <bmds/blockdevices.h>
+#include <bmds/clock.h>
+#include <bmds/filecommands.h>
+#include <bmds/fscommands.h>
+#include <bmds/ramblockdevice.h>
+#include <bmds/shell.h>
+#include <bmds/textcommands.h>
+#include <bmds/vfs.h>
+#include "fakeconsole.h"
+
+using bmds::Error;
+using bmds::Shell;
+namespace Vfs = bmds::Vfs;
+
+namespace {
+
+        constexpr bmds::Command Commands[] = {
+                {"cat", "[file]...", "", bmds::TextCommands::cat},
+                {"cd", "[dir | -]", "", bmds::FileCommands::cd},
+                {"cp", "[-r] source... target", "", bmds::FileCommands::cp},
+                {"df", "[-h]", "", bmds::FsCommands::df},
+                {"echo", "[-neE] [word]...", "", bmds::TextCommands::echo},
+                {"grep", "[-civnqF] pattern [file]...", "", bmds::TextCommands::grep},
+                {"head", "[-n count] [file]...", "", bmds::TextCommands::head},
+                {"hexdump", "[-C] [file]", "", bmds::FileCommands::hexdump},
+                {"ls", "[-la1] [path]...", "", bmds::FileCommands::ls},
+                {"mkdir", "[-p] dir...", "", bmds::FileCommands::mkdir},
+                {"mkfs", "[-t auto|fat32|exfat] -y DEVICE", "", bmds::FsCommands::mkfs},
+                {"mount", "[DEVICE PATH]", "", bmds::FsCommands::mount},
+                {"mv", "source... target", "", bmds::FileCommands::mv},
+                {"pwd", "", "", bmds::FileCommands::pwd},
+                {"rm", "[-rf] path...", "", bmds::FileCommands::rm},
+                {"rmdir", "dir...", "", bmds::FileCommands::rmdir},
+                {"touch", "file...", "", bmds::FileCommands::touch},
+                {"wc", "[-lwc] [file]...", "", bmds::TextCommands::wc},
+        };
+
+        // Two RAM disks, kept for the whole run (the registry and mounts are
+        // global): ram-disk "a" (64 MB, FAT32 at its default path) and "b"
+        // (8 MB) for moving across filesystems and for mkfs.
+        struct Disks {
+                        Disks() : a(512), b(512) {
+                                REQUIRE(a.allocate(64 * 2048, bmds::MemSpace::Psram).isOk());
+                                REQUIRE(b.allocate(8 * 2048, bmds::MemSpace::Psram).isOk());
+                        }
+
+                        bmds::RamBlockDevice a;
+                        bmds::RamBlockDevice b;
+                        char                 aName[bmds::BlockDevices::MaxName + 1];
+                        char                 bName[bmds::BlockDevices::MaxName + 1];
+        };
+
+        Disks &disks() {
+                static Disks d;
+                return d;
+        }
+
+        void put(const char *path, const std::string &text) {
+                auto [h, err] = Vfs::open(path, Vfs::Write | Vfs::Create | Vfs::Truncate, Vfs::Context{"/", nullptr});
+                REQUIRE_MESSAGE(err.isOk(), path);
+                REQUIRE(h->write(bmds::StringView(text.data(), text.size()), bmds::WaitForever).error().isOk());
+        }
+
+        struct Fixture {
+                        Fixture() {
+                                Disks &d = disks();
+                                REQUIRE(bmds::BlockDevices::addNumbered(d.a, "disk", d.aName).isOk());
+                                REQUIRE(bmds::BlockDevices::addNumbered(d.b, "disk", d.bName).isOk());
+                                REQUIRE(std::string(d.aName) == "disk0");
+                                REQUIRE(Vfs::format(d.a, bmds::FsFormat::Fat32).isOk());
+                                REQUIRE(Vfs::automount(d.a).value() == 1);
+                                REQUIRE(Vfs::format(d.b, bmds::FsFormat::Auto).isOk());
+                                REQUIRE(Vfs::automount(d.b).value() == 1);
+                                REQUIRE(bmds::Clock::setTimeZone("UTC0").isOk());
+                                shell = std::make_unique<Shell>(con, bmds::Span<const bmds::Command>(Commands),
+                                                                1 << 20);
+                                REQUIRE(shell->init().isOk());
+                                REQUIRE(shell->execute("NO_COLOR=1; COLUMNS=40; HOME=/disk0/p0") == 0);
+                                con.take();
+                        }
+
+                        // The registry and mounts are shared with the other tests: leave none behind.
+                        ~Fixture() {
+                                shell.reset();
+                                Vfs::eject(disks().a);
+                                Vfs::eject(disks().b);
+                                bmds::BlockDevices::remove(disks().a);
+                                bmds::BlockDevices::remove(disks().b);
+                        }
+
+                        std::string out(const char *line, int expectStatus = Shell::ExitSuccess) {
+                                CHECK_MESSAGE(shell->execute(line) == expectStatus, line);
+                                return con.take();
+                        }
+
+                        FakeConsole            con;
+                        std::unique_ptr<Shell> shell;
+        };
+
+} // namespace
+
+TEST_CASE("Files: cd and pwd") {
+        Fixture f;
+        CHECK(f.out("pwd") == "/\n");
+        CHECK(f.out("cd /disk0/p0; pwd") == "/disk0/p0\n");
+        CHECK(f.out("mkdir docs; cd docs; pwd; echo $PWD $OLDPWD") == "/disk0/p0/docs\n/disk0/p0/docs /disk0/p0\n");
+        CHECK(f.out("cd ..; pwd") == "/disk0/p0\n");
+        CHECK(f.out("cd -") == "/disk0/p0/docs\n");
+        CHECK(f.out("cd /; cd; pwd") == "/disk0/p0\n");
+        CHECK(f.out("cd ../..; pwd") == "/\n");
+        CHECK(f.out("cd /nowhere", Shell::ExitFailure) == "cd: /nowhere: No such file or directory\n");
+        put("/disk0/p0/file", "x");
+        CHECK(f.out("cd /disk0/p0/file", Shell::ExitFailure) == "cd: /disk0/p0/file: Not a directory\n");
+        CHECK(f.out("cd a b", Shell::ExitFailure) == "cd: too many arguments\n");
+        CHECK(f.out("pwd") == "/\n");
+        // A subshell has its own directory.
+        CHECK(f.out("(cd /disk0/p0; pwd); pwd") == "/disk0/p0\n/\n");
+        CHECK(f.out("x=$(cd /disk0; pwd); echo $x; pwd") == "/disk0\n/\n");
+}
+
+TEST_CASE("Files: ls") {
+        Fixture f;
+        put("/disk0/p0/b.txt", "bee");
+        put("/disk0/p0/A.txt", "ay");
+        put("/disk0/p0/.hidden", "");
+        CHECK(f.out("mkdir /disk0/p0/docs") == "");
+        const int64_t when = bmds::Calendar::daysFromCivil(2026, 3, 4) * 86400 + 15 * 3600 + 6 * 60;
+        REQUIRE(Vfs::setModified("/disk0/p0/b.txt", bmds::Timestamp::fromSeconds(when), Vfs::Context{"/", nullptr})
+                        .isOk());
+
+        CHECK(f.out("ls /disk0/p0") == "A.txt  b.txt  docs/\n");
+        CHECK(f.out("ls -1 /disk0/p0") == "A.txt\nb.txt\ndocs/\n");
+        CHECK(f.out("ls -a1 /disk0/p0") == ".hidden\nA.txt\nb.txt\ndocs/\n");
+        CHECK(f.out("cd /disk0/p0; ls b.txt docs") == "b.txt\n\ndocs:\n");
+        CHECK(f.out("ls /") == "dev/  disk0/  disk1/\n");
+        CHECK(f.out("ls /dev") == "console  disk0p0  disk1p0\ndisk0    disk1    null\n");
+        const std::string longList = f.out("ls -l /disk0/p0/b.txt /disk0/p0/A.txt");
+        CHECK(longList.find("-rw-  2  ") == 0);
+        CHECK(longList.find("/disk0/p0/A.txt\n") != std::string::npos);
+        CHECK(longList.find("-rw-  3  2026-03-04 15:06  /disk0/p0/b.txt\n") != std::string::npos);
+        CHECK(f.out("TZ=CET-1; ls -l /disk0/p0/b.txt") == "-rw-  3  2026-03-04 16:06  /disk0/p0/b.txt\n");
+        CHECK(f.out("ls -l /disk0/p0").find("drw-  0  ") != std::string::npos);
+        CHECK(f.out("ls /nope", Shell::ExitUsage) == "ls: /nope: No such file or directory\n");
+        CHECK(f.out("ls -z", Shell::ExitUsage) == "usage: ls [-la1] [path]...\n");
+
+        SUBCASE("columns fill top to bottom") {
+                for (int i = 0; i < 7; ++i) put(("/disk0/p0/docs/file" + std::to_string(i)).c_str(), "");
+                CHECK(f.out("ls /disk0/p0/docs") == "file0  file2  file4  file6\nfile1  file3  file5\n");
+                CHECK(f.out("COLUMNS=12; ls /disk0/p0/docs") == "file0  file4\nfile1  file5\nfile2  file6\nfile3\n");
+        }
+        SUBCASE("colors when allowed") {
+                CHECK(f.out("NO_COLOR=; ls /disk0/p0") == "A.txt  b.txt  \x1b[1;34mdocs/\x1b[0m\n");
+        }
+}
+
+TEST_CASE("Files: the text commands read files") {
+        Fixture f;
+        put("/disk0/p0/one", "alpha\nbeta\ngamma\n");
+        put("/disk0/p0/two", "delta\nalpha again\n");
+        CHECK(f.out("cd /disk0/p0; cat one two") == "alpha\nbeta\ngamma\ndelta\nalpha again\n");
+        CHECK(f.out("cat /disk0/p0/missing /disk0/p0/one", Shell::ExitFailure) ==
+              "cat: /disk0/p0/missing: No such file or directory\nalpha\nbeta\ngamma\n");
+        CHECK(f.out("cd /disk0/p0; head -n 1 one two") == "==> one <==\nalpha\n\n==> two <==\ndelta\n");
+        CHECK(f.out("cd /disk0/p0; head -n 2 one") == "alpha\nbeta\n");
+        CHECK(f.out("cd /disk0/p0; wc one two") == " 3  3 17 one\n 2  3 18 two\n 5  6 35 total\n");
+        CHECK(f.out("cd /disk0/p0; wc -l one") == "3 one\n");
+        CHECK(f.out("cd /disk0/p0; grep -n alpha one two") == "one:1:alpha\ntwo:2:alpha again\n");
+        CHECK(f.out("cd /disk0/p0; grep -c a one two") == "one:3\ntwo:2\n");
+        CHECK(f.out("cd /disk0/p0; grep beta one") == "beta\n");
+        CHECK(f.out("cd /disk0/p0; grep zzz one", Shell::ExitFailure) == "");
+        CHECK(f.out("cd /disk0/p0; grep a nofile", Shell::ExitUsage) == "grep: nofile: No such file or directory\n");
+        CHECK(f.out("cd /disk0/p0; echo piped | cat - one") == "piped\nalpha\nbeta\ngamma\n");
+        CHECK(f.out("cat /dev/null") == "");
+        CHECK(f.out("cat /disk0", Shell::ExitFailure) == "cat: /disk0: Is a directory\n");
+}
+
+TEST_CASE("Files: mkdir, rmdir, rm, touch") {
+        Fixture f;
+        CHECK(f.out("cd /disk0/p0; mkdir -p a/b/c; mkdir -p a/b; ls -1 a/b") == "c/\n");
+        CHECK(f.out("cd /disk0/p0; mkdir a", Shell::ExitFailure) == "mkdir: a: File exists\n");
+        CHECK(f.out("mkdir /top", Shell::ExitFailure) == "mkdir: /top: Permission denied\n");
+        CHECK(f.out("cd /disk0/p0; rmdir a", Shell::ExitFailure) == "rmdir: a: Directory not empty\n");
+        CHECK(f.out("cd /disk0/p0; touch a/file new; ls -1") == "a/\nnew\n");
+        CHECK(f.out("cd /disk0/p0; rm a", Shell::ExitFailure) == "rm: a: Is a directory\n");
+        CHECK(f.out("cd /disk0/p0; rm -r a; rm new; ls -1") == "");
+        CHECK(f.out("cd /disk0/p0; rm gone", Shell::ExitFailure) == "rm: gone: No such file or directory\n");
+        CHECK(f.out("cd /disk0/p0; rm -f gone") == "");
+        CHECK(f.out("rm -r /disk0/p0", Shell::ExitFailure) == "rm: /disk0/p0: Device or resource busy\n");
+
+        // touch sets the time of an existing file to now.
+        const int64_t when = bmds::Calendar::daysFromCivil(2026, 5, 6) * 86400 + 7 * 3600 + 8 * 60;
+        REQUIRE(bmds::Clock::set(bmds::Timestamp::fromSeconds(when), bmds::ClockSource::Manual).isOk());
+        put("/disk0/p0/old", "x");
+        REQUIRE(Vfs::setModified("/disk0/p0/old", bmds::Timestamp::fromSeconds(0), Vfs::Context{"/", nullptr}).isOk());
+        CHECK(f.out("touch /disk0/p0/old; ls -l /disk0/p0/old") == "-rw-  1  2026-05-06 07:08  /disk0/p0/old\n");
+}
+
+TEST_CASE("Files: cp and mv") {
+        Fixture f;
+        put("/disk0/p0/a", "data a");
+        CHECK(f.out("cd /disk0/p0; mkdir d; cp a b; cp a d; cat b d/a") == "data adata a");
+        CHECK(f.out("cd /disk0/p0; cp a a", Shell::ExitFailure) ==
+              "cp: /disk0/p0/a and /disk0/p0/a are the same file\n");
+        CHECK(f.out("cd /disk0/p0; cp d e", Shell::ExitFailure) == "cp: d: Is a directory (not copied without -r)\n");
+        CHECK(f.out("cd /disk0/p0; mkdir d/sub; cp -r d e; ls -1 e") == "a\nsub/\n");
+        CHECK(f.out("cd /disk0/p0; cp -r d d/sub", Shell::ExitFailure) == "cp: cannot copy /disk0/p0/d into itself\n");
+        CHECK(f.out("cd /disk0/p0; cp a b nothere", Shell::ExitFailure) == "cp: nothere: Not a directory\n");
+
+        // A bigger file than the copy buffer.
+        std::string big;
+        for (int i = 0; i < 100000; ++i) big += static_cast<char>('A' + i % 23);
+        put("/disk0/p0/big", big);
+        CHECK(f.out("cd /disk0/p0; cp big big2; wc -c big2") == "100000 big2\n");
+
+        CHECK(f.out("cd /disk0/p0; mv b c; ls -1") == "a\nbig\nbig2\nc\nd/\ne/\n");
+        CHECK(f.out("cd /disk0/p0; mv c a; cat a; ls -1") == "data aa\nbig\nbig2\nd/\ne/\n");
+        CHECK(f.out("cd /disk0/p0; mv e d; ls -1 d") == "a\ne/\nsub/\n");
+        // Across filesystems: copied, then removed.
+        CHECK(f.out("cd /disk0/p0; mv d /disk1/p0; ls -1; ls -1 /disk1/p0/d") == "a\nbig\nbig2\na\ne/\nsub/\n");
+        CHECK(f.out("mv /disk1/p0/d /disk1/p0/d/e", Shell::ExitFailure) == "mv: cannot copy /disk1/p0/d into itself\n");
+}
+
+TEST_CASE("Files: hexdump") {
+        Fixture f;
+        put("/disk0/p0/h", "Hello\n0123456789abcdefXYZ");
+        CHECK(f.out("hexdump -C /disk0/p0/h") ==
+              "00000000  48 65 6c 6c 6f 0a 30 31  32 33 34 35 36 37 38 39  |Hello.0123456789|\n"
+              "00000010  61 62 63 64 65 66 58 59  5a                       |abcdefXYZ|\n"
+              "00000019\n");
+        put("/disk0/p0/z", std::string(64, '\0'));
+        CHECK(f.out("hexdump /disk0/p0/z") ==
+              "00000000  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  |................|\n*\n00000040\n");
+        CHECK(f.out("echo hi | hexdump -C") ==
+              "00000000  68 69 0a                                          |hi.|\n00000003\n");
+        CHECK(f.out("hexdump /dev/null") == "");
+}
+
+TEST_CASE("Files: df and mkfs") {
+        Fixture           f;
+        const std::string df = f.out("df");
+        CHECK(df.find("Filesystem     1K-blocks ") == 0);
+        CHECK(df.find("\n/dev/disk0p0   ") != std::string::npos);
+        CHECK(df.find(" /disk0/p0\n") != std::string::npos);
+        CHECK(df.find(" /disk1/p0\n") != std::string::npos);
+        const std::string dfh = f.out("df -h");
+        CHECK(dfh.find("Filesystem     Size Used Avail Use% Mounted on\n") == 0);
+        CHECK(dfh.find("M ") != std::string::npos);
+
+        CHECK(f.out("mkfs /dev/disk1", Shell::ExitFailure) ==
+              "mkfs: this erases everything on /dev/disk1; run again with -y to go ahead\n");
+        CHECK(f.out("mkfs -y /dev/nothing", Shell::ExitFailure) == "mkfs: /dev/nothing: not a block device\n");
+        put("/disk1/p0/doomed", "x");
+        CHECK(f.out("mkfs -t exfat -y /dev/disk1") == "/dev/disk1p0 on /disk1/p0 type exfat\n");
+        CHECK(f.out("ls /disk1/p0") == "");
+        CHECK(f.out("mkfs -t fat32 -y /dev/disk1p0", Shell::ExitFailure).find("mkfs: /dev/disk1p0: Invalid argument") ==
+              0);
+        CHECK(f.out("mkfs -y /dev/disk1p0") == "/dev/disk1p0 on /disk1/p0 type fat16\n");
+        CHECK(f.out("mount") == "/dev/disk0p0 on /disk0/p0 type fat32\n/dev/disk1p0 on /disk1/p0 type fat16\n");
+}

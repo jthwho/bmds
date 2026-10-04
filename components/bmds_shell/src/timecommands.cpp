@@ -66,14 +66,9 @@ namespace {
                 return true;
         }
 
-        // The zone `date` shows: $TZ if set (UTC if it doesn't parse, as
-        // glibc does), else the kernel's.
+        // The zone `date` shows: UTC with -u, else as CommandContext::displayZone().
         TimeZone displayZone(CommandContext &ctx, bool utc) {
-                if (utc) return TimeZone();
-                const String *tz = ctx.shell().state().vars.value("TZ");
-                if (tz == nullptr) return Clock::timeZone();
-                const Result<TimeZone> zone = TimeZone::parse(tz->view());
-                return zone.error().isOk() ? zone.value() : TimeZone();
+                return utc ? TimeZone() : ctx.displayZone();
         }
 
         // "@SECONDS[.frac]", "YYYY-MM-DD[ HH:MM[:SS]]" or "HH:MM[:SS]" (today),

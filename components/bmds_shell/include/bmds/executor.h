@@ -47,7 +47,7 @@ struct ShellOptions {
 
 /**
  * @brief Everything a subshell gets a copy of: variables, functions,
- *        positional parameters, options and `$?`.
+ *        positional parameters, options, `$?` and the current directory.
  */
 class ShellState {
         public:
@@ -56,6 +56,7 @@ class ShellState {
                 List<String>        positional;
                 ShellOptions        options;
                 int                 lastStatus = 0;
+                String              cwd; ///< Current directory (absolute, normalized); empty means `/`.
 
                 ShellState() = default;
                 ShellState(ShellState &&) = default;
