@@ -30,6 +30,7 @@
 
 #include <cstdarg>
 #include <cstddef>
+#include <bmds/color.h>
 #include <bmds/config.h>
 #include <bmds/error.h>
 #include <bmds/fdtable.h>
@@ -142,6 +143,15 @@ class CommandContext {
 
                 /** @brief Writes formatted text (up to `PrintBufferBytes`) to stderr. */
                 void eprintf(const char *fmt, ...) BMDS_PRINTF_FORMAT(2, 3);
+
+                /**
+                 * @brief Returns the colors to use on stdout: `None` unless stdout is
+                 *        a terminal and `NO_COLOR` is unset, else the console's depth.
+                 *
+                 * For commands that color their own output (the `ls --color=auto`
+                 * rule). Output sent anyway is still fitted by the console.
+                 */
+                ColorDepth colorDepth();
 
                 /** @brief Returns true after Ctrl-C, or once stdout is a broken pipe. */
                 bool isInterrupted() const;

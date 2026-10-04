@@ -6,6 +6,7 @@
  * See LICENSE file in the project root folder for license information.
  */
 
+#include <new>
 #include <esp_intr_alloc.h>
 #include <esp_private/periph_ctrl.h>
 #include <hal/usb_serial_jtag_ll.h>
@@ -35,15 +36,61 @@ namespace {
 
         constinit StaticObject<UsbSerialConsole> console;
 
+        constexpr ColorDepth InitialDepth =
+#if defined(CONFIG_BMDS_USJ_COLOR_NONE)
+                ColorDepth::None;
+#elif defined(CONFIG_BMDS_USJ_COLOR_16)
+                ColorDepth::Ansi16;
+#elif defined(CONFIG_BMDS_USJ_COLOR_256)
+                ColorDepth::Ansi256;
+#else
+                ColorDepth::TrueColor;
+#endif
+
+        ByteSpan bytes(StringView s) {
+                return ByteSpan(reinterpret_cast<const uint8_t *>(s.data()), s.size());
+        }
+
+        // Where the level letter of a log line is, or NPos: BMDS lines are
+        // "[ time] L text", ESP-IDF lines "L (ms) tag: text".
+        size_t levelLetter(StringView line) {
+                if (line.size() > 3 && line[0] == '[') {
+                        const size_t close = line.indexOf("] ");
+                        if (close != StringView::NPos && close + 3 < line.size() && line[close + 3] == ' ')
+                                return close + 2;
+                        return StringView::NPos;
+                }
+                if (line.size() > 3 && line[1] == ' ' && line[2] == '(') return 0;
+                return StringView::NPos;
+        }
+
         void logSink(const char *text, size_t lengthBytes) {
-                (void)console->write(StringView(text, lengthBytes), UsbSerialConsole::LogTimeoutMs);
+                const StringView line(text, lengthBytes);
+                const size_t     at = console->colorDepth() == ColorDepth::None ? StringView::NPos : levelLetter(line);
+                const char      *color = nullptr;
+                if (at != StringView::NPos) {
+                        switch (line[at]) {
+                                case 'E': color = "\x1b[31m"; break; // red
+                                case 'W': color = "\x1b[33m"; break; // yellow
+                                case 'D': color = "\x1b[2m"; break;  // dim
+                                default: break;
+                        }
+                }
+                if (color == nullptr) {
+                        (void)console->write(line, UsbSerialConsole::LogTimeoutMs);
+                        return;
+                }
+                // The history keeps plain text; only the console sees the color.
+                const ByteSpan parts[] = {bytes(line.left(at)), bytes(color), bytes(line.mid(at, 1)), bytes("\x1b[0m"),
+                                          bytes(line.mid(at + 1))};
+                (void)console->writeParts(Span<const ByteSpan>(parts), UsbSerialConsole::LogTimeoutMs);
                 return;
         }
 
 } // namespace
 
 UsbSerialConsole::UsbSerialConsole(WritableByteSpan txStorage, WritableByteSpan rxStorage)
-    : _tx(txStorage), _rx(rxStorage), _txSpace(1, 0), _rxReady(1, 0) {}
+    : Console(InitialDepth), _tx(txStorage), _rx(rxStorage), _txSpace(1, 0), _rxReady(1, 0) {}
 
 Error UsbSerialConsole::init() {
         if (!board().usbSerialJtag) return Error::NotSupported;
@@ -208,10 +255,10 @@ Result<size_t> UsbSerialConsole::read(WritableByteSpan buf, unsigned int timeout
         }
 }
 
-size_t UsbSerialConsole::pushTranslated(ByteSpan data, size_t &done, bool &crSent) {
-        // Copies data[done...] into the TX ring, sending '\n' as "\r\n".
-        // `crSent` carries a half-sent pair across calls when the ring fills
-        // between the two bytes.
+size_t UsbSerialConsole::pushTranslated(ByteSpan data, size_t &done, bool &crSent, bool translate) {
+        // Copies data[done...] into the TX ring, sending '\n' as "\r\n" when
+        // translating. `crSent` carries a half-sent pair across calls when the
+        // ring fills between the two bytes.
         size_t pushed = 0;
         while (done < data.size()) {
                 WritableByteSpan dst = _tx.writable();
@@ -219,7 +266,7 @@ size_t UsbSerialConsole::pushTranslated(ByteSpan data, size_t &done, bool &crSen
                 size_t n = 0;
                 while (n < dst.size() && done < data.size()) {
                         const uint8_t b = data[done];
-                        if (b == '\n' && !crSent) {
+                        if (translate && b == '\n' && !crSent) {
                                 dst[n++] = '\r';
                                 crSent = true;
                                 continue;
@@ -234,39 +281,78 @@ size_t UsbSerialConsole::pushTranslated(ByteSpan data, size_t &done, bool &crSen
         return pushed;
 }
 
-Result<size_t> UsbSerialConsole::write(ByteSpan data, unsigned int timeoutMs) {
-        if (data.isEmpty()) return makeResult(size_t(0));
-        Deadline deadline(timeoutMs);
-        if (_txMutex.lock(deadline).isError()) return Result<size_t>(0, Error::Timeout);
-
-        // While stalled, take a write whole or not at all, so the backlog the
+// Queues all of @p data (the TX mutex is held).
+Error UsbSerialConsole::pushAll(ByteSpan data, const Deadline &deadline) {
+        if (data.isEmpty()) return Error::Ok;
+        const bool translate = mode().nlToCrNl;
+        // While stalled, take output whole or not at all, so the backlog the
         // host eventually sees holds complete lines.
         if (_stalled.load(std::memory_order_relaxed)) {
                 size_t need = data.size();
-                for (uint8_t b : data) need += (b == '\n');
-                if (_tx.freeSpace() < need) {
-                        _txMutex.unlock();
-                        return Result<size_t>(0, Error::Timeout);
+                if (translate) {
+                        for (uint8_t b : data) need += (b == '\n');
                 }
+                if (_tx.freeSpace() < need) return Error::Timeout;
         }
-
         size_t done = 0;
         bool   crSent = false;
-        Error  err;
         for (;;) {
-                (void)pushTranslated(data, done, crSent);
+                (void)pushTranslated(data, done, crSent, translate);
                 enableInterrupt(USB_SERIAL_JTAG_INTR_SERIAL_IN_EMPTY);
-                if (done == data.size()) break;
+                if (done == data.size()) return Error::Ok;
                 // Ring full. With nobody reading, give up at once instead of
                 // making every writer wait out its timeout.
                 if (_stalled.load(std::memory_order_relaxed) || waitForSpace(deadline).isError()) {
                         _stalled.store(true, std::memory_order_relaxed);
-                        err = Error::Timeout;
-                        break;
+                        return Error::Timeout;
                 }
         }
+}
+
+namespace {
+
+        struct FilterContext {
+                        UsbSerialConsole *console;
+                        const Deadline   *deadline;
+                        Error             err;
+        };
+
+} // namespace
+
+void UsbSerialConsole::filterSink(void *context, ByteSpan data) {
+        auto *ctx = static_cast<FilterContext *>(context);
+        if (ctx->err.isOk()) ctx->err = ctx->console->pushAll(data, *ctx->deadline);
+        return;
+}
+
+Error UsbSerialConsole::writeParts(Span<const ByteSpan> parts, unsigned int timeoutMs) {
+        Deadline deadline(timeoutMs);
+        if (_txMutex.lock(deadline).isError()) return Error::Timeout;
+        const ColorDepth depth = colorDepth();
+        if (depth != ColorDepth::TrueColor && _filter == nullptr) {
+                // Rare (a depth change), so allocating here is fine; without
+                // memory the output just goes unfiltered.
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(ColorFilter));
+                if (mem != nullptr) _filter = new (mem) ColorFilter(depth);
+        }
+        Error err;
+        if (depth != ColorDepth::TrueColor && _filter != nullptr) {
+                _filter->setDepth(depth);
+                FilterContext ctx{this, &deadline, Error()};
+                for (size_t i = 0; i < parts.size() && ctx.err.isOk(); ++i)
+                        _filter->process(parts[i], filterSink, &ctx);
+                err = ctx.err;
+        } else {
+                for (size_t i = 0; i < parts.size() && err.isOk(); ++i) err = pushAll(parts[i], deadline);
+        }
         _txMutex.unlock();
-        return Result<size_t>(done, err);
+        return err;
+}
+
+Result<size_t> UsbSerialConsole::write(ByteSpan data, unsigned int timeoutMs) {
+        if (data.isEmpty()) return makeResult(size_t(0));
+        Error err = writeParts(Span<const ByteSpan>(&data, 1), timeoutMs);
+        return Result<size_t>(err.isOk() ? data.size() : 0, err);
 }
 
 Error UsbSerialConsole::waitForSpace(const Deadline &deadline) {

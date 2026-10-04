@@ -19,4 +19,22 @@ menu "BMDS console"
             there is no flow control, so input beyond it is dropped. Must be
             a power of two.
 
+    choice BMDS_USJ_COLOR_DEPTH
+        prompt "USB-Serial/JTAG console color depth"
+        default BMDS_USJ_COLOR_TRUECOLOR
+        help
+            Colors the terminal on the other end of the serial port shows.
+            The console can't detect it; output with more colors is
+            rewritten to fit. Change it at run time with `term color`.
+
+        config BMDS_USJ_COLOR_TRUECOLOR
+            bool "24-bit (truecolor)"
+        config BMDS_USJ_COLOR_256
+            bool "256 colors"
+        config BMDS_USJ_COLOR_16
+            bool "16 colors"
+        config BMDS_USJ_COLOR_NONE
+            bool "No color"
+    endchoice
+
 endmenu

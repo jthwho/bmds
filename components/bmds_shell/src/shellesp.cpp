@@ -57,6 +57,8 @@ Error Shell::spawn(Console &console, const char *name) {
         auto *session = ::new (mem) Session(console);
         Error err = session->shell.init();
         if (err.isOk()) err = session->shell.state().vars.set("BMDS_VERSION", System::info().bmdsVersion);
+        // A colored prompt; the console fits the color to its terminal.
+        if (err.isOk()) err = session->shell.state().vars.set("PS1", "\\[\\e[1;32m\\]bmds\\[\\e[0m\\]> ");
         if (err.isError()) {
                 session->~Session();
                 Memory::free(mem);

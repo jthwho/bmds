@@ -214,6 +214,7 @@ Echo uses relative cursor movement (`ESC[nD`, `ESC[nC`, `ESC[K`), so the editor 
 | `log on\|off <module>...\|all` | Enable/disable debug modules. |
 | `log show` | Print the log history. |
 | `reboot` | Flush the console, restart. |
+| `term [color [none\|16\|256\|truecolor] \| size [COLSxROWS]]` | `terminal: <name>`, `color: <depth>`, `size: <cols>x<rows>`; sets the depth, or the size (`size` alone asks the terminal and prints `<cols>x<rows>`). (Phase 1b) |
 | `sleep <seconds>` | Wait; fractions allowed (`0.5`), up to a week. Ctrl-C stops it (exit 130). (Phase 1b) |
 
 Text built-ins (Phase 1b, `textcommands.cpp`). They read stdin and follow the GNU tools' output formats; file arguments arrive with storage (`-` means stdin):

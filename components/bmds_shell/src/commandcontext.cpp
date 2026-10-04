@@ -8,6 +8,7 @@
 
 #include <cstdio>
 #include <bmds/console.h>
+#include <bmds/executor.h>
 #include <bmds/shell.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -59,6 +60,15 @@ void CommandContext::eprintf(const char *fmt, ...) {
         vwrite(FdTable::Stderr, fmt, args);
         va_end(args);
         return;
+}
+
+ColorDepth CommandContext::colorDepth() {
+        FileHandle *out = _fds.handle(FdTable::Stdout);
+        if (out == nullptr || !out->stream().isTerminal()) return ColorDepth::None;
+        const String *noColor = _executor != nullptr ? _executor->state().vars.value("NO_COLOR") : nullptr;
+        if (noColor != nullptr && !noColor->isEmpty()) return ColorDepth::None;
+        // Only consoles are terminals.
+        return static_cast<Console &>(out->stream()).colorDepth();
 }
 
 bool CommandContext::isInterrupted() const {

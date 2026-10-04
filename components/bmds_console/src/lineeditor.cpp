@@ -10,6 +10,7 @@
 #include <cstring>
 #include <bmds/console.h>
 #include <bmds/lineeditor.h>
+#include <bmds/utf8.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -137,6 +138,12 @@ LineEditor::Event LineEditor::feed(char c) {
         }
 
         if (c == '\n' && wasCr) return Event::None; // the LF of a CR LF pair
+        const uint8_t u = static_cast<uint8_t>(c);
+        if (u >= 0x80) {
+                feedUtf8(u, out);
+                return Event::None;
+        }
+        _utf8Need = 0; // an ASCII byte ends any partial character
         if (c >= 0x20 && c < Del) {
                 insert(c, out);
                 return Event::None;
@@ -158,12 +165,12 @@ LineEditor::Event LineEditor::handleControl(char c, Output &out) {
 
                 case Del:
                 case ctrl('H'):
-                        if (_cursor > 0) eraseRange(_cursor - 1, _cursor, out);
+                        if (_cursor > 0) eraseRange(previousCharacter(_cursor), _cursor, out);
                         break;
 
                 case ctrl('D'):
                         if (_length == 0) return Event::Eof;
-                        if (_cursor < _length) eraseRange(_cursor, _cursor + 1, out);
+                        if (_cursor < _length) eraseRange(_cursor, nextCharacter(_cursor), out);
                         break;
 
                 case ctrl('C'):
@@ -176,10 +183,10 @@ LineEditor::Event LineEditor::handleControl(char c, Output &out) {
                 case ctrl('A'): moveTo(0, out); break;
                 case ctrl('E'): moveTo(_length, out); break;
                 case ctrl('B'):
-                        if (_cursor > 0) moveTo(_cursor - 1, out);
+                        if (_cursor > 0) moveTo(previousCharacter(_cursor), out);
                         break;
                 case ctrl('F'):
-                        if (_cursor < _length) moveTo(_cursor + 1, out);
+                        if (_cursor < _length) moveTo(nextCharacter(_cursor), out);
                         break;
                 case ctrl('P'): historyUp(out); break;
                 case ctrl('N'): historyDown(out); break;
@@ -191,7 +198,7 @@ LineEditor::Event LineEditor::handleControl(char c, Output &out) {
                         out.put("\x1b[H\x1b[2J");
                         out.put(_prompt);
                         out.put(line());
-                        out.csi(_length - _cursor, 'D');
+                        out.csi(columns(_cursor, _length), 'D');
                         _screenCursor = _cursor;
                         break;
 
@@ -213,14 +220,14 @@ void LineEditor::handleSequence(char final, Output &out) {
                         if (word) {
                                 moveTo(wordRight(), out);
                         } else if (_cursor < _length) {
-                                moveTo(_cursor + 1, out);
+                                moveTo(nextCharacter(_cursor), out);
                         }
                         break;
                 case 'D':
                         if (word) {
                                 moveTo(wordLeft(), out);
                         } else if (_cursor > 0) {
-                                moveTo(_cursor - 1, out);
+                                moveTo(previousCharacter(_cursor), out);
                         }
                         break;
                 case 'H': moveTo(0, out); break;
@@ -232,7 +239,7 @@ void LineEditor::handleSequence(char final, Output &out) {
                                 case 4:
                                 case 8: moveTo(_length, out); break;
                                 case 3:
-                                        if (_cursor < _length) eraseRange(_cursor, _cursor + 1, out);
+                                        if (_cursor < _length) eraseRange(_cursor, nextCharacter(_cursor), out);
                                         break;
                                 default: break;
                         }
@@ -243,27 +250,71 @@ void LineEditor::handleSequence(char final, Output &out) {
 }
 
 void LineEditor::insert(char c, Output &out) {
-        if (_length == LineMax) {
+        insertBytes(&c, 1, out);
+        return;
+}
+
+void LineEditor::insertBytes(const char *bytes, size_t n, Output &out) {
+        if (_length + n > LineMax) {
                 out.put('\a');
                 return;
         }
-        std::memmove(_line + _cursor + 1, _line + _cursor, _length - _cursor);
-        _line[_cursor] = c;
-        ++_length;
-        ++_cursor;
+        std::memmove(_line + _cursor + n, _line + _cursor, _length - _cursor);
+        std::memcpy(_line + _cursor, bytes, n);
+        _length += n;
+        _cursor += n;
         _line[_length] = '\0';
         if (_cursor == _length) {
                 // Typing at the end of the line: just echo.
-                out.put(c);
+                out.put(StringView(bytes, n));
                 _screenCursor = _cursor;
         } else {
-                refreshFrom(_cursor - 1, out);
+                refreshFrom(_cursor - n, out);
         }
         return;
 }
 
+// Collects the bytes of a UTF-8 character, then inserts it whole.
+void LineEditor::feedUtf8(uint8_t b, Output &out) {
+        if (!Utf8::isContinuation(b)) {
+                _utf8Need = b >= 0xF0 ? 3 : (b >= 0xE0 ? 2 : (b >= 0xC0 ? 1 : 0));
+                _utf8Length = 0;
+                if (_utf8Need == 0 || b > 0xF4) {
+                        _utf8Need = 0; // not a lead byte
+                        return;
+                }
+        } else if (_utf8Need == 0) {
+                return; // a stray continuation byte
+        } else {
+                --_utf8Need;
+        }
+        _utf8[_utf8Length++] = static_cast<char>(b);
+        if (_utf8Need == 0 && _utf8Length > 1) insertBytes(_utf8, _utf8Length, out);
+        return;
+}
+
+size_t LineEditor::columns(size_t from, size_t to) const {
+        return Utf8::displayWidth(StringView(_line + from, to - from));
+}
+
+size_t LineEditor::previousCharacter(size_t pos) const {
+        if (pos == 0) return 0;
+        --pos;
+        while (pos > 0 && Utf8::isContinuation(static_cast<uint8_t>(_line[pos]))) --pos;
+        return pos;
+}
+
+size_t LineEditor::nextCharacter(size_t pos) const {
+        if (pos >= _length) return _length;
+        ++pos;
+        while (pos < _length && Utf8::isContinuation(static_cast<uint8_t>(_line[pos]))) ++pos;
+        return pos;
+}
+
 void LineEditor::eraseRange(size_t from, size_t to, Output &out) {
         if (from >= to) return;
+        // Move the terminal cursor while the columns before it are still there.
+        moveScreenTo(from, out);
         std::memmove(_line + from, _line + to, _length - to);
         _length -= to - from;
         _line[_length] = '\0';
@@ -276,11 +327,21 @@ void LineEditor::eraseRange(size_t from, size_t to, Output &out) {
         return;
 }
 
+void LineEditor::moveScreenTo(size_t pos, Output &out) {
+        if (pos > _screenCursor) {
+                out.csi(columns(_screenCursor, pos), 'C');
+        } else {
+                out.csi(columns(pos, _screenCursor), 'D');
+        }
+        _screenCursor = pos;
+        return;
+}
+
 void LineEditor::moveTo(size_t pos, Output &out) {
         if (pos > _screenCursor) {
-                out.csi(pos - _screenCursor, 'C');
+                out.csi(columns(_screenCursor, pos), 'C');
         } else {
-                out.csi(_screenCursor - pos, 'D');
+                out.csi(columns(pos, _screenCursor), 'D');
         }
         _cursor = pos;
         _screenCursor = pos;
@@ -291,18 +352,19 @@ void LineEditor::refreshFrom(size_t from, Output &out) {
         // Move to `from`, rewrite the rest of the line, clear what was left
         // over from a longer line, then put the cursor back where it belongs.
         if (from < _screenCursor) {
-                out.csi(_screenCursor - from, 'D');
+                out.csi(columns(from, _screenCursor), 'D');
         } else {
-                out.csi(from - _screenCursor, 'C');
+                out.csi(columns(_screenCursor, from), 'C');
         }
         out.put(StringView(_line + from, _length - from));
         out.put("\x1b[K");
-        out.csi(_length - _cursor, 'D');
+        out.csi(columns(_cursor, _length), 'D');
         _screenCursor = _cursor;
         return;
 }
 
 void LineEditor::loadLine(StringView text, Output &out) {
+        moveScreenTo(0, out); // measured on the old line
         const size_t len = text.size() < LineMax ? text.size() : LineMax;
         std::memcpy(_line, text.data(), len);
         _length = len;
@@ -477,7 +539,7 @@ void LineEditor::complete(Output &out) {
         if (list.rowOpen()) out.put('\n');
         out.put(_prompt);
         out.put(line());
-        out.csi(_length - _cursor, 'D');
+        out.csi(columns(_cursor, _length), 'D');
         _screenCursor = _cursor;
         return;
 }
@@ -488,7 +550,7 @@ void LineEditor::redraw() {
         out.put(_prompt);
         out.put(line());
         out.put("\x1b[K");
-        out.csi(_length - _cursor, 'D');
+        out.csi(columns(_cursor, _length), 'D');
         _screenCursor = _cursor;
         return;
 }

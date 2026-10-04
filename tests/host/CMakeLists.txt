@@ -41,6 +41,7 @@ add_executable(bmds_host_tests
         string.cpp
         stringview.cpp
         syntax.cpp
+        terminal.cpp
         workerpool.cpp)
 target_include_directories(bmds_host_tests PRIVATE ${BMDS_ROOT}/thirdparty/doctest)
 target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS

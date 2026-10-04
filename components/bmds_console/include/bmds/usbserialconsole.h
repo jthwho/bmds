@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstdint>
 #include <bmds/bytering.h>
+#include <bmds/colorfilter.h>
 #include <bmds/config.h>
 #include <bmds/console.h>
 #include <bmds/deadline.h>
@@ -73,12 +74,19 @@ class UsbSerialConsole final : public Console {
                 using Console::write;
 
                 const char    *name() const override { return "usb"; }
-                uint32_t       capabilities() const override { return Ansi | Color; }
-                Size           size() const override { return Size(); }
+                uint32_t       capabilities() const override { return Ansi; }
                 Result<size_t> read(WritableByteSpan buf, unsigned int timeoutMs) override;
                 Result<size_t> tryRead(WritableByteSpan buf) override;
                 Result<size_t> write(ByteSpan data, unsigned int timeoutMs) override;
                 Error          flush(unsigned int timeoutMs) override;
+
+                /**
+                 * @brief Writes several pieces as one atomic write (no other writer
+                 *        gets in between), e.g. a log line with its color codes.
+                 * @return `Ok`, or `Timeout` (some output may have been dropped).
+                 * @blocking
+                 */
+                Error writeParts(Span<const ByteSpan> parts, unsigned int timeoutMs);
 
                 /** @brief Returns true while output is being discarded because no host is reading. */
                 bool isStalled() const { return _stalled.load(std::memory_order_relaxed); }
@@ -93,8 +101,10 @@ class UsbSerialConsole final : public Console {
                 static void isr(void *arg);
                 void        handleInterrupt();
                 void        enableInterrupt(uint32_t mask);
-                size_t      pushTranslated(ByteSpan data, size_t &done, bool &crSent);
+                size_t      pushTranslated(ByteSpan data, size_t &done, bool &crSent, bool translate);
                 Error       waitForSpace(const Deadline &deadline);
+                Error       pushAll(ByteSpan data, const Deadline &deadline);
+                static void filterSink(void *context, ByteSpan data);
 
                 ByteRing              _tx;
                 ByteRing              _rx;
@@ -106,6 +116,7 @@ class UsbSerialConsole final : public Console {
                 std::atomic<uint32_t> _rxDropped{0};
                 std::atomic<uint32_t> _rxFlushTo{0}; // Ctrl-C: discard input up to here
                 std::atomic<bool>     _rxFlush{false};
+                ColorFilter          *_filter = nullptr; // PSRAM, made when the depth first drops below truecolor
 };
 
 BMDS_NAMESPACE_END

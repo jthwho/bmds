@@ -167,8 +167,14 @@ class LineEditor {
                 Event  handleControl(char c, Output &out);
                 void   handleSequence(char final, Output &out);
                 void   insert(char c, Output &out);
+                void   insertBytes(const char *bytes, size_t n, Output &out);
+                void   feedUtf8(uint8_t b, Output &out);
+                size_t columns(size_t from, size_t to) const;
+                size_t previousCharacter(size_t pos) const;
+                size_t nextCharacter(size_t pos) const;
                 void   eraseRange(size_t from, size_t to, Output &out);
                 void   moveTo(size_t pos, Output &out);
+                void   moveScreenTo(size_t pos, Output &out);
                 void   refreshFrom(size_t from, Output &out);
                 void   loadLine(StringView text, Output &out);
                 void   historyUp(Output &out);
@@ -183,6 +189,9 @@ class LineEditor {
                 size_t         _length = 0;
                 size_t         _cursor = 0;
                 size_t         _screenCursor = 0; // where the terminal cursor is, relative to the line start
+                char           _utf8[4] = {};     // a UTF-8 character being typed
+                uint8_t        _utf8Length = 0;
+                uint8_t        _utf8Need = 0;
                 size_t         _savedLength = 0;
                 size_t         _historyUsed = 0;
                 size_t         _historyPos = 0; // 0 = editing a new line; n = showing the n-th newest entry

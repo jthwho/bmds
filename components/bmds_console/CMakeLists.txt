@@ -5,6 +5,7 @@
 # console drivers are target-only.
 
 set(BMDS_CONSOLE_PURE_SRCS
+        src/colorfilter.cpp
         src/lineeditor.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)

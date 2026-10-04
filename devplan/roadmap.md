@@ -26,15 +26,15 @@ Plan: [`shell.md`](shell.md). Complete; verified on hardware.
 - [x] Built-ins: `help`, `version`, `uptime`, `mem` (per-MemSpace usage), `tasks`, `log` (levels/modules), `reboot`.
 - [x] Log history (`log show`), since a USB serial port misses the boot messages.
 
-## Phase 1b — Shell Language, Standard I/O, Terminal Model (proposed)
+## Phase 1b — Shell Language, Standard I/O, Terminal Model
 
-Plans: [`shell-language.md`](shell-language.md), [`terminal.md`](terminal.md). In progress.
+Plans: [`shell-language.md`](shell-language.md), [`terminal.md`](terminal.md). Done.
 
 - [x] `String`, `List<T>` and an arena allocator in `bmds_core`.
 - [x] Standard I/O: `Stream`, refcounted fd tables, pipes, memory/null streams; Ctrl-C interrupts.
 - [x] Commands use stdin/stdout/stderr; pipelines (concurrent stages, workers with PSRAM stacks); fd redirection.
 - [x] Shell language (bash subset): lexer, parser, executor; variables, expansion, `$(…)`, `$((…))`, `if`/`while`/`until`/`for`/`case`, functions, language built-ins, `printf`/`read`/`type`/`command`, `set -x`, `PS1`/`PS2`, completion. (`source` and path completion need storage: Phase 2.)
-- [ ] Terminal model: 24-bit color, SGR with depth downgrade, VT parser, UTF-8, `term` built-in, colored prompt and log levels.
+- [x] Terminal model: 24-bit color, SGR with depth downgrade, VT parser, UTF-8, `term` built-in, colored prompt and log levels.
 
 ## Phase 2 — Storage
 

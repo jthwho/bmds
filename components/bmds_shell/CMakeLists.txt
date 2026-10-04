@@ -15,6 +15,7 @@ set(BMDS_SHELL_PURE_SRCS
         src/regex.cpp
         src/shell.cpp
         src/syntaxdump.cpp
+        src/termcommand.cpp
         src/textcommands.cpp
         src/variables.cpp)
 

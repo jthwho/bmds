@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <bmds/color.h>
 #include <bmds/config.h>
 #include <bmds/error.h>
 #include <bmds/interrupt.h>
@@ -53,13 +54,14 @@ class Console : public Stream {
         public:
                 /** @brief Capability flags (`capabilities()`). */
                 enum Capability : uint32_t {
-                        Ansi = 1u << 0,  ///< Understands ANSI/VT100 cursor and erase sequences.
-                        Color = 1u << 1, ///< Understands SGR color sequences.
+                        Ansi = 1u << 0, ///< Understands ANSI/VT100 cursor and erase sequences.
                 };
 
                 /** @brief Terminal modes ("termios-lite"). */
                 struct TermMode {
                                 bool signals = true; ///< Ctrl-C raises `interrupt()` instead of being read (ISIG).
+                                bool nlToCrNl =
+                                        true; ///< Output `\n` is sent as CR LF where the terminal needs it (ONLCR).
                 };
 
                 /** @brief Terminal size in character cells. */
@@ -77,8 +79,38 @@ class Console : public Stream {
                 /** @brief Returns the `Capability` flags. */
                 virtual uint32_t capabilities() const = 0;
 
-                /** @brief Returns the terminal size (a default when unknown). */
-                virtual Size size() const = 0;
+                /**
+                 * @brief Returns the terminal size (80x24 until set: a serial console
+                 *        can't see its terminal; `term size` asks it).
+                 */
+                Size size() const {
+                        const uint32_t v = _size.load(std::memory_order_relaxed);
+                        return Size{static_cast<uint16_t>(v >> 16), static_cast<uint16_t>(v & 0xFFFF)};
+                }
+
+                /** @brief Records the terminal size. */
+                void setSize(Size size) {
+                        _size.store((static_cast<uint32_t>(size.columns) << 16) | size.rows, std::memory_order_relaxed);
+                        return;
+                }
+
+                /**
+                 * @brief Returns how many colors the terminal shows.
+                 *
+                 * Output may use any SGR colors; below `TrueColor` the console
+                 * rewrites them to fit (see `ColorFilter`).
+                 */
+                ColorDepth colorDepth() const {
+                        return static_cast<ColorDepth>(_depth.load(std::memory_order_relaxed));
+                }
+
+                /**
+                 * @brief Sets the color depth (a serial console can't detect its terminal's).
+                 */
+                void setColorDepth(ColorDepth depth) {
+                        _depth.store(static_cast<uint8_t>(depth), std::memory_order_relaxed);
+                        return;
+                }
 
                 /**
                  * @brief Reads input, waiting until at least one byte is available.
@@ -126,7 +158,10 @@ class Console : public Stream {
                 Interrupt &interrupt() { return _interrupt; }
 
                 /** @brief Returns the terminal modes. */
-                TermMode mode() const { return TermMode{_signals.load(std::memory_order_relaxed)}; }
+                TermMode mode() const {
+                        return TermMode{_signals.load(std::memory_order_relaxed),
+                                        _nlToCrNl.load(std::memory_order_relaxed)};
+                }
 
                 /**
                  * @brief Sets the terminal modes.
@@ -136,11 +171,14 @@ class Console : public Stream {
                  */
                 void setMode(const TermMode &mode) {
                         _signals.store(mode.signals, std::memory_order_relaxed);
+                        _nlToCrNl.store(mode.nlToCrNl, std::memory_order_relaxed);
                         return;
                 }
 
         protected:
-                constexpr Console() = default;
+                /** @brief Constructs a console of color depth @p depth. */
+                explicit constexpr Console(ColorDepth depth = ColorDepth::TrueColor)
+                    : _depth(static_cast<uint8_t>(depth)) {}
                 ~Console() = default;
 
                 /**
@@ -150,8 +188,11 @@ class Console : public Stream {
                 bool signalsEnabled() const { return _signals.load(std::memory_order_relaxed); }
 
         private:
-                Interrupt         _interrupt;
-                std::atomic<bool> _signals{true};
+                Interrupt             _interrupt;
+                std::atomic<bool>     _signals{true};
+                std::atomic<bool>     _nlToCrNl{true};
+                std::atomic<uint8_t>  _depth;
+                std::atomic<uint32_t> _size{(80u << 16) | 24u};
 };
 
 BMDS_NAMESPACE_END

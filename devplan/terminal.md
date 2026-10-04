@@ -1,6 +1,6 @@
 # Terminal Model: ANSI/VT and 24-bit Color
 
-Status: **design, not started.** Proposed for Phase 1b (parser, color model, terminal modes) and Phase 4 (screen model and HDMI renderer).
+Status: **Phase 1b part done** (color model, SGR, VT parser, UTF-8, color filter, terminal modes, `term`); the screen model and HDMI renderer are Phase 4.
 
 ## 1. Goal
 
@@ -74,6 +74,20 @@ Most code should just write ANSI and let the console deal with it. Two mechanism
 
 The history stays plain text, so `log show | ...` stays parseable. The console sink colors the level letter by depth: `W` yellow, `E` red, `D` dim. This is skipped at `None`.
 
+## As built (Phase 1b step 6)
+
+- **`bmds_core`:** `utf8.h` (decode, encode, a byte-at-a-time `Utf8Decoder`, `displayWidth()` from two binary-searched range tables: ~180 zero-width and ~60 wide ranges, an approximation of Unicode good for cursor arithmetic); `color.h` (`ColorDepth`, the 4-byte `Color` with xterm's palette computed, not stored, `downgrade()` to the nearest cube/gray-ramp or ANSI color; `TextStyle`); `vtparser.h` (`VtParser`, the Williams state machine with UTF-8 in the ground state, `:` sub-parameters, private markers, OSC up to 64 bytes, DCS/SOS/PM/APC consumed, CAN/SUB/ESC abort; `Sgr::apply()` and `Sgr::transition()`, which picks the shorter of an incremental change and a reset-and-set).
+- **`ColorFilter`** (`bmds_console`, pure): text and other sequences pass byte for byte; each SGR is replaced by `transition(sent, requested, depth)`; sequences longer than 96 bytes pass through untouched. The serial console makes one (in PSRAM) the first time its depth drops below truecolor, so at truecolor nothing is parsed.
+- **`Console`:** `colorDepth()`/`setColorDepth()` replace the `Color` capability; the size is stored (`setSize()`); `TermMode` has `signals` and `nlToCrNl` (ONLCR, for raw programs). `crToNl` was dropped: the line editor already takes CR, LF and CR LF, and a raw program wants the bytes the key sent.
+- **Serial console:** initial depth from `CONFIG_BMDS_USJ_COLOR_DEPTH` (truecolor); `writeParts()` writes several pieces as one atomic write (used for colored log lines without a stack buffer); filtered writes return all-or-nothing counts.
+- **Log levels:** the console sink colors the level letter of BMDS lines (`[t] L …`) and ESP-IDF lines (`L (ms) …`): E red, W yellow, D dim; nothing at depth `None`. The history stays plain text.
+- **`term`** (`termcommand.cpp`): `term` shows terminal, color depth and size; `term color none|16|256|truecolor`; `term size COLSxROWS`, or `term size` alone asks the terminal (`ESC [ 18 t`, reply `ESC [ 8 ; rows ; cols t`, 500 ms). It keeps `COLORTERM`, `COLUMNS` and `LINES` up to date. The shell exports `TERM=xterm-256color` and, at truecolor, `COLORTERM=truecolor`.
+- **`CommandContext::colorDepth()`:** `None` unless stdout is a terminal and `NO_COLOR` is unset, for commands that color their own output.
+- **Prompt:** on the target `PS1` is `\[\e[1;32m\]bmds\[\e[0m\]> ` (bold green); the filter fits it to the terminal.
+- **Line editor:** UTF-8 aware: characters are assembled before insertion (bytes ≥ 0x80 used to be dropped), the cursor moves and deletes by character, and terminal cursor movement counts display columns (a CJK character or emoji moves two). **Hard-won:** an edit must move the terminal cursor before changing the buffer, because the column distance is measured over the text the cursor crosses.
+- **Tested:** UTF-8 edge cases, palette downgrades, SGR round trips over attribute/color combinations, a VT sequence corpus fed whole and byte by byte, the filter at each depth (also split byte by byte), editor UTF-8, `term` including a probe reply. On the board: the depth switch rewriting truecolor to `91`/`1;34`, `none` keeping bold, `café 日本` editing, dim `D` log lines.
+- Size: image +9.5 KB; static RAM +8 bytes.
+
 ## 3. Design (Phase 4: screen model and renderer)
 
 `TerminalScreen` (pure, host-tested) consumes `VtParser` actions and maintains:
@@ -127,4 +141,4 @@ Host tests:
 ## 8. Open questions
 
 - Fonts and Unicode coverage for HDMI (Phase 4). Wide characters need a font that has them; fall back to a replacement glyph.
-- Should the line editor become UTF-8 aware now (cursor movement by codepoint and display width)? Recommended together with `utf8.h`. It is cheap.
+- Line editor UTF-8: done in Phase 1b.

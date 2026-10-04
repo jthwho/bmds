@@ -51,6 +51,13 @@ Error Shell::init() {
         if (err.isOk()) err = _state.vars.set("PS1", "bmds> ");
         if (err.isOk()) err = _state.vars.set("PS2", "> ");
         if (err.isOk()) err = _state.vars.set("IFS", " \t\n");
+        // What programs look at to decide on escape sequences and colors.
+        if (err.isOk()) err = _state.vars.set("TERM", "xterm-256color");
+        if (err.isOk()) err = _state.vars.addFlags("TERM", Variables::Exported);
+        if (err.isOk() && _console.colorDepth() == ColorDepth::TrueColor) {
+                err = _state.vars.set("COLORTERM", "truecolor");
+                if (err.isOk()) err = _state.vars.addFlags("COLORTERM", Variables::Exported);
+        }
         return err;
 }
 

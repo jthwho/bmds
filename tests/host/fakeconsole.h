@@ -22,7 +22,6 @@ class FakeConsole final : public bmds::Console {
 
                 const char *name() const override { return "fake"; }
                 uint32_t    capabilities() const override { return Ansi; }
-                Size        size() const override { return Size(); }
 
                 bmds::Result<size_t> read(bmds::WritableByteSpan buf, unsigned int) override {
                         if (interrupt().isRaised()) return bmds::makeError<size_t>(bmds::Error::Interrupted);

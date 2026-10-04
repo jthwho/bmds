@@ -37,6 +37,7 @@ namespace LangBuiltins {
         int read(CommandContext &ctx);        ///< `read [-r] [-p prompt] [name]...`
         int type(CommandContext &ctx);        ///< `type [-t] name...`
         int command(CommandContext &ctx);     ///< `command [-vV] name [arg]...`
+        int term(CommandContext &ctx);        ///< `term [color [depth] | size [COLSxROWS]]`
 
 } // namespace LangBuiltins
 

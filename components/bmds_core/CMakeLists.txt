@@ -6,8 +6,11 @@
 set(BMDS_CORE_SRCS
         src/arena.cpp
         src/bytering.cpp
+        src/color.cpp
         src/error.cpp
-        src/string.cpp)
+        src/string.cpp
+        src/utf8.cpp
+        src/vtparser.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
