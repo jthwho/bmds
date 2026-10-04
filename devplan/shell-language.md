@@ -1,6 +1,6 @@
 # Shell Language and Standard I/O
 
-Status: **in progress** (Phase 1b). Steps 1 (containers), 2 (streams, pipes, Ctrl-C) and 3 (commands on stdio, pipelines, redirection) done. File redirection, globbing and scripts on disk land with Phase 2; external programs in pipelines land with Phase 3.
+Status: **in progress** (Phase 1b). Steps 1 (containers), 2 (streams, pipes, Ctrl-C), 3 (commands on stdio, pipelines, redirection) and 4 (lexer, parser, syntax tree) done. File redirection, globbing and scripts on disk land with Phase 2; external programs in pipelines land with Phase 3.
 
 ## 1. Goal
 
@@ -106,7 +106,7 @@ Modeled on bash. Anything not listed is out of scope until someone needs it.
 |---|---|---|
 | Lexing | words, `'…'`, `"…"`, `\`, `#` comments, line continuation, multi-line input with the `PS2` prompt | `$'…'` ANSI-C quotes (later, cheap), brace expansion `{a,b}`, tilde expansion |
 | Lists | `;`, newline, `&&`, `\|\|`, `!`, `{ …; }`, `( … )` (runs on the same task with saved and restored variables) | `&` background jobs, job control (`jobs`/`fg`/Ctrl-Z), coprocesses |
-| Pipes and redirection | `\|`, `<`, `>`, `>>`, `2>`, `2>>`, `&>`, `n>&m`, `n<&m`, `>&-`, `<<EOF`/`<<-EOF` here-docs, `<<<` here-strings. Without a filesystem (until Phase 2), only `/dev/null` works as a file target | `\|&`, process substitution `<(…)`, `>\|` noclobber |
+| Pipes and redirection | `\|`, `\|&`, `<`, `>`, `>>`, `>\|`, `<>`, `2>`, `2>>`, `&>`, `&>>`, `n>&m`, `n<&m`, `>&-`, `<<EOF`/`<<-EOF` here-docs, `<<<` here-strings. Without a filesystem (until Phase 2), only `/dev/null` works as a file target | process substitution `<(…)`, noclobber (`set -C`) |
 | Parameters | `NAME=value`, `VAR=x cmd` prefix assignments, `$NAME`, `${NAME}`, `${NAME:-w}` `:=` `:+` `:?`, `${#NAME}`, `${NAME#p}` `##` `%` `%%` (glob patterns), `$?`, `$#`, `$@`, `$*`, `$0`–`$9`, `${10}`, `$$`, `export`, `unset`, `local`, `readonly`, `shift` | arrays, associative arrays, `${NAME/pat/rep}` (later, cheap), `${!NAME}` indirection |
 | Expansion | command substitution `$(…)` (and backquotes), arithmetic `$((…))`, word splitting on `IFS`, quote removal, `"$@"` semantics | pathname globbing `*.txt` (Phase 2, needs the filesystem) |
 | Arithmetic | 32-bit signed integers: `+ - * / % ** << >> & \| ^ ~ ! && \|\| == != < <= > >= ?: =  += -= *= /= %= ++ --`, parentheses, variables, `(( … ))` as a command | 64-bit integers, floating point |
@@ -146,6 +146,15 @@ line editor ─► Lexer ─► Parser ─► AST ─► Executor ─► Command
 - **Stack.**
   - The parser and executor recurse, so the shell task stack moves to **16 KB in `Psram`**. That frees the current 4 KB of internal RAM.
   - Nesting depth and function recursion are bounded (`CONFIG_BMDS_SHELL_MAX_DEPTH`, 64 and 100), and exceeding either is an error rather than a stack overflow.
+- **As built (step 4).**
+  - `Parser` (`bmds/parser.h`) and the tree (`bmds/syntax.h`). `next()` returns one complete command at a time (up to an unquoted newline, with any compound command or here-documents it opens), so a script runs up to its first syntax error, as in bash. Incomplete input returns `NotReady`; a trailing `\`-newline counts as incomplete (interactive behavior; `bash -n` on a whole file would accept it).
+  - The lexer is driven by the parser: `((` is an arithmetic command only in command position, reserved words are recognized by the parser only where a command starts, and here-document bodies are read when the lexer reaches the newline after the operator. `$((…))` is arithmetic only if its first `)` at depth 0 is followed by another; otherwise it's a command substitution (bash's rule, checked against bash).
+  - Nodes, words and redirections are arena objects linked through `next`; text points into the source (no copies, except backquote bodies with escapes and joined here-doc delimiters). Function definitions keep their body's source text (`FunctionNode::source`, including trailing redirections) for reparsing.
+  - Errors carry a format and a token and are worded as bash words them (`appendSyntaxError()`); the line number comes from the offset.
+  - **Corpus** (`tests/host/corpus/syntax.txt`, ~95 entries): each snippet with its expected tree, `incomplete`, or bash's error message and line. `check_bash.py` (a ctest, when bash is installed) runs every `ok`/`error` entry through `bash -n` and fails on any disagreement. A further test parses every prefix of every entry and 3,000 random token soups, under ASan/UBSan.
+  - Known divergences: a `case` inside `$(…)` (the pattern's `)` ends the substitution: parentheses are counted, not parsed); `$"…"` locale strings (taken as `$` + a quoted string); `|&` is supported (the table above lists it as deferred); `${x:offset}` and other unsupported `${…}` forms are parse errors ("bad substitution") where bash accepts them.
+  - Size: `parser.cpp` 12.7 KB, `syntaxdump.cpp` 2.7 KB of code (the dump is for tests; nothing on the target calls it yet, so neither is linked until step 5).
+  - **Hard-won:** `std::string_view::substr` in `StringView::mid()` made the never-called parser link libstdc++'s exception runtime (+5.7 KB flash, +198 B DIRAM) because `bmds_shell` is linked whole-archive. `StringView` slicing is now throw-free, and `cmake/check_map.cmake` fails the build if the runtime is ever linked again.
 - **Executor.**
   - It walks the AST. `set -e`/`-u`/`-x` behave as in bash, with `-x` tracing to stderr.
   - `break`/`continue`/`return`/`exit` propagate as control-flow results, not exceptions (`-fno-exceptions`).

@@ -6,9 +6,11 @@
 
 set(BMDS_SHELL_PURE_SRCS
         src/commandcontext.cpp
+        src/parser.cpp
         src/pipeline.cpp
         src/regex.cpp
         src/shell.cpp
+        src/syntaxdump.cpp
         src/textcommands.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)

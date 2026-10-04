@@ -337,6 +337,7 @@ The kernel must have predictable allocation and code size. In kernel code:
 
 - **Allowed freely**: freestanding / header-only facilities — `<cstdint>`, `<cstddef>`, `<type_traits>`, `<utility>`, `<limits>`, `<bit>`, `<array>`, `<span>`, `<string_view>`, `<optional>`, `<algorithm>` (non-allocating algorithms), `<atomic>`, `<concepts>`, `<new>` (placement new).
 - **Allowed via wrappers only**: allocating containers (`<vector>`, `<string>`, `<map>`) — through `List`, `String`, `Map`, which route allocation to a `MemSpace`.
+- **No throwing standard-library calls**, even unreachable ones: `std::string_view::substr`/`compare(pos, …)`/`starts_with`, `.at()`, `std::stoi`, `std::string`. A reference to a throwing helper links libstdc++'s exception runtime (~5.7 KB flash, ~200 B RAM, kept alive by its static constructor). Use the BMDS types (`StringView::mid()` is throw-free). A post-link check (`cmake/check_map.cmake`) fails the build if the runtime gets in.
 - **Forbidden in the kernel**: `<iostream>` and streams, `<regex>`, `<locale>`, `<thread>`, `<mutex>`, `<condition_variable>`, `<future>` (use BMDS/FreeRTOS wrappers), `<functional>`'s `std::function` on any hot path (it may allocate — use a non-allocating `FunctionRef` or fixed-capacity callable).
 
 ---

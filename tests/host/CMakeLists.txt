@@ -38,11 +38,22 @@ add_executable(bmds_host_tests
         staticobject.cpp
         string.cpp
         stringview.cpp
+        syntax.cpp
         workerpool.cpp)
 target_include_directories(bmds_host_tests PRIVATE ${BMDS_ROOT}/thirdparty/doctest)
-target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS)
+target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
+        BMDS_CORPUS_DIR="${CMAKE_CURRENT_LIST_DIR}/corpus")
 target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console bmds_shell)
 bmds_target_options(bmds_host_tests)
 
 enable_testing()
 add_test(NAME bmds_host_tests COMMAND bmds_host_tests)
+
+# The corpus's expectations, checked against real bash (when there is one).
+find_program(BASH_PROGRAM bash)
+find_package(Python3 COMPONENTS Interpreter)
+if(BASH_PROGRAM AND Python3_Interpreter_FOUND)
+        add_test(NAME corpus_agrees_with_bash
+                 COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/corpus/check_bash.py
+                         ${CMAKE_CURRENT_LIST_DIR}/corpus)
+endif()

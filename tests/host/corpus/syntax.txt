@@ -1,0 +1,527 @@
+# Shell syntax corpus: each entry is a snippet and what the parser must make of it.
+#
+#   === name
+#   <input lines; the input is these lines, each ending in a newline>
+#   --- ok                  then one syntax-tree dump per complete command
+#   --- incomplete          more input needed (NotReady: the PS2 prompt)
+#   --- error N: message    a syntax error on line N (the message bash prints too)
+#   --- unsupported N: msg  rejected here although bash accepts it (outside the subset)
+#
+# check_bash.py runs every `ok` and `error` entry through `bash -n` to keep this file honest.
+
+=== simple command
+echo hello world
+--- ok
+(cmd echo hello world)
+
+=== blank lines and comments
+# a comment
+
+   echo a   # trailing comment
+--- ok
+(cmd echo a)
+
+=== several complete commands
+echo a
+echo b
+--- ok
+(cmd echo a)
+(cmd echo b)
+
+=== quoting
+echo 'single $x' "double $x" \$x a\ b ""
+--- ok
+(cmd echo 'single $x' 'double '"${x}" '$'x a' 'b '')
+
+=== quotes join
+echo a"b c"'d'
+--- ok
+(cmd echo a'b c''d')
+
+=== backslash in double quotes
+echo "a\"b\\c\$d\e"
+--- ok
+(cmd echo 'a''"''b''\''c''$''d''\''e')
+
+=== parameters
+echo $x ${y} $1 $? $# $@ "$*" $$ ${10}
+--- ok
+(cmd echo ${x} ${y} ${1} ${?} ${#} ${@} "${*}" ${$} ${10})
+
+=== parameter operations
+echo ${a:-def} ${b=x} ${c:?msg here} ${d:+alt} ${#e} ${f#*/} ${g##*/} ${h%.c} ${i%%.*}
+--- ok
+(cmd echo ${a:-def} ${b=x} ${c:?msg here} ${d:+alt} ${#e} ${f#*/} ${g##*/} ${h%.c} ${i%%.*})
+
+=== parameter word with expansions and quotes
+echo ${x:-"$y z"} "${x:-'q'}"
+--- ok
+(cmd echo ${x:-"${y}"' z'} "${x:-''q''''}")
+
+=== dollar alone is literal
+echo $ a$ "$"
+--- ok
+(cmd echo $ a$ '$')
+
+=== command substitution
+echo $(date) "$(echo "nested $(inner)")" `old style`
+--- ok
+(cmd echo $(date) "$(echo "nested $(inner)")" $(old style))
+
+=== backquote escapes
+echo `echo \$x \`y\``
+--- ok
+(cmd echo $(echo $x `y`))
+
+=== arithmetic expansion
+echo $((1 + 2 * (3 - x))) "$((y++))"
+--- ok
+(cmd echo $((1 + 2 * (3 - x))) "$((y++))")
+
+=== command substitution that starts with a subshell
+echo $((echo hi) )
+--- ok
+(cmd echo $((echo hi) ))
+
+=== assignments
+a=1 b="two words" c= cmd arg d=notassign
+--- ok
+(cmd a=1 b='two words' c= cmd arg d=notassign)
+
+=== assignment only
+x=$((x + 1))
+--- ok
+(cmd x=$((x + 1)))
+
+=== not an assignment
+1x=a "y"=b
+--- ok
+(cmd 1x=a 'y'=b)
+
+=== pipeline
+a | b | c
+--- ok
+(| (cmd a) (cmd b) (cmd c))
+
+=== pipeline with stderr
+a |& b
+--- ok
+(| (cmd a (2>& 1)) (cmd b))
+
+=== negation
+! a | b
+--- ok
+(! (| (cmd a) (cmd b)))
+
+=== and or
+a && b || c
+--- ok
+(|| (&& (cmd a) (cmd b)) (cmd c))
+
+=== list
+a; b && c; d
+--- ok
+(; (cmd a) (&& (cmd b) (cmd c)) (cmd d))
+
+=== trailing semicolon
+a;
+--- ok
+(cmd a)
+
+=== newline after operator continues
+a &&
+b |
+c
+--- ok
+(&& (cmd a) (| (cmd b) (cmd c)))
+
+=== redirections
+cmd <in >out 2>>err 3<&0 4>&- >|clob 5<>rw &>both &>>bothapp
+--- ok
+(cmd cmd (< in) (> out) (2>> err) (3<& 0) (4>& -) (>| clob) (5<> rw) (&> both) (&>> bothapp))
+
+=== redirection anywhere
+>out echo a 2>&1 b
+--- ok
+(cmd echo a b (> out) (2>& 1))
+
+=== io number needs no space
+echo 2>x 2 >y
+--- ok
+(cmd echo 2 (2> x) (> y))
+
+=== here-string
+cat <<<"$x and more"
+--- ok
+(cmd cat (<<< "${x}"' and more'))
+
+=== here-document
+cat <<EOF
+hello $name
+  `cmd` \$x
+EOF
+echo after
+--- ok
+(cmd cat (<< EOF 'hello '"${name}"'
+''  '"$(cmd)"' ''$''x
+'))
+(cmd echo after)
+
+=== quoted here-document delimiter
+cat <<'EOF'
+no $expansion here
+EOF
+--- ok
+(cmd cat (<< 'EOF' 'no $expansion here
+'))
+
+=== here-document with tabs stripped
+cat <<-END
+		indented
+	END
+--- ok
+(cmd cat (<<- END 'indented
+'))
+
+=== two here-documents on one line
+cat <<A; cat <<B
+a
+A
+b
+B
+--- ok
+(; (cmd cat (<< A 'a
+')) (cmd cat (<< B 'b
+')))
+
+=== here-document in a pipeline
+cat <<X | wc -l
+one
+X
+--- ok
+(| (cmd cat (<< X 'one
+')) (cmd wc -l))
+
+=== if
+if a; then b; fi
+--- ok
+(if (cmd a) (cmd b))
+
+=== if else
+if a
+then
+  b
+else
+  c
+fi
+--- ok
+(if (cmd a) (cmd b) (cmd c))
+
+=== elif chain
+if a; then b; elif c; then d; elif e; then f; else g; fi
+--- ok
+(if (cmd a) (cmd b) (if (cmd c) (cmd d) (if (cmd e) (cmd f) (cmd g))))
+
+=== while
+while read line; do echo "$line"; done
+--- ok
+(while (cmd read line) (cmd echo "${line}"))
+
+=== until with list body
+until a; do b; c; done
+--- ok
+(until (cmd a) (; (cmd b) (cmd c)))
+
+=== for in
+for x in a "b c" $d; do echo $x; done
+--- ok
+(for x (a 'b c' ${d}) (cmd echo ${x}))
+
+=== for without in
+for arg; do echo $arg; done
+--- ok
+(for arg (cmd echo ${arg}))
+
+=== for without in or semicolon
+for arg do echo $arg; done
+--- ok
+(for arg (cmd echo ${arg}))
+
+=== for over nothing
+for x in; do echo; done
+--- ok
+(for x () (cmd echo))
+
+=== reserved words are plain words as arguments
+for x in if then fi do done; do echo $x; done
+--- ok
+(for x (if then fi do done) (cmd echo ${x}))
+
+=== arithmetic for
+for ((i = 0; i < 10; i++)); do echo $i; done
+--- ok
+(for ((i = 0; i < 10; i++)) (cmd echo ${i}))
+
+=== arithmetic for with empty parts
+for ((;;)); do break; done
+--- ok
+(for ((; ; )) (cmd break))
+
+=== case
+case $x in
+  a|b) echo ab ;;
+  (c) echo c ;;
+  *.txt) ;;
+  *) echo other
+esac
+--- ok
+(case ${x} (a|b (cmd echo ab)) (c (cmd echo c)) (*.txt) (* (cmd echo other)))
+
+=== case on one line
+case x in x) echo y;; esac
+--- ok
+(case x (x (cmd echo y)))
+
+=== empty case
+case x in esac
+--- ok
+(case x)
+
+=== group and subshell
+{ a; b; } > out; (c; d)
+--- ok
+(; (redirect (group (; (cmd a) (cmd b))) (> out)) (subshell (; (cmd c) (cmd d))))
+
+=== braces are words unless separate
+echo {a} }; {x
+--- ok
+(; (cmd echo {a} }) (cmd {x))
+
+=== arithmetic command
+((x += 2)) && echo yes
+--- ok
+(&& (arith x += 2) (cmd echo yes))
+
+=== subshell inside subshell is not arithmetic
+( (a) )
+--- ok
+(subshell (subshell (cmd a)))
+
+=== function definitions
+greet() { echo "hi $1"; }
+function bye { echo bye; }
+function two() (echo sub)
+--- ok
+(function greet (group (cmd echo 'hi '"${1}")))
+(function bye (group (cmd echo bye)))
+(function two (subshell (cmd echo sub)))
+
+=== function with redirection and newline before body
+f()
+{
+  echo a
+} > /dev/null
+--- ok
+(function f (redirect (group (cmd echo a)) (> /dev/null)))
+
+=== nested compound commands
+while true; do
+  for f in a b; do
+    if [ "$f" = a ]; then continue; fi
+    case $f in b) break 2;; esac
+  done
+done
+--- ok
+(while (cmd true) (for f (a b) (; (if (cmd [ "${f}" = a ]) (cmd continue)) (case ${f} (b (cmd break 2))))))
+
+=== line continuation
+echo a \
+  b
+--- ok
+(cmd echo a b)
+
+=== continuation inside a word
+ec\
+ho hi
+--- ok
+(cmd echo hi)
+
+=== comment char inside a word
+echo a#b '#c' # gone
+--- ok
+(cmd echo a#b '#c')
+
+=== loop with redirection
+while read l; do echo $l; done < /dev/null
+--- ok
+(redirect (while (cmd read l) (cmd echo ${l})) (< /dev/null))
+
+=== special parameters in braces
+echo ${#} ${#@} ${?} ${10:-x}
+--- ok
+(cmd echo ${#} ${#@} ${?} ${10:-x})
+
+=== here-document inside a loop
+while read l; do
+  cat <<END
+$l
+END
+done
+--- ok
+(while (cmd read l) (cmd cat (<< END "${l}"'
+')))
+
+=== keywords on their own lines
+if true
+then echo
+fi
+--- ok
+(if (cmd true) (cmd echo))
+
+=== empty quoted words
+"" '' a""
+--- ok
+(cmd '' '' a)
+
+=== negated compound command
+! if a; then b; fi
+--- ok
+(! (if (cmd a) (cmd b)))
+
+=== unterminated single quote
+echo 'abc
+--- incomplete
+
+=== unterminated double quote
+echo "abc
+--- incomplete
+
+=== multi-line double quote
+echo "a
+b"
+--- ok
+(cmd echo 'a
+b')
+
+=== unterminated command substitution
+echo $(date
+--- incomplete
+
+=== unterminated parameter
+echo ${x
+--- incomplete
+
+=== trailing pipe
+a |
+--- incomplete
+
+=== trailing and
+a &&
+--- incomplete
+
+=== open if
+if true; then
+--- incomplete
+
+=== open while body
+while true
+do
+  echo
+--- incomplete
+
+=== open group
+{ echo a
+--- incomplete
+
+=== brace as an argument keeps the group open
+{ echo a }
+--- incomplete
+
+=== open case
+case x in
+  a) echo a ;;
+--- incomplete
+
+=== here-document without its delimiter
+cat <<EOF
+line
+--- incomplete
+
+=== trailing continuation
+echo a \
+--- incomplete
+
+=== unexpected fi
+fi
+--- error 1: syntax error near unexpected token `fi'
+
+=== then without if
+echo a; then echo b
+--- error 1: syntax error near unexpected token `then'
+
+=== empty if condition
+if then echo; fi
+--- error 1: syntax error near unexpected token `then'
+
+=== missing then
+if a; b; fi
+--- error 1: syntax error near unexpected token `fi'
+
+=== leading pipe
+| a
+--- error 1: syntax error near unexpected token `|'
+
+=== leading and
+&& a
+--- error 1: syntax error near unexpected token `&&'
+
+=== lone semicolon
+;
+--- error 1: syntax error near unexpected token `;'
+
+=== double semicolon outside case
+a ;; b
+--- error 1: syntax error near unexpected token `;;'
+
+=== redirection without target
+echo >
+--- error 1: syntax error near unexpected token `newline'
+
+=== redirection followed by operator
+echo > | cat
+--- error 1: syntax error near unexpected token `|'
+
+=== empty group
+{ }
+--- error 1: syntax error near unexpected token `}'
+
+=== unbalanced paren
+echo a )
+--- error 1: syntax error near unexpected token `)'
+
+=== error on a later line
+echo ok
+if true; then
+  echo
+done
+--- error 4: syntax error near unexpected token `done'
+
+=== bad for variable
+for 1x in a; do echo; done
+--- error 1: `1x': not a valid identifier
+
+=== function body must be compound
+f() echo hi
+--- error 1: syntax error near unexpected token `echo'
+
+=== background jobs
+sleep 1 &
+--- unsupported 1: background jobs (&) are not supported
+
+=== substring expansion
+echo ${x:1:2}
+--- unsupported 1: ${x:1:2}: bad substitution
+
+=== nesting limit
+( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( a ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) )
+--- unsupported 1: nesting too deep

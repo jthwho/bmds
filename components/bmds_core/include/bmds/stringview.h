@@ -95,14 +95,14 @@ class StringView {
                  * @brief Returns the first @p count characters.
                  * @param count Number of characters (clamped to `size()`).
                  */
-                constexpr StringView left(size_t count) const { return StringView(_view.substr(0, count)); }
+                constexpr StringView left(size_t count) const { return slice(0, count); }
 
                 /**
                  * @brief Returns the last @p count characters.
                  * @param count Number of characters (clamped to `size()`).
                  */
                 constexpr StringView right(size_t count) const {
-                        return count >= size() ? *this : StringView(_view.substr(size() - count));
+                        return count >= size() ? *this : slice(size() - count, count);
                 }
 
                 /**
@@ -111,20 +111,24 @@ class StringView {
                  * @param count Number of characters (clamped); `NPos` means "to the end".
                  */
                 constexpr StringView mid(size_t pos, size_t count = NPos) const {
-                        return pos >= size() ? StringView() : StringView(_view.substr(pos, count));
+                        return pos >= size() ? StringView() : slice(pos, count);
                 }
 
                 /** @brief Returns true if the view begins with @p prefix. */
-                constexpr bool startsWith(StringView prefix) const { return _view.starts_with(prefix._view); }
+                constexpr bool startsWith(StringView prefix) const {
+                        return prefix.size() <= size() && left(prefix.size()) == prefix;
+                }
 
                 /** @brief Returns true if the view begins with @p ch. */
-                constexpr bool startsWith(char ch) const { return _view.starts_with(ch); }
+                constexpr bool startsWith(char ch) const { return !isEmpty() && front() == ch; }
 
                 /** @brief Returns true if the view ends with @p suffix. */
-                constexpr bool endsWith(StringView suffix) const { return _view.ends_with(suffix._view); }
+                constexpr bool endsWith(StringView suffix) const {
+                        return suffix.size() <= size() && right(suffix.size()) == suffix;
+                }
 
                 /** @brief Returns true if the view ends with @p ch. */
-                constexpr bool endsWith(char ch) const { return _view.ends_with(ch); }
+                constexpr bool endsWith(char ch) const { return !isEmpty() && back() == ch; }
 
                 /** @brief Returns true if @p str occurs in the view. */
                 constexpr bool contains(StringView str) const { return indexOf(str) != NPos; }
@@ -156,13 +160,21 @@ class StringView {
                         size_t last = size();
                         while (first < last && isSpace(_view[first])) ++first;
                         while (last > first && isSpace(_view[last - 1])) --last;
-                        return StringView(_view.substr(first, last - first));
+                        return slice(first, last - first);
                 }
 
                 /** @brief Returns the underlying `std::string_view`. */
                 constexpr StdView toStdStringView() const { return _view; }
 
         private:
+                // Like substr(), without its out_of_range throw: @p pos must be
+                // <= size(); @p count is clamped. (A throw path, even unreachable,
+                // links libstdc++'s exception runtime: ~5.7 KB flash, ~200 B RAM.)
+                constexpr StringView slice(size_t pos, size_t count) const {
+                        const size_t n = count < size() - pos ? count : size() - pos;
+                        return StringView(StdView(_view.data() + pos, n));
+                }
+
                 static constexpr bool isSpace(char ch) {
                         return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\v' || ch == '\f';
                 }
