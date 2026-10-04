@@ -30,35 +30,38 @@ namespace {
         // `log show` prints in pieces, each within the shell's write timeout.
         constexpr size_t LogShowChunkBytes = 256;
 
-        int runVersion(Shell &shell, Args args) {
-                if (args.size() != 1) return shell.usage();
+        int runVersion(CommandContext &ctx) {
+                const Args args = ctx.args();
+                if (args.size() != 1) return ctx.usage();
                 const SystemInfo info = System::info();
-                shell.printf("BMDS %s (build %s, ESP-IDF %s)\n", info.bmdsVersion, info.buildVersion, info.idfVersion);
-                shell.printf("Board: %s\n", info.boardName);
-                shell.printf("Chip: ESP32-P4 rev v%u.%u, %u cores @ %u MHz\n", info.chipRevMajor, info.chipRevMinor,
-                             info.cores, info.cpuMhz);
+                ctx.printf("BMDS %s (build %s, ESP-IDF %s)\n", info.bmdsVersion, info.buildVersion, info.idfVersion);
+                ctx.printf("Board: %s\n", info.boardName);
+                ctx.printf("Chip: ESP32-P4 rev v%u.%u, %u cores @ %u MHz\n", info.chipRevMajor, info.chipRevMinor,
+                           info.cores, info.cpuMhz);
                 return Shell::ExitSuccess;
         }
 
-        int runUptime(Shell &shell, Args args) {
-                if (args.size() != 1) return shell.usage();
+        int runUptime(CommandContext &ctx) {
+                const Args args = ctx.args();
+                if (args.size() != 1) return ctx.usage();
                 const uint64_t ms = System::uptimeUs() / 1000;
                 const uint64_t s = ms / 1000;
-                shell.printf("up %lud %02u:%02u:%02u.%03u\n", static_cast<unsigned long>(s / 86400),
-                             static_cast<unsigned>(s / 3600 % 24), static_cast<unsigned>(s / 60 % 60),
-                             static_cast<unsigned>(s % 60), static_cast<unsigned>(ms % 1000));
+                ctx.printf("up %lud %02u:%02u:%02u.%03u\n", static_cast<unsigned long>(s / 86400),
+                           static_cast<unsigned>(s / 3600 % 24), static_cast<unsigned>(s / 60 % 60),
+                           static_cast<unsigned>(s % 60), static_cast<unsigned>(ms % 1000));
                 return Shell::ExitSuccess;
         }
 
-        int runMem(Shell &shell, Args args) {
-                if (args.size() != 1) return shell.usage();
-                shell.printf("%-11s %10s %10s %10s %10s\n", "space", "total", "free", "min_free", "largest");
+        int runMem(CommandContext &ctx) {
+                const Args args = ctx.args();
+                if (args.size() != 1) return ctx.usage();
+                ctx.printf("%-11s %10s %10s %10s %10s\n", "space", "total", "free", "min_free", "largest");
                 for (size_t i = 0; i < MemSpaceCount; ++i) {
                         const MemSpace space = static_cast<MemSpace>(i);
                         const MemStats s = Memory::stats(space);
-                        shell.printf("%-11s %10u %10u %10u %10u\n", memSpaceName(space),
-                                     static_cast<unsigned>(s.totalBytes), static_cast<unsigned>(s.freeBytes),
-                                     static_cast<unsigned>(s.minFreeBytes), static_cast<unsigned>(s.largestFreeBlock));
+                        ctx.printf("%-11s %10u %10u %10u %10u\n", memSpaceName(space),
+                                   static_cast<unsigned>(s.totalBytes), static_cast<unsigned>(s.freeBytes),
+                                   static_cast<unsigned>(s.minFreeBytes), static_cast<unsigned>(s.largestFreeBlock));
                 }
                 return Shell::ExitSuccess;
         }
@@ -74,14 +77,15 @@ namespace {
                 }
         }
 
-        int runTasks(Shell &shell, Args args) {
-                if (args.size() != 1) return shell.usage();
+        int runTasks(CommandContext &ctx) {
+                const Args args = ctx.args();
+                if (args.size() != 1) return ctx.usage();
                 // Room for a few tasks created between counting and listing.
                 UBaseType_t capacity = uxTaskGetNumberOfTasks() + 4;
                 auto       *tasks =
                         static_cast<TaskStatus_t *>(Memory::alloc(MemSpace::Psram, capacity * sizeof(TaskStatus_t)));
                 if (tasks == nullptr) {
-                        shell.print("tasks: out of memory\n");
+                        ctx.eprint("tasks: out of memory\n");
                         return Shell::ExitFailure;
                 }
                 const UBaseType_t count = uxTaskGetSystemState(tasks, capacity, nullptr);
@@ -96,7 +100,7 @@ namespace {
                         }
                 }
 
-                shell.printf("%-16s %-9s %4s %4s %10s\n", "name", "state", "prio", "core", "stack_free");
+                ctx.printf("%-16s %-9s %4s %4s %10s\n", "name", "state", "prio", "core", "stack_free");
                 for (UBaseType_t i = 0; i < count; ++i) {
                         const TaskStatus_t &t = tasks[i];
                         const BaseType_t    core = xTaskGetCoreID(t.xHandle);
@@ -104,9 +108,9 @@ namespace {
                         if (core != tskNO_AFFINITY)
                                 std::snprintf(coreText, sizeof(coreText), "%d", static_cast<int>(core));
                         // ESP-IDF reports the high-water mark in bytes.
-                        shell.printf("%-16s %-9s %4u %4s %10u\n", t.pcTaskName, taskStateName(t.eCurrentState),
-                                     static_cast<unsigned>(t.uxCurrentPriority), coreText,
-                                     static_cast<unsigned>(t.usStackHighWaterMark));
+                        ctx.printf("%-16s %-9s %4u %4s %10u\n", t.pcTaskName, taskStateName(t.eCurrentState),
+                                   static_cast<unsigned>(t.uxCurrentPriority), coreText,
+                                   static_cast<unsigned>(t.usStackHighWaterMark));
                 }
                 Memory::free(tasks);
                 return Shell::ExitSuccess;
@@ -122,11 +126,11 @@ namespace {
                 return "?";
         }
 
-        void printLogStatus(Shell &shell) {
-                shell.printf("level: %s\n", levelName(Log::level()));
+        void printLogStatus(CommandContext &ctx) {
+                ctx.printf("level: %s\n", levelName(Log::level()));
                 const Span<const DebugModule> modules = Log::debugModules();
                 if (modules.isEmpty()) return;
-                shell.printf("%-20s %s\n", "module", "debug");
+                ctx.printf("%-20s %s\n", "module", "debug");
                 // Print in name order (the registry is in link order): pick the
                 // smallest name greater than the last one printed.
                 StringView last;
@@ -139,14 +143,14 @@ namespace {
                                 }
                         }
                         if (next == nullptr) break;
-                        shell.printf("%-20s %s\n", next->name, next->isEnabled() ? "on" : "off");
+                        ctx.printf("%-20s %s\n", next->name, next->isEnabled() ? "on" : "off");
                         last = next->name;
                 }
                 return;
         }
 
-        int setLogLevel(Shell &shell, Args args) {
-                if (args.size() != 3) return shell.usage();
+        int setLogLevel(CommandContext &ctx, Args args) {
+                if (args.size() != 3) return ctx.usage();
                 const StringView name = args[2];
                 if (name == "info") {
                         Log::setLevel(LogLevel::Info);
@@ -155,13 +159,13 @@ namespace {
                 } else if (name == "err") {
                         Log::setLevel(LogLevel::Err);
                 } else {
-                        return shell.usage();
+                        return ctx.usage();
                 }
                 return Shell::ExitSuccess;
         }
 
-        int setLogModules(Shell &shell, Args args, bool on) {
-                if (args.size() < 3) return shell.usage();
+        int setLogModules(CommandContext &ctx, Args args, bool on) {
+                if (args.size() < 3) return ctx.usage();
                 int result = Shell::ExitSuccess;
                 for (size_t i = 2; i < args.size(); ++i) {
                         if (StringView(args[i]) == "all") {
@@ -170,7 +174,7 @@ namespace {
                         }
                         const DebugModule *m = Log::findDebugModule(args[i]);
                         if (m == nullptr) {
-                                shell.printf("log: no such debug module: %s\n", args[i]);
+                                ctx.eprintf("log: no such debug module: %s\n", args[i]);
                                 result = Shell::ExitFailure;
                                 continue;
                         }
@@ -179,43 +183,44 @@ namespace {
                 return result;
         }
 
-        int showLog(Shell &shell, Args args) {
-                if (args.size() != 2) return shell.usage();
+        int showLog(CommandContext &ctx, Args args) {
+                if (args.size() != 2) return ctx.usage();
                 const size_t capacity = Log::historyCapacity();
                 if (capacity == 0) {
-                        shell.print("log: no history\n");
+                        ctx.eprint("log: no history\n");
                         return Shell::ExitFailure;
                 }
                 char *buf = static_cast<char *>(Memory::alloc(MemSpace::Psram, capacity));
                 if (buf == nullptr) {
-                        shell.print("log: out of memory\n");
+                        ctx.eprint("log: out of memory\n");
                         return Shell::ExitFailure;
                 }
                 const size_t len = Log::copyHistory(Span<char>(buf, capacity));
                 int          result = Shell::ExitSuccess;
                 for (size_t done = 0; done < len; done += LogShowChunkBytes) {
-                        if (shell.isInterrupted()) {
+                        if (ctx.isInterrupted()) {
                                 result = Shell::ExitInterrupted;
                                 break;
                         }
                         const size_t n = len - done < LogShowChunkBytes ? len - done : LogShowChunkBytes;
-                        shell.print(StringView(buf + done, n));
+                        ctx.print(StringView(buf + done, n));
                 }
                 Memory::free(buf);
                 return result;
         }
 
-        int runLog(Shell &shell, Args args) {
+        int runLog(CommandContext &ctx) {
+                const Args args = ctx.args();
                 if (args.size() == 1) {
-                        printLogStatus(shell);
+                        printLogStatus(ctx);
                         return Shell::ExitSuccess;
                 }
                 const StringView sub = args[1];
-                if (sub == "level") return setLogLevel(shell, args);
-                if (sub == "on") return setLogModules(shell, args, true);
-                if (sub == "off") return setLogModules(shell, args, false);
-                if (sub == "show") return showLog(shell, args);
-                return shell.usage();
+                if (sub == "level") return setLogLevel(ctx, args);
+                if (sub == "on") return setLogModules(ctx, args, true);
+                if (sub == "off") return setLogModules(ctx, args, false);
+                if (sub == "show") return showLog(ctx, args);
+                return ctx.usage();
         }
 
         // Parses "N" or "N.FFF" seconds into milliseconds (fraction to 1 ms).
@@ -245,17 +250,19 @@ namespace {
                 return true;
         }
 
-        int runSleep(Shell &shell, Args args) {
+        int runSleep(CommandContext &ctx) {
+                const Args   args = ctx.args();
                 unsigned int ms = 0;
-                if (args.size() != 2 || !parseSeconds(args[1], ms)) return shell.usage();
+                if (args.size() != 2 || !parseSeconds(args[1], ms)) return ctx.usage();
                 if (ms == 0) return Shell::ExitSuccess; // 0 would mean WaitForever
-                return shell.console().interrupt().sleep(ms).isOk() ? Shell::ExitSuccess : Shell::ExitInterrupted;
+                return ctx.shell().console().interrupt().sleep(ms).isOk() ? Shell::ExitSuccess : Shell::ExitInterrupted;
         }
 
-        int runReboot(Shell &shell, Args args) {
-                if (args.size() != 1) return shell.usage();
-                shell.print("Rebooting...\n");
-                (void)shell.console().flush(RebootFlushMs);
+        int runReboot(CommandContext &ctx) {
+                const Args args = ctx.args();
+                if (args.size() != 1) return ctx.usage();
+                ctx.print("Rebooting...\n");
+                (void)ctx.shell().console().flush(RebootFlushMs);
                 System::restart();
         }
 

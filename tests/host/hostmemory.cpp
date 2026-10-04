@@ -8,19 +8,23 @@
 
 #include "hostmemory.h"
 
+#include <atomic>
 #include <cstdlib>
 #include <bmds/memory.h>
 
 namespace {
 
-        size_t live = 0;
-        long   remaining = -1;
+        // Atomic: pipeline stages allocate on worker threads.
+        std::atomic<size_t> live{0};
+        std::atomic<long>   remaining{-1};
 
         bool mayAllocate() {
-                if (remaining < 0) return true;
-                if (remaining == 0) return false;
-                --remaining;
-                return true;
+                long r = remaining.load();
+                for (;;) {
+                        if (r < 0) return true;
+                        if (r == 0) return false;
+                        if (remaining.compare_exchange_weak(r, r - 1)) return true;
+                }
         }
 
         void *counted(void *p) {

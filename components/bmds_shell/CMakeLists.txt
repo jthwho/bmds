@@ -5,8 +5,11 @@
 # linker-built command table, shell tasks and built-ins are target-only.
 
 set(BMDS_SHELL_PURE_SRCS
-        src/args.cpp
-        src/shell.cpp)
+        src/commandcontext.cpp
+        src/pipeline.cpp
+        src/regex.cpp
+        src/shell.cpp
+        src/textcommands.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
@@ -18,14 +21,14 @@ if(COMMAND idf_component_register)
                                     src/builtins.cpp
                                     src/shellesp.cpp
                                INCLUDE_DIRS include
-                               REQUIRES bmds_core bmds_console
-                               PRIV_REQUIRES bmds_kernel freertos
+                               REQUIRES bmds_core bmds_kernel bmds_console
+                               PRIV_REQUIRES freertos
                                LDFRAGMENTS linker.lf
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})
 else()
         add_library(bmds_shell STATIC ${BMDS_SHELL_PURE_SRCS})
         target_include_directories(bmds_shell PUBLIC include)
-        target_link_libraries(bmds_shell PUBLIC bmds_core bmds_console)
+        target_link_libraries(bmds_shell PUBLIC bmds_core bmds_kernel bmds_console)
         bmds_target_options(bmds_shell)
 endif()

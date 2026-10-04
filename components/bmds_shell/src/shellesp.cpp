@@ -52,12 +52,18 @@ Error Shell::spawn(Console &console, const char *name) {
                 bmdsErr("Shell: no memory for session '%s'", name);
                 return Error::NoMem;
         }
-        auto        *session = ::new (mem) Session(console);
+        auto *session = ::new (mem) Session(console);
+        Error err = session->shell.init();
+        if (err.isError()) {
+                session->~Session();
+                Memory::free(mem);
+                return err;
+        }
         Task::Config config;
         config.name = name;
         config.stackBytes = CONFIG_BMDS_SHELL_STACK_BYTES;
         config.priority = CONFIG_BMDS_SHELL_PRIORITY;
-        const Error err = session->task.start(config, sessionMain, session);
+        err = session->task.start(config, sessionMain, session);
         if (err.isError()) {
                 session->~Session();
                 Memory::free(mem);

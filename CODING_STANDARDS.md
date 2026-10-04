@@ -176,6 +176,7 @@ Every allocation comes from an explicit **memory space**. The ESP32-P4 has sever
 - `MemSpace` identifies a kind of memory (e.g. `MemSpace::Internal`, `MemSpace::InternalDma`, `MemSpace::Psram`, `MemSpace::PsramDma`, `MemSpace::Fast`). The set of spaces and their mapping to physical regions/heap caps is defined by the board/chip layer.
 - APIs that allocate either take a `MemSpace` parameter or document which space they use.
 - Bulk data (framebuffers, file buffers, user program images) defaults to PSRAM. Internal SRAM is reserved for things that need it (ISR data, DMA descriptors, hot data, stacks of latency-critical tasks).
+- **Task stacks may live in PSRAM** (`Thread::Config::stackSpace`; pipeline workers do). Such a task must not write SPI flash (NVS, OTA, partition writes): a flash write disables the cache through which PSRAM is reached. Hand that work to a task with an internal-RAM stack. Task control blocks are always internal.
 - `Buffer` records its `MemSpace` and alignment, and handles cache writeback/invalidate for DMA when the space requires it.
 
 ---

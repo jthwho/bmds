@@ -13,6 +13,7 @@
 #include <bmds/bytering.h>
 #include <bmds/config.h>
 #include <bmds/console.h>
+#include <bmds/deadline.h>
 #include <bmds/mutex.h>
 #include <bmds/semaphore.h>
 #include <bmds/spinlock.h>
@@ -29,8 +30,9 @@ BMDS_NAMESPACE_BEGIN
  *
  * - **Output** goes through a ring buffer (`CONFIG_BMDS_USJ_TX_BYTES`),
  *   with `'\n'` sent as CR LF. When no host is reading (the serial port
- *   isn't open), the console marks itself *stalled* after one write times
- *   out (or at `init()`, if boot output is still unread). While stalled,
+ *   isn't open), the console marks itself *stalled* once output makes no
+ *   progress for `StallMs`, or a write times out (or at `init()`, if boot
+ *   output is still unread). While stalled,
  *   a write is queued whole if it fits and otherwise dropped, without
  *   waiting, until the host reads again.
  * - **Input** goes through a ring buffer (`CONFIG_BMDS_USJ_RX_BYTES`).
@@ -48,6 +50,14 @@ class UsbSerialConsole final : public Console {
         public:
                 /** @brief Output timeout used by the log sink; a stalled console drops log text. */
                 static constexpr unsigned int LogTimeoutMs = 20;
+
+                /**
+                 * @brief How long output may make no progress before the console counts as stalled.
+                 *
+                 * Applies whatever the caller's timeout, so writers can use
+                 * `WaitForever` and still fail fast when nobody is reading.
+                 */
+                static constexpr unsigned int StallMs = 100;
 
                 /**
                  * @brief Boot stage: creates the console, starts its interrupt
@@ -84,6 +94,7 @@ class UsbSerialConsole final : public Console {
                 void        handleInterrupt();
                 void        enableInterrupt(uint32_t mask);
                 size_t      pushTranslated(ByteSpan data, size_t &done, bool &crSent);
+                Error       waitForSpace(const Deadline &deadline);
 
                 ByteRing              _tx;
                 ByteRing              _rx;

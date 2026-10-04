@@ -100,7 +100,9 @@ class Shell {
 };
 ```
 
-`tokenizeArgs(char *line, Span<char *> argv) -> Result<size_t>` (`bmds/args.h`) splits a line in place: whitespace separates arguments, `"..."` quotes with `\"`/`\\` escapes, `'...'` quotes literally, a backslash outside quotes escapes the next character, and `#` at the start of an argument begins a comment. An unterminated quote returns `Error::Invalid`; too many arguments returns `Error::Full`.
+Phase 1b changed the command signature to `int (*run)(CommandContext &ctx)`: commands write to stdout/stderr through the context instead of the shell, and `Shell::init()` opens fds 0–2 on the console. See [`shell-language.md`](shell-language.md) ("As built (step 3)").
+
+`tokenizeArgs(char *line, Span<char *> argv) -> Result<size_t>` (`bmds/args.h`) splits a line in place: whitespace separates arguments, `"..."` quotes with `\"`/`\\` escapes, `'...'` quotes literally, a backslash outside quotes escapes the next character, and `#` at the start of an argument begins a comment. An unterminated quote returns `Error::Invalid`; too many arguments returns `Error::Full`. (Phase 1b replaced it with `parsePipeline()`, `bmds/pipeline.h`, which keeps these word rules and adds pipes and redirections.)
 
 ## 3. Design
 
@@ -213,6 +215,18 @@ Echo uses relative cursor movement (`ESC[nD`, `ESC[nC`, `ESC[K`), so the editor 
 | `log show` | Print the log history. |
 | `reboot` | Flush the console, restart. |
 | `sleep <seconds>` | Wait; fractions allowed (`0.5`), up to a week. Ctrl-C stops it (exit 130). (Phase 1b) |
+
+Text built-ins (Phase 1b, `textcommands.cpp`). They read stdin and follow the GNU tools' output formats; file arguments arrive with storage (`-` means stdin):
+
+| Command | Output |
+|---|---|
+| `echo [-neE] [word]...` | The words, space-separated, as bash's builtin (`-e` escapes: `\a \b \c \e \f \n \r \t \v \\ \0nnn \xHH`). |
+| `cat [-]` | stdin, unchanged. |
+| `head [-n count]` | The first `count` (10) lines. Stops reading early, so the writer gets a broken pipe. |
+| `wc [-lwc]` | Lines, words, bytes; one count bare, several padded to 7 columns (GNU). |
+| `grep [-civnqF] pattern` | Matching lines; `-c` count, `-n` `N:` prefix, `-q` status only. Exit 0 = selected, 1 = none, 2 = error. Patterns are a POSIX BRE subset (`bmds/regex.h`); unsupported syntax (`\(`, `\{`, `[:class:]`, GNU `\|`) is an error, not a literal, so it can be added later without changing any pattern's meaning. `-e`/`-E` are not there yet. |
+
+Command line syntax (Phase 1b step 3; the full language is step 4/5): `a | b`, `a |& b`, and redirections `<`, `>`, `>>`, `>|`, `n>&m`, `n<&m`, `n>&-`, `&>`, `&>>`, `>&file`, applied left to right as in bash. The only file until storage is `/dev/null`. `;`, `&&`, `||`, `&` and `<<` are rejected ("unsupported operator").
 
 ## 4. IDF usage
 

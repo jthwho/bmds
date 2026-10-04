@@ -12,7 +12,8 @@ set(BMDS_KERNEL_PORTABLE_SRCS
         src/filehandle.cpp
         src/interrupt.cpp
         src/memorystream.cpp
-        src/pipe.cpp)
+        src/pipe.cpp
+        src/workerpool.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
@@ -28,6 +29,7 @@ if(COMMAND idf_component_register)
                                     src/semaphore.cpp
                                     src/system.cpp
                                     src/task.cpp
+                                    src/thread.cpp
                                INCLUDE_DIRS include
                                REQUIRES bmds_core bmds_board freertos
                                PRIV_REQUIRES esp_app_format esp_hw_support esp_psram esp_system esp_timer heap log

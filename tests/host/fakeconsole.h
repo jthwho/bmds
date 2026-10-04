@@ -5,11 +5,14 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * A Console for host tests: records output, serves queued input.
+ * A Console for host tests: records output, serves queued input. Writes
+ * are thread-safe (pipeline stages write concurrently); `read()` returns
+ * EndOfFile once the queued input is used up.
  */
 
 #pragma once
 
+#include <mutex>
 #include <string>
 #include <bmds/console.h>
 
@@ -21,7 +24,13 @@ class FakeConsole final : public bmds::Console {
                 uint32_t    capabilities() const override { return Ansi; }
                 Size        size() const override { return Size(); }
 
-                bmds::Result<size_t> read(bmds::WritableByteSpan buf, unsigned int) override { return tryRead(buf); }
+                bmds::Result<size_t> read(bmds::WritableByteSpan buf, unsigned int) override {
+                        if (interrupt().isRaised()) return bmds::makeError<size_t>(bmds::Error::Interrupted);
+                        auto r = tryRead(buf);
+                        if (r.error() == bmds::Error::WouldBlock)
+                                return bmds::makeError<size_t>(bmds::Error::EndOfFile);
+                        return r;
+                }
 
                 bmds::Result<size_t> tryRead(bmds::WritableByteSpan buf) override {
                         size_t n = 0;
@@ -32,6 +41,7 @@ class FakeConsole final : public bmds::Console {
                 }
 
                 bmds::Result<size_t> write(bmds::ByteSpan data, unsigned int) override {
+                        std::lock_guard<std::mutex> lock(_lock);
                         output.append(reinterpret_cast<const char *>(data.data()), data.size());
                         return bmds::makeResult(data.size());
                 }
@@ -40,7 +50,8 @@ class FakeConsole final : public bmds::Console {
 
                 /** @brief Returns and clears the output so far. */
                 std::string take() {
-                        std::string out;
+                        std::lock_guard<std::mutex> lock(_lock);
+                        std::string                 out;
                         out.swap(output);
                         return out;
                 }
@@ -49,5 +60,6 @@ class FakeConsole final : public bmds::Console {
                 std::string output;
 
         private:
-                size_t _inPos = 0;
+                std::mutex _lock;
+                size_t     _inPos = 0;
 };

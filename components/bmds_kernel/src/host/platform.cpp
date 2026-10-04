@@ -13,10 +13,12 @@
 #include <condition_variable>
 #include <mutex>
 #include <new>
+#include <thread>
 #include <bmds/deadline.h>
 #include <bmds/detail/platform.h>
 #include <bmds/mutex.h>
 #include <bmds/semaphore.h>
+#include <bmds/thread.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -39,7 +41,9 @@ namespace {
         // Waits up to @p remainingUs for a count (Deadline::Forever: no limit).
         Error take(HostSemaphore &s, int64_t remainingUs) {
                 std::unique_lock<std::mutex> lock(s.lock);
-                auto                         ready = [&s] { return s.count > 0; };
+                auto                         ready = [&s] {
+                        return s.count > 0;
+                };
                 if (remainingUs == Deadline::Forever) {
                         s.cond.wait(lock, ready);
                 } else if (!s.cond.wait_for(lock, std::chrono::microseconds(remainingUs), ready)) {
@@ -137,6 +141,25 @@ Error Semaphore::tryAcquire() {
 
 void Semaphore::release() {
         give(semOf(_storage));
+        return;
+}
+
+Thread::~Thread() {
+        // Joined or never started; a joinable std::thread would terminate().
+}
+
+Error Thread::start(const Config &, Entry entry, void *arg) {
+        if (_impl != nullptr) return Error::InvalidState;
+        _impl = new std::thread(entry, arg);
+        return Error::Ok;
+}
+
+void Thread::join() {
+        auto *t = static_cast<std::thread *>(_impl);
+        if (t == nullptr) return;
+        t->join();
+        delete t;
+        _impl = nullptr;
         return;
 }
 

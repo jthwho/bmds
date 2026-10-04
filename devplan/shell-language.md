@@ -1,6 +1,6 @@
 # Shell Language and Standard I/O
 
-Status: **in progress** (Phase 1b). Steps 1 (containers) and 2 (streams, pipes, Ctrl-C) done. File redirection, globbing and scripts on disk land with Phase 2; external programs in pipelines land with Phase 3.
+Status: **in progress** (Phase 1b). Steps 1 (containers), 2 (streams, pipes, Ctrl-C) and 3 (commands on stdio, pipelines, redirection) done. File redirection, globbing and scripts on disk land with Phase 2; external programs in pipelines land with Phase 3.
 
 ## 1. Goal
 
@@ -84,7 +84,18 @@ class CommandContext {                  // replaces (Shell &, Span<char *const>)
 - **Status:**
   - The pipeline's status is the last stage's (`set -o pipefail` is optional, later).
   - When a downstream stage exits, upstream writers get `BrokenPipe` and stop.
-- **Constraint on PSRAM-stack tasks:** they must not perform SPI-flash writes. NVS and OTA work goes to a helper task. This is recorded in CODING_STANDARDS when it lands.
+- **Constraint on PSRAM-stack tasks:** they must not perform SPI-flash writes. NVS and OTA work goes to a helper task. Recorded in CODING_STANDARDS.
+
+### As built (step 3)
+
+- **`Thread`** (kernel, portable header): a task that ends. `join()` waits for the entry function, then deletes the task and frees its stack and control block. The task parks itself (`vTaskSuspend`) after signalling, and `join()` deletes it only once it is seen suspended, so a task is never deleted while still running on the other core and no FreeRTOS idle-task cleanup is involved. Programs (Phase 3) will be Threads too.
+- **`WorkerPool`** (kernel): starts workers on demand up to `maxWorkers` (7 for the shell: `MaxStages` − 1), keeps up to `maxIdle` (2) for reuse, and joins the rest. Measured: a worker stage peaks at ~1.9 KB of its 8 KB `Psram` stack (`CONFIG_BMDS_SHELL_WORKER_STACK_BYTES`).
+- **`CommandContext`** replaces `(Shell &, Span)`: `args()`, `read()` (stdin), `write(fd)`, `print`/`printf` (stdout), `eprint`/`eprintf` (stderr), `isInterrupted()` (Ctrl-C *or* stdout became a broken pipe, the SIGPIPE stand-in), `usage()`. Built-ins send errors to stderr. No `Environment` yet; it comes with variables in step 5.
+- **Output never times out at the caller.** Commands write with `WaitForever` (a full pipe holds them back; Ctrl-C releases them). The serial console decides by itself when nobody is reading: output that makes no progress for `UsbSerialConsole::StallMs` (100 ms) marks it stalled, whatever the caller's timeout.
+- **The runner** (`Shell::runPipeline`): each stage gets a copy of the shell's `FdTable` (fds 0–2 share one console handle), then its pipe ends, then its redirections left to right. Only the stages hold pipe ends, and a stage closes its table as soon as its command returns, which is what produces EOF downstream and `BrokenPipe` upstream. A stage that can't start (unknown command, failed redirection, no worker) closes its ends too, so its neighbors finish. The last stage runs on the shell task; the status is its exit code.
+- **Interim parser.** `parsePipeline()` handles words, `|`, `|&` and redirections, and rejects `;`, `&&`, `||`, `&`, `<<` with "unsupported operator". It replaces Phase 1's `tokenizeArgs()` and is itself replaced by the step 4 lexer/parser; the runner and `Redirect`/`Stage` model stay.
+- **Text built-ins** `echo`, `cat`, `head`, `wc`, `grep` (see `shell.md`), so pipelines are useful before storage: `mem | grep Psram`, `log show | grep -c E`, `help | wc -l`.
+- Measured: image +14.1 KB (parser 1.5 KB, runner 1 KB, text built-ins ~3 KB, regex 0.7 KB, plus CommandContext, Thread, WorkerPool and pipes now linked in). Static RAM unchanged. Two idle workers hold their control blocks in internal RAM. Internal RAM is unchanged across 30 pipelines on the board. Shell task: 1.6 KB of its 4 KB stack free with the last stage on it (moves to 16 KB `Psram` in step 5).
 - **Phase 3 implication:** a pipeline of two external programs needs two programs loaded at once. The executable format and memory layout must allow several resident programs (position-independent code, per-program heaps). If that turns out too costly, the fallback is DOS-style: program → `MemoryStream` → program, run one after the other. Decide in the Phase 3 ABI design; this plan works either way.
 
 ## 3. Language subset

@@ -259,7 +259,7 @@ Result<size_t> UsbSerialConsole::write(ByteSpan data, unsigned int timeoutMs) {
                 if (done == data.size()) break;
                 // Ring full. With nobody reading, give up at once instead of
                 // making every writer wait out its timeout.
-                if (_stalled.load(std::memory_order_relaxed) || _txSpace.acquire(deadline).isError()) {
+                if (_stalled.load(std::memory_order_relaxed) || waitForSpace(deadline).isError()) {
                         _stalled.store(true, std::memory_order_relaxed);
                         err = Error::Timeout;
                         break;
@@ -267,6 +267,13 @@ Result<size_t> UsbSerialConsole::write(ByteSpan data, unsigned int timeoutMs) {
         }
         _txMutex.unlock();
         return Result<size_t>(done, err);
+}
+
+Error UsbSerialConsole::waitForSpace(const Deadline &deadline) {
+        // Output that makes no progress for StallMs means nobody is reading,
+        // however long the caller was willing to wait.
+        Deadline stall(StallMs);
+        return _txSpace.acquire(deadline.remainingUs() < stall.remainingUs() ? deadline : stall);
 }
 
 Error UsbSerialConsole::flush(unsigned int timeoutMs) {
@@ -279,7 +286,7 @@ Error UsbSerialConsole::flush(unsigned int timeoutMs) {
                         break;
                 }
                 enableInterrupt(USB_SERIAL_JTAG_INTR_SERIAL_IN_EMPTY);
-                if (_txSpace.acquire(deadline).isError()) {
+                if (waitForSpace(deadline).isError()) {
                         err = Error::Timeout;
                         break;
                 }
