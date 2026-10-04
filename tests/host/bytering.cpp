@@ -85,3 +85,29 @@ TEST_CASE("ByteRing") {
                 CHECK(ring.freeSpace() == 8);
         }
 }
+
+TEST_CASE("ByteRing: discardTo") {
+        uint8_t        storage[16];
+        bmds::ByteRing ring{bmds::WritableByteSpan(storage)};
+        const uint8_t  abc[] = {'a', 'b', 'c'};
+        const uint8_t  de[] = {'d', 'e'};
+        CHECK(ring.push(bmds::ByteSpan(abc)) == 3);
+        const uint32_t mark = ring.writePosition();
+        CHECK(ring.push(bmds::ByteSpan(de)) == 2);
+        ring.discardTo(mark);
+        uint8_t out[8];
+        CHECK(ring.pop(bmds::WritableByteSpan(out)) == 2);
+        CHECK(out[0] == 'd');
+        ring.discardTo(mark); // already past: no effect
+        CHECK(ring.isEmpty());
+
+        // Across the wrap of the free-running indices.
+        for (int i = 0; i < 100; ++i) {
+                CHECK(ring.push(bmds::ByteSpan(abc)) == 3);
+                const uint32_t m = ring.writePosition();
+                CHECK(ring.push(bmds::ByteSpan(de)) == 2);
+                ring.discardTo(m);
+                CHECK(ring.available() == 2);
+                CHECK(ring.pop(bmds::WritableByteSpan(out)) == 2);
+        }
+}

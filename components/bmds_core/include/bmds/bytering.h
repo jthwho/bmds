@@ -88,6 +88,21 @@ class ByteRing {
                 /** @brief Publishes @p count bytes written into `writable()` (producer). */
                 void produce(size_t count);
 
+                /**
+                 * @brief Returns the count of bytes ever written, modulo 2^32 (producer).
+                 *
+                 * A position in the stream that `discardTo()` can later
+                 * discard up to.
+                 */
+                uint32_t writePosition() const { return _head.load(std::memory_order_relaxed); }
+
+                /**
+                 * @brief Discards waiting bytes up to @p position from `writePosition()` (consumer).
+                 *
+                 * Bytes already read past @p position are unaffected (no-op).
+                 */
+                void discardTo(uint32_t position);
+
         private:
                 uint8_t              *_data;
                 uint32_t              _mask;

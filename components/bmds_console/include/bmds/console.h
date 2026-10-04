@@ -8,12 +8,15 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
 #include <bmds/error.h>
+#include <bmds/interrupt.h>
 #include <bmds/result.h>
 #include <bmds/span.h>
+#include <bmds/stream.h>
 #include <bmds/stringview.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -31,6 +34,13 @@ BMDS_NAMESPACE_BEGIN
  * terminal needs something else (a serial terminal wants CR LF) translates
  * as it writes.
  *
+ * A console is a `Stream` (it is what fds 0/1/2 refer to in an
+ * interactive shell) and owns the `Interrupt` of the job in its foreground:
+ * with `TermMode::signals` set, a Ctrl-C byte in the input is not queued
+ * but raises that interrupt, straight from the receive path, so it stops
+ * a running command even when nothing is reading input. A `read()` blocked
+ * at the time returns `Error::Interrupted`.
+ *
  * Consoles are functional objects with identity: not copyable, owned by
  * whoever created them, and never destroyed through this interface.
  *
@@ -39,12 +49,17 @@ BMDS_NAMESPACE_BEGIN
  * atomic with respect to other writers. Reading supports a single reader
  * task.
  */
-class Console {
+class Console : public Stream {
         public:
                 /** @brief Capability flags (`capabilities()`). */
                 enum Capability : uint32_t {
                         Ansi = 1u << 0,  ///< Understands ANSI/VT100 cursor and erase sequences.
                         Color = 1u << 1, ///< Understands SGR color sequences.
+                };
+
+                /** @brief Terminal modes ("termios-lite"). */
+                struct TermMode {
+                                bool signals = true; ///< Ctrl-C raises `interrupt()` instead of being read (ISIG).
                 };
 
                 /** @brief Terminal size in character cells. */
@@ -69,10 +84,11 @@ class Console {
                  * @brief Reads input, waiting until at least one byte is available.
                  * @param buf       Destination.
                  * @param timeoutMs How long to wait, or `WaitForever`.
-                 * @return The byte count (at least 1), or `Error::Timeout`.
+                 * @return The byte count (at least 1), `Error::Timeout`, or
+                 *         `Error::Interrupted` (Ctrl-C, with `TermMode::signals`).
                  * @blocking
                  */
-                virtual Result<size_t> read(WritableByteSpan buf, unsigned int timeoutMs) = 0;
+                Result<size_t> read(WritableByteSpan buf, unsigned int timeoutMs) override = 0;
 
                 /**
                  * @brief Reads whatever input is available now.
@@ -92,23 +108,50 @@ class Console {
                  *         fewer with `Error::Timeout`.
                  * @blocking
                  */
-                virtual Result<size_t> write(ByteSpan data, unsigned int timeoutMs) = 0;
+                Result<size_t> write(ByteSpan data, unsigned int timeoutMs) override = 0;
+
+                using Stream::write;
 
                 /**
                  * @brief Waits until buffered output has been handed to the terminal.
                  * @return `Error::Ok`, or `Error::Timeout`.
                  * @blocking
                  */
-                virtual Error flush(unsigned int timeoutMs) = 0;
+                Error flush(unsigned int timeoutMs) override = 0;
 
-                /** @brief Writes text. See `write(ByteSpan, unsigned int)`. @blocking */
-                Result<size_t> write(StringView text, unsigned int timeoutMs) {
-                        return write(ByteSpan(reinterpret_cast<const uint8_t *>(text.data()), text.size()), timeoutMs);
+                /** @brief Consoles are terminals. */
+                bool isTerminal() const override { return true; }
+
+                /** @brief Returns the interrupt Ctrl-C raises (the foreground job's). */
+                Interrupt &interrupt() { return _interrupt; }
+
+                /** @brief Returns the terminal modes. */
+                TermMode mode() const { return TermMode{_signals.load(std::memory_order_relaxed)}; }
+
+                /**
+                 * @brief Sets the terminal modes.
+                 *
+                 * A program that wants raw keys clears `signals` while it runs;
+                 * the shell restores the modes when it exits.
+                 */
+                void setMode(const TermMode &mode) {
+                        _signals.store(mode.signals, std::memory_order_relaxed);
+                        return;
                 }
 
         protected:
                 constexpr Console() = default;
                 ~Console() = default;
+
+                /**
+                 * @brief Returns true if Ctrl-C should raise the interrupt (receive path).
+                 * @isrsafe
+                 */
+                bool signalsEnabled() const { return _signals.load(std::memory_order_relaxed); }
+
+        private:
+                Interrupt         _interrupt;
+                std::atomic<bool> _signals{true};
 };
 
 BMDS_NAMESPACE_END

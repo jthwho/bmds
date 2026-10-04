@@ -31,4 +31,13 @@ menu "BMDS kernel"
             Size of the ring that keeps recent log text for 'log show'.
             Allocated from PSRAM at boot. 0 disables the history.
 
+    config BMDS_PIPE_BYTES
+        int "Pipe buffer size (bytes, PSRAM)"
+        default 4096
+        range 256 65536
+        help
+            Ring size of each pipe between pipeline stages. Must be a power
+            of two. Allocated from PSRAM when the pipeline starts and freed
+            when it ends.
+
 endmenu

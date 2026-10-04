@@ -37,11 +37,23 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        // Stands in for Ctrl-C arriving while the command runs.
+        int runInterrupted(Shell &shell, Span<char *const>) {
+                shell.print("working");
+                shell.console().interrupt().raise();
+                return shell.isInterrupted() ? Shell::ExitInterrupted : Shell::ExitSuccess;
+        }
+
         constexpr bmds::Command Commands[] = {
                 {"echo", "[text]...", "Print the arguments", runEcho},
                 {"fail", "", "Exit with 42", runFail},
                 {"help", "[command]", "List commands", Shell::runHelp},
                 {"strict", "", "Takes no arguments", runStrict},
+        };
+
+        constexpr bmds::Command InterruptCommands[] = {
+                {"echo", "[text]...", "Print the arguments", runEcho},
+                {"interrupted", "", "Gets interrupted", runInterrupted},
         };
 
         int run(Shell &shell, const char *line) {
@@ -108,5 +120,23 @@ TEST_CASE("Shell") {
                 CHECK(con.take() == "echo hi\nhi\nbmds> ");
                 for (char c : std::string("x\x03")) shell->feed(c);
                 CHECK(con.take() == "x^C\nbmds> ");
+        }
+}
+
+TEST_CASE("Shell: Ctrl-C") {
+        FakeConsole con;
+        auto        shell = std::make_unique<Shell>(con, Span<const bmds::Command>(InterruptCommands));
+
+        SUBCASE("an interrupted command exits 130 and the shell echoes ^C") {
+                CHECK(run(*shell, "interrupted") == Shell::ExitInterrupted);
+                CHECK(con.take() == "working^C\n");
+                CHECK_FALSE(con.interrupt().isRaised());
+        }
+
+        SUBCASE("a Ctrl-C typed after the line still interrupts the command") {
+                con.interrupt().raise();
+                CHECK(run(*shell, "echo hi") == Shell::ExitInterrupted);
+                CHECK(con.take() == "hi\n^C\n");
+                CHECK(run(*shell, "echo hi") == Shell::ExitSuccess);
         }
 }

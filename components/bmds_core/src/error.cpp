@@ -54,6 +54,7 @@ namespace {
                 {"Interrupted", "Interrupted"},
                 {"LibraryFailure", "Library failure"},
                 {"UnsupportedSystemError", "Unmapped system error"},
+                {"BrokenPipe", "Broken pipe"},
         };
         static_assert(sizeof(CodeTexts) / sizeof(CodeTexts[0]) == Error::CodeCount,
                       "CodeTexts must have one entry per Error::Code");
@@ -110,6 +111,7 @@ namespace {
                 {ENOTEMPTY, Error::NotEmpty},
                 {EROFS, Error::ReadOnly},
                 {EINTR, Error::Interrupted},
+                {EPIPE, Error::BrokenPipe},
                 {ECANCELED, Error::Cancelled},
                 {ENODEV, Error::NotExist},
                 {ENXIO, Error::NotExist},

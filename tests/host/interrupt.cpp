@@ -1,0 +1,133 @@
+/**
+ * @file      interrupt.cpp
+ * @copyright Jason Howard. All rights reserved.
+ *
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file in the project root folder for license information.
+ */
+
+#include <doctest.h>
+
+#include <atomic>
+#include <chrono>
+#include <thread>
+#include <vector>
+#include <bmds/deadline.h>
+#include <bmds/interrupt.h>
+#include <bmds/semaphore.h>
+
+using bmds::Deadline;
+using bmds::Error;
+using bmds::Interrupt;
+using bmds::Semaphore;
+
+namespace {
+
+        void pause(int ms) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+        }
+
+} // namespace
+
+TEST_CASE("Interrupt: flag") {
+        Interrupt intr;
+        CHECK_FALSE(intr.isRaised());
+        intr.raise();
+        CHECK(intr.isRaised());
+        intr.clear();
+        CHECK_FALSE(intr.isRaised());
+        intr.raiseFromIsr();
+        CHECK(intr.isRaised());
+}
+
+TEST_CASE("Interrupt: wait behaves like acquire when not raised") {
+        Interrupt intr;
+        Semaphore sem(1, 1);
+        CHECK(intr.wait(sem, Deadline(100)).isOk());
+        CHECK(intr.wait(sem, Deadline(20)) == Error::Timeout);
+        CHECK(Interrupt::wait(nullptr, sem, Deadline(20)) == Error::Timeout);
+}
+
+TEST_CASE("Interrupt: wait returns at once when already raised") {
+        Interrupt intr;
+        Semaphore sem(1, 1);
+        intr.raise();
+        CHECK(intr.wait(sem, Deadline(bmds::WaitForever)) == Error::Interrupted);
+        CHECK(sem.tryAcquire().isOk()); // the count wasn't taken
+}
+
+TEST_CASE("Interrupt: raise wakes every blocked waiter") {
+        Interrupt                intr;
+        constexpr int            Waiters = 4;
+        Semaphore               *sems[Waiters];
+        std::atomic<int>         interrupted{0};
+        std::vector<std::thread> threads;
+        for (int i = 0; i < Waiters; ++i) {
+                sems[i] = new Semaphore(1, 0);
+                threads.emplace_back([&, i] {
+                        if (intr.wait(*sems[i], Deadline(bmds::WaitForever)) == Error::Interrupted) ++interrupted;
+                });
+        }
+        pause(50);
+        CHECK(interrupted.load() == 0);
+        intr.raise();
+        for (std::thread &t : threads) t.join();
+        CHECK(interrupted.load() == Waiters);
+        for (Semaphore *s : sems) delete s;
+}
+
+TEST_CASE("Interrupt: sleep") {
+        Interrupt  intr;
+        const auto start = std::chrono::steady_clock::now();
+        CHECK(intr.sleep(30).isOk());
+        CHECK(std::chrono::steady_clock::now() - start >= std::chrono::milliseconds(30));
+
+        std::thread raiser([&] {
+                pause(30);
+                intr.raise();
+        });
+        const auto  before = std::chrono::steady_clock::now();
+        CHECK(intr.sleep(10000) == Error::Interrupted);
+        CHECK(std::chrono::steady_clock::now() - before < std::chrono::seconds(5));
+        raiser.join();
+}
+
+TEST_CASE("Interrupt: many raises racing waiters that come and go") {
+        // Exercises the lifetime handshake: each waiter's semaphore is
+        // destroyed right after its wait, while raises keep arriving.
+        Interrupt                intr;
+        std::atomic<bool>        stop{false};
+        std::thread              raiser([&] {
+                while (!stop.load()) {
+                        intr.raise();
+                        intr.clear();
+                }
+        });
+        std::vector<std::thread> waiters;
+        for (int t = 0; t < 4; ++t) {
+                waiters.emplace_back([&] {
+                        for (int i = 0; i < 2000; ++i) {
+                                Semaphore sem(1, 0);
+                                (void)intr.wait(sem, Deadline(1));
+                        }
+                });
+        }
+        for (std::thread &t : waiters) t.join();
+        stop.store(true);
+        raiser.join();
+}
+
+TEST_CASE("Deadline") {
+        Deadline forever(bmds::WaitForever);
+        CHECK(forever.isForever());
+        CHECK(forever.remainingUs() == Deadline::Forever);
+        CHECK_FALSE(forever.isExpired());
+
+        Deadline soon(20);
+        CHECK_FALSE(soon.isForever());
+        CHECK(soon.remainingUs() > 0);
+        CHECK(soon.remainingUs() <= 20000);
+        pause(30);
+        CHECK(soon.isExpired());
+        CHECK(soon.remainingUs() == 0);
+}

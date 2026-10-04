@@ -53,7 +53,10 @@ class Console : public Stream {    // Stream: see shell-language.md
   - Default `TrueColor` (`CONFIG_BMDS_USJ_COLOR_DEPTH`). Every current terminal emulator on Linux, macOS and Windows renders it.
   - Changed at runtime with the `term` built-in: `term color none|16|256|truecolor`.
   - The shell exports it to programs as `COLORTERM=truecolor` and `TERM=xterm-256color`, the conventional variables. It also honors `NO_COLOR`.
-- **Ctrl-C.** When `signals` is set, the console's RX path (ISR side) spots `0x03` and raises the console's `Interrupt` instead of queueing the byte. So a running loop or pipeline can be stopped even though nobody is reading input. This resolves the Phase 1 open item.
+- **Ctrl-C** (done in Phase 1b step 2). When `signals` is set, the console's RX path (ISR side) spots `0x03` and raises the console's `Interrupt` instead of queueing the byte. So a running loop or pipeline can be stopped even though nobody is reading input. This resolves the Phase 1 open item.
+  - **Like a tty, Ctrl-C flushes pending input.** Bytes received before it are discarded: the rest of its USB packet in the ISR, and what the RX ring already holds by a discard position (`ByteRing::writePosition()`/`discardTo()`) that the reader applies, since only the reader may consume. Bytes after it are kept. So `junk^Cuptime⏎` arriving in one packet cancels `junk` and runs `uptime`, and a line typed ahead of Ctrl-C never runs.
+  - `Console::read()` reports a raised interrupt before returning input, so a Ctrl-C is handled ahead of keys typed after it. At the prompt the shell turns it into the editor's line cancel (`^C`). During a command, the shell echoes `^C` when the command returns and sets the exit code to 130.
+  - Only `TermMode::signals` exists so far; `crToNl`/`nlToCrNl` come with step 6.
 - **Raw mode.**
   - A program that wants raw keys clears `signals`/`crToNl` while it runs. The shell restores the mode when the program exits.
   - The line editor already treats the console as raw: it is readline-like and lives in the shell, not in the console.

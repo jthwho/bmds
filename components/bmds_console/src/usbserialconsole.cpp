@@ -27,6 +27,8 @@ namespace {
         // Both FIFOs hold one full-speed bulk packet.
         constexpr size_t PacketBytes = 64;
 
+        constexpr uint8_t CtrlC = 0x03;
+
         static_assert((CONFIG_BMDS_USJ_TX_BYTES & (CONFIG_BMDS_USJ_TX_BYTES - 1)) == 0, "TX size: power of two");
         static_assert((CONFIG_BMDS_USJ_RX_BYTES & (CONFIG_BMDS_USJ_RX_BYTES - 1)) == 0, "RX size: power of two");
         static_assert(CONFIG_BMDS_USJ_RX_BYTES >= PacketBytes, "RX ring must hold a packet");
@@ -147,8 +149,31 @@ void UsbSerialConsole::handleInterrupt() {
                 // sent meanwhile (seen on the ESP32-P4 rev v1.3). Input the ring
                 // can't take is dropped and counted.
                 usb_serial_jtag_ll_clr_intsts_mask(USB_SERIAL_JTAG_INTR_SERIAL_OUT_RECV_PKT);
-                uint8_t      buf[PacketBytes];
-                const size_t n = static_cast<size_t>(usb_serial_jtag_ll_read_rxfifo(buf, PacketBytes));
+                uint8_t buf[PacketBytes];
+                size_t  n = static_cast<size_t>(usb_serial_jtag_ll_read_rxfifo(buf, PacketBytes));
+                if (signalsEnabled()) {
+                        // Ctrl-C interrupts the foreground job now, instead of
+                        // waiting in the ring for a reader that may never come.
+                        // Like a tty, it also flushes the input before it: the
+                        // rest of this packet up to it is dropped here, and the
+                        // reader discards what the ring already holds.
+                        size_t kept = 0;
+                        bool   interrupted = false;
+                        for (size_t i = 0; i < n; ++i) {
+                                if (buf[i] == CtrlC) {
+                                        interrupted = true;
+                                        kept = 0;
+                                } else {
+                                        buf[kept++] = buf[i];
+                                }
+                        }
+                        n = kept;
+                        if (interrupted) {
+                                _rxFlushTo.store(_rx.writePosition(), std::memory_order_relaxed);
+                                _rxFlush.store(true, std::memory_order_release);
+                                interrupt().raiseFromIsr();
+                        }
+                }
                 const size_t pushed = _rx.push(ByteSpan(buf, n));
                 if (pushed < n) _rxDropped.fetch_add(static_cast<uint32_t>(n - pushed), std::memory_order_relaxed);
                 _rxReady.releaseFromIsr();
@@ -163,6 +188,8 @@ void UsbSerialConsole::enableInterrupt(uint32_t mask) {
 }
 
 Result<size_t> UsbSerialConsole::tryRead(WritableByteSpan buf) {
+        if (_rxFlush.exchange(false, std::memory_order_acquire))
+                _rx.discardTo(_rxFlushTo.load(std::memory_order_relaxed));
         const size_t n = _rx.pop(buf);
         if (n == 0) return makeError<size_t>(Error::WouldBlock);
         return makeResult(n);
@@ -172,9 +199,12 @@ Result<size_t> UsbSerialConsole::read(WritableByteSpan buf, unsigned int timeout
         if (buf.isEmpty()) return makeError<size_t>(Error::Invalid);
         Deadline deadline(timeoutMs);
         for (;;) {
+                // An interrupt comes before input typed after it.
+                if (interrupt().isRaised()) return makeError<size_t>(Error::Interrupted);
                 Result<size_t> r = tryRead(buf);
                 if (r.isOk()) return r;
-                if (_rxReady.acquire(deadline).isError()) return makeError<size_t>(Error::Timeout);
+                Error err = interrupt().wait(_rxReady, deadline);
+                if (err.isError()) return makeError<size_t>(err);
         }
 }
 

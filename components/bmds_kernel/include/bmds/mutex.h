@@ -8,10 +8,9 @@
 
 #pragma once
 
-#include <freertos/FreeRTOS.h>
-#include <freertos/semphr.h>
 #include <bmds/config.h>
 #include <bmds/deadline.h>
+#include <bmds/detail/platform.h>
 #include <bmds/error.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -20,7 +19,9 @@ BMDS_NAMESPACE_BEGIN
  * @brief A FreeRTOS mutex (priority inheritance, not recursive).
  *
  * The control block is embedded in the object (`xSemaphoreCreateMutexStatic`),
- * so constructing a `Mutex` never touches the heap. Construction is a
+ * so constructing a `Mutex` never touches the heap. The header is
+ * FreeRTOS-free (opaque storage) so portable kernel code using it builds in
+ * the host tests, where a `std::timed_mutex` stands in. Construction is a
  * runtime call: a kernel-global mutex lives in a `StaticObject` or inside an
  * object created at boot.
  *
@@ -58,8 +59,11 @@ class Mutex {
                                 bool   _locked;
                 };
 
-                Mutex() { _handle = xSemaphoreCreateMutexStatic(&_storage); }
-                ~Mutex() { vSemaphoreDelete(_handle); }
+                /** @brief Constructs an unlocked mutex. */
+                Mutex();
+
+                /** @brief Destroys the mutex; it must not be locked or waited on. */
+                ~Mutex();
 
                 Mutex(const Mutex &) = delete;
                 Mutex &operator=(const Mutex &) = delete;
@@ -76,7 +80,7 @@ class Mutex {
                  * @return `Error::Ok`, or `Error::Timeout`.
                  * @blocking
                  */
-                Error lock(Deadline &deadline);
+                Error lock(const Deadline &deadline);
 
                 /**
                  * @brief Locks if free.
@@ -86,14 +90,10 @@ class Mutex {
                 Error tryLock();
 
                 /** @brief Unlocks. Must be called by the holder. */
-                void unlock() {
-                        xSemaphoreGive(_handle);
-                        return;
-                }
+                void unlock();
 
         private:
-                StaticSemaphore_t _storage;
-                SemaphoreHandle_t _handle;
+                alignas(Detail::SyncStorageAlign) unsigned char _storage[Detail::SyncStorageBytes];
 };
 
 BMDS_NAMESPACE_END

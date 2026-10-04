@@ -69,6 +69,7 @@ TEST_CASE("Error") {
                 CHECK(Error::syserr(EAGAIN) == Error::WouldBlock);
                 CHECK(Error::syserr(ENOTSUP) == Error::NotSupported);
                 CHECK(Error::syserr(EOPNOTSUPP) == Error::NotSupported);
+                CHECK(Error::syserr(EPIPE) == Error::BrokenPipe);
                 CHECK(Error::syserr(-12345) == Error::UnsupportedSystemError);
                 errno = EBUSY;
                 CHECK(Error::syserr() == Error::Busy);

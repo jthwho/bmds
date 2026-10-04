@@ -79,10 +79,11 @@ class Shell {
                 /** @brief Timeout for output writes. */
                 static constexpr unsigned int OutputTimeoutMs = 100;
 
-                static constexpr int ExitSuccess = 0;    ///< Success.
-                static constexpr int ExitFailure = 1;    ///< The command failed.
-                static constexpr int ExitUsage = 2;      ///< Bad arguments, or a line that doesn't parse.
-                static constexpr int ExitNotFound = 127; ///< No such command.
+                static constexpr int ExitSuccess = 0;       ///< Success.
+                static constexpr int ExitFailure = 1;       ///< The command failed.
+                static constexpr int ExitUsage = 2;         ///< Bad arguments, or a line that doesn't parse.
+                static constexpr int ExitNotFound = 127;    ///< No such command.
+                static constexpr int ExitInterrupted = 130; ///< Stopped by Ctrl-C (128 + SIGINT, as in bash).
 
                 /**
                  * @brief Returns the commands registered with `BMDS_SHELL_COMMAND`, sorted by name.
@@ -129,6 +130,14 @@ class Shell {
                 /** @brief Returns the exit code of the last command run. */
                 int lastExitCode() const { return _lastExitCode; }
 
+                /**
+                 * @brief Returns true once Ctrl-C has interrupted the running command.
+                 *
+                 * Commands that loop or produce long output check this and
+                 * return `ExitInterrupted`.
+                 */
+                bool isInterrupted();
+
                 /** @brief Prints the first prompt. */
                 void start();
 
@@ -137,6 +146,9 @@ class Shell {
 
                 /**
                  * @brief Tokenizes @p line in place and runs it.
+                 *
+                 * A Ctrl-C that interrupts the command makes the exit code
+                 * `ExitInterrupted` and prints `^C`.
                  * @return The exit code. An empty line returns `lastExitCode()`.
                  */
                 int execute(char *line);

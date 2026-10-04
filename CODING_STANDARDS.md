@@ -491,5 +491,6 @@ Kernel-internal C code (rare — mostly glue) may use the latest C standard the 
 - **Build system**: ESP-IDF (CMake); host tests use plain CMake.
 - **Compiler flags**: `-fno-exceptions -fno-rtti`; warnings are treated as errors in BMDS components.
 - **Forward declare** in headers to minimize include chains (compile time and host-testability).
+- **Host-testable kernel code.** `bmds_core` never includes ESP-IDF headers. In `bmds_kernel`, the synchronization classes (`Mutex`, `Semaphore`, `Deadline`), `Interrupt` and the stream layer keep FreeRTOS-free headers (opaque storage, sizes checked by `static_assert`), so code built on them also builds for the host tests. Their platform code lives in `src/` for the target and `src/host/` for the host, behind `bmds/detail/platform.h`.
 - **No global constructors** in the kernel. Use `constexpr`, rodata, or explicit init functions called from the boot sequence. A kernel singleton that needs runtime construction (it holds a `Mutex`, say) lives in a `constinit StaticObject<T>` and is built by `create()` from its boot stage.
 - **Explicit `return;`** at the end of void functions.

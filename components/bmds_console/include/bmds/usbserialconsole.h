@@ -93,6 +93,8 @@ class UsbSerialConsole final : public Console {
                 SpinLock              _intLock; // guards interrupt-enable read-modify-writes
                 std::atomic<bool>     _stalled{false};
                 std::atomic<uint32_t> _rxDropped{0};
+                std::atomic<uint32_t> _rxFlushTo{0}; // Ctrl-C: discard input up to here
+                std::atomic<bool>     _rxFlush{false};
 };
 
 BMDS_NAMESPACE_END

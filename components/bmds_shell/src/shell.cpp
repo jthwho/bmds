@@ -20,6 +20,8 @@ namespace {
 
         constexpr StringView Prompt = "bmds> ";
 
+        constexpr char CtrlC = 0x03;
+
 } // namespace
 
 Shell::Shell(Console &console, Span<const Command> commands)
@@ -44,6 +46,10 @@ const Command *Shell::findCommand(StringView name) const {
                 }
         }
         return nullptr;
+}
+
+bool Shell::isInterrupted() {
+        return _console.interrupt().isRaised();
 }
 
 void Shell::start() {
@@ -84,9 +90,18 @@ int Shell::execute(char *line) {
                 _lastExitCode = ExitNotFound;
                 return _lastExitCode;
         }
+        // A Ctrl-C typed after the line but before the command started is for
+        // the command (as with a tty); one typed earlier was taken by read().
+        Interrupt &interrupt = _console.interrupt();
         _current = cmd;
         _lastExitCode = cmd->run(*this, Span<char *const>(argv, argc));
         _current = nullptr;
+        if (interrupt.isRaised()) {
+                // The console swallowed the ^C, so echo it here, as a terminal would.
+                print("^C\n");
+                _lastExitCode = ExitInterrupted;
+                interrupt.clear();
+        }
         return _lastExitCode;
 }
 
@@ -97,6 +112,13 @@ void Shell::run() {
                 // An idle shell waits for input indefinitely; it uses no CPU
                 // while it waits.
                 auto [n, err] = _console.read(WritableByteSpan(buf), WaitForever);
+                if (err == Error::Interrupted) {
+                        // Ctrl-C at the prompt: the console turned it into an
+                        // interrupt; the editor cancels the line as for a raw ^C.
+                        _console.interrupt().clear();
+                        feed(CtrlC);
+                        continue;
+                }
                 if (err.isError()) continue;
                 for (size_t i = 0; i < n; ++i) feed(static_cast<char>(buf[i]));
         }

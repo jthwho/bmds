@@ -59,6 +59,15 @@ ByteSpan ByteRing::readable() const {
         return ByteSpan(_data + offset, used < toEnd ? used : toEnd);
 }
 
+void ByteRing::discardTo(uint32_t position) {
+        const uint32_t tail = _tail.load(std::memory_order_relaxed);
+        const uint32_t ahead = position - tail;
+        // A position at or behind the tail wraps to a huge `ahead`.
+        if (ahead != 0 && ahead <= _head.load(std::memory_order_acquire) - tail)
+                _tail.store(position, std::memory_order_release);
+        return;
+}
+
 void ByteRing::consume(size_t count) {
         const uint32_t tail = _tail.load(std::memory_order_relaxed);
         BMDS_ASSERT(count <= _head.load(std::memory_order_acquire) - tail);

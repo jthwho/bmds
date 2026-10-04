@@ -8,10 +8,9 @@
 
 #pragma once
 
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
+#include <cstdint>
 #include <bmds/config.h>
-#include <bmds/detail/ticks.h>
+#include <bmds/detail/platform.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -28,27 +27,33 @@ BMDS_NAMESPACE_BEGIN
  */
 class Deadline {
         public:
+                /** @brief `remainingUs()` of a deadline that never expires. */
+                static constexpr int64_t Forever = INT64_MAX;
+
                 /** @brief Starts the clock. */
-                explicit Deadline(unsigned int timeoutMs) : _ticks(Detail::toTicks(timeoutMs)) {
-                        vTaskSetTimeOutState(&_timeOut);
-                }
+                explicit Deadline(unsigned int timeoutMs)
+                    : _expiresUs(timeoutMs == WaitForever
+                                         ? Forever
+                                         : Detail::monotonicUs() + static_cast<int64_t>(timeoutMs) * 1000) {}
 
                 Deadline(const Deadline &) = delete;
                 Deadline &operator=(const Deadline &) = delete;
 
-                /** @brief Returns the ticks left: 0 once expired, `portMAX_DELAY` for `WaitForever`. */
-                TickType_t remainingTicks() {
-                        if (_ticks == portMAX_DELAY) return portMAX_DELAY;
-                        if (xTaskCheckForTimeOut(&_timeOut, &_ticks) == pdTRUE) _ticks = 0;
-                        return _ticks;
+                /** @brief Returns true for a `WaitForever` deadline. */
+                bool isForever() const { return _expiresUs == Forever; }
+
+                /** @brief Returns the microseconds left: 0 once expired, `Forever` for `WaitForever`. */
+                int64_t remainingUs() const {
+                        if (isForever()) return Forever;
+                        const int64_t left = _expiresUs - Detail::monotonicUs();
+                        return left > 0 ? left : 0;
                 }
 
                 /** @brief Returns true once the timeout has passed. */
-                bool isExpired() { return remainingTicks() == 0; }
+                bool isExpired() const { return remainingUs() == 0; }
 
         private:
-                TimeOut_t  _timeOut;
-                TickType_t _ticks;
+                int64_t _expiresUs;
 };
 
 BMDS_NAMESPACE_END

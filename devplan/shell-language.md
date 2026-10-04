@@ -1,6 +1,6 @@
 # Shell Language and Standard I/O
 
-Status: **in progress** (Phase 1b). Step 1 (containers) done. File redirection, globbing and scripts on disk land with Phase 2; external programs in pipelines land with Phase 3.
+Status: **in progress** (Phase 1b). Steps 1 (containers) and 2 (streams, pipes, Ctrl-C) done. File redirection, globbing and scripts on disk land with Phase 2; external programs in pipelines land with Phase 3.
 
 ## 1. Goal
 
@@ -26,7 +26,7 @@ fd table (per job)  ──►  FileHandle (refcounted "open file description")  
   - `isTerminal()`, and `close()` called on the last reference.
 - **`FileHandle`**: an intrusively refcounted wrapper shared by every fd that refers to it (`dup`, `2>&1`, inherited by pipeline stages). Closing the last reference closes the stream. That last close is what produces EOF on a pipe.
 - **`FdTable`**:
-  - 16 slots (`CONFIG_BMDS_MAX_FDS`), copied cheaply when a command starts: one refcount increment per open fd.
+  - 16 slots (`FdTable::MaxFds`), copied cheaply when a command starts: one refcount increment per open fd.
   - Redirections are applied to the copy, so the shell's own table is never disturbed.
 - **`Pipe`**:
   - A `ByteRing` in `Psram` (`CONFIG_BMDS_PIPE_BYTES`, 4 KB) with two semaphores.
@@ -34,6 +34,17 @@ fd table (per job)  ──►  FileHandle (refcounted "open file description")  
   - Reads and writes take an `Interrupt` (below), so a blocked stage can be stopped.
 - **`MemoryStream`**: a growable `Psram` buffer. It captures the output of `$(...)` and holds here-documents.
 - **`NullStream`**: `/dev/null`.
+
+### As built (step 2)
+
+- **The kernel's synchronization headers are FreeRTOS-free.** `Mutex` and `Semaphore` hold the `StaticSemaphore_t` as opaque storage (92 bytes on the target, checked by `static_assert`; the separate handle is gone, saving 4 bytes per object), and `Deadline` holds an absolute `esp_timer` time instead of FreeRTOS tick state. `bmds_kernel` is now dual-mode like the console and shell: `Interrupt`, the streams, `FdTable` and `Pipe` build for the host tests too, over `src/host/platform.cpp` (`std::mutex`/`condition_variable`). Pipes, interrupts and (later) whole pipelines are tested on the host with real threads, including under ThreadSanitizer.
+  - **Hard-won:** the host `Mutex` is a binary semaphore, not `std::timed_mutex`. A timed lock goes through `pthread_mutex_clocklock`, which ThreadSanitizer doesn't intercept, so it reports a bogus "unlock of an unlocked mutex".
+  - **Hard-won:** GCC's `-Wnon-virtual-dtor` treats any `friend` as making a protected destructor accessible, so `Stream::handleClosed()` is public (documented as FileHandle's callback) rather than reached through a friend.
+- **`FileHandle::Ptr`** is an intrusive counted reference; copying never fails, so `FdTable` is an ordinary copyable value (16 slots, 64 bytes on the target). Handles are 12-byte `Psram` allocations made when a file is opened.
+- **`Pipe`** is one `Psram` allocation (object + ring, `CONFIG_BMDS_PIPE_BYTES`), with reader and writer mutexes (the ring is single-producer/single-consumer) and two binary "event" semaphores. It frees itself when both ends are closed.
+- **`MemoryStream`** is a `String`; **`NullStream`** is a constant-initialized singleton.
+- **`Interrupt` wakes blocked waiters without owning a FreeRTOS object:** a waiter publishes the semaphore it is about to block on in one of 8 slots, and `raise()` releases every published semaphore. ESP-IDF forbids FreeRTOS calls inside a critical section, so the slots are atomics with a "raisers busy" count that a leaving waiter drains before its semaphore can be destroyed; a task-context `raise()` suspends the scheduler around the releases so the drain is always short. Waits therefore cost nothing extra when no interrupt comes. `Interrupt::sleep()` is an interruptible delay.
+- Measured: image +1.4 KB, static DIRAM +32 bytes (the console's `Interrupt` and flush marker, less the dropped handles). Pipes and fd tables add nothing until step 3 uses them.
 
 ### Interrupts (Ctrl-C)
 

@@ -192,12 +192,17 @@ namespace {
                         return Shell::ExitFailure;
                 }
                 const size_t len = Log::copyHistory(Span<char>(buf, capacity));
+                int          result = Shell::ExitSuccess;
                 for (size_t done = 0; done < len; done += LogShowChunkBytes) {
+                        if (shell.isInterrupted()) {
+                                result = Shell::ExitInterrupted;
+                                break;
+                        }
                         const size_t n = len - done < LogShowChunkBytes ? len - done : LogShowChunkBytes;
                         shell.print(StringView(buf + done, n));
                 }
                 Memory::free(buf);
-                return Shell::ExitSuccess;
+                return result;
         }
 
         int runLog(Shell &shell, Args args) {
@@ -211,6 +216,40 @@ namespace {
                 if (sub == "off") return setLogModules(shell, args, false);
                 if (sub == "show") return showLog(shell, args);
                 return shell.usage();
+        }
+
+        // Parses "N" or "N.FFF" seconds into milliseconds (fraction to 1 ms).
+        bool parseSeconds(StringView text, unsigned int &ms) {
+                constexpr uint64_t MaxMs = 7 * 24 * 3600 * 1000ull;
+                uint64_t           whole = 0;
+                size_t             i = 0;
+                for (; i < text.size() && text[i] >= '0' && text[i] <= '9'; ++i) {
+                        whole = whole * 10 + static_cast<uint64_t>(text[i] - '0');
+                        if (whole * 1000 > MaxMs) return false;
+                }
+                const bool hasWhole = i > 0;
+                uint64_t   frac = 0;
+                uint64_t   scale = 100;
+                bool       hasFrac = false;
+                if (i < text.size() && text[i] == '.') {
+                        for (++i; i < text.size() && text[i] >= '0' && text[i] <= '9'; ++i) {
+                                frac += static_cast<uint64_t>(text[i] - '0') * scale;
+                                scale /= 10;
+                                hasFrac = true;
+                        }
+                }
+                if (i != text.size() || (!hasWhole && !hasFrac)) return false;
+                const uint64_t total = whole * 1000 + frac;
+                if (total > MaxMs) return false;
+                ms = static_cast<unsigned int>(total);
+                return true;
+        }
+
+        int runSleep(Shell &shell, Args args) {
+                unsigned int ms = 0;
+                if (args.size() != 2 || !parseSeconds(args[1], ms)) return shell.usage();
+                if (ms == 0) return Shell::ExitSuccess; // 0 would mean WaitForever
+                return shell.console().interrupt().sleep(ms).isOk() ? Shell::ExitSuccess : Shell::ExitInterrupted;
         }
 
         int runReboot(Shell &shell, Args args) {
@@ -227,6 +266,7 @@ BMDS_SHELL_COMMAND(log, runLog, "[level info|warn|err | on <module>...|all | off
                    "Show or set the log level and debug modules; show the log history")
 BMDS_SHELL_COMMAND(mem, runMem, "", "Show memory usage per memory space (bytes)")
 BMDS_SHELL_COMMAND(reboot, runReboot, "", "Restart the system")
+BMDS_SHELL_COMMAND(sleep, runSleep, "<seconds>", "Wait for a number of seconds (fractions allowed, e.g. 0.5)")
 BMDS_SHELL_COMMAND(tasks, runTasks, "", "List tasks: state, priority, core, free stack (bytes)")
 BMDS_SHELL_COMMAND(uptime, runUptime, "", "Show time since boot")
 BMDS_SHELL_COMMAND(version, runVersion, "", "Show BMDS, build, board and chip versions")

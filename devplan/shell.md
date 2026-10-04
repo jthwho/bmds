@@ -30,7 +30,7 @@ An interactive shell over the USB-C port (USB-Serial/JTAG), usable from any term
 | `bmds/semaphore.h` | `Semaphore` (static counting semaphore): `acquire(timeoutMs)`, `tryAcquire()`, `release()`, `releaseFromIsr()`. |
 | `bmds/spinlock.h` | `SpinLock` (`portMUX_TYPE`) with `Locker` and `lockFromIsr()`/`unlockFromIsr()`. |
 | `bmds/task.h` | `Task`: starts a kernel-lifetime FreeRTOS task with its TCB in `Internal` memory and its stack in a chosen `MemSpace`. |
-| `bmds/deadline.h` | `Deadline`: one timeout shared by several waits (`Mutex::lock(Deadline &)`, `Semaphore::acquire(Deadline &)`), so a call that waits more than once still honors its `timeoutMs`. |
+| `bmds/deadline.h` | `Deadline`: one timeout shared by several waits (`Mutex::lock(const Deadline &)`, `Semaphore::acquire(const Deadline &)`), so a call that waits more than once still honors its `timeoutMs`. (Phase 1b made these headers FreeRTOS-free; see `shell-language.md`.) |
 | `bmds/system.h` | `System::info()` (version, build, board, chip), `System::uptimeUs()`, `System::restart()`. |
 | `bmds/log.h` | New: `Log::init()`, `Log::setSink()`, `Log::writeRaw()`, `Log::copyHistory()`. |
 | `bmds/boot.h` | `Boot::Stage`. `Boot::run(Span<const Stage>)` runs the kernel stages and then the system stages that `main` supplies. `Boot::waitUntilComplete()` lets tasks started by stages wait for the boot report to finish. |
@@ -191,7 +191,7 @@ Echo uses relative cursor movement (`ESC[nD`, `ESC[nC`, `ESC[K`), so the editor 
 - **Execution:** the editor's buffer is tokenized in place (`MaxArgs` = 16), then the command runs on the shell's task.
   - Unknown command: `name: command not found`, exit code 127.
   - The exit code is kept in `lastExitCode()` (later `$?`).
-  - A command cannot be interrupted yet. Ctrl-C during a command waits until the program/signal model exists.
+  - Ctrl-C interrupts a running command (Phase 1b; see [`shell-language.md`](shell-language.md)): the command sees `isInterrupted()`, the shell echoes `^C`, and the exit code is 130.
 - **Output:** `printf` formats into a 256-byte stack buffer; longer output is truncated, so commands print line by line. The write timeout is 100 ms; a stalled console fails fast, as described above.
 - **Instances:** `Shell::spawn()` allocates the `Shell` (about 1.7 KB) in `Psram` and starts a `Task` running `run()`:
   - stack: `CONFIG_BMDS_SHELL_STACK_BYTES` (4 KB), `Internal`. The deepest use measured so far is 2,036 bytes, by `tasks`/`log show`;
@@ -212,6 +212,7 @@ Echo uses relative cursor movement (`ESC[nD`, `ESC[nC`, `ESC[K`), so the editor 
 | `log on\|off <module>...\|all` | Enable/disable debug modules. |
 | `log show` | Print the log history. |
 | `reboot` | Flush the console, restart. |
+| `sleep <seconds>` | Wait; fractions allowed (`0.5`), up to a week. Ctrl-C stops it (exit 130). (Phase 1b) |
 
 ## 4. IDF usage
 
@@ -272,5 +273,4 @@ Shell command names, arguments and output formats are userspace interfaces under
 - Async log lines arriving while a line is being edited garble the prompt line. Fix: the editor clears and redraws around sink output (needs a hook between `Log` and the active editor).
 - Lines longer than the terminal width: relative cursor movement doesn't cross wrapped rows. Query the width (`ESC[6n`) or scroll the line horizontally.
 - Tab completion (command names, later paths).
-- Ctrl-C interrupting a running command (needs the program model, Phase 3).
 - `top` with CPU %, if run-time stats prove cheap enough.

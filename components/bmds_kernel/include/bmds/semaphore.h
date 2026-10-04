@@ -8,10 +8,9 @@
 
 #pragma once
 
-#include <freertos/FreeRTOS.h>
-#include <freertos/semphr.h>
 #include <bmds/config.h>
 #include <bmds/deadline.h>
+#include <bmds/detail/platform.h>
 #include <bmds/error.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -21,7 +20,8 @@ BMDS_NAMESPACE_BEGIN
  *
  * With `maxCount` 1 it is a binary "event happened" flag, the usual way an
  * ISR wakes a waiting task. The control block is embedded in the object, so
- * constructing one never touches the heap.
+ * constructing one never touches the heap. The header is FreeRTOS-free
+ * (opaque storage) so portable kernel code builds in the host tests.
  *
  * @par Thread Safety
  * Thread-safe. `releaseFromIsr()` is ISR-safe.
@@ -33,10 +33,10 @@ class Semaphore {
                  * @param maxCount     Maximum count (1 = binary).
                  * @param initialCount Starting count.
                  */
-                explicit Semaphore(unsigned int maxCount, unsigned int initialCount) {
-                        _handle = xSemaphoreCreateCountingStatic(maxCount, initialCount, &_storage);
-                }
-                ~Semaphore() { vSemaphoreDelete(_handle); }
+                explicit Semaphore(unsigned int maxCount, unsigned int initialCount);
+
+                /** @brief Destroys the semaphore; nobody may be waiting on it. */
+                ~Semaphore();
 
                 Semaphore(const Semaphore &) = delete;
                 Semaphore &operator=(const Semaphore &) = delete;
@@ -53,7 +53,7 @@ class Semaphore {
                  * @return `Error::Ok`, or `Error::Timeout`.
                  * @blocking
                  */
-                Error acquire(Deadline &deadline);
+                Error acquire(const Deadline &deadline);
 
                 /**
                  * @brief Takes one count if available.
@@ -66,10 +66,7 @@ class Semaphore {
                  * @brief Adds one count (no effect when already at `maxCount`).
                  * @nonblocking
                  */
-                void release() {
-                        xSemaphoreGive(_handle);
-                        return;
-                }
+                void release();
 
                 /**
                  * @brief Adds one count from an ISR.
@@ -79,16 +76,10 @@ class Semaphore {
                  * `portYIELD_FROM_ISR()` to the end of the ISR).
                  * @isrsafe
                  */
-                void releaseFromIsr() {
-                        BaseType_t woken = pdFALSE;
-                        xSemaphoreGiveFromISR(_handle, &woken);
-                        portYIELD_FROM_ISR(woken);
-                        return;
-                }
+                void releaseFromIsr();
 
         private:
-                StaticSemaphore_t _storage;
-                SemaphoreHandle_t _handle;
+                alignas(Detail::SyncStorageAlign) unsigned char _storage[Detail::SyncStorageBytes];
 };
 
 BMDS_NAMESPACE_END
