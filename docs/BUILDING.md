@@ -40,6 +40,12 @@ cmake -S tests/host -B build-host -G Ninja
 cd build-host && build && ctest --output-on-failure
 ```
 
+When Espressif's `riscv32-esp-elf-gcc` is found (on `PATH` after `export.sh`, or in `~/.espressif`), the host build also cross-compiles the SDK examples (`build-host/sdk-examples/`) and tests them with the loader's checks; it builds `build-host/bmds-elfcheck` either way.
+
+## Programs (SDK)
+
+Programs for BMDS are built with the SDK in `sdk/` (headers, startup code, linker script, CMake toolchain file); see [`sdk/README.md`](../sdk/README.md). `bmds-elfcheck program.elf` says whether the kernel will load a file, and why not.
+
 ## Configuration
 
 `sdkconfig.defaults` is checked in; `sdkconfig` is generated and ignored. BMDS options are under **BMDS board**, **BMDS kernel**, **BMDS storage** (and others) in `idf.py menuconfig`:

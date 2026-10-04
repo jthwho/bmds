@@ -1,0 +1,9 @@
+# The SDK examples. Configure with the SDK toolchain file, then build:
+#   cmake -S sdk/examples -B build-sdk -DCMAKE_TOOLCHAIN_FILE=sdk/cmake/bmds-toolchain.cmake
+
+cmake_minimum_required(VERSION 3.16)
+project(bmds_examples C ASM)
+
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/BmdsProgram.cmake)
+
+bmds_add_program(hello SOURCES hello/hello.c)

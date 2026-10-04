@@ -1,6 +1,6 @@
 # Programs: Executables, Loader, Syscall ABI v1, SDK
 
-Status: **design** (Phase 3); D1-D7 agreed (2026-10-04; D3 confirmed by the step 1 spike, §2). Step 1 done; nothing else implemented. Once the first program ships, everything marked *frozen* is userspace ABI (`docs/ABI.md`): append-only forever.
+Status: **steps 1-2 done** (Phase 3): the PSRAM spike; the SDK skeleton, the format check and relocation (`ProgramImage`), `bmds-elfcheck`, the ABI lock. D1-D7 agreed (2026-10-04; D2 revised in step 2, below). Once the first program ships, everything marked *frozen* is userspace ABI (`docs/ABI.md`): append-only forever.
 
 ## 1. Goal
 
@@ -33,7 +33,7 @@ Status: **design** (Phase 3); D1-D7 agreed (2026-10-04; D3 confirmed by the step
 | # | Question | Choice | Alternatives |
 |---|---|---|---|
 | D1 | Call mechanism | **A function table**, its address passed to the entry point | `ecall` trap |
-| D2 | Executable format | **ELF, static PIE** (`ET_DYN`, one contiguous image, only `R_RISCV_RELATIVE` relocations) | custom format converted from ELF at build time; relocatable `ET_REL` |
+| D2 | Executable format | **ELF linked at 0 with its relocations kept** (`ET_EXEC`, one image; the loader patches `R_RISCV_32` and `R_RISCV_HI20`), DOS-EXE style; revised from static PIE in step 2 | static PIE with our own picolibc built `-fPIE`; custom format; relocatable `ET_REL` |
 | D3 | Where code runs | **PSRAM** (the whole image), measured as fast as flash or IRAM (§2); fast internal RAM for data on request | internal SRAM (needs MEMPROT off) |
 | D4 | C library | **picolibc, linked into each program**, over a small SDK glue layer | newlib-nano in the program; libc provided by the kernel |
 | D5 | Instruction set | **Everything every P4 runs: `rv32imafc_zicsr_zifencei_zaamo_zalrsc_xesploop_xespv2p1`, `ilp32f`** (the firmware's own set) | the base set only; Zc* (rev ≥ 3 only) |
@@ -46,24 +46,26 @@ Status: **design** (Phase 3); D1-D7 agreed (2026-10-04; D3 confirmed by the step
 - **The table keeps traps possible.** Programs only ever call through the table they were given. If a later chip or IDF allows U-mode, the kernel hands such programs a table of small stubs that `ecall`; their binaries don't change. The reverse (traps now, table later) would need nothing either, but costs the trap price from day one.
 - The table is versioned: `{ uint32_t magic, abi_version, count; void *slot[count]; }`. A slot number is frozen forever; a program probes a slot as `slot < count && slot[n] != NULL` (ABI rule 8).
 
-### D2: why static-PIE ELF
+### D2: ELF linked at 0, relocations kept (revised in step 2)
 
-- Standard tools make it (`-fPIE -static-pie` with our linker script), standard tools read it (`readelf`, `objdump`, `addr2line`, GDB), and a self-hosted toolchain only needs to emit ELF.
-- RISC-V position-independent code addresses its own code and data PC-relative (`auipc`), so a contiguous image loaded anywhere needs relocating only where data holds absolute addresses (pointer tables, function pointers, `const char *` arrays): `R_RISCV_RELATIVE` entries, "add the load address". The loader is about 1-2 KB and supports exactly that; anything else (`R_RISCV_32`, `JUMP_SLOT`, TLS, `DT_NEEDED`) is rejected with an error, never guessed at.
-- No dynamic linking, no shared libraries in v1. (A shared SDK library could come later as a new, optional mechanism.)
+- **First choice, static PIE, didn't survive contact with the toolchain:** the picolibc that ships with `riscv32-esp-elf-gcc` is compiled for the `medlow` model (absolute `lui`/`addi` addressing, `R_RISCV_HI20`), which a PIE can't contain (ld refuses, then crashes). Keeping static PIE would mean building picolibc ourselves with `-fPIE`. Agreed instead (2026-10-04): the classic relocatable executable, as DOS did with `.EXE` files.
+- **The format** (`sdk/include/bmds/program.h`): `ET_EXEC`, one `PT_LOAD` at virtual address 0 holding the whole image, linked with `--emit-relocs` so the relocation sections and the symbol table stay in the file. The kernel loads it at any 4096-byte-aligned address B and patches only two kinds: `R_RISCV_32` (a data word: add B) and `R_RISCV_HI20` (a `lui`: add B >> 12 to its upper immediate; B's low 12 bits are zero, so the matching `LO12` halves never change). References to absolute or undefined (weak) symbols aren't patched. Everything else in loaded sections is either position-independent (branches, calls, `PCREL_*`, thread-local `TPREL_*`, label differences `ADD/SUB/SET*`, the linker's `RELAX`/`ALIGN` hints) or refused, as is a `PCREL_HI20` to an absolute symbol that the linker didn't turn into a `lui`. Programs' own code is built `medany` (PC-relative, no GOT, slightly faster than PIE); medlow libraries work through `HI20`.
 - **Identification:** `EM_RISCV`, `ELFCLASS32`, little endian, float ABI flag `EF_RISCV_FLOAT_ABI_SINGLE`, and a `PT_NOTE` with name `"BMDS"`, type 1, holding a `bmds_program_note_t` (size, ABI version the program was built for, requested stack size, flags). A file without the note is not a BMDS program (`exec format error`).
-- A custom format would be smaller to parse but needs a converter on the PC and in a self-hosted toolchain, and loses the tools. `ET_REL` would make the loader a linker (dozens of relocation types, relaxation): too much to freeze.
+- **Cost:** the file keeps its relocations and symbols, so it is bigger than its image (hello: 11.5 KB of image in a 136 KB file with debug information stripped, 458 KB with it; loading reads only the headers, the segment, the relocation sections and a symbol per patch). Fully stripping a program breaks it (the loader says "no section headers (stripped? relocations are needed)").
+- **Why it's still a good format:** stock toolchain and libraries; standard tools read it (`readelf`, `objdump`, `addr2line`, GDB); a small self-hosted compiler emits exactly this (non-PIC code plus relocations) without knowing about PIC; the loader is small and refuses whatever it doesn't understand instead of guessing.
+- No dynamic linking, no shared libraries in v1 (`PT_DYNAMIC` and `PT_INTERP` are refused).
 
 ### D3: memory
 
-- The image (text, rodata, data, bss) is one `Psram` allocation, aligned to a cache line; the loader copies the `PT_LOAD` segments, zeroes bss, applies relocations, syncs the caches.
+- The image (text, rodata, data, bss) is one `Psram` allocation, aligned to 4096 bytes (the relocation scheme needs it); the loader copies the `PT_LOAD` segment, zeroes bss, applies relocations, syncs the caches.
 - The program's **stack** is allocated from internal RAM if it fits (stacks are hot), else `Psram`: the note asks for a size (default 32 KB, at most 1 MB).
-- **Heap:** `malloc` in the program is picolibc's over SDK glue that takes chunks from the kernel (`bmds_mem_alloc(size, flags)`), with a flag for fast internal RAM (`BMDS_MEM_FAST`) and one for DMA-capable memory. The kernel tracks every allocation per program and frees what is left at exit.
+- **Heap:** the SDK defines `malloc`, `free`, `realloc`, `calloc` and the aligned forms itself (`sdk/crt/malloc.c`), straight over the kernel's allocator: slots `mem_alloc(size, align, flags)`, `mem_free`, `mem_realloc`, with flags for fast internal RAM (`BMDS_MEM_FAST`) and DMA-capable memory (`BMDS_MEM_DMA`). picolibc's own malloc (and its fixed `sbrk` heap) is never linked. The kernel tracks every allocation per program and frees what is left at exit.
 - Code always runs from PSRAM through the caches; a program that needs a hot loop in fast memory is a later question (TCM is 8 KB).
 
 ### D4: libc
 
-- picolibc is made for this (small, `stdio` without `malloc`, a clean OS glue layer: `read`, `write`, `open`, `close`, `lseek`, `_exit`, `sbrk`-free malloc over a callback) and ships in the toolchain for our multilib. Linked statically into each program: a hello world costs a few KB.
+- picolibc is made for this (small `stdio`, a clean OS glue layer: `read`, `write`, `close`, `lseek`, `isatty`, `_exit`) and ships in the toolchain for our multilib. Linked statically into each program: a `printf` hello world is 11.5 KB of image.
+- picolibc keeps `errno` (and a few other things) in **thread-local storage**, addressed through `tp`. The firmware has no thread-local variables (its TLS area is empty) and FreeRTOS saves `tp` per task, so `_start` points `tp` at the program's own TLS block in its image (one thread per program) without disturbing the kernel. The loader will refuse to run programs if the firmware ever gains TLS (step 3 checks the linker symbols). `gp` stays the kernel's: programs are linked without relaxation or a global pointer.
 - A kernel-provided libc would make thousands of functions and every struct in them ABI. Programs carrying their own libc keep the ABI to the syscall table alone, as on Linux.
 - newlib-nano also works; picolibc's smaller `printf` and saner glue win.
 
@@ -77,9 +79,11 @@ Status: **design** (Phase 3); D1-D7 agreed (2026-10-04; D3 confirmed by the step
 
 ## 4. The syscall table (frozen once shipped)
 
-- The entry point is `void _start(const bmds_sys_t *sys, int argc, char **argv, char **envp)`; crt0 stores `sys`, runs constructors, calls `main`, then `exit(main(...))`.
+- The entry point is `void _start(const bmds_sys_t *sys, int32_t argc, char **argv, char **envp)`; crt0 points `tp` at the program's TLS block, then C stores `sys` in `bmds_sys`, sets `environ`, runs constructors (`__libc_init_array`) and calls `exit(main(...))`. The full startup contract (registers, stack, `gp`/`tp`, FP state, returning from `_start`) is in `sys.h`.
+- The table: `{ magic "BMDS", abi_version, count, reserved, slot[] }`; `bmds_sys_has(n)` probes a slot. The SDK calls slots through typed inline functions (`bmds_write()`...), one indirect call each.
 - Slot functions are plain C (`ilp32f`), return `int32_t`: ≥ 0 success, negative `BMDS_E*` error codes, a frozen list in `sdk/include/bmds/errno.h` mapped from the kernel's `Error` (kernel `Error` values stay internal).
-- **v1 slots** (names indicative):
+- **Defined in step 2** (frozen from the first release): 0 `exit`, 1 `read`, 2 `write`, 3 `close`, 4 `seek` (64-bit offset, result through a pointer), 5 `isatty`, 6 `mem_alloc`, 7 `mem_free`, 8 `mem_realloc`: what picolibc's `stdio` and `malloc` need. The rest of v1 lands in step 4.
+- **The rest of v1** (names indicative):
   - Discovery: `abi_version`, `slot_count` (also in the table header).
   - Process: `exit`, `getenv`/`environ` (envp is passed in), `interrupted` (has Ctrl-C been pressed), `sleep_us`.
   - fd I/O: `read`, `write`, `close`, `dup2`, `isatty`, `lseek`, `pipe` (maybe v1.1).
@@ -88,7 +92,7 @@ Status: **design** (Phase 3); D1-D7 agreed (2026-10-04; D3 confirmed by the step
   - Time: `clock_gettime` (realtime and monotonic, ns), timezone offset.
   - Terminal: `term_mode` get/set (`signals`, `nlToCrNl`, raw input), `term_size`, `term_colors`.
 - Every struct starts with `uint32_t size`; unknown flags fail with `BMDS_EINVAL`; a bad pointer from a program is its own problem (no protection), but the kernel validates lengths and handles.
-- **ABI lock tests** (host): slot numbers, struct sizes and offsets, error numbers, flag values. Append-only.
+- **ABI lock** (`components/bmds_loader/src/abilock.c`): `_Static_assert`s on slot numbers, struct sizes and offsets (layouts with pointers checked where pointers are 32-bit), error numbers, flag values and format constants, compiled in every firmware build (`main` requires `bmds_loader`) and the host tests. Append-only.
 
 ## 5. Running a program
 
@@ -108,16 +112,18 @@ Status: **design** (Phase 3); D1-D7 agreed (2026-10-04; D3 confirmed by the step
 ## 6. The SDK (`sdk/`)
 
 ```
-sdk/include/bmds/*.h      the ABI: sys.h (the table), errno.h, types and constants (C99)
-sdk/crt/crt0.S, glue.c    entry, picolibc's OS glue over the table
-sdk/ld/bmds.ld            the static-PIE layout (one PT_LOAD RWX, PT_NOTE, .rela.dyn)
-sdk/cmake/bmds-toolchain.cmake, sdk/make/bmds.mk    build a program on a PC
-sdk/examples/             hello, cat, a benchmark
-tools/                    bmds-run (push over serial and run), bmds-elfcheck
+sdk/include/bmds/*.h      the ABI (C99): sys.h (the table, startup contract), program.h (the format, the note), errno.h
+sdk/crt/crt0.S, crt.c     _start (tp), main's caller, picolibc's POSIX glue over the table
+sdk/crt/malloc.c          malloc and friends over mem_alloc
+sdk/ld/bmds.ld            the layout: one PT_LOAD RWX at 0, the note (stack size from --defsym), TLS
+sdk/cmake/                bmds-toolchain.cmake, BmdsProgram.cmake (bmds_add_program)
+sdk/examples/             hello (cat, a benchmark later)
+tools/elfcheck/           bmds-elfcheck (built with the host tests); bmds-run later
 ```
 
-- Building a program: `cmake -DCMAKE_TOOLCHAIN_FILE=sdk/cmake/bmds-toolchain.cmake` or `make -f sdk/make/bmds.mk`, with IDF's `riscv32-esp-elf-gcc` (no IDF needed otherwise).
-- `bmds-elfcheck` (also run by the loader's host tests) rejects images the loader would.
+- Building a program: `cmake -DCMAKE_TOOLCHAIN_FILE=sdk/cmake/bmds-toolchain.cmake` with IDF's `riscv32-esp-elf-gcc` (no IDF needed otherwise); see `sdk/README.md`. (A Makefile template can follow if anyone wants one.)
+- Two traps found on the way: the bare-metal GCC driver silently drops `-static-pie`, and CMake's Generic platform ignores `CMAKE_EXECUTABLE_SUFFIX` (the helper sets `.elf` per target).
+- `bmds-elfcheck` runs `ProgramImage::inspect()`, the loader's own check, and prints what the loader would do (`hello.elf: BMDS program, ABI 1: image 11520 bytes (11364 in the file), entry +0x0, stack 0 (default), 70 relocations, 4 bytes thread-local`).
 - **Push-and-run:** `tools/bmds-run prog [args]` sends the file with YMODEM into a RAM disk (`/ram0`, a `RamBlockDevice` in PSRAM, which this also brings) and runs it, printing its output; the card is not needed.
 
 ## 7. Phasing
@@ -125,7 +131,7 @@ tools/                    bmds-run (push over serial and run), bmds-elfcheck
 | Step | Content |
 |---|---|
 | 1 | **Spike:** code copied into PSRAM runs (cache sync, PMP as analyzed); measure PSRAM vs internal code speed. **Done** (§2): PSRAM confirmed. |
-| 2 | SDK skeleton: headers, crt0, linker script, toolchain file; `hello` builds on the PC; `bmds-elfcheck`; ABI lock tests. |
+| 2 | SDK skeleton: headers, crt0, linker script, toolchain file; `hello` builds on the PC; `bmds-elfcheck`; ABI lock tests. **Done** (format revised, D2). |
 | 3 | Loader (`bmds_loader`): validate, load, relocate, sync, run in a task, exit status, cleanup; run by path from the shell. Host tests of the ELF validation and relocation. |
 | 4 | Syscall table v1 and picolibc glue: fd I/O, files, directories, memory, time, env, terminal; examples `hello`, `cat`, `ls`-like. |
 | 5 | Shell: `$PATH` search, programs in pipelines and redirections, Ctrl-C and kill; `exec` dispatch by content with `#!` scripts (built-in `sh` as the interpreter first; programs as interpreters as soon as they run). |
@@ -135,16 +141,21 @@ tools/                    bmds-run (push over serial and run), bmds-elfcheck
 
 | Item | Flash | RAM |
 |---|---|---|
-| Loader (ELF checks, relocation, task) | ~3 KB | per program: image in `Psram`, stack (internal if it fits), ~200 B bookkeeping |
+| Loader (ELF checks, relocation, task) | ~3 KB (`ProgramImage` in step 2; linked in step 3) | per program: image in `Psram`, stack (internal if it fits), ~200 B bookkeeping |
 | Syscall table v1 + glue to the VFS | ~6 KB | table in flash (rodata) |
 | RAM disk | ~1 KB | its blocks in `Psram`, on demand |
 | **Total** | **~10 KB** | **no static internal RAM** |
 
-## 9. ABI impact
+## 9. Testing
 
-Everything in §4 and §6's headers, the ELF profile in D2 (note format, relocation set, entry signature, startup state), the stack and memory guarantees, the `$PATH` lookup and the `.elf`/`.sh` order, the `#!` rules (line length, one optional argument, argument order, nesting depth, the `/bin/sh` and `/usr/bin/env` mapping), `.sh` files run by `sh` without `#!`, other text files refused, `test -x`, exit statuses 126/127/130. Each lands with an `ABI:` line.
+- **Host:** `ProgramImage` on hand-built ELF files (each refusal: not ELF, wrong machine/type/ABI, no note, newer ABI, too much stack, unknown flags, interpreter, dynamic, two segments, not at 0, entry outside, stripped, REL, unknown relocation kind, relocation outside its section, bad symbol, PC-relative to an absolute symbol) and their relocation (word, upper immediate with wrap-around, absolute and undefined symbols left alone, bss zeroed, unaligned base refused); the SDK's `hello.elf`, cross-built as an external project when the compiler is found, loaded at 0 (equal to the file's segment) and at two other bases (exactly the patched words differ, by the distance); 3,000 randomly damaged copies refused or loaded without a crash under ASan/UBSan; `bmds-elfcheck hello.elf` as a ctest.
+- **Board (step 3 on):** load and run `hello` from the card, exit status, Ctrl-C, pipelines.
 
-## 10. Open questions
+## 10. ABI impact
+
+Everything in §4 and §6's headers, the ELF profile in D2 (note format, the patched and the accepted relocation kinds, the 4096-byte load alignment, entry signature, startup state), the stack and memory guarantees, the `$PATH` lookup and the `.elf`/`.sh` order, the `#!` rules (line length, one optional argument, argument order, nesting depth, the `/bin/sh` and `/usr/bin/env` mapping), `.sh` files run by `sh` without `#!`, other text files refused, `test -x`, exit statuses 126/127/130. Each lands with an `ABI:` line.
+
+## 11. Open questions
 
 - A fault hook that turns a program's crash into a status instead of a reboot (IDF's panic handler is not designed for resuming).
 - Whether programs get their own console modes (raw keys) restored automatically at exit (yes, planned) and the framebuffer later (Phase 6).

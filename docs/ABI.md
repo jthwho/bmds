@@ -41,6 +41,6 @@ Kernel internals — C++ classes, driver interfaces, internal headers under `com
 Resolved in [`devplan/programs.md`](../devplan/programs.md) (Phase 3):
 
 - **Call mechanism**: a versioned function table whose address is passed to the program's entry point. Calls cost a few cycles; if a later chip allows user mode, the kernel can hand programs a table of `ecall` stubs without rebuilding them.
-- **Executable format**: static-PIE ELF (one contiguous image, only `R_RISCV_RELATIVE` relocations), identified by a BMDS ELF note. Commands are found as `name`, `name.elf` or `name.sh` on `$PATH`; files starting with `#!` are launched through their interpreter, and `.sh` files by the built-in `sh`.
+- **Executable format**: ELF linked at address 0 with its relocations kept, which the loader patches for wherever it loads the image (`R_RISCV_32`, `R_RISCV_HI20`; DOS-EXE style), identified by a BMDS ELF note (`sdk/include/bmds/program.h`). Commands are found as `name`, `name.elf` or `name.sh` on `$PATH`; files starting with `#!` are launched through their interpreter, and `.sh` files by the built-in `sh`.
 - **Where code runs**: from PSRAM through the caches (the internal heap is not executable with IDF's memory protection); measured as fast as flash or internal RAM once cached.
 - **C library**: picolibc, linked statically into each program over a small glue layer, so only the syscall table is ABI.

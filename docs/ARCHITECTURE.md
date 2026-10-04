@@ -80,7 +80,7 @@ devplan/                Design notes and plans per subsystem
 ## Open Questions
 
 - **Dual-core usage.** Pin kernel services to one core and give user programs the other? Or SMP with affinity hints?
-- **Executable format and loading.** Decided in `devplan/programs.md`: static-PIE ELF and our own minimal loader (Espressif's `elf_loader` supports more relocation types than we want to freeze).
+- **Executable format and loading.** Decided in `devplan/programs.md`: ELF linked at 0 with its relocations kept, and our own minimal loader (Espressif's `elf_loader` supports more relocation types than we want to freeze).
 - **Execution from PSRAM.** Measured (`devplan/programs.md` §2): cached code in PSRAM runs as fast as code in flash or internal RAM, and PSRAM fills cache misses 5.3 times faster than flash. Programs run from PSRAM.
 - **Memory protection.** On the P4, IDF runs in M-mode only and locks its PMP entries at boot, so programs can't run in U-mode today. The syscall table (`devplan/programs.md`) leaves room for `ecall` stubs if that changes.
 - **Filesystem.** FatFs for SD compatibility with PCs. Proposed in `devplan/storage.md`: FatFs vendored with exFAT, under BMDS's own VFS (files as `Stream`s behind `FileHandle`s), not IDF's VFS and newlib.
