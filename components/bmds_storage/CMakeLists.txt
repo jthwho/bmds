@@ -1,5 +1,5 @@
 # bmds_storage — the SD card driver and the storage service (card detect,
-# hot-plug), and the `sd` command. Target-only.
+# hot-plug), the `sd` command, and the RAM disk. Target-only.
 #
 # WHOLE_ARCHIVE: nothing references sdcommand.cpp by symbol -- its command is
 # found through the linker section -- so without it the linker would never
@@ -7,7 +7,8 @@
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
-idf_component_register(SRCS src/sdcard.cpp
+idf_component_register(SRCS src/ramdisk.cpp
+                            src/sdcard.cpp
                             src/sdcommand.cpp
                             src/storage.cpp
                        INCLUDE_DIRS include

@@ -1,0 +1,90 @@
+# The compatibility corpus, SDK v1 (ABI 1): run with tools/bmds-compat.
+# Each case: "=== command" (run in this corpus's directory on the board's
+# RAM disk), the output the console shows, "--- status". The programs here
+# are kept exactly as built; never rebuild or replace them.
+
+=== ./hello.elf one 'two words'
+Hello from a BMDS program!
+argv[0] = "./hello.elf"
+argv[1] = "one"
+argv[2] = "two words"
+--- 0
+
+=== ./progtest.elf status 7
+--- 7
+
+=== ./progtest.elf exit 9
+--- 9
+
+=== CV='a b' ./progtest.elf env CV
+CV=a b
+--- 0
+
+=== ./progtest.elf env NOT_SET_ANYWHERE
+NOT_SET_ANYWHERE=(unset)
+--- 0
+
+=== ./progtest.elf float
+float: 11.8047
+--- 0
+
+=== ./progtest.elf files .
+files: ok
+--- 0
+
+=== ./progtest.elf sleep 20
+slept: ok
+--- 0
+
+=== ./progtest.elf random | wc -c
+33
+--- 0
+
+=== ./progtest.elf cwd /ram0; pwd
+cwd: /ram0/p0/compat
+cwd: /ram0
+/ram0/p0/compat
+--- 0
+
+=== ./progtest.elf leak 100
+leaked 100 KB, fast block ok
+--- 0
+
+=== ./progtest.elf tty < /dev/null | ./cat.elf
+isatty: 0 0 1
+--- 0
+
+=== ./progtest.elf term < /dev/null 2> /dev/null | ./cat.elf
+fd 0: Not a character device
+fd 1: Not a character device
+fd 2: Not a character device
+--- 0
+
+=== echo first; echo second | ./progtest.elf lines
+first
+line 1: [second]
+end of input after 1 lines
+--- 0
+
+=== ./progtest.elf nothing
+progtest: nothing: unknown test
+--- 2
+
+=== ./progtest.elf
+usage: progtest status|exit|leak|env|tty|float|files|time|sleep|term|lines|raw|mem|random|cwd|spin|calls [arg]
+--- 2
+
+=== echo a > f.txt; echo b >> f.txt; ./cat.elf f.txt - < f.txt; rm f.txt
+a
+b
+a
+b
+--- 0
+
+=== ./cat.elf nope
+cat: nope: No such file or directory
+--- 1
+
+=== ./hello.elf x | ./cat.elf | ./cat.elf | wc -l
+3
+--- 0

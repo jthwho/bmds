@@ -45,7 +45,7 @@ That decision and its rationale is recorded per driver in its devplan document.
 | `bmds_board` | Board definitions, `MemSpace` mapping, chip constants. | Yes (thinly) |
 | `bmds_kernel` | Boot sequence, task/IPC wrappers, logging, interrupt dispatch, device model. | Yes |
 | `bmds_fs` | Block devices (`BlockDevice`, `RamBlockDevice`), the filesystem (FatFs) and the VFS. | **No** — host-testable |
-| `bmds_storage` | The SD card (`SdCard`) and the storage service (card detect, hot-plug). | Yes |
+| `bmds_storage` | The SD card (`SdCard`), the storage service (card detect, hot-plug), and the RAM disk (`/ram0/p0`). | Yes |
 | `bmds_drivers` | Hardware drivers (may split per driver). | Yes |
 | `bmds_console` | Terminal abstraction, serial console, HDMI text console, ANSI/VT parsing. | Partly |
 | `bmds_shell` | Command shell, built-in commands. | Partly |
@@ -63,7 +63,8 @@ components/             BMDS components (bmds_core, bmds_board, ...)
 sdk/                    Userspace SDK (C headers, crt0, linker script, examples)
 tests/host/             Host-side doctest unit tests (plain CMake)
 tests/target/           On-target tests
-tools/                  Host tools (program upload, image builders, ...)
+tests/compat/           Compatibility corpus: programs from each SDK version, kept as built
+tools/                  Host tools (bmds-elfcheck, bmds-run push-and-run, bmds-compat, ...)
 cmake/                  Shared CMake helpers (BMDS compile flags)
 thirdparty/             Vendored third-party code (doctest)
 docs/                   Project documentation

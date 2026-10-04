@@ -13,6 +13,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 #include <bmds/program.h>
@@ -457,4 +458,35 @@ TEST_CASE("Program format: damaged files are refused, never crash") {
                 if (err.isOk()) ++accepted;
         }
         CHECK(accepted > 0); // some damage lands where nothing checks (code, debug info)
+}
+
+// The compatibility corpus (tests/compat/v*): programs built with an older
+// SDK, kept as built, must still pass the loader's check and relocate.
+// (tools/bmds-compat runs them on a board.)
+TEST_CASE("Program format: the compatibility corpus still loads") {
+        size_t programs = 0;
+        for (const auto &dir : std::filesystem::directory_iterator(BMDS_COMPAT_DIR)) {
+                if (!dir.is_directory()) continue;
+                for (const auto &entry : std::filesystem::directory_iterator(dir.path())) {
+                        if (entry.path().extension() != ".elf") continue;
+                        CAPTURE(entry.path().string());
+                        std::vector<uint8_t> file;
+                        FILE                *f = std::fopen(entry.path().c_str(), "rb");
+                        REQUIRE(f != nullptr);
+                        uint8_t buf[4096];
+                        size_t  n;
+                        while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) file.insert(file.end(), buf, buf + n);
+                        std::fclose(f);
+                        const Checked c = check(file);
+                        CAPTURE(why(c));
+                        REQUIRE(c.err == Error::Ok);
+                        CHECK(c.info.abiVersion >= 1);
+                        CHECK(c.info.abiVersion <= BMDS_ABI_VERSION);
+                        Error err;
+                        (void)loadAt(file, 0x48ABC000, err);
+                        CHECK(err == Error::Ok);
+                        ++programs;
+                }
+        }
+        CHECK(programs >= 3);
 }

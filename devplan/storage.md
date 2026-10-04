@@ -237,4 +237,4 @@ Step 2b measured: the image grew by 10.9 KB (331.7 → 342.7 KB); the linker sti
 - Read-ahead or write-back caching above FatFs: measure first; FatFs already transfers whole-sector runs directly.
 - Commands ignore write errors, so `echo x > f` on a full or pulled card succeeds silently. GNU tools report `write error: No space left on device` and fail; `CommandContext::print()`/`write()` should remember the first error and the built-ins return 1.
 - The removal of a card is noticed only after the write in flight times out (about 4 s): shorter IDF timeouts, or the card-detect interrupt failing transfers early, would shorten it.
-- A `/ram` RAM disk on `RamBlockDevice` (cheap once it exists) for scratch files and tests on the board.
+- ~~A `/ram` RAM disk on `RamBlockDevice` for scratch files and tests on the board.~~ Done in Phase 3 step 6: `ram0` at `/ram0/p0`, sparse (`programs.md` §6).

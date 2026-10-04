@@ -61,6 +61,11 @@ namespace {
 
         const Vfs::Context Root{"/", nullptr};
 
+        // Live allocations but the RAM disk's chunks (its contents, not leaks).
+        size_t liveObjects() {
+                return HostMemory::liveAllocations() - disk().device.usedBytes() / RamBlockDevice::ChunkBytes;
+        }
+
         // A fresh filesystem on the RAM disk, mounted at /ram0/p0 as the
         // storage service would.
         void fresh(FsFormat format = FsFormat::Fat32) {
@@ -340,7 +345,7 @@ TEST_CASE("Vfs: files") {
         for (FsFormat format : {FsFormat::Fat32, FsFormat::ExFat}) {
                 CAPTURE(static_cast<int>(format));
                 fresh(format);
-                const size_t base = HostMemory::liveAllocations();
+                const size_t base = liveObjects();
 
                 put("/ram0/p0/hello.txt", "hello, world\n");
                 CHECK(get("/ram0/p0/hello.txt") == "hello, world\n");
@@ -404,13 +409,13 @@ TEST_CASE("Vfs: files") {
                         FileHandle::Ptr r = open("/ram0/p0/shared.txt", Vfs::Read);
                         CHECK(r->write(bmds::StringView("x"), WaitForever).error() == Error::BadDescriptor);
                 }
-                CHECK(HostMemory::liveAllocations() == base);
+                CHECK(liveObjects() == base);
         }
 }
 
 TEST_CASE("Vfs: directories and names") {
         fresh(FsFormat::ExFat);
-        const size_t base = HostMemory::liveAllocations();
+        const size_t base = liveObjects();
 
         CHECK(Vfs::mkdir("/ram0/p0/docs", Root).isOk());
         CHECK(Vfs::mkdir("/ram0/p0/docs/deeper", Root).isOk());
@@ -502,7 +507,7 @@ TEST_CASE("Vfs: directories and names") {
                         CHECK(handles.size() == 16);
                 }
         }
-        CHECK(HostMemory::liveAllocations() == base);
+        CHECK(liveObjects() == base);
 }
 
 TEST_CASE("Vfs: /dev/null and /dev/console") {

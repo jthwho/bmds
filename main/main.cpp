@@ -11,6 +11,7 @@
 
 #include <bmds/boot.h>
 #include <bmds/loader.h>
+#include <bmds/ramdisk.h>
 #include <bmds/shell.h>
 #include <bmds/storage.h>
 #include <bmds/usbserialconsole.h>
@@ -42,6 +43,7 @@ namespace {
                 {"console", bmds::UsbSerialConsole::init},
                 {"vfs", bmds::Vfs::init},
                 {"storage", bmds::Storage::init},
+                {"ramdisk", bmds::RamDisk::init},
                 {"shell", startSerialShell},
         };
 

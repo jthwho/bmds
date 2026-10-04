@@ -42,8 +42,11 @@ The result is two files: `myprog.elf`, what goes on the card (symbols no
 relocation needs and debug information stripped, a tenth of the size), and
 `myprog.debug.elf`, the same program with everything, for `addr2line` and
 GDB. `bmds-elfcheck myprog.elf` (built with the host tests) checks it exactly
-as the loader will. On the board, copy it to the card (`rz` and
-`sz --ymodem myprog.elf` on the PC) and run it by path (`./myprog.elf`), or
+as the loader will. To try it without the card, `tools/bmds-run myprog.elf
+[args]` sends it to the board's RAM disk and runs it there, with its output
+and exit status on the PC (pyserial: run it in ESP-IDF's environment). To
+keep it, copy it to the card (`rz` on the board and `sz --ymodem myprog.elf`
+on the PC) and run it by path (`./myprog.elf`), or
 put it in `/sd0/p0/bin` (the default `$PATH`) and run it by name: `myprog`.
 A script can name a program as its interpreter (`#!/sd0/p0/bin/myprog.elf`):
 its `argv` is the interpreter, the line's optional argument, the script's path,

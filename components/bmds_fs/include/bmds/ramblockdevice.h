@@ -17,12 +17,17 @@
 BMDS_NAMESPACE_BEGIN
 
 /**
- * @brief A block device in memory.
+ * @brief A block device in memory, sparse.
  *
- * Stands in for a disk in the host tests, and can serve as a RAM disk. The
- * sectors are one allocation from the `MemSpace` given to `allocate()`,
- * zero-filled; `trim()` leaves them as they are. `setPresent(false)`
- * simulates a removed medium.
+ * Stands in for a disk in the host tests and serves as the RAM disk. The
+ * sectors are kept in chunks of `ChunkBytes` (whole sectors), allocated from
+ * the `MemSpace` given to `allocate()` when first written with anything but
+ * zeros, and freed when `trim()` leaves one all zeros (trimmed sectors
+ * become zeros; FatFs trims the clusters of deleted files), so the
+ * device's size is only a limit: a
+ * fresh filesystem on it costs a chunk or two. Unwritten sectors read as
+ * zeros. A write that needs a chunk when memory has run out fails with
+ * `NoMem`. `setPresent(false)` simulates a removed medium.
  *
  * @par Thread Safety
  * Thread-safe, except `allocate()`, which must happen before the device is
@@ -30,6 +35,9 @@ BMDS_NAMESPACE_BEGIN
  */
 class RamBlockDevice final : public BlockDevice {
         public:
+                /** @brief Bytes per chunk (rounded down to whole sectors, at least one). */
+                static constexpr size_t ChunkBytes = 32 * 1024;
+
                 /**
                  * @brief Constructs an empty device (no sectors until `allocate()`).
                  * @param sectorSize Sector size in bytes (non-zero).
@@ -43,7 +51,11 @@ class RamBlockDevice final : public BlockDevice {
                 RamBlockDevice &operator=(const RamBlockDevice &) = delete;
 
                 /**
-                 * @brief Allocates @p sectorCount zeroed sectors, replacing any there were.
+                 * @brief Sets the size to @p sectorCount zeroed sectors, dropping any
+                 *        contents; chunks come from @p space as they are written.
+                 *
+                 * Allocates only the chunk table (a pointer per chunk).
+                 *
                  * @return `Ok`, `NoMem`, or `Invalid` (no sectors, or too many to address).
                  */
                 Error allocate(uint64_t sectorCount, MemSpace space);
@@ -51,8 +63,8 @@ class RamBlockDevice final : public BlockDevice {
                 /** @brief Simulates inserting (true) or removing (false) the medium. */
                 void setPresent(bool present);
 
-                /** @brief Returns the sectors, for inspection in tests. */
-                ByteSpan contents() const { return ByteSpan(_data, _bytes); }
+                /** @brief Returns the memory the written chunks take, in bytes. */
+                size_t usedBytes() const;
 
                 uint32_t sectorSize() const override { return _sectorSize; }
                 uint64_t sectorCount() const override;
@@ -65,10 +77,16 @@ class RamBlockDevice final : public BlockDevice {
                 Error writeSectors(uint64_t sector, ByteSpan data) override;
 
         private:
+                void freeChunks();
+
                 mutable Mutex  _lock;
-                uint8_t       *_data = nullptr;
-                size_t         _bytes = 0;
+                uint8_t      **_chunks = nullptr; // one per chunk; null: all zeros
+                size_t         _chunkCount = 0;
+                size_t         _usedChunks = 0;
+                uint64_t       _sectors = 0;
                 const uint32_t _sectorSize;
+                const uint32_t _chunkSectors; // sectors per chunk
+                MemSpace       _space = MemSpace::Psram;
                 bool           _present = true;
 };
 
