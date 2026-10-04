@@ -65,6 +65,9 @@ namespace {
         }
 
         void logSink(const char *text, size_t lengthBytes) {
+                // During a file transfer the line carries data: logs go only
+                // to the history.
+                if (!console->mode().logs) return;
                 const StringView line(text, lengthBytes);
                 const size_t     at = console->colorDepth() == ColorDepth::None ? StringView::NPos : levelLetter(line);
                 const char      *color = nullptr;
@@ -328,7 +331,7 @@ void UsbSerialConsole::filterSink(void *context, ByteSpan data) {
 Error UsbSerialConsole::writeParts(Span<const ByteSpan> parts, unsigned int timeoutMs) {
         Deadline deadline(timeoutMs);
         if (_txMutex.lock(deadline).isError()) return Error::Timeout;
-        const ColorDepth depth = colorDepth();
+        const ColorDepth depth = mode().colors ? colorDepth() : ColorDepth::TrueColor;
         if (depth != ColorDepth::TrueColor && _filter == nullptr) {
                 // Rare (a depth change), so allocating here is fine; without
                 // memory the output just goes unfiltered.

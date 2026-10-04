@@ -47,7 +47,8 @@ add_executable(bmds_host_tests
         terminal.cpp
         time.cpp
         vfs.cpp
-        workerpool.cpp)
+        workerpool.cpp
+        ymodem.cpp)
 target_include_directories(bmds_host_tests PRIVATE ${BMDS_ROOT}/thirdparty/doctest)
 target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
         BMDS_CORPUS_DIR="${CMAKE_CURRENT_LIST_DIR}/corpus")

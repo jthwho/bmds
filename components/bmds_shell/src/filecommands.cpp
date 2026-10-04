@@ -545,7 +545,10 @@ int FileCommands::rm(CommandContext &ctx) {
                 const Error err = removeTree(ctx, args[i], recursive, 0);
                 if (err == Error::Interrupted) return Shell::ExitInterrupted;
                 // -f: a missing file is not an error.
-                if (err.isError() && !(force && err == Error::NotExist)) status = fail(ctx, args[i], err);
+                // -f: a name FAT can't hold (`rm -f *.o` with nothing to match)
+                // can't exist either.
+                const bool missing = err == Error::NotExist || err == Error::Invalid;
+                if (err.isError() && !(force && missing)) status = fail(ctx, args[i], err);
         }
         return status;
 }

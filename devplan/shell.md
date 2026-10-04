@@ -114,7 +114,7 @@ A shell task waits in `Boot::waitUntilComplete()` before its first prompt. It ru
 
 ### USB-Serial/JTAG console
 
-The peripheral has 64-byte RX and TX FIFOs and a full-speed CDC-ACM endpoint. ESP-IDF's ROM, bootloader and VFS console already use it in polled mode for early boot and panic output. From the `console` boot stage onward, `UsbSerialConsole` owns it at runtime. Its two `ByteRing`s (`CONFIG_BMDS_USJ_TX_BYTES` / `_RX_BYTES`, 1 KB each) are allocated from `Psram` by `init()`. The ISR is not in IRAM, so it only runs with the cache enabled and may touch PSRAM.
+The peripheral has 64-byte RX and TX FIFOs and a full-speed CDC-ACM endpoint. ESP-IDF's ROM, bootloader and VFS console already use it in polled mode for early boot and panic output. From the `console` boot stage onward, `UsbSerialConsole` owns it at runtime. Its two `ByteRing`s (`CONFIG_BMDS_USJ_TX_BYTES` / `_RX_BYTES`: 1 KB and, since Phase 2's YMODEM, 4 KB) are allocated from `Psram` by `init()`. The ISR is not in IRAM, so it only runs with the cache enabled and may touch PSRAM.
 
 - **TX**:
   - Writers copy into the TX ring, translating `\n` to `\r\n`, while holding a `Mutex`. That makes each write call atomic with respect to other writers.

@@ -36,6 +36,9 @@ struct TermMode {                  // termios-lite, per console
         bool signals = true;       // ^C raises interrupt on the foreground job (ISIG)
         bool crToNl  = true;       // input CR -> NL (ICRNL)
         bool nlToCrNl = true;      // output NL -> CR NL (ONLCR), the serial console's current behavior
+        bool colors = true;        // SGR colors fitted to colorDepth() (Phase 2: off for file transfers)
+        bool logs = true;          // log lines shown (Phase 2: off for file transfers; the history keeps them)
+        static constexpr TermMode binary();  // all off: bytes pass untouched (rz/sz)
 };
 
 class Console : public Stream {    // Stream: see shell-language.md

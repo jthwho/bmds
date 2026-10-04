@@ -1,6 +1,6 @@
 # Storage: SD Card, Filesystem, Files in the Shell
 
-Status: **steps 1-4 done** (SD driver with hot-plug; the clock; FatFs, the VFS, numbered devices and partitions, a run-time mount table with automatic mounting; the file commands; files in the shell language); step 5 (YMODEM) not started (Phase 2).
+Status: **done** (Phase 2, steps 1-5): SD driver with hot-plug; the clock; FatFs, the VFS, numbered devices and partitions, a run-time mount table with automatic mounting; the file commands; files in the shell language; YMODEM `rz`/`sz`.
 
 ## 1. Goal
 
@@ -161,12 +161,14 @@ Behavior follows bash; the run corpus checks it against bash (each script starts
 - **Path completion:** in argument position, after a redirection, or in command position when the word has a `/`, Tab completes file and directory names: directories get a `/` and no space, special characters are escaped with `\` (the editor's word may contain escaped blanks), `~/` works, dot files are offered only when the word starts with `.`, and ambiguous candidates are listed by their last component.
 - **Reading files:** `cat`, `wc`, `head` and `grep` now read through a 32 KB `PsramDma` buffer (was 2 KB on the stack, and 256 B for line readers), so whole sectors go straight from the card in one transfer: `cat` of a 4 MB file 1.56 → 0.35 s, `wc -c` 1.96 → 0.60 s.
 
-## 6. Files over the serial cable: YMODEM
+## 6. Files over the serial cable: YMODEM (as shipped in step 5)
 
-- **`rz`** (receive into the cwd) and **`sz file...`** (send) speak **YMODEM** (batch, file names and sizes, 1 KB blocks, CRC-16), compatible with `lrzsz`. From picocom: `C-a C-s` runs `sz` on the PC; minicom and tio have the same.
-- During a transfer the console is in raw mode: `TermMode::signals` off (a 0x03 byte is data, not Ctrl-C) and `nlToCrNl` off. Ctrl-C can't abort it, so YMODEM's own cancel (CAN CAN) and a timeout do.
-- The receiver drains the console while it writes to the card, but the USB RX ring (1 KB today, no flow control) must hold a whole 1 KB block plus slack: **`CONFIG_BMDS_USJ_RX_BYTES` goes to 4 KB** (`Psram`).
-- Expected speed: YMODEM waits for an ACK per 1 KB block; at USB full speed's 1 ms frames, a few hundred KB/s. ZMODEM (streaming) is the upgrade path if that's too slow.
+- **`rz [-y]`** receives into the cwd, **`sz file...`** sends; both speak **YMODEM** batch (block 0 with name, decimal size, octal mtime and mode; 1 KB `STX` and 128-byte `SOH` blocks with CRC-16/XMODEM; an ACK per block), interoperating with `lrzsz` 0.12.21: on the PC `sz --ymodem file...` and `rz --ymodem` (picocom: `--send-cmd "sz -vv --ymodem" --receive-cmd "rz -vv --ymodem"`, then `C-a C-s` / `C-a C-r`). The protocol is `Ymodem::send()`/`receive()` (`bmds/ymodem.h`), pure code over a `Stream` with handler interfaces for the files, so the host tests run both ends against each other over pipes.
+- **The line:** the commands refuse to run unless stdin and stdout are the shell's console (`rz: the serial line must be the terminal (no redirections or pipes)`). While a transfer runs the console is in `TermMode::binary()`: no Ctrl-C signal, no newline translation, and two new modes: `colors` off (the color filter would rewrite ESC sequences in the data) and `logs` off (log lines go only to the history; on the line they would corrupt blocks). Nothing is printed during a transfer: per-file lines (`rz: name: N bytes`) and the summary (`rz: 2 files, 71689 bytes in 1.9 s (102 KB/s)`, with `, N retries` when there were any) come afterwards, once the line has been quiet for 250 ms (so the program on the PC has exited and doesn't swallow them). The summary is left out when nothing was transferred.
+- **Protocol choices:** the receiver repeats its `C` every second until the sender starts (one minute in all; a sender started later waits at most a second), answers the first `EOT` with `NAK` and the second with `ACK` (as the YMODEM description says; lrzsz resends), ACKs a repeated block, cancels on a wrong block number, and NAKs a damaged block after purging the line until it has been quiet for 200 ms (10 tries per block). Both ends cancel with lrzsz's sequence (8 CAN, 8 BS) and take two CANs in a row from the other end as a cancel; a Ctrl-C byte cancels only while waiting for the other end to start (afterwards a 0x03 is data, and the terminal's Ctrl-X x5 sends CANs). The receiver ACKs a block before storing it, so the sender prepares the next one meanwhile. Messages printed before a transfer contain no capital `C`, which a sender already running would take for the start.
+- **Files:** `rz` keeps only the last path component of a name, refuses `.`, `..` and empty names, and replaces an existing file only with `-y` (else `rz: f: File exists (rz -y replaces files)` and the transfer is cancelled); a file whose transfer fails is removed. The size from block 0 cuts the padding; the mtime is set when given. Both commands move data through a 32 KB `PsramDma` buffer, so the card sees whole-sector runs, not 1 KB writes. `sz` checks every file before it starts (`sz: x: No such file or directory`, `Is a directory`).
+- **RX ring:** the receiver doesn't read the console while it writes to the card, and USB has no flow control here, so `CONFIG_BMDS_USJ_RX_BYTES` goes from 1 to **4 KB** (`Psram`): a 1029-byte block plus slack. (An existing `sdkconfig` keeps its old value; set it to 4096.)
+- **Speed** (board and lrzsz on the PC, 4 MB files): PC → board 300 KB/s (13.6 s); board → PC 650 KB/s of data, but lrzsz's `rz` adds about a second at the start of the batch, after each file and at the end (it does the same against its own `sz`), so small files take seconds. ZMODEM (streaming) would remove the per-block round trip if that is ever too slow.
 
 ## 7. Phasing
 
@@ -177,7 +179,7 @@ Behavior follows bash; the run corpus checks it against bash (each script starts
 | 2b | FatFs vendored (`thirdparty/fatfs`, our `ffconf.h`, port in `fatfsport.cpp`); `bmds_fs` VFS, files, `Directory`; the block device registry (`sd0`), partition tables (`sd0p0`), the run-time mount table, automatic mounting (`/sd0/p0`), `mount`/`umount`; `/dev` nodes; `Error::NoFilesystem`; host tests on `RamBlockDevice`. **Done.** |
 | 3 | Shell: `cd pwd ls cat cp mv rm mkdir rmdir touch df hexdump mkfs`; text commands on files; a current directory per shell; the VFS as a boot stage. **Done.** |
 | 4 | Language: file redirection, globbing, tilde, file tests, `source`/`.`/`sh`, `autoexec.sh`, path completion. **Done.** |
-| 5 | `rz`/`sz` (YMODEM); 4 KB RX ring. |
+| 5 | `rz`/`sz` (YMODEM); 4 KB RX ring. **Done.** |
 
 ## 8. Resource budget (estimates)
 
@@ -188,12 +190,14 @@ Behavior follows bash; the run corpus checks it against bash (each script starts
 | FatFs (LFN, exFAT, mkfs) | ~30 KB | `FATFS` ~600 B + LFN buffer 512 B `Psram`; ~600 B `Psram` per open file |
 | VFS, `File`, `Directory` | ~6 KB | — |
 | Shell file commands, globbing, redirection | ~12 KB | — |
-| YMODEM | ~4 KB | 1 KB block buffer while transferring; RX ring 1 → 4 KB `Psram` |
+| YMODEM, `rz`/`sz` (**measured**) | 6 KB | 1 KB frame on the stack and a 32 KB `PsramDma` buffer while transferring; RX ring 1 → 4 KB `Psram` |
 | **Total** | **~110 KB** (the IDF SD stack is three times the estimate) | **~3 KB internal** |
 
 Step 1 measured on the board (32 GB SDHC, 4-bit, 40 MHz): sequential reads of 64 KB **16.3 MB/s direct**, 6.9 MB/s through the 4 KB bounce buffer; 512 B requests 1.3 MB/s on either path (about 0.38 ms of command overhead each, which is also what limits the bounce path: a larger bounce buffer moves more per command). The card is ready 120 ms after boot (50 ms debounce, 30 ms power cycle, init). Card init uses about 1.8 KB of the storage task's stack.
 
 Step 1 measured: the image grew by 58 KB (200 → 258 KB flash), internal RAM free at boot fell by 2.9 KB (610,895 → 607,983 bytes).
+
+Step 5 verified on the board against lrzsz 0.12.21 (Ubuntu's package): round trips of 0 B, 1 B, 1000 B, 1024 B, 300 KB, 1 MB and 4 MB files (PC `sz --ymodem` → `rz`, then `sz *` → PC `rz --ymodem`) came back identical; Ctrl-C cancels `rz` and `sz` while they wait; an existing file is refused (lrzsz reports the cancel, the old file stays) and `rz -y` replaces it. Measured: the image grew by 6.9 KB (389.9 → 396.8 KB; the shell 6 KB); internal RAM 8 bytes (the two new mode flags); the RX ring 3 KB more `Psram`; a transfer takes a 32 KB `PsramDma` buffer while it runs.
 
 Step 4 verified on the board (the exFAT card): writing 4 MB through `>` in 64 KB `echo`s 1.86 s (2.2 MB/s, shell included); `cat big big > big3` (8 MB read and written) 2.06 s; `cp` of 4 MB 1.01 s; reading 4 MB with `cat` 0.35 s (12 MB/s) and `wc -c` 0.60 s, after the 32 KB read buffer (before: 1.56 s and 1.96 s); `grep` over 64 KB lines is CPU-bound (1.76 s for 4 MB). Globs across mounts (`/sd*/p0/w/f`), noclobber, file tests, `source` with `return`, `sh -c`; `autoexec.sh` runs before the first prompt (about 0.4 s after reset, once the card is mounted), and Ctrl-C stops it in a `sleep` or a busy loop, keeping what it changed (its `cd`). Tab completion of paths on the card, `/sd0/` and `~/`. Pulling the card during an endless write loop (`while :; do echo "$s"; done > stream`, 64 KB a write): the write in flight fails after the IDF's 1 s timeouts (about 4 s), and only then does the storage task, which needs the storage lock for the eject, log the removal; later writes fail at once, and the loop runs on. The card mounts again 0.13 s after it is back, and new files work. The file being written comes back empty (0 bytes): FAT writes the size into the directory entry only on close or sync. The clusters it had taken are free again, so no space is lost (`df`: 192 KB used, as before). Nothing tells the loop that its writes fail, since commands ignore write errors (an open item). A busy loop on the console shell (autoexec's or typed) starves IDLE0, so the task watchdog prints a warning after 5 s, as it did before step 4.
 

@@ -62,6 +62,11 @@ class Console : public Stream {
                                 bool signals = true; ///< Ctrl-C raises `interrupt()` instead of being read (ISIG).
                                 bool nlToCrNl =
                                         true; ///< Output `\n` is sent as CR LF where the terminal needs it (ONLCR).
+                                bool colors = true; ///< Output SGR colors are fitted to `colorDepth()`.
+                                bool logs = true;   ///< Log lines are shown (else they go only to the history).
+
+                                /** @brief Everything off: bytes pass both ways untouched (a file transfer). */
+                                static constexpr TermMode binary() { return TermMode{false, false, false, false}; }
                 };
 
                 /** @brief Terminal size in character cells. */
@@ -160,7 +165,8 @@ class Console : public Stream {
                 /** @brief Returns the terminal modes. */
                 TermMode mode() const {
                         return TermMode{_signals.load(std::memory_order_relaxed),
-                                        _nlToCrNl.load(std::memory_order_relaxed)};
+                                        _nlToCrNl.load(std::memory_order_relaxed),
+                                        _colors.load(std::memory_order_relaxed), _logs.load(std::memory_order_relaxed)};
                 }
 
                 /**
@@ -172,6 +178,8 @@ class Console : public Stream {
                 void setMode(const TermMode &mode) {
                         _signals.store(mode.signals, std::memory_order_relaxed);
                         _nlToCrNl.store(mode.nlToCrNl, std::memory_order_relaxed);
+                        _colors.store(mode.colors, std::memory_order_relaxed);
+                        _logs.store(mode.logs, std::memory_order_relaxed);
                         return;
                 }
 
@@ -191,6 +199,8 @@ class Console : public Stream {
                 Interrupt             _interrupt;
                 std::atomic<bool>     _signals{true};
                 std::atomic<bool>     _nlToCrNl{true};
+                std::atomic<bool>     _colors{true};
+                std::atomic<bool>     _logs{true};
                 std::atomic<uint8_t>  _depth;
                 std::atomic<uint32_t> _size{(80u << 16) | 24u};
 };

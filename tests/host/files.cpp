@@ -305,6 +305,7 @@ TEST_CASE("Files: redirection, globbing and scripts report errors as bash does")
         CHECK(f.out(". nope", Shell::ExitFailure) == ".: nope: No such file or directory\n");
         CHECK(f.out("sh nope", Shell::ExitNotFound) == "sh: nope: No such file or directory\n");
         CHECK(f.out("return", Shell::ExitFailure) == "return: can only `return' from a function or sourced script\n");
+        CHECK(f.out("rm -f *.o nope") == ""); // nothing matched: nothing to say
         // Globs reach into directories and across mounts; `echo` of nothing matched is the word.
         CHECK(f.out("echo /disk*/p0/d /disk0/p0/*.txt") == "/disk0/p0/d /disk0/p0/a.txt /disk0/p0/b.txt\n");
         CHECK(f.out("echo /dev/n*") == "/dev/null\n");
