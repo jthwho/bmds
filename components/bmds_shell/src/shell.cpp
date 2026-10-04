@@ -34,6 +34,7 @@ namespace {
 Shell::Shell(Console &console, Span<const Command> commands, size_t stackBytes)
     : _console(console), _commands(commands), _workers(workerConfig()), _executor(*this, _state, _fds, stackBytes),
       _editor(console) {
+        _editor.setCompleter(this);
         // findCommand() binary-searches, so the table must be sorted and unique.
         for (size_t i = 1; i < _commands.size(); ++i) {
                 BMDS_ASSERT(StringView(_commands[i - 1].name) < StringView(_commands[i].name));
@@ -72,8 +73,122 @@ const Command *Shell::findCommand(StringView name) const {
 void Shell::start() {
         const String *prompt = _state.vars.value(isContinuing() ? "PS2" : "PS1");
         // The editor keeps a view, so keep our own copy (the variable may change).
-        (void)_prompt.assign(prompt != nullptr ? prompt->view() : StringView());
+        _prompt.clear();
+        renderPrompt(prompt != nullptr ? prompt->view() : StringView(), _prompt);
         _editor.start(_prompt);
+        return;
+}
+
+void Shell::renderPrompt(StringView ps, String &out) {
+        auto var = [this](const char *name, StringView fallback) {
+                const String *v = _state.vars.value(name);
+                return v != nullptr ? v->view() : fallback;
+        };
+        String raw;
+        for (size_t i = 0; i < ps.size(); ++i) {
+                if (ps[i] != '\\' || i + 1 == ps.size()) {
+                        (void)raw.append(ps[i]);
+                        continue;
+                }
+                const char c = ps[++i];
+                switch (c) {
+                        case 'a': (void)raw.append('\a'); break;
+                        case 'e': (void)raw.append('\x1b'); break;
+                        case 'n': (void)raw.append('\n'); break;
+                        case 'r': (void)raw.append('\r'); break;
+                        case '\\': (void)raw.append("\\\\"); break; // stays escaped for the expansion below
+                        case '[':
+                        case ']': break; // non-printing markers: the editor doesn't need widths
+                        case 'h':
+                        case 'H': (void)raw.append(var("HOSTNAME", "bmds")); break;
+                        case 'u': (void)raw.append(var("USER", "user")); break;
+                        case 'w': (void)raw.append(var("PWD", "/")); break;
+                        case 'W': {
+                                const StringView pwd = var("PWD", "/");
+                                const size_t     slash = pwd.lastIndexOf('/');
+                                (void)raw.append(pwd.size() > 1 && slash != StringView::NPos ? pwd.mid(slash + 1)
+                                                                                             : pwd);
+                                break;
+                        }
+                        case 's': (void)raw.append("bmds"); break;
+                        case 'v':
+                        case 'V': (void)raw.append(var("BMDS_VERSION", "")); break;
+                        case '$': (void)raw.append('$'); break;
+                        case 'j': (void)raw.append('0'); break;
+                        case 'l': (void)raw.append(_console.name()); break;
+                        default:
+                                if (c >= '0' && c <= '7') {
+                                        int v = 0, n = 0;
+                                        for (--i; n < 3 && i + 1 < ps.size() && ps[i + 1] >= '0' && ps[i + 1] <= '7';
+                                             ++n)
+                                                v = v * 8 + (ps[++i] - '0');
+                                        (void)raw.append(static_cast<char>(v));
+                                } else {
+                                        (void)raw.append('\\');
+                                        (void)raw.append(c);
+                                }
+                                break;
+                }
+        }
+        // Then expansion, as in double quotes (bash's promptvars). On any failure,
+        // show the escaped text as is.
+        Arena            &arena = _executor.arena();
+        const Arena::Mark mark = arena.mark();
+        SyntaxError       syntax;
+        auto [word, err] = parseQuotedText(raw, arena, syntax);
+        String expanded;
+        if (err.isOk()) err = _executor.expandString(word, expanded);
+        arena.rewind(mark);
+        if (err.isOk() && _executor.flow() == Executor::Flow::Normal) {
+                out = std::move(expanded);
+        } else {
+                _executor.clearFlow();
+                out = std::move(raw);
+        }
+        return;
+}
+
+void Shell::complete(StringView line, size_t wordStart, CompletionSink &sink) {
+        const StringView word = line.mid(wordStart);
+        if (word.startsWith('$')) {
+                const bool       brace = word.startsWith("${");
+                const StringView prefix = word.mid(brace ? 2 : 1);
+                for (const Variables::Entry &e : _state.vars.entries()) {
+                        if (!e.name.view().startsWith(prefix)) continue;
+                        String candidate;
+                        (void)candidate.append(brace ? "${" : "$");
+                        (void)candidate.append(e.name);
+                        if (brace) (void)candidate.append('}');
+                        sink.add(candidate);
+                }
+                return;
+        }
+        // Command position: the start, after an operator, or after a word that
+        // takes a command.
+        size_t k = wordStart;
+        while (k > 0 && (line[k - 1] == ' ' || line[k - 1] == '\t')) --k;
+        bool command = k == 0 || StringView("|;&(").contains(line[k - 1]);
+        if (!command) {
+                size_t s = k;
+                while (s > 0 && line[s - 1] != ' ' && line[s - 1] != '\t' && !StringView("|;&(").contains(line[s - 1]))
+                        --s;
+                const StringView previous = line.mid(s, k - s);
+                for (const char *w :
+                     {"then", "do", "else", "elif", "if", "while", "until", "!", "{", "command", "type", "help"}) {
+                        command = command || previous == w;
+                }
+        }
+        if (!command) return; // file names come with storage (Phase 2)
+        for (const Command &c : _commands) {
+                if (StringView(c.name).startsWith(word)) sink.add(c.name);
+        }
+        for (const ShellFunction &f : _state.functions) {
+                if (f.name.view().startsWith(word)) sink.add(f.name);
+        }
+        for (const char *k2 : {"case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in",
+                               "then", "until", "while"}) {
+                if (StringView(k2).startsWith(word)) sink.add(k2);
+        }
         return;
 }
 

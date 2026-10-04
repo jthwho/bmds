@@ -1,6 +1,6 @@
 # Shell Language and Standard I/O
 
-Status: **in progress** (Phase 1b). Steps 1–4 done (containers; streams, pipes, Ctrl-C; commands on stdio, pipelines, redirection; lexer and parser) and step 5a (the executor and the language core). Step 5b (`printf`, `read`, `source`, `type`, `command`, `set -x`, `PS1` escapes, completion) is next. File redirection, globbing and scripts on disk land with Phase 2; external programs in pipelines land with Phase 3.
+Status: **steps 1–5 done** (Phase 1b): containers; streams, pipes, Ctrl-C; commands on stdio, pipelines, redirection; lexer and parser; the executor and built-ins. `source`/`.` wait for files (Phase 2). Step 6 (terminal model) is next. File redirection, globbing and scripts on disk land with Phase 2; external programs in pipelines land with Phase 3.
 
 ## 1. Goal
 
@@ -170,6 +170,15 @@ line editor ─► Lexer ─► Parser ─► AST ─► Executor ─► Command
   - **Hard-won:** `check_bash.py`'s parsers yielded each entry at its `===` header, before its lines were read, so the step 4 check compared bash against empty entries and always passed. Fixed (and the first real run found five wrong expectations, now corrected); the syntax corpus still agrees with bash.
   - **Divergences from bash, on purpose:** the last pipeline stage runs in the shell (bash's `lastpipe`), so `cmd | while read x; do …; done` keeps `x`; `exit` at the console prompt ends the input, not the console shell; arithmetic is 64-bit (the plan said 32; bash compatibility won, at a few hundred bytes); no globbing, tilde or brace expansion yet.
   - Size: image +38 KB (bmds_shell 13.5 → 47.8 KB: executor 16.8, parser 12.7, language built-ins 9.8, arithmetic 5.6, variables 1.9, glob 0.7; the interim step 3 parser is gone). Static RAM unchanged.
+- **As built (step 5b).**
+  - **`printf`** (bash's): `%s %b %c %d %i %u %o %x %X %%` with flags, width, precision and `*`; escapes in the format; numeric arguments in decimal, `0x`, `0` octal or `'c`; the format is reused while arguments remain; invalid numbers print 0 and give status 1; `-v var`. No floating point.
+  - **`read [-r] [-p prompt] [name...]`**: IFS splitting with the last name taking the rest, backslash escapes and continuation without `-r`, `REPLY` without names, status 1 at end of input. From a pipe or file it reads a byte at a time so it never consumes past its line; from the console it runs its own `LineEditor` (echo, editing, Ctrl-C), with `-p` as the prompt.
+  - **`type [-t]`** and **`command [-v|-V] name args`** (runs a built-in past a function of the same name). Keywords, functions and built-ins are told apart; every command is a built-in until programs arrive (Phase 3).
+  - **`set -x`** traces each simple command and assignment to stderr after `PS4` (default `+ `), quoted as bash quotes (`appendShellQuoted`, shared with `set`).
+  - **Prompts:** `PS1`/`PS2` get bash's escapes (`\h \u \w \W \s \v \$ \n \e \a \\ \nnn`, `\[`/`\]` dropped), then expansion as in double quotes; a failing expansion shows the text as is. The line editor redraws by returning to the line start and reprinting the prompt, so it never needs the prompt's display width and colors just work. `\h` is `$HOSTNAME` (default `bmds`), `\v` is `$BMDS_VERSION` (set at startup on the target), `\w` is `$PWD` (default `/` until Phase 2).
+  - **Tab completion:** `LineEditor` takes a `LineCompleter` that streams candidates into a sink (the editor allocates nothing: a first pass finds the count and common prefix, a second lists). Tab inserts the common prefix, completes a single match with a space, and lists the candidates in columns when nothing can be added. The shell completes commands, functions and keywords in command position (after `| ; & (`, `then`/`do`/`if`..., `command`/`type`/`help`), and variable names after `$` or `${`. Paths come with storage.
+  - **Hard-won:** a `StringView` into the variable table is invalidated by any assignment (the sorted list moves). `read` assigning its fields while holding `IFS`, arithmetic evaluating a variable whose value assigns another, the expander holding `IFS` across `$((x=1))`, and `${v#$((x=1))}` all read freed memory; each now copies first, and the corpus has an entry for each case (ASan found the first).
+  - Size: image +8.9 KB (241 → 250 KB). Static RAM unchanged.
 - **Executor.**
   - It walks the AST. `set -e`/`-u`/`-x` behave as in bash, with `-x` tracing to stderr.
   - `break`/`continue`/`return`/`exit` propagate as control-flow results, not exceptions (`-fno-exceptions`).

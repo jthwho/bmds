@@ -226,7 +226,7 @@ Text built-ins (Phase 1b, `textcommands.cpp`). They read stdin and follow the GN
 | `wc [-lwc]` | Lines, words, bytes; one count bare, several padded to 7 columns (GNU). |
 | `grep [-civnqF] pattern` | Matching lines; `-c` count, `-n` `N:` prefix, `-q` status only. Exit 0 = selected, 1 = none, 2 = error. Patterns are a POSIX BRE subset (`bmds/regex.h`); unsupported syntax (`\(`, `\{`, `[:class:]`, GNU `\|`) is an error, not a literal, so it can be added later without changing any pattern's meaning. `-e`/`-E` are not there yet. |
 
-Language built-ins (Phase 1b step 5a): `:` `true` `false` `test`/`[` `break` `continue` `return` `exit` `eval` `set` `shift` `export` `readonly` `unset` `local`, behaving as bash's (see `shell-language.md`). `exit` at the prompt ends the input; the console shell stays.
+Language built-ins (Phase 1b step 5): `:` `true` `false` `test`/`[` `break` `continue` `return` `exit` `eval` `set` `shift` `export` `readonly` `unset` `local` `printf` `read` `type` `command`, behaving as bash's (see `shell-language.md`). `exit` at the prompt ends the input; the console shell stays.
 
 Command line syntax (Phase 1b step 3; superseded by the full language in step 5a, see `shell-language.md`): `a | b`, `a |& b`, and redirections `<`, `>`, `>>`, `>|`, `n>&m`, `n<&m`, `n>&-`, `&>`, `&>>`, `>&file`, applied left to right as in bash. The only file until storage is `/dev/null`. `;`, `&&`, `||`, `&` and `<<` are rejected ("unsupported operator").
 
@@ -288,5 +288,5 @@ Shell command names, arguments and output formats are userspace interfaces under
 - No RX flow control (see the hard-won note). Revisit if the hardware turns out to support it some other way.
 - Async log lines arriving while a line is being edited garble the prompt line. Fix: the editor clears and redraws around sink output (needs a hook between `Log` and the active editor).
 - Lines longer than the terminal width: relative cursor movement doesn't cross wrapped rows. Query the width (`ESC[6n`) or scroll the line horizontally.
-- Tab completion (command names, later paths).
+- Path completion (Phase 2; commands and variables complete since Phase 1b).
 - `top` with CPU %, if run-time stats prove cheap enough.

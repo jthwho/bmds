@@ -5,7 +5,8 @@
 #   === name
 #   <script lines>
 #   --- out
-#   <expected stdout lines; none for no output>
+#   <expected stdout lines; none for no output. Blank lines count, except
+#    trailing ones (the separator before the next entry)>
 #   --- status N            (optional; default 0)
 #
 # Only stdout and the status are compared (error messages go to stderr and are
@@ -702,3 +703,129 @@ final 4
 { { echo a; { echo b; }; }; echo c; } | wc -l
 --- out
 3
+
+=== printf conversions
+printf '%s|%5s|%-5s|%.2s\n' abc de fg hijk
+printf '%d %i %5d %-5d| %05d %+d\n' 42 -7 3 4 5 6
+printf '%x %X %o %u %#x %c\n' 255 255 8 3000000000 255 hello
+printf '%%literal\t%s\n' tab
+--- out
+abc|   de|fg   |hi
+42 -7     3 4    | 00005 +6
+ff FF 10 3000000000 0xff h
+%literal	tab
+
+=== printf reuses the format
+printf '[%s %s]\n' a b c d e
+printf '%s\n'
+echo end
+--- out
+[a b]
+[c d]
+[e ]
+
+end
+
+=== printf escapes and %b
+printf 'a\tb\x41\101\n'
+printf '%b|%s\n' 'x\ty' 'x\ty'
+printf 'stop%b here\n' '\c'
+echo
+--- out
+a	bAA
+x	y|x\ty
+stop
+
+=== printf numbers
+printf '%d %d %d %d\n' 0x10 010 "'A" -0
+printf '%d\n' abc 2>/dev/null; echo "status $?"
+--- out
+16 8 65 0
+0
+status 1
+
+=== printf width from an argument and -v
+printf '%*d|\n' 6 42
+printf -v out '%03d-%s' 7 x
+echo "$out"
+--- out
+    42|
+007-x
+
+=== read from a pipe
+echo "one two three four" | read a b rest
+echo "$a/$b/$rest"
+--- out
+one/two/three four
+
+=== read splits on IFS and trims
+printf '  lead  trail  \n' | read x
+echo "[$x]"
+printf 'a:b:c\n' | { IFS=: read p q; echo "[$p][$q]"; }
+--- out
+[lead  trail]
+[a][b:c]
+
+=== read backslashes
+printf 'a\\ b c\\\nd\n' | read x y
+echo "[$x][$y]"
+printf 'a\\ b\n' | read -r x y
+echo "[$x][$y]"
+--- out
+[a b][cd]
+[a\][b]
+
+=== read loop and status at end of input
+printf 'x 1\ny 2\nz' | while read name value; do echo "$name=$value"; done
+read v < /dev/null; echo "status $? [$v]"
+--- out
+x=1
+y=2
+status 1 []
+
+=== read into REPLY
+echo '  keep  spaces  ' | read
+echo "[$REPLY]"
+--- out
+[  keep  spaces  ]
+
+=== here-string into read
+read a b <<< "first second third"
+echo "$b"
+--- out
+second third
+
+=== type and command
+f() { :; }
+type -t f echo if
+type -t nosuch || echo "not found"
+command -v echo f if
+command -v nosuch || echo none
+echo() { printf 'function echo\n'; }
+echo hi
+command echo builtin hi
+--- out
+function
+builtin
+keyword
+not found
+echo
+f
+if
+none
+function echo
+builtin hi
+
+=== assignments during expansion move nothing out from under it
+x='newvar1=5'
+echo $((x)) $newvar1
+w="a b"
+for f in $w$((newvar2 = 1))$w; do echo "<$f>"; done
+p=abcabc
+echo ${p#$((newvar3 = 1))a} $newvar3
+--- out
+5 5
+<a>
+<b1a>
+<b>
+abcabc 1

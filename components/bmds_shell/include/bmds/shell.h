@@ -42,12 +42,15 @@ class Console;
  *   commands; the shell echoes `^C` and the exit status is 130.
  * - `exit` at the prompt ends the running input and sets `$?`; the console
  *   shell itself keeps running.
+ * - The prompt is `PS1` (`PS2` while continuing) with bash's backslash
+ *   escapes, then parameter expansion; Tab completes command names (and
+ *   functions, keywords) where a command starts, and variable names after `$`.
  *
  * @par Thread Safety
  * Thread-affine: one task runs the shell. Pipeline stages on worker
  * threads use their own state copy, the command table and the console.
  */
-class Shell {
+class Shell final : public LineCompleter {
         public:
                 /** @brief Most stages in a pipeline (one interruptible waiter each). */
                 static constexpr size_t MaxStages = Interrupt::MaxWaiters;
@@ -158,6 +161,17 @@ class Shell {
                  * @blocking Waits for console input indefinitely.
                  */
                 [[noreturn]] void run();
+
+                /**
+                 * @brief Renders a prompt string: backslash escapes (`\h \u \w \W \s \v
+                 *        \$ \n \e \a \\ \nnn`, `\[` `\]` dropped), then expansion.
+                 * @param ps   The prompt variable's value.
+                 * @param out  [out] The prompt to show.
+                 */
+                void renderPrompt(StringView ps, String &out);
+
+                /** @brief Tab completion for the line editor (see `LineCompleter`). */
+                void complete(StringView line, size_t wordStart, CompletionSink &sink) override;
 
         private:
                 void runInput();

@@ -36,7 +36,13 @@ def _entries(path):
 
 
 def run_entries(path):
-    return list(_run_entries(path))  # fully read: entries are filled in after they start
+    # Fully read (entries are filled in after they start); blank lines at the
+    # end of an output block are the separator, not output.
+    entries = list(_run_entries(path))
+    for e in entries:
+        while e["out"].endswith("\n\n") or e["out"] == "\n":
+            e["out"] = e["out"][:-1]
+    return entries
 
 
 def _run_entries(path):
@@ -56,7 +62,7 @@ def _run_entries(path):
             state = None
         elif state == "script":
             entry["script"] += line + "\n"
-        elif state == "out" and line:
+        elif state == "out":
             entry["out"] += line + "\n"
 
 

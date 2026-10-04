@@ -17,6 +17,39 @@ BMDS_NAMESPACE_BEGIN
 
 class Console;
 
+/** @brief Receives completion candidates (see `LineCompleter`). */
+class CompletionSink {
+        public:
+                /** @brief Offers one candidate: the whole word it would complete to. */
+                virtual void add(StringView candidate) = 0;
+
+        protected:
+                ~CompletionSink() = default;
+};
+
+/**
+ * @brief Supplies Tab completions to a `LineEditor`.
+ *
+ * Candidates go to a sink as they are found, so the editor allocates
+ * nothing; it may ask more than once for one key press (to find the common
+ * prefix, then to list).
+ */
+class LineCompleter {
+        public:
+                /**
+                 * @brief Calls `sink.add()` for each completion of the word that
+                 *        ends at the cursor.
+                 * @param line      The line up to the cursor.
+                 * @param wordStart Where in @p line the word starts.
+                 * @param sink      Where candidates go. Ones that don't start with the
+                 *                  word are ignored.
+                 */
+                virtual void complete(StringView line, size_t wordStart, CompletionSink &sink) = 0;
+
+        protected:
+                ~LineCompleter() = default;
+};
+
 /**
  * @brief An interactive line editor with history, driven one input byte at a time.
  *
@@ -109,6 +142,18 @@ class LineEditor {
                 /** @brief Reprints the prompt and line, e.g. after unrelated output. */
                 void redraw();
 
+                /**
+                 * @brief Enables Tab completion through @p completer (null: off).
+                 *
+                 * Tab inserts what all candidates share; a single candidate is
+                 * completed and followed by a space; when nothing can be added,
+                 * the candidates are listed and the line reprinted.
+                 */
+                void setCompleter(LineCompleter *completer) {
+                        _completer = completer;
+                        return;
+                }
+
         private:
                 enum class InputState : uint8_t {
                         Normal,
@@ -129,23 +174,25 @@ class LineEditor {
                 void   historyUp(Output &out);
                 void   historyDown(Output &out);
                 size_t wordLeft() const;
+                void   complete(Output &out);
                 size_t wordRight() const;
 
-                Console   &_console;
-                StringView _prompt;
-                size_t     _length = 0;
-                size_t     _cursor = 0;
-                size_t     _screenCursor = 0; // where the terminal cursor is, relative to the line start
-                size_t     _savedLength = 0;
-                size_t     _historyUsed = 0;
-                size_t     _historyPos = 0; // 0 = editing a new line; n = showing the n-th newest entry
-                unsigned   _params[2] = {};
-                uint8_t    _paramCount = 0;
-                InputState _state = InputState::Normal;
-                bool       _lastWasCr = false;
-                char       _line[LineMax + 1] = {};
-                char       _saved[LineMax + 1] = {}; // the new line, kept while browsing history
-                char       _history[HistoryBytes] = {};
+                Console       &_console;
+                LineCompleter *_completer = nullptr;
+                StringView     _prompt;
+                size_t         _length = 0;
+                size_t         _cursor = 0;
+                size_t         _screenCursor = 0; // where the terminal cursor is, relative to the line start
+                size_t         _savedLength = 0;
+                size_t         _historyUsed = 0;
+                size_t         _historyPos = 0; // 0 = editing a new line; n = showing the n-th newest entry
+                unsigned       _params[2] = {};
+                uint8_t        _paramCount = 0;
+                InputState     _state = InputState::Normal;
+                bool           _lastWasCr = false;
+                char           _line[LineMax + 1] = {};
+                char           _saved[LineMax + 1] = {}; // the new line, kept while browsing history
+                char           _history[HistoryBytes] = {};
 };
 
 BMDS_NAMESPACE_END

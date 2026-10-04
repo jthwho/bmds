@@ -26,6 +26,12 @@ BMDS_NAMESPACE_BEGIN
 
 class Shell;
 
+/**
+ * @brief Appends @p value quoted for re-input to the shell, as bash's `set`
+ *        and `set -x` show values: as is when safe, otherwise in '...'.
+ */
+void appendShellQuoted(String &out, StringView value);
+
 /** @brief A shell function: its name and the source of its body. */
 struct ShellFunction {
                 String name;
@@ -202,6 +208,7 @@ class Executor {
 
                 bool           stackExhausted();
                 int            expansionFailed();
+                void           xtrace(StringView text);
                 void           inheritAbort(const Executor &child);
                 int            finish(int status, bool errexitApplies);
                 int            runSimple(const SimpleNode *n);

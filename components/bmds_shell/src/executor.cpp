@@ -115,6 +115,29 @@ namespace {
 
 } // namespace
 
+void appendShellQuoted(String &out, StringView value) {
+        bool plain = !value.isEmpty();
+        for (char c : value) {
+                const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                                StringView("_./:@%+,=-").contains(c);
+                plain = plain && ok;
+        }
+        if (plain) {
+                (void)out.append(value);
+                return;
+        }
+        (void)out.append('\'');
+        for (char c : value) {
+                if (c == '\'') {
+                        (void)out.append("'\\''");
+                } else {
+                        (void)out.append(c);
+                }
+        }
+        (void)out.append('\'');
+        return;
+}
+
 // ---------------------------------------------------------------------------
 // ShellState
 // ---------------------------------------------------------------------------
@@ -197,8 +220,9 @@ class Expander {
                 };
 
                 Expander(Executor &ex, Mode mode, List<String> *fields) : _ex(ex), _mode(mode), _fields(fields) {
+                        // A copy: the word may assign variables ($((x=1))), moving the table.
                         const String *ifs = ex._state.vars.value("IFS");
-                        _ifs = ifs != nullptr ? ifs->view() : DefaultIfs;
+                        (void)_ifs.assign(ifs != nullptr ? ifs->view() : DefaultIfs);
                 }
 
                 Error word(const Word *w) {
@@ -275,7 +299,7 @@ class Expander {
                         return err.isError() ? fatal(err) : err;
                 }
 
-                bool isIfs(char c) const { return _ifs.contains(c); }
+                bool isIfs(char c) const { return _ifs.view().contains(c); }
 
                 static bool isWhite(char c) { return c == ' ' || c == '\t' || c == '\n'; }
 
@@ -417,6 +441,10 @@ class Expander {
                                 case ParamOp::RemoveSmallestSuffix:
                                 case ParamOp::RemoveLargestSuffix: {
                                         if (!set && nounset) return unbound(name);
+                                        // Own the value: the pattern may assign variables ($((x=1))).
+                                        String owned;
+                                        if (owned.assign(value).isError()) return fatal(Error::NoMem);
+                                        value = owned;
                                         String pattern;
                                         if (subExpand(p->arg, Mode::Pattern, pattern).isError()) return Error::Invalid;
                                         const bool prefix = p->op == ParamOp::RemoveSmallestPrefix ||
@@ -475,7 +503,7 @@ class Expander {
                 Executor     &_ex;
                 Mode          _mode;
                 List<String> *_fields;
-                StringView    _ifs;
+                String        _ifs;
                 String        _cur;
                 bool          _exists = false;     // the current field exists (even if empty)
                 bool          _afterWhite = false; // white IFS space just ended a field
@@ -570,6 +598,18 @@ int Executor::expansionFailed() {
         const int status = _errorStatus;
         _errorStatus = 1;
         return finish(status, false);
+}
+
+// `set -x`: the command as it runs, after `PS4`, on stderr.
+void Executor::xtrace(StringView text) {
+        const String *ps4 = _state.vars.value("PS4");
+        String        line;
+        (void)line.append(ps4 != nullptr ? ps4->view() : StringView("+ "));
+        (void)line.append(text);
+        (void)line.append('\n');
+        FileHandle *err = _fds->handle(FdTable::Stderr);
+        if (err != nullptr) (void)err->write(line, WaitForever);
+        return;
 }
 
 int Executor::finish(int status, bool errexitApplies) {
@@ -927,6 +967,13 @@ int Executor::runSimple(const SimpleNode *n) {
                 for (const Assignment *a = n->assignments; a != nullptr; a = a->next) {
                         String value;
                         if (expandString(a->value, value).isError()) return expansionFailed();
+                        if (_state.options.xtrace) {
+                                String trace;
+                                (void)trace.append(a->name);
+                                (void)trace.append('=');
+                                appendShellQuoted(trace, value);
+                                xtrace(trace);
+                        }
                         Error err = _state.vars.set(a->name, value);
                         if (err.isError()) {
                                 report("%.*s: %s", static_cast<int>(a->name.size()), a->name.data(),
@@ -947,9 +994,16 @@ int Executor::runSimple(const SimpleNode *n) {
         List<LocalSave> saved;
         int             status = 0;
         bool            ok = true;
+        String          trace;
         for (const Assignment *a = n->assignments; a != nullptr && ok; a = a->next) {
                 String value;
                 if (expandString(a->value, value).isError()) return expansionFailed();
+                if (_state.options.xtrace) {
+                        (void)trace.append(a->name);
+                        (void)trace.append('=');
+                        appendShellQuoted(trace, value);
+                        (void)trace.append(' ');
+                }
                 LocalSave   s;
                 const auto *e = _state.vars.find(a->name);
                 ok = s.name.assign(a->name).isOk();
@@ -967,6 +1021,13 @@ int Executor::runSimple(const SimpleNode *n) {
                         status = 1;
                         ok = false;
                 }
+        }
+        if (ok && _state.options.xtrace) {
+                for (size_t i = 0; i < args.size(); ++i) {
+                        if (i > 0) (void)trace.append(' ');
+                        appendShellQuoted(trace, args[i]);
+                }
+                xtrace(trace);
         }
         if (ok) status = runCommand(args, n->redirects);
         for (size_t i = saved.size(); i-- > 0;) {

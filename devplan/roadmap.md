@@ -33,7 +33,7 @@ Plans: [`shell-language.md`](shell-language.md), [`terminal.md`](terminal.md). I
 - [x] `String`, `List<T>` and an arena allocator in `bmds_core`.
 - [x] Standard I/O: `Stream`, refcounted fd tables, pipes, memory/null streams; Ctrl-C interrupts.
 - [x] Commands use stdin/stdout/stderr; pipelines (concurrent stages, workers with PSRAM stacks); fd redirection.
-- [ ] Shell language (bash subset): lexer, parser, executor; variables, expansion, `$(…)`, `$((…))`, `if`/`while`/`until`/`for`/`case`, functions, core language built-ins, `PS2` (done, step 5a); `printf`, `read`, `source`, `type`, `command`, `set -x`, `PS1` escapes, completion (step 5b).
+- [x] Shell language (bash subset): lexer, parser, executor; variables, expansion, `$(…)`, `$((…))`, `if`/`while`/`until`/`for`/`case`, functions, language built-ins, `printf`/`read`/`type`/`command`, `set -x`, `PS1`/`PS2`, completion. (`source` and path completion need storage: Phase 2.)
 - [ ] Terminal model: 24-bit color, SGR with depth downgrade, VT parser, UTF-8, `term` built-in, colored prompt and log levels.
 
 ## Phase 2 — Storage

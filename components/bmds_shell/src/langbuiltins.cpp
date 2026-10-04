@@ -52,31 +52,6 @@ namespace {
                 return true;
         }
 
-        // Quotes @p value for re-input to the shell, as bash's `set` and
-        // `declare -p` do ('...' when needed).
-        void appendQuoted(String &out, StringView value) {
-                bool plain = !value.isEmpty();
-                for (char c : value) {
-                        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-                                        StringView("_./:@%+,=-").contains(c);
-                        plain = plain && ok;
-                }
-                if (plain) {
-                        (void)out.append(value);
-                        return;
-                }
-                (void)out.append('\'');
-                for (char c : value) {
-                        if (c == '\'') {
-                                (void)out.append("'\\''");
-                        } else {
-                                (void)out.append(c);
-                        }
-                }
-                (void)out.append('\'');
-                return;
-        }
-
         // `break`, `continue`: the loop count.
         int loopControl(CommandContext &ctx, Flow flow) {
                 Executor  &ex = ctx.executor();
@@ -362,6 +337,111 @@ namespace {
 
 } // namespace
 
+namespace {
+
+        bool isKeyword(StringView w) {
+                static const char *const keywords[] = {"!",    "[[",    "]]",    "case", "do",       "done", "elif",
+                                                       "else", "esac",  "fi",    "for",  "function", "if",   "in",
+                                                       "then", "until", "while", "{",    "}"};
+                for (const char *k : keywords) {
+                        if (w == k) return true;
+                }
+                return false;
+        }
+
+        // What a name is, the way `type` and `command -v` look it up.
+        enum class Kind {
+                None,
+                Keyword,
+                Function,
+                Builtin
+        };
+
+        Kind kindOf(CommandContext &ctx, StringView name) {
+                if (isKeyword(name)) return Kind::Keyword;
+                if (ctx.executor().state().findFunction(name) != nullptr) return Kind::Function;
+                if (ctx.shell().findCommand(name) != nullptr) return Kind::Builtin;
+                return Kind::None;
+        }
+
+        // `type`'s description of @p name; false if not found.
+        bool describe(CommandContext &ctx, const char *name, bool word) {
+                switch (kindOf(ctx, name)) {
+                        case Kind::Keyword:
+                                ctx.printf(word ? "keyword\n" : "%s is a shell keyword\n", name);
+                                return true;
+                        case Kind::Function: {
+                                if (word) {
+                                        ctx.print("function\n");
+                                        return true;
+                                }
+                                const ShellFunction *f = ctx.executor().state().findFunction(name);
+                                ctx.printf("%s is a function\n%s () ", name, name);
+                                ctx.print(f->source);
+                                ctx.print("\n");
+                                return true;
+                        }
+                        case Kind::Builtin:
+                                ctx.printf(word ? "builtin\n" : "%s is a shell builtin\n", name);
+                                return true;
+                        case Kind::None: break;
+                }
+                return false;
+        }
+
+} // namespace
+
+int LangBuiltins::type(CommandContext &ctx) {
+        const Args args = ctx.args();
+        size_t     i = 1;
+        bool       word = false;
+        if (i < args.size() && StringView(args[i]) == "-t") {
+                word = true;
+                ++i;
+        }
+        if (i == args.size()) return ctx.usage();
+        int status = Shell::ExitSuccess;
+        for (; i < args.size(); ++i) {
+                if (!describe(ctx, args[i], word)) {
+                        if (!word) ctx.eprintf("type: %s: not found\n", args[i]);
+                        status = Shell::ExitFailure;
+                }
+        }
+        return status;
+}
+
+int LangBuiltins::command(CommandContext &ctx) {
+        const Args args = ctx.args();
+        if (args.size() < 2) return Shell::ExitSuccess;
+        const StringView option = args[1];
+        if (option == "-v" || option == "-V") {
+                int status = Shell::ExitSuccess;
+                for (size_t i = 2; i < args.size(); ++i) {
+                        if (option == "-V") {
+                                if (!describe(ctx, args[i], false)) {
+                                        ctx.eprintf("command: %s: not found\n", args[i]);
+                                        status = Shell::ExitFailure;
+                                }
+                        } else if (kindOf(ctx, args[i]) != Kind::None) {
+                                ctx.printf("%s\n", args[i]);
+                        } else {
+                                status = Shell::ExitFailure;
+                        }
+                }
+                return status;
+        }
+        // Run a built-in, bypassing functions of the same name.
+        const Args rest = args.mid(option == "--" ? 2 : 1);
+        if (rest.isEmpty()) return Shell::ExitSuccess;
+        const Command *cmd = ctx.shell().findCommand(rest[0]);
+        if (cmd == nullptr) {
+                ctx.eprintf("%s: command not found\n", rest[0]);
+                return Shell::ExitNotFound;
+        }
+        CommandContext sub(ctx.shell(), *cmd, rest, ctx.fds(), &ctx.executor());
+        return cmd->run(sub);
+}
+
 int LangBuiltins::colon(CommandContext &) {
         return Shell::ExitSuccess;
 }
@@ -445,7 +525,7 @@ int LangBuiltins::set(CommandContext &ctx) {
                         String line;
                         (void)line.append(e.name);
                         (void)line.append('=');
-                        appendQuoted(line, e.value);
+                        appendShellQuoted(line, e.value);
                         (void)line.append('\n');
                         ctx.print(line);
                 }
@@ -607,6 +687,8 @@ int LangBuiltins::local(CommandContext &ctx) {
 BMDS_SHELL_COMMAND_AS(colon, ":", LangBuiltins::colon, "[arg]...", "Do nothing, successfully")
 BMDS_SHELL_COMMAND_AS(bracket, "[", LangBuiltins::test, "expr ]", "Evaluate a conditional expression (as test)")
 BMDS_SHELL_COMMAND_AS(breakCmd, "break", LangBuiltins::breakCmd, "[n]", "Leave n enclosing loops")
+BMDS_SHELL_COMMAND(command, LangBuiltins::command, "[-vV] name [arg]...",
+                   "Run a built-in, ignoring functions; or say what a name is")
 BMDS_SHELL_COMMAND_AS(continueCmd, "continue", LangBuiltins::continueCmd, "[n]",
                       "Start the next iteration of the n-th enclosing loop")
 BMDS_SHELL_COMMAND(eval, LangBuiltins::eval, "[word]...", "Run the words as a command")
@@ -621,6 +703,7 @@ BMDS_SHELL_COMMAND(set, LangBuiltins::set, "[-+eux] [-+o name] [--] [arg]...",
                    "Set shell options and positional parameters, or list variables")
 BMDS_SHELL_COMMAND(shift, LangBuiltins::shift, "[n]", "Drop the first n positional parameters")
 BMDS_SHELL_COMMAND(test, LangBuiltins::test, "expr", "Evaluate a conditional expression")
+BMDS_SHELL_COMMAND(type, LangBuiltins::type, "[-t] name...", "Say whether names are keywords, functions or built-ins")
 BMDS_SHELL_COMMAND_AS(trueCmd, "true", LangBuiltins::colon, "", "Do nothing, successfully")
 BMDS_SHELL_COMMAND(unset, LangBuiltins::unset, "[-fv] name...", "Remove variables or functions")
 

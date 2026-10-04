@@ -93,7 +93,13 @@ namespace {
                                         return true;
                                 }
                                 if (_depth >= MaxRecursion) return failed("expression recursion level exceeded");
-                                Evaluator inner(*text, _vars, _failure, _depth + 1);
+                                // A copy: the expression may assign variables, moving the table.
+                                auto [copy, cerr] = text->clone();
+                                if (cerr.isError()) {
+                                        _err = cerr;
+                                        return false;
+                                }
+                                Evaluator inner(copy, _vars, _failure, _depth + 1);
                                 int64_t   out = 0;
                                 Error     err = inner.run(out);
                                 if (err.isError()) {

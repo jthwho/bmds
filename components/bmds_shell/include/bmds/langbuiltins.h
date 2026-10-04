@@ -33,6 +33,10 @@ namespace LangBuiltins {
         int readonly(CommandContext &ctx);    ///< `readonly [-p] [name[=value]]...`
         int unset(CommandContext &ctx);       ///< `unset [-fv] name...`
         int local(CommandContext &ctx);       ///< `local name[=value]...`
+        int printfCmd(CommandContext &ctx);   ///< `printf [-v var] format [arg]...`
+        int read(CommandContext &ctx);        ///< `read [-r] [-p prompt] [name]...`
+        int type(CommandContext &ctx);        ///< `type [-t] name...`
+        int command(CommandContext &ctx);     ///< `command [-vV] name [arg]...`
 
 } // namespace LangBuiltins
 

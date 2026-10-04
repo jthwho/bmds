@@ -53,6 +53,7 @@ namespace {
                 {"[", "", "", L::test},
                 {"break", "", "", L::breakCmd},
                 {"cat", "", "", T::cat},
+                {"command", "", "", L::command},
                 {"continue", "", "", L::continueCmd},
                 {"echo", "", "", T::echo},
                 {"eval", "", "", L::eval},
@@ -62,12 +63,15 @@ namespace {
                 {"grep", "", "", T::grep},
                 {"head", "", "", T::head},
                 {"local", "", "", L::local},
+                {"printf", "", "", L::printfCmd},
+                {"read", "", "", L::read},
                 {"readonly", "", "", L::readonly},
                 {"return", "", "", L::returnCmd},
                 {"set", "", "", L::set},
                 {"shift", "", "", L::shift},
                 {"test", "", "", L::test},
                 {"true", "", "", L::colon},
+                {"type", "", "", L::type},
                 {"unset", "", "", L::unset},
                 {"wc", "", "", T::wc},
         };
@@ -102,8 +106,13 @@ namespace {
                         } else if (state == Script) {
                                 entries.back().script += line + "\n";
                         } else if (state == Out) {
-                                if (!line.empty()) entries.back().out += line + "\n";
+                                entries.back().out += line + "\n";
                         }
+                }
+                // Blank lines at the end of an output block are the separator.
+                for (Entry &e : entries) {
+                        while (e.out.size() >= 2 && e.out.compare(e.out.size() - 2, 2, "\n\n") == 0) e.out.pop_back();
+                        if (e.out == "\n") e.out.clear();
                 }
                 return entries;
         }

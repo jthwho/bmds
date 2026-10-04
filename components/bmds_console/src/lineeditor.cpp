@@ -195,7 +195,9 @@ LineEditor::Event LineEditor::handleControl(char c, Output &out) {
                         _screenCursor = _cursor;
                         break;
 
-                default: break; // Tab (completion, later) and other control bytes
+                case '\t': complete(out); break;
+
+                default: break; // other control bytes
         }
         return Event::None;
 }
@@ -378,6 +380,105 @@ void LineEditor::addHistory(StringView text) {
         std::memcpy(_history + _historyUsed, text.data(), text.size());
         _history[_historyUsed + text.size()] = '\0';
         _historyUsed += need;
+        return;
+}
+
+namespace {
+
+        bool isWordBreak(char c) {
+                return c == ' ' || c == '\t' || c == '|' || c == ';' || c == '&' || c == '<' || c == '>' || c == '(' ||
+                       c == ')';
+        }
+
+        // Counts candidates for a word and narrows their common prefix.
+        class PrefixSink final : public CompletionSink {
+                public:
+                        explicit PrefixSink(StringView word) : _word(word) {}
+
+                        void add(StringView candidate) override {
+                                if (!candidate.startsWith(_word) || candidate.size() > LineEditor::LineMax) return;
+                                if (_count++ == 0) {
+                                        for (size_t i = 0; i < candidate.size(); ++i) _common[i] = candidate[i];
+                                        _commonLength = candidate.size();
+                                } else {
+                                        size_t n = 0;
+                                        while (n < _commonLength && n < candidate.size() && _common[n] == candidate[n])
+                                                ++n;
+                                        _commonLength = n;
+                                }
+                                if (candidate.size() > _longest) _longest = candidate.size();
+                                return;
+                        }
+
+                        size_t     count() const { return _count; }
+                        size_t     longest() const { return _longest; }
+                        StringView common() const { return StringView(_common, _commonLength); }
+
+                private:
+                        StringView _word;
+                        size_t     _count = 0;
+                        size_t     _longest = 0;
+                        size_t     _commonLength = 0;
+                        char       _common[LineEditor::LineMax];
+        };
+
+} // namespace
+
+void LineEditor::complete(Output &out) {
+        if (_completer == nullptr) return;
+        size_t start = _cursor;
+        while (start > 0 && !isWordBreak(_line[start - 1])) --start;
+        const StringView before(_line, _cursor);
+        const StringView word = before.mid(start);
+        PrefixSink       prefix(word);
+        _completer->complete(before, start, prefix);
+        if (prefix.count() == 0) {
+                out.put('\a');
+                return;
+        }
+        const StringView common = prefix.common();
+        for (size_t i = word.size(); i < common.size(); ++i) insert(common[i], out);
+        if (prefix.count() == 1) {
+                insert(' ', out);
+                return;
+        }
+        if (common.size() > word.size()) return;
+        // Ambiguous and nothing to add: list them in columns, then the line again.
+        class ListSink final : public CompletionSink {
+                public:
+                        ListSink(StringView w, size_t width, Output &o)
+                            : _word(w), _width(width), _out(o), _perRow(80 / width > 0 ? 80 / width : 1) {
+                        } // 80 columns
+
+                        void add(StringView candidate) override {
+                                if (!candidate.startsWith(_word)) return;
+                                _out.put(candidate);
+                                if (++_column == _perRow) {
+                                        _out.put('\n');
+                                        _column = 0;
+                                } else {
+                                        for (size_t i = candidate.size(); i < _width; ++i) _out.put(' ');
+                                }
+                                return;
+                        }
+
+                        bool rowOpen() const { return _column != 0; }
+
+                private:
+                        StringView _word;
+                        size_t     _width;
+                        Output    &_out;
+                        size_t     _perRow;
+                        size_t     _column = 0;
+        };
+        out.put('\n');
+        ListSink list(word, prefix.longest() + 2, out);
+        _completer->complete(before, start, list);
+        if (list.rowOpen()) out.put('\n');
+        out.put(_prompt);
+        out.put(line());
+        out.csi(_length - _cursor, 'D');
+        _screenCursor = _cursor;
         return;
 }
 
