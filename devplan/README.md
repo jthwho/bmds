@@ -9,7 +9,8 @@ Design notes and implementation plans for BMDS subsystems. Write a plan here **b
 - [`terminal.md`](terminal.md) — Phase 1b/4: ANSI/VT and 24-bit color as first-class, terminal modes, HDMI screen model.
 - [`time.md`](time.md) — Phase 2: the system clock (Linux-style: set, slewed and disciplined by sources), time zones, `date`.
 - [`storage.md`](storage.md) — Phase 2: SD card driver and hot-plug, FatFs (exFAT) under the BMDS VFS, files in the shell, YMODEM transfer.
-- [`programs.md`](programs.md) — Phase 3: executables (relocatable ELF), the loader, the syscall table (ABI v1), the SDK, push-and-run.
+- [`programs.md`](programs.md) — Phase 3: executables (relocatable ELF), the loader, the syscall table (ABI v1-3), the SDK (static musl), push-and-run.
+- [`distribution.md`](distribution.md) — Phase 3: the programs shipped on the card (`dist/` recipes, `tools/bmds-dist`), BusyBox.
 
 ## Plan Document Template
 

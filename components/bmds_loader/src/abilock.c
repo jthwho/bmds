@@ -52,7 +52,11 @@ _Static_assert(BMDS_SYS_MEM_INFO == 28, "ABI: slot MEM_INFO");
 _Static_assert(BMDS_SYS_RANDOM == 29, "ABI: slot RANDOM");
 _Static_assert(BMDS_SYS_SET_MTIME == 30, "ABI: slot SET_MTIME");
 _Static_assert(BMDS_SYS_FTRUNCATE == 31, "ABI 2: slot FTRUNCATE");
-_Static_assert(BMDS_ABI_VERSION == 2, "ABI: version (raise it with every addition)");
+_Static_assert(BMDS_SYS_SYMLINK == 32, "ABI 3: slot SYMLINK");
+_Static_assert(BMDS_SYS_READLINK == 33, "ABI 3: slot READLINK");
+_Static_assert(BMDS_SYS_LSTAT == 34, "ABI 3: slot LSTAT");
+_Static_assert(BMDS_TYPE_LINK == 4, "ABI 3: file type LINK");
+_Static_assert(BMDS_ABI_VERSION == 3, "ABI: version (raise it with every addition)");
 _Static_assert(BMDS_STDIN == 0 && BMDS_STDOUT == 1 && BMDS_STDERR == 2, "ABI: standard fds");
 _Static_assert(BMDS_SEEK_SET == 0 && BMDS_SEEK_CUR == 1 && BMDS_SEEK_END == 2, "ABI: whence");
 _Static_assert(BMDS_MEM_FAST == 1 && BMDS_MEM_DMA == 2 && BMDS_MEM_ALIGN == 16, "ABI: memory flags");
@@ -126,3 +130,4 @@ _Static_assert(BMDS_EPIPE == 32 && BMDS_ERANGE == 34 && BMDS_ENOSYS == 88 && BMD
 _Static_assert(BMDS_ENAMETOOLONG == 91 && BMDS_ETIMEDOUT == 116 && BMDS_ENOTSUP == 134, "ABI: errno 91-134");
 _Static_assert(BMDS_ENOMEDIUM == 135 && BMDS_EILSEQ == 138 && BMDS_EOVERFLOW == 139, "ABI: errno 135-139");
 _Static_assert(BMDS_ECANCELED == 140, "ABI: errno 140");
+_Static_assert(BMDS_ELOOP == 92, "ABI 3: errno ELOOP");

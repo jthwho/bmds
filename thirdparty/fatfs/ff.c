@@ -3943,6 +3943,7 @@ FRESULT f_open (
 			fp->cltbl = 0;		/* Disable fast seek mode */
 #endif
 			fp->obj.id = fs->id;	/* Set current volume mount ID */
+			fp->obj.attr = dj.obj.attr;	/* BMDS: the attribute, kept (emulated symbolic links are System files) */
 			fp->flag = mode;	/* Set file access mode */
 			fp->err = 0;		/* Clear error flag */
 			fp->sect = 0;		/* Invalidate current data sector */

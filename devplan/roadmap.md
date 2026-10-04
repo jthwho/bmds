@@ -57,6 +57,10 @@ Plans: [`storage.md`](storage.md), [`time.md`](time.md). Complete; verified on h
 - [x] Shell: run programs by name, `PATH`-like search; `#!` and `.sh` scripts launched by content; kill on a second Ctrl-C.
 - [x] Push-and-run over serial (host tool sends a program, device runs it — no reflash): `tools/bmds-run`, into the RAM disk (`/ram0/p0`); compatibility corpus `tests/compat/v1` (`tools/bmds-compat`).
 - [x] SDK 2 on static musl (`devplan/programs.md` §12, step 7): vendored musl, the Linux system call layer, ABI 2 (file identity, `ftruncate`), `bmds-cc` for other build systems; BusyBox builds and runs.
+- [x] Emulated symbolic links on FAT/exFAT, Cygwin's format (`storage.md` §4; ABI 3: `symlink`, `readlink`, `lstat`); `ln -s`.
+- [x] Terminal size learned from a serial terminal (`ESC [ 18 t`, the answer taken out of the input; `terminal.md`), `COLUMNS`/`LINES`, `TIOCGWINSZ`; `clear`, `reset`.
+- [x] Distribution structure (`devplan/distribution.md`): `dist/` recipes, `tools/bmds-dist` build and install; BusyBox 1.37 (115 applets as links).
+- [ ] Storage: a sector cache for directories and the FAT under FatFs (`storage.md` §12; lookups in large directories, `ls -l` of BusyBox's `bin`).
 - [ ] POSIX completion (§12, step 8+): process creation (`vfork`/`posix_spawn`, `waitpid`, `pipe`), signals from outside, `termios`, `poll`. Yardstick: BusyBox no-MMU (shells included) runs. A shared runtime only if measurements ask for it.
 - [ ] Example programs: `hello`, `cat`, a benchmark.
 

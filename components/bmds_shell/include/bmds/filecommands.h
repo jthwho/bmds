@@ -22,6 +22,7 @@ namespace FileCommands {
 
         int cd(CommandContext &ctx);      ///< `cd [dir | -]`: change the shell's current directory.
         int pwd(CommandContext &ctx);     ///< `pwd`: print it.
+        int ln(CommandContext &ctx);      ///< `ln -s [-f] target name`, `ln -s [-f] target... dir`
         int ls(CommandContext &ctx);      ///< `ls [-la1] [path]...`: list directories.
         int cp(CommandContext &ctx);      ///< `cp [-r] source... target`: copy.
         int mv(CommandContext &ctx);      ///< `mv source... target`: move or rename.

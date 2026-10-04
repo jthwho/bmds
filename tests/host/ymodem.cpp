@@ -260,14 +260,16 @@ namespace {
                         using Console::write;
                         const char          *name() const override { return "line"; }
                         uint32_t             capabilities() const override { return 0; }
-                        bmds::Result<size_t> read(bmds::WritableByteSpan buf, unsigned int timeoutMs) override {
-                                return _end.read(buf, timeoutMs);
-                        }
-                        bmds::Result<size_t> tryRead(bmds::WritableByteSpan buf) override { return _end.read(buf, 1); }
                         bmds::Result<size_t> write(bmds::ByteSpan data, unsigned int timeoutMs) override {
                                 return _end.write(data, timeoutMs);
                         }
                         bmds::Error flush(unsigned int) override { return bmds::Error(); }
+
+                protected:
+                        bmds::Result<size_t> readInput(bmds::WritableByteSpan buf, unsigned int timeoutMs) override {
+                                return _end.read(buf, timeoutMs);
+                        }
+                        bmds::Result<size_t> tryReadInput(bmds::WritableByteSpan buf) override { return _end.read(buf, 1); }
 
                 private:
                         LineEnd &_end;

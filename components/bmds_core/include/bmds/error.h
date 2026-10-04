@@ -85,6 +85,7 @@ class [[nodiscard]] Error {
                         BrokenPipe,             ///< Write with no reader left (EPIPE).
                         NoMedia,                ///< No medium in the drive: the card is out (ENOMEDIUM).
                         NoFilesystem,           ///< The medium holds no filesystem BMDS can mount.
+                        TooManyLinks,           ///< Too many symbolic links in a row (ELOOP).
                         CodeCount               ///< Number of codes (not an error code).
                 };
 

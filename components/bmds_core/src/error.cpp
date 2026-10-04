@@ -57,6 +57,7 @@ namespace {
                 {"BrokenPipe", "Broken pipe"},
                 {"NoMedia", "No medium"},
                 {"NoFilesystem", "No filesystem"},
+                {"TooManyLinks", "Too many levels of symbolic links"},
         };
         static_assert(sizeof(CodeTexts) / sizeof(CodeTexts[0]) == Error::CodeCount,
                       "CodeTexts must have one entry per Error::Code");
@@ -111,6 +112,7 @@ namespace {
                 {EISDIR, Error::IsDir},
                 {ENOTDIR, Error::NotDir},
                 {ENOTEMPTY, Error::NotEmpty},
+                {ELOOP, Error::TooManyLinks},
                 {EROFS, Error::ReadOnly},
                 {EINTR, Error::Interrupted},
                 {EPIPE, Error::BrokenPipe},

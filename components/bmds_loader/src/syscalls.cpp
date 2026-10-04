@@ -183,4 +183,19 @@ int32_t bmds_k_ftruncate(int32_t fd, int64_t size) {
         return call->ftruncate(fd, size);
 }
 
+int32_t bmds_k_symlink(const char *target, const char *path) {
+        KernelCall call;
+        return call->symlink(target, path);
+}
+
+int32_t bmds_k_readlink(const char *path, char *buf, uint32_t size) {
+        KernelCall call;
+        return call->readlink(path, buf, size);
+}
+
+int32_t bmds_k_lstat(const char *path, bmds_stat_t *info) {
+        KernelCall call;
+        return call->lstat(path, info);
+}
+
 } // extern "C"

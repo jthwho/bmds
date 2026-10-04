@@ -80,6 +80,7 @@ namespace {
                         case FileType::File: st.type = BMDS_TYPE_FILE; break;
                         case FileType::Directory: st.type = BMDS_TYPE_DIRECTORY; break;
                         case FileType::Device: st.type = BMDS_TYPE_DEVICE; break;
+                        case FileType::Link: st.type = BMDS_TYPE_LINK; break;
                 }
                 st.attributes = info.attributes;
                 st.file_size = info.size;
@@ -222,6 +223,7 @@ int32_t Process::errnoFor(Error err) {
                 case Error::Cancelled: return -BMDS_ECANCELED;
                 case Error::BadDescriptor: return -BMDS_EBADF;
                 case Error::TooManyOpen: return -BMDS_EMFILE;
+                case Error::TooManyLinks: return -BMDS_ELOOP;
                 case Error::IsDir: return -BMDS_EISDIR;
                 case Error::NotDir: return -BMDS_ENOTDIR;
                 case Error::NotEmpty: return -BMDS_ENOTEMPTY;
@@ -409,6 +411,45 @@ int32_t Process::open(const char *path, uint32_t flags) {
         return fd;
 }
 
+int32_t Process::lstat(const char *path, bmds_stat_t *info) {
+        StringView p;
+        if (int32_t r = this->path(path, p); r < 0) return r;
+        if (info == nullptr) return -BMDS_EFAULT;
+        auto [fi, err] = Vfs::lstat(p, vfs());
+        if (err.isError()) return fsErrno(err);
+        return copyOut(statFor(fi), info);
+}
+
+int32_t Process::symlink(const char *target, const char *path) {
+        StringView t;
+        StringView p;
+        if (int32_t r = this->path(target, t); r < 0) return r;
+        if (int32_t r = this->path(path, p); r < 0) return r;
+        const Error err = Vfs::symlink(t, p, vfs());
+        return err == Error::Invalid ? -BMDS_EINVAL : fsErrno(err);
+}
+
+int32_t Process::readlink(const char *path, char *buf, uint32_t size) {
+        StringView p;
+        if (int32_t r = this->path(path, p); r < 0) return r;
+        if (buf == nullptr && size != 0) return -BMDS_EFAULT;
+        auto [target, err] = Vfs::readLink(p, vfs());
+        if (err == Error::Invalid) return -BMDS_EINVAL;
+        if (err.isError()) return fsErrno(err);
+        const StringView t = target.view();
+        if (size != 0) {
+                // Cut at a character boundary, as readdir's names.
+                size_t len = t.size();
+                if (len > size - 1) {
+                        len = size - 1;
+                        while (len > 0 && (static_cast<uint8_t>(t[len]) & 0xC0) == 0x80) --len;
+                }
+                std::memcpy(buf, t.data(), len);
+                buf[len] = '\0';
+        }
+        return static_cast<int32_t>(t.size());
+}
+
 int32_t Process::stat(const char *path, bmds_stat_t *info) {
         StringView p;
         if (int32_t r = this->path(path, p); r < 0) return r;
@@ -520,12 +561,13 @@ int32_t Process::getcwd(char *buf, uint32_t size) {
 int32_t Process::chdir(const char *path) {
         StringView p;
         if (int32_t r = this->path(path, p); r < 0) return r;
-        auto [normal, err] = Vfs::normalize(p, cwd());
+        // The physical path: links along it followed once, here.
+        auto [real, err] = Vfs::realPath(p, vfs());
         if (err.isError()) return fsErrno(err);
-        auto [fi, serr] = Vfs::stat(normal.view(), vfs());
+        auto [fi, serr] = Vfs::stat(real.view(), vfs());
         if (serr.isError()) return fsErrno(serr);
         if (!fi.isDirectory()) return -BMDS_ENOTDIR;
-        _cwd = std::move(normal);
+        _cwd = std::move(real);
         return 0;
 }
 

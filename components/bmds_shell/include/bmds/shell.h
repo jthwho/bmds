@@ -204,6 +204,13 @@ class Shell final : public LineCompleter {
                  */
                 void renderPrompt(StringView ps, String &out);
 
+                /**
+                 * @brief Sets the variables programs look at for the terminal from
+                 *        the console: `COLORTERM`, `COLUMNS`, `LINES`. Done before each
+                 *        typed line when the size changed, and by `term`.
+                 */
+                void exportTerminal();
+
                 /** @brief Tab completion for the line editor (see `LineCompleter`). */
                 void complete(StringView line, size_t wordStart, CompletionSink &sink) override;
 
@@ -222,6 +229,7 @@ class Shell final : public LineCompleter {
                 String              _prompt; // what the editor shows
                 ProgramLauncher    *_launcher = nullptr;
                 LineEditor          _editor;
+                uint32_t            _sizeSeen = UINT32_MAX; // the console's size generation exported
 };
 
 BMDS_NAMESPACE_END

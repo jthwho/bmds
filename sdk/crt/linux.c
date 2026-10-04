@@ -13,7 +13,7 @@
  * POSIX functions.
  *
  * What BMDS doesn't have is approximated, as noted at each call: one user
- * (root), no links, no file descriptor flags, modes made up from the FAT
+ * (root), no hard links, no file descriptor flags, modes made up from the FAT
  * attributes, poll by guess, signals only from the program itself. Process
  * creation, pipes and sockets fail with ENOSYS (programs.md, step 8).
  */
@@ -61,6 +61,7 @@ static long result(int32_t r) {
                 case BMDS_EILSEQ: return -EILSEQ;
                 case BMDS_EOVERFLOW: return -EOVERFLOW;
                 case BMDS_ECANCELED: return -ECANCELED;
+                case BMDS_ELOOP: return -ELOOP;
                 default: return r; /* 1-34: the same numbers */
         }
 }
@@ -206,7 +207,10 @@ static long rewind_dir(int i) {
 }
 
 static unsigned char d_type(uint32_t type) {
-        return type == BMDS_TYPE_DIRECTORY ? DT_DIR : type == BMDS_TYPE_DEVICE ? DT_CHR : DT_REG;
+        return type == BMDS_TYPE_DIRECTORY ? DT_DIR
+             : type == BMDS_TYPE_DEVICE    ? DT_CHR
+             : type == BMDS_TYPE_LINK      ? DT_LNK
+                                           : DT_REG;
 }
 
 /* One getdents64 record; 0 if it doesn't fit. */
@@ -281,6 +285,10 @@ static uint32_t open_flags(long flags) {
 
 static long do_open(long dirfd, const char *path, long flags) {
         AT_PATH(dirfd, path);
+        if ((flags & O_NOFOLLOW) && bmds_sys_has(BMDS_SYS_LSTAT)) {
+                bmds_stat_t st = {.size = sizeof(st)};
+                if (bmds_lstat(p, &st) == 0 && st.type == BMDS_TYPE_LINK) return -ELOOP;
+        }
         if (flags & O_DIRECTORY) return open_dir(p);
         const int32_t fd = bmds_open(p, open_flags(flags));
         /* open(".", O_RDONLY), for fchdir(), is a directory too. */
@@ -365,7 +373,9 @@ static void to_statx(const bmds_stat_t *st, const char *path, long fd, struct st
         x->stx_mask = STATX_BASIC_STATS | STATX_BTIME;
         x->stx_blksize = 4096;
         x->stx_nlink = st->type == BMDS_TYPE_DIRECTORY ? 2 : 1;
-        if (st->type == BMDS_TYPE_DIRECTORY) {
+        if (st->type == BMDS_TYPE_LINK) {
+                x->stx_mode = S_IFLNK | 0777;
+        } else if (st->type == BMDS_TYPE_DIRECTORY) {
                 x->stx_mode = S_IFDIR | 0755;
         } else if (st->type == BMDS_TYPE_DEVICE) {
                 x->stx_mode = S_IFCHR | 0666;
@@ -400,10 +410,30 @@ static long do_statx(long dirfd, const char *path, long flags, struct statx *out
                 return 0;
         }
         AT_PATH(dirfd, path);
-        const int32_t r = bmds_stat(p, &st);
+        /* lstat: the link itself (ABI 3; an older kernel has no links). */
+        const int nofollow = (flags & AT_SYMLINK_NOFOLLOW) && bmds_sys_has(BMDS_SYS_LSTAT);
+        const int32_t r = nofollow ? bmds_lstat(p, &st) : bmds_stat(p, &st);
         if (r < 0) return result(r);
         to_statx(&st, p, -1, out);
         return 0;
+}
+
+static long do_readlink(long dirfd, const char *path, char *buf, size_t size) {
+        AT_PATH(dirfd, path);
+        if (!bmds_sys_has(BMDS_SYS_READLINK)) return -EINVAL;
+        char          target[BMDS_PATH_MAX + 1];
+        const int32_t n = bmds_readlink(p, target, sizeof(target));
+        if (n < 0) return result(n);
+        /* POSIX: no NUL, as much as fits. */
+        const size_t len = (size_t)n < size ? (size_t)n : size;
+        memcpy(buf, target, len);
+        return (long)len;
+}
+
+static long do_symlink(const char *target, long dirfd, const char *path) {
+        AT_PATH(dirfd, path);
+        if (!bmds_sys_has(BMDS_SYS_SYMLINK)) return -EPERM;
+        return result(bmds_symlink(target, p));
 }
 
 /* access(): F_OK exists; W_OK not read-only; X_OK as the shell's `test -x`
@@ -805,9 +835,9 @@ long __bmds_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 case SYS_fchmodat:
                 case SYS_fchown:
                 case SYS_fchownat: return 0; /* no permissions on FAT: every user is root */
-                case SYS_readlinkat: return -EINVAL; /* no symbolic links */
-                case SYS_symlinkat:
-                case SYS_linkat:
+                case SYS_readlinkat: return do_readlink(a, (const char *)b, (char *)c, (size_t)d);
+                case SYS_symlinkat: return do_symlink((const char *)a, b, (const char *)c);
+                case SYS_linkat: /* no hard links on FAT */
                 case SYS_mknodat: return -EPERM;
                 case SYS_umask: {
                         const mode_t old = umask_value;

@@ -11,6 +11,7 @@
 
 #include <cstdio>
 #include <bmds/console.h>
+#include <bmds/deadline.h>
 #include <bmds/executor.h>
 #include <bmds/langbuiltins.h>
 #include <bmds/shell.h>
@@ -51,45 +52,22 @@ namespace {
                 return true;
         }
 
-        // The variables programs look at: TERM, COLORTERM, COLUMNS, LINES.
-        void exportTerminal(Executor &ex, const Console &console) {
-                Variables &vars = ex.state().vars;
-                if (console.colorDepth() == ColorDepth::TrueColor) {
-                        (void)vars.set("COLORTERM", "truecolor");
-                        (void)vars.addFlags("COLORTERM", Variables::Exported);
-                } else {
-                        (void)vars.unset("COLORTERM");
-                }
-                char buf[8];
-                std::snprintf(buf, sizeof(buf), "%u", console.size().columns);
-                (void)vars.set("COLUMNS", buf);
-                std::snprintf(buf, sizeof(buf), "%u", console.size().rows);
-                (void)vars.set("LINES", buf);
-                return;
-        }
-
-        // Asks the terminal for its size (ESC [ 18 t; the answer is ESC [ 8 ; rows ; cols t).
-        Error probeSize(Console &console, Console::Size &size) {
-                (void)console.write(StringView("\x1b[18t"), ProbeTimeoutMs);
-                char   reply[24];
-                size_t n = 0;
-                for (;;) {
+        // Asks the terminal for its size and waits for the answer, which the
+        // console takes out of the input as it is read. Ok if it answered.
+        Error probeSize(Console &console) {
+                console.resetSizeRequests();
+                console.requestSize();
+                if (!console.isSizeRequestPending()) return Error::NotSupported;
+                Deadline deadline(ProbeTimeoutMs);
+                while (console.isSizeRequestPending() && !deadline.isExpired()) {
+                        // Keys typed meanwhile are dropped, as at a prompt that isn't there yet.
                         uint8_t b = 0;
-                        auto [got, err] = console.read(WritableByteSpan(&b, 1), ProbeTimeoutMs);
-                        if (err.isError()) return err;
-                        if (got == 0) continue;
-                        if (n == 0 && b != 0x1B) continue; // typed-ahead input before the reply
-                        if (n < sizeof(reply)) reply[n++] = static_cast<char>(b);
-                        if (b == 't') break;
+                        auto [n, err] = console.read(WritableByteSpan(&b, 1), ProbeTimeoutMs);
+                        (void)n;
+                        if (err == Error::Interrupted) return err;
+                        if (err.isError()) break;
                 }
-                const StringView r(reply, n);
-                if (!r.startsWith("\x1b[8;")) return Error::Invalid;
-                const StringView body = r.mid(4, r.size() - 5);
-                const size_t     semi = body.indexOf(';');
-                if (semi == StringView::NPos) return Error::Invalid;
-                if (!parseNumber(body.left(semi), size.rows) || !parseNumber(body.mid(semi + 1), size.columns))
-                        return Error::Invalid;
-                return Error::Ok;
+                return console.isSizeRequestPending() || console.unansweredSizeRequests() > 0 ? Error::Timeout : Error::Ok;
         }
 
 } // namespace
@@ -97,7 +75,6 @@ namespace {
 int LangBuiltins::term(CommandContext &ctx) {
         const Args args = ctx.args();
         Console   &console = ctx.shell().console();
-        Executor  &ex = ctx.executor();
         if (args.size() == 1) {
                 const Console::Size size = console.size();
                 ctx.printf("terminal: %s\ncolor:    %s\nsize:     %ux%u\n", console.name(),
@@ -113,7 +90,7 @@ int LangBuiltins::term(CommandContext &ctx) {
                 ColorDepth depth;
                 if (!parseDepth(args[2], depth)) return ctx.usage();
                 console.setColorDepth(depth);
-                exportTerminal(ex, console);
+                ctx.shell().exportTerminal();
                 return Shell::ExitSuccess;
         }
         if (what == "size" && args.size() <= 3) {
@@ -124,22 +101,45 @@ int LangBuiltins::term(CommandContext &ctx) {
                         if (x == StringView::NPos || !parseNumber(v.left(x), size.columns) ||
                             !parseNumber(v.mid(x + 1), size.rows))
                                 return ctx.usage();
+                        console.setSize(size);
                 } else {
-                        Error err = probeSize(console, size);
+                        const Error err = probeSize(console);
                         if (err == Error::Interrupted || ctx.isInterrupted()) return Shell::ExitInterrupted;
                         if (err.isError()) {
                                 ctx.eprint("term: the terminal didn't report its size\n");
                                 return Shell::ExitFailure;
                         }
+                        size = console.size();
                 }
-                console.setSize(size);
-                exportTerminal(ex, console);
+                ctx.shell().exportTerminal();
                 ctx.printf("%ux%u\n", size.columns, size.rows);
                 return Shell::ExitSuccess;
         }
         return ctx.usage();
 }
 
+int LangBuiltins::clear(CommandContext &ctx) {
+        if (ctx.args().size() != 1) return ctx.usage();
+        // Home, erase the screen, erase the scrollback (xterm's E3).
+        ctx.print("\x1b[H\x1b[2J\x1b[3J");
+        return Shell::ExitSuccess;
+}
+
+int LangBuiltins::reset(CommandContext &ctx) {
+        if (ctx.args().size() != 1) return ctx.usage();
+        Console &console = ctx.shell().console();
+        // The terminal's full reset (RIS: modes, character sets, colors, the
+        // screen), then the console's own modes as a session starts them, and
+        // the size asked for again (also after a terminal that didn't answer).
+        (void)console.write(StringView("\x1b" "c"), ProbeTimeoutMs);
+        console.setMode(Console::TermMode());
+        console.resetSizeRequests();
+        console.requestSize();
+        return Shell::ExitSuccess;
+}
+
+BMDS_SHELL_COMMAND(clear, LangBuiltins::clear, "", "Clear the screen and its scrollback")
+BMDS_SHELL_COMMAND(reset, LangBuiltins::reset, "", "Reset the terminal and the console's modes")
 BMDS_SHELL_COMMAND(term, LangBuiltins::term, "[color [none|16|256|truecolor] | size [COLSxROWS]]",
                    "Show or set the terminal's color depth and size (size alone asks the terminal)")
 

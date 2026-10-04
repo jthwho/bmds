@@ -64,7 +64,8 @@ sdk/                    Userspace SDK (C headers, musl and its system call layer
 tests/host/             Host-side doctest unit tests (plain CMake)
 tests/target/           On-target tests
 tests/compat/           Compatibility corpus: programs from each SDK version, kept as built
-tools/                  Host tools (bmds-elfcheck, bmds-run push-and-run, bmds-compat, ...)
+dist/                   The distribution: recipes for third-party programs (BusyBox), built by tools/bmds-dist
+tools/                  Host tools (bmds-elfcheck, bmds-run push-and-run, bmds-compat, bmds-dist, ...)
 cmake/                  Shared CMake helpers (BMDS compile flags)
 thirdparty/             Vendored third-party code (doctest, FatFs; musl is in sdk/libc)
 docs/                   Project documentation

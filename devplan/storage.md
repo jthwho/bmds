@@ -128,6 +128,22 @@ namespace Partitions   { read(device, out); attach(device); detach(device); }   
 - **Thread safety:** every FatFs call is made under the FAT layer's lock (above); a file may be used from one task at a time (as any stream).
 - **Mounting on the board:** the storage service registers the slot as `sd0` at boot; after attaching a card it runs `Vfs::automount()` (2 ms for the Raspberry Pi test card: its FAT32 boot partition mounts at `/sd0/p0`, its ext4 partition `/dev/sd0p1` is listed but not mounted) and logs each mount; before detaching it runs `Vfs::eject()`. A card with no FAT filesystem gets a warning.
 
+### Symbolic links (emulated; Phase 3, ABI 3)
+
+FAT and exFAT have no links (agreed 2026-10-04: emulate them, as Cygwin does on FAT; needed to break BusyBox into its applets, and by POSIX programs generally).
+
+- **On disk** (frozen once shipped; Cygwin's "system file" symlink, so Cygwin and MSYS2 on Windows see them as links too, and Linux sees small files): a regular file with the FAT **System** attribute, holding the cookie `!<symlink>`, the byte order mark `FF FE`, the target in UTF-16LE, and a 16-bit NUL. Read also: no BOM after the cookie means a UTF-8 target (older Cygwin, hand-made links). At most `BMDS_PATH_MAX` bytes of target. A System file without the cookie is an ordinary file.
+- **Targets** are BMDS paths: absolute, or relative to the link's directory (`busybox`, `../share/x`): relative links survive the card being mounted elsewhere.
+- **Cost: nothing for paths without links.** The VFS doesn't look at path components one by one. FatFs reports "no path" (`FR_NO_PATH`) when a directory along the way is missing or is a file, which is how a link in the middle of a path shows up: only then are the components walked (one `f_stat` each) to find it. A link as the last component shows up as a successful `stat`/`open` of a file with the System attribute: only those are read to check the cookie. Missing files (`FR_NO_FILE`, as in `$PATH` searches) cost nothing extra.
+- **Following:** `open`, `stat`, `opendir`, `set_mtime`, `chdir` and running a program follow links, at most 8 in a row (`ELOOP`, `too many levels of symbolic links`). `lstat`, `readlink`, `unlink`, `rename` and `rmdir` act on the link itself (links in the directories along the way are followed). Opening a link with create makes the target. A current directory reached through a link is the physical path (as `cd -P`): relative paths then don't walk the link each time.
+- **Listing:** `readdir` calls a file a link (`FileType::Link`, size the target's length if ASCII) by its attributes alone: System, not Hidden (the System files Windows makes, `desktop.ini`, are also Hidden), and small enough. Reading each one made a plain `ls` of BusyBox's 119-entry `bin` take 4.2 s (each read is a lookup in that directory); now 0.05 s. `lstat`, `readlink` and following read the cookie, so a listing may call a non-link a link, never the reverse: `ls -l` reads each to show `-> target` (2.5 s for that `bin`; BusyBox's `ls -l` 4.7 s: the sector cache below would fix both).
+- **FatFs patch:** `f_open` didn't keep the file's attribute in the `FIL`; one line in `thirdparty/fatfs` (`patches/bmds-attr.diff`) does, so opening a file sees the System attribute with no second lookup. The link is read on that same `FIL` inside `Fat::openFile` (closing a handle, or opening the file again, while holding the FAT lock would deadlock or hit FatFs's own locking).
+- **Creating:** `symlink(target, path)` writes the file and sets the System attribute (`f_chmod`); `EEXIST` if the name is taken.
+- **Kernel API:** `Vfs::symlink`, `Vfs::readLink`, `Vfs::lstat`, `Vfs::realPath`; the others follow as above.
+- **ABI 3:** slots 32 `symlink(target, path)`, 33 `readlink(path, buf, size)` (NUL-terminated, cut at a character boundary, returns the full length, as `readdir`'s name), 34 `lstat`; `BMDS_TYPE_LINK` 4; `BMDS_ELOOP` 92 (newlib's; Linux's 40 in musl's layer). SDK 2's layer maps `symlinkat`, `readlinkat`, `statx(AT_SYMLINK_NOFOLLOW)` (mode `S_IFLNK | 0777`), `O_NOFOLLOW` and `DT_LNK`.
+- **Shell:** `ln -s [-f] target name` (`ln` without `-s`: no hard links on FAT), `ls -l` shows `l` and `name -> target`, `test -L`/`-h`, `cd` resolves to the physical path, `rm` removes the link.
+- **From a PC:** a link copied onto the card by a PC loses the System attribute unless the PC's tools keep it (Cygwin's do), so the distribution creates its links on the board (`devplan/distribution.md`).
+
 ## 5. Shell
 
 ### Commands (formats are an interface: fixed as shipped in step 3)
@@ -235,6 +251,7 @@ Step 2b measured: the image grew by 10.9 KB (331.7 → 342.7 KB); the linker sti
 
 - UHS-I (1.8 V, SDR50/SDR104): worth it for a DOS-like machine? Measure high speed first.
 - Read-ahead or write-back caching above FatFs: measure first; FatFs already transfers whole-sector runs directly.
+- **A sector cache for directories and the FAT** (measured with links, Phase 3): FatFs keeps one sector of directory, so every lookup in a large directory reads it again from the card (BusyBox's `bin`: 119 entries, 23 sectors on exFAT, about 20 ms a lookup). A small write-through cache under FatFs (32 sectors, 16 KB of PSRAM, metadata only) would make lookups RAM-fast: `ls -l` of that `bin`, PATH searches, links.
 - Commands ignore write errors, so `echo x > f` on a full or pulled card succeeds silently. GNU tools report `write error: No space left on device` and fail; `CommandContext::print()`/`write()` should remember the first error and the built-ins return 1.
 - The removal of a card is noticed only after the write in flight times out (about 4 s): shorter IDF timeouts, or the card-detect interrupt failing transfers early, would shorten it.
 - ~~A `/ram` RAM disk on `RamBlockDevice` for scratch files and tests on the board.~~ Done in Phase 3 step 6: `ram0` at `/ram0/p0`, sparse (`programs.md` §6).

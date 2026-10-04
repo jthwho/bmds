@@ -137,6 +137,9 @@ class Process {
                 int32_t memInfo(uint32_t flags, bmds_mem_info_t *info);
                 int32_t setMtime(const char *path, int64_t ns);
                 int32_t ftruncate(int32_t fd, int64_t size);
+                int32_t symlink(const char *target, const char *path);
+                int32_t readlink(const char *path, char *buf, uint32_t size);
+                int32_t lstat(const char *path, bmds_stat_t *info);
 
                 /** @brief Returns the negated `BMDS_E...` number for @p err. */
                 static int32_t errnoFor(Error err);

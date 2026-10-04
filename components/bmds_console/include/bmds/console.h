@@ -54,7 +54,8 @@ class Console : public Stream {
         public:
                 /** @brief Capability flags (`capabilities()`). */
                 enum Capability : uint32_t {
-                        Ansi = 1u << 0, ///< Understands ANSI/VT100 cursor and erase sequences.
+                        Ansi = 1u << 0,      ///< Understands ANSI/VT100 cursor and erase sequences.
+                        SizeQuery = 1u << 1, ///< A terminal that may answer `requestSize()` (serial).
                 };
 
                 /** @brief Terminal modes ("termios-lite"). */
@@ -85,19 +86,58 @@ class Console : public Stream {
                 virtual uint32_t capabilities() const = 0;
 
                 /**
-                 * @brief Returns the terminal size (80x24 until set: a serial console
-                 *        can't see its terminal; `term size` asks it).
+                 * @brief Returns the terminal size: 80x24 until known. A display or
+                 *        network console sets it; a serial one learns it from the
+                 *        terminal's answer to `requestSize()`.
                  */
                 Size size() const {
                         const uint32_t v = _size.load(std::memory_order_relaxed);
                         return Size{static_cast<uint16_t>(v >> 16), static_cast<uint16_t>(v & 0xFFFF)};
                 }
 
-                /** @brief Records the terminal size. */
+                /** @brief Records the terminal size; `sizeGeneration()` changes if it did. */
                 void setSize(Size size) {
-                        _size.store((static_cast<uint32_t>(size.columns) << 16) | size.rows, std::memory_order_relaxed);
+                        const uint32_t v = (static_cast<uint32_t>(size.columns) << 16) | size.rows;
+                        if (_size.exchange(v, std::memory_order_relaxed) != v)
+                                _sizeGeneration.fetch_add(1, std::memory_order_relaxed);
                         return;
                 }
+
+                /**
+                 * @brief Returns a number that changes whenever the size does (so a
+                 *        shell can update `COLUMNS` and `LINES`, and later signal
+                 *        `SIGWINCH`).
+                 * @isrsafe
+                 */
+                uint32_t sizeGeneration() const { return _sizeGeneration.load(std::memory_order_relaxed); }
+
+                /**
+                 * @brief Asks the terminal for its size, without waiting.
+                 *
+                 * Writes `ESC [ 18 t`; the answer (`ESC [ 8 ; rows ; cols t`) is
+                 * taken out of the input by `read()`, wherever it comes among typed
+                 * keys, and sets `size()`. Nothing is sent while a request is
+                 * outstanding (2 s), nor after three went unanswered (a terminal
+                 * that doesn't answer), until `resetSizeRequests()`.
+                 * @nonblocking
+                 */
+                void requestSize();
+
+                /**
+                 * @brief Lets `requestSize()` ask again at once: after unanswered
+                 *        requests, or with one outstanding (`reset`, `term size`).
+                 */
+                void resetSizeRequests() {
+                        _unanswered = 0;
+                        _requestDeadlineUs.store(0, std::memory_order_relaxed);
+                        return;
+                }
+
+                /** @brief Returns how many size requests in a row went unanswered. */
+                uint8_t unansweredSizeRequests() const { return _unanswered; }
+
+                /** @brief Returns true while a size request waits for its answer. */
+                bool isSizeRequestPending() const { return _requestDeadlineUs.load(std::memory_order_relaxed) != 0; }
 
                 /**
                  * @brief Returns how many colors the terminal shows.
@@ -119,20 +159,23 @@ class Console : public Stream {
 
                 /**
                  * @brief Reads input, waiting until at least one byte is available.
+                 *
+                 * The terminal's answer to `requestSize()` is taken out on the way.
+                 *
                  * @param buf       Destination.
                  * @param timeoutMs How long to wait, or `WaitForever`.
                  * @return The byte count (at least 1), `Error::Timeout`, or
                  *         `Error::Interrupted` (Ctrl-C, with `TermMode::signals`).
                  * @blocking
                  */
-                Result<size_t> read(WritableByteSpan buf, unsigned int timeoutMs) override = 0;
+                Result<size_t> read(WritableByteSpan buf, unsigned int timeoutMs) final;
 
                 /**
-                 * @brief Reads whatever input is available now.
+                 * @brief Reads whatever input is available now (the size answer taken out).
                  * @return The byte count (at least 1), or `Error::WouldBlock`.
                  * @nonblocking
                  */
-                virtual Result<size_t> tryRead(WritableByteSpan buf) = 0;
+                Result<size_t> tryRead(WritableByteSpan buf);
 
                 /**
                  * @brief Writes all of @p data, waiting for space up to @p timeoutMs.
@@ -195,6 +238,16 @@ class Console : public Stream {
                  */
                 bool signalsEnabled() const { return _signals.load(std::memory_order_relaxed); }
 
+                /**
+                 * @brief The input as the terminal sent it, waiting until at least one
+                 *        byte is available (as `read()`, for implementations).
+                 * @blocking
+                 */
+                virtual Result<size_t> readInput(WritableByteSpan buf, unsigned int timeoutMs) = 0;
+
+                /** @brief The input available now (as `tryRead()`, for implementations). */
+                virtual Result<size_t> tryReadInput(WritableByteSpan buf) = 0;
+
         private:
                 Interrupt             _interrupt;
                 std::atomic<bool>     _signals{true};
@@ -203,6 +256,20 @@ class Console : public Stream {
                 std::atomic<bool>     _logs{true};
                 std::atomic<uint8_t>  _depth;
                 std::atomic<uint32_t> _size{(80u << 16) | 24u};
+                std::atomic<uint32_t> _sizeGeneration{0};
+
+                // The size answer filter (the reader's; requestSize() starts it).
+                Result<size_t> filter(WritableByteSpan buf, size_t n);
+                size_t         drainHeld(WritableByteSpan buf, bool force = false);
+                bool           expireRequest();
+
+                std::atomic<int64_t> _requestDeadlineUs{0}; // 0: no request outstanding
+                uint8_t              _unanswered = 0;
+                uint8_t              _held[16] = {};  // the start of an answer, across reads
+                uint8_t              _heldCount = 0;
+                uint8_t              _release[16] = {}; // held bytes that weren't an answer
+                uint8_t              _releaseCount = 0;
+                uint8_t              _releasePos = 0;
 };
 
 BMDS_NAMESPACE_END

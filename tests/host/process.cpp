@@ -396,6 +396,64 @@ TEST_CASE("Process: ABI 2: file identity and ftruncate") {
         CHECK(HostMemory::liveAllocations() == base);
 }
 
+TEST_CASE("Process: ABI 3: symbolic links") {
+        { Disks warm; }
+        const size_t base = HostMemory::liveAllocations();
+        {
+                Disks         disks;
+                bmds::FdTable fds;
+                Process       p(fds);
+                REQUIRE(p.setCwd(disks.aRoot.c_str()).isOk());
+                CHECK(p.mkdir("dir") == 0);
+                const int32_t fd = p.open("dir/file", BMDS_O_WRITE | BMDS_O_CREATE);
+                CHECK(p.write(fd, "data", 4) == 4);
+                CHECK(p.close(fd) == 0);
+                CHECK(p.symlink("dir/file", "link") == 0);
+                CHECK(p.symlink("dir", "dlink") == 0);
+                CHECK(p.symlink("x", "link") == -BMDS_EEXIST);
+                CHECK(p.symlink("", "empty") == -BMDS_ENOENT);
+                // readlink: NUL-terminated, cut at a character boundary, the full length back.
+                char buf[16];
+                CHECK(p.readlink("link", buf, sizeof(buf)) == 8);
+                CHECK(std::string(buf) == "dir/file");
+                CHECK(p.readlink("link", buf, 4) == 8);
+                CHECK(std::string(buf) == "dir");
+                CHECK(p.readlink("dir/file", buf, sizeof(buf)) == -BMDS_EINVAL);
+                CHECK(p.readlink("nope", buf, sizeof(buf)) == -BMDS_ENOENT);
+                // stat follows; lstat doesn't.
+                CHECK(statOf(p, "link").type == BMDS_TYPE_FILE);
+                CHECK(statOf(p, "link").file_size == 4);
+                bmds_stat_t l = {};
+                l.size = sizeof(l);
+                CHECK(p.lstat("link", &l) == 0);
+                CHECK(l.type == BMDS_TYPE_LINK);
+                CHECK(l.file_size == 8);
+                CHECK(statOf(p, "dlink/file").file_size == 4);
+                // chdir through a link: the physical directory.
+                CHECK(p.chdir("dlink") == 0);
+                CHECK(p.getcwd(buf, sizeof(buf)) > 0);
+                CHECK(std::string(buf).find("/dir") != std::string::npos);
+                CHECK(p.chdir("..") == 0);
+                // A loop, and the link removed itself.
+                CHECK(p.symlink("b", "a") == 0);
+                CHECK(p.symlink("a", "b") == 0);
+                CHECK(p.open("a", BMDS_O_READ) == -BMDS_ELOOP);
+                CHECK(p.unlink("dlink") == 0);
+                CHECK(statOf(p, "dir/file").file_size == 4);
+                // readdir reports links.
+                const int32_t dir = p.opendir(".");
+                bmds_stat_t   e = {};
+                e.size = sizeof(e);
+                char name[16];
+                int  links = 0;
+                while (p.readdir(dir, &e, name, sizeof(name)) > 0) links += e.type == BMDS_TYPE_LINK;
+                CHECK(p.closedir(dir) == 0);
+                CHECK(links == 3); // link, a, b
+                p.release();
+        }
+        CHECK(HostMemory::liveAllocations() == base);
+}
+
 TEST_CASE("Process: console input, lines and raw") {
         const size_t base = HostMemory::liveAllocations();
         {

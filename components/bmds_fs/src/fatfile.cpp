@@ -152,7 +152,7 @@ namespace {
 
 } // namespace
 
-Result<FileHandle::Ptr> Fat::openFile(FatVolume &volume, const char *path, uint8_t flags) {
+Result<FileHandle::Ptr> Fat::openFile(FatVolume &volume, const char *path, uint8_t flags, FRESULT *raw, String *link) {
         void *mem = Memory::alloc(MemSpace::Psram, sizeof(FatFile));
         if (mem == nullptr) return makeError<FileHandle::Ptr>(Error::NoMem);
         auto   *file = ::new (mem) FatFile(volume, (flags & Vfs::Append) != 0);
@@ -161,6 +161,26 @@ Result<FileHandle::Ptr> Fat::openFile(FatVolume &volume, const char *path, uint8
         if (result == FR_OK && (flags & Vfs::Truncate) && !(flags & Vfs::Create)) {
                 result = f_truncate(&file->fil());
                 if (result != FR_OK) (void)f_close(&file->fil());
+        }
+        if (raw != nullptr) *raw = result;
+        // A System file may be an emulated link: read it here, on this FIL
+        // (the lock is held: a second open, or a handle closed now, can't be).
+        FIL &fil = file->fil();
+        if (result == FR_OK && link != nullptr && (fil.obj.attr & AM_SYS) != 0 && f_size(&fil) > 10 &&
+            f_size(&fil) <= MaxLinkFile) {
+                auto *buf = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, MaxLinkFile));
+                UINT  got = 0;
+                if (buf != nullptr && f_read(&fil, buf, MaxLinkFile, &got) == FR_OK && parseLink(buf, got, *link).isOk()) {
+                        Memory::free(buf);
+                        (void)f_close(&fil);
+                        file->~FatFile();
+                        Memory::free(mem);
+                        return makeError<FileHandle::Ptr>(Error::Invalid);
+                }
+                Memory::free(buf);
+                link->clear();
+                result = f_lseek(&fil, 0);
+                if (result != FR_OK) (void)f_close(&fil);
         }
         if (result != FR_OK) {
                 Error err = toError(result, volume);

@@ -237,7 +237,7 @@ void UsbSerialConsole::enableInterrupt(uint32_t mask) {
         return;
 }
 
-Result<size_t> UsbSerialConsole::tryRead(WritableByteSpan buf) {
+Result<size_t> UsbSerialConsole::tryReadInput(WritableByteSpan buf) {
         if (_rxFlush.exchange(false, std::memory_order_acquire))
                 _rx.discardTo(_rxFlushTo.load(std::memory_order_relaxed));
         const size_t n = _rx.pop(buf);
@@ -245,13 +245,13 @@ Result<size_t> UsbSerialConsole::tryRead(WritableByteSpan buf) {
         return makeResult(n);
 }
 
-Result<size_t> UsbSerialConsole::read(WritableByteSpan buf, unsigned int timeoutMs) {
+Result<size_t> UsbSerialConsole::readInput(WritableByteSpan buf, unsigned int timeoutMs) {
         if (buf.isEmpty()) return makeError<size_t>(Error::Invalid);
         Deadline deadline(timeoutMs);
         for (;;) {
                 // An interrupt comes before input typed after it.
                 if (interrupt().isRaised()) return makeError<size_t>(Error::Interrupted);
-                Result<size_t> r = tryRead(buf);
+                Result<size_t> r = tryReadInput(buf);
                 if (r.isOk()) return r;
                 Error err = interrupt().wait(_rxReady, deadline);
                 if (err.isError()) return makeError<size_t>(err);

@@ -46,7 +46,7 @@ extern "C" {
  * @brief The ABI version this SDK describes. A kernel implements every
  *        version up to its `bmds_sys_t::abi_version`.
  */
-#define BMDS_ABI_VERSION 2u
+#define BMDS_ABI_VERSION 3u
 
 /** @brief A slot, before it is cast to its function's type. */
 typedef void (*bmds_sys_fn_t)(void);
@@ -103,6 +103,10 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_SET_MTIME 30u   /**< `int32_t set_mtime(const char *path, int64_t ns)`. */
 /* ABI 2 */
 #define BMDS_SYS_FTRUNCATE 31u   /**< `int32_t ftruncate(int32_t fd, int64_t size)`. */
+/* ABI 3 */
+#define BMDS_SYS_SYMLINK 32u     /**< `int32_t symlink(const char *target, const char *path)`. */
+#define BMDS_SYS_READLINK 33u    /**< `int32_t readlink(const char *path, char *buf, uint32_t size)`. */
+#define BMDS_SYS_LSTAT 34u       /**< `int32_t lstat(const char *path, bmds_stat_t *info)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -139,6 +143,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_TYPE_FILE 1u      /**< A regular file. */
 #define BMDS_TYPE_DIRECTORY 2u /**< A directory (also `/`, `/dev` and mount points). */
 #define BMDS_TYPE_DEVICE 3u    /**< A device (`/dev/null`, the console), a pipe. */
+#define BMDS_TYPE_LINK 4u      /**< A symbolic link (ABI 3: only from `lstat` and `readdir`). */
 
 /** @brief `bmds_stat_t::attributes` (the FAT attributes). */
 #define BMDS_ATTR_READONLY 0x01u /**< Read-only. */
@@ -229,6 +234,8 @@ typedef int32_t (*bmds_sys_mem_info_fn)(uint32_t flags, bmds_mem_info_t *info);
 typedef int32_t (*bmds_sys_random_fn)(void *buf, uint32_t size);
 typedef int32_t (*bmds_sys_set_mtime_fn)(const char *path, int64_t ns);
 typedef int32_t (*bmds_sys_ftruncate_fn)(int32_t fd, int64_t size);
+typedef int32_t (*bmds_sys_symlink_fn)(const char *target, const char *path);
+typedef int32_t (*bmds_sys_readlink_fn)(const char *path, char *buf, uint32_t size);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -445,6 +452,38 @@ static inline int32_t bmds_set_mtime(const char *path, int64_t ns) {
  */
 static inline int32_t bmds_ftruncate(int32_t fd, int64_t size) {
         return ((bmds_sys_ftruncate_fn)bmds_sys->slot[BMDS_SYS_FTRUNCATE])(fd, size);
+}
+
+/*
+ * Symbolic links (ABI 3). FAT has none: they are emulated as Cygwin does
+ * (a System file holding "!<symlink>" and the target), so Cygwin on a PC
+ * sees them too. open, stat, opendir, chdir, set_mtime and running a
+ * program follow them (at most 8 in a row: BMDS_ELOOP); unlink, rename and
+ * lstat act on the link itself.
+ */
+
+/**
+ * @brief Makes @p path a symbolic link to @p target (absolute, or relative
+ *        to the link's directory; it needn't exist).
+ * @return 0, or `BMDS_EEXIST`, `BMDS_EINVAL` (empty or longer than
+ *         `BMDS_PATH_MAX`), `BMDS_ENOENT`, ...
+ */
+static inline int32_t bmds_symlink(const char *target, const char *path) {
+        return ((bmds_sys_symlink_fn)bmds_sys->slot[BMDS_SYS_SYMLINK])(target, path);
+}
+
+/**
+ * @brief Reads the target of the symbolic link @p path into @p buf,
+ *        NUL-terminated, cut to @p size - 1 bytes (at a character boundary).
+ * @return The target's full length, or `BMDS_EINVAL` (not a link), `BMDS_ENOENT`, ...
+ */
+static inline int32_t bmds_readlink(const char *path, char *buf, uint32_t size) {
+        return ((bmds_sys_readlink_fn)bmds_sys->slot[BMDS_SYS_READLINK])(path, buf, size);
+}
+
+/** @brief As `bmds_stat`, but a link is described itself (`BMDS_TYPE_LINK`, the target's length). */
+static inline int32_t bmds_lstat(const char *path, bmds_stat_t *info) {
+        return ((bmds_sys_stat_fn)bmds_sys->slot[BMDS_SYS_LSTAT])(path, info);
 }
 
 #ifdef __cplusplus

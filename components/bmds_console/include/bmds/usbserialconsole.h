@@ -74,9 +74,8 @@ class UsbSerialConsole final : public Console {
                 using Console::write;
 
                 const char    *name() const override { return "usb"; }
-                uint32_t       capabilities() const override { return Ansi; }
-                Result<size_t> read(WritableByteSpan buf, unsigned int timeoutMs) override;
-                Result<size_t> tryRead(WritableByteSpan buf) override;
+                uint32_t       capabilities() const override { return Ansi | SizeQuery; }
+
                 Result<size_t> write(ByteSpan data, unsigned int timeoutMs) override;
                 Error          flush(unsigned int timeoutMs) override;
 
@@ -96,6 +95,10 @@ class UsbSerialConsole final : public Console {
 
                 /** @brief Called by `StaticObject`; use `init()`. */
                 UsbSerialConsole(WritableByteSpan txStorage, WritableByteSpan rxStorage);
+
+        protected:
+                Result<size_t> readInput(WritableByteSpan buf, unsigned int timeoutMs) override;
+                Result<size_t> tryReadInput(WritableByteSpan buf) override;
 
         private:
                 static void isr(void *arg);

@@ -125,8 +125,23 @@ namespace Fat {
          * @brief Opens the file at @p path (a FatFs path on @p volume) as a
          *        stream behind a FileHandle. Lock held.
          * @param flags `Vfs::OpenFlag` bits.
+         * @param raw   [out] FatFs's result, if not null (`FR_NO_PATH` tells a
+         *              missing directory from a missing file).
+         * @param link  [out] If not null and the file is an emulated symbolic
+         *              link: its target, and the file is closed again (`Invalid`).
          */
-        Result<FileHandle::Ptr> openFile(FatVolume &volume, const char *path, uint8_t flags);
+        Result<FileHandle::Ptr> openFile(FatVolume &volume, const char *path, uint8_t flags, FRESULT *raw = nullptr,
+                                         String *link = nullptr);
+
+        /** @brief The largest file that can be an emulated symbolic link. */
+        constexpr size_t MaxLinkFile = 10 + 2 + 2 * 1024 + 2;
+
+        /**
+         * @brief The target of an emulated symbolic link from the file's first
+         *        @p size bytes (devplan/storage.md §4).
+         * @return `Ok`, or `Invalid` if it isn't one.
+         */
+        Error parseLink(const uint8_t *data, size_t size, String &target);
 
         // The block device registry, lock held.
 

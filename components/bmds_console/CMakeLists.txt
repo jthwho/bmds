@@ -6,6 +6,7 @@
 
 set(BMDS_CONSOLE_PURE_SRCS
         src/colorfilter.cpp
+        src/console.cpp
         src/lineeditor.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)

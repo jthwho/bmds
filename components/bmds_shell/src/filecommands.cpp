@@ -101,8 +101,9 @@ namespace {
         }
 
         bool isHidden(const FileInfo &info) {
-                return info.name.view().startsWith('.') ||
-                       (info.attributes & (FileInfo::Hidden | FileInfo::System)) != 0;
+                // A link is a System file underneath; it isn't hidden for that.
+                const uint8_t hiding = info.type == FileType::Link ? FileInfo::Hidden : FileInfo::Hidden | FileInfo::System;
+                return info.name.view().startsWith('.') || (info.attributes & hiding) != 0;
         }
 
         // --- ls ---------------------------------------------------------------
@@ -125,6 +126,7 @@ namespace {
                 const char *color = nullptr;
                 if (style.color && info.type == FileType::Directory) color = "\x1b[1;34m";
                 if (style.color && info.type == FileType::Device) color = "\x1b[33m";
+                if (style.color && info.type == FileType::Link) color = "\x1b[1;36m";
                 if (color != nullptr) (void)out.append(color);
                 (void)out.append(info.name.view());
                 if (info.type == FileType::Directory) (void)out.append('/');
@@ -136,7 +138,7 @@ namespace {
                 return Utf8::displayWidth(info.name.view()) + (info.type == FileType::Directory ? 1 : 0);
         }
 
-        void printLong(CommandContext &ctx, const List<FileInfo> &entries, const LsStyle &style) {
+        void printLong(CommandContext &ctx, const List<FileInfo> &entries, const LsStyle &style, StringView dir) {
                 int sizeWidth = 1;
                 for (const FileInfo &e : entries) {
                         int digits = 1;
@@ -144,8 +146,22 @@ namespace {
                         if (digits > sizeWidth) sizeWidth = digits;
                 }
                 for (const FileInfo &e : entries) {
-                        String     line;
-                        const char type = e.type == FileType::Directory ? 'd' : e.type == FileType::Device ? 'c' : '-';
+                        String line;
+                        // A listing calls a link by its attributes; reading it tells for sure.
+                        String target;
+                        bool   link = false;
+                        if (e.type == FileType::Link) {
+                                String path;
+                                if (dir.isEmpty() ? path.assign(e.name).isOk() : join(dir, e.name.view(), path).isOk()) {
+                                        auto [t, err] = Vfs::readLink(path.view(), ctx.vfs());
+                                        link = err.isOk();
+                                        if (link) target = std::move(t);
+                                }
+                        }
+                        const char type = e.type == FileType::Directory ? 'd'
+                                          : e.type == FileType::Device  ? 'c'
+                                          : link                        ? 'l'
+                                                                        : '-';
                         (void)line.appendf("%cr%c-  %*llu  ", type, (e.attributes & FileInfo::ReadOnly) ? '-' : 'w',
                                            sizeWidth, static_cast<unsigned long long>(e.size));
                         if (e.modified.ns == 0) {
@@ -155,6 +171,10 @@ namespace {
                         }
                         (void)line.append("  ");
                         appendName(line, e, style);
+                        if (link) {
+                                (void)line.append(" -> ");
+                                (void)line.append(target);
+                        }
                         (void)line.append('\n');
                         ctx.print(line);
                 }
@@ -216,10 +236,11 @@ namespace {
                 return;
         }
 
-        void printEntries(CommandContext &ctx, List<FileInfo> &entries, unsigned flags, const LsStyle &style) {
+        void printEntries(CommandContext &ctx, List<FileInfo> &entries, unsigned flags, const LsStyle &style,
+                          StringView dir) {
                 sortByName(entries);
                 if (flags & LsLong) {
-                        printLong(ctx, entries, style);
+                        printLong(ctx, entries, style, dir);
                 } else {
                         printShort(ctx, entries, style);
                 }
@@ -263,8 +284,15 @@ namespace {
         // @p to. Reports errors itself; returns false if any.
         bool copyTree(CommandContext &ctx, StringView from, StringView to, bool recursive, uint8_t *buf, int depth) {
                 const Vfs::Context vfs = ctx.vfs();
-                auto [info, err] = Vfs::stat(from, vfs);
+                // A link named on the command line is followed; one inside a
+                // tree is copied as a link (as GNU cp -R does).
+                auto [info, err] = depth == 0 ? Vfs::stat(from, vfs) : Vfs::lstat(from, vfs);
                 if (err.isError()) return report(ctx, from, err);
+                if (info.type == FileType::Link) {
+                        auto [target, linkErr] = Vfs::readLink(from, vfs);
+                        err = linkErr.isOk() ? Vfs::symlink(target.view(), to, vfs) : linkErr;
+                        return err.isOk() || report(ctx, to, err);
+                }
                 if (!info.isDirectory()) {
                         err = copyFile(ctx, from, to, buf);
                         if (err == Error::Interrupted) return false;
@@ -301,7 +329,8 @@ namespace {
         // Removes @p path (a file, or with @p recursive a directory tree).
         Error removeTree(CommandContext &ctx, StringView path, bool recursive, int depth) {
                 const Vfs::Context vfs = ctx.vfs();
-                auto [info, err] = Vfs::stat(path, vfs);
+                // A link is removed itself, never what it leads to.
+                auto [info, err] = Vfs::lstat(path, vfs);
                 if (err.isError()) return err;
                 if (!info.isDirectory()) return Vfs::remove(path, vfs);
                 if (!recursive) return Error::IsDir;
@@ -410,9 +439,10 @@ int FileCommands::cd(CommandContext &ctx) {
         } else {
                 target = args[1];
         }
-        Result<String> normalized = Vfs::normalize(target, ctx.cwd());
-        if (normalized.error().isError()) return fail(ctx, target, normalized.error());
-        String to = std::move(normalized).value();
+        // The physical path (links followed once, here, as cd -P).
+        Result<String> real = Vfs::realPath(target, ctx.vfs());
+        if (real.error().isError()) return fail(ctx, target, real.error());
+        String to = std::move(real).value();
         auto [info, err] = Vfs::stat(to.view(), ctx.vfs());
         if (err.isOk() && !info.isDirectory()) err = Error::NotDir;
         if (err.isError()) return fail(ctx, target, err);
@@ -453,7 +483,8 @@ int FileCommands::ls(CommandContext &ctx) {
         List<FileInfo> files;
         List<size_t>   dirs;
         for (size_t i = 0; i < operands.size(); ++i) {
-                auto [info, err] = Vfs::stat(operands[i], ctx.vfs());
+                // As GNU ls: a link operand is listed itself with -l, followed without.
+                auto [info, err] = (flags & LsLong) ? Vfs::lstat(operands[i], ctx.vfs()) : Vfs::stat(operands[i], ctx.vfs());
                 if (err.isError()) {
                         fail(ctx, operands[i], err);
                         status = Shell::ExitUsage; // GNU: 2 when an operand can't be reached
@@ -467,7 +498,7 @@ int FileCommands::ls(CommandContext &ctx) {
                         (void)files.append(std::move(info));
                 }
         }
-        printEntries(ctx, files, flags, style);
+        printEntries(ctx, files, flags, style, StringView());
         const bool headers = operands.size() > 1;
         for (size_t d = 0; d < dirs.size() && !ctx.isInterrupted(); ++d) {
                 const char *path = operands[dirs[d]];
@@ -480,7 +511,7 @@ int FileCommands::ls(CommandContext &ctx) {
                         status = Shell::ExitUsage;
                         continue;
                 }
-                printEntries(ctx, entries, flags, style);
+                printEntries(ctx, entries, flags, style, path);
         }
         if (ctx.isInterrupted()) return Shell::ExitInterrupted;
         return status;
@@ -642,6 +673,53 @@ int FileCommands::mv(CommandContext &ctx) {
         return ctx.isInterrupted() ? Shell::ExitInterrupted : status;
 }
 
+int FileCommands::ln(CommandContext &ctx) {
+        const Args args = ctx.args();
+        size_t     i = 1;
+        bool       symbolic = false;
+        bool       force = false;
+        for (; i < args.size() && args[i][0] == '-' && args[i][1] != '\0'; ++i) {
+                for (const char *o = args[i] + 1; *o != '\0'; ++o) {
+                        if (*o == 's') {
+                                symbolic = true;
+                        } else if (*o == 'f') {
+                                force = true;
+                        } else {
+                                return ctx.usage();
+                        }
+                }
+        }
+        if (args.size() - i < 2) return ctx.usage();
+        if (!symbolic) {
+                ctx.eprint("ln: hard links: Operation not supported (FAT has none; use ln -s)\n");
+                return Shell::ExitFailure;
+        }
+        const Vfs::Context vfs = ctx.vfs();
+        const StringView   last = args[args.size() - 1];
+        auto [lastInfo, lastErr] = Vfs::stat(last, vfs);
+        const bool intoDir = lastErr.isOk() && lastInfo.isDirectory();
+        if (!intoDir && args.size() - i > 2) {
+                ctx.eprintf("ln: %s: Not a directory\n", args[args.size() - 1]);
+                return Shell::ExitFailure;
+        }
+        int status = Shell::ExitSuccess;
+        for (size_t t = i; t + 1 < args.size(); ++t) {
+                const StringView target = args[t];
+                String           name;
+                Error            err = intoDir ? join(last, baseName(target), name) : name.assign(last);
+                if (err.isOk() && force) {
+                        auto [old, oldErr] = Vfs::lstat(name.view(), vfs);
+                        if (oldErr.isOk() && !old.isDirectory()) err = Vfs::remove(name.view(), vfs);
+                }
+                if (err.isOk()) err = Vfs::symlink(target, name.view(), vfs);
+                if (err.isError()) {
+                        fail(ctx, name.view(), err);
+                        status = Shell::ExitFailure;
+                }
+        }
+        return status;
+}
+
 int FileCommands::hexdump(CommandContext &ctx) {
         const Args   args = ctx.args();
         unsigned     flags = 0;
@@ -690,6 +768,8 @@ int FileCommands::hexdump(CommandContext &ctx) {
 BMDS_SHELL_COMMAND(cd, FileCommands::cd, "[dir | -]", "Change the current directory ($HOME without a dir)")
 BMDS_SHELL_COMMAND(cp, FileCommands::cp, "[-r] source... target", "Copy files (-r: directories too)")
 BMDS_SHELL_COMMAND(hexdump, FileCommands::hexdump, "[-C] [file]", "Show a file (or standard input) in hex and ASCII")
+BMDS_SHELL_COMMAND(ln, FileCommands::ln, "-s [-f] target name | -s [-f] target... dir",
+                   "Make symbolic links (emulated on FAT, as Cygwin does)")
 BMDS_SHELL_COMMAND(ls, FileCommands::ls, "[-la1] [path]...",
                    "List directories (-l: long, -a: hidden files too, -1: one per line)")
 BMDS_SHELL_COMMAND(mkdir, FileCommands::mkdir, "[-p] dir...", "Make directories (-p: parents too, no error if there)")

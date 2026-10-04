@@ -1,0 +1,10 @@
+# BusyBox: one program, a link per applet (devplan/distribution.md §6).
+name = "busybox"
+version = "1.37.0"
+description = "Unix tools in one binary: coreutils, sed, awk, vi, less, diff, find, tar, compressors, hush"
+license = "GPL-2.0-only"
+source = "https://busybox.net/downloads/busybox-1.37.0.tar.bz2"
+sha256 = "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4"
+license_files = ["LICENSE"]
+# Bytes of stack the program asks for (its shell and editors recurse).
+stack = 65536

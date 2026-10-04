@@ -1,0 +1,10 @@
+--- a/ff.c	2026-10-04 14:09:32.812558297 -0700
++++ b/ff.c	2026-10-04 14:09:32.872136419 -0700
+@@ -3943,6 +3943,7 @@
+ 			fp->cltbl = 0;		/* Disable fast seek mode */
+ #endif
+ 			fp->obj.id = fs->id;	/* Set current volume mount ID */
++			fp->obj.attr = dj.obj.attr;	/* BMDS: the attribute, kept (emulated symbolic links are System files) */
+ 			fp->flag = mode;	/* Set file access mode */
+ 			fp->err = 0;		/* Clear error flag */
+ 			fp->sect = 0;		/* Invalidate current data sector */

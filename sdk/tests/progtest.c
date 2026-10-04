@@ -229,6 +229,16 @@ static int posix(const char *dir) {
         // access: X_OK as the shell's test -x.
         CHECK(access(path, R_OK | W_OK) == 0 && access(path, X_OK) == -1 && errno == EACCES);
         CHECK(access(".", X_OK) == 0 && access("nonexistent", F_OK) == -1 && errno == ENOENT);
+        // Symbolic links (ABI 3, emulated on FAT).
+        char target[64] = {0};
+        CHECK(stat(path, &a) == 0 && symlink(path, "pt-link") == 0);
+        CHECK(lstat("pt-link", &b) == 0 && S_ISLNK(b.st_mode) && b.st_size == (off_t)strlen(path));
+        CHECK(readlink("pt-link", target, sizeof(target)) == (ssize_t)strlen(path) && strcmp(target, path) == 0);
+        CHECK(stat("pt-link", &b) == 0 && S_ISREG(b.st_mode) && b.st_ino == a.st_ino);
+        CHECK(symlink("x", "pt-link") == -1 && errno == EEXIST);
+        CHECK(symlink("pt-loop", "pt-loop") == 0 && open("pt-loop", O_RDONLY) == -1 && errno == ELOOP);
+        CHECK(open("pt-link", O_RDONLY | O_NOFOLLOW) == -1 && errno == ELOOP);
+        CHECK(unlink("pt-link") == 0 && unlink("pt-loop") == 0 && stat(path, &b) == 0);
         CHECK(unlink(path) == 0);
         // termios on the console: raw and back (a pipe or file: ENOTTY).
         struct termios t, raw;

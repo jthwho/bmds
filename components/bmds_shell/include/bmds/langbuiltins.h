@@ -38,6 +38,8 @@ namespace LangBuiltins {
         int type(CommandContext &ctx);        ///< `type [-t] name...`
         int command(CommandContext &ctx);     ///< `command [-vV] name [arg]...`
         int term(CommandContext &ctx);        ///< `term [color [depth] | size [COLSxROWS]]`
+        int clear(CommandContext &ctx);       ///< `clear`: clears the screen and its scrollback
+        int reset(CommandContext &ctx);       ///< `reset`: the terminal and the console's modes back to their start
         int source(CommandContext &ctx);      ///< `source file [arg]...`, `. file [arg]...`
         int sh(CommandContext &ctx);          ///< `sh [-c command [name] | file] [arg]...`
 

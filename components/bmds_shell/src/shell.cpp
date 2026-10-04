@@ -7,6 +7,7 @@
  */
 
 #include <cstdint>
+#include <cstdio>
 #include <bmds/assert.h>
 #include <bmds/console.h>
 #include <bmds/glob.h>
@@ -70,6 +71,24 @@ Error Shell::init() {
         return err;
 }
 
+void Shell::exportTerminal() {
+        Variables &vars = _state.vars;
+        if (_console.colorDepth() == ColorDepth::TrueColor) {
+                (void)vars.set("COLORTERM", "truecolor");
+                (void)vars.addFlags("COLORTERM", Variables::Exported);
+        } else {
+                (void)vars.unset("COLORTERM");
+        }
+        _sizeSeen = _console.sizeGeneration();
+        const Console::Size size = _console.size();
+        char                buf[8];
+        std::snprintf(buf, sizeof(buf), "%u", size.columns);
+        (void)vars.set("COLUMNS", buf);
+        std::snprintf(buf, sizeof(buf), "%u", size.rows);
+        (void)vars.set("LINES", buf);
+        return;
+}
+
 const Command *Shell::findCommand(StringView name) const {
         size_t lo = 0;
         size_t hi = _commands.size();
@@ -87,6 +106,9 @@ const Command *Shell::findCommand(StringView name) const {
 }
 
 void Shell::start() {
+        // A serial terminal may have been resized since: ask again (the answer
+        // is taken out of the input as the line is typed).
+        _console.requestSize();
         const String *prompt = _state.vars.value(isContinuing() ? "PS2" : "PS1");
         // The editor keeps a view, so keep our own copy (the variable may change).
         _prompt.clear();
@@ -271,6 +293,7 @@ void Shell::completePath(StringView word, CompletionSink &sink) {
 void Shell::feed(char c) {
         switch (_editor.feed(c)) {
                 case LineEditor::Event::Line:
+                        if (_console.sizeGeneration() != _sizeSeen) exportTerminal();
                         (void)execute(_editor.line());
                         start();
                         break;

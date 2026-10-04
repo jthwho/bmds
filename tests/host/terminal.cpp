@@ -320,7 +320,9 @@ namespace {
         namespace T = bmds::TextCommands;
 
         constexpr bmds::Command TermCommands[] = {
+                {"clear", "", "", L::clear},
                 {"echo", "", "", T::echo},
+                {"reset", "", "", L::reset},
                 {"term", "[color [none|16|256|truecolor] | size [COLSxROWS]]", "", L::term},
         };
 
@@ -343,8 +345,80 @@ TEST_CASE("term") {
         CHECK(run("term color purple") == "usage: term [color [none|16|256|truecolor] | size [COLSxROWS]]\n");
         CHECK(run("term size 132x43; echo $COLUMNS $LINES") == "132x43\n132 43\n");
         CHECK(con.size().columns == 132);
+        // Not a terminal that can be asked.
+        CHECK(run("term size") == "term: the terminal didn't report its size\n");
+        con.caps |= bmds::Console::SizeQuery;
         con.input = "\x1b[8;50;100t";
         CHECK(run("term size") == "\x1b[18t100x50\n");
         CHECK(con.size().rows == 50);
         CHECK(run("term size") == "\x1b[18tterm: the terminal didn't report its size\n");
+        CHECK(run("clear") == "\x1b[H\x1b[2J\x1b[3J");
+        CHECK(run("reset") == "\x1b" "c\x1b[18t");
+}
+
+namespace {
+
+        // Reads everything @p con has for its reader, @p chunk bytes at a time.
+        std::string drain(FakeConsole &con, size_t chunk) {
+                std::string out;
+                uint8_t     buf[64];
+                for (;;) {
+                        auto [n, err] = con.read(bmds::WritableByteSpan(buf, chunk), 50);
+                        if (err.isError()) break;
+                        out.append(reinterpret_cast<char *>(buf), n);
+                }
+                return out;
+        }
+
+} // namespace
+
+TEST_CASE("Console: the size answer is taken out of the input") {
+        for (size_t chunk : {size_t(64), size_t(1), size_t(3)}) {
+                CAPTURE(chunk);
+                FakeConsole con;
+                con.caps |= bmds::Console::SizeQuery;
+                // No request: an answer-like sequence is input like any other.
+                con.input = "a\x1b[8;5;6tb";
+                CHECK(drain(con, chunk) == "a\x1b[8;5;6tb");
+                CHECK(con.size().columns == 80);
+                // A request: the answer goes, typed keys around it stay, in order.
+                const uint32_t gen = con.sizeGeneration();
+                con.requestSize();
+                CHECK(con.take() == "\x1b[18t");
+                CHECK(con.isSizeRequestPending());
+                con.input += "ls\x1b[A\x1b[8;40;120tq";
+                CHECK(drain(con, chunk) == "ls\x1b[Aq");
+                CHECK(con.size().columns == 120);
+                CHECK(con.size().rows == 40);
+                CHECK(con.sizeGeneration() != gen);
+                CHECK_FALSE(con.isSizeRequestPending());
+                // A lone ESC (vi's) while waiting comes through, as do broken answers.
+                con.requestSize();
+                con.input += "\x1b\x1b[8;x\x1b[8;1;2t";
+                CHECK(drain(con, chunk) == "\x1b\x1b[8;x");
+                CHECK(con.size().columns == 2);
+                // An answer that never comes: the ESC held meanwhile comes out at the end.
+                con.requestSize();
+                con.input += "\x1b[8;12";
+                CHECK(drain(con, chunk) == "\x1b[8;12");
+        }
+}
+
+TEST_CASE("Shell: COLUMNS and LINES follow the terminal") {
+        FakeConsole con;
+        con.caps |= bmds::Console::SizeQuery;
+        auto shell = std::make_unique<bmds::Shell>(con, bmds::Span<const bmds::Command>(TermCommands), 1 << 20);
+        REQUIRE(shell->init().isOk());
+        shell->start();
+        CHECK(con.take().find("\x1b[18t") != std::string::npos); // asked at the prompt
+        // The answer arrives ahead of the keys of the next line, read a byte at a time as the shell does.
+        con.input += "\x1b[8;33;99techo $COLUMNS $LINES\r";
+        for (;;) {
+                uint8_t c = 0;
+                auto [n, err] = con.read(bmds::WritableByteSpan(&c, 1), 50);
+                if (err.isError()) break;
+                shell->feed(static_cast<char>(c));
+        }
+        const std::string out = con.take();
+        CHECK_MESSAGE(out.find("99 33\n") != std::string::npos, out);
 }

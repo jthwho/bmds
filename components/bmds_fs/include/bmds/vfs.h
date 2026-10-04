@@ -28,6 +28,7 @@ enum class FileType : uint8_t {
         File,      ///< A regular file.
         Directory, ///< A directory (also `/`, `/dev` and mount points).
         Device,    ///< A device node (`/dev/null`, `/dev/console`).
+        Link,      ///< A symbolic link (only from `lstat()` and `Directory::next()`).
 };
 
 /** @brief What `Vfs::stat()` and `Directory::next()` report. */
@@ -238,8 +239,43 @@ namespace Vfs {
          */
         Result<FileHandle::Ptr> open(StringView path, uint8_t flags, const Context &context);
 
-        /** @brief Returns what @p path names. */
+        /**
+         * @brief Returns what @p path names, following symbolic links.
+         * @return The file, or `NotExist`, `TooManyLinks` (more than 8 in a row), ...
+         */
         Result<FileInfo> stat(StringView path, const Context &context);
+
+        /**
+         * @brief As `stat()`, but a symbolic link as the last component is
+         *        described itself: `FileType::Link`, the size its target's length.
+         */
+        Result<FileInfo> lstat(StringView path, const Context &context);
+
+        /**
+         * @brief Returns the target of the symbolic link @p path (as written:
+         *        absolute, or relative to the link's directory).
+         * @return The target, or `NotExist`, `Invalid` (not a link), ...
+         */
+        Result<String> readLink(StringView path, const Context &context);
+
+        /**
+         * @brief Makes @p path a symbolic link to @p target (which needn't exist).
+         *
+         * Emulated (devplan/storage.md §4): a System file holding Cygwin's
+         * `!<symlink>` cookie and the target in UTF-16LE.
+         *
+         * @return `Ok`, or `Exists` (the name is taken), `Invalid` (an empty
+         *         or too long target), `PermissionDenied` (outside every
+         *         filesystem), `NotExist` (no such directory), ...
+         */
+        Error symlink(StringView target, StringView path, const Context &context);
+
+        /**
+         * @brief Returns the physical path @p path names: normalized, with every
+         *        symbolic link followed (for a current directory).
+         * @return The path, or `NotExist`, `TooManyLinks`, ...
+         */
+        Result<String> realPath(StringView path, const Context &context);
 
         /** @brief Opens a directory for listing. */
         Result<Directory> openDirectory(StringView path, const Context &context);

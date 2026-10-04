@@ -289,6 +289,12 @@ namespace {
                                         case 'f': out = stat(a, info) && info.type == FileType::File; return true;
                                         case 'd': out = stat(a, info) && info.isDirectory(); return true;
                                         case 'c': out = stat(a, info) && info.type == FileType::Device; return true;
+                                        case 'h':
+                                        case 'L': {
+                                                auto [l, err] = Vfs::lstat(a, _ctx.vfs());
+                                                out = err.isOk() && l.type == FileType::Link;
+                                                return true;
+                                        }
                                         // Directories count as non-empty, as on Unix (where they have a size).
                                         case 's':
                                                 out = stat(a, info) && (info.size > 0 || info.isDirectory());

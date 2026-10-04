@@ -101,13 +101,19 @@ on BMDS's table; programs never see that layer. What differs from Linux:
   0755; files 0644, or 0444 when read-only; execute bits as the shell's
   `test -x` decides: `.elf` and `.sh` by name, a name without an extension
   by its first bytes), every user is root, `chmod`/`chown` do nothing. No
-  links (`readlink` is `EINVAL`, `link`/`symlink` `EPERM`). `st_ino` and
+  hard links (`link` is `EPERM`). Symbolic links work (ABI 3), emulated as
+  Cygwin does: `symlink`, `readlink`, `lstat`, `O_NOFOLLOW`; `readdir` calls
+  a System file a link by its attributes (`lstat` reads it to be sure). `st_ino` and
   `st_dev` tell files apart (a hash of the path, so a rename changes it).
   `ftruncate`, holes (a write past the end leaves zeros), `pread`/`pwrite`,
   64-bit `off_t`. A file open for writing can't be opened again (FatFs), and
   `stat` by name shows its size as of its last flush (`fstat` is current).
   `unlink` of an open file is `EBUSY`; `rename` across filesystems `EXDEV`.
 - **Directories:** `readdir` lists `.` and `..` first, as Linux; up to 8 open.
+- **Terminal size:** `TIOCGWINSZ` gives the console's size, which a serial
+  terminal reports when the shell asks at each prompt (`term size` asks now);
+  a resize while a program runs isn't seen until the next prompt (no
+  `SIGWINCH` yet).
 - **Memory:** `malloc` (musl's) over whole pages from the kernel; private
   file `mmap` is a copy; no shared mappings; everything is freed at exit.
 - **Terminal:** `termios` maps `ICANON` (line input, with echo), `ISIG`

@@ -583,6 +583,94 @@ TEST_CASE("Vfs: file identity") {
         CHECK(Vfs::stat("/dev/null", Root).value().device == 0);
 }
 
+TEST_CASE("Vfs: symbolic links") {
+        for (FsFormat format : {FsFormat::Fat32, FsFormat::ExFat}) {
+                CAPTURE(static_cast<int>(format));
+                fresh(format);
+                const size_t base = liveObjects();
+                CHECK(Vfs::mkdir("/ram0/p0/bin", Root).isOk());
+                CHECK(Vfs::mkdir("/ram0/p0/data", Root).isOk());
+                put("/ram0/p0/bin/busybox", "BB");
+                put("/ram0/p0/data/notes.txt", "notes");
+                // Relative to the link's directory, and absolute.
+                CHECK(Vfs::symlink("busybox", "/ram0/p0/bin/awk", Root).isOk());
+                CHECK(Vfs::symlink("/ram0/p0/data", "/ram0/p0/d", Root).isOk());
+                CHECK(Vfs::symlink("busybox", "/ram0/p0/bin/awk", Root) == Error::Exists);
+                CHECK(Vfs::symlink("", "/ram0/p0/x", Root) == Error::Invalid);
+                CHECK(Vfs::symlink("x", "/dev/x", Root) == Error::PermissionDenied);
+
+                // On disk: Cygwin's format, with the System attribute.
+                {
+                        const std::string raw = get("/ram0/p0/bin/awk"); // followed: the target's contents
+                        CHECK(raw == "BB");
+                }
+                const FileInfo awk = Vfs::lstat("/ram0/p0/bin/awk", Root).value();
+                CHECK(awk.type == FileType::Link);
+                CHECK(awk.size == 7);
+                CHECK((awk.attributes & FileInfo::System) != 0);
+                CHECK(Vfs::readLink("/ram0/p0/bin/awk", Root).value() == "busybox");
+                CHECK(Vfs::readLink("/ram0/p0/bin/busybox", Root).error() == Error::Invalid);
+
+                // Followed: stat, open (also for writing), directories, along a path.
+                CHECK(Vfs::stat("/ram0/p0/bin/awk", Root).value().type == FileType::File);
+                CHECK(Vfs::stat("/ram0/p0/bin/awk", Root).value().id == Vfs::stat("/ram0/p0/bin/busybox", Root).value().id);
+                CHECK(Vfs::stat("/ram0/p0/d", Root).value().isDirectory());
+                CHECK(get("/ram0/p0/d/notes.txt") == "notes");
+                CHECK(Vfs::stat("/ram0/p0/d/notes.txt", Root).value().size == 5);
+                put("/ram0/p0/d/new.txt", "made through the link");
+                CHECK(get("/ram0/p0/data/new.txt") == "made through the link");
+                CHECK(Vfs::mkdir("/ram0/p0/d/sub", Root).isOk());
+                CHECK(Vfs::stat("/ram0/p0/data/sub", Root).value().isDirectory());
+                {
+                        auto [dir, err] = Vfs::openDirectory("/ram0/p0/d", Root);
+                        REQUIRE(err.isOk());
+                        size_t n = 0;
+                        while (dir.next().error().isOk()) ++n;
+                        CHECK(n == 3);
+                }
+                CHECK(Vfs::realPath("/ram0/p0/d/sub/..", Root).value() == "/ram0/p0/data");
+                CHECK(Vfs::realPath("/ram0/p0/bin/awk", Root).value() == "/ram0/p0/bin/busybox");
+                CHECK(Vfs::stat("x", Vfs::Context{"/ram0/p0/d", nullptr}).error() == Error::NotExist);
+                CHECK(Vfs::stat("notes.txt", Vfs::Context{"/ram0/p0/d", nullptr}).isOk());
+                // Truncating through a link cuts the target, not the link.
+                put("/ram0/p0/bin/awk", "short");
+                CHECK(get("/ram0/p0/bin/busybox") == "short");
+                CHECK(Vfs::lstat("/ram0/p0/bin/awk", Root).value().type == FileType::Link);
+
+                // Listing: links as links.
+                {
+                        auto [dir, err] = Vfs::openDirectory("/ram0/p0/bin", Root);
+                        REQUIRE(err.isOk());
+                        int links = 0;
+                        for (auto r = dir.next(); r.isOk(); r = dir.next()) links += r.value().type == FileType::Link;
+                        CHECK(links == 1);
+                }
+
+                // A dangling link, a loop.
+                CHECK(Vfs::symlink("nowhere", "/ram0/p0/dangling", Root).isOk());
+                CHECK(Vfs::stat("/ram0/p0/dangling", Root).error() == Error::NotExist);
+                CHECK(Vfs::lstat("/ram0/p0/dangling", Root).value().type == FileType::Link);
+                CHECK(Vfs::symlink("loop2", "/ram0/p0/loop1", Root).isOk());
+                CHECK(Vfs::symlink("loop1", "/ram0/p0/loop2", Root).isOk());
+                CHECK(Vfs::stat("/ram0/p0/loop1", Root).error() == Error::TooManyLinks);
+                CHECK(Vfs::open("/ram0/p0/loop1", Vfs::Read, Root).error() == Error::TooManyLinks);
+                CHECK(Vfs::stat("/ram0/p0/loop1/x", Root).error() == Error::TooManyLinks);
+
+                // The link itself: removed, renamed; rmdir refuses it.
+                CHECK(Vfs::rmdir("/ram0/p0/d", Root) == Error::NotDir);
+                CHECK(Vfs::rename("/ram0/p0/d", "/ram0/p0/e", Root).isOk());
+                CHECK(Vfs::readLink("/ram0/p0/e", Root).value() == "/ram0/p0/data");
+                CHECK(Vfs::remove("/ram0/p0/e", Root).isOk());
+                CHECK(Vfs::stat("/ram0/p0/data/notes.txt", Root).isOk());
+                CHECK(Vfs::stat("/ram0/p0/e", Root).error() == Error::NotExist);
+
+                // The cookie alone doesn't make a link: only a System file is one.
+                put("/ram0/p0/plain", "!<symlink>\xff\xfex\0\0\0");
+                CHECK(Vfs::lstat("/ram0/p0/plain", Root).value().type == FileType::File);
+                CHECK(liveObjects() == base);
+        }
+}
+
 TEST_CASE("Vfs: /dev/null and /dev/console") {
         fresh();
         CHECK(Vfs::stat("/", Root).value().isDirectory());

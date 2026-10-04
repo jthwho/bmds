@@ -91,6 +91,18 @@ The history stays plain text, so `log show | ...` stays parseable. The console s
 - **Tested:** UTF-8 edge cases, palette downgrades, SGR round trips over attribute/color combinations, a VT sequence corpus fed whole and byte by byte, the filter at each depth (also split byte by byte), editor UTF-8, `term` including a probe reply. On the board: the depth switch rewriting truecolor to `91`/`1;34`, `none` keeping bold, `café 日本` editing, dim `D` log lines.
 - Size: image +9.5 KB; static RAM +8 bytes.
 
+## Terminal size, `clear`, `reset` (Phase 3)
+
+Programs need the terminal's size (BusyBox's `vi` and `less` used 80x24 whatever the window). The `Console` is where it lives (`size()`, `setSize()`), and every console fills it its own way; programs read it with `TIOCGWINSZ` (SDK 2's layer) or `bmds_term_get`, the shell exports `COLUMNS` and `LINES`.
+
+- **Serial:** a terminal can't tell the device when its window changes, so the device asks. `Console::requestSize()` writes `ESC [ 18 t`; `Console::read()` takes the answer, `ESC [ 8 ; rows ; cols t`, out of the input wherever it comes among typed keys (holding a partial answer across reads, so readers taking a byte at a time get it too) and sets the size. Only while a request is outstanding (2 s) is anything held, so a real Escape key is never kept long; with no request the input passes untouched (the fast path, as for `rz`). The shell asks at every prompt, so a resize is seen by the next command; after three unanswered requests (a terminal that doesn't do it, a script on the port) it stops, until `reset` or `term size`. `term size` asks and waits for the answer; `term size COLSxROWS` sets it. Consoles that can be asked say so (`Console::SizeQuery`).
+- **Display console (Phase 4):** its own grid, set when the mode or font changes.
+- **SSH (Phase 7):** the client's window size from `pty-req` and `window-change`.
+- **Changes:** `Console::sizeGeneration()` counts them; the shell updates `COLUMNS`/`LINES` before each typed line when it changed. With signals from outside (programs.md step 8+), the console's foreground job gets `SIGWINCH`.
+- **`clear`:** home, erase the screen and the scrollback (`ESC [ H ESC [ 2 J ESC [ 3 J`), to standard output.
+- **`reset`:** the terminal's full reset (RIS, `ESC c`: modes, character sets, colors, the screen), the console's modes as a session starts them, and the size asked for again.
+- **Tested:** the answer taken out among keys, a byte at a time and in chunks, a lone ESC and broken answers coming through, an answer that never comes (held bytes released), no filtering without a request; `term size` asking and failing; `COLUMNS`/`LINES` following; `clear`, `reset`. On the board: the answer typed into the middle of a command (`ec<answer>ho`), programs seeing 132x40, asking stopping after three unanswered requests, `reset` asking again.
+
 ## 3. Design (Phase 4: screen model and renderer)
 
 `TerminalScreen` (pure, host-tested) consumes `VtParser` actions and maintains:
@@ -142,6 +154,8 @@ Host tests:
 - `TerminalScreen` against expected cell grids, including the scrolling, wrapping and erase cases from vttest-style scripts.
 
 ## 8. Open questions
+
+- **A byte lost at a USB packet boundary:** twice in a day of testing, the 65th byte of a line typed in one write (the first of the second 64-byte USB packet) never reached the shell, both times just before the line ran a program. 60 long lines in a row, with and without long output before them, came through whole. The receive path already works around a lost packet when the chip transmits meanwhile (rev v1.3); a lost byte may be a relative of it. Watch for it; a reproduction would point at the driver or the hardware.
 
 - Fonts and Unicode coverage for HDMI (Phase 4). Wide characters need a font that has them; fall back to a replacement glyph.
 - Line editor UTF-8: done in Phase 1b.

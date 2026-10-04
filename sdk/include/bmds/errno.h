@@ -46,6 +46,7 @@
 #define BMDS_ENOSYS 88       /**< Function not implemented (a slot this kernel lacks). */
 #define BMDS_ENOTEMPTY 90    /**< Directory not empty. */
 #define BMDS_ENAMETOOLONG 91 /**< File name too long. */
+#define BMDS_ELOOP 92        /**< Too many levels of symbolic links (ABI 3). */
 #define BMDS_ETIMEDOUT 116   /**< Timed out. */
 #define BMDS_ENOTSUP 134     /**< Not supported. */
 #define BMDS_ENOMEDIUM 135   /**< No medium (the card is out). */

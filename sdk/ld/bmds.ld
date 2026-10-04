@@ -42,7 +42,7 @@ SECTIONS
                 LONG(1)                 /* type: BMDS_NOTE_PROGRAM */
                 BYTE(0x42) BYTE(0x4d) BYTE(0x44) BYTE(0x53) BYTE(0) BYTE(0) BYTE(0) BYTE(0)
                 LONG(16)                /* size */
-                LONG(2)                 /* abi_version: BMDS_ABI_VERSION */
+                LONG(3)                 /* abi_version: BMDS_ABI_VERSION */
                 LONG(__bmds_stack_size) /* stack_size */
                 LONG(0)                 /* flags */
         } :image :note

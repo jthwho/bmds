@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+# @file      bmds-dist
+# @copyright Jason Howard. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+# See LICENSE file in the project root folder for license information.
+#
+# Builds the distribution (devplan/distribution.md): the programs in dist/,
+# from pinned upstream sources with the SDK, into build-dist/rootfs, the
+# card's tree; and installs that tree on a board over the serial cable.
+#
+#   bmds-dist list                  the packages
+#   bmds-dist build [package...]    build (all by default) into build-dist/rootfs
+#   bmds-dist install [-p port]     send build-dist/rootfs to the board, make the links
+#
+# Python's standard library only (3.11+, for tomllib); install needs pyserial.
+
+import argparse
+import hashlib
+import os
+import shutil
+import subprocess
+import sys
+import tarfile
+import tomllib
+import urllib.request
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+DIST = os.path.join(ROOT, "dist")
+OUT = os.path.join(ROOT, "build-dist")
+CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "bmds-dist", "sources")
+ROOTFS = os.path.join(OUT, "rootfs")
+
+
+def die(message):
+    print("bmds-dist: " + message, file=sys.stderr)
+    sys.exit(1)
+
+
+def packages():
+    """Every recipe in dist/, by name."""
+    found = {}
+    for name in sorted(os.listdir(DIST)):
+        path = os.path.join(DIST, name, "package.toml")
+        if os.path.isfile(path):
+            with open(path, "rb") as f:
+                recipe = tomllib.load(f)
+            recipe["dir"] = os.path.join(DIST, name)
+            if recipe.get("name") != name:
+                die("%s: name must be %s" % (path, name))
+            found[name] = recipe
+    return found
+
+
+def run(command, **kwargs):
+    print("+ " + " ".join(command), flush=True)
+    result = subprocess.run(command, **kwargs)
+    if result.returncode != 0:
+        die("failed (%d): %s" % (result.returncode, " ".join(command)))
+
+
+def make_tool():
+    """The `build` wrapper when there is one (it paces parallel jobs), else make -jN."""
+    if os.environ.get("BMDS_MAKE"):
+        return os.environ["BMDS_MAKE"]
+    wrapper = shutil.which("build")
+    return wrapper if wrapper else "make -j%d" % (os.cpu_count() or 2)
+
+
+def find_tool(name):
+    gcc = shutil.which("riscv32-esp-elf-gcc")
+    if gcc is None:
+        die("riscv32-esp-elf-gcc not found: run ESP-IDF's export.sh first")
+    return os.path.join(os.path.dirname(gcc), "riscv32-esp-elf-" + name)
+
+
+def build_sdk():
+    """Configures build-dist/sdk and builds musl and libbmds; returns bmds-cc's path."""
+    sdk = os.path.join(OUT, "sdk")
+    if not os.path.isfile(os.path.join(sdk, "CMakeCache.txt")):
+        run(["cmake", "-S", os.path.join(ROOT, "sdk", "examples"), "-B", sdk, "-G", "Ninja",
+             "-DCMAKE_TOOLCHAIN_FILE=" + os.path.join(ROOT, "sdk", "cmake", "bmds-toolchain.cmake"),
+             "-DCMAKE_BUILD_TYPE=MinSizeRel"])
+    wrapper = shutil.which("build")
+    if wrapper:
+        run([wrapper, "bmds_libs"], cwd=sdk)
+    else:
+        run(["cmake", "--build", sdk, "--target", "bmds_libs"])
+    return os.path.join(sdk, "bmds-cc")
+
+
+def fetch(recipe):
+    """The release tarball, downloaded once and checked."""
+    url = recipe["source"]
+    path = os.path.join(CACHE, os.path.basename(url))
+    if not os.path.isfile(path):
+        os.makedirs(CACHE, exist_ok=True)
+        print("fetching " + url, flush=True)
+        with urllib.request.urlopen(url) as response, open(path + ".part", "wb") as f:
+            shutil.copyfileobj(response, f)
+        os.replace(path + ".part", path)
+    digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+    if digest != recipe["sha256"]:
+        os.remove(path)
+        die("%s: sha256 %s, expected %s (removed; fetch again)" % (path, digest, recipe["sha256"]))
+    return path
+
+
+def unpack(recipe, tarball):
+    """A fresh source tree, patched; returns its path."""
+    src_root = os.path.join(OUT, "src")
+    top = "%s-%s" % (recipe["name"], recipe["version"])
+    src = os.path.join(src_root, top)
+    shutil.rmtree(src, ignore_errors=True)
+    os.makedirs(src_root, exist_ok=True)
+    with tarfile.open(tarball) as t:
+        t.extractall(src_root, filter="tar")
+    unpacked = os.path.join(src_root, recipe.get("source_dir", top))
+    if unpacked != src:
+        os.replace(unpacked, src)
+    patches = os.path.join(recipe["dir"], "patches")
+    if os.path.isdir(patches):
+        for patch in sorted(os.listdir(patches)):
+            run(["patch", "-p1", "-i", os.path.join(patches, patch)], cwd=src)
+    return src
+
+
+def is_elf(path):
+    with open(path, "rb") as f:
+        return f.read(4) == b"\x7fELF"
+
+
+def tree_files(root):
+    """Files and links below root, relative, sorted."""
+    found = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in filenames + [d for d in dirnames if os.path.islink(os.path.join(dirpath, d))]:
+            found.append(os.path.relpath(os.path.join(dirpath, name), root))
+    return sorted(found)
+
+
+def build_package(recipe, cc):
+    name = recipe["name"]
+    print("=== %s %s" % (name, recipe["version"]), flush=True)
+    src = unpack(recipe, fetch(recipe))
+    build = os.path.join(OUT, "build", name)
+    shutil.rmtree(build, ignore_errors=True)
+    os.makedirs(build)
+    stage = os.path.join(OUT, "stage", name)
+    shutil.rmtree(stage, ignore_errors=True)
+    os.makedirs(stage)
+    env = dict(os.environ)
+    env.update({
+        "SRC": src, "BUILD": build, "DESTDIR": stage, "PKGDIR": recipe["dir"], "CC": cc,
+        "AR": find_tool("ar"), "STRIP": find_tool("strip"), "OBJCOPY": find_tool("objcopy"),
+        "HOSTCC": os.environ.get("HOSTCC", "gcc"), "BMDS_MAKE": make_tool(), "JOBS": str(os.cpu_count() or 2),
+        "BMDS_STACK": str(recipe.get("stack", 0)), "VERSION": recipe["version"],
+    })
+    run(["bash", "-e", os.path.join(recipe["dir"], "build.sh")], cwd=build, env=env)
+    # Programs as the loader needs them: symbols it doesn't use gone, relocations kept.
+    bindir = os.path.join(stage, "bin")
+    if os.path.isdir(bindir):
+        for entry in sorted(os.listdir(bindir)):
+            path = os.path.join(bindir, entry)
+            if os.path.isfile(path) and not os.path.islink(path) and is_elf(path):
+                run([find_tool("objcopy"), "--strip-unneeded", path])
+    licenses = os.path.join(stage, "share", "licenses", name)
+    os.makedirs(licenses, exist_ok=True)
+    for license_file in recipe.get("license_files", []):
+        shutil.copy(os.path.join(src, license_file), licenses)
+    # Into the rootfs, with the package's file list.
+    files = tree_files(stage)
+    for rel in files:
+        dest = os.path.join(ROOTFS, rel)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        if os.path.lexists(dest):
+            os.remove(dest)
+        source = os.path.join(stage, rel)
+        if os.path.islink(source):
+            os.symlink(os.readlink(source), dest)
+        else:
+            shutil.copy2(source, dest)
+    meta = os.path.join(ROOTFS, "etc", "dist")
+    os.makedirs(meta, exist_ok=True)
+    with open(os.path.join(meta, name + ".files"), "w") as f:
+        f.write("".join(rel + "\n" for rel in files))
+    print("%s: %d files" % (name, len(files)), flush=True)
+
+
+def write_links_script():
+    """etc/dist/links.sh: every link in the rootfs, made by the board (emulated links
+    need the FAT System attribute, which a PC's tools don't set)."""
+    lines = ["# Made by tools/bmds-dist: the distribution's symbolic links. Run on the board:",
+             "#   sh /sd0/p0/etc/dist/links.sh", ""]
+    links = [rel for rel in tree_files(ROOTFS) if os.path.islink(os.path.join(ROOTFS, rel))]
+    root = "${DIST_ROOT:-/sd0/p0}"
+    for rel in links:
+        target = os.readlink(os.path.join(ROOTFS, rel))
+        lines.append("ln -sf %s %s/%s" % (target, root, rel))
+    with open(os.path.join(ROOTFS, "etc", "dist", "links.sh"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+    return links
+
+
+def command_list(_opts):
+    for name, recipe in packages().items():
+        print("%-12s %-10s %s (%s)" % (name, recipe["version"], recipe.get("description", ""), recipe.get("license", "?")))
+    return 0
+
+
+def command_build(opts):
+    known = packages()
+    wanted = opts.packages or list(known)
+    for name in wanted:
+        if name not in known:
+            die("no package %s (see bmds-dist list)" % name)
+    cc = build_sdk()
+    for name in wanted:
+        build_package(known[name], cc)
+    links = write_links_script()
+    print("rootfs: %s (%d links in etc/dist/links.sh)" % (ROOTFS, len(links)))
+    return 0
+
+
+def command_install(opts):
+    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+    import bmdsboard  # noqa: E402
+
+    if not os.path.isdir(ROOTFS):
+        die("nothing built: run bmds-dist build first")
+    root = opts.root.rstrip("/")
+    by_dir = {}
+    for rel in tree_files(ROOTFS):
+        path = os.path.join(ROOTFS, rel)
+        if not os.path.islink(path):
+            by_dir.setdefault(os.path.dirname(rel), []).append(path)
+    try:
+        board = bmdsboard.Board(opts.port)
+        board.sync()
+        for rel_dir in sorted(by_dir):
+            where = root + ("/" + rel_dir if rel_dir else "")
+            print("%s: %d files" % (where, len(by_dir[rel_dir])), flush=True)
+            board.send_files(by_dir[rel_dir], where)
+        output, status = board.run("DIST_ROOT=%s sh %s/etc/dist/links.sh" % (bmdsboard.quote(root), root), 120)
+        sys.stdout.write(output.decode(errors="replace"))
+        if status != 0:
+            die("making the links failed (%d)" % status)
+    except bmdsboard.BoardError as e:
+        die(str(e))
+    print("installed in %s" % root)
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Build and install the BMDS distribution (dist/).")
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("list", help="the packages")
+    b = sub.add_parser("build", help="build packages (all by default) into build-dist/rootfs")
+    b.add_argument("packages", nargs="*")
+    i = sub.add_parser("install", help="send build-dist/rootfs to the board and make the links")
+    i.add_argument("-p", "--port", help="serial port (default: $ESPPORT, /dev/esp-*, /dev/ttyACM0)")
+    i.add_argument("--root", default="/sd0/p0", help="where the tree goes (default: /sd0/p0)")
+    opts = parser.parse_args()
+    return {"list": command_list, "build": command_build, "install": command_install}[opts.command](opts)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

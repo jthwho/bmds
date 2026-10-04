@@ -42,6 +42,7 @@ namespace {
                 {"grep", "[-civnqF] pattern [file]...", "", bmds::TextCommands::grep},
                 {"head", "[-n count] [file]...", "", bmds::TextCommands::head},
                 {"hexdump", "[-C] [file]", "", bmds::FileCommands::hexdump},
+                {"ln", "-s [-f] target name | -s [-f] target... dir", "", bmds::FileCommands::ln},
                 {"ls", "[-la1] [path]...", "", bmds::FileCommands::ls},
                 {"mkdir", "[-p] dir...", "", bmds::FileCommands::mkdir},
                 {"mkfs", "[-t auto|fat32|exfat] -y DEVICE", "", bmds::FsCommands::mkfs},
@@ -54,6 +55,7 @@ namespace {
                 {"set", "[-+Ceux] [-+o name] [--] [arg]...", "", bmds::LangBuiltins::set},
                 {"sh", "[-c command [name] | file] [arg]...", "", bmds::LangBuiltins::sh},
                 {"source", "file [arg]...", "", bmds::LangBuiltins::source},
+                {"test", "expr", "", bmds::LangBuiltins::test},
                 {"touch", "file...", "", bmds::FileCommands::touch},
                 {"wc", "[-lwc] [file]...", "", bmds::TextCommands::wc},
         };
@@ -364,4 +366,29 @@ TEST_CASE("Files: a startup script") {
         ctrlC.join();
         CHECK(f.con.take() == "^C\n");
         CHECK(f.out("echo after") == "after\n");
+}
+
+TEST_CASE("Files: symbolic links") {
+        Fixture f;
+        CHECK(f.out("cd /disk0/p0; mkdir bin data; echo BB > bin/busybox; echo n > data/notes") == "");
+        // ln -s: one name, or several targets into a directory.
+        CHECK(f.out("ln -s busybox bin/awk; ln -s ../data bin/d; ln -s busybox busybox bin; echo $?") ==
+              "ln: bin/busybox: File exists\nln: bin/busybox: File exists\n1\n");
+        CHECK(f.out("ln busybox bin/x", 1) == "ln: hard links: Operation not supported (FAT has none; use ln -s)\n");
+        CHECK(f.out("ln -s data", Shell::ExitUsage).find("usage") != std::string::npos);
+        CHECK(f.out("ln -sf other bin/awk; ln -sf busybox bin/awk; cat bin/awk") == "BB\n");
+        // ls: shown (not hidden as a System file), as links with -l.
+        CHECK(f.out("ls -1 bin") == "awk\nbusybox\nd\n");
+        const std::string l = f.out("ls -l bin");
+        CHECK(l.find("lrw-") != std::string::npos);
+        CHECK(l.find("awk -> busybox") != std::string::npos);
+        CHECK(l.find("d -> ../data") != std::string::npos);
+        CHECK(f.out("ls bin/d") == "notes\n");
+        // test -L/-h; cd takes the physical path.
+        CHECK(f.out("[ -L bin/awk ] && [ -h bin/d ] && [ ! -L bin/busybox ] && [ -f bin/awk ] && echo yes") == "yes\n");
+        CHECK(f.out("cd bin/d; pwd; cd /disk0/p0") == "/disk0/p0/data\n");
+        // cp -r copies links in a tree as links; rm -r removes a link, never what it leads to.
+        CHECK(f.out("cp -r bin copy; [ -L copy/awk ] && cat copy/awk") == "BB\n");
+        CHECK(f.out("rm -r copy/d; ls data; rm bin/d; ls bin") == "notes\nawk  busybox\n");
+        CHECK(f.out("rm -r copy; ls") == "bin/  data/\n");
 }
