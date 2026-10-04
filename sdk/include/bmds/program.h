@@ -33,7 +33,7 @@
  *   linker didn't turn into a `lui`, makes the file unloadable.
  * - The entry point is `_start` (see bmds/sys.h for the startup state).
  * - Code uses the medany model (PC-relative addressing); libraries built
- *   for medlow (absolute `lui` addressing, like the toolchain's picolibc)
+ *   for medlow (absolute `lui` addressing, like the toolchain's prebuilt libraries)
  *   work too, through R_RISCV_HI20.
  *
  * The SDK's linker script and flags (sdk/ld/bmds.ld, BmdsProgram.cmake)

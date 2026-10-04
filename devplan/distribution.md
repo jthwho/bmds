@@ -59,7 +59,7 @@ Candidates, roughly in order: a scripting language (Lua or MicroPython), `zlib`/
 
 ## 6. BusyBox's configuration
 
-`dist/busybox/config` is a complete `.config`: everything off (`allnoconfig`), then the applets and features that build against SDK 2 and work on BMDS. Off, and why:
+`dist/busybox/config` is a complete `.config`: everything off (`allnoconfig`), then the applets and features that build against the SDK and work on BMDS. Off, and why:
 - needs process creation (step 8): the shells run their own built-ins but can't start programs yet (`hush` is in, for that), `xargs`, `find -exec`, `time`, `timeout`, `watch`, `nohup`, `env` running a command still works only for built-ins;
 - needs Linux interfaces: `mount`, `df` (`statfs`), `ps`/`top`/`free` (`/proc`), `init`, modules, networking, `login` and users, `dmesg`, consoles and keyboards;
 - `CONFIG_BUSYBOX_EXEC_PATH`, used to re-run itself: `/sd0/p0/bin/busybox`.

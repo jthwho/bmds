@@ -320,7 +320,7 @@ namespace {
 
 // The startup code hands musl __tls_base as the TLS template's address; the
 // linker computes thread-local offsets from the TLS segment's start. They
-// must be the same address (they weren't, in SDK 1, when a program had no
+// must be the same address (they weren't, once, when a program had no
 // initialized thread-locals: localtime's buffer then overwrote bmds_sys).
 // musl itself has no thread-locals; progtest has both kinds.
 TEST_CASE("Program format: the SDK's programs describe their TLS segment") {

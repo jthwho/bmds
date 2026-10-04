@@ -128,7 +128,7 @@ namespace Partitions   { read(device, out); attach(device); detach(device); }   
 - **Thread safety:** every FatFs call is made under the FAT layer's lock (above); a file may be used from one task at a time (as any stream).
 - **Mounting on the board:** the storage service registers the slot as `sd0` at boot; after attaching a card it runs `Vfs::automount()` (2 ms for the Raspberry Pi test card: its FAT32 boot partition mounts at `/sd0/p0`, its ext4 partition `/dev/sd0p1` is listed but not mounted) and logs each mount; before detaching it runs `Vfs::eject()`. A card with no FAT filesystem gets a warning.
 
-### Symbolic links (emulated; Phase 3, ABI 3)
+### Symbolic links (emulated; Phase 3)
 
 FAT and exFAT have no links (agreed 2026-10-04: emulate them, as Cygwin does on FAT; needed to break BusyBox into its applets, and by POSIX programs generally).
 
@@ -140,7 +140,7 @@ FAT and exFAT have no links (agreed 2026-10-04: emulate them, as Cygwin does on 
 - **FatFs patch:** `f_open` didn't keep the file's attribute in the `FIL`; one line in `thirdparty/fatfs` (`patches/bmds-attr.diff`) does, so opening a file sees the System attribute with no second lookup. The link is read on that same `FIL` inside `Fat::openFile` (closing a handle, or opening the file again, while holding the FAT lock would deadlock or hit FatFs's own locking).
 - **Creating:** `symlink(target, path)` writes the file and sets the System attribute (`f_chmod`); `EEXIST` if the name is taken.
 - **Kernel API:** `Vfs::symlink`, `Vfs::readLink`, `Vfs::lstat`, `Vfs::realPath`; the others follow as above.
-- **ABI 3:** slots 32 `symlink(target, path)`, 33 `readlink(path, buf, size)` (NUL-terminated, cut at a character boundary, returns the full length, as `readdir`'s name), 34 `lstat`; `BMDS_TYPE_LINK` 4; `BMDS_ELOOP` 92 (newlib's; Linux's 40 in musl's layer). SDK 2's layer maps `symlinkat`, `readlinkat`, `statx(AT_SYMLINK_NOFOLLOW)` (mode `S_IFLNK | 0777`), `O_NOFOLLOW` and `DT_LNK`.
+- **ABI:** slots 32 `symlink(target, path)`, 33 `readlink(path, buf, size)` (NUL-terminated, cut at a character boundary, returns the full length, as `readdir`'s name), 34 `lstat`; `BMDS_TYPE_LINK` 4; `BMDS_ELOOP` 40. The SDK's layer maps `symlinkat`, `readlinkat`, `statx(AT_SYMLINK_NOFOLLOW)` (mode `S_IFLNK | 0777`), `O_NOFOLLOW` and `DT_LNK`.
 - **Shell:** `ln -s [-f] target name` (`ln` without `-s`: no hard links on FAT), `ls -l` shows `l` and `name -> target`, `test -L`/`-h`, `cd` resolves to the physical path, `rm` removes the link.
 - **From a PC:** a link copied onto the card by a PC loses the System attribute unless the PC's tools keep it (Cygwin's do), so the distribution creates its links on the board (`devplan/distribution.md`).
 

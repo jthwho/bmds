@@ -6,10 +6,9 @@
  * See LICENSE file in the project root folder for license information.
  *
  * Error numbers of the BMDS userspace ABI. System calls return them
- * negated (a negative result is -BMDS_E...). The values are those of
- * newlib's <errno.h> (SDK 1's picolibc passed them through); up to 34 they
- * are also Linux's, and SDK 2's layer under musl translates the rest. They
- * are frozen here independently of any C library.
+ * negated (a negative result is -BMDS_E...). The values are Linux's (as
+ * musl's <errno.h>, so the SDK's layer under musl passes them through);
+ * they are frozen here independently of any C library.
  *
  * ABI: frozen. Append only.
  */
@@ -43,15 +42,15 @@
 #define BMDS_EROFS 30        /**< Read-only file system. */
 #define BMDS_EPIPE 32        /**< Broken pipe. */
 #define BMDS_ERANGE 34       /**< Result out of range. */
-#define BMDS_ENOSYS 88       /**< Function not implemented (a slot this kernel lacks). */
-#define BMDS_ENOTEMPTY 90    /**< Directory not empty. */
-#define BMDS_ENAMETOOLONG 91 /**< File name too long. */
-#define BMDS_ELOOP 92        /**< Too many levels of symbolic links (ABI 3). */
-#define BMDS_ETIMEDOUT 116   /**< Timed out. */
-#define BMDS_ENOTSUP 134     /**< Not supported. */
-#define BMDS_ENOMEDIUM 135   /**< No medium (the card is out). */
-#define BMDS_EILSEQ 138      /**< Illegal byte sequence. */
-#define BMDS_EOVERFLOW 139   /**< Value too large. */
-#define BMDS_ECANCELED 140   /**< Cancelled. */
+#define BMDS_ENAMETOOLONG 36 /**< File name too long. */
+#define BMDS_ENOSYS 38       /**< Function not implemented (a slot this kernel lacks). */
+#define BMDS_ENOTEMPTY 39    /**< Directory not empty. */
+#define BMDS_ELOOP 40        /**< Too many levels of symbolic links. */
+#define BMDS_EOVERFLOW 75    /**< Value too large. */
+#define BMDS_EILSEQ 84       /**< Illegal byte sequence. */
+#define BMDS_ENOTSUP 95      /**< Not supported. */
+#define BMDS_ETIMEDOUT 110   /**< Timed out. */
+#define BMDS_ENOMEDIUM 123   /**< No medium (the card is out). */
+#define BMDS_ECANCELED 125   /**< Cancelled. */
 
 #endif /* BMDS_ERRNO_H */

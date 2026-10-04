@@ -46,7 +46,7 @@ extern "C" {
  * @brief The ABI version this SDK describes. A kernel implements every
  *        version up to its `bmds_sys_t::abi_version`.
  */
-#define BMDS_ABI_VERSION 3u
+#define BMDS_ABI_VERSION 1u
 
 /** @brief A slot, before it is cast to its function's type. */
 typedef void (*bmds_sys_fn_t)(void);
@@ -101,9 +101,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_MEM_INFO 28u    /**< `int32_t mem_info(uint32_t flags, bmds_mem_info_t *info)`. */
 #define BMDS_SYS_RANDOM 29u      /**< `int32_t random(void *buf, uint32_t size)`. */
 #define BMDS_SYS_SET_MTIME 30u   /**< `int32_t set_mtime(const char *path, int64_t ns)`. */
-/* ABI 2 */
 #define BMDS_SYS_FTRUNCATE 31u   /**< `int32_t ftruncate(int32_t fd, int64_t size)`. */
-/* ABI 3 */
 #define BMDS_SYS_SYMLINK 32u     /**< `int32_t symlink(const char *target, const char *path)`. */
 #define BMDS_SYS_READLINK 33u    /**< `int32_t readlink(const char *path, char *buf, uint32_t size)`. */
 #define BMDS_SYS_LSTAT 34u       /**< `int32_t lstat(const char *path, bmds_stat_t *info)`. */
@@ -143,7 +141,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_TYPE_FILE 1u      /**< A regular file. */
 #define BMDS_TYPE_DIRECTORY 2u /**< A directory (also `/`, `/dev` and mount points). */
 #define BMDS_TYPE_DEVICE 3u    /**< A device (`/dev/null`, the console), a pipe. */
-#define BMDS_TYPE_LINK 4u      /**< A symbolic link (ABI 3: only from `lstat` and `readdir`). */
+#define BMDS_TYPE_LINK 4u      /**< A symbolic link (only from `lstat` and `readdir`). */
 
 /** @brief `bmds_stat_t::attributes` (the FAT attributes). */
 #define BMDS_ATTR_READONLY 0x01u /**< Read-only. */
@@ -164,7 +162,6 @@ typedef struct bmds_stat_t {
                 uint32_t open_flags;  /**< `fstat`: the fd's `BMDS_O_READ`/`BMDS_O_WRITE`; else 0. */
                 uint64_t file_size;   /**< Bytes (0 for directories and devices). */
                 int64_t  modified_ns; /**< Last modified, ns since 1970-01-01 UTC; 0 if unknown. */
-                /* ABI 2 (0 from an ABI 1 kernel) */
                 uint64_t file_id;  /**< The same for each name and fd of one file, different for others; 0 if unknown. */
                 uint32_t device;   /**< The filesystem it is on (non-zero), or 0 (devices, pipes, `/`, `/dev`). */
                 uint32_t reserved; /**< Zero. */
@@ -445,8 +442,7 @@ static inline int32_t bmds_set_mtime(const char *path, int64_t ns) {
 
 /**
  * @brief Sets the size of the file @p fd (open for writing) refers to: cut,
- *        or grown with zeros. Its position stays. ABI 2 (check
- *        `bmds_sys_has(BMDS_SYS_FTRUNCATE)` on older kernels).
+ *        or grown with zeros. Its position stays.
  * @return 0, or `BMDS_EBADF`, `BMDS_EINVAL` (negative @p size, or not a file),
  *         `BMDS_ENOSPC`, ...
  */
@@ -455,7 +451,7 @@ static inline int32_t bmds_ftruncate(int32_t fd, int64_t size) {
 }
 
 /*
- * Symbolic links (ABI 3). FAT has none: they are emulated as Cygwin does
+ * Symbolic links. FAT has none: they are emulated as Cygwin does
  * (a System file holding "!<symlink>" and the target), so Cygwin on a PC
  * sees them too. open, stat, opendir, chdir, set_mtime and running a
  * program follow them (at most 8 in a row: BMDS_ELOOP); unlink, rename and

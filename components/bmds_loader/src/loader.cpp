@@ -200,7 +200,7 @@ Result<int> Loader::run(const Request &request) {
         }
 
         // Its resources and its task. The environment gets the kernel's
-        // time zone as TZ unless it has one (picolibc's localtime reads TZ).
+        // time zone as TZ unless it has one (the C library's localtime reads TZ).
         Process          process(*request.fds, request.console, request.interrupt);
         List<StringView> environment;
         String           tz;

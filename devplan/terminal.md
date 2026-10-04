@@ -93,7 +93,7 @@ The history stays plain text, so `log show | ...` stays parseable. The console s
 
 ## Terminal size, `clear`, `reset` (Phase 3)
 
-Programs need the terminal's size (BusyBox's `vi` and `less` used 80x24 whatever the window). The `Console` is where it lives (`size()`, `setSize()`), and every console fills it its own way; programs read it with `TIOCGWINSZ` (SDK 2's layer) or `bmds_term_get`, the shell exports `COLUMNS` and `LINES`.
+Programs need the terminal's size (BusyBox's `vi` and `less` used 80x24 whatever the window). The `Console` is where it lives (`size()`, `setSize()`), and every console fills it its own way; programs read it with `TIOCGWINSZ` (the SDK's layer) or `bmds_term_get`, the shell exports `COLUMNS` and `LINES`.
 
 - **Serial:** a terminal can't tell the device when its window changes, so the device asks. `Console::requestSize()` writes `ESC [ 18 t`; `Console::read()` takes the answer, `ESC [ 8 ; rows ; cols t`, out of the input wherever it comes among typed keys (holding a partial answer across reads, so readers taking a byte at a time get it too) and sets the size. Only while a request is outstanding (2 s) is anything held, so a real Escape key is never kept long; with no request the input passes untouched (the fast path, as for `rz`). The shell asks at every prompt, so a resize is seen by the next command; after three unanswered requests (a terminal that doesn't do it, a script on the port) it stops, until `reset` or `term size`. `term size` asks and waits for the answer; `term size COLSxROWS` sets it. Consoles that can be asked say so (`Console::SizeQuery`).
 - **Display console (Phase 4):** its own grid, set when the mode or font changes.
@@ -155,7 +155,7 @@ Host tests:
 
 ## 8. Open questions
 
-- **A byte lost at a USB packet boundary:** twice in a day of testing, the 65th byte of a line typed in one write (the first of the second 64-byte USB packet) never reached the shell, both times just before the line ran a program. 60 long lines in a row, with and without long output before them, came through whole. The receive path already works around a lost packet when the chip transmits meanwhile (rev v1.3); a lost byte may be a relative of it. Watch for it; a reproduction would point at the driver or the hardware.
+- **Input lost on the USB serial console under two-way traffic:** the 65th byte of a line written in one go (the first of the second 64-byte USB packet) sometimes never reaches the shell. Seen four times: twice by hand, and in `bmds-compat` runs, where the next case's line is sent while the shell is still printing (a lost `x` turned `echo a > f.txt` into `echo a > f.tt`); in one run a YMODEM transfer then stalled for 114 s with 10 retries. Not reproduced by 160 lines sent idle, after long output, or while a listing was being printed. The receive path already works around a lost packet when the chip transmits meanwhile (rev v1.3); this looks related. It makes push-and-run and the corpus flaky, so it is the next driver bug to chase (roadmap).
 
 - Fonts and Unicode coverage for HDMI (Phase 4). Wide characters need a font that has them; fall back to a replacement glyph.
 - Line editor UTF-8: done in Phase 1b.

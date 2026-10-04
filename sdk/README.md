@@ -27,11 +27,9 @@ the headers in `include/bmds/` are the ABI and never change incompatibly
 
 The compiler is the one ESP-IDF installs (`riscv32-esp-elf-gcc`); run IDF's
 `export.sh` first, or the toolchain file finds it in `~/.espressif`. Its
-newlib and picolibc are never used: programs compile against musl's headers
+own C libraries are never used: programs compile against musl's headers
 (`-nostdinc`) and link `-nostdlib` with the SDK's `libc.a`, `libbmds.a` and
-libgcc. musl is built once per build directory (about 1,300 files). A build
-directory made with SDK 1 (picolibc) keeps its old flags in the CMake cache:
-start a new one.
+libgcc. musl is built once per build directory (about 1,300 files).
 
 ```cmake
 cmake_minimum_required(VERSION 3.16)
@@ -101,7 +99,7 @@ on BMDS's table; programs never see that layer. What differs from Linux:
   0755; files 0644, or 0444 when read-only; execute bits as the shell's
   `test -x` decides: `.elf` and `.sh` by name, a name without an extension
   by its first bytes), every user is root, `chmod`/`chown` do nothing. No
-  hard links (`link` is `EPERM`). Symbolic links work (ABI 3), emulated as
+  hard links (`link` is `EPERM`). Symbolic links work, emulated as
   Cygwin does: `symlink`, `readlink`, `lstat`, `O_NOFOLLOW`; `readdir` calls
   a System file a link by its attributes (`lstat` reads it to be sure). `st_ino` and
   `st_dev` tell files apart (a hash of the path, so a rename changes it).
@@ -138,4 +136,4 @@ off; the shell gets its modes back when the program ends), memory
 (`bmds_mem_info`, `bmds_mem_alloc` with `BMDS_MEM_FAST`/`BMDS_MEM_DMA`).
 Their structs start with `size`; initialize them as
 `bmds_term_t t = {.size = sizeof(t)};`. Their errors are `BMDS_E...`
-values, not `errno`'s.
+values, the same numbers as `errno`'s (Linux's).

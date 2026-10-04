@@ -336,7 +336,7 @@ TEST_CASE("Process: files and directories") {
         CHECK(HostMemory::liveAllocations() == base);
 }
 
-TEST_CASE("Process: ABI 2: file identity and ftruncate") {
+TEST_CASE("Process: file identity and ftruncate") {
         { Disks warm; }
         const size_t base = HostMemory::liveAllocations();
         {
@@ -355,7 +355,7 @@ TEST_CASE("Process: ABI 2: file identity and ftruncate") {
                 CHECK(byName.device == byFd.device);
                 CHECK(byName.device != 0);
                 CHECK(statOf(p, ".").file_id != byName.file_id);
-                // An ABI 1 caller's struct: the new fields aren't written.
+                // A caller's smaller struct: the fields past its size aren't written.
                 struct {
                                 bmds_stat_t st;
                 } old = {};
@@ -396,7 +396,7 @@ TEST_CASE("Process: ABI 2: file identity and ftruncate") {
         CHECK(HostMemory::liveAllocations() == base);
 }
 
-TEST_CASE("Process: ABI 3: symbolic links") {
+TEST_CASE("Process: symbolic links") {
         { Disks warm; }
         const size_t base = HostMemory::liveAllocations();
         {

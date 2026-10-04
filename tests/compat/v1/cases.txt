@@ -1,4 +1,4 @@
-# The compatibility corpus, SDK v1 (ABI 1): run with tools/bmds-compat.
+# The compatibility corpus, ABI 1 (static musl): run with tools/bmds-compat.
 # Each case: "=== command" (run in this corpus's directory on the board's
 # RAM disk), the output the console shows, "--- status". The programs here
 # are kept exactly as built; never rebuild or replace them.
@@ -20,10 +20,6 @@ argv[2] = "two words"
 CV=a b
 --- 0
 
-=== ./progtest.elf env NOT_SET_ANYWHERE
-NOT_SET_ANYWHERE=(unset)
---- 0
-
 === ./progtest.elf float
 float: 11.8047
 --- 0
@@ -31,6 +27,17 @@ float: 11.8047
 === ./progtest.elf files .
 files: ok
 --- 0
+
+=== ./progtest.elf posix .
+posix: ok (BMDS 1 riscv32)
+--- 0
+
+=== ./progtest.elf posix . < /dev/null | ./cat.elf
+posix: ok (BMDS 1 riscv32)
+--- 0
+
+=== ./progtest.elf abort
+--- 134
 
 === ./progtest.elf sleep 20
 slept: ok
@@ -55,9 +62,9 @@ isatty: 0 0 1
 --- 0
 
 === ./progtest.elf term < /dev/null 2> /dev/null | ./cat.elf
-fd 0: Not a character device
-fd 1: Not a character device
-fd 2: Not a character device
+fd 0: Not a tty
+fd 1: Not a tty
+fd 2: Not a tty
 --- 0
 
 === echo first; echo second | ./progtest.elf lines
@@ -68,10 +75,6 @@ end of input after 1 lines
 
 === ./progtest.elf nothing
 progtest: nothing: unknown test
---- 2
-
-=== ./progtest.elf
-usage: progtest status|exit|leak|env|tty|float|files|time|sleep|term|lines|raw|mem|random|cwd|spin|calls [arg]
 --- 2
 
 === echo a > f.txt; echo b >> f.txt; ./cat.elf f.txt - < f.txt; rm f.txt

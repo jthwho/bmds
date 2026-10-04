@@ -8,9 +8,8 @@
  * The Linux system calls musl makes, carried out on the BMDS system call
  * table (devplan/programs.md §12). musl's syscall_arch.h sends every call
  * here instead of to ecall; the result is what Linux would return: a value,
- * or a negated Linux errno (BMDS's errno values match Linux's up to 34 and
- * are translated above). Programs never see this layer: they see musl's
- * POSIX functions.
+ * or a negated errno (BMDS's values are Linux's). Programs never see this
+ * layer: they see musl's POSIX functions.
  *
  * What BMDS doesn't have is approximated, as noted at each call: one user
  * (root), no hard links, no file descriptor flags, modes made up from the FAT
@@ -45,26 +44,6 @@
 #define RENAME_NOREPLACE 1 /* renameat2() flags, as Linux */
 #define RENAME_EXCHANGE 2
 #endif
-
-/* --- Errors ------------------------------------------------------------ */
-
-/* A BMDS result as Linux returns it: values pass, errors are translated. */
-static long result(int32_t r) {
-        if (r >= 0) return r;
-        switch (-r) {
-                case BMDS_ENOSYS: return -ENOSYS;
-                case BMDS_ENOTEMPTY: return -ENOTEMPTY;
-                case BMDS_ENAMETOOLONG: return -ENAMETOOLONG;
-                case BMDS_ETIMEDOUT: return -ETIMEDOUT;
-                case BMDS_ENOTSUP: return -ENOTSUP;
-                case BMDS_ENOMEDIUM: return -ENOMEDIUM;
-                case BMDS_EILSEQ: return -EILSEQ;
-                case BMDS_EOVERFLOW: return -EOVERFLOW;
-                case BMDS_ECANCELED: return -ECANCELED;
-                case BMDS_ELOOP: return -ELOOP;
-                default: return r; /* 1-34: the same numbers */
-        }
-}
 
 /* --- Time ---------------------------------------------------------------- */
 
@@ -108,7 +87,7 @@ static long clock_ns(long clock, int64_t *ns) {
 }
 
 static long sleep_ns(int64_t ns) {
-        return ns > 0 ? result(bmds_sleep(ns)) : 0;
+        return ns > 0 ? (long)(bmds_sleep(ns)) : 0;
 }
 
 /* --- Paths and directories ------------------------------------------------ */
@@ -175,7 +154,7 @@ static long open_dir(const char *path) {
                 const int32_t h = bmds_opendir(path);
                 if (h < 0) {
                         bmds_mem_free(copy);
-                        return result(h);
+                        return (long)(h);
                 }
                 dirs[i].handle = h;
                 dirs[i].path = copy;
@@ -191,13 +170,13 @@ static long close_dir(int i) {
         bmds_mem_free(dirs[i].path);
         bmds_mem_free(dirs[i].held);
         dirs[i].handle = -1;
-        return result(r);
+        return (long)(r);
 }
 
 /* Back to the first entry: BMDS directories don't rewind, so reopen. */
 static long rewind_dir(int i) {
         const int32_t h = bmds_opendir(dirs[i].path);
-        if (h < 0) return result(h);
+        if (h < 0) return (long)(h);
         (void)bmds_closedir(dirs[i].handle);
         bmds_mem_free(dirs[i].held);
         dirs[i].handle = h;
@@ -243,7 +222,7 @@ static long do_getdents(long fd, char *buf, size_t len) {
                         st = dirs[i].held_info;
                 } else {
                         const int32_t n = bmds_readdir(dirs[i].handle, &st, name, sizeof(name));
-                        if (n < 0) return at > 0 ? (long)at : result(n);
+                        if (n < 0) return at > 0 ? (long)at : (long)(n);
                         if (n == 0) return (long)at;
                 }
                 const size_t put = put_dirent(buf + at, len - at, entry, st.file_id, d_type(st.type), dirs[i].pos + 1);
@@ -285,7 +264,7 @@ static uint32_t open_flags(long flags) {
 
 static long do_open(long dirfd, const char *path, long flags) {
         AT_PATH(dirfd, path);
-        if ((flags & O_NOFOLLOW) && bmds_sys_has(BMDS_SYS_LSTAT)) {
+        if (flags & O_NOFOLLOW) {
                 bmds_stat_t st = {.size = sizeof(st)};
                 if (bmds_lstat(p, &st) == 0 && st.type == BMDS_TYPE_LINK) return -ELOOP;
         }
@@ -293,12 +272,12 @@ static long do_open(long dirfd, const char *path, long flags) {
         const int32_t fd = bmds_open(p, open_flags(flags));
         /* open(".", O_RDONLY), for fchdir(), is a directory too. */
         if (fd == -BMDS_EISDIR && (flags & O_ACCMODE) == O_RDONLY) return open_dir(p);
-        return result(fd);
+        return (long)(fd);
 }
 
 static long do_close(long fd) {
         const int i = dir_index(fd);
-        return i >= 0 ? close_dir(i) : result(bmds_close((int32_t)fd));
+        return i >= 0 ? close_dir(i) : (long)(bmds_close((int32_t)fd));
 }
 
 static long io_vector(long fd, const struct iovec *v, long count, int writing) {
@@ -307,7 +286,7 @@ static long io_vector(long fd, const struct iovec *v, long count, int writing) {
                 if (v[i].iov_len == 0) continue;
                 const int32_t n = writing ? bmds_write((int32_t)fd, v[i].iov_base, (uint32_t)v[i].iov_len)
                                           : bmds_read((int32_t)fd, v[i].iov_base, (uint32_t)v[i].iov_len);
-                if (n < 0) return total > 0 ? total : result(n);
+                if (n < 0) return total > 0 ? total : (long)(n);
                 total += n;
                 if ((size_t)n < v[i].iov_len) break;
         }
@@ -319,10 +298,10 @@ static long io_at(long fd, void *buf, size_t size, int64_t offset, int writing) 
         int64_t here, ignored;
         int32_t r = bmds_seek((int32_t)fd, 0, BMDS_SEEK_CUR, &here);
         if (r == 0) r = bmds_seek((int32_t)fd, offset, BMDS_SEEK_SET, &ignored);
-        if (r < 0) return result(r);
+        if (r < 0) return (long)(r);
         const int32_t n = writing ? bmds_write((int32_t)fd, buf, (uint32_t)size) : bmds_read((int32_t)fd, buf, (uint32_t)size);
         (void)bmds_seek((int32_t)fd, here, BMDS_SEEK_SET, &ignored);
-        return result(n);
+        return (long)(n);
 }
 
 static long do_llseek(long fd, int64_t offset, int64_t *out, long whence) {
@@ -333,7 +312,7 @@ static long do_llseek(long fd, int64_t offset, int64_t *out, long whence) {
                 if (r == 0) *out = 0;
                 return r;
         }
-        return result(bmds_seek((int32_t)fd, offset, (uint32_t)whence, out));
+        return (long)(bmds_seek((int32_t)fd, offset, (uint32_t)whence, out));
 }
 
 /* Starts like a program or a script (what the shell runs). */
@@ -361,7 +340,7 @@ static int runnable(const char *path) {
         return dot == NULL && runnable_content(path);
 }
 
-/* A file id when the kernel has none (ABI 1): the path hashed. */
+/* A file id when the kernel has none (a device without one): the path hashed. */
 static uint64_t path_hash(const char *p) {
         uint64_t h = 14695981039346656037ull;
         for (; *p != '\0'; ++p) h = (h ^ (unsigned char)*p) * 1099511628211ull;
@@ -400,30 +379,28 @@ static long do_statx(long dirfd, const char *path, long flags, struct statx *out
                 const int i = dir_index(dirfd);
                 if (i >= 0) {
                         const int32_t r = bmds_stat(dirs[i].path, &st);
-                        if (r < 0) return result(r);
+                        if (r < 0) return (long)(r);
                         to_statx(&st, dirs[i].path, dirfd, out);
                         return 0;
                 }
                 const int32_t r = bmds_fstat((int32_t)dirfd, &st);
-                if (r < 0) return result(r);
+                if (r < 0) return (long)(r);
                 to_statx(&st, NULL, dirfd, out);
                 return 0;
         }
         AT_PATH(dirfd, path);
-        /* lstat: the link itself (ABI 3; an older kernel has no links). */
-        const int nofollow = (flags & AT_SYMLINK_NOFOLLOW) && bmds_sys_has(BMDS_SYS_LSTAT);
+        const int nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0; /* lstat: the link itself */
         const int32_t r = nofollow ? bmds_lstat(p, &st) : bmds_stat(p, &st);
-        if (r < 0) return result(r);
+        if (r < 0) return (long)(r);
         to_statx(&st, p, -1, out);
         return 0;
 }
 
 static long do_readlink(long dirfd, const char *path, char *buf, size_t size) {
         AT_PATH(dirfd, path);
-        if (!bmds_sys_has(BMDS_SYS_READLINK)) return -EINVAL;
         char          target[BMDS_PATH_MAX + 1];
         const int32_t n = bmds_readlink(p, target, sizeof(target));
-        if (n < 0) return result(n);
+        if (n < 0) return (long)(n);
         /* POSIX: no NUL, as much as fits. */
         const size_t len = (size_t)n < size ? (size_t)n : size;
         memcpy(buf, target, len);
@@ -432,8 +409,7 @@ static long do_readlink(long dirfd, const char *path, char *buf, size_t size) {
 
 static long do_symlink(const char *target, long dirfd, const char *path) {
         AT_PATH(dirfd, path);
-        if (!bmds_sys_has(BMDS_SYS_SYMLINK)) return -EPERM;
-        return result(bmds_symlink(target, p));
+        return (long)(bmds_symlink(target, p));
 }
 
 /* access(): F_OK exists; W_OK not read-only; X_OK as the shell's `test -x`
@@ -442,7 +418,7 @@ static long do_access(long dirfd, const char *path, long mode) {
         AT_PATH(dirfd, path);
         bmds_stat_t st = {.size = sizeof(st)};
         const int32_t r = bmds_stat(p, &st);
-        if (r < 0) return result(r);
+        if (r < 0) return (long)(r);
         if ((mode & W_OK) && st.type == BMDS_TYPE_FILE && (st.attributes & BMDS_ATTR_READONLY)) return -EACCES;
         if ((mode & X_OK) && st.type != BMDS_TYPE_DIRECTORY) {
                 const size_t n = strlen(p);
@@ -462,17 +438,16 @@ static long do_utimens(long dirfd, const char *path, const void *times) {
                 if (nsec == UTIME_OMIT) return 0;
                 if (nsec != UTIME_NOW) ns = t[2] * 1000000000 + nsec;
         }
-        return result(bmds_set_mtime(p, ns));
+        return (long)(bmds_set_mtime(p, ns));
 }
 
 static long do_ftruncate(long fd, int64_t size) {
-        if (!bmds_sys_has(BMDS_SYS_FTRUNCATE)) return -ENOSYS;
-        return result(bmds_ftruncate((int32_t)fd, size));
+        return (long)(bmds_ftruncate((int32_t)fd, size));
 }
 
 static long do_truncate(const char *path, int64_t size) {
         const int32_t fd = bmds_open(path, BMDS_O_WRITE);
-        if (fd < 0) return result(fd);
+        if (fd < 0) return (long)(fd);
         const long r = do_ftruncate(fd, size);
         (void)bmds_close(fd);
         return r;
@@ -481,7 +456,7 @@ static long do_truncate(const char *path, int64_t size) {
 static long do_fcntl(long fd, long cmd, long arg) {
         switch (cmd) {
                 case F_DUPFD:
-                case F_DUPFD_CLOEXEC: return result(bmds_dup((int32_t)fd, (int32_t)arg));
+                case F_DUPFD_CLOEXEC: return (long)(bmds_dup((int32_t)fd, (int32_t)arg));
                 case F_GETFD:
                 case F_SETFD:
                 case F_SETFL: return 0; /* no exec yet; no non-blocking I/O */
@@ -489,7 +464,7 @@ static long do_fcntl(long fd, long cmd, long arg) {
                         if (dir_index(fd) >= 0) return O_RDONLY | O_DIRECTORY;
                         bmds_stat_t   st = {.size = sizeof(st)};
                         const int32_t r = bmds_fstat((int32_t)fd, &st);
-                        if (r < 0) return result(r);
+                        if (r < 0) return (long)(r);
                         const uint32_t rw = st.open_flags & (BMDS_O_READ | BMDS_O_WRITE);
                         return rw == BMDS_O_WRITE ? O_WRONLY : rw == BMDS_O_READ ? O_RDONLY : O_RDWR;
                 }
@@ -536,7 +511,7 @@ static long tc_set(long fd, const struct termios *t) {
         if (t->c_lflag & ICANON) flags |= BMDS_TERM_LINE;
         if (t->c_lflag & ISIG) flags |= BMDS_TERM_SIGNALS;
         if ((t->c_oflag & OPOST) && (t->c_oflag & ONLCR)) flags |= BMDS_TERM_ONLCR;
-        return result(bmds_term_set((int32_t)fd, flags));
+        return (long)(bmds_term_set((int32_t)fd, flags));
 }
 
 static long do_ioctl(long fd, unsigned long request, void *arg) {
@@ -810,8 +785,8 @@ long __bmds_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 /* Files */
                 case SYS_openat: return do_open(a, (const char *)b, c);
                 case SYS_close: return do_close(a);
-                case SYS_read: return result(bmds_read((int32_t)a, (void *)b, (uint32_t)c));
-                case SYS_write: return result(bmds_write((int32_t)a, (const void *)b, (uint32_t)c));
+                case SYS_read: return (long)(bmds_read((int32_t)a, (void *)b, (uint32_t)c));
+                case SYS_write: return (long)(bmds_write((int32_t)a, (const void *)b, (uint32_t)c));
                 case SYS_readv: return io_vector(a, (const struct iovec *)b, c, 0);
                 case SYS_writev: return io_vector(a, (const struct iovec *)b, c, 1);
                 case SYS_pread64: return io_at(a, (void *)b, (size_t)c, (int64_t)((uint64_t)(uint32_t)e << 32 | (uint32_t)d), 0);
@@ -820,8 +795,8 @@ long __bmds_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 case SYS_statx: return do_statx(a, (const char *)b, c, (struct statx *)e);
                 case SYS_getdents64: return do_getdents(a, (char *)b, (size_t)c);
                 case SYS_fcntl64: return do_fcntl(a, b, c);
-                case SYS_dup: return dir_index(a) >= 0 ? -EBADF : result(bmds_dup((int32_t)a, 0));
-                case SYS_dup3: return a == b ? -EINVAL : result(bmds_dup2((int32_t)a, (int32_t)b));
+                case SYS_dup: return dir_index(a) >= 0 ? -EBADF : (long)(bmds_dup((int32_t)a, 0));
+                case SYS_dup3: return a == b ? -EINVAL : (long)(bmds_dup2((int32_t)a, (int32_t)b));
                 case SYS_ioctl: return do_ioctl(a, (unsigned long)b, (void *)c);
                 case SYS_ftruncate64: return do_ftruncate(a, (int64_t)((uint64_t)(uint32_t)c << 32 | (uint32_t)b));
                 case SYS_truncate64: return do_truncate((const char *)a, (int64_t)((uint64_t)(uint32_t)c << 32 | (uint32_t)b));
@@ -848,20 +823,20 @@ long __bmds_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 /* Directories */
                 case SYS_getcwd: {
                         const int32_t r = bmds_getcwd((char *)a, (uint32_t)b);
-                        return r < 0 ? result(r) : r + 1;
+                        return r < 0 ? (long)(r) : r + 1;
                 }
-                case SYS_chdir: return result(bmds_chdir((const char *)a));
+                case SYS_chdir: return (long)(bmds_chdir((const char *)a));
                 case SYS_fchdir: {
                         const int i = dir_index(a);
-                        return i >= 0 ? result(bmds_chdir(dirs[i].path)) : -ENOTDIR;
+                        return i >= 0 ? (long)(bmds_chdir(dirs[i].path)) : -ENOTDIR;
                 }
                 case SYS_mkdirat: {
                         AT_PATH(a, b);
-                        return result(bmds_mkdir(p));
+                        return (long)(bmds_mkdir(p));
                 }
                 case SYS_unlinkat: {
                         AT_PATH(a, b);
-                        return result((c & AT_REMOVEDIR) ? bmds_rmdir(p) : bmds_unlink(p));
+                        return (long)((c & AT_REMOVEDIR) ? bmds_rmdir(p) : bmds_unlink(p));
                 }
                 case SYS_renameat2: {
                         char        from_buf[BMDS_PATH_MAX + 1];
@@ -873,7 +848,7 @@ long __bmds_syscall(long n, long a, long b, long c, long d, long e, long f) {
                                 bmds_stat_t st = {.size = sizeof(st)};
                                 if (bmds_stat(p, &st) == 0) return -EEXIST;
                         }
-                        return result(bmds_rename(from, p));
+                        return (long)(bmds_rename(from, p));
                 }
 
                 /* Time */
@@ -939,7 +914,7 @@ long __bmds_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 case SYS_prlimit64: return do_prlimit(b, (struct rlimit *)d);
                 case SYS_getrandom: {
                         const int32_t r = bmds_random((void *)a, (uint32_t)b);
-                        return r < 0 ? result(r) : b;
+                        return r < 0 ? (long)(r) : b;
                 }
                 case SYS_sched_yield: return 0;
                 case SYS_futex: return (b & 0x7f) == 0 ? -EAGAIN : 0; /* one thread: a wait would never end */

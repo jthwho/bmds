@@ -191,7 +191,7 @@ static void on_signal(int sig) {
         return;
 }
 
-/* The POSIX layer of SDK 2 (musl over BMDS): sizes, holes, file identity,
+/* The POSIX layer (musl over BMDS): sizes, holes, file identity,
  * access, termios, signals raised by the program itself, uname. */
 static int posix(const char *dir) {
         char        path[512];
@@ -229,7 +229,7 @@ static int posix(const char *dir) {
         // access: X_OK as the shell's test -x.
         CHECK(access(path, R_OK | W_OK) == 0 && access(path, X_OK) == -1 && errno == EACCES);
         CHECK(access(".", X_OK) == 0 && access("nonexistent", F_OK) == -1 && errno == ENOENT);
-        // Symbolic links (ABI 3, emulated on FAT).
+        // Symbolic links (emulated on FAT).
         char target[64] = {0};
         CHECK(stat(path, &a) == 0 && symlink(path, "pt-link") == 0);
         CHECK(lstat("pt-link", &b) == 0 && S_ISLNK(b.st_mode) && b.st_size == (off_t)strlen(path));
