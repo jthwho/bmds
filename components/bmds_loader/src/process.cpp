@@ -7,7 +7,12 @@
  */
 
 #include <cstring>
+#include <new>
+#include <bmds/clock.h>
+#include <bmds/console.h>
 #include <bmds/errno.h>
+#include <bmds/interrupt.h>
+#include <bmds/lineeditor.h>
 #include <bmds/memory.h>
 #include <bmds/process.h>
 #include <bmds/sys.h>
@@ -23,9 +28,28 @@ struct Process::Block {
                 uint32_t offset; // from the raw allocation to the program's pointer (just past this)
 };
 
+// Console input with BMDS_TERM_LINE: the editor, the line it gave (with
+// its '\n') until the program has read it all, and what was typed after
+// the line in the same read.
+struct Process::LineInput {
+                explicit LineInput(Console &console) : editor(console) {}
+
+                LineEditor editor;
+                char       line[LineEditor::LineMax + 1];
+                uint16_t   linePos = 0;
+                uint16_t   lineLength = 0;
+                uint8_t    ahead[32];
+                uint8_t    aheadPos = 0;
+                uint8_t    aheadLength = 0;
+};
+
 namespace {
 
         constexpr uint32_t KnownMemFlags = BMDS_MEM_FAST | BMDS_MEM_DMA;
+        constexpr uint32_t KnownOpenFlags =
+                BMDS_O_READ | BMDS_O_WRITE | BMDS_O_CREATE | BMDS_O_TRUNC | BMDS_O_APPEND | BMDS_O_EXCL;
+        constexpr uint32_t KnownTermFlags =
+                BMDS_TERM_SIGNALS | BMDS_TERM_ONLCR | BMDS_TERM_COLORS | BMDS_TERM_LOGS | BMDS_TERM_LINE;
 
         constexpr size_t roundUp(size_t value, size_t to) {
                 return (value + to - 1) / to * to;
@@ -38,9 +62,51 @@ namespace {
                 return dma ? MemSpace::PsramDma : MemSpace::Psram;
         }
 
+        // Copies the fields of @p full that fit in the caller's struct (its
+        // first member, `size`, says how big it is), leaving `size` alone.
+        template <typename T> int32_t copyOut(const T &full, T *out) {
+                if (out == nullptr) return -BMDS_EFAULT;
+                const uint32_t size = out->size;
+                if (size < sizeof(uint32_t)) return -BMDS_EINVAL;
+                const size_t n = size < sizeof(T) ? size : sizeof(T);
+                std::memcpy(reinterpret_cast<uint8_t *>(out) + sizeof(uint32_t),
+                            reinterpret_cast<const uint8_t *>(&full) + sizeof(uint32_t), n - sizeof(uint32_t));
+                return 0;
+        }
+
+        bmds_stat_t statFor(const FileInfo &info) {
+                bmds_stat_t st = {};
+                switch (info.type) {
+                        case FileType::File: st.type = BMDS_TYPE_FILE; break;
+                        case FileType::Directory: st.type = BMDS_TYPE_DIRECTORY; break;
+                        case FileType::Device: st.type = BMDS_TYPE_DEVICE; break;
+                }
+                st.attributes = info.attributes;
+                st.file_size = info.size;
+                st.modified_ns = info.modified.ns;
+                return st;
+        }
+
+        // A filesystem call's error: a path too long once joined to the
+        // current directory is ENAMETOOLONG, not ERANGE.
+        int32_t fsErrno(Error err) {
+                return err == Error::OutOfRange ? -BMDS_ENAMETOOLONG : Process::errnoFor(err);
+        }
+
+        uint32_t colorCount(ColorDepth depth) {
+                switch (depth) {
+                        case ColorDepth::None: return 0;
+                        case ColorDepth::Ansi16: return 16;
+                        case ColorDepth::Ansi256: return 256;
+                        case ColorDepth::TrueColor: return 1u << 24;
+                }
+                return 0;
+        }
+
 } // namespace
 
-Process::Process(const FdTable &fds) : _fds(fds) {}
+Process::Process(const FdTable &fds, Console *console, Interrupt *interrupt)
+    : _fds(fds), _console(console), _interrupt(interrupt) {}
 
 Process::~Process() {
         release();
@@ -48,6 +114,13 @@ Process::~Process() {
 
 void Process::release() {
         _fds.closeAll();
+        for (Directory &d : _dirs) d.close();
+        if (_line != nullptr) {
+                _line->~LineInput();
+                Memory::free(_line);
+                _line = nullptr;
+        }
+        _lineInput = true;
         while (_blocks != nullptr) {
                 Block *b = _blocks;
                 _blocks = b->next;
@@ -61,6 +134,38 @@ void Process::release() {
         _envp = nullptr;
         _argc = 0;
         return;
+}
+
+Error Process::setCwd(StringView cwd) {
+        String copy;
+        Error  err = copy.append(cwd);
+        if (err.isError()) return err;
+        _cwd = std::move(copy);
+        return Error::Ok;
+}
+
+int Process::openDirectories() const {
+        int n = 0;
+        for (const Directory &d : _dirs) n += d.isOpen() ? 1 : 0;
+        return n;
+}
+
+Vfs::Context Process::vfs() const {
+        return Vfs::Context{cwd(), _console};
+}
+
+bool Process::isConsole(const FileHandle *h) const {
+        return _console != nullptr && h != nullptr && &h->stream() == static_cast<Stream *>(_console);
+}
+
+// A path from the program: NUL-terminated, at most BMDS_PATH_MAX bytes.
+int32_t Process::path(const char *path, StringView &out) const {
+        if (path == nullptr) return -BMDS_EFAULT;
+        const size_t n = strnlen(path, BMDS_PATH_MAX + 1);
+        if (n > BMDS_PATH_MAX) return -BMDS_ENAMETOOLONG;
+        if (n == 0) return -BMDS_ENOENT;
+        out = StringView(path, n);
+        return 0;
 }
 
 Error Process::setArguments(Span<const StringView> args, Span<const StringView> environment) {
@@ -131,10 +236,69 @@ int32_t Process::read(int32_t fd, void *buf, uint32_t size) {
         if (h == nullptr) return -BMDS_EBADF;
         if (size == 0) return 0;
         if (size > INT32_MAX) size = INT32_MAX;
+        if (h->canRead() && isConsole(h)) return readConsole(buf, size);
         auto [n, err] = h->read(WritableByteSpan(static_cast<uint8_t *>(buf), size), WaitForever);
         if (err == Error::EndOfFile) return 0;
         if (err.isError()) return errnoFor(err);
         return static_cast<int32_t>(n);
+}
+
+// The console: lines from the editor with BMDS_TERM_LINE, else bytes as
+// they come (after anything left over from line mode).
+int32_t Process::readConsole(void *buf, uint32_t size) {
+        auto *out = static_cast<uint8_t *>(buf);
+        if (_line != nullptr && _line->linePos < _line->lineLength) {
+                LineInput     &l = *_line;
+                const uint32_t left = static_cast<uint32_t>(l.lineLength - l.linePos);
+                const uint32_t n = left < size ? left : size;
+                std::memcpy(out, l.line + l.linePos, n);
+                l.linePos = static_cast<uint16_t>(l.linePos + n);
+                return static_cast<int32_t>(n);
+        }
+        if (!_lineInput) {
+                if (_line != nullptr && _line->aheadPos < _line->aheadLength) {
+                        LineInput     &l = *_line;
+                        const uint32_t left = static_cast<uint32_t>(l.aheadLength - l.aheadPos);
+                        const uint32_t n = left < size ? left : size;
+                        std::memcpy(out, l.ahead + l.aheadPos, n);
+                        l.aheadPos = static_cast<uint8_t>(l.aheadPos + n);
+                        return static_cast<int32_t>(n);
+                }
+                auto [n, err] = _console->read(WritableByteSpan(out, size), WaitForever);
+                if (err == Error::EndOfFile) return 0;
+                if (err.isError()) return errnoFor(err);
+                return static_cast<int32_t>(n);
+        }
+        if (_line == nullptr) {
+                void *memory = Memory::alloc(MemSpace::Psram, sizeof(LineInput));
+                if (memory == nullptr) return -BMDS_ENOMEM;
+                _line = new (memory) LineInput(*_console);
+        }
+        LineInput &l = *_line;
+        l.editor.start(StringView());
+        for (;;) {
+                if (l.aheadPos == l.aheadLength) {
+                        auto [n, err] = _console->read(WritableByteSpan(l.ahead, sizeof(l.ahead)), WaitForever);
+                        if (err == Error::EndOfFile) return 0;
+                        if (err.isError()) return errnoFor(err);
+                        l.aheadPos = 0;
+                        l.aheadLength = static_cast<uint8_t>(n);
+                }
+                switch (l.editor.feed(static_cast<char>(l.ahead[l.aheadPos++]))) {
+                        case LineEditor::Event::Line: {
+                                const StringView line = l.editor.line();
+                                if (!line.isEmpty()) l.editor.addHistory(line); // up-arrow recalls it
+                                std::memcpy(l.line, line.data(), line.size());
+                                l.line[line.size()] = '\n';
+                                l.linePos = 0;
+                                l.lineLength = static_cast<uint16_t>(line.size() + 1);
+                                return readConsole(buf, size);
+                        }
+                        case LineEditor::Event::Eof: return 0;
+                        case LineEditor::Event::Cancel: l.editor.start(StringView()); break;
+                        case LineEditor::Event::None: break;
+                }
+        }
 }
 
 int32_t Process::write(int32_t fd, const void *buf, uint32_t size) {
@@ -223,6 +387,240 @@ void *Process::memRealloc(void *ptr, uint32_t size, uint32_t flags) {
         std::memcpy(p, ptr, old->size < size ? old->size : size);
         memFree(ptr);
         return p;
+}
+
+int32_t Process::open(const char *path, uint32_t flags) {
+        StringView p;
+        if (int32_t r = this->path(path, p); r < 0) return r;
+        if ((flags & ~KnownOpenFlags) != 0 || (flags & (BMDS_O_READ | BMDS_O_WRITE)) == 0) return -BMDS_EINVAL;
+        uint8_t vfsFlags = 0;
+        if (flags & BMDS_O_READ) vfsFlags |= Vfs::Read;
+        if (flags & BMDS_O_WRITE) vfsFlags |= Vfs::Write;
+        if (flags & BMDS_O_CREATE) vfsFlags |= Vfs::Create;
+        if (flags & BMDS_O_TRUNC) vfsFlags |= Vfs::Truncate;
+        if (flags & BMDS_O_APPEND) vfsFlags |= Vfs::Append;
+        if (flags & BMDS_O_EXCL) vfsFlags |= Vfs::Exclusive;
+        auto [file, err] = Vfs::open(p, vfsFlags, vfs());
+        if (err.isError()) return fsErrno(err);
+        auto [fd, aerr] = _fds.add(std::move(file));
+        if (aerr.isError()) return -BMDS_EMFILE;
+        return fd;
+}
+
+int32_t Process::stat(const char *path, bmds_stat_t *info) {
+        StringView p;
+        if (int32_t r = this->path(path, p); r < 0) return r;
+        if (info == nullptr) return -BMDS_EFAULT;
+        auto [fi, err] = Vfs::stat(p, vfs());
+        if (err.isError()) return fsErrno(err);
+        return copyOut(statFor(fi), info);
+}
+
+int32_t Process::fstat(int32_t fd, bmds_stat_t *info) {
+        FileHandle *h = _fds.handle(fd);
+        if (h == nullptr) return -BMDS_EBADF;
+        bmds_stat_t st = {};
+        st.type = BMDS_TYPE_DEVICE;
+        st.open_flags = (h->canRead() ? BMDS_O_READ : 0) | (h->canWrite() ? BMDS_O_WRITE : 0);
+        // A stream that seeks is a file: its size is where its end is.
+        Stream &stream = h->stream();
+        auto [here, err] = stream.seek(0, Stream::SeekFrom::Current);
+        if (err.isOk()) {
+                auto [end, eerr] = stream.seek(0, Stream::SeekFrom::End);
+                if (eerr.isOk()) {
+                        st.type = BMDS_TYPE_FILE;
+                        st.file_size = end;
+                }
+                (void)stream.seek(static_cast<int64_t>(here), Stream::SeekFrom::Start);
+        }
+        return copyOut(st, info);
+}
+
+int32_t Process::mkdir(const char *path) {
+        StringView p;
+        if (int32_t r = this->path(path, p); r < 0) return r;
+        return fsErrno(Vfs::mkdir(p, vfs()));
+}
+
+int32_t Process::rmdir(const char *path) {
+        StringView p;
+        if (int32_t r = this->path(path, p); r < 0) return r;
+        return fsErrno(Vfs::rmdir(p, vfs()));
+}
+
+int32_t Process::unlink(const char *path) {
+        StringView p;
+        if (int32_t r = this->path(path, p); r < 0) return r;
+        return fsErrno(Vfs::remove(p, vfs()));
+}
+
+int32_t Process::rename(const char *from, const char *to) {
+        StringView f, t;
+        if (int32_t r = path(from, f); r < 0) return r;
+        if (int32_t r = path(to, t); r < 0) return r;
+        // The VFS's NotSupported: not within one filesystem. EXDEV, so a
+        // `mv` knows to copy instead.
+        const Error err = Vfs::rename(f, t, vfs());
+        return err == Error::NotSupported ? -BMDS_EXDEV : fsErrno(err);
+}
+
+int32_t Process::opendir(const char *path) {
+        StringView p;
+        if (int32_t r = this->path(path, p); r < 0) return r;
+        int slot = 0;
+        while (slot < MaxDirectories && _dirs[slot].isOpen()) ++slot;
+        if (slot == MaxDirectories) return -BMDS_EMFILE;
+        auto [dir, err] = Vfs::openDirectory(p, vfs());
+        if (err.isError()) return fsErrno(err);
+        _dirs[slot] = std::move(dir);
+        return slot;
+}
+
+int32_t Process::readdir(int32_t dir, bmds_stat_t *info, char *name, uint32_t size) {
+        if (dir < 0 || dir >= MaxDirectories || !_dirs[dir].isOpen()) return -BMDS_EBADF;
+        if (name == nullptr && size != 0) return -BMDS_EFAULT;
+        if (info != nullptr && info->size < sizeof(uint32_t)) return -BMDS_EINVAL;
+        auto [fi, err] = _dirs[dir].next();
+        if (err == Error::EndOfFile) return 0;
+        if (err.isError()) return errnoFor(err);
+        if (info != nullptr) (void)copyOut(statFor(fi), info);
+        const StringView n = fi.name.view();
+        if (size != 0) {
+                // Cut a name that doesn't fit at a character boundary.
+                size_t len = n.size();
+                if (len > size - 1) {
+                        len = size - 1;
+                        while (len > 0 && (static_cast<uint8_t>(n[len]) & 0xC0) == 0x80) --len;
+                }
+                std::memcpy(name, n.data(), len);
+                name[len] = '\0';
+        }
+        return static_cast<int32_t>(n.size());
+}
+
+int32_t Process::closedir(int32_t dir) {
+        if (dir < 0 || dir >= MaxDirectories || !_dirs[dir].isOpen()) return -BMDS_EBADF;
+        _dirs[dir].close();
+        return 0;
+}
+
+int32_t Process::getcwd(char *buf, uint32_t size) {
+        const StringView c = cwd();
+        if (buf == nullptr) return -BMDS_EFAULT;
+        if (size < c.size() + 1) return -BMDS_ERANGE;
+        std::memcpy(buf, c.data(), c.size());
+        buf[c.size()] = '\0';
+        return static_cast<int32_t>(c.size());
+}
+
+int32_t Process::chdir(const char *path) {
+        StringView p;
+        if (int32_t r = this->path(path, p); r < 0) return r;
+        auto [normal, err] = Vfs::normalize(p, cwd());
+        if (err.isError()) return fsErrno(err);
+        auto [fi, serr] = Vfs::stat(normal.view(), vfs());
+        if (serr.isError()) return fsErrno(serr);
+        if (!fi.isDirectory()) return -BMDS_ENOTDIR;
+        _cwd = std::move(normal);
+        return 0;
+}
+
+int32_t Process::dup(int32_t fd, int32_t minFd) {
+        if (!_fds.isOpen(fd)) return -BMDS_EBADF;
+        if (minFd < 0 || minFd >= FdTable::MaxFds) return -BMDS_EINVAL;
+        auto [n, err] = _fds.dup(fd, minFd);
+        if (err.isError()) return -BMDS_EMFILE;
+        return n;
+}
+
+int32_t Process::dup2(int32_t fd, int32_t to) {
+        if (!_fds.isOpen(fd) || to < 0 || to >= FdTable::MaxFds) return -BMDS_EBADF;
+        (void)_fds.dup2(fd, to);
+        return to;
+}
+
+int32_t Process::clockGet(uint32_t clock, int64_t *ns) {
+        if (ns == nullptr) return -BMDS_EFAULT;
+        switch (clock) {
+                case BMDS_CLOCK_REALTIME: *ns = Clock::now().ns; return 0;
+                case BMDS_CLOCK_MONOTONIC: *ns = Clock::monotonicNs(); return 0;
+                default: return -BMDS_EINVAL;
+        }
+}
+
+int32_t Process::sleep(int64_t ns) {
+        // Ticks count from wherever the current one is: sleep to a deadline
+        // on the clock, so the program gets at least what it asked for.
+        constexpr int64_t NsPerMs = 1'000'000;
+        constexpr int64_t MaxMs = UINT32_MAX - 1;
+        Interrupt         none;
+        Interrupt        &interrupt = _interrupt != nullptr ? *_interrupt : none;
+        if (ns <= 0) return interrupt.isRaised() ? -BMDS_EINTR : 0;
+        const int64_t end = Clock::monotonicNs() + ns;
+        for (;;) {
+                const int64_t left = end - Clock::monotonicNs();
+                if (left <= 0) return 0;
+                const int64_t ms = left / NsPerMs + (left % NsPerMs != 0 ? 1 : 0);
+                const Error   err = interrupt.sleep(static_cast<unsigned>(ms < MaxMs ? ms : MaxMs));
+                if (err.isError()) return errnoFor(err);
+        }
+}
+
+int32_t Process::interrupted() {
+        return _interrupt != nullptr && _interrupt->isRaised() ? 1 : 0;
+}
+
+int32_t Process::termGet(int32_t fd, bmds_term_t *term) {
+        FileHandle *h = _fds.handle(fd);
+        if (h == nullptr) return -BMDS_EBADF;
+        if (!isConsole(h)) return -BMDS_ENOTTY;
+        const Console::TermMode mode = _console->mode();
+        const Console::Size     cells = _console->size();
+        bmds_term_t             t = {};
+        t.flags = (mode.signals ? BMDS_TERM_SIGNALS : 0) | (mode.nlToCrNl ? BMDS_TERM_ONLCR : 0) |
+                  (mode.colors ? BMDS_TERM_COLORS : 0) | (mode.logs ? BMDS_TERM_LOGS : 0) |
+                  (_lineInput ? BMDS_TERM_LINE : 0);
+        t.columns = cells.columns;
+        t.rows = cells.rows;
+        t.colors = colorCount(_console->colorDepth());
+        return copyOut(t, term);
+}
+
+int32_t Process::termSet(int32_t fd, uint32_t flags) {
+        FileHandle *h = _fds.handle(fd);
+        if (h == nullptr) return -BMDS_EBADF;
+        if (!isConsole(h)) return -BMDS_ENOTTY;
+        if ((flags & ~KnownTermFlags) != 0) return -BMDS_EINVAL;
+        Console::TermMode mode;
+        mode.signals = (flags & BMDS_TERM_SIGNALS) != 0;
+        mode.nlToCrNl = (flags & BMDS_TERM_ONLCR) != 0;
+        mode.colors = (flags & BMDS_TERM_COLORS) != 0;
+        mode.logs = (flags & BMDS_TERM_LOGS) != 0;
+        _console->setMode(mode);
+        _lineInput = (flags & BMDS_TERM_LINE) != 0;
+        return 0;
+}
+
+int32_t Process::memInfo(uint32_t flags, bmds_mem_info_t *info) {
+        if ((flags & ~KnownMemFlags) != 0) return -BMDS_EINVAL;
+        if (info == nullptr) return -BMDS_EFAULT;
+        const MemStats  stats = Memory::stats(spaceFor(flags));
+        bmds_mem_info_t m = {};
+        auto            clamp = [](size_t v) {
+                return static_cast<uint32_t>(v < UINT32_MAX ? v : UINT32_MAX);
+        };
+        m.total_bytes = clamp(stats.totalBytes);
+        m.free_bytes = clamp(stats.freeBytes);
+        m.largest_free = clamp(stats.largestFreeBlock);
+        m.program_bytes = clamp(_allocatedBytes);
+        m.program_blocks = clamp(_allocations);
+        return copyOut(m, info);
+}
+
+int32_t Process::setMtime(const char *path, int64_t ns) {
+        StringView p;
+        if (int32_t r = this->path(path, p); r < 0) return r;
+        return fsErrno(Vfs::setModified(p, Timestamp{ns}, vfs()));
 }
 
 BMDS_NAMESPACE_END

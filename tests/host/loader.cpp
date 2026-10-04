@@ -291,6 +291,73 @@ TEST_CASE("Program format: relocation") {
         CHECK(err == Error::Invalid);
 }
 
+#ifdef BMDS_SDK_EXAMPLES
+namespace {
+
+        std::vector<uint8_t> readFile(const std::string &path) {
+                std::vector<uint8_t> file;
+                FILE                *f = std::fopen(path.c_str(), "rb");
+                REQUIRE_MESSAGE(f != nullptr, path);
+                uint8_t buf[4096];
+                size_t  n;
+                while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) file.insert(file.end(), buf, buf + n);
+                std::fclose(f);
+                return file;
+        }
+
+        uint32_t word(const std::vector<uint8_t> &f, size_t at) {
+                REQUIRE(at + 4 <= f.size());
+                return f[at] | f[at + 1] << 8 | f[at + 2] << 16 | uint32_t(f[at + 3]) << 24;
+        }
+
+        uint16_t half(const std::vector<uint8_t> &f, size_t at) {
+                REQUIRE(at + 2 <= f.size());
+                return static_cast<uint16_t>(f[at] | f[at + 1] << 8);
+        }
+
+} // namespace
+
+// crt0 points tp at __tls_base; the linker computes thread-local offsets
+// from the TLS segment's start. They must be the same address (they weren't
+// when a program had no initialized thread-locals: localtime's buffer then
+// overwrote bmds_sys).
+TEST_CASE("Program format: the SDK's programs point tp at their TLS segment") {
+        for (const std::string name : {"hello", "cat", "ls", "progtest"}) {
+                CAPTURE(name);
+                const std::vector<uint8_t> f = readFile(std::string(BMDS_SDK_EXAMPLES) + "/" + name + ".debug.elf");
+                const uint32_t             phoff = word(f, 0x1C), shoff = word(f, 0x20);
+                const uint16_t             phentsize = half(f, 0x2A), phnum = half(f, 0x2C);
+                const uint16_t             shentsize = half(f, 0x2E), shnum = half(f, 0x30);
+                uint32_t                   tls = 0;
+                bool                       hasTls = false;
+                for (uint16_t i = 0; i < phnum; ++i) {
+                        const size_t ph = phoff + size_t(i) * phentsize;
+                        if (word(f, ph) == 7) { // PT_TLS
+                                tls = word(f, ph + 8);
+                                hasTls = true;
+                        }
+                }
+                REQUIRE(hasTls);
+                bool found = false;
+                for (uint16_t i = 0; i < shnum && !found; ++i) {
+                        const size_t sh = shoff + size_t(i) * shentsize;
+                        if (word(f, sh + 4) != 2) continue; // SHT_SYMTAB
+                        const uint32_t off = word(f, sh + 16), size = word(f, sh + 20), entsize = word(f, sh + 36);
+                        const size_t   strSh = shoff + size_t(word(f, sh + 24)) * shentsize;
+                        const uint32_t strOff = word(f, strSh + 16);
+                        for (uint32_t s = 0; s + entsize <= size; s += entsize) {
+                                const char *symName = reinterpret_cast<const char *>(&f[strOff + word(f, off + s)]);
+                                if (std::strcmp(symName, "__tls_base") != 0) continue;
+                                CHECK(word(f, off + s + 4) == tls);
+                                found = true;
+                                break;
+                        }
+                }
+                CHECK(found);
+        }
+}
+#endif
+
 #ifdef BMDS_SDK_HELLO
 TEST_CASE("Program format: the SDK's hello.elf") {
         std::vector<uint8_t> file;

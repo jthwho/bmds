@@ -80,15 +80,18 @@ SECTIONS
          * Thread-local storage: one thread per program, so the block lives
          * in the image and tp points at its start (the startup code sets it).
          * .tbss takes no room by itself; .tbss_space reserves it.
+         * __tls_base is where the TLS segment starts: .tdata's address, or
+         * .tbss's when there is no .tdata (the linker drops an empty .tdata
+         * and .tbss doesn't start where .tdata's alignment would have).
          */
         .tdata : ALIGN(16) {
-                PROVIDE_HIDDEN(__tls_base = .);
                 *(.tdata .tdata.* .gnu.linkonce.td.*)
         } :image :tls
         .tbss : {
                 *(.tbss .tbss.* .gnu.linkonce.tb.*)
                 *(.tcommon)
         } :image :tls
+        PROVIDE_HIDDEN(__tls_base = SIZEOF(.tdata) > 0 ? ADDR(.tdata) : ADDR(.tbss));
         .tbss_space (NOLOAD) : {
                 . = ADDR(.tbss) + SIZEOF(.tbss);
         } :image

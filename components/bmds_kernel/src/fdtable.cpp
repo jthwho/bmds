@@ -28,6 +28,11 @@ Result<int> FdTable::add(FileHandle::Ptr handle, int minFd) {
         return makeError<int>(Error::TooManyOpen);
 }
 
+Result<int> FdTable::dup(int fd, int minFd) {
+        if (!isValid(fd) || !_fds[fd]) return makeError<int>(Error::BadDescriptor);
+        return add(_fds[fd], minFd);
+}
+
 Error FdTable::dup2(int from, int to) {
         if (!isValid(from) || !isValid(to) || !_fds[from]) return Error::BadDescriptor;
         if (from != to) _fds[to] = _fds[from];

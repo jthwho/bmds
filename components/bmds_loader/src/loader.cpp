@@ -10,6 +10,9 @@
 #include <cstdio>
 #include <esp_cache.h>
 #include <sdkconfig.h>
+#include <bmds/clock.h>
+#include <bmds/console.h>
+#include <bmds/list.h>
 #include <bmds/loader.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
@@ -169,9 +172,27 @@ Result<int> Loader::run(const Request &request) {
                 return makeError<int>(err);
         }
 
-        // Its resources and its task.
-        Process process(*request.fds);
-        err = process.setArguments(request.args, request.environment);
+        // Its resources and its task. The environment gets the kernel's
+        // time zone as TZ unless it has one (picolibc's localtime reads TZ).
+        Process          process(*request.fds, request.console, request.interrupt);
+        List<StringView> environment;
+        String           tz;
+        err = process.setCwd(request.cwd.isEmpty() ? StringView("/") : request.cwd);
+        if (err.isOk()) err = environment.reserve(request.environment.size() + 1);
+        bool hasTz = false;
+        for (StringView e : request.environment) {
+                hasTz = hasTz || e.startsWith("TZ=");
+                if (err.isOk()) err = environment.append(e);
+        }
+        const TimeZone zone = Clock::timeZone();
+        if (err.isOk() && !hasTz && !zone.spec().isEmpty()) {
+                err = tz.append("TZ=");
+                if (err.isOk()) err = tz.append(zone.spec());
+                if (err.isOk()) err = environment.append(tz.view());
+        }
+        if (err.isOk())
+                err = process.setArguments(request.args,
+                                           Span<const StringView>(environment.data(), environment.size()));
         if (err.isError()) {
                 report(request, "%s", err == Error::NoMem ? "out of memory" : "argument list too long");
                 Memory::free(memory);
@@ -193,7 +214,9 @@ Result<int> Loader::run(const Request &request) {
                         ? MemSpace::Internal
                         : MemSpace::Psram;
         config.priority = uxTaskPriorityGet(nullptr);
-        Task task;
+        // The program may change the terminal's modes: the shell gets its own back.
+        const Console::TermMode savedMode = request.console != nullptr ? request.console->mode() : Console::TermMode();
+        Task                    task;
         err = task.start(config, programMain, &running);
         if (err.isError()) {
                 report(request, "cannot start: %s", errorText(err));
@@ -205,6 +228,7 @@ Result<int> Loader::run(const Request &request) {
         (void)running.done.acquire(WaitForever);
         (void)task.stop();
         process.release();
+        if (request.console != nullptr) request.console->setMode(savedMode);
         Memory::free(memory);
         return makeResult(static_cast<int>(running.status & 0xff));
 }

@@ -36,6 +36,8 @@ namespace {
                                 for (bmds::StringView a : r.args) c.args.emplace_back(a.data(), a.size());
                                 for (bmds::StringView e : r.environment) c.env.emplace_back(e.data(), e.size());
                                 c.cwd.assign(r.cwd.data(), r.cwd.size());
+                                c.console = r.console;
+                                c.interrupt = r.interrupt;
                                 calls.push_back(c);
                                 // The program "writes" its path to its stdout.
                                 bmds::FileHandle *out = r.fds->handle(1);
@@ -49,6 +51,8 @@ namespace {
                                         std::vector<std::string> args;
                                         std::vector<std::string> env;
                                         std::string              cwd;
+                                        bmds::Console           *console = nullptr;
+                                        bmds::Interrupt         *interrupt = nullptr;
                         };
                         std::vector<Call> calls;
                         int               status = 0;
@@ -103,6 +107,8 @@ TEST_CASE("Launch: a command with a / goes to the launcher") {
         CHECK(has(c.env, "TERM=xterm-256color"));
         CHECK_FALSE(has(c.env, "HIDDEN=no"));
         CHECK(c.cwd == "/");
+        CHECK(c.console == &f.con); // the terminal, for /dev/console and the terminal calls
+        CHECK(c.interrupt == &f.con.interrupt());
         // A prefix assignment reaches the program, for that command only.
         CHECK(f.out("ONCE=1 /bin/prog", 3) == "ran\n");
         CHECK(has(f.launcher.calls[1].env, "ONCE=1"));

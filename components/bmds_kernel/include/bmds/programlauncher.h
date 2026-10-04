@@ -16,6 +16,7 @@
 
 BMDS_NAMESPACE_BEGIN
 
+class Console;
 class Interrupt;
 
 /**
@@ -24,8 +25,9 @@ class Interrupt;
  *
  * The shell hands over a command whose name is a path: the file, its
  * arguments (`args[0]` as typed), the exported environment as "NAME=value"
- * strings, the command's file descriptors and current directory. The call
- * returns when the program has ended.
+ * strings, the command's file descriptors and current directory, its
+ * terminal. The call returns when the program has ended; the terminal's
+ * modes are as they were.
  *
  * @par Thread Safety
  * Called from the task running the command (a shell or a pipeline worker);
@@ -41,6 +43,7 @@ class ProgramLauncher {
                                 const FdTable         *fds = nullptr;       ///< The command's descriptors.
                                 StringView             cwd;                 ///< Its current directory.
                                 Interrupt             *interrupt = nullptr; ///< Ctrl-C (the console's).
+                                Console               *console = nullptr;   ///< The terminal (`/dev/console`).
                 };
 
                 /**

@@ -8,15 +8,16 @@ the headers in `include/bmds/` are the ABI and never change incompatibly
 
 | Path | What |
 |---|---|
-| `include/bmds/sys.h` | The system call table: slot numbers, typed calls (`bmds_write()`...), the startup contract. |
+| `include/bmds/sys.h` | The system call table: slot numbers, typed calls (`bmds_open()`, `bmds_term_set()`...), their structs and flags, the startup contract. |
 | `include/bmds/program.h` | The executable format and the program note. |
 | `include/bmds/errno.h` | Error numbers (`BMDS_E...`; picolibc's values). |
-| `crt/crt0.S`, `crt/crt.c` | `_start`, thread-local setup, `main`'s caller, picolibc's POSIX glue (`read`, `write`...). |
+| `crt/crt0.S`, `crt/crt.c` | `_start`, thread-local setup, `main`'s caller, the stdio glue (`read`, `write`, `lseek`, `_exit`). |
+| `crt/posix.c` | The rest of picolibc's POSIX glue: `open`, `stat`, `opendir`, `getcwd`, `dup2`, `fcntl`, `clock_gettime`, `nanosleep`... |
 | `crt/malloc.c` | `malloc` and friends over the kernel's allocator. |
 | `ld/bmds.ld` | The program layout: one image linked at 0, the note, thread-local storage. |
 | `cmake/bmds-toolchain.cmake` | A CMake toolchain file for Espressif's `riscv32-esp-elf-gcc`. |
 | `cmake/BmdsProgram.cmake` | `bmds_add_program(name SOURCES ... [STACK_SIZE bytes])`. |
-| `examples/` | `hello`, `cat` (stdin to stdout with the raw calls). |
+| `examples/` | `hello`; `cat` (files or stdin, with the raw calls); `ls [-l]` (portable POSIX only). |
 | `tests/` | `progtest`, used by the loader's board tests. |
 
 ## Building a program
@@ -55,3 +56,35 @@ as the loader will. On the board, copy it to the card (`rz` and
   does) is fine; a full `strip` removes what the loader needs.
 - `gp` belongs to the kernel: build with relaxation off (the toolchain
   file does) and never set it.
+
+## The C library
+
+picolibc, over the system calls. What works as on any POSIX system:
+
+- stdio and `malloc` (the kernel frees what a program still holds at exit).
+- Files: `open` (`O_RDONLY`/`O_WRONLY`/`O_RDWR`, `O_CREAT`, `O_TRUNC`,
+  `O_APPEND`, `O_EXCL`; `O_CLOEXEC`, `O_NOCTTY`, `O_SYNC` accepted and
+  meaningless), `stat`/`lstat`/`fstat`, `access`, `mkdir`, `rmdir`,
+  `unlink`/`remove` (not while the file is open: `EBUSY`), `rename` (`EXDEV`
+  across filesystems), `utime`/`utimes`.
+- Directories: `opendir`, `readdir`, `closedir` (up to 8 open), `getcwd`
+  (also `getcwd(NULL, 0)`), `chdir` (the program's own current directory).
+- Descriptors: `dup`, `dup2`, `fcntl` (`F_DUPFD`, `F_GETFL`; `F_GETFD` and
+  `F_SETFD` do nothing: there is no exec).
+- Time: `time`, `gettimeofday`, `clock_gettime` (`CLOCK_REALTIME`,
+  `CLOCK_MONOTONIC`), `clock`, `localtime` (the kernel's time zone arrives as
+  `TZ`), `nanosleep`, `usleep`, `sleep`; `getentropy` (hardware random).
+- Ctrl-C: blocking calls fail with `EINTR`, and the program ends with status
+  130 however it exits. `bmds_interrupted()` tells it apart from other errors.
+
+BMDS's own calls (`bmds/sys.h`) do what POSIX has no call for: the terminal
+(`bmds_term_get`, `bmds_term_set`: line input or raw keys, Ctrl-C as a key,
+log lines off; the shell gets its modes back when the program ends), memory
+(`bmds_mem_info`, `bmds_mem_alloc` with `BMDS_MEM_FAST`/`BMDS_MEM_DMA`).
+Their structs start with `size`; initialize them as
+`bmds_term_t t = {.size = sizeof(t)};`.
+
+Limits: one thread (no `pthread`); no `fork`/`exec`, signals or pipes yet;
+picolibc's `off_t` is 32 bits, so `stat()` misreports files over 2 GB
+(`bmds_stat()` has the full size). The glue functions are linked into every
+program as objects, so a program can't define its own `open`, `stat`...

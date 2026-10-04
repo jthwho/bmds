@@ -87,7 +87,8 @@ if(BMDS_RISCV_GCC)
                 INSTALL_COMMAND "")
         add_dependencies(bmds_host_tests sdk_examples)
         target_compile_definitions(bmds_host_tests PRIVATE
-                BMDS_SDK_HELLO="${CMAKE_BINARY_DIR}/sdk-examples/hello.elf")
+                BMDS_SDK_HELLO="${CMAKE_BINARY_DIR}/sdk-examples/hello.elf"
+                BMDS_SDK_EXAMPLES="${CMAKE_BINARY_DIR}/sdk-examples")
         add_test(NAME sdk_examples_are_programs
                  COMMAND bmds-elfcheck ${CMAKE_BINARY_DIR}/sdk-examples/hello.elf)
 else()

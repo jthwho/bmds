@@ -1201,6 +1201,7 @@ int Executor::runProgram(List<String> &args, FdTable &fds) {
         request.fds = &fds;
         request.cwd = vfs().cwd;
         request.interrupt = &_shell.console().interrupt();
+        request.console = &_shell.console();
         auto [status, lerr] = _shell.launcher()->run(request);
         if (lerr.isOk()) return status;
         if (lerr == Error::Interrupted) return Shell::ExitInterrupted;

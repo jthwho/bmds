@@ -98,6 +98,13 @@ TEST_CASE("FdTable") {
                 CHECK(fd == 0);
                 auto [fd3, err3] = table.add(open(NullStream::instance(), FileHandle::Read), 3);
                 CHECK(fd3 == 3);
+                // dup: the lowest free descriptor at or above the minimum.
+                CHECK(table.dup(1, 0).value() == 4);
+                CHECK(table.handle(4) == table.handle(1));
+                CHECK(table.handle(1)->refCount() == 3);
+                CHECK(table.dup(7, 0).error() == Error::BadDescriptor);
+                CHECK(table.dup(1, FdTable::MaxFds).error() == Error::BadDescriptor);
+                CHECK(table.close(4).isOk());
 
                 // A copy shares handles, and the original is unaffected by
                 // changes to it.

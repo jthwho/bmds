@@ -13,7 +13,8 @@ get_filename_component(BMDS_SDK_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 
 if(NOT TARGET bmds_crt)
         enable_language(ASM)
-        add_library(bmds_crt OBJECT ${BMDS_SDK_DIR}/crt/crt0.S ${BMDS_SDK_DIR}/crt/crt.c ${BMDS_SDK_DIR}/crt/malloc.c)
+        add_library(bmds_crt OBJECT ${BMDS_SDK_DIR}/crt/crt0.S ${BMDS_SDK_DIR}/crt/crt.c ${BMDS_SDK_DIR}/crt/malloc.c
+                    ${BMDS_SDK_DIR}/crt/posix.c)
         target_include_directories(bmds_crt PUBLIC ${BMDS_SDK_DIR}/include)
         target_compile_options(bmds_crt PRIVATE -O2 -Wall -Wextra -Werror)
 endif()

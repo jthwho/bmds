@@ -19,6 +19,7 @@ const bmds_sys_t *bmds_sys;
 
 extern char **environ;
 extern void   __libc_init_array(void);
+extern void   __bmds_posix_start(void);
 extern int    main(int argc, char **argv, char **envp);
 
 void __bmds_start(const bmds_sys_t *sys, int32_t argc, char **argv, char **envp) __attribute__((noreturn));
@@ -26,6 +27,7 @@ void __bmds_start(const bmds_sys_t *sys, int32_t argc, char **argv, char **envp)
 void __bmds_start(const bmds_sys_t *sys, int32_t argc, char **argv, char **envp) {
         bmds_sys = sys;
         environ = envp;
+        __bmds_posix_start();
         __libc_init_array();
         exit(main((int)argc, argv, envp));
 }
@@ -66,7 +68,10 @@ int isatty(int fd) {
         return 1;
 }
 
+/* After Ctrl-C the program ends with 130, however it ends (as a shell
+ * reports a command killed by SIGINT). */
 void _exit(int status) {
+        if (bmds_sys_has(BMDS_SYS_INTERRUPTED) && bmds_interrupted()) status = 130;
         bmds_exit(status);
         for (;;) {}
 }

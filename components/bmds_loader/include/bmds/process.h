@@ -17,17 +17,28 @@
 #include <bmds/span.h>
 #include <bmds/string.h>
 #include <bmds/stringview.h>
+#include <bmds/sys.h>
+#include <bmds/vfs.h>
 
 BMDS_NAMESPACE_BEGIN
+
+class Console;
+class Interrupt;
 
 /**
  * @brief A running program's resources and its system calls.
  *
  * Everything a program gets from the kernel belongs to its Process: its
  * file descriptors (a copy of the shell's, so closing one doesn't close
- * the shell's), the memory it allocates, its argument and environment
- * block. When the program ends, however it ends, `release()` returns all
- * of it, so a program can't leak past its exit.
+ * the shell's), the memory it allocates, its directory handles, its
+ * current directory, its argument and environment block. When the program
+ * ends, however it ends, `release()` returns all of it, so a program can't
+ * leak past its exit.
+ *
+ * The console (the shell's terminal) is where `/dev/console` leads and
+ * what the terminal calls work on. With `BMDS_TERM_LINE` (the default),
+ * reading it gets whole lines, echoed and editable (the line editor the
+ * shell's `read` uses); else the bytes as they arrive.
  *
  * The methods are the system calls behind the SDK's table (bmds/sys.h):
  * same arguments, results >= 0 or a negated `BMDS_E...` number.
@@ -41,8 +52,15 @@ class Process {
                 /** @brief Largest alignment `memAlloc()` accepts. */
                 static constexpr uint32_t MaxAlign = 4096;
 
-                /** @brief Constructs a process with its own copy of @p fds. */
-                explicit Process(const FdTable &fds);
+                /** @brief How many directories a program may have open at once. */
+                static constexpr int MaxDirectories = 8;
+
+                /**
+                 * @brief Constructs a process with its own copy of @p fds, in `/`.
+                 * @param console   The terminal (`/dev/console`, the terminal calls); may be null.
+                 * @param interrupt Ctrl-C (`interrupted()`, `sleep()`); may be null.
+                 */
+                explicit Process(const FdTable &fds, Console *console = nullptr, Interrupt *interrupt = nullptr);
                 ~Process();
                 Process(const Process &) = delete;
                 Process &operator=(const Process &) = delete;
@@ -53,6 +71,15 @@ class Process {
                  * @return `Ok`, `NoMem`, or `Invalid` (too many or too long).
                  */
                 Error setArguments(Span<const StringView> args, Span<const StringView> environment);
+
+                /**
+                 * @brief Sets the current directory (absolute, normalized: the shell's).
+                 * @return `Ok` or `NoMem`.
+                 */
+                Error setCwd(StringView cwd);
+
+                /** @brief Returns the current directory. */
+                StringView cwd() const { return _cwd.isEmpty() ? StringView("/") : _cwd.view(); }
 
                 /** @brief Returns the program's `argc`. */
                 int32_t argc() const { return _argc; }
@@ -72,7 +99,10 @@ class Process {
                 /** @brief Returns how many allocations it holds. */
                 size_t allocations() const { return _allocations; }
 
-                /** @brief Closes its fds and frees everything it allocated. Idempotent. */
+                /** @brief Returns how many directories it has open. */
+                int openDirectories() const;
+
+                /** @brief Closes its fds and directories and frees everything it allocated. Idempotent. */
                 void release();
 
                 // --- System calls (bmds/sys.h) ------------------------------------
@@ -85,21 +115,54 @@ class Process {
                 void   *memAlloc(uint32_t size, uint32_t align, uint32_t flags);
                 void    memFree(void *ptr);
                 void   *memRealloc(void *ptr, uint32_t size, uint32_t flags);
+                int32_t open(const char *path, uint32_t flags);
+                int32_t stat(const char *path, bmds_stat_t *info);
+                int32_t fstat(int32_t fd, bmds_stat_t *info);
+                int32_t mkdir(const char *path);
+                int32_t rmdir(const char *path);
+                int32_t unlink(const char *path);
+                int32_t rename(const char *from, const char *to);
+                int32_t opendir(const char *path);
+                int32_t readdir(int32_t dir, bmds_stat_t *info, char *name, uint32_t size);
+                int32_t closedir(int32_t dir);
+                int32_t getcwd(char *buf, uint32_t size);
+                int32_t chdir(const char *path);
+                int32_t dup(int32_t fd, int32_t minFd);
+                int32_t dup2(int32_t fd, int32_t to);
+                int32_t clockGet(uint32_t clock, int64_t *ns);
+                int32_t sleep(int64_t ns);
+                int32_t interrupted();
+                int32_t termGet(int32_t fd, bmds_term_t *term);
+                int32_t termSet(int32_t fd, uint32_t flags);
+                int32_t memInfo(uint32_t flags, bmds_mem_info_t *info);
+                int32_t setMtime(const char *path, int64_t ns);
 
                 /** @brief Returns the negated `BMDS_E...` number for @p err. */
                 static int32_t errnoFor(Error err);
 
         private:
-                struct Block; // an allocation's header, just before what the program gets
+                struct Block;     // an allocation's header, just before what the program gets
+                struct LineInput; // the line editor and its line, once the program reads the console
 
-                FdTable _fds;
-                Block  *_blocks = nullptr;
-                size_t  _allocatedBytes = 0;
-                size_t  _allocations = 0;
-                void   *_argBlock = nullptr;
-                char  **_argv = nullptr;
-                char  **_envp = nullptr;
-                int32_t _argc = 0;
+                Vfs::Context vfs() const;
+                bool         isConsole(const FileHandle *h) const;
+                int32_t      readConsole(void *buf, uint32_t size);
+                int32_t      path(const char *path, StringView &out) const;
+
+                FdTable    _fds;
+                Console   *_console;
+                Interrupt *_interrupt;
+                String     _cwd;
+                LineInput *_line = nullptr;
+                bool       _lineInput = true;
+                Directory  _dirs[MaxDirectories];
+                Block     *_blocks = nullptr;
+                size_t     _allocatedBytes = 0;
+                size_t     _allocations = 0;
+                void      *_argBlock = nullptr;
+                char     **_argv = nullptr;
+                char     **_envp = nullptr;
+                int32_t    _argc = 0;
 };
 
 BMDS_NAMESPACE_END

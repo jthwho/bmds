@@ -21,12 +21,12 @@ if(COMMAND idf_component_register)
                                     src/syscalls.cpp
                                     src/systable.c
                                INCLUDE_DIRS include ${BMDS_SDK_INCLUDE}
-                               REQUIRES bmds_core bmds_kernel bmds_fs
-                               PRIV_REQUIRES esp_mm freertos)
+                               REQUIRES bmds_core bmds_kernel bmds_console bmds_fs
+                               PRIV_REQUIRES esp_hw_support esp_mm freertos)
         bmds_target_options(${COMPONENT_LIB})
 else()
         add_library(bmds_loader STATIC ${BMDS_LOADER_PURE_SRCS})
         target_include_directories(bmds_loader PUBLIC include ${BMDS_SDK_INCLUDE})
-        target_link_libraries(bmds_loader PUBLIC bmds_core bmds_kernel bmds_fs)
+        target_link_libraries(bmds_loader PUBLIC bmds_core bmds_kernel bmds_console bmds_fs)
         bmds_target_options(bmds_loader)
 endif()

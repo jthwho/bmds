@@ -71,6 +71,14 @@ class FdTable {
                 Result<int> add(FileHandle::Ptr handle, int minFd = 0);
 
                 /**
+                 * @brief Puts the handle of @p fd also on the lowest closed descriptor
+                 *        at or above @p minFd.
+                 * @return The new descriptor, `BadDescriptor` if either is out of
+                 *         range or @p fd is closed, or `TooManyOpen`.
+                 */
+                Result<int> dup(int fd, int minFd = 0);
+
+                /**
                  * @brief Makes @p to refer to the same handle as @p from (`to>&from`).
                  * @return `Ok`, or `BadDescriptor` if either is out of range or @p from is closed.
                  */
