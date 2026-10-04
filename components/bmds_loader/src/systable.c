@@ -45,8 +45,9 @@ int32_t bmds_k_term_set(int32_t fd, uint32_t flags);
 int32_t bmds_k_mem_info(uint32_t flags, bmds_mem_info_t *info);
 int32_t bmds_k_random(void *buf, uint32_t size);
 int32_t bmds_k_set_mtime(const char *path, int64_t ns);
+int32_t bmds_k_ftruncate(int32_t fd, int64_t size);
 
-#define SLOTS 31
+#define SLOTS 32
 
 /* bmds_sys_t with its slots spelled out (same layout; checked below). */
 static const struct {
@@ -92,10 +93,11 @@ static const struct {
                 [BMDS_SYS_MEM_INFO] = (bmds_sys_fn_t)bmds_k_mem_info,
                 [BMDS_SYS_RANDOM] = (bmds_sys_fn_t)bmds_k_random,
                 [BMDS_SYS_SET_MTIME] = (bmds_sys_fn_t)bmds_k_set_mtime,
+                [BMDS_SYS_FTRUNCATE] = (bmds_sys_fn_t)bmds_k_ftruncate,
         },
 };
 
-_Static_assert(SLOTS == BMDS_SYS_SET_MTIME + 1, "every slot is in the table");
+_Static_assert(SLOTS == BMDS_SYS_FTRUNCATE + 1, "every slot is in the table");
 _Static_assert(sizeof(table) == 16 + SLOTS * sizeof(bmds_sys_fn_t), "table layout");
 
 const bmds_sys_t *bmds_k_sys_table(void) {

@@ -46,7 +46,7 @@ extern "C" {
  * @brief The ABI version this SDK describes. A kernel implements every
  *        version up to its `bmds_sys_t::abi_version`.
  */
-#define BMDS_ABI_VERSION 1u
+#define BMDS_ABI_VERSION 2u
 
 /** @brief A slot, before it is cast to its function's type. */
 typedef void (*bmds_sys_fn_t)(void);
@@ -101,6 +101,8 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_MEM_INFO 28u    /**< `int32_t mem_info(uint32_t flags, bmds_mem_info_t *info)`. */
 #define BMDS_SYS_RANDOM 29u      /**< `int32_t random(void *buf, uint32_t size)`. */
 #define BMDS_SYS_SET_MTIME 30u   /**< `int32_t set_mtime(const char *path, int64_t ns)`. */
+/* ABI 2 */
+#define BMDS_SYS_FTRUNCATE 31u   /**< `int32_t ftruncate(int32_t fd, int64_t size)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -157,6 +159,10 @@ typedef struct bmds_stat_t {
                 uint32_t open_flags;  /**< `fstat`: the fd's `BMDS_O_READ`/`BMDS_O_WRITE`; else 0. */
                 uint64_t file_size;   /**< Bytes (0 for directories and devices). */
                 int64_t  modified_ns; /**< Last modified, ns since 1970-01-01 UTC; 0 if unknown. */
+                /* ABI 2 (0 from an ABI 1 kernel) */
+                uint64_t file_id;  /**< The same for each name and fd of one file, different for others; 0 if unknown. */
+                uint32_t device;   /**< The filesystem it is on (non-zero), or 0 (devices, pipes, `/`, `/dev`). */
+                uint32_t reserved; /**< Zero. */
 } bmds_stat_t;
 
 /** @brief `clock_get` clocks. */
@@ -222,6 +228,7 @@ typedef int32_t (*bmds_sys_term_set_fn)(int32_t fd, uint32_t flags);
 typedef int32_t (*bmds_sys_mem_info_fn)(uint32_t flags, bmds_mem_info_t *info);
 typedef int32_t (*bmds_sys_random_fn)(void *buf, uint32_t size);
 typedef int32_t (*bmds_sys_set_mtime_fn)(const char *path, int64_t ns);
+typedef int32_t (*bmds_sys_ftruncate_fn)(int32_t fd, int64_t size);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -427,6 +434,17 @@ static inline int32_t bmds_random(void *buf, uint32_t size) {
 /** @brief Sets a file's modification time (ns since 1970-01-01 UTC; FAT keeps 2 s). */
 static inline int32_t bmds_set_mtime(const char *path, int64_t ns) {
         return ((bmds_sys_set_mtime_fn)bmds_sys->slot[BMDS_SYS_SET_MTIME])(path, ns);
+}
+
+/**
+ * @brief Sets the size of the file @p fd (open for writing) refers to: cut,
+ *        or grown with zeros. Its position stays. ABI 2 (check
+ *        `bmds_sys_has(BMDS_SYS_FTRUNCATE)` on older kernels).
+ * @return 0, or `BMDS_EBADF`, `BMDS_EINVAL` (negative @p size, or not a file),
+ *         `BMDS_ENOSPC`, ...
+ */
+static inline int32_t bmds_ftruncate(int32_t fd, int64_t size) {
+        return ((bmds_sys_ftruncate_fn)bmds_sys->slot[BMDS_SYS_FTRUNCATE])(fd, size);
 }
 
 #ifdef __cplusplus

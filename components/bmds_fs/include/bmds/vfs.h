@@ -45,6 +45,15 @@ struct FileInfo {
                 uint64_t  size = 0;              ///< Size in bytes (0 for directories and devices).
                 Timestamp modified;              ///< Last modified (UTC); zero if unknown.
                 uint8_t   attributes = 0;        ///< `Attribute` bits.
+                /**
+                 * Identifies the file: the same for each of its names (`.`, `..`,
+                 * case) and every handle of it (`FileHandle::id()`), different for
+                 * other files. A hash of its normalized path with letters folded,
+                 * so it changes when the file is renamed; for a device node, the
+                 * device's object. 0 if unknown.
+                 */
+                uint64_t id = 0;
+                uint32_t device = 0; ///< The filesystem it is on: its mount slot + 1; 0 outside them.
 
                 /** @brief Returns true for directories. */
                 bool isDirectory() const { return type == FileType::Directory; }

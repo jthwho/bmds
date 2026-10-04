@@ -136,6 +136,7 @@ class Process {
                 int32_t termSet(int32_t fd, uint32_t flags);
                 int32_t memInfo(uint32_t flags, bmds_mem_info_t *info);
                 int32_t setMtime(const char *path, int64_t ns);
+                int32_t ftruncate(int32_t fd, int64_t size);
 
                 /** @brief Returns the negated `BMDS_E...` number for @p err. */
                 static int32_t errnoFor(Error err);

@@ -35,7 +35,7 @@ set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 # single-precision float, Espressif hardware loops and PIE SIMD. No Zc*.
 set(BMDS_ARCH_FLAGS "-march=rv32imafc_zicsr_zifencei_zaamo_zalrsc_xesploop_xespv2p1 -mabi=ilp32f")
 # PC-relative addressing (medany), no relaxation (gp is the kernel's).
-set(BMDS_C_FLAGS "${BMDS_ARCH_FLAGS} --specs=picolibc.specs -mcmodel=medany -mno-relax -ffunction-sections -fdata-sections")
+set(BMDS_C_FLAGS "${BMDS_ARCH_FLAGS} -mcmodel=medany -mno-relax -ffunction-sections -fdata-sections")
 
 set(CMAKE_C_FLAGS_INIT "${BMDS_C_FLAGS}")
 set(CMAKE_CXX_FLAGS_INIT "${BMDS_C_FLAGS} -fno-exceptions -fno-rtti")

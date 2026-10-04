@@ -26,11 +26,14 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/utsname.h>
 #include <sys/time.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 #include <bmds/sys.h>
@@ -82,12 +85,19 @@ static int files(const char *dir) {
         CHECK(rename(path, "pt-dir/moved.txt") == 0);
         CHECK(stat(path, &st) == -1 && errno == ENOENT);
         CHECK(stat("pt-dir/moved.txt", &st) == 0 && st.st_size == 20);
-        CHECK(open("pt-dir", O_RDONLY) == -1 && errno == EISDIR);
+        // A directory opens for reading (as on Linux: opendir does that), not for writing.
+        int dfd = open("pt-dir", O_RDONLY);
+        CHECK(dfd >= 0 && close(dfd) == 0);
+        CHECK(open("pt-dir", O_WRONLY) == -1 && errno == EISDIR);
         CHECK(unlink("pt-dir") == -1 && errno == EISDIR);
         CHECK(rmdir("pt-dir") == -1 && errno == ENOTEMPTY);
         DIR *dp = opendir("pt-dir");
         CHECK(dp != NULL);
         struct dirent *e = readdir(dp);
+        CHECK(e != NULL && strcmp(e->d_name, ".") == 0 && e->d_type == DT_DIR);
+        e = readdir(dp);
+        CHECK(e != NULL && strcmp(e->d_name, "..") == 0);
+        e = readdir(dp);
         CHECK(e != NULL && strcmp(e->d_name, "moved.txt") == 0 && e->d_type == DT_REG);
         CHECK(readdir(dp) == NULL);
         CHECK(closedir(dp) == 0);
@@ -169,6 +179,83 @@ static int raw(void) {
         return 0;
 }
 
+static volatile sig_atomic_t caught;
+
+/* Thread-locals, initialized and not: musl copies the template (described
+ * to it by the startup code) into the thread's block. */
+static __thread int  tls_counter = 5;
+static __thread char tls_zeros[64];
+
+static void on_signal(int sig) {
+        caught = sig;
+        return;
+}
+
+/* The POSIX layer of SDK 2 (musl over BMDS): sizes, holes, file identity,
+ * access, termios, signals raised by the program itself, uname. */
+static int posix(const char *dir) {
+        char        path[512];
+        struct stat a, b;
+        CHECK(tls_counter == 5 && tls_zeros[0] == 0 && tls_zeros[63] == 0);
+        tls_counter += 2;
+        tls_zeros[63] = 'x';
+        CHECK(tls_counter == 7 && tls_zeros[63] == 'x');
+        CHECK(chdir(dir) == 0);
+        snprintf(path, sizeof(path), "pt-posix.txt");
+        int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+        CHECK(fd >= 0 && write(fd, "abcdef", 6) == 6);
+        // ftruncate: cut, then grown with zeros; the offset stays.
+        CHECK(ftruncate(fd, 3) == 0 && fstat(fd, &a) == 0 && a.st_size == 3);
+        CHECK(lseek(fd, 0, SEEK_CUR) == 6);
+        CHECK(ftruncate(fd, 8) == 0 && fstat(fd, &a) == 0 && a.st_size == 8);
+        char buf[16] = {0};
+        CHECK(pread(fd, buf, sizeof(buf), 0) == 8 && memcmp(buf, "abc\0\0\0\0\0", 8) == 0);
+        // Written past the end: the gap reads as zeros; seeking alone doesn't grow it.
+        CHECK(lseek(fd, 100, SEEK_SET) == 100 && fstat(fd, &a) == 0 && a.st_size == 8);
+        CHECK(write(fd, "Z", 1) == 1 && fstat(fd, &a) == 0 && a.st_size == 101);
+        CHECK(pread(fd, buf, 4, 96) == 4 && memcmp(buf, "\0\0\0\0", 4) == 0);
+        CHECK(ftruncate(fd, -1) == -1 && errno == EINVAL);
+        // One file, one id: by name (any case), by fd, in its directory.
+        CHECK(stat(path, &a) == 0 && fstat(fd, &b) == 0);
+        CHECK(a.st_ino == b.st_ino && a.st_dev == b.st_dev && a.st_ino != 0);
+        CHECK(stat("PT-POSIX.TXT", &b) == 0 && a.st_ino == b.st_ino);
+        CHECK(stat(".", &b) == 0 && a.st_ino != b.st_ino && S_ISDIR(b.st_mode));
+        DIR           *dp = opendir(".");
+        struct dirent *e;
+        int            found = 0;
+        while (dp != NULL && (e = readdir(dp)) != NULL) found |= strcmp(e->d_name, path) == 0 && e->d_ino == a.st_ino;
+        CHECK(dp != NULL && closedir(dp) == 0 && found);
+        CHECK(close(fd) == 0 && truncate(path, 2) == 0 && stat(path, &a) == 0 && a.st_size == 2);
+        // access: X_OK as the shell's test -x.
+        CHECK(access(path, R_OK | W_OK) == 0 && access(path, X_OK) == -1 && errno == EACCES);
+        CHECK(access(".", X_OK) == 0 && access("nonexistent", F_OK) == -1 && errno == ENOENT);
+        CHECK(unlink(path) == 0);
+        // termios on the console: raw and back (a pipe or file: ENOTTY).
+        struct termios t, raw;
+        if (tcgetattr(0, &t) == 0) {
+                raw = t;
+                cfmakeraw(&raw);
+                CHECK(tcsetattr(0, TCSANOW, &raw) == 0 && tcgetattr(0, &raw) == 0 && !(raw.c_lflag & ICANON));
+                CHECK(tcsetattr(0, TCSANOW, &t) == 0 && tcgetattr(0, &raw) == 0 && (raw.c_lflag & ICANON));
+        } else {
+                CHECK(errno == ENOTTY);
+        }
+        // Signals the program raises itself.
+        CHECK(signal(SIGUSR1, on_signal) != SIG_ERR && raise(SIGUSR1) == 0 && caught == SIGUSR1);
+        sigset_t set, old;
+        sigemptyset(&set);
+        sigaddset(&set, SIGUSR2);
+        caught = 0;
+        CHECK(signal(SIGUSR2, on_signal) != SIG_ERR && sigprocmask(SIG_BLOCK, &set, &old) == 0);
+        CHECK(raise(SIGUSR2) == 0 && caught == 0);
+        CHECK(sigprocmask(SIG_SETMASK, &old, NULL) == 0 && caught == SIGUSR2);
+        CHECK(signal(SIGCHLD, SIG_DFL) != SIG_ERR && raise(SIGCHLD) == 0); // ignored by default
+        struct utsname u;
+        CHECK(uname(&u) == 0 && strcmp(u.sysname, "BMDS") == 0);
+        printf("posix: ok (%s %s %s)\n", u.sysname, u.release, u.machine);
+        return 0;
+}
+
 static int mem(void) {
         char *volatile p = malloc(100000); /* volatile: GCC drops a malloc nothing uses */
         bmds_mem_info_t psram = {.size = sizeof(psram)}, fast = {.size = sizeof(fast)};
@@ -191,7 +278,7 @@ int main(int argc, char **argv) {
         if (argc < 2) {
                 fprintf(stderr,
                         "usage: progtest status|exit|leak|env|tty|float|files|time|sleep|term|lines|raw|mem|random|cwd|"
-                        "spin|calls [arg]\n");
+                        "spin|calls|posix|abort [arg]\n");
                 return 2;
         }
         const char *what = argv[1];
@@ -238,6 +325,8 @@ int main(int argc, char **argv) {
         if (strcmp(what, "lines") == 0) return lines();
         if (strcmp(what, "raw") == 0) return raw();
         if (strcmp(what, "mem") == 0) return mem();
+        if (strcmp(what, "posix") == 0) return posix(arg);
+        if (strcmp(what, "abort") == 0) abort();
         if (strcmp(what, "random") == 0) {
                 unsigned char b[16];
                 CHECK(getentropy(b, sizeof(b)) == 0);

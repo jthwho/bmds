@@ -53,7 +53,30 @@ namespace {
                         BlockDevice *device = nullptr;
                         StringView   name; // The last component ("" for /).
                         StringView   rest; // Fat: within the volume, "" for its root, else "/dir/file".
+                        uint32_t     mount = 0; // Fat: the mount slot + 1 (FileInfo::device).
         };
+
+        // FileInfo::id: FNV-1a over the normalized path, ASCII letters folded
+        // (FAT names are case-insensitive). The root hashes as "", so that a
+        // directory's prefix and "/name" make its children's ids.
+        constexpr uint64_t IdSeed = 14695981039346656037ull;
+
+        uint64_t idAppend(uint64_t id, StringView text) {
+                for (char c : text) {
+                        uint8_t b = static_cast<uint8_t>(c);
+                        if (b >= 'A' && b <= 'Z') b = static_cast<uint8_t>(b + ('a' - 'A'));
+                        id = (id ^ b) * 1099511628211ull;
+                }
+                return id;
+        }
+
+        uint64_t pathId(StringView normalized) {
+                return idAppend(IdSeed, normalized == "/" ? StringView() : normalized);
+        }
+
+        uint64_t objectId(const void *object) {
+                return reinterpret_cast<uintptr_t>(object);
+        }
 
         // True if @p path is @p dir itself or below it.
         bool isAtOrBelow(StringView path, StringView dir) {
@@ -92,6 +115,7 @@ namespace {
                         const StringView mp(mounts[i].path);
                         if (isAtOrBelow(path, mp)) {
                                 node.kind = Kind::Fat;
+                                node.mount = static_cast<uint32_t>(i + 1);
                                 node.volume = mounts[i].volume;
                                 node.device = mounts[i].device;
                                 node.rest = path.mid(mp.size());
@@ -229,6 +253,8 @@ namespace {
 struct Directory::State {
                 uint8_t    kind = 0;
                 uint8_t    index = 0; // Virtual directories: the next entry.
+                uint32_t   device = 0;
+                uint64_t   idPrefix = IdSeed; // The directory's path hashed (children: + "/name").
                 FatVolume *volume = nullptr;
                 char       path[MaxMountPath + 1] = {}; // Virtual directories.
                 DIR        dir = {};
@@ -281,16 +307,21 @@ Result<FileInfo> Directory::next() {
                         const StringView child = virtualChild(StringView(s.path), s.index);
                         if (child.isEmpty()) return makeError<FileInfo>(Error::EndOfFile);
                         ++s.index;
-                        return makeResult(directoryInfo(child));
+                        info = directoryInfo(child);
+                        info.id = idAppend(idAppend(s.idPrefix, "/"), child);
+                        return makeResult(std::move(info));
                 }
                 case Kind::DevDir: {
                         constexpr size_t Fixed = sizeof(DevNames) / sizeof(DevNames[0]);
                         if (s.index < Fixed) {
                                 (void)info.name.assign(DevNames[s.index]);
+                                // The console's id is its stream's, unknown here.
+                                if (info.name == "null") info.id = objectId(static_cast<Stream *>(&devNull));
                         } else if (s.index - Fixed < Fat::deviceCountLocked()) {
                                 const BlockDevices::Entry &e = Fat::deviceAtLocked(s.index - Fixed);
                                 (void)info.name.assign(e.name);
                                 info.size = e.device->sectorCount() * e.device->sectorSize();
+                                info.id = objectId(e.device);
                         } else {
                                 return makeError<FileInfo>(Error::EndOfFile);
                         }
@@ -305,6 +336,8 @@ Result<FileInfo> Directory::next() {
         if (s.entry.fname[0] == '\0') return makeError<FileInfo>(Error::EndOfFile);
         const Error err = Fat::toFileInfo(s.entry, info);
         if (err.isError()) return makeError<FileInfo>(err);
+        info.id = idAppend(idAppend(s.idPrefix, "/"), info.name.view());
+        info.device = s.device;
         return makeResult(std::move(info));
 }
 
@@ -474,7 +507,9 @@ Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context 
         String      fat;
         const Error err = fatPath(node, fat);
         if (err.isError()) return makeError<FileHandle::Ptr>(err);
-        return Fat::openFile(*node.volume, fat.cStr(), flags);
+        Result<FileHandle::Ptr> handle = Fat::openFile(*node.volume, fat.cStr(), flags);
+        if (handle.error().isOk()) handle.value()->setIdentity(pathId(storage.view()), node.mount);
+        return handle;
 }
 
 Result<FileInfo> Vfs::stat(StringView path, const Context &context) {
@@ -482,7 +517,21 @@ Result<FileInfo> Vfs::stat(StringView path, const Context &context) {
         String             storage;
         const Result<Node> found = lookupLocked(path, context, storage);
         if (found.error().isError()) return makeError<FileInfo>(found.error());
-        return statLocked(found.value());
+        const Node      &node = found.value();
+        Result<FileInfo> info = statLocked(node);
+        if (info.error().isError()) return info;
+        FileInfo &fi = info.value();
+        switch (node.kind) {
+                // A device node is its stream (or device), as its handles say.
+                case Kind::DevNull: fi.id = objectId(static_cast<Stream *>(&devNull)); break;
+                case Kind::DevConsole: fi.id = objectId(context.terminal); break;
+                case Kind::DevBlock: fi.id = objectId(node.device); break;
+                default:
+                        fi.id = pathId(storage.view());
+                        fi.device = node.mount;
+                        break;
+        }
+        return info;
 }
 
 Result<Directory> Vfs::openDirectory(StringView path, const Context &context) {
@@ -503,6 +552,8 @@ Result<Directory> Vfs::openDirectory(StringView path, const Context &context) {
         auto *state = ::new (mem) Directory::State();
         state->kind = static_cast<uint8_t>(node.kind);
         state->volume = node.volume;
+        state->device = node.mount;
+        state->idPrefix = pathId(storage.view());
         if (node.kind == Kind::Virtual) {
                 const size_t n = storage.size() < MaxMountPath ? storage.size() : MaxMountPath;
                 std::memcpy(state->path, storage.data(), n);

@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * The first BMDS program: its arguments, through picolibc's printf.
+ * The first BMDS program: its arguments, through printf.
  */
 
 #include <stdio.h>

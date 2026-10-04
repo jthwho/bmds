@@ -56,7 +56,8 @@ Plans: [`storage.md`](storage.md), [`time.md`](time.md). Complete; verified on h
 - [x] ABI lock tests.
 - [x] Shell: run programs by name, `PATH`-like search; `#!` and `.sh` scripts launched by content; kill on a second Ctrl-C.
 - [x] Push-and-run over serial (host tool sends a program, device runs it — no reflash): `tools/bmds-run`, into the RAM disk (`/ram0/p0`); compatibility corpus `tests/compat/v1` (`tools/bmds-compat`).
-- [ ] POSIX C runtime in the firmware (`devplan/programs.md` §12): libc spike (musl vs picolibc), Amiga-style library tables, spawn/wait/pipe, signals, `termios`, `poll`; replaces static picolibc before the first release. Yardstick: BusyBox/Toybox no-MMU builds run.
+- [x] SDK 2 on static musl (`devplan/programs.md` §12, step 7): vendored musl, the Linux system call layer, ABI 2 (file identity, `ftruncate`), `bmds-cc` for other build systems; BusyBox builds and runs.
+- [ ] POSIX completion (§12, step 8+): process creation (`vfork`/`posix_spawn`, `waitpid`, `pipe`), signals from outside, `termios`, `poll`. Yardstick: BusyBox no-MMU (shells included) runs. A shared runtime only if measurements ask for it.
 - [ ] Example programs: `hello`, `cat`, a benchmark.
 
 ## Phase 4 — Display

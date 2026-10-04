@@ -318,27 +318,28 @@ namespace {
 
 } // namespace
 
-// crt0 points tp at __tls_base; the linker computes thread-local offsets
-// from the TLS segment's start. They must be the same address (they weren't
-// when a program had no initialized thread-locals: localtime's buffer then
-// overwrote bmds_sys).
-TEST_CASE("Program format: the SDK's programs point tp at their TLS segment") {
+// The startup code hands musl __tls_base as the TLS template's address; the
+// linker computes thread-local offsets from the TLS segment's start. They
+// must be the same address (they weren't, in SDK 1, when a program had no
+// initialized thread-locals: localtime's buffer then overwrote bmds_sys).
+// musl itself has no thread-locals; progtest has both kinds.
+TEST_CASE("Program format: the SDK's programs describe their TLS segment") {
         for (const std::string name : {"hello", "cat", "ls", "progtest"}) {
                 CAPTURE(name);
                 const std::vector<uint8_t> f = readFile(std::string(BMDS_SDK_EXAMPLES) + "/" + name + ".debug.elf");
                 const uint32_t             phoff = word(f, 0x1C), shoff = word(f, 0x20);
                 const uint16_t             phentsize = half(f, 0x2A), phnum = half(f, 0x2C);
                 const uint16_t             shentsize = half(f, 0x2E), shnum = half(f, 0x30);
-                uint32_t                   tls = 0;
-                bool                       hasTls = false;
+                uint32_t                   tls = 0, tlsSize = 0;
                 for (uint16_t i = 0; i < phnum; ++i) {
                         const size_t ph = phoff + size_t(i) * phentsize;
                         if (word(f, ph) == 7) { // PT_TLS
                                 tls = word(f, ph + 8);
-                                hasTls = true;
+                                tlsSize = word(f, ph + 20);
                         }
                 }
-                REQUIRE(hasTls);
+                if (name == "progtest") CHECK(tlsSize > 0);
+                if (tlsSize == 0) continue;
                 bool found = false;
                 for (uint16_t i = 0; i < shnum && !found; ++i) {
                         const size_t sh = shoff + size_t(i) * shentsize;
@@ -375,7 +376,7 @@ TEST_CASE("Program format: the SDK's hello.elf") {
         REQUIRE(c.err == Error::Ok);
         CHECK(c.info.abiVersion == BMDS_ABI_VERSION);
         CHECK(c.info.relocations > 0);
-        CHECK(c.info.tlsSize > 0); // picolibc's errno
+        CHECK(c.info.tlsSize == 0); // musl keeps errno in its thread descriptor
 
         // Loaded at 0 it is the file's segment; loaded anywhere else, exactly
         // the patched words differ, by the distance (whole words, or upper

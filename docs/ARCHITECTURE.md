@@ -50,7 +50,7 @@ That decision and its rationale is recorded per driver in its devplan document.
 | `bmds_console` | Terminal abstraction, serial console, HDMI text console, ANSI/VT parsing. | Partly |
 | `bmds_shell` | Command shell, built-in commands. | Partly |
 | `bmds_loader` | Executable loader, syscall table, program lifecycle. | Yes |
-| `sdk/` | Userspace C headers, crt0, linker script, example programs. | No (cross-compiled) |
+| `sdk/` | Userspace C headers, the C library (musl) and its system call layer, linker script, example programs. | No (cross-compiled) |
 
 ### Repository Layout (Planned)
 
@@ -60,13 +60,13 @@ sdkconfig.defaults      Checked-in configuration defaults
 partitions.csv          Flash partition table
 main/                   Minimal app_main() that hands off to the BMDS boot sequence
 components/             BMDS components (bmds_core, bmds_board, ...)
-sdk/                    Userspace SDK (C headers, crt0, linker script, examples)
+sdk/                    Userspace SDK (C headers, musl and its system call layer, linker script, examples)
 tests/host/             Host-side doctest unit tests (plain CMake)
 tests/target/           On-target tests
 tests/compat/           Compatibility corpus: programs from each SDK version, kept as built
 tools/                  Host tools (bmds-elfcheck, bmds-run push-and-run, bmds-compat, ...)
 cmake/                  Shared CMake helpers (BMDS compile flags)
-thirdparty/             Vendored third-party code (doctest)
+thirdparty/             Vendored third-party code (doctest, FatFs; musl is in sdk/libc)
 docs/                   Project documentation
 devplan/                Design notes and plans per subsystem
 ```

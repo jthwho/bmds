@@ -29,6 +29,7 @@ namespace {
 
                         Result<size_t> read(WritableByteSpan buf, unsigned int) override {
                                 Mutex::Locker lock(Fat::lock(), WaitForever);
+                                if (_hole != 0 && !buf.isEmpty()) return makeError<size_t>(Error::EndOfFile);
                                 UINT          got = 0;
                                 const FRESULT result = f_read(&_fil, buf.data(), static_cast<UINT>(buf.size()), &got);
                                 if (result != FR_OK) return makeError<size_t>(Fat::toError(result, _volume));
@@ -38,11 +39,18 @@ namespace {
 
                         Result<size_t> write(ByteSpan data, unsigned int) override {
                                 Mutex::Locker lock(Fat::lock(), WaitForever);
-                                FRESULT       result = FR_OK;
-                                if (_append) result = f_lseek(&_fil, f_size(&_fil));
-                                UINT put = 0;
-                                if (result == FR_OK)
-                                        result = f_write(&_fil, data.data(), static_cast<UINT>(data.size()), &put);
+                                Error         err;
+                                if (_append) {
+                                        _hole = 0;
+                                        err = Fat::toError(f_lseek(&_fil, f_size(&_fil)), _volume);
+                                } else if (_hole != 0) {
+                                        // Written past the end: the gap reads as zeros.
+                                        err = zeroFill(_hole);
+                                        _hole = 0;
+                                }
+                                if (err.isError()) return makeError<size_t>(err);
+                                UINT          put = 0;
+                                const FRESULT result = f_write(&_fil, data.data(), static_cast<UINT>(data.size()), &put);
                                 if (result != FR_OK) return makeError<size_t>(Fat::toError(result, _volume));
                                 // FatFs writes short only when the volume is full.
                                 if (put < data.size()) return makeError<size_t>(Error::NoSpace);
@@ -54,15 +62,34 @@ namespace {
                                 return Fat::toError(f_sync(&_fil), _volume);
                         }
 
+                        // Past the end, the position is a hole that the next write
+                        // fills with zeros (FatFs would grow the file at once, with
+                        // whatever its new clusters held).
                         Result<uint64_t> seek(int64_t offset, SeekFrom from) override {
                                 Mutex::Locker lock(Fat::lock(), WaitForever);
                                 int64_t       base = 0;
-                                if (from == SeekFrom::Current) base = static_cast<int64_t>(f_tell(&_fil));
+                                if (from == SeekFrom::Current) base = static_cast<int64_t>(position());
                                 if (from == SeekFrom::End) base = static_cast<int64_t>(f_size(&_fil));
                                 if (offset < -base) return makeError<uint64_t>(Error::Invalid);
-                                const FRESULT result = f_lseek(&_fil, static_cast<FSIZE_t>(base + offset));
-                                if (result != FR_OK) return makeError<uint64_t>(Fat::toError(result, _volume));
-                                return makeResult(static_cast<uint64_t>(f_tell(&_fil)));
+                                const Error err = moveTo(static_cast<FSIZE_t>(base + offset));
+                                if (err.isError()) return makeError<uint64_t>(err);
+                                return makeResult(static_cast<uint64_t>(position()));
+                        }
+
+                        Error truncate(uint64_t size) override {
+                                Mutex::Locker lock(Fat::lock(), WaitForever);
+                                if ((_fil.flag & FA_WRITE) == 0) return Error::BadDescriptor;
+                                const FSIZE_t here = position();
+                                Error         err;
+                                if (size < f_size(&_fil)) {
+                                        err = Fat::toError(f_lseek(&_fil, static_cast<FSIZE_t>(size)), _volume);
+                                        if (err.isOk()) err = Fat::toError(f_truncate(&_fil), _volume);
+                                } else if (size > f_size(&_fil)) {
+                                        err = zeroFill(static_cast<FSIZE_t>(size));
+                                }
+                                // The position stays where it was, even past the new end.
+                                if (err.isOk()) err = moveTo(here);
+                                return err;
                         }
 
                         void handleClosed(uint8_t) override {
@@ -77,8 +104,35 @@ namespace {
                         }
 
                 private:
+                        FSIZE_t position() const { return _hole != 0 ? _hole : f_tell(&_fil); }
+
+                        // Moves to @p to: there, or to the end with a hole. Lock held.
+                        Error moveTo(FSIZE_t to) {
+                                _hole = 0;
+                                if (to > f_size(&_fil)) {
+                                        _hole = to;
+                                        to = f_size(&_fil);
+                                }
+                                return Fat::toError(f_lseek(&_fil, to), _volume);
+                        }
+
+                        // Writes zeros from the end to @p to; the position is then @p to. Lock held.
+                        Error zeroFill(FSIZE_t to) {
+                                static const uint8_t zeros[512] = {};
+                                FRESULT              result = f_lseek(&_fil, f_size(&_fil));
+                                while (result == FR_OK && f_tell(&_fil) < to) {
+                                        const FSIZE_t left = to - f_tell(&_fil);
+                                        const UINT    n = left < sizeof(zeros) ? static_cast<UINT>(left) : sizeof(zeros);
+                                        UINT          put = 0;
+                                        result = f_write(&_fil, zeros, n, &put);
+                                        if (result == FR_OK && put < n) return Error::NoSpace;
+                                }
+                                return Fat::toError(result, _volume);
+                        }
+
                         FIL        _fil = {};
                         FatVolume &_volume;
+                        FSIZE_t    _hole = 0; // A position past the end, or 0.
                         const bool _append;
         };
 

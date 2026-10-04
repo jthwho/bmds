@@ -94,6 +94,17 @@ class Stream {
                         return makeError<uint64_t>(Error::NotSupported);
                 }
 
+                /**
+                 * @brief Sets the size of a file: cut, or grown with zeros. The
+                 *        position doesn't change (it may be past the new end).
+                 * @return `Ok`, or `NotSupported` (pipes, consoles, and streams
+                 *         that aren't files), `NoSpace`, or the stream's error.
+                 */
+                virtual Error truncate(uint64_t size) {
+                        (void)size;
+                        return Error::NotSupported;
+                }
+
                 /** @brief Returns true if this is an interactive terminal (a console). */
                 virtual bool isTerminal() const { return false; }
 

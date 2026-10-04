@@ -178,4 +178,9 @@ int32_t bmds_k_set_mtime(const char *path, int64_t ns) {
         return call->setMtime(path, ns);
 }
 
+int32_t bmds_k_ftruncate(int32_t fd, int64_t size) {
+        KernelCall call;
+        return call->ftruncate(fd, size);
+}
+
 } // extern "C"

@@ -128,6 +128,23 @@ class FileHandle {
                 /** @brief Returns true if the handle was opened for writing. */
                 bool canWrite() const { return (_mode & Write) != 0; }
 
+                /**
+                 * @brief Identifies the file (`FileInfo::id`): set by whoever opened it
+                 *        by name, before the handle is shared; else the stream's
+                 *        identity, so every handle of one pipe or console agrees.
+                 */
+                uint64_t id() const { return _id != 0 ? _id : reinterpret_cast<uintptr_t>(_stream); }
+
+                /** @brief The filesystem it is on (`FileInfo::device`); 0 for other streams. */
+                uint32_t device() const { return _device; }
+
+                /** @brief Sets `id()` and `device()` (by the opener, before sharing the handle). */
+                void setIdentity(uint64_t id, uint32_t device) {
+                        _id = id;
+                        _device = device;
+                        return;
+                }
+
                 /** @brief Returns the number of references (for tests and diagnostics). */
                 uint32_t refCount() const { return _refs.load(std::memory_order_relaxed); }
 
@@ -166,6 +183,8 @@ class FileHandle {
 
                 std::atomic<uint32_t> _refs{1};
                 Stream               *_stream;
+                uint64_t              _id = 0;
+                uint32_t              _device = 0;
                 uint8_t               _mode;
 };
 

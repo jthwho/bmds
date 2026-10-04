@@ -5,9 +5,9 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * ls [-l] [path...]: lists directories (sorted) and files, with portable
+ * ls [-al] [path...]: lists directories (sorted) and files, with portable
  * POSIX calls only (opendir, readdir, stat, localtime), as a program
- * written for any system would.
+ * written for any system would. Names starting with '.' only with -a.
  */
 
 #include <dirent.h>
@@ -19,7 +19,7 @@
 #include <time.h>
 #include <unistd.h>
 
-static int long_format;
+static int long_format, all;
 
 static int by_name(const void *a, const void *b) {
         return strcmp(*(char *const *)a, *(char *const *)b);
@@ -67,6 +67,7 @@ static int list(const char *path, int heading) {
         size_t         count = 0, room = 0;
         struct dirent *e;
         while ((e = readdir(dir)) != NULL) {
+                if (e->d_name[0] == '.' && !all) continue;
                 if (count == room) {
                         room = room ? room * 2 : 64;
                         char **more = realloc(names, room * sizeof(*names));
@@ -89,8 +90,17 @@ static int list(const char *path, int heading) {
 
 int main(int argc, char **argv) {
         int first = 1;
-        if (first < argc && strcmp(argv[first], "-l") == 0) {
-                long_format = 1;
+        while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+                for (const char *o = argv[first] + 1; *o != '\0'; ++o) {
+                        if (*o == 'l') {
+                                long_format = 1;
+                        } else if (*o == 'a') {
+                                all = 1;
+                        } else {
+                                fprintf(stderr, "usage: ls [-al] [path...]\n");
+                                return 2;
+                        }
+                }
                 ++first;
         }
         if (first == argc) return list(".", 0);

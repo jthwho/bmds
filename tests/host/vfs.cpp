@@ -510,6 +510,79 @@ TEST_CASE("Vfs: directories and names") {
         CHECK(liveObjects() == base);
 }
 
+TEST_CASE("Vfs: holes and truncate") {
+        for (FsFormat format : {FsFormat::Fat32, FsFormat::ExFat}) {
+                CAPTURE(static_cast<int>(format));
+                fresh(format);
+                const size_t base = liveObjects();
+                {
+                        FileHandle::Ptr h = open("/ram0/p0/h.bin", Vfs::Read | Vfs::Write | Vfs::Create);
+                        Stream         &s = h->stream();
+                        CHECK(h->write(bmds::StringView("abc"), WaitForever).error().isOk());
+                        // Seeking past the end doesn't grow the file; reading there is the end.
+                        CHECK(s.seek(5000, Stream::SeekFrom::Start).value() == 5000);
+                        CHECK(s.seek(0, Stream::SeekFrom::Current).value() == 5000);
+                        uint8_t c = 1;
+                        CHECK(h->read(WritableByteSpan(&c, 1), WaitForever).error() == Error::EndOfFile);
+                        CHECK(s.seek(0, Stream::SeekFrom::End).value() == 3);
+                        CHECK(s.seek(5000, Stream::SeekFrom::Start).value() == 5000);
+                        // Writing there fills the gap with zeros.
+                        CHECK(h->write(bmds::StringView("Z"), WaitForever).error().isOk());
+                        CHECK(s.flush(WaitForever).isOk());
+                        // Cut, with the position kept past the new end; grown with zeros.
+                        CHECK(s.truncate(2).isOk());
+                        CHECK(s.seek(0, Stream::SeekFrom::Current).value() == 5001);
+                        CHECK(s.seek(0, Stream::SeekFrom::End).value() == 2);
+                        CHECK(s.truncate(10).isOk());
+                        CHECK(s.seek(0, Stream::SeekFrom::End).value() == 10);
+                }
+                // (FatFs refuses a second open while a file is open for writing.)
+                CHECK(get("/ram0/p0/h.bin") == std::string("ab") + std::string(8, '\0'));
+                put("/ram0/p0/g.bin", "x");
+                {
+                        FileHandle::Ptr h = open("/ram0/p0/g.bin", Vfs::Write);
+                        CHECK(h->stream().seek(3000, Stream::SeekFrom::Start).isOk());
+                        CHECK(h->write(bmds::StringView("y"), WaitForever).error().isOk());
+                }
+                const std::string g = get("/ram0/p0/g.bin");
+                CHECK(g.size() == 3001);
+                CHECK(g.front() == 'x');
+                CHECK(g.back() == 'y');
+                CHECK(g.find_first_not_of('\0', 1) == 3000); // zeros between, not old clusters
+                // Only files open for writing are cut.
+                {
+                        FileHandle::Ptr r = open("/ram0/p0/g.bin", Vfs::Read);
+                        CHECK(r->stream().truncate(0) == Error::BadDescriptor);
+                }
+                CHECK(liveObjects() == base);
+        }
+}
+
+TEST_CASE("Vfs: file identity") {
+        fresh(FsFormat::Fat32);
+        CHECK(Vfs::mkdir("/ram0/p0/Dir", Root).isOk());
+        put("/ram0/p0/Dir/File.txt", "x");
+        const FileInfo a = Vfs::stat("/ram0/p0/Dir/File.txt", Root).value();
+        CHECK(a.id != 0);
+        CHECK(a.device != 0);
+        // The same for every name of it (case within the volume, ., ..) and its handles; not for others.
+        CHECK(Vfs::stat("/ram0/p0/dir/../Dir/./FILE.TXT", Root).value().id == a.id);
+        CHECK(Vfs::stat("File.txt", Vfs::Context{"/ram0/p0/Dir", nullptr}).value().id == a.id);
+        CHECK(open("/ram0/p0/dir/file.txt", Vfs::Read)->id() == a.id);
+        CHECK(open("/ram0/p0/dir/file.txt", Vfs::Read)->device() == a.device);
+        CHECK(Vfs::stat("/ram0/p0/Dir", Root).value().id != a.id);
+        CHECK(Vfs::stat("/ram0/p0", Root).value().id != Vfs::stat("/", Root).value().id);
+        auto [dir, err] = Vfs::openDirectory("/ram0/p0/dir", Root);
+        REQUIRE(err.isOk());
+        const FileInfo listed = dir.next().value();
+        CHECK(listed.id == a.id);
+        CHECK(listed.device == a.device);
+        // Devices: their stream, as their handles say.
+        const uint64_t null = Vfs::stat("/dev/null", Root).value().id;
+        CHECK(null == open("/dev/null", Vfs::Write)->id());
+        CHECK(Vfs::stat("/dev/null", Root).value().device == 0);
+}
+
 TEST_CASE("Vfs: /dev/null and /dev/console") {
         fresh();
         CHECK(Vfs::stat("/", Root).value().isDirectory());

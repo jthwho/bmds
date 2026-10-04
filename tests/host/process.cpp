@@ -336,6 +336,66 @@ TEST_CASE("Process: files and directories") {
         CHECK(HostMemory::liveAllocations() == base);
 }
 
+TEST_CASE("Process: ABI 2: file identity and ftruncate") {
+        { Disks warm; }
+        const size_t base = HostMemory::liveAllocations();
+        {
+                Disks         disks;
+                bmds::FdTable fds;
+                Process       p(fds);
+                REQUIRE(p.setCwd(disks.aRoot.c_str()).isOk());
+                const int32_t fd = p.open("t.txt", BMDS_O_READ | BMDS_O_WRITE | BMDS_O_CREATE);
+                REQUIRE(fd >= 0);
+                CHECK(p.write(fd, "abcdef", 6) == 6);
+                bmds_stat_t byName = statOf(p, "T.TXT"), byFd = {};
+                byFd.size = sizeof(byFd);
+                CHECK(p.fstat(fd, &byFd) == 0);
+                CHECK(byName.file_id != 0);
+                CHECK(byName.file_id == byFd.file_id);
+                CHECK(byName.device == byFd.device);
+                CHECK(byName.device != 0);
+                CHECK(statOf(p, ".").file_id != byName.file_id);
+                // An ABI 1 caller's struct: the new fields aren't written.
+                struct {
+                                bmds_stat_t st;
+                } old = {};
+                old.st.size = 32;
+                old.st.file_id = 7;
+                CHECK(p.stat("t.txt", &old.st) == 0);
+                CHECK(old.st.file_id == 7);
+                // readdir gives the same id.
+                const int32_t dir = p.opendir(".");
+                bmds_stat_t   listed = {};
+                listed.size = sizeof(listed);
+                char name[32];
+                CHECK(p.readdir(dir, &listed, name, sizeof(name)) > 0);
+                CHECK(listed.file_id == byName.file_id);
+                CHECK(p.closedir(dir) == 0);
+                // ftruncate: cut, grown, refused.
+                // (fstat: a name's size is the one FatFs last wrote to its entry.)
+                CHECK(p.ftruncate(fd, 2) == 0);
+                CHECK(p.fstat(fd, &byFd) == 0);
+                CHECK(byFd.file_size == 2);
+                CHECK(p.ftruncate(fd, 9) == 0);
+                CHECK(p.fstat(fd, &byFd) == 0);
+                CHECK(byFd.file_size == 9);
+                CHECK(p.ftruncate(fd, -1) == -BMDS_EINVAL);
+                CHECK(p.ftruncate(99, 0) == -BMDS_EBADF);
+                CHECK(p.close(fd) == 0);
+                CHECK(statOf(p, "t.txt").file_size == 9);
+                const int32_t ro = p.open("t.txt", BMDS_O_READ);
+                CHECK(p.ftruncate(ro, 0) == -BMDS_EBADF);
+                CHECK(p.close(ro) == 0);
+                // Not a file: /dev/null can't be cut.
+                const int32_t null = p.open("/dev/null", BMDS_O_WRITE);
+                CHECK(p.ftruncate(null, 0) == -BMDS_EINVAL);
+                CHECK(p.close(null) == 0);
+                CHECK(p.unlink("t.txt") == 0);
+                p.release();
+        }
+        CHECK(HostMemory::liveAllocations() == base);
+}
+
 TEST_CASE("Process: console input, lines and raw") {
         const size_t base = HostMemory::liveAllocations();
         {

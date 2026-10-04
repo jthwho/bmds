@@ -7,8 +7,9 @@
  *
  * Error numbers of the BMDS userspace ABI. System calls return them
  * negated (a negative result is -BMDS_E...). The values are those of
- * picolibc's <errno.h> (and newlib's), so the C library glue passes them
- * through; they are frozen here independently of any C library.
+ * newlib's <errno.h> (SDK 1's picolibc passed them through); up to 34 they
+ * are also Linux's, and SDK 2's layer under musl translates the rest. They
+ * are frozen here independently of any C library.
  *
  * ABI: frozen. Append only.
  */

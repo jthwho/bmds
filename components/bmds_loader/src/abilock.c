@@ -51,6 +51,8 @@ _Static_assert(BMDS_SYS_TERM_SET == 27, "ABI: slot TERM_SET");
 _Static_assert(BMDS_SYS_MEM_INFO == 28, "ABI: slot MEM_INFO");
 _Static_assert(BMDS_SYS_RANDOM == 29, "ABI: slot RANDOM");
 _Static_assert(BMDS_SYS_SET_MTIME == 30, "ABI: slot SET_MTIME");
+_Static_assert(BMDS_SYS_FTRUNCATE == 31, "ABI 2: slot FTRUNCATE");
+_Static_assert(BMDS_ABI_VERSION == 2, "ABI: version (raise it with every addition)");
 _Static_assert(BMDS_STDIN == 0 && BMDS_STDOUT == 1 && BMDS_STDERR == 2, "ABI: standard fds");
 _Static_assert(BMDS_SEEK_SET == 0 && BMDS_SEEK_CUR == 1 && BMDS_SEEK_END == 2, "ABI: whence");
 _Static_assert(BMDS_MEM_FAST == 1 && BMDS_MEM_DMA == 2 && BMDS_MEM_ALIGN == 16, "ABI: memory flags");
@@ -65,13 +67,17 @@ _Static_assert(BMDS_CLOCK_REALTIME == 0 && BMDS_CLOCK_MONOTONIC == 1, "ABI: cloc
 _Static_assert(BMDS_TERM_SIGNALS == 0x01 && BMDS_TERM_ONLCR == 0x02 && BMDS_TERM_COLORS == 0x04, "ABI: term flags");
 _Static_assert(BMDS_TERM_LOGS == 0x08 && BMDS_TERM_LINE == 0x10, "ABI: term flags");
 
-_Static_assert(sizeof(bmds_stat_t) == 32, "ABI: bmds_stat_t size");
+// ABI 1's bmds_stat_t was 32 bytes; ABI 2 appended to it (rule 4).
+_Static_assert(offsetof(bmds_stat_t, file_id) == 32, "ABI: bmds_stat_t ABI 1 size");
 _Static_assert(offsetof(bmds_stat_t, size) == 0, "ABI: stat.size");
 _Static_assert(offsetof(bmds_stat_t, type) == 4, "ABI: stat.type");
 _Static_assert(offsetof(bmds_stat_t, attributes) == 8, "ABI: stat.attributes");
 _Static_assert(offsetof(bmds_stat_t, open_flags) == 12, "ABI: stat.open_flags");
 _Static_assert(offsetof(bmds_stat_t, file_size) == 16, "ABI: stat.file_size");
 _Static_assert(offsetof(bmds_stat_t, modified_ns) == 24, "ABI: stat.modified_ns");
+_Static_assert(offsetof(bmds_stat_t, device) == 40, "ABI 2: stat.device");
+_Static_assert(offsetof(bmds_stat_t, reserved) == 44, "ABI 2: stat.reserved");
+_Static_assert(sizeof(bmds_stat_t) == 48, "ABI 2: bmds_stat_t size");
 _Static_assert(sizeof(bmds_term_t) == 16, "ABI: bmds_term_t size");
 _Static_assert(offsetof(bmds_term_t, size) == 0, "ABI: term.size");
 _Static_assert(offsetof(bmds_term_t, flags) == 4, "ABI: term.flags");

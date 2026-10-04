@@ -1,0 +1,284 @@
+diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/arch/riscv32/syscall_arch.h musl/arch/riscv32/syscall_arch.h
+--- /home/jth/.cache/bmds-scratch/musl-pristine/arch/riscv32/syscall_arch.h	2026-10-04 12:44:05.190751894 -0700
++++ musl/arch/riscv32/syscall_arch.h	2026-10-04 12:44:25.695565887 -0700
+@@ -1,80 +1,47 @@
++/* BMDS: programs run on a function table, not ecall. Every system call
++ * goes to __bmds_syscall() (sdk/crt/linux.c in the program), which carries
++ * out the Linux call on the BMDS system call table. */
++
+ #define __SYSCALL_LL_E(x) \
+ ((union { long long ll; long l[2]; }){ .ll = x }).l[0], \
+ ((union { long long ll; long l[2]; }){ .ll = x }).l[1]
+ #define __SYSCALL_LL_O(x) __SYSCALL_LL_E((x))
+ 
+-#define __asm_syscall(...) \
+-	__asm__ __volatile__ ("ecall\n\t" \
+-	: "=r"(a0) : __VA_ARGS__ : "memory"); \
+-	return a0; \
++hidden long __bmds_syscall(long, long, long, long, long, long, long);
+ 
+ static inline long __syscall0(long n)
+ {
+-	register long a7 __asm__("a7") = n;
+-	register long a0 __asm__("a0");
+-	__asm_syscall("r"(a7))
++	return __bmds_syscall(n, 0, 0, 0, 0, 0, 0);
+ }
+ 
+ static inline long __syscall1(long n, long a)
+ {
+-	register long a7 __asm__("a7") = n;
+-	register long a0 __asm__("a0") = a;
+-	__asm_syscall("r"(a7), "0"(a0))
++	return __bmds_syscall(n, a, 0, 0, 0, 0, 0);
+ }
+ 
+ static inline long __syscall2(long n, long a, long b)
+ {
+-	register long a7 __asm__("a7") = n;
+-	register long a0 __asm__("a0") = a;
+-	register long a1 __asm__("a1") = b;
+-	__asm_syscall("r"(a7), "0"(a0), "r"(a1))
++	return __bmds_syscall(n, a, b, 0, 0, 0, 0);
+ }
+ 
+ static inline long __syscall3(long n, long a, long b, long c)
+ {
+-	register long a7 __asm__("a7") = n;
+-	register long a0 __asm__("a0") = a;
+-	register long a1 __asm__("a1") = b;
+-	register long a2 __asm__("a2") = c;
+-	__asm_syscall("r"(a7), "0"(a0), "r"(a1), "r"(a2))
++	return __bmds_syscall(n, a, b, c, 0, 0, 0);
+ }
+ 
+ static inline long __syscall4(long n, long a, long b, long c, long d)
+ {
+-	register long a7 __asm__("a7") = n;
+-	register long a0 __asm__("a0") = a;
+-	register long a1 __asm__("a1") = b;
+-	register long a2 __asm__("a2") = c;
+-	register long a3 __asm__("a3") = d;
+-	__asm_syscall("r"(a7), "0"(a0), "r"(a1), "r"(a2), "r"(a3))
++	return __bmds_syscall(n, a, b, c, d, 0, 0);
+ }
+ 
+ static inline long __syscall5(long n, long a, long b, long c, long d, long e)
+ {
+-	register long a7 __asm__("a7") = n;
+-	register long a0 __asm__("a0") = a;
+-	register long a1 __asm__("a1") = b;
+-	register long a2 __asm__("a2") = c;
+-	register long a3 __asm__("a3") = d;
+-	register long a4 __asm__("a4") = e;
+-	__asm_syscall("r"(a7), "0"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(a4))
++	return __bmds_syscall(n, a, b, c, d, e, 0);
+ }
+ 
+ static inline long __syscall6(long n, long a, long b, long c, long d, long e, long f)
+ {
+-	register long a7 __asm__("a7") = n;
+-	register long a0 __asm__("a0") = a;
+-	register long a1 __asm__("a1") = b;
+-	register long a2 __asm__("a2") = c;
+-	register long a3 __asm__("a3") = d;
+-	register long a4 __asm__("a4") = e;
+-	register long a5 __asm__("a5") = f;
+-	__asm_syscall("r"(a7), "0"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(a4), "r"(a5))
++	return __bmds_syscall(n, a, b, c, d, e, f);
+ }
+ 
+-#define VDSO_USEFUL
+-/* We don't have a clock_gettime function.
+-#define VDSO_CGT_SYM "__vdso_clock_gettime"
+-#define VDSO_CGT_VER "LINUX_2.6" */
+-
+ #define IPC_64 0
+diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/setjmp/riscv32/longjmp.S musl/src/setjmp/riscv32/longjmp.S
+--- /home/jth/.cache/bmds-scratch/musl-pristine/src/setjmp/riscv32/longjmp.S	2026-10-04 12:44:05.255431306 -0700
++++ musl/src/setjmp/riscv32/longjmp.S	2026-10-04 12:44:14.620893719 -0700
+@@ -1,3 +1,12 @@
++/* BMDS: single-precision float registers (ilp32f) are saved with fsw/flw. */
++#if defined(__riscv_flen) && __riscv_flen == 32
++#define FSX fsw
++#define FLX flw
++#else
++#define FSX fsd
++#define FLX fld
++#endif
++
+ .global __longjmp
+ .global _longjmp
+ .global longjmp
+@@ -23,18 +32,18 @@
+ 	lw ra,    52(a0)
+ 
+ #ifndef __riscv_float_abi_soft
+-	fld fs0,  56(a0)
+-	fld fs1,  64(a0)
+-	fld fs2,  72(a0)
+-	fld fs3,  80(a0)
+-	fld fs4,  88(a0)
+-	fld fs5,  96(a0)
+-	fld fs6,  104(a0)
+-	fld fs7,  112(a0)
+-	fld fs8,  120(a0)
+-	fld fs9,  128(a0)
+-	fld fs10, 136(a0)
+-	fld fs11, 144(a0)
++	FLX fs0,  56(a0)
++	FLX fs1,  64(a0)
++	FLX fs2,  72(a0)
++	FLX fs3,  80(a0)
++	FLX fs4,  88(a0)
++	FLX fs5,  96(a0)
++	FLX fs6,  104(a0)
++	FLX fs7,  112(a0)
++	FLX fs8,  120(a0)
++	FLX fs9,  128(a0)
++	FLX fs10, 136(a0)
++	FLX fs11, 144(a0)
+ #endif
+ 
+ 	seqz a0, a1
+diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/setjmp/riscv32/setjmp.S musl/src/setjmp/riscv32/setjmp.S
+--- /home/jth/.cache/bmds-scratch/musl-pristine/src/setjmp/riscv32/setjmp.S	2026-10-04 12:44:05.255491848 -0700
++++ musl/src/setjmp/riscv32/setjmp.S	2026-10-04 12:44:14.614455254 -0700
+@@ -1,3 +1,12 @@
++/* BMDS: single-precision float registers (ilp32f) are saved with fsw/flw. */
++#if defined(__riscv_flen) && __riscv_flen == 32
++#define FSX fsw
++#define FLX flw
++#else
++#define FSX fsd
++#define FLX fld
++#endif
++
+ .global __setjmp
+ .global _setjmp
+ .global setjmp
+@@ -23,18 +32,18 @@
+ 	sw ra,    52(a0)
+ 
+ #ifndef __riscv_float_abi_soft
+-	fsd fs0,  56(a0)
+-	fsd fs1,  64(a0)
+-	fsd fs2,  72(a0)
+-	fsd fs3,  80(a0)
+-	fsd fs4,  88(a0)
+-	fsd fs5,  96(a0)
+-	fsd fs6,  104(a0)
+-	fsd fs7,  112(a0)
+-	fsd fs8,  120(a0)
+-	fsd fs9,  128(a0)
+-	fsd fs10, 136(a0)
+-	fsd fs11, 144(a0)
++	FSX fs0,  56(a0)
++	FSX fs1,  64(a0)
++	FSX fs2,  72(a0)
++	FSX fs3,  80(a0)
++	FSX fs4,  88(a0)
++	FSX fs5,  96(a0)
++	FSX fs6,  104(a0)
++	FSX fs7,  112(a0)
++	FSX fs8,  120(a0)
++	FSX fs9,  128(a0)
++	FSX fs10, 136(a0)
++	FSX fs11, 144(a0)
+ #endif
+ 
+ 	li a0, 0
+diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/signal/riscv32/restore.s musl/src/signal/riscv32/restore.s
+--- /home/jth/.cache/bmds-scratch/musl-pristine/src/signal/riscv32/restore.s	2026-10-04 12:44:05.256120344 -0700
++++ musl/src/signal/riscv32/restore.s	1969-12-31 16:00:00.000000000 -0800
+@@ -1,8 +0,0 @@
+-.global __restore
+-.type __restore, %function
+-__restore:
+-.global __restore_rt
+-.type __restore_rt, %function
+-__restore_rt:
+-	li a7, 139 # SYS_rt_sigreturn
+-	ecall
+diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/thread/riscv32/clone.s musl/src/thread/riscv32/clone.s
+--- /home/jth/.cache/bmds-scratch/musl-pristine/src/thread/riscv32/clone.s	2026-10-04 12:44:05.283749001 -0700
++++ musl/src/thread/riscv32/clone.s	1969-12-31 16:00:00.000000000 -0800
+@@ -1,34 +0,0 @@
+-# __clone(func, stack, flags, arg, ptid, tls, ctid)
+-#           a0,    a1,    a2,  a3,   a4,  a5,   a6
+-
+-# syscall(SYS_clone, flags, stack, ptid, tls, ctid)
+-#                a7     a0,    a1,   a2,  a3,   a4
+-
+-.global __clone
+-.type  __clone, %function
+-__clone:
+-	# Save func and arg to stack
+-	addi a1, a1, -16
+-	sw a0, 0(a1)
+-	sw a3, 4(a1)
+-
+-	# Call SYS_clone
+-	mv a0, a2
+-	mv a2, a4
+-	mv a3, a5
+-	mv a4, a6
+-	li a7, 220 # SYS_clone
+-	ecall
+-
+-	beqz a0, 1f
+-	# Parent
+-	ret
+-
+-	# Child
+-1:      lw a1, 0(sp)
+-	lw a0, 4(sp)
+-	jalr a1
+-
+-	# Exit
+-	li a7, 93 # SYS_exit
+-	ecall
+diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/thread/riscv32/syscall_cp.s musl/src/thread/riscv32/syscall_cp.s
+--- /home/jth/.cache/bmds-scratch/musl-pristine/src/thread/riscv32/syscall_cp.s	2026-10-04 12:44:05.283785751 -0700
++++ musl/src/thread/riscv32/syscall_cp.s	1969-12-31 16:00:00.000000000 -0800
+@@ -1,29 +0,0 @@
+-.global __cp_begin
+-.hidden __cp_begin
+-.global __cp_end
+-.hidden __cp_end
+-.global __cp_cancel
+-.hidden __cp_cancel
+-.hidden __cancel
+-.global __syscall_cp_asm
+-.hidden __syscall_cp_asm
+-.type __syscall_cp_asm, %function
+-__syscall_cp_asm:
+-__cp_begin:
+-	lw t0, 0(a0)
+-	bnez t0, __cp_cancel
+-
+-	mv t0, a1
+-	mv a0, a2
+-	mv a1, a3
+-	mv a2, a4
+-	mv a3, a5
+-	mv a4, a6
+-	mv a5, a7
+-	lw a6, 0(sp)
+-	mv a7, t0
+-	ecall
+-__cp_end:
+-	ret
+-__cp_cancel:
+-	tail __cancel
+diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/thread/riscv32/__unmapself.s musl/src/thread/riscv32/__unmapself.s
+--- /home/jth/.cache/bmds-scratch/musl-pristine/src/thread/riscv32/__unmapself.s	2026-10-04 12:44:05.283712314 -0700
++++ musl/src/thread/riscv32/__unmapself.s	1969-12-31 16:00:00.000000000 -0800
+@@ -1,7 +0,0 @@
+-.global __unmapself
+-.type __unmapself, %function
+-__unmapself:
+-	li a7, 215 # SYS_munmap
+-	ecall
+-	li a7, 93  # SYS_exit
+-	ecall

@@ -84,6 +84,8 @@ namespace {
                 st.attributes = info.attributes;
                 st.file_size = info.size;
                 st.modified_ns = info.modified.ns;
+                st.file_id = info.id;
+                st.device = info.device;
                 return st;
         }
 
@@ -422,6 +424,8 @@ int32_t Process::fstat(int32_t fd, bmds_stat_t *info) {
         bmds_stat_t st = {};
         st.type = BMDS_TYPE_DEVICE;
         st.open_flags = (h->canRead() ? BMDS_O_READ : 0) | (h->canWrite() ? BMDS_O_WRITE : 0);
+        st.file_id = h->id();
+        st.device = h->device();
         // A stream that seeks is a file: its size is where its end is.
         Stream &stream = h->stream();
         auto [here, err] = stream.seek(0, Stream::SeekFrom::Current);
@@ -621,6 +625,15 @@ int32_t Process::setMtime(const char *path, int64_t ns) {
         StringView p;
         if (int32_t r = this->path(path, p); r < 0) return r;
         return fsErrno(Vfs::setModified(p, Timestamp{ns}, vfs()));
+}
+
+int32_t Process::ftruncate(int32_t fd, int64_t size) {
+        FileHandle *h = _fds.handle(fd);
+        if (h == nullptr || !h->canWrite()) return -BMDS_EBADF;
+        if (size < 0) return -BMDS_EINVAL;
+        const Error err = h->stream().truncate(static_cast<uint64_t>(size));
+        if (err == Error::NotSupported) return -BMDS_EINVAL; // a pipe or a terminal
+        return fsErrno(err);
 }
 
 BMDS_NAMESPACE_END
