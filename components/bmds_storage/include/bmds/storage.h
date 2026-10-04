@@ -18,8 +18,9 @@ BMDS_NAMESPACE_BEGIN
  *
  * One task (`storage`, PSRAM stack) waits on the card-detect interrupt.
  * Once the switch has been stable for 50 ms it attaches a card that went
- * in, or detaches one that came out (open files go stale). There is no
- * polling. The first check happens in the task as well, so boot doesn't
+ * in and mounts its FAT partitions (`Vfs::automount()`: `/sd0/p0`...), or
+ * unmounts everything on one that came out and detaches it (open files go
+ * stale: `NoMedia`). There is no polling. The first check happens in the task as well, so boot doesn't
  * wait for card initialization.
  *
  * @par Thread Safety
@@ -28,14 +29,15 @@ BMDS_NAMESPACE_BEGIN
 namespace Storage {
 
         /**
-         * @brief Boot stage: brings up the SD slot and starts the service task.
+         * @brief Boot stage: sets up the VFS, brings up the SD slot, registers
+         *        it as a block device (`sd0`) and starts the service task.
          * @return `Ok`, or why it couldn't (the system runs on without storage).
          */
         Error init();
 
         /**
-         * @brief Waits until the first card check is done: a card attached,
-         *        or none there (or it failed).
+         * @brief Waits until the first card check is done: a card's partitions
+         *        mounted, or none there (or it failed).
          * @param timeoutMs Timeout, or `WaitForever`.
          * @return `Ok`, `Timeout`, or `NotReady` if the service isn't running.
          * @blocking

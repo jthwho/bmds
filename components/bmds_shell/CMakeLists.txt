@@ -8,6 +8,7 @@ set(BMDS_SHELL_PURE_SRCS
         src/arith.cpp
         src/commandcontext.cpp
         src/executor.cpp
+        src/fscommands.cpp
         src/glob.cpp
         src/iobuiltins.cpp
         src/langbuiltins.cpp
@@ -30,7 +31,7 @@ if(COMMAND idf_component_register)
                                     src/builtins.cpp
                                     src/shellesp.cpp
                                INCLUDE_DIRS include
-                               REQUIRES bmds_core bmds_kernel bmds_console
+                               REQUIRES bmds_core bmds_kernel bmds_console bmds_fs
                                PRIV_REQUIRES freertos
                                LDFRAGMENTS linker.lf
                                WHOLE_ARCHIVE)
@@ -38,6 +39,6 @@ if(COMMAND idf_component_register)
 else()
         add_library(bmds_shell STATIC ${BMDS_SHELL_PURE_SRCS})
         target_include_directories(bmds_shell PUBLIC include)
-        target_link_libraries(bmds_shell PUBLIC bmds_core bmds_kernel bmds_console)
+        target_link_libraries(bmds_shell PUBLIC bmds_core bmds_kernel bmds_console bmds_fs)
         bmds_target_options(bmds_shell)
 endif()

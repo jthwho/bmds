@@ -56,6 +56,7 @@ namespace {
                 {"UnsupportedSystemError", "Unmapped system error"},
                 {"BrokenPipe", "Broken pipe"},
                 {"NoMedia", "No medium"},
+                {"NoFilesystem", "No filesystem"},
         };
         static_assert(sizeof(CodeTexts) / sizeof(CodeTexts[0]) == Error::CodeCount,
                       "CodeTexts must have one entry per Error::Code");

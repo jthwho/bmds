@@ -129,6 +129,7 @@ class SdCard final : public BlockDevice {
                 uint32_t sectorSize() const override;
                 uint64_t sectorCount() const override;
                 bool     isPresent() const override;
+                uint32_t eraseBlockSectors() const override;
                 Error    sync() override;
                 Error    trim(uint64_t first, uint64_t count) override;
 

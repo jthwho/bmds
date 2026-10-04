@@ -52,6 +52,13 @@ class BlockDevice {
                 virtual bool isPresent() const { return true; }
 
                 /**
+                 * @brief Returns the erase block (allocation unit) in sectors, 1 if unknown.
+                 *
+                 * Formatting aligns the filesystem's data area to it.
+                 */
+                virtual uint32_t eraseBlockSectors() const { return 1; }
+
+                /**
                  * @brief Reads whole sectors.
                  * @param sector First sector.
                  * @param buf    Destination; its size is a multiple of `sectorSize()`.

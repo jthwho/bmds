@@ -274,6 +274,13 @@ uint64_t SdCard::sectorCount() const {
         return isAttached() ? static_cast<uint64_t>(card->csd.capacity) : 0;
 }
 
+uint32_t SdCard::eraseBlockSectors() const {
+        Mutex::Locker lock(_lock, WaitForever);
+        // The SD allocation unit (from the SD status register), in sectors.
+        if (!isAttached() || card->ssr.alloc_unit_kb == 0) return 1;
+        return card->ssr.alloc_unit_kb * 2;
+}
+
 bool SdCard::isPresent() const {
         return isAttached() && isInserted();
 }

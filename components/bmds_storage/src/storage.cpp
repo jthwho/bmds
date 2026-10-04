@@ -7,12 +7,14 @@
  */
 
 #include <atomic>
+#include <bmds/blockdevices.h>
 #include <bmds/log.h>
 #include <bmds/sdcard.h>
 #include <bmds/semaphore.h>
 #include <bmds/staticobject.h>
 #include <bmds/storage.h>
 #include <bmds/task.h>
+#include <bmds/vfs.h>
 
 BMDS_DEBUG(Storage)
 
@@ -27,7 +29,8 @@ namespace {
                         Service() : firstCheck(1, 0) {}
 
                         Task      task;
-                        Semaphore firstCheck; // Released once the first check is done.
+                        Semaphore firstCheck;                           // Released once the first check is done.
+                        char      name[BlockDevices::MaxName + 1] = {}; // The slot's device name ("sd0").
         };
 
         constinit StaticObject<Service> service;
@@ -54,10 +57,26 @@ namespace {
                 const uint64_t     mb = info.sectorCount * info.sectorSize / 1000000;
                 bmdsInfo("Storage: SD card %s (%s), %llu MB, %u-bit %u kHz", info.name, typeName(info.type),
                          static_cast<unsigned long long>(mb), info.busWidth, static_cast<unsigned>(info.clockKhz));
+                const Result<size_t> mounted = Vfs::automount(card);
+                if (mounted.error().isError()) {
+                        bmdsWarn("Storage: /dev/%s: no partitions: %s", service->name, mounted.error().desc());
+                } else if (mounted.value() == 0) {
+                        bmdsWarn("Storage: /dev/%s holds no FAT or exFAT filesystem (mkfs formats it)", service->name);
+                }
+                Vfs::MountInfo mounts[Vfs::MaxMounts];
+                const size_t   n = Vfs::listMounts(Span<Vfs::MountInfo>(mounts));
+                for (size_t i = 0; i < n; ++i) {
+                        // This card's mounts: its partitions are named after it.
+                        if (StringView(mounts[i].device).startsWith(StringView(service->name)))
+                                bmdsInfo("Storage: /dev/%s mounted on %s (%s)", mounts[i].device, mounts[i].path,
+                                         mounts[i].type);
+                }
                 return;
         }
 
         void cardRemoved(SdCard &card) {
+                // Unmount first: open files go stale (NoMedia) rather than failing with I/O errors.
+                Vfs::eject(card);
                 card.detach();
                 bmdsInfo("Storage: SD card removed");
                 return;
@@ -87,9 +106,12 @@ namespace {
 } // namespace
 
 Error Storage::init() {
-        Error err = SdCard::init();
+        Error err = Vfs::init();
+        if (err.isOk()) err = SdCard::init();
         if (err.isError()) return err;
-        Service     &s = service.create();
+        Service &s = service.create();
+        err = BlockDevices::addNumbered(SdCard::instance(), "sd", s.name);
+        if (err.isError()) return err;
         Task::Config config;
         config.name = "storage";
         config.stackBytes = CONFIG_BMDS_STORAGE_STACK_BYTES;

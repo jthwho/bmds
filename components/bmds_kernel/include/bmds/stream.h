@@ -70,6 +70,30 @@ class Stream {
                         return Error::Ok;
                 }
 
+                /** @brief Where `seek()` counts from. */
+                enum class SeekFrom : uint8_t {
+                        Start,   ///< From the beginning.
+                        Current, ///< From the current position.
+                        End,     ///< From the end.
+                };
+
+                /**
+                 * @brief Moves the read/write position (files only).
+                 *
+                 * `seek(0, SeekFrom::Current)` tells the position;
+                 * `seek(0, SeekFrom::End)` the size. A file opened for
+                 * writing may be positioned past its end; it grows when
+                 * written there.
+                 * @return The new position from the start, or `NotSupported`
+                 *         (pipes, consoles), `Invalid` (before the start), or the
+                 *         stream's error.
+                 */
+                virtual Result<uint64_t> seek(int64_t offset, SeekFrom from) {
+                        (void)offset;
+                        (void)from;
+                        return makeError<uint64_t>(Error::NotSupported);
+                }
+
                 /** @brief Returns true if this is an interactive terminal (a console). */
                 virtual bool isTerminal() const { return false; }
 

@@ -17,6 +17,6 @@ function(bmds_target_options target)
         endif()
         target_compile_options(${target} PRIVATE
                 $<$<COMPILE_LANGUAGE:CXX>:-std=gnu++20 -fno-exceptions -fno-rtti -Wnon-virtual-dtor>
-                $<$<COMPILE_LANGUAGE:C>:-std=gnu23>
+                $<$<COMPILE_LANGUAGE:C>:-std=gnu17>
                 -Wall -Wextra -Werror -Wshadow)
 endfunction()

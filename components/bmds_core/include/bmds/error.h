@@ -84,6 +84,7 @@ class [[nodiscard]] Error {
                         UnsupportedSystemError, ///< A system (errno) error with no specific mapping.
                         BrokenPipe,             ///< Write with no reader left (EPIPE).
                         NoMedia,                ///< No medium in the drive: the card is out (ENOMEDIUM).
+                        NoFilesystem,           ///< The medium holds no filesystem BMDS can mount.
                         CodeCount               ///< Number of codes (not an error code).
                 };
 

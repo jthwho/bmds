@@ -1,0 +1,268 @@
+/**
+ * @file      vfs.h
+ * @copyright Jason Howard. All rights reserved.
+ *
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file in the project root folder for license information.
+ */
+
+#pragma once
+
+#include <cstdint>
+#include <bmds/config.h>
+#include <bmds/datetime.h>
+#include <bmds/error.h>
+#include <bmds/filehandle.h>
+#include <bmds/result.h>
+#include <bmds/span.h>
+#include <bmds/string.h>
+#include <bmds/stringview.h>
+
+BMDS_NAMESPACE_BEGIN
+
+class BlockDevice;
+class Stream;
+
+/** @brief What a path names. */
+enum class FileType : uint8_t {
+        File,      ///< A regular file.
+        Directory, ///< A directory (also `/`, `/dev` and mount points).
+        Device,    ///< A device node (`/dev/null`, `/dev/console`).
+};
+
+/** @brief What `Vfs::stat()` and `Directory::next()` report. */
+struct FileInfo {
+                /** @brief FAT attribute bits. */
+                enum Attribute : uint8_t {
+                        ReadOnly = 0x01, ///< Read-only.
+                        Hidden = 0x02,   ///< Hidden.
+                        System = 0x04,   ///< System.
+                        Archive = 0x20,  ///< Changed since last backed up.
+                };
+
+                String    name;                  ///< The last path component ("" for `/`).
+                FileType  type = FileType::File; ///< What it is.
+                uint64_t  size = 0;              ///< Size in bytes (0 for directories and devices).
+                Timestamp modified;              ///< Last modified (UTC); zero if unknown.
+                uint8_t   attributes = 0;        ///< `Attribute` bits.
+
+                /** @brief Returns true for directories. */
+                bool isDirectory() const { return type == FileType::Directory; }
+};
+
+/** @brief What `Vfs::format()` creates. */
+enum class FsFormat : uint8_t {
+        Auto,  ///< FatFs's choice by size: FAT12/16 when small, FAT32 up to 32 GB, exFAT above (as SD cards ship).
+        Fat32, ///< FAT32 (`Invalid` if the device is too small for it, under about 32 MB).
+        ExFat, ///< exFAT.
+};
+
+/** @brief What `Vfs::statfs()` reports about a mounted filesystem. */
+struct FsInfo {
+                const char *type = "";        ///< "FAT12", "FAT16", "FAT32" or "exFAT".
+                uint64_t    totalBytes = 0;   ///< Capacity of the data area.
+                uint64_t    freeBytes = 0;    ///< Free space.
+                uint32_t    clusterBytes = 0; ///< Allocation unit.
+};
+
+/**
+ * @brief An open directory, read entry by entry.
+ *
+ * From `Vfs::openDirectory()`. Move-only; closes when destroyed. Entries
+ * come in the filesystem's order, without `.` and `..`.
+ *
+ * @par Thread Safety
+ * Use one Directory from one task at a time.
+ */
+class Directory {
+        public:
+                /** @brief Constructs a closed directory. */
+                Directory() = default;
+
+                /** @brief Closes the directory. */
+                ~Directory();
+
+                Directory(Directory &&other);
+                Directory &operator=(Directory &&other);
+                Directory(const Directory &) = delete;
+                Directory &operator=(const Directory &) = delete;
+
+                /** @brief Returns true while open. */
+                bool isOpen() const { return _state != nullptr; }
+
+                /**
+                 * @brief Returns the next entry.
+                 * @return The entry, `EndOfFile` after the last, `NoMedia` if the
+                 *         card went, or another filesystem error.
+                 */
+                Result<FileInfo> next();
+
+                /** @brief Closes the directory (also done by the destructor). */
+                void close();
+
+                struct State; ///< Implementation (vfs.cpp).
+
+        private:
+                friend class VfsAccess;
+                State *_state = nullptr;
+};
+
+/**
+ * @brief The virtual filesystem: one tree of paths over the mounted
+ *        filesystems and the device nodes.
+ *
+ * ```
+ * /              virtual: /dev, and the directories leading to mounts
+ * /dev/null      discards writes, reads end at once
+ * /dev/console   the caller's terminal (Context::terminal)
+ * /dev/sd0       a block device (BlockDevices); /dev/sd0p0 a partition
+ * /sd0/p0        a mounted FAT or exFAT filesystem (the storage service's default path)
+ * ```
+ *
+ * The mount table is run-time state: `mount()` puts a filesystem at any
+ * absolute path outside `/dev` and other mounts (up to four); the
+ * directories leading to it are virtual. `unmount()` removes the path.
+ *
+ * Paths are UTF-8 with `/` separators. A relative path is resolved against
+ * `Context::cwd`; `.` and `..` are resolved here (`..` never climbs above
+ * `/`). FAT names are case-insensitive and case-preserving.
+ *
+ * Files are Streams behind FileHandles: `dup` and `2>&1` share one offset,
+ * and the file closes with its last handle. Files and directories still
+ * open when their filesystem is unmounted (its card pulled) fail with
+ * `NoMedia` from then on.
+ *
+ * @par Thread Safety
+ * Thread-safe. Every call resolves its path and does its work under one
+ * storage lock, so a mount can't change under it; FatFs calls are thereby
+ * serialized. `init()` runs first (boot, or a test).
+ */
+namespace Vfs {
+
+        /** @brief Longest path the VFS handles, in bytes. */
+        inline constexpr size_t MaxPath = 1024;
+
+        /** @brief The caller's view: where relative paths start, and its terminal. */
+        struct Context {
+                        StringView cwd = "/";          ///< Current directory (absolute, normalized).
+                        Stream    *terminal = nullptr; ///< What `/dev/console` opens; null for none.
+        };
+
+        /** @brief `open()` flags. */
+        enum OpenFlag : uint8_t {
+                Read = 1u << 0,      ///< Open for reading.
+                Write = 1u << 1,     ///< Open for writing.
+                Create = 1u << 2,    ///< Create the file if it doesn't exist.
+                Truncate = 1u << 3,  ///< Empty an existing file.
+                Append = 1u << 4,    ///< Every write goes to the end.
+                Exclusive = 1u << 5, ///< With `Create`: fail with `Exists` if it exists.
+        };
+
+        /** @brief Longest mount path. */
+        inline constexpr size_t MaxMountPath = 63;
+
+        /** @brief Most mounts at once. */
+        inline constexpr size_t MaxMounts = 4;
+
+        /** @brief A mount, as `listMounts()` reports it. */
+        struct MountInfo {
+                        char        path[MaxMountPath + 1] = {}; ///< Where it is mounted.
+                        char        device[12] = {};             ///< The device's name ("sd0p0").
+                        const char *type = "";                   ///< "fat12", "fat16", "fat32" or "exfat".
+        };
+
+        /** @brief Sets up the VFS (the storage lock). Boot stage; idempotent. */
+        Error init();
+
+        /**
+         * @brief Mounts the FAT or exFAT filesystem on @p device at @p path.
+         * @param path Absolute (normalized here); not `/`, not in `/dev`, not
+         *        inside or above another mount; at most `MaxMountPath` bytes.
+         * @return `Ok`, `Invalid` (the path), `Exists` (something is there),
+         *         `Busy` (@p device, a partition of it or the device it is part of
+         *         is mounted already), `Full`, `NoMedia`,
+         *         `NoFilesystem`, `IoError`, ...
+         */
+        Error mount(StringView path, BlockDevice &device);
+
+        /** @brief Unmounts the filesystem at @p path; `NotExist` if nothing is mounted there. */
+        Error unmount(StringView path);
+
+        /**
+         * @brief Unmounts everything on @p device and its partitions (a medium went).
+         * @return How many mounts went.
+         */
+        size_t unmountDevice(BlockDevice &device);
+
+        /**
+         * @brief A medium arrived in registered @p device: registers its
+         *        partitions (`Partitions::attach()`) and mounts each one holding
+         *        a FAT or exFAT filesystem at `/<device>/p<N>` (`/sd0/p0`).
+         * @return How many were mounted, or the error reading the partition table.
+         */
+        Result<size_t> automount(BlockDevice &device);
+
+        /** @brief @p device's medium went: unmounts everything on it and unregisters its partitions. */
+        void eject(BlockDevice &device);
+
+        /** @brief Copies up to `out.size()` mounts, in mount order; returns how many. */
+        size_t listMounts(Span<MountInfo> out);
+
+        /** @brief Returns the device at @p path (`/dev/sd0`), or null. */
+        BlockDevice *findDevice(StringView path, const Context &context);
+
+        /**
+         * @brief Creates a new, empty filesystem on @p device: on a whole
+         *        device, a partition table with one partition (GPT from
+         *        128 GB, else MBR); on a partition, the filesystem alone.
+         * @return `Ok`, `Busy` (mounted), `NoMedia`, `Invalid` (too small), `NoMem`, `IoError`, ...
+         */
+        Error format(BlockDevice &device, FsFormat format);
+
+        /**
+         * @brief Opens a file or device.
+         * @param flags `OpenFlag` bits; at least one of `Read`, `Write`.
+         * @return A handle (its mode `Read`/`Write` as asked), or `NotExist`,
+         *         `IsDir`, `Exists`, `Busy` (open for writing elsewhere),
+         *         `TooManyOpen`, `NoMedia`, `ReadOnly`, `Invalid`, ...
+         */
+        Result<FileHandle::Ptr> open(StringView path, uint8_t flags, const Context &context);
+
+        /** @brief Returns what @p path names. */
+        Result<FileInfo> stat(StringView path, const Context &context);
+
+        /** @brief Opens a directory for listing. */
+        Result<Directory> openDirectory(StringView path, const Context &context);
+
+        /** @brief Creates a directory (`Exists` if anything has that name). */
+        Error mkdir(StringView path, const Context &context);
+
+        /** @brief Removes an empty directory (`NotEmpty`, `NotDir`). */
+        Error rmdir(StringView path, const Context &context);
+
+        /** @brief Removes a file (`IsDir` for a directory; `Busy` if open). */
+        Error remove(StringView path, const Context &context);
+
+        /**
+         * @brief Renames or moves @p from to @p to, within one filesystem.
+         * @return `Ok`, `Exists` (@p to exists), `NotSupported` (across
+         *         filesystems), `NotExist`, `Busy`, ...
+         */
+        Error rename(StringView from, StringView to, const Context &context);
+
+        /** @brief Sets the modification time of a file or directory. */
+        Error setModified(StringView path, Timestamp time, const Context &context);
+
+        /** @brief Returns size and free space of the filesystem holding @p path. */
+        Result<FsInfo> statfs(StringView path, const Context &context);
+
+        /**
+         * @brief Returns @p path as an absolute path without `.`, `..`, empty
+         *        components or a trailing `/`.
+         * @return The path, `Invalid` (empty), `OutOfRange` (longer than `MaxPath`), `NoMem`.
+         */
+        Result<String> normalize(StringView path, StringView cwd);
+
+} // namespace Vfs
+
+BMDS_NAMESPACE_END

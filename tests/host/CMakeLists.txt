@@ -4,7 +4,7 @@
 #   cd build-host && build && ctest --output-on-failure
 
 cmake_minimum_required(VERSION 3.22)
-project(bmds_host_tests LANGUAGES CXX)
+project(bmds_host_tests LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -45,6 +45,7 @@ add_executable(bmds_host_tests
         syntax.cpp
         terminal.cpp
         time.cpp
+        vfs.cpp
         workerpool.cpp)
 target_include_directories(bmds_host_tests PRIVATE ${BMDS_ROOT}/thirdparty/doctest)
 target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
