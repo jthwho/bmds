@@ -83,6 +83,7 @@ class [[nodiscard]] Error {
                         LibraryFailure,   ///< An underlying library (e.g. ESP-IDF) failed without a specific mapping.
                         UnsupportedSystemError, ///< A system (errno) error with no specific mapping.
                         BrokenPipe,             ///< Write with no reader left (EPIPE).
+                        NoMedia,                ///< No medium in the drive: the card is out (ENOMEDIUM).
                         CodeCount               ///< Number of codes (not an error code).
                 };
 

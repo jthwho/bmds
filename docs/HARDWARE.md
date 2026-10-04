@@ -61,7 +61,7 @@ Every ESP32-P4 GPIO with a board function. Netlist names are given where they he
 |---|---|---|---|
 | 0, 1 | 32.768 kHz crystal | RTC | Not available |
 | 2 | User LED (green) | GPIO out | Active low. Also on EXT1 pin 7. |
-| 3 | SD card detect (`SD_DET`) | GPIO in | Pull-up powered from LDO VO4. Active low **(unconfirmed)**. |
+| 3 | SD card detect (`SD_DET`) | GPIO in | Pull-up powered from LDO VO4. Active low (confirmed on a Rev C board). |
 | 4 | UEXT SCK | SPI | UEXT pin 9 |
 | 5 | UEXT CS | SPI | UEXT pin 10 |
 | 6 | Codec power (`CODEC_PWR_DIS#`) | GPIO out | Drives the codec LDO's CE. Pulled up, so on by default; drive low to switch off. |

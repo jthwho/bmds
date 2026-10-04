@@ -43,7 +43,9 @@ That decision and its rationale is recorded per driver in its devplan document.
 |---|---|---|
 | `bmds_core` | Core types: `Error`, `Result`, `String`, `StringView`, `List`, `Map`, `Span`, `SharedPtr`, `UniquePtr`, `Buffer`, geometry types, `ObjectBase`, signals/slots. | **No** — host-testable |
 | `bmds_board` | Board definitions, `MemSpace` mapping, chip constants. | Yes (thinly) |
-| `bmds_kernel` | Boot sequence, task/IPC wrappers, logging, interrupt dispatch, device model, VFS. | Yes |
+| `bmds_kernel` | Boot sequence, task/IPC wrappers, logging, interrupt dispatch, device model. | Yes |
+| `bmds_fs` | Block devices (`BlockDevice`, `RamBlockDevice`), the filesystem (FatFs) and the VFS. | **No** — host-testable |
+| `bmds_storage` | The SD card (`SdCard`) and the storage service (card detect, hot-plug). | Yes |
 | `bmds_drivers` | Hardware drivers (may split per driver). | Yes |
 | `bmds_console` | Terminal abstraction, serial console, HDMI text console, ANSI/VT parsing. | Partly |
 | `bmds_shell` | Command shell, built-in commands. | Partly |
@@ -81,7 +83,7 @@ devplan/                Design notes and plans per subsystem
 - **Executable format and loading.** See `docs/ABI.md`. Also: can we leverage Espressif's ELF loader component, or do we want our own minimal loader?
 - **Execution from PSRAM.** Performance characteristics of running user code from PSRAM through the cache vs. copying hot code to internal SRAM.
 - **Memory protection.** The P4 has RISC-V PMP and Espressif's memory protection/permission features. Could user programs run in U-mode with the kernel protected? What does that cost per syscall? (Would favor a trap-based syscall mechanism.)
-- **Filesystem.** FatFs (via IDF VFS or used directly) for SD compatibility with PCs is the likely start; whether we keep IDF's VFS layer or provide our own is open.
+- **Filesystem.** FatFs for SD compatibility with PCs. Proposed in `devplan/storage.md`: FatFs vendored with exFAT, under BMDS's own VFS (files as `Stream`s behind `FileHandle`s), not IDF's VFS and newlib.
 - **USB host stack.** IDF's `usb_host` + HID class driver vs. a lighter custom stack for keyboard/mouse.
 - **Display path.** HDMI via the board's MIPI-DSI-to-HDMI bridge; resolution/timing choices; text rendering via the P4's 2D-DMA / PPA hardware where it helps.
 - **Networking stack.** lwIP (IDF default) vs. something lighter.

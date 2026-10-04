@@ -42,11 +42,22 @@ cd build-host && build && ctest --output-on-failure
 
 ## Configuration
 
-`sdkconfig.defaults` is checked in; `sdkconfig` is generated and ignored. BMDS options are under **BMDS board** and **BMDS kernel** in `idf.py menuconfig`:
+`sdkconfig.defaults` is checked in; `sdkconfig` is generated and ignored. BMDS options are under **BMDS board**, **BMDS kernel**, **BMDS storage** (and others) in `idf.py menuconfig`:
 
 - `BMDS_BOARD` selects the board definition.
 - `BMDS_ASSERT` and `BMDS_DEBUG_LOG` compile in asserts and `bmdsDebug()`.
 - `BMDS_LOG_LINE_MAX` sets the maximum log line length.
+- `BMDS_SD_MAX_KHZ` caps the SD bus clock; `BMDS_SD_BOUNCE_BYTES` sizes the SD bounce buffer
+  (under **BMDS storage**).
+
+## Release Builds
+
+Development builds keep diagnostics that a release build drops. There is no release
+configuration yet; when there is, it sets:
+
+- `CONFIG_COMPILER_OPTIMIZATION_CHECKS_SILENT=y`: drops the message strings of ESP-IDF's
+  `ESP_RETURN_ON_*` checks (16 KB of a 320 KB image, measured in Phase 2). BMDS still logs its own
+  error with the `esp_err_t`.
 
 ## Size Tracking
 

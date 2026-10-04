@@ -62,7 +62,7 @@ namespace Detail {
                                 .d2 = 41,
                                 .d3 = 42,
                                 // Pull-up is powered from LDO VO4: only valid while ioLdo is on.
-                                // Polarity inferred from the socket wiring (UNCONFIRMED on hardware).
+                                // Low with a card in (confirmed on a Rev C board).
                                 .cardDetect = {.gpio = 3, .activeLow = true},
                                 // P-FET high-side switch, gate pulled low: powered by default.
                                 .powerOn = {.gpio = 45, .activeLow = true},

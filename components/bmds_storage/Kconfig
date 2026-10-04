@@ -1,0 +1,40 @@
+menu "BMDS storage"
+
+    config BMDS_STORAGE_STACK_BYTES
+        int "Storage task stack size (bytes, PSRAM)"
+        default 6144
+        range 3072 65536
+        help
+            Stack of the storage service task, which handles card insertion
+            and removal (card initialization, and later mounting). In PSRAM.
+            Check the 'tasks' command's stack_free column before shrinking.
+
+    config BMDS_STORAGE_PRIORITY
+        int "Storage task priority"
+        default 3
+        range 1 24
+        help
+            FreeRTOS priority of the storage task. Above the shell, so a
+            removed card is noticed while a command is busy.
+
+    config BMDS_SD_MAX_KHZ
+        int "SD card bus clock limit (kHz)"
+        default 40000
+        range 400 40000
+        help
+            Highest SD bus clock. 40000 is high speed (about 20 MB/s on a
+            4-bit bus) for cards that support it; others stay at the default
+            speed, 20000. Lower it to rule out signal problems.
+
+    config BMDS_SD_BOUNCE_BYTES
+        int "SD bounce buffer size (bytes, PSRAM)"
+        default 4096
+        range 512 65536
+        help
+            DMA-capable buffer that requests in buffers the SD host can't
+            reach by DMA (unaligned, or not DMA-capable) are copied through,
+            so the driver never allocates per request. A multiple of 512.
+            Larger is faster for such requests; aligned PSRAM buffers don't
+            use it.
+
+endmenu

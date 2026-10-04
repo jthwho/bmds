@@ -16,11 +16,13 @@ add_subdirectory(${BMDS_ROOT}/components/bmds_core ${CMAKE_BINARY_DIR}/bmds_core
 add_subdirectory(${BMDS_ROOT}/components/bmds_kernel ${CMAKE_BINARY_DIR}/bmds_kernel)
 add_subdirectory(${BMDS_ROOT}/components/bmds_console ${CMAKE_BINARY_DIR}/bmds_console)
 add_subdirectory(${BMDS_ROOT}/components/bmds_shell ${CMAKE_BINARY_DIR}/bmds_shell)
+add_subdirectory(${BMDS_ROOT}/components/bmds_fs ${CMAKE_BINARY_DIR}/bmds_fs)
 
 add_executable(bmds_host_tests
         main.cpp
         hostmemory.cpp
         arena.cpp
+        blockdevice.cpp
         bytering.cpp
         error.cpp
         fdtable.cpp
@@ -46,7 +48,7 @@ add_executable(bmds_host_tests
 target_include_directories(bmds_host_tests PRIVATE ${BMDS_ROOT}/thirdparty/doctest)
 target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
         BMDS_CORPUS_DIR="${CMAKE_CURRENT_LIST_DIR}/corpus")
-target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console bmds_shell)
+target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console bmds_shell bmds_fs)
 bmds_target_options(bmds_host_tests)
 
 enable_testing()

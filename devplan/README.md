@@ -7,6 +7,8 @@ Design notes and implementation plans for BMDS subsystems. Write a plan here **b
 - [`shell.md`](shell.md) — Phase 1: console abstraction, USB-Serial/JTAG console, line editor, shell, built-ins, log history.
 - [`shell-language.md`](shell-language.md) — Phase 1b: stdin/stdout/stderr, pipes, redirection, the bash-subset shell language.
 - [`terminal.md`](terminal.md) — Phase 1b/4: ANSI/VT and 24-bit color as first-class, terminal modes, HDMI screen model.
+- [`time.md`](time.md) — Phase 2: the system clock (Linux-style: set, slewed and disciplined by sources), time zones, `date`.
+- [`storage.md`](storage.md) — Phase 2: SD card driver and hot-plug, FatFs (exFAT) under the BMDS VFS, files in the shell, YMODEM transfer.
 
 ## Plan Document Template
 
