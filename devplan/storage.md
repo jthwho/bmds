@@ -1,6 +1,6 @@
 # Storage: SD Card, Filesystem, Files in the Shell
 
-Status: **steps 1-3 done** (SD driver with hot-plug; the clock; FatFs, the VFS, numbered devices and partitions, a run-time mount table with automatic mounting; the file commands); steps 4-5 not started (Phase 2).
+Status: **steps 1-4 done** (SD driver with hot-plug; the clock; FatFs, the VFS, numbered devices and partitions, a run-time mount table with automatic mounting; the file commands; files in the shell language); step 5 (YMODEM) not started (Phase 2).
 
 ## 1. Goal
 
@@ -148,15 +148,18 @@ Errors are `command: path: reason`, with POSIX's `strerror` wording ("No such fi
 | `mkfs [-t auto\|fat32\|exfat] -y DEVICE` | Without `-y`: `mkfs: this erases everything on /dev/sd0; run again with -y to go ahead`, status 1. A whole device (`/dev/sd0`) is ejected, gets a new partition table with one partition, and is mounted again (`/sd0/p0`); a partition (`/dev/sd0p0`) is unmounted, formatted alone and mounted at its default path. Prints the resulting mounts as `mount` does. |
 | `mount`, `mount DEVICE PATH`, `umount PATH` | Without arguments, the mounts, one per line, as on Unix: `/dev/sd0p0 on /sd0/p0 type exfat`. With them, mount or unmount by hand. |
 
-### Language
+### Language (as shipped in step 4)
 
-- **File redirection:** `<`, `>`, `>>`, `>|`, `<>`, `&>` open real files (relative to the cwd). `set -C` (noclobber) is added with `>|`.
-- **Globbing** (pathname expansion): unquoted `*`, `?`, `[...]` in a word expand to the sorted matching paths, component by component, using `Glob`; a leading `.` must be matched explicitly; no match leaves the word as it is (bash's default). Quoted text never globs (the expander already marks it).
-- **Tilde:** `~` and `~/...` expand to `$HOME`.
-- **File tests:** `test -e -f -d -s -r -w -x -nt -ot` on real files (`-x`: directories and `*.sh`).
-- **`source file [args]`** / **`. file`**: run in the current shell. **`sh file [args]`**: run in a subshell with its own positional parameters. (Running `./script.sh` directly, with `#!`, comes with the Phase 3 program model.)
-- **`/sd0/p0/autoexec.sh`:** after the first mount attempt (or a timeout), the console shell sources it if it exists. Ctrl-C interrupts it, as anything else.
-- **Path completion:** Tab completes file and directory names in argument position (directories get a trailing `/`).
+Behavior follows bash; the run corpus checks it against bash (each script starts in an empty directory: a fresh temporary directory for bash, a freshly formatted RAM disk for BMDS).
+
+- **File redirection:** `<`, `>`, `>>`, `>|`, `<>` (opens read-write, creating), `&>`, `&>>`, `>&file` open real files relative to the cwd; `/dev/null` is the VFS's device, no longer a shell special case. A target is expanded like an argument (split, globbed) and must come to exactly one word, else `$x: ambiguous redirect` (the word as written). Errors are `path: reason` in `strerror` wording; creating a file outside every filesystem is `Permission denied` (`Vfs::open` now says so too). **`set -C`** / `set -o noclobber` (`C` in `$-`): `>`, `&>` and `>&` refuse an existing regular file (`f: cannot overwrite existing file`); `>|` overrides.
+- **Globbing:** unquoted `*`, `?` and bracket expressions expand to the matching paths, component by component (`Glob::expandPaths()`), sorted as `ls` sorts (case-insensitive, then bytewise; the bash check runs in the C locale with names whose orders agree). A leading `.` must be matched explicitly, and `.`/`..` never match; a trailing `/` matches directories only; no match leaves the word as is; unreadable directories match nothing. Results of unquoted expansions glob too (`x='*.txt'; echo $x`), quoted text never does. The expander keeps a pattern copy of a field (quoted specials escaped) only from the first character that needs it, so plain words cost nothing extra. A `[` without its `]` is not magic, so `[ -f x ]` reads no directory.
+- **Tilde:** a word starting with unquoted `~` alone or `~/` gets `$HOME` (not split or globbed), in arguments, assignments (`x=~/bin`), redirection targets and `case`. `~user` stays as written; with `HOME` unset, `~` stays.
+- **File tests:** `-e -r` exist; `-f -d -c` regular file, directory, device; `-s` non-empty (directories count, as on Unix); `-w` not read-only; `-x` directories and `*.sh` files (FAT has no execute bits); `-nt -ot` by modification time, a file that exists being newer than one that doesn't; `-ef` the same normalized path, ignoring case.
+- **`source file [args]`**, **`. file [args]`**: run in the current shell; with arguments, they are the positional parameters while it runs; `return` ends it. Errors: `source: filename argument required` (status 2), `.: x: No such file or directory` (1). **`sh file [args]`**, **`sh -c command [name [args]]`**, and `sh` with a script on stdin (not a terminal): a subshell with its own positional parameters; `exit` ends just the script; an unreadable file is status 127. `$0` stays `bmds`. (Running `./script.sh` directly, with `#!`, comes with the Phase 3 program model.)
+- **`/sd0/p0/autoexec.sh`:** `Shell::spawn()` takes a `Startup` (a wait function and a script); the console shell waits for the first card check (`Storage::waitForFirstMount`, at most 3 s) and then sources the script if it exists, before the first prompt. Ctrl-C interrupts it, as anything else.
+- **Path completion:** in argument position, after a redirection, or in command position when the word has a `/`, Tab completes file and directory names: directories get a `/` and no space, special characters are escaped with `\` (the editor's word may contain escaped blanks), `~/` works, dot files are offered only when the word starts with `.`, and ambiguous candidates are listed by their last component.
+- **Reading files:** `cat`, `wc`, `head` and `grep` now read through a 32 KB `PsramDma` buffer (was 2 KB on the stack, and 256 B for line readers), so whole sectors go straight from the card in one transfer: `cat` of a 4 MB file 1.56 → 0.35 s, `wc -c` 1.96 → 0.60 s.
 
 ## 6. Files over the serial cable: YMODEM
 
@@ -173,7 +176,7 @@ Errors are `command: path: reason`, with POSIX's `strerror` wording ("No such fi
 | 2a | The system clock ([`time.md`](time.md)): `Clock`, `TimeZone`, the reset record, `date`, `clock`. **Done.** |
 | 2b | FatFs vendored (`thirdparty/fatfs`, our `ffconf.h`, port in `fatfsport.cpp`); `bmds_fs` VFS, files, `Directory`; the block device registry (`sd0`), partition tables (`sd0p0`), the run-time mount table, automatic mounting (`/sd0/p0`), `mount`/`umount`; `/dev` nodes; `Error::NoFilesystem`; host tests on `RamBlockDevice`. **Done.** |
 | 3 | Shell: `cd pwd ls cat cp mv rm mkdir rmdir touch df hexdump mkfs`; text commands on files; a current directory per shell; the VFS as a boot stage. **Done.** |
-| 4 | Language: file redirection, globbing, tilde, file tests, `source`/`.`/`sh`, `autoexec.sh`, path completion. |
+| 4 | Language: file redirection, globbing, tilde, file tests, `source`/`.`/`sh`, `autoexec.sh`, path completion. **Done.** |
 | 5 | `rz`/`sz` (YMODEM); 4 KB RX ring. |
 
 ## 8. Resource budget (estimates)
@@ -191,6 +194,10 @@ Errors are `command: path: reason`, with POSIX's `strerror` wording ("No such fi
 Step 1 measured on the board (32 GB SDHC, 4-bit, 40 MHz): sequential reads of 64 KB **16.3 MB/s direct**, 6.9 MB/s through the 4 KB bounce buffer; 512 B requests 1.3 MB/s on either path (about 0.38 ms of command overhead each, which is also what limits the bounce path: a larger bounce buffer moves more per command). The card is ready 120 ms after boot (50 ms debounce, 30 ms power cycle, init). Card init uses about 1.8 KB of the storage task's stack.
 
 Step 1 measured: the image grew by 58 KB (200 → 258 KB flash), internal RAM free at boot fell by 2.9 KB (610,895 → 607,983 bytes).
+
+Step 4 verified on the board (the exFAT card): writing 4 MB through `>` in 64 KB `echo`s 1.86 s (2.2 MB/s, shell included); `cat big big > big3` (8 MB read and written) 2.06 s; `cp` of 4 MB 1.01 s; reading 4 MB with `cat` 0.35 s (12 MB/s) and `wc -c` 0.60 s, after the 32 KB read buffer (before: 1.56 s and 1.96 s); `grep` over 64 KB lines is CPU-bound (1.76 s for 4 MB). Globs across mounts (`/sd*/p0/w/f`), noclobber, file tests, `source` with `return`, `sh -c`; `autoexec.sh` runs before the first prompt (about 0.4 s after reset, once the card is mounted), and Ctrl-C stops it in a `sleep` or a busy loop, keeping what it changed (its `cd`). Tab completion of paths on the card, `/sd0/` and `~/`. Pulling the card during an endless write loop (`while :; do echo "$s"; done > stream`, 64 KB a write): the write in flight fails after the IDF's 1 s timeouts (about 4 s), and only then does the storage task, which needs the storage lock for the eject, log the removal; later writes fail at once, and the loop runs on. The card mounts again 0.13 s after it is back, and new files work. The file being written comes back empty (0 bytes): FAT writes the size into the directory entry only on close or sync. The clusters it had taken are free again, so no space is lost (`df`: 192 KB used, as before). Nothing tells the loop that its writes fail, since commands ignore write errors (an open item). A busy loop on the console shell (autoexec's or typed) starves IDLE0, so the task watchdog prints a warning after 5 s, as it did before step 4.
+
+Step 4 measured: the image grew by 6.7 KB (383.2 → 389.9 KB). No new internal RAM; a command that reads files takes a 32 KB `PsramDma` buffer while it runs.
 
 Step 3 verified on the board: the read commands on the Raspberry Pi card; then `mkfs -t exfat -y /dev/sd0` (a 30 GB exFAT partition, mounted again at `/sd0/p0`), and `mkdir -p`, `touch`, `cp -r`, `mv`, `rm -r`, `rmdir` and long UTF-8 names (`Grüße aus Zürich ✓ 日本.txt`) on it. Write throughput and pulling a card during a write wait for redirection (step 4), the first way to put data into a file.
 
@@ -224,4 +231,6 @@ Step 2b measured: the image grew by 10.9 KB (331.7 → 342.7 KB); the linker sti
 
 - UHS-I (1.8 V, SDR50/SDR104): worth it for a DOS-like machine? Measure high speed first.
 - Read-ahead or write-back caching above FatFs: measure first; FatFs already transfers whole-sector runs directly.
+- Commands ignore write errors, so `echo x > f` on a full or pulled card succeeds silently. GNU tools report `write error: No space left on device` and fail; `CommandContext::print()`/`write()` should remember the first error and the built-ins return 1.
+- The removal of a card is noticed only after the write in flight times out (about 4 s): shorter IDF timeouts, or the card-detect interrupt failing transfers early, would shorten it.
 - A `/ram` RAM disk on `RamBlockDevice` (cheap once it exists) for scratch files and tests on the board.

@@ -66,9 +66,10 @@ struct WordPart {
 
 /** @brief A word: a sequence of parts that expands to zero or more fields. */
 struct Word {
-                WordPart *parts = nullptr;
-                Word     *next = nullptr;
-                bool      hasQuotes = false; ///< Contains quotes, so it is a word even when empty (`""`).
+                WordPart  *parts = nullptr;
+                Word      *next = nullptr;
+                bool       hasQuotes = false; ///< Contains quotes, so it is a word even when empty (`""`).
+                StringView source;            ///< As written, for messages (empty for words made up by the parser).
 };
 
 /** @brief `name=value` before a command. */

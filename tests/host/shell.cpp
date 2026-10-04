@@ -230,7 +230,9 @@ TEST_CASE("Shell: redirections") {
         CHECK(f.out("> /dev/null") == "");
 
         SUBCASE("errors") {
-                CHECK(f.out("echo hi > out.txt", Shell::ExitFailure) == "out.txt: No such file or directory\n");
+                // No filesystem is mounted here: nothing can be created in /.
+                CHECK(f.out("echo hi > out.txt", Shell::ExitFailure) == "out.txt: Permission denied\n");
+                CHECK(f.out("cat < in.txt", Shell::ExitFailure) == "in.txt: No such file or directory\n");
                 CHECK(f.out("echo hi 3>&5", Shell::ExitFailure) == "5: Bad file descriptor\n");
                 CHECK(f.out("echo hi 99>&1", Shell::ExitFailure) == "99: Bad file descriptor\n");
                 CHECK(f.out("echo hi <&x", Shell::ExitFailure) == "x: ambiguous redirect\n");

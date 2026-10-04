@@ -17,10 +17,12 @@
 #include <bmds/fdtable.h>
 #include <bmds/list.h>
 #include <bmds/result.h>
+#include <bmds/span.h>
 #include <bmds/string.h>
 #include <bmds/stringview.h>
 #include <bmds/syntax.h>
 #include <bmds/variables.h>
+#include <bmds/vfs.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -38,11 +40,12 @@ struct ShellFunction {
                 String source; ///< The body and its redirections, parsed again on each call.
 };
 
-/** @brief `set -e/-u/-x`. */
+/** @brief `set -e/-u/-x/-C`. */
 struct ShellOptions {
-                bool errexit = false; ///< `-e`: exit when a command fails.
-                bool nounset = false; ///< `-u`: expanding an unset variable is an error.
-                bool xtrace = false;  ///< `-x`: trace commands to stderr.
+                bool errexit = false;   ///< `-e`: exit when a command fails.
+                bool nounset = false;   ///< `-u`: expanding an unset variable is an error.
+                bool xtrace = false;    ///< `-x`: trace commands to stderr.
+                bool noclobber = false; ///< `-C`: `>` doesn't overwrite an existing file (`>|` does).
 };
 
 /**
@@ -175,6 +178,33 @@ class Executor {
                 /** @brief Returns true while a function runs. */
                 bool inFunction() const { return _callDepth > 0; }
 
+                /** @brief Returns true while a function or a sourced script runs (`return` works). */
+                bool canReturn() const { return _callDepth > 0 || _sourceDepth > 0; }
+
+                /** @brief Returns the VFS context: the current directory and the console. */
+                Vfs::Context vfs() const;
+
+                /**
+                 * @brief Reads a whole file (a script), relative to the current directory.
+                 * @return `Ok`, or the error opening or reading it.
+                 */
+                Error readFile(StringView path, String &out);
+
+                /**
+                 * @brief `source`: runs a script in this shell.
+                 *
+                 * With @p args, they are the positional parameters while it runs
+                 * (put back afterwards); without, it sees the caller's. `return`
+                 * ends it.
+                 */
+                int runSourced(StringView source, Span<char *const> args);
+
+                /**
+                 * @brief `sh`: runs a script in a subshell with @p args as its
+                 *        positional parameters; `exit` ends just the subshell.
+                 */
+                int runInSubshell(StringView source, Span<char *const> args);
+
                 /** @brief Returns the state. */
                 ShellState &state() { return _state; }
 
@@ -225,6 +255,9 @@ class Executor {
                 int            callFunction(const ShellFunction &fn, List<String> &args);
                 bool           loopIteration(bool &stop);
                 Error          applyRedirects(const Redirection *r, FdTable &fds);
+                Error          expandTarget(const Word *word, String &out);
+                Error          openTarget(const Redirection *r, StringView path, FileHandle::Ptr &out);
+                Error          expandPaths(StringView pattern, List<String> &out, size_t &count);
                 Error          expandPattern(const Word *word, String &out);
                 static void    stageMain(void *arg);
                 Error          evaluate(StringView expression, int64_t &value);
@@ -243,6 +276,7 @@ class Executor {
                 int              _flowCount = 0;
                 int              _loopDepth = 0;
                 int              _callDepth = 0;
+                int              _sourceDepth = 0;
                 int              _errexitSuppressed = 0;
                 int              _substStatus = 0; // status of the last command substitution
                 bool             _substRan = false;

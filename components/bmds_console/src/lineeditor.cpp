@@ -488,8 +488,9 @@ namespace {
 
 void LineEditor::complete(Output &out) {
         if (_completer == nullptr) return;
+        // The word: back to a break that isn't escaped (`my\ file`).
         size_t start = _cursor;
-        while (start > 0 && !isWordBreak(_line[start - 1])) --start;
+        while (start > 0 && (!isWordBreak(_line[start - 1]) || (start > 1 && _line[start - 2] == '\\'))) --start;
         const StringView before(_line, _cursor);
         const StringView word = before.mid(start);
         PrefixSink       prefix(word);
@@ -501,19 +502,22 @@ void LineEditor::complete(Output &out) {
         const StringView common = prefix.common();
         for (size_t i = word.size(); i < common.size(); ++i) insert(common[i], out);
         if (prefix.count() == 1) {
-                insert(' ', out);
+                // A directory ends in '/', ready for the next name.
+                if (!common.endsWith('/')) insert(' ', out);
                 return;
         }
         if (common.size() > word.size()) return;
-        // Ambiguous and nothing to add: list them in columns, then the line again.
+        // Ambiguous and nothing to add: list them in columns, then the line
+        // again. Paths are listed by their last component, as bash does.
         class ListSink final : public CompletionSink {
                 public:
-                        ListSink(StringView w, size_t width, Output &o)
-                            : _word(w), _width(width), _out(o), _perRow(80 / width > 0 ? 80 / width : 1) {
-                        } // 80 columns
+                        ListSink(StringView w, size_t strip, size_t width, Output &o)
+                            : _word(w), _strip(strip), _width(width), _out(o),
+                              _perRow(80 / width > 0 ? 80 / width : 1) {} // 80 columns
 
                         void add(StringView candidate) override {
                                 if (!candidate.startsWith(_word)) return;
+                                candidate = candidate.mid(_strip);
                                 _out.put(candidate);
                                 if (++_column == _perRow) {
                                         _out.put('\n');
@@ -528,13 +532,16 @@ void LineEditor::complete(Output &out) {
 
                 private:
                         StringView _word;
+                        size_t     _strip;
                         size_t     _width;
                         Output    &_out;
                         size_t     _perRow;
                         size_t     _column = 0;
         };
         out.put('\n');
-        ListSink list(word, prefix.longest() + 2, out);
+        const size_t slash = word.lastIndexOf('/');
+        const size_t strip = slash == StringView::NPos ? 0 : slash + 1;
+        ListSink     list(word, strip, prefix.longest() - strip + 2, out);
         _completer->complete(before, start, list);
         if (list.rowOpen()) out.put('\n');
         out.put(_prompt);

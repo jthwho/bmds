@@ -27,7 +27,7 @@ namespace LangBuiltins {
         int returnCmd(CommandContext &ctx);   ///< `return [n]`
         int exitCmd(CommandContext &ctx);     ///< `exit [n]`
         int eval(CommandContext &ctx);        ///< `eval [word]...`
-        int set(CommandContext &ctx);         ///< `set [-+euxo] [--] [arg]...`
+        int set(CommandContext &ctx);         ///< `set [-+Ceuxo] [--] [arg]...`
         int shift(CommandContext &ctx);       ///< `shift [n]`
         int exportCmd(CommandContext &ctx);   ///< `export [-p] [name[=value]]...`
         int readonly(CommandContext &ctx);    ///< `readonly [-p] [name[=value]]...`
@@ -38,6 +38,8 @@ namespace LangBuiltins {
         int type(CommandContext &ctx);        ///< `type [-t] name...`
         int command(CommandContext &ctx);     ///< `command [-vV] name [arg]...`
         int term(CommandContext &ctx);        ///< `term [color [depth] | size [COLSxROWS]]`
+        int source(CommandContext &ctx);      ///< `source file [arg]...`, `. file [arg]...`
+        int sh(CommandContext &ctx);          ///< `sh [-c command [name] | file] [arg]...`
 
 } // namespace LangBuiltins
 

@@ -351,8 +351,9 @@ namespace {
                         Error lexWord(Token &t) {
                                 Word *w = _arena.create<Word>();
                                 if (w == nullptr) return Error::NoMem;
-                                WordPart *tail = nullptr;
-                                Error     err;
+                                WordPart    *tail = nullptr;
+                                Error        err;
+                                const size_t start = _pos;
                                 while (_pos < _end && err.isOk()) {
                                         const char c = _src[_pos];
                                         if (isWordBreak(c)) break;
@@ -381,6 +382,7 @@ namespace {
                                                 err = literal(w, tail, s, _pos - s, false);
                                         }
                                 }
+                                w->source = _src.mid(start, _pos - start);
                                 t.kind = Tok::Word;
                                 t.word = w;
                                 return err;

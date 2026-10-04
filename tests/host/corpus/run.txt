@@ -829,3 +829,232 @@ echo ${p#$((newvar3 = 1))a} $newvar3
 <b1a>
 <b>
 abcabc 1
+
+=== files: redirection
+echo hello > f
+cat f
+echo more >> f
+cat f
+cat < f | wc -l
+echo new > f
+cat f
+--- out
+hello
+hello
+more
+2
+new
+
+=== files: read-write and both streams
+echo abc > f
+cat <> f
+{ echo out; echo err >&2; } &> both
+cat both
+{ echo again; echo err2 >&2; } &>> both
+cat both
+echo dup >&file
+cat file
+--- out
+abc
+out
+err
+out
+err
+again
+err2
+dup
+
+=== files: noclobber
+echo a > f
+set -C
+echo b > f
+echo "status $?"
+cat f
+echo c >| f
+cat f
+echo d > new
+cat new
+echo e > /dev/null && echo "devices are fine"
+case $- in *C*) echo "dash C";; esac
+set +C
+echo f > f
+cat f
+--- out
+status 1
+a
+c
+d
+devices are fine
+dash C
+f
+
+=== files: redirection failures
+cat < nope
+echo "status $?"
+echo x > nodir/f
+echo "status $?"
+mkdir d
+echo x > d
+echo "status $?"
+x="a b"
+echo x > $x
+echo "status $?"
+echo x > $unset_variable
+echo "status $?"
+echo x > ""
+echo "status $?"
+--- out
+status 1
+status 1
+status 1
+status 1
+status 1
+status 1
+
+=== files: /dev/null
+echo hi > /dev/null
+cat /dev/null
+cat < /dev/null | wc -c
+echo done
+--- out
+0
+done
+
+=== globbing
+touch b.txt a.txt c.log .hidden
+echo *.txt
+echo *
+echo .*
+echo nomatch* "*.txt" \*.txt '*'.txt
+x='*.log'
+echo $x "$x"
+for f in *.txt; do echo "<$f>"; done
+--- out
+a.txt b.txt
+a.txt b.txt c.log
+.hidden
+nomatch* *.txt *.txt *.txt
+c.log *.log
+<a.txt>
+<b.txt>
+
+=== globbing: brackets, question marks, directories
+touch a1 a2 b1 abc
+mkdir dir1 dir2
+touch dir1/x dir2/y dir2/z
+echo a[12] [!a]1 [ab]1 ?? a?c
+echo */
+echo */* dir2/?
+echo d*/[xz]
+echo nodir/* [ab
+--- out
+a1 a2 b1 a1 b1 a1 a2 b1 abc
+dir1/ dir2/
+dir1/x dir2/y dir2/z dir2/y dir2/z
+dir1/x dir2/z
+nodir/* [ab
+
+=== globbing: redirection targets
+touch only.txt
+echo hi > *.txt
+cat only.txt
+touch two.txt
+echo hi > *.txt
+echo "status $?"
+--- out
+hi
+status 1
+
+=== tilde
+HOME=/home/someone
+echo ~ ~/docs "~" \~ ~nosuchuser42 a~ ~"x"
+y=~/z
+echo $y
+HOME='/with space/*'
+for w in ~; do echo "<$w>"; done
+--- out
+/home/someone /home/someone/docs ~ ~ ~nosuchuser42 a~ ~x
+/home/someone/z
+</with space/*>
+
+=== file tests
+touch f
+mkdir d
+test -e f && echo e
+test -f f && echo f
+test -d d && echo d
+test -f d || echo "d is not a file"
+test -d f || echo "f is not a directory"
+test -s f || echo "f is empty"
+echo x > f
+test -s f && echo "f has data"
+test -e nope || echo "nope is missing"
+[ -d . ] && echo "dot is a directory"
+[ -r f -a -w f ] && echo "readable and writable"
+[ -e /dev/null ] && echo "null exists"
+[ f -nt nope ] && echo "newer than nothing"
+[ nope -ot f ] && echo "nothing is older"
+[ nope -nt f ] || echo "nothing is not newer"
+[ f -ef ./f ] && echo "same file"
+[ f -ef d ] || echo "different files"
+--- out
+e
+f
+d
+d is not a file
+f is not a directory
+f is empty
+f has data
+nope is missing
+dot is a directory
+readable and writable
+null exists
+newer than nothing
+nothing is older
+nothing is not newer
+same file
+different files
+
+=== source
+printf 'echo "in script: $# $*"\nx=set\nreturn 3\necho never\n' > s.sh
+. ./s.sh a b
+echo "status $? x=$x"
+set -- outer
+source s.sh
+echo "after: $*"
+f() { source s.sh inner; echo "in f: $? $*"; }
+f one
+--- out
+in script: 2 a b
+status 3 x=set
+in script: 1 outer
+after: outer
+in script: 1 inner
+in f: 3 one
+
+=== sh
+printf 'echo "args: $*"\nx=inner\nexit 4\n' > t.sh
+sh t.sh one two
+echo "status $? x=${x-unset}"
+sh -c 'echo "c: $1 $2"' name first second
+echo 'echo from stdin' | sh
+--- out
+args: one two
+status 4 x=unset
+c: first second
+from stdin
+
+=== files: commands and the current directory
+mkdir -p a/b
+cd a
+echo inside > b/f
+cd b
+cat f
+cd ..
+echo */
+cd ..
+echo a/b/*
+--- out
+inside
+b/
+a/b/f

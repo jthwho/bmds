@@ -130,6 +130,20 @@ class StringView {
                 /** @brief Returns true if the view ends with @p ch. */
                 constexpr bool endsWith(char ch) const { return !isEmpty() && back() == ch; }
 
+                /** @brief Returns true if the view equals @p other, ignoring ASCII case. */
+                constexpr bool equalsIgnoreCase(StringView other) const {
+                        if (size() != other.size()) return false;
+                        for (size_t i = 0; i < size(); ++i) {
+                                if (toLower(_view[i]) != toLower(other._view[i])) return false;
+                        }
+                        return true;
+                }
+
+                /** @brief Returns @p ch in lower case (ASCII letters only). */
+                static constexpr char toLower(char ch) {
+                        return ch >= 'A' && ch <= 'Z' ? static_cast<char>(ch - 'A' + 'a') : ch;
+                }
+
                 /** @brief Returns true if @p str occurs in the view. */
                 constexpr bool contains(StringView str) const { return indexOf(str) != NPos; }
 

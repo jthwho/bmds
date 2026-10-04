@@ -82,6 +82,14 @@ class Shell final : public LineCompleter {
                  */
                 static Span<const Command> registeredCommands();
 
+                /** @brief What a spawned shell does before its first prompt. */
+                struct Startup {
+                                /** @brief Called on the shell's task first (e.g. to wait for the SD card); may be null. */
+                                void (*wait)() = nullptr;
+                                /** @brief A script to source if it exists (`/sd0/p0/autoexec.sh`); may be null. */
+                                const char *script = nullptr;
+                };
+
                 /**
                  * @brief Starts a shell on @p console in its own task.
                  *
@@ -89,9 +97,10 @@ class Shell final : public LineCompleter {
                  * `Psram` and run until reboot.
                  * @param console The console to run on.
                  * @param name    Task name.
+                 * @param startup What to do before the first prompt.
                  * @return `Ok`, or `NoMem`.
                  */
-                static Error spawn(Console &console, const char *name);
+                static Error spawn(Console &console, const char *name, const Startup &startup);
 
                 /** @brief The `help` command (registered by the built-ins). */
                 static int runHelp(CommandContext &ctx);
@@ -157,6 +166,14 @@ class Shell final : public LineCompleter {
                 int runScript(StringView source);
 
                 /**
+                 * @brief Sources the script at @p path if it exists, as `source`
+                 *        would; Ctrl-C stops it. A missing file is not an error.
+                 * @return Its status, or 0 if there is none.
+                 * @blocking
+                 */
+                int sourceIfExists(StringView path);
+
+                /**
                  * @brief Runs the shell: prompt, read, execute, forever.
                  * @blocking Waits for console input indefinitely.
                  */
@@ -174,6 +191,7 @@ class Shell final : public LineCompleter {
                 void complete(StringView line, size_t wordStart, CompletionSink &sink) override;
 
         private:
+                void completePath(StringView word, CompletionSink &sink);
                 void runInput();
                 void endInterrupt();
 

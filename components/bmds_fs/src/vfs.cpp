@@ -113,6 +113,15 @@ namespace {
                 return resolveLocked(storage.view());
         }
 
+        // True if normalized @p path, which doesn't exist, is in a virtual
+        // directory (outside every filesystem), where nothing can be made.
+        bool outsideFilesystemsLocked(StringView path) {
+                if (path.isEmpty()) return false;
+                const size_t       slash = path.lastIndexOf('/');
+                const Result<Node> parent = resolveLocked(slash == 0 ? StringView("/") : path.left(slash));
+                return parent.error().isOk() && parent.value().kind != Kind::Fat;
+        }
+
         // The FatFs path of a node inside a volume: "N:/dir/file".
         Error fatPath(const Node &node, String &out) {
                 char root[3];
@@ -446,6 +455,8 @@ Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context 
         Mutex::Locker      lock(Fat::lock(), WaitForever);
         String             storage;
         const Result<Node> found = lookupLocked(path, context, storage);
+        if (found.error() == Error::NotExist && (flags & Create) != 0 && outsideFilesystemsLocked(storage))
+                return makeError<FileHandle::Ptr>(Error::PermissionDenied);
         if (found.error().isError()) return makeError<FileHandle::Ptr>(found.error());
         const Node   &node = found.value();
         const uint8_t mode = ((flags & Read) ? FileHandle::Read : 0) | ((flags & Write) ? FileHandle::Write : 0);
@@ -536,13 +547,7 @@ Error Vfs::mkdir(StringView path, const Context &context) {
         String        fat;
         Node          node;
         Error         err = fatTargetLocked(path, context, Error::Exists, storage, node, fat);
-        if (err == Error::NotExist && !storage.isEmpty()) {
-                // Outside every filesystem (in a virtual directory) nothing can be made.
-                const StringView   p = storage.view();
-                const size_t       slash = p.lastIndexOf('/');
-                const Result<Node> parent = resolveLocked(slash == 0 ? StringView("/") : p.left(slash));
-                if (parent.error().isOk() && parent.value().kind != Kind::Fat) err = Error::PermissionDenied;
-        }
+        if (err == Error::NotExist && outsideFilesystemsLocked(storage)) err = Error::PermissionDenied;
         if (err.isError()) return err;
         return Fat::toError(f_mkdir(fat.cStr()), *node.volume);
 }

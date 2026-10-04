@@ -17,8 +17,20 @@
 
 namespace {
 
+        // How long the first shell waits for the SD card before autoexec.sh
+        // (a card is normally mounted well within this).
+        constexpr unsigned int StorageWaitMs = 3000;
+
+        void waitForStorage() {
+                (void)bmds::Storage::waitForFirstMount(StorageWaitMs);
+                return;
+        }
+
         bmds::Error startSerialShell() {
-                return bmds::Shell::spawn(bmds::UsbSerialConsole::instance(), "shell");
+                bmds::Shell::Startup startup;
+                startup.wait = waitForStorage;
+                startup.script = "/sd0/p0/autoexec.sh";
+                return bmds::Shell::spawn(bmds::UsbSerialConsole::instance(), "shell", startup);
         }
 
         constexpr bmds::Boot::Stage SystemStages[] = {

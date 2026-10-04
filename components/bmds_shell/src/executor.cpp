@@ -21,6 +21,7 @@
 #include <bmds/parser.h>
 #include <bmds/pipe.h>
 #include <bmds/shell.h>
+#include <bmds/vfs.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -96,10 +97,12 @@ namespace {
                         size_t _pos = 0;
         };
 
-        Result<FileHandle::Ptr> openPath(StringView path, uint8_t mode) {
-                // No filesystem until Phase 2.
-                if (path == "/dev/null") return FileHandle::open(NullStream::instance(), mode);
-                return makeError<FileHandle::Ptr>(Error::NotExist);
+        bool isGlobMagic(char c) {
+                return c == '*' || c == '?' || c == '[';
+        }
+
+        bool isGlobSpecial(char c) {
+                return isGlobMagic(c) || c == ']' || c == '\\';
         }
 
         // One pipeline stage being run.
@@ -199,6 +202,7 @@ void ShellState::optionLetters(String &out) const {
         if (options.errexit) (void)out.append('e');
         if (options.nounset) (void)out.append('u');
         if (options.xtrace) (void)out.append('x');
+        if (options.noclobber) (void)out.append('C');
         return;
 }
 
@@ -227,7 +231,18 @@ class Expander {
                 }
 
                 Error word(const Word *w) {
-                        Error err = parts(w->parts);
+                        const WordPart *p = w->parts;
+                        // `~` and `~/...`: $HOME (not split or globbed). `~user` stays as is.
+                        if (p != nullptr && p->kind == WordPart::Kind::Literal && !p->quoted &&
+                            (p->text == "~" ? p->next == nullptr : p->text.startsWith("~/"))) {
+                                const String *home = _ex._state.vars.value("HOME");
+                                if (home != nullptr) {
+                                        if (append(*home, true, false).isError()) return Error::Invalid;
+                                        if (append(p->text.mid(1), false, false).isError()) return Error::Invalid;
+                                        p = p->next;
+                                }
+                        }
+                        Error err = parts(p);
                         if (err.isError()) return err;
                         if (_mode == Mode::Fields && (_exists || (w->parts == nullptr && w->hasQuotes)))
                                 return emit(true);
@@ -279,8 +294,31 @@ class Expander {
                 }
 
                 Error push(char c) {
+                        if (note(StringView(&c, 1), false).isError()) return Error::Invalid;
                         Error err = _cur.append(c);
                         return err.isError() ? fatal(err) : err;
+                }
+
+                // Pathname expansion bookkeeping, before @p text joins the field:
+                // `_pat` is the field as a pattern (quoted special characters
+                // escaped), kept only from the first character that makes it
+                // differ from `_cur`; `_magic` is an unquoted `*`, `?` or `[`.
+                Error note(StringView text, bool quoted) {
+                        if (_mode != Mode::Fields) return Error::Ok;
+                        if (!_patActive) {
+                                bool needed = false;
+                                for (char c : text) needed = needed || (quoted ? isGlobSpecial(c) : isGlobMagic(c));
+                                if (!needed) return Error::Ok;
+                                if (_pat.assign(_cur).isError()) return fatal(Error::NoMem);
+                                _patActive = true;
+                        }
+                        for (char c : text) {
+                                if (quoted && isGlobSpecial(c) && _pat.append('\\').isError())
+                                        return fatal(Error::NoMem);
+                                if (!quoted && isGlobMagic(c)) _magic = true;
+                                if (_pat.append(c).isError()) return fatal(Error::NoMem);
+                        }
+                        return Error::Ok;
                 }
 
                 Error append(StringView text, bool quoted, bool expansion) {
@@ -296,6 +334,7 @@ class Expander {
                                 }
                                 return Error::Ok;
                         }
+                        if (note(text, quoted).isError()) return Error::Invalid;
                         Error err = _cur.append(text);
                         return err.isError() ? fatal(err) : err;
                 }
@@ -328,8 +367,16 @@ class Expander {
 
                 Error emit(bool force = false) {
                         if (!_exists && !force) return Error::Ok;
-                        Error err = _fields->append(std::move(_cur));
+                        Error  err;
+                        size_t matches = 0;
+                        // A field with unquoted magic is replaced by the paths it
+                        // matches; with none, it stays as it is (bash's default).
+                        if (_magic && Glob::hasMagic(_pat)) err = _ex.expandPaths(_pat, *_fields, matches);
+                        if (err.isOk() && matches == 0) err = _fields->append(std::move(_cur));
                         _cur = String();
+                        _pat.clear();
+                        _patActive = false;
+                        _magic = false;
                         _exists = false;
                         return err.isError() ? fatal(err) : err;
                 }
@@ -506,6 +553,9 @@ class Expander {
                 List<String> *_fields;
                 String        _ifs;
                 String        _cur;
+                String        _pat; // see note()
+                bool          _patActive = false;
+                bool          _magic = false;
                 bool          _exists = false;     // the current field exists (even if empty)
                 bool          _afterWhite = false; // white IFS space just ended a field
 };
@@ -552,7 +602,7 @@ Executor::Executor(Shell &shell, ShellState &state, FdTable &fds, size_t stackBy
 Executor::Executor(Executor &parent, ShellState &state, FdTable &fds)
     : _shell(parent._shell), _state(state), _fds(&fds), _ownArena(MemSpace::Psram, 4096), _arena(parent._arena),
       _stackBase(parent._stackBase), _stackBudget(parent._stackBudget), _loopDepth(parent._loopDepth),
-      _callDepth(parent._callDepth) {}
+      _callDepth(parent._callDepth), _sourceDepth(parent._sourceDepth) {}
 
 // The real stack position. (Not the address of a local: sanitizers may
 // put locals on a separate "fake stack".)
@@ -885,6 +935,61 @@ Result<String> Executor::substitute(StringView source) {
         return makeResult(std::move(text));
 }
 
+Vfs::Context Executor::vfs() const {
+        return Vfs::Context{_state.cwd.isEmpty() ? StringView("/") : _state.cwd.view(), &_shell.console()};
+}
+
+Error Executor::expandPaths(StringView pattern, List<String> &out, size_t &count) {
+        auto [n, err] = Glob::expandPaths(pattern, vfs(), out);
+        count = n;
+        return err;
+}
+
+// A redirection's file or descriptor: expanded as an argument (split and
+// globbed), and it must come to exactly one word.
+Error Executor::expandTarget(const Word *word, String &out) {
+        List<String> fields;
+        Error        err = expandWords(word, fields);
+        if (err.isError()) return err;
+        if (fields.size() != 1) {
+                report("%.*s: ambiguous redirect", static_cast<int>(word->source.size()), word->source.data());
+                return Error::Invalid;
+        }
+        out = std::move(fields[0]);
+        return Error::Ok;
+}
+
+Error Executor::openTarget(const Redirection *r, StringView path, FileHandle::Ptr &out) {
+        using Kind = Redirection::Kind;
+        uint8_t flags = Vfs::Write | Vfs::Create | Vfs::Truncate;
+        switch (r->kind) {
+                case Kind::Input: flags = Vfs::Read; break;
+                case Kind::InputOutput: flags = Vfs::Read | Vfs::Write | Vfs::Create; break;
+                case Kind::Append:
+                case Kind::AppendBoth: flags = Vfs::Write | Vfs::Create | Vfs::Append; break;
+                case Kind::Clobber: break;
+                default:
+                        // `>`, `&>`, `>&file` with noclobber: not over an existing file.
+                        if (_state.options.noclobber) {
+                                const Result<FileInfo> info = Vfs::stat(path, vfs());
+                                if (info.error().isOk() && info.value().type == FileType::File) {
+                                        report("%.*s: cannot overwrite existing file", static_cast<int>(path.size()),
+                                               path.data());
+                                        return Error::Exists;
+                                }
+                                if (info.error() == Error::NotExist) flags = Vfs::Write | Vfs::Create | Vfs::Exclusive;
+                        }
+                        break;
+        }
+        auto [h, err] = path.isEmpty() ? makeError<FileHandle::Ptr>(Error::NotExist) : Vfs::open(path, flags, vfs());
+        if (err.isError()) {
+                report("%.*s: %s", static_cast<int>(path.size()), path.data(), CommandContext::errorText(err));
+                return err;
+        }
+        out = std::move(h);
+        return Error::Ok;
+}
+
 Error Executor::applyRedirects(const Redirection *r, FdTable &fds) {
         for (; r != nullptr; r = r->next) {
                 using Kind = Redirection::Kind;
@@ -896,7 +1001,9 @@ Error Executor::applyRedirects(const Redirection *r, FdTable &fds) {
                         return Error::BadDescriptor;
                 }
                 String text;
-                Error  err = r->kind == Kind::HereDoc ? expandString(r->body, text) : expandString(r->target, text);
+                Error  err = r->kind == Kind::HereDoc      ? expandString(r->body, text)
+                             : r->kind == Kind::HereString ? expandString(r->target, text)
+                                                           : expandTarget(r->target, text);
                 if (err.isError()) return err;
                 switch (r->kind) {
                         case Kind::HereDoc:
@@ -911,7 +1018,7 @@ Error Executor::applyRedirects(const Redirection *r, FdTable &fds) {
                                 break;
                         }
                         case Kind::DupInput:
-                        case Kind::DupOutput:
+                        case Kind::DupOutput: {
                                 if (text == "-") {
                                         (void)fds.close(fd);
                                         break;
@@ -925,28 +1032,20 @@ Error Executor::applyRedirects(const Redirection *r, FdTable &fds) {
                                         }
                                         break;
                                 }
-                                if (r->kind == Kind::DupOutput && r->fd < 0) {
-                                        // `>&file` is `&>file`.
-                                        auto [h, oerr] = openPath(text, FileHandle::Write);
-                                        if (oerr.isError()) {
-                                                report("%s: No such file or directory", text.cStr());
-                                                return oerr;
-                                        }
-                                        (void)fds.set(1, std::move(h));
-                                        (void)fds.dup2(1, 2);
-                                        break;
+                                if (r->kind != Kind::DupOutput || r->fd >= 0) {
+                                        report("%s: ambiguous redirect", text.cStr());
+                                        return Error::Invalid;
                                 }
-                                report("%s: ambiguous redirect", text.cStr());
-                                return Error::Invalid;
+                                // `>&file` is `&>file`.
+                                FileHandle::Ptr h;
+                                if (openTarget(r, text, h).isError()) return Error::Invalid;
+                                (void)fds.set(1, std::move(h));
+                                (void)fds.dup2(1, 2);
+                                break;
+                        }
                         default: {
-                                const uint8_t mode = r->kind == Kind::Input         ? FileHandle::Read
-                                                     : r->kind == Kind::InputOutput ? FileHandle::ReadWrite
-                                                                                    : FileHandle::Write;
-                                auto [h, oerr] = openPath(text, mode);
-                                if (oerr.isError()) {
-                                        report("%s: No such file or directory", text.cStr());
-                                        return oerr;
-                                }
+                                FileHandle::Ptr h;
+                                if (openTarget(r, text, h).isError()) return Error::Invalid;
                                 (void)fds.set(fd, std::move(h));
                                 if (r->kind == Kind::OutputBoth || r->kind == Kind::AppendBoth) (void)fds.dup2(fd, 2);
                                 break;
@@ -1152,10 +1251,76 @@ int Executor::runSource(StringView source, bool script) {
         return status;
 }
 
+Error Executor::readFile(StringView path, String &out) {
+        out.clear();
+        auto [file, err] = Vfs::open(path, Vfs::Read, vfs());
+        if (err.isError()) return err;
+        char buf[512];
+        for (;;) {
+                auto [n, rerr] =
+                        file->read(WritableByteSpan(reinterpret_cast<uint8_t *>(buf), sizeof(buf)), WaitForever);
+                if (rerr == Error::EndOfFile || (rerr.isOk() && n == 0)) return Error::Ok;
+                if (rerr.isError()) return rerr;
+                err = out.append(StringView(buf, n));
+                if (err.isError()) return err;
+        }
+}
+
+int Executor::runSourced(StringView source, Span<char *const> args) {
+        List<String> params;
+        const bool   hasArgs = !args.isEmpty();
+        if (hasArgs) {
+                Error err = params.reserve(args.size());
+                for (size_t i = 0; err.isOk() && i < args.size(); ++i) {
+                        auto [p, perr] = String::fromView(args[i]);
+                        err = perr.isOk() ? params.append(std::move(p)) : perr;
+                }
+                if (err.isError()) {
+                        report("out of memory");
+                        return finish(1, false);
+                }
+                std::swap(_state.positional, params);
+        }
+        ++_sourceDepth;
+        int status = runSource(source, true);
+        --_sourceDepth;
+        if (_flow == Flow::Return) {
+                clearFlow();
+                status = _state.lastStatus;
+        }
+        if (hasArgs) std::swap(_state.positional, params);
+        return status;
+}
+
+int Executor::runInSubshell(StringView source, Span<char *const> args) {
+        auto [state, err] = _state.clone();
+        List<String> params;
+        if (err.isOk()) err = params.reserve(args.size());
+        for (size_t i = 0; err.isOk() && i < args.size(); ++i) {
+                auto [p, perr] = String::fromView(args[i]);
+                err = perr.isOk() ? params.append(std::move(p)) : perr;
+        }
+        if (err.isError()) {
+                report("out of memory");
+                return 1;
+        }
+        state.positional = std::move(params);
+        FdTable  fds = *_fds;
+        Executor child(*this, state, fds);
+        // A script of its own: not inside the caller's functions or sourced scripts.
+        child._callDepth = 0;
+        child._sourceDepth = 0;
+        child._loopDepth = 0;
+        const int status = child.runSource(source, true);
+        inheritAbort(child);
+        return status;
+}
+
 void Executor::stageMain(void *arg) {
         StageRun *run = static_cast<StageRun *>(arg);
         Executor  child(run->parent->_shell, run->state, run->fds, Shell::WorkerStackBytes);
         child._callDepth = run->parent->_callDepth;
+        child._sourceDepth = run->parent->_sourceDepth;
         run->status = child.execute(run->node);
         // Closing this stage's ends gives its neighbors EOF / a broken pipe.
         run->fds.closeAll();

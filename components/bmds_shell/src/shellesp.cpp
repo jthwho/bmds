@@ -28,18 +28,23 @@ namespace {
 
         // One running shell: the shell and the task that runs it.
         struct Session {
-                        explicit Session(Console &console)
-                            : shell(console, Shell::registeredCommands(), CONFIG_BMDS_SHELL_STACK_BYTES) {}
+                        Session(Console &console, const Shell::Startup &start)
+                            : shell(console, Shell::registeredCommands(), CONFIG_BMDS_SHELL_STACK_BYTES),
+                              startup(start) {}
 
-                        Shell shell;
-                        Task  task;
+                        Shell          shell;
+                        Shell::Startup startup;
+                        Task           task;
         };
 
         void sessionMain(void *arg) {
                 // Keep the first prompt out of the boot report. Boot always
                 // completes, so there is nothing to time out on.
                 (void)Boot::waitUntilComplete(WaitForever);
-                static_cast<Session *>(arg)->shell.run();
+                Session *session = static_cast<Session *>(arg);
+                if (session->startup.wait != nullptr) session->startup.wait();
+                if (session->startup.script != nullptr) (void)session->shell.sourceIfExists(session->startup.script);
+                session->shell.run();
         }
 
 } // namespace
@@ -48,16 +53,16 @@ Span<const Command> Shell::registeredCommands() {
         return Span<const Command>(_bmds_cmd_start, static_cast<size_t>(_bmds_cmd_end - _bmds_cmd_start));
 }
 
-Error Shell::spawn(Console &console, const char *name) {
+Error Shell::spawn(Console &console, const char *name, const Startup &startup) {
         void *mem = Memory::alloc(MemSpace::Psram, sizeof(Session));
         if (mem == nullptr) {
                 bmdsErr("Shell: no memory for session '%s'", name);
                 return Error::NoMem;
         }
-        auto *session = ::new (mem) Session(console);
+        auto *session = ::new (mem) Session(console, startup);
         Error err = session->shell.init();
         if (err.isOk()) err = session->shell.state().vars.set("BMDS_VERSION", System::info().bmdsVersion);
-        // The first partition of the first SD card (what /sd0/p0/autoexec.sh will live on).
+        // The first partition of the first SD card (where autoexec.sh lives).
         if (err.isOk()) err = session->shell.state().vars.set("HOME", "/sd0/p0");
         // A colored prompt with the directory; the console fits the color to its terminal.
         if (err.isOk())

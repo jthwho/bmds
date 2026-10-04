@@ -224,6 +224,7 @@ namespace Vfs {
          * @param flags `OpenFlag` bits; at least one of `Read`, `Write`.
          * @return A handle (its mode `Read`/`Write` as asked), or `NotExist`,
          *         `IsDir`, `Exists`, `Busy` (open for writing elsewhere),
+         *         `PermissionDenied` (creating outside every filesystem),
          *         `TooManyOpen`, `NoMedia`, `ReadOnly`, `Invalid`, ...
          */
         Result<FileHandle::Ptr> open(StringView path, uint8_t flags, const Context &context);

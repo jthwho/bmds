@@ -13,6 +13,7 @@
 #include <bmds/executor.h>
 #include <bmds/langbuiltins.h>
 #include <bmds/shell.h>
+#include <bmds/vfs.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -269,15 +270,38 @@ namespace {
                                 return true;
                         }
 
+                        // What @p path names, or false if nothing.
+                        bool stat(StringView path, FileInfo &info) {
+                                if (path.isEmpty()) return false;
+                                Result<FileInfo> r = Vfs::stat(path, _ctx.vfs());
+                                if (r.error().isError()) return false;
+                                info = std::move(r).value();
+                                return true;
+                        }
+
                         bool unary(StringView op, StringView a, bool &out) {
-                                const bool devNull = a == "/dev/null"; // the only file until Phase 2
+                                FileInfo info;
                                 switch (op[1]) {
                                         case 'z': out = a.isEmpty(); return true;
                                         case 'n': out = !a.isEmpty(); return true;
                                         case 'e':
-                                        case 'c':
-                                        case 'r':
-                                        case 'w': out = devNull; return true;
+                                        case 'r': out = stat(a, info); return true;
+                                        case 'f': out = stat(a, info) && info.type == FileType::File; return true;
+                                        case 'd': out = stat(a, info) && info.isDirectory(); return true;
+                                        case 'c': out = stat(a, info) && info.type == FileType::Device; return true;
+                                        // Directories count as non-empty, as on Unix (where they have a size).
+                                        case 's':
+                                                out = stat(a, info) && (info.size > 0 || info.isDirectory());
+                                                return true;
+                                        case 'w':
+                                                out = stat(a, info) && (info.attributes & FileInfo::ReadOnly) == 0;
+                                                return true;
+                                        // No execute bits on FAT: directories, and scripts by name.
+                                        case 'x':
+                                                out = stat(a, info) &&
+                                                      (info.isDirectory() ||
+                                                       (info.type == FileType::File && a.endsWith(".sh")));
+                                                return true;
                                         case 'v': out = _ctx.executor().state().vars.value(a) != nullptr; return true;
                                         case 't': {
                                                 long fd = 0;
@@ -304,8 +328,27 @@ namespace {
                                         out = a < b;
                                 } else if (op == ">") {
                                         out = a > b;
-                                } else if (op == "-nt" || op == "-ot" || op == "-ef") {
+                                } else if (op == "-nt" || op == "-ot") {
+                                        // As bash: a file that exists is newer than one that doesn't.
+                                        FileInfo   x, y;
+                                        const bool hasA = stat(a, x);
+                                        const bool hasB = stat(b, y);
+                                        if (op == "-ot") {
+                                                out = hasB && (!hasA || x.modified < y.modified);
+                                        } else {
+                                                out = hasA && (!hasB || x.modified > y.modified);
+                                        }
+                                } else if (op == "-ef") {
+                                        // FAT has no links: the same file is the same path
+                                        // (names are case-insensitive).
+                                        FileInfo x, y;
                                         out = false;
+                                        if (stat(a, x) && stat(b, y)) {
+                                                const Result<String> pa = Vfs::normalize(a, _ctx.cwd());
+                                                const Result<String> pb = Vfs::normalize(b, _ctx.cwd());
+                                                out = pa.error().isOk() && pb.error().isOk() &&
+                                                      pa.value().view().equalsIgnoreCase(pb.value());
+                                        }
                                 } else {
                                         long x = 0, y = 0;
                                         for (StringView v : {a, b}) {
@@ -473,7 +516,7 @@ int LangBuiltins::continueCmd(CommandContext &ctx) {
 int LangBuiltins::returnCmd(CommandContext &ctx) {
         Executor  &ex = ctx.executor();
         const Args args = ctx.args();
-        if (!ex.inFunction()) {
+        if (!ex.canReturn()) {
                 ctx.eprint("return: can only `return' from a function or sourced script\n");
                 return Shell::ExitFailure;
         }
@@ -515,6 +558,61 @@ int LangBuiltins::eval(CommandContext &ctx) {
         return ctx.executor().runSource(source);
 }
 
+int LangBuiltins::source(CommandContext &ctx) {
+        const Args args = ctx.args();
+        if (args.size() < 2) {
+                ctx.eprintf("%s: filename argument required\n", args[0]);
+                return Shell::ExitUsage;
+        }
+        String script;
+        Error  err = ctx.executor().readFile(args[1], script);
+        if (err.isError()) {
+                ctx.eprintf("%s: %s: %s\n", args[0], args[1], CommandContext::errorText(err));
+                return Shell::ExitFailure;
+        }
+        return ctx.executor().runSourced(script, args.mid(2));
+}
+
+int LangBuiltins::sh(CommandContext &ctx) {
+        const Args args = ctx.args();
+        String     script;
+        Args       params;
+        if (args.size() >= 2 && StringView(args[1]) == "-c") {
+                // `sh -c command [name [arg]...]`: name would be $0.
+                if (args.size() < 3) {
+                        ctx.eprint("sh: -c: option requires an argument\n");
+                        return Shell::ExitUsage;
+                }
+                if (script.assign(args[2]).isError()) {
+                        ctx.eprint("sh: out of memory\n");
+                        return Shell::ExitFailure;
+                }
+                params = args.size() > 4 ? args.mid(4) : Args();
+        } else if (args.size() >= 2) {
+                Error err = ctx.executor().readFile(args[1], script);
+                if (err.isError()) {
+                        ctx.eprintf("sh: %s: %s\n", args[1], CommandContext::errorText(err));
+                        return Shell::ExitNotFound;
+                }
+                params = args.mid(2);
+        } else {
+                // The script on stdin; an interactive subshell is not supported.
+                FileHandle *in = ctx.fds().handle(FdTable::Stdin);
+                if (in == nullptr || in->stream().isTerminal()) return ctx.usage();
+                uint8_t buf[256];
+                for (;;) {
+                        auto [n, err] = ctx.read(WritableByteSpan(buf));
+                        if (err == Error::EndOfFile || (err.isOk() && n == 0)) break;
+                        if (err.isError()) return Shell::ExitFailure;
+                        if (script.append(StringView(reinterpret_cast<const char *>(buf), n)).isError()) {
+                                ctx.eprint("sh: out of memory\n");
+                                return Shell::ExitFailure;
+                        }
+                }
+        }
+        return ctx.executor().runInSubshell(script, params);
+}
+
 int LangBuiltins::set(CommandContext &ctx) {
         Executor   &ex = ctx.executor();
         ShellState &st = ex.state();
@@ -538,6 +636,7 @@ int LangBuiltins::set(CommandContext &ctx) {
         };
         static const Option options[] = {
                 {'e', "errexit", &ShellOptions::errexit},
+                {'C', "noclobber", &ShellOptions::noclobber},
                 {'u', "nounset", &ShellOptions::nounset},
                 {'x', "xtrace", &ShellOptions::xtrace},
         };
@@ -684,6 +783,7 @@ int LangBuiltins::local(CommandContext &ctx) {
         return status;
 }
 
+BMDS_SHELL_COMMAND_AS(dot, ".", LangBuiltins::source, "file [arg]...", "Run a script in this shell (as source)")
 BMDS_SHELL_COMMAND_AS(colon, ":", LangBuiltins::colon, "[arg]...", "Do nothing, successfully")
 BMDS_SHELL_COMMAND_AS(bracket, "[", LangBuiltins::test, "expr ]", "Evaluate a conditional expression (as test)")
 BMDS_SHELL_COMMAND_AS(breakCmd, "break", LangBuiltins::breakCmd, "[n]", "Leave n enclosing loops")
@@ -699,9 +799,12 @@ BMDS_SHELL_COMMAND_AS(falseCmd, "false", LangBuiltins::falseCmd, "", "Do nothing
 BMDS_SHELL_COMMAND(local, LangBuiltins::local, "name[=value]...", "Make variables local to the function")
 BMDS_SHELL_COMMAND(readonly, LangBuiltins::readonly, "[-p] [name[=value]]...", "Make variables read-only, or list them")
 BMDS_SHELL_COMMAND_AS(returnCmd, "return", LangBuiltins::returnCmd, "[n]", "Return from a function")
-BMDS_SHELL_COMMAND(set, LangBuiltins::set, "[-+eux] [-+o name] [--] [arg]...",
+BMDS_SHELL_COMMAND(set, LangBuiltins::set, "[-+Ceux] [-+o name] [--] [arg]...",
                    "Set shell options and positional parameters, or list variables")
+BMDS_SHELL_COMMAND(sh, LangBuiltins::sh, "[-c command [name] | file] [arg]...",
+                   "Run a script in a subshell (from stdin without arguments)")
 BMDS_SHELL_COMMAND(shift, LangBuiltins::shift, "[n]", "Drop the first n positional parameters")
+BMDS_SHELL_COMMAND(source, LangBuiltins::source, "file [arg]...", "Run a script in this shell")
 BMDS_SHELL_COMMAND(test, LangBuiltins::test, "expr", "Evaluate a conditional expression")
 BMDS_SHELL_COMMAND(type, LangBuiltins::type, "[-t] name...", "Say whether names are keywords, functions or built-ins")
 BMDS_SHELL_COMMAND_AS(trueCmd, "true", LangBuiltins::colon, "", "Do nothing, successfully")

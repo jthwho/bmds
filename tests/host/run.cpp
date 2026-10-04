@@ -7,6 +7,8 @@
  *
  * Runs corpus/run.txt scripts through the shell and compares stdout and the
  * exit status with what bash does (check_bash.py keeps the file honest).
+ * Each script starts in the root of a freshly formatted RAM disk, as bash
+ * starts in an empty temporary directory.
  */
 
 #include <doctest.h>
@@ -18,9 +20,13 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <bmds/blockdevices.h>
+#include <bmds/filecommands.h>
 #include <bmds/langbuiltins.h>
+#include <bmds/ramblockdevice.h>
 #include <bmds/shell.h>
 #include <bmds/textcommands.h>
+#include <bmds/vfs.h>
 #include "fakeconsole.h"
 #include "hostmemory.h"
 
@@ -45,16 +51,21 @@ namespace {
                         std::mutex _lock;
         };
 
+        namespace F = bmds::FileCommands;
         namespace L = bmds::LangBuiltins;
         namespace T = bmds::TextCommands;
+        namespace Vfs = bmds::Vfs;
 
         constexpr bmds::Command Commands[] = {
+                {".", "", "", L::source},
                 {":", "", "", L::colon},
                 {"[", "", "", L::test},
                 {"break", "", "", L::breakCmd},
                 {"cat", "", "", T::cat},
+                {"cd", "", "", F::cd},
                 {"command", "", "", L::command},
                 {"continue", "", "", L::continueCmd},
+                {"cp", "", "", F::cp},
                 {"echo", "", "", T::echo},
                 {"eval", "", "", L::eval},
                 {"exit", "", "", L::exitCmd},
@@ -63,17 +74,54 @@ namespace {
                 {"grep", "", "", T::grep},
                 {"head", "", "", T::head},
                 {"local", "", "", L::local},
+                {"mkdir", "", "", F::mkdir},
+                {"mv", "", "", F::mv},
                 {"printf", "", "", L::printfCmd},
+                {"pwd", "", "", F::pwd},
                 {"read", "", "", L::read},
                 {"readonly", "", "", L::readonly},
                 {"return", "", "", L::returnCmd},
+                {"rm", "", "", F::rm},
+                {"rmdir", "", "", F::rmdir},
                 {"set", "", "", L::set},
+                {"sh", "", "", L::sh},
                 {"shift", "", "", L::shift},
+                {"source", "", "", L::source},
                 {"test", "", "", L::test},
+                {"touch", "", "", F::touch},
                 {"true", "", "", L::colon},
                 {"type", "", "", L::type},
                 {"unset", "", "", L::unset},
                 {"wc", "", "", T::wc},
+        };
+
+        // A RAM disk formatted and mounted for the scripts to work in; the
+        // registry and mounts are shared with the other tests, so it leaves
+        // nothing behind.
+        bmds::RamBlockDevice &scratchDevice() {
+                static bmds::RamBlockDevice disk(512);
+                if (disk.sectorCount() == 0) REQUIRE(disk.allocate(4 * 2048, bmds::MemSpace::Psram).isOk());
+                return disk;
+        }
+
+        class ScratchDisk {
+                public:
+                        ScratchDisk() : _disk(&scratchDevice()) {
+                                char name[bmds::BlockDevices::MaxName + 1];
+                                REQUIRE(bmds::BlockDevices::addNumbered(*_disk, "scratch", name).isOk());
+                                REQUIRE(Vfs::format(*_disk, bmds::FsFormat::Auto).isOk());
+                                REQUIRE(Vfs::automount(*_disk).value() == 1);
+                                path = std::string("/") + name + "/p0";
+                        }
+                        ~ScratchDisk() {
+                                Vfs::eject(*_disk);
+                                bmds::BlockDevices::remove(*_disk);
+                        }
+
+                        std::string path;
+
+                private:
+                        bmds::RamBlockDevice *_disk;
         };
 
         struct Entry {
@@ -141,11 +189,19 @@ namespace {
 TEST_CASE("Executor: run corpus") {
         const std::vector<Entry> corpus = loadCorpus();
         CHECK(corpus.size() > 50);
+        {
+                // Once-only allocations (the scratch disk, the first mount's) before counting.
+                ScratchDisk disk;
+                Runner      r;
+                REQUIRE(r.shell->execute(("cd " + disk.path).c_str()) == 0);
+        }
         const size_t base = HostMemory::liveAllocations();
         for (const Entry &e : corpus) {
                 CAPTURE(e.name);
                 CAPTURE(e.script);
-                Runner    r;
+                ScratchDisk disk;
+                Runner      r;
+                REQUIRE(r.shell->execute(("cd " + disk.path).c_str()) == 0);
                 const int status = r.shell->runScript(bmds::StringView(e.script.data(), e.script.size()));
                 CAPTURE(r.err.text);
                 CHECK(r.out.text == e.out);

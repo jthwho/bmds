@@ -7,6 +7,7 @@ not checked (bash -n reads a whole file, so it has no "need more input").
 Every run.txt script must print the same stdout and exit with the same status
 under `bash -c`.
 """
+import os
 import pathlib
 import subprocess
 import sys
@@ -68,11 +69,16 @@ def _run_entries(path):
 
 def check_runs(corpus_dir):
     failures = 0
-    with tempfile.TemporaryDirectory() as empty:  # nothing for a stray glob to match
-        for e in run_entries(corpus_dir / "run.txt"):
+    # The C locale: globs sort bytewise (the corpus uses names whose order is
+    # the same as BMDS's case-insensitive one).
+    env = dict(os.environ, LC_ALL="C")
+    for e in run_entries(corpus_dir / "run.txt"):
+        # Each script starts in an empty directory of its own, as BMDS's start
+        # on a freshly formatted RAM disk.
+        with tempfile.TemporaryDirectory() as empty:
             # lastpipe: the last pipeline stage runs in the shell, as in BMDS.
             r = subprocess.run(["bash", "--norc", "--noprofile", "-O", "lastpipe", "-c", e["script"]], cwd=empty,
-                               text=True, capture_output=True)
+                               text=True, capture_output=True, env=env)
             if r.stdout != e["out"] or r.returncode != e["status"]:
                 failures += 1
                 print(f"FAIL run '{e['name']}': bash printed {r.stdout!r} with status {r.returncode}")

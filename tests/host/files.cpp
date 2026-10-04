@@ -10,12 +10,15 @@
 
 #include <doctest.h>
 
+#include <chrono>
 #include <memory>
 #include <string>
+#include <thread>
 #include <bmds/blockdevices.h>
 #include <bmds/clock.h>
 #include <bmds/filecommands.h>
 #include <bmds/fscommands.h>
+#include <bmds/langbuiltins.h>
 #include <bmds/ramblockdevice.h>
 #include <bmds/shell.h>
 #include <bmds/textcommands.h>
@@ -29,6 +32,8 @@ namespace Vfs = bmds::Vfs;
 namespace {
 
         constexpr bmds::Command Commands[] = {
+                {".", "file [arg]...", "", bmds::LangBuiltins::source},
+                {"[", "expr ]", "", bmds::LangBuiltins::test},
                 {"cat", "[file]...", "", bmds::TextCommands::cat},
                 {"cd", "[dir | -]", "", bmds::FileCommands::cd},
                 {"cp", "[-r] source... target", "", bmds::FileCommands::cp},
@@ -43,8 +48,12 @@ namespace {
                 {"mount", "[DEVICE PATH]", "", bmds::FsCommands::mount},
                 {"mv", "source... target", "", bmds::FileCommands::mv},
                 {"pwd", "", "", bmds::FileCommands::pwd},
+                {"return", "[n]", "", bmds::LangBuiltins::returnCmd},
                 {"rm", "[-rf] path...", "", bmds::FileCommands::rm},
                 {"rmdir", "dir...", "", bmds::FileCommands::rmdir},
+                {"set", "[-+Ceux] [-+o name] [--] [arg]...", "", bmds::LangBuiltins::set},
+                {"sh", "[-c command [name] | file] [arg]...", "", bmds::LangBuiltins::sh},
+                {"source", "file [arg]...", "", bmds::LangBuiltins::source},
                 {"touch", "file...", "", bmds::FileCommands::touch},
                 {"wc", "[-lwc] [file]...", "", bmds::TextCommands::wc},
         };
@@ -104,6 +113,15 @@ namespace {
 
                         std::string out(const char *line, int expectStatus = Shell::ExitSuccess) {
                                 CHECK_MESSAGE(shell->execute(line) == expectStatus, line);
+                                return con.take();
+                        }
+
+                        // Types @p keys at a fresh prompt; returns what the editor echoed after it.
+                        std::string type(const char *keys) {
+                                shell->feed('\x03'); // cancel any line
+                                shell->start();
+                                (void)con.take();
+                                for (const char *k = keys; *k != '\0'; ++k) shell->feed(*k);
                                 return con.take();
                         }
 
@@ -270,4 +288,79 @@ TEST_CASE("Files: df and mkfs") {
               0);
         CHECK(f.out("mkfs -y /dev/disk1p0") == "/dev/disk1p0 on /disk1/p0 type fat16\n");
         CHECK(f.out("mount") == "/dev/disk0p0 on /disk0/p0 type fat32\n/dev/disk1p0 on /disk1/p0 type fat16\n");
+}
+
+TEST_CASE("Files: redirection, globbing and scripts report errors as bash does") {
+        Fixture f;
+        CHECK(f.out("cd /disk0/p0") == "");
+        CHECK(f.out("echo a > f; set -C; echo b > f", Shell::ExitFailure) == "f: cannot overwrite existing file\n");
+        CHECK(f.out("echo c >| f; set +C; cat f") == "c\n");
+        CHECK(f.out("x='a b'; echo > $x", Shell::ExitFailure) == "$x: ambiguous redirect\n");
+        CHECK(f.out("echo > \"$nothing\"", Shell::ExitFailure) == ": No such file or directory\n");
+        CHECK(f.out("mkdir d; echo > d", Shell::ExitFailure) == "d: Is a directory\n");
+        CHECK(f.out("cat < nope", Shell::ExitFailure) == "nope: No such file or directory\n");
+        CHECK(f.out("echo > /x", Shell::ExitFailure) == "/x: Permission denied\n");
+        CHECK(f.out("touch a.txt b.txt; echo > *.txt", Shell::ExitFailure) == "*.txt: ambiguous redirect\n");
+        CHECK(f.out("source", Shell::ExitUsage) == "source: filename argument required\n");
+        CHECK(f.out(". nope", Shell::ExitFailure) == ".: nope: No such file or directory\n");
+        CHECK(f.out("sh nope", Shell::ExitNotFound) == "sh: nope: No such file or directory\n");
+        CHECK(f.out("return", Shell::ExitFailure) == "return: can only `return' from a function or sourced script\n");
+        // Globs reach into directories and across mounts; `echo` of nothing matched is the word.
+        CHECK(f.out("echo /disk*/p0/d /disk0/p0/*.txt") == "/disk0/p0/d /disk0/p0/a.txt /disk0/p0/b.txt\n");
+        CHECK(f.out("echo /dev/n*") == "/dev/null\n");
+        CHECK(f.out("echo ~/*.txt") == "/disk0/p0/a.txt /disk0/p0/b.txt\n");
+        // `test -x`: directories and scripts.
+        CHECK(f.out("touch s.sh; [ -x s.sh ] && [ -x d ] && [ ! -x a.txt ] && echo yes") == "yes\n");
+        // A sourced script sees the directory it was run from, and can change it.
+        put("/disk0/p0/d/go.sh", "cd /disk0/p0/d\necho \"$PWD\"\n");
+        CHECK(f.out(". d/go.sh; pwd; cd ..") == "/disk0/p0/d\n/disk0/p0/d\n");
+        CHECK(f.out("sh d/go.sh; pwd") == "/disk0/p0/d\n/disk0/p0\n");
+}
+
+TEST_CASE("Files: Tab completes paths") {
+        Fixture f;
+        CHECK(f.out("cd /disk0/p0; mkdir docs; touch 'my file.txt' notes.txt .hidden") == "");
+        // What the editor echoes: the keys, then the completion.
+        SUBCASE("a directory gets a '/' and no space") {
+                CHECK(f.type("ls do\t") == "ls docs/");
+        }
+        SUBCASE("a file gets a space; special characters are escaped") {
+                CHECK(f.type("cat my\t") == "cat my\\ file.txt ");
+                CHECK(f.type("cat my\\ f\t") == "cat my\\ file.txt ");
+        }
+        SUBCASE("candidates are listed by name; dot files only when asked") {
+                CHECK(f.out("touch /disk0/p0/aaa") == ""); // made last, listed first
+                CHECK(f.type("cat /disk0/p0/\t") == "cat /disk0/p0/\naaa           docs/         my\\ file.txt  "
+                                                    "notes.txt     \nbmds> cat /disk0/p0/");
+                CHECK(f.type("cat .h\t") == "cat .hidden ");
+        }
+        SUBCASE("after a redirection, in command position with a '/', and with ~") {
+                CHECK(f.type("echo >no\t") == "echo >notes.txt ");
+                CHECK(f.type("./do\t") == "./docs/");
+                CHECK(f.type("cat ~/no\t") == "cat ~/notes.txt ");
+        }
+        SUBCASE("devices and mount points") {
+                CHECK(f.type("cat /dev/nu\t") == "cat /dev/null ");
+                CHECK(f.type("cd /disk0/\t") == "cd /disk0/p0/");
+        }
+}
+
+TEST_CASE("Files: a startup script") {
+        Fixture f;
+        CHECK(f.shell->sourceIfExists("/disk0/p0/autoexec.sh") == 0);
+        CHECK(f.con.take() == "");
+        put("/disk0/p0/autoexec.sh", "greeting=hello\ncd /disk0\necho started $#\n[ -e nope ]\n");
+        CHECK(f.shell->sourceIfExists("/disk0/p0/autoexec.sh") == 1);
+        CHECK(f.con.take() == "started 0\n");
+        CHECK(f.out("echo $greeting; pwd") == "hello\n/disk0\n");
+        // Ctrl-C stops it, and the shell goes on.
+        put("/disk0/p0/autoexec.sh", "while [ 1 ]; do [ 1 ]; done\necho never\n");
+        std::thread ctrlC([&f] {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                f.con.interrupt().raise();
+        });
+        CHECK(f.shell->sourceIfExists("/disk0/p0/autoexec.sh") == Shell::ExitInterrupted);
+        ctrlC.join();
+        CHECK(f.con.take() == "^C\n");
+        CHECK(f.out("echo after") == "after\n");
 }

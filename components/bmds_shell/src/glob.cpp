@@ -91,9 +91,11 @@ bool Glob::match(StringView p, StringView t) {
 
 bool Glob::hasMagic(StringView p) {
         for (size_t i = 0; i < p.size(); ++i) {
+                size_t end = 0;
+                bool   matched = false;
                 if (p[i] == '\\') {
                         ++i;
-                } else if (p[i] == '*' || p[i] == '?' || p[i] == '[') {
+                } else if (p[i] == '*' || p[i] == '?' || (p[i] == '[' && bracket(p, i, '\0', end, matched))) {
                         return true;
                 }
         }
@@ -114,6 +116,125 @@ size_t Glob::matchSuffix(StringView p, StringView t, bool longest) {
                 if (match(p, t.right(n))) return n;
         }
         return StringView::NPos;
+}
+
+namespace {
+
+        // The pattern's text with its escapes removed.
+        Error unescape(StringView p, String &out) {
+                for (size_t i = 0; i < p.size(); ++i) {
+                        if (p[i] == '\\' && i + 1 < p.size()) ++i;
+                        Error err = out.append(p[i]);
+                        if (err.isError()) return err;
+                }
+                return Error::Ok;
+        }
+
+        // Expands @p rest (components separated by '/') below @p prefix (empty,
+        // or ending in '/'), appending to @p out.
+        Error walk(String &prefix, StringView rest, const Vfs::Context &context, List<String> &out) {
+                const size_t     slash = rest.indexOf('/');
+                const StringView component = slash == StringView::NPos ? rest : rest.left(slash);
+                StringView       after = slash == StringView::NPos ? StringView() : rest.mid(slash + 1);
+                while (after.startsWith('/')) after = after.mid(1);
+                const bool   last = slash == StringView::NPos;
+                const bool   dirOnly = !last && after.isEmpty(); // a trailing '/'
+                const size_t base = prefix.size();
+                Error        err;
+                if (!Glob::hasMagic(component)) {
+                        err = unescape(component, prefix);
+                        if (err.isOk() && (last || dirOnly)) {
+                                const Result<FileInfo> info = Vfs::stat(prefix, context);
+                                if (info.error().isOk() && (last || info.value().isDirectory())) {
+                                        if (dirOnly) err = prefix.append('/');
+                                        auto [copy, cerr] = prefix.clone();
+                                        err = err.isOk() ? cerr : err;
+                                        if (err.isOk()) err = out.append(std::move(copy));
+                                }
+                        } else if (err.isOk()) {
+                                err = prefix.append('/');
+                                if (err.isOk()) err = walk(prefix, after, context, out);
+                        }
+                        prefix.truncate(base);
+                        return err;
+                }
+                const bool dotOk = component.startsWith('.') || component.startsWith("\\.");
+                // The matching subdirectories are collected first, so that only one
+                // directory is open at a time.
+                List<String> subdirs;
+                {
+                        auto [dir, derr] =
+                                Vfs::openDirectory(prefix.isEmpty() ? StringView(".") : prefix.view(), context);
+                        if (derr.isError()) return Error::Ok; // unreadable: no matches
+                        for (;;) {
+                                auto [info, nerr] = dir.next();
+                                if (nerr.isError()) break;
+                                const StringView name = info.name;
+                                if (name == "." || name == ".." || (name.startsWith('.') && !dotOk)) continue;
+                                if (!Glob::match(component, name)) continue;
+                                if (!last && !info.isDirectory()) continue;
+                                if (!last && !dirOnly) {
+                                        err = subdirs.append(std::move(info.name));
+                                } else {
+                                        String path;
+                                        err = path.append(prefix);
+                                        if (err.isOk()) err = path.append(name);
+                                        if (err.isOk() && dirOnly) err = path.append('/');
+                                        if (err.isOk()) err = out.append(std::move(path));
+                                }
+                                if (err.isError()) return err;
+                        }
+                }
+                for (const String &name : subdirs) {
+                        err = prefix.append(name);
+                        if (err.isOk()) err = prefix.append('/');
+                        if (err.isOk()) err = walk(prefix, after, context, out);
+                        prefix.truncate(base);
+                        if (err.isError()) return err;
+                }
+                return Error::Ok;
+        }
+
+} // namespace
+
+Result<size_t> Glob::expandPaths(StringView pattern, const Vfs::Context &context, List<String> &out) {
+        const size_t first = out.size();
+        String       prefix;
+        Error        err;
+        if (pattern.startsWith('/')) {
+                err = prefix.append('/');
+                while (pattern.startsWith('/')) pattern = pattern.mid(1);
+        }
+        if (err.isOk()) err = walk(prefix, pattern, context, out);
+        if (err.isError()) {
+                while (out.size() > first) out.removeAt(out.size() - 1);
+                return makeError<size_t>(err);
+        }
+        sortNames(out, first);
+        return makeResult(out.size() - first);
+}
+
+bool Glob::nameLess(StringView a, StringView b) {
+        const size_t n = a.size() < b.size() ? a.size() : b.size();
+        for (size_t i = 0; i < n; ++i) {
+                char x = a[i], y = b[i];
+                if (x >= 'A' && x <= 'Z') x = static_cast<char>(x - 'A' + 'a');
+                if (y >= 'A' && y <= 'Z') y = static_cast<char>(y - 'A' + 'a');
+                if (x != y) return x < y;
+        }
+        if (a.size() != b.size()) return a.size() < b.size();
+        return a < b;
+}
+
+void Glob::sortNames(List<String> &list, size_t first) {
+        // Insertion sort: Strings only move, and expansions are short.
+        for (size_t i = first + 1; i < list.size(); ++i) {
+                String item = std::move(list[i]);
+                size_t j = i;
+                for (; j > first && nameLess(item, list[j - 1]); --j) list[j] = std::move(list[j - 1]);
+                list[j] = std::move(item);
+        }
+        return;
 }
 
 BMDS_NAMESPACE_END

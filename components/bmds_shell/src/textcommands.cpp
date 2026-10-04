@@ -11,6 +11,7 @@
  */
 
 #include <cstdint>
+#include <bmds/memory.h>
 #include <bmds/regex.h>
 #include <bmds/shell.h>
 #include <bmds/string.h>
@@ -22,10 +23,30 @@ namespace {
 
         using Args = Span<char *const>;
 
-        constexpr size_t ReadChunkBytes = 256;
+        // Inputs are read in big pieces, so a file's whole sectors go from
+        // the card straight into the buffer (one transfer each), as cp does.
+        constexpr size_t ReadBufferBytes = 32 * 1024;
 
-        // Files are read in bigger pieces than pipes.
-        constexpr size_t FileChunkBytes = 2048;
+        // A command's read buffer, in DMA-capable PSRAM.
+        class ReadBuffer {
+                public:
+                        ReadBuffer()
+                            : _data(static_cast<uint8_t *>(Memory::alloc(MemSpace::PsramDma, ReadBufferBytes))) {}
+                        ~ReadBuffer() { Memory::free(_data); }
+                        ReadBuffer(const ReadBuffer &) = delete;
+                        ReadBuffer &operator=(const ReadBuffer &) = delete;
+
+                        /** False if there was no memory (reported on stderr here). */
+                        bool check(CommandContext &ctx) const {
+                                if (_data == nullptr) ctx.eprintf("%s: out of memory\n", ctx.command().name);
+                                return _data != nullptr;
+                        }
+
+                        WritableByteSpan span() const { return WritableByteSpan(_data, ReadBufferBytes); }
+
+                private:
+                        uint8_t *_data;
+        };
 
         bool isSpace(char c) {
                 return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
@@ -34,7 +55,8 @@ namespace {
         // Reads an input a line at a time.
         class LineReader {
                 public:
-                        LineReader(CommandContext &ctx, CommandContext::Input &input) : _ctx(ctx), _input(input) {}
+                        LineReader(CommandContext &ctx, CommandContext::Input &input, WritableByteSpan buf)
+                            : _ctx(ctx), _input(input), _buf(buf) {}
 
                         /**
                          * Reads the next line into @p line, without its newline.
@@ -46,7 +68,7 @@ namespace {
                                 for (;;) {
                                         if (_pos == _len) {
                                                 if (_ctx.isInterrupted()) return Error::Interrupted;
-                                                auto [n, err] = _input.read(WritableByteSpan(_buf));
+                                                auto [n, err] = _input.read(_buf);
                                                 if (err == Error::EndOfFile || err == Error::BadDescriptor)
                                                         return any ? Error(Error::Ok) : Error(Error::EndOfFile);
                                                 if (err.isError()) return err;
@@ -54,7 +76,7 @@ namespace {
                                                 _len = n;
                                         }
                                         any = true;
-                                        const char  *start = reinterpret_cast<const char *>(_buf) + _pos;
+                                        const char  *start = reinterpret_cast<const char *>(_buf.data()) + _pos;
                                         const size_t avail = _len - _pos;
                                         size_t       n = 0;
                                         while (n < avail && start[n] != '\n') ++n;
@@ -71,7 +93,7 @@ namespace {
                 private:
                         CommandContext        &_ctx;
                         CommandContext::Input &_input;
-                        uint8_t                _buf[ReadChunkBytes];
+                        WritableByteSpan       _buf;
                         size_t                 _pos = 0;
                         size_t                 _len = 0;
         };
@@ -221,18 +243,19 @@ int TextCommands::echo(CommandContext &ctx) {
 }
 
 int TextCommands::cat(CommandContext &ctx) {
-        uint8_t    buf[FileChunkBytes];
+        ReadBuffer buffer;
+        if (!buffer.check(ctx)) return Shell::ExitFailure;
         Error      failed;
         const bool opened = forEachInput(ctx, ctx.args().mid(1), [&](StringView, CommandContext::Input &input) {
                 for (;;) {
                         if (ctx.isInterrupted()) return false;
-                        auto [n, err] = input.read(WritableByteSpan(buf));
+                        auto [n, err] = input.read(buffer.span());
                         if (err == Error::EndOfFile) return true;
                         if (err.isError()) {
                                 failed = err;
                                 return false;
                         }
-                        (void)ctx.write(FdTable::Stdout, ByteSpan(buf, n));
+                        (void)ctx.write(FdTable::Stdout, ByteSpan(buffer.span().data(), n));
                 }
         });
         if (failed.isError()) return readFailed(ctx, failed);
@@ -250,6 +273,8 @@ int TextCommands::head(CommandContext &ctx) {
                 ++i;
         }
         const Args files = args.mid(i);
+        ReadBuffer buffer;
+        if (!buffer.check(ctx)) return Shell::ExitFailure;
         String     line;
         Error      failed;
         bool       first = true;
@@ -258,7 +283,7 @@ int TextCommands::head(CommandContext &ctx) {
                 if (files.size() > 1)
                         ctx.printf("%s==> %.*s <==\n", first ? "" : "\n", static_cast<int>(name.size()), name.data());
                 first = false;
-                LineReader reader(ctx, input);
+                LineReader reader(ctx, input, buffer.span());
                 for (unsigned long n = 0; n < count; ++n) {
                         Error err = reader.next(line);
                         if (err == Error::EndOfFile) break;
@@ -306,13 +331,15 @@ int TextCommands::wc(CommandContext &ctx) {
         size_t           rowCount = 0;
         Counts           total;
         Error            failed;
-        uint8_t          buf[FileChunkBytes];
-        const bool       opened = forEachInput(ctx, files, [&](StringView name, CommandContext::Input &input) {
+        ReadBuffer       buffer;
+        if (!buffer.check(ctx)) return Shell::ExitFailure;
+        const uint8_t *buf = buffer.span().data();
+        const bool     opened = forEachInput(ctx, files, [&](StringView name, CommandContext::Input &input) {
                 Counts c;
                 bool   inWord = false;
                 for (;;) {
                         if (ctx.isInterrupted()) return false;
-                        auto [n, err] = input.read(WritableByteSpan(buf));
+                        auto [n, err] = input.read(buffer.span());
                         if (err == Error::EndOfFile) break;
                         if (err.isError()) {
                                 failed = err;
@@ -404,13 +431,15 @@ int TextCommands::grep(CommandContext &ctx) {
                 }
         }
 
+        ReadBuffer buffer;
+        if (!buffer.check(ctx)) return Shell::ExitFailure;
         String        line;
         unsigned long selected = 0;
         bool          quit = false;
         Error         failed;
         const bool    named = files.size() > 1; // GNU: "file:" before each line with several files
         const bool    opened = forEachInput(ctx, files, [&](StringView name, CommandContext::Input &input) {
-                LineReader    reader(ctx, input);
+                LineReader    reader(ctx, input, buffer.span());
                 unsigned long lineNo = 0;
                 unsigned long fileSelected = 0;
                 for (;;) {

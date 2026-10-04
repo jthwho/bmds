@@ -9,14 +9,19 @@
 #include <cstdint>
 #include <bmds/assert.h>
 #include <bmds/console.h>
+#include <bmds/glob.h>
 #include <bmds/parser.h>
 #include <bmds/shell.h>
+#include <bmds/vfs.h>
 
 BMDS_NAMESPACE_BEGIN
 
 namespace {
 
         constexpr char CtrlC = 0x03;
+
+        // Characters a completed file name escapes with a backslash.
+        constexpr StringView EscapedInNames = " \t'\"\\$`|&;()<>*?[]!{}";
 
         WorkerPool::Config workerConfig() {
                 WorkerPool::Config config;
@@ -201,7 +206,10 @@ void Shell::complete(StringView line, size_t wordStart, CompletionSink &sink) {
                         command = command || previous == w;
                 }
         }
-        if (!command) return; // file names come with storage (Phase 2)
+        if (!command || word.contains('/')) {
+                completePath(word, sink);
+                return;
+        }
         for (const Command &c : _commands) {
                 if (StringView(c.name).startsWith(word)) sink.add(c.name);
         }
@@ -212,6 +220,51 @@ void Shell::complete(StringView line, size_t wordStart, CompletionSink &sink) {
                                "then", "until", "while"}) {
                 if (StringView(k2).startsWith(word)) sink.add(k2);
         }
+        return;
+}
+
+// File names: the word's directory part as typed, then each matching name
+// (escaped), directories with a trailing '/'; sorted as ls sorts.
+void Shell::completePath(StringView word, CompletionSink &sink) {
+        const size_t     slash = word.lastIndexOf('/');
+        const StringView typedDir = slash == StringView::NPos ? StringView() : word.left(slash + 1);
+        String           dir;
+        String           prefix;
+        if (typedDir.startsWith("~/")) {
+                const String *home = _state.vars.value("HOME");
+                if (home != nullptr) (void)dir.append(*home);
+        }
+        const StringView dirRest = dir.isEmpty() ? typedDir : typedDir.mid(1);
+        const StringView nameRest = slash == StringView::NPos ? word : word.mid(slash + 1);
+        auto             unescape = [](StringView text, String &out) {
+                for (size_t i = 0; i < text.size(); ++i) {
+                        if (text[i] == '\\' && i + 1 < text.size()) ++i;
+                        (void)out.append(text[i]);
+                }
+        };
+        unescape(dirRest, dir);
+        unescape(nameRest, prefix);
+        auto [listing, err] = Vfs::openDirectory(dir.isEmpty() ? StringView(".") : dir.view(), _executor.vfs());
+        if (err.isError()) return;
+        List<String> candidates;
+        for (;;) {
+                auto [info, nerr] = listing.next();
+                if (nerr.isError()) break;
+                const StringView name = info.name;
+                if (name == "." || name == ".." || !name.startsWith(prefix)) continue;
+                if (name.startsWith('.') && !prefix.view().startsWith('.')) continue;
+                String candidate;
+                (void)candidate.append(typedDir);
+                for (char c : name) {
+                        if (EscapedInNames.contains(c)) (void)candidate.append('\\');
+                        (void)candidate.append(c);
+                }
+                if (info.isDirectory()) (void)candidate.append('/');
+                if (candidates.append(std::move(candidate)).isError()) break;
+        }
+        listing.close();
+        Glob::sortNames(candidates, 0);
+        for (const String &c : candidates) sink.add(c);
         return;
 }
 
@@ -306,6 +359,25 @@ int Shell::runScript(StringView source) {
                 _executor.clearFlow();
         }
         (void)status;
+        _executor.arena().reset();
+        return _state.lastStatus;
+}
+
+int Shell::sourceIfExists(StringView path) {
+        String script;
+        Error  err = _executor.readFile(path, script);
+        if (err == Error::NotExist || err == Error::NoMedia) return ExitSuccess;
+        if (err.isError()) {
+                _executor.report("%.*s: %s", static_cast<int>(path.size()), path.data(),
+                                 CommandContext::errorText(err));
+                return ExitFailure;
+        }
+        (void)_executor.runSourced(script, Span<char *const>());
+        if (_executor.flow() == Executor::Flow::Interrupt || _console.interrupt().isRaised()) {
+                endInterrupt();
+        } else {
+                _executor.clearFlow();
+        }
         _executor.arena().reset();
         return _state.lastStatus;
 }

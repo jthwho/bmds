@@ -145,9 +145,12 @@ class LineEditor {
                 /**
                  * @brief Enables Tab completion through @p completer (null: off).
                  *
-                 * Tab inserts what all candidates share; a single candidate is
-                 * completed and followed by a space; when nothing can be added,
-                 * the candidates are listed and the line reprinted.
+                 * The word ends at the cursor and starts after a blank or an
+                 * operator character that isn't escaped with `\`. Tab inserts
+                 * what all candidates share; a single candidate is completed and
+                 * followed by a space (none after a directory's `/`); when nothing
+                 * can be added, the candidates are listed (by what follows the
+                 * word's last `/`) and the line reprinted.
                  */
                 void setCompleter(LineCompleter *completer) {
                         _completer = completer;

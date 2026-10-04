@@ -16,6 +16,7 @@
 #include <bmds/console.h>
 #include <bmds/executor.h>
 #include <bmds/filecommands.h>
+#include <bmds/glob.h>
 #include <bmds/list.h>
 #include <bmds/memory.h>
 #include <bmds/shell.h>
@@ -87,25 +88,12 @@ namespace {
                 return normalized.error().isOk() ? std::move(normalized).value() : String();
         }
 
-        // Case-insensitive (ASCII), then bytewise: the order ls lists in.
-        bool nameLess(const String &a, const String &b) {
-                const size_t n = a.size() < b.size() ? a.size() : b.size();
-                for (size_t i = 0; i < n; ++i) {
-                        char x = a[i], y = b[i];
-                        if (x >= 'A' && x <= 'Z') x = static_cast<char>(x - 'A' + 'a');
-                        if (y >= 'A' && y <= 'Z') y = static_cast<char>(y - 'A' + 'a');
-                        if (x != y) return x < y;
-                }
-                if (a.size() != b.size()) return a.size() < b.size();
-                return a.view() < b.view();
-        }
-
         void sortByName(List<FileInfo> &entries) {
                 // Insertion sort: listings are short, and FileInfo only moves.
                 for (size_t i = 1; i < entries.size(); ++i) {
                         FileInfo item = std::move(entries[i]);
                         size_t   j = i;
-                        for (; j > 0 && nameLess(item.name, entries[j - 1].name); --j)
+                        for (; j > 0 && Glob::nameLess(item.name, entries[j - 1].name); --j)
                                 entries[j] = std::move(entries[j - 1]);
                         entries[j] = std::move(item);
                 }
