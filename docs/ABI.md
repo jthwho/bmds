@@ -4,7 +4,7 @@
 >
 > If a program that worked on an earlier BMDS release stops working on a later one, that is a BMDS bug. It doesn't matter whether the program relied on documented behavior, undocumented behavior, or a bug — if it shipped and programs depend on it, it stays.
 
-This document defines what "userspace" means in BMDS, the rules for evolving it, and how compliance is checked. The specifics of the ABI (calling mechanism, executable format, startup state) are still being designed; this policy applies from the moment the first user program runs.
+This document defines what "userspace" means in BMDS, the rules for evolving it, and how compliance is checked. The specifics of the ABI are designed in `devplan/programs.md`; this policy applies from the moment the first user program runs.
 
 ## What Counts as Userspace
 
@@ -36,11 +36,11 @@ Kernel internals — C++ classes, driver interfaces, internal headers under `com
 - **ABI lock tests** verify syscall slot numbers, struct sizes, and field offsets. These tests are append-only: a failing ABI test means the change is wrong, not the test.
 - A small corpus of **compatibility test programs** built against older SDK versions is kept and run against new kernels.
 
-## Open Design Questions
+## Design Decisions
 
-These will be resolved in `devplan/` before the first program runs:
+Resolved in [`devplan/programs.md`](../devplan/programs.md) (Phase 3):
 
-- **Call mechanism**: function-pointer table passed to the program's entry point vs. `ecall`-style trap. (A table is faster; a trap enables future privilege separation via PMP / U-mode.)
-- **Executable format**: relocatable ELF vs. position-independent ELF vs. a simple custom format produced from ELF at build time.
-- **Where code runs**: executing user code from PSRAM (via cache) vs. internal SRAM, and how much of each a program gets.
-- **C library**: what libc a program links against (newlib subset, picolibc, or our own) and whether it lives in the program or is provided by the kernel.
+- **Call mechanism**: a versioned function table whose address is passed to the program's entry point. Calls cost a few cycles; if a later chip allows user mode, the kernel can hand programs a table of `ecall` stubs without rebuilding them.
+- **Executable format**: static-PIE ELF (one contiguous image, only `R_RISCV_RELATIVE` relocations), identified by a BMDS ELF note. Commands are found as `name`, `name.elf` or `name.sh` on `$PATH`; files starting with `#!` are launched through their interpreter, and `.sh` files by the built-in `sh`.
+- **Where code runs**: from PSRAM through the caches (the internal heap is not executable with IDF's memory protection); measured as fast as flash or internal RAM once cached.
+- **C library**: picolibc, linked statically into each program over a small glue layer, so only the syscall table is ABI.
