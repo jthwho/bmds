@@ -506,9 +506,10 @@ if true; then
 done
 --- error 4: syntax error near unexpected token `done'
 
-=== bad for variable
+=== bad for variable is checked when the loop runs
 for 1x in a; do echo; done
---- error 1: `1x': not a valid identifier
+--- ok
+(for 1x (a) (cmd echo))
 
 === function body must be compound
 f() echo hi

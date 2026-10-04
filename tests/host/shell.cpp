@@ -82,13 +82,12 @@ namespace {
         };
 
         int run(Shell &shell, const char *line) {
-                std::string buf(line);
-                return shell.execute(buf.data());
+                return shell.execute(line);
         }
 
         struct Fixture {
                         explicit Fixture(Span<const bmds::Command> commands = Span<const bmds::Command>(Commands))
-                            : shell(std::make_unique<Shell>(con, commands)) {
+                            : shell(std::make_unique<Shell>(con, commands, 1 << 20)) {
                                 REQUIRE(shell->init().isOk());
                         }
 
@@ -125,8 +124,30 @@ TEST_CASE("Shell: commands") {
                 CHECK(shell.lastExitCode() == 42);
                 CHECK(f.out("   ", 42) == ""); // an empty line keeps the last code
                 CHECK(f.out("missing arg", Shell::ExitNotFound) == "missing: command not found\n");
-                CHECK(f.out("echo \"open", Shell::ExitUsage) == "unterminated quote\n");
                 CHECK(f.out("strict x", Shell::ExitUsage) == "usage: strict\n");
+                CHECK(f.out("fi", Shell::ExitUsage) == "syntax error near unexpected token `fi'\n");
+        }
+
+        SUBCASE("an incomplete command continues on the next line") {
+                CHECK(f.out("args \"open", Shell::ExitSuccess) == "");
+                CHECK(shell.isContinuing());
+                CHECK(f.out("quote\"") == "open\nquote\n");
+                CHECK_FALSE(shell.isContinuing());
+                CHECK(f.out("args a |") == "");
+                CHECK(f.out("cat") == "a\n");
+                CHECK(f.out("cat <<END") == "");
+                CHECK(f.out("doc $((1+2))") == "");
+                CHECK(f.out("END") == "doc 3\n");
+        }
+
+        SUBCASE("the prompt shows PS2 while continuing; Ctrl-C abandons the command") {
+                shell.start();
+                CHECK(f.con.take() == "bmds> ");
+                for (char c : std::string("if true\r")) shell.feed(c);
+                CHECK(f.con.take() == "if true\n> ");
+                for (char c : std::string("x\x03")) shell.feed(c);
+                CHECK(f.con.take() == "x^C\nbmds> ");
+                CHECK_FALSE(shell.isContinuing());
         }
 
         SUBCASE("interactive: prompt, edit, run, prompt") {
@@ -169,7 +190,8 @@ TEST_CASE("Shell: pipelines") {
         }
 
         SUBCASE("stages that can't start don't block their neighbors") {
-                CHECK(f.out("missing | echo x") == "missing: command not found\nx\n");
+                const std::string both = f.out("missing | echo x"); // the stages race to the console
+                CHECK((both == "missing: command not found\nx\n" || both == "x\nmissing: command not found\n"));
                 CHECK(f.out("echo x | missing", Shell::ExitNotFound) == "missing: command not found\n");
                 CHECK(f.out("yes | missing | cat") == "missing: command not found\n");
         }
@@ -211,18 +233,14 @@ TEST_CASE("Shell: redirections") {
                 CHECK(f.out("echo hi > out.txt", Shell::ExitFailure) == "out.txt: No such file or directory\n");
                 CHECK(f.out("echo hi 3>&5", Shell::ExitFailure) == "5: Bad file descriptor\n");
                 CHECK(f.out("echo hi 99>&1", Shell::ExitFailure) == "99: Bad file descriptor\n");
-                CHECK(f.out("echo hi <&x", Shell::ExitUsage) == "ambiguous redirect `x'\n");
+                CHECK(f.out("echo hi <&x", Shell::ExitFailure) == "x: ambiguous redirect\n");
         }
 
         SUBCASE("syntax errors") {
                 CHECK(f.out("| cat", Shell::ExitUsage) == "syntax error near unexpected token `|'\n");
-                CHECK(f.out("echo |", Shell::ExitUsage) == "syntax error near unexpected token `newline'\n");
                 CHECK(f.out("echo >", Shell::ExitUsage) == "syntax error near unexpected token `newline'\n");
                 CHECK(f.out("echo > | cat", Shell::ExitUsage) == "syntax error near unexpected token `|'\n");
-                CHECK(f.out("a ; b", Shell::ExitUsage) == "unsupported operator `;'\n");
-                CHECK(f.out("a && b", Shell::ExitUsage) == "unsupported operator `&&'\n");
-                CHECK(f.out("a &", Shell::ExitUsage) == "unsupported operator `&'\n");
-                CHECK(f.out("cat << EOF", Shell::ExitUsage) == "unsupported operator `<<'\n");
+                CHECK(f.out("a &", Shell::ExitUsage) == "background jobs (&) are not supported\n");
         }
 }
 
@@ -234,9 +252,9 @@ TEST_CASE("Shell: Ctrl-C") {
                 CHECK_FALSE(f.con.interrupt().isRaised());
         }
 
-        SUBCASE("a Ctrl-C typed after the line still interrupts the command") {
+        SUBCASE("a Ctrl-C typed after the line stops the command before it starts") {
                 f.con.interrupt().raise();
-                CHECK(f.out("echo hi", Shell::ExitInterrupted) == "hi\n^C\n");
+                CHECK(f.out("echo hi", Shell::ExitInterrupted) == "^C\n");
                 CHECK(f.out("echo hi") == "hi\n");
         }
 }

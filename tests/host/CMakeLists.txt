@@ -25,14 +25,15 @@ add_executable(bmds_host_tests
         error.cpp
         fdtable.cpp
         interrupt.cpp
+        language.cpp
         lineeditor.cpp
         list.cpp
         memorystream.cpp
         memspace.cpp
-        parse.cpp
         pipe.cpp
         regex.cpp
         result.cpp
+        run.cpp
         shell.cpp
         span.cpp
         staticobject.cpp

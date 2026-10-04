@@ -1,0 +1,704 @@
+# Shell execution corpus: each entry is a script, the stdout it must print and
+# its exit status. check_bash.py runs every entry through bash too, so this file
+# records what bash does; the host tests check that BMDS does the same.
+#
+#   === name
+#   <script lines>
+#   --- out
+#   <expected stdout lines; none for no output>
+#   --- status N            (optional; default 0)
+#
+# Only stdout and the status are compared (error messages go to stderr and are
+# worded per shell). Scripts use only commands both shells have.
+
+=== echo and quoting
+echo hello   world
+echo 'single  $x' "double  quoted"
+echo a\ b "c\"d" 'e'"f"g
+--- out
+hello world
+single  $x double  quoted
+a b c"d efg
+
+=== variables
+x=hello
+y="$x world"
+echo $x "$y" ${x}s
+--- out
+hello hello world hellos
+
+=== unset and empty
+x=
+echo "[$x]" "[${x-unset}]" "[${x:-empty}]" "[${nope-unset}]"
+unset x
+echo "[${x-unset}]"
+--- out
+[] [] [empty] [unset]
+[unset]
+
+=== field splitting
+v="a  b   c"
+for w in $v; do echo "<$w>"; done
+for w in "$v"; do echo "<$w>"; done
+--- out
+<a>
+<b>
+<c>
+<a  b   c>
+
+=== custom IFS
+IFS=:
+v="a:b::c"
+for w in $v; do echo "<$w>"; done
+--- out
+<a>
+<b>
+<>
+<c>
+
+=== empty expansions vanish unless quoted
+e=
+set -- $e "" x
+echo $#
+--- out
+2
+
+=== parameter operations
+p=/usr/local/lib/libc.so.6
+echo ${p#*/} ${p##*/} ${p%.*} ${p%%.*} ${#p}
+--- out
+usr/local/lib/libc.so.6 libc.so.6 /usr/local/lib/libc.so /usr/local/lib/libc 24
+
+=== default assign alternative
+unset a
+echo ${a:=set} $a ${a:+alt} ${b:+alt}x
+--- out
+set set alt x
+
+=== quoted patterns are literal
+v='a*b'
+echo "${v#a\*}" "${v#"a*"}" "${v#a*}"
+--- out
+b b *b
+
+=== positional parameters
+set -- one "two words" three
+echo $# "$1" "$2"
+for a in "$@"; do echo "[$a]"; done
+for a in "$*"; do echo "[$a]"; done
+shift
+echo $# "$1"
+--- out
+3 one two words
+[one]
+[two words]
+[three]
+[one two words three]
+2 two words
+
+=== quoted at with no parameters
+set --
+for a in "$@"; do echo never; done
+echo "[$@]" done
+--- out
+[] done
+
+=== command substitution
+x=$(echo inner)
+echo "got $x" $(echo a; echo b)
+echo "$(printf_missing 2>/dev/null; echo ok)"
+--- out
+got inner a b
+ok
+
+=== command substitution strips trailing newlines
+x="$(echo a; echo; echo)"
+echo "[$x]"
+--- out
+[a]
+
+=== nested command substitution
+echo $(echo $(echo deep))
+--- out
+deep
+
+=== substitution runs in a subshell
+x=1
+y=$(x=2; echo $x)
+echo $x $y
+--- out
+1 2
+
+=== arithmetic
+echo $((1 + 2 * 3)) $(( (1+2) * 3 )) $((7 / 2)) $((7 % 3)) $((2 ** 10)) $((-7 / 2))
+echo $((1 << 4)) $((0xff)) $((010)) $((2#101)) $((5 > 3)) $((!0)) $((~0))
+--- out
+7 9 3 1 1024 -3
+16 255 8 5 1 1 -1
+
+=== arithmetic variables and assignment
+i=5
+echo $((i * 2)) $((i += 3)) $i $((i++)) $i $((--i))
+--- out
+10 8 8 8 9 8
+
+=== arithmetic short circuit and ternary
+x=0
+echo $((1 || (x = 5))) $x $((0 && (x = 6))) $x $((x ? 10 : 20))
+--- out
+1 0 0 0 20
+
+=== arithmetic is 64-bit and wraps
+echo $((2147483647 + 1)) $((65536 * 65536)) $((9223372036854775807 + 1))
+--- out
+2147483648 4294967296 -9223372036854775808
+
+=== arithmetic command
+(( 3 > 2 )) && echo yes
+(( 0 )) || echo zero-is-false
+x=4; (( x *= 2 )); echo $x
+--- out
+yes
+zero-is-false
+8
+
+=== and or not
+true && echo a
+false && echo b
+false || echo c
+! false && echo d
+true || echo e
+--- out
+a
+c
+d
+
+=== status variable
+false; echo $?
+true; echo $?
+! true; echo $?
+--- out
+1
+0
+1
+
+=== if elif else
+for n in 1 2 3; do
+  if [ $n -eq 1 ]; then echo one
+  elif [ $n = 2 ]; then echo two
+  else echo many
+  fi
+done
+--- out
+one
+two
+many
+
+=== while and until
+i=0
+while [ $i -lt 3 ]; do echo w$i; i=$((i+1)); done
+until [ $i -eq 0 ]; do echo u$i; i=$((i-1)); done
+--- out
+w0
+w1
+w2
+u3
+u2
+u1
+
+=== for with arithmetic
+for ((i = 0; i < 3; i++)); do echo $i; done
+--- out
+0
+1
+2
+
+=== break and continue
+for i in 1 2 3 4 5; do
+  [ $i = 2 ] && continue
+  [ $i = 4 ] && break
+  echo $i
+done
+--- out
+1
+3
+
+=== break out of nested loops
+for a in 1 2; do
+  for b in x y; do
+    [ $b = y ] && continue 2
+    [ $a = 2 ] && break 2
+    echo $a$b
+  done
+done
+echo end
+--- out
+1x
+end
+
+=== case
+for f in main.c lib.h README notes.txt; do
+  case $f in
+    *.c|*.h) echo "source $f" ;;
+    README) echo readme ;;
+    *) echo "other $f" ;;
+  esac
+done
+--- out
+source main.c
+source lib.h
+readme
+other notes.txt
+
+=== case pattern classes and quoting
+for v in a1 b? '*'; do
+  case $v in
+    [a-c][0-9]) echo digit ;;
+    'b?') echo literal ;;
+    "*") echo star ;;
+  esac
+done
+--- out
+digit
+literal
+star
+
+=== functions
+greet() {
+  echo "hello $1, you passed $# args"
+}
+greet world a b
+greet "two words"
+--- out
+hello world, you passed 3 args
+hello two words, you passed 1 args
+
+=== function return status
+check() { [ "$1" = yes ] && return 0; return 3; }
+check yes; echo $?
+check no; echo $?
+--- out
+0
+3
+
+=== local variables
+x=global
+f() { local x=inside; echo $x; g; }
+g() { echo "g sees $x"; }
+f
+echo $x
+--- out
+inside
+g sees inside
+global
+
+=== recursion
+fact() {
+  if [ $1 -le 1 ]; then echo 1; return; fi
+  echo $(( $1 * $(fact $(( $1 - 1 ))) ))
+}
+fact 10
+--- out
+3628800
+
+=== positional parameters restored after a call
+set -- outer
+f() { echo "in: $1"; }
+f inner
+echo "out: $1"
+--- out
+in: inner
+out: outer
+
+=== subshell isolation
+x=1
+(x=2; echo in $x)
+echo out $x
+--- out
+in 2
+out 1
+
+=== group shares the shell
+x=1
+{ x=2; echo in $x; }
+echo out $x
+--- out
+in 2
+out 2
+
+=== pipeline stages are subshells except the last
+x=1
+echo hi | x=2
+echo $x
+x=1
+x=3 | cat
+echo $x
+--- out
+2
+1
+
+=== pipeline output
+echo -e 'b\na\nc' | grep -v b | wc -l
+--- out
+2
+
+=== exit status of a pipeline
+true | false; echo $?
+false | true; echo $?
+--- out
+1
+0
+
+=== here-document
+name=world
+cat <<EOF
+hello $name
+  $((1 + 1)) \$literal
+EOF
+cat <<'EOF'
+no $expansion
+EOF
+--- out
+hello world
+  2 $literal
+no $expansion
+
+=== here-string
+cat <<< "one $((2)) three"
+--- out
+one 2 three
+
+=== redirect to /dev/null
+echo hidden > /dev/null
+echo shown
+{ echo a; echo b; } > /dev/null
+echo end
+--- out
+shown
+end
+
+=== assignment prefix is temporary
+x=outer
+f() { echo "f: $x"; }
+x=temp f
+echo "after: $x"
+--- out
+f: temp
+after: outer
+
+=== eval
+cmd='echo evaluated $((6 * 7))'
+eval "$cmd"
+eval 'x=5'; echo $x
+--- out
+evaluated 42
+5
+
+=== set -e
+set -e
+echo before
+false || echo handled
+if false; then :; fi
+false
+echo never
+--- out
+before
+handled
+--- status 1
+
+=== unset parameter error
+echo start
+echo ${missing:?is required}
+echo never
+--- out
+start
+--- status 127
+
+=== bad for variable is a run-time error
+for 1x in a; do echo never; done
+echo after $?
+--- out
+after 1
+
+=== readonly assignment abandons the command
+readonly r=1
+r=2; echo same-line
+echo next-line $r
+--- out
+next-line 1
+
+=== arithmetic error abandons the command, even inside a function
+f() { echo $((1 / 0)); echo in-f; }
+f; echo same-line
+echo next-line
+x=$(echo $((1 / 0)); echo sub-after)
+echo "got [$x]"
+--- out
+next-line
+got []
+
+=== set -u
+set -u
+echo start
+echo ${unset_var-default}
+echo $unset_var
+echo never
+--- out
+start
+default
+--- status 127
+
+=== exit with status
+echo one
+exit 3
+echo never
+--- out
+one
+--- status 3
+
+=== exit in a subshell
+(exit 4); echo $?
+echo still here
+--- out
+4
+still here
+
+=== test operators
+[ -z "" ] && echo z
+[ -n "x" ] && echo n
+[ abc = abc ] && echo eq
+[ abc != abd ] && echo ne
+[ 10 -gt 9 ] && echo gt
+[ ! 1 -eq 2 ] && echo not
+[ a = a -a b = b ] && echo and
+[ a = b -o b = b ] && echo or
+test 3 -le 3 && echo le
+[ "" ] || echo empty-false
+--- out
+z
+n
+eq
+ne
+gt
+not
+and
+or
+le
+empty-false
+
+=== shift and set
+set -- a b c d
+shift 2
+echo "$@"
+set -- x
+echo $# $1
+--- out
+c d
+1 x
+
+=== readonly
+readonly r=1
+echo $r
+--- out
+1
+
+=== unset function
+f() { echo f; }
+f
+unset -f f
+f 2>/dev/null || echo gone
+--- out
+f
+gone
+
+=== a long loop
+i=0
+while [ $i -lt 1000 ]; do i=$((i+1)); done
+echo $i
+--- out
+1000
+
+=== nested functions and loops
+outer() {
+  for i in 1 2; do
+    inner $i
+  done
+}
+inner() { local j; for j in a b; do echo "$1$j"; done; }
+outer
+--- out
+1a
+1b
+2a
+2b
+
+=== return inside a loop inside a function
+f() {
+  for i in 1 2 3; do
+    [ $i = 2 ] && return 7
+    echo $i
+  done
+}
+f; echo "status $?"
+--- out
+1
+status 7
+
+=== syntax error stops the script
+echo before
+if then
+echo after
+--- out
+before
+--- status 2
+
+=== quotes inside command substitution
+echo "$(echo "a   b")" $(echo "c   d")
+--- out
+a   b c d
+
+=== unquoted at splits each parameter
+set -- "a b" c
+for w in $@; do echo "<$w>"; done
+--- out
+<a>
+<b>
+<c>
+
+=== star joins with the first IFS character
+set -- a b c
+IFS=-
+echo "$*"
+--- out
+a-b-c
+
+=== a variable as a case pattern
+pat='a*'
+case abc in $pat) echo pattern ;; esac
+case abc in "$pat") echo literal ;; *) echo no-literal ;; esac
+--- out
+pattern
+no-literal
+
+=== substitution status
+x=$(false); echo $?
+x=$(true); echo $?
+--- out
+1
+0
+
+=== function with a redirection
+f() { echo inner; } > /dev/null
+f
+echo done
+--- out
+done
+
+=== local without a value
+x=global
+f() { local x; echo "[${x-unset}]"; x=set; echo "[$x]"; }
+f
+echo "[$x]"
+--- out
+[unset]
+[set]
+[global]
+
+=== assignments happen left to right
+x=1 y=$x
+echo $y
+--- out
+1
+
+=== arithmetic evaluates variable values
+e="2 + 3"
+echo $((e * 2)) $(( e ))
+--- out
+10 5
+
+=== default with a command substitution
+echo "${unset_thing:-$(echo computed)}"
+--- out
+computed
+
+=== exit inside a function ends the script
+f() { echo in-f; exit 5; echo never; }
+f
+echo never
+--- out
+in-f
+--- status 5
+
+=== shift past the end fails
+set -- a
+shift 2; echo $?
+echo $#
+--- out
+1
+1
+
+=== functions defining functions
+outer() { inner() { echo inner-defined; }; }
+outer
+inner
+--- out
+inner-defined
+
+=== test with parentheses and negation
+[ \( a = a \) -a ! b = c ] && echo ok
+[ ! -n "" ] && echo empty
+--- out
+ok
+empty
+
+=== errexit ignores conditions and lists
+set -e
+false && echo no
+if ! false; then echo negated; fi
+while false; do :; done
+echo survived
+false
+echo never
+--- out
+negated
+survived
+--- status 1
+
+=== here-document with tab stripping
+cat <<-EOF
+	indented $((1+1))
+		twice
+	EOF
+--- out
+indented 2
+twice
+
+=== loops over command substitution output
+for i in $(echo 1 2 3); do echo -n "$i,"; done
+echo
+--- out
+1,2,3,
+
+=== continue in until
+i=0
+until [ $i -ge 5 ]; do
+  i=$((i + 1))
+  [ $((i % 2)) -eq 0 ] && continue
+  echo $i
+done
+--- out
+1
+3
+5
+
+=== nested subshells and status
+(exit 3) || (echo "status $?"; exit 4)
+echo "final $?"
+--- out
+status 3
+final 4
+
+=== deeply nested braces and lists
+{ { echo a; { echo b; }; }; echo c; } | wc -l
+--- out
+3

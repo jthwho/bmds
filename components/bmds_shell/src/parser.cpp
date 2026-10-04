@@ -17,7 +17,6 @@ namespace {
 
         constexpr const char *UnexpectedToken = "syntax error near unexpected token `%.*s'";
         constexpr const char *BadSubstitution = "%.*s: bad substitution";
-        constexpr const char *NotIdentifier = "`%.*s': not a valid identifier";
 
         enum class Tok : uint8_t {
                 Error, // lexing failed; the status says why
@@ -191,6 +190,17 @@ namespace {
                                         h.delimiter = StringView(buf, n);
                                 }
                                 return Error::Ok;
+                        }
+
+                        // The whole input as here-document-style quoted text.
+                        Error lexQuotedText(Word *&out) {
+                                Word *w = _arena.create<Word>();
+                                if (w == nullptr) return Error::NoMem;
+                                w->hasQuotes = true;
+                                WordPart *tail = nullptr;
+                                Error     err = lexQuotedContent(w, tail, false);
+                                out = w;
+                                return err;
                         }
 
                         Error fail(const char *format, StringView token) {
@@ -527,7 +537,10 @@ namespace {
                                         default: return badSubstitution(start);
                                 }
                                 _pos = i + 1;
-                                return lexParamWord(part->arg, quoted);
+                                // A pattern isn't quoted by double quotes around the
+                                // expansion, only by quotes inside it (as in bash).
+                                const bool pattern = part->op >= ParamOp::RemoveSmallestPrefix;
+                                return lexParamWord(part->arg, pattern ? false : quoted);
                         }
 
                         Error badSubstitution(size_t start) {
@@ -1287,8 +1300,8 @@ class ParserImpl {
                         const Token &t = peek(true);
                         if (t.kind == Tok::ArithCmd) return parseArithFor();
                         if (t.kind != Tok::Word) return unexpected(t);
-                        const StringView name = plainText(t.word);
-                        if (!isValidName(name)) return fail(NotIdentifier, t.text, t.start);
+                        // The name is checked when the loop runs, as bash does.
+                        const StringView name = plainText(t.word).isEmpty() ? t.text : plainText(t.word);
                         (void)take();
                         ForNode *n = make<ForNode>();
                         if (n == nullptr) return nullptr;
@@ -1417,6 +1430,18 @@ class ParserImpl {
 };
 
 Parser::Parser(StringView source, Arena &arena) : _source(source), _arena(arena) {}
+
+Result<Word *> parseQuotedText(StringView text, Arena &arena, SyntaxError &error) {
+        error = SyntaxError();
+        Lexer lexer(text, 0, arena, error);
+        Word *word = nullptr;
+        Error err = lexer.lexQuotedText(word);
+        if (err == Error::NotReady) {
+                error.format = "unexpected end of expression";
+                err = Error::Invalid;
+        }
+        return Result<Word *>(word, err);
+}
 
 Error appendSyntaxError(const SyntaxError &error, String &out) {
         if (error.format == nullptr) return out.append("syntax error");

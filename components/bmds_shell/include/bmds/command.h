@@ -40,6 +40,7 @@
 BMDS_NAMESPACE_BEGIN
 
 class CommandContext;
+class Executor;
 class Shell;
 
 /**
@@ -85,10 +86,12 @@ class CommandContext {
                  * @param shell   The shell running the command.
                  * @param command The command.
                  * @param args    Its arguments; `args[0]` is the name.
-                 * @param fds     Its file descriptors.
+                 * @param fds      Its file descriptors.
+                 * @param executor The interpreter running it (variables, control flow).
                  */
-                CommandContext(Shell &shell, const Command &command, Span<char *const> args, FdTable &fds)
-                    : _shell(shell), _command(command), _args(args), _fds(fds) {}
+                CommandContext(Shell &shell, const Command &command, Span<char *const> args, FdTable &fds,
+                               Executor *executor)
+                    : _shell(shell), _command(command), _args(args), _fds(fds), _executor(executor) {}
 
                 CommandContext(const CommandContext &) = delete;
                 CommandContext &operator=(const CommandContext &) = delete;
@@ -104,6 +107,14 @@ class CommandContext {
 
                 /** @brief Returns the file descriptors. */
                 FdTable &fds() { return _fds; }
+
+                /**
+                 * @brief Returns the interpreter running the command.
+                 *
+                 * Language built-ins (`set`, `export`, `return`...) work on its
+                 * state and control flow.
+                 */
+                Executor &executor() { return *_executor; }
 
                 /**
                  * @brief Reads from stdin, waiting for input.
@@ -148,6 +159,7 @@ class CommandContext {
                 const Command    &_command;
                 Span<char *const> _args;
                 FdTable          &_fds;
+                Executor         *_executor;
                 bool              _outputBroken = false;
 };
 
@@ -175,3 +187,13 @@ BMDS_NAMESPACE_END
 #define BMDS_SHELL_COMMAND(Name, Fn, Usage, Help)                                                                      \
         [[gnu::used, gnu::section(".bmds_cmd." #Name)]] constexpr ::bmds::Command bmdsShellCommand_##Name = {          \
                 #Name, Usage, Help, Fn};
+
+/**
+ * @def BMDS_SHELL_COMMAND_AS
+ * @brief Registers a command whose name isn't an identifier (`:`, `[`, `.`).
+ * @param Id   An identifier for the object.
+ * @param Name The name, a string literal.
+ */
+#define BMDS_SHELL_COMMAND_AS(Id, Name, Fn, Usage, Help)                                                               \
+        [[gnu::used, gnu::section(".bmds_cmd." Name)]] constexpr ::bmds::Command bmdsShellCommand_##Id = {Name, Usage, \
+                                                                                                          Help, Fn};

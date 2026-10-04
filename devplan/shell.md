@@ -196,7 +196,7 @@ Echo uses relative cursor movement (`ESC[nD`, `ESC[nC`, `ESC[K`), so the editor 
   - Ctrl-C interrupts a running command (Phase 1b; see [`shell-language.md`](shell-language.md)): the command sees `isInterrupted()`, the shell echoes `^C`, and the exit code is 130.
 - **Output:** `printf` formats into a 256-byte stack buffer; longer output is truncated, so commands print line by line. The write timeout is 100 ms; a stalled console fails fast, as described above.
 - **Instances:** `Shell::spawn()` allocates the `Shell` (about 1.7 KB) in `Psram` and starts a `Task` running `run()`:
-  - stack: `CONFIG_BMDS_SHELL_STACK_BYTES` (4 KB), `Internal`. The deepest use measured so far is 2,036 bytes, by `tasks`/`log show`;
+  - stack: `CONFIG_BMDS_SHELL_STACK_BYTES` (64 KB since Phase 1b step 5a), `Psram` (Phase 1: 4 KB `Internal`; the deepest use then was 2,036 bytes, by `tasks`/`log show`);
   - priority: `CONFIG_BMDS_SHELL_PRIORITY` (2);
   - core: none (no affinity).
 
@@ -226,7 +226,9 @@ Text built-ins (Phase 1b, `textcommands.cpp`). They read stdin and follow the GN
 | `wc [-lwc]` | Lines, words, bytes; one count bare, several padded to 7 columns (GNU). |
 | `grep [-civnqF] pattern` | Matching lines; `-c` count, `-n` `N:` prefix, `-q` status only. Exit 0 = selected, 1 = none, 2 = error. Patterns are a POSIX BRE subset (`bmds/regex.h`); unsupported syntax (`\(`, `\{`, `[:class:]`, GNU `\|`) is an error, not a literal, so it can be added later without changing any pattern's meaning. `-e`/`-E` are not there yet. |
 
-Command line syntax (Phase 1b step 3; the full language is step 4/5): `a | b`, `a |& b`, and redirections `<`, `>`, `>>`, `>|`, `n>&m`, `n<&m`, `n>&-`, `&>`, `&>>`, `>&file`, applied left to right as in bash. The only file until storage is `/dev/null`. `;`, `&&`, `||`, `&` and `<<` are rejected ("unsupported operator").
+Language built-ins (Phase 1b step 5a): `:` `true` `false` `test`/`[` `break` `continue` `return` `exit` `eval` `set` `shift` `export` `readonly` `unset` `local`, behaving as bash's (see `shell-language.md`). `exit` at the prompt ends the input; the console shell stays.
+
+Command line syntax (Phase 1b step 3; superseded by the full language in step 5a, see `shell-language.md`): `a | b`, `a |& b`, and redirections `<`, `>`, `>>`, `>|`, `n>&m`, `n<&m`, `n>&-`, `&>`, `&>>`, `>&file`, applied left to right as in bash. The only file until storage is `/dev/null`. `;`, `&&`, `||`, `&` and `<<` are rejected ("unsupported operator").
 
 ## 4. IDF usage
 

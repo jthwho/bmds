@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
-"""Checks tests/host/corpus/syntax.txt against real bash.
+"""Checks the shell corpora (syntax.txt, run.txt) against real bash.
 
 Every `ok` entry must pass `bash -n`; every `error` entry must fail it on the
 same line with the same message. `incomplete` and `unsupported` entries are
 not checked (bash -n reads a whole file, so it has no "need more input").
+Every run.txt script must print the same stdout and exit with the same status
+under `bash -c`.
 """
 import pathlib
 import subprocess
 import sys
+import tempfile
 
 
 def entries(path):
+    return list(_entries(path))  # fully read: entries are filled in after they start
+
+
+def _entries(path):
     entry = None
     for line in path.read_text().splitlines():
         if line.startswith("=== "):
@@ -28,9 +35,48 @@ def entries(path):
                 entry["input"] += line + "\n"
 
 
-def main():
-    corpus = pathlib.Path(sys.argv[1]) / "syntax.txt"
+def run_entries(path):
+    return list(_run_entries(path))  # fully read: entries are filled in after they start
+
+
+def _run_entries(path):
+    entry = None
+    state = None
+    for line in path.read_text().splitlines():
+        if line.startswith("=== "):
+            entry = {"name": line[4:], "script": "", "out": "", "status": 0}
+            state = "script"
+            yield entry
+        elif entry is None:
+            continue
+        elif line == "--- out":
+            state = "out"
+        elif state == "out" and line.startswith("--- status "):
+            entry["status"] = int(line[11:])
+            state = None
+        elif state == "script":
+            entry["script"] += line + "\n"
+        elif state == "out" and line:
+            entry["out"] += line + "\n"
+
+
+def check_runs(corpus_dir):
     failures = 0
+    with tempfile.TemporaryDirectory() as empty:  # nothing for a stray glob to match
+        for e in run_entries(corpus_dir / "run.txt"):
+            # lastpipe: the last pipeline stage runs in the shell, as in BMDS.
+            r = subprocess.run(["bash", "--norc", "--noprofile", "-O", "lastpipe", "-c", e["script"]], cwd=empty,
+                               text=True, capture_output=True)
+            if r.stdout != e["out"] or r.returncode != e["status"]:
+                failures += 1
+                print(f"FAIL run '{e['name']}': bash printed {r.stdout!r} with status {r.returncode}")
+    return failures
+
+
+def main():
+    corpus_dir = pathlib.Path(sys.argv[1])
+    corpus = corpus_dir / "syntax.txt"
+    failures = check_runs(corpus_dir)
     for e in entries(corpus):
         if e["outcome"] not in ("ok", "error"):
             continue

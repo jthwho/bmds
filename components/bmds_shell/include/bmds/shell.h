@@ -14,37 +14,38 @@
 #include <bmds/command.h>
 #include <bmds/config.h>
 #include <bmds/error.h>
+#include <bmds/executor.h>
 #include <bmds/fdtable.h>
 #include <bmds/interrupt.h>
 #include <bmds/lineeditor.h>
 #include <bmds/span.h>
+#include <bmds/string.h>
 #include <bmds/stringview.h>
 #include <bmds/workerpool.h>
 
 BMDS_NAMESPACE_BEGIN
 
 class Console;
-struct Pipeline;
 
 /**
  * @brief A command shell running on a console.
  *
  * The owner feeds input bytes (or calls `run()`, which reads the console
- * forever). Each completed line is parsed into a pipeline (see
- * `parsePipeline()`) and run:
+ * forever). Completed lines are collected until they form complete
+ * commands (`PS2` prompts for the rest), which the `Executor` runs one at a
+ * time: the shell language of devplan/shell-language.md, with commands
+ * looked up as functions, then in the command table.
  *
- * - Every stage gets a copy of the shell's file descriptors (0, 1 and 2 on
- *   the console), then its pipes, then its redirections, left to right.
- * - The stages run concurrently. The last runs on the shell's own task;
- *   the others on worker threads from a pool (PSRAM stacks). The exit code
- *   is the last stage's.
- * - Ctrl-C (the console's interrupt) stops blocked pipes and is seen by
- *   commands through `CommandContext::isInterrupted()`. An interrupted
- *   line exits with `ExitInterrupted` and the shell echoes `^C`.
+ * - Pipelines run concurrently: the last stage on the shell's task, the
+ *   others on worker threads (PSRAM stacks), each over a copy of the state.
+ * - Ctrl-C (the console's interrupt) stops blocked pipes and running
+ *   commands; the shell echoes `^C` and the exit status is 130.
+ * - `exit` at the prompt ends the running input and sets `$?`; the console
+ *   shell itself keeps running.
  *
  * @par Thread Safety
  * Thread-affine: one task runs the shell. Pipeline stages on worker
- * threads use only the command table and the console.
+ * threads use their own state copy, the command table and the console.
  */
 class Shell {
         public:
@@ -55,7 +56,7 @@ class Shell {
 #if defined(CONFIG_BMDS_SHELL_WORKER_STACK_BYTES)
                 static constexpr size_t WorkerStackBytes = CONFIG_BMDS_SHELL_WORKER_STACK_BYTES;
 #else
-                static constexpr size_t WorkerStackBytes = 8192;
+                static constexpr size_t WorkerStackBytes = 32768;
 #endif
 
                 /** @brief Priority of pipeline worker threads (the shell's own). */
@@ -81,8 +82,8 @@ class Shell {
                 /**
                  * @brief Starts a shell on @p console in its own task.
                  *
-                 * Target only. The shell is allocated from `Psram` and runs
-                 * until reboot.
+                 * Target only. The shell and its stack are allocated from
+                 * `Psram` and run until reboot.
                  * @param console The console to run on.
                  * @param name    Task name.
                  * @return `Ok`, or `NoMem`.
@@ -94,16 +95,18 @@ class Shell {
 
                 /**
                  * @brief Constructs a shell; call `init()` before use.
-                 * @param console  The console to run on.
-                 * @param commands The command table, sorted by name (asserted).
+                 * @param console    The console to run on.
+                 * @param commands   The command table, sorted by name (asserted).
+                 * @param stackBytes Stack of the task that will run it (recursion budget).
                  */
-                Shell(Console &console, Span<const Command> commands);
+                Shell(Console &console, Span<const Command> commands, size_t stackBytes);
 
                 Shell(const Shell &) = delete;
                 Shell &operator=(const Shell &) = delete;
 
                 /**
-                 * @brief Opens stdin, stdout and stderr on the console.
+                 * @brief Opens stdin, stdout and stderr on the console and sets the
+                 *        initial variables (`PS1`, `PS2`, `IFS`).
                  * @return `Ok`, or `NoMem`.
                  */
                 Error init();
@@ -120,20 +123,35 @@ class Shell {
                 /** @brief Returns the shell's own file descriptors (what commands start from). */
                 FdTable &fds() { return _fds; }
 
-                /** @brief Returns the exit code of the last command line run. */
-                int lastExitCode() const { return _lastExitCode; }
+                /** @brief Returns the shell state: variables, functions, options. */
+                ShellState &state() { return _state; }
 
-                /** @brief Prints the first prompt. */
+                /** @brief Returns the worker threads that run pipeline stages. */
+                WorkerPool &workers() { return _workers; }
+
+                /** @brief Returns the exit status of the last command (`$?`). */
+                int lastExitCode() const { return _state.lastStatus; }
+
+                /** @brief Returns true while a command is incomplete (the `PS2` prompt). */
+                bool isContinuing() const { return !_input.isEmpty(); }
+
+                /** @brief Prints the prompt (`PS1`, or `PS2` while continuing). */
                 void start();
 
-                /** @brief Processes one input byte; runs a command line when one completes. */
+                /** @brief Processes one input byte; runs commands when a line completes them. */
                 void feed(char c);
 
                 /**
-                 * @brief Parses @p line in place and runs it.
-                 * @return The exit code. An empty line returns `lastExitCode()`.
+                 * @brief Adds one line of input and runs the commands it completes.
+                 * @return `$?` afterwards (unchanged while the input is incomplete).
                  */
-                int execute(char *line);
+                int execute(StringView line);
+
+                /**
+                 * @brief Runs @p source as a script (not interactively: `exit` ends it).
+                 * @return Its exit status.
+                 */
+                int runScript(StringView source);
 
                 /**
                  * @brief Runs the shell: prompt, read, execute, forever.
@@ -142,14 +160,17 @@ class Shell {
                 [[noreturn]] void run();
 
         private:
-                int  runPipeline(Pipeline &pipeline);
-                void report(const char *fmt, ...) BMDS_PRINTF_FORMAT(2, 3);
+                void runInput();
+                void endInterrupt();
 
                 Console            &_console;
                 Span<const Command> _commands;
                 FdTable             _fds;
                 WorkerPool          _workers;
-                int                 _lastExitCode = 0;
+                ShellState          _state;
+                Executor            _executor;
+                String              _input;  // lines of an incomplete command
+                String              _prompt; // what the editor shows
                 LineEditor          _editor;
 };
 

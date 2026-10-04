@@ -1,17 +1,21 @@
 menu "BMDS shell"
 
     config BMDS_SHELL_STACK_BYTES
-        int "Shell task stack size (bytes)"
-        default 4096
-        range 2048 65536
+        int "Shell task stack size (bytes, PSRAM)"
+        default 65536
+        range 16384 262144
         help
-            Stack of each shell task, in internal RAM. Commands run on it.
-            Check the 'tasks' command's stack_free column before shrinking.
+            Stack of each shell task, in PSRAM. The interpreter and the
+            commands run on it; deep recursion is stopped with an error
+            before it runs out. Each level of a function that recurses
+            through $(...) takes about 2.5 KB, a plain recursive call about
+            1 KB. Check the 'tasks' command's stack_free
+            column before shrinking.
 
     config BMDS_SHELL_WORKER_STACK_BYTES
         int "Pipeline worker stack size (bytes, PSRAM)"
-        default 8192
-        range 4096 65536
+        default 32768
+        range 8192 131072
         help
             Stack of each worker thread that runs an earlier stage of a
             pipeline. In PSRAM, so a pipeline costs internal RAM only for

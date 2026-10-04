@@ -36,6 +36,16 @@ struct SyntaxError {
 Error appendSyntaxError(const SyntaxError &error, String &out);
 
 /**
+ * @brief Lexes @p text as the inside of double quotes (expansions, backslash
+ *        before `$` `` ` `` `\`), for arithmetic and other re-expanded text.
+ * @param text  The text; must outlive the word.
+ * @param arena Where the word is allocated.
+ * @param error [out] Set on `Invalid`.
+ * @return The word (all parts quoted); `Invalid` (an unterminated `$(`...) or `NoMem`.
+ */
+Result<Word *> parseQuotedText(StringView text, Arena &arena, SyntaxError &error);
+
+/**
  * @brief Parses shell source (the bash subset in devplan/shell-language.md).
  *
  * `next()` returns one complete command at a time, as bash reads them: a

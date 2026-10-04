@@ -5,13 +5,17 @@
 # linker-built command table, shell tasks and built-ins are target-only.
 
 set(BMDS_SHELL_PURE_SRCS
+        src/arith.cpp
         src/commandcontext.cpp
+        src/executor.cpp
+        src/glob.cpp
+        src/langbuiltins.cpp
         src/parser.cpp
-        src/pipeline.cpp
         src/regex.cpp
         src/shell.cpp
         src/syntaxdump.cpp
-        src/textcommands.cpp)
+        src/textcommands.cpp
+        src/variables.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 

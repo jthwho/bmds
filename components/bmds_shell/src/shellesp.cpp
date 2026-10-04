@@ -27,7 +27,8 @@ namespace {
 
         // One running shell: the shell and the task that runs it.
         struct Session {
-                        explicit Session(Console &console) : shell(console, Shell::registeredCommands()) {}
+                        explicit Session(Console &console)
+                            : shell(console, Shell::registeredCommands(), CONFIG_BMDS_SHELL_STACK_BYTES) {}
 
                         Shell shell;
                         Task  task;
@@ -62,6 +63,9 @@ Error Shell::spawn(Console &console, const char *name) {
         Task::Config config;
         config.name = name;
         config.stackBytes = CONFIG_BMDS_SHELL_STACK_BYTES;
+        // The interpreter recurses (compound commands, functions, $(...)), so
+        // its stack is large; PSRAM keeps it out of internal RAM.
+        config.stackSpace = MemSpace::Psram;
         config.priority = CONFIG_BMDS_SHELL_PRIORITY;
         err = session->task.start(config, sessionMain, session);
         if (err.isError()) {
