@@ -61,6 +61,7 @@ Error Shell::spawn(Console &console, const char *name, const Startup &startup) {
         }
         auto *session = ::new (mem) Session(console, startup);
         Error err = session->shell.init();
+        session->shell.setLauncher(startup.launcher);
         if (err.isOk()) err = session->shell.state().vars.set("BMDS_VERSION", System::info().bmdsVersion);
         // The first partition of the first SD card (where autoexec.sh lives).
         if (err.isOk()) err = session->shell.state().vars.set("HOME", "/sd0/p0");

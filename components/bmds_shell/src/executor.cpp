@@ -20,6 +20,7 @@
 #include <bmds/memorystream.h>
 #include <bmds/parser.h>
 #include <bmds/pipe.h>
+#include <bmds/programlauncher.h>
 #include <bmds/shell.h>
 #include <bmds/vfs.h>
 
@@ -1155,12 +1156,55 @@ int Executor::runCommand(List<String> &args, const Redirection *redirects) {
                         CommandContext ctx(_shell, *cmd, argv.span(), fds, this);
                         status = cmd->run(ctx);
                 }
+        } else if (args[0].view().contains('/') && _shell.launcher() != nullptr) {
+                status = runProgram(args, fds);
         } else {
                 report("%s: command not found", args[0].cStr());
                 status = Shell::ExitNotFound;
         }
         _fds = saved;
         return status;
+}
+
+// A program file: the launcher runs it with the exported variables as its
+// environment. It reports its own problems; they become 127 (no such file)
+// or 126 (can't run it), as in bash.
+int Executor::runProgram(List<String> &args, FdTable &fds) {
+        List<StringView> argViews;
+        List<String>     envStrings;
+        List<StringView> envViews;
+        Error            err = argViews.reserve(args.size());
+        for (const String &a : args) {
+                if (err.isOk()) err = argViews.append(a.view());
+        }
+        for (const Variables::Entry &e : _state.vars.entries()) {
+                if (err.isError()) break;
+                if ((e.flags & Variables::Exported) == 0 || (e.flags & Variables::IsSet) == 0) continue;
+                String line;
+                err = line.append(e.name);
+                if (err.isOk()) err = line.append('=');
+                if (err.isOk()) err = line.append(e.value);
+                if (err.isOk()) err = envStrings.append(std::move(line));
+        }
+        if (err.isOk()) err = envViews.reserve(envStrings.size());
+        for (const String &e : envStrings) {
+                if (err.isOk()) err = envViews.append(e.view());
+        }
+        if (err.isError()) {
+                report("out of memory");
+                return 1;
+        }
+        ProgramLauncher::Request request;
+        request.path = args[0];
+        request.args = Span<const StringView>(argViews.data(), argViews.size());
+        request.environment = Span<const StringView>(envViews.data(), envViews.size());
+        request.fds = &fds;
+        request.cwd = vfs().cwd;
+        request.interrupt = &_shell.console().interrupt();
+        auto [status, lerr] = _shell.launcher()->run(request);
+        if (lerr.isOk()) return status;
+        if (lerr == Error::Interrupted) return Shell::ExitInterrupted;
+        return lerr == Error::NotExist ? Shell::ExitNotFound : Shell::ExitCannotRun;
 }
 
 int Executor::callFunction(const ShellFunction &fn, List<String> &args) {

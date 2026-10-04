@@ -16,7 +16,8 @@ the headers in `include/bmds/` are the ABI and never change incompatibly
 | `ld/bmds.ld` | The program layout: one image linked at 0, the note, thread-local storage. |
 | `cmake/bmds-toolchain.cmake` | A CMake toolchain file for Espressif's `riscv32-esp-elf-gcc`. |
 | `cmake/BmdsProgram.cmake` | `bmds_add_program(name SOURCES ... [STACK_SIZE bytes])`. |
-| `examples/` | `hello`. |
+| `examples/` | `hello`, `cat` (stdin to stdout with the raw calls). |
+| `tests/` | `progtest`, used by the loader's board tests. |
 
 ## Building a program
 
@@ -36,9 +37,12 @@ cmake -S myprog -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=<bmds>/sdk/cmake/bmds-t
 cd build && build            # or ninja
 ```
 
-The result, `myprog.elf`, is checked by `bmds-elfcheck` (built with the
-host tests: `build-host/bmds-elfcheck myprog.elf`) exactly as the loader
-will check it.
+The result is two files: `myprog.elf`, what goes on the card (symbols no
+relocation needs and debug information stripped, a tenth of the size), and
+`myprog.debug.elf`, the same program with everything, for `addr2line` and
+GDB. `bmds-elfcheck myprog.elf` (built with the host tests) checks it exactly
+as the loader will. On the board, copy it to the card (`rz` and
+`sz --ymodem myprog.elf` on the PC) and run it by path: `./myprog.elf`.
 
 ## What a program is
 
@@ -47,7 +51,7 @@ will check it.
 - Built for every ESP32-P4 revision: `rv32imafc` with atomics, single
   float (`ilp32f`), Espressif's hardware loops and PIE SIMD, `medany`.
 - Linked at address 0 with its relocations kept (`--emit-relocs`); the
-  kernel moves it where it loads it. Don't strip it (`strip --strip-debug`
-  is fine): the loader needs the relocations and symbol table.
+  kernel moves it where it loads it. `strip --strip-unneeded` (what the SDK
+  does) is fine; a full `strip` removes what the loader needs.
 - `gp` belongs to the kernel: build with relaxation off (the toolchain
   file does) and never set it.

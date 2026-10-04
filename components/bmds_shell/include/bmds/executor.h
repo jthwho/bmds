@@ -253,6 +253,7 @@ class Executor {
                 int            runSubshell(const Node *body);
                 int            runCommand(List<String> &args, const Redirection *redirects);
                 int            callFunction(const ShellFunction &fn, List<String> &args);
+                int            runProgram(List<String> &args, FdTable &fds);
                 bool           loopIteration(bool &stop);
                 Error          applyRedirects(const Redirection *r, FdTable &fds);
                 Error          expandTarget(const Word *word, String &out);

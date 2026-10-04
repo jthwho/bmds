@@ -26,6 +26,7 @@
 BMDS_NAMESPACE_BEGIN
 
 class Console;
+class ProgramLauncher;
 
 /**
  * @brief A command shell running on a console.
@@ -69,10 +70,12 @@ class Shell final : public LineCompleter {
                 static constexpr unsigned int WorkerPriority = 2;
 #endif
 
-                static constexpr int ExitSuccess = 0;       ///< Success.
-                static constexpr int ExitFailure = 1;       ///< The command failed.
-                static constexpr int ExitUsage = 2;         ///< Bad arguments, or a line that doesn't parse.
-                static constexpr int ExitNotFound = 127;    ///< No such command.
+                static constexpr int ExitSuccess = 0; ///< Success.
+                static constexpr int ExitFailure = 1; ///< The command failed.
+                static constexpr int ExitUsage = 2;   ///< Bad arguments, or a line that doesn't parse.
+                static constexpr int ExitCannotRun =
+                        126;                             ///< A file that exists but can't run (bash: "cannot execute").
+                static constexpr int ExitNotFound = 127; ///< No such command.
                 static constexpr int ExitInterrupted = 130; ///< Stopped by Ctrl-C (128 + SIGINT, as in bash).
 
                 /**
@@ -88,6 +91,8 @@ class Shell final : public LineCompleter {
                                 void (*wait)() = nullptr;
                                 /** @brief A script to source if it exists (`/sd0/p0/autoexec.sh`); may be null. */
                                 const char *script = nullptr;
+                                /** @brief Runs program files (see `setLauncher()`); may be null. */
+                                ProgramLauncher *launcher = nullptr;
                 };
 
                 /**
@@ -140,6 +145,18 @@ class Shell final : public LineCompleter {
 
                 /** @brief Returns the worker threads that run pipeline stages. */
                 WorkerPool &workers() { return _workers; }
+
+                /**
+                 * @brief Sets what runs a command whose name is a path (`./hello.elf`);
+                 *        null (the default): such commands are "command not found".
+                 */
+                void setLauncher(ProgramLauncher *launcher) {
+                        _launcher = launcher;
+                        return;
+                }
+
+                /** @brief Returns the program launcher, or null. */
+                ProgramLauncher *launcher() const { return _launcher; }
 
                 /** @brief Returns the exit status of the last command (`$?`). */
                 int lastExitCode() const { return _state.lastStatus; }
@@ -203,6 +220,7 @@ class Shell final : public LineCompleter {
                 Executor            _executor;
                 String              _input;  // lines of an incomplete command
                 String              _prompt; // what the editor shows
+                ProgramLauncher    *_launcher = nullptr;
                 LineEditor          _editor;
 };
 

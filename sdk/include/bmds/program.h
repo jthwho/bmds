@@ -19,7 +19,9 @@
  *   BMDS program.
  * - Section headers, the symbol table (SHT_SYMTAB) and the relocation
  *   sections (SHT_RELA, linked with --emit-relocs) of every allocated
- *   section are kept: don't strip them (`strip --strip-debug` is fine).
+ *   section are kept. `strip --strip-unneeded` (what the SDK does to the
+ *   file that goes on the card) and `--strip-debug` keep them; a full
+ *   `strip` doesn't, and the file no longer loads.
  * - Relocations in allocated sections, at load address B (a multiple of
  *   4096): R_RISCV_32 adds B to the word; R_RISCV_HI20 adds B >> 12 to the
  *   instruction's upper immediate (the low 12 bits of B are zero, so the

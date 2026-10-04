@@ -31,12 +31,14 @@ add_executable(bmds_host_tests
         interactive.cpp
         interrupt.cpp
         language.cpp
+        launch.cpp
         lineeditor.cpp
         list.cpp
         loader.cpp
         memorystream.cpp
         memspace.cpp
         pipe.cpp
+        process.cpp
         regex.cpp
         result.cpp
         run.cpp
@@ -58,7 +60,7 @@ target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console
 bmds_target_options(bmds_host_tests)
 
 # bmds-elfcheck: the loader's format check as a host tool (tools/elfcheck).
-add_executable(bmds-elfcheck ${BMDS_ROOT}/tools/elfcheck/main.cpp)
+add_executable(bmds-elfcheck ${BMDS_ROOT}/tools/elfcheck/main.cpp hostmemory.cpp)
 target_link_libraries(bmds-elfcheck PRIVATE bmds_loader)
 bmds_target_options(bmds-elfcheck)
 

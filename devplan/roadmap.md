@@ -51,7 +51,7 @@ Plans: [`storage.md`](storage.md), [`time.md`](time.md). Complete; verified on h
 
 - [ ] Design: syscall mechanism, executable format, memory layout (`docs/ABI.md` open questions resolved).
 - [ ] Userspace SDK v1: C headers, crt0, linker script, host build (CMake toolchain file / Makefile template).
-- [ ] Loader: load from SD, relocate, run, return exit code; clean up on exit.
+- [x] Loader: load from SD, relocate, run, return exit code; clean up on exit.
 - [ ] Syscall table v1: fd-based I/O (stdin/stdout/stderr, `read/write/close/dup2/isatty`), terminal info/modes, file I/O, memory, time, exit, args, environment.
 - [ ] ABI lock tests.
 - [ ] Shell: run programs by name, `PATH`-like search.

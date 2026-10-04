@@ -7,6 +7,7 @@
  */
 
 #include <cstring>
+#include <bmds/memory.h>
 #include <bmds/program.h>
 #include <bmds/programimage.h>
 #include <bmds/sys.h>
@@ -63,6 +64,11 @@ namespace {
         constexpr uint32_t MaxPhdrs = 16;
         constexpr uint32_t MaxShdrs = 1024;
         constexpr uint32_t MaxNoteBytes = 512;
+        // A symbol table up to this size is read into memory once (one
+        // sequential read), instead of a scattered read per relocation.
+        constexpr uint32_t MaxCachedSymtabBytes = 512 * 1024;
+        // The same for a relocation section.
+        constexpr uint32_t MaxCachedRelaBytes = 1024 * 1024;
 
         // What a relocation needs at load time.
         enum class Action : uint8_t {
@@ -261,6 +267,12 @@ namespace {
                         Relocator(ProgramImage::Source &source, uint32_t fileSize, const Ehdr &eh,
                                   const ProgramImage::Info &info, Problem &problem)
                             : _source(source), _fileSize(fileSize), _eh(eh), _info(info), _problem(problem) {}
+                        ~Relocator() {
+                                Memory::free(_symbols);
+                                Memory::free(_headers);
+                        }
+                        Relocator(const Relocator &) = delete;
+                        Relocator &operator=(const Relocator &) = delete;
 
                         // @p image null: check and count only.
                         Error run(uint8_t *image, uint32_t base, uint32_t &patches) {
@@ -271,6 +283,15 @@ namespace {
                                     !within(_eh.shoff, uint64_t(_eh.shnum) * sizeof(Shdr), _fileSize))
                                         return fail(_problem, Error::NotSupported,
                                                     "no section headers (stripped? relocations are needed)");
+                                // All the section headers in one read (each is consulted again).
+                                const size_t headerBytes = size_t(_eh.shnum) * sizeof(Shdr);
+                                _headers = static_cast<Shdr *>(Memory::alloc(MemSpace::Psram, headerBytes));
+                                if (_headers != nullptr) {
+                                        Error err = _source.readAt(
+                                                _eh.shoff,
+                                                WritableByteSpan(reinterpret_cast<uint8_t *>(_headers), headerBytes));
+                                        if (err.isError()) return err;
+                                }
                                 bool any = false;
                                 for (uint32_t i = 0; i < _eh.shnum; ++i) {
                                         Shdr  sh;
@@ -300,6 +321,10 @@ namespace {
 
                 private:
                         Error section(uint32_t index, Shdr &out) {
+                                if (_headers != nullptr) {
+                                        out = _headers[index];
+                                        return Error::Ok;
+                                }
                                 return readStruct(_source, _eh.shoff + index * sizeof(Shdr), out);
                         }
 
@@ -309,32 +334,59 @@ namespace {
                                         return fail(_problem, Error::Invalid, "bad relocation section");
                                 if (!within(target.addr, target.size, _info.imageSize))
                                         return fail(_problem, Error::Invalid, "relocated section outside the image");
-                                _symtab = Shdr{};
-                                if (rela.link != 0) {
-                                        if (rela.link >= _eh.shnum)
-                                                return fail(_problem, Error::Invalid, "bad symbol table");
-                                        Error err = section(rela.link, _symtab);
+                                if (rela.link != _symtabIndex) {
+                                        Error err = useSymbolTable(rela.link);
                                         if (err.isError()) return err;
-                                        if (_symtab.type != ShtSymtab || _symtab.entsize != sizeof(Sym) ||
-                                            !within(_symtab.offset, _symtab.size, _fileSize))
-                                                return fail(_problem, Error::Invalid, "bad symbol table");
                                 }
-                                // A chunk at a time: relocation sections can be large.
+                                // The whole section in one sequential read when there is memory
+                                // for it (small reads from a card cost a command each); else a
+                                // chunk at a time.
+                                Rela          *rels = nullptr;
+                                uint32_t       step = 64;
                                 Rela           chunk[64];
                                 const uint32_t count = rela.size / sizeof(Rela);
+                                if (rela.size <= MaxCachedRelaBytes)
+                                        rels = static_cast<Rela *>(Memory::alloc(MemSpace::Psram, rela.size));
+                                if (rels != nullptr) step = count;
+                                struct Freer {
+                                                void *p;
+                                                ~Freer() { Memory::free(p); }
+                                } freer{rels};
+                                Rela *const buffer = rels != nullptr ? rels : chunk;
                                 for (uint32_t done = 0; done < count;) {
-                                        const uint32_t n = count - done < 64 ? count - done : 64;
-                                        Error          err = _source.readAt(
-                                                rela.offset + done * sizeof(Rela),
-                                                WritableByteSpan(reinterpret_cast<uint8_t *>(chunk), n * sizeof(Rela)));
+                                        const uint32_t n = count - done < step ? count - done : step;
+                                        Error          err = _source.readAt(rela.offset + done * sizeof(Rela),
+                                                                            WritableByteSpan(reinterpret_cast<uint8_t *>(buffer),
+                                                                                             n * sizeof(Rela)));
                                         if (err.isError()) return err;
                                         for (uint32_t k = 0; k < n; ++k) {
-                                                err = relocation(chunk[k], target, patches);
+                                                err = relocation(buffer[k], target, patches);
                                                 if (err.isError()) return err;
                                         }
                                         done += n;
                                 }
                                 return Error::Ok;
+                        }
+
+                        // Makes section @p index the symbol table lookups use, reading it
+                        // into memory if it is small enough.
+                        Error useSymbolTable(uint32_t index) {
+                                _symtab = Shdr{};
+                                _symtabIndex = index;
+                                Memory::free(_symbols);
+                                _symbols = nullptr;
+                                if (index == 0) return Error::Ok;
+                                if (index >= _eh.shnum) return fail(_problem, Error::Invalid, "bad symbol table");
+                                Error err = section(index, _symtab);
+                                if (err.isError()) return err;
+                                if (_symtab.type != ShtSymtab || _symtab.entsize != sizeof(Sym) ||
+                                    !within(_symtab.offset, _symtab.size, _fileSize))
+                                        return fail(_problem, Error::Invalid, "bad symbol table");
+                                if (_symtab.size > MaxCachedSymtabBytes) return Error::Ok;
+                                // Without the memory, symbols are read one at a time.
+                                _symbols = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, _symtab.size));
+                                if (_symbols == nullptr) return Error::Ok;
+                                return _source.readAt(_symtab.offset, WritableByteSpan(_symbols, _symtab.size));
                         }
 
                         // True if relocation @p r's symbol is absolute or undefined: its
@@ -345,9 +397,13 @@ namespace {
                                         return fail(_problem, Error::Invalid, "relocation without a symbol", r.offset);
                                 if (index >= _symtab.size / sizeof(Sym))
                                         return fail(_problem, Error::Invalid, "bad symbol index", index);
-                                Sym   sym;
-                                Error err = readStruct(_source, _symtab.offset + index * sizeof(Sym), sym);
-                                if (err.isError()) return err;
+                                Sym sym;
+                                if (_symbols != nullptr) {
+                                        std::memcpy(&sym, _symbols + index * sizeof(Sym), sizeof(Sym));
+                                } else {
+                                        Error err = readStruct(_source, _symtab.offset + index * sizeof(Sym), sym);
+                                        if (err.isError()) return err;
+                                }
                                 fixed = sym.shndx == ShnAbs || sym.shndx == ShnUndef;
                                 return Error::Ok;
                         }
@@ -403,6 +459,9 @@ namespace {
                         const ProgramImage::Info &_info;
                         Problem                  &_problem;
                         Shdr                      _symtab{};
+                        uint32_t                  _symtabIndex = 0;
+                        uint8_t                  *_symbols = nullptr; // the cached symbol table, if any
+                        Shdr                     *_headers = nullptr; // the section headers, if there was memory
                         uint8_t                  *_image = nullptr;
                         uint32_t                  _base = 0;
         };

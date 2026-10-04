@@ -30,7 +30,7 @@ BMDS_NAMESPACE_BEGIN
  */
 class Task {
         public:
-                /** @brief Task entry point. Must not return. */
+                /** @brief Task entry point. Must not return (it may suspend itself for `stop()`). */
                 using Entry = void (*)(void *arg);
 
                 /** @brief Any core (no affinity). */
@@ -59,6 +59,20 @@ class Task {
                  */
                 Error start(const Config &config, Entry entry, void *arg);
 
+                /**
+                 * @brief Deletes the task and frees its TCB and stack.
+                 *
+                 * Call from another task. The task is suspended first and deleted
+                 * once it is no longer running on either core, so it may be
+                 * anywhere (typically suspended in its own code, having signalled
+                 * that it's done). It must not hold a lock anyone else needs.
+                 *
+                 * @return `Ok`, or `InvalidState` if not running or if called by the
+                 *         task itself.
+                 * @blocking Briefly, while the task leaves the CPU.
+                 */
+                Error stop();
+
                 /** @brief Returns true once started. */
                 bool isRunning() const { return _handle != nullptr; }
 
@@ -72,7 +86,9 @@ class Task {
                 static void sleep(unsigned int delayMs);
 
         private:
-                TaskHandle_t _handle = nullptr;
+                TaskHandle_t  _handle = nullptr;
+                StaticTask_t *_tcb = nullptr;
+                StackType_t  *_stack = nullptr;
 };
 
 BMDS_NAMESPACE_END

@@ -10,12 +10,16 @@
  */
 
 #include <bmds/boot.h>
+#include <bmds/loader.h>
 #include <bmds/shell.h>
 #include <bmds/storage.h>
 #include <bmds/usbserialconsole.h>
 #include <bmds/vfs.h>
 
 namespace {
+
+        // Runs program files for the shells (stateless).
+        constinit bmds::Loader loader;
 
         // How long the first shell waits for the SD card before autoexec.sh
         // (a card is normally mounted well within this).
@@ -30,6 +34,7 @@ namespace {
                 bmds::Shell::Startup startup;
                 startup.wait = waitForStorage;
                 startup.script = "/sd0/p0/autoexec.sh";
+                startup.launcher = &loader;
                 return bmds::Shell::spawn(bmds::UsbSerialConsole::instance(), "shell", startup);
         }
 

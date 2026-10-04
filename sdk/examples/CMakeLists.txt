@@ -7,3 +7,7 @@ project(bmds_examples C ASM)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/BmdsProgram.cmake)
 
 bmds_add_program(hello SOURCES hello/hello.c)
+bmds_add_program(cat SOURCES cat/cat.c)
+
+# Test programs (not examples): the loader's board tests use them.
+bmds_add_program(progtest SOURCES ../tests/progtest.c)

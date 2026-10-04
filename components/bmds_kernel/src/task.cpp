@@ -28,11 +28,29 @@ Error Task::start(const Config &config, Entry entry, void *arg) {
         }
         const BaseType_t core = config.core == AnyCore ? tskNO_AFFINITY : static_cast<BaseType_t>(config.core);
         // ESP-IDF stack depth is in bytes (StackType_t is uint8_t).
+        _tcb = tcb;
+        _stack = stack;
         _handle = xTaskCreateStaticPinnedToCore(entry, config.name, config.stackBytes / sizeof(StackType_t), arg,
                                                 config.priority, stack, tcb, core);
         bmdsDebug("Task(%p '%s'): started, %u-byte stack in %s, priority %u", this, config.name,
                   static_cast<unsigned>(config.stackBytes), memSpaceName(config.stackSpace), config.priority);
         return Error();
+}
+
+Error Task::stop() {
+        if (_handle == nullptr || _handle == xTaskGetCurrentTaskHandle()) return Error::InvalidState;
+        // As IDF's vTaskDeleteWithCaps(): suspended and off the CPU first, then
+        // deleted (the port's delete hook may still touch the stack: FPU and
+        // PIE state), and only then are its buffers freed.
+        vTaskSuspend(_handle);
+        while (eTaskGetState(_handle) == eRunning) taskYIELD();
+        vTaskDelete(_handle);
+        Memory::free(_stack);
+        Memory::free(_tcb);
+        _handle = nullptr;
+        _stack = nullptr;
+        _tcb = nullptr;
+        return Error::Ok;
 }
 
 void Task::sleep(unsigned int delayMs) {
