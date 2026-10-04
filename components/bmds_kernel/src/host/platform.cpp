@@ -84,6 +84,22 @@ void Detail::resumeScheduler() {
         return;
 }
 
+int64_t Detail::persistentTimeUs() {
+        return monotonicUs();
+}
+
+bool Detail::loadClockRecord(ClockRecord &) {
+        return false;
+}
+
+void Detail::saveClockRecord(const ClockRecord &) {
+        return;
+}
+
+void Detail::setLibcTime(int64_t) {
+        return;
+}
+
 // The host Mutex is a binary semaphore: timed std::timed_mutex locks go
 // through pthread_mutex_clocklock, which ThreadSanitizer doesn't model.
 // Ownership and priority inheritance don't matter in the tests.

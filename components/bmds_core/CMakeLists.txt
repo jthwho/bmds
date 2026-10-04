@@ -6,9 +6,12 @@
 set(BMDS_CORE_SRCS
         src/arena.cpp
         src/bytering.cpp
+        src/clockmodel.cpp
         src/color.cpp
+        src/datetime.cpp
         src/error.cpp
         src/string.cpp
+        src/timezone.cpp
         src/utf8.cpp
         src/vtparser.cpp)
 

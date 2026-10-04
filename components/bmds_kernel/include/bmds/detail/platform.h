@@ -47,6 +47,27 @@ namespace Detail {
         /** @brief Undoes `suspendScheduler()`. */
         void resumeScheduler();
 
+        /** @brief The system clock as carried across a reset (`Clock`). */
+        struct ClockRecord {
+                        int64_t wallMinusPersistentNs = 0; ///< Wall time minus `persistentTimeUs()` (in ns).
+                        int32_t frequencyPpb = 0;          ///< The frequency correction.
+        };
+
+        /**
+         * @brief Returns microseconds of a timer that keeps counting across
+         *        resets (the RTC timer on the target; the monotonic clock on the host).
+         */
+        int64_t persistentTimeUs();
+
+        /** @brief Reads the clock record that survived a reset; false if there is none. */
+        bool loadClockRecord(ClockRecord &record);
+
+        /** @brief Stores the clock record, to survive a reset. Task context, cheap. */
+        void saveClockRecord(const ClockRecord &record);
+
+        /** @brief Steps the C library's time (`time()`, `gettimeofday()`) to @p wallNs. */
+        void setLibcTime(int64_t wallNs);
+
 } // namespace Detail
 
 BMDS_NAMESPACE_END

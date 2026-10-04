@@ -8,6 +8,7 @@
 # C++ thread library.
 
 set(BMDS_KERNEL_PORTABLE_SRCS
+        src/clock.cpp
         src/fdtable.cpp
         src/filehandle.cpp
         src/interrupt.cpp
@@ -21,6 +22,7 @@ if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_KERNEL_PORTABLE_SRCS}
                                     src/assert.cpp
                                     src/boot.cpp
+                                    src/clockinit.cpp
                                     src/esperr_check.cpp
                                     src/log.cpp
                                     src/memory.cpp
@@ -37,6 +39,7 @@ if(COMMAND idf_component_register)
         bmds_target_options(${COMPONENT_LIB})
 else()
         find_package(Threads REQUIRED)
+        # No clockinit.cpp: on the host nothing survives a "reset".
         add_library(bmds_kernel STATIC ${BMDS_KERNEL_PORTABLE_SRCS} src/host/platform.cpp)
         target_include_directories(bmds_kernel PUBLIC include)
         target_link_libraries(bmds_kernel PUBLIC bmds_core Threads::Threads)

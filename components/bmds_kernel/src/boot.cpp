@@ -14,6 +14,7 @@
 #include <freertos/task.h>
 #include <bmds/assert.h>
 #include <bmds/boot.h>
+#include <bmds/clock.h>
 #include <bmds/error.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
@@ -57,6 +58,7 @@ namespace {
         // The boot stages, in order. Lives in rodata.
         constexpr Stage Stages[] = {
                 {"memory", initMemory},
+                {"clock", Clock::init},
         };
         constexpr size_t StageCount = sizeof(Stages) / sizeof(Stages[0]);
 

@@ -142,7 +142,8 @@ namespace Vfs {
 | Step | Delivers |
 |---|---|
 | 1 | `BlockDevice`, `RamBlockDevice`; `SdCard` (LDO 4, power, card detect, hot-plug task, high speed, bounce buffer); `Error::NoMedia`; `sd` command; a read benchmark (`sd bench`). |
-| 2 | The system clock ([`time.md`](time.md)): `Clock`, `TimeZone`, the reset record, `date`, `clock`. FatFs vendored (`thirdparty/fatfs`, our `ffconf.h`, `ffsystem`, `diskio`); `bmds_fs` VFS, `File`, `Directory`, mount table, `/dev` nodes; mount `/sd`; host tests on `RamBlockDevice`. |
+| 2a | The system clock ([`time.md`](time.md)): `Clock`, `TimeZone`, the reset record, `date`, `clock`. **Done.** |
+| 2b | FatFs vendored (`thirdparty/fatfs`, our `ffconf.h`, `ffsystem`, `diskio`); `bmds_fs` VFS, `File`, `Directory`, mount table, `/dev` nodes; mount `/sd`; host tests on `RamBlockDevice`. |
 | 3 | Shell: `cd pwd ls cat cp mv rm mkdir rmdir touch df hexdump mkfs`; text commands on files. |
 | 4 | Language: file redirection, globbing, tilde, file tests, `source`/`.`/`sh`, `autoexec.sh`, path completion. |
 | 5 | `rz`/`sz` (YMODEM); 4 KB RX ring. |

@@ -40,4 +40,14 @@ menu "BMDS kernel"
             of two. Allocated from PSRAM when the pipeline starts and freed
             when it ends.
 
+    config BMDS_TIMEZONE
+        string "Kernel time zone (POSIX TZ string)"
+        default "UTC0"
+        help
+            The time zone the kernel shows time in and stamps FAT files
+            with (FAT stores local time). A POSIX TZ string, e.g.
+            "CET-1CEST,M3.5.0,M10.5.0/3" or "EST5EDT,M3.2.0,M11.1.0".
+            The clock itself keeps UTC; 'clock zone' changes this at run
+            time and the shell's TZ variable overrides it for display.
+
 endmenu

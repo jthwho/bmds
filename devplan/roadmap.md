@@ -41,7 +41,7 @@ Plans: [`shell-language.md`](shell-language.md), [`terminal.md`](terminal.md). D
 Plans: [`storage.md`](storage.md), [`time.md`](time.md).
 
 - [x] SD card driver (SDMMC host), card detect, hot-plug handling; `BlockDevice`; `sd` command.
-- [ ] System clock (Linux-style: software clock, set/slewed/disciplined by sources, survives resets), time zones, `date`, `clock`.
+- [x] System clock (Linux-style: software clock, set/slewed/disciplined by sources, survives resets), time zones, `date`, `clock`.
 - [ ] Filesystem (FatFs with exFAT, vendored) and VFS: mount table, `/sd`, `/dev` nodes, files as streams; host tests on a RAM disk.
 - [ ] Shell: `ls`, `cd`, `pwd`, `cat`, `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `touch`, `df`, `hexdump`, `mkfs`.
 - [ ] Shell: file redirection, globbing, tilde, file tests, `source`/`sh`, `/sd/autoexec.sh`, path completion.

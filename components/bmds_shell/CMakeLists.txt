@@ -17,6 +17,7 @@ set(BMDS_SHELL_PURE_SRCS
         src/syntaxdump.cpp
         src/termcommand.cpp
         src/textcommands.cpp
+        src/timecommands.cpp
         src/variables.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)

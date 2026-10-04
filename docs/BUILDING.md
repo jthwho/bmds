@@ -47,6 +47,7 @@ cd build-host && build && ctest --output-on-failure
 - `BMDS_BOARD` selects the board definition.
 - `BMDS_ASSERT` and `BMDS_DEBUG_LOG` compile in asserts and `bmdsDebug()`.
 - `BMDS_LOG_LINE_MAX` sets the maximum log line length.
+- `BMDS_TIMEZONE` is the kernel time zone at boot, a POSIX `TZ` string (under **BMDS kernel**).
 - `BMDS_SD_MAX_KHZ` caps the SD bus clock; `BMDS_SD_BOUNCE_BYTES` sizes the SD bounce buffer
   (under **BMDS storage**).
 
