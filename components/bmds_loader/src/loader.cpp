@@ -12,6 +12,8 @@
 #include <sdkconfig.h>
 #include <bmds/clock.h>
 #include <bmds/console.h>
+#include <bmds/deadline.h>
+#include <bmds/interrupt.h>
 #include <bmds/list.h>
 #include <bmds/loader.h>
 #include <bmds/log.h>
@@ -108,6 +110,31 @@ namespace {
                 const int32_t status =
                         entry(bmds_k_sys_table(), run.process->argc(), run.process->argv(), run.process->envp());
                 run.finish(status);
+        }
+
+        // Waits for the program to end. The first Ctrl-C is the program's
+        // to handle (its calls return EINTR); one more while it runs kills
+        // it, outside any system call (see Running).
+        void waitOrKill(Running &running, Task &task, Interrupt *interrupt) {
+                if (interrupt == nullptr) {
+                        (void)running.done.acquire(WaitForever);
+                        return;
+                }
+                const Deadline forever(WaitForever);
+                uint32_t       seen = interrupt->raises();
+                const uint32_t atStart = seen;
+                for (;;) {
+                        if (interrupt->wait(running.done, forever, seen).isOk()) return;
+                        seen = interrupt->raises();
+                        if (seen < 2 || seen == atStart || running.kill.load()) continue;
+                        running.kill.store(true);
+                        (void)task.suspend();
+                        if (!running.inKernel.load()) {
+                                running.status = Running::KilledStatus;
+                                return;
+                        }
+                        (void)task.resume(); // it ends itself on leaving the call
+                }
         }
 
 } // namespace
@@ -225,7 +252,7 @@ Result<int> Loader::run(const Request &request) {
         }
         bmdsDebug("Loader: %s at %p, %u bytes, stack %u in %s", name, memory, static_cast<unsigned>(imageBytes),
                   static_cast<unsigned>(config.stackBytes), memSpaceName(config.stackSpace));
-        (void)running.done.acquire(WaitForever);
+        waitOrKill(running, task, request.interrupt);
         (void)task.stop();
         process.release();
         if (request.console != nullptr) request.console->setMode(savedMode);

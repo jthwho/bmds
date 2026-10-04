@@ -43,7 +43,11 @@ relocation needs and debug information stripped, a tenth of the size), and
 `myprog.debug.elf`, the same program with everything, for `addr2line` and
 GDB. `bmds-elfcheck myprog.elf` (built with the host tests) checks it exactly
 as the loader will. On the board, copy it to the card (`rz` and
-`sz --ymodem myprog.elf` on the PC) and run it by path: `./myprog.elf`.
+`sz --ymodem myprog.elf` on the PC) and run it by path (`./myprog.elf`), or
+put it in `/sd0/p0/bin` (the default `$PATH`) and run it by name: `myprog`.
+A script can name a program as its interpreter (`#!/sd0/p0/bin/myprog.elf`):
+its `argv` is the interpreter, the line's optional argument, the script's path,
+then the script's arguments.
 
 ## What a program is
 

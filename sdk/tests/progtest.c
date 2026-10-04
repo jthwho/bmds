@@ -190,8 +190,8 @@ static void deep(int depth, int status) {
 int main(int argc, char **argv) {
         if (argc < 2) {
                 fprintf(stderr,
-                        "usage: progtest status|exit|leak|env|tty|float|files|time|sleep|term|lines|raw|mem|random|cwd "
-                        "[arg]\n");
+                        "usage: progtest status|exit|leak|env|tty|float|files|time|sleep|term|lines|raw|mem|random|cwd|"
+                        "spin|calls [arg]\n");
                 return 2;
         }
         const char *what = argv[1];
@@ -251,6 +251,22 @@ int main(int argc, char **argv) {
                 CHECK(chdir(arg) == 0);
                 printf("cwd: %s\n", getcwd(buf, sizeof(buf)));
                 return 0;
+        }
+        /* Ignoring Ctrl-C: computing (never in the kernel), or calling it
+         * all the time; a second Ctrl-C kills either. A leak shows if the
+         * kill doesn't clean up. */
+        if (strcmp(what, "spin") == 0 || strcmp(what, "calls") == 0) {
+                const int calls = what[0] == 'c';
+                char *volatile block = malloc(100000);
+                printf("%s until killed%s\n", what, block != NULL ? "" : " (no memory)");
+                fflush(stdout);
+                for (volatile uint32_t n = 0;; ++n) {
+                        if (calls) {
+                                int64_t ns;
+                                (void)bmds_clock_get(BMDS_CLOCK_MONOTONIC, &ns);
+                                (void)bmds_interrupted();
+                        }
+                }
         }
         fprintf(stderr, "progtest: %s: unknown test\n", what);
         return 2;

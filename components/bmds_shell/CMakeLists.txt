@@ -7,6 +7,7 @@
 set(BMDS_SHELL_PURE_SRCS
         src/arith.cpp
         src/commandcontext.cpp
+        src/exec.cpp
         src/executor.cpp
         src/filecommands.cpp
         src/fscommands.cpp

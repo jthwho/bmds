@@ -20,7 +20,6 @@
 #include <bmds/memorystream.h>
 #include <bmds/parser.h>
 #include <bmds/pipe.h>
-#include <bmds/programlauncher.h>
 #include <bmds/shell.h>
 #include <bmds/vfs.h>
 
@@ -1143,69 +1142,9 @@ int Executor::runCommand(List<String> &args, const Redirection *redirects) {
         if (redirects != nullptr && applyRedirects(redirects, fds).isError()) return 1;
         FdTable *saved = _fds;
         _fds = &fds;
-        int status = 0;
-        if (const ShellFunction *fn = _state.findFunction(args[0])) {
-                status = callFunction(*fn, args);
-        } else if (const Command *cmd = _shell.findCommand(args[0])) {
-                List<char *> argv;
-                if (argv.reserve(args.size()).isError()) {
-                        report("out of memory");
-                        status = 1;
-                } else {
-                        for (String &a : args) (void)argv.append(a.data());
-                        CommandContext ctx(_shell, *cmd, argv.span(), fds, this);
-                        status = cmd->run(ctx);
-                }
-        } else if (args[0].view().contains('/') && _shell.launcher() != nullptr) {
-                status = runProgram(args, fds);
-        } else {
-                report("%s: command not found", args[0].cStr());
-                status = Shell::ExitNotFound;
-        }
+        const int status = invoke(args, true);
         _fds = saved;
         return status;
-}
-
-// A program file: the launcher runs it with the exported variables as its
-// environment. It reports its own problems; they become 127 (no such file)
-// or 126 (can't run it), as in bash.
-int Executor::runProgram(List<String> &args, FdTable &fds) {
-        List<StringView> argViews;
-        List<String>     envStrings;
-        List<StringView> envViews;
-        Error            err = argViews.reserve(args.size());
-        for (const String &a : args) {
-                if (err.isOk()) err = argViews.append(a.view());
-        }
-        for (const Variables::Entry &e : _state.vars.entries()) {
-                if (err.isError()) break;
-                if ((e.flags & Variables::Exported) == 0 || (e.flags & Variables::IsSet) == 0) continue;
-                String line;
-                err = line.append(e.name);
-                if (err.isOk()) err = line.append('=');
-                if (err.isOk()) err = line.append(e.value);
-                if (err.isOk()) err = envStrings.append(std::move(line));
-        }
-        if (err.isOk()) err = envViews.reserve(envStrings.size());
-        for (const String &e : envStrings) {
-                if (err.isOk()) err = envViews.append(e.view());
-        }
-        if (err.isError()) {
-                report("out of memory");
-                return 1;
-        }
-        ProgramLauncher::Request request;
-        request.path = args[0];
-        request.args = Span<const StringView>(argViews.data(), argViews.size());
-        request.environment = Span<const StringView>(envViews.data(), envViews.size());
-        request.fds = &fds;
-        request.cwd = vfs().cwd;
-        request.interrupt = &_shell.console().interrupt();
-        request.console = &_shell.console();
-        auto [status, lerr] = _shell.launcher()->run(request);
-        if (lerr.isOk()) return status;
-        if (lerr == Error::Interrupted) return Shell::ExitInterrupted;
-        return lerr == Error::NotExist ? Shell::ExitNotFound : Shell::ExitCannotRun;
 }
 
 int Executor::callFunction(const ShellFunction &fn, List<String> &args) {
@@ -1337,7 +1276,7 @@ int Executor::runSourced(StringView source, Span<char *const> args) {
         return status;
 }
 
-int Executor::runInSubshell(StringView source, Span<char *const> args) {
+int Executor::runInSubshell(StringView source, Span<char *const> args, const ShellOptions *options) {
         auto [state, err] = _state.clone();
         List<String> params;
         if (err.isOk()) err = params.reserve(args.size());
@@ -1350,6 +1289,7 @@ int Executor::runInSubshell(StringView source, Span<char *const> args) {
                 return 1;
         }
         state.positional = std::move(params);
+        if (options != nullptr) state.options = *options;
         FdTable  fds = *_fds;
         Executor child(*this, state, fds);
         // A script of its own: not inside the caller's functions or sourced scripts.

@@ -296,12 +296,9 @@ namespace {
                                         case 'w':
                                                 out = stat(a, info) && (info.attributes & FileInfo::ReadOnly) == 0;
                                                 return true;
-                                        // No execute bits on FAT: directories, and scripts by name.
-                                        case 'x':
-                                                out = stat(a, info) &&
-                                                      (info.isDirectory() ||
-                                                       (info.type == FileType::File && a.endsWith(".sh")));
-                                                return true;
+                                        // No execute bits on FAT: directories, and what would run
+                                        // (programs and scripts, by content or name).
+                                        case 'x': out = _ctx.executor().isExecutable(a); return true;
                                         case 'v': out = _ctx.executor().state().vars.value(a) != nullptr; return true;
                                         case 't': {
                                                 long fd = 0;
@@ -397,19 +394,26 @@ namespace {
                 None,
                 Keyword,
                 Function,
-                Builtin
+                Builtin,
+                File
         };
 
-        Kind kindOf(CommandContext &ctx, StringView name) {
+        // For a File, @p path is where (the name itself if it has a `/`).
+        Kind kindOf(CommandContext &ctx, StringView name, String &path) {
                 if (isKeyword(name)) return Kind::Keyword;
                 if (ctx.executor().state().findFunction(name) != nullptr) return Kind::Function;
                 if (ctx.shell().findCommand(name) != nullptr) return Kind::Builtin;
-                return Kind::None;
+                if (name.contains('/')) {
+                        const bool found = ctx.executor().isExecutable(name) && path.assign(name).isOk();
+                        return found ? Kind::File : Kind::None;
+                }
+                return ctx.executor().findInPath(name, path).isOk() ? Kind::File : Kind::None;
         }
 
         // `type`'s description of @p name; false if not found.
         bool describe(CommandContext &ctx, const char *name, bool word) {
-                switch (kindOf(ctx, name)) {
+                String path;
+                switch (kindOf(ctx, name, path)) {
                         case Kind::Keyword:
                                 ctx.printf(word ? "keyword\n" : "%s is a shell keyword\n", name);
                                 return true;
@@ -427,9 +431,49 @@ namespace {
                         case Kind::Builtin:
                                 ctx.printf(word ? "builtin\n" : "%s is a shell builtin\n", name);
                                 return true;
+                        case Kind::File:
+                                if (word) {
+                                        ctx.print("file\n");
+                                } else {
+                                        ctx.printf("%s is %s\n", name, path.cStr());
+                                }
+                                return true;
                         case Kind::None: break;
                 }
                 return false;
+        }
+
+        // The options `set` and `sh` take.
+        struct OptionName {
+                        char        letter;
+                        const char *name;
+                        bool ShellOptions::*field;
+        };
+
+        constexpr OptionName OptionNames[] = {
+                {'e', "errexit", &ShellOptions::errexit},
+                {'C', "noclobber", &ShellOptions::noclobber},
+                {'u', "nounset", &ShellOptions::nounset},
+                {'x', "xtrace", &ShellOptions::xtrace},
+        };
+
+        // `-eux` (on) or `+eux` (off) into @p options; false, reported, for an unknown letter.
+        bool applyOptionLetters(CommandContext &ctx, StringView arg, ShellOptions &options) {
+                const bool on = arg[0] == '-';
+                for (size_t k = 1; k < arg.size(); ++k) {
+                        bool found = false;
+                        for (const OptionName &o : OptionNames) {
+                                if (arg[k] == o.letter) {
+                                        options.*o.field = on;
+                                        found = true;
+                                }
+                        }
+                        if (!found) {
+                                ctx.eprintf("%s: %c%c: invalid option\n", ctx.args()[0], arg[0], arg[k]);
+                                return false;
+                        }
+                }
+                return true;
         }
 
 } // namespace
@@ -458,31 +502,36 @@ int LangBuiltins::command(CommandContext &ctx) {
         if (args.size() < 2) return Shell::ExitSuccess;
         const StringView option = args[1];
         if (option == "-v" || option == "-V") {
-                int status = Shell::ExitSuccess;
+                int  status = Shell::ExitSuccess;
+                Kind kind = Kind::None;
                 for (size_t i = 2; i < args.size(); ++i) {
                         if (option == "-V") {
                                 if (!describe(ctx, args[i], false)) {
                                         ctx.eprintf("command: %s: not found\n", args[i]);
                                         status = Shell::ExitFailure;
                                 }
-                        } else if (kindOf(ctx, args[i]) != Kind::None) {
-                                ctx.printf("%s\n", args[i]);
+                        } else if (String path; (kind = kindOf(ctx, args[i], path)) != Kind::None) {
+                                ctx.printf("%s\n", kind == Kind::File ? path.cStr() : args[i]);
                         } else {
                                 status = Shell::ExitFailure;
                         }
                 }
                 return status;
         }
-        // Run a built-in, bypassing functions of the same name.
+        // Run a built-in or a file, bypassing functions of the same name.
         const Args rest = args.mid(option == "--" ? 2 : 1);
         if (rest.isEmpty()) return Shell::ExitSuccess;
-        const Command *cmd = ctx.shell().findCommand(rest[0]);
-        if (cmd == nullptr) {
-                ctx.eprintf("%s: command not found\n", rest[0]);
-                return Shell::ExitNotFound;
+        List<String> words;
+        Error        err = words.reserve(rest.size());
+        for (size_t i = 0; err.isOk() && i < rest.size(); ++i) {
+                auto [w, werr] = String::fromView(rest[i]);
+                err = werr.isOk() ? words.append(std::move(w)) : werr;
         }
-        CommandContext sub(ctx.shell(), *cmd, rest, ctx.fds(), &ctx.executor());
-        return cmd->run(sub);
+        if (err.isError()) {
+                ctx.eprint("command: out of memory\n");
+                return Shell::ExitFailure;
+        }
+        return ctx.executor().invoke(words, false);
 }
 
 int LangBuiltins::colon(CommandContext &) {
@@ -574,27 +623,37 @@ int LangBuiltins::source(CommandContext &ctx) {
 }
 
 int LangBuiltins::sh(CommandContext &ctx) {
-        const Args args = ctx.args();
-        String     script;
-        Args       params;
-        if (args.size() >= 2 && StringView(args[1]) == "-c") {
+        const Args   args = ctx.args();
+        String       script;
+        Args         params;
+        ShellOptions options = ctx.executor().state().options;
+        // Options first (`#!/bin/sh -e` comes here as `sh -e script`).
+        size_t first = 1;
+        while (first < args.size()) {
+                const StringView a = args[first];
+                if (a.size() < 2 || (a[0] != '-' && a[0] != '+') || a == "-c") break;
+                ++first;
+                if (a == "--") break;
+                if (!applyOptionLetters(ctx, a, options)) return Shell::ExitUsage;
+        }
+        if (first < args.size() && StringView(args[first]) == "-c") {
                 // `sh -c command [name [arg]...]`: name would be $0.
-                if (args.size() < 3) {
+                if (first + 1 == args.size()) {
                         ctx.eprint("sh: -c: option requires an argument\n");
                         return Shell::ExitUsage;
                 }
-                if (script.assign(args[2]).isError()) {
+                if (script.assign(args[first + 1]).isError()) {
                         ctx.eprint("sh: out of memory\n");
                         return Shell::ExitFailure;
                 }
-                params = args.size() > 4 ? args.mid(4) : Args();
-        } else if (args.size() >= 2) {
-                Error err = ctx.executor().readFile(args[1], script);
+                params = args.size() > first + 3 ? args.mid(first + 3) : Args();
+        } else if (first < args.size()) {
+                Error err = ctx.executor().readFile(args[first], script);
                 if (err.isError()) {
-                        ctx.eprintf("sh: %s: %s\n", args[1], CommandContext::errorText(err));
+                        ctx.eprintf("sh: %s: %s\n", args[first], CommandContext::errorText(err));
                         return Shell::ExitNotFound;
                 }
-                params = args.mid(2);
+                params = args.mid(first + 1);
         } else {
                 // The script on stdin; an interactive subshell is not supported.
                 FileHandle *in = ctx.fds().handle(FdTable::Stdin);
@@ -610,7 +669,7 @@ int LangBuiltins::sh(CommandContext &ctx) {
                         }
                 }
         }
-        return ctx.executor().runInSubshell(script, params);
+        return ctx.executor().runInSubshell(script, params, &options);
 }
 
 int LangBuiltins::set(CommandContext &ctx) {
@@ -629,17 +688,6 @@ int LangBuiltins::set(CommandContext &ctx) {
                 }
                 return Shell::ExitSuccess;
         }
-        struct Option {
-                        char        letter;
-                        const char *name;
-                        bool ShellOptions::*field;
-        };
-        static const Option options[] = {
-                {'e', "errexit", &ShellOptions::errexit},
-                {'C', "noclobber", &ShellOptions::noclobber},
-                {'u', "nounset", &ShellOptions::nounset},
-                {'x', "xtrace", &ShellOptions::xtrace},
-        };
         size_t i = 1;
         bool   setPositional = false;
         for (; i < args.size(); ++i) {
@@ -653,14 +701,14 @@ int LangBuiltins::set(CommandContext &ctx) {
                 const bool on = a[0] == '-';
                 if (a[1] == 'o') {
                         if (i + 1 == args.size()) {
-                                for (const Option &o : options) {
+                                for (const OptionName &o : OptionNames) {
                                         ctx.printf("%-15s\t%s\n", o.name, st.options.*o.field ? "on" : "off");
                                 }
                                 return Shell::ExitSuccess;
                         }
                         const StringView name = args[++i];
                         bool             found = false;
-                        for (const Option &o : options) {
+                        for (const OptionName &o : OptionNames) {
                                 if (name == o.name) {
                                         st.options.*o.field = on;
                                         found = true;
@@ -672,19 +720,7 @@ int LangBuiltins::set(CommandContext &ctx) {
                         }
                         continue;
                 }
-                for (size_t k = 1; k < a.size(); ++k) {
-                        bool found = false;
-                        for (const Option &o : options) {
-                                if (a[k] == o.letter) {
-                                        st.options.*o.field = on;
-                                        found = true;
-                                }
-                        }
-                        if (!found) {
-                                ctx.eprintf("set: %c%c: invalid option\n", a[0], a[k]);
-                                return Shell::ExitUsage;
-                        }
-                }
+                if (!applyOptionLetters(ctx, a, st.options)) return Shell::ExitUsage;
         }
         if (i < args.size()) setPositional = true;
         if (setPositional) {
@@ -801,7 +837,7 @@ BMDS_SHELL_COMMAND(readonly, LangBuiltins::readonly, "[-p] [name[=value]]...", "
 BMDS_SHELL_COMMAND_AS(returnCmd, "return", LangBuiltins::returnCmd, "[n]", "Return from a function")
 BMDS_SHELL_COMMAND(set, LangBuiltins::set, "[-+Ceux] [-+o name] [--] [arg]...",
                    "Set shell options and positional parameters, or list variables")
-BMDS_SHELL_COMMAND(sh, LangBuiltins::sh, "[-c command [name] | file] [arg]...",
+BMDS_SHELL_COMMAND(sh, LangBuiltins::sh, "[-+Ceux] [-c command [name] | file] [arg]...",
                    "Run a script in a subshell (from stdin without arguments)")
 BMDS_SHELL_COMMAND(shift, LangBuiltins::shift, "[n]", "Drop the first n positional parameters")
 BMDS_SHELL_COMMAND(source, LangBuiltins::source, "file [arg]...", "Run a script in this shell")

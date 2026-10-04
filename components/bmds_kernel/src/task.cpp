@@ -42,14 +42,26 @@ Error Task::stop() {
         // As IDF's vTaskDeleteWithCaps(): suspended and off the CPU first, then
         // deleted (the port's delete hook may still touch the stack: FPU and
         // PIE state), and only then are its buffers freed.
-        vTaskSuspend(_handle);
-        while (eTaskGetState(_handle) == eRunning) taskYIELD();
+        (void)suspend();
         vTaskDelete(_handle);
         Memory::free(_stack);
         Memory::free(_tcb);
         _handle = nullptr;
         _stack = nullptr;
         _tcb = nullptr;
+        return Error::Ok;
+}
+
+Error Task::suspend() {
+        if (_handle == nullptr || _handle == xTaskGetCurrentTaskHandle()) return Error::InvalidState;
+        vTaskSuspend(_handle);
+        while (eTaskGetState(_handle) == eRunning) taskYIELD();
+        return Error::Ok;
+}
+
+Error Task::resume() {
+        if (_handle == nullptr) return Error::InvalidState;
+        vTaskResume(_handle);
         return Error::Ok;
 }
 

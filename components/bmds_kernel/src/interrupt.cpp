@@ -25,7 +25,7 @@ BMDS_NAMESPACE_BEGIN
 // waiter it is releasing.
 
 void Interrupt::raise() {
-        _raised.store(true);
+        _raises.fetch_add(1);
         // FreeRTOS calls aren't allowed inside a critical section, so keep the
         // waiter from being scheduled in instead.
         Detail::suspendScheduler();
@@ -35,12 +35,12 @@ void Interrupt::raise() {
 }
 
 void Interrupt::raiseFromIsr() {
-        _raised.store(true);
+        _raises.fetch_add(1);
         wake(true);
         return;
 }
 
-Error Interrupt::wait(Semaphore &semaphore, const Deadline &deadline) {
+Error Interrupt::wait(Semaphore &semaphore, const Deadline &deadline, uint32_t seen) {
         size_t slot = MaxWaiters;
         for (size_t i = 0; i < MaxWaiters; ++i) {
                 Semaphore *expected = nullptr;
@@ -49,12 +49,12 @@ Error Interrupt::wait(Semaphore &semaphore, const Deadline &deadline) {
                         break;
                 }
         }
-        Error err = isRaised() ? Error(Error::Interrupted) : semaphore.acquire(deadline);
+        Error err = raises() != seen ? Error(Error::Interrupted) : semaphore.acquire(deadline);
         if (slot != MaxWaiters) {
                 _waiters[slot].store(nullptr);
                 while (_busy.load() != 0) {}
         }
-        if (isRaised()) return Error::Interrupted;
+        if (raises() != seen) return Error::Interrupted;
         return err;
 }
 

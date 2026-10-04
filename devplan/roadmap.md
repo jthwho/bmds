@@ -54,7 +54,7 @@ Plans: [`storage.md`](storage.md), [`time.md`](time.md). Complete; verified on h
 - [x] Loader: load from SD, relocate, run, return exit code; clean up on exit.
 - [x] Syscall table v1: fd-based I/O (stdin/stdout/stderr, `read/write/close/dup2/isatty`), terminal info/modes, file I/O, memory, time, exit, args, environment.
 - [x] ABI lock tests.
-- [ ] Shell: run programs by name, `PATH`-like search.
+- [x] Shell: run programs by name, `PATH`-like search; `#!` and `.sh` scripts launched by content; kill on a second Ctrl-C.
 - [ ] Push-and-run over serial (host tool sends a program, device runs it — no reflash).
 - [ ] POSIX C runtime in the firmware (`devplan/programs.md` §12): libc spike (musl vs picolibc), Amiga-style library tables, spawn/wait/pipe, signals, `termios`, `poll`; replaces static picolibc before the first release. Yardstick: BusyBox/Toybox no-MMU builds run.
 - [ ] Example programs: `hello`, `cat`, a benchmark.

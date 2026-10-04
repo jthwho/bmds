@@ -55,7 +55,13 @@ class Interrupt {
                  * @brief Returns true if the interrupt has been raised and not cleared.
                  * @isrsafe
                  */
-                bool isRaised() const { return _raised.load(); }
+                bool isRaised() const { return _raises.load() != 0; }
+
+                /**
+                 * @brief Returns how often it has been raised since the last `clear()`.
+                 * @isrsafe
+                 */
+                uint32_t raises() const { return _raises.load(); }
 
                 /**
                  * @brief Raises the interrupt and wakes every waiter (task context).
@@ -69,15 +75,27 @@ class Interrupt {
                  */
                 void raiseFromIsr();
 
-                /** @brief Clears the flag. */
-                void clear() { _raised.store(false); }
+                /** @brief Clears the flag (and the count). */
+                void clear() { _raises.store(0); }
 
                 /**
                  * @brief Takes @p semaphore, giving up at @p deadline or when raised.
                  * @return `Ok`, `Timeout`, or `Interrupted` (also if already raised).
                  * @blocking
                  */
-                Error wait(Semaphore &semaphore, const Deadline &deadline);
+                Error wait(Semaphore &semaphore, const Deadline &deadline) { return wait(semaphore, deadline, 0); }
+
+                /**
+                 * @brief Takes @p semaphore, giving up at @p deadline or when raised
+                 *        again: when `raises()` is no longer @p seen.
+                 *
+                 * For a waiter that has handled the raises so far and waits for
+                 * the next (with @p seen 0, the same as the plain `wait()`).
+                 *
+                 * @return `Ok`, `Timeout`, or `Interrupted` (also if already past @p seen).
+                 * @blocking
+                 */
+                Error wait(Semaphore &semaphore, const Deadline &deadline, uint32_t seen);
 
                 /**
                  * @brief `wait()` on @p interrupt, or a plain acquire when it is null.
@@ -100,7 +118,7 @@ class Interrupt {
         private:
                 void wake(bool fromIsr);
 
-                std::atomic<bool>        _raised{false};
+                std::atomic<uint32_t>    _raises{0}; // since clear(); raised while non-zero
                 std::atomic<uint32_t>    _busy{0}; // raisers currently releasing waiters
                 std::atomic<Semaphore *> _waiters[MaxWaiters] = {};
 };

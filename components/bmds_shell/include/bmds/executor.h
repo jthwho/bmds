@@ -27,6 +27,7 @@
 BMDS_NAMESPACE_BEGIN
 
 class Shell;
+struct Command;
 
 /**
  * @brief Appends @p value quoted for re-input to the shell, as bash's `set`
@@ -116,6 +117,20 @@ class Executor {
                 /** @brief Deepest function recursion. */
                 static constexpr int MaxCallDepth = 100;
 
+                /** @brief Bytes of a file `runFile()` looks at: the `#!` line must end within them. */
+                static constexpr size_t HeadBytes = 256;
+
+                /** @brief Deepest nesting of `#!` interpreters (a script whose interpreter is a script...). */
+                static constexpr int MaxInterpreterDepth = 4;
+
+                /** @brief What a file is to `runFile()`, from its first bytes, else its name. */
+                enum class FileKind : uint8_t {
+                        Other,       ///< None of these: not run.
+                        Program,     ///< `\x7fELF`: the launcher checks and runs it.
+                        Interpreted, ///< `#!`: its interpreter runs it.
+                        ShellScript, ///< A `.sh` file without `#!`: the built-in `sh` runs it.
+                };
+
                 /** @brief Stack the executor leaves free (for the commands it runs). */
                 static constexpr size_t StackReserveBytes = 3072;
 
@@ -203,7 +218,57 @@ class Executor {
                  * @brief `sh`: runs a script in a subshell with @p args as its
                  *        positional parameters; `exit` ends just the subshell.
                  */
-                int runInSubshell(StringView source, Span<char *const> args);
+                int runInSubshell(StringView source, Span<char *const> args, const ShellOptions *options = nullptr);
+
+                /**
+                 * @brief Runs a command that isn't a keyword: a function (if
+                 *        @p functions), a built-in, else a file.
+                 *
+                 * A name with a `/` is a path; otherwise the file is looked up
+                 * on `$PATH` (`findInPath()`). Not found: `name: command not
+                 * found` and 127. Uses the current file descriptors.
+                 *
+                 * @param args      The command and its arguments (may be moved from).
+                 * @param functions False for `command name`: skip functions.
+                 * @return The exit status.
+                 */
+                int invoke(List<String> &args, bool functions);
+
+                /**
+                 * @brief Finds @p name in the directories of `$PATH`.
+                 *
+                 * In each directory in turn: `name`, `name.elf`, `name.sh`; the
+                 * first regular file wins. An empty entry is the current directory.
+                 *
+                 * @return `Ok` with the path in @p out, `NotExist`, or `NoMem`.
+                 */
+                Error findInPath(StringView name, String &out);
+
+                /**
+                 * @brief Runs the file at @p path by what it contains.
+                 *
+                 * A BMDS program goes to the launcher; `#!interpreter [arg]`
+                 * runs `interpreter [arg] path args...` (an interpreter path that
+                 * doesn't exist is a built-in by its last component, `bash`
+                 * meaning `sh`, or `/usr/bin/env name` looks `name` up as a
+                 * command); a `.sh` file runs in the built-in `sh`. Anything
+                 * else is refused (126). Problems are reported as `path: reason`.
+                 *
+                 * @param path  The file.
+                 * @param args  argv as typed (`args[0]` stays the program's name; may be moved from).
+                 * @param depth Interpreters around this one (internal; 0 from outside).
+                 * @return The exit status.
+                 */
+                int runFile(StringView path, List<String> &args, int depth = 0);
+
+                /**
+                 * @brief `test -x`: a directory, or a file `runFile()` would run
+                 *        (a program, a `#!` script, a `.sh` file).
+                 */
+                bool isExecutable(StringView path);
+
+                /** @brief The kind of the file at @p path whose first bytes are @p head. */
+                static FileKind classify(StringView path, StringView head);
 
                 /** @brief Returns the state. */
                 ShellState &state() { return _state; }
@@ -253,7 +318,11 @@ class Executor {
                 int            runSubshell(const Node *body);
                 int            runCommand(List<String> &args, const Redirection *redirects);
                 int            callFunction(const ShellFunction &fn, List<String> &args);
-                int            runProgram(List<String> &args, FdTable &fds);
+                int            runBuiltin(const Command &cmd, List<String> &args);
+                int            runProgram(StringView path, List<String> &args);
+                int            runInterpreter(StringView path, StringView head, bool whole, List<String> &args,
+                                              int depth);
+                Error          readHead(StringView path, char (&head)[HeadBytes], size_t &size, bool &whole);
                 bool           loopIteration(bool &stop);
                 Error          applyRedirects(const Redirection *r, FdTable &fds);
                 Error          expandTarget(const Word *word, String &out);

@@ -76,6 +76,30 @@ TEST_CASE("Interrupt: raise wakes every blocked waiter") {
         for (Semaphore *s : sems) delete s;
 }
 
+TEST_CASE("Interrupt: raises are counted, and a waiter can wait for the next") {
+        Interrupt intr;
+        Semaphore done(1, 0);
+        CHECK(intr.raises() == 0);
+        intr.raise();
+        intr.raiseFromIsr();
+        CHECK(intr.raises() == 2);
+        // Past the raises it has seen: blocks until the next one, or a release.
+        CHECK(intr.wait(done, Deadline(20), 2) == Error::Timeout);
+        CHECK(intr.wait(done, Deadline(20), 1) == Error::Interrupted);
+        std::thread raiser([&] {
+                pause(20);
+                intr.raise();
+        });
+        CHECK(intr.wait(done, Deadline(bmds::WaitForever), 2) == Error::Interrupted);
+        raiser.join();
+        CHECK(intr.raises() == 3);
+        done.release();
+        CHECK(intr.wait(done, Deadline(bmds::WaitForever), 3).isOk());
+        intr.clear();
+        CHECK(intr.raises() == 0);
+        CHECK_FALSE(intr.isRaised());
+}
+
 TEST_CASE("Interrupt: sleep") {
         Interrupt  intr;
         const auto start = std::chrono::steady_clock::now();

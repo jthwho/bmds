@@ -65,6 +65,9 @@ Error Shell::spawn(Console &console, const char *name, const Startup &startup) {
         if (err.isOk()) err = session->shell.state().vars.set("BMDS_VERSION", System::info().bmdsVersion);
         // The first partition of the first SD card (where autoexec.sh lives).
         if (err.isOk()) err = session->shell.state().vars.set("HOME", "/sd0/p0");
+        // Where commands that aren't built-ins are looked for (name, name.elf, name.sh).
+        if (err.isOk()) err = session->shell.state().vars.set("PATH", "/sd0/p0/bin");
+        if (err.isOk()) err = session->shell.state().vars.addFlags("PATH", Variables::Exported);
         // A colored prompt with the directory; the console fits the color to its terminal.
         if (err.isOk())
                 err = session->shell.state().vars.set(

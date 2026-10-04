@@ -73,6 +73,25 @@ class Task {
                  */
                 Error stop();
 
+                /**
+                 * @brief Suspends the task and waits until it is off both cores.
+                 *
+                 * Once this returns, the task's state (its memory, flags it
+                 * publishes) holds still until `resume()`.
+                 *
+                 * @return `Ok`, or `InvalidState` if not running or if called by the
+                 *         task itself.
+                 * @blocking Briefly, while the task leaves the CPU.
+                 */
+                Error suspend();
+
+                /**
+                 * @brief Resumes a task suspended by `suspend()`.
+                 * @return `Ok`, or `InvalidState` if not running.
+                 * @nonblocking
+                 */
+                Error resume();
+
                 /** @brief Returns true once started. */
                 bool isRunning() const { return _handle != nullptr; }
 
