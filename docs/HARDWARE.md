@@ -38,7 +38,7 @@ U1 is a bare QFN104 ESP32-P4 chip soldered to the board, not a module.
 
 | Function | Implementation | Notes |
 |---|---|---|
-| **Video out** | HDMI via a **Lontium LT8912B** (U12), 2 DSI lanes | Controlled over the main I²C bus at 0x48/0x49/0x4A. No ESP GPIO for reset (RC only), interrupt, or HPD; hot-plug state is read from LT8912B registers. HDMI carries video only. Up to 1920×1080 at 30 Hz or 1280×800 at 60 Hz. The DSI PHY is powered from LDO VO3 at 2.5 V. |
+| **Video out** | HDMI via a **Lontium LT8912B** (U12), 2 DSI lanes | Controlled over the main I²C bus at 0x48/0x49/0x4A. No ESP GPIO for reset (RC only: **an ESP reset leaves the bridge's registers as they were**), interrupt, or HPD; hot-plug state is read from LT8912B registers (main 0xC1 bit 7, valid once its digital clocks are on). Shows a picture at 1280×720 (confirmed 2026-10-04). HDMI carries video only. Up to 1920×1080 at 30 Hz or 1280×800 at 60 Hz. The DSI PHY is powered from LDO VO3 at 2.5 V. |
 | **LCD** | 15-pin MIPI-DSI connector | **Shares the DSI lanes with the HDMI bridge, with no mux**, so use one or the other. |
 | **Camera** | MIPI-CSI connector, 2 lanes | Camera I²C is on the main bus. No GPIOs for camera reset or strobe. Not planned for early phases. |
 | **USB host** | 4× USB-A behind a **Terminus FE1.1s** hub (U7), on the P4's USB 2.0 HS OTG | Hub reset on GPIO21 (active low). VBUS comes from one CH217K switch controlled by the hub. The ESP has no GPIO for VBUS enable or overcurrent. |
@@ -105,6 +105,8 @@ Every ESP32-P4 GPIO with a board function. Netlist names are given where they he
 | USB HS | DP/DM (dedicated pins 49/50 of the package) | USB 2.0 OTG | To the FE1.1s upstream port |
 
 ### Main I²C Bus (GPIO7/8)
+
+**Run it at 100 kHz.** At 400 kHz about 40% of reads from the LT8912B came back wrong and writes were corrupted, with no acknowledge errors (measured 2026-10-04, Rev C board, a monitor connected). The bus carries 10k pull-ups and level shifters to 1.8 V and to the HDMI side's 5 V.
 
 | Device | 7-bit address | Notes |
 |---|---|---|

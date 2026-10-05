@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <bmds/config.h>
+#include <bmds/edid.h>
 #include <bmds/error.h>
 #include <bmds/i2cbus.h>
 #include <bmds/result.h>
@@ -58,6 +59,29 @@ class Lt8912b {
                  * @blocking
                  */
                 Result<bool> isMonitorConnected();
+
+                /**
+                 * @brief Sets the bridge up for @p timing from @p lanes DSI data
+                 *        lanes (1-4), sending HDMI (with an AVI infoframe) or DVI,
+                 *        and turns its HDMI output on. Call before the DSI video
+                 *        starts; `resetReceiver()` after.
+                 * @return `Ok`, or the bus's error.
+                 * @blocking
+                 */
+                Error configure(const VideoTiming &timing, uint8_t lanes, bool hdmi);
+
+                /**
+                 * @brief Resets the DSI receiver and the pixel clock recovery, so
+                 *        they lock onto the video now coming in.
+                 * @blocking
+                 */
+                Error resetReceiver();
+
+                /**
+                 * @brief Turns the HDMI output on or off (the TMDS drivers).
+                 * @blocking
+                 */
+                Error setOutput(bool on);
 
                 /** @brief Returns the bus. */
                 I2cBus &bus() { return _bus; }

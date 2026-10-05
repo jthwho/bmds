@@ -19,7 +19,7 @@ if(COMMAND idf_component_register)
                                     src/lt8912b.cpp
                                INCLUDE_DIRS include
                                REQUIRES bmds_core bmds_kernel
-                               PRIV_REQUIRES bmds_board bmds_shell esp_driver_i2c
+                               PRIV_REQUIRES bmds_board bmds_shell esp_driver_i2c esp_hw_support esp_lcd
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})
 else()

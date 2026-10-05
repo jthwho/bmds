@@ -79,11 +79,11 @@ Plans: [`storage.md`](storage.md), [`time.md`](time.md). Complete; verified on h
 
 Plan: [`display.md`](display.md).
 
-- [ ] Bring-up and measurements (`display.md` §4): 1a the bridge and EDID on I²C, 1b a picture, 1c the cost of scanout.
-- [ ] DSI-to-HDMI bridge bring-up; mode selection.
-- [ ] Framebuffer in PSRAM (DMA-capable), double buffering policy.
-- [ ] Text console: `TerminalScreen` (VT subset, 24-bit color cells) + bitmap font renderer with damage tracking (`terminal.md`).
-- [ ] Shell instance on the HDMI console (output only until Phase 5).
+- [x] Bring-up (`display.md` §4): the LT8912B and EDID on I²C, a test picture at 1280×720.
+- [ ] Line-rendered scanout (`display.md` §5): a ring of line buffers in internal RAM streamed by the DSI DMA, refilled per block; measured.
+- [ ] Text console: `TerminalScreen` (VT subset, 24-bit color cells) + a bitmap font renderer as the scanout's line source (`terminal.md`).
+- [ ] Shell instance on the HDMI console (output only until Phase 5); `Display` as a service (hot-plug).
+- [ ] Display modes (720p and up, the EDID's preferred where the DSI link allows) and depths for programs (8-bit palette, 16, 24); line-based graphics.
 
 ## Phase 5 — Input
 

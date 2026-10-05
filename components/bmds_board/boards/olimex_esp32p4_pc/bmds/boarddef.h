@@ -40,8 +40,9 @@ namespace Detail {
                 .i2c =
                         {
                                 // Main: LT8912B (0x48-0x4A), ES8311 (0x18), HDMI DDC (0x50), DSI/CSI connectors.
-                                // 10k pull-ups on board.
-                                {.port = 0, .sda = 7, .scl = 8, .clockHz = 400'000},
+                                // 10k pull-ups on board. 100 kHz: at 400 kHz about 40% of reads
+                                // from the LT8912B came back wrong, and writes were corrupted.
+                                {.port = 0, .sda = 7, .scl = 8, .clockHz = 100'000},
                                 // UEXT pins 5/6, 2.2k pull-ups.
                                 {.port = 1, .sda = 22, .scl = 23, .clockHz = 100'000},
                         },

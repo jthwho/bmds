@@ -11,6 +11,9 @@
  */
 
 #include <cstring>
+#include <esp_lcd_mipi_dsi.h>
+#include <esp_lcd_panel_ops.h>
+#include <esp_ldo_regulator.h>
 #include <bmds/board.h>
 #include <bmds/command.h>
 #include <bmds/edid.h>
@@ -30,6 +33,32 @@ namespace {
         constexpr unsigned int TimeoutMs = 100;
 
         constinit StaticObject<Lt8912b> bridgeObject;
+
+        // Step 1b's bring-up (devplan/display.md): IDF's DPI panel showing the
+        // DSI controller's own bar pattern, to prove the bridge setup. The
+        // line-buffer scanout replaces it.
+        struct TestMode {
+                        const char *name;
+                        VideoTiming timing;
+        };
+        constexpr TestMode TestModes[] = {
+                // Espressif's timings: pixel clocks the DPI clock divides from its PLL.
+                {"720", {80'000, 1280, 408, 32, 80, 720, 3, 5, 13, true, false, false}},
+                {"1080", {70'000, 1920, 48, 32, 80, 1080, 3, 5, 8, true, false, false}},
+        };
+        esp_ldo_channel_handle_t testLdo = nullptr;
+        esp_lcd_dsi_bus_handle_t testBus = nullptr;
+        esp_lcd_panel_handle_t   testPanel = nullptr;
+
+        void stopTest() {
+                if (testPanel != nullptr) (void)esp_lcd_panel_del(testPanel);
+                if (testBus != nullptr) (void)esp_lcd_del_dsi_bus(testBus);
+                if (testLdo != nullptr) (void)esp_ldo_release_channel(testLdo);
+                testPanel = nullptr;
+                testBus = nullptr;
+                testLdo = nullptr;
+                return;
+        }
 
         // The board's bridge, attached on first use; null (with a message) if none.
         Lt8912b *bridge(CommandContext &ctx) {
@@ -149,11 +178,131 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        int runTest(CommandContext &ctx, const char *which) {
+                Lt8912b *b = bridge(ctx);
+                if (b == nullptr) return Shell::ExitFailure;
+                stopTest();
+                if (std::strcmp(which, "off") == 0) {
+                        (void)b->setOutput(false);
+                        return Shell::ExitSuccess;
+                }
+                const TestMode *mode = nullptr;
+                for (const TestMode &m : TestModes) {
+                        if (std::strcmp(m.name, which) == 0) mode = &m;
+                }
+                if (mode == nullptr) return ctx.usage();
+                const VideoTiming       &t = mode->timing;
+                const BoardDisplay      &d = board().display;
+                const uint32_t           laneMbps = (t.pixelKhz * 24 / d.dsiLanes + 999) / 1000;
+                esp_err_t                err = ESP_OK;
+                const char              *step = "";
+                esp_ldo_channel_config_t ldo = {};
+                ldo.chan_id = d.phyLdo;
+                ldo.voltage_mv = d.phyLdoMv;
+                step = "LDO";
+                err = esp_ldo_acquire_channel(&ldo, &testLdo);
+                if (err == ESP_OK) {
+                        esp_lcd_dsi_bus_config_t bus = {};
+                        bus.bus_id = 0;
+                        bus.num_data_lanes = d.dsiLanes;
+                        // 0: the driver picks by chip revision (the crystal needs v3.0).
+                        bus.phy_clk_src = static_cast<mipi_dsi_phy_pllref_clock_source_t>(0);
+                        bus.lane_bit_rate_mbps = laneMbps;
+                        step = "DSI bus";
+                        err = esp_lcd_new_dsi_bus(&bus, &testBus);
+                }
+                if (err == ESP_OK) {
+                        const Error berr = b->configure(t, d.dsiLanes, true);
+                        if (berr.isError()) {
+                                ctx.eprintf("display: bridge: %s\n", berr.desc());
+                                stopTest();
+                                return Shell::ExitFailure;
+                        }
+                        esp_lcd_dpi_panel_config_t panel = {};
+                        panel.virtual_channel = 0;
+                        panel.dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT;
+                        panel.dpi_clock_freq_mhz = t.pixelKhz / 1000;
+                        panel.in_color_format = LCD_COLOR_FMT_RGB565;
+                        panel.out_color_format = LCD_COLOR_FMT_RGB888;
+                        panel.num_fbs = 1;
+                        panel.video_timing.h_size = t.hActive;
+                        panel.video_timing.v_size = t.vActive;
+                        panel.video_timing.hsync_back_porch = t.hBack;
+                        panel.video_timing.hsync_pulse_width = t.hSync;
+                        panel.video_timing.hsync_front_porch = t.hFront;
+                        panel.video_timing.vsync_back_porch = t.vBack;
+                        panel.video_timing.vsync_pulse_width = t.vSync;
+                        panel.video_timing.vsync_front_porch = t.vFront;
+                        panel.flags.disable_lp = true;
+                        step = "DPI panel";
+                        err = esp_lcd_new_panel_dpi(testBus, &panel, &testPanel);
+                }
+                if (err == ESP_OK) {
+                        step = "pattern";
+                        err = esp_lcd_dpi_panel_set_pattern(testPanel, MIPI_DSI_PATTERN_BAR_VERTICAL);
+                }
+                if (err == ESP_OK) {
+                        step = "start";
+                        err = esp_lcd_panel_init(testPanel);
+                }
+                if (err != ESP_OK) {
+                        ctx.eprintf("display: %s: %s\n", step, esp_err_to_name(err));
+                        stopTest();
+                        return Shell::ExitFailure;
+                }
+                (void)b->resetReceiver();
+                ctx.printf("Test:     %ux%u, %u.%03u MHz, lanes at %u Mbps, vertical bars\n", t.hActive, t.vActive,
+                           static_cast<unsigned>(t.pixelKhz / 1000), static_cast<unsigned>(t.pixelKhz % 1000),
+                           static_cast<unsigned>(laneMbps));
+                return Shell::ExitSuccess;
+        }
+
+        // Bring-up diagnostics: I2C read reliability at two clocks, and what the
+        // bridge sees of the DSI input (main 0x9c-0x9f: the measured sync counts).
+        int runCheck(CommandContext &ctx) {
+                Lt8912b *b = bridge(ctx);
+                if (b == nullptr) return Shell::ExitFailure;
+                for (uint32_t hz : {400'000u, 100'000u}) {
+                        auto [d, err] = b->bus().device(b->address(), hz, TimeoutMs);
+                        if (err.isError()) return Shell::ExitFailure;
+                        unsigned bad = 0, failed = 0;
+                        for (int i = 0; i < 200; ++i) {
+                                auto [v, rerr] = d->readRegister(0x00, TimeoutMs);
+                                if (rerr.isError()) {
+                                        ++failed;
+                                } else if (v != 0x12) {
+                                        ++bad;
+                                }
+                        }
+                        ctx.printf("i2c %u kHz: 200 reads of 0x00, %u wrong, %u failed\n",
+                                   static_cast<unsigned>(hz / 1000), bad, failed);
+                }
+                auto [d, err] = b->bus().device(b->address(), 100'000, TimeoutMs);
+                if (err.isError()) return Shell::ExitFailure;
+                ctx.printf("main:");
+                for (uint8_t r : {0x9c, 0x9d, 0x9e, 0x9f, 0x33, 0x44, 0xb2, 0xab, 0xc1}) {
+                        auto [v, rerr] = d->readRegister(r, TimeoutMs);
+                        ctx.printf(" %02x=%02x%s", r, v, rerr.isError() ? "!" : "");
+                }
+                ctx.printf("\n");
+                auto [dsi, derr] = b->bus().device(static_cast<uint8_t>(b->address() + 1), 100'000, TimeoutMs);
+                if (derr.isError()) return Shell::ExitFailure;
+                ctx.printf("dsi: ");
+                for (uint8_t r : {0x10, 0x11, 0x13, 0x18, 0x19, 0x1c, 0x1d, 0x34, 0x35, 0x36, 0x37}) {
+                        auto [v, rerr] = dsi->readRegister(r, TimeoutMs);
+                        ctx.printf(" %02x=%02x%s", r, v, rerr.isError() ? "!" : "");
+                }
+                ctx.printf("\n");
+                return Shell::ExitSuccess;
+        }
+
         int runDisplay(CommandContext &ctx) {
                 const Args args = ctx.args();
                 if (args.size() == 1) return showStatus(ctx);
                 if (args.size() == 2 && std::strcmp(args[1], "edid") == 0) return showEdid(ctx);
                 if (args.size() == 2 && std::strcmp(args[1], "scan") == 0) return scanBus(ctx);
+                if (args.size() == 3 && std::strcmp(args[1], "test") == 0) return runTest(ctx, args[2]);
+                if (args.size() == 2 && std::strcmp(args[1], "check") == 0) return runCheck(ctx);
                 return ctx.usage();
         }
 
