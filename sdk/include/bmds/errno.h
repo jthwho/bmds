@@ -18,10 +18,13 @@
 
 #define BMDS_EPERM 1         /**< Operation not permitted. */
 #define BMDS_ENOENT 2        /**< No such file or directory. */
+#define BMDS_ESRCH 3         /**< No such process. */
 #define BMDS_EINTR 4         /**< Interrupted (Ctrl-C). */
 #define BMDS_EIO 5           /**< Input/output error. */
+#define BMDS_E2BIG 7         /**< Argument list too long. */
 #define BMDS_ENOEXEC 8       /**< Exec format error. */
 #define BMDS_EBADF 9         /**< Bad file descriptor. */
+#define BMDS_ECHILD 10       /**< No child processes. */
 #define BMDS_EAGAIN 11       /**< Try again (would block). */
 #define BMDS_ENOMEM 12       /**< Out of memory. */
 #define BMDS_EACCES 13       /**< Permission denied. */

@@ -89,6 +89,10 @@ foreach(dir IN LISTS _bmds_dirs)
         list(APPEND _bmds_srcs ${base} ${arch})
 endforeach()
 
+# The SDK's vfork.S has vfork and __clone (musl's generic ones are fork and
+# ENOSYS).
+list(REMOVE_ITEM _bmds_srcs "${_bmds_musl}/src/process/vfork.c" "${_bmds_musl}/src/thread/clone.c")
+
 add_library(bmds_libc STATIC ${_bmds_srcs})
 set_target_properties(bmds_libc PROPERTIES OUTPUT_NAME c ARCHIVE_OUTPUT_DIRECTORY "${BMDS_LIBC_LIB}")
 # What other libcs keep apart is all in libc.a: -lm and the like must find

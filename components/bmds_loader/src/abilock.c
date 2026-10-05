@@ -55,6 +55,13 @@ _Static_assert(BMDS_SYS_FTRUNCATE == 31, "ABI: slot FTRUNCATE");
 _Static_assert(BMDS_SYS_SYMLINK == 32, "ABI: slot SYMLINK");
 _Static_assert(BMDS_SYS_READLINK == 33, "ABI: slot READLINK");
 _Static_assert(BMDS_SYS_LSTAT == 34, "ABI: slot LSTAT");
+_Static_assert(BMDS_SYS_PROC_VFORK == 35, "ABI: slot PROC_VFORK");
+_Static_assert(BMDS_SYS_PROC_EXEC == 36, "ABI: slot PROC_EXEC");
+_Static_assert(BMDS_SYS_PROC_VFORK_EXIT == 37, "ABI: slot PROC_VFORK_EXIT");
+_Static_assert(BMDS_SYS_PROC_WAIT == 38, "ABI: slot PROC_WAIT");
+_Static_assert(BMDS_SYS_PIPE == 39, "ABI: slot PIPE");
+_Static_assert(BMDS_SYS_PROC_ID == 40, "ABI: slot PROC_ID");
+_Static_assert(BMDS_SYS_FD_FLAGS == 41, "ABI: slot FD_FLAGS");
 _Static_assert(BMDS_TYPE_LINK == 4, "ABI: file type LINK");
 _Static_assert(BMDS_ABI_VERSION == 1, "ABI: version (raise it with every addition once shipped)");
 _Static_assert(BMDS_STDIN == 0 && BMDS_STDOUT == 1 && BMDS_STDERR == 2, "ABI: standard fds");
@@ -64,6 +71,8 @@ _Static_assert(BMDS_MEM_FAST == 1 && BMDS_MEM_DMA == 2 && BMDS_MEM_ALIGN == 16, 
 _Static_assert(BMDS_PATH_MAX == 1024 && BMDS_NAME_MAX == 765, "ABI: path and name lengths");
 _Static_assert(BMDS_O_READ == 0x01 && BMDS_O_WRITE == 0x02 && BMDS_O_CREATE == 0x04, "ABI: open flags");
 _Static_assert(BMDS_O_TRUNC == 0x08 && BMDS_O_APPEND == 0x10 && BMDS_O_EXCL == 0x20, "ABI: open flags");
+_Static_assert(BMDS_O_CLOEXEC == 0x40 && BMDS_FD_CLOEXEC == 0x1, "ABI: close-on-exec flags");
+_Static_assert(BMDS_WAIT_NOHANG == 0x1 && BMDS_PROC_SELF == 0 && BMDS_PROC_PARENT == 1, "ABI: process flags");
 _Static_assert(BMDS_TYPE_FILE == 1 && BMDS_TYPE_DIRECTORY == 2 && BMDS_TYPE_DEVICE == 3, "ABI: file types");
 _Static_assert(BMDS_ATTR_READONLY == 0x01 && BMDS_ATTR_HIDDEN == 0x02, "ABI: attributes");
 _Static_assert(BMDS_ATTR_SYSTEM == 0x04 && BMDS_ATTR_ARCHIVE == 0x20, "ABI: attributes");
@@ -119,8 +128,10 @@ _Static_assert(offsetof(bmds_program_note_t, flags) == 12, "ABI: note.flags");
 
 // --- bmds/errno.h ---------------------------------------------------------
 
-_Static_assert(BMDS_EPERM == 1 && BMDS_ENOENT == 2 && BMDS_EINTR == 4 && BMDS_EIO == 5, "ABI: errno 1-5");
-_Static_assert(BMDS_ENOEXEC == 8 && BMDS_EBADF == 9 && BMDS_EAGAIN == 11 && BMDS_ENOMEM == 12, "ABI: errno 8-12");
+_Static_assert(BMDS_EPERM == 1 && BMDS_ENOENT == 2 && BMDS_ESRCH == 3 && BMDS_EINTR == 4 && BMDS_EIO == 5,
+               "ABI: errno 1-5");
+_Static_assert(BMDS_E2BIG == 7 && BMDS_ENOEXEC == 8 && BMDS_EBADF == 9 && BMDS_ECHILD == 10, "ABI: errno 7-10");
+_Static_assert(BMDS_EAGAIN == 11 && BMDS_ENOMEM == 12, "ABI: errno 11-12");
 _Static_assert(BMDS_EACCES == 13 && BMDS_EFAULT == 14 && BMDS_EBUSY == 16 && BMDS_EEXIST == 17, "ABI: errno 13-17");
 _Static_assert(BMDS_EXDEV == 18 && BMDS_ENODEV == 19 && BMDS_ENOTDIR == 20 && BMDS_EISDIR == 21, "ABI: errno 18-21");
 _Static_assert(BMDS_EINVAL == 22 && BMDS_ENFILE == 23 && BMDS_EMFILE == 24 && BMDS_ENOTTY == 25, "ABI: errno 22-25");

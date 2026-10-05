@@ -18,6 +18,7 @@
 #include <bmds/errno.h>
 #include <bmds/memorystream.h>
 #include <bmds/process.h>
+#include <bmds/processtable.h>
 #include <bmds/ramblockdevice.h>
 #include <bmds/sys.h>
 #include <bmds/vfs.h>
@@ -214,7 +215,7 @@ TEST_CASE("Process: files and directories") {
                 CHECK(p.open("", BMDS_O_READ) == -BMDS_ENOENT);
                 CHECK(p.open(tooLong.c_str(), BMDS_O_READ) == -BMDS_ENAMETOOLONG);
                 CHECK(p.open("f", 0) == -BMDS_EINVAL);
-                CHECK(p.open("f", BMDS_O_WRITE | 0x40) == -BMDS_EINVAL);
+                CHECK(p.open("f", BMDS_O_WRITE | 0x80) == -BMDS_EINVAL);
                 CHECK(p.open("missing", BMDS_O_READ) == -BMDS_ENOENT);
 
                 // A file: relative to the cwd, on the lowest free fd.
@@ -547,4 +548,154 @@ TEST_CASE("Process: clocks, sleeping, memory") {
         CHECK(p.memInfo(0x80, &info) == -BMDS_EINVAL);
         CHECK(p.memInfo(0, nullptr) == -BMDS_EFAULT);
         p.memFree(m);
+}
+
+TEST_CASE("ProcessTable") {
+        using bmds::Error;
+        using bmds::ProcessTable;
+        const size_t base = HostMemory::liveAllocations();
+        {
+                ProcessTable table;
+                CHECK(table.add(ProcessTable::ShellPid, 0, nullptr, nullptr).error() == Error::InvalidState);
+                REQUIRE(table.init().isOk());
+                REQUIRE(table.init().isOk());
+                bmds::Semaphore shellEvent{1, 0};
+                bmds::Semaphore parentEvent{1, 0};
+                int             tag = 0;
+
+                // A shell program and two children; ids count up from 2.
+                const int32_t parent = table.add(ProcessTable::ShellPid, 0, &shellEvent, &tag).value();
+                CHECK(parent == 2);
+                const int32_t a = table.add(parent, parent, &parentEvent, nullptr).value();
+                const int32_t b = table.add(parent, parent, &parentEvent, nullptr).value();
+                CHECK(a == 3);
+                CHECK(b == 4);
+                CHECK(table.parentOf(a) == parent);
+                CHECK(table.parentOf(parent) == ProcessTable::ShellPid);
+                CHECK(table.parentOf(99) == 0);
+                CHECK(table.count() == 3);
+                int inJob = 0;
+                table.forEachInJob(parent, [&](int32_t, void *) { ++inJob; });
+                CHECK(inJob == 3);
+
+                // Waiting: none ended yet; a wrong id; then one ended.
+                CHECK(table.reap(parent, -1).error() == Error::WouldBlock);
+                CHECK(table.reap(parent, 77).error() == Error::NotExist);
+                CHECK(table.reap(a, -1).error() == Error::NotExist);
+                table.exited(b, ProcessTable::exitStatus(3));
+                CHECK(parentEvent.tryAcquire().isOk());
+                table.exited(b, ProcessTable::exitStatus(9)); // once only
+                inJob = 0;
+                table.forEachInJob(parent, [&](int32_t, void *) { ++inJob; });
+                CHECK(inJob == 2);
+                CHECK(table.reap(parent, a).error() == Error::WouldBlock);
+                const ProcessTable::Ended e = table.reap(parent, -1).value();
+                CHECK(e.pid == b);
+                CHECK(e.status == 3 << 8);
+                CHECK(table.reap(parent, b).error() == Error::NotExist);
+
+                // The parent ends: its zombie goes, its living child is an
+                // orphan, freed when it ends.
+                const int32_t c = table.add(parent, parent, &parentEvent, nullptr).value();
+                table.exited(c, ProcessTable::killedStatus(2));
+                table.exited(parent, ProcessTable::exitStatus(0));
+                CHECK(shellEvent.tryAcquire().isOk());
+                CHECK(table.count() == 2); // the parent's zombie and the orphan a
+                CHECK(table.parentOf(a) == 0);
+                table.exited(a, 0);
+                CHECK(table.count() == 1);
+                CHECK(table.reap(ProcessTable::ShellPid, parent).value().status == 0);
+                CHECK(table.count() == 0);
+
+                // Full, and ids skip those in use.
+                std::vector<int32_t> pids;
+                for (int i = 0; i < ProcessTable::Capacity; ++i)
+                        pids.push_back(table.add(ProcessTable::ShellPid, 0, nullptr, nullptr).value());
+                CHECK(table.add(ProcessTable::ShellPid, 0, nullptr, nullptr).error() == Error::Full);
+                for (size_t i = 1; i < pids.size(); ++i) CHECK(pids[i] == pids[i - 1] + 1);
+                for (int32_t p : pids) {
+                        table.exited(p, 0);
+                        (void)table.reap(ProcessTable::ShellPid, p);
+                }
+                CHECK(table.count() == 0);
+        }
+        CHECK(HostMemory::liveAllocations() == base);
+}
+
+TEST_CASE("Process: vfork children, pipes, close-on-exec, exec") {
+        Disks        disks;
+        const size_t base = HostMemory::liveAllocations();
+        {
+                bmds::FdTable fds;
+                Process      *parent = Process::create(fds, nullptr, nullptr);
+                REQUIRE(parent != nullptr);
+                REQUIRE(parent->setCwd(bmds::StringView(disks.aRoot.c_str())).isOk());
+
+                // A pipe: a write on one end reads on the other; flags.
+                int32_t p[2] = {-1, -1};
+                CHECK(parent->pipe(nullptr, 0) == -BMDS_EFAULT);
+                CHECK(parent->pipe(p, 0x80) == -BMDS_EINVAL);
+                REQUIRE(parent->pipe(p, BMDS_O_CLOEXEC) == 0);
+                CHECK(p[0] == 0);
+                CHECK(p[1] == 1);
+                CHECK(parent->fdFlags(p[0], -1) == static_cast<int32_t>(BMDS_FD_CLOEXEC));
+                CHECK(parent->fdFlags(p[1], 0) == 0);
+                CHECK(parent->fdFlags(p[1], 2) == -BMDS_EINVAL);
+                CHECK(parent->fdFlags(9, -1) == -BMDS_EBADF);
+                CHECK(parent->write(p[1], "hi", 2) == 2);
+                char buf[8] = {};
+                CHECK(parent->read(p[0], buf, sizeof(buf)) == 2);
+                CHECK(std::string(buf, 2) == "hi");
+                const int32_t f = parent->open("cx", BMDS_O_WRITE | BMDS_O_CREATE | BMDS_O_CLOEXEC);
+                REQUIRE(f == 2);
+                CHECK(parent->fdFlags(f, -1) == static_cast<int32_t>(BMDS_FD_CLOEXEC));
+
+                // A child: the fds (and flags) and directory copied; its changes
+                // stay its own; its memory calls aren't its own (the kernel
+                // routes them to the parent).
+                Process *child = parent->createChild();
+                REQUIRE(child != nullptr);
+                CHECK(child->cwd() == parent->cwd());
+                CHECK(child->fdFlags(f, -1) == static_cast<int32_t>(BMDS_FD_CLOEXEC));
+                CHECK(child->dup2(p[1], 5) == 5);
+                CHECK(child->close(p[1]) == 0);
+                CHECK(child->chdir(disks.bRoot.c_str()) == 0);
+                CHECK(parent->fdFlags(5, -1) == -BMDS_EBADF);
+                CHECK(parent->fdFlags(p[1], -1) == 0);
+                CHECK(parent->cwd() == bmds::StringView(disks.aRoot.c_str()));
+
+                // exec: arguments copied (also from the old block), close-on-exec
+                // fds closed, the others kept.
+                const bmds::StringView args1[] = {"prog", "one"};
+                REQUIRE(child->setArguments(args1, {}).isOk());
+                char                  *oldArg = child->argv()[1];
+                const bmds::StringView args2[] = {"next", bmds::StringView(oldArg, std::strlen(oldArg))};
+                const bmds::StringView env[] = {"A=1"};
+                REQUIRE(child->prepareExec(args2, env).isOk());
+                CHECK(std::string(child->argv()[0]) == "next");
+                CHECK(std::string(child->argv()[1]) == "one");
+                CHECK(std::string(child->envp()[0]) == "A=1");
+                CHECK(child->fdFlags(p[0], -1) == -BMDS_EBADF);
+                CHECK(child->fdFlags(f, -1) == -BMDS_EBADF);
+                CHECK(child->fdFlags(5, -1) == 0);
+                CHECK(parent->fdFlags(p[0], -1) == static_cast<int32_t>(BMDS_FD_CLOEXEC));
+                // The child's copy of the write end keeps the pipe open; then EOF.
+                CHECK(parent->close(p[1]) == 0);
+                CHECK(child->write(5, "x", 1) == 1);
+                Process::destroy(child);
+                CHECK(parent->read(p[0], buf, sizeof(buf)) == 1);
+                CHECK(parent->read(p[0], buf, sizeof(buf)) == 0);
+
+                // A program's exec frees its memory but keeps its fds.
+                void *block = parent->memAlloc(1000, 0, 0);
+                REQUIRE(block != nullptr);
+                std::strcpy(static_cast<char *>(block), "from the heap");
+                const bmds::StringView args3[] = {"again", bmds::StringView(static_cast<char *>(block))};
+                REQUIRE(parent->prepareExec(args3, {}).isOk());
+                CHECK(std::string(parent->argv()[1]) == "from the heap");
+                CHECK(parent->allocations() == 0);
+                CHECK(parent->fdFlags(p[0], -1) == -BMDS_EBADF);
+                Process::destroy(parent);
+        }
+        CHECK(HostMemory::liveAllocations() == base);
 }

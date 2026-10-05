@@ -44,6 +44,7 @@ namespace {
                 {"vfs", bmds::Vfs::init},
                 {"storage", bmds::Storage::init},
                 {"ramdisk", bmds::RamDisk::init},
+                {"programs", bmds::Loader::init}, // the process table
                 {"shell", startSerialShell},
         };
 

@@ -6,6 +6,7 @@
  * See LICENSE file in the project root folder for license information.
  */
 
+#include <bmds/assert.h>
 #include <bmds/detail/ticks.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
@@ -30,8 +31,14 @@ Error Task::start(const Config &config, Entry entry, void *arg) {
         // ESP-IDF stack depth is in bytes (StackType_t is uint8_t).
         _tcb = tcb;
         _stack = stack;
-        _handle = xTaskCreateStaticPinnedToCore(entry, config.name, config.stackBytes / sizeof(StackType_t), arg,
-                                                config.priority, stack, tcb, core);
+        // A static task's handle is its TCB. Known before it exists: the task
+        // may run on the other core, and even end and be stopped, before the
+        // create call returns.
+        _handle = reinterpret_cast<TaskHandle_t>(tcb);
+        const TaskHandle_t handle = xTaskCreateStaticPinnedToCore(
+                entry, config.name, config.stackBytes / sizeof(StackType_t), arg, config.priority, stack, tcb, core);
+        BMDS_ASSERT(handle == reinterpret_cast<TaskHandle_t>(tcb));
+        (void)handle;
         bmdsDebug("Task(%p '%s'): started, %u-byte stack in %s, priority %u", this, config.name,
                   static_cast<unsigned>(config.stackBytes), memSpaceName(config.stackSpace), config.priority);
         return Error();

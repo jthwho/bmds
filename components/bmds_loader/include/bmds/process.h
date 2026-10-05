@@ -14,6 +14,7 @@
 #include <bmds/error.h>
 #include <bmds/fdtable.h>
 #include <bmds/memspace.h>
+#include <bmds/semaphore.h>
 #include <bmds/span.h>
 #include <bmds/string.h>
 #include <bmds/stringview.h>
@@ -64,6 +65,40 @@ class Process {
                 ~Process();
                 Process(const Process &) = delete;
                 Process &operator=(const Process &) = delete;
+
+                /**
+                 * @brief Creates a vfork child's Process (`Psram`): a copy of this
+                 *        one's fds (with their flags), directory, console and
+                 *        interrupt; no memory, directories or arguments.
+                 * @return The child (free it with `destroy()`), or null (no memory).
+                 */
+                Process *createChild() const;
+
+                /** @brief Releases and frees a Process from `createChild()` or `create()`. */
+                static void destroy(Process *process);
+
+                /** @brief Creates a Process in `Psram` (see the constructor); null if no memory. */
+                static Process *create(const FdTable &fds, Console *console, Interrupt *interrupt);
+
+                /**
+                 * @brief Prepares for a new program (an exec): the argument block
+                 *        is rebuilt from @p args and @p environment (which may point
+                 *        into the old one or into this process's memory), then the
+                 *        memory, directories and line input of the old program are
+                 *        freed and the close-on-exec fds closed. Its fds, directory
+                 *        and terminal stay.
+                 * @return `Ok`, or as `setArguments()` (nothing changed then).
+                 */
+                Error prepareExec(Span<const StringView> args, Span<const StringView> environment);
+
+                /** @brief Released when one of its children ends (its waits). */
+                Semaphore &childEvent() { return _childEvent; }
+
+                /** @brief Returns its console (may be null). */
+                Console *console() const { return _console; }
+
+                /** @brief Returns its interrupt (may be null). */
+                Interrupt *interrupt() const { return _interrupt; }
 
                 /**
                  * @brief Builds the argument block: `argv` (with its NULL) and `envp`
@@ -140,6 +175,8 @@ class Process {
                 int32_t symlink(const char *target, const char *path);
                 int32_t readlink(const char *path, char *buf, uint32_t size);
                 int32_t lstat(const char *path, bmds_stat_t *info);
+                int32_t pipe(int32_t *fds, uint32_t flags);
+                int32_t fdFlags(int32_t fd, int32_t flags);
 
                 /** @brief Returns the negated `BMDS_E...` number for @p err. */
                 static int32_t errnoFor(Error err);
@@ -148,6 +185,7 @@ class Process {
                 struct Block;     // an allocation's header, just before what the program gets
                 struct LineInput; // the line editor and its line, once the program reads the console
 
+                void         releaseProgram();
                 Vfs::Context vfs() const;
                 bool         isConsole(const FileHandle *h) const;
                 int32_t      readConsole(void *buf, uint32_t size);
@@ -160,6 +198,7 @@ class Process {
                 LineInput *_line = nullptr;
                 bool       _lineInput = true;
                 Directory  _dirs[MaxDirectories];
+                Semaphore  _childEvent{1, 0};
                 Block     *_blocks = nullptr;
                 size_t     _allocatedBytes = 0;
                 size_t     _allocations = 0;

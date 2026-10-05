@@ -21,18 +21,28 @@
  *   progtest mem          memory info
  *   progtest random       16 random bytes
  *   progtest cwd DIR      getcwd, chdir DIR, getcwd
+ *   progtest spawn SELF DIR  processes: vfork, exec, posix_spawn, wait, pipes, in DIR
+ *                         (SELF: this program's path)
+ *   progtest fd N         exit 0 if fd N is open, 1 if not
+ *   progtest ppid N       exit 0 if the parent's id is N
+ *   progtest exec SELF    execve SELF status 42 (the program is replaced)
+ *   progtest orphan SELF  start a child that outlives this program
+ *   progtest tree SELF    start two `spin` children and wait (for Ctrl-C)
  */
 
 #include <dirent.h>
+#include <stdarg.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -279,6 +289,171 @@ static int mem(void) {
         return 0;
 }
 
+extern char **environ;
+
+/* Starts SELF with the arguments after it (NULL-terminated); its id. */
+static pid_t start(const char *self, posix_spawn_file_actions_t *fa, char **env, ...) {
+        char   *argv[8] = {"progtest"};
+        int     n = 1;
+        va_list ap;
+        va_start(ap, env);
+        for (char *a; n < 7 && (a = va_arg(ap, char *)) != NULL;) argv[n++] = a;
+        va_end(ap);
+        argv[n] = NULL;
+        pid_t     pid = -1;
+        const int r = posix_spawn(&pid, self, fa, NULL, argv, env != NULL ? env : environ);
+        if (r != 0) {
+                errno = r;
+                return -1;
+        }
+        return pid;
+}
+
+/* The exit status of child @p pid, or -1. */
+static int status_of(pid_t pid) {
+        int st = 0;
+        if (waitpid(pid, &st, 0) != pid || !WIFEXITED(st)) return -1;
+        return WEXITSTATUS(st);
+}
+
+static volatile int shared_with_child;
+
+/* Processes (programs.md §13). */
+static int spawn(const char *self, const char *dir) {
+        char buf[128], cwd[BMDS_PATH_MAX + 1], other[BMDS_PATH_MAX + 1];
+        CHECK(chdir(dir) == 0);
+        CHECK(getcwd(cwd, sizeof(cwd)) != NULL);
+        // No children yet.
+        CHECK(waitpid(-1, NULL, WNOHANG) == -1 && errno == ECHILD);
+        CHECK(getpid() > 1);
+
+        // vfork + execve, and the exit status.
+        pid_t pid = vfork();
+        if (pid == 0) {
+                char *argv[] = {"progtest", "status", "7", NULL};
+                execve(self, argv, environ);
+                _exit(99);
+        }
+        CHECK(pid > 0);
+        CHECK(status_of(pid) == 7);
+
+        // A vfork child that exits: its fds and directory were its own, its
+        // memory the parent's.
+        pid = vfork();
+        if (pid == 0) {
+                shared_with_child = 5;
+                (void)dup2(2, 9);
+                (void)chdir("/");
+                (void)close(0);
+                _exit(3);
+        }
+        CHECK(pid > 0);
+        CHECK(shared_with_child == 5);
+        CHECK(fcntl(9, F_GETFD) == -1 && errno == EBADF);
+        CHECK(fcntl(0, F_GETFD) == 0);
+        CHECK(getcwd(other, sizeof(other)) != NULL && strcmp(cwd, other) == 0);
+        CHECK(status_of(pid) == 3);
+        // exec failing in the child: the child goes on (and exits).
+        pid = vfork();
+        if (pid == 0) {
+                char *argv[] = {"nope", NULL};
+                execve("/nonexistent/program", argv, environ);
+                _exit(errno == ENOENT ? 4 : 5);
+        }
+        CHECK(status_of(pid) == 4);
+
+        // posix_spawn: file actions, the environment, the parent's id.
+        posix_spawn_file_actions_t fa;
+        CHECK(posix_spawn_file_actions_init(&fa) == 0);
+        CHECK(posix_spawn_file_actions_addopen(&fa, 1, "pt-spawn.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644) == 0);
+        char *env[] = {"PT_VAR=spawned", NULL};
+        pid = start(self, &fa, env, "env", "PT_VAR", NULL);
+        CHECK(pid > 0);
+        CHECK(status_of(pid) == 0);
+        CHECK(posix_spawn_file_actions_destroy(&fa) == 0);
+        FILE *f = fopen("pt-spawn.txt", "r");
+        CHECK(f != NULL && fgets(buf, sizeof(buf), f) != NULL && strcmp(buf, "PT_VAR=spawned\n") == 0);
+        fclose(f);
+        CHECK(unlink("pt-spawn.txt") == 0);
+        snprintf(buf, sizeof(buf), "%d", (int)getpid());
+        CHECK(status_of(start(self, NULL, NULL, "ppid", buf, NULL)) == 0);
+        // A missing program is posix_spawn's error, not the child's status.
+        pid_t none = -1;
+        char *nargv[] = {"nope", NULL};
+        CHECK(posix_spawn(&none, "/nonexistent/program", NULL, NULL, nargv, environ) == ENOENT);
+
+        // A pipe: EOF once the writer has ended.
+        int p[2];
+        CHECK(pipe(p) == 0);
+        CHECK(posix_spawn_file_actions_init(&fa) == 0);
+        CHECK(posix_spawn_file_actions_adddup2(&fa, p[1], 1) == 0);
+        CHECK(posix_spawn_file_actions_addclose(&fa, p[0]) == 0);
+        pid = start(self, &fa, env, "env", "PT_VAR", NULL);
+        CHECK(posix_spawn_file_actions_destroy(&fa) == 0);
+        CHECK(close(p[1]) == 0);
+        size_t got = 0;
+        for (ssize_t n; (n = read(p[0], buf + got, sizeof(buf) - 1 - got)) > 0;) got += (size_t)n;
+        buf[got] = '\0';
+        CHECK(strcmp(buf, "PT_VAR=spawned\n") == 0);
+        CHECK(close(p[0]) == 0);
+        CHECK(status_of(pid) == 0);
+
+        // Two children joined by a pipe; wait for any, then the other.
+        CHECK(pipe(p) == 0);
+        CHECK(posix_spawn_file_actions_init(&fa) == 0);
+        CHECK(posix_spawn_file_actions_adddup2(&fa, p[1], 1) == 0);
+        CHECK(posix_spawn_file_actions_addclose(&fa, p[0]) == 0);
+        const pid_t writer = start(self, &fa, env, "env", "PT_VAR", NULL);
+        CHECK(posix_spawn_file_actions_destroy(&fa) == 0);
+        CHECK(posix_spawn_file_actions_init(&fa) == 0);
+        CHECK(posix_spawn_file_actions_adddup2(&fa, p[0], 0) == 0);
+        CHECK(posix_spawn_file_actions_addclose(&fa, p[1]) == 0);
+        CHECK(posix_spawn_file_actions_addopen(&fa, 1, "pt-lines.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644) == 0);
+        const pid_t reader = start(self, &fa, NULL, "lines", NULL);
+        CHECK(posix_spawn_file_actions_destroy(&fa) == 0);
+        CHECK(close(p[0]) == 0 && close(p[1]) == 0);
+        int   st = 0;
+        pid_t first = wait(&st);
+        CHECK((first == writer || first == reader) && WIFEXITED(st) && WEXITSTATUS(st) == 0);
+        pid_t second = waitpid(-1, &st, 0);
+        CHECK(second == (first == writer ? reader : writer) && WIFEXITED(st));
+        f = fopen("pt-lines.txt", "r");
+        CHECK(f != NULL && fgets(buf, sizeof(buf), f) != NULL && strcmp(buf, "line 1: [PT_VAR=spawned]\n") == 0);
+        CHECK(fgets(buf, sizeof(buf), f) != NULL && strcmp(buf, "end of input after 1 lines\n") == 0);
+        fclose(f);
+        CHECK(unlink("pt-lines.txt") == 0);
+
+        // WNOHANG while a child runs.
+        pid = start(self, NULL, NULL, "sleep", "200", NULL);
+        CHECK(pid > 0);
+        CHECK(waitpid(pid, &st, WNOHANG) == 0);
+        CHECK(status_of(pid) == 0);
+        CHECK(waitpid(pid, &st, 0) == -1 && errno == ECHILD);
+
+        // Close-on-exec: the flagged fd is gone in the child, the other not.
+        const int keep = open("pt-keep.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        const int drop = open("pt-drop.txt", O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+        CHECK(keep >= 0 && drop >= 0);
+        CHECK(fcntl(drop, F_GETFD) == FD_CLOEXEC && fcntl(keep, F_GETFD) == 0);
+        snprintf(buf, sizeof(buf), "%d", keep);
+        CHECK(status_of(start(self, NULL, NULL, "fd", buf, NULL)) == 0);
+        snprintf(buf, sizeof(buf), "%d", drop);
+        CHECK(status_of(start(self, NULL, NULL, "fd", buf, NULL)) == 1);
+        CHECK(fcntl(keep, F_SETFD, FD_CLOEXEC) == 0 && fcntl(keep, F_GETFD) == FD_CLOEXEC);
+        snprintf(buf, sizeof(buf), "%d", keep);
+        CHECK(status_of(start(self, NULL, NULL, "fd", buf, NULL)) == 1);
+        CHECK(close(keep) == 0 && close(drop) == 0);
+        CHECK(unlink("pt-keep.txt") == 0 && unlink("pt-drop.txt") == 0);
+
+        // A child that replaces itself: the status is the new program's.
+        CHECK(status_of(start(self, NULL, NULL, "exec", self, NULL)) == 42);
+
+        // system() needs /bin/sh (step 8b).
+        printf("system: %d\n", system("true"));
+        printf("spawn: all passed\n");
+        return 0;
+}
+
 static void deep(int depth, int status) {
         if (depth == 0) exit(status);
         deep(depth - 1, status);
@@ -288,7 +463,7 @@ int main(int argc, char **argv) {
         if (argc < 2) {
                 fprintf(stderr,
                         "usage: progtest status|exit|leak|env|tty|float|files|time|sleep|term|lines|raw|mem|random|cwd|"
-                        "spin|calls|posix|abort [arg]\n");
+                        "spin|calls|posix|abort|spawn|fd|ppid|exec|orphan|tree [arg]\n");
                 return 2;
         }
         const char *what = argv[1];
@@ -343,6 +518,30 @@ int main(int argc, char **argv) {
                 for (size_t i = 0; i < sizeof(b); ++i) printf("%02x", b[i]);
                 printf("\n");
                 return 0;
+        }
+        if (strcmp(what, "spawn") == 0) return spawn(arg, argc > 3 ? argv[3] : ".");
+        if (strcmp(what, "fd") == 0) return fcntl(atoi(arg), F_GETFD) >= 0 ? 0 : 1;
+        if (strcmp(what, "ppid") == 0) return getppid() == atoi(arg) ? 0 : 1;
+        if (strcmp(what, "exec") == 0) {
+                char *eargv[] = {"progtest", "status", "42", NULL};
+                execve(arg, eargv, environ);
+                printf("exec: %s\n", strerror(errno));
+                return 1;
+        }
+        if (strcmp(what, "orphan") == 0) {
+                const pid_t pid = start(arg, NULL, NULL, "sleep", "300", NULL);
+                printf("orphan: started %d\n", (int)pid);
+                return pid > 0 ? 0 : 1;
+        }
+        if (strcmp(what, "tree") == 0) {
+                const pid_t a = start(arg, NULL, NULL, "spin", NULL);
+                const pid_t b = start(arg, NULL, NULL, "spin", NULL);
+                printf("tree: %d %d\n", (int)a, (int)b);
+                fflush(stdout);
+                int         st = 0;
+                const pid_t w = waitpid(-1, &st, 0);
+                printf("tree: wait %d (%s)\n", (int)w, w < 0 ? strerror(errno) : "ended");
+                for (;;) {}
         }
         if (strcmp(what, "cwd") == 0) {
                 char buf[BMDS_PATH_MAX + 1];

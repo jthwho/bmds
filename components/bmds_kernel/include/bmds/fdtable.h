@@ -9,6 +9,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <bmds/config.h>
 #include <bmds/error.h>
 #include <bmds/filehandle.h>
@@ -25,6 +26,10 @@ BMDS_NAMESPACE_BEGIN
  * own table is never disturbed.
  *
  * Descriptors 0, 1 and 2 are stdin, stdout and stderr by convention.
+ *
+ * Each descriptor has a close-on-exec flag (programs: `exec` closes the
+ * flagged ones); a descriptor that is set, added, duplicated onto or
+ * closed starts without it, as POSIX says.
  *
  * @par Thread Safety
  * Not thread-safe; a table belongs to one task. Copies may be handed to
@@ -93,10 +98,27 @@ class FdTable {
                 /** @brief Closes every descriptor. */
                 void closeAll();
 
+                /** @brief Returns true if @p fd is open and flagged close-on-exec. */
+                bool isCloseOnExec(int fd) const { return isOpen(fd) && (_closeOnExec & (1u << fd)) != 0; }
+
+                /**
+                 * @brief Sets or clears @p fd's close-on-exec flag.
+                 * @return `Ok`, or `BadDescriptor` if out of range or closed.
+                 */
+                Error setCloseOnExec(int fd, bool on);
+
+                /** @brief Closes the descriptors flagged close-on-exec. */
+                void closeOnExec();
+
         private:
+                static_assert(MaxFds <= 16, "_closeOnExec has a bit per descriptor");
+
                 static bool isValid(int fd) { return fd >= 0 && fd < MaxFds; }
 
+                void clearFlag(int fd) { _closeOnExec = static_cast<uint16_t>(_closeOnExec & ~(1u << fd)); }
+
                 FileHandle::Ptr _fds[MaxFds];
+                uint16_t        _closeOnExec = 0;
 };
 
 BMDS_NAMESPACE_END

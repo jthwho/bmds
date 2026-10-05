@@ -19,6 +19,9 @@ musl, <https://musl.libc.org/>, the C library BMDS programs link statically
   - Removed `src/thread/riscv32/clone.s`, `syscall_cp.s`, `__unmapself.s` and
     `src/signal/riscv32/restore.s`, which issue `ecall` themselves: musl's
     generic C versions take their place (`clone` returns `ENOSYS`).
+- **Not built:** `src/process/vfork.c` (generic: `fork`) and
+  `src/thread/clone.c` (`ENOSYS`); the SDK's `crt/vfork.S` has `vfork` and
+  `__clone` for `CLONE_VM|CLONE_VFORK` (`posix_spawn`, `system`, `popen`).
 
 To update: unpack the new release, prune it the same way, apply
 `patches/bmds.diff` (fixing what no longer applies), regenerate the diff

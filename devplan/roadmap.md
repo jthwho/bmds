@@ -63,6 +63,9 @@ Plans: [`storage.md`](storage.md), [`time.md`](time.md). Complete; verified on h
 - [x] USB serial console: input bytes lost under two-way traffic. ESP-IDF's ESP32-P4 TX FIFO write is a read-modify-write that pops an RX byte (`shell.md`).
 - [x] Storage: a sector cache for directories and the FAT under FatFs (`storage.md` §3): `ls -l` of BusyBox's `bin` 2.36 → 0.30 s.
 - [ ] POSIX completion (§12, step 8+): process creation (`vfork`/`posix_spawn`, `waitpid`, `pipe`), signals from outside, `termios`, `poll`. Yardstick: BusyBox no-MMU (shells included) runs. A shared runtime only if measurements ask for it.
+  - [x] 8a: processes, `vfork`/`exec`/`posix_spawn`, `waitpid`, `pipe`, close-on-exec (`programs.md` §13); `hush` runs programs and pipelines.
+  - [ ] 8b: `/bin/sh` and `#!` scripts in `exec` (`system`, `popen`).
+  - [ ] 8c: BusyBox with `xargs`, `find -exec`, `time`, `nohup`.
 - [ ] Example programs: `hello`, `cat`, a benchmark.
 
 ## Phase 4 — Display

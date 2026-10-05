@@ -6,7 +6,7 @@
  * See LICENSE file in the project root folder for license information.
  *
  * A program while it runs (target only): what its system calls reach
- * through the task's thread-local pointer, and how it says it's done.
+ * through the task's thread-local pointer, and how it ends.
  */
 
 #pragma once
@@ -18,7 +18,7 @@
 #include <sdkconfig.h>
 #include <bmds/config.h>
 #include <bmds/process.h>
-#include <bmds/semaphore.h>
+#include <bmds/task.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -28,41 +28,61 @@ static_assert(CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS >= 2,
               "programs need thread-local pointer 1 (CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS >= 2)");
 
 /**
- * @brief A running program: its Process, and how it ends.
+ * @brief A running program: its image, its task, its process, and the
+ *        vfork children running in its task (devplan/programs.md §13).
+ *
+ * Lives in `Psram` from its start until its task has been stopped (by the
+ * loader's stop queue, after it ends).
  *
  * Killing (a second Ctrl-C) must never stop the task inside a system call,
  * where it may hold a kernel lock: every slot is bracketed by `enter()` and
- * `leave()` (a `KernelCall`). The loader sets `kill`, suspends the task and
- * looks at `inKernel`: clear, the task is in program code and is deleted;
- * set, it is resumed and ends itself in `leave()`. The two flags are a
- * Dekker handshake (sequentially consistent): if the loader reads
- * `inKernel` clear, the task can only be past its last kernel work.
+ * `leave()` (a `KernelCall`). The killer sets `kill`, suspends the task and
+ * looks at `inKernel`: clear, the task is in program code, and the killer
+ * ends it; set, it is resumed and ends itself in `leave()`. The two flags
+ * are a Dekker handshake (sequentially consistent): if the killer reads
+ * `inKernel` clear, the task can only be past its last kernel work. Ending
+ * sets `inKernel` for good.
  */
 struct Running {
-                /** @brief The status of a killed program (128 + SIGINT, as Ctrl-C in bash). */
-                static constexpr int32_t KilledStatus = 130;
+                /** @brief How deep vfork children may nest in one task. */
+                static constexpr int MaxVforkDepth = 2;
 
-                Process          *process = nullptr;
-                uintptr_t         entry = 0;  // the program's _start
-                int32_t           status = 0; // set when it ends
-                Semaphore         done{1, 0}; // released when it ends
+                /** @brief The signal a killed program ends with (Ctrl-C: SIGINT). */
+                static constexpr int32_t KillSignal = 2;
+
+                struct Child {
+                                Process *process;
+                                int32_t  pid;
+                };
+
+                Process          *process = nullptr; // the program's own (memory is always its)
+                int32_t           pid = 0;
+                int32_t           job = 0;
+                Process          *current = nullptr; // process, or the innermost vfork child
+                int32_t           currentPid = 0;
+                Child             children[MaxVforkDepth] = {};
+                int               depth = 0;
+                uint8_t          *image = nullptr;
+                uintptr_t         entry = 0; // the program's _start
+                Task              task;
+                Running          *nextStop = nullptr; // in the stop queue
                 std::atomic<bool> inKernel{false};
                 std::atomic<bool> kill{false};
 
                 /** @brief The running program of the calling task. */
-                static Running &current() {
+                static Running &self() {
                         return *static_cast<Running *>(pvTaskGetThreadLocalStoragePointer(nullptr, RunningTlsIndex));
                 }
 
                 /**
-                 * @brief Ends the calling program with @p status: signals the loader
-                 *        and suspends; the loader then deletes the task.
+                 * @brief Ends the calling program with wait status @p status: its
+                 *        children in the task, its process and its image go, its
+                 *        task is queued to be stopped.
                  */
-                [[noreturn]] void finish(int32_t exitStatus) {
-                        status = exitStatus;
-                        done.release();
-                        for (;;) vTaskSuspend(nullptr);
-                }
+                [[noreturn]] void finish(int32_t status);
+
+                /** @brief Frees what the program holds and records its end (lock-free of the table). */
+                void end(int32_t status);
 
                 /** @brief A system call starts. */
                 void enter() {
@@ -71,27 +91,37 @@ struct Running {
                 }
 
                 /** @brief A system call ends: back to program code, unless killed meanwhile. */
-                void leave() {
-                        inKernel.store(false);
-                        if (kill.load()) finish(KilledStatus);
-                        return;
-                }
+                void leave();
+
+                // The process calls (loader.cpp); results as the slots'.
+                int32_t vfork();
+                int32_t exec(const char *path, char *const *argv, char *const *envp);
+                int32_t vforkExit(int32_t status);
+                int32_t wait(int32_t child, int32_t *status, uint32_t flags);
+                int32_t id(uint32_t which);
 };
 
 /**
- * @brief Brackets one system call (see `Running`); gives the Process.
+ * @brief Brackets one system call (see `Running`); gives the Process it
+ *        acts on (a vfork child's while one runs).
  * @par Thread Safety
  * The program's own task only.
  */
 class KernelCall {
         public:
-                KernelCall() : _run(Running::current()) { _run.enter(); }
+                KernelCall() : _run(Running::self()) { _run.enter(); }
                 ~KernelCall() { _run.leave(); }
                 KernelCall(const KernelCall &) = delete;
                 KernelCall &operator=(const KernelCall &) = delete;
 
-                /** @brief The calling program's Process. */
-                Process *operator->() const { return _run.process; }
+                /** @brief The Process the call acts on. */
+                Process *operator->() const { return _run.current; }
+
+                /** @brief The program's own Process: memory calls act on it (a vfork child shares it). */
+                Process *owner() const { return _run.process; }
+
+                /** @brief The running program. */
+                Running &running() const { return _run; }
 
         private:
                 Running &_run;

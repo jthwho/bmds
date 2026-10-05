@@ -14,6 +14,7 @@
 #include <esp_random.h>
 #include <bmds/errno.h>
 #include <bmds/sys.h>
+#include <bmds/processtable.h>
 #include "running.h"
 
 using bmds::KernelCall;
@@ -22,7 +23,7 @@ using bmds::Running;
 extern "C" {
 
 void bmds_k_exit(int32_t status) {
-        Running::current().finish(status);
+        Running::self().finish(bmds::ProcessTable::exitStatus(status));
 }
 
 int32_t bmds_k_read(int32_t fd, void *buf, uint32_t size) {
@@ -52,18 +53,18 @@ int32_t bmds_k_isatty(int32_t fd) {
 
 void *bmds_k_mem_alloc(uint32_t size, uint32_t align, uint32_t flags) {
         KernelCall call;
-        return call->memAlloc(size, align, flags);
+        return call.owner()->memAlloc(size, align, flags);
 }
 
 void bmds_k_mem_free(void *ptr) {
         KernelCall call;
-        call->memFree(ptr);
+        call.owner()->memFree(ptr);
         return;
 }
 
 void *bmds_k_mem_realloc(void *ptr, uint32_t size, uint32_t flags) {
         KernelCall call;
-        return call->memRealloc(ptr, size, flags);
+        return call.owner()->memRealloc(ptr, size, flags);
 }
 
 int32_t bmds_k_open(const char *path, uint32_t flags) {
@@ -163,7 +164,7 @@ int32_t bmds_k_term_set(int32_t fd, uint32_t flags) {
 
 int32_t bmds_k_mem_info(uint32_t flags, bmds_mem_info_t *info) {
         KernelCall call;
-        return call->memInfo(flags, info);
+        return call.owner()->memInfo(flags, info);
 }
 
 int32_t bmds_k_random(void *buf, uint32_t size) {
@@ -196,6 +197,41 @@ int32_t bmds_k_readlink(const char *path, char *buf, uint32_t size) {
 int32_t bmds_k_lstat(const char *path, bmds_stat_t *info) {
         KernelCall call;
         return call->lstat(path, info);
+}
+
+int32_t bmds_k_proc_vfork(void) {
+        KernelCall call;
+        return call.running().vfork();
+}
+
+int32_t bmds_k_proc_exec(const char *path, char *const *argv, char *const *envp) {
+        KernelCall call;
+        return call.running().exec(path, argv, envp);
+}
+
+int32_t bmds_k_proc_vfork_exit(int32_t status) {
+        KernelCall call;
+        return call.running().vforkExit(status);
+}
+
+int32_t bmds_k_proc_wait(int32_t pid, int32_t *status, uint32_t flags) {
+        KernelCall call;
+        return call.running().wait(pid, status, flags);
+}
+
+int32_t bmds_k_pipe(int32_t *fds, uint32_t flags) {
+        KernelCall call;
+        return call->pipe(fds, flags);
+}
+
+int32_t bmds_k_proc_id(uint32_t which) {
+        KernelCall call;
+        return call.running().id(which);
+}
+
+int32_t bmds_k_fd_flags(int32_t fd, int32_t flags) {
+        KernelCall call;
+        return call->fdFlags(fd, flags);
 }
 
 } // extern "C"

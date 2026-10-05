@@ -73,8 +73,8 @@ riscv32-esp-elf-objcopy --strip-unneeded busybox_unstripped busybox
 `BMDS_STACK=bytes` in the environment sets the stack the linked program
 asks for. `-lm`, `-lpthread`, `-lrt`... find empty archives: musl keeps all
 of it in `libc.a`. BusyBox 1.37 with `CONFIG_NOMMU` builds this way
-unmodified (about 90 applets; the ones that start other programs wait for
-process creation).
+unmodified (about 90 applets; `hush` starts programs and runs pipelines
+with `vfork`).
 
 ## What a program is
 
@@ -121,9 +121,16 @@ on BMDS's table; programs never see that layer. What differs from Linux:
 - **Signals:** handlers, masks and `raise`/`abort`/`kill(getpid())` work
   within the program. Ctrl-C is not a signal yet: blocking calls fail with
   `EINTR`, and the program ends with status 130 however it exits.
-- **Not yet:** `fork`/`vfork`/`posix_spawn`/`exec`, `waitpid`, `pipe`
-  (`ENOSYS`, coming with process creation), threads, sockets
-  (`EAFNOSUPPORT`), `alarm`.
+- **Processes:** no `fork` (`ENOSYS`: no MMU). `vfork` + `exec`, as on
+  uClinux: the child runs in the parent's memory, on its stack, until it
+  execs or exits (`_exit`), while the parent waits; what it changes in
+  memory the parent sees, its descriptors and directory are its own.
+  `posix_spawn` (with file actions), `waitpid`/`wait4`/`waitid`, `pipe`,
+  `O_CLOEXEC`/`FD_CLOEXEC`, `getpid`/`getppid` work. `exec` runs BMDS
+  programs only so far: `system`, `popen` and scripts (`/bin/sh`) come with
+  step 8b. A second Ctrl-C kills every process the shell's command started.
+- **Not yet:** threads, sockets (`EAFNOSUPPORT`), `alarm`, `kill` of
+  another process (signals from outside).
 - **Size:** a `printf` hello is about 40 KB (`long double` is 128-bit on
   RISC-V, and musl's `printf` formats through it: about 12 KB of libgcc's
   soft quad-float; the system call layer is about 10 KB). Programs are

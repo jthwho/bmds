@@ -1,6 +1,6 @@
 # Programs: Executables, Loader, Syscall ABI v1, SDK
 
-Status: **steps 1-7 done** (Phase 3), plus emulated symbolic links and the distribution (`distribution.md`): the PSRAM spike; the SDK skeleton, the format check and relocation (`ProgramImage`), `bmds-elfcheck`, the ABI lock; the loader; the system call table (35 slots by ABI 3: files, directories, time, terminal, links), examples `hello`, `cat`, `ls`; programs and scripts run by name (`$PATH`, `#!`), killed on a second Ctrl-C; the RAM disk, push-and-run (`tools/bmds-run`) and the compatibility corpus; the SDK on static musl (§12; BusyBox builds with it and runs). **The ABI was reset before the first release** (2026-10-04): the programs of the first SDK (picolibc) dropped with every compatibility path for them, errno values made Linux's, and the additions since folded into ABI 1. Next (agreed 2026-10-04): the rest of the kernel's support (process creation, signals, `poll`) and the drivers; the distribution grows as needed. D1-D7 agreed (2026-10-04; D2 revised in step 2, below). Once the first program ships, everything marked *frozen* is userspace ABI (`docs/ABI.md`): append-only forever.
+Status: **steps 1-7 and 8a done** (Phase 3), plus emulated symbolic links and the distribution (`distribution.md`): the PSRAM spike; the SDK skeleton, the format check and relocation (`ProgramImage`), `bmds-elfcheck`, the ABI lock; the loader; the system call table (42 slots: files, directories, time, terminal, links, processes), examples `hello`, `cat`, `ls`; programs and scripts run by name (`$PATH`, `#!`), killed on a second Ctrl-C; the RAM disk, push-and-run (`tools/bmds-run`) and the compatibility corpus; the SDK on static musl (§12; BusyBox builds with it and runs). **The ABI was reset before the first release** (2026-10-04): the programs of the first SDK (picolibc) dropped with every compatibility path for them, errno values made Linux's, and the additions since folded into ABI 1. Next (agreed 2026-10-04): the rest of the kernel's support (process creation, signals, `poll`) and the drivers; the distribution grows as needed. D1-D7 agreed (2026-10-04; D2 revised in step 2, below). Once the first program ships, everything marked *frozen* is userspace ABI (`docs/ABI.md`): append-only forever.
 
 ## 1. Goal
 
@@ -147,7 +147,7 @@ tools/bmds-compat         runs the compatibility corpus (tests/compat/v*) on a b
 | 5 | Shell: `$PATH` search, programs in pipelines and redirections, Ctrl-C and kill; `exec` dispatch by content with `#!` scripts (built-in `sh` as the interpreter first; programs as interpreters as soon as they run). **Done.** |
 | 6 | RAM disk and push-and-run (`tools/bmds-run`); compatibility corpus. **Done.** |
 | 7 | The SDK on static musl (§12): vendored musl, the Linux system call layer, file identity and `ftruncate`; examples and `progtest` on musl. **Done.** |
-| 8+ | Process creation (`vfork`/`posix_spawn`, `waitpid`, `pipe`), signals, `termios`, `poll`; BusyBox as the yardstick. A shared runtime only if measurements ask for it. |
+| 8+ | Process creation (`vfork`/`posix_spawn`, `waitpid`, `pipe`), signals, `termios`, `poll`; BusyBox as the yardstick. A shared runtime only if measurements ask for it. **8a done** (§13): processes, `vfork`/`exec`, `posix_spawn`, `waitpid`, `pipe`. |
 
 ## 8. Resource budget (estimates)
 
@@ -262,3 +262,82 @@ Agreed 2026-10-04: the C library moves out of programs into a shared runtime lib
 
 **Scope and order:** roughly doubles Phase 3's remaining work (the library mechanism, the libc spike and port, spawn/wait/pipe, signals, `termios`, `poll`). Step 5 (`$PATH`, `#!` scripts, kill) doesn't depend on it and goes first; step 6 (RAM disk, push-and-run) also stays ahead, since it speeds up the testing this needs. All of it before the first release.
 
+
+## 13. Step 8: process creation (design, 2026-10-04)
+
+**Goal:** programs start programs. Yardstick: BusyBox `hush` runs programs and pipelines, `xargs`, `find -exec`, `env CMD`, `time`, `nohup` work, and musl's `posix_spawn`, `system` and `popen` work unchanged. No `fork()` (§12): `vfork()` + `exec`, as on uClinux, and `posix_spawn()` on top of it.
+
+**The model.** A process is a `Process` (its resources, as now), a pid, and a program image running in a task. Every program gets a pid, shell launches included; the shell itself is pid 1 for its programs' `getppid()` (it can't be waited for or signalled).
+- **The process table** (`bmds_loader`, portable, host-tested): 32 entries (pid, parent, job, state, wait status, the `Process` while it runs), 1 KB of `Psram` allocated at boot, under a lock. Pids count up from 2 and skip those in use. A full table is `EAGAIN`.
+- **Ending:** the program's own task, in kernel code, releases its `Process` at once (fds closed, so a pipe's reader sees EOF when the writer exits, not when someone waits for it), frees its image, records the status (a zombie: the entry only), wakes the parent's waits, and queues its task to be stopped. Stopping (the TCB and the stack) happens in FreeRTOS's timer service task (`xTimerPendFunctionCall`, no new task), and the queue is drained at every start as well, in case the timer queue was full.
+- **Waiting:** a zombie stays until its parent waits for it. Children of the shell (parent 1) are waited for by the launcher. When a parent ends, its zombies go and its living children become orphans, freed as soon as they end.
+- **Jobs:** a program the shell starts is a job; its descendants inherit the job. A second Ctrl-C kills every process in the job (each with step 5's handshake), not only the first.
+
+**`vfork`, in the same task.** The child runs on the parent's stack, in its memory, until it execs or exits, while the parent waits; this is what makes it work without an MMU.
+- `proc_vfork()`: the kernel makes a child `Process`, with a copy of the fds and their flags, the cwd, the console and the interrupt, plus a new pid in the same job. It becomes the task's current process, at most 2 deep. System calls now act on the child's fds and cwd. Memory calls still act on the program's own `Process`: the memory is shared, so a block the child allocates belongs to the parent's heap.
+- `proc_exec(path, argv, envp)` in a child:
+  1. loads the image (errors are returned, not printed);
+  2. closes the child's close-on-exec fds and builds its argument block (a copy: `argv` points into the parent);
+  3. starts the child's task with the image's stack size;
+  4. returns to the parent's process, giving the child's pid.
+- `proc_exec` outside a child replaces the program. The pid and `Process` stay; the new image gets a new task, the old image is freed, and the old task is queued for stopping.
+- `proc_vfork_exit(status)` in a child: the child `Process` is released, it becomes a zombie with that status, and the parent's process returns with its pid.
+- **SDK** (`sdk/crt/vfork.S`, `linux.c`):
+  - `vfork` saves `ra`, `sp`, `s0`-`s11` and `fs0`-`fs11` in a static buffer per depth, calls the slot, and returns 0. `execve` or `_exit` in the child jumps back to that point with the pid, so `vfork` returns a second time, in the parent.
+  - `__clone(fn, stack, CLONE_VM|CLONE_VFORK, arg)` does the same with `fn` on the given stack, so musl's `posix_spawn` (its error pipe included), `system` and `popen` work as written. Other `clone` flags and `fork` are `ENOSYS`.
+  - What Linux keeps per process but the SDK keeps in program memory is saved at `vfork` and restored on return: signal dispositions, mask, pending signals, `umask`, the directory-fd table. musl's `posix_spawn` child resets dispositions, which must not reach the parent.
+- **Linux layer:** `execve`, `waitid` (`P_PID`, `P_ALL`; `P_PGID` as `P_ALL`; musl builds `wait4`/`waitpid` on it), `pipe2`, `getpid`/`getppid`, `F_GETFD`/`F_SETFD`, `O_CLOEXEC`, `F_DUPFD_CLOEXEC`.
+
+**New slots** (appended to ABI 1, which hasn't shipped):
+
+| Slot | Call |
+|---|---|
+| 35 | `int32_t proc_vfork(void)`: 0, now in the child; or `EAGAIN` (table full, too deep), `ENOMEM`. |
+| 36 | `int32_t proc_exec(const char *path, char *const argv[], char *const envp[])`: in a child, the child's pid (back in the parent); else does not return. `ENOENT`, `ENOEXEC` (not a BMDS program), `ENOMEM`, `E2BIG`, ... |
+| 37 | `int32_t proc_vfork_exit(int32_t status)`: in a child, its pid (back in the parent); else `EINVAL`. |
+| 38 | `int32_t proc_wait(int32_t pid, int32_t *status, uint32_t flags)`: the pid of an ended child (`pid` -1: any), 0 with `BMDS_WAIT_NOHANG` if none has ended, `ECHILD`, `EINTR`. `*status` in Linux's layout: the exit status in bits 8-15, or a signal number in bits 0-6 for a killed child (Ctrl-C: `SIGINT`). |
+| 39 | `int32_t pipe(int32_t fds[2], uint32_t flags)`: read end, write end; flags `BMDS_O_CLOEXEC`. |
+| 40 | `int32_t proc_id(uint32_t which)`: `BMDS_PROC_SELF` or `BMDS_PROC_PARENT`. |
+| 41 | `int32_t fd_flags(int32_t fd, int32_t flags)`: sets the fd's flags (`BMDS_FD_CLOEXEC`), or with -1 only returns them. |
+
+Also `BMDS_O_CLOEXEC` (0x40) for `open`. Kernels that predate these refuse the flag, as they refuse any unknown one.
+
+**Ctrl-C until signals arrive (step 9):** a job's processes share the console's interrupt. A Ctrl-C makes blocking calls fail with `EINTR` in all of them, `proc_wait` included (step 4's rule), and a second kills the job.
+
+**Not in 8a:** `exec` of anything but a BMDS program is `ENOEXEC` (musl's `execvp` then tries `/bin/sh`). 8b adds `#!` scripts and `/bin/sh` as the BMDS shell running as a process (`system` and `popen` run `/bin/sh -c`). `kill()` between processes waits for signals. The shell's own pipelines keep their worker tasks.
+
+**Sub-steps:** 8a, the kernel, the slots and the SDK, tested with `progtest spawn`; 8b, `/bin/sh` and `#!` in `exec`; 8c, BusyBox with the applets this enables (§6 of `distribution.md`) and `hush` as the measure.
+
+**Budget (estimate):** firmware +5 KB, 1 KB `Psram` (the table), no new task, internal RAM unchanged. Per vfork child, a `Process` (~250 B `Psram`). The SDK adds about 1 KB of code to programs that use `vfork` or `posix_spawn`; what it saves at a vfork goes on the heap while the child runs.
+
+**Testing:**
+- **Host:** the table (pids, wait for one or any, `NOHANG`, `ECHILD`, zombies freed by waiting and by the parent ending, orphans, a full table); `Process` copies for a child (fds shared with refcounts, close-on-exec closed at exec, cwd separate); `pipe` and `fd_flags`.
+- **Board:** `progtest spawn`:
+  - `vfork`+`execve` with the child's `dup2`/`close`/`chdir` not reaching the parent;
+  - `posix_spawn` with file actions, and its error for a missing program;
+  - `system()` failing cleanly until 8b;
+  - `waitpid` for one, for any and with `WNOHANG`, and exit statuses;
+  - a pipe between two spawned children, with EOF when the writer exits;
+  - close-on-exec;
+  - `execve` replacing the program (the shell sees the new program's status);
+  - a child that `_exit`s without exec;
+  - a parent that exits before its children;
+  - Ctrl-C killing a job of three;
+  - free memory and tasks unchanged afterwards.
+
+**8a as built** (2026-10-04): as designed above, plus what building it found.
+- **Task handles:** `Task::start()` stored the handle when the create call returned. A child that starts on the other core can end, and be stopped, before then: the stop saw no handle and the task stayed suspended, with its stack (32 KB of internal RAM each). A static task's handle is its TCB, now known before the task exists.
+- **`exec` never returns** when it replaces a program, so nothing that owns memory may still be alive at that point: its argument `List`s leaked 64 bytes an `exec` until scoped.
+- **`setArguments()`** freed the old argument block before copying the new one; an `exec` passing its own `argv` on (`exec "$@"`) needs it kept until the copy is made.
+- **The stop queue** must not run while the ending task holds a lock: a debug line in it (the log's lock) hung the console when the drain deleted the task inside it. The ending task now holds nothing from queueing itself to suspending.
+- **musl:** its generic `vfork.c` (a `fork`) and `clone.c` (`ENOSYS`) are left out of `libc.a`; the SDK's `vfork.S` has both. Its `posix_spawn`, `system` and `popen` are unchanged. `posix_spawn` keeps a 5 KB child stack in its own frame, well within the 32 KB default.
+- **Verified on the board:**
+  - `progtest spawn` (vfork + exec, vfork + `_exit`, a failing exec, `posix_spawn` with file actions and its `ENOENT`, `getppid`, a pipe and EOF, two children joined by a pipe and waited for in either order, `WNOHANG`, `ECHILD`, close-on-exec set three ways, a child that replaces itself) passes, with output to the console, a file or a pipe;
+  - `exec` replacing the shell's program gives the shell the new program's status (42);
+  - an orphan outlives its parent and is freed when it ends;
+  - two Ctrl-Cs kill a job of three spinning processes;
+  - 40 runs of `progtest spawn` (about 640 processes) and 40 replacing execs leave free memory and the task list exactly as they were;
+  - BusyBox rebuilt: `hush -c` runs programs, its own pipelines (`for ... | sort -r | tr`), `$(...)`, `&&`/`||` and exit statuses, and `env VAR=x program` runs it;
+  - the corpus passes.
+- **Host:** the process table (ids, waiting for one or any, zombies, orphans, a full table, ids skipping those in use); a vfork child's `Process` (copied fds and flags, its own `dup2`/`close`/`chdir`); `pipe`, `fd_flags`, `O_CLOEXEC`, `prepareExec()` (arguments from the old block and from the heap, memory freed, close-on-exec fds closed); `FdTable`'s flags.
+- **Measured:** the firmware grew 6.1 KB (428.9 → 435.1 KB); 1 KB of `Psram` for the table, internal RAM unchanged at rest. The SDK's system call layer is 9.3 KB of code (`hello` 41.9 KB); `vfork.S` (0.5 KB) is linked only into programs that start others; the saved registers are 208 B of `bss`, and the state saved at a vfork (1.9 KB) is on the heap only while the child runs. `progtest spawn` (16 processes) takes 0.45 s.

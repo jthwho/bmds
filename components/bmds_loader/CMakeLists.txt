@@ -11,6 +11,7 @@ set(BMDS_SDK_INCLUDE ${CMAKE_CURRENT_LIST_DIR}/../../sdk/include)
 set(BMDS_LOADER_PURE_SRCS
         src/abilock.c
         src/process.cpp
+        src/processtable.cpp
         src/programimage.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)

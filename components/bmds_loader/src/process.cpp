@@ -14,6 +14,7 @@
 #include <bmds/interrupt.h>
 #include <bmds/lineeditor.h>
 #include <bmds/memory.h>
+#include <bmds/pipe.h>
 #include <bmds/process.h>
 #include <bmds/sys.h>
 
@@ -46,8 +47,8 @@ struct Process::LineInput {
 namespace {
 
         constexpr uint32_t KnownMemFlags = BMDS_MEM_FAST | BMDS_MEM_DMA;
-        constexpr uint32_t KnownOpenFlags =
-                BMDS_O_READ | BMDS_O_WRITE | BMDS_O_CREATE | BMDS_O_TRUNC | BMDS_O_APPEND | BMDS_O_EXCL;
+        constexpr uint32_t KnownOpenFlags = BMDS_O_READ | BMDS_O_WRITE | BMDS_O_CREATE | BMDS_O_TRUNC | BMDS_O_APPEND |
+                                            BMDS_O_EXCL | BMDS_O_CLOEXEC;
         constexpr uint32_t KnownTermFlags =
                 BMDS_TERM_SIGNALS | BMDS_TERM_ONLCR | BMDS_TERM_COLORS | BMDS_TERM_LOGS | BMDS_TERM_LINE;
 
@@ -115,8 +116,32 @@ Process::~Process() {
         release();
 }
 
-void Process::release() {
-        _fds.closeAll();
+Process *Process::create(const FdTable &fds, Console *console, Interrupt *interrupt) {
+        void *memory = Memory::alloc(MemSpace::Psram, sizeof(Process));
+        if (memory == nullptr) return nullptr;
+        return new (memory) Process(fds, console, interrupt);
+}
+
+Process *Process::createChild() const {
+        Process *child = create(_fds, _console, _interrupt);
+        if (child == nullptr) return nullptr;
+        if (child->setCwd(_cwd.view()).isError()) {
+                destroy(child);
+                return nullptr;
+        }
+        child->_lineInput = _lineInput;
+        return child;
+}
+
+void Process::destroy(Process *process) {
+        if (process == nullptr) return;
+        process->~Process();
+        Memory::free(process);
+        return;
+}
+
+// What a program leaves behind but its fds and arguments.
+void Process::releaseProgram() {
         for (Directory &d : _dirs) d.close();
         if (_line != nullptr) {
                 _line->~LineInput();
@@ -131,6 +156,20 @@ void Process::release() {
         }
         _allocatedBytes = 0;
         _allocations = 0;
+        return;
+}
+
+Error Process::prepareExec(Span<const StringView> args, Span<const StringView> environment) {
+        const Error err = setArguments(args, environment);
+        if (err.isError()) return err;
+        releaseProgram();
+        _fds.closeOnExec();
+        return Error::Ok;
+}
+
+void Process::release() {
+        _fds.closeAll();
+        releaseProgram();
         Memory::free(_argBlock);
         _argBlock = nullptr;
         _argv = nullptr;
@@ -182,7 +221,8 @@ Error Process::setArguments(Span<const StringView> args, Span<const StringView> 
         const size_t pointers = (args.size() + 1 + environment.size() + 1) * sizeof(char *);
         auto        *block = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, pointers + text));
         if (block == nullptr) return Error::NoMem;
-        Memory::free(_argBlock);
+        // The old block goes last: an exec's arguments may point into it.
+        void *old = _argBlock;
         _argBlock = block;
         char **slots = reinterpret_cast<char **>(block);
         char  *out = reinterpret_cast<char *>(block + pointers);
@@ -200,6 +240,7 @@ Error Process::setArguments(Span<const StringView> args, Span<const StringView> 
         for (size_t i = 0; i < environment.size(); ++i) _envp[i] = copy(environment[i]);
         _envp[environment.size()] = nullptr;
         _argc = static_cast<int32_t>(args.size());
+        Memory::free(old);
         return Error::Ok;
 }
 
@@ -408,7 +449,38 @@ int32_t Process::open(const char *path, uint32_t flags) {
         if (err.isError()) return fsErrno(err);
         auto [fd, aerr] = _fds.add(std::move(file));
         if (aerr.isError()) return -BMDS_EMFILE;
+        if (flags & BMDS_O_CLOEXEC) (void)_fds.setCloseOnExec(fd, true);
         return fd;
+}
+
+int32_t Process::pipe(int32_t *fds, uint32_t flags) {
+        if (fds == nullptr) return -BMDS_EFAULT;
+        if ((flags & ~BMDS_O_CLOEXEC) != 0) return -BMDS_EINVAL;
+        auto [ends, err] = Pipe::create(_interrupt);
+        if (err.isError()) return errnoFor(err);
+        auto [readFd, rerr] = _fds.add(std::move(ends.read));
+        if (rerr.isError()) return -BMDS_EMFILE;
+        auto [writeFd, werr] = _fds.add(std::move(ends.write));
+        if (werr.isError()) {
+                (void)_fds.close(readFd);
+                return -BMDS_EMFILE;
+        }
+        if (flags & BMDS_O_CLOEXEC) {
+                (void)_fds.setCloseOnExec(readFd, true);
+                (void)_fds.setCloseOnExec(writeFd, true);
+        }
+        fds[0] = readFd;
+        fds[1] = writeFd;
+        return 0;
+}
+
+int32_t Process::fdFlags(int32_t fd, int32_t flags) {
+        if (!_fds.isOpen(fd)) return -BMDS_EBADF;
+        if (flags != -1) {
+                if ((flags & ~static_cast<int32_t>(BMDS_FD_CLOEXEC)) != 0) return -BMDS_EINVAL;
+                (void)_fds.setCloseOnExec(fd, (flags & BMDS_FD_CLOEXEC) != 0);
+        }
+        return _fds.isCloseOnExec(fd) ? static_cast<int32_t>(BMDS_FD_CLOEXEC) : 0;
 }
 
 int32_t Process::lstat(const char *path, bmds_stat_t *info) {

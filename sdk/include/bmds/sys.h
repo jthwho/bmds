@@ -105,6 +105,13 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_SYMLINK 32u     /**< `int32_t symlink(const char *target, const char *path)`. */
 #define BMDS_SYS_READLINK 33u    /**< `int32_t readlink(const char *path, char *buf, uint32_t size)`. */
 #define BMDS_SYS_LSTAT 34u       /**< `int32_t lstat(const char *path, bmds_stat_t *info)`. */
+#define BMDS_SYS_PROC_VFORK 35u  /**< `int32_t proc_vfork(void)`: 0, now the child. */
+#define BMDS_SYS_PROC_EXEC 36u   /**< `int32_t proc_exec(const char *path, char *const *argv, char *const *envp)`. */
+#define BMDS_SYS_PROC_VFORK_EXIT 37u /**< `int32_t proc_vfork_exit(int32_t status)`: the child's pid. */
+#define BMDS_SYS_PROC_WAIT 38u       /**< `int32_t proc_wait(int32_t pid, int32_t *status, uint32_t flags)`. */
+#define BMDS_SYS_PIPE 39u            /**< `int32_t pipe(int32_t fds[2], uint32_t flags)`. */
+#define BMDS_SYS_PROC_ID 40u         /**< `int32_t proc_id(uint32_t which)`. */
+#define BMDS_SYS_FD_FLAGS 41u        /**< `int32_t fd_flags(int32_t fd, int32_t flags)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -130,12 +137,23 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_NAME_MAX 765u
 
 /** @brief `open` flags: at least one of `BMDS_O_READ` and `BMDS_O_WRITE`. */
-#define BMDS_O_READ 0x01u   /**< Open for reading. */
-#define BMDS_O_WRITE 0x02u  /**< Open for writing. */
-#define BMDS_O_CREATE 0x04u /**< Create the file if it doesn't exist (with `BMDS_O_WRITE`). */
-#define BMDS_O_TRUNC 0x08u  /**< Empty an existing file (with `BMDS_O_WRITE`). */
-#define BMDS_O_APPEND 0x10u /**< Every write goes to the end. */
-#define BMDS_O_EXCL 0x20u   /**< With `BMDS_O_CREATE`: fail with `BMDS_EEXIST` if it exists. */
+#define BMDS_O_READ 0x01u    /**< Open for reading. */
+#define BMDS_O_WRITE 0x02u   /**< Open for writing. */
+#define BMDS_O_CREATE 0x04u  /**< Create the file if it doesn't exist (with `BMDS_O_WRITE`). */
+#define BMDS_O_TRUNC 0x08u   /**< Empty an existing file (with `BMDS_O_WRITE`). */
+#define BMDS_O_APPEND 0x10u  /**< Every write goes to the end. */
+#define BMDS_O_EXCL 0x20u    /**< With `BMDS_O_CREATE`: fail with `BMDS_EEXIST` if it exists. */
+#define BMDS_O_CLOEXEC 0x40u /**< The new fd is closed by `bmds_proc_exec` (also for `bmds_pipe`). */
+
+/** @brief `fd_flags`: a descriptor's own flags. */
+#define BMDS_FD_CLOEXEC 0x1u /**< Closed by `bmds_proc_exec`. */
+
+/** @brief `proc_wait` flags. */
+#define BMDS_WAIT_NOHANG 0x1u /**< Return 0 at once if no child has ended. */
+
+/** @brief `proc_id`. */
+#define BMDS_PROC_SELF 0u   /**< The calling process's id. */
+#define BMDS_PROC_PARENT 1u /**< Its parent's (1: the shell). */
 
 /** @brief `bmds_stat_t::type`. */
 #define BMDS_TYPE_FILE 1u      /**< A regular file. */
@@ -233,6 +251,11 @@ typedef int32_t (*bmds_sys_set_mtime_fn)(const char *path, int64_t ns);
 typedef int32_t (*bmds_sys_ftruncate_fn)(int32_t fd, int64_t size);
 typedef int32_t (*bmds_sys_symlink_fn)(const char *target, const char *path);
 typedef int32_t (*bmds_sys_readlink_fn)(const char *path, char *buf, uint32_t size);
+typedef int32_t (*bmds_sys_proc_exec_fn)(const char *path, char *const *argv, char *const *envp);
+typedef int32_t (*bmds_sys_proc_wait_fn)(int32_t pid, int32_t *status, uint32_t flags);
+typedef int32_t (*bmds_sys_pipe_fn)(int32_t *fds, uint32_t flags);
+typedef int32_t (*bmds_sys_int_fn)(int32_t value);
+typedef int32_t (*bmds_sys_uint_fn)(uint32_t value);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -480,6 +503,87 @@ static inline int32_t bmds_readlink(const char *path, char *buf, uint32_t size) 
 /** @brief As `bmds_stat`, but a link is described itself (`BMDS_TYPE_LINK`, the target's length). */
 static inline int32_t bmds_lstat(const char *path, bmds_stat_t *info) {
         return ((bmds_sys_stat_fn)bmds_sys->slot[BMDS_SYS_LSTAT])(path, info);
+}
+
+/*
+ * Processes. Every program is a process with an id; it starts others with
+ * vfork and exec, as on Unix systems without an MMU: the child runs in the
+ * parent's memory, on its stack, until it execs or exits, and the parent
+ * waits until then. The SDK's vfork(), posix_spawn() and execve() wrap
+ * these calls (a C function can't use proc_vfork directly: it returns
+ * twice, the second time through the SDK's saved registers).
+ */
+
+/**
+ * @brief Starts a child process in the calling task: from now until
+ *        `bmds_proc_exec` or `bmds_proc_vfork_exit`, system calls act on
+ *        the child's descriptors and directory (copies of the caller's).
+ *        Memory stays the caller's: what the child allocates is the parent's.
+ * @return 0 (now the child), or `BMDS_EAGAIN` (too many processes, or a
+ *         child already vforking again), `BMDS_ENOMEM`.
+ */
+static inline int32_t bmds_proc_vfork(void) {
+        return ((bmds_sys_void_fn)bmds_sys->slot[BMDS_SYS_PROC_VFORK])();
+}
+
+/**
+ * @brief Runs the program at @p path with @p argv and @p envp (both
+ *        NULL-terminated; copied). Descriptors flagged `BMDS_FD_CLOEXEC` are
+ *        closed, the others stay.
+ *
+ * In a vfork child: the child becomes that program, running on its own,
+ * and the call returns in the parent with the child's id (> 0). Else the
+ * calling program is replaced (same id, descriptors and directory) and
+ * the call doesn't return.
+ * @return The child's id, or `BMDS_ENOENT`, `BMDS_ENOEXEC` (not a BMDS
+ *         program), `BMDS_EACCES` (a directory), `BMDS_ENOMEM`, `BMDS_E2BIG`, ...
+ *         (the caller is still what it was).
+ */
+static inline int32_t bmds_proc_exec(const char *path, char *const *argv, char *const *envp) {
+        return ((bmds_sys_proc_exec_fn)bmds_sys->slot[BMDS_SYS_PROC_EXEC])(path, argv, envp);
+}
+
+/**
+ * @brief Ends a vfork child that didn't exec, with @p status (0-255).
+ * @return In the parent again: the child's id; `BMDS_EINVAL` if not a vfork child.
+ */
+static inline int32_t bmds_proc_vfork_exit(int32_t status) {
+        return ((bmds_sys_int_fn)bmds_sys->slot[BMDS_SYS_PROC_VFORK_EXIT])(status);
+}
+
+/**
+ * @brief Waits for child @p pid (-1: any child) to end and frees it.
+ * @param status Gets how it ended (may be NULL), in Linux's layout: the
+ *               exit status in bits 8-15, or for a killed child the signal
+ *               in bits 0-6 (2, SIGINT, for Ctrl-C).
+ * @param flags  `BMDS_WAIT_NOHANG`.
+ * @return The child's id, 0 with `BMDS_WAIT_NOHANG` if none has ended,
+ *         `BMDS_ECHILD` (no such child), `BMDS_EINTR` (Ctrl-C).
+ */
+static inline int32_t bmds_proc_wait(int32_t pid, int32_t *status, uint32_t flags) {
+        return ((bmds_sys_proc_wait_fn)bmds_sys->slot[BMDS_SYS_PROC_WAIT])(pid, status, flags);
+}
+
+/**
+ * @brief Makes a pipe: @p fds[0] reads what @p fds[1] writes.
+ * @param flags `BMDS_O_CLOEXEC` (both ends).
+ * @return 0, or `BMDS_EMFILE`, `BMDS_ENOMEM`, `BMDS_EINVAL`.
+ */
+static inline int32_t bmds_pipe(int32_t *fds, uint32_t flags) {
+        return ((bmds_sys_pipe_fn)bmds_sys->slot[BMDS_SYS_PIPE])(fds, flags);
+}
+
+/** @brief Returns the calling process's id, or its parent's (`BMDS_PROC_...`). */
+static inline int32_t bmds_proc_id(uint32_t which) {
+        return ((bmds_sys_uint_fn)bmds_sys->slot[BMDS_SYS_PROC_ID])(which);
+}
+
+/**
+ * @brief Sets @p fd's flags (`BMDS_FD_CLOEXEC`), or with @p flags -1 only reads them.
+ * @return The flags (as they are now), or `BMDS_EBADF`, `BMDS_EINVAL`.
+ */
+static inline int32_t bmds_fd_flags(int32_t fd, int32_t flags) {
+        return ((bmds_sys_fd2_fn)bmds_sys->slot[BMDS_SYS_FD_FLAGS])(fd, flags);
 }
 
 #ifdef __cplusplus

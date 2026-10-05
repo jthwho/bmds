@@ -37,5 +37,6 @@ board makes them: emulated links need the FAT System attribute, which a PC
 doesn't set).
 
 Programs see POSIX through musl, with BMDS's differences listed in
-`sdk/README.md` ("The C library"); until process creation lands, nothing can
-start another program (`fork`, `exec`, `system`, `popen`).
+`sdk/README.md` ("The C library"): programs start others with `vfork` and
+`exec` or `posix_spawn` (no `fork`); `system`, `popen` and `/bin/sh`
+scripts wait for step 8b.

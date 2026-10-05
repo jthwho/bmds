@@ -20,8 +20,13 @@ BMDS_NAMESPACE_BEGIN
  *        own, with the caller's file descriptors, arguments and environment
  *        (`Process`), then frees everything it had.
  *
- * Target only. Stateless: one object serves every shell, and several
- * programs may run at once (pipeline stages).
+ * Every program is a process (`ProcessTable`); programs start others with
+ * vfork and exec (devplan/programs.md §13). A program the shell starts is
+ * a job: a second Ctrl-C kills it and every process it started.
+ *
+ * Target only. The object is stateless: one serves every shell, and
+ * several programs may run at once (pipeline stages). The processes are
+ * the system's, set up once by `init()`.
  *
  * @par Thread Safety
  * Thread-safe.
@@ -29,6 +34,9 @@ BMDS_NAMESPACE_BEGIN
 class Loader final : public ProgramLauncher {
         public:
                 constexpr Loader() = default;
+
+                /** @brief Sets up the process table (a boot stage). */
+                static Error init();
 
                 /** @copydoc ProgramLauncher::run */
                 Result<int> run(const Request &request) override;

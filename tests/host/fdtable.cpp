@@ -123,6 +123,34 @@ TEST_CASE("FdTable") {
                 CHECK(table.add(open(NullStream::instance(), FileHandle::Read)).error() == Error::TooManyOpen);
                 CHECK(table.add(open(NullStream::instance(), FileHandle::Read), -1).error() == Error::BadDescriptor);
 
+                // Close-on-exec: per descriptor, gone with dup, dup2 onto it,
+                // close; copied with the table; exec closes the flagged ones.
+                {
+                        FdTable t;
+                        CHECK(t.setCloseOnExec(0, true) == Error::BadDescriptor);
+                        REQUIRE(t.set(0, open(NullStream::instance(), FileHandle::Read)).isOk());
+                        REQUIRE(t.set(1, open(NullStream::instance(), FileHandle::Write)).isOk());
+                        CHECK_FALSE(t.isCloseOnExec(0));
+                        CHECK(t.setCloseOnExec(0, true).isOk());
+                        CHECK(t.isCloseOnExec(0));
+                        CHECK_FALSE(t.isCloseOnExec(t.dup(0).value()));
+                        CHECK(t.setCloseOnExec(1, true).isOk());
+                        CHECK(t.dup2(0, 1).isOk());
+                        CHECK_FALSE(t.isCloseOnExec(1));
+                        CHECK(t.dup2(0, 0).isOk());
+                        CHECK(t.isCloseOnExec(0));
+                        FdTable copy = t;
+                        CHECK(copy.isCloseOnExec(0));
+                        copy.closeOnExec();
+                        CHECK_FALSE(copy.isOpen(0));
+                        CHECK(copy.isOpen(1));
+                        CHECK(copy.isOpen(2));
+                        CHECK(t.isOpen(0));
+                        CHECK(t.close(0).isOk());
+                        REQUIRE(t.set(0, open(NullStream::instance(), FileHandle::Read)).isOk());
+                        CHECK_FALSE(t.isCloseOnExec(0));
+                }
+
                 table.closeAll();
                 CHECK(stream.closed == 2);
                 CHECK_FALSE(table.isOpen(1));

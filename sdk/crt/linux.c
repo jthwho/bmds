@@ -12,9 +12,9 @@
  * layer: they see musl's POSIX functions.
  *
  * What BMDS doesn't have is approximated, as noted at each call: one user
- * (root), no hard links, no file descriptor flags, modes made up from the FAT
- * attributes, poll by guess, signals only from the program itself. Process
- * creation, pipes and sockets fail with ENOSYS (programs.md, step 8).
+ * (root), no hard links, modes made up from the FAT attributes, poll by
+ * guess, signals only from the program itself, no fork() (vfork, and
+ * posix_spawn on it: programs.md §13). Sockets fail.
  */
 
 #define _GNU_SOURCE
@@ -35,6 +35,7 @@
 #include <sys/times.h>
 #include <sys/uio.h>
 #include <sys/utsname.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
 #include <bmds/errno.h>
@@ -165,7 +166,12 @@ static long open_dir(const char *path) {
         return -EMFILE;
 }
 
+int __bmds_vfork_depth;
+
 static long close_dir(int i) {
+        /* A vfork child has no directories of its own (they are per process):
+         * the entry, and the memory it points to, are the parent's. */
+        if (__bmds_vfork_depth > 0) return 0;
         const int32_t r = bmds_closedir(dirs[i].handle);
         bmds_mem_free(dirs[i].path);
         bmds_mem_free(dirs[i].held);
@@ -259,6 +265,7 @@ static uint32_t open_flags(long flags) {
                 if (flags & O_TRUNC) f |= BMDS_O_TRUNC;
                 if (flags & O_APPEND) f |= BMDS_O_APPEND;
         }
+        if (flags & O_CLOEXEC) f |= BMDS_O_CLOEXEC;
         return f;
 }
 
@@ -455,11 +462,22 @@ static long do_truncate(const char *path, int64_t size) {
 
 static long do_fcntl(long fd, long cmd, long arg) {
         switch (cmd) {
-                case F_DUPFD:
-                case F_DUPFD_CLOEXEC: return (long)(bmds_dup((int32_t)fd, (int32_t)arg));
+                case F_DUPFD: return (long)(bmds_dup((int32_t)fd, (int32_t)arg));
+                case F_DUPFD_CLOEXEC: {
+                        const int32_t n = bmds_dup((int32_t)fd, (int32_t)arg);
+                        if (n >= 0) (void)bmds_fd_flags(n, BMDS_FD_CLOEXEC);
+                        return (long)(n);
+                }
                 case F_GETFD:
-                case F_SETFD:
-                case F_SETFL: return 0; /* no exec yet; no non-blocking I/O */
+                        /* Directory fds are the SDK's own: closed by an exec anyway. */
+                        if (dir_index(fd) >= 0) return FD_CLOEXEC;
+                        return (long)(bmds_fd_flags((int32_t)fd, -1));
+                case F_SETFD: {
+                        if (dir_index(fd) >= 0) return 0;
+                        const int32_t r = bmds_fd_flags((int32_t)fd, (arg & FD_CLOEXEC) ? BMDS_FD_CLOEXEC : 0);
+                        return r < 0 ? (long)(r) : 0;
+                }
+                case F_SETFL: return 0; /* no non-blocking I/O */
                 case F_GETFL: {
                         if (dir_index(fd) >= 0) return O_RDONLY | O_DIRECTORY;
                         bmds_stat_t   st = {.size = sizeof(st)};
@@ -717,10 +735,14 @@ static long do_sigprocmask(long how, const uint64_t *set, uint64_t *old) {
         return 0;
 }
 
-#define SELF 1 /* the program's process and thread id, until processes have ids */
+static long self(void) {
+        return (long)(bmds_proc_id(BMDS_PROC_SELF));
+}
 
+/* Signals reach only the program itself until they are delivered from
+ * outside (step 9). */
 static long do_kill(long pid, long sig) {
-        if (pid != SELF && pid != 0 && pid != -1) return -ESRCH;
+        if (pid != self() && pid != 0 && pid != -1) return -ESRCH;
         if (sig < 0 || sig >= _NSIG) return -EINVAL;
         if (sig != 0) deliver(sig);
         return 0;
@@ -766,13 +788,117 @@ static long do_times(struct tms *t) {
         return (long)(now(BMDS_CLOCK_MONOTONIC) / (1000000000 / 100));
 }
 
-static long do_exit(long status) {
-        /* As a command ended by SIGINT: 130 after a Ctrl-C, however it ends. */
-        bmds_exit(bmds_interrupted() ? 130 : (int32_t)status);
+static mode_t umask_value = 022;
+
+/* --- Processes ----------------------------------------------------------------- */
+
+/*
+ * vfork (vfork.S saves the registers; programs.md §13). A vfork child runs
+ * in its parent's memory, so what Linux keeps per process but this layer
+ * keeps in that memory is saved at the vfork and put back when the parent
+ * resumes: signal dispositions (musl's posix_spawn child resets them), the
+ * mask, pending signals, the umask, the directory-fd table. The copy lives
+ * on the heap while the child runs: programs that never vfork pay nothing.
+ */
+#define VFORK_DEPTH 2
+
+typedef struct {
+        struct k_sigaction actions[_NSIG];
+        uint64_t           blocked, pending;
+        mode_t             umask;
+        __typeof__(dirs)   dirs;
+} vfork_saved_t;
+
+uint32_t              __bmds_vfork_regs[VFORK_DEPTH][26];
+static vfork_saved_t *vfork_saved[VFORK_DEPTH];
+
+_Noreturn void __bmds_vfork_resume(long pid, const uint32_t *regs);
+
+/* From vfork.S, registers saved: 0 (now the child), or -errno. */
+long __bmds_vfork_enter(void) {
+        vfork_saved_t *saved = bmds_mem_alloc(sizeof(*saved), 0, 0);
+        if (saved == NULL) return -ENOMEM;
+        memcpy(saved->actions, actions, sizeof(actions));
+        saved->blocked = blocked;
+        saved->pending = pending;
+        saved->umask = umask_value;
+        memcpy(saved->dirs, dirs, sizeof(dirs));
+        const int32_t r = bmds_proc_vfork();
+        if (r < 0) {
+                bmds_mem_free(saved);
+                return (long)(r);
+        }
+        vfork_saved[__bmds_vfork_depth++] = saved;
         return 0;
 }
 
-static mode_t umask_value = 022;
+/* The child has exec'd or exited: the parent goes on, vfork returning @p pid. */
+static _Noreturn void vfork_return(long pid) {
+        vfork_saved_t *saved = vfork_saved[--__bmds_vfork_depth];
+        memcpy(actions, saved->actions, sizeof(actions));
+        blocked = saved->blocked;
+        pending = saved->pending;
+        umask_value = saved->umask;
+        memcpy(dirs, saved->dirs, sizeof(dirs));
+        bmds_mem_free(saved);
+        __bmds_vfork_resume(pid, __bmds_vfork_regs[__bmds_vfork_depth]);
+}
+
+static long do_exit(long status) {
+        /* As a command ended by SIGINT: 130 after a Ctrl-C, however it ends. */
+        const int32_t code = bmds_interrupted() ? 130 : (int32_t)status;
+        if (__bmds_vfork_depth > 0) vfork_return((long)(bmds_proc_vfork_exit(code)));
+        bmds_exit(code);
+        return 0;
+}
+
+/* A __clone child's function returned @p status. */
+_Noreturn void __bmds_vfork_child_exit(long status) {
+        (void)do_exit(status);
+        for (;;) {}
+}
+
+static long do_execve(const char *path, char *const *argv, char *const *envp) {
+        const int32_t r = bmds_proc_exec(path, argv, envp);
+        /* Only a vfork child gets here with an id: its parent goes on. */
+        if (r >= 0) vfork_return((long)r);
+        return (long)(r);
+}
+
+/* waitid(2); musl builds wait4 and waitpid on it. Process groups are the
+ * whole family: P_PGID waits for any child. */
+static long do_waitid(long type, long id, siginfo_t *info, long options) {
+        if (type != P_ALL && type != P_PID && type != P_PGID) return -EINVAL;
+        int32_t       status = 0;
+        const int32_t r = bmds_proc_wait(type == P_PID ? (int32_t)id : -1, &status,
+                                         (options & WNOHANG) ? BMDS_WAIT_NOHANG : 0);
+        if (r < 0) return (long)(r);
+        if (info != NULL) {
+                memset(info, 0, sizeof(*info));
+                if (r > 0) {
+                        info->si_signo = SIGCHLD;
+                        info->si_pid = r;
+                        if (status & 0x7f) {
+                                info->si_code = CLD_KILLED;
+                                info->si_status = status & 0x7f;
+                        } else {
+                                info->si_code = CLD_EXITED;
+                                info->si_status = (status >> 8) & 0xff;
+                        }
+                }
+        }
+        return 0;
+}
+
+static long do_pipe2(int *fds, long flags) {
+        if (flags & ~(O_CLOEXEC | O_NONBLOCK)) return -EINVAL;
+        int32_t       ends[2];
+        const int32_t r = bmds_pipe(ends, (flags & O_CLOEXEC) ? BMDS_O_CLOEXEC : 0);
+        if (r < 0) return (long)(r);
+        fds[0] = ends[0];
+        fds[1] = ends[1];
+        return 0;
+}
 
 /* Called by the startup code before musl starts. */
 void __bmds_linux_start(void) {
@@ -796,7 +922,13 @@ long __bmds_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 case SYS_getdents64: return do_getdents(a, (char *)b, (size_t)c);
                 case SYS_fcntl64: return do_fcntl(a, b, c);
                 case SYS_dup: return dir_index(a) >= 0 ? -EBADF : (long)(bmds_dup((int32_t)a, 0));
-                case SYS_dup3: return a == b ? -EINVAL : (long)(bmds_dup2((int32_t)a, (int32_t)b));
+                case SYS_dup3: {
+                        if (a == b || (c & ~O_CLOEXEC)) return -EINVAL;
+                        const int32_t r = bmds_dup2((int32_t)a, (int32_t)b);
+                        if (r >= 0 && (c & O_CLOEXEC)) (void)bmds_fd_flags(r, BMDS_FD_CLOEXEC);
+                        return (long)(r);
+                }
+                case SYS_pipe2: return do_pipe2((int *)a, b);
                 case SYS_ioctl: return do_ioctl(a, (unsigned long)b, (void *)c);
                 case SYS_ftruncate64: return do_ftruncate(a, (int64_t)((uint64_t)(uint32_t)c << 32 | (uint32_t)b));
                 case SYS_truncate64: return do_truncate((const char *)a, (int64_t)((uint64_t)(uint32_t)c << 32 | (uint32_t)b));
@@ -890,13 +1022,15 @@ long __bmds_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 /* The program */
                 case SYS_exit:
                 case SYS_exit_group: return do_exit(a);
+                case SYS_execve: return do_execve((const char *)a, (char *const *)b, (char *const *)c);
+                case SYS_waitid: return do_waitid(a, b, (siginfo_t *)c, d);
                 case SYS_set_tid_address:
                 case SYS_gettid:
                 case SYS_getpid:
                 case SYS_getpgid:
                 case SYS_getsid:
-                case SYS_setsid: return SELF;
-                case SYS_getppid:
+                case SYS_setsid: return self();
+                case SYS_getppid: return (long)(bmds_proc_id(BMDS_PROC_PARENT));
                 case SYS_setpgid: return 0;
                 case SYS_getuid:
                 case SYS_geteuid:
@@ -932,7 +1066,7 @@ long __bmds_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 /* Waiting */
                 case SYS_ppoll_time64: return do_poll((struct pollfd *)a, (unsigned long)b, (const void *)c);
 
-                /* Step 8: process creation and pipes. No sockets. */
+                /* No sockets; no fork (SYS_clone: vfork.S handles CLONE_VFORK). */
                 case SYS_socket: return -EAFNOSUPPORT;
                 default: return -ENOSYS;
         }

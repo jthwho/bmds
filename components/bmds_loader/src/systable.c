@@ -49,8 +49,15 @@ int32_t bmds_k_ftruncate(int32_t fd, int64_t size);
 int32_t bmds_k_symlink(const char *target, const char *path);
 int32_t bmds_k_readlink(const char *path, char *buf, uint32_t size);
 int32_t bmds_k_lstat(const char *path, bmds_stat_t *info);
+int32_t bmds_k_proc_vfork(void);
+int32_t bmds_k_proc_exec(const char *path, char *const *argv, char *const *envp);
+int32_t bmds_k_proc_vfork_exit(int32_t status);
+int32_t bmds_k_proc_wait(int32_t pid, int32_t *status, uint32_t flags);
+int32_t bmds_k_pipe(int32_t *fds, uint32_t flags);
+int32_t bmds_k_proc_id(uint32_t which);
+int32_t bmds_k_fd_flags(int32_t fd, int32_t flags);
 
-#define SLOTS 35
+#define SLOTS 42
 
 /* bmds_sys_t with its slots spelled out (same layout; checked below). */
 static const struct {
@@ -100,10 +107,17 @@ static const struct {
                 [BMDS_SYS_SYMLINK] = (bmds_sys_fn_t)bmds_k_symlink,
                 [BMDS_SYS_READLINK] = (bmds_sys_fn_t)bmds_k_readlink,
                 [BMDS_SYS_LSTAT] = (bmds_sys_fn_t)bmds_k_lstat,
+                [BMDS_SYS_PROC_VFORK] = (bmds_sys_fn_t)bmds_k_proc_vfork,
+                [BMDS_SYS_PROC_EXEC] = (bmds_sys_fn_t)bmds_k_proc_exec,
+                [BMDS_SYS_PROC_VFORK_EXIT] = (bmds_sys_fn_t)bmds_k_proc_vfork_exit,
+                [BMDS_SYS_PROC_WAIT] = (bmds_sys_fn_t)bmds_k_proc_wait,
+                [BMDS_SYS_PIPE] = (bmds_sys_fn_t)bmds_k_pipe,
+                [BMDS_SYS_PROC_ID] = (bmds_sys_fn_t)bmds_k_proc_id,
+                [BMDS_SYS_FD_FLAGS] = (bmds_sys_fn_t)bmds_k_fd_flags,
         },
 };
 
-_Static_assert(SLOTS == BMDS_SYS_LSTAT + 1, "every slot is in the table");
+_Static_assert(SLOTS == BMDS_SYS_FD_FLAGS + 1, "every slot is in the table");
 _Static_assert(sizeof(table) == 16 + SLOTS * sizeof(bmds_sys_fn_t), "table layout");
 
 const bmds_sys_t *bmds_k_sys_table(void) {
