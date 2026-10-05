@@ -34,8 +34,8 @@ class FileHandle;
  * - `write()` waits until all of @p data is taken, or fails part-way with
  *   the count written so far and the error: `Timeout`, `Interrupted`, or
  *   `BrokenPipe` when nobody will ever read it.
- * - Blocking streams return `Error::Interrupted` when the interrupt they
- *   were created with (the job's) is raised.
+ * - Blocking streams return `Error::Interrupted` when the calling task's
+ *   interrupt (`Interrupt::current()`) is raised.
  *
  * Kernel-internal; programs see file descriptors (Phase 3 ABI).
  *

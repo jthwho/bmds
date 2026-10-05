@@ -62,6 +62,14 @@ _Static_assert(BMDS_SYS_PROC_WAIT == 38, "ABI: slot PROC_WAIT");
 _Static_assert(BMDS_SYS_PIPE == 39, "ABI: slot PIPE");
 _Static_assert(BMDS_SYS_PROC_ID == 40, "ABI: slot PROC_ID");
 _Static_assert(BMDS_SYS_FD_FLAGS == 41, "ABI: slot FD_FLAGS");
+_Static_assert(BMDS_SYS_SIG_SETUP == 42, "ABI: slot SIG_SETUP");
+_Static_assert(BMDS_SYS_SIG_ACTION == 43, "ABI: slot SIG_ACTION");
+_Static_assert(BMDS_SYS_SIG_MASK == 44, "ABI: slot SIG_MASK");
+_Static_assert(BMDS_SYS_SIG_PENDING == 45, "ABI: slot SIG_PENDING");
+_Static_assert(BMDS_SYS_SIG_TAKE == 46, "ABI: slot SIG_TAKE");
+_Static_assert(BMDS_SYS_SIG_SUSPEND == 47, "ABI: slot SIG_SUSPEND");
+_Static_assert(BMDS_SYS_PROC_KILL == 48, "ABI: slot PROC_KILL");
+_Static_assert(BMDS_SYS_PROC_EXIT_SIGNAL == 49, "ABI: slot PROC_EXIT_SIGNAL");
 _Static_assert(BMDS_TYPE_LINK == 4, "ABI: file type LINK");
 _Static_assert(BMDS_ABI_VERSION == 1, "ABI: version (raise it with every addition once shipped)");
 _Static_assert(BMDS_STDIN == 0 && BMDS_STDOUT == 1 && BMDS_STDERR == 2, "ABI: standard fds");
@@ -79,6 +87,25 @@ _Static_assert(BMDS_ATTR_SYSTEM == 0x04 && BMDS_ATTR_ARCHIVE == 0x20, "ABI: attr
 _Static_assert(BMDS_CLOCK_REALTIME == 0 && BMDS_CLOCK_MONOTONIC == 1, "ABI: clocks");
 _Static_assert(BMDS_TERM_SIGNALS == 0x01 && BMDS_TERM_ONLCR == 0x02 && BMDS_TERM_COLORS == 0x04, "ABI: term flags");
 _Static_assert(BMDS_TERM_LOGS == 0x08 && BMDS_TERM_LINE == 0x10, "ABI: term flags");
+_Static_assert(BMDS_PROC_JOB == 2, "ABI: proc_id JOB");
+_Static_assert(BMDS_SIGHUP == 1 && BMDS_SIGINT == 2 && BMDS_SIGQUIT == 3 && BMDS_SIGILL == 4, "ABI: signals 1-4");
+_Static_assert(BMDS_SIGTRAP == 5 && BMDS_SIGABRT == 6 && BMDS_SIGBUS == 7 && BMDS_SIGFPE == 8, "ABI: signals 5-8");
+_Static_assert(BMDS_SIGKILL == 9 && BMDS_SIGUSR1 == 10 && BMDS_SIGSEGV == 11 && BMDS_SIGUSR2 == 12,
+               "ABI: signals 9-12");
+_Static_assert(BMDS_SIGPIPE == 13 && BMDS_SIGALRM == 14 && BMDS_SIGTERM == 15 && BMDS_SIGSTKFLT == 16,
+               "ABI: signals 13-16");
+_Static_assert(BMDS_SIGCHLD == 17 && BMDS_SIGCONT == 18 && BMDS_SIGSTOP == 19 && BMDS_SIGTSTP == 20,
+               "ABI: signals 17-20");
+_Static_assert(BMDS_SIGTTIN == 21 && BMDS_SIGTTOU == 22 && BMDS_SIGURG == 23 && BMDS_SIGXCPU == 24,
+               "ABI: signals 21-24");
+_Static_assert(BMDS_SIGXFSZ == 25 && BMDS_SIGVTALRM == 26 && BMDS_SIGPROF == 27 && BMDS_SIGWINCH == 28,
+               "ABI: signals 25-28");
+_Static_assert(BMDS_SIGIO == 29 && BMDS_SIGPWR == 30 && BMDS_SIGSYS == 31 && BMDS_SIG_COUNT == 32,
+               "ABI: signals 29-31");
+_Static_assert(BMDS_SIG_DEFAULT == 0 && BMDS_SIG_IGNORE == 1 && BMDS_SIG_CATCH == 2, "ABI: signal actions");
+_Static_assert(BMDS_SIG_QUERY == 0xffffffffu, "ABI: signal action query");
+_Static_assert(BMDS_SIG_BLOCK == 0 && BMDS_SIG_UNBLOCK == 1 && BMDS_SIG_SETMASK == 2, "ABI: signal mask hows");
+_Static_assert(BMDS_SI_USER == 0 && BMDS_SI_KERNEL == 0x80 && BMDS_SIG_TERMINATE == 0x1, "ABI: siginfo values");
 
 _Static_assert(offsetof(bmds_stat_t, size) == 0, "ABI: stat.size");
 _Static_assert(offsetof(bmds_stat_t, type) == 4, "ABI: stat.type");
@@ -103,6 +130,12 @@ _Static_assert(offsetof(bmds_mem_info_t, free_bytes) == 8, "ABI: mem_info.free_b
 _Static_assert(offsetof(bmds_mem_info_t, largest_free) == 12, "ABI: mem_info.largest_free");
 _Static_assert(offsetof(bmds_mem_info_t, program_bytes) == 16, "ABI: mem_info.program_bytes");
 _Static_assert(offsetof(bmds_mem_info_t, program_blocks) == 20, "ABI: mem_info.program_blocks");
+
+_Static_assert(offsetof(bmds_siginfo_t, size) == 0, "ABI: siginfo.size");
+_Static_assert(offsetof(bmds_siginfo_t, signo) == 4, "ABI: siginfo.signo");
+_Static_assert(offsetof(bmds_siginfo_t, code) == 8, "ABI: siginfo.code");
+_Static_assert(offsetof(bmds_siginfo_t, flags) == 12, "ABI: siginfo.flags");
+_Static_assert(sizeof(bmds_siginfo_t) == 16, "ABI: bmds_siginfo_t size");
 
 _Static_assert(offsetof(bmds_sys_t, magic) == 0, "ABI: bmds_sys_t.magic");
 _Static_assert(offsetof(bmds_sys_t, abi_version) == 4, "ABI: bmds_sys_t.abi_version");

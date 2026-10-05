@@ -30,6 +30,13 @@
  *   progtest tree SELF    start two `spin` children and wait (for Ctrl-C)
  *   progtest scripts SELF DIR  system, popen, scripts run by exec (/bin/sh, #!), in DIR
  *   progtest run PATH [ARG]  posix_spawn PATH ARG (stdout to pt-out.txt), print its status
+ *   progtest signals SELF handlers, masks, kill, SIGCHLD, SIGPIPE, sigsuspend, SA_RESTART
+ *   progtest catch        print "catch: ready", wait for SIGINT or SIGTERM, say which, exit 7
+ *   progtest ignore       ignore SIGINT, then sleep (for Ctrl-C: the second one kills)
+ *   progtest killer PID MS [FD]  after MS ms send SIGUSR1 to PID, then write "x" to FD
+ *   progtest pipewrite    write to a pipe nobody reads (ends by SIGPIPE)
+ *   progtest sigstate     exit 0 if SIGUSR1 is default and SIGUSR2 ignored (after exec)
+ *   progtest winch        wait up to 5 s for SIGWINCH, print the new size to stderr
  */
 
 #include <dirent.h>
@@ -41,6 +48,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
 #include <sys/time.h>
@@ -547,11 +555,144 @@ static void deep(int depth, int status) {
         deep(depth - 1, status);
 }
 
+static volatile sig_atomic_t got[NSIG];
+static volatile int          last_code;
+
+static void count_signal(int sig) {
+        got[sig]++;
+}
+
+static void on_info(int sig, siginfo_t *si, void *context) {
+        (void)context;
+        got[sig]++;
+        last_code = si->si_code;
+}
+
+static int catch_signal(int sig, void (*handler)(int), int flags) {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = handler;
+        sa.sa_flags = flags;
+        return sigaction(sig, &sa, NULL);
+}
+
+/* How child @p pid ended: its exit status, or 1000 + the signal; -1 on error. */
+static int ending_of(pid_t pid) {
+        int st = 0;
+        if (waitpid(pid, &st, 0) != pid) return -1;
+        if (WIFSIGNALED(st)) return 1000 + WTERMSIG(st);
+        return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+}
+
+/* Signals (programs.md §15). */
+static int signals(const char *self) {
+        char pidbuf[16], fdbuf[16];
+        // raise() runs the handler before it returns; kill() of itself too, with siginfo.
+        CHECK(catch_signal(SIGUSR1, count_signal, 0) == 0);
+        CHECK(raise(SIGUSR1) == 0 && got[SIGUSR1] == 1);
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_sigaction = on_info;
+        sa.sa_flags = SA_SIGINFO;
+        CHECK(sigaction(SIGUSR2, &sa, NULL) == 0);
+        CHECK(kill(getpid(), SIGUSR2) == 0 && got[SIGUSR2] == 1 && last_code == SI_USER);
+        // The mask holds a signal until it is unblocked.
+        sigset_t set, old, pend;
+        sigemptyset(&set);
+        sigaddset(&set, SIGUSR1);
+        CHECK(sigprocmask(SIG_BLOCK, &set, &old) == 0);
+        CHECK(raise(SIGUSR1) == 0 && got[SIGUSR1] == 1);
+        CHECK(sigpending(&pend) == 0 && sigismember(&pend, SIGUSR1));
+        CHECK(sigprocmask(SIG_SETMASK, &old, NULL) == 0 && got[SIGUSR1] == 2);
+        CHECK(sigpending(&pend) == 0 && !sigismember(&pend, SIGUSR1));
+        // Ignored: dropped, a pending one too.
+        CHECK(sigprocmask(SIG_BLOCK, &set, NULL) == 0 && raise(SIGUSR1) == 0);
+        CHECK(signal(SIGUSR1, SIG_IGN) == count_signal);
+        CHECK(sigpending(&pend) == 0 && !sigismember(&pend, SIGUSR1));
+        CHECK(sigprocmask(SIG_SETMASK, &old, NULL) == 0 && got[SIGUSR1] == 2);
+        // The job and errors.
+        CHECK(kill(0, SIGUSR2) == 0 && got[SIGUSR2] == 2);
+        CHECK(kill(-getpgrp(), SIGUSR2) == 0 && got[SIGUSR2] == 3);
+        CHECK(kill(1, 0) == -1 && errno == EPERM);
+        CHECK(kill(30000, 0) == -1 && errno == ESRCH);
+        CHECK(kill(getpid(), 40) == -1 && errno == EINVAL);
+        CHECK(sigaction(SIGKILL, &sa, NULL) == -1 && errno == EINVAL);
+        // SIGCHLD when a child ends; waitpid still gets the child (no SA_RESTART).
+        CHECK(catch_signal(SIGCHLD, count_signal, 0) == 0);
+        pid_t c = start(self, NULL, NULL, "status", "3", NULL);
+        CHECK(c > 0 && status_of(c) == 3 && got[SIGCHLD] == 1);
+        CHECK(signal(SIGCHLD, SIG_DFL) == count_signal);
+        // A zombie still accepts signals.
+        c = start(self, NULL, NULL, "status", "0", NULL);
+        CHECK(c > 0 && usleep(100000) == 0 && kill(c, 0) == 0 && status_of(c) == 0);
+        // Children ended by SIGTERM: sleeping, computing; one that catches it.
+        c = start(self, NULL, NULL, "sleep", "5000", NULL);
+        CHECK(c > 0 && usleep(100000) == 0 && kill(c, SIGTERM) == 0 && ending_of(c) == 1000 + SIGTERM);
+        c = start(self, NULL, NULL, "spin", NULL);
+        CHECK(c > 0 && usleep(100000) == 0 && kill(c, SIGTERM) == 0 && ending_of(c) == 1000 + SIGTERM);
+        c = start(self, NULL, NULL, "catch", NULL);
+        CHECK(c > 0 && usleep(200000) == 0 && kill(c, SIGTERM) == 0 && ending_of(c) == 7);
+        // SIGKILL can't be caught.
+        c = start(self, NULL, NULL, "catch", NULL);
+        CHECK(c > 0 && usleep(200000) == 0 && kill(c, SIGKILL) == 0 && ending_of(c) == 1000 + SIGKILL);
+        // SIGPIPE ends a writer; ignored, the write fails with EPIPE.
+        c = start(self, NULL, NULL, "pipewrite", NULL);
+        CHECK(c > 0 && ending_of(c) == 1000 + SIGPIPE);
+        int fds[2];
+        CHECK(signal(SIGPIPE, SIG_IGN) == SIG_DFL && pipe(fds) == 0 && close(fds[0]) == 0);
+        CHECK(write(fds[1], "x", 1) == -1 && errno == EPIPE && close(fds[1]) == 0);
+        CHECK(signal(SIGPIPE, SIG_DFL) == SIG_IGN);
+        // A vfork child that kills itself before exec; the parent goes on.
+        shared_with_child = 0;
+        c = vfork();
+        if (c == 0) {
+                shared_with_child = 1;
+                kill(getpid(), SIGTERM);
+                _exit(99); // not reached
+        }
+        CHECK(c > 0 && shared_with_child == 1 && ending_of(c) == 1000 + SIGTERM);
+        // exec: handlers go back to default, ignored signals stay ignored.
+        CHECK(catch_signal(SIGUSR1, count_signal, 0) == 0 && signal(SIGUSR2, SIG_IGN) != SIG_ERR);
+        c = start(self, NULL, NULL, "sigstate", NULL);
+        CHECK(c > 0 && status_of(c) == 0);
+        CHECK(signal(SIGUSR2, SIG_DFL) == SIG_IGN);
+        // A read interrupted by a handler: made again with SA_RESTART, EINTR without.
+        snprintf(pidbuf, sizeof(pidbuf), "%d", (int)getpid());
+        char b = 0;
+        for (int restart = 1; restart >= 0; --restart) {
+                CHECK(catch_signal(SIGUSR1, count_signal, restart ? SA_RESTART : 0) == 0);
+                CHECK(pipe(fds) == 0);
+                snprintf(fdbuf, sizeof(fdbuf), "%d", fds[1]);
+                const int before = got[SIGUSR1];
+                c = start(self, NULL, NULL, "killer", pidbuf, "150", fdbuf, NULL);
+                CHECK(c > 0 && close(fds[1]) == 0);
+                const ssize_t n = read(fds[0], &b, 1);
+                CHECK(got[SIGUSR1] == before + 1);
+                if (restart) {
+                        CHECK(n == 1 && b == 'x');
+                } else {
+                        CHECK(n == -1 && errno == EINTR);
+                }
+                CHECK(status_of(c) == 0 && close(fds[0]) == 0);
+        }
+        // sigsuspend: blocked until then, handled there, the mask put back.
+        CHECK(catch_signal(SIGUSR1, count_signal, 0) == 0 && sigprocmask(SIG_BLOCK, &set, &old) == 0);
+        const int before = got[SIGUSR1];
+        c = start(self, NULL, NULL, "killer", pidbuf, "150", NULL);
+        sigset_t none;
+        sigemptyset(&none);
+        CHECK(c > 0 && sigsuspend(&none) == -1 && errno == EINTR && got[SIGUSR1] == before + 1);
+        CHECK(sigprocmask(SIG_SETMASK, &old, &pend) == 0 && sigismember(&pend, SIGUSR1));
+        CHECK(status_of(c) == 0);
+        printf("signals: all passed\n");
+        return 0;
+}
+
 int main(int argc, char **argv) {
         if (argc < 2) {
                 fprintf(stderr,
                         "usage: progtest status|exit|leak|env|tty|float|files|time|sleep|term|lines|raw|mem|random|cwd|"
-                        "spin|calls|posix|abort|spawn|scripts|fd|ppid|exec|orphan|tree [arg]\n");
+                        "spin|calls|posix|abort|spawn|scripts|signals|catch|ignore|fd|ppid|exec|orphan|tree [arg]\n");
                 return 2;
         }
         const char *what = argv[1];
@@ -613,6 +754,50 @@ int main(int argc, char **argv) {
                 return 0;
         }
         if (strcmp(what, "scripts") == 0) return scripts(arg, argc > 3 ? argv[3] : ".");
+        if (strcmp(what, "signals") == 0) return signals(arg);
+        if (strcmp(what, "catch") == 0) {
+                if (catch_signal(SIGINT, count_signal, 0) != 0 || catch_signal(SIGTERM, count_signal, 0) != 0) return 1;
+                printf("catch: ready\n");
+                fflush(stdout);
+                while (got[SIGINT] == 0 && got[SIGTERM] == 0) pause();
+                printf("catch: %s\n", got[SIGINT] != 0 ? "SIGINT" : "SIGTERM");
+                return 7;
+        }
+        if (strcmp(what, "ignore") == 0) {
+                signal(SIGINT, SIG_IGN);
+                printf("ignore: SIGINT ignored\n");
+                fflush(stdout);
+                for (;;) sleep(1);
+        }
+        if (strcmp(what, "killer") == 0) {
+                usleep((useconds_t)(argc > 3 ? atoi(argv[3]) : 100) * 1000);
+                if (kill(atoi(arg), SIGUSR1) != 0) return 1;
+                if (argc > 4) {
+                        usleep(100000);
+                        if (write(atoi(argv[4]), "x", 1) != 1) return 1;
+                }
+                return 0;
+        }
+        if (strcmp(what, "pipewrite") == 0) {
+                int fds[2];
+                if (pipe(fds) != 0 || close(fds[0]) != 0) return 1;
+                (void)write(fds[1], "x", 1);
+                return 2; // not reached: SIGPIPE
+        }
+        if (strcmp(what, "winch") == 0) {
+                if (catch_signal(SIGWINCH, count_signal, 0) != 0) return 1;
+                for (int i = 0; i < 50 && got[SIGWINCH] == 0; ++i) usleep(100000);
+                struct winsize ws = {0};
+                (void)ioctl(2, TIOCGWINSZ, &ws);
+                fprintf(stderr, "winch: %s, %ux%u\n", got[SIGWINCH] != 0 ? "got SIGWINCH" : "none",
+                        (unsigned)ws.ws_col, (unsigned)ws.ws_row);
+                return got[SIGWINCH] != 0 ? 0 : 1;
+        }
+        if (strcmp(what, "sigstate") == 0) {
+                struct sigaction a1, a2;
+                if (sigaction(SIGUSR1, NULL, &a1) != 0 || sigaction(SIGUSR2, NULL, &a2) != 0) return 1;
+                return a1.sa_handler == SIG_DFL && a2.sa_handler == SIG_IGN ? 0 : 1;
+        }
         if (strcmp(what, "fd") == 0) return fcntl(atoi(arg), F_GETFD) >= 0 ? 0 : 1;
         if (strcmp(what, "ppid") == 0) return getppid() == atoi(arg) ? 0 : 1;
         if (strcmp(what, "exec") == 0) {
@@ -643,9 +828,9 @@ int main(int argc, char **argv) {
                 printf("cwd: %s\n", getcwd(buf, sizeof(buf)));
                 return 0;
         }
-        /* Ignoring Ctrl-C: computing (never in the kernel), or calling it
-         * all the time; a second Ctrl-C kills either. A leak shows if the
-         * kill doesn't clean up. */
+        /* Computing (never in the kernel), or calling it all the time: the
+         * first Ctrl-C (SIGINT) ends either. A leak shows if ending them
+         * doesn't clean up. */
         if (strcmp(what, "spin") == 0 || strcmp(what, "calls") == 0) {
                 const int calls = what[0] == 'c';
                 char *volatile block = malloc(100000);

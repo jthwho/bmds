@@ -1,7 +1,7 @@
 # bmds_loader — BMDS programs: the executable format, the loader, the system
 # call table (devplan/programs.md).
 #
-# Portable parts (the format check and relocation, Process, the ABI lock)
+# Portable parts (the format check and relocation, Process, Signals, the ABI lock)
 # also build as a plain CMake library for the host tests and tools; the
 # loader, the system call table and its slots are target only. The SDK's headers
 # (sdk/include) are the userspace ABI the kernel implements.
@@ -12,7 +12,8 @@ set(BMDS_LOADER_PURE_SRCS
         src/abilock.c
         src/process.cpp
         src/processtable.cpp
-        src/programimage.cpp)
+        src/programimage.cpp
+        src/signals.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 

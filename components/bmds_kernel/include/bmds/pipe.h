@@ -34,7 +34,8 @@ BMDS_NAMESPACE_BEGIN
  *   `EndOfFile`.
  * - A writer waits while the pipe is full and the read end is open; once
  *   the read end is closed, `write()` fails with `BrokenPipe`.
- * - Both return `Interrupted` when the job's interrupt is raised.
+ * - Both return `Interrupted` when the calling task's interrupt
+ *   (`Interrupt::current()`) is raised.
  *
  * The pipe and its ring are one `Psram` allocation; there is no other
  * per-pipe cost.
@@ -59,11 +60,10 @@ class Pipe final : public Stream {
 
                 /**
                  * @brief Creates a pipe.
-                 * @param interrupt The job's interrupt (may be null: not interruptible).
-                 * @param bytes     Ring size, a power of two.
+                 * @param bytes Ring size, a power of two.
                  * @return The ends, `Invalid` for a bad size, or `NoMem`.
                  */
-                static Result<Ends> create(Interrupt *interrupt, size_t bytes = DefaultBytes);
+                static Result<Ends> create(size_t bytes = DefaultBytes);
 
                 Result<size_t> read(WritableByteSpan buf, unsigned int timeoutMs) override;
                 Result<size_t> write(ByteSpan data, unsigned int timeoutMs) override;
@@ -76,13 +76,12 @@ class Pipe final : public Stream {
                 void handleClosed(uint8_t mode) override;
 
         private:
-                Pipe(WritableByteSpan storage, Interrupt *interrupt);
+                explicit Pipe(WritableByteSpan storage);
                 ~Pipe() = default;
 
                 void endClosed();
 
                 ByteRing             _ring;
-                Interrupt           *_interrupt;
                 Mutex                _readLock;
                 Mutex                _writeLock;
                 Semaphore            _readable{1, 0}; // released when data arrives or the writer goes

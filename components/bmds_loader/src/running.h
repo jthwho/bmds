@@ -25,8 +25,8 @@ BMDS_NAMESPACE_BEGIN
 
 /** @brief The FreeRTOS thread-local pointer of a program's task that holds its `Running`. */
 inline constexpr BaseType_t RunningTlsIndex = 1;
-static_assert(CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS >= 2,
-              "programs need thread-local pointer 1 (CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS >= 2)");
+static_assert(CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS >= 3,
+              "programs need thread-local pointers 1 and 2 (CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS >= 3)");
 
 /**
  * @brief A running program: its image, its task, its process, and the
@@ -35,21 +35,23 @@ static_assert(CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS >= 2,
  * Lives in `Psram` from its start until its task has been stopped (by the
  * loader's stop queue, after it ends).
  *
- * Killing (a second Ctrl-C) must never stop the task inside a system call,
- * where it may hold a kernel lock: every slot is bracketed by `enter()` and
- * `leave()` (a `KernelCall`). The killer sets `kill`, suspends the task and
- * looks at `inKernel`: clear, the task is in program code, and the killer
- * ends it; set, it is resumed and ends itself in `leave()`. The two flags
- * are a Dekker handshake (sequentially consistent): if the killer reads
- * `inKernel` clear, the task can only be past its last kernel work. Ending
- * sets `inKernel` for good.
+ * Killing (a signal that ends the program) must never stop the task inside
+ * a system call, where it may hold a kernel lock: every slot is bracketed by
+ * `enter()` and `leave()` (a `KernelCall`). The killer sets `killStatus` and
+ * `kill`, suspends the task and looks at `inKernel`: clear, the task is in
+ * program code, and the killer ends it; set, it is resumed (its interrupt
+ * wakes the call) and ends itself in `leave()`. The two flags are a Dekker
+ * handshake (sequentially consistent): if the killer reads `inKernel`
+ * clear, the task can only be past its last kernel work. Ending sets
+ * `inKernel` for good.
+ *
+ * Signals (devplan/programs.md §15) are each Process's; `leave()` ends the
+ * program when one that ends it is due, and sets the program's hint word
+ * while one is due for the current process (the SDK then takes it).
  */
 struct Running {
                 /** @brief How deep vfork children may nest in one task. */
                 static constexpr int MaxVforkDepth = 2;
-
-                /** @brief The signal a killed program ends with (Ctrl-C: SIGINT). */
-                static constexpr int32_t KillSignal = 2;
 
                 struct Child {
                                 Process *process;
@@ -68,6 +70,8 @@ struct Running {
                 uintptr_t             entry = 0;         // the program's _start
                 Task                  task;
                 Running              *nextStop = nullptr; // in the stop queue
+                volatile uint32_t    *hint = nullptr;     // the program's (sig_setup): a signal is due
+                std::atomic<int32_t>  killStatus{0};      // what a kill ends it with
                 std::atomic<bool>     inKernel{false};
                 std::atomic<bool>     kill{false};
 
@@ -89,18 +93,34 @@ struct Running {
                 /** @brief A system call starts. */
                 void enter() {
                         inKernel.store(true);
+                        current->signals().prepare();
                         return;
                 }
 
-                /** @brief A system call ends: back to program code, unless killed meanwhile. */
+                /**
+                 * @brief A system call ends: back to program code, unless a signal
+                 *        or a kill ends the program.
+                 */
                 void leave();
 
-                // The process calls (loader.cpp); results as the slots'.
+                /** @brief The Process of @p pid in this task (its own, a vfork child's), or null. */
+                Process *processOf(int32_t pid) const;
+
+                // The process and signal calls (loader.cpp); results as the slots'.
                 int32_t vfork();
                 int32_t exec(const char *path, char *const *argv, char *const *envp);
                 int32_t vforkExit(int32_t status);
                 int32_t wait(int32_t child, int32_t *status, uint32_t flags);
                 int32_t id(uint32_t which);
+                int32_t sigSetup(volatile uint32_t *word);
+                int32_t sigTake(bmds_siginfo_t *info);
+                int32_t sigSuspend(uint32_t mask);
+                int32_t sendSignal(int32_t target, int32_t sig);
+                int32_t exitSignal(int32_t sig);
+
+        private:
+                int32_t endChild(int32_t waitStatus);
+                void    setCurrent(Process *p, int32_t id);
 };
 
 /**

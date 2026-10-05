@@ -15,6 +15,7 @@
 #include <bmds/fdtable.h>
 #include <bmds/memspace.h>
 #include <bmds/semaphore.h>
+#include <bmds/signals.h>
 #include <bmds/span.h>
 #include <bmds/string.h>
 #include <bmds/stringview.h>
@@ -24,7 +25,6 @@
 BMDS_NAMESPACE_BEGIN
 
 class Console;
-class Interrupt;
 
 /**
  * @brief A running program's resources and its system calls.
@@ -58,10 +58,9 @@ class Process {
 
                 /**
                  * @brief Constructs a process with its own copy of @p fds, in `/`.
-                 * @param console   The terminal (`/dev/console`, the terminal calls); may be null.
-                 * @param interrupt Ctrl-C (`interrupted()`, `sleep()`); may be null.
+                 * @param console The terminal (`/dev/console`, the terminal calls); may be null.
                  */
-                explicit Process(const FdTable &fds, Console *console = nullptr, Interrupt *interrupt = nullptr);
+                explicit Process(const FdTable &fds, Console *console = nullptr);
                 ~Process();
                 Process(const Process &) = delete;
                 Process &operator=(const Process &) = delete;
@@ -69,7 +68,8 @@ class Process {
                 /**
                  * @brief Creates a vfork child's Process (`Psram`): a copy of this
                  *        one's fds (with their flags), directory, console and
-                 *        interrupt; no memory, directories or arguments.
+                 *        signal actions and mask; no memory, directories,
+                 *        arguments or pending signals.
                  * @return The child (free it with `destroy()`), or null (no memory).
                  */
                 Process *createChild() const;
@@ -78,15 +78,16 @@ class Process {
                 static void destroy(Process *process);
 
                 /** @brief Creates a Process in `Psram` (see the constructor); null if no memory. */
-                static Process *create(const FdTable &fds, Console *console, Interrupt *interrupt);
+                static Process *create(const FdTable &fds, Console *console);
 
                 /**
                  * @brief Prepares for a new program (an exec): the argument block
                  *        is rebuilt from @p args and @p environment (which may point
                  *        into the old one or into this process's memory), then the
                  *        memory, directories and line input of the old program are
-                 *        freed and the close-on-exec fds closed. Its fds, directory
-                 *        and terminal stay.
+                 *        freed, the close-on-exec fds closed and caught signals
+                 *        reset to their default. Its fds, directory, terminal,
+                 *        ignored signals, mask and pending signals stay.
                  * @return `Ok`, or as `setArguments()` (nothing changed then).
                  */
                 Error prepareExec(Span<const StringView> args, Span<const StringView> environment);
@@ -97,8 +98,8 @@ class Process {
                 /** @brief Returns its console (may be null). */
                 Console *console() const { return _console; }
 
-                /** @brief Returns its interrupt (may be null). */
-                Interrupt *interrupt() const { return _interrupt; }
+                /** @brief Returns its signals (whose interrupt its blocking calls wake on). */
+                Signals &signals() { return _signals; }
 
                 /**
                  * @brief Builds the argument block: `argv` (with its NULL) and `envp`
@@ -193,7 +194,7 @@ class Process {
 
                 FdTable    _fds;
                 Console   *_console;
-                Interrupt *_interrupt;
+                Signals    _signals;
                 String     _cwd;
                 LineInput *_line = nullptr;
                 bool       _lineInput = true;

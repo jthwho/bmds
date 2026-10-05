@@ -53,15 +53,14 @@ The builder uses Python's standard library only (3.11 or newer, for `tomllib`).
 
 | Package | Version | What | Notes |
 |---|---|---|---|
-| `busybox` | 1.37.0 | Unix tools: coreutils, `sed`, `awk`, `vi`, `less`, `diff`, `find`, `grep`, `tar`, compressors, `hush` | `CONFIG_NOMMU`; applets that need Linux interfaces BMDS lacks are off (§6). One binary, a link per applet. The BMDS shell's built-ins (`ls`, `cat`, `echo`...) still come first; `busybox ls` or the full path reaches BusyBox's. |
+| `busybox` | 1.37.0 | Unix tools: coreutils, `sed`, `awk`, `vi`, `less`, `diff`, `find`, `grep`, `tar`, compressors, `hush` | `CONFIG_NOMMU`; applets that need Linux interfaces BMDS lacks are off (§6). One binary, a link per applet (119). Patch: `timeout`'s no-MMU watcher re-execs with `-p` before the duration (upstream's never saw it, so nothing was ever timed out). The BMDS shell's built-ins (`ls`, `cat`, `echo`...) still come first; `busybox ls` or the full path reaches BusyBox's. |
 
 Candidates, roughly in order: a scripting language (Lua or MicroPython), `zlib`/`xz` as libraries, `make`, `sqlite`, TinyCC (the first step to self-hosting), games; `dropbear` with networking.
 
 ## 6. BusyBox's configuration
 
-`dist/busybox/config` is a complete `.config`: everything off (`allnoconfig`), then the applets and features that build against the SDK and work on BMDS. Off, and why:
-- wait for signals (step 9): `timeout`, `watch`, `kill` (process creation, steps 8a-8c, turned on `xargs`, `find -exec`, `time`, `nohup`);
-- needs Linux interfaces: `mount`, `df` (`statfs`), `ps`/`top`/`free` (`/proc`), `init`, modules, networking, `login` and users, `dmesg`, consoles and keyboards;
+`dist/busybox/config` is a complete `.config`: everything off (`allnoconfig`), then the applets and features that build against the SDK and work on BMDS. Process creation and signals (steps 8 and 9) turned on `xargs`, `find -exec`, `time`, `nohup`, `kill`, `timeout` and `watch`. Off, and why:
+- needs Linux interfaces: `mount`, `df` (`statfs`), `ps`/`top`/`free`, `pidof`, `killall` (`/proc`), `init`, modules, networking, `login` and users, `dmesg`, consoles and keyboards;
 - `CONFIG_BUSYBOX_EXEC_PATH`, used to re-run itself: `/sd0/p0/bin/busybox`.
 
 ## 7. Tests

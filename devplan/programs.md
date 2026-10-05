@@ -1,6 +1,6 @@
 # Programs: Executables, Loader, Syscall ABI v1, SDK
 
-Status: **steps 1-7, 8a and 8b done** (Phase 3), plus emulated symbolic links and the distribution (`distribution.md`): the PSRAM spike; the SDK skeleton, the format check and relocation (`ProgramImage`), `bmds-elfcheck`, the ABI lock; the loader; the system call table (42 slots: files, directories, time, terminal, links, processes), examples `hello`, `cat`, `ls`; programs and scripts run by name (`$PATH`, `#!`), killed on a second Ctrl-C; the RAM disk, push-and-run (`tools/bmds-run`) and the compatibility corpus; the SDK on static musl (§12; BusyBox builds with it and runs). **The ABI was reset before the first release** (2026-10-04): the programs of the first SDK (picolibc) dropped with every compatibility path for them, errno values made Linux's, and the additions since folded into ABI 1. Next (agreed 2026-10-04): the rest of the kernel's support (process creation, signals, `poll`) and the drivers; the distribution grows as needed. D1-D7 agreed (2026-10-04; D2 revised in step 2, below). Once the first program ships, everything marked *frozen* is userspace ABI (`docs/ABI.md`): append-only forever.
+Status: **steps 1-7, 8 and 9 done** (Phase 3), plus emulated symbolic links and the distribution (`distribution.md`): the PSRAM spike; the SDK skeleton, the format check and relocation (`ProgramImage`), `bmds-elfcheck`, the ABI lock; the loader; the system call table (50 slots: files, directories, time, terminal, links, processes, signals), examples `hello`, `cat`, `ls`; programs and scripts run by name (`$PATH`, `#!`), Ctrl-C as `SIGINT`; the RAM disk, push-and-run (`tools/bmds-run`) and the compatibility corpus; the SDK on static musl (§12; BusyBox builds with it and runs). **The ABI was reset before the first release** (2026-10-04): the programs of the first SDK (picolibc) dropped with every compatibility path for them, errno values made Linux's, and the additions since folded into ABI 1. Next (agreed 2026-10-04): the rest of the kernel's support (`poll`, `termios`) and the drivers; the distribution grows as needed. D1-D7 agreed (2026-10-04; D2 revised in step 2, below). Once the first program ships, everything marked *frozen* is userspace ABI (`docs/ABI.md`): append-only forever.
 
 ## 1. Goal
 
@@ -310,7 +310,7 @@ Agreed 2026-10-04: the C library moves out of programs into a shared runtime lib
 
 Also `BMDS_O_CLOEXEC` (0x40) for `open`. Kernels that predate these refuse the flag, as they refuse any unknown one.
 
-**Ctrl-C until signals arrive (step 9):** a job's processes share the console's interrupt. A Ctrl-C makes blocking calls fail with `EINTR` in all of them, `proc_wait` included (step 4's rule), and a second kills the job.
+**Ctrl-C until signals arrive (step 9; replaced by §15):** a job's processes share the console's interrupt. A Ctrl-C makes blocking calls fail with `EINTR` in all of them, `proc_wait` included (step 4's rule), and a second kills the job.
 
 **Not in 8a:** `exec` of anything but a BMDS program is `ENOEXEC` (musl's `execvp` then tries `/bin/sh`). 8b adds `#!` scripts and `/bin/sh` as the BMDS shell running as a process (`system` and `popen` run `/bin/sh -c`). `kill()` between processes waits for signals. The shell's own pipelines keep their worker tasks.
 
@@ -428,3 +428,91 @@ A program without shared pages keeps its whole file part as "private" bytes.
 - **Board:** BusyBox and `progtest` instances side by side (`hush` pipelines, `xargs`, `find -exec`), each with its own data; free memory per instance before and after; time of a cached `exec`; a program rewritten (same size, within 2 s) and removed while it runs; card removal with cached entries; Ctrl-C of shared instances; a full window falling back to plain copies; the cache emptied under memory pressure; tasks, free memory and the window bitmap as before afterwards.
 
 **Phasing:** (a) the image cache with plain copies (`exec` without the card), measured; (b) shared pages through the window; (c) the SDK changes, each with its measurement.
+
+## 15. Step 9: signals (design, 2026-10-04)
+
+**Goal:** signals between processes, as Linux has them for one user on one terminal: `kill`, Ctrl-C as `SIGINT` to the job, `SIGPIPE`, `SIGCHLD`, `SIGWINCH`, handlers, masks, `sigsuspend`. Yardstick: BusyBox `kill`, `timeout` and `watch` work, `yes | head` ends `yes` by `SIGPIPE`, `hush` traps and Ctrl-C at its prompt behave as on Linux. It replaces step 4's rule (a Ctrl-C makes blocking calls fail with `EINTR` until the program exits, which then reports 130) and 8b's (an interrupted job ends with its first process).
+
+**Where signals live: in the kernel, per `Process`.** The SDK kept dispositions, the mask and pending signals in program memory (§12); the kernel must now decide, when a signal arrives from another task, whether it is dropped, waits, interrupts a blocking call or ends the process, without running program code. So `Signals` (`bmds_loader`, portable, host-tested; one per `Process`, vfork children included) holds, for signals 1-31 (bit `sig - 1`, Linux's layout):
+- the action of each signal: default, ignore, or catch (the handler's address stays in the SDK);
+- the mask (blocked) and the pending set (from any task: a spinlock, never held over a FreeRTOS call);
+- an `Interrupt`, raised when a signal becomes due: pending, not blocked, and either caught or ending the process.
+
+Realtime signals (32-64) are refused by `kill` (`EINVAL`) and never delivered; `sigaction` on them still works in the SDK. Signals don't queue (Linux's standard signals don't either).
+
+**Default actions** (Linux's): `SIGCHLD`, `SIGURG`, `SIGWINCH`, `SIGCONT` are dropped; the stop signals (`SIGSTOP`, `SIGTSTP`, `SIGTTIN`, `SIGTTOU`) are dropped too, since nothing stops a task (job control is out of scope, below); every other signal ends the process, with Linux's wait status for "killed by signal N" (the shell shows 128 + N). `SIGKILL` can't be caught, ignored or blocked. Ignoring a signal discards it if pending; `exec` resets caught signals to default and keeps ignored ones, the mask and pending signals; a vfork child starts with its parent's actions and mask and nothing pending.
+
+**Waking a blocked call: the task's interrupt.** Today a blocking call wakes on the interrupt of the stream it waits in (pipes and the console carry the job's, raised by Ctrl-C). A signal must wake the process it is for, and only when it is due, so the interrupt moves from the stream to the caller:
+- `Interrupt::current()`: the interrupt of the calling task (FreeRTOS thread-local pointer 2; `CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS` 3; a `thread_local` on the host), set with `Interrupt::Scope`. Index 0 is IDF's pthread's, 1 the loader's `Running`.
+- Pipes and the console wait through `Interrupt::current()`; `Pipe::create()` loses its interrupt argument.
+- A program's task has its current `Process`'s interrupt (switched at `vfork`, its exit and `exec`); the kernel shell's tasks, its pipeline workers included, have the console's, so built-in commands see Ctrl-C as now; the shell as `/bin/sh` has its process's (`Shell::interrupt()` replaces `console().interrupt()` in the shell).
+- A process's interrupt is cleared at the start of each of its system calls when nothing is due, and checked again after the clear, so a signal arriving in between still wakes the call (the sender sets the pending bit before raising).
+
+**Delivery: at system-call boundaries.** A handler never runs inside a kernel call, and a program computing without system calls isn't interrupted until its next one; ending a process doesn't wait for that (below).
+- Leaving each system call, the kernel writes the task's **hint** word, an `uint32_t` in program memory that the SDK registers at startup (`sig_setup`): non-zero while a signal is due for the task's current process. Senders in other tasks set it too.
+- The SDK checks the hint after every Linux system call it makes. While it is set: `sig_take()` gives the next due caught signal (removing it from the pending set); the SDK blocks the handler's `sa_mask` and the signal (unless `SA_NODEFER`), runs the handler (`SA_SIGINFO` with `si_signo` and `si_code`), restores the mask, and goes on with the next. `SA_RESETHAND` sets the action back to default.
+- `SA_RESTART`: a call that failed with `EINTR` and whose handlers all had it is made again (`read`, `readv`, `write`, `writev`, `pread`, `pwrite`, `ioctl`, `waitid`, `openat`), as Linux restarts them; sleeps, `poll` and `sigsuspend` aren't restarted.
+- `sigsuspend(mask)`: `sig_suspend` sets the mask, waits until a signal is due and fails with `EINTR`; the SDK runs the handlers under that mask, then restores the old one. `pause()` (musl: `ppoll` with nothing and no timeout) is `sigsuspend` with the current mask.
+
+**Ending a process by a signal.** When a signal that ends the process becomes due:
+- **A program in its own task** (no vfork child running): the kernel ends it with step 5's handshake, now with the signal's status: suspended in program code, it is ended at once; inside a system call, it is resumed, its interrupt wakes the call, and it ends as the call returns. The shell as `/bin/sh` (always "in the kernel") sees its interrupt, unwinds, and ends with the signal's status.
+- **A vfork child** runs on its parent's stack, which only the SDK can return to: its interrupt wakes it, the hint makes the SDK call `sig_take()`, which says "end" (`BMDS_SIG_TERMINATE`), and the SDK ends the child with `proc_exit_signal(sig)` and resumes the parent. A vfork child only makes system calls until it execs, so this is prompt.
+- **A program whose vfork child is running:** it ends when the child execs or exits, as control comes back to it.
+- **Sent by the program to itself** (`raise`, `abort`, an unblocked pending signal, `SIGPIPE`): it ends as the call returns.
+
+**Sources.**
+- `kill(pid, sig)` (`proc_kill`): `pid` > 1 one process (a zombie still accepts it, as on Linux); 0 the caller's job; -1 every process but the caller; < -1 the job `-pid`. pid 1, the shell, is `EPERM`. `sig` 0 only checks. One user: always permitted.
+- **Ctrl-C:** the console raises its interrupt as now (the kernel shell's commands stop); the launcher waiting for a program job sends `SIGINT` to every process in the job. If the previous Ctrl-C had no effect, because every process ignored it or one still has it pending (a program computing with a handler, or blocking it), this Ctrl-C sends `SIGKILL` to the job instead: a job that doesn't answer can always be stopped, while an interactive program that takes each `SIGINT` (`hush` at its prompt) is never killed by it.
+- `SIGPIPE`: a write to a pipe without readers, before `EPIPE` returns.
+- `SIGCHLD`: to the parent when a process ends (the shell, pid 1, excepted).
+- `SIGWINCH`: to the job the launcher waits for, when the console's size changes (the console releases a semaphore the launcher registers).
+
+**Process groups are jobs.** `getpgid`/`getpgrp` return the job, `TIOCGPGRP` the caller's job (one terminal: its job is in front), `setpgid` and `TIOCSPGRP` succeed without effect. Job control (stopping, `fg`/`bg`) is out of scope: no task is stopped.
+
+**New slots** (appended to ABI 1, which hasn't shipped):
+
+| Slot | Call |
+|---|---|
+| 42 | `int32_t sig_setup(volatile uint32_t *hint)`: the word the kernel sets while a signal is due (0 to stop). |
+| 43 | `int32_t sig_action(int32_t sig, uint32_t action)`: `BMDS_SIG_DEFAULT`, `BMDS_SIG_IGNORE`, `BMDS_SIG_CATCH`, or `BMDS_SIG_QUERY` to only read it; returns the previous one, or `EINVAL` (`SIGKILL`, `SIGSTOP`, out of range). |
+| 44 | `int32_t sig_mask(uint32_t how, uint32_t set)`: `BMDS_SIG_BLOCK`, `BMDS_SIG_UNBLOCK`, `BMDS_SIG_SETMASK` (Linux's 0, 1, 2); returns the previous mask. |
+| 45 | `int32_t sig_pending(void)`: the pending set. |
+| 46 | `int32_t sig_take(bmds_siginfo_t *info)`: the next due caught signal, removed from the pending set; 0 if none. `info` (`size`, `signo`, `code`: `BMDS_SI_USER` from `kill`, `BMDS_SI_KERNEL`; `flags`: `BMDS_SIG_TERMINATE` when the process must end instead). |
+| 47 | `int32_t sig_suspend(uint32_t mask)`: sets the mask and waits until a signal is due; `EINTR`. |
+| 48 | `int32_t proc_kill(int32_t pid, int32_t sig)`: 0, `ESRCH`, `EINVAL`, `EPERM`. |
+| 49 | `int32_t proc_exit_signal(int32_t sig)`: ends the caller as killed by `sig`; in a vfork child, returns its pid in the parent (as `proc_vfork_exit`). |
+
+Also `BMDS_PROC_JOB` (2) for `proc_id`. `interrupted()` (slot 25) now means "a `SIGINT` is pending": a program on BMDS's own calls can catch `SIGINT` and poll it, taking it with `sig_take()`. A program that never calls `sig_setup` gets default actions: Ctrl-C ends it, as on Linux.
+
+**SDK** (`linux.c`): the signal state moves to the kernel; the SDK keeps the handlers (still saved and restored around `vfork`) and the hint. `rt_sigaction`, `rt_sigprocmask`, `rt_sigpending`, `rt_sigsuspend`, `kill`/`tkill`/`tgkill` on the slots; `exit` loses the 130 rule.
+
+**Not in this step:** `alarm`/`setitimer` (a timer per process; with `poll`'s timeouts later), `sigaltstack`, `sigwaitinfo`/`sigtimedwait`, the sender's pid in `siginfo`, realtime signals, stopping and continuing, delivery in the middle of computation (no preemption of program code: delivery waits for a system call; ending doesn't).
+
+**ABI impact:** slots 42-49 and their constants, `BMDS_PROC_JOB`, `bmds_siginfo_t`; `interrupted()` redefined; Ctrl-C is a signal for every program (programs built before this get default actions: Ctrl-C ends them). Recorded with an `ABI:` line.
+
+**Budget (estimate):** firmware +4 KB; per `Process` about 60 bytes (`Psram`); one thread-local pointer per task; no new task. The SDK's check after each system call is one load.
+
+**Testing:**
+- **Host:** `Signals` (actions, mask, pending, due and ending rules, ignore discarding, `exec` and vfork inheritance, clear-and-check against a racing sender); `Interrupt::current()` and pipes waking on the caller's interrupt; the shell's built-ins still stopped by Ctrl-C.
+- **Board:** `progtest signals`: a handler run by `kill` of itself and of a child, `SA_RESTART` on a pipe read, `EINTR` without it, the mask holding a signal until unblocked, `sigsuspend`, `SIGCHLD`, `SIGPIPE` (default and ignored), `SIGTERM` ending a sleeping child and a computing one, a vfork child killed before its exec, `exec` resetting handlers, `kill(0)` and `kill(-job)`. Ctrl-C: a program with a handler, one ignoring it (second Ctrl-C kills), one computing; `hush` at its prompt and running a program; BusyBox `kill`, `timeout` (with `-k`), `watch`, `yes | head`. Free memory and tasks as before afterwards; the corpus passes.
+
+**Sub-steps:** 9a, the kernel (`Signals`, the task's interrupt, the slots, ending, `kill`, Ctrl-C, `SIGPIPE`, `SIGCHLD`) and the SDK, tested with `progtest signals`; 9b, `SIGWINCH` and BusyBox's `kill`, `timeout`, `watch` with `hush` as the measure.
+
+**9a as built** (2026-10-04): as designed above, plus what building it found.
+- **Inherited ignored signals:** a new program's handler table starts empty, so `sigaction` would report `SIG_DFL` for a signal ignored across `exec` (`nohup`, a shell's `trap ''`). `sig_action` takes `BMDS_SIG_QUERY` to only read an action; the SDK reads them all at startup.
+- **`waitpid` and `SIGCHLD`:** a child's end releases its parent's wait and then sends `SIGCHLD`; with a handler, the wait woke interrupted and failed with `EINTR` although the child could be reaped. As on Linux, an interrupted wait first reaps an ended child.
+- **A launcher that stops waiting:** the shell as `/bin/sh` stops waiting for its program when a signal ends it, but the child's table entry points at a semaphore on the launcher's stack. `ProcessTable::detach()` makes the child an orphan first.
+- **The shell after a Ctrl-C:** any Ctrl-C during a program abandoned the rest of the line. Now only a program that `SIGINT` ended does (bash's rule); one that caught or ignored it returns its status and the line goes on.
+- **vfork children** now have their task's `Running` in the table, so signals find them. `SIGKILL` to a program with a vfork child running ends both: only the SDK can return to the parent's frame.
+- **Verified on the board:** `progtest signals` (the list in Testing, all of it), `progtest spawn` and `scripts`, the corpus. Ctrl-C: a program with default actions (130), one with a handler (its status, 7, and the line goes on), one ignoring it (the second Ctrl-C kills: 137), computing with and without calls, `busybox sleep`, `hush -c` with `trap ... INT`, interactive `hush` at its prompt and running a program; `hush` `trap ... USR1`, `kill`, `kill -9`, `wait` (143); `yes | head`. Free memory and tasks as before afterwards.
+- **Host:** `Signals` (defaults, catching, the mask, ignoring, exec and vfork inheritance, a sender racing the clear), `Interrupt::current()`, pipes waking only callers with that interrupt, `Process` (sleep, `interrupted()`, `SIGPIPE`), the shell going on after a caught Ctrl-C.
+- **Measured:** the firmware grew 3.3 KB (438,348 → 441,674 bytes).
+- **Seen, not new:** interactive `hush` reports `fcntl(0,F_DUPFD,255): Invalid argument` at startup (a process has 16 descriptors) and runs without its own copy of the terminal's fd.
+
+**9b as built** (2026-10-04):
+- **`SIGWINCH`:** `Console::setSize()` raises `Console::resized()` when the size changes; the launcher watches it (`Interrupt::Watch`: the semaphore it waits on is released by that interrupt's raises too) and sends `SIGWINCH` to the job. Each wake checks what happened, since `ended` is now released by resizes as well (`ProcessTable::isEnded()`). A serial terminal's size is learned only when something asks (the prompt, `term size`): asking from a program's `TIOCGWINSZ` was left out, because only a reader takes the answer out of the input, and a program that never reads would leave it there as typed text for the shell.
+- **BusyBox `kill`, `timeout`, `watch`** are on (119 links). `timeout` didn't time anything out: its no-MMU watcher re-execs itself as `timeout DURATION -pPARENT`, but `getopt32("+...")` stops at the duration, so `-p` was never seen and the watcher died. `dist/busybox/patches/0001-timeout-nommu-reexec.patch` puts `-p` (and the options) first.
+- **A race fixed on the way:** the launcher read `run->job` after starting the program; one that ended at once could already have been freed.
+- **Verified on the board:** `progtest winch | { sleep 0.5; term size 100x40; }` (the program gets `SIGWINCH` and sees 100x40); `kill -l`, `kill -USR1` from `hush`; `timeout 1 sleep 10` (143 after 1.8 s: whole seconds, plus the watcher's start), `timeout -s INT` to a program catching it (its status), `timeout -s INT -k 1 1` to one ignoring it (137), a program that ends in time (0); `watch -n 1` until Ctrl-C (130). Free memory and tasks as before afterwards.
+- **Host:** `Interrupt::Watch`, `Console::resized()`.
+- **Measured:** steps 9a and 9b together: firmware +3.6 KB (438,348 → 441,982 bytes).

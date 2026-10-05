@@ -328,6 +328,16 @@ namespace {
 
 } // namespace
 
+TEST_CASE("Console: a size change raises resized()") {
+        FakeConsole    console;
+        const uint32_t generation = console.sizeGeneration();
+        console.setSize(bmds::Console::Size{100, 40});
+        CHECK(console.resized().raises() == 1);
+        CHECK(console.sizeGeneration() != generation);
+        console.setSize(bmds::Console::Size{100, 40}); // the same: nothing
+        CHECK(console.resized().raises() == 1);
+}
+
 TEST_CASE("term") {
         FakeConsole con;
         auto        shell = std::make_unique<bmds::Shell>(con, bmds::Span<const bmds::Command>(TermCommands), 1 << 20);

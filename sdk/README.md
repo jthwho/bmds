@@ -109,18 +109,25 @@ on BMDS's table; programs never see that layer. What differs from Linux:
   `unlink` of an open file is `EBUSY`; `rename` across filesystems `EXDEV`.
 - **Directories:** `readdir` lists `.` and `..` first, as Linux; up to 8 open.
 - **Terminal size:** `TIOCGWINSZ` gives the console's size, which a serial
-  terminal reports when the shell asks at each prompt (`term size` asks now);
-  a resize while a program runs isn't seen until the next prompt (no
-  `SIGWINCH` yet).
+  terminal reports when the shell asks at each prompt (`term size` asks now).
+  When the console's size changes while a program runs, its job gets
+  `SIGWINCH`; a serial terminal's resize is only learned when something
+  asks, so in practice at the next prompt.
 - **Memory:** `malloc` (musl's) over whole pages from the kernel; private
   file `mmap` is a copy; no shared mappings; everything is freed at exit.
 - **Terminal:** `termios` maps `ICANON` (line input, with echo), `ISIG`
   (Ctrl-C) and `OPOST|ONLCR` onto the console's modes; `TIOCGWINSZ` works;
   echo can't be turned off by itself yet. `poll` is a guess (output and
   files are ready; terminal and pipe input is ready only for an endless wait).
-- **Signals:** handlers, masks and `raise`/`abort`/`kill(getpid())` work
-  within the program. Ctrl-C is not a signal yet: blocking calls fail with
-  `EINTR`, and the program ends with status 130 however it exits.
+- **Signals** (signals 1-31): `kill` between processes (`0` the job, `-1`
+  all, `-job`), handlers (`SA_SIGINFO`, `SA_RESTART`, `SA_RESETHAND`,
+  `SA_NODEFER`), masks, `sigpending`, `sigsuspend`, `pause`; Ctrl-C sends
+  `SIGINT` to the job, a write to a pipe nobody reads `SIGPIPE`, a child's
+  end `SIGCHLD`. Handlers run between system calls: a program computing
+  without calls takes a caught signal at its next one (one that ends it
+  ends it at once). A Ctrl-C while the last one had no effect (ignored, or
+  still pending) kills the job. Process groups are jobs; nothing stops
+  (`SIGSTOP`, `SIGTSTP` are dropped).
 - **Processes:** no `fork` (`ENOSYS`: no per-process address spaces).
   `vfork` + `exec`, as on uClinux: the child runs in the parent's memory,
   on its stack, until it execs or exits (`_exit`), while the parent waits;
@@ -130,10 +137,10 @@ on BMDS's table; programs never see that layer. What differs from Linux:
   `O_CLOEXEC`/`FD_CLOEXEC`, `getpid`/`getppid` work (`wait4`'s resource
   usage is zero: CPU time isn't counted). `exec` runs programs,
   `#!` scripts and `.sh` files; `/bin/sh` is the BMDS shell, so `system` and
-  `popen` work. A Ctrl-C that ends a command's first process ends the
-  processes it started too; a second Ctrl-C kills them all.
-- **Not yet:** threads, sockets (`EAFNOSUPPORT`), `alarm`, `kill` of
-  another process (signals from outside).
+  `popen` work.
+- **Not yet:** threads, sockets (`EAFNOSUPPORT`), `alarm`/`setitimer`,
+  `sigaltstack`, `sigwaitinfo`, realtime signals, the sender's pid in
+  `siginfo`.
 - **Size:** a `printf` hello is about 40 KB (`long double` is 128-bit on
   RISC-V, and musl's `printf` formats through it: about 12 KB of libgcc's
   soft quad-float; the system call layer is about 10 KB). Programs are

@@ -120,6 +120,25 @@ int32_t ProcessTable::parentOf(int32_t pid) {
         return e != nullptr ? e->parent : 0;
 }
 
+bool ProcessTable::isEnded(int32_t pid) {
+        Mutex::Locker locker(_lock, WaitForever);
+        const Entry  *e = find(pid);
+        return e == nullptr || e->ended;
+}
+
+void ProcessTable::detach(int32_t pid) {
+        Mutex::Locker locker(_lock, WaitForever);
+        Entry        *e = find(pid);
+        if (e == nullptr) return;
+        if (e->ended) {
+                free(*e);
+                return;
+        }
+        e->parent = 0;
+        e->notify = nullptr;
+        return;
+}
+
 int ProcessTable::count() {
         Mutex::Locker locker(_lock, WaitForever);
         if (_entries == nullptr) return 0;

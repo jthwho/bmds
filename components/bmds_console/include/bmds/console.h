@@ -39,8 +39,10 @@ BMDS_NAMESPACE_BEGIN
  * interactive shell) and owns the `Interrupt` of the job in its foreground:
  * with `TermMode::signals` set, a Ctrl-C byte in the input is not queued
  * but raises that interrupt, straight from the receive path, so it stops
- * a running command even when nothing is reading input. A `read()` blocked
- * at the time returns `Error::Interrupted`.
+ * a running command even when nothing is reading input (programs get
+ * `SIGINT` from the loader, which waits on it). Like every stream, a
+ * `read()` waits through the calling task's interrupt
+ * (`Interrupt::current()`): the shell's tasks have this one.
  *
  * Consoles are functional objects with identity: not copyable, owned by
  * whoever created them, and never destroyed through this interface.
@@ -95,13 +97,24 @@ class Console : public Stream {
                         return Size{static_cast<uint16_t>(v >> 16), static_cast<uint16_t>(v & 0xFFFF)};
                 }
 
-                /** @brief Records the terminal size; `sizeGeneration()` changes if it did. */
+                /**
+                 * @brief Records the terminal size; if it changed, `sizeGeneration()`
+                 *        changes and `resized()` is raised. Task context.
+                 */
                 void setSize(Size size) {
                         const uint32_t v = (static_cast<uint32_t>(size.columns) << 16) | size.rows;
-                        if (_size.exchange(v, std::memory_order_relaxed) != v)
+                        if (_size.exchange(v, std::memory_order_relaxed) != v) {
                                 _sizeGeneration.fetch_add(1, std::memory_order_relaxed);
+                                _resized.raise();
+                        }
                         return;
                 }
+
+                /**
+                 * @brief Raised whenever the size changes (never cleared): watch it
+                 *        (`Interrupt::Watch`) to wake on resizes (`SIGWINCH`).
+                 */
+                Interrupt &resized() { return _resized; }
 
                 /**
                  * @brief Returns a number that changes whenever the size does (so a
@@ -165,7 +178,7 @@ class Console : public Stream {
                  * @param buf       Destination.
                  * @param timeoutMs How long to wait, or `WaitForever`.
                  * @return The byte count (at least 1), `Error::Timeout`, or
-                 *         `Error::Interrupted` (Ctrl-C, with `TermMode::signals`).
+                 *         `Error::Interrupted` (the caller's interrupt was raised).
                  * @blocking
                  */
                 Result<size_t> read(WritableByteSpan buf, unsigned int timeoutMs) final;
@@ -250,6 +263,7 @@ class Console : public Stream {
 
         private:
                 Interrupt             _interrupt;
+                Interrupt             _resized;
                 std::atomic<bool>     _signals{true};
                 std::atomic<bool>     _nlToCrNl{true};
                 std::atomic<bool>     _colors{true};

@@ -47,6 +47,12 @@ namespace Detail {
         /** @brief Undoes `suspendScheduler()`. */
         void resumeScheduler();
 
+        /** @brief Returns the calling task's pointer for `Interrupt::current()` (null if none). */
+        void *taskInterrupt();
+
+        /** @brief Sets the calling task's pointer for `Interrupt::current()`. */
+        void setTaskInterrupt(void *interrupt);
+
         /** @brief The system clock as carried across a reset (`Clock`). */
         struct ClockRecord {
                         int64_t wallMinusPersistentNs = 0; ///< Wall time minus `persistentTimeUs()` (in ns).

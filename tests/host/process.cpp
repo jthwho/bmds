@@ -461,7 +461,7 @@ TEST_CASE("Process: console input, lines and raw") {
                 FakeConsole        console;
                 bmds::MemoryStream file(bmds::MemSpace::Psram);
                 bmds::FdTable      fds = tableWith(console, console, file);
-                Process            p(fds, &console, &console.interrupt());
+                Process            p(fds, &console);
                 char               buf[64];
 
                 // Lines: echoed and edited, given whole (or in pieces to a small read).
@@ -507,15 +507,23 @@ TEST_CASE("Process: console input, lines and raw") {
                 CHECK(p.termGet(0, &t) == 0);
                 CHECK(t.flags == BMDS_TERM_ONLCR);
 
-                // Ctrl-C: reads, sleeps and interrupted() see it.
+                // A caught SIGINT (Ctrl-C): reads in its task, sleeps and
+                // interrupted() see it until it is taken.
                 CHECK(p.termSet(0, BMDS_TERM_SIGNALS | BMDS_TERM_LINE) == 0);
                 CHECK(p.interrupted() == 0);
-                console.interrupt().raise();
-                CHECK(p.interrupted() == 1);
-                CHECK(p.read(0, buf, sizeof(buf)) == -BMDS_EINTR);
-                CHECK(p.sleep(1'000'000'000) == -BMDS_EINTR);
-                CHECK(p.sleep(0) == -BMDS_EINTR);
-                console.interrupt().clear();
+                {
+                        bmds::Interrupt::Scope task(&p.signals().interrupt());
+                        REQUIRE(p.signals().setAction(BMDS_SIGINT, bmds::Signals::Action::Catch));
+                        CHECK(p.signals().post(BMDS_SIGINT, BMDS_SI_KERNEL) == bmds::Signals::Posted::Pending);
+                        CHECK(p.interrupted() == 1);
+                        CHECK(p.read(0, buf, sizeof(buf)) == -BMDS_EINTR);
+                        CHECK(p.sleep(1'000'000'000) == -BMDS_EINTR);
+                        CHECK(p.sleep(0) == -BMDS_EINTR);
+                        CHECK(p.signals().take().signal == BMDS_SIGINT);
+                        p.signals().prepare();
+                        CHECK(p.interrupted() == 0);
+                        CHECK(p.sleep(0) == 0);
+                }
 
                 // A file isn't the terminal.
                 CHECK(p.write(2, "x", 1) == 1);
@@ -627,7 +635,7 @@ TEST_CASE("Process: vfork children, pipes, close-on-exec, exec") {
         const size_t base = HostMemory::liveAllocations();
         {
                 bmds::FdTable fds;
-                Process      *parent = Process::create(fds, nullptr, nullptr);
+                Process      *parent = Process::create(fds, nullptr);
                 REQUIRE(parent != nullptr);
                 REQUIRE(parent->setCwd(bmds::StringView(disks.aRoot.c_str())).isOk());
 

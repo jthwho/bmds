@@ -272,9 +272,14 @@ int Executor::runProgram(StringView path, List<String> &args) {
         request.environment = Span<const StringView>(envViews.data(), envViews.size());
         request.fds = _fds;
         request.cwd = vfs().cwd;
-        request.interrupt = &_shell.console().interrupt();
+        request.interrupt = &_shell.interrupt();
         request.console = &_shell.console();
+        const uint32_t raises = _shell.interrupt().raises();
         auto [status, lerr] = _shell.launcher()->run(request);
+        // Ctrl-C sent the program SIGINT. If that didn't end it (caught or
+        // ignored), the shell goes on with the commands after it, as bash does.
+        if (lerr.isOk() && status != Shell::ExitInterrupted && _shell.interrupt().raises() != raises && raises == 0)
+                _shell.interrupt().clear();
         if (lerr.isOk()) return status;
         if (lerr == Error::Interrupted) return Shell::ExitInterrupted;
         return lerr == Error::NotExist ? Shell::ExitNotFound : Shell::ExitCannotRun;

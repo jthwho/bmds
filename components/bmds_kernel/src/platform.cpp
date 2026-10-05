@@ -59,6 +59,24 @@ void Detail::resumeScheduler() {
         return;
 }
 
+namespace {
+
+        // Index 0 is IDF's pthread's, 1 the loader's (a program's Running).
+        constexpr BaseType_t InterruptTlsIndex = 2;
+        static_assert(CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS > InterruptTlsIndex,
+                      "Interrupt::current() needs thread-local pointer 2");
+
+} // namespace
+
+void *Detail::taskInterrupt() {
+        return pvTaskGetThreadLocalStoragePointer(nullptr, InterruptTlsIndex);
+}
+
+void Detail::setTaskInterrupt(void *interrupt) {
+        vTaskSetThreadLocalStoragePointer(nullptr, InterruptTlsIndex, interrupt);
+        return;
+}
+
 int64_t Detail::persistentTimeUs() {
         return static_cast<int64_t>(esp_rtc_get_time_us());
 }

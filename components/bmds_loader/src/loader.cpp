@@ -11,6 +11,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <new>
+#include <optional>
 #include <esp_cache.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/timers.h>
@@ -310,6 +311,7 @@ namespace {
         void programMain(void *arg) {
                 Running &run = *static_cast<Running *>(arg);
                 vTaskSetThreadLocalStoragePointer(nullptr, RunningTlsIndex, &run);
+                Interrupt::setCurrent(&run.process->signals().interrupt());
                 using Entry = int32_t (*)(const bmds_sys_t *, int32_t, char **, char **);
                 const Entry   entry = reinterpret_cast<Entry>(run.entry);
                 const int32_t status =
@@ -318,10 +320,12 @@ namespace {
         }
 
         // A built-in program's task (the shell as /bin/sh): all of it is
-        // kernel code, so a kill leaves it to end itself (it sees Ctrl-C).
+        // kernel code, so a signal that ends it leaves it to end itself (its
+        // interrupt stops the shell).
         void builtinMain(void *arg) {
                 Running &run = *static_cast<Running *>(arg);
                 vTaskSetThreadLocalStoragePointer(nullptr, RunningTlsIndex, &run);
+                Interrupt::setCurrent(&run.process->signals().interrupt());
                 run.inKernel.store(true);
                 int status = 0;
                 {
@@ -339,11 +343,13 @@ namespace {
                         context.args = Span<const StringView>(args.data(), args.size());
                         context.environment = Span<const StringView>(env.data(), env.size());
                         context.console = p.console();
-                        context.interrupt = p.interrupt();
+                        context.interrupt = &p.signals().interrupt();
                         context.launcher = &builtinLauncher;
                         status = err.isOk() ? run.builtin->main(context) : 126;
                 }
-                run.finish(ProcessTable::exitStatus(status));
+                if (run.kill.load()) run.finish(run.killStatus.load());
+                const int ending = run.process->signals().terminateSignal();
+                run.finish(ending != 0 ? ProcessTable::killedStatus(ending) : ProcessTable::exitStatus(status));
         }
 
         // A Running for @p image and @p process (owned once it starts), not yet started.
@@ -422,28 +428,108 @@ namespace {
                 for (;;) vTaskSuspend(nullptr);
         }
 
-        // Kills every process of job @p job outside a system call; those
-        // inside one end themselves when it returns (see Running).
-        void killJob(int32_t job) {
-                Running *frozen[ProcessTable::Capacity];
-                int      count = 0;
-                processes->forEachInJob(job, [&](int32_t, void *runtime) {
-                        auto *run = static_cast<Running *>(runtime);
-                        if (run == nullptr || run->kill.load()) return;
-                        run->kill.store(true);
-                        (void)run->task.suspend();
-                        if (run->inKernel.load()) {
-                                (void)run->task.resume();
-                        } else {
-                                frozen[count++] = run;
+        // Sends signals (programs.md §15). `post()` and `killTask()` run with
+        // the process table locked; programs caught in program code are ended
+        // when the Sender goes, after the lock.
+        class Sender {
+                public:
+                        Sender()
+                            : _self(static_cast<Running *>(
+                                      pvTaskGetThreadLocalStoragePointer(nullptr, RunningTlsIndex))) {}
+                        ~Sender() { endFrozen(); }
+                        Sender(const Sender &) = delete;
+                        Sender &operator=(const Sender &) = delete;
+
+                        // Sends @p sig to process @p pid of @p run; false if it had no
+                        // effect (dropped, or not there yet).
+                        bool post(Running &run, int32_t pid, int sig, int code) {
+                                Process *p = run.processOf(pid);
+                                if (p == nullptr) return false;
+                                Signals              &s = p->signals();
+                                const Signals::Posted posted = s.post(sig, code);
+                                if (posted == Signals::Posted::Dropped) return false;
+                                // A vfork child (or its parent while it runs) ends through
+                                // the SDK; SIGKILL takes the whole task.
+                                if (posted == Signals::Posted::Terminate && p == run.process &&
+                                    (run.depth == 0 || sig == BMDS_SIGKILL)) {
+                                        const int ending = sig == BMDS_SIGKILL ? sig : s.terminateSignal();
+                                        killTask(run, ProcessTable::killedStatus(ending));
+                                }
+                                if (p == run.current && run.hint != nullptr && s.isDue()) *run.hint = 1;
+                                return true;
                         }
+
+                        // Ends @p run's program with @p status (step 5's handshake).
+                        void killTask(Running &run, int32_t status) {
+                                if (run.kill.load()) return;
+                                run.killStatus.store(status);
+                                bool expected = false;
+                                if (!run.kill.compare_exchange_strong(expected, true)) return;
+                                if (&run == _self) return; // it ends as its call returns
+                                (void)run.task.suspend();
+                                if (run.inKernel.load()) {
+                                        (void)run.task.resume();
+                                } else {
+                                        _frozen[_count++] = &run;
+                                }
+                                return;
+                        }
+
+                private:
+                        // Suspended in program code: nothing else touches them now.
+                        void endFrozen() {
+                                for (int i = 0; i < _count; ++i) {
+                                        _frozen[i]->end(_frozen[i]->killStatus.load());
+                                        (void)_frozen[i]->task.stop();
+                                        destroyRunning(_frozen[i]);
+                                }
+                                _count = 0;
+                                return;
+                        }
+
+                        Running *_self;
+                        Running *_frozen[ProcessTable::Capacity];
+                        int      _count = 0;
+        };
+
+        // Sends @p sig to every process of job @p job; false if none took it.
+        bool signalJob(int32_t job, int sig, int code) {
+                Sender sender;
+                bool   taken = false;
+                processes->forEachInJob(job, [&](int32_t pid, void *runtime) {
+                        if (runtime != nullptr && sender.post(*static_cast<Running *>(runtime), pid, sig, code))
+                                taken = true;
                 });
-                // Suspended in program code: nothing else touches them now.
-                for (int i = 0; i < count; ++i) {
-                        frozen[i]->end(ProcessTable::killedStatus(Running::KillSignal));
-                        (void)frozen[i]->task.stop();
-                        destroyRunning(frozen[i]);
-                }
+                return taken;
+        }
+
+        // Ends every process of job @p job (SIGKILL).
+        void killJob(int32_t job) {
+                (void)signalJob(job, BMDS_SIGKILL, BMDS_SI_KERNEL);
+                return;
+        }
+
+        // Returns true if a process of job @p job has @p sig pending.
+        bool jobHasPending(int32_t job, int sig) {
+                bool pending = false;
+                processes->forEachInJob(job, [&](int32_t pid, void *runtime) {
+                        Process *p = runtime != nullptr ? static_cast<Running *>(runtime)->processOf(pid) : nullptr;
+                        if (p != nullptr && (p->signals().pending() & Signals::bit(sig)) != 0) pending = true;
+                });
+                return pending;
+        }
+
+        // Records that @p pid ended with @p status, and tells its parent (SIGCHLD).
+        void recordEnd(int32_t pid, int32_t status) {
+                const int32_t parent = processes->parentOf(pid);
+                processes->exited(pid, status);
+                if (parent <= ProcessTable::ShellPid) return;
+                Sender sender;
+                (void)processes->withProcess(parent, [&](void *runtime) {
+                        if (runtime != nullptr)
+                                (void)sender.post(*static_cast<Running *>(runtime), parent, BMDS_SIGCHLD,
+                                                  BMDS_SI_KERNEL);
+                });
                 return;
         }
 
@@ -471,8 +557,29 @@ namespace {
 // --- Running ------------------------------------------------------------------
 
 void Running::leave() {
+        Signals &s = current->signals();
+        // A vfork child is ended by the SDK (the hint); its parent once it is back.
+        if (depth == 0) {
+                if (const int sig = s.terminateSignal(); sig != 0) finish(ProcessTable::killedStatus(sig));
+        }
+        if (hint != nullptr) *hint = s.isDue() ? 1 : 0;
         inKernel.store(false);
-        if (kill.load()) finish(ProcessTable::killedStatus(KillSignal));
+        if (kill.load()) finish(killStatus.load());
+        return;
+}
+
+Process *Running::processOf(int32_t id) const {
+        if (id == pid) return process;
+        for (int i = 0; i < depth; ++i) {
+                if (children[i].pid == id) return children[i].process;
+        }
+        return nullptr;
+}
+
+void Running::setCurrent(Process *p, int32_t id) {
+        current = p;
+        currentPid = id;
+        Interrupt::setCurrent(&p->signals().interrupt());
         return;
 }
 
@@ -483,14 +590,14 @@ void Running::end(int32_t status) {
         while (depth > 0) {
                 const Child c = children[--depth];
                 c.process->release();
-                processes->exited(c.pid, status);
+                recordEnd(c.pid, status);
                 Process::destroy(c.process);
         }
         current = process;
         currentPid = pid;
         if (process != nullptr) {
                 process->release();
-                processes->exited(pid, status);
+                recordEnd(pid, status);
                 Process::destroy(process);
                 process = current = nullptr;
         }
@@ -509,27 +616,33 @@ int32_t Running::vfork() {
         if (depth >= MaxVforkDepth) return -BMDS_EAGAIN;
         Process *child = current->createChild();
         if (child == nullptr) return -BMDS_ENOMEM;
-        // Its record has no runner: it dies with this task.
-        const Result<int32_t> added = processes->add(currentPid, job, &current->childEvent(), nullptr);
+        // Its runner is this task's, until it execs (signals find it there).
+        const Result<int32_t> added = processes->add(currentPid, job, &current->childEvent(), this);
         if (added.isError()) {
                 Process::destroy(child);
                 return -BMDS_EAGAIN;
         }
         children[depth++] = Child{child, added.value()};
-        current = child;
-        currentPid = added.value();
+        setCurrent(child, added.value());
         return 0;
 }
 
-int32_t Running::vforkExit(int32_t status) {
+int32_t Running::endChild(int32_t waitStatus) {
         if (depth == 0) return -BMDS_EINVAL;
         const Child c = children[--depth];
-        current = depth > 0 ? children[depth - 1].process : process;
-        currentPid = depth > 0 ? children[depth - 1].pid : pid;
+        if (depth > 0) {
+                setCurrent(children[depth - 1].process, children[depth - 1].pid);
+        } else {
+                setCurrent(process, pid);
+        }
         c.process->release();
-        processes->exited(c.pid, ProcessTable::exitStatus(status));
+        recordEnd(c.pid, waitStatus);
         Process::destroy(c.process);
         return c.pid;
+}
+
+int32_t Running::vforkExit(int32_t status) {
+        return endChild(ProcessTable::exitStatus(status));
 }
 
 int32_t Running::exec(const char *path, char *const *argv, char *const *envp) {
@@ -595,11 +708,14 @@ int32_t Running::exec(const char *path, char *const *argv, char *const *envp) {
                 // The child runs on its own (or failed past return: it ends);
                 // this task is the parent again.
                 --depth;
-                current = depth > 0 ? children[depth - 1].process : process;
-                currentPid = depth > 0 ? children[depth - 1].pid : pid;
+                if (depth > 0) {
+                        setCurrent(children[depth - 1].process, children[depth - 1].pid);
+                } else {
+                        setCurrent(process, pid);
+                }
                 if (run == nullptr) {
                         target->release();
-                        processes->exited(targetPid, ProcessTable::exitStatus(127));
+                        recordEnd(targetPid, ProcessTable::exitStatus(127));
                         Process::destroy(target);
                         Memory::free(loaded.memory);
                 }
@@ -628,13 +744,15 @@ int32_t Running::wait(int32_t child, int32_t *status, uint32_t flags) {
                 }
                 if (ended.error() == Error::NotExist) return -BMDS_ECHILD;
                 if ((flags & BMDS_WAIT_NOHANG) != 0) return 0;
-                Semaphore &event = current->childEvent();
-                if (current->interrupt() != nullptr) {
-                        const Error err = current->interrupt()->wait(event, Deadline(WaitForever));
-                        if (err == Error::Interrupted) return -BMDS_EINTR;
-                } else {
-                        (void)event.acquire(WaitForever);
+                const Error err = current->signals().interrupt().wait(current->childEvent(), Deadline(WaitForever));
+                if (err != Error::Interrupted) continue;
+                // A child that ended meanwhile (its SIGCHLD may be the signal) still counts.
+                const Result<ProcessTable::Ended> late = processes->reap(currentPid, child);
+                if (late.isOk()) {
+                        if (status != nullptr) *status = late.value().status;
+                        return late.value().pid;
                 }
+                return -BMDS_EINTR;
         }
 }
 
@@ -645,8 +763,66 @@ int32_t Running::id(uint32_t which) {
                         const int32_t parent = processes->parentOf(currentPid);
                         return parent != 0 ? parent : ProcessTable::ShellPid;
                 }
+                case BMDS_PROC_JOB: return job;
                 default: return -BMDS_EINVAL;
         }
+}
+
+int32_t Running::sigSetup(volatile uint32_t *word) {
+        hint = word;
+        return 0;
+}
+
+int32_t Running::sigTake(bmds_siginfo_t *info) {
+        const Signals::Taken taken = current->signals().take();
+        if (info != nullptr && info->size > sizeof(uint32_t)) {
+                const bmds_siginfo_t out = {sizeof(bmds_siginfo_t), taken.signal, taken.code,
+                                            taken.terminate ? BMDS_SIG_TERMINATE : 0u};
+                // The fields that fit; the caller's size stays.
+                const size_t n = info->size < sizeof(out) ? info->size : sizeof(out);
+                std::memcpy(reinterpret_cast<uint8_t *>(info) + sizeof(uint32_t),
+                            reinterpret_cast<const uint8_t *>(&out) + sizeof(uint32_t), n - sizeof(uint32_t));
+        }
+        return taken.signal;
+}
+
+int32_t Running::sigSuspend(uint32_t mask) {
+        Signals &s = current->signals();
+        s.setBlocked(mask);
+        while (!s.isDue()) (void)s.interrupt().sleep(WaitForever);
+        return -BMDS_EINTR;
+}
+
+int32_t Running::sendSignal(int32_t target, int32_t sig) {
+        if (sig < 0 || sig >= Signals::Count) return -BMDS_EINVAL;
+        if (target == ProcessTable::ShellPid) return -BMDS_EPERM;
+        bool found = false;
+        {
+                Sender sender;
+                auto   send = [&](int32_t id, void *runtime) {
+                        found = true;
+                        if (sig != 0 && runtime != nullptr)
+                                (void)sender.post(*static_cast<Running *>(runtime), id, sig, BMDS_SI_USER);
+                };
+                if (target > 0) {
+                        found = processes->withProcess(target, [&](void *runtime) { send(target, runtime); }) !=
+                                ProcessTable::Found::None;
+                } else if (target == -1) {
+                        processes->forEachRunning([&](int32_t id, void *runtime) {
+                                if (id != currentPid) send(id, runtime);
+                        });
+                } else {
+                        processes->forEachInJob(target == 0 ? job : -target, send);
+                }
+        }
+        return found ? 0 : -BMDS_ESRCH;
+}
+
+int32_t Running::exitSignal(int32_t sig) {
+        if (!Signals::isValid(sig)) return -BMDS_EINVAL;
+        const int32_t status = ProcessTable::killedStatus(sig);
+        if (depth > 0) return endChild(status);
+        finish(status);
 }
 
 // --- Loader -------------------------------------------------------------------
@@ -684,24 +860,38 @@ namespace {
                 return;
         }
 
-        // Waits for a program to end (@p ended is released). The first Ctrl-C
-        // is the program's to handle (its calls return EINTR); one more
-        // while it runs kills its job, @p job.
-        void waitOrKill(int32_t job, Semaphore &ended, Interrupt *interrupt) {
-                if (interrupt == nullptr) {
-                        (void)ended.acquire(WaitForever);
-                        return;
-                }
+        // Waits for the shell's program @p pid to end (@p ended is released).
+        // Each Ctrl-C (@p interrupt raised) sends SIGINT to its job, @p job;
+        // one that comes while the previous had no effect (all ignored it, or
+        // it is still pending somewhere) sends SIGKILL instead. A change of
+        // @p console's size sends SIGWINCH.
+        void waitForJob(int32_t pid, int32_t job, Semaphore &ended, Interrupt *interrupt, Console *console) {
+                Interrupt  none;
+                Interrupt &ctrlC = interrupt != nullptr ? *interrupt : none;
+                // Resizes release `ended` too, so each wake checks what happened.
+                const std::optional<Interrupt::Watch> resizes =
+                        console != nullptr ? std::optional<Interrupt::Watch>(std::in_place, console->resized(), ended)
+                                           : std::nullopt;
                 const Deadline forever(WaitForever);
-                uint32_t       seen = interrupt->raises();
-                const uint32_t atStart = seen;
-                bool           killed = false;
+                uint32_t       seen = ctrlC.raises();
+                uint32_t       size = console != nullptr ? console->sizeGeneration() : 0;
+                bool           unanswered = false;
                 for (;;) {
-                        if (interrupt->wait(ended, forever, seen).isOk()) return;
-                        seen = interrupt->raises();
-                        if (seen < 2 || seen == atStart || killed) continue;
-                        killed = true;
-                        killJob(job);
+                        (void)ctrlC.wait(ended, forever, seen);
+                        if (ctrlC.raises() != seen) {
+                                seen = ctrlC.raises();
+                                if (unanswered || jobHasPending(job, BMDS_SIGINT)) {
+                                        killJob(job);
+                                        unanswered = false;
+                                } else {
+                                        unanswered = !signalJob(job, BMDS_SIGINT, BMDS_SI_KERNEL);
+                                }
+                        }
+                        if (console != nullptr && console->sizeGeneration() != size) {
+                                size = console->sizeGeneration();
+                                (void)signalJob(job, BMDS_SIGWINCH, BMDS_SI_KERNEL);
+                        }
+                        if (processes->isEnded(pid)) return;
                 }
         }
 
@@ -743,7 +933,7 @@ Result<int> Loader::run(const Request &request) {
 
         // Its resources. The environment gets the kernel's time zone as TZ
         // unless it has one (the C library's localtime reads TZ).
-        Process *process = Process::create(*request.fds, request.console, request.interrupt);
+        Process *process = Process::create(*request.fds, request.console);
         if (process == nullptr) {
                 report(request, "out of memory");
                 Memory::free(image.memory);
@@ -807,12 +997,16 @@ Result<int> Loader::run(const Request &request) {
                 Memory::free(image.memory);
                 return makeError<int>(err);
         }
-        const int32_t  job = run->job;
-        const uint32_t raisesAtStart = request.interrupt != nullptr ? request.interrupt->raises() : 0;
-        waitOrKill(job, ended, request.interrupt);
-        // Interrupted, the job ends with it (until signals: its other processes
-        // got EINTR too, and those ignoring it couldn't be killed any more).
-        if (request.interrupt != nullptr && request.interrupt->raises() != raisesAtStart && job == pid) killJob(job);
+        if (caller == nullptr) {
+                // Not run->job: a program that ended already may have been freed.
+                waitForJob(pid, parentJob != 0 ? parentJob : pid, ended, request.interrupt, request.console);
+        } else if (Interrupt::wait(request.interrupt, ended, Deadline(WaitForever)) == Error::Interrupted) {
+                // The calling process is being ended by a signal: its child goes
+                // on, an orphan (and won't release `ended`, about to go).
+                processes->detach(pid);
+                if (request.console != nullptr) request.console->setMode(savedMode);
+                return makeError<int>(Error::Interrupted);
+        }
         const Result<ProcessTable::Ended> result = processes->reap(parent, pid);
         if (request.console != nullptr) request.console->setMode(savedMode);
         drainStops();

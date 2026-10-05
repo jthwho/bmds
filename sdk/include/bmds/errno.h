@@ -19,7 +19,7 @@
 #define BMDS_EPERM 1         /**< Operation not permitted. */
 #define BMDS_ENOENT 2        /**< No such file or directory. */
 #define BMDS_ESRCH 3         /**< No such process. */
-#define BMDS_EINTR 4         /**< Interrupted (Ctrl-C). */
+#define BMDS_EINTR 4         /**< Interrupted (a signal is due). */
 #define BMDS_EIO 5           /**< Input/output error. */
 #define BMDS_E2BIG 7         /**< Argument list too long. */
 #define BMDS_ENOEXEC 8       /**< Exec format error. */

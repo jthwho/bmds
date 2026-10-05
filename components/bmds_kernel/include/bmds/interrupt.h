@@ -19,14 +19,15 @@
 BMDS_NAMESPACE_BEGIN
 
 /**
- * @brief A job's interrupt request (Ctrl-C): a flag that also wakes waiters.
+ * @brief An interrupt request (Ctrl-C, a signal): a flag that also wakes waiters.
  *
  * A console raises its Interrupt from its receive interrupt when it sees
- * Ctrl-C. Code that runs a job checks `isRaised()` between steps; blocking
- * stream operations wait through `wait()`, which returns
- * `Error::Interrupted` as soon as the interrupt is raised, even while
- * blocked. The flag stays raised until `clear()` (the shell clears it when
- * it starts the next command).
+ * Ctrl-C; a process's is raised when a signal is due for it. Code that
+ * runs a job checks `isRaised()` between steps; blocking stream operations
+ * wait through the calling task's (`current()`), which returns
+ * `Error::Interrupted` as soon as it is raised, even while blocked. The
+ * flag stays raised until `clear()` (the shell clears the console's when it
+ * starts the next command).
  *
  * Waking works by releasing the semaphore each waiter is blocked on, so up
  * to `MaxWaiters` tasks can wait through one Interrupt at a time (one per
@@ -108,6 +109,60 @@ class Interrupt {
                 }
 
                 /**
+                 * @brief Returns the calling task's interrupt: what its blocking
+                 *        stream calls wake on (null: they don't).
+                 *
+                 * A program's task has its process's (raised by signals), the
+                 * shell's tasks the console's (raised by Ctrl-C). Set with `Scope`.
+                 */
+                static Interrupt *current();
+
+                /**
+                 * @brief `wait()` on the calling task's interrupt (`current()`).
+                 * @return `Ok`, `Timeout`, or `Interrupted`.
+                 * @blocking
+                 */
+                static Error waitCurrent(Semaphore &semaphore, const Deadline &deadline) {
+                        return wait(current(), semaphore, deadline);
+                }
+
+                /**
+                 * @brief Makes an interrupt the calling task's (`current()`) for its
+                 *        lifetime, then puts the previous one back.
+                 */
+                class Scope {
+                        public:
+                                explicit Scope(Interrupt *interrupt);
+                                ~Scope();
+                                Scope(const Scope &) = delete;
+                                Scope &operator=(const Scope &) = delete;
+
+                        private:
+                                Interrupt *_previous;
+                };
+
+                /** @brief Sets the calling task's interrupt (`current()`) for good. */
+                static void setCurrent(Interrupt *interrupt);
+
+                /**
+                 * @brief Releases a semaphore at every raise for its lifetime, so
+                 *        a task waiting on it (through another interrupt) wakes on
+                 *        this one's raises too. Takes a waiter slot (`MaxWaiters`);
+                 *        without one, it watches nothing.
+                 */
+                class Watch {
+                        public:
+                                Watch(Interrupt &interrupt, Semaphore &semaphore);
+                                ~Watch();
+                                Watch(const Watch &) = delete;
+                                Watch &operator=(const Watch &) = delete;
+
+                        private:
+                                Interrupt &_interrupt;
+                                size_t     _slot;
+                };
+
+                /**
                  * @brief Sleeps for @p delayMs, waking early if raised.
                  * @param delayMs How long; `WaitForever` sleeps until raised.
                  * @return `Ok` after the full delay, or `Interrupted`.
@@ -116,7 +171,9 @@ class Interrupt {
                 Error sleep(unsigned int delayMs);
 
         private:
-                void wake(bool fromIsr);
+                size_t addWaiter(Semaphore &semaphore); // its slot, or MaxWaiters if full
+                void   removeWaiter(size_t slot);
+                void   wake(bool fromIsr);
 
                 std::atomic<uint32_t>    _raises{0}; // since clear(); raised while non-zero
                 std::atomic<uint32_t>    _busy{0}; // raisers currently releasing waiters

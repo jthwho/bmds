@@ -258,13 +258,14 @@ Result<size_t> UsbSerialConsole::tryReadInput(WritableByteSpan buf) {
 
 Result<size_t> UsbSerialConsole::readInput(WritableByteSpan buf, unsigned int timeoutMs) {
         if (buf.isEmpty()) return makeError<size_t>(Error::Invalid);
-        Deadline deadline(timeoutMs);
+        Deadline   deadline(timeoutMs);
+        Interrupt *interrupt = Interrupt::current();
         for (;;) {
                 // An interrupt comes before input typed after it.
-                if (interrupt().isRaised()) return makeError<size_t>(Error::Interrupted);
+                if (interrupt != nullptr && interrupt->isRaised()) return makeError<size_t>(Error::Interrupted);
                 Result<size_t> r = tryReadInput(buf);
                 if (r.isOk()) return r;
-                Error err = interrupt().wait(_rxReady, deadline);
+                Error err = Interrupt::wait(interrupt, _rxReady, deadline);
                 if (err.isError()) return makeError<size_t>(err);
         }
 }

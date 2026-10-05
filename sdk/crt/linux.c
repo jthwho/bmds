@@ -13,8 +13,8 @@
  *
  * What BMDS doesn't have is approximated, as noted at each call: one user
  * (root), no hard links, modes made up from the FAT attributes, poll by
- * guess, signals only from the program itself, no fork() (vfork, and
- * posix_spawn on it: programs.md §13). Sockets fail.
+ * guess, signals delivered between calls (programs.md §15), no fork()
+ * (vfork, and posix_spawn on it: programs.md §13). Sockets fail.
  */
 
 #define _GNU_SOURCE
@@ -547,7 +547,11 @@ static long do_ioctl(long fd, unsigned long request, void *arg) {
                         w->ws_xpixel = w->ws_ypixel = 0;
                         return 0;
                 }
-                case TIOCGPGRP: *(pid_t *)arg = 1; return 0;
+                case TIOCGPGRP:
+                        /* One terminal: the caller's job is the one in front. */
+                        if (bmds_isatty((int32_t)fd) != 1) return -ENOTTY;
+                        *(pid_t *)arg = (pid_t)(bmds_proc_id(BMDS_PROC_JOB));
+                        return 0;
                 case TIOCSPGRP:
                 case TCFLSH:
                 case TCXONC:
@@ -560,7 +564,13 @@ static long do_ioctl(long fd, unsigned long request, void *arg) {
 /* poll by guess, until BMDS can wait on several streams: files and
  * output are always ready; input from a terminal or pipe is reported ready
  * when the caller would wait for ever (the read then waits), else not. */
-static long do_poll(struct pollfd *fds, unsigned long n, const void *timeout) {
+static long     do_sigsuspend(uint32_t mask);
+static uint32_t kernel_set(uint64_t set);
+
+static long do_poll(struct pollfd *fds, unsigned long n, const void *timeout, const uint64_t *mask) {
+        /* Nothing to wait for, for ever: pause() (or ppoll with its mask). */
+        if (n == 0 && timeout == NULL)
+                return do_sigsuspend(mask != NULL ? kernel_set(*mask) : (uint32_t)bmds_sig_mask(BMDS_SIG_BLOCK, 0));
         long ready = 0;
         for (unsigned long i = 0; i < n; ++i) {
                 fds[i].revents = 0;
@@ -574,7 +584,10 @@ static long do_poll(struct pollfd *fds, unsigned long n, const void *timeout) {
                 }
                 if (fds[i].revents != 0) ++ready;
         }
-        if (ready == 0 && timeout != NULL) (void)sleep_ns(ts_read(timeout));
+        if (ready == 0 && timeout != NULL) {
+                const long r = sleep_ns(ts_read(timeout));
+                if (r < 0) return r;
+        }
         return ready;
 }
 
@@ -636,10 +649,13 @@ static long do_munmap(void *addr, size_t len) {
 /* --- Signals --------------------------------------------------------------- */
 
 /*
- * Handlers and the mask are kept as Linux would, but only the program
- * itself raises signals (raise, abort, kill of its own pid): delivered at
- * once, or when unblocked. Ctrl-C keeps step 4's behavior: blocking calls
- * fail with EINTR and the exit status becomes 130.
+ * The kernel keeps each process's actions, mask and pending signals
+ * (programs.md §15); this layer keeps the handlers and runs them. The
+ * kernel sets sig_hint while a signal is due: after each call,
+ * __bmds_syscall takes the due signals (bmds_sig_take) and runs their
+ * handlers, then makes an interrupted call again if they all asked for
+ * SA_RESTART. Realtime signals (32-64) are only recorded here: the kernel
+ * never delivers them.
  */
 /* musl's k_sigaction (src/internal/ksigaction.h, with SA_RESTORER as riscv32 has it). */
 struct k_sigaction {
@@ -650,102 +666,106 @@ struct k_sigaction {
 };
 
 static struct k_sigaction actions[_NSIG];
-static uint64_t           blocked, pending;
+static volatile uint32_t  sig_hint;
 
-static uint64_t bit(long sig) {
-        return 1ull << (sig - 1);
-}
-
-static void deliver(long sig);
-
-static void deliver_pending(void) {
-        while (pending & ~blocked) {
-                for (long sig = 1; sig < _NSIG; ++sig) {
-                        if ((pending & ~blocked) & bit(sig)) {
-                                pending &= ~bit(sig);
-                                deliver(sig);
-                                break;
-                        }
-                }
-        }
-        return;
-}
-
-static void deliver(long sig) {
-        struct k_sigaction *a = &actions[sig];
-        if (a->handler == SIG_IGN) return;
-        if (a->handler == SIG_DFL) {
-                switch (sig) {
-                        case SIGCHLD:
-                        case SIGCONT:
-                        case SIGURG:
-                        case SIGWINCH:
-                        case SIGSTOP:
-                        case SIGTSTP:
-                        case SIGTTIN:
-                        case SIGTTOU: return;
-                        default: bmds_exit(128 + (int32_t)sig); return;
-                }
-        }
-        if (blocked & bit(sig)) {
-                pending |= bit(sig);
-                return;
-        }
-        void (*handler)(int) = a->handler;
-        const unsigned long flags = a->flags;
-        const uint64_t      saved = blocked;
-        blocked |= ((uint64_t)a->mask[1] << 32 | a->mask[0]) | ((flags & SA_NODEFER) ? 0 : bit(sig));
-        if (flags & SA_RESETHAND) a->handler = SIG_DFL;
-        if (flags & SA_SIGINFO) {
-                siginfo_t info;
-                memset(&info, 0, sizeof(info));
-                info.si_signo = (int)sig;
-                info.si_code = SI_USER;
-                ((void (*)(int, siginfo_t *, void *))(void *)handler)((int)sig, &info, NULL);
-        } else {
-                handler((int)sig);
-        }
-        blocked = saved;
-        deliver_pending();
-        return;
+/* The kernel's part of a sigset: signals 1-31. */
+static uint32_t kernel_set(uint64_t set) {
+        return (uint32_t)set & 0x7fffffffu;
 }
 
 static long do_sigaction(long sig, const struct k_sigaction *act, struct k_sigaction *old) {
         if (sig < 1 || sig >= _NSIG) return -EINVAL;
+        if (act != NULL && (sig == SIGKILL || sig == SIGSTOP)) return -EINVAL;
+        struct k_sigaction next;
+        if (act != NULL) next = *act;
         if (old != NULL) *old = actions[sig];
         if (act != NULL) {
-                if (sig == SIGKILL || sig == SIGSTOP) return -EINVAL;
-                actions[sig] = *act;
+                if (sig < BMDS_SIG_COUNT) {
+                        const uint32_t action = next.handler == SIG_DFL   ? BMDS_SIG_DEFAULT
+                                                : next.handler == SIG_IGN ? BMDS_SIG_IGNORE
+                                                                          : BMDS_SIG_CATCH;
+                        const int32_t  r = bmds_sig_action((int32_t)sig, action);
+                        if (r < 0) return (long)(r);
+                }
+                actions[sig] = next;
         }
         return 0;
 }
 
 static long do_sigprocmask(long how, const uint64_t *set, uint64_t *old) {
-        if (old != NULL) *old = blocked;
-        if (set != NULL) {
-                switch (how) {
-                        case SIG_BLOCK: blocked |= *set; break;
-                        case SIG_UNBLOCK: blocked &= ~*set; break;
-                        case SIG_SETMASK: blocked = *set; break;
-                        default: return -EINVAL;
-                }
-                blocked &= ~(bit(SIGKILL) | bit(SIGSTOP));
-                deliver_pending();
+        int32_t r;
+        if (set == NULL) {
+                r = bmds_sig_mask(BMDS_SIG_BLOCK, 0);
+        } else {
+                if (how != SIG_BLOCK && how != SIG_UNBLOCK && how != SIG_SETMASK) return -EINVAL;
+                r = bmds_sig_mask((uint32_t)how, kernel_set(*set));
         }
+        if (r < 0) return (long)(r);
+        if (old != NULL) *old = (uint32_t)r;
         return 0;
+}
+
+static _Noreturn void signal_exit(int32_t sig);
+
+/* Runs the handler of the taken signal @p info; returns whether it asked
+ * for SA_RESTART. */
+static int run_handler(const bmds_siginfo_t *info) {
+        const int           sig = info->signo;
+        struct k_sigaction *a = &actions[sig];
+        void (*handler)(int) = a->handler;
+        const unsigned long flags = a->flags;
+        /* Changed here since the kernel took it: nothing to run. */
+        if (handler == SIG_DFL || handler == SIG_IGN) return 1;
+        uint32_t block = kernel_set((uint64_t)a->mask[1] << 32 | a->mask[0]);
+        if (!(flags & SA_NODEFER)) block |= 1u << (sig - 1);
+        const int32_t saved = bmds_sig_mask(BMDS_SIG_BLOCK, block);
+        if (flags & SA_RESETHAND) {
+                a->handler = SIG_DFL;
+                (void)bmds_sig_action(sig, BMDS_SIG_DEFAULT);
+        }
+        if (flags & SA_SIGINFO) {
+                siginfo_t si;
+                memset(&si, 0, sizeof(si));
+                si.si_signo = sig;
+                si.si_code = info->code;
+                ((void (*)(int, siginfo_t *, void *))(void *)handler)(sig, &si, NULL);
+        } else {
+                handler(sig);
+        }
+        (void)bmds_sig_mask(BMDS_SIG_SETMASK, (uint32_t)saved);
+        return (flags & SA_RESTART) != 0;
+}
+
+/* Takes and handles the due signals; returns whether every handler asked
+ * for SA_RESTART (1 if none ran). */
+static int deliver_due(void) {
+        int restart = 1;
+        while (sig_hint) {
+                bmds_siginfo_t info = {.size = sizeof(info)};
+                const int32_t  sig = bmds_sig_take(&info);
+                if (sig <= 0) break;
+                if (info.flags & BMDS_SIG_TERMINATE) signal_exit(sig);
+                if (!run_handler(&info)) restart = 0;
+        }
+        return restart;
+}
+
+/* sigsuspend(): the mask becomes @p mask until a signal is due and handled. */
+static long do_sigsuspend(uint32_t mask) {
+        const int32_t old = bmds_sig_mask(BMDS_SIG_BLOCK, 0);
+        (void)bmds_sig_suspend(mask);
+        (void)deliver_due();
+        (void)bmds_sig_mask(BMDS_SIG_SETMASK, (uint32_t)old);
+        return -EINTR;
 }
 
 static long self(void) {
         return (long)(bmds_proc_id(BMDS_PROC_SELF));
 }
 
-/* Signals reach only the program itself until they are delivered from
- * outside (step 9). */
 static long do_kill(long pid, long sig) {
-        if (pid != self() && pid != 0 && pid != -1) return -ESRCH;
-        if (sig < 0 || sig >= _NSIG) return -EINVAL;
-        if (sig != 0) deliver(sig);
-        return 0;
+        if (sig < 0 || sig >= BMDS_SIG_COUNT) return -EINVAL; /* realtime signals aren't sent */
+        return (long)(bmds_proc_kill((int32_t)pid, (int32_t)sig));
 }
 
 /* --- The rest ---------------------------------------------------------------- */
@@ -796,15 +816,15 @@ static mode_t umask_value = 022;
  * vfork (vfork.S saves the registers; programs.md §13). A vfork child runs
  * in its parent's memory, so what Linux keeps per process but this layer
  * keeps in that memory is saved at the vfork and put back when the parent
- * resumes: signal dispositions (musl's posix_spawn child resets them), the
- * mask, pending signals, the umask, the directory-fd table. The copy lives
+ * resumes: the signal handlers (musl's posix_spawn child resets them; the
+ * kernel keeps the child's actions and mask apart), the umask, the
+ * directory-fd table. The copy lives
  * on the heap while the child runs: programs that never vfork pay nothing.
  */
 #define VFORK_DEPTH 2
 
 typedef struct {
         struct k_sigaction actions[_NSIG];
-        uint64_t           blocked, pending;
         mode_t             umask;
         __typeof__(dirs)   dirs;
 } vfork_saved_t;
@@ -819,8 +839,6 @@ long __bmds_vfork_enter(void) {
         vfork_saved_t *saved = bmds_mem_alloc(sizeof(*saved), 0, 0);
         if (saved == NULL) return -ENOMEM;
         memcpy(saved->actions, actions, sizeof(actions));
-        saved->blocked = blocked;
-        saved->pending = pending;
         saved->umask = umask_value;
         memcpy(saved->dirs, dirs, sizeof(dirs));
         const int32_t r = bmds_proc_vfork();
@@ -836,8 +854,6 @@ long __bmds_vfork_enter(void) {
 static _Noreturn void vfork_return(long pid) {
         vfork_saved_t *saved = vfork_saved[--__bmds_vfork_depth];
         memcpy(actions, saved->actions, sizeof(actions));
-        blocked = saved->blocked;
-        pending = saved->pending;
         umask_value = saved->umask;
         memcpy(dirs, saved->dirs, sizeof(dirs));
         bmds_mem_free(saved);
@@ -845,11 +861,16 @@ static _Noreturn void vfork_return(long pid) {
 }
 
 static long do_exit(long status) {
-        /* As a command ended by SIGINT: 130 after a Ctrl-C, however it ends. */
-        const int32_t code = bmds_interrupted() ? 130 : (int32_t)status;
-        if (__bmds_vfork_depth > 0) vfork_return((long)(bmds_proc_vfork_exit(code)));
-        bmds_exit(code);
+        if (__bmds_vfork_depth > 0) vfork_return((long)(bmds_proc_vfork_exit((int32_t)status)));
+        bmds_exit((int32_t)status);
         return 0;
+}
+
+/* Ends the program (or the vfork child) as killed by @p sig. */
+static _Noreturn void signal_exit(int32_t sig) {
+        if (__bmds_vfork_depth > 0) vfork_return((long)(bmds_proc_exit_signal(sig)));
+        (void)bmds_proc_exit_signal(sig);
+        for (;;) {}
 }
 
 /* A __clone child's function returned @p status. */
@@ -905,10 +926,18 @@ static long do_pipe2(int *fds, long flags) {
 /* Called by the startup code before musl starts. */
 void __bmds_linux_start(void) {
         started_ns = now(BMDS_CLOCK_MONOTONIC);
+        if (bmds_sys_has(BMDS_SYS_SIG_SETUP)) {
+                (void)bmds_sig_setup(&sig_hint);
+                /* Ignored signals survive exec (nohup, a shell's trap ''). */
+                for (int sig = 1; sig < BMDS_SIG_COUNT; ++sig) {
+                        if (bmds_sig_action(sig, BMDS_SIG_QUERY) == (int32_t)BMDS_SIG_IGNORE)
+                                actions[sig].handler = SIG_IGN;
+                }
+        }
         return;
 }
 
-long __bmds_syscall(long n, long a, long b, long c, long d, long e, long f) {
+static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
         switch (n) {
                 /* Files */
                 case SYS_openat: return do_open(a, (const char *)b, c);
@@ -1029,10 +1058,11 @@ long __bmds_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 case SYS_set_tid_address:
                 case SYS_gettid:
                 case SYS_getpid:
-                case SYS_getpgid:
-                case SYS_getsid:
                 case SYS_setsid: return self();
                 case SYS_getppid: return (long)(bmds_proc_id(BMDS_PROC_PARENT));
+                /* Process groups are jobs; they can't be changed (no job control). */
+                case SYS_getpgid:
+                case SYS_getsid: return (long)(bmds_proc_id(BMDS_PROC_JOB));
                 case SYS_setpgid: return 0;
                 case SYS_getuid:
                 case SYS_geteuid:
@@ -1058,18 +1088,45 @@ long __bmds_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 /* Signals */
                 case SYS_rt_sigaction: return do_sigaction(a, (const struct k_sigaction *)b, (struct k_sigaction *)c);
                 case SYS_rt_sigprocmask: return do_sigprocmask(a, (const uint64_t *)b, (uint64_t *)c);
-                case SYS_rt_sigpending: *(uint64_t *)a = pending; return 0;
-                case SYS_rt_sigsuspend: return -EINTR;
+                case SYS_rt_sigpending: *(uint64_t *)a = (uint32_t)bmds_sig_pending(); return 0;
+                case SYS_rt_sigsuspend: return do_sigsuspend(kernel_set(*(const uint64_t *)a));
                 case SYS_sigaltstack: return 0;
                 case SYS_kill: return do_kill(a, b);
                 case SYS_tkill: return do_kill(a, b);
                 case SYS_tgkill: return do_kill(b, c);
 
                 /* Waiting */
-                case SYS_ppoll_time64: return do_poll((struct pollfd *)a, (unsigned long)b, (const void *)c);
+                case SYS_ppoll_time64:
+                        return do_poll((struct pollfd *)a, (unsigned long)b, (const void *)c, (const uint64_t *)d);
 
                 /* No sockets; no fork (SYS_clone: vfork.S handles CLONE_VFORK). */
                 case SYS_socket: return -EAFNOSUPPORT;
                 default: return -ENOSYS;
+        }
+}
+
+/* The calls Linux makes again after a handler with SA_RESTART. */
+static int restartable(long n) {
+        switch (n) {
+                case SYS_read:
+                case SYS_readv:
+                case SYS_write:
+                case SYS_writev:
+                case SYS_pread64:
+                case SYS_pwrite64:
+                case SYS_ioctl:
+                case SYS_waitid:
+                case SYS_openat: return 1;
+                default: return 0;
+        }
+}
+
+long __bmds_syscall(long n, long a, long b, long c, long d, long e, long f) {
+        for (;;) {
+                const long r = do_syscall(n, a, b, c, d, e, f);
+                if (!sig_hint) return r;
+                /* A signal is due: its handler runs as the call returns. */
+                const int restart = deliver_due();
+                if (r != -EINTR || !restart || !restartable(n)) return r;
         }
 }

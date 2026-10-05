@@ -41,8 +41,8 @@ namespace {
 } // namespace
 
 Shell::Shell(Console &console, Span<const Command> commands, size_t stackBytes)
-    : _console(console), _commands(commands), _workers(workerConfig()), _executor(*this, _state, _fds, stackBytes),
-      _editor(console) {
+    : _console(console), _interrupt(&console.interrupt()), _commands(commands), _workers(workerConfig()),
+      _executor(*this, _state, _fds, stackBytes), _editor(console) {
         _editor.setCompleter(this);
         // findCommand() binary-searches, so the table must be sorted and unique.
         for (size_t i = 1; i < _commands.size(); ++i) {
@@ -68,6 +68,7 @@ int Shell::runAsProgram(const BuiltinProgram::Context &context, Span<const Comma
         if (e.isOk()) {
                 shell->_fds = *context.fds;
                 shell->setLauncher(context.launcher);
+                if (context.interrupt != nullptr) shell->_interrupt = context.interrupt;
                 if (!context.cwd.isEmpty()) e = state.cwd.assign(context.cwd);
                 if (e.isOk()) e = state.vars.set("PWD", state.cwd.view());
         }
@@ -86,7 +87,11 @@ int Shell::runAsProgram(const BuiltinProgram::Context &context, Span<const Comma
                 auto [arg, aerr] = String::fromView(context.args[i]);
                 e = aerr.isOk() ? args.append(std::move(arg)) : aerr;
         }
-        const int status = e.isOk() ? shell->_executor.invoke(args, false) : fail("sh: out of memory\n");
+        int status = 0;
+        {
+                Interrupt::Scope scope(shell->_interrupt);
+                status = e.isOk() ? shell->_executor.invoke(args, false) : fail("sh: out of memory\n");
+        }
         args = List<String>();
         shell->~Shell();
         Memory::free(memory);
@@ -354,6 +359,7 @@ void Shell::feed(char c) {
 }
 
 int Shell::execute(StringView line) {
+        Interrupt::Scope scope(_interrupt);
         if (_input.append(line).isError() || _input.append('\n').isError()) {
                 _executor.report("out of memory");
                 _input.clear();
@@ -388,7 +394,7 @@ void Shell::runInput() {
                         consumed = parser.position();
                         if (node == nullptr) break;
                         (void)_executor.execute(node);
-                        if (_executor.flow() == Executor::Flow::Interrupt || _console.interrupt().isRaised()) {
+                        if (_executor.flow() == Executor::Flow::Interrupt || interrupt().isRaised()) {
                                 endInterrupt();
                                 consumed = _input.size();
                                 break;
@@ -416,13 +422,14 @@ void Shell::endInterrupt() {
         (void)_console.write(StringView("^C\n"), WaitForever);
         _executor.clearFlow();
         _state.lastStatus = ExitInterrupted;
-        _console.interrupt().clear();
+        interrupt().clear();
         return;
 }
 
 int Shell::runScript(StringView source) {
-        const int status = _executor.runSource(source, true);
-        if (_executor.flow() == Executor::Flow::Interrupt || _console.interrupt().isRaised()) {
+        Interrupt::Scope scope(_interrupt);
+        const int        status = _executor.runSource(source, true);
+        if (_executor.flow() == Executor::Flow::Interrupt || interrupt().isRaised()) {
                 endInterrupt();
         } else {
                 _executor.clearFlow();
@@ -433,8 +440,9 @@ int Shell::runScript(StringView source) {
 }
 
 int Shell::sourceIfExists(StringView path) {
-        String script;
-        Error  err = _executor.readFile(path, script);
+        Interrupt::Scope scope(_interrupt);
+        String           script;
+        Error            err = _executor.readFile(path, script);
         if (err == Error::NotExist || err == Error::NoMedia) return ExitSuccess;
         if (err.isError()) {
                 _executor.report("%.*s: %s", static_cast<int>(path.size()), path.data(),
@@ -442,7 +450,7 @@ int Shell::sourceIfExists(StringView path) {
                 return ExitFailure;
         }
         (void)_executor.runSourced(script, Span<char *const>());
-        if (_executor.flow() == Executor::Flow::Interrupt || _console.interrupt().isRaised()) {
+        if (_executor.flow() == Executor::Flow::Interrupt || interrupt().isRaised()) {
                 endInterrupt();
         } else {
                 _executor.clearFlow();
@@ -452,6 +460,7 @@ int Shell::sourceIfExists(StringView path) {
 }
 
 void Shell::run() {
+        Interrupt::setCurrent(_interrupt);
         start();
         for (;;) {
                 uint8_t buf[32];
@@ -461,7 +470,7 @@ void Shell::run() {
                 if (err == Error::Interrupted) {
                         // Ctrl-C at the prompt: the console turned it into an
                         // interrupt; the editor cancels the line as for a raw ^C.
-                        _console.interrupt().clear();
+                        interrupt().clear();
                         feed(CtrlC);
                         continue;
                 }

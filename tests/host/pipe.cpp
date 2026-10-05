@@ -45,14 +45,14 @@ namespace {
 } // namespace
 
 TEST_CASE("Pipe: create checks the size") {
-        auto [ends, err] = Pipe::create(nullptr, 1000);
+        auto [ends, err] = Pipe::create(1000);
         CHECK(err == Error::Invalid);
 }
 
 TEST_CASE("Pipe: data flows and EOF follows the writer's close") {
         const size_t base = HostMemory::liveAllocations();
         {
-                auto [ends, err] = Pipe::create(nullptr, 64);
+                auto [ends, err] = Pipe::create(64);
                 REQUIRE(err.isOk());
                 CHECK(ends.read->canRead());
                 CHECK_FALSE(ends.read->canWrite());
@@ -75,7 +75,7 @@ TEST_CASE("Pipe: data flows and EOF follows the writer's close") {
 TEST_CASE("Pipe: a writer bigger than the ring streams through a concurrent reader") {
         const size_t base = HostMemory::liveAllocations();
         {
-                auto [ends, err] = Pipe::create(nullptr, 64);
+                auto [ends, err] = Pipe::create(64);
                 REQUIRE(err.isOk());
                 std::string data;
                 for (int i = 0; i < 10000; ++i) data.push_back(static_cast<char>('a' + i % 26));
@@ -93,7 +93,7 @@ TEST_CASE("Pipe: a writer bigger than the ring streams through a concurrent read
 }
 
 TEST_CASE("Pipe: closing the reader breaks the pipe for a blocked writer") {
-        auto [ends, err] = Pipe::create(nullptr, 64);
+        auto [ends, err] = Pipe::create(64);
         REQUIRE(err.isOk());
         std::string big(1000, 'x');
         Error       writeErr;
@@ -114,7 +114,7 @@ TEST_CASE("Pipe: closing the reader breaks the pipe for a blocked writer") {
 }
 
 TEST_CASE("Pipe: timeouts") {
-        auto [ends, err] = Pipe::create(nullptr, 64);
+        auto [ends, err] = Pipe::create(64);
         REQUIRE(err.isOk());
         uint8_t buf[8];
         CHECK(ends.read->read(WritableByteSpan(buf), 20).error() == Error::Timeout);
@@ -124,34 +124,44 @@ TEST_CASE("Pipe: timeouts") {
         CHECK(n == 64);
 }
 
-TEST_CASE("Pipe: the job's interrupt stops blocked readers and writers") {
+TEST_CASE("Pipe: the caller's interrupt stops blocked readers and writers") {
         Interrupt intr;
-        auto [ends, err] = Pipe::create(&intr, 64);
+        auto [ends, err] = Pipe::create(64);
         REQUIRE(err.isOk());
-        auto [full, ferr] = Pipe::create(&intr, 64);
+        auto [full, ferr] = Pipe::create(64);
         REQUIRE(ferr.isOk());
         std::string big(100, 'x');
 
-        Error       readErr, writeErr;
+        Error       readErr, writeErr, otherErr;
         std::thread reader([&] {
-                uint8_t buf[8];
+                Interrupt::Scope scope(&intr);
+                uint8_t          buf[8];
                 readErr = ends.read->read(WritableByteSpan(buf), WaitForever).error();
         });
-        std::thread writer(
-                [&] { writeErr = full.write->write(bmds::StringView(big.data(), big.size()), WaitForever).error(); });
+        std::thread writer([&] {
+                Interrupt::Scope scope(&intr);
+                writeErr = full.write->write(bmds::StringView(big.data(), big.size()), WaitForever).error();
+        });
+        // A caller with another interrupt (none) isn't stopped by this one.
+        std::thread other([&] {
+                uint8_t buf[8];
+                otherErr = ends.read->read(WritableByteSpan(buf), 200).error();
+        });
         pause(50);
         intr.raise();
         reader.join();
         writer.join();
+        other.join();
         CHECK(readErr == Error::Interrupted);
         CHECK(writeErr == Error::Interrupted);
+        CHECK(otherErr == Error::Timeout);
 }
 
 TEST_CASE("Pipe: allocation failure") {
         const size_t base = HostMemory::liveAllocations();
         for (long successes = 0; successes < 3; ++successes) {
                 HostMemory::FailGuard fail(successes);
-                auto [ends, err] = Pipe::create(nullptr, 64);
+                auto [ends, err] = Pipe::create(64);
                 CHECK(err == Error::NoMem);
         }
         CHECK(HostMemory::liveAllocations() == base);

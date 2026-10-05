@@ -121,7 +121,7 @@ ColorDepth CommandContext::colorDepth() {
 }
 
 bool CommandContext::isInterrupted() const {
-        return _outputBroken || _shell.console().interrupt().isRaised();
+        return _outputBroken || _shell.interrupt().isRaised();
 }
 
 int CommandContext::usage() {

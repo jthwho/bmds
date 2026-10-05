@@ -40,22 +40,51 @@ void Interrupt::raiseFromIsr() {
         return;
 }
 
-Error Interrupt::wait(Semaphore &semaphore, const Deadline &deadline, uint32_t seen) {
-        size_t slot = MaxWaiters;
+size_t Interrupt::addWaiter(Semaphore &semaphore) {
         for (size_t i = 0; i < MaxWaiters; ++i) {
                 Semaphore *expected = nullptr;
-                if (_waiters[i].compare_exchange_strong(expected, &semaphore)) {
-                        slot = i;
-                        break;
-                }
+                if (_waiters[i].compare_exchange_strong(expected, &semaphore)) return i;
         }
-        Error err = raises() != seen ? Error(Error::Interrupted) : semaphore.acquire(deadline);
-        if (slot != MaxWaiters) {
-                _waiters[slot].store(nullptr);
-                while (_busy.load() != 0) {}
-        }
+        return MaxWaiters;
+}
+
+void Interrupt::removeWaiter(size_t slot) {
+        if (slot == MaxWaiters) return;
+        _waiters[slot].store(nullptr);
+        while (_busy.load() != 0) {}
+        return;
+}
+
+Error Interrupt::wait(Semaphore &semaphore, const Deadline &deadline, uint32_t seen) {
+        const size_t slot = addWaiter(semaphore);
+        Error        err = raises() != seen ? Error(Error::Interrupted) : semaphore.acquire(deadline);
+        removeWaiter(slot);
         if (raises() != seen) return Error::Interrupted;
         return err;
+}
+
+Interrupt::Watch::Watch(Interrupt &interrupt, Semaphore &semaphore)
+    : _interrupt(interrupt), _slot(interrupt.addWaiter(semaphore)) {}
+
+Interrupt::Watch::~Watch() {
+        _interrupt.removeWaiter(_slot);
+}
+
+Interrupt *Interrupt::current() {
+        return static_cast<Interrupt *>(Detail::taskInterrupt());
+}
+
+void Interrupt::setCurrent(Interrupt *interrupt) {
+        Detail::setTaskInterrupt(interrupt);
+        return;
+}
+
+Interrupt::Scope::Scope(Interrupt *interrupt) : _previous(current()) {
+        setCurrent(interrupt);
+}
+
+Interrupt::Scope::~Scope() {
+        setCurrent(_previous);
 }
 
 Error Interrupt::sleep(unsigned int delayMs) {

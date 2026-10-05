@@ -69,8 +69,8 @@ namespace {
         // Two connected ends.
         struct Line {
                         Line() {
-                                auto [ab, e1] = bmds::Pipe::create(nullptr, 8192);
-                                auto [ba, e2] = bmds::Pipe::create(nullptr, 8192);
+                                auto [ab, e1] = bmds::Pipe::create(8192);
+                                auto [ba, e2] = bmds::Pipe::create(8192);
                                 REQUIRE((e1.isOk() && e2.isOk()));
                                 a = std::make_unique<LineEnd>(std::move(ba.read), std::move(ab.write));
                                 b = std::make_unique<LineEnd>(std::move(ab.read), std::move(ba.write));

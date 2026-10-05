@@ -19,6 +19,7 @@
 
 using bmds::KernelCall;
 using bmds::Running;
+using bmds::Signals;
 
 extern "C" {
 
@@ -232,6 +233,59 @@ int32_t bmds_k_proc_id(uint32_t which) {
 int32_t bmds_k_fd_flags(int32_t fd, int32_t flags) {
         KernelCall call;
         return call->fdFlags(fd, flags);
+}
+
+int32_t bmds_k_sig_setup(volatile uint32_t *hint) {
+        KernelCall call;
+        return call.running().sigSetup(hint);
+}
+
+int32_t bmds_k_sig_action(int32_t sig, uint32_t action) {
+        KernelCall call;
+        if (!Signals::isValid(sig) || (action > BMDS_SIG_CATCH && action != BMDS_SIG_QUERY)) return -BMDS_EINVAL;
+        Signals       &s = call->signals();
+        const uint32_t previous = static_cast<uint32_t>(s.action(sig));
+        if (action != BMDS_SIG_QUERY && !s.setAction(sig, static_cast<Signals::Action>(action))) return -BMDS_EINVAL;
+        return static_cast<int32_t>(previous);
+}
+
+int32_t bmds_k_sig_mask(uint32_t how, uint32_t set) {
+        KernelCall     call;
+        Signals       &s = call->signals();
+        const uint32_t old = s.blocked();
+        set &= (1u << (Signals::Count - 1)) - 1; // signals 1-31
+        switch (how) {
+                case BMDS_SIG_BLOCK: s.setBlocked(old | set); break;
+                case BMDS_SIG_UNBLOCK: s.setBlocked(old & ~set); break;
+                case BMDS_SIG_SETMASK: s.setBlocked(set); break;
+                default: return -BMDS_EINVAL;
+        }
+        return static_cast<int32_t>(old);
+}
+
+int32_t bmds_k_sig_pending(void) {
+        KernelCall call;
+        return static_cast<int32_t>(call->signals().pending());
+}
+
+int32_t bmds_k_sig_take(bmds_siginfo_t *info) {
+        KernelCall call;
+        return call.running().sigTake(info);
+}
+
+int32_t bmds_k_sig_suspend(uint32_t mask) {
+        KernelCall call;
+        return call.running().sigSuspend(mask & ((1u << (Signals::Count - 1)) - 1));
+}
+
+int32_t bmds_k_proc_kill(int32_t pid, int32_t sig) {
+        KernelCall call;
+        return call.running().sendSignal(pid, sig);
+}
+
+int32_t bmds_k_proc_exit_signal(int32_t sig) {
+        KernelCall call;
+        return call.running().exitSignal(sig);
 }
 
 } // extern "C"

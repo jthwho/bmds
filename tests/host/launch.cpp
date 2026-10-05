@@ -50,6 +50,8 @@ namespace {
                                 c.console = r.console;
                                 c.interrupt = r.interrupt;
                                 calls.push_back(c);
+                                // Ctrl-C while it runs (the loader would send it SIGINT).
+                                if (pressCtrlC && r.interrupt != nullptr) r.interrupt->raise();
                                 // The program "writes" to its stdout.
                                 bmds::FileHandle *out = r.fds->handle(1);
                                 if (out != nullptr) (void)out->write(bmds::StringView("ran\n"), bmds::WaitForever);
@@ -68,6 +70,7 @@ namespace {
                         std::vector<Call> calls;
                         int               status = 0;
                         Error             fail;
+                        bool              pressCtrlC = false;
 
                 private:
                         std::mutex _lock;
@@ -182,6 +185,19 @@ TEST_CASE("Launch: a program by path") {
         f.launcher.status = 0;
         CHECK(f.out("./prog | wc -l", 0) == "1\n");
         CHECK(f.out("./prog > /dev/null", 0) == "");
+}
+
+TEST_CASE("Launch: Ctrl-C abandons the command line only if it ended the program") {
+        Fixture f;
+        f.program("prog");
+        f.launcher.pressCtrlC = true;
+        // Ended by SIGINT (128 + 2): the rest of the line is abandoned, as in bash.
+        f.launcher.status = Shell::ExitInterrupted;
+        CHECK(f.out("./prog; echo next", Shell::ExitInterrupted) == "ran\n^C\n");
+        // Caught or ignored: the program's status, and the shell goes on.
+        f.launcher.status = 7;
+        CHECK(f.out("./prog; echo next $?", 0) == "ran\nnext 7\n");
+        CHECK_FALSE(f.con.interrupt().isRaised());
 }
 
 TEST_CASE("Launch: failures become 127 and 126") {

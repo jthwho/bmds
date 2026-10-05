@@ -1,0 +1,41 @@
+timeout: the NOMMU watcher re-execs with -p before the duration
+
+getopt32("+...") stops at the first non-option, so "timeout DURATION -pPARENT" never saw
+-p: the watcher ran as a new timeout and died. Upstream 1.37.0 bug (BMDS, no MMU).
+
+--- a/coreutils/timeout.c	2026-10-04 20:41:55.359347298 -0700
++++ b/coreutils/timeout.c	2026-10-04 20:41:55.430354652 -0700
+@@ -100,7 +100,7 @@
+ 	if (!argv[optind])
+ 		bb_show_usage();
+ 	timeout = parse_duration_str(argv[optind++]);
+-	if (!argv[optind]) /* no PROG? */
++	if (!argv[optind] && !parent) /* no PROG? (the re-execed grandchild has none) */
+ 		bb_show_usage();
+ 
+ 	/* We want to create a grandchild which will watch
+@@ -123,11 +123,21 @@
+ 		/* Child: spawn grandchild and exit */
+ 		parent = getppid();
+ #if !BB_MMU
+-		argv[optind] = xasprintf("-p%u", parent);
+-		argv[optind + 1] = NULL;
+-#endif
++		{
++			/* Re-exec as "timeout -pPARENT [OPTS] DURATION": getopt32
++			 * stops at the first non-option, so -p goes first. A new
++			 * vector: argv is the parent's (this is a vfork child). */
++			char **nargv = xzalloc((optind + 2) * sizeof(nargv[0]));
++			nargv[0] = argv[0];
++			nargv[1] = xasprintf("-p%u", parent);
++			memcpy(nargv + 2, argv + 1, (optind - 1) * sizeof(nargv[0]));
++			/* NB: exits with nonzero on error: */
++			bb_daemonize_or_rexec(0, nargv);
++		}
++#else
+ 		/* NB: exits with nonzero on error: */
+ 		bb_daemonize_or_rexec(0, argv);
++#endif
+ 		/* Here we are grandchild. Sleep, then kill grandparent */
+  grandchild:
+ 		if (timeout_wait(timeout, parent) == EXIT_SUCCESS)

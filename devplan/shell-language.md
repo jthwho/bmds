@@ -50,9 +50,12 @@ fd table (per job)  ──►  FileHandle (refcounted "open file description")  
 
 Each job has an `Interrupt`, an atomic flag plus a wakeup. The console raises the foreground job's `Interrupt` from its RX path (see `terminal.md`). Then:
 
-- blocking stream operations return `Error::Interrupted`;
+- blocking stream operations in the shell's tasks return `Error::Interrupted` (streams wait through the calling task's interrupt, `Interrupt::current()`, which is the console's in the shell's tasks and pipeline workers);
 - the interpreter checks the flag between commands and on every loop iteration, and unwinds with status 130, as bash does;
-- built-ins with long loops (`log show`, later `cat`) check it too.
+- built-ins with long loops (`log show`, later `cat`) check it too;
+- a program gets `SIGINT` from the loader instead (`programs.md` §15). If that doesn't end it (caught or ignored), the shell clears the flag when the program returns and goes on with the next command, as bash does; if it does, the line is abandoned.
+
+The shell as `/bin/sh` uses its process's interrupt instead, raised by the signals that end it (`Shell::interrupt()`).
 
 ### What commands see
 

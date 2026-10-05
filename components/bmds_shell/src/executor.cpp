@@ -627,7 +627,7 @@ void Executor::inheritAbort(const Executor &child) {
 }
 
 bool Executor::interrupted() {
-        if (!_shell.console().interrupt().isRaised()) return false;
+        if (!_shell.interrupt().isRaised()) return false;
         setFlow(Flow::Interrupt);
         return true;
 }
@@ -1304,8 +1304,9 @@ int Executor::runInSubshell(StringView source, Span<char *const> args, const She
 }
 
 void Executor::stageMain(void *arg) {
-        StageRun *run = static_cast<StageRun *>(arg);
-        Executor  child(run->parent->_shell, run->state, run->fds, Shell::WorkerStackBytes);
+        StageRun        *run = static_cast<StageRun *>(arg);
+        Interrupt::Scope scope(&run->parent->_shell.interrupt());
+        Executor         child(run->parent->_shell, run->state, run->fds, Shell::WorkerStackBytes);
         child._callDepth = run->parent->_callDepth;
         child._sourceDepth = run->parent->_sourceDepth;
         run->status = child.execute(run->node);
@@ -1340,7 +1341,7 @@ int Executor::runPipeline(const PipelineNode *p) {
                 (void)runs.append(std::move(run));
         }
         for (size_t i = 0; i + 1 < count; ++i) {
-                auto [ends, err] = Pipe::create(&_shell.console().interrupt());
+                auto [ends, err] = Pipe::create();
                 if (err.isError()) {
                         report("cannot create pipe: %s", err.desc());
                         return finish(1, true);

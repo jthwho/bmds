@@ -95,7 +95,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_DUP2 22u        /**< `int32_t dup2(int32_t fd, int32_t to)`. */
 #define BMDS_SYS_CLOCK_GET 23u   /**< `int32_t clock_get(uint32_t clock, int64_t *ns)`. */
 #define BMDS_SYS_SLEEP 24u       /**< `int32_t sleep(int64_t ns)`. */
-#define BMDS_SYS_INTERRUPTED 25u /**< `int32_t interrupted(void)`: 1 after Ctrl-C. */
+#define BMDS_SYS_INTERRUPTED 25u /**< `int32_t interrupted(void)`: 1 while a `SIGINT` is pending. */
 #define BMDS_SYS_TERM_GET 26u    /**< `int32_t term_get(int32_t fd, bmds_term_t *term)`. */
 #define BMDS_SYS_TERM_SET 27u    /**< `int32_t term_set(int32_t fd, uint32_t flags)`. */
 #define BMDS_SYS_MEM_INFO 28u    /**< `int32_t mem_info(uint32_t flags, bmds_mem_info_t *info)`. */
@@ -112,6 +112,14 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_PIPE 39u            /**< `int32_t pipe(int32_t fds[2], uint32_t flags)`. */
 #define BMDS_SYS_PROC_ID 40u         /**< `int32_t proc_id(uint32_t which)`. */
 #define BMDS_SYS_FD_FLAGS 41u        /**< `int32_t fd_flags(int32_t fd, int32_t flags)`. */
+#define BMDS_SYS_SIG_SETUP 42u       /**< `int32_t sig_setup(volatile uint32_t *hint)`. */
+#define BMDS_SYS_SIG_ACTION 43u      /**< `int32_t sig_action(int32_t sig, uint32_t action)`: the previous one. */
+#define BMDS_SYS_SIG_MASK 44u        /**< `int32_t sig_mask(uint32_t how, uint32_t set)`: the previous mask. */
+#define BMDS_SYS_SIG_PENDING 45u     /**< `int32_t sig_pending(void)`: the pending set. */
+#define BMDS_SYS_SIG_TAKE 46u        /**< `int32_t sig_take(bmds_siginfo_t *info)`: a due signal, or 0. */
+#define BMDS_SYS_SIG_SUSPEND 47u     /**< `int32_t sig_suspend(uint32_t mask)`: `BMDS_EINTR`. */
+#define BMDS_SYS_PROC_KILL 48u       /**< `int32_t proc_kill(int32_t pid, int32_t sig)`. */
+#define BMDS_SYS_PROC_EXIT_SIGNAL 49u /**< `int32_t proc_exit_signal(int32_t sig)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -154,6 +162,70 @@ static inline int bmds_sys_has(uint32_t n) {
 /** @brief `proc_id`. */
 #define BMDS_PROC_SELF 0u   /**< The calling process's id. */
 #define BMDS_PROC_PARENT 1u /**< Its parent's (1: the shell). */
+#define BMDS_PROC_JOB 2u    /**< Its job: the id of the shell's program it descends from (its process group). */
+
+/** @brief Signals: Linux's numbers. Signals 1-31 are delivered; a mask has bit `sig - 1`. */
+#define BMDS_SIGHUP 1
+#define BMDS_SIGINT 2 /**< Ctrl-C. */
+#define BMDS_SIGQUIT 3
+#define BMDS_SIGILL 4
+#define BMDS_SIGTRAP 5
+#define BMDS_SIGABRT 6
+#define BMDS_SIGBUS 7
+#define BMDS_SIGFPE 8
+#define BMDS_SIGKILL 9 /**< Ends the process; can't be caught, ignored or blocked. */
+#define BMDS_SIGUSR1 10
+#define BMDS_SIGSEGV 11
+#define BMDS_SIGUSR2 12
+#define BMDS_SIGPIPE 13 /**< A write to a pipe nobody reads. */
+#define BMDS_SIGALRM 14
+#define BMDS_SIGTERM 15
+#define BMDS_SIGSTKFLT 16
+#define BMDS_SIGCHLD 17 /**< A child ended (dropped by default). */
+#define BMDS_SIGCONT 18 /**< Dropped by default. */
+#define BMDS_SIGSTOP 19 /**< Can't be caught, ignored or blocked; nothing stops (dropped). */
+#define BMDS_SIGTSTP 20 /**< Dropped by default. */
+#define BMDS_SIGTTIN 21 /**< Dropped by default. */
+#define BMDS_SIGTTOU 22 /**< Dropped by default. */
+#define BMDS_SIGURG 23  /**< Dropped by default. */
+#define BMDS_SIGXCPU 24
+#define BMDS_SIGXFSZ 25
+#define BMDS_SIGVTALRM 26
+#define BMDS_SIGPROF 27
+#define BMDS_SIGWINCH 28 /**< The terminal's size changed (dropped by default). */
+#define BMDS_SIGIO 29
+#define BMDS_SIGPWR 30
+#define BMDS_SIGSYS 31
+#define BMDS_SIG_COUNT 32 /**< One more than the highest signal delivered. */
+
+/** @brief `sig_action` actions. */
+#define BMDS_SIG_DEFAULT 0u        /**< The default: dropped, or ends the process (see the signal). */
+#define BMDS_SIG_IGNORE 1u         /**< Dropped (a pending one too). */
+#define BMDS_SIG_CATCH 2u          /**< Kept pending until taken with `sig_take` (the SDK runs the handler). */
+#define BMDS_SIG_QUERY 0xffffffffu /**< Changes nothing: `sig_action` only returns the action. */
+
+/** @brief `sig_mask` hows (Linux's values). */
+#define BMDS_SIG_BLOCK 0u   /**< Add `set` to the mask. */
+#define BMDS_SIG_UNBLOCK 1u /**< Remove `set` from the mask. */
+#define BMDS_SIG_SETMASK 2u /**< The mask becomes `set`. */
+
+/** @brief `bmds_siginfo_t::code` (Linux's `si_code` values). */
+#define BMDS_SI_USER 0      /**< Sent by `proc_kill`. */
+#define BMDS_SI_KERNEL 0x80 /**< Sent by the kernel (Ctrl-C, a broken pipe, a child's end, a resize). */
+
+/** @brief `bmds_siginfo_t::flags`. */
+#define BMDS_SIG_TERMINATE 0x1u /**< Not a signal to handle: end with `proc_exit_signal(signo)`. */
+
+/**
+ * @brief A signal taken with `sig_take`. The caller sets `size`; the kernel
+ *        fills the fields that fit in it.
+ */
+typedef struct bmds_siginfo_t {
+                uint32_t size;  /**< Set by the caller: `sizeof(bmds_siginfo_t)`. */
+                int32_t  signo; /**< The signal. */
+                int32_t  code;  /**< `BMDS_SI_...`. */
+                uint32_t flags; /**< `BMDS_SIG_...`. */
+} bmds_siginfo_t;
 
 /** @brief `bmds_stat_t::type`. */
 #define BMDS_TYPE_FILE 1u      /**< A regular file. */
@@ -190,7 +262,7 @@ typedef struct bmds_stat_t {
 #define BMDS_CLOCK_MONOTONIC 1u /**< ns since boot, never goes back. */
 
 /** @brief Terminal modes (`term_get`, `term_set`); a program starts with all set. */
-#define BMDS_TERM_SIGNALS 0x01u /**< Ctrl-C interrupts the program instead of being read. */
+#define BMDS_TERM_SIGNALS 0x01u /**< Ctrl-C sends `SIGINT` to the job instead of being read. */
 #define BMDS_TERM_ONLCR 0x02u   /**< Output `\n` is sent as CR LF where the terminal needs it. */
 #define BMDS_TERM_COLORS 0x04u  /**< Output colors are fitted to what the terminal shows. */
 #define BMDS_TERM_LOGS 0x08u    /**< The kernel's log lines are shown. */
@@ -256,6 +328,11 @@ typedef int32_t (*bmds_sys_proc_wait_fn)(int32_t pid, int32_t *status, uint32_t 
 typedef int32_t (*bmds_sys_pipe_fn)(int32_t *fds, uint32_t flags);
 typedef int32_t (*bmds_sys_int_fn)(int32_t value);
 typedef int32_t (*bmds_sys_uint_fn)(uint32_t value);
+typedef int32_t (*bmds_sys_sig_setup_fn)(volatile uint32_t *hint);
+typedef int32_t (*bmds_sys_sig_action_fn)(int32_t sig, uint32_t action);
+typedef int32_t (*bmds_sys_sig_mask_fn)(uint32_t how, uint32_t set);
+typedef int32_t (*bmds_sys_sig_take_fn)(bmds_siginfo_t *info);
+typedef int32_t (*bmds_sys_proc_kill_fn)(int32_t pid, int32_t sig);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -417,17 +494,17 @@ static inline int32_t bmds_clock_get(uint32_t clock, int64_t *ns) {
 
 /**
  * @brief Sleeps at least @p ns nanoseconds (rounded up to the kernel's tick).
- * @return 0, or `BMDS_EINTR` (Ctrl-C).
+ * @return 0, or `BMDS_EINTR` (a signal is due).
  */
 static inline int32_t bmds_sleep(int64_t ns) {
         return ((bmds_sys_sleep_fn)bmds_sys->slot[BMDS_SYS_SLEEP])(ns);
 }
 
 /**
- * @brief Returns 1 once Ctrl-C has been pressed (with `BMDS_TERM_SIGNALS`),
- *        else 0. From then until the program ends, blocking calls return
- *        `BMDS_EINTR`; the program should clean up and exit (the SDK makes
- *        its exit status 130).
+ * @brief Returns 1 while a `BMDS_SIGINT` is pending (Ctrl-C sends it, with
+ *        `BMDS_TERM_SIGNALS`), else 0. By default `SIGINT` ends the program;
+ *        one that catches it (`bmds_sig_action`) can poll this, and takes the
+ *        signal with `bmds_sig_take` (until then, blocking calls return `BMDS_EINTR`).
  */
 static inline int32_t bmds_interrupted(void) {
         return ((bmds_sys_void_fn)bmds_sys->slot[BMDS_SYS_INTERRUPTED])();
@@ -566,7 +643,7 @@ static inline int32_t bmds_proc_vfork_exit(int32_t status) {
  *               in bits 0-6 (2, SIGINT, for Ctrl-C).
  * @param flags  `BMDS_WAIT_NOHANG`.
  * @return The child's id, 0 with `BMDS_WAIT_NOHANG` if none has ended,
- *         `BMDS_ECHILD` (no such child), `BMDS_EINTR` (Ctrl-C).
+ *         `BMDS_ECHILD` (no such child), `BMDS_EINTR` (a signal is due).
  */
 static inline int32_t bmds_proc_wait(int32_t pid, int32_t *status, uint32_t flags) {
         return ((bmds_sys_proc_wait_fn)bmds_sys->slot[BMDS_SYS_PROC_WAIT])(pid, status, flags);
@@ -581,7 +658,7 @@ static inline int32_t bmds_pipe(int32_t *fds, uint32_t flags) {
         return ((bmds_sys_pipe_fn)bmds_sys->slot[BMDS_SYS_PIPE])(fds, flags);
 }
 
-/** @brief Returns the calling process's id, or its parent's (`BMDS_PROC_...`). */
+/** @brief Returns the calling process's id, its parent's or its job's (`BMDS_PROC_...`). */
 static inline int32_t bmds_proc_id(uint32_t which) {
         return ((bmds_sys_uint_fn)bmds_sys->slot[BMDS_SYS_PROC_ID])(which);
 }
@@ -592,6 +669,93 @@ static inline int32_t bmds_proc_id(uint32_t which) {
  */
 static inline int32_t bmds_fd_flags(int32_t fd, int32_t flags) {
         return ((bmds_sys_fd2_fn)bmds_sys->slot[BMDS_SYS_FD_FLAGS])(fd, flags);
+}
+
+/*
+ * Signals (devplan/programs.md §15). The kernel keeps each process's
+ * actions, mask and pending signals; a signal is due when it is pending,
+ * not blocked, and either caught or one that ends the process. Signals are
+ * looked at between system calls: a due signal that ends the process ends
+ * it (at once if it is computing, as its call returns if it is in one); a
+ * due caught signal wakes a blocked call (BMDS_EINTR) and waits to be taken.
+ */
+
+/**
+ * @brief Registers the word the kernel sets non-zero while a signal is due
+ *        for the caller (NULL: none). The SDK checks it after each call and
+ *        takes due signals with `bmds_sig_take`.
+ * @return 0.
+ */
+static inline int32_t bmds_sig_setup(volatile uint32_t *hint) {
+        return ((bmds_sys_sig_setup_fn)bmds_sys->slot[BMDS_SYS_SIG_SETUP])(hint);
+}
+
+/**
+ * @brief Sets what @p sig does: `BMDS_SIG_DEFAULT`, `BMDS_SIG_IGNORE` or `BMDS_SIG_CATCH`;
+ *        `BMDS_SIG_QUERY` only reads it (a new program inherits ignored signals).
+ * @return The previous action, or `BMDS_EINVAL` (`BMDS_SIGKILL`, `BMDS_SIGSTOP`
+ *         except to query, not 1-31, an unknown action).
+ */
+static inline int32_t bmds_sig_action(int32_t sig, uint32_t action) {
+        return ((bmds_sys_sig_action_fn)bmds_sys->slot[BMDS_SYS_SIG_ACTION])(sig, action);
+}
+
+/**
+ * @brief Changes the mask (`BMDS_SIG_BLOCK`, `BMDS_SIG_UNBLOCK`, `BMDS_SIG_SETMASK`;
+ *        bit `sig - 1`). `BMDS_SIGKILL` and `BMDS_SIGSTOP` are never blocked.
+ *        Unblocking a pending signal that ends the process ends it.
+ * @return The previous mask, or `BMDS_EINVAL`.
+ */
+static inline int32_t bmds_sig_mask(uint32_t how, uint32_t set) {
+        return ((bmds_sys_sig_mask_fn)bmds_sys->slot[BMDS_SYS_SIG_MASK])(how, set);
+}
+
+/** @brief Returns the pending signals (bit `sig - 1`). */
+static inline int32_t bmds_sig_pending(void) {
+        return ((bmds_sys_void_fn)bmds_sys->slot[BMDS_SYS_SIG_PENDING])();
+}
+
+/**
+ * @brief Takes the lowest due caught signal off the pending set.
+ *
+ * With `BMDS_SIG_TERMINATE` in @p info->flags, the caller must end with
+ * `bmds_proc_exit_signal(signo)` instead: a vfork child, which only its
+ * program can return from.
+ *
+ * @param info Filled (may be NULL).
+ * @return The signal, or 0 if none is due.
+ */
+static inline int32_t bmds_sig_take(bmds_siginfo_t *info) {
+        return ((bmds_sys_sig_take_fn)bmds_sys->slot[BMDS_SYS_SIG_TAKE])(info);
+}
+
+/**
+ * @brief Sets the mask to @p mask and waits until a signal is due (the mask
+ *        stays: put the old one back after taking the signals).
+ * @return `BMDS_EINTR`.
+ */
+static inline int32_t bmds_sig_suspend(uint32_t mask) {
+        return ((bmds_sys_uint_fn)bmds_sys->slot[BMDS_SYS_SIG_SUSPEND])(mask);
+}
+
+/**
+ * @brief Sends @p sig (0: only checks) to @p pid: > 1 that process (one that
+ *        ended and hasn't been waited for too); 0 the caller's job; -1 every
+ *        process but the caller; < -1 the job -@p pid.
+ * @return 0, or `BMDS_ESRCH` (no such process), `BMDS_EINVAL` (not 0-31),
+ *         `BMDS_EPERM` (pid 1, the shell).
+ */
+static inline int32_t bmds_proc_kill(int32_t pid, int32_t sig) {
+        return ((bmds_sys_proc_kill_fn)bmds_sys->slot[BMDS_SYS_PROC_KILL])(pid, sig);
+}
+
+/**
+ * @brief Ends the caller as killed by @p sig (its parent sees the signal).
+ * @return In a vfork child, in the parent again: the child's id; else doesn't
+ *         return (`BMDS_EINVAL` if @p sig isn't 1-31).
+ */
+static inline int32_t bmds_proc_exit_signal(int32_t sig) {
+        return ((bmds_sys_int_fn)bmds_sys->slot[BMDS_SYS_PROC_EXIT_SIGNAL])(sig);
 }
 
 #ifdef __cplusplus

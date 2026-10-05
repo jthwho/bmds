@@ -43,6 +43,7 @@ add_executable(bmds_host_tests
         result.cpp
         run.cpp
         shell.cpp
+        signals.cpp
         span.cpp
         staticobject.cpp
         string.cpp

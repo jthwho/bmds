@@ -151,6 +151,13 @@ class Shell final : public LineCompleter {
                 /** @brief Returns the console. */
                 Console &console() { return _console; }
 
+                /**
+                 * @brief Returns the interrupt that stops commands: the console's
+                 *        (Ctrl-C), or the process's when the shell runs as `/bin/sh`
+                 *        (its signals). The shell's tasks wait through it.
+                 */
+                Interrupt &interrupt() { return *_interrupt; }
+
                 /** @brief Returns the command table. */
                 Span<const Command> commands() const { return _commands; }
 
@@ -243,6 +250,7 @@ class Shell final : public LineCompleter {
                 void endInterrupt();
 
                 Console            &_console;
+                Interrupt          *_interrupt;
                 Span<const Command> _commands;
                 FdTable             _fds;
                 WorkerPool          _workers;

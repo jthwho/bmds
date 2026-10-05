@@ -255,7 +255,7 @@ namespace {
                 unsigned int ms = 0;
                 if (args.size() != 2 || !parseSeconds(args[1], ms)) return ctx.usage();
                 if (ms == 0) return Shell::ExitSuccess; // 0 would mean WaitForever
-                return ctx.shell().console().interrupt().sleep(ms).isOk() ? Shell::ExitSuccess : Shell::ExitInterrupted;
+                return ctx.shell().interrupt().sleep(ms).isOk() ? Shell::ExitSuccess : Shell::ExitInterrupted;
         }
 
         int runReboot(CommandContext &ctx) {

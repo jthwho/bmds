@@ -56,8 +56,16 @@ int32_t bmds_k_proc_wait(int32_t pid, int32_t *status, uint32_t flags);
 int32_t bmds_k_pipe(int32_t *fds, uint32_t flags);
 int32_t bmds_k_proc_id(uint32_t which);
 int32_t bmds_k_fd_flags(int32_t fd, int32_t flags);
+int32_t bmds_k_sig_setup(volatile uint32_t *hint);
+int32_t bmds_k_sig_action(int32_t sig, uint32_t action);
+int32_t bmds_k_sig_mask(uint32_t how, uint32_t set);
+int32_t bmds_k_sig_pending(void);
+int32_t bmds_k_sig_take(bmds_siginfo_t *info);
+int32_t bmds_k_sig_suspend(uint32_t mask);
+int32_t bmds_k_proc_kill(int32_t pid, int32_t sig);
+int32_t bmds_k_proc_exit_signal(int32_t sig);
 
-#define SLOTS 42
+#define SLOTS 50
 
 /* bmds_sys_t with its slots spelled out (same layout; checked below). */
 static const struct {
@@ -114,10 +122,18 @@ static const struct {
                 [BMDS_SYS_PIPE] = (bmds_sys_fn_t)bmds_k_pipe,
                 [BMDS_SYS_PROC_ID] = (bmds_sys_fn_t)bmds_k_proc_id,
                 [BMDS_SYS_FD_FLAGS] = (bmds_sys_fn_t)bmds_k_fd_flags,
+                [BMDS_SYS_SIG_SETUP] = (bmds_sys_fn_t)bmds_k_sig_setup,
+                [BMDS_SYS_SIG_ACTION] = (bmds_sys_fn_t)bmds_k_sig_action,
+                [BMDS_SYS_SIG_MASK] = (bmds_sys_fn_t)bmds_k_sig_mask,
+                [BMDS_SYS_SIG_PENDING] = (bmds_sys_fn_t)bmds_k_sig_pending,
+                [BMDS_SYS_SIG_TAKE] = (bmds_sys_fn_t)bmds_k_sig_take,
+                [BMDS_SYS_SIG_SUSPEND] = (bmds_sys_fn_t)bmds_k_sig_suspend,
+                [BMDS_SYS_PROC_KILL] = (bmds_sys_fn_t)bmds_k_proc_kill,
+                [BMDS_SYS_PROC_EXIT_SIGNAL] = (bmds_sys_fn_t)bmds_k_proc_exit_signal,
         },
 };
 
-_Static_assert(SLOTS == BMDS_SYS_FD_FLAGS + 1, "every slot is in the table");
+_Static_assert(SLOTS == BMDS_SYS_PROC_EXIT_SIGNAL + 1, "every slot is in the table");
 _Static_assert(sizeof(table) == 16 + SLOTS * sizeof(bmds_sys_fn_t), "table layout");
 
 const bmds_sys_t *bmds_k_sys_table(void) {

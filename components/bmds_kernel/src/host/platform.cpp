@@ -84,6 +84,21 @@ void Detail::resumeScheduler() {
         return;
 }
 
+namespace {
+
+        thread_local void *taskInterruptPointer = nullptr;
+
+} // namespace
+
+void *Detail::taskInterrupt() {
+        return taskInterruptPointer;
+}
+
+void Detail::setTaskInterrupt(void *interrupt) {
+        taskInterruptPointer = interrupt;
+        return;
+}
+
 int64_t Detail::persistentTimeUs() {
         return monotonicUs();
 }

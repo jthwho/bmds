@@ -46,7 +46,9 @@ class FakeConsole final : public bmds::Console {
 
         protected:
                 bmds::Result<size_t> readInput(bmds::WritableByteSpan buf, unsigned int) override {
-                        if (interrupt().isRaised()) return bmds::makeError<size_t>(bmds::Error::Interrupted);
+                        bmds::Interrupt *current = bmds::Interrupt::current();
+                        if (current != nullptr && current->isRaised())
+                                return bmds::makeError<size_t>(bmds::Error::Interrupted);
                         auto r = tryReadInput(buf);
                         if (r.error() == bmds::Error::WouldBlock)
                                 return bmds::makeError<size_t>(bmds::Error::EndOfFile);

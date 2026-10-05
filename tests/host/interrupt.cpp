@@ -155,3 +155,21 @@ TEST_CASE("Deadline") {
         CHECK(soon.isExpired());
         CHECK(soon.remainingUs() == 0);
 }
+
+TEST_CASE("Interrupt: a Watch wakes a waiter on another interrupt") {
+        Interrupt ctrlC, resized;
+        Semaphore sem(1, 0);
+        {
+                Interrupt::Watch watch(resized, sem);
+                std::thread      raiser([&] {
+                        pause(30);
+                        resized.raise();
+                });
+                // Woken through the watch: the semaphore, not an interrupt.
+                CHECK(ctrlC.wait(sem, Deadline(bmds::WaitForever)) == Error::Ok);
+                raiser.join();
+        }
+        // Gone with its scope: raises no longer release the semaphore.
+        resized.raise();
+        CHECK(sem.acquire(Deadline(20)) == Error::Timeout);
+}

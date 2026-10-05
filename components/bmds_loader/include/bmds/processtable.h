@@ -99,12 +99,60 @@ class ProcessTable {
                 /** @brief Returns @p pid's parent: an id, `ShellPid`, or 0 (none, or no such process). */
                 int32_t parentOf(int32_t pid);
 
+                /** @brief Returns true if @p pid has ended (a zombie) or doesn't exist. */
+                bool isEnded(int32_t pid);
+
+                /**
+                 * @brief Makes @p pid an orphan: no parent, nothing released when it
+                 *        ends (for a parent that stops waiting before it ends). A
+                 *        zombie is freed.
+                 */
+                void detach(int32_t pid);
+
+                /** @brief What `withProcess()` found. */
+                enum class Found : uint8_t {
+                        None,    ///< No such process.
+                        Ended,   ///< A zombie: @p fn wasn't called.
+                        Running, ///< @p fn was called.
+                };
+
+                /**
+                 * @brief Calls @p fn(runtime) for @p pid if it is running, with the
+                 *        table locked.
+                 */
+                template <typename Fn> Found withProcess(int32_t pid, Fn &&fn) {
+                        Mutex::Locker locker(_lock, WaitForever);
+                        if (_entries == nullptr) return Found::None;
+                        Entry *e = find(pid);
+                        if (e == nullptr) return Found::None;
+                        if (e->ended) return Found::Ended;
+                        fn(e->runtime);
+                        return Found::Running;
+                }
+
+                /**
+                 * @brief Calls @p fn(pid, runtime) for each running process, with the
+                 *        table locked.
+                 */
+                template <typename Fn> void forEachRunning(Fn &&fn) {
+                        Mutex::Locker locker(_lock, WaitForever);
+                        if (_entries == nullptr) return;
+                        for (int i = 0; i < Capacity; ++i) {
+                                Entry &e = _entries[i];
+                                if (e.pid != 0 && !e.ended) fn(e.pid, e.runtime);
+                        }
+                        return;
+                }
+
                 /** @brief Returns how many entries are in use, zombies included. */
                 int count();
 
                 /**
                  * @brief Calls @p fn(pid, runtime) for each running process in job
                  *        @p job, with the table locked.
+                 *
+                 * @p fn must not call the table (its lock isn't recursive); the
+                 * same holds for `withProcess()` and `forEachRunning()`.
                  */
                 template <typename Fn> void forEachInJob(int32_t job, Fn &&fn) {
                         Mutex::Locker locker(_lock, WaitForever);

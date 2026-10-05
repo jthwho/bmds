@@ -22,13 +22,13 @@ namespace {
 
 } // namespace
 
-Pipe::Pipe(WritableByteSpan storage, Interrupt *interrupt) : _ring(storage), _interrupt(interrupt) {}
+Pipe::Pipe(WritableByteSpan storage) : _ring(storage) {}
 
-Result<Pipe::Ends> Pipe::create(Interrupt *interrupt, size_t bytes) {
+Result<Pipe::Ends> Pipe::create(size_t bytes) {
         if (bytes == 0 || (bytes & (bytes - 1)) != 0) return makeError<Ends>(Error::Invalid);
         auto *block = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, HeaderBytes + bytes));
         if (block == nullptr) return makeError<Ends>(Error::NoMem);
-        Pipe *pipe = new (block) Pipe(WritableByteSpan(block + HeaderBytes, bytes), interrupt);
+        Pipe *pipe = new (block) Pipe(WritableByteSpan(block + HeaderBytes, bytes));
 
         Ends ends;
         auto [readEnd, readErr] = FileHandle::open(*pipe, FileHandle::Read);
@@ -67,7 +67,7 @@ Result<size_t> Pipe::read(WritableByteSpan buf, unsigned int timeoutMs) {
                         result = makeResult(n);
                         break;
                 }
-                Error err = Interrupt::wait(_interrupt, _readable, deadline);
+                Error err = Interrupt::waitCurrent(_readable, deadline);
                 if (err.isError()) {
                         result = makeError<size_t>(err);
                         break;
@@ -94,7 +94,7 @@ Result<size_t> Pipe::write(ByteSpan data, unsigned int timeoutMs) {
                         _readable.release();
                 }
                 if (done == data.size()) break;
-                err = Interrupt::wait(_interrupt, _writable, deadline);
+                err = Interrupt::waitCurrent(_writable, deadline);
                 if (err.isError()) break;
         }
         _writeLock.unlock();

@@ -109,27 +109,27 @@ namespace {
 
 } // namespace
 
-Process::Process(const FdTable &fds, Console *console, Interrupt *interrupt)
-    : _fds(fds), _console(console), _interrupt(interrupt) {}
+Process::Process(const FdTable &fds, Console *console) : _fds(fds), _console(console) {}
 
 Process::~Process() {
         release();
 }
 
-Process *Process::create(const FdTable &fds, Console *console, Interrupt *interrupt) {
+Process *Process::create(const FdTable &fds, Console *console) {
         void *memory = Memory::alloc(MemSpace::Psram, sizeof(Process));
         if (memory == nullptr) return nullptr;
-        return new (memory) Process(fds, console, interrupt);
+        return new (memory) Process(fds, console);
 }
 
 Process *Process::createChild() const {
-        Process *child = create(_fds, _console, _interrupt);
+        Process *child = create(_fds, _console);
         if (child == nullptr) return nullptr;
         if (child->setCwd(_cwd.view()).isError()) {
                 destroy(child);
                 return nullptr;
         }
         child->_lineInput = _lineInput;
+        child->_signals.inherit(_signals);
         return child;
 }
 
@@ -164,6 +164,7 @@ Error Process::prepareExec(Span<const StringView> args, Span<const StringView> e
         if (err.isError()) return err;
         releaseProgram();
         _fds.closeOnExec();
+        _signals.resetForExec();
         return Error::Ok;
 }
 
@@ -352,7 +353,12 @@ int32_t Process::write(int32_t fd, const void *buf, uint32_t size) {
         if (size > INT32_MAX) size = INT32_MAX;
         auto [n, err] = h->write(ByteSpan(static_cast<const uint8_t *>(buf), size), WaitForever);
         // Part of it written, then an error: report what was written.
-        if (err.isError() && n == 0) return errnoFor(err);
+        if (err.isError() && n == 0) {
+                // Nobody will read it: SIGPIPE, which ends the program unless
+                // it is caught or ignored.
+                if (err == Error::BrokenPipe) (void)_signals.post(BMDS_SIGPIPE, BMDS_SI_KERNEL);
+                return errnoFor(err);
+        }
         return static_cast<int32_t>(n);
 }
 
@@ -456,7 +462,7 @@ int32_t Process::open(const char *path, uint32_t flags) {
 int32_t Process::pipe(int32_t *fds, uint32_t flags) {
         if (fds == nullptr) return -BMDS_EFAULT;
         if ((flags & ~BMDS_O_CLOEXEC) != 0) return -BMDS_EINVAL;
-        auto [ends, err] = Pipe::create(_interrupt);
+        auto [ends, err] = Pipe::create();
         if (err.isError()) return errnoFor(err);
         auto [readFd, rerr] = _fds.add(std::move(ends.read));
         if (rerr.isError()) return -BMDS_EMFILE;
@@ -671,8 +677,7 @@ int32_t Process::sleep(int64_t ns) {
         // on the clock, so the program gets at least what it asked for.
         constexpr int64_t NsPerMs = 1'000'000;
         constexpr int64_t MaxMs = UINT32_MAX - 1;
-        Interrupt         none;
-        Interrupt        &interrupt = _interrupt != nullptr ? *_interrupt : none;
+        Interrupt        &interrupt = _signals.interrupt();
         if (ns <= 0) return interrupt.isRaised() ? -BMDS_EINTR : 0;
         const int64_t end = Clock::monotonicNs() + ns;
         for (;;) {
@@ -685,7 +690,7 @@ int32_t Process::sleep(int64_t ns) {
 }
 
 int32_t Process::interrupted() {
-        return _interrupt != nullptr && _interrupt->isRaised() ? 1 : 0;
+        return (_signals.pending() & Signals::bit(BMDS_SIGINT)) != 0 ? 1 : 0;
 }
 
 int32_t Process::termGet(int32_t fd, bmds_term_t *term) {
