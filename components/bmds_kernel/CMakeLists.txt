@@ -14,6 +14,7 @@ set(BMDS_KERNEL_PORTABLE_SRCS
         src/interrupt.cpp
         src/memorystream.cpp
         src/pipe.cpp
+        src/waitlist.cpp
         src/workerpool.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)

@@ -15,6 +15,7 @@
 #include <bmds/deadline.h>
 #include <bmds/error.h>
 #include <bmds/semaphore.h>
+#include <bmds/waitlist.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -29,9 +30,10 @@ BMDS_NAMESPACE_BEGIN
  * flag stays raised until `clear()` (the shell clears the console's when it
  * starts the next command).
  *
- * Waking works by releasing the semaphore each waiter is blocked on, so up
- * to `MaxWaiters` tasks can wait through one Interrupt at a time (one per
- * pipeline stage); a waiter beyond that still waits, but uninterruptibly.
+ * Waking works by releasing the semaphore each waiter is blocked on (a
+ * `WaitList`), so up to `MaxWaiters` tasks can wait through one Interrupt
+ * at a time (one per pipeline stage); a waiter beyond that still waits,
+ * but uninterruptibly.
  * The releases may leave a semaphore with a spare count, so a semaphore
  * used with `wait()` must be an "event happened" signal whose takers
  * re-check their condition (the usual loop).
@@ -158,8 +160,7 @@ class Interrupt {
                                 Watch &operator=(const Watch &) = delete;
 
                         private:
-                                Interrupt &_interrupt;
-                                size_t     _slot;
+                                WaitList::Entry _entry;
                 };
 
                 /**
@@ -171,13 +172,8 @@ class Interrupt {
                 Error sleep(unsigned int delayMs);
 
         private:
-                size_t addWaiter(Semaphore &semaphore); // its slot, or MaxWaiters if full
-                void   removeWaiter(size_t slot);
-                void   wake(bool fromIsr);
-
-                std::atomic<uint32_t>    _raises{0}; // since clear(); raised while non-zero
-                std::atomic<uint32_t>    _busy{0}; // raisers currently releasing waiters
-                std::atomic<Semaphore *> _waiters[MaxWaiters] = {};
+                std::atomic<uint32_t>  _raises{0}; // since clear(); raised while non-zero
+                WaitListOf<MaxWaiters> _waiters;
 };
 
 BMDS_NAMESPACE_END

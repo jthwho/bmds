@@ -238,6 +238,7 @@ void UsbSerialConsole::handleInterrupt() {
                 const size_t pushed = _rx.push(ByteSpan(buf, n));
                 if (pushed < n) _rxDropped.fetch_add(static_cast<uint32_t>(n - pushed), std::memory_order_relaxed);
                 _rxReady.releaseFromIsr();
+                inputArrivedFromIsr();
         }
         return;
 }

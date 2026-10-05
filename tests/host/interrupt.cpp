@@ -173,3 +173,58 @@ TEST_CASE("Interrupt: a Watch wakes a waiter on another interrupt") {
         resized.raise();
         CHECK(sem.acquire(Deadline(20)) == Error::Timeout);
 }
+
+TEST_CASE("WaitList: notify releases every waiter; a full list refuses more") {
+        bmds::WaitListOf<2> list;
+        Semaphore           a(1, 0), b(1, 0), c(1, 0);
+        CHECK_FALSE(list.hasWaiters());
+        list.notify(); // nobody: nothing happens
+        const size_t sa = list.add(a);
+        const size_t sb = list.add(b);
+        CHECK(sa != bmds::WaitList::NoSlot);
+        CHECK(sb != bmds::WaitList::NoSlot);
+        CHECK(list.add(c) == bmds::WaitList::NoSlot);
+        CHECK(list.hasWaiters());
+        list.notify();
+        CHECK(a.tryAcquire().isOk());
+        CHECK(b.tryAcquire().isOk());
+        CHECK(c.tryAcquire().isError());
+        list.remove(sa);
+        list.notify();
+        CHECK(a.tryAcquire().isError());
+        CHECK(b.tryAcquire().isOk());
+        {
+                bmds::WaitList::Entry entry(list, c);
+                CHECK(entry.isAdded());
+                list.notify();
+                CHECK(c.tryAcquire().isOk());
+        }
+        list.remove(sb);
+        CHECK_FALSE(list.hasWaiters());
+        list.remove(bmds::WaitList::NoSlot); // nothing
+}
+
+TEST_CASE("WaitList: waiters coming and going while notified") {
+        bmds::WaitListOf<4>      list;
+        std::atomic<bool>        stop{false};
+        std::thread              notifier([&] {
+                while (!stop.load()) list.notify();
+        });
+        std::vector<std::thread> waiters;
+        for (int t = 0; t < 3; ++t) {
+                waiters.emplace_back([&] {
+                        for (int i = 0; i < 2000; ++i) {
+                                // On the stack: it must never be released once removed.
+                                Semaphore             s(1, 0);
+                                bmds::WaitList::Entry entry(list, s);
+                                REQUIRE(entry.isAdded());
+                                const Deadline deadline(1000);
+                                CHECK(s.acquire(deadline).isOk());
+                        }
+                });
+        }
+        for (std::thread &w : waiters) w.join();
+        stop.store(true);
+        notifier.join();
+        CHECK_FALSE(list.hasWaiters());
+}

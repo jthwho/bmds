@@ -70,6 +70,7 @@ _Static_assert(BMDS_SYS_SIG_TAKE == 46, "ABI: slot SIG_TAKE");
 _Static_assert(BMDS_SYS_SIG_SUSPEND == 47, "ABI: slot SIG_SUSPEND");
 _Static_assert(BMDS_SYS_PROC_KILL == 48, "ABI: slot PROC_KILL");
 _Static_assert(BMDS_SYS_PROC_EXIT_SIGNAL == 49, "ABI: slot PROC_EXIT_SIGNAL");
+_Static_assert(BMDS_SYS_IO_POLL == 50, "ABI: slot IO_POLL");
 _Static_assert(BMDS_TYPE_LINK == 4, "ABI: file type LINK");
 _Static_assert(BMDS_ABI_VERSION == 1, "ABI: version (raise it with every addition once shipped)");
 _Static_assert(BMDS_STDIN == 0 && BMDS_STDOUT == 1 && BMDS_STDERR == 2, "ABI: standard fds");
@@ -87,6 +88,7 @@ _Static_assert(BMDS_ATTR_SYSTEM == 0x04 && BMDS_ATTR_ARCHIVE == 0x20, "ABI: attr
 _Static_assert(BMDS_CLOCK_REALTIME == 0 && BMDS_CLOCK_MONOTONIC == 1, "ABI: clocks");
 _Static_assert(BMDS_TERM_SIGNALS == 0x01 && BMDS_TERM_ONLCR == 0x02 && BMDS_TERM_COLORS == 0x04, "ABI: term flags");
 _Static_assert(BMDS_TERM_LOGS == 0x08 && BMDS_TERM_LINE == 0x10, "ABI: term flags");
+_Static_assert(BMDS_TERM_ECHO == 0x20 && BMDS_TERM_ICRNL == 0x40, "ABI: term flags");
 _Static_assert(BMDS_PROC_JOB == 2, "ABI: proc_id JOB");
 _Static_assert(BMDS_SIGHUP == 1 && BMDS_SIGINT == 2 && BMDS_SIGQUIT == 3 && BMDS_SIGILL == 4, "ABI: signals 1-4");
 _Static_assert(BMDS_SIGTRAP == 5 && BMDS_SIGABRT == 6 && BMDS_SIGBUS == 7 && BMDS_SIGFPE == 8, "ABI: signals 5-8");
@@ -106,6 +108,9 @@ _Static_assert(BMDS_SIG_DEFAULT == 0 && BMDS_SIG_IGNORE == 1 && BMDS_SIG_CATCH =
 _Static_assert(BMDS_SIG_QUERY == 0xffffffffu, "ABI: signal action query");
 _Static_assert(BMDS_SIG_BLOCK == 0 && BMDS_SIG_UNBLOCK == 1 && BMDS_SIG_SETMASK == 2, "ABI: signal mask hows");
 _Static_assert(BMDS_SI_USER == 0 && BMDS_SI_KERNEL == 0x80 && BMDS_SIG_TERMINATE == 0x1, "ABI: siginfo values");
+_Static_assert(BMDS_POLL_IN == 0x01 && BMDS_POLL_PRI == 0x02 && BMDS_POLL_OUT == 0x04, "ABI: poll events");
+_Static_assert(BMDS_POLL_ERR == 0x08 && BMDS_POLL_HUP == 0x10 && BMDS_POLL_NVAL == 0x20, "ABI: poll events");
+_Static_assert(BMDS_POLL_MAX == 64, "ABI: poll entries");
 
 _Static_assert(offsetof(bmds_stat_t, size) == 0, "ABI: stat.size");
 _Static_assert(offsetof(bmds_stat_t, type) == 4, "ABI: stat.type");
@@ -136,6 +141,12 @@ _Static_assert(offsetof(bmds_siginfo_t, signo) == 4, "ABI: siginfo.signo");
 _Static_assert(offsetof(bmds_siginfo_t, code) == 8, "ABI: siginfo.code");
 _Static_assert(offsetof(bmds_siginfo_t, flags) == 12, "ABI: siginfo.flags");
 _Static_assert(sizeof(bmds_siginfo_t) == 16, "ABI: bmds_siginfo_t size");
+
+_Static_assert(offsetof(bmds_pollfd_t, size) == 0, "ABI: pollfd.size");
+_Static_assert(offsetof(bmds_pollfd_t, fd) == 4, "ABI: pollfd.fd");
+_Static_assert(offsetof(bmds_pollfd_t, events) == 8, "ABI: pollfd.events");
+_Static_assert(offsetof(bmds_pollfd_t, revents) == 12, "ABI: pollfd.revents");
+_Static_assert(sizeof(bmds_pollfd_t) == 16, "ABI: bmds_pollfd_t size");
 
 _Static_assert(offsetof(bmds_sys_t, magic) == 0, "ABI: bmds_sys_t.magic");
 _Static_assert(offsetof(bmds_sys_t, abi_version) == 4, "ABI: bmds_sys_t.abi_version");

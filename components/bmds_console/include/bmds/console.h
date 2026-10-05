@@ -19,6 +19,7 @@
 #include <bmds/span.h>
 #include <bmds/stream.h>
 #include <bmds/stringview.h>
+#include <bmds/waitlist.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -43,6 +44,10 @@ BMDS_NAMESPACE_BEGIN
  * `SIGINT` from the loader, which waits on it). Like every stream, a
  * `read()` waits through the calling task's interrupt
  * (`Interrupt::current()`): the shell's tasks have this one.
+ *
+ * For `poll`, a console is readable while input is waiting (the terminal's
+ * size answer, which `read()` takes out, counts until then) and always
+ * writable; input arriving notifies `readinessWaiters()`.
  *
  * Consoles are functional objects with identity: not copyable, owned by
  * whoever created them, and never destroyed through this interface.
@@ -212,6 +217,15 @@ class Console : public Stream {
                  */
                 Error flush(unsigned int timeoutMs) override = 0;
 
+                /** @brief Readable while input waits; always writable. */
+                uint8_t readiness() override {
+                        return static_cast<uint8_t>(Writable |
+                                                    (hasInput() || _releasePos < _releaseCount ? Readable : 0));
+                }
+
+                /** @brief Notified when input arrives. */
+                WaitList *readinessWaiters() override { return &_inputWaiters; }
+
                 /** @brief Consoles are terminals. */
                 bool isTerminal() const override { return true; }
 
@@ -261,9 +275,31 @@ class Console : public Stream {
                 /** @brief The input available now (as `tryRead()`, for implementations). */
                 virtual Result<size_t> tryReadInput(WritableByteSpan buf) = 0;
 
+                /**
+                 * @brief Returns true if input is waiting (for implementations).
+                 * @nonblocking
+                 */
+                virtual bool hasInput() const = 0;
+
+                /**
+                 * @brief Tells pollers that input arrived (receive interrupt).
+                 * @isrsafe
+                 */
+                void inputArrivedFromIsr() {
+                        _inputWaiters.notifyFromIsr();
+                        return;
+                }
+
+                /** @brief Tells pollers that input arrived (task context). */
+                void inputArrived() {
+                        _inputWaiters.notify();
+                        return;
+                }
+
         private:
                 Interrupt             _interrupt;
                 Interrupt             _resized;
+                WaitListOf<4>         _inputWaiters;
                 std::atomic<bool>     _signals{true};
                 std::atomic<bool>     _nlToCrNl{true};
                 std::atomic<bool>     _colors{true};

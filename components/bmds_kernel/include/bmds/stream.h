@@ -19,6 +19,7 @@
 BMDS_NAMESPACE_BEGIN
 
 class FileHandle;
+class WaitList;
 
 /**
  * @brief A byte stream: what a file descriptor ultimately refers to.
@@ -36,6 +37,8 @@ class FileHandle;
  *   `BrokenPipe` when nobody will ever read it.
  * - Blocking streams return `Error::Interrupted` when the calling task's
  *   interrupt (`Interrupt::current()`) is raised.
+ * - `readiness()` says whether a read or a write would wait now, and
+ *   `readinessWaiters()` lets a poller wake when that changes (`poll`).
  *
  * Kernel-internal; programs see file descriptors (Phase 3 ABI).
  *
@@ -104,6 +107,27 @@ class Stream {
                         (void)size;
                         return Error::NotSupported;
                 }
+
+                /** @brief What a stream is ready for (`readiness()`). */
+                enum Ready : uint8_t {
+                        Readable = 1u << 0, ///< A read wouldn't wait (it may return data or the end).
+                        Writable = 1u << 1, ///< A write wouldn't wait (for at least one byte).
+                        HungUp = 1u << 2,   ///< The other end is gone: reads end (a pipe's writer closed).
+                        Broken = 1u << 3,   ///< Nobody will read: writes fail (a pipe's reader closed).
+                };
+
+                /**
+                 * @brief Returns the `Ready` flags now. The default, for streams
+                 *        that never wait (files, memory): readable and writable.
+                 * @nonblocking
+                 */
+                virtual uint8_t readiness() { return Readable | Writable; }
+
+                /**
+                 * @brief Returns the list notified whenever `readiness()` may have
+                 *        changed, or null if it never changes (the default).
+                 */
+                virtual WaitList *readinessWaiters() { return nullptr; }
 
                 /** @brief Returns true if this is an interactive terminal (a console). */
                 virtual bool isTerminal() const { return false; }

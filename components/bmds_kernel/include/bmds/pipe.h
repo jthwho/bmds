@@ -19,6 +19,7 @@
 #include <bmds/result.h>
 #include <bmds/semaphore.h>
 #include <bmds/stream.h>
+#include <bmds/waitlist.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -36,6 +37,9 @@ BMDS_NAMESPACE_BEGIN
  *   the read end is closed, `write()` fails with `BrokenPipe`.
  * - Both return `Interrupted` when the calling task's interrupt
  *   (`Interrupt::current()`) is raised.
+ * - It is readable while it holds data or the write end is closed
+ *   (`HungUp`), writable while it has room or the read end is closed
+ *   (`Broken`); reads, writes and closes notify `readinessWaiters()`.
  *
  * The pipe and its ring are one `Psram` allocation; there is no other
  * per-pipe cost.
@@ -73,6 +77,9 @@ class Pipe final : public Stream {
                 /** @brief Returns the bytes waiting to be read. */
                 size_t available() const { return _ring.available(); }
 
+                uint8_t   readiness() override;
+                WaitList *readinessWaiters() override { return &_pollers; }
+
                 void handleClosed(uint8_t mode) override;
 
         private:
@@ -86,6 +93,7 @@ class Pipe final : public Stream {
                 Mutex                _writeLock;
                 Semaphore            _readable{1, 0}; // released when data arrives or the writer goes
                 Semaphore            _writable{1, 0}; // released when space frees or the reader goes
+                WaitListOf<4>        _pollers;
                 std::atomic<bool>    _readerOpen{true};
                 std::atomic<bool>    _writerOpen{true};
                 std::atomic<uint8_t> _openEnds{2};

@@ -40,6 +40,16 @@ class FakeConsole final : public bmds::Console {
                         return out;
                 }
 
+                /** @brief Queues @p text as typed now (thread-safe), waking pollers. */
+                void type(const std::string &text) {
+                        {
+                                std::lock_guard<std::mutex> lock(_lock);
+                                input += text;
+                        }
+                        inputArrived();
+                        return;
+                }
+
                 std::string input;
                 std::string output;
                 uint32_t    caps = Ansi; ///< SizeQuery too, for tests of the size request
@@ -55,8 +65,14 @@ class FakeConsole final : public bmds::Console {
                         return r;
                 }
 
+                bool hasInput() const override {
+                        std::lock_guard<std::mutex> lock(_lock);
+                        return _inPos < input.size();
+                }
+
                 bmds::Result<size_t> tryReadInput(bmds::WritableByteSpan buf) override {
-                        size_t n = 0;
+                        std::lock_guard<std::mutex> lock(_lock);
+                        size_t                      n = 0;
                         while (n < buf.size() && _inPos < input.size())
                                 buf[n++] = static_cast<uint8_t>(input[_inPos++]);
                         if (n == 0) return bmds::makeError<size_t>(bmds::Error::WouldBlock);
@@ -64,6 +80,6 @@ class FakeConsole final : public bmds::Console {
                 }
 
         private:
-                std::mutex _lock;
-                size_t     _inPos = 0;
+                mutable std::mutex _lock;
+                size_t             _inPos = 0;
 };

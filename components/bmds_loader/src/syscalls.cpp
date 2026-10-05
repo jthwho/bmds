@@ -288,4 +288,16 @@ int32_t bmds_k_proc_exit_signal(int32_t sig) {
         return call.running().exitSignal(sig);
 }
 
+int32_t bmds_k_io_poll(bmds_pollfd_t *fds, uint32_t count, int32_t timeout_ms, const uint32_t *mask) {
+        KernelCall call;
+        if (mask != nullptr) {
+                // Set for the wait and left so: the SDK runs the handlers under
+                // it. A signal it unblocks is due now, but nothing raised for it.
+                Signals &s = call->signals();
+                s.setBlocked(*mask & ((1u << (Signals::Count - 1)) - 1));
+                if (s.isDue()) s.interrupt().raise();
+        }
+        return call->poll(fds, count, timeout_ms);
+}
+
 } // extern "C"

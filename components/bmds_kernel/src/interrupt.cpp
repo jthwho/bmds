@@ -11,64 +11,35 @@
 
 BMDS_NAMESPACE_BEGIN
 
-// All atomics here are sequentially consistent; the two handshakes below
-// depend on it.
-//
-// Lost wakeup: a waiter publishes its semaphore, then reads the flag; a
-// raiser sets the flag, then reads the slots. At least one sees the other.
-//
-// Lifetime: a raiser counts itself in _busy before reading a slot, and a
-// leaving waiter clears its slot and then waits for _busy to drain, so the
-// semaphore (owned by a stream that may be destroyed next) is never released
-// after its waiter has gone. The drain is short: a raiser in an ISR, or in a
-// task with this core's scheduler suspended, can't be preempted by the
-// waiter it is releasing.
+// Lost wakeup: a waiter publishes its semaphore (WaitList::add), then reads
+// the flag; a raiser sets the flag, then releases the waiters. At least one
+// sees the other (both sequentially consistent).
 
 void Interrupt::raise() {
         _raises.fetch_add(1);
-        // FreeRTOS calls aren't allowed inside a critical section, so keep the
-        // waiter from being scheduled in instead.
-        Detail::suspendScheduler();
-        wake(false);
-        Detail::resumeScheduler();
+        _waiters.notify();
         return;
 }
 
 void Interrupt::raiseFromIsr() {
         _raises.fetch_add(1);
-        wake(true);
-        return;
-}
-
-size_t Interrupt::addWaiter(Semaphore &semaphore) {
-        for (size_t i = 0; i < MaxWaiters; ++i) {
-                Semaphore *expected = nullptr;
-                if (_waiters[i].compare_exchange_strong(expected, &semaphore)) return i;
-        }
-        return MaxWaiters;
-}
-
-void Interrupt::removeWaiter(size_t slot) {
-        if (slot == MaxWaiters) return;
-        _waiters[slot].store(nullptr);
-        while (_busy.load() != 0) {}
+        _waiters.notifyFromIsr();
         return;
 }
 
 Error Interrupt::wait(Semaphore &semaphore, const Deadline &deadline, uint32_t seen) {
-        const size_t slot = addWaiter(semaphore);
-        Error        err = raises() != seen ? Error(Error::Interrupted) : semaphore.acquire(deadline);
-        removeWaiter(slot);
+        Error err;
+        {
+                WaitList::Entry entry(_waiters, semaphore);
+                err = raises() != seen ? Error(Error::Interrupted) : semaphore.acquire(deadline);
+        }
         if (raises() != seen) return Error::Interrupted;
         return err;
 }
 
-Interrupt::Watch::Watch(Interrupt &interrupt, Semaphore &semaphore)
-    : _interrupt(interrupt), _slot(interrupt.addWaiter(semaphore)) {}
+Interrupt::Watch::Watch(Interrupt &interrupt, Semaphore &semaphore) : _entry(interrupt._waiters, semaphore) {}
 
-Interrupt::Watch::~Watch() {
-        _interrupt.removeWaiter(_slot);
-}
+Interrupt::Watch::~Watch() = default;
 
 Interrupt *Interrupt::current() {
         return static_cast<Interrupt *>(Detail::taskInterrupt());
@@ -93,21 +64,6 @@ Error Interrupt::sleep(unsigned int delayMs) {
         Deadline  deadline(delayMs);
         Error     err = wait(never, deadline);
         return err == Error::Timeout ? Error(Error::Ok) : err;
-}
-
-void Interrupt::wake(bool fromIsr) {
-        _busy.fetch_add(1);
-        for (std::atomic<Semaphore *> &waiter : _waiters) {
-                Semaphore *semaphore = waiter.load();
-                if (semaphore == nullptr) continue;
-                if (fromIsr) {
-                        semaphore->releaseFromIsr();
-                } else {
-                        semaphore->release();
-                }
-        }
-        _busy.fetch_sub(1);
-        return;
 }
 
 BMDS_NAMESPACE_END

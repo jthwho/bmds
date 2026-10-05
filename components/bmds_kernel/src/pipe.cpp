@@ -64,6 +64,7 @@ Result<size_t> Pipe::read(WritableByteSpan buf, unsigned int timeoutMs) {
                 }
                 if (n > 0) {
                         _writable.release();
+                        _pollers.notify();
                         result = makeResult(n);
                         break;
                 }
@@ -92,6 +93,7 @@ Result<size_t> Pipe::write(ByteSpan data, unsigned int timeoutMs) {
                 if (n > 0) {
                         done += n;
                         _readable.release();
+                        _pollers.notify();
                 }
                 if (done == data.size()) break;
                 err = Interrupt::waitCurrent(_writable, deadline);
@@ -99,6 +101,21 @@ Result<size_t> Pipe::write(ByteSpan data, unsigned int timeoutMs) {
         }
         _writeLock.unlock();
         return Result<size_t>(done, err);
+}
+
+uint8_t Pipe::readiness() {
+        uint8_t ready = 0;
+        if (!_writerOpen.load()) {
+                ready |= Readable | HungUp;
+        } else if (_ring.available() > 0) {
+                ready |= Readable;
+        }
+        if (!_readerOpen.load()) {
+                ready |= Writable | Broken;
+        } else if (_ring.freeSpace() > 0) {
+                ready |= Writable;
+        }
+        return ready;
 }
 
 void Pipe::handleClosed(uint8_t mode) {
@@ -110,6 +127,7 @@ void Pipe::handleClosed(uint8_t mode) {
                 _writerOpen.store(false);
                 _readable.release();
         }
+        _pollers.notify();
         endClosed();
         return;
 }

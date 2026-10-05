@@ -115,10 +115,17 @@ on BMDS's table; programs never see that layer. What differs from Linux:
   asks, so in practice at the next prompt.
 - **Memory:** `malloc` (musl's) over whole pages from the kernel; private
   file `mmap` is a copy; no shared mappings; everything is freed at exit.
-- **Terminal:** `termios` maps `ICANON` (line input, with echo), `ISIG`
-  (Ctrl-C) and `OPOST|ONLCR` onto the console's modes; `TIOCGWINSZ` works;
-  echo can't be turned off by itself yet. `poll` is a guess (output and
-  files are ready; terminal and pipe input is ready only for an endless wait).
+- **Terminal:** `termios` maps `ICANON` (line input), `ECHO`, `ICRNL`,
+  `ISIG` (Ctrl-C) and `OPOST|ONLCR` onto the console's modes; `VMIN` 0
+  with `VTIME` (a timed read) works, `VMIN` above 1 reads like 1; the other
+  flags and control characters are reported as Linux's defaults and can't
+  be changed. `TIOCGWINSZ` works.
+- **Waiting:** `poll`, `ppoll`, `select`, `pselect` wait on pipes, the
+  terminal and files (always ready), with timeouts and signal masks; the
+  terminal in line mode is readable once a whole line is typed. Timeouts
+  count whole milliseconds and aren't written back. `O_NONBLOCK` belongs to
+  the descriptor number in one program: a `dup`'d descriptor or another
+  program doesn't share it.
 - **Signals** (signals 1-31): `kill` between processes (`0` the job, `-1`
   all, `-job`), handlers (`SA_SIGINFO`, `SA_RESTART`, `SA_RESETHAND`,
   `SA_NODEFER`), masks, `sigpending`, `sigsuspend`, `pause`; Ctrl-C sends

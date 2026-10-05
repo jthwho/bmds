@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 #include <bmds/blockdevices.h>
 #include <bmds/errno.h>
@@ -480,8 +481,8 @@ TEST_CASE("Process: console input, lines and raw") {
                 bmds_term_t t = {};
                 t.size = sizeof(t);
                 CHECK(p.termGet(1, &t) == 0);
-                CHECK(t.flags ==
-                      (BMDS_TERM_SIGNALS | BMDS_TERM_ONLCR | BMDS_TERM_COLORS | BMDS_TERM_LOGS | BMDS_TERM_LINE));
+                CHECK(t.flags == (BMDS_TERM_SIGNALS | BMDS_TERM_ONLCR | BMDS_TERM_COLORS | BMDS_TERM_LOGS |
+                                  BMDS_TERM_LINE | BMDS_TERM_ECHO | BMDS_TERM_ICRNL));
                 CHECK(t.columns == 80);
                 CHECK(t.rows == 24);
                 CHECK(t.colors == 16777216u);
@@ -507,6 +508,26 @@ TEST_CASE("Process: console input, lines and raw") {
                 CHECK(p.termGet(0, &t) == 0);
                 CHECK(t.flags == BMDS_TERM_ONLCR);
 
+                // Raw with ICRNL and ECHO: CR read as LF; echoed, control bytes as ^X.
+                CHECK(p.termSet(0, BMDS_TERM_ONLCR | BMDS_TERM_ICRNL | BMDS_TERM_ECHO) == 0);
+                console.input += "a\r\x1b\t";
+                CHECK(p.read(0, buf, sizeof(buf)) == 4);
+                CHECK(std::string(buf, 4) == "a\n\x1b\t");
+                CHECK(console.take() == "a\n^[\t");
+
+                // Lines without echo (a password): unseen, Backspace and Ctrl-U
+                // still edit, Ctrl-D ends a part line without a newline, or the input.
+                CHECK(p.termSet(0, BMDS_TERM_LINE) == 0);
+                console.input += "secrex\x7ft\rjunk\x15ok\npart\x04\x04";
+                CHECK(p.read(0, buf, sizeof(buf)) == 7);
+                CHECK(std::string(buf, 7) == "secret\n");
+                CHECK(p.read(0, buf, sizeof(buf)) == 3);
+                CHECK(std::string(buf, 3) == "ok\n");
+                CHECK(p.read(0, buf, sizeof(buf)) == 4);
+                CHECK(std::string(buf, 4) == "part");
+                CHECK(p.read(0, buf, sizeof(buf)) == 0);
+                CHECK(console.take().empty());
+
                 // A caught SIGINT (Ctrl-C): reads in its task, sleeps and
                 // interrupted() see it until it is taken.
                 CHECK(p.termSet(0, BMDS_TERM_SIGNALS | BMDS_TERM_LINE) == 0);
@@ -528,6 +549,128 @@ TEST_CASE("Process: console input, lines and raw") {
                 // A file isn't the terminal.
                 CHECK(p.write(2, "x", 1) == 1);
                 CHECK(p.read(2, buf, sizeof(buf)) == -BMDS_EBADF);
+                p.release();
+        }
+        CHECK(HostMemory::liveAllocations() == base);
+}
+
+TEST_CASE("Process: poll") {
+        const size_t base = HostMemory::liveAllocations();
+        {
+                FakeConsole        console;
+                bmds::MemoryStream file(bmds::MemSpace::Psram);
+                bmds::FdTable      fds = tableWith(console, console, file);
+                Process            p(fds, &console);
+                int32_t            pp[2] = {-1, -1};
+                REQUIRE(p.pipe(pp, 0) == 0);
+                auto entry = [](int32_t fd, uint32_t events) {
+                        bmds_pollfd_t e = {};
+                        e.size = sizeof(e);
+                        e.fd = fd;
+                        e.events = events;
+                        return e;
+                };
+                using Clock = std::chrono::steady_clock;
+
+                // Arguments.
+                bmds_pollfd_t one[2] = {entry(pp[0], BMDS_POLL_IN), entry(pp[1], BMDS_POLL_OUT)};
+                CHECK(p.poll(nullptr, 1, 0) == -BMDS_EFAULT);
+                CHECK(p.poll(one, BMDS_POLL_MAX + 1, 0) == -BMDS_EINVAL);
+                one[1].size = 8;
+                CHECK(p.poll(one, 2, 0) == -BMDS_EINVAL);
+                one[1].size = sizeof(bmds_pollfd_t);
+                CHECK(p.poll(nullptr, 0, 0) == 0);
+
+                // A pipe: writable, not readable until written; a file both; a
+                // closed fd NVAL; a negative one skipped.
+                bmds_pollfd_t set[5] = {entry(pp[0], BMDS_POLL_IN), entry(pp[1], BMDS_POLL_OUT | BMDS_POLL_IN),
+                                        entry(2, BMDS_POLL_OUT | BMDS_POLL_IN), entry(9, BMDS_POLL_IN),
+                                        entry(-1, BMDS_POLL_IN)};
+                CHECK(p.poll(set, 5, 0) == 3);
+                CHECK(set[0].revents == 0);
+                CHECK(set[1].revents == BMDS_POLL_OUT); // a write end isn't readable
+                CHECK(set[2].revents == BMDS_POLL_OUT); // fd 2 is write-only
+                CHECK(set[3].revents == BMDS_POLL_NVAL);
+                CHECK(set[4].revents == 0);
+                CHECK(p.write(pp[1], "x", 1) == 1);
+                CHECK(p.poll(set, 1, 0) == 1);
+                CHECK(set[0].revents == BMDS_POLL_IN);
+                char buf[64];
+                CHECK(p.read(pp[0], buf, sizeof(buf)) == 1);
+
+                // The timeout.
+                auto start = Clock::now();
+                CHECK(p.poll(set, 1, 30) == 0);
+                CHECK(Clock::now() - start >= std::chrono::milliseconds(30));
+
+                // Woken by a write from another task.
+                {
+                        std::thread writer([&] {
+                                std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                                CHECK(p.fds().handle(pp[1])->write(bmds::StringView("y"), bmds::WaitForever).isOk());
+                        });
+                        start = Clock::now();
+                        CHECK(p.poll(set, 1, 5000) == 1);
+                        CHECK(set[0].revents == BMDS_POLL_IN);
+                        CHECK(Clock::now() - start < std::chrono::seconds(4));
+                        writer.join();
+                        CHECK(p.read(pp[0], buf, sizeof(buf)) == 1);
+                }
+
+                // Woken by a due signal: EINTR.
+                {
+                        bmds::Interrupt::Scope task(&p.signals().interrupt());
+                        REQUIRE(p.signals().setAction(BMDS_SIGUSR1, bmds::Signals::Action::Catch));
+                        std::thread sender([&] {
+                                std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                                (void)p.signals().post(BMDS_SIGUSR1, BMDS_SI_USER);
+                        });
+                        CHECK(p.poll(set, 1, -1) == -BMDS_EINTR);
+                        sender.join();
+                        CHECK(p.signals().take().signal == BMDS_SIGUSR1);
+                        p.signals().prepare();
+                }
+
+                // The console in line mode: readable once a whole line is typed,
+                // edited and echoed on the way.
+                bmds_pollfd_t in[1] = {entry(0, BMDS_POLL_IN)};
+                console.type("ab");
+                CHECK(p.poll(in, 1, 0) == 0);
+                CHECK(console.take() == "ab");
+                {
+                        std::thread typist([&] {
+                                std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                                console.type("c\r");
+                        });
+                        CHECK(p.poll(in, 1, 5000) == 1);
+                        typist.join();
+                }
+                CHECK(in[0].revents == BMDS_POLL_IN);
+                CHECK(p.read(0, buf, sizeof(buf)) == 4);
+                CHECK(std::string(buf, 4) == "abc\n");
+                CHECK(p.poll(in, 1, 0) == 0);
+
+                // Raw: any byte.
+                CHECK(p.termSet(0, BMDS_TERM_ONLCR) == 0);
+                CHECK(p.poll(in, 1, 0) == 0);
+                console.type("k");
+                CHECK(p.poll(in, 1, 0) == 1);
+                CHECK(p.read(0, buf, sizeof(buf)) == 1);
+                CHECK(buf[0] == 'k');
+                CHECK(p.poll(in, 1, 0) == 0);
+
+                // The ends closing: HUP for the reader, ERR for the writer.
+                bmds_pollfd_t ends[2] = {entry(pp[0], BMDS_POLL_IN), entry(pp[1], BMDS_POLL_OUT)};
+                int32_t       qq[2] = {-1, -1};
+                REQUIRE(p.pipe(qq, 0) == 0);
+                ends[0].fd = qq[0];
+                CHECK(p.close(qq[1]) == 0);
+                CHECK(p.poll(ends, 1, 0) == 1);
+                CHECK(ends[0].revents == (BMDS_POLL_IN | BMDS_POLL_HUP));
+                CHECK(p.close(qq[0]) == 0);
+                CHECK(p.close(pp[0]) == 0);
+                CHECK(p.poll(ends + 1, 1, 0) == 1);
+                CHECK(ends[1].revents == (BMDS_POLL_OUT | BMDS_POLL_ERR));
                 p.release();
         }
         CHECK(HostMemory::liveAllocations() == base);

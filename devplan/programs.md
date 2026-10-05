@@ -1,6 +1,6 @@
 # Programs: Executables, Loader, Syscall ABI v1, SDK
 
-Status: **steps 1-7, 8 and 9 done** (Phase 3), plus emulated symbolic links and the distribution (`distribution.md`): the PSRAM spike; the SDK skeleton, the format check and relocation (`ProgramImage`), `bmds-elfcheck`, the ABI lock; the loader; the system call table (50 slots: files, directories, time, terminal, links, processes, signals), examples `hello`, `cat`, `ls`; programs and scripts run by name (`$PATH`, `#!`), Ctrl-C as `SIGINT`; the RAM disk, push-and-run (`tools/bmds-run`) and the compatibility corpus; the SDK on static musl (§12; BusyBox builds with it and runs). **The ABI was reset before the first release** (2026-10-04): the programs of the first SDK (picolibc) dropped with every compatibility path for them, errno values made Linux's, and the additions since folded into ABI 1. Next (agreed 2026-10-04): the rest of the kernel's support (`poll`, `termios`) and the drivers; the distribution grows as needed. D1-D7 agreed (2026-10-04; D2 revised in step 2, below). Once the first program ships, everything marked *frozen* is userspace ABI (`docs/ABI.md`): append-only forever.
+Status: **steps 1-10 done** (Phase 3), plus emulated symbolic links and the distribution (`distribution.md`): the PSRAM spike; the SDK skeleton, the format check and relocation (`ProgramImage`), `bmds-elfcheck`, the ABI lock; the loader; the system call table (51 slots: files, directories, time, terminal, links, processes, signals, `poll`), examples `hello`, `cat`, `ls`; programs and scripts run by name (`$PATH`, `#!`), Ctrl-C as `SIGINT`; the RAM disk, push-and-run (`tools/bmds-run`) and the compatibility corpus; the SDK on static musl (§12; BusyBox builds with it and runs). **The ABI was reset before the first release** (2026-10-04): the programs of the first SDK (picolibc) dropped with every compatibility path for them, errno values made Linux's, and the additions since folded into ABI 1. Next (agreed 2026-10-04): the drivers; the distribution grows as needed. D1-D7 agreed (2026-10-04; D2 revised in step 2, below). Once the first program ships, everything marked *frozen* is userspace ABI (`docs/ABI.md`): append-only forever.
 
 ## 1. Goal
 
@@ -155,7 +155,7 @@ tools/bmds-compat         runs the compatibility corpus (tests/compat/v*) on a b
 | 5 | Shell: `$PATH` search, programs in pipelines and redirections, Ctrl-C and kill; `exec` dispatch by content with `#!` scripts (built-in `sh` as the interpreter first; programs as interpreters as soon as they run). **Done.** |
 | 6 | RAM disk and push-and-run (`tools/bmds-run`); compatibility corpus. **Done.** |
 | 7 | The SDK on static musl (§12): vendored musl, the Linux system call layer, file identity and `ftruncate`; examples and `progtest` on musl. **Done.** |
-| 8+ | Process creation (`vfork`/`posix_spawn`, `waitpid`, `pipe`), signals, `termios`, `poll`; BusyBox as the yardstick. A shared runtime only if measurements ask for it. **8a, 8b done** (§13): processes, `vfork`/`exec`, `posix_spawn`, `waitpid`, `pipe`; `/bin/sh` and scripts in `exec`. |
+| 8+ | Process creation (`vfork`/`posix_spawn`, `waitpid`, `pipe`), signals, `termios`, `poll`; BusyBox as the yardstick. A shared runtime only if measurements ask for it. **Done:** 8 (§13): processes, `vfork`/`exec`, `posix_spawn`, `waitpid`, `pipe`; `/bin/sh` and scripts in `exec`; 9 (§15): signals; 10 (§16): `poll`, `termios`. |
 
 ## 8. Resource budget (estimates)
 
@@ -516,3 +516,54 @@ Also `BMDS_PROC_JOB` (2) for `proc_id`. `interrupted()` (slot 25) now means "a `
 - **Verified on the board:** `progtest winch | { sleep 0.5; term size 100x40; }` (the program gets `SIGWINCH` and sees 100x40); `kill -l`, `kill -USR1` from `hush`; `timeout 1 sleep 10` (143 after 1.8 s: whole seconds, plus the watcher's start), `timeout -s INT` to a program catching it (its status), `timeout -s INT -k 1 1` to one ignoring it (137), a program that ends in time (0); `watch -n 1` until Ctrl-C (130). Free memory and tasks as before afterwards.
 - **Host:** `Interrupt::Watch`, `Console::resized()`.
 - **Measured:** steps 9a and 9b together: firmware +3.6 KB (438,348 → 441,982 bytes).
+
+## 16. Step 10: `poll` and `termios` (design, 2026-10-04)
+
+**Goal:** a program can wait on several descriptors with a timeout, and set the terminal as full-screen and line-reading programs expect. Yardstick: BusyBox `vi` and `less` (raw keys; `poll` with a timeout tells a lone Esc from an arrow key's sequence), `hush`'s `read -t`, `read -n`, `read -s`, interactive `hush` line editing; `select` and `pselect` work. It replaces the SDK's "poll by guess" (files and output ready; terminal or pipe input ready only for an endless wait; no `select` at all).
+
+**Readiness in the kernel.** Each stream says what it is ready for and lets waiters know when that changes:
+- `Stream::readiness()`: `Readable`, `Writable`, `HungUp` (a pipe's writer is gone: reads end), `Broken` (a pipe's reader is gone: writes fail). The default is readable and writable: files, directories, `/dev/null` and memory streams never block.
+- `Stream::readinessWaiters()`: a `WaitList` released whenever the readiness may have changed, or null when it never does (the default).
+- **`WaitList`** (`bmds_kernel`): a fixed set of semaphore slots, released on `notify()` (task) or `notifyFromIsr()`. It is what `Interrupt` already does for its waiters (lock-free slots, a busy count so a leaving waiter never has its semaphore released after it has gone, the scheduler suspended while a task releases), moved out so that `Interrupt` (8 slots), `Pipe` (4) and `Console` (4) share it. `notify()` first looks for a waiter, so a pipe nobody polls pays one load per slot on each read and write.
+- **`Pipe`:** readable while it holds data or its writer is gone (with `HungUp`); writable while it has room or its reader is gone (with `Broken`). Reads, writes and closes notify.
+- **`Console`:** input arrivals notify, from the receive interrupt. Writes are always ready (a console write waits briefly at most).
+
+**`poll` in the kernel** (`Process::poll`, slot 50): one semaphore on the caller's stack is registered in the wait list of every distinct stream polled (at most `FdTable::MaxFds`), then readiness is checked, then the caller waits on the semaphore through its interrupt (`Interrupt::waitCurrent`) until something is ready, the timeout passes, or a signal is due (`EINTR`); it is unregistered from all of them before returning. Registering before checking means a change in between still releases the semaphore. A stream whose wait list is full (more pollers than slots) is checked every 10 ms instead: correct, and rare enough to cost nothing in practice.
+- **The console as the program reads it.** A program's console input goes through its `Process` (the line editor with `BMDS_TERM_LINE`, left-over bytes, the terminal's size answer taken out), so readiness is the process's: `poll` pumps what has arrived (`Console::tryRead()`) into the process's input buffer, through the line editor in line mode, and the console is readable when a read wouldn't wait: a whole line in line mode (as Linux's canonical mode), any byte in raw mode. In line mode, polling echoes and edits what was typed, as reading would.
+- `count` above 64 is `EINVAL`; a negative fd is skipped (`revents` 0); a closed one gets `POLLNVAL`. Events use Linux's values (`POLLIN` 1, `POLLPRI` 2, `POLLOUT` 4, `POLLERR` 8, `POLLHUP` 16, `POLLNVAL` 32); `POLLERR`, `POLLHUP` and `POLLNVAL` are reported whether asked for or not.
+
+**New slot** (appended to ABI 1, which hasn't shipped):
+
+| Slot | Call |
+|---|---|
+| 50 | `int32_t io_poll(bmds_pollfd_t *fds, uint32_t count, int32_t timeout_ms, const uint32_t *mask)`: the number of entries with events; 0 at the timeout (`timeout_ms` < 0: none; 0: only check); `EINTR`, `EINVAL`, `EFAULT`. With `mask`, the signal mask is set to `*mask` for the wait and left set when the call returns, so the caller runs the handlers of what interrupted it under that mask and then restores its own (as `sig_suspend`); that is `ppoll` and `pselect` without a race. |
+
+`bmds_pollfd_t` is `{uint32_t size; int32_t fd; uint32_t events; uint32_t revents;}`, a boundary struct like the others (`CODING_STANDARDS.md`): the kernel steps through the array by the first entry's `size`, and every entry must have the same (else `EINVAL`), so the entry can grow. Linux's `struct pollfd` (8 bytes) differs, so the SDK copies the program's array into one on its stack and back (at most 64 entries, 1 KB; usually one to three). `BMDS_POLL_...` constants.
+
+**termios.** Two flags join `BMDS_TERM_...`, set when a program starts, as the others:
+- `BMDS_TERM_ECHO` (0x20): input is echoed. In line mode, without it lines are read unseen: no editor display, but Backspace, Ctrl-U (erase the line), Ctrl-D (end of input at the start of a line) and Enter work (passwords, `read -s`). In raw mode, with it, the bytes read are echoed (`read -n` keeps `ECHO` and clears `ICANON`).
+- `BMDS_TERM_ICRNL` (0x40): in raw mode, an input CR is read as LF (Linux's default; `cfmakeraw` clears it). Line mode always ends a line with LF.
+The SDK maps `ECHO`, `ICRNL` both ways, keeps `VMIN` and `VTIME` itself (per program; a program starts with 1 and 0): a terminal read with `VMIN` 0 polls first, for `VTIME` tenths of a second (0: just a check), and returns 0 if nothing came. `tcgetattr` reports what is in effect; the other flags and control characters keep reporting the fixed values they report now (`VINTR` is Ctrl-C...), and setting them has no effect.
+
+**SDK** (`linux.c`): `poll`, `ppoll` on `io_poll`; `select`, `pselect6` (and their 64-bit-time forms) converted to poll entries (an fd from 64 up can't be open: `EBADF`, as for any fd in a set that isn't open), the timeout left in place untouched (Linux writes back what remains; programs must not depend on it); `pause()` (musl: `ppoll` with nothing and no timeout) waits in `io_poll` until a signal is due, which is what `sig_suspend` with the current mask did. `poll` and `select` aren't restarted after a handler (`SA_RESTART` doesn't apply to them, as on Linux).
+
+**Not in this step:** `FIONREAD`, `VMIN` above 1 (read as 1) and `VTIME` with it, other control characters (`VERASE`, `VINTR`...) being settable, `POLLPRI`, `epoll`.
+
+**ABI impact:** slot 50, `bmds_pollfd_t`, `BMDS_POLL_...`, `BMDS_TERM_ECHO`, `BMDS_TERM_ICRNL`. Recorded with an `ABI:` line.
+
+**Budget (estimate):** firmware +2.5 KB; per pipe 20 bytes (`Psram`); per console 20 bytes; nothing per process; a `poll` uses about 150 bytes of the caller's stack (the registrations). No new task.
+
+**Testing:**
+- **Host:** `WaitList` (notify, full lists, a waiter leaving while notified), `Interrupt` unchanged (its tests), pipe readiness (data, room, both ends closing, notification on each), `Process::poll` (pipes ready and not, the timeout, `EINTR` on a due signal, `POLLNVAL`, the console in raw and line mode with the fake console: ready only on a whole line, echo off reading unseen).
+- **Board:** `progtest poll`: a pipe becoming readable from a child, a timeout, `POLLHUP` after the writer exits, `POLLERR` on a pipe without a reader, `ppoll` with a mask woken by a signal, `select` on a pipe and the terminal. By hand: `vi` (arrow keys, Esc, `:q`), `less` on a file and a pipe, `hush` `read -t 2`, `read -n 1`, `read -s`, interactive `hush`. Free memory and tasks as before afterwards; the corpus passes.
+
+**Sub-steps:** 10a, `WaitList`, readiness, `io_poll` and the SDK's `poll`/`select`, tested with `progtest poll`; 10b, `ECHO`, `ICRNL`, `VMIN`/`VTIME`, with `vi`, `less` and `hush` as the measure.
+
+**10a and 10b as built** (2026-10-04): as designed above, plus what building it found.
+- **`O_NONBLOCK`** joined the step: BusyBox `less` sets it on its terminal and reads keys until `EAGAIN`, so that it can go back to a pipe that is still filling; without it, it waited for a key first. The SDK keeps it per descriptor number (`fcntl`, `open`, `pipe2`; a `dup` starts without it; saved across a vfork child); a non-blocking read or write polls first (`io_poll` with no wait) and fails with `EAGAIN` if it would wait. A large non-blocking write to a pipe with some room still waits for the rest.
+- **`WaitList`** is `Interrupt`'s waiter slots moved out (`bmds_kernel`); `Interrupt::Watch` is a `WaitList::Entry`.
+- **`less` showed one line:** the BusyBox config had `FEATURE_LESS_MAXLINES=0` (upstream's default is 9999999), not a kernel matter.
+- **A child that writes and exits** may be gone before the reader's `poll` returns, which then reports `POLLIN` with `POLLHUP`, as Linux can.
+- **Verified on the board:** `progtest poll` (the list in Testing, plus `O_NONBLOCK` on a pipe and the terminal, `ECHO` and `ICRNL` both ways, `VMIN` 0 with `VTIME` 1 returning 0 after 100 ms), `progtest signals`, `spawn`, `scripts`, the corpus; `hush` `read -t 1` on the terminal and on a pipe (1 s, then status 1; a line typed in time; data already there), `read -n 1` (echoed), `read -s` (unseen); interactive `hush` (editing, Ctrl-C at the prompt and to a program); `vi` (insert, Esc, `x`, arrow keys, `:wq`, the file right); `less` on a file (paging, `G`, `/150`) and on a pipe filling in two parts 2 s apart (`G` reaches the end); step 9's Ctrl-C cases and `SIGWINCH`. Free memory and tasks as before afterwards (the shell keeps up to two idle pipeline workers).
+- **Host:** `WaitList` (notify, a full list, waiters leaving while notified), pipe readiness and notification, `Process::poll` (arguments, pipes, a file, `POLLNVAL`, the timeout, woken by a write and by a signal, the console in line and raw mode, both ends closing), raw input with `ICRNL` and echo, lines without echo.
+- **Measured:** firmware +2.5 KB (441,982 → 444,528 bytes).

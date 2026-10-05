@@ -38,8 +38,13 @@ class Console;
  *
  * The console (the shell's terminal) is where `/dev/console` leads and
  * what the terminal calls work on. With `BMDS_TERM_LINE` (the default),
- * reading it gets whole lines, echoed and editable (the line editor the
- * shell's `read` uses); else the bytes as they arrive.
+ * reading it gets whole lines, editable: echoed through the line editor
+ * the shell's `read` uses, or unseen without `BMDS_TERM_ECHO`. Else it
+ * gets the bytes as they arrive, CR as LF with `BMDS_TERM_ICRNL`, echoed
+ * with `BMDS_TERM_ECHO`. These modes are the process's (a vfork child
+ * starts with its parent's); the rest are the console's. `poll()` sees it
+ * as reading does: readable once a read would be served (a whole line in
+ * line mode), editing what was typed on the way.
  *
  * The methods are the system calls behind the SDK's table (bmds/sys.h):
  * same arguments, results >= 0 or a negated `BMDS_E...` number.
@@ -55,6 +60,12 @@ class Process {
 
                 /** @brief How many directories a program may have open at once. */
                 static constexpr int MaxDirectories = 8;
+
+                /** @brief The most entries one `poll()` takes. */
+                static constexpr uint32_t MaxPollEntries = BMDS_POLL_MAX;
+
+                /** @brief How often `poll()` checks a stream whose wait list was full. */
+                static constexpr unsigned int UnwatchedPollMs = 10;
 
                 /**
                  * @brief Constructs a process with its own copy of @p fds, in `/`.
@@ -178,6 +189,7 @@ class Process {
                 int32_t lstat(const char *path, bmds_stat_t *info);
                 int32_t pipe(int32_t *fds, uint32_t flags);
                 int32_t fdFlags(int32_t fd, int32_t flags);
+                int32_t poll(bmds_pollfd_t *fds, uint32_t count, int32_t timeoutMs);
 
                 /** @brief Returns the negated `BMDS_E...` number for @p err. */
                 static int32_t errnoFor(Error err);
@@ -190,6 +202,9 @@ class Process {
                 Vfs::Context vfs() const;
                 bool         isConsole(const FileHandle *h) const;
                 int32_t      readConsole(void *buf, uint32_t size);
+                int32_t      pumpConsole(bool wait);
+                uint8_t      readiness(FileHandle &h);
+                int32_t      rawRead(uint8_t *out, int32_t n);
                 int32_t      path(const char *path, StringView &out) const;
 
                 FdTable    _fds;
@@ -198,6 +213,8 @@ class Process {
                 String     _cwd;
                 LineInput *_line = nullptr;
                 bool       _lineInput = true;
+                bool       _echo = true;
+                bool       _crToNl = true;
                 Directory  _dirs[MaxDirectories];
                 Semaphore  _childEvent{1, 0};
                 Block     *_blocks = nullptr;

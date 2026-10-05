@@ -12,8 +12,8 @@
  * layer: they see musl's POSIX functions.
  *
  * What BMDS doesn't have is approximated, as noted at each call: one user
- * (root), no hard links, modes made up from the FAT attributes, poll by
- * guess, signals delivered between calls (programs.md §15), no fork()
+ * (root), no hard links, modes made up from the FAT attributes, O_NONBLOCK
+ * per descriptor, signals delivered between calls (programs.md §15), no fork()
  * (vfork, and posix_spawn on it: programs.md §13). Sockets fail.
  */
 
@@ -29,6 +29,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
@@ -269,6 +270,55 @@ static uint32_t open_flags(long flags) {
         return f;
 }
 
+/* What Linux keeps per open file or per terminal and this layer keeps per
+ * program (programs.md §16): O_NONBLOCK by descriptor number (a dup'd
+ * descriptor and other programs don't share it), and the terminal's VMIN
+ * and VTIME. A non-blocking read or write polls first and fails with
+ * EAGAIN if it would wait; a raw terminal read with VMIN 0 polls for VTIME
+ * tenths of a second and returns 0 if nothing came. */
+static struct {
+                uint32_t nonblock; /* a bit per descriptor */
+                uint8_t  vmin;
+                uint8_t  vtime;
+                uint8_t  timed; /* raw with VMIN 0: terminal reads poll first */
+} io_modes = {0, 1, 0, 0};
+
+static void set_nonblock(long fd, int on) {
+        if (fd < 0 || fd >= 32) return;
+        if (on) {
+                io_modes.nonblock |= 1u << fd;
+        } else {
+                io_modes.nonblock &= ~(1u << fd);
+        }
+        return;
+}
+
+/* Before a read or write: 1 to go on; 0, a timed terminal read that got
+ * nothing (the read returns 0); or -EAGAIN, -EINTR. */
+static long io_gate(long fd, int writing) {
+        const int nonblock = fd >= 0 && fd < 32 && (io_modes.nonblock >> fd & 1u);
+        int32_t   ms = 0;
+        if (!nonblock) {
+                if (writing || !io_modes.timed || bmds_isatty((int32_t)fd) != 1) return 1;
+                ms = io_modes.vtime * 100;
+        }
+        bmds_pollfd_t p = {.size = sizeof(p), .fd = (int32_t)fd, .events = writing ? BMDS_POLL_OUT : BMDS_POLL_IN};
+        const int32_t r = bmds_io_poll(&p, 1, ms, NULL);
+        if (r < 0) return (long)(r);
+        if (r == 0) return nonblock ? -EAGAIN : 0;
+        return 1;
+}
+
+static long gated_read(long fd, void *buf, size_t size) {
+        const long g = io_gate(fd, 0);
+        return g <= 0 ? g : (long)(bmds_read((int32_t)fd, buf, (uint32_t)size));
+}
+
+static long gated_write(long fd, const void *buf, size_t size) {
+        const long g = io_gate(fd, 1);
+        return g <= 0 ? g : (long)(bmds_write((int32_t)fd, buf, (uint32_t)size));
+}
+
 static long do_open(long dirfd, const char *path, long flags) {
         AT_PATH(dirfd, path);
         if (flags & O_NOFOLLOW) {
@@ -279,15 +329,20 @@ static long do_open(long dirfd, const char *path, long flags) {
         const int32_t fd = bmds_open(p, open_flags(flags));
         /* open(".", O_RDONLY), for fchdir(), is a directory too. */
         if (fd == -BMDS_EISDIR && (flags & O_ACCMODE) == O_RDONLY) return open_dir(p);
+        set_nonblock(fd, (flags & O_NONBLOCK) != 0);
         return (long)(fd);
 }
 
 static long do_close(long fd) {
         const int i = dir_index(fd);
-        return i >= 0 ? close_dir(i) : (long)(bmds_close((int32_t)fd));
+        if (i >= 0) return close_dir(i);
+        set_nonblock(fd, 0);
+        return (long)(bmds_close((int32_t)fd));
 }
 
 static long io_vector(long fd, const struct iovec *v, long count, int writing) {
+        const long g = io_gate(fd, writing);
+        if (g <= 0) return g;
         long total = 0;
         for (long i = 0; i < count; ++i) {
                 if (v[i].iov_len == 0) continue;
@@ -462,10 +517,15 @@ static long do_truncate(const char *path, int64_t size) {
 
 static long do_fcntl(long fd, long cmd, long arg) {
         switch (cmd) {
-                case F_DUPFD: return (long)(bmds_dup((int32_t)fd, (int32_t)arg));
+                case F_DUPFD: {
+                        const int32_t n = bmds_dup((int32_t)fd, (int32_t)arg);
+                        set_nonblock(n, 0);
+                        return (long)(n);
+                }
                 case F_DUPFD_CLOEXEC: {
                         const int32_t n = bmds_dup((int32_t)fd, (int32_t)arg);
                         if (n >= 0) (void)bmds_fd_flags(n, BMDS_FD_CLOEXEC);
+                        set_nonblock(n, 0);
                         return (long)(n);
                 }
                 case F_GETFD:
@@ -477,14 +537,22 @@ static long do_fcntl(long fd, long cmd, long arg) {
                         const int32_t r = bmds_fd_flags((int32_t)fd, (arg & FD_CLOEXEC) ? BMDS_FD_CLOEXEC : 0);
                         return r < 0 ? (long)(r) : 0;
                 }
-                case F_SETFL: return 0; /* no non-blocking I/O */
+                case F_SETFL: {
+                        if (dir_index(fd) >= 0) return 0;
+                        bmds_stat_t   st = {.size = sizeof(st)};
+                        const int32_t r = bmds_fstat((int32_t)fd, &st);
+                        if (r < 0) return (long)(r);
+                        set_nonblock(fd, (arg & O_NONBLOCK) != 0);
+                        return 0;
+                }
                 case F_GETFL: {
                         if (dir_index(fd) >= 0) return O_RDONLY | O_DIRECTORY;
                         bmds_stat_t   st = {.size = sizeof(st)};
                         const int32_t r = bmds_fstat((int32_t)fd, &st);
                         if (r < 0) return (long)(r);
                         const uint32_t rw = st.open_flags & (BMDS_O_READ | BMDS_O_WRITE);
-                        return rw == BMDS_O_WRITE ? O_WRONLY : rw == BMDS_O_READ ? O_RDONLY : O_RDWR;
+                        const long     mode = rw == BMDS_O_WRITE ? O_WRONLY : rw == BMDS_O_READ ? O_RDONLY : O_RDWR;
+                        return mode | ((fd < 32 && (io_modes.nonblock >> fd & 1u)) ? O_NONBLOCK : 0);
                 }
                 case F_GETLK: ((struct flock *)arg)->l_type = F_UNLCK; return 0;
                 case F_SETLK:
@@ -495,18 +563,20 @@ static long do_fcntl(long fd, long cmd, long arg) {
 
 /* --- The terminal ----------------------------------------------------------- */
 
-/* termios over the console's modes: ICANON (line input, which echoes),
- * ISIG (Ctrl-C interrupts), OPOST|ONLCR (newlines as CR LF). ECHO can't be
- * turned off by itself yet. */
+/* termios over the console's modes: ICANON (line input), ECHO, ICRNL (raw
+ * input), ISIG (Ctrl-C interrupts), OPOST|ONLCR (newlines as CR LF); VMIN
+ * and VTIME are this layer's (io_modes). The other flags and control
+ * characters are reported as Linux's defaults and can't be changed. */
 static long tc_get(long fd, struct termios *t) {
         bmds_term_t   term = {.size = sizeof(term)};
         const int32_t r = bmds_term_get((int32_t)fd, &term);
         if (r < 0) return -ENOTTY;
         memset(t, 0, sizeof(*t));
-        t->c_iflag = ICRNL;
+        t->c_iflag = (term.flags & BMDS_TERM_ICRNL) ? ICRNL : 0;
         t->c_oflag = (term.flags & BMDS_TERM_ONLCR) ? OPOST | ONLCR : 0;
         t->c_cflag = CS8 | CREAD | B115200;
-        t->c_lflag = ((term.flags & BMDS_TERM_LINE) ? ICANON | ECHO | ECHOE | ECHOK : 0) |
+        t->c_lflag = ((term.flags & BMDS_TERM_LINE) ? ICANON : 0) |
+                     ((term.flags & BMDS_TERM_ECHO) ? ECHO | ECHOE | ECHOK | ECHOCTL | ECHOKE : 0) |
                      ((term.flags & BMDS_TERM_SIGNALS) ? ISIG : 0) | IEXTEN;
         t->c_cc[VINTR] = 3;
         t->c_cc[VQUIT] = 28;
@@ -516,7 +586,8 @@ static long tc_get(long fd, struct termios *t) {
         t->c_cc[VSTART] = 17;
         t->c_cc[VSTOP] = 19;
         t->c_cc[VSUSP] = 26;
-        t->c_cc[VMIN] = 1;
+        t->c_cc[VMIN] = io_modes.vmin;
+        t->c_cc[VTIME] = io_modes.vtime;
         t->__c_ispeed = t->__c_ospeed = B115200;
         return 0;
 }
@@ -527,9 +598,16 @@ static long tc_set(long fd, const struct termios *t) {
         if (r < 0) return -ENOTTY;
         uint32_t flags = term.flags & (BMDS_TERM_COLORS | BMDS_TERM_LOGS);
         if (t->c_lflag & ICANON) flags |= BMDS_TERM_LINE;
+        if (t->c_lflag & ECHO) flags |= BMDS_TERM_ECHO;
         if (t->c_lflag & ISIG) flags |= BMDS_TERM_SIGNALS;
+        if (t->c_iflag & ICRNL) flags |= BMDS_TERM_ICRNL;
         if ((t->c_oflag & OPOST) && (t->c_oflag & ONLCR)) flags |= BMDS_TERM_ONLCR;
-        return (long)(bmds_term_set((int32_t)fd, flags));
+        const int32_t s = bmds_term_set((int32_t)fd, flags);
+        if (s < 0) return (long)(s);
+        io_modes.vmin = t->c_cc[VMIN];
+        io_modes.vtime = t->c_cc[VTIME];
+        io_modes.timed = !(t->c_lflag & ICANON) && t->c_cc[VMIN] == 0;
+        return 0;
 }
 
 static long do_ioctl(long fd, unsigned long request, void *arg) {
@@ -561,32 +639,96 @@ static long do_ioctl(long fd, unsigned long request, void *arg) {
         }
 }
 
-/* poll by guess, until BMDS can wait on several streams: files and
- * output are always ready; input from a terminal or pipe is reported ready
- * when the caller would wait for ever (the read then waits), else not. */
-static long     do_sigsuspend(uint32_t mask);
+/* poll, ppoll, select, pselect: io_poll, on a copy of the entries in the
+ * kernel's form (programs.md §16). The timeout is rounded up to whole
+ * milliseconds and isn't written back. With a mask, it is in effect while
+ * the kernel waits and while the handlers of what interrupted it run. */
+static int      deliver_due(void);
 static uint32_t kernel_set(uint64_t set);
 
-static long do_poll(struct pollfd *fds, unsigned long n, const void *timeout, const uint64_t *mask) {
-        /* Nothing to wait for, for ever: pause() (or ppoll with its mask). */
-        if (n == 0 && timeout == NULL)
-                return do_sigsuspend(mask != NULL ? kernel_set(*mask) : (uint32_t)bmds_sig_mask(BMDS_SIG_BLOCK, 0));
-        long ready = 0;
-        for (unsigned long i = 0; i < n; ++i) {
-                fds[i].revents = 0;
-                if (fds[i].fd < 0) continue;
-                bmds_stat_t st = {.size = sizeof(st)};
-                if (dir_index(fds[i].fd) < 0 && bmds_fstat(fds[i].fd, &st) < 0) {
-                        fds[i].revents = POLLNVAL;
-                } else {
-                        const int input = st.type == BMDS_TYPE_FILE || dir_index(fds[i].fd) >= 0 || timeout == NULL;
-                        fds[i].revents = (short)(fds[i].events & ((input ? POLLIN | POLLRDNORM : 0) | POLLOUT | POLLWRNORM));
-                }
-                if (fds[i].revents != 0) ++ready;
+static long poll_entries(bmds_pollfd_t *k, unsigned long n, const void *timeout, const uint64_t *mask) {
+        int32_t ms = -1;
+        if (timeout != NULL) {
+                const int64_t ns = ts_read(timeout);
+                if (ns < 0) return -EINVAL;
+                ms = ns >= (int64_t)INT32_MAX * 1000000 ? INT32_MAX : (int32_t)((ns + 999999) / 1000000);
         }
-        if (ready == 0 && timeout != NULL) {
-                const long r = sleep_ns(ts_read(timeout));
-                if (r < 0) return r;
+        if (mask == NULL) return (long)(bmds_io_poll(k, (uint32_t)n, ms, NULL));
+        const uint32_t set = kernel_set(*mask);
+        const int32_t  old = bmds_sig_mask(BMDS_SIG_BLOCK, 0);
+        const int32_t  r = bmds_io_poll(k, (uint32_t)n, ms, &set);
+        (void)deliver_due();
+        (void)bmds_sig_mask(BMDS_SIG_SETMASK, (uint32_t)old);
+        return (long)(r);
+}
+
+static long do_poll(struct pollfd *fds, unsigned long n, const void *timeout, const uint64_t *mask) {
+        if (n > BMDS_POLL_MAX) return -EINVAL;
+        bmds_pollfd_t k[n > 0 ? n : 1];
+        for (unsigned long i = 0; i < n; ++i) {
+                const short e = fds[i].events;
+                k[i].size = sizeof(k[i]);
+                k[i].fd = fds[i].fd;
+                k[i].events = ((e & (POLLIN | POLLRDNORM)) ? BMDS_POLL_IN : 0) |
+                              ((e & (POLLOUT | POLLWRNORM)) ? BMDS_POLL_OUT : 0) | ((e & POLLPRI) ? BMDS_POLL_PRI : 0);
+        }
+        const long r = poll_entries(k, n, timeout, mask);
+        if (r < 0) return r;
+        for (unsigned long i = 0; i < n; ++i) {
+                const short    e = fds[i].events;
+                const uint32_t got = k[i].revents;
+                fds[i].revents = (short)(((got & BMDS_POLL_IN) ? e & (POLLIN | POLLRDNORM) : 0) |
+                                         ((got & BMDS_POLL_OUT) ? e & (POLLOUT | POLLWRNORM) : 0) |
+                                         ((got & BMDS_POLL_ERR) ? POLLERR : 0) | ((got & BMDS_POLL_HUP) ? POLLHUP : 0) |
+                                         ((got & BMDS_POLL_NVAL) ? POLLNVAL : 0));
+        }
+        return r;
+}
+
+/* select's sets as poll entries: readable includes hung up and broken,
+ * writable broken, as on Linux; nothing is ever exceptional. An fd in a set
+ * that isn't open is EBADF. */
+static long do_select(long n, fd_set *rd, fd_set *wr, fd_set *ex, const void *timeout, const long *data) {
+        if (n < 0) return -EINVAL;
+        if (n > FD_SETSIZE) n = FD_SETSIZE;
+        bmds_pollfd_t k[BMDS_POLL_MAX];
+        unsigned long count = 0;
+        for (long fd = 0; fd < n; ++fd) {
+                const uint32_t events = ((rd != NULL && FD_ISSET(fd, rd)) ? BMDS_POLL_IN : 0) |
+                                        ((wr != NULL && FD_ISSET(fd, wr)) ? BMDS_POLL_OUT : 0) |
+                                        ((ex != NULL && FD_ISSET(fd, ex)) ? BMDS_POLL_PRI : 0);
+                if (events == 0) continue;
+                if (count == BMDS_POLL_MAX) return -EBADF; /* more fds than a process can have open */
+                k[count].size = sizeof(k[count]);
+                k[count].fd = (int32_t)fd;
+                k[count].events = events;
+                ++count;
+        }
+        const uint64_t *mask = data != NULL && data[0] != 0 ? (const uint64_t *)data[0] : NULL;
+        const long      r = poll_entries(k, count, timeout, mask);
+        if (r < 0) return r;
+        for (unsigned long i = 0; i < count; ++i) {
+                if (k[i].revents & BMDS_POLL_NVAL) return -EBADF;
+        }
+        long ready = 0;
+        for (unsigned long i = 0; i < count; ++i) {
+                const int      fd = k[i].fd;
+                const uint32_t got = k[i].revents;
+                if (rd != NULL && FD_ISSET(fd, rd)) {
+                        if (got & (BMDS_POLL_IN | BMDS_POLL_HUP | BMDS_POLL_ERR)) {
+                                ++ready;
+                        } else {
+                                FD_CLR(fd, rd);
+                        }
+                }
+                if (wr != NULL && FD_ISSET(fd, wr)) {
+                        if (got & (BMDS_POLL_OUT | BMDS_POLL_ERR)) {
+                                ++ready;
+                        } else {
+                                FD_CLR(fd, wr);
+                        }
+                }
+                if (ex != NULL) FD_CLR(fd, ex);
         }
         return ready;
 }
@@ -818,15 +960,16 @@ static mode_t umask_value = 022;
  * keeps in that memory is saved at the vfork and put back when the parent
  * resumes: the signal handlers (musl's posix_spawn child resets them; the
  * kernel keeps the child's actions and mask apart), the umask, the
- * directory-fd table. The copy lives
+ * directory-fd table, O_NONBLOCK and VMIN/VTIME. The copy lives
  * on the heap while the child runs: programs that never vfork pay nothing.
  */
 #define VFORK_DEPTH 2
 
 typedef struct {
         struct k_sigaction actions[_NSIG];
-        mode_t             umask;
-        __typeof__(dirs)   dirs;
+        mode_t               umask;
+        __typeof__(dirs)     dirs;
+        __typeof__(io_modes) io_modes;
 } vfork_saved_t;
 
 uint32_t              __bmds_vfork_regs[VFORK_DEPTH][26];
@@ -841,6 +984,7 @@ long __bmds_vfork_enter(void) {
         memcpy(saved->actions, actions, sizeof(actions));
         saved->umask = umask_value;
         memcpy(saved->dirs, dirs, sizeof(dirs));
+        saved->io_modes = io_modes;
         const int32_t r = bmds_proc_vfork();
         if (r < 0) {
                 bmds_mem_free(saved);
@@ -856,6 +1000,7 @@ static _Noreturn void vfork_return(long pid) {
         memcpy(actions, saved->actions, sizeof(actions));
         umask_value = saved->umask;
         memcpy(dirs, saved->dirs, sizeof(dirs));
+        io_modes = saved->io_modes;
         bmds_mem_free(saved);
         __bmds_vfork_resume(pid, __bmds_vfork_regs[__bmds_vfork_depth]);
 }
@@ -920,6 +1065,8 @@ static long do_pipe2(int *fds, long flags) {
         if (r < 0) return (long)(r);
         fds[0] = ends[0];
         fds[1] = ends[1];
+        set_nonblock(ends[0], (flags & O_NONBLOCK) != 0);
+        set_nonblock(ends[1], (flags & O_NONBLOCK) != 0);
         return 0;
 }
 
@@ -942,8 +1089,8 @@ static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 /* Files */
                 case SYS_openat: return do_open(a, (const char *)b, c);
                 case SYS_close: return do_close(a);
-                case SYS_read: return (long)(bmds_read((int32_t)a, (void *)b, (uint32_t)c));
-                case SYS_write: return (long)(bmds_write((int32_t)a, (const void *)b, (uint32_t)c));
+                case SYS_read: return gated_read(a, (void *)b, (size_t)c);
+                case SYS_write: return gated_write(a, (const void *)b, (size_t)c);
                 case SYS_readv: return io_vector(a, (const struct iovec *)b, c, 0);
                 case SYS_writev: return io_vector(a, (const struct iovec *)b, c, 1);
                 case SYS_pread64: return io_at(a, (void *)b, (size_t)c, (int64_t)((uint64_t)(uint32_t)e << 32 | (uint32_t)d), 0);
@@ -952,10 +1099,16 @@ static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 case SYS_statx: return do_statx(a, (const char *)b, c, (struct statx *)e);
                 case SYS_getdents64: return do_getdents(a, (char *)b, (size_t)c);
                 case SYS_fcntl64: return do_fcntl(a, b, c);
-                case SYS_dup: return dir_index(a) >= 0 ? -EBADF : (long)(bmds_dup((int32_t)a, 0));
+                case SYS_dup: {
+                        if (dir_index(a) >= 0) return -EBADF;
+                        const int32_t r = bmds_dup((int32_t)a, 0);
+                        set_nonblock(r, 0);
+                        return (long)(r);
+                }
                 case SYS_dup3: {
                         if (a == b || (c & ~O_CLOEXEC)) return -EINVAL;
                         const int32_t r = bmds_dup2((int32_t)a, (int32_t)b);
+                        set_nonblock(r, 0);
                         if (r >= 0 && (c & O_CLOEXEC)) (void)bmds_fd_flags(r, BMDS_FD_CLOEXEC);
                         return (long)(r);
                 }
@@ -1098,6 +1251,8 @@ static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 /* Waiting */
                 case SYS_ppoll_time64:
                         return do_poll((struct pollfd *)a, (unsigned long)b, (const void *)c, (const uint64_t *)d);
+                case SYS_pselect6_time64:
+                        return do_select(a, (fd_set *)b, (fd_set *)c, (fd_set *)d, (const void *)e, (const long *)f);
 
                 /* No sockets; no fork (SYS_clone: vfork.S handles CLONE_VFORK). */
                 case SYS_socket: return -EAFNOSUPPORT;

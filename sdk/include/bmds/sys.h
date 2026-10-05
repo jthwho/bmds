@@ -120,6 +120,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_SIG_SUSPEND 47u     /**< `int32_t sig_suspend(uint32_t mask)`: `BMDS_EINTR`. */
 #define BMDS_SYS_PROC_KILL 48u       /**< `int32_t proc_kill(int32_t pid, int32_t sig)`. */
 #define BMDS_SYS_PROC_EXIT_SIGNAL 49u /**< `int32_t proc_exit_signal(int32_t sig)`. */
+#define BMDS_SYS_IO_POLL 50u          /**< `int32_t io_poll(fds, count, timeout_ms, mask)`: see `bmds_io_poll`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -227,6 +228,28 @@ typedef struct bmds_siginfo_t {
                 uint32_t flags; /**< `BMDS_SIG_...`. */
 } bmds_siginfo_t;
 
+/** @brief `bmds_pollfd_t` events (Linux's values). */
+#define BMDS_POLL_IN 0x01u   /**< A read wouldn't wait (data, or the end of input). */
+#define BMDS_POLL_PRI 0x02u  /**< Urgent data (never reported). */
+#define BMDS_POLL_OUT 0x04u  /**< A write wouldn't wait. */
+#define BMDS_POLL_ERR 0x08u  /**< Writes fail: a pipe without a reader (reported unasked). */
+#define BMDS_POLL_HUP 0x10u  /**< The other end is gone: a pipe without a writer (reported unasked). */
+#define BMDS_POLL_NVAL 0x20u /**< The fd isn't open (reported unasked). */
+
+/**
+ * @brief An entry of `io_poll`'s array. The caller sets `size` (the same in
+ *        every entry), `fd` and `events`; the kernel sets `revents`.
+ */
+typedef struct bmds_pollfd_t {
+                uint32_t size;    /**< Set by the caller: `sizeof(bmds_pollfd_t)`. */
+                int32_t  fd;      /**< The descriptor; a negative one is skipped (`revents` 0). */
+                uint32_t events;  /**< `BMDS_POLL_IN` and/or `BMDS_POLL_OUT`. */
+                uint32_t revents; /**< Set by the kernel: the events that are true, with ERR, HUP, NVAL. */
+} bmds_pollfd_t;
+
+/** @brief The most entries one `io_poll` takes. */
+#define BMDS_POLL_MAX 64u
+
 /** @brief `bmds_stat_t::type`. */
 #define BMDS_TYPE_FILE 1u      /**< A regular file. */
 #define BMDS_TYPE_DIRECTORY 2u /**< A directory (also `/`, `/dev` and mount points). */
@@ -266,7 +289,9 @@ typedef struct bmds_stat_t {
 #define BMDS_TERM_ONLCR 0x02u   /**< Output `\n` is sent as CR LF where the terminal needs it. */
 #define BMDS_TERM_COLORS 0x04u  /**< Output colors are fitted to what the terminal shows. */
 #define BMDS_TERM_LOGS 0x08u    /**< The kernel's log lines are shown. */
-#define BMDS_TERM_LINE 0x10u    /**< Input is read in lines, echoed and editable (else raw bytes). */
+#define BMDS_TERM_LINE 0x10u    /**< Input is read in lines, editable (else raw bytes). */
+#define BMDS_TERM_ECHO 0x20u    /**< Input is echoed (line mode: the editor shows it; raw: the bytes read). */
+#define BMDS_TERM_ICRNL 0x40u   /**< Raw input: CR is read as LF. */
 
 /**
  * @brief A terminal (`term_get`). The caller sets `size`, the kernel the rest
@@ -333,6 +358,7 @@ typedef int32_t (*bmds_sys_sig_action_fn)(int32_t sig, uint32_t action);
 typedef int32_t (*bmds_sys_sig_mask_fn)(uint32_t how, uint32_t set);
 typedef int32_t (*bmds_sys_sig_take_fn)(bmds_siginfo_t *info);
 typedef int32_t (*bmds_sys_proc_kill_fn)(int32_t pid, int32_t sig);
+typedef int32_t (*bmds_sys_io_poll_fn)(bmds_pollfd_t *fds, uint32_t count, int32_t timeout_ms, const uint32_t *mask);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -756,6 +782,24 @@ static inline int32_t bmds_proc_kill(int32_t pid, int32_t sig) {
  */
 static inline int32_t bmds_proc_exit_signal(int32_t sig) {
         return ((bmds_sys_int_fn)bmds_sys->slot[BMDS_SYS_PROC_EXIT_SIGNAL])(sig);
+}
+
+/**
+ * @brief Waits until one of @p count descriptors is ready for what its entry
+ *        asks, @p timeout_ms passes (negative: never; 0: only checks), or a
+ *        signal is due.
+ *
+ * A terminal in line mode is readable once a whole line is typed (polling
+ * edits and echoes it as reading would). With @p mask, the signal mask is
+ * `*mask` for the wait and stays so when the call returns: the caller runs
+ * its handlers under it, then restores its own (`ppoll`, `pselect`).
+ *
+ * @return How many entries have `revents`; 0 at the timeout; `BMDS_EINTR`,
+ *         `BMDS_EINVAL` (more than `BMDS_POLL_MAX`, or a bad `size`),
+ *         `BMDS_EFAULT`.
+ */
+static inline int32_t bmds_io_poll(bmds_pollfd_t *fds, uint32_t count, int32_t timeout_ms, const uint32_t *mask) {
+        return ((bmds_sys_io_poll_fn)bmds_sys->slot[BMDS_SYS_IO_POLL])(fds, count, timeout_ms, mask);
 }
 
 #ifdef __cplusplus

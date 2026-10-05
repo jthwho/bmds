@@ -53,7 +53,7 @@ The builder uses Python's standard library only (3.11 or newer, for `tomllib`).
 
 | Package | Version | What | Notes |
 |---|---|---|---|
-| `busybox` | 1.37.0 | Unix tools: coreutils, `sed`, `awk`, `vi`, `less`, `diff`, `find`, `grep`, `tar`, compressors, `hush` | `CONFIG_NOMMU`; applets that need Linux interfaces BMDS lacks are off (§6). One binary, a link per applet (119). Patch: `timeout`'s no-MMU watcher re-execs with `-p` before the duration (upstream's never saw it, so nothing was ever timed out). The BMDS shell's built-ins (`ls`, `cat`, `echo`...) still come first; `busybox ls` or the full path reaches BusyBox's. |
+| `busybox` | 1.37.0 | Unix tools: coreutils, `sed`, `awk`, `vi`, `less`, `diff`, `find`, `grep`, `tar`, compressors, `hush` | `CONFIG_NOMMU`; applets that need Linux interfaces BMDS lacks are off (§6). One binary, a link per applet (119). Patch: `timeout`'s no-MMU watcher re-execs with `-p` before the duration (upstream's never saw it, so nothing was ever timed out). `less` keeps upstream's line limit (`FEATURE_LESS_MAXLINES`; the config had 0, which showed one line). The BMDS shell's built-ins (`ls`, `cat`, `echo`...) still come first; `busybox ls` or the full path reaches BusyBox's. |
 
 Candidates, roughly in order: a scripting language (Lua or MicroPython), `zlib`/`xz` as libraries, `make`, `sqlite`, TinyCC (the first step to self-hosting), games; `dropbear` with networking.
 

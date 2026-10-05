@@ -270,6 +270,7 @@ namespace {
                                 return _end.read(buf, timeoutMs);
                         }
                         bmds::Result<size_t> tryReadInput(bmds::WritableByteSpan buf) override { return _end.read(buf, 1); }
+                        bool                 hasInput() const override { return false; } // never polled
 
                 private:
                         LineEnd &_end;

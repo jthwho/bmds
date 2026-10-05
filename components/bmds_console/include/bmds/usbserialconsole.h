@@ -98,6 +98,7 @@ class UsbSerialConsole final : public Console {
         protected:
                 Result<size_t> readInput(WritableByteSpan buf, unsigned int timeoutMs) override;
                 Result<size_t> tryReadInput(WritableByteSpan buf) override;
+                bool           hasInput() const override { return !_rx.isEmpty(); }
 
         private:
                 static void isr(void *arg);

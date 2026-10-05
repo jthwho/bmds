@@ -14,6 +14,8 @@
 #include <thread>
 #include <bmds/interrupt.h>
 #include <bmds/pipe.h>
+#include <bmds/semaphore.h>
+#include <bmds/waitlist.h>
 #include "hostmemory.h"
 
 using bmds::ByteSpan;
@@ -155,6 +157,46 @@ TEST_CASE("Pipe: the caller's interrupt stops blocked readers and writers") {
         CHECK(readErr == Error::Interrupted);
         CHECK(writeErr == Error::Interrupted);
         CHECK(otherErr == Error::Timeout);
+}
+
+TEST_CASE("Pipe: readiness, and pollers told of every change") {
+        const size_t base = HostMemory::liveAllocations();
+        {
+                auto [ends, err] = Pipe::create(16);
+                REQUIRE(err.isOk());
+                bmds::Stream &pipe = ends.read->stream();
+                REQUIRE(pipe.readinessWaiters() != nullptr);
+                bmds::Semaphore       told(1, 0);
+                bmds::WaitList::Entry entry(*pipe.readinessWaiters(), told);
+                REQUIRE(entry.isAdded());
+
+                CHECK(pipe.readiness() == bmds::Stream::Writable); // empty, with room
+                CHECK(ends.write->write(bmds::StringView("0123456789abcdef"), WaitForever).isOk());
+                CHECK(told.tryAcquire().isOk());
+                CHECK(pipe.readiness() == bmds::Stream::Readable); // full
+                uint8_t buf[4];
+                CHECK(ends.read->read(WritableByteSpan(buf), WaitForever).value() == 4);
+                CHECK(told.tryAcquire().isOk());
+                CHECK(pipe.readiness() == (bmds::Stream::Readable | bmds::Stream::Writable));
+
+                // The writer goes: readable (the rest, then the end) and hung up.
+                ends.write.reset();
+                CHECK(told.tryAcquire().isOk());
+                CHECK(pipe.readiness() == (bmds::Stream::Readable | bmds::Stream::Writable | bmds::Stream::HungUp));
+                CHECK(readAll(*ends.read) == "456789abcdef");
+                CHECK((pipe.readiness() & bmds::Stream::Readable) != 0);
+        }
+        {
+                // The reader goes: writes fail at once.
+                auto [ends, err] = Pipe::create(16);
+                REQUIRE(err.isOk());
+                bmds::Stream &pipe = ends.write->stream();
+                CHECK(ends.write->write(bmds::StringView("0123456789abcdef"), WaitForever).isOk());
+                CHECK(pipe.readiness() == bmds::Stream::Readable);
+                ends.read.reset();
+                CHECK(pipe.readiness() == (bmds::Stream::Readable | bmds::Stream::Writable | bmds::Stream::Broken));
+        }
+        CHECK(HostMemory::liveAllocations() == base);
 }
 
 TEST_CASE("Pipe: allocation failure") {

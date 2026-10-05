@@ -37,6 +37,8 @@
  *   progtest pipewrite    write to a pipe nobody reads (ends by SIGPIPE)
  *   progtest sigstate     exit 0 if SIGUSR1 is default and SIGUSR2 ignored (after exec)
  *   progtest winch        wait up to 5 s for SIGWINCH, print the new size to stderr
+ *   progtest poll SELF    poll, ppoll, select, O_NONBLOCK, termios: pipes, timeouts, hang-ups, signals
+ *   progtest later MS FD  after MS ms write "x" to FD
  */
 
 #include <dirent.h>
@@ -48,7 +50,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <poll.h>
 #include <sys/ioctl.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
 #include <sys/time.h>
@@ -187,7 +191,8 @@ static int lines(void) {
 static int raw(void) {
         bmds_term_t t = {.size = sizeof(t)};
         CHECK(bmds_term_get(0, &t) == 0);
-        CHECK(bmds_term_set(0, t.flags & ~(BMDS_TERM_LINE | BMDS_TERM_SIGNALS)) == 0);
+        CHECK(bmds_term_set(0, t.flags & ~(BMDS_TERM_LINE | BMDS_TERM_SIGNALS | BMDS_TERM_ECHO | BMDS_TERM_ICRNL)) ==
+              0);
         printf("raw keys, q ends:\n");
         fflush(stdout);
         for (;;) {
@@ -688,11 +693,135 @@ static int signals(const char *self) {
         return 0;
 }
 
+static long ms_since(const struct timespec *start) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        return (long)((now.tv_sec - start->tv_sec) * 1000 + (now.tv_nsec - start->tv_nsec) / 1000000);
+}
+
+/* poll, ppoll, select (programs.md §16). */
+static int polling(const char *self) {
+        char            pidbuf[16], fdbuf[16], b = 0;
+        struct timespec t0;
+        int             fds[2];
+        CHECK(pipe(fds) == 0);
+        struct pollfd p[2] = {{.fd = fds[0], .events = POLLIN}, {.fd = 1, .events = POLLOUT}};
+        // Not readable yet; the terminal is writable.
+        CHECK(poll(p, 2, 0) == 1 && p[0].revents == 0 && p[1].revents == POLLOUT);
+        // The timeout.
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        CHECK(poll(p, 1, 100) == 0);
+        long ms = ms_since(&t0);
+        CHECK(ms >= 100 && ms < 150);
+        // Readable when a child writes; hung up once every writer is gone.
+        snprintf(fdbuf, sizeof(fdbuf), "%d", fds[1]);
+        pid_t c = start(self, NULL, NULL, "later", "100", fdbuf, NULL);
+        CHECK(c > 0 && close(fds[1]) == 0);
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        const int n = poll(p, 1, -1);
+        if (n != 1 || !(p[0].revents & POLLIN)) printf("poll %d revents %#x\n", n, p[0].revents);
+        CHECK(n == 1 && (p[0].revents & POLLIN)); // and POLLHUP if the child has exited already
+        ms = ms_since(&t0);
+        CHECK(ms >= 90 && ms < 1000);
+        CHECK(read(fds[0], &b, 1) == 1 && b == 'x' && status_of(c) == 0);
+        CHECK(poll(p, 1, 0) == 1 && p[0].revents == (POLLIN | POLLHUP));
+        CHECK(read(fds[0], &b, 1) == 0 && close(fds[0]) == 0);
+        // A pipe without a reader: POLLERR, unasked.
+        CHECK(pipe(fds) == 0 && close(fds[0]) == 0);
+        p[0].fd = fds[1];
+        p[0].events = POLLOUT;
+        CHECK(poll(p, 1, 0) == 1 && p[0].revents == (POLLOUT | POLLERR) && close(fds[1]) == 0);
+        // A closed fd: POLLNVAL; a negative one skipped.
+        p[0].fd = 9;
+        p[1].fd = -1;
+        CHECK(poll(p, 2, 0) == 1 && p[0].revents == POLLNVAL && p[1].revents == 0);
+        // ppoll with a mask: SIGUSR1 blocked but for the wait, its handler run
+        // under that mask, then the old mask back.
+        CHECK(catch_signal(SIGUSR1, count_signal, SA_RESTART) == 0);
+        sigset_t set, old, none, now;
+        sigemptyset(&set);
+        sigaddset(&set, SIGUSR1);
+        sigemptyset(&none);
+        CHECK(sigprocmask(SIG_BLOCK, &set, &old) == 0 && pipe(fds) == 0);
+        snprintf(pidbuf, sizeof(pidbuf), "%d", (int)getpid());
+        const int before = got[SIGUSR1];
+        c = start(self, NULL, NULL, "killer", pidbuf, "100", NULL);
+        p[0].fd = fds[0];
+        p[0].events = POLLIN;
+        CHECK(c > 0 && ppoll(p, 1, NULL, &none) == -1 && errno == EINTR && got[SIGUSR1] == before + 1);
+        CHECK(sigprocmask(SIG_SETMASK, &old, &now) == 0 && sigismember(&now, SIGUSR1));
+        CHECK(status_of(c) == 0);
+        // poll isn't restarted after a handler, even with SA_RESTART.
+        c = start(self, NULL, NULL, "killer", pidbuf, "100", NULL);
+        CHECK(c > 0 && poll(p, 1, 2000) == -1 && errno == EINTR && got[SIGUSR1] == before + 2);
+        CHECK(status_of(c) == 0);
+        // select: the pipe and the terminal; the timeout; a closed fd.
+        fd_set rd;
+        FD_ZERO(&rd);
+        FD_SET(fds[0], &rd);
+        struct timeval tv = {0, 50000};
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        CHECK(select(fds[0] + 1, &rd, NULL, NULL, &tv) == 0 && !FD_ISSET(fds[0], &rd));
+        ms = ms_since(&t0);
+        CHECK(ms >= 50 && ms < 100);
+        CHECK(write(fds[1], "y", 1) == 1);
+        fd_set wr;
+        FD_ZERO(&rd);
+        FD_ZERO(&wr);
+        FD_SET(fds[0], &rd);
+        FD_SET(1, &wr);
+        tv.tv_usec = 0;
+        CHECK(select(fds[0] + 1, &rd, &wr, NULL, &tv) == 2 && FD_ISSET(fds[0], &rd) && FD_ISSET(1, &wr));
+        FD_ZERO(&rd);
+        FD_SET(9, &rd);
+        CHECK(select(10, &rd, NULL, NULL, &tv) == -1 && errno == EBADF);
+        CHECK(close(fds[0]) == 0 && close(fds[1]) == 0);
+        // O_NONBLOCK: an empty pipe's read fails with EAGAIN; the flag is the
+        // descriptor's (not a dup's).
+        CHECK(pipe(fds) == 0 && fcntl(fds[0], F_SETFL, O_NONBLOCK) == 0);
+        CHECK((fcntl(fds[0], F_GETFL) & O_NONBLOCK) && read(fds[0], &b, 1) == -1 && errno == EAGAIN);
+        const int d = dup(fds[0]);
+        CHECK(d >= 0 && !(fcntl(d, F_GETFL) & O_NONBLOCK) && close(d) == 0);
+        CHECK(write(fds[1], "z", 1) == 1 && read(fds[0], &b, 1) == 1 && b == 'z');
+        CHECK(close(fds[0]) == 0 && close(fds[1]) == 0);
+        // termios: ECHO and ICRNL both ways; VMIN 0 with VTIME 1: a read waits
+        // 0.1 s and returns 0; O_NONBLOCK on the terminal.
+        if (isatty(0)) {
+                struct termios before_t, t, now_t;
+                CHECK(tcgetattr(0, &before_t) == 0);
+                CHECK((before_t.c_lflag & (ICANON | ECHO | ISIG)) == (ICANON | ECHO | ISIG));
+                CHECK((before_t.c_iflag & ICRNL) && before_t.c_cc[VMIN] == 1 && before_t.c_cc[VTIME] == 0);
+                t = before_t;
+                t.c_lflag &= ~(tcflag_t)(ICANON | ECHO);
+                t.c_iflag &= ~(tcflag_t)ICRNL;
+                t.c_cc[VMIN] = 0;
+                t.c_cc[VTIME] = 1;
+                CHECK(tcsetattr(0, TCSANOW, &t) == 0 && tcgetattr(0, &now_t) == 0);
+                CHECK(!(now_t.c_lflag & (ICANON | ECHO)) && (now_t.c_lflag & ISIG) && !(now_t.c_iflag & ICRNL));
+                CHECK(now_t.c_cc[VMIN] == 0 && now_t.c_cc[VTIME] == 1);
+                bmds_term_t bt = {.size = sizeof(bt)};
+                CHECK(bmds_term_get(0, &bt) == 0);
+                CHECK(!(bt.flags & (BMDS_TERM_LINE | BMDS_TERM_ECHO | BMDS_TERM_ICRNL)) &&
+                      (bt.flags & BMDS_TERM_SIGNALS));
+                clock_gettime(CLOCK_MONOTONIC, &t0);
+                CHECK(read(0, &b, 1) == 0);
+                ms = ms_since(&t0);
+                CHECK(ms >= 100 && ms < 150);
+                CHECK(fcntl(0, F_SETFL, O_NONBLOCK) == 0 && read(0, &b, 1) == -1 && errno == EAGAIN);
+                CHECK(fcntl(0, F_SETFL, 0) == 0 && tcsetattr(0, TCSANOW, &before_t) == 0);
+                CHECK(bmds_term_get(0, &bt) == 0 && (bt.flags & (BMDS_TERM_LINE | BMDS_TERM_ECHO | BMDS_TERM_ICRNL)) ==
+                                                            (BMDS_TERM_LINE | BMDS_TERM_ECHO | BMDS_TERM_ICRNL));
+        }
+        printf("poll: all passed\n");
+        return 0;
+}
+
 int main(int argc, char **argv) {
         if (argc < 2) {
                 fprintf(stderr,
                         "usage: progtest status|exit|leak|env|tty|float|files|time|sleep|term|lines|raw|mem|random|cwd|"
-                        "spin|calls|posix|abort|spawn|scripts|signals|catch|ignore|fd|ppid|exec|orphan|tree [arg]\n");
+                        "spin|calls|posix|abort|spawn|scripts|signals|catch|ignore|fd|ppid|exec|orphan|tree|poll "
+                        "[arg]\n");
                 return 2;
         }
         const char *what = argv[1];
@@ -768,6 +897,11 @@ int main(int argc, char **argv) {
                 printf("ignore: SIGINT ignored\n");
                 fflush(stdout);
                 for (;;) sleep(1);
+        }
+        if (strcmp(what, "poll") == 0) return polling(arg);
+        if (strcmp(what, "later") == 0) {
+                usleep((useconds_t)atoi(arg) * 1000);
+                return argc > 3 && write(atoi(argv[3]), "x", 1) == 1 ? 0 : 1;
         }
         if (strcmp(what, "killer") == 0) {
                 usleep((useconds_t)(argc > 3 ? atoi(argv[3]) : 100) * 1000);

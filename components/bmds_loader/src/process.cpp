@@ -10,6 +10,7 @@
 #include <new>
 #include <bmds/clock.h>
 #include <bmds/console.h>
+#include <bmds/deadline.h>
 #include <bmds/errno.h>
 #include <bmds/interrupt.h>
 #include <bmds/lineeditor.h>
@@ -17,6 +18,7 @@
 #include <bmds/pipe.h>
 #include <bmds/process.h>
 #include <bmds/sys.h>
+#include <bmds/waitlist.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -29,9 +31,11 @@ struct Process::Block {
                 uint32_t offset; // from the raw allocation to the program's pointer (just past this)
 };
 
-// Console input with BMDS_TERM_LINE: the editor, the line it gave (with
-// its '\n') until the program has read it all, and what was typed after
-// the line in the same read.
+// Console input taken from the console but not yet read: with
+// BMDS_TERM_LINE, the editor, the line it gave (with its '\n') until the
+// program has read it all; and bytes not yet edited (line mode) or read
+// (raw mode, after a poll). A poll pumps input in here, so a line may be
+// half edited between calls.
 struct Process::LineInput {
                 explicit LineInput(Console &console) : editor(console) {}
 
@@ -42,6 +46,9 @@ struct Process::LineInput {
                 uint8_t    ahead[32];
                 uint8_t    aheadPos = 0;
                 uint8_t    aheadLength = 0;
+                uint16_t   typed = 0;       // without echo: the line so far, in `line`
+                bool       editing = false; // the editor has a line started
+                bool       ended = false;   // the end of input came: the next read gets 0
 };
 
 namespace {
@@ -49,8 +56,14 @@ namespace {
         constexpr uint32_t KnownMemFlags = BMDS_MEM_FAST | BMDS_MEM_DMA;
         constexpr uint32_t KnownOpenFlags = BMDS_O_READ | BMDS_O_WRITE | BMDS_O_CREATE | BMDS_O_TRUNC | BMDS_O_APPEND |
                                             BMDS_O_EXCL | BMDS_O_CLOEXEC;
-        constexpr uint32_t KnownTermFlags =
-                BMDS_TERM_SIGNALS | BMDS_TERM_ONLCR | BMDS_TERM_COLORS | BMDS_TERM_LOGS | BMDS_TERM_LINE;
+        constexpr uint32_t KnownTermFlags = BMDS_TERM_SIGNALS | BMDS_TERM_ONLCR | BMDS_TERM_COLORS | BMDS_TERM_LOGS |
+                                            BMDS_TERM_LINE | BMDS_TERM_ECHO | BMDS_TERM_ICRNL;
+
+        constexpr uint8_t CtrlC = 0x03;
+        constexpr uint8_t CtrlD = 0x04;
+        constexpr uint8_t CtrlH = 0x08;
+        constexpr uint8_t CtrlU = 0x15;
+        constexpr uint8_t Delete = 0x7f;
 
         constexpr size_t roundUp(size_t value, size_t to) {
                 return (value + to - 1) / to * to;
@@ -129,6 +142,8 @@ Process *Process::createChild() const {
                 return nullptr;
         }
         child->_lineInput = _lineInput;
+        child->_echo = _echo;
+        child->_crToNl = _crToNl;
         child->_signals.inherit(_signals);
         return child;
 }
@@ -290,45 +305,106 @@ int32_t Process::read(int32_t fd, void *buf, uint32_t size) {
 }
 
 // The console: lines from the editor with BMDS_TERM_LINE, else bytes as
-// they come (after anything left over from line mode).
+// they come (after anything a poll or line mode left over).
 int32_t Process::readConsole(void *buf, uint32_t size) {
         auto *out = static_cast<uint8_t *>(buf);
-        if (_line != nullptr && _line->linePos < _line->lineLength) {
-                LineInput     &l = *_line;
-                const uint32_t left = static_cast<uint32_t>(l.lineLength - l.linePos);
-                const uint32_t n = left < size ? left : size;
-                std::memcpy(out, l.line + l.linePos, n);
-                l.linePos = static_cast<uint16_t>(l.linePos + n);
-                return static_cast<int32_t>(n);
-        }
-        if (!_lineInput) {
-                if (_line != nullptr && _line->aheadPos < _line->aheadLength) {
-                        LineInput     &l = *_line;
-                        const uint32_t left = static_cast<uint32_t>(l.aheadLength - l.aheadPos);
-                        const uint32_t n = left < size ? left : size;
-                        std::memcpy(out, l.ahead + l.aheadPos, n);
-                        l.aheadPos = static_cast<uint8_t>(l.aheadPos + n);
-                        return static_cast<int32_t>(n);
+        for (;;) {
+                if (_line != nullptr) {
+                        LineInput &l = *_line;
+                        if (l.linePos < l.lineLength) {
+                                const uint32_t left = static_cast<uint32_t>(l.lineLength - l.linePos);
+                                const uint32_t n = left < size ? left : size;
+                                std::memcpy(out, l.line + l.linePos, n);
+                                l.linePos = static_cast<uint16_t>(l.linePos + n);
+                                return static_cast<int32_t>(n);
+                        }
+                        if (!_lineInput && l.aheadPos < l.aheadLength) {
+                                const uint32_t left = static_cast<uint32_t>(l.aheadLength - l.aheadPos);
+                                const uint32_t n = left < size ? left : size;
+                                std::memcpy(out, l.ahead + l.aheadPos, n);
+                                l.aheadPos = static_cast<uint8_t>(l.aheadPos + n);
+                                return rawRead(out, static_cast<int32_t>(n));
+                        }
+                        if (l.ended) {
+                                l.ended = false;
+                                return 0;
+                        }
                 }
-                auto [n, err] = _console->read(WritableByteSpan(out, size), WaitForever);
-                if (err == Error::EndOfFile) return 0;
-                if (err.isError()) return errnoFor(err);
-                return static_cast<int32_t>(n);
+                if (!_lineInput) {
+                        // Nothing held: straight into the program's buffer.
+                        auto [n, err] = _console->read(WritableByteSpan(out, size), WaitForever);
+                        if (err == Error::EndOfFile) return 0;
+                        if (err.isError()) return errnoFor(err);
+                        return rawRead(out, static_cast<int32_t>(n));
+                }
+                const int32_t r = pumpConsole(true);
+                if (r < 0) return r;
         }
+}
+
+// Takes console input into _line, through the editor in line mode, until
+// a read would be served (1), or (without waiting) until nothing more has
+// arrived (0); or a negative errno.
+int32_t Process::pumpConsole(bool wait) {
         if (_line == nullptr) {
                 void *memory = Memory::alloc(MemSpace::Psram, sizeof(LineInput));
                 if (memory == nullptr) return -BMDS_ENOMEM;
                 _line = new (memory) LineInput(*_console);
         }
         LineInput &l = *_line;
-        l.editor.start(StringView());
+        if (l.linePos < l.lineLength || l.ended) return 1;
         for (;;) {
                 if (l.aheadPos == l.aheadLength) {
-                        auto [n, err] = _console->read(WritableByteSpan(l.ahead, sizeof(l.ahead)), WaitForever);
-                        if (err == Error::EndOfFile) return 0;
+                        const WritableByteSpan into(l.ahead, sizeof(l.ahead));
+                        auto [n, err] = wait ? _console->read(into, WaitForever) : _console->tryRead(into);
+                        if (err == Error::WouldBlock) return 0;
+                        if (err == Error::EndOfFile) {
+                                l.ended = true;
+                                return 1;
+                        }
                         if (err.isError()) return errnoFor(err);
                         l.aheadPos = 0;
                         l.aheadLength = static_cast<uint8_t>(n);
+                }
+                if (!_lineInput) return 1;
+                if (!_echo) {
+                        // Unseen (a password): Enter, Backspace, Ctrl-U, Ctrl-D.
+                        l.editing = false;
+                        const uint8_t b = l.ahead[l.aheadPos++];
+                        switch (b) {
+                                case '\r':
+                                case '\n':
+                                        l.line[l.typed] = '\n';
+                                        l.lineLength = static_cast<uint16_t>(l.typed + 1);
+                                        l.linePos = 0;
+                                        l.typed = 0;
+                                        return 1;
+                                case CtrlD:
+                                        // The line so far, without a newline; on an empty line, the end.
+                                        if (l.typed == 0) {
+                                                l.ended = true;
+                                        } else {
+                                                l.lineLength = l.typed;
+                                                l.linePos = 0;
+                                                l.typed = 0;
+                                        }
+                                        return 1;
+                                case Delete:
+                                case CtrlH:
+                                        if (l.typed > 0) --l.typed;
+                                        break;
+                                case CtrlU:
+                                case CtrlC: l.typed = 0; break;
+                                default:
+                                        if (l.typed < LineEditor::LineMax) l.line[l.typed++] = static_cast<char>(b);
+                                        break;
+                        }
+                        continue;
+                }
+                l.typed = 0;
+                if (!l.editing) {
+                        l.editor.start(StringView());
+                        l.editing = true;
                 }
                 switch (l.editor.feed(static_cast<char>(l.ahead[l.aheadPos++]))) {
                         case LineEditor::Event::Line: {
@@ -338,13 +414,127 @@ int32_t Process::readConsole(void *buf, uint32_t size) {
                                 l.line[line.size()] = '\n';
                                 l.linePos = 0;
                                 l.lineLength = static_cast<uint16_t>(line.size() + 1);
-                                return readConsole(buf, size);
+                                l.editing = false;
+                                return 1;
                         }
-                        case LineEditor::Event::Eof: return 0;
+                        case LineEditor::Event::Eof:
+                                l.editing = false;
+                                l.ended = true;
+                                return 1;
                         case LineEditor::Event::Cancel: l.editor.start(StringView()); break;
                         case LineEditor::Event::None: break;
                 }
         }
+}
+
+// Raw console bytes as the program reads them: CR as LF (ICRNL), and
+// echoed (ECHO), control bytes as ^X but tab and newline (Linux's ECHOCTL).
+int32_t Process::rawRead(uint8_t *out, int32_t n) {
+        if (_crToNl) {
+                for (int32_t i = 0; i < n; ++i) {
+                        if (out[i] == '\r') out[i] = '\n';
+                }
+        }
+        if (!_echo) return n;
+        uint8_t echo[64];
+        size_t  k = 0;
+        for (int32_t i = 0; i < n; ++i) {
+                const uint8_t b = out[i];
+                if ((b < 0x20 && b != '\n' && b != '\t') || b == Delete) {
+                        echo[k++] = '^';
+                        echo[k++] = b == Delete ? '?' : static_cast<uint8_t>(b + '@');
+                } else {
+                        echo[k++] = b;
+                }
+                if (k >= sizeof(echo) - 1 || i == n - 1) {
+                        (void)_console->write(ByteSpan(echo, k), WaitForever);
+                        k = 0;
+                }
+        }
+        return n;
+}
+
+// What a stream is ready for, as the program sees it: its console input is
+// ready when a read would be served from what has arrived.
+uint8_t Process::readiness(FileHandle &h) {
+        if (!isConsole(&h) || !h.canRead()) return h.stream().readiness();
+        const int32_t r = pumpConsole(false);
+        return static_cast<uint8_t>(Stream::Writable | (r != 0 ? Stream::Readable : 0));
+}
+
+int32_t Process::poll(bmds_pollfd_t *fds, uint32_t count, int32_t timeoutMs) {
+        if (count > MaxPollEntries) return -BMDS_EINVAL;
+        if (count > 0 && fds == nullptr) return -BMDS_EFAULT;
+        const uint32_t stride = count > 0 ? fds[0].size : 0;
+        if (count > 0 && stride < sizeof(bmds_pollfd_t)) return -BMDS_EINVAL;
+        auto entry = [&](uint32_t i) {
+                return reinterpret_cast<bmds_pollfd_t *>(reinterpret_cast<uint8_t *>(fds) + size_t(i) * stride);
+        };
+        for (uint32_t i = 1; i < count; ++i) {
+                if (entry(i)->size != stride) return -BMDS_EINVAL;
+        }
+
+        // The semaphore goes in the wait list of every distinct stream polled
+        // before readiness is checked, so a change in between still wakes us.
+        struct Watched {
+                        WaitList *list;
+                        size_t    slot;
+        };
+        Semaphore wake(1, 0);
+        Watched   watched[FdTable::MaxFds];
+        size_t    watchedCount = 0;
+        bool      unwatched = false; // a full wait list: check now and then instead
+        if (timeoutMs != 0) {
+                for (uint32_t i = 0; i < count; ++i) {
+                        FileHandle *h = _fds.handle(entry(i)->fd);
+                        WaitList   *list = h != nullptr ? h->stream().readinessWaiters() : nullptr;
+                        if (list == nullptr) continue;
+                        bool seen = false;
+                        for (size_t w = 0; w < watchedCount && !seen; ++w) seen = watched[w].list == list;
+                        if (seen) continue;
+                        const size_t slot = list->add(wake);
+                        if (slot == WaitList::NoSlot) {
+                                unwatched = true;
+                        } else {
+                                watched[watchedCount++] = Watched{list, slot};
+                        }
+                }
+        }
+
+        const Deadline deadline(timeoutMs < 0 ? WaitForever : static_cast<unsigned int>(timeoutMs));
+        int32_t        result = 0;
+        for (;;) {
+                result = 0;
+                for (uint32_t i = 0; i < count; ++i) {
+                        bmds_pollfd_t &e = *entry(i);
+                        e.revents = 0;
+                        if (e.fd < 0) continue;
+                        FileHandle *h = _fds.handle(e.fd);
+                        if (h == nullptr) {
+                                e.revents = BMDS_POLL_NVAL;
+                        } else {
+                                const uint8_t ready = readiness(*h);
+                                uint32_t      events = 0;
+                                if (h->canRead() && (ready & Stream::Readable)) events |= BMDS_POLL_IN;
+                                if (h->canWrite() && (ready & Stream::Writable)) events |= BMDS_POLL_OUT;
+                                e.revents = events & e.events;
+                                if (h->canRead() && (ready & Stream::HungUp)) e.revents |= BMDS_POLL_HUP;
+                                if (h->canWrite() && (ready & Stream::Broken)) e.revents |= BMDS_POLL_ERR;
+                        }
+                        if (e.revents != 0) ++result;
+                }
+                if (result != 0 || timeoutMs == 0 || deadline.isExpired()) break;
+                unsigned int waitMs = WaitForever;
+                if (!deadline.isForever()) waitMs = static_cast<unsigned int>((deadline.remainingUs() + 999) / 1000);
+                if (unwatched && (waitMs == WaitForever || waitMs > UnwatchedPollMs)) waitMs = UnwatchedPollMs;
+                const Deadline step(waitMs);
+                if (Interrupt::waitCurrent(wake, step) == Error::Interrupted) {
+                        result = -BMDS_EINTR;
+                        break;
+                }
+        }
+        for (size_t w = 0; w < watchedCount; ++w) watched[w].list->remove(watched[w].slot);
+        return result;
 }
 
 int32_t Process::write(int32_t fd, const void *buf, uint32_t size) {
@@ -702,7 +892,7 @@ int32_t Process::termGet(int32_t fd, bmds_term_t *term) {
         bmds_term_t             t = {};
         t.flags = (mode.signals ? BMDS_TERM_SIGNALS : 0) | (mode.nlToCrNl ? BMDS_TERM_ONLCR : 0) |
                   (mode.colors ? BMDS_TERM_COLORS : 0) | (mode.logs ? BMDS_TERM_LOGS : 0) |
-                  (_lineInput ? BMDS_TERM_LINE : 0);
+                  (_lineInput ? BMDS_TERM_LINE : 0) | (_echo ? BMDS_TERM_ECHO : 0) | (_crToNl ? BMDS_TERM_ICRNL : 0);
         t.columns = cells.columns;
         t.rows = cells.rows;
         t.colors = colorCount(_console->colorDepth());
@@ -721,6 +911,8 @@ int32_t Process::termSet(int32_t fd, uint32_t flags) {
         mode.logs = (flags & BMDS_TERM_LOGS) != 0;
         _console->setMode(mode);
         _lineInput = (flags & BMDS_TERM_LINE) != 0;
+        _echo = (flags & BMDS_TERM_ECHO) != 0;
+        _crToNl = (flags & BMDS_TERM_ICRNL) != 0;
         return 0;
 }
 
