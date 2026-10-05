@@ -14,6 +14,7 @@
 #include <bmds/config.h>
 #include <bmds/colorexpander.h>
 #include <bmds/edid.h>
+#include <bmds/framebuffer.h>
 #include <bmds/error.h>
 #include <bmds/paletteexpander.h>
 #include <bmds/semaphore.h>
@@ -103,8 +104,6 @@ class Scanout {
                                 bool            fullLaneRate = false; ///< Lanes at the 24-bit rate whatever the format.
                                 bool            freeRunning =
                                         true; ///< The ring never stops: a late block goes out stale and is skipped.
-                                uint8_t *frameSource =
-                                        nullptr; ///< `Rgb565Expanded`: the picture from this RGB565 framebuffer (PSRAM, written back) instead of the source's lines; the source's `frame()` changes it once a frame.
                                 const uint32_t *palette =
                                         nullptr; ///< `Indexed8`: 256 entries (0xRRGGBB) loaded at the start.
                                 void (*onRestart)(void *arg) =
@@ -154,6 +153,17 @@ class Scanout {
                  */
                 Error start(const Config &config, LineSource &source);
 
+                /**
+                 * @brief Starts sending @p frames (`devplan/display.md` §5b): the
+                 *        2D-DMA widens its front buffer into the ring, and the
+                 *        scanout makes its swaps as it begins each frame.
+                 *        `config.format` is `Rgb565Expanded`, its timing the
+                 *        framebuffer's size.
+                 * @return As the other `start()`.
+                 * @blocking
+                 */
+                Error start(const Config &config, Framebuffer &frames);
+
                 /** @brief Stops sending and frees everything. Idempotent. */
                 void stop();
 
@@ -186,7 +196,9 @@ class Scanout {
 
                 static void refillTask(void *arg);
                 void        refill();
+                Error       begin(const Config &config);
                 void        renderSlot(uint32_t block);
+                uint8_t    *frameFor(uint32_t block);
                 Error       startLink();
                 Error       startDpi();
                 void        resync();
@@ -197,6 +209,9 @@ class Scanout {
                 int                   _bus;
                 Config                _config;
                 LineSource           *_source = nullptr;
+                Framebuffer          *_frames = nullptr;    // the picture, when started on a framebuffer
+                uint8_t              *_frameData = nullptr; // its buffer for the frame being filled
+                uint32_t              _frameNumber = 0;     // that frame, counted like the blocks
                 Hardware             *_hw = nullptr;
                 uint8_t              *_ring = nullptr;    // blocks × _blockBytes
                 uint8_t              *_staging = nullptr; // Indexed8, Rgb565Expanded: one block as drawn

@@ -1,11 +1,11 @@
-# Display: HDMI through the LT8912B, Line-Rendered Scanout, Text Console
+# Display: HDMI through the LT8912B, a PSRAM Framebuffer, Text Console
 
-Status: **step 1 done, step 2 in progress** (Phase 4, 2026-10-04): the bridge is set up over I²C and shows the DSI controller's test pattern at 1280×720 on a monitor. Revised the same day (with the user): no framebuffer; the picture is rendered line by line into internal RAM as it is scanned out.
+Status: **step 1 done, step 2 done as a line-rendered scanout, step 2b designed** (Phase 4). The first plan (2026-10-04) had no framebuffer: lines rendered into internal RAM as they were scanned out. Measurement changed it (2026-10-05, with the user, §8): the scanout became free-running, and the picture now comes from an **RGB565 double buffer in PSRAM**, widened to RGB888 by the 2D-DMA into the free-running ring of internal line buffers (§5b). It needs the PSRAM at 200 MHz (`psram.md`).
 
 ## 1. Goal
 
 - A picture on an HDMI monitor, from the P4's MIPI-DSI controller through the board's Lontium LT8912B bridge.
-- **No framebuffer.** The DSI controller's DMA streams a small ring of line buffers in internal RAM; a renderer fills each part of the ring just before the scan reaches it. Scanout then costs PSRAM nothing, and the resolution isn't bounded by a framebuffer's memory or bandwidth: the native 1920×1080 of a monitor is reachable later as far as the DSI link allows.
+- **A framebuffer in PSRAM, double-buffered, RGB565** (§5b): drawing goes to the back buffer (drawn in internal RAM, copied in by DMA), `present()` swaps the buffers at the start of a frame. The DSI controller's DMA streams a small free-running ring of RGB888 line buffers in internal RAM, which the 2D-DMA fills from the front buffer just ahead of the scan. A late fill never stops the stream: the block goes out stale.
 - Know the monitor: hot-plug state and its EDID (name, preferred mode).
 - A **text console** as the first renderer (`terminal.md` §3): a cell grid with 24-bit colors, glyphs drawn into each line as it goes out; the shell's output on the screen, and with a keyboard (Phase 5) a full local shell.
 - **Later** (not this plan's steps): display modes of several depths for programs (8-bit palette, 16-bit, 24-bit), video mode testing beyond 720p, and a fast graphics scheme for a line-based display (tiles, sprites, a palette framebuffer expanded per line).
@@ -14,7 +14,7 @@ Status: **step 1 done, step 2 in progress** (Phase 4, 2026-10-04): the bridge is
 
 - **The bridge** (`docs/HARDWARE.md`): LT8912B on the main I²C bus (GPIO7/8, **100 kHz**: at 400 kHz reads and writes were corrupted), three register pages at 0x48 (main), 0x49 (CEC/DSI), 0x4A (AVI infoframe). Reset is an RC circuit only, so **an ESP reset doesn't reset the bridge**: every setup writes all its registers. No interrupt or hot-plug line: hot-plug is bit 7 of main 0xC1, valid once the bridge's digital clocks are on. 2 DSI data lanes; the DSI PHY is powered by on-chip LDO 3 at 2.5 V. The monitor's DDC (EDID at 0x50) is on the same bus.
 - **The bridge takes 24-bit RGB** over DSI and sends HDMI (or DVI). No audio on this board.
-- **The DSI link:** the P4's PHY does 80-1500 Mbps per lane, 2 lanes: up to a 125 MHz pixel clock in 24-bit. Standard 1080p60 (148.5 MHz) doesn't fit; 1080p50 with reduced blanking (about 115 MHz) would; 720p60 runs at an 80 MHz pixel clock with 960 Mbps lanes (Espressif's timing: htotal 1800, vtotal 741, 59.98 Hz; the DPI clock divides a PLL, so CEA's 74.25 MHz isn't available). The DSI bridge converts its input format (RGB565, RGB666, RGB888) to the link's 24 bits, so the line buffers can be 16-bit.
+- **The DSI link:** the P4's PHY does 80-1500 Mbps per lane, 2 lanes: up to a 125 MHz pixel clock in 24-bit. Standard 1080p60 (148.5 MHz) doesn't fit; 1080p50 with reduced blanking (about 115 MHz) would; 720p60 runs at an 80 MHz pixel clock with 960 Mbps lanes (Espressif's timing: htotal 1800, vtotal 741, 59.98 Hz; the DPI clock divides a PLL, so CEA's 74.25 MHz isn't available). Before chip revision 3.0 the DSI bridge can't convert formats, and the LT8912B never locks onto 16-bit DSI input (§8), so the link carries RGB888.
 - **The DSI bridge pulls pixels with the DW-GDMA** (IDF's private `esp_private/dw_gdma.h`): IDF's DPI panel gives it one block, the whole framebuffer in PSRAM, re-armed each frame. The DMA also does **circular linked lists with an interrupt per block**, which is what a ring of line buffers needs. IDF has no line-buffer ("bounce buffer") mode for DSI (its RGB-LCD driver has one), so the scanout is ours, on the DSI HAL and the DW-GDMA, with IDF's DPI panel as the reference for the register setup.
 - **The cost moves from memory to rendering.** 720p60 sends 80 Mpixel/s: 160 MB/s of 16-bit pixels, or 240 MB/s of 24-bit, all written by the renderer into internal RAM. Text rows rendered from a glyph bitmap with two colors per cell: about 160 cells per line at 8 pixels each, 720 lines, 60 frames: **6.9 million cell-lines a second**, so a cell-line must cost a few tens of cycles at most. 16-bit output halves the bytes written. The P4's SIMD (`xespv2p1`) and its PPA (which has a palette lookup, L8 with a CLUT, that IDF doesn't drive yet) are for later depths and graphics.
 - **The bridge setup** is BMDS's own, from the register meanings in Linux's (GPL) and Espressif's (Apache-2.0, known to work with the P4) drivers; no code is copied. Espressif's analog values are used.
@@ -24,19 +24,23 @@ Status: **step 1 done, step 2 in progress** (Phase 4, 2026-10-04): the bridge is
 | # | Question | Choice | Alternatives |
 |---|---|---|---|
 | V1 | Bridge driver | **Our own `Lt8912b`** over our `I2cBus`. Done. | Espressif's component |
-| V2 | Scanout | **Our own, line-rendered**: the DSI HAL for the link and DPI timing, the DW-GDMA streaming a circular ring of line buffers in internal DMA RAM, a refill task woken per block | IDF's DPI panel with a PSRAM framebuffer (the step 1 bring-up; rejected: memory, bandwidth, resolution) |
+| V2 | Scanout | **Our own, free-running**: the DSI HAL for the link and DPI timing, the DW-GDMA streaming a circular ring of line buffers in internal DMA RAM that never stops (§8), a refill task woken per block | IDF's DPI panel scanning PSRAM directly (no slack: one late read is an underrun; at 80 MHz it couldn't keep up); the ring stopping at a buffer not refilled (the first design; every late refill cost a resync) |
 | V3 | I²C | **`I2cBus` over IDF's `i2c_master`**, numbered. Done. | our own on the LL layer |
-| V4 | Line buffer format | **Measured in step 2**: RGB565 (the bridge widens it) unless RGB888 renders nearly as fast | RGB888 |
+| V4 | Formats | **RGB565 framebuffer, RGB888 ring and link**: the LT8912B never locks onto 16-bit DSI input (§8), so the 2D-DMA's color converter widens the pixels between framebuffer and ring | RGB888 framebuffer (166 MB/s of PSRAM reads at 720p60, against 110); 8-bit palette (the PPA's lookup was too slow at 720p60) |
 | V5 | First mode | **1280×720 at 60 Hz**; other modes later | the EDID's preferred |
 | V6 | Hot-plug | **Read 0xC1 every 2 s** in the display service; act on changes (EDID, output on or off) | interrupt (none on this board) |
-| V7 | Where | **`bmds_drivers`**: `I2cBus`, `Lt8912b`, `Edid`, `Scanout`; the text renderer with the console | one component per driver |
+| V7 | Where | **`bmds_drivers`**: `I2cBus`, `Lt8912b`, `Edid`, `Scanout`, `Framebuffer`; the text renderer with the console | one component per driver |
+| V8 | PSRAM clock | **200 MHz** for the framebuffer (its 2D-DMA reads keep up under load; at 80 MHz half the blocks were skipped under load, §8), once verified (`psram.md`) | 80 MHz with the line-rendered scanout |
+| V9 | Drawing | **In internal RAM, copied into the back buffer by 2D-DMA rectangle copies**: the CPU never writes the framebuffer, so no PSRAM cache traffic or write-backs (the CPU's PSRAM traffic can't be ranked below the 2D-DMA's: the caches bypass the interconnect, §8) | the CPU drawing into PSRAM (its write-backs held the refill up to 5 ms a frame in the prototype) |
+| V10 | Buffering | **Double, swapped at a frame's start** by the refill task (no vsync interrupt on this chip revision); drawing waits while a swap is pending | single buffer (tearing); triple (more PSRAM, more copying) |
+| V11 | Ring | **3 buffers of 24 lines** (276 KB of internal RAM at 720p); free-running | 3×16 (184 KB; three times the skips under flat-out CPU PSRAM writes); more buffers (no better: the skips follow the 2D-DMA's pace, not jitter) |
 
 ## 4. Step 1: bring-up (done)
 
 - **1a, the bridge on I²C:** `I2cBus`, `Lt8912b` (chip id, hot-plug), `Edid`, the `display` command (status, `edid`, `scan`).
 - **1b, a picture:** `display test 720` sets the bridge up and starts IDF's DPI panel showing the DSI controller's own bar pattern: bars on the monitor. Kept until step 2's scanout replaces it.
 
-## 5. Step 2: the line-rendered scanout (next)
+## 5. Step 2: the line-rendered scanout (done; superseded as the picture source by §5b)
 
 - **`Scanout`** (`bmds_drivers`): powers the PHY (LDO 3), brings up the DSI host and PHY at the mode's lane rate, programs the DPI timing and the DSI bridge (input format, the frame's size, flow control by the DMA), and starts the DW-GDMA on a circular list of `B` buffers of `L` lines each in internal DMA RAM. Each block's completion wakes the **refill task** (pinned to core 1, high priority), which asks the `LineSource` for the next `L` lines into the buffer just sent. A frame counter and the bridge's underrun count tell whether the renderer kept up.
 - **`LineSource`:** `void render(uint16_t firstLine, uint16_t lines, uint8_t *dst, size_t stride)`; the mode's format and width are known to it.
@@ -44,16 +48,39 @@ Status: **step 1 done, step 2 in progress** (Phase 4, 2026-10-04): the bridge is
 - **Measure:** cycles per block for RGB565 and RGB888 at 720p; the refill task's share of core 1; underruns while the other core hammers PSRAM and internal RAM; internal RAM for `B`×`L` (720p, 8 lines: 20 KB per buffer in RGB565, 30 KB in RGB888). Then V4.
 - **Then:** `display test` uses it; IDF's DPI panel and its framebuffer go.
 
+## 5b. Step 2b: the framebuffer
+
+```
+ CPU draws a strip   2D-DMA copy      PSRAM, 200 MHz         2D-DMA widen      internal ring       DW-GDMA
+ in internal RAM ──► (rectangle) ──► back  │ front (565) ──► 565 → 888, ────► 3 × 24 lines ────► (free-running) ──► DSI ──► LT8912B ──► HDMI
+ (565)                                     │ swap at a        per 24 lines      RGB888, 276 KB
+                                           │ frame's start    (the refill)
+```
+
+- **`Framebuffer`** (`bmds_drivers`): two RGB565 buffers in PSRAM (`MemSpace::PsramDma`, 128-byte aligned; 1.84 MB each at 1280×720), and the 2D-DMA jobs that draw into them. One client at a time (the display service, then the console). Sketch:
+  - `Error blit(const Rect &to, const uint8_t *src, size_t srcStride, unsigned int timeoutMs)`: copies a 565 rectangle from internal RAM into the back buffer (a 2D descriptor pair: a block of the source picture into a block of the framebuffer). It writes the source back from the cache first, in bounded pieces (a cache operation runs with interrupts off). Blocking; waits while a swap is pending.
+  - `Error copyFromFront(const Rect &r, unsigned int timeoutMs)`: brings a rectangle of the back buffer up to the front's (after a swap the back holds the frame from two presents ago). The caller copies only what changed since: the console knows its dirty cells. A full-frame copy moves 3.7 MB of PSRAM traffic (about 15 ms at the measured DMA rate), so it's the exception.
+  - `Error present(unsigned int timeoutMs)` / `Error tryPresent()`: asks for the swap (the user's "take"). The refill task swaps when it starts the first block of the next frame and releases the waiter; `present()` waits for that, `tryPresent()` returns at once (`WouldBlock` if a swap is already pending). Until the swap, `blit()` and `copyFromFront()` wait: the back buffer is about to be shown.
+  - `size()`, `format()`; later a `Format` beyond 565.
+- **`Scanout`** takes the front buffer (`Config::frameSource`, the prototype's) and a swap request, checked at each frame's first block. The `LineSource` path stays as the bring-up and 80 MHz fallback until the framebuffer is the default, then goes with the other bring-up knobs.
+- **The 2D-DMA:** 3 TX and 2 RX channels on this revision (TX 0-2 convert colors), so a widen job (1 TX with the converter, 1 RX) and a copy job (1+1) can run at once. Within the 2D-DMA, channel priorities and arbiter weights (`dma2d_ll_rx_set_priority`, token counts) can favor the widen job over copies; against other DMA masters its interconnect QoS is already 15, and other masters can be rate-limited (§8). Against the CPU nothing ranks it (§8): hence V9.
+- **Cache rules:** the CPU never writes the framebuffer; it reads it only after invalidating (screenshots, tests). Its strips in internal RAM are written back before each copy.
+- **Budgets (720p60):** PSRAM 3.7 MB for the two buffers; reads 110 MB/s for the scan plus the copies. Internal RAM 276 KB for the ring (494 KB was free with the 92 KB 3×8 ring, so about 310 KB remains), 4 KB of descriptors, plus the drawing strips (a 16-line text row is 40 KB). At 1080p30: 4.15 MB a buffer, 124 MB/s, and 5.76 KB a ring line (3×16 lines: 276 KB).
+- **When it falls behind:** a skipped block goes out with the lines of three blocks earlier (72 rows up) for one frame, and is counted; the link never loses sync. Measured with the prototype (3×24, 200 MHz): none idle, 3.7% of blocks while the CPU writes PSRAM flat out, about 0.1% under `memtest`.
+- **Steps:** (1) `Framebuffer` with the swap in the scanout, the test pattern drawn once; (2) `blit` and `copyFromFront`, a moving test drawn the V9 way, measured idle and under the stresses (the skips, the copy rates, the 2D-DMA priorities); (3) the default, together with 200 MHz PSRAM once `psram.md`'s checks pass; the line-rendered paths and bring-up commands removed.
+
 ## 6. Later steps (outline)
 
-- **3, the text renderer:** `TerminalScreen` (host-tested, `terminal.md` §3) holding the cells (in PSRAM: a 160×45 grid is about 72 KB; each text row's cells copied to internal RAM once per 16 lines); a `LineSource` drawing glyph rows with each cell's colors; an 8×16 bitmap font with a licence that fits (permissive or public domain), in internal RAM.
+- **3, the text renderer:** `TerminalScreen` (host-tested, `terminal.md` §3) holding the cells; changed rows drawn as glyphs with each cell's colors into a strip in internal RAM and blitted into the back buffer, then presented (§5b); an 8×16 bitmap font with a licence that fits (permissive or public domain), in internal RAM.
 - **4, the HDMI console:** a `Console` whose output is the screen; a shell instance on it (output only until Phase 5); the boot log on it. `Display` as a service: hot-plug, output off without a monitor.
 - **Beyond Phase 4's text console:** modes (720p and up, the EDID's preferred where the link allows), depths for programs (8-bit palette, 16, 24), line-based graphics.
 
 ## 7. Open questions
 
-- The DW-GDMA and the DSI bridge in a never-ending circular list: IDF re-arms one block per frame; whether the bridge's per-frame block count and "last block" markers allow an endless ring, or the ring must be re-armed each frame (a per-frame interrupt, cheap). Step 2 finds out.
-- Rendering in the DMA interrupt instead of a task (lower latency, fewer buffers; but long interrupts).
+- Answered: the DW-GDMA does run an endless circular list against the DSI bridge (§8), as long as each descriptor is made valid again after its block.
+- The 2D-DMA per job: about 13,400 cycles of fixed cost through IDF's job queue (§8). Driving its channels directly (configured once, only descriptors rewritten) would cut most of it; worth it only if the skips stay a problem.
+- Whether copies and the widen job, running at once on the 2D-DMA, need its channel priorities set, and what blit sizes keep the scan's share.
+- A larger L2 cache (256 or 512 KB, from internal RAM) to cut the CPU's PSRAM misses, against the RAM the ring wants.
 - DVI versus HDMI mode: from the EDID (HDMI for this monitor).
 - The bridge's analog values: Espressif's, as measured working.
 
@@ -160,3 +187,6 @@ Status: **step 1 done, step 2 in progress** (Phase 4, 2026-10-04): the bridge is
   - **Longer jobs help, a deeper ring doesn't** (4×16 is 3×16): the skips come from the 2D-DMA's average pace under PSRAM contention, not from jitter. 24-line blocks (3 of them: 276 KB of internal RAM) skip 3.7% of blocks while the CPU writes PSRAM flat out, none under PSRAM copies, about 0.1% under `memtest`.
   - **80 MHz works idle but not under load** (half the blocks skipped while the CPU writes PSRAM): the framebuffer wants 200 MHz.
   - Not measured yet: a moving picture drawn the planned way (internal RAM, then DMA into the framebuffer). The test pattern's own moving stripe writes PSRAM from the CPU in the refill task (up to 5 ms a frame), which skipped blocks even idle; that's the approach the plan avoids.
+- **§5b step 1, the framebuffer and its swap** (2026-10-05): `Framebuffer` (`bmds_drivers`): two RGB565 buffers in PSRAM (128-byte aligned, cleared and written back in 64 KB pieces), `front()`/`back()`, `present(timeoutMs)`, `tryPresent()`, `isSwapPending()`, `swaps()`. The swap request is three-state (idle, asked, swapping), and whoever moves it from asked to swapping makes the swap, so a present racing a scan that stops swaps once, and `isSwapPending()` stays true until the front has moved. A counter of swaps tells a waiter its swap from an earlier one. `Scanout::start(config, Framebuffer &)` replaces the prototype's `frameSource`: the refill asks the framebuffer for the frame's buffer at each frame's first block filled (after a skip, the first one filled), which is where a pending swap is made; without a running scan a present swaps at once. `display test MODE fb565` draws the test picture into both buffers with the stripe in different places; `display present [N]` swaps N times, timing each.
+  - **Measured** (200 MHz PSRAM, 720p60, 3×24): one present waited 9.8 ms; 120 back to back took 16,601 µs on average and 16,677 at most (a frame is 16,672 µs), so swaps land on frame starts. No skipped blocks through 181 swaps; 3 during a 2 s `display stress write`. The 3.7 MB of PSRAM comes back at `display test off`.
+  - **`display verify` proven:** the occasional single wrong line was the line the 2D-DMA was writing (part old, part new: a buffer goes from one kind of line to the other three blocks on). Each flagged line is now looked at again 50 µs later: in 20 checks (24- and 8-line blocks, after 61 swaps) every one was right then, 0 stayed wrong.

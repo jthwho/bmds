@@ -14,6 +14,7 @@
 #include <sdkconfig.h>
 #include <cstring>
 #include <esp_cache.h>
+#include <esp_rom_sys.h>
 #include <hal/axi_icm_ll.h>
 #include <bmds/board.h>
 #include <bmds/command.h>
@@ -101,14 +102,13 @@ namespace {
 
                         // Framebuffer: the stripe's old place back from the line template,
                         // its new one inverted.
-                        // A still picture (`display test MODE ... still`): frame() changes nothing.
-                        void setStill(bool still) {
-                                _still = still;
+                        // The frame count the stripe's place follows (4 pixels a frame).
+                        void setFrame(uint32_t frame) {
+                                _frame = frame;
                                 return;
                         }
 
                         BMDS_HOT_ATTR void frame(uint8_t *fb, size_t stride) override {
-                                if (_still) return;
                                 const uint16_t old = static_cast<uint16_t>((_frame * 4) % (_width - 16));
                                 ++_frame;
                                 const uint16_t now = static_cast<uint16_t>((_frame * 4) % (_width - 16));
@@ -148,13 +148,13 @@ namespace {
 
                         uint8_t *_lines = nullptr;
                         size_t   _bytes = 2;
-                        bool     _still = false;
                         uint16_t _width = 0;
                         uint16_t _height = 0;
                         uint32_t _frame = 0;
         };
 
-        constinit StaticObject<Scanout> scanoutObject;
+        constinit StaticObject<Scanout>     scanoutObject;
+        constinit StaticObject<Framebuffer> framesObject; // `display test MODE fb565`
         TestPattern                     testPattern;
         uint64_t                        testStartUs = 0;
 
@@ -277,6 +277,11 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        Framebuffer &frames() {
+                if (!framesObject.isCreated()) framesObject.create();
+                return *framesObject;
+        }
+
         Scanout &scanout() {
                 if (!scanoutObject.isCreated()) scanoutObject.create(0);
                 return *scanoutObject;
@@ -298,14 +303,11 @@ namespace {
         uint8_t testPacking = 0;
         bool    testFullLane = false;
         bool    testFree = true; // the free-running ring, unless `display test MODE ... strict`
-        uint8_t *testFrame = nullptr; // `display test MODE fb565`: the RGB565 framebuffer (PSRAM)
-        bool     testStill = false;
 
         Error startTest(Lt8912b &b, const VideoTiming &timing, Scanout::Format format, uint16_t lines, uint8_t blocks,
                         bool framebuffer, bool fb565 = false) {
                 scanout().stop();
-                Memory::free(testFrame);
-                testFrame = nullptr;
+                frames().stop();
                 const BoardDisplay &d = board().display;
                 Scanout::Config     c;
                 c.timing = timing;
@@ -332,22 +334,26 @@ namespace {
                 c.onRestartArg = &b;
                 Error err = b.configure(c.timing, c.lanes, true);
                 if (err.isOk()) err = testPattern.setUp(c.format, c.timing.hActive, c.timing.vActive);
-                testPattern.setStill(testStill);
                 if (err.isOk() && fb565) {
-                        // The picture drawn once into the framebuffer, written back in pieces
+                        // Both buffers drawn once, the stripe in a different place in each
+                        // (`display present` shows the swaps), and written back in pieces
                         // (a cache operation runs with interrupts off).
-                        const size_t stride = size_t(c.timing.hActive) * 2;
-                        const size_t bytes = stride * c.timing.vActive;
-                        testFrame = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::PsramDma, bytes, 128));
-                        if (testFrame == nullptr) return Error::NoMem;
-                        testPattern.render(0, c.timing.vActive, testFrame, stride);
-                        for (size_t off = 0; off < bytes; off += 64 * 1024)
-                                (void)esp_cache_msync(testFrame + off,
-                                                      bytes - off < 64 * 1024 ? bytes - off : 64 * 1024,
-                                                      ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-                        c.frameSource = testFrame;
+                        Framebuffer &f = frames();
+                        err = f.start(c.timing.hActive, c.timing.vActive);
+                        const size_t bytes = f.stride() * f.height();
+                        for (int i = 0; i < 2 && err.isOk(); ++i) {
+                                uint8_t *buffer = i == 0 ? f.front() : f.back();
+                                testPattern.setFrame(i == 0 ? 0 : 100);
+                                testPattern.render(0, f.height(), buffer, f.stride());
+                                for (size_t off = 0; off < bytes; off += 64 * 1024)
+                                        (void)esp_cache_msync(buffer + off,
+                                                              bytes - off < 64 * 1024 ? bytes - off : 64 * 1024,
+                                                              ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                        }
+                        if (err.isOk()) err = scanout().start(c, f);
+                } else if (err.isOk()) {
+                        err = scanout().start(c, testPattern);
                 }
-                if (err.isOk()) err = scanout().start(c, testPattern);
                 if (err.isError()) return err;
                 testStartUs = System::uptimeUs();
                 return b.resetReceiver();
@@ -359,8 +365,7 @@ namespace {
                 if (b == nullptr) return Shell::ExitFailure;
                 if (std::strcmp(args[2], "off") == 0) {
                         scanout().stop();
-                        Memory::free(testFrame);
-                        testFrame = nullptr;
+                        frames().stop();
                         (void)b->setOutput(false);
                         return Shell::ExitSuccess;
                 }
@@ -368,18 +373,15 @@ namespace {
                 testPacking = 0;
                 testFullLane = false;
                 testFree = true;
-                testStill = false;
                 size_t positional = args.size();
                 for (size_t i = 3; i < args.size(); ++i) {
                         const bool pack = std::strncmp(args[i], "pack=", 5) == 0;
                         if (pack) testPacking = static_cast<uint8_t>(std::atoi(args[i] + 5));
                         const bool lane24 = std::strcmp(args[i], "lane24") == 0;
                         const bool strict = std::strcmp(args[i], "strict") == 0;
-                        const bool still = std::strcmp(args[i], "still") == 0;
-                        if (still) testStill = true;
                         if (lane24) testFullLane = true;
                         if (strict) testFree = false;
-                        if ((pack || lane24 || strict || still) && i < positional) positional = i;
+                        if ((pack || lane24 || strict) && i < positional) positional = i;
                 }
                 if (positional > 6) return ctx.usage();
                 args = Args(args.data(), positional);
@@ -511,11 +513,11 @@ namespace {
         // Bring-up diagnostics: I2C read reliability at two clocks, and what the
         // bridge sees of the DSI input (main 0x9c-0x9f: the measured sync counts).
         // Bring-up: `display verify` checks the ring against the framebuffer it was
-        // widened from (`display test MODE fb565 still`): every line one of the
+        // widened from (`display test MODE fb565`): every line one of the
         // picture's two kinds, each RGB888 pixel's top bits its RGB565 pixel's.
         int runVerify(CommandContext &ctx) {
-                if (testFrame == nullptr || !scanout().isRunning()) {
-                        ctx.eprintf("display: verify needs `display test MODE fb565 still`\n");
+                if (!framesObject.isCreated() || !frames().isStarted() || !scanout().isRunning()) {
+                        ctx.eprintf("display: verify needs `display test MODE fb565`\n");
                         return Shell::ExitFailure;
                 }
                 const VideoTiming &t = runningTiming;
@@ -523,12 +525,11 @@ namespace {
                 const uint8_t     *ring = scanout().ring();
                 (void)esp_cache_msync(const_cast<uint8_t *>(ring), ringBytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
                 const size_t   stride888 = size_t(t.hActive) * 3;
-                const uint8_t *kinds[2] = {testFrame, testFrame + size_t(t.vActive - 1) * t.hActive * 2};
-                size_t         lines = 0, bad = 0;
+                const uint8_t *front = frames().front();
+                const uint8_t *kinds[2] = {front, front + size_t(t.vActive - 1) * t.hActive * 2};
                 uint32_t       lowBits = 0;
-                for (size_t off = 0; off + stride888 <= ringBytes; off += stride888, ++lines) {
-                        const uint8_t *out = ring + off;
-                        bool           matched = false;
+                // One of the picture's two kinds of line, each pixel's top bits right.
+                auto matches = [&](const uint8_t *out) {
                         for (const uint8_t *in : kinds) {
                                 size_t x = 0;
                                 for (; x < t.hActive; ++x) {
@@ -539,21 +540,58 @@ namespace {
                                                 break;
                                         lowBits |= (r & 7u) << 16 | (g & 3u) << 8 | (b & 7u);
                                 }
-                                if (x == t.hActive) matched = true;
+                                if (x == t.hActive) return true;
                         }
-                        if (!matched) {
-                                if (bad == 0) {
-                                        const uint32_t p = kinds[0][0] | uint32_t(kinds[0][1]) << 8;
-                                        ctx.printf("first bad line %u: out %02x %02x %02x, in %04x\n",
-                                                   static_cast<unsigned>(lines), out[0], out[1], out[2],
-                                                   static_cast<unsigned>(p));
-                                }
-                                ++bad;
+                        return false;
+                };
+                size_t lines = 0, bad = 0, inFlight = 0;
+                for (size_t off = 0; off + stride888 <= ringBytes; off += stride888, ++lines) {
+                        const uint8_t *out = ring + off;
+                        if (matches(out)) continue;
+                        // The line the 2D-DMA is writing is part old, part new: looked at
+                        // again once it's done (a line takes about 11 us), it's right.
+                        esp_rom_delay_us(50);
+                        (void)esp_cache_msync(const_cast<uint8_t *>(out), stride888, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+                        if (matches(out)) {
+                                ++inFlight;
+                                continue;
                         }
+                        if (bad == 0)
+                                ctx.printf("first bad line %u: out %02x %02x %02x\n", static_cast<unsigned>(lines),
+                                           out[0], out[1], out[2]);
+                        ++bad;
                 }
-                ctx.printf("verify: %u of %u ring lines wrong; low bits seen %06lx\n", static_cast<unsigned>(bad),
-                           static_cast<unsigned>(lines), static_cast<unsigned long>(lowBits));
+                ctx.printf("verify: %u of %u ring lines wrong (%u more being written, right 50 us later); low bits "
+                           "seen %06lx\n",
+                           static_cast<unsigned>(bad), static_cast<unsigned>(lines), static_cast<unsigned>(inFlight),
+                           static_cast<unsigned long>(lowBits));
                 return bad == 0 ? Shell::ExitSuccess : Shell::ExitFailure;
+        }
+
+        // Bring-up: `display present [N]` swaps the test framebuffer N times,
+        // timing each present (it waits for the next frame's start).
+        int runPresent(CommandContext &ctx, const char *count) {
+                if (!framesObject.isCreated() || !frames().isStarted() || !scanout().isRunning()) {
+                        ctx.eprintf("display: present needs `display test MODE fb565`\n");
+                        return Shell::ExitFailure;
+                }
+                const int n = count == nullptr ? 1 : std::atoi(count);
+                uint64_t  total = 0, longest = 0;
+                for (int i = 0; i < n && !ctx.isInterrupted(); ++i) {
+                        const uint64_t start = System::uptimeUs();
+                        const Error    err = frames().present(100);
+                        const uint64_t us = System::uptimeUs() - start;
+                        if (err.isError()) {
+                                ctx.eprintf("display: present: %s\n", err.desc());
+                                return Shell::ExitFailure;
+                        }
+                        total += us;
+                        if (us > longest) longest = us;
+                }
+                ctx.printf("present: %d swaps, %llu us each on average, %llu at most (%u swaps in all)\n", n,
+                           static_cast<unsigned long long>(n > 0 ? total / n : 0),
+                           static_cast<unsigned long long>(longest), static_cast<unsigned>(frames().swaps()));
+                return Shell::ExitSuccess;
         }
 
         int runCheck(CommandContext &ctx) {
@@ -725,6 +763,8 @@ namespace {
                 if (args.size() == 2 && std::strcmp(args[1], "check") == 0) return runCheck(ctx);
                 if (args.size() >= 2 && std::strcmp(args[1], "qos") == 0) return runQos(ctx, args);
                 if (args.size() == 2 && std::strcmp(args[1], "verify") == 0) return runVerify(ctx);
+                if (args.size() <= 3 && args.size() >= 2 && std::strcmp(args[1], "present") == 0)
+                        return runPresent(ctx, args.size() == 3 ? args[2] : nullptr);
                 return ctx.usage();
         }
 
@@ -745,7 +785,7 @@ Error DisplayTest::init() {
 
 BMDS_SHELL_COMMAND(display, runDisplay,
                    "[edid|scan|check|stats|test 720|1080|WxH@HZ [cpu|pal|565|dma|fb|fb565] [lines] [blocks] "
-                   "[strict]|test off|stress "
+                   "[strict]|test off|present [N]|verify|stress "
                    "psram|write|internal|qos [FIELD N|limit MASTER r|w BURST PEAK RATE|off]]",
                    "Show the HDMI bridge and the monitor; 'edid' dumps the monitor's EDID, 'scan' lists the bus, "
                    "'test' starts the test picture (bring-up), 'stats' shows the scanout's counters")

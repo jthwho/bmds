@@ -21,6 +21,7 @@ if(COMMAND idf_component_register)
                                     src/lt8912b.cpp
                                     src/memtestcommand.cpp
                                     src/colorexpander.cpp
+                                    src/framebuffer.cpp
                                     src/paletteexpander.cpp
                                     src/scanout.cpp
                                INCLUDE_DIRS include

@@ -159,24 +159,39 @@ struct ScanoutIsr {
 
 Error Scanout::start(const Config &config, LineSource &source) {
         if (_running) return Error::InvalidState;
+        _source = &source;
+        _frames = nullptr;
+        return begin(config);
+}
+
+Error Scanout::start(const Config &config, Framebuffer &frames) {
+        if (_running) return Error::InvalidState;
+        if (!frames.isStarted() || frames.width() != config.timing.hActive || frames.height() != config.timing.vActive)
+                return Error::Invalid;
+        _source = nullptr;
+        _frames = &frames;
+        return begin(config);
+}
+
+Error Scanout::begin(const Config &config) {
         const VideoTiming &t = config.timing;
         if (config.blocks < 2 || config.blocks > 16 || config.linesPerBlock == 0 ||
             t.vActive % config.linesPerBlock != 0 || config.lanes < 1 || config.lanes > MIPI_DSI_LL_MAX_DATA_LANES ||
             t.pixelKhz < 1000)
                 return Error::Invalid;
-        if (config.frameSource != nullptr && (config.format != Format::Rgb565Expanded || config.framebuffer))
+        if (_frames != nullptr && (config.format != Format::Rgb565Expanded || config.framebuffer))
                 return Error::Invalid;
         if (config.framebuffer &&
             (config.format != Format::Rgb888 || uint32_t(config.blocks) * config.linesPerBlock != t.vActive))
                 return Error::Invalid;
         _config = config;
-        _source = &source;
         _stride = t.hActive * bytesPerPixel(config.format);
         if (_stride % 8 != 0) return Error::Invalid; // the DMA moves 64-bit words
         _blockBytes = _stride * config.linesPerBlock;
         _blocksPerFrame = t.vActive / config.linesPerBlock;
         _sent.store(0);
         _primed = false;
+        _frameData = nullptr;
         _refilled = 0;
         _late.store(0);
         _skipped = 0;
@@ -212,11 +227,11 @@ Error Scanout::start(const Config &config, LineSource &source) {
         if (isExpanded(config.format)) {
                 const size_t drawn = size_t(t.hActive) * config.linesPerBlock * drawnBytesPerPixel(config.format);
                 // From a framebuffer, the 2D-DMA reads it directly: no staging.
-                if (config.frameSource == nullptr)
+                if (_frames == nullptr)
                         _staging =
                                 static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, drawn, BufferAlign));
                 Error err = Error::NoMem;
-                if (_staging != nullptr || config.frameSource != nullptr)
+                if (_staging != nullptr || _frames != nullptr)
                         err = config.format == Format::Indexed8 ? _expander.start() : _widener.start();
                 if (err.isError()) {
                         _expander.stop();
@@ -249,8 +264,23 @@ Error Scanout::start(const Config &config, LineSource &source) {
                 tc.core = config.core;
                 err = _task.start(tc, refillTask, this);
         }
-        if (err.isError()) stop();
+        if (err.isError()) {
+                stop();
+                return err;
+        }
+        if (_frames != nullptr) _frames->setScanning(true);
         return err;
+}
+
+// The framebuffer buffer for @p block's frame: at a frame's first block
+// (or the first filled, after a skip) the framebuffer makes a pending swap.
+BMDS_HOT_ATTR uint8_t *Scanout::frameFor(uint32_t block) {
+        const uint32_t frame = block / _blocksPerFrame;
+        if (_frameData == nullptr || frame != _frameNumber) {
+                _frameNumber = frame;
+                _frameData = _frames->beginFrame();
+        }
+        return _frameData;
 }
 
 // The DSI host and PHY: clocks, the PHY PLL at the lane rate, the host's
@@ -506,6 +536,9 @@ void Scanout::stop() {
         _staging = nullptr;
         _hw = nullptr;
         _ring = nullptr;
+        if (_frames != nullptr) _frames->setScanning(false); // a pending swap made now
+        _frames = nullptr;
+        _frameData = nullptr;
         _running = false;
         return;
 }
@@ -555,6 +588,7 @@ void Scanout::rebuild() {
         _blocksBefore += _sent.load(std::memory_order_relaxed);
         _sent.store(0, std::memory_order_relaxed);
         _primed = false;
+        _frameData = nullptr;
         _refilled = 0;
         while (_wake.tryAcquire().isOk()) {}
         if (!_config.framebuffer) {
@@ -668,9 +702,6 @@ BMDS_HOT_ATTR void Scanout::refill() {
                         }
                         if (next > sending + _config.blocks - 1) break;
                         const uint32_t start = esp_cpu_get_cycle_count();
-                        // From a framebuffer: what moves changes as a frame starts.
-                        if (_config.frameSource != nullptr && next % _blocksPerFrame == 0)
-                                _source->frame(_config.frameSource, size_t(_config.timing.hActive) * 2);
                         renderSlot(next);
                         const uint32_t cycles = esp_cpu_get_cycle_count() - start;
                         if (cycles > _renderCyclesMax) _renderCyclesMax = cycles;
@@ -735,6 +766,7 @@ void Scanout::resync() {
         _blocksBefore += _sent.load(std::memory_order_relaxed);
         _sent.store(0, std::memory_order_relaxed);
         _primed = false;
+        _frameData = nullptr;
         _refilled = 0;
         while (_wake.tryAcquire().isOk()) {}
         for (uint32_t i = 0; i < _config.blocks; ++i)
@@ -762,11 +794,12 @@ BMDS_HOT_ATTR void Scanout::renderSlot(uint32_t block) {
         uint8_t       *dst = _ring + (block % _config.blocks) * _blockBytes;
         const uint32_t first = (block % _blocksPerFrame) * _config.linesPerBlock;
         const uint16_t width = _config.timing.hActive;
-        if (_config.frameSource != nullptr) {
+        if (_frames != nullptr) {
                 // The 2D-DMA widens the block's lines straight from the framebuffer.
+                const uint8_t *frame = frameFor(block);
                 const uint32_t started = esp_cpu_get_cycle_count();
-                if (_widener.expand(_config.frameSource + size_t(first) * width * 2, dst,
-                                    size_t(width) * _config.linesPerBlock, ExpandTimeoutMs)
+                if (_widener.expand(frame + size_t(first) * width * 2, dst, size_t(width) * _config.linesPerBlock,
+                                    ExpandTimeoutMs)
                             .isError())
                         ++_expandErrors;
                 const uint32_t cycles = esp_cpu_get_cycle_count() - started;
