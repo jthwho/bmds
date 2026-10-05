@@ -13,9 +13,12 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <bmds/langbuiltins.h>
+#include <bmds/memorystream.h>
 #include <bmds/shell.h>
 #include <bmds/textcommands.h>
 #include "fakeconsole.h"
+#include "hostmemory.h"
 
 using bmds::CommandContext;
 using bmds::Shell;
@@ -318,4 +321,56 @@ TEST_CASE("Text commands") {
                 CHECK(g("grep '[abc'", Shell::ExitUsage) == "grep: invalid pattern: [abc\n");
                 CHECK(g("grep", Shell::ExitUsage) == "usage: grep [-civnqF] pattern\n");
         }
+}
+
+TEST_CASE("Shell: as a program (/bin/sh)") {
+        static constexpr bmds::Command ShCommands[] = {
+                {"cat", "[-]", "cat", bmds::TextCommands::cat},
+                {"echo", "[-neE] [word]...", "echo", bmds::TextCommands::echo},
+                {"exit", "[n]", "exit", bmds::LangBuiltins::exitCmd},
+                {"fail", "", "Exit with 42", runFail},
+                {"sh", "[-c command | file] [arg]...", "sh", bmds::LangBuiltins::sh},
+        };
+        const size_t base = HostMemory::liveAllocations();
+        {
+                FakeConsole        con;
+                bmds::MemoryStream out(bmds::MemSpace::Psram);
+                bmds::FdTable      fds;
+                auto [h, err] = bmds::FileHandle::open(out, bmds::FileHandle::Write);
+                REQUIRE(err.isOk());
+                REQUIRE(fds.set(bmds::FdTable::Stdout, h).isOk());
+                auto [e, eerr] = bmds::FileHandle::open(con, bmds::FileHandle::ReadWrite);
+                REQUIRE(eerr.isOk());
+                REQUIRE(fds.set(bmds::FdTable::Stderr, e).isOk());
+                const bmds::StringView        env[] = {"GREETING=hello", "PATH=/nowhere", "bad", "=x"};
+                bmds::BuiltinProgram::Context context;
+                context.fds = &fds;
+                context.cwd = "/dev";
+                context.environment = env;
+                context.console = &con;
+                const auto run = [&](std::initializer_list<bmds::StringView> args) {
+                        std::vector<bmds::StringView> v(args);
+                        context.args = Span<const bmds::StringView>(v.data(), v.size());
+                        return Shell::runAsProgram(context, ShCommands, 1 << 20);
+                };
+
+                // sh -c: the environment exported, the directory, the status.
+                CHECK(run({"/bin/sh", "-c", "echo $GREETING $PWD; exit 3"}) == 3);
+                CHECK(std::string(out.contents().data(), out.contents().size()) == "hello /dev\n");
+                // $0: the name after the command, else the shell's own.
+                out.clear();
+                CHECK(run({"sh", "-c", "echo $0 $1", "name", "one"}) == 0);
+                CHECK(run({"/bin/sh", "-c", "echo $0"}) == 0);
+                CHECK(std::string(out.contents().data(), out.contents().size()) == "name one\nsh\n");
+                CHECK(run({"sh", "-c", "fail"}) == 42);
+                CHECK(run({"sh", "-e", "-c", "fail; echo no"}) == 42);
+                // A missing script; a command it doesn't know (no launcher).
+                CHECK(run({"sh", "/nowhere/x.sh"}) == Shell::ExitNotFound);
+                CHECK(run({"sh", "-c", "nonesuch"}) == Shell::ExitNotFound);
+                CHECK(con.take().find("nonesuch: command not found") != std::string::npos);
+                // No terminal: refused.
+                context.console = nullptr;
+                CHECK(run({"sh", "-c", "echo x"}) == Shell::ExitCannotRun);
+        }
+        CHECK(HostMemory::liveAllocations() == base);
 }

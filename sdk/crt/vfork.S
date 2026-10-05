@@ -6,8 +6,8 @@
  * See LICENSE file in the project root folder for license information.
  *
  * vfork() and musl's __clone() for CLONE_VM|CLONE_VFORK (devplan/programs.md
- * §13). The child runs in the calling task, on the caller's stack (vfork)
- * or the given one (__clone), until it execs or exits; then the C side
+ * §13). The child runs in the calling task, on the caller's stack, until it
+ * execs or exits; then the C side
  * (linux.c) calls __bmds_vfork_resume(), which returns from vfork or
  * __clone a second time, in the parent, with the child's id.
  *
@@ -82,7 +82,11 @@ vfork:
         .size   vfork, . - vfork
 
 /* int __clone(int (*fn)(void *), void *stack, int flags, void *arg, ...):
- * the child calls fn(arg) on stack; returns the child's id, or -errno. */
+ * the child calls fn(arg); returns the child's id, or -errno. Not on the
+ * stack given: musl's posix_spawn passes 5 KB in its own frame, enough
+ * where exec runs on a kernel stack, but BMDS's exec runs on the caller's.
+ * Below the caller's frames there is the whole program stack, and the
+ * parent is suspended until the child execs or exits. */
         .globl  __clone
         .type   __clone, @function
 __clone:
@@ -93,11 +97,9 @@ __clone:
         save_registers 4f
         mv      s1, t6
         mv      s2, a0                  /* fn */
-        mv      s3, a1                  /* stack */
         mv      s4, a3                  /* arg */
         call    __bmds_vfork_enter
         bnez    a0, 5f
-        andi    sp, s3, -16
         mv      a0, s4
         jalr    s2
         call    __bmds_vfork_child_exit /* with fn's result; does not return */
@@ -107,7 +109,6 @@ __clone:
         ret
 5:      lw      ra, 0(s1)
         lw      s2, 16(s1)
-        lw      s3, 20(s1)
         lw      s4, 24(s1)
         lw      s1, 12(s1)
         ret

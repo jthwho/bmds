@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <bmds/config.h>
 #include <bmds/fdtable.h>
 #include <bmds/result.h>
@@ -60,6 +61,34 @@ class ProgramLauncher {
 
         protected:
                 ~ProgramLauncher() = default;
+};
+
+/**
+ * @brief A program built into the firmware, run as a process: the shell as
+ *        `/bin/sh` (devplan/programs.md §13, step 8b).
+ *
+ * The loader runs `main` in a task of its own, as it runs a program file,
+ * and the process ends with what it returns. It sees what a program gets
+ * at its start; it calls no system calls, so it must notice Ctrl-C itself
+ * (the interrupt), as the shell does.
+ */
+struct BuiltinProgram {
+                /** @brief What the program starts with (valid until `main` returns). */
+                struct Context {
+                                const FdTable         *fds = nullptr;       ///< Its descriptors.
+                                StringView             cwd;                 ///< Its directory.
+                                Span<const StringView> args;                ///< argv, args[0] included.
+                                Span<const StringView> environment;         ///< "NAME=value" each.
+                                Console               *console = nullptr;   ///< The terminal (may be null).
+                                Interrupt             *interrupt = nullptr; ///< Ctrl-C (may be null).
+                                ProgramLauncher       *launcher = nullptr;  ///< Runs the programs it starts.
+                };
+
+                /** @brief The program: returns its exit status (0-255). */
+                using Main = int (*)(const Context &context);
+
+                Main   main = nullptr; ///< Null: none.
+                size_t stackBytes = 0; ///< Its task's stack.
 };
 
 BMDS_NAMESPACE_END

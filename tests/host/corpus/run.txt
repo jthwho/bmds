@@ -1044,6 +1044,17 @@ status 4 x=unset
 c: first second
 from stdin
 
+=== $0: the script, or sh -c's name
+printf 'echo "zero: $0 $1"\nf() { echo "in f: $0 $1"; }\nf inner\n' > z.sh
+sh z.sh one
+sh -c 'echo "c: $0 $1"' name first
+sh -c 'echo "c: $0"'
+--- out
+zero: z.sh one
+in f: z.sh inner
+c: name first
+c: sh
+
 === files: commands and the current directory
 mkdir -p a/b
 cd a

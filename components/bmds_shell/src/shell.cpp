@@ -8,9 +8,12 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
+#include <new>
 #include <bmds/assert.h>
 #include <bmds/console.h>
 #include <bmds/glob.h>
+#include <bmds/memory.h>
 #include <bmds/parser.h>
 #include <bmds/shell.h>
 #include <bmds/vfs.h>
@@ -45,6 +48,49 @@ Shell::Shell(Console &console, Span<const Command> commands, size_t stackBytes)
         for (size_t i = 1; i < _commands.size(); ++i) {
                 BMDS_ASSERT(StringView(_commands[i - 1].name) < StringView(_commands[i].name));
         }
+}
+
+int Shell::runAsProgram(const BuiltinProgram::Context &context, Span<const Command> commands, size_t stackBytes) {
+        FileHandle *err = context.fds != nullptr ? context.fds->handle(FdTable::Stderr) : nullptr;
+        auto        fail = [&](const char *message) {
+                if (err != nullptr)
+                        (void)err->write(ByteSpan(reinterpret_cast<const uint8_t *>(message), std::strlen(message)),
+                                                WaitForever);
+                return ExitCannotRun;
+        };
+        if (context.console == nullptr || context.fds == nullptr) return fail("sh: no terminal\n");
+        void *memory = Memory::alloc(MemSpace::Psram, sizeof(Shell));
+        if (memory == nullptr) return fail("sh: out of memory\n");
+        Shell       *shell = new (memory) Shell(*context.console, commands, stackBytes);
+        ShellState  &state = shell->state();
+        Error        e = shell->init();
+        List<String> args;
+        if (e.isOk()) {
+                shell->_fds = *context.fds;
+                shell->setLauncher(context.launcher);
+                if (!context.cwd.isEmpty()) e = state.cwd.assign(context.cwd);
+                if (e.isOk()) e = state.vars.set("PWD", state.cwd.view());
+        }
+        for (StringView entry : context.environment) {
+                const size_t eq = entry.indexOf('=');
+                if (e.isError() || eq == StringView::NPos || eq == 0) continue;
+                const StringView name = entry.left(eq);
+                e = state.vars.set(name, entry.mid(eq + 1));
+                if (e.isOk()) e = state.vars.addFlags(name, Variables::Exported);
+        }
+        // The built-in `sh` does the rest (`-c`, a script, options).
+        if (e.isOk()) e = args.reserve(context.args.size() + 1);
+        if (e.isOk()) e = args.append(String());
+        if (e.isOk()) e = args[0].assign("sh");
+        for (size_t i = 1; e.isOk() && i < context.args.size(); ++i) {
+                auto [arg, aerr] = String::fromView(context.args[i]);
+                e = aerr.isOk() ? args.append(std::move(arg)) : aerr;
+        }
+        const int status = e.isOk() ? shell->_executor.invoke(args, false) : fail("sh: out of memory\n");
+        args = List<String>();
+        shell->~Shell();
+        Memory::free(memory);
+        return status;
 }
 
 Error Shell::init() {

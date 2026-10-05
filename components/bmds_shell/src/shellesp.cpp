@@ -49,6 +49,10 @@ namespace {
 
 } // namespace
 
+int Shell::programMain(const BuiltinProgram::Context &context) {
+        return runAsProgram(context, registeredCommands(), CONFIG_BMDS_SHELL_STACK_BYTES);
+}
+
 Span<const Command> Shell::registeredCommands() {
         return Span<const Command>(_bmds_cmd_start, static_cast<size_t>(_bmds_cmd_end - _bmds_cmd_start));
 }

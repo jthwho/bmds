@@ -9,6 +9,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 #include <new>
 #include <esp_cache.h>
 #include <freertos/FreeRTOS.h>
@@ -28,6 +29,7 @@
 #include <bmds/program.h>
 #include <bmds/programimage.h>
 #include <bmds/staticobject.h>
+#include <bmds/shebang.h>
 #include <bmds/sys.h>
 #include <bmds/vfs.h>
 #include "running.h"
@@ -54,6 +56,13 @@ namespace {
         constexpr size_t InternalReserveBytes = 64 * 1024;
 
         constinit StaticObject<ProcessTable> processes;
+
+        // `/bin/sh` (Loader::setShell()), and what runs the programs it starts.
+        constinit BuiltinProgram shellProgram;
+        constinit Loader         builtinLauncher;
+
+        // Deepest nesting of `#!` interpreters in an exec (the shell's limit).
+        constexpr int MaxInterpreterDepth = 4;
 
         // Ended programs whose tasks wait to be stopped (see queueStop()).
         constinit StaticObject<Mutex> stopLock;
@@ -82,12 +91,14 @@ namespace {
                         FileHandle &_file;
         };
 
-        // A program loaded, relocated and synced, not yet running.
+        // A program loaded, relocated and synced, not yet running; or a
+        // built-in one (no memory).
         struct Image {
-                        uint8_t *memory = nullptr;
-                        size_t   bytes = 0;
-                        uint32_t entry = 0;
-                        uint32_t stackBytes = 0;
+                        uint8_t              *memory = nullptr;
+                        size_t                bytes = 0;
+                        uint32_t              entry = 0;
+                        uint32_t              stackBytes = 0;
+                        const BuiltinProgram *builtin = nullptr;
         };
 
         // Why a load failed: the error, and for messages a stage ("cannot
@@ -108,19 +119,30 @@ namespace {
                 }
         }
 
-        // Loads the program at @p path (relative to @p cwd).
-        Error loadImage(StringView path, StringView cwd, Image &image, LoadFailure &failure) {
-                const Vfs::Context     context{cwd.isEmpty() ? StringView("/") : cwd, nullptr};
+        Vfs::Context contextFor(StringView cwd) {
+                return Vfs::Context{cwd.isEmpty() ? StringView("/") : cwd, nullptr};
+        }
+
+        // Opens the file at @p path (relative to @p cwd) to run it.
+        Error openProgram(StringView path, StringView cwd, FileHandle::Ptr &file, uint32_t &size) {
+                const Vfs::Context     context = contextFor(cwd);
                 const Result<FileInfo> info = Vfs::stat(path, context);
                 Error                  err = info.error();
                 if (err.isOk() && info.value().isDirectory()) err = Error::IsDir;
                 if (err.isOk() && info.value().size > UINT32_MAX) err = Error::NotSupported;
                 if (err.isError()) return err;
-                auto [file, oerr] = Vfs::open(path, Vfs::Read, context);
+                auto [opened, oerr] = Vfs::open(path, Vfs::Read, context);
                 if (oerr.isError()) return oerr;
-                const uint32_t     fileSize = static_cast<uint32_t>(info.value().size);
-                FileSource         source(*file);
+                file = std::move(opened);
+                size = static_cast<uint32_t>(info.value().size);
+                return Error::Ok;
+        }
+
+        // Loads the program in @p file (@p fileSize bytes).
+        Error loadFrom(FileHandle &file, uint32_t fileSize, Image &image, LoadFailure &failure) {
+                FileSource         source(file);
                 ProgramImage::Info header;
+                Error              err;
                 err = ProgramImage::inspect(source, fileSize, header, failure.problem);
                 if (err.isError()) {
                         if (failure.problem.what != nullptr) failure.stage = "cannot execute";
@@ -153,6 +175,136 @@ namespace {
                 return Error::Ok;
         }
 
+        // Loads the program at @p path (relative to @p cwd).
+        Error loadImage(StringView path, StringView cwd, Image &image, LoadFailure &failure) {
+                FileHandle::Ptr file;
+                uint32_t        size = 0;
+                const Error     err = openProgram(path, cwd, file, size);
+                return err.isError() ? err : loadFrom(*file, size, image, failure);
+        }
+
+        StringView baseName(StringView path) {
+                const size_t slash = path.lastIndexOf('/');
+                return slash == StringView::NPos ? path : path.mid(slash + 1);
+        }
+
+        bool isFile(StringView path, StringView cwd) {
+                const Result<FileInfo> info = Vfs::stat(path, contextFor(cwd));
+                return info.isOk() && info.value().type == FileType::File;
+        }
+
+        // Finds @p name as the shell would on the `PATH` in @p env: in each
+        // directory `name`, `name.elf`, `name.sh`.
+        Error findInPath(StringView name, Span<const StringView> env, StringView cwd, String &out) {
+                StringView dirs;
+                bool       found = false;
+                for (StringView e : env) {
+                        if (e.startsWith("PATH=")) {
+                                dirs = e.mid(5);
+                                found = true;
+                        }
+                }
+                if (!found || name.isEmpty() || name.contains('/')) return Error::NotExist;
+                static const char *const suffixes[] = {"", ".elf", ".sh"};
+                size_t                   at = 0;
+                for (;;) {
+                        size_t colon = dirs.indexOf(':', at);
+                        if (colon == StringView::NPos) colon = dirs.size();
+                        const StringView dir = colon > at ? dirs.mid(at, colon - at) : StringView(".");
+                        for (const char *suffix : suffixes) {
+                                out.clear();
+                                Error err = out.append(dir);
+                                if (err.isOk() && !dir.endsWith('/')) err = out.append('/');
+                                if (err.isOk()) err = out.append(name);
+                                if (err.isOk()) err = out.append(suffix);
+                                if (err.isError()) return err;
+                                if (isFile(out.view(), cwd)) return Error::Ok;
+                        }
+                        if (colon == dirs.size()) break;
+                        at = colon + 1;
+                }
+                return Error::NotExist;
+        }
+
+        // @p args with @p front in place of its first element.
+        Error withFront(List<String> &args, std::initializer_list<StringView> front) {
+                List<String> out;
+                Error        err = out.reserve(args.size() + front.size());
+                for (StringView f : front) {
+                        if (err.isError()) break;
+                        auto [s, serr] = String::fromView(f);
+                        err = serr.isOk() ? out.append(std::move(s)) : serr;
+                }
+                for (size_t i = 1; err.isOk() && i < args.size(); ++i) err = out.append(std::move(args[i]));
+                if (err.isOk()) args = std::move(out);
+                return err;
+        }
+
+        // What runs @p path for an exec (devplan/programs.md §13, 8b): a
+        // program; a `#!` script's interpreter (an existing file, `/bin/sh`
+        // or `/bin/bash` the shell, `/usr/bin/env name` looked up on `PATH`),
+        // in front of the script in @p args; the shell for a `.sh` file and
+        // for `/bin/sh`.
+        Error resolveExec(StringView path, StringView cwd, Span<const StringView> env, List<String> &args, Image &image,
+                          LoadFailure &failure, int depth) {
+                if (depth > MaxInterpreterDepth) return Error::TooManyLinks;
+                const bool isShell = path == "/bin/sh" || path == "/bin/bash";
+                if (isShell && !isFile(path, cwd)) {
+                        if (shellProgram.main == nullptr) return Error::NotExist;
+                        image.builtin = &shellProgram;
+                        image.stackBytes = static_cast<uint32_t>(shellProgram.stackBytes);
+                        return Error::Ok;
+                }
+                FileHandle::Ptr file;
+                uint32_t        size = 0;
+                Error           err = openProgram(path, cwd, file, size);
+                if (err.isError()) return err;
+                char   head[Shebang::HeadBytes];
+                size_t got = 0;
+                while (got < sizeof(head)) {
+                        auto [n, rerr] = file->read(
+                                WritableByteSpan(reinterpret_cast<uint8_t *>(head) + got, sizeof(head) - got),
+                                WaitForever);
+                        if (rerr == Error::EndOfFile || (rerr.isOk() && n == 0)) break;
+                        if (rerr.isError()) return rerr;
+                        got += n;
+                }
+                const StringView headView(head, got);
+                if (headView.startsWith(StringView("\x7f"
+                                                   "ELF")))
+                        return loadFrom(*file, size, image, failure);
+                file = FileHandle::Ptr();
+                if (Shebang::isScript(headView)) {
+                        Shebang line;
+                        if (!Shebang::parse(headView, size <= got, line) || line.interpreter.isEmpty())
+                                return Error::NotSupported;
+                        // Copies: the views point into head, and path may be an element of args.
+                        auto [script, cerr] = String::fromView(path);
+                        auto [interp, ierr] = String::fromView(line.interpreter);
+                        auto [arg, aerr] = String::fromView(line.argument);
+                        if (cerr.isError() || ierr.isError() || aerr.isError()) return Error::NoMem;
+                        if (!isFile(interp.view(), cwd) && baseName(interp.view()) == "env" && !arg.isEmpty()) {
+                                String found;
+                                err = findInPath(arg.view(), env, cwd, found);
+                                if (err.isOk()) err = withFront(args, {arg.view(), script.view()});
+                                if (err.isError()) return err;
+                                return resolveExec(found.view(), cwd, env, args, image, failure, depth + 1);
+                        }
+                        err = arg.isEmpty() ? withFront(args, {interp.view(), script.view()})
+                                            : withFront(args, {interp.view(), arg.view(), script.view()});
+                        if (err.isError()) return err;
+                        return resolveExec(interp.view(), cwd, env, args, image, failure, depth + 1);
+                }
+                if (path.endsWith(StringView(".sh"))) {
+                        auto [script, cerr] = String::fromView(path);
+                        if (cerr.isError()) return Error::NoMem;
+                        err = withFront(args, {StringView("sh"), script.view()});
+                        if (err.isError()) return err;
+                        return resolveExec(StringView("/bin/sh"), cwd, env, args, image, failure, depth + 1);
+                }
+                return Error::NotSupported;
+        }
+
         // The program's task: point tp's table entry at the Running, call
         // _start, end with what it returns (or with exit(), from inside).
         void programMain(void *arg) {
@@ -165,6 +317,35 @@ namespace {
                 run.finish(ProcessTable::exitStatus(status));
         }
 
+        // A built-in program's task (the shell as /bin/sh): all of it is
+        // kernel code, so a kill leaves it to end itself (it sees Ctrl-C).
+        void builtinMain(void *arg) {
+                Running &run = *static_cast<Running *>(arg);
+                vTaskSetThreadLocalStoragePointer(nullptr, RunningTlsIndex, &run);
+                run.inKernel.store(true);
+                int status = 0;
+                {
+                        Process         &p = *run.process;
+                        List<StringView> args;
+                        List<StringView> env;
+                        Error            err = Error::Ok;
+                        for (char **a = p.argv(); err.isOk() && a != nullptr && *a != nullptr; ++a)
+                                err = args.append(StringView(*a, std::strlen(*a)));
+                        for (char **e = p.envp(); err.isOk() && e != nullptr && *e != nullptr; ++e)
+                                err = env.append(StringView(*e, std::strlen(*e)));
+                        BuiltinProgram::Context context;
+                        context.fds = &p.fds();
+                        context.cwd = p.cwd();
+                        context.args = Span<const StringView>(args.data(), args.size());
+                        context.environment = Span<const StringView>(env.data(), env.size());
+                        context.console = p.console();
+                        context.interrupt = p.interrupt();
+                        context.launcher = &builtinLauncher;
+                        status = err.isOk() ? run.builtin->main(context) : 126;
+                }
+                run.finish(ProcessTable::exitStatus(status));
+        }
+
         // A Running for @p image and @p process (owned once it starts), not yet started.
         Running *createRunning(const Image &image, Process *process, int32_t pid, int32_t job) {
                 void *memory = Memory::alloc(MemSpace::Psram, sizeof(Running));
@@ -174,7 +355,8 @@ namespace {
                 run->pid = run->currentPid = pid;
                 run->job = job;
                 run->image = image.memory;
-                run->entry = reinterpret_cast<uintptr_t>(image.memory) + image.entry;
+                run->builtin = image.builtin;
+                run->entry = image.builtin != nullptr ? 0 : reinterpret_cast<uintptr_t>(image.memory) + image.entry;
                 return run;
         }
 
@@ -193,13 +375,14 @@ namespace {
                               path.data() + slash + 1);
                 config.name = name;
                 config.stackBytes = stackBytes;
-                // Stacks are hot: internal RAM if there is room to spare.
-                config.stackSpace =
-                        Memory::stats(MemSpace::Internal).largestFreeBlock >= config.stackBytes + InternalReserveBytes
-                                ? MemSpace::Internal
-                                : MemSpace::Psram;
+                // Stacks are hot: internal RAM if there is room to spare. Not
+                // a built-in's (the shell's recursion budget is large).
+                config.stackSpace = run.builtin == nullptr && Memory::stats(MemSpace::Internal).largestFreeBlock >=
+                                                                      config.stackBytes + InternalReserveBytes
+                                            ? MemSpace::Internal
+                                            : MemSpace::Psram;
                 config.priority = uxTaskPriorityGet(nullptr);
-                const Error err = run.task.start(config, programMain, &run);
+                const Error err = run.task.start(config, run.builtin != nullptr ? builtinMain : programMain, &run);
                 if (err.isOk())
                         bmdsDebug("Loader: %s (pid %d) at %p, stack %u in %s", name, static_cast<int>(run.pid),
                                   run.image, static_cast<unsigned>(config.stackBytes), memSpaceName(config.stackSpace));
@@ -362,14 +545,34 @@ int32_t Running::exec(const char *path, char *const *argv, char *const *envp) {
         {
                 // Scoped: the replacing path below never returns, so nothing
                 // that owns memory may still be alive there.
-                List<StringView> args;
+                List<StringView> argViews;
                 List<StringView> env;
-                if (int32_t r = viewsOf(argv, args); r < 0) return r;
+                if (int32_t r = viewsOf(argv, argViews); r < 0) return r;
                 if (int32_t r = viewsOf(envp, env); r < 0) return r;
+                // Owned: a script's interpreter goes in front.
+                List<String> args;
+                if (args.reserve(argViews.size()).isError()) return -BMDS_ENOMEM;
+                for (StringView a : argViews) {
+                        auto [copy, cerr] = String::fromView(a);
+                        if (cerr.isError()) return -BMDS_ENOMEM;
+                        (void)args.append(std::move(copy));
+                }
+                if (args.isEmpty()) {
+                        auto [copy, cerr] = String::fromView(p);
+                        if (cerr.isError() || args.append(std::move(copy)).isError()) return -BMDS_ENOMEM;
+                }
                 LoadFailure failure;
-                err = loadImage(p, current->cwd(), loaded, failure);
+                err = resolveExec(p, current->cwd(), Span<const StringView>(env.data(), env.size()), args, loaded,
+                                  failure, 0);
                 if (err.isError()) return execErrno(err);
-                err = target->prepareExec(Span<const StringView>(args.data(), args.size()),
+                argViews.clear();
+                for (const String &a : args) {
+                        if (argViews.append(a.view()).isError()) {
+                                Memory::free(loaded.memory);
+                                return -BMDS_ENOMEM;
+                        }
+                }
+                err = target->prepareExec(Span<const StringView>(argViews.data(), argViews.size()),
                                           Span<const StringView>(env.data(), env.size()));
                 if (err.isError()) {
                         Memory::free(loaded.memory);
@@ -448,6 +651,11 @@ int32_t Running::id(uint32_t which) {
 
 // --- Loader -------------------------------------------------------------------
 
+void Loader::setShell(const BuiltinProgram &shell) {
+        shellProgram = shell;
+        return;
+}
+
 Error Loader::init() {
         if (!stopLock.isCreated()) stopLock.create();
         if (!processes.isCreated()) processes.create();
@@ -476,10 +684,10 @@ namespace {
                 return;
         }
 
-        // Waits for the shell's program @p pid to end (@p ended is released).
-        // The first Ctrl-C is the program's to handle (its calls return
-        // EINTR); one more while it runs kills its job.
-        void waitOrKill(int32_t pid, Semaphore &ended, Interrupt *interrupt) {
+        // Waits for a program to end (@p ended is released). The first Ctrl-C
+        // is the program's to handle (its calls return EINTR); one more
+        // while it runs kills its job, @p job.
+        void waitOrKill(int32_t job, Semaphore &ended, Interrupt *interrupt) {
                 if (interrupt == nullptr) {
                         (void)ended.acquire(WaitForever);
                         return;
@@ -493,7 +701,7 @@ namespace {
                         seen = interrupt->raises();
                         if (seen < 2 || seen == atStart || killed) continue;
                         killed = true;
-                        killJob(pid);
+                        killJob(job);
                 }
         }
 
@@ -512,7 +720,11 @@ Result<int> Loader::run(const Request &request) {
         const StringView cwd = request.cwd.isEmpty() ? StringView("/") : request.cwd;
         Image            image;
         LoadFailure      failure;
-        Error            err = loadImage(request.path, cwd, image, failure);
+        // Called by a process (the shell as /bin/sh): its child, in its job.
+        const auto *caller = static_cast<const Running *>(pvTaskGetThreadLocalStoragePointer(nullptr, RunningTlsIndex));
+        const int32_t parent = caller != nullptr ? caller->currentPid : ProcessTable::ShellPid;
+        const int32_t parentJob = caller != nullptr ? caller->job : 0;
+        Error         err = loadImage(request.path, cwd, image, failure);
         if (err.isError()) {
                 const ProgramImage::Problem &problem = failure.problem;
                 if (failure.stage == nullptr || problem.what == nullptr) {
@@ -571,7 +783,7 @@ Result<int> Loader::run(const Request &request) {
                 Memory::free(image.memory);
                 return makeError<int>(Error::NoMem);
         }
-        const Result<int32_t> added = processes->add(ProcessTable::ShellPid, 0, &ended, run);
+        const Result<int32_t> added = processes->add(parent, parentJob, &ended, run);
         if (added.isError()) {
                 report(request, "cannot start: too many processes");
                 destroyRunning(run);
@@ -580,7 +792,8 @@ Result<int> Loader::run(const Request &request) {
                 return makeError<int>(Error::Busy);
         }
         const int32_t pid = added.value();
-        run->pid = run->currentPid = run->job = pid;
+        run->pid = run->currentPid = pid;
+        run->job = parentJob != 0 ? parentJob : pid;
         // The program may change the terminal's modes: the shell gets its own back.
         const Console::TermMode savedMode = request.console != nullptr ? request.console->mode() : Console::TermMode();
         err = startRunning(*run, request.path, image.stackBytes);
@@ -588,14 +801,19 @@ Result<int> Loader::run(const Request &request) {
                 report(request, "cannot start: %s", errorText(err));
                 processes->setRuntime(pid, nullptr);
                 processes->exited(pid, ProcessTable::exitStatus(127));
-                (void)processes->reap(ProcessTable::ShellPid, pid);
+                (void)processes->reap(parent, pid);
                 destroyRunning(run);
                 Process::destroy(process);
                 Memory::free(image.memory);
                 return makeError<int>(err);
         }
-        waitOrKill(pid, ended, request.interrupt);
-        const Result<ProcessTable::Ended> result = processes->reap(ProcessTable::ShellPid, pid);
+        const int32_t  job = run->job;
+        const uint32_t raisesAtStart = request.interrupt != nullptr ? request.interrupt->raises() : 0;
+        waitOrKill(job, ended, request.interrupt);
+        // Interrupted, the job ends with it (until signals: its other processes
+        // got EINTR too, and those ignoring it couldn't be killed any more).
+        if (request.interrupt != nullptr && request.interrupt->raises() != raisesAtStart && job == pid) killJob(job);
+        const Result<ProcessTable::Ended> result = processes->reap(parent, pid);
         if (request.console != nullptr) request.console->setMode(savedMode);
         drainStops();
         const int32_t status = result.isOk() ? result.value().status : ProcessTable::exitStatus(127);

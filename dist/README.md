@@ -38,5 +38,5 @@ doesn't set).
 
 Programs see POSIX through musl, with BMDS's differences listed in
 `sdk/README.md` ("The C library"): programs start others with `vfork` and
-`exec` or `posix_spawn` (no `fork`); `system`, `popen` and `/bin/sh`
-scripts wait for step 8b.
+`exec` or `posix_spawn` (no `fork`); `/bin/sh` is the BMDS shell (`system`,
+`popen`, `#!/bin/sh` scripts).

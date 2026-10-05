@@ -17,6 +17,7 @@
 #include <bmds/fdtable.h>
 #include <bmds/list.h>
 #include <bmds/result.h>
+#include <bmds/shebang.h>
 #include <bmds/span.h>
 #include <bmds/string.h>
 #include <bmds/stringview.h>
@@ -58,6 +59,7 @@ class ShellState {
                 Variables           vars;
                 List<ShellFunction> functions; ///< Sorted by name.
                 List<String>        positional;
+                String              scriptName; ///< `$0`: the script, or `sh -c`'s name; empty: the shell's (`bmds`).
                 ShellOptions        options;
                 int                 lastStatus = 0;
                 String              cwd; ///< Current directory (absolute, normalized); empty means `/`.
@@ -118,7 +120,7 @@ class Executor {
                 static constexpr int MaxCallDepth = 100;
 
                 /** @brief Bytes of a file `runFile()` looks at: the `#!` line must end within them. */
-                static constexpr size_t HeadBytes = 256;
+                static constexpr size_t HeadBytes = Shebang::HeadBytes;
 
                 /** @brief Deepest nesting of `#!` interpreters (a script whose interpreter is a script...). */
                 static constexpr int MaxInterpreterDepth = 4;
@@ -216,9 +218,11 @@ class Executor {
 
                 /**
                  * @brief `sh`: runs a script in a subshell with @p args as its
-                 *        positional parameters; `exit` ends just the subshell.
+                 *        positional parameters and @p name as `$0` (empty: the
+                 *        caller's); `exit` ends just the subshell.
                  */
-                int runInSubshell(StringView source, Span<char *const> args, const ShellOptions *options = nullptr);
+                int runInSubshell(StringView source, Span<char *const> args, const ShellOptions *options = nullptr,
+                                  StringView name = StringView());
 
                 /**
                  * @brief Runs a command that isn't a keyword: a function (if

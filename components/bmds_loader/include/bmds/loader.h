@@ -38,6 +38,13 @@ class Loader final : public ProgramLauncher {
                 /** @brief Sets up the process table (a boot stage). */
                 static Error init();
 
+                /**
+                 * @brief Sets the program `exec` runs for `/bin/sh` (and `#!/bin/sh`,
+                 *        `.sh` files): the shell (`Shell::programMain`). Call before
+                 *        programs run (boot).
+                 */
+                static void setShell(const BuiltinProgram &shell);
+
                 /** @copydoc ProgramLauncher::run */
                 Result<int> run(const Request &request) override;
 };

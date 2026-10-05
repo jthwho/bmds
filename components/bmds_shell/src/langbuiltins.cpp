@@ -632,6 +632,7 @@ int LangBuiltins::sh(CommandContext &ctx) {
         const Args   args = ctx.args();
         String       script;
         Args         params;
+        StringView   name = args[0]; // $0: as bash, the shell's name for `-c` without one
         ShellOptions options = ctx.executor().state().options;
         // Options first (`#!/bin/sh -e` comes here as `sh -e script`).
         size_t first = 1;
@@ -652,6 +653,7 @@ int LangBuiltins::sh(CommandContext &ctx) {
                         ctx.eprint("sh: out of memory\n");
                         return Shell::ExitFailure;
                 }
+                if (args.size() > first + 2) name = args[first + 2];
                 params = args.size() > first + 3 ? args.mid(first + 3) : Args();
         } else if (first < args.size()) {
                 Error err = ctx.executor().readFile(args[first], script);
@@ -659,6 +661,7 @@ int LangBuiltins::sh(CommandContext &ctx) {
                         ctx.eprintf("sh: %s: %s\n", args[first], CommandContext::errorText(err));
                         return Shell::ExitNotFound;
                 }
+                name = args[first];
                 params = args.mid(first + 1);
         } else {
                 // The script on stdin; an interactive subshell is not supported.
@@ -675,7 +678,7 @@ int LangBuiltins::sh(CommandContext &ctx) {
                         }
                 }
         }
-        return ctx.executor().runInSubshell(script, params, &options);
+        return ctx.executor().runInSubshell(script, params, &options, name);
 }
 
 int LangBuiltins::set(CommandContext &ctx) {

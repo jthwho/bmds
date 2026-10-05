@@ -28,6 +28,8 @@
  *   progtest exec SELF    execve SELF status 42 (the program is replaced)
  *   progtest orphan SELF  start a child that outlives this program
  *   progtest tree SELF    start two `spin` children and wait (for Ctrl-C)
+ *   progtest scripts SELF DIR  system, popen, scripts run by exec (/bin/sh, #!), in DIR
+ *   progtest run PATH [ARG]  posix_spawn PATH ARG (stdout to pt-out.txt), print its status
  */
 
 #include <dirent.h>
@@ -448,9 +450,95 @@ static int spawn(const char *self, const char *dir) {
         // A child that replaces itself: the status is the new program's.
         CHECK(status_of(start(self, NULL, NULL, "exec", self, NULL)) == 42);
 
-        // system() needs /bin/sh (step 8b).
-        printf("system: %d\n", system("true"));
         printf("spawn: all passed\n");
+        return 0;
+}
+
+static int put_file(const char *path, const char *text) {
+        FILE *f = fopen(path, "w");
+        if (f == NULL) return -1;
+        fputs(text, f);
+        return fclose(f);
+}
+
+static int file_is(const char *path, const char *text) {
+        char  buf[256];
+        FILE *f = fopen(path, "r");
+        if (f == NULL) return 0;
+        const size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+        buf[n] = '\0';
+        if (strcmp(buf, text) != 0) printf("%s: [%s]\n", path, buf);
+        return strcmp(buf, text) == 0;
+}
+
+/* Runs @p path with @p arg, stdout to pt-out.txt; its exit status or -errno. */
+static int run_to_file(const char *path, const char *arg) {
+        posix_spawn_file_actions_t fa;
+        posix_spawn_file_actions_init(&fa);
+        posix_spawn_file_actions_addopen(&fa, 1, "pt-out.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        char     *argv[] = {(char *)path, (char *)arg, NULL};
+        pid_t     pid = -1;
+        const int r = posix_spawn(&pid, path, &fa, NULL, argv, environ);
+        posix_spawn_file_actions_destroy(&fa);
+        return r != 0 ? -r : status_of(pid);
+}
+
+/* /bin/sh and scripts (programs.md §13, step 8b). */
+static int scripts(const char *self, const char *dir) {
+        char buf[256];
+        CHECK(chdir(dir) == 0);
+        // system(): the shell runs the command, its status comes back.
+        int st = system("echo hi > pt-sys.txt; exit 4");
+        CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 4);
+        CHECK(file_is("pt-sys.txt", "hi\n"));
+        CHECK(system(NULL) != 0);
+        // popen() both ways.
+        FILE *p = popen("echo one; echo two", "r");
+        CHECK(p != NULL);
+        size_t n = fread(buf, 1, sizeof(buf) - 1, p);
+        buf[n] = '\0';
+        CHECK(strcmp(buf, "one\ntwo\n") == 0);
+        CHECK(pclose(p) == 0);
+        p = popen("cat > pt-popen.txt", "w");
+        CHECK(p != NULL && fputs("through popen\n", p) >= 0);
+        CHECK(pclose(p) == 0);
+        CHECK(file_is("pt-popen.txt", "through popen\n"));
+        // Scripts by exec: #!/bin/sh, .sh without #!, a program as interpreter.
+        CHECK(put_file("pt-s.sh", "#!/bin/sh\necho script $1\nexit 6\n") == 0);
+        CHECK(run_to_file("pt-s.sh", "arg") == 6);
+        CHECK(file_is("pt-out.txt", "script arg\n"));
+        CHECK(put_file("pt-plain.sh", "echo plain $1\n") == 0);
+        CHECK(run_to_file("pt-plain.sh", "x") == 0);
+        CHECK(file_is("pt-out.txt", "plain x\n"));
+        snprintf(buf, sizeof(buf), "#!%s env\n", self);
+        CHECK(put_file("pt-interp", buf) == 0);
+        CHECK(run_to_file("pt-interp", "z") == 0);
+        CHECK(file_is("pt-out.txt", "pt-interp=(unset)\n"));
+        CHECK(put_file("pt-crlf.sh", "#!/bin/sh -e\r\nfalse\necho not here\n") == 0);
+        CHECK(run_to_file("pt-crlf.sh", "") == 1);
+        // Not a program or script; an interpreter loop.
+        CHECK(put_file("pt-text", "just text\n") == 0);
+        CHECK(run_to_file("pt-text", "") == -ENOEXEC);
+        CHECK(put_file("pt-loop", "#!pt-loop\n") == 0);
+        CHECK(run_to_file("pt-loop", "") == -ELOOP);
+        CHECK(run_to_file("pt-missing.sh", "") == -ENOENT);
+        // execvp falls back to /bin/sh for a text file (POSIX).
+        pid_t pid = vfork();
+        if (pid == 0) {
+                char *argv[] = {"pt-plain.sh", "vp", NULL};
+                int   fd = open("pt-out.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                dup2(fd, 1);
+                close(fd);
+                execvp("./pt-plain.sh", argv);
+                _exit(99);
+        }
+        CHECK(status_of(pid) == 0);
+        CHECK(file_is("pt-out.txt", "plain vp\n"));
+        const char *made[] = {"pt-sys.txt", "pt-popen.txt", "pt-s.sh", "pt-plain.sh", "pt-interp",
+                              "pt-crlf.sh", "pt-text",      "pt-loop", "pt-out.txt"};
+        for (size_t i = 0; i < sizeof(made) / sizeof(made[0]); ++i) CHECK(unlink(made[i]) == 0);
+        printf("scripts: all passed\n");
         return 0;
 }
 
@@ -463,7 +551,7 @@ int main(int argc, char **argv) {
         if (argc < 2) {
                 fprintf(stderr,
                         "usage: progtest status|exit|leak|env|tty|float|files|time|sleep|term|lines|raw|mem|random|cwd|"
-                        "spin|calls|posix|abort|spawn|fd|ppid|exec|orphan|tree [arg]\n");
+                        "spin|calls|posix|abort|spawn|scripts|fd|ppid|exec|orphan|tree [arg]\n");
                 return 2;
         }
         const char *what = argv[1];
@@ -520,6 +608,11 @@ int main(int argc, char **argv) {
                 return 0;
         }
         if (strcmp(what, "spawn") == 0) return spawn(arg, argc > 3 ? argv[3] : ".");
+        if (strcmp(what, "run") == 0) {
+                printf("run: %d\n", run_to_file(arg, argc > 3 ? argv[3] : ""));
+                return 0;
+        }
+        if (strcmp(what, "scripts") == 0) return scripts(arg, argc > 3 ? argv[3] : ".");
         if (strcmp(what, "fd") == 0) return fcntl(atoi(arg), F_GETFD) >= 0 ? 0 : 1;
         if (strcmp(what, "ppid") == 0) return getppid() == atoi(arg) ? 0 : 1;
         if (strcmp(what, "exec") == 0) {

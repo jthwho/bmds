@@ -126,9 +126,10 @@ on BMDS's table; programs never see that layer. What differs from Linux:
   execs or exits (`_exit`), while the parent waits; what it changes in
   memory the parent sees, its descriptors and directory are its own.
   `posix_spawn` (with file actions), `waitpid`/`wait4`/`waitid`, `pipe`,
-  `O_CLOEXEC`/`FD_CLOEXEC`, `getpid`/`getppid` work. `exec` runs BMDS
-  programs only so far: `system`, `popen` and scripts (`/bin/sh`) come with
-  step 8b. A second Ctrl-C kills every process the shell's command started.
+  `O_CLOEXEC`/`FD_CLOEXEC`, `getpid`/`getppid` work. `exec` runs programs,
+  `#!` scripts and `.sh` files; `/bin/sh` is the BMDS shell, so `system` and
+  `popen` work. A Ctrl-C that ends a command's first process ends the
+  processes it started too; a second Ctrl-C kills them all.
 - **Not yet:** threads, sockets (`EAFNOSUPPORT`), `alarm`, `kill` of
   another process (signals from outside).
 - **Size:** a `printf` hello is about 40 KB (`long double` is 128-bit on

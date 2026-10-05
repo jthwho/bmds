@@ -162,6 +162,7 @@ Result<ShellState> ShellState::clone() const {
                 err = perr;
                 if (err.isOk()) err = copy.positional.append(std::move(p));
         }
+        if (err.isOk()) err = copy.scriptName.assign(scriptName.view());
         copy.options = options;
         copy.lastStatus = lastStatus;
         if (err.isOk()) err = copy.cwd.assign(cwd.view());
@@ -411,7 +412,7 @@ class Expander {
                                 unsigned long n = 0;
                                 for (char c : name) n = n * 10 + static_cast<unsigned long>(c - '0');
                                 if (n == 0) {
-                                        value = ShellName;
+                                        value = st.scriptName.isEmpty() ? ShellName : st.scriptName.view();
                                         return true;
                                 }
                                 if (n > st.positional.size()) return false;
@@ -1276,8 +1277,9 @@ int Executor::runSourced(StringView source, Span<char *const> args) {
         return status;
 }
 
-int Executor::runInSubshell(StringView source, Span<char *const> args, const ShellOptions *options) {
+int Executor::runInSubshell(StringView source, Span<char *const> args, const ShellOptions *options, StringView name) {
         auto [state, err] = _state.clone();
+        if (err.isOk() && !name.isEmpty()) err = state.scriptName.assign(name);
         List<String> params;
         if (err.isOk()) err = params.reserve(args.size());
         for (size_t i = 0; err.isOk() && i < args.size(); ++i) {

@@ -18,6 +18,7 @@
 #include <sdkconfig.h>
 #include <bmds/config.h>
 #include <bmds/process.h>
+#include <bmds/programlauncher.h>
 #include <bmds/task.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -55,19 +56,20 @@ struct Running {
                                 int32_t  pid;
                 };
 
-                Process          *process = nullptr; // the program's own (memory is always its)
-                int32_t           pid = 0;
-                int32_t           job = 0;
-                Process          *current = nullptr; // process, or the innermost vfork child
-                int32_t           currentPid = 0;
-                Child             children[MaxVforkDepth] = {};
-                int               depth = 0;
-                uint8_t          *image = nullptr;
-                uintptr_t         entry = 0; // the program's _start
-                Task              task;
-                Running          *nextStop = nullptr; // in the stop queue
-                std::atomic<bool> inKernel{false};
-                std::atomic<bool> kill{false};
+                Process              *process = nullptr; // the program's own (memory is always its)
+                int32_t               pid = 0;
+                int32_t               job = 0;
+                Process              *current = nullptr; // process, or the innermost vfork child
+                int32_t               currentPid = 0;
+                Child                 children[MaxVforkDepth] = {};
+                int                   depth = 0;
+                uint8_t              *image = nullptr;
+                const BuiltinProgram *builtin = nullptr; // the shell as /bin/sh: no image
+                uintptr_t             entry = 0;         // the program's _start
+                Task                  task;
+                Running              *nextStop = nullptr; // in the stop queue
+                std::atomic<bool>     inKernel{false};
+                std::atomic<bool>     kill{false};
 
                 /** @brief The running program of the calling task. */
                 static Running &self() {

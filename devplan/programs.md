@@ -1,6 +1,6 @@
 # Programs: Executables, Loader, Syscall ABI v1, SDK
 
-Status: **steps 1-7 and 8a done** (Phase 3), plus emulated symbolic links and the distribution (`distribution.md`): the PSRAM spike; the SDK skeleton, the format check and relocation (`ProgramImage`), `bmds-elfcheck`, the ABI lock; the loader; the system call table (42 slots: files, directories, time, terminal, links, processes), examples `hello`, `cat`, `ls`; programs and scripts run by name (`$PATH`, `#!`), killed on a second Ctrl-C; the RAM disk, push-and-run (`tools/bmds-run`) and the compatibility corpus; the SDK on static musl (§12; BusyBox builds with it and runs). **The ABI was reset before the first release** (2026-10-04): the programs of the first SDK (picolibc) dropped with every compatibility path for them, errno values made Linux's, and the additions since folded into ABI 1. Next (agreed 2026-10-04): the rest of the kernel's support (process creation, signals, `poll`) and the drivers; the distribution grows as needed. D1-D7 agreed (2026-10-04; D2 revised in step 2, below). Once the first program ships, everything marked *frozen* is userspace ABI (`docs/ABI.md`): append-only forever.
+Status: **steps 1-7, 8a and 8b done** (Phase 3), plus emulated symbolic links and the distribution (`distribution.md`): the PSRAM spike; the SDK skeleton, the format check and relocation (`ProgramImage`), `bmds-elfcheck`, the ABI lock; the loader; the system call table (42 slots: files, directories, time, terminal, links, processes), examples `hello`, `cat`, `ls`; programs and scripts run by name (`$PATH`, `#!`), killed on a second Ctrl-C; the RAM disk, push-and-run (`tools/bmds-run`) and the compatibility corpus; the SDK on static musl (§12; BusyBox builds with it and runs). **The ABI was reset before the first release** (2026-10-04): the programs of the first SDK (picolibc) dropped with every compatibility path for them, errno values made Linux's, and the additions since folded into ABI 1. Next (agreed 2026-10-04): the rest of the kernel's support (process creation, signals, `poll`) and the drivers; the distribution grows as needed. D1-D7 agreed (2026-10-04; D2 revised in step 2, below). Once the first program ships, everything marked *frozen* is userspace ABI (`docs/ABI.md`): append-only forever.
 
 ## 1. Goal
 
@@ -147,7 +147,7 @@ tools/bmds-compat         runs the compatibility corpus (tests/compat/v*) on a b
 | 5 | Shell: `$PATH` search, programs in pipelines and redirections, Ctrl-C and kill; `exec` dispatch by content with `#!` scripts (built-in `sh` as the interpreter first; programs as interpreters as soon as they run). **Done.** |
 | 6 | RAM disk and push-and-run (`tools/bmds-run`); compatibility corpus. **Done.** |
 | 7 | The SDK on static musl (§12): vendored musl, the Linux system call layer, file identity and `ftruncate`; examples and `progtest` on musl. **Done.** |
-| 8+ | Process creation (`vfork`/`posix_spawn`, `waitpid`, `pipe`), signals, `termios`, `poll`; BusyBox as the yardstick. A shared runtime only if measurements ask for it. **8a done** (§13): processes, `vfork`/`exec`, `posix_spawn`, `waitpid`, `pipe`. |
+| 8+ | Process creation (`vfork`/`posix_spawn`, `waitpid`, `pipe`), signals, `termios`, `poll`; BusyBox as the yardstick. A shared runtime only if measurements ask for it. **8a, 8b done** (§13): processes, `vfork`/`exec`, `posix_spawn`, `waitpid`, `pipe`; `/bin/sh` and scripts in `exec`. |
 
 ## 8. Resource budget (estimates)
 
@@ -176,7 +176,7 @@ tools/bmds-compat         runs the compatibility corpus (tests/compat/v*) on a b
 
 ## 10. ABI impact
 
-Everything in §4 and §6's headers, the ELF profile in D2 (note format, the patched and the accepted relocation kinds, the 4096-byte load alignment, entry signature, startup state), the stack and memory guarantees, the `$PATH` lookup and the `.elf`/`.sh` order, the `#!` rules (line length, one optional argument, argument order, nesting depth, the `/bin/sh` and `/usr/bin/env` mapping), `.sh` files run by `sh` without `#!`, other text files refused, `test -x`, exit statuses 126/127/130. Each lands with an `ABI:` line.
+Everything in §4 and §6's headers, the `exec` rules (§13: `#!` as the shell's, `/bin/sh` the shell, `.sh` files), the ELF profile in D2 (note format, the patched and the accepted relocation kinds, the 4096-byte load alignment, entry signature, startup state), the stack and memory guarantees, the `$PATH` lookup and the `.elf`/`.sh` order, the `#!` rules (line length, one optional argument, argument order, nesting depth, the `/bin/sh` and `/usr/bin/env` mapping), `.sh` files run by `sh` without `#!`, other text files refused, `test -x`, exit statuses 126/127/130. Each lands with an `ABI:` line.
 
 ## 11. Open questions
 
@@ -341,3 +341,21 @@ Also `BMDS_O_CLOEXEC` (0x40) for `open`. Kernels that predate these refuse the f
   - the corpus passes.
 - **Host:** the process table (ids, waiting for one or any, zombies, orphans, a full table, ids skipping those in use); a vfork child's `Process` (copied fds and flags, its own `dup2`/`close`/`chdir`); `pipe`, `fd_flags`, `O_CLOEXEC`, `prepareExec()` (arguments from the old block and from the heap, memory freed, close-on-exec fds closed); `FdTable`'s flags.
 - **Measured:** the firmware grew 6.1 KB (428.9 → 435.1 KB); 1 KB of `Psram` for the table, internal RAM unchanged at rest. The SDK's system call layer is 9.3 KB of code (`hello` 41.9 KB); `vfork.S` (0.5 KB) is linked only into programs that start others; the saved registers are 208 B of `bss`, and the state saved at a vfork (1.9 KB) is on the heap only while the child runs. `progtest spawn` (16 processes) takes 0.45 s.
+
+**8b as built** (2026-10-04):
+- **`/bin/sh` is the shell as a process:** `main` hands the loader a `BuiltinProgram` (`Shell::programMain`, so the loader doesn't depend on the shell). `exec` of `/bin/sh` or `/bin/bash` (when no such file exists) starts it in a task of its own with a 64 KB `Psram` stack. It is a process like any other, with a `Running`, a pid and a place in the job, but without an image. `Shell::runAsProgram()` builds a `Shell` on the process's descriptors, directory and environment (all exported), runs the built-in `sh` with its arguments, and frees the `Shell`. Programs it starts are its children, in its job: the loader finds the calling process through the task's thread-local pointer. It makes no system calls, so it is always "in the kernel" to a kill, and ends by itself on Ctrl-C, as the shell does.
+- **`exec` resolves scripts** with the shell's rules: `Shebang` (`bmds/shebang.h`) is shared between the two. An existing interpreter file, `/bin/sh` or `/bin/bash` (the shell), or `/usr/bin/env name` (`name`, `name.elf`, `name.sh` on the `PATH` of the new environment) goes in front of the script's arguments, at most 4 deep (then `ELOOP`). A `.sh` file goes to the shell; anything else is `ENOEXEC`, and musl's `execvp` then runs it with `/bin/sh` (POSIX). The file is opened once: its head is read, and a program is loaded from the same handle.
+- **The child's stack:** musl's `posix_spawn` gives `__clone` 5 KB inside its own frame. That is enough on Linux, where `exec` runs on a kernel stack, but here the kernel's `exec` runs on the caller's: resolving a `#!` interpreter overflowed it into `posix_spawn`'s frame, and the parent hung at its exit. `__clone` now runs the child on the current stack, below the caller's frames, as `vfork` does; the parent is suspended until the child execs or exits. Kernel calls run on the program's stack, so they need room there.
+- **Ctrl-C:** a command's first process that ends after a Ctrl-C now takes the rest of its job with it (`killJob`). Without that, BusyBox `hush`, which returns from a `waitpid` that failed with `EINTR`, left a shell process and a spinning program running that nothing could kill. Signals (step 9) replace the rule.
+- **Verified on the board:** `progtest scripts`:
+  - `system()` (its status, a redirection) and `system(NULL)`;
+  - `popen` both ways;
+  - `#!/bin/sh` with an argument, a `.sh` file without `#!`, a program as interpreter (`#!progtest env`);
+  - a CR LF `#!` line with `-e`;
+  - `ENOEXEC`, `ELOOP`, `ENOENT`;
+  - `execvp` falling back to `/bin/sh`.
+
+  Also: `hush` `exec`s `/bin/sh -c`, whose programs report their status back; a script run by `hush` through `#!/bin/sh`. Ctrl-C ends a sleeping shell process at once, and a shell process running a spinning program, with the job. 21 runs of `progtest scripts` leave free memory and tasks as they were; `progtest spawn` and the corpus pass.
+- **Host:** `Shell::runAsProgram()` (`-c` with the environment, directory and status, `-e`, a missing script, an unknown command, no terminal, no leaks).
+- **Measured:** the firmware grew 3.4 KB (435.1 → 438.5 KB); a shell process costs its 64 KB `Psram` stack and its `Shell` object, only while it runs.
+- **`$0`** was always `bmds` in the shell. It is now the script (`sh script`, a script run by name or through `#!`), the name after `sh -c command`, else `sh` for `sh -c` and `bmds` at the prompt; functions and `source` keep it, as in bash (a corpus entry checks it against bash).

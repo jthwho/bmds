@@ -18,6 +18,7 @@
 #include <bmds/fdtable.h>
 #include <bmds/interrupt.h>
 #include <bmds/lineeditor.h>
+#include <bmds/programlauncher.h>
 #include <bmds/span.h>
 #include <bmds/string.h>
 #include <bmds/stringview.h>
@@ -107,6 +108,25 @@ class Shell final : public LineCompleter {
                  */
                 static Error spawn(Console &console, const char *name, const Startup &startup);
 
+                /**
+                 * @brief Runs a shell as a program: `/bin/sh` for `exec`, and so for
+                 *        `system()` and `popen()` (a `BuiltinProgram`).
+                 *
+                 * A shell on the context's descriptors, directory and environment
+                 * (all exported) runs the built-in `sh` with the context's
+                 * arguments (`sh -c command`, `sh script args`), then is freed.
+                 * Target only (the registered commands, the configured stack).
+                 * @return Its exit status; 126 without a console or memory.
+                 */
+                static int programMain(const BuiltinProgram::Context &context);
+
+                /**
+                 * @brief `programMain()` with a command table and a stack budget
+                 *        (portable; the host tests use it).
+                 */
+                static int runAsProgram(const BuiltinProgram::Context &context, Span<const Command> commands,
+                                        size_t stackBytes);
+
                 /** @brief The `help` command (registered by the built-ins). */
                 static int runHelp(CommandContext &ctx);
 
@@ -142,6 +162,9 @@ class Shell final : public LineCompleter {
 
                 /** @brief Returns the shell state: variables, functions, options. */
                 ShellState &state() { return _state; }
+
+                /** @brief Returns the top-level executor. */
+                Executor &executor() { return _executor; }
 
                 /** @brief Returns the worker threads that run pipeline stages. */
                 WorkerPool &workers() { return _workers; }

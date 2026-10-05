@@ -531,12 +531,20 @@ static inline int32_t bmds_proc_vfork(void) {
  *        NULL-terminated; copied). Descriptors flagged `BMDS_FD_CLOEXEC` are
  *        closed, the others stay.
  *
+ * @p path may be a BMDS program; a script starting `#!interpreter [arg]`
+ * (run as `interpreter [arg] path argv[1]...`: an existing file, `/bin/sh`
+ * or `/bin/bash` for the BMDS shell, `/usr/bin/env name` with `name` looked
+ * up on `PATH` in @p envp as the shell does; at most 4 nested); a `.sh`
+ * file (the shell runs it); or `/bin/sh` itself (the BMDS shell, so
+ * `system()` and `popen()` work).
+ *
  * In a vfork child: the child becomes that program, running on its own,
  * and the call returns in the parent with the child's id (> 0). Else the
  * calling program is replaced (same id, descriptors and directory) and
  * the call doesn't return.
- * @return The child's id, or `BMDS_ENOENT`, `BMDS_ENOEXEC` (not a BMDS
- *         program), `BMDS_EACCES` (a directory), `BMDS_ENOMEM`, `BMDS_E2BIG`, ...
+ * @return The child's id, or `BMDS_ENOENT`, `BMDS_ENOEXEC` (neither a
+ *         program nor a script), `BMDS_ELOOP` (interpreters nested too deep),
+ *         `BMDS_EACCES` (a directory), `BMDS_ENOMEM`, `BMDS_E2BIG`, ...
  *         (the caller is still what it was).
  */
 static inline int32_t bmds_proc_exec(const char *path, char *const *argv, char *const *envp) {

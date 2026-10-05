@@ -15,42 +15,13 @@
 #include <bmds/console.h>
 #include <bmds/executor.h>
 #include <bmds/programlauncher.h>
+#include <bmds/shebang.h>
 #include <bmds/shell.h>
 #include <bmds/vfs.h>
 
 BMDS_NAMESPACE_BEGIN
 
 namespace {
-
-        bool isBlank(char c) {
-                return c == ' ' || c == '\t';
-        }
-
-        // A `#!` line, split as Linux does: the interpreter, then the rest of
-        // the line (trimmed) as at most one argument.
-        struct Shebang {
-                        StringView interpreter;
-                        StringView argument;
-        };
-
-        // @p head starts with "#!"; @p whole if it is the whole file. False if
-        // the line doesn't end within the head.
-        bool parseShebang(StringView head, bool whole, Shebang &out) {
-                StringView   line = head.mid(2);
-                const size_t newline = line.indexOf('\n');
-                if (newline != StringView::NPos) {
-                        line = line.left(newline);
-                } else if (!whole) {
-                        return false;
-                }
-                // Trailing CRs too: scripts written on a PC may have CR LF lines.
-                line = line.trimmed();
-                size_t end = 0;
-                while (end < line.size() && !isBlank(line[end])) ++end;
-                out.interpreter = line.left(end);
-                out.argument = line.mid(end).trimmed();
-                return true;
-        }
 
         StringView baseName(StringView path) {
                 const size_t slash = path.lastIndexOf('/');
@@ -129,7 +100,7 @@ Error Executor::findInPath(StringView name, String &out) {
 
 Executor::FileKind Executor::classify(StringView path, StringView head) {
         if (head.startsWith(StringView("\x7f" "ELF"))) return FileKind::Program;
-        if (head.startsWith(StringView("#!"))) return FileKind::Interpreted;
+        if (Shebang::isScript(head)) return FileKind::Interpreted;
         if (path.endsWith(StringView(".sh"))) return FileKind::ShellScript;
         return FileKind::Other;
 }
@@ -209,7 +180,7 @@ int Executor::runFile(StringView path, List<String> &args, int depth) {
 int Executor::runInterpreter(StringView path, StringView head, bool whole, List<String> &args, int depth) {
         const int pathLen = static_cast<int>(path.size());
         Shebang   line;
-        if (!parseShebang(head, whole, line)) {
+        if (!Shebang::parse(head, whole, line)) {
                 report("%.*s: interpreter line too long (at most %u bytes)", pathLen, path.data(),
                        static_cast<unsigned>(HeadBytes - 1));
                 return Shell::ExitCannotRun;

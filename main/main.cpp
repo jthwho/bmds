@@ -9,6 +9,7 @@
  * sequence runs its own stages, then the ones listed here.
  */
 
+#include <sdkconfig.h>
 #include <bmds/boot.h>
 #include <bmds/loader.h>
 #include <bmds/ramdisk.h>
@@ -39,12 +40,18 @@ namespace {
                 return bmds::Shell::spawn(bmds::UsbSerialConsole::instance(), "shell", startup);
         }
 
+        // The process table, and the shell as /bin/sh for exec (system(), popen()).
+        bmds::Error initPrograms() {
+                bmds::Loader::setShell(bmds::BuiltinProgram{bmds::Shell::programMain, CONFIG_BMDS_SHELL_STACK_BYTES});
+                return bmds::Loader::init();
+        }
+
         constexpr bmds::Boot::Stage SystemStages[] = {
                 {"console", bmds::UsbSerialConsole::init},
                 {"vfs", bmds::Vfs::init},
                 {"storage", bmds::Storage::init},
                 {"ramdisk", bmds::RamDisk::init},
-                {"programs", bmds::Loader::init}, // the process table
+                {"programs", initPrograms}, // processes, /bin/sh
                 {"shell", startSerialShell},
         };
 
