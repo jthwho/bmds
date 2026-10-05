@@ -120,6 +120,44 @@ Programs need the terminal's size (BusyBox's `vi` and `less` used 80x24 whatever
 
 The serial console doesn't need any of this; it is the HDMI console's job. Keeping `TerminalScreen` pure means it can be tested on the host long before the display works.
 
+### 3a. `TerminalScreen` as designed (Phase 4, the text renderer's first part)
+
+In `bmds_console` beside `ColorFilter` (pure, host-tested). Decisions:
+
+- **Cells:** `TerminalCell`, 12 bytes: the codepoint (21 bits), the SGR attributes (8), a wide
+  flag (the left half of a two-column character) and a tail flag (its right half), then the
+  foreground and background `Color`s. Reverse, dim and invisible stay attributes: the renderer
+  applies them, so a cell keeps what the program asked for.
+- **Memory:** one allocation in the `MemSpace` the owner names (the console: `Psram`): both
+  screens' cells, a row map per screen, the tab stops and the dirty-row bitmap. `resize()`
+  reallocates; content keeps its top-left, and when rows go the top ones go first so the cursor's
+  row stays. Nothing allocates while writing.
+- **Scrolling moves rows, not cells:** each screen has a row map (logical row → stored row), so a
+  line feed at the bottom rotates the map within the scroll region and clears one row: O(rows)
+  pointer work instead of moving the whole region's cells (190 KB at 1080p) per line.
+- **Erasing** fills with a space in the current background, no attributes (xterm's `bce`, which
+  the `xterm-256color` terminfo the shell exports promises).
+- **Wide characters** take two cells; overwriting either half blanks the other. A wide character
+  that doesn't fit at the end of a line wraps first. Zero-width characters (combining marks) are
+  dropped for now.
+- **Sequences:** §3's list, plus IND/NEL/RI, HTS/TBC/CHT/CBT, HPA/HPR/VPR, REP, IRM (insert),
+  DECOM (origin), DECSTR (soft reset), RIS, DECALN, SCOSC/SCORC, the DEC line-drawing set (G0/G1,
+  SO/SI) mapped to Unicode box drawing, `ESC [ 18 t` (the size report the serial console asks
+  terminals for). Modes the console's keyboard needs later are kept, not acted on: DECCKM
+  (application cursor keys), keypad mode, bracketed paste. Everything else is ignored.
+- **Replies** (DSR, DA, the size report) go to a sink function the console sets, which puts them
+  into its input.
+- **Damage** is per row and covers cells only: the renderer remembers where it drew the cursor
+  and redraws that row and the new one itself. A switch between screens or a resize dirties all.
+- **Thread safety:** none of its own; the console serializes writes and the renderer's reads.
+
+As built: `bmds/terminalscreen.h` / `terminalscreen.cpp`, as above. Host-tested
+(`tests/host/terminalscreen.cpp`): wrapping and the pending wrap, scrolling by the row map, scroll
+regions with IL/DL/RI/SU/SD and origin mode, erasing in the current background, SGR in the cells,
+wide characters (wrapping, split halves, DCH), ICH/DCH/IRM/ECH/REP, both alternate-screen modes,
+the line-drawing set with SO/SI, tab stops, DECSTR and RIS, the DA/DSR/size replies, resizing,
+input split byte by byte, and 20,000 junk bytes. Not yet in the firmware (nothing uses it).
+
 ## 4. IDF usage
 
 None. Everything here is pure C++ in `bmds_core`/`bmds_console`, except the RX-path Ctrl-C hook in each console driver.

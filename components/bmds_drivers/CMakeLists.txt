@@ -16,10 +16,12 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
 if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_DRIVERS_PORTABLE_SRCS}
+                                    src/display.cpp
                                     src/displaycommand.cpp
                                     src/i2cbus.cpp
                                     src/lt8912b.cpp
                                     src/memtestcommand.cpp
+                                    src/blitchain.cpp
                                     src/colorexpander.cpp
                                     src/framebuffer.cpp
                                     src/paletteexpander.cpp
@@ -28,7 +30,8 @@ if(COMMAND idf_component_register)
                                INCLUDE_DIRS include
                                REQUIRES bmds_core bmds_kernel
                                PRIV_REQUIRES bmds_board bmds_shell esp_driver_i2c esp_hw_support esp_hal_lcd esp_mm esp_timer
-                               WHOLE_ARCHIVE)
+                               WHOLE_ARCHIVE
+                               LDFRAGMENTS linker.lf)
         bmds_target_options(${COMPONENT_LIB})
 else()
         add_library(bmds_drivers STATIC ${BMDS_DRIVERS_PORTABLE_SRCS})

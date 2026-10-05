@@ -125,6 +125,22 @@ Error Framebuffer::copyFromFront(const Rect &rect, unsigned int timeoutMs) {
                             remainingMs(deadline));
 }
 
+Error Framebuffer::copyToBack(const RectCopier::Picture &from, uint16_t fromX, uint16_t fromY, const Rect &to,
+                              unsigned int timeoutMs) {
+        if (!isStarted()) return Error::InvalidState;
+        const Deadline deadline(timeoutMs);
+        const Error    err = waitForDrawing(deadline);
+        if (err.isError()) return err;
+        return _copier.copy(from, fromX, fromY, picture(back()), to.x, to.y, to.width, to.height,
+                            remainingMs(deadline));
+}
+
+Error Framebuffer::copy(const RectCopier::Picture &from, uint16_t fromX, uint16_t fromY, const RectCopier::Picture &to,
+                        uint16_t toX, uint16_t toY, uint16_t width, uint16_t height, unsigned int timeoutMs) {
+        if (!isStarted()) return Error::InvalidState;
+        return _copier.copy(from, fromX, fromY, to, toX, toY, width, height, timeoutMs);
+}
+
 // Drawing waits while a swap is pending: the back buffer is about to be shown.
 Error Framebuffer::waitForDrawing(const Deadline &deadline) {
         if (!isSwapPending()) return Error::Ok;

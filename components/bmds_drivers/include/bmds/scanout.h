@@ -58,6 +58,34 @@ class LineSource {
 };
 
 /**
+ * @brief Composes each block of the picture straight into the scanout's ring
+ *        by DMA (`devplan/windows.md` §4b): windows as sprites, no framebuffer.
+ *
+ * Called from the scanout's refill task, never from an interrupt: a block
+ * must be done well within the time its lines take to send. Nothing may
+ * allocate or wait for anything but the DMA it starts.
+ */
+class BlockSource {
+        public:
+                /**
+                 * @brief Frame @p frame is beginning (its first block comes next,
+                 *        or the first after skipped ones): take the positions
+                 *        and buffers it shows now. @hotpath
+                 */
+                virtual void beginFrame(uint32_t frame) = 0;
+
+                /**
+                 * @brief Writes lines @p first to @p first + @p count - 1 into
+                 *        @p dst (RGB888, @p stride bytes a line) by DMA, and
+                 *        returns when they are written. @hotpath
+                 */
+                virtual void composeBlock(uint16_t first, uint16_t count, uint8_t *dst, size_t stride) = 0;
+
+        protected:
+                ~BlockSource() = default;
+};
+
+/**
  * @brief A line-rendered picture on the MIPI-DSI output (`devplan/display.md`
  *        §5): no framebuffer.
  *
@@ -164,6 +192,14 @@ class Scanout {
                  */
                 Error start(const Config &config, Framebuffer &frames);
 
+                /**
+                 * @brief Starts sending blocks @p blocks composes into the ring
+                 *        (`devplan/windows.md` §4b). `config.format` is `Rgb888`.
+                 * @return As the other `start()`.
+                 * @blocking
+                 */
+                Error start(const Config &config, BlockSource &blocks);
+
                 /** @brief Stops sending and frees everything. Idempotent. */
                 void stop();
 
@@ -210,6 +246,8 @@ class Scanout {
                 Config                _config;
                 LineSource           *_source = nullptr;
                 Framebuffer          *_frames = nullptr;    // the picture, when started on a framebuffer
+                BlockSource          *_blocks = nullptr;    // the composer, when started on one
+                bool                  _frameBegun = false;  // _blocks: _frameNumber's frame was begun
                 uint8_t              *_frameData = nullptr; // its buffer for the frame being filled
                 uint32_t              _frameNumber = 0;     // that frame, counted like the blocks
                 Hardware             *_hw = nullptr;

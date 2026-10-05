@@ -185,6 +185,16 @@ Error Scanout::start(const Config &config, LineSource &source) {
         if (_running) return Error::InvalidState;
         _source = &source;
         _frames = nullptr;
+        _blocks = nullptr;
+        return begin(config);
+}
+
+Error Scanout::start(const Config &config, BlockSource &blocks) {
+        if (_running) return Error::InvalidState;
+        if (config.format != Format::Rgb888 || config.framebuffer) return Error::Invalid;
+        _source = nullptr;
+        _frames = nullptr;
+        _blocks = &blocks;
         return begin(config);
 }
 
@@ -193,6 +203,7 @@ Error Scanout::start(const Config &config, Framebuffer &frames) {
         if (!frames.isStarted() || frames.width() != config.timing.hActive || frames.height() != config.timing.vActive)
                 return Error::Invalid;
         _source = nullptr;
+        _blocks = nullptr;
         _frames = &frames;
         return begin(config);
 }
@@ -216,6 +227,7 @@ Error Scanout::begin(const Config &config) {
         _sent.store(0);
         _primed = false;
         _frameData = nullptr;
+        _frameBegun = false;
         _refilled = 0;
         _late.store(0);
         _skipped = 0;
@@ -274,6 +286,8 @@ Error Scanout::begin(const Config &config) {
                 // Only the PPA or the 2D-DMA writes the ring: no stale lines of it may stay in the cache.
                 (void)esp_cache_msync(_ring, _blockBytes * config.blocks, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
         }
+        // A composer writes the ring by DMA too.
+        if (_blocks != nullptr) (void)esp_cache_msync(_ring, _blockBytes * config.blocks, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
         // The ring starts full: buffer i carries block i.
         for (uint32_t i = 0; i < config.blocks; ++i) renderSlot(i);
         _running = true;
@@ -564,7 +578,9 @@ void Scanout::stop() {
         _ring = nullptr;
         if (_frames != nullptr) _frames->setScanning(false); // a pending swap made now
         _frames = nullptr;
+        _blocks = nullptr;
         _frameData = nullptr;
+        _frameBegun = false;
         _running = false;
         return;
 }
@@ -618,6 +634,7 @@ void Scanout::rebuild() {
         _sent.store(0, std::memory_order_relaxed);
         _primed = false;
         _frameData = nullptr;
+        _frameBegun = false;
         _refilled = 0;
         while (_wake.tryAcquire().isOk()) {}
         if (!_config.framebuffer) {
@@ -796,6 +813,7 @@ void Scanout::resync() {
         _sent.store(0, std::memory_order_relaxed);
         _primed = false;
         _frameData = nullptr;
+        _frameBegun = false;
         _refilled = 0;
         while (_wake.tryAcquire().isOk()) {}
         for (uint32_t i = 0; i < _config.blocks; ++i)
@@ -823,6 +841,21 @@ BMDS_HOT_ATTR void Scanout::renderSlot(uint32_t block) {
         uint8_t       *dst = _ring + (block % _config.blocks) * _blockBytes;
         const uint32_t first = (block % _blocksPerFrame) * _config.linesPerBlock;
         const uint16_t width = _config.timing.hActive;
+        if (_blocks != nullptr) {
+                // The composer's DMA writes the block; at a frame's start it takes the positions.
+                const uint32_t frame = block / _blocksPerFrame;
+                if (!_frameBegun || frame != _frameNumber) {
+                        _frameNumber = frame;
+                        _frameBegun = true;
+                        _blocks->beginFrame(frame);
+                }
+                const uint32_t started = esp_cpu_get_cycle_count();
+                _blocks->composeBlock(static_cast<uint16_t>(first), _config.linesPerBlock, dst, _stride);
+                const uint32_t cycles = esp_cpu_get_cycle_count() - started;
+                _expandCycles += cycles;
+                if (cycles > _expandCyclesMax) _expandCyclesMax = cycles;
+                return;
+        }
         if (_frames != nullptr) {
                 // The 2D-DMA widens the block's lines straight from the framebuffer.
                 const uint8_t *frame = frameFor(block);

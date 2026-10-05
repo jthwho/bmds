@@ -19,6 +19,7 @@ add_subdirectory(${BMDS_ROOT}/components/bmds_shell ${CMAKE_BINARY_DIR}/bmds_she
 add_subdirectory(${BMDS_ROOT}/components/bmds_fs ${CMAKE_BINARY_DIR}/bmds_fs)
 add_subdirectory(${BMDS_ROOT}/components/bmds_loader ${CMAKE_BINARY_DIR}/bmds_loader)
 add_subdirectory(${BMDS_ROOT}/components/bmds_drivers ${CMAKE_BINARY_DIR}/bmds_drivers)
+add_subdirectory(${BMDS_ROOT}/components/bmds_ui ${CMAKE_BINARY_DIR}/bmds_ui)
 
 add_executable(bmds_host_tests
         main.cpp
@@ -53,6 +54,8 @@ add_executable(bmds_host_tests
         stringview.cpp
         syntax.cpp
         terminal.cpp
+        terminalscreen.cpp
+        ui.cpp
         time.cpp
         vfs.cpp
         workerpool.cpp
@@ -61,7 +64,7 @@ target_include_directories(bmds_host_tests PRIVATE ${BMDS_ROOT}/thirdparty/docte
 target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
         BMDS_CORPUS_DIR="${CMAKE_CURRENT_LIST_DIR}/corpus"
         BMDS_COMPAT_DIR="${CMAKE_CURRENT_LIST_DIR}/../compat")
-target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers)
+target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_ui)
 bmds_target_options(bmds_host_tests)
 
 # bmds-elfcheck: the loader's format check as a host tool (tools/elfcheck).

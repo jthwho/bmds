@@ -81,5 +81,9 @@ test picture scanning out the whole time. Per pass: four CPU patterns, then the 
   safe: the `display stress` cases still upset it at 200 MHz.
 - **The soak:** 150 passes (750 pattern runs over 30,464 KB, CPU and DMA) in 1,244 s, 0 errors,
   with the test picture scanning out throughout. Still to do: cold boots (powered off for a while,
-  tested at once) and a long warm run. The user keeps the 200 MHz image on the board for daily use
+  tested at once). The user keeps the 200 MHz image on the board for daily use
   meanwhile, with no SD card writes of anything that matters.
+- **Warm run** (2026-10-05, 200 MHz image): `memtest -p 0` for 45 minutes (155 passes, the board
+  up 12 minutes before) under 720p from the RGB565 framebuffer with `display anim start 32`:
+  **0 errors**; 86 of 4,881,807 blocks skipped, the animation 0 errors and 0 of 921,600 pixels
+  wrong at the end; DMA copies 65-71 MB/s.

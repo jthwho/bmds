@@ -14,20 +14,13 @@
 #include <bmds/config.h>
 #include <bmds/error.h>
 #include <bmds/rectcopier.h>
+#include <bmds/rect.h>
 #include <bmds/semaphore.h>
 
 BMDS_NAMESPACE_BEGIN
 
 class Deadline;
 class Scanout;
-
-/** @brief A rectangle of pixels: its top-left corner and size. */
-struct Rect {
-                uint16_t x = 0;
-                uint16_t y = 0;
-                uint16_t width = 0;
-                uint16_t height = 0;
-};
 
 /**
  * @brief A double-buffered RGB565 picture in PSRAM (`devplan/display.md`
@@ -118,6 +111,28 @@ class Framebuffer {
                  * @blocking
                  */
                 Error copyFromFront(const Rect &rect, unsigned int timeoutMs);
+
+                /**
+                 * @brief Copies a rectangle of @p from (a picture the DMA reads as
+                 *        it is: written by DMA, or written back from the cache)
+                 *        to @p to in the back buffer, by 2D-DMA. Waits while a
+                 *        swap is pending.
+                 * @return As `blit()`.
+                 * @blocking
+                 */
+                Error copyToBack(const RectCopier::Picture &from, uint16_t fromX, uint16_t fromY, const Rect &to,
+                                 unsigned int timeoutMs);
+
+                /**
+                 * @brief Copies @p width × @p height pixels between two pictures off
+                 *        the screen, on the framebuffer's 2D-DMA channels (so drawing
+                 *        never takes a second pair from the scan's widening).
+                 * @return As `RectCopier::copy()`, or `InvalidState` (not started).
+                 * @blocking
+                 */
+                Error copy(const RectCopier::Picture &from, uint16_t fromX, uint16_t fromY,
+                           const RectCopier::Picture &to, uint16_t toX, uint16_t toY, uint16_t width, uint16_t height,
+                           unsigned int timeoutMs);
 
                 /**
                  * @brief Shows the back buffer from the start of the next frame,

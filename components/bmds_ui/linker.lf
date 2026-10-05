@@ -1,0 +1,9 @@
+# The scan-time compositor's per-block path in internal RAM (devplan/windows.md
+# §4b): with the code in flash, a core busy with PSRAM made each block's
+# planning several times slower through the shared L2 cache.
+
+[mapping:bmds_ui_hot]
+archive: libbmds_ui.a
+entries:
+    region (noflash)
+    scancompositor (noflash)

@@ -1,0 +1,10 @@
+menu "BMDS desktop"
+
+    config BMDS_DESKTOP_COLOR
+        hex "Desktop color (0xRRGGBB)"
+        default 0x404040
+        help
+            The flat color of the desktop under the windows
+            (devplan/windows.md W6). The default is a dark grey.
+
+endmenu

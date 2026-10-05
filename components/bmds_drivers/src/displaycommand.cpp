@@ -20,6 +20,7 @@
 #include <hal/axi_icm_ll.h>
 #include <bmds/board.h>
 #include <bmds/command.h>
+#include <bmds/display.h>
 #include <bmds/displaytest.h>
 #include <bmds/log.h>
 #include <bmds/edid.h>
@@ -44,8 +45,6 @@ namespace {
         constexpr uint8_t      EdidAddress = 0x50;
         constexpr uint32_t     DdcHz = 100'000; // DDC's standard clock
         constexpr unsigned int TimeoutMs = 100;
-
-        constinit StaticObject<Lt8912b> bridgeObject;
 
         // Step 2's test picture (devplan/display.md): bars, a gray ramp and a
         // stripe that moves each frame, so a lost or late block shows.
@@ -156,23 +155,28 @@ namespace {
                         uint32_t _frame = 0;
         };
 
-        constinit StaticObject<Scanout>     scanoutObject;
-        constinit StaticObject<Framebuffer> framesObject; // `display test MODE fb565`
-        void                                stopAnim();   // `display anim`, below
+        void                            stopAnim(); // `display anim`, below
         TestPattern                     testPattern;
         uint64_t                        testStartUs = 0;
 
         // The board's bridge, attached on first use.
         Result<Lt8912b *> attachBridge() {
-                const BoardDisplay &d = board().display;
-                if (d.bridge != BoardDisplayBridge::Lt8912b) return makeError<Lt8912b *>(Error::NotSupported);
-                if (!bridgeObject.isCreated()) {
-                        I2cBus *bus = I2cBus::bus(static_cast<size_t>(d.i2c));
-                        if (bus == nullptr) return makeError<Lt8912b *>(Error::NotExist);
-                        const Error err = bridgeObject.create(*bus, d.i2cAddr).attach();
-                        if (err.isError()) return makeError<Lt8912b *>(err);
-                }
-                return makeResult(&*bridgeObject);
+                auto [d, err] = Display::display(0);
+                if (err.isError()) return makeError<Lt8912b *>(err);
+                return makeResult(&d->bridge());
+        }
+
+        // True once display 0 (its bridge) has answered; its parts are then there.
+        bool hasDisplay() {
+                return Display::display(0).isOk();
+        }
+
+        // True, with a message, while another user (the desktop) has the display.
+        bool isClaimed(CommandContext &ctx) {
+                auto [d, err] = Display::display(0);
+                if (err.isError() || d->owner() == nullptr) return false;
+                ctx.eprintf("display: in use by the %s\n", d->owner());
+                return true;
         }
 
         // The bridge, or null with a message.
@@ -374,14 +378,13 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        // Display 0's parts: only once `hasDisplay()`.
         Framebuffer &frames() {
-                if (!framesObject.isCreated()) framesObject.create();
-                return *framesObject;
+                return Display::display(0).value()->framebuffer();
         }
 
         Scanout &scanout() {
-                if (!scanoutObject.isCreated()) scanoutObject.create(0);
-                return *scanoutObject;
+                return Display::display(0).value()->scanout();
         }
 
         // Sets the bridge up and starts the test picture in @p mode.
@@ -464,7 +467,7 @@ namespace {
         // display test 720|1080|WxH@Hz [cpu|pal|565|dma|fb|fb565] [lines per block] [blocks] | off
         int runTest(CommandContext &ctx, Args args) {
                 Lt8912b *b = bridge(ctx);
-                if (b == nullptr) return Shell::ExitFailure;
+                if (b == nullptr || isClaimed(ctx)) return Shell::ExitFailure;
                 if (std::strcmp(args[2], "off") == 0) {
                         stopAnim();
                         scanout().stop();
@@ -586,7 +589,7 @@ namespace {
         }
 
         int runStats(CommandContext &ctx) {
-                if (!scanoutObject.isCreated() || !scanout().isRunning()) {
+                if (!hasDisplay() || !scanout().isRunning()) {
                         ctx.eprintf("display: no scanout running\n");
                         return Shell::ExitFailure;
                 }
@@ -632,7 +635,7 @@ namespace {
         // widened from (`display test MODE fb565`): every line one of the
         // picture's two kinds, each RGB888 pixel's top bits its RGB565 pixel's.
         int runVerify(CommandContext &ctx) {
-                if (!framesObject.isCreated() || !frames().isStarted() || !scanout().isRunning()) {
+                if (!hasDisplay() || !frames().isStarted() || !scanout().isRunning()) {
                         ctx.eprintf("display: verify needs `display test MODE fb565`\n");
                         return Shell::ExitFailure;
                 }
@@ -687,7 +690,8 @@ namespace {
         // Bring-up: `display present [N]` swaps the test framebuffer N times,
         // timing each present (it waits for the next frame's start).
         int runPresent(CommandContext &ctx, const char *count) {
-                if (!framesObject.isCreated() || !frames().isStarted() || !scanout().isRunning()) {
+                if (isClaimed(ctx)) return Shell::ExitFailure;
+                if (!hasDisplay() || !frames().isStarted() || !scanout().isRunning()) {
                         ctx.eprintf("display: present needs `display test MODE fb565`\n");
                         return Shell::ExitFailure;
                 }
@@ -1040,7 +1044,8 @@ namespace {
                         return Shell::ExitSuccess;
                 }
                 if (args.size() >= 3 && std::strcmp(args[2], "start") == 0) {
-                        if (!framesObject.isCreated() || !frames().isStarted() || !scanout().isRunning()) {
+                        if (isClaimed(ctx)) return Shell::ExitFailure;
+                        if (!hasDisplay() || !frames().isStarted() || !scanout().isRunning()) {
                                 ctx.eprintf("display: anim needs `display test MODE fb565`\n");
                                 return Shell::ExitFailure;
                         }
@@ -1223,7 +1228,7 @@ namespace {
                 if (args.size() == 2 && std::strcmp(args[1], "scan") == 0) return scanBus(ctx);
                 if (args.size() >= 3 && std::strcmp(args[1], "test") == 0) return runTest(ctx, args);
                 if (args.size() == 2 && std::strcmp(args[1], "stats") == 0) return runStats(ctx);
-                if (args.size() == 3 && std::strcmp(args[1], "resync") == 0 && scanoutObject.isCreated()) {
+                if (args.size() == 3 && std::strcmp(args[1], "resync") == 0 && hasDisplay()) {
                         scanout().requestResync(std::atoi(args[2]));
                         return Shell::ExitSuccess;
                 }
