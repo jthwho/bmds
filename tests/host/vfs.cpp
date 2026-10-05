@@ -733,6 +733,79 @@ TEST_CASE("Vfs: a full disk") {
 
 namespace {
 
+        // A RAM disk that counts the reads reaching it.
+        class CountingDevice final : public bmds::BlockDevice {
+                public:
+                        CountingDevice() : _disk(512) {
+                                REQUIRE(_disk.allocate(64 * 2048, bmds::MemSpace::Psram).isOk());
+                        }
+
+                        uint32_t sectorSize() const override { return _disk.sectorSize(); }
+                        uint64_t sectorCount() const override { return _disk.sectorCount(); }
+                        Error    sync() override { return _disk.sync(); }
+
+                        size_t reads = 0;
+
+                protected:
+                        Error readSectors(uint64_t sector, WritableByteSpan buf) override {
+                                ++reads;
+                                return _disk.read(sector, buf);
+                        }
+                        Error writeSectors(uint64_t sector, ByteSpan data) override {
+                                return _disk.write(sector, data);
+                        }
+
+                private:
+                        RamBlockDevice _disk;
+        };
+
+} // namespace
+
+TEST_CASE("Vfs: the metadata cache") {
+        disk();
+        for (FsFormat format : {FsFormat::Fat32, FsFormat::ExFat}) {
+                CAPTURE(static_cast<int>(format));
+                CountingDevice dev;
+                char           name[MaxName + 1];
+                REQUIRE(bmds::BlockDevices::addNumbered(dev, "cnt", name).isOk());
+                REQUIRE(Vfs::format(dev, format).isOk());
+                REQUIRE(Vfs::automount(dev).value() == 1);
+                const std::string root = std::string("/") + name + "/p0";
+                REQUIRE(Vfs::mkdir((root + "/bin").c_str(), Root).isOk());
+                std::vector<std::string> paths;
+                for (int i = 0; i < 120; ++i) paths.push_back(root + "/bin/applet-number-" + std::to_string(i));
+                for (const std::string &p : paths) put(p.c_str(), "x");
+
+                // Looked up again, a directory comes from memory.
+                for (const std::string &p : paths) REQUIRE(Vfs::stat(p.c_str(), Root).isOk());
+                dev.reads = 0;
+                for (const std::string &p : paths) REQUIRE(Vfs::stat(p.c_str(), Root).isOk());
+                CHECK(dev.reads == 0);
+
+                // Bigger than the cache: evictions, and writes kept in step.
+                REQUIRE(Vfs::mkdir((root + "/big").c_str(), Root).isOk());
+                for (int i = 0; i < 600; ++i)
+                        put((root + "/big/a-long-file-name-" + std::to_string(i)).c_str(), std::to_string(i));
+                CHECK(list((root + "/big").c_str()).size() == 600);
+                for (int i = 0; i < 600; i += 2)
+                        REQUIRE(Vfs::remove((root + "/big/a-long-file-name-" + std::to_string(i)).c_str(), Root)
+                                        .isOk());
+                CHECK(list((root + "/big").c_str()).size() == 300);
+                CHECK(get((root + "/big/a-long-file-name-599").c_str()) == "599");
+
+                // Remounted: read from the device again, and still right.
+                Vfs::eject(dev);
+                REQUIRE(Vfs::automount(dev).value() == 1);
+                dev.reads = 0;
+                CHECK(list((root + "/big").c_str()).size() == 300);
+                CHECK(dev.reads > 0);
+                Vfs::eject(dev);
+                bmds::BlockDevices::remove(dev);
+        }
+}
+
+namespace {
+
         constexpr bmds::Command FsCommandTable[] = {
                 {"mount", "[DEVICE PATH]", "mount", bmds::FsCommands::mount},
                 {"umount", "PATH", "umount", bmds::FsCommands::umount},

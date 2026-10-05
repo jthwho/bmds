@@ -10,6 +10,7 @@
 #include <bmds/memory.h>
 
 #include "fatlayer.h"
+#include "sectorcache.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -64,6 +65,9 @@ Error FatVolume::mount(BlockDevice &device) {
         if (_mounted) return Error::InvalidState;
         if (!device.isPresent()) return Error::NoMedia;
         _device = &device;
+        // Whatever the drive held before is another filesystem's (or an
+        // older copy of this one's: the card may have been in a PC).
+        Fat::cache().discard(drive());
         char path[3];
         root(path);
         const FRESULT result = f_mount(_fs, path, 1);
@@ -84,6 +88,7 @@ void FatVolume::unmount() {
         // Clears the volume's type, which every open file and directory on it
         // is checked against: they all fail from now on.
         (void)f_mount(nullptr, path, 0);
+        Fat::cache().discard(drive());
         _mounted = false;
         _device = nullptr;
         return;
@@ -112,7 +117,8 @@ Error FatVolume::format(BlockDevice &device, FsFormat format, bool partitionTabl
         char path[3];
         v->root(path);
         const FRESULT result = f_mkfs(path, &params, work, FormatBufferBytes);
-        const Error   err = Fat::toError(result, *v);
+        Fat::cache().discard(v->drive());
+        const Error err = Fat::toError(result, *v);
         Memory::free(work);
         v->release();
         return err;

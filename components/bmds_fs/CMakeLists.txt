@@ -16,6 +16,7 @@ set(BMDS_FS_SRCS
         src/fatvolume.cpp
         src/partitions.cpp
         src/ramblockdevice.cpp
+        src/sectorcache.cpp
         src/vfs.cpp
         ${BMDS_FATFS_DIR}/ff.c
         ${BMDS_FATFS_DIR}/ffunicode.c)

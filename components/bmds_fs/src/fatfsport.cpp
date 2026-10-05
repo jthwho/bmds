@@ -17,6 +17,7 @@
 #include <bmds/staticobject.h>
 
 #include "fatlayer.h"
+#include "sectorcache.h"
 // After ff.h (from fatlayer.h), which defines its types.
 #include "diskio.h"
 
@@ -25,6 +26,9 @@ BMDS_NAMESPACE_BEGIN
 namespace {
 
         constinit StaticObject<Mutex> storageLock;
+        constinit SectorCache         sectorCache;
+
+        static_assert(FF_MIN_SS == SectorCache::SectorBytes && FF_MAX_SS == SectorCache::SectorBytes);
 
         // FatFs calls these with the storage lock held (every FatFs call is).
         BlockDevice *deviceOf(BYTE pdrv) {
@@ -49,9 +53,13 @@ Mutex &Fat::lock() {
         return *storageLock;
 }
 
+SectorCache &Fat::cache() {
+        return sectorCache;
+}
+
 Error Fat::init() {
         if (!storageLock.isCreated()) storageLock.create();
-        return Error();
+        return sectorCache.init();
 }
 
 Error Fat::toError(FRESULT result) {
@@ -139,14 +147,28 @@ extern "C" DSTATUS disk_initialize(BYTE pdrv) {
 extern "C" DRESULT disk_read(BYTE pdrv, BYTE *buff, LBA_t sector, UINT count) {
         BlockDevice *device = deviceOf(pdrv);
         if (device == nullptr) return RES_PARERR;
-        return toDiskResult(
-                device->read(sector, WritableByteSpan(buff, static_cast<size_t>(count) * device->sectorSize())));
+        // What FatFs reads into its window is metadata (FF_FS_TINY is off:
+        // file data goes through each file's own buffer or straight to the
+        // caller's).
+        const bool metadata = FatVolume::at(pdrv).isWindow(buff);
+        if (metadata && sectorCache.read(pdrv, sector, buff)) return RES_OK;
+        const Error err =
+                device->read(sector, WritableByteSpan(buff, static_cast<size_t>(count) * device->sectorSize()));
+        if (metadata && err.isOk()) sectorCache.store(pdrv, sector, buff);
+        return toDiskResult(err);
 }
 
 extern "C" DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count) {
         BlockDevice *device = deviceOf(pdrv);
         if (device == nullptr) return RES_PARERR;
-        return toDiskResult(device->write(sector, ByteSpan(buff, static_cast<size_t>(count) * device->sectorSize())));
+        const Error err = device->write(sector, ByteSpan(buff, static_cast<size_t>(count) * device->sectorSize()));
+        // Write-through: the cached copies follow the device, or go when its
+        // contents are uncertain.
+        if (err.isOk())
+                sectorCache.written(pdrv, sector, count, buff);
+        else
+                sectorCache.discard(pdrv, sector, count);
+        return toDiskResult(err);
 }
 
 extern "C" DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void *buff) {
@@ -162,6 +184,7 @@ extern "C" DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void *buff) {
                 case CTRL_TRIM: {
                         // Inclusive range; trimming is advisory.
                         const LBA_t *range = static_cast<const LBA_t *>(buff);
+                        sectorCache.discard(pdrv, range[0], range[1] - range[0] + 1);
                         (void)device->trim(range[0], range[1] - range[0] + 1);
                         return RES_OK;
                 }

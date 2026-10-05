@@ -40,6 +40,8 @@ BMDS_NAMESPACE_BEGIN
  * longer matches) even after the volume is mounted on another device.
  * Everything here expects the storage lock.
  */
+class SectorCache;
+
 class FatVolume {
         public:
                 constexpr FatVolume() = default;
@@ -66,6 +68,9 @@ class FatVolume {
 
                 /** @brief Returns the device while mounted (or formatting); else null. */
                 BlockDevice *device() const { return _device; }
+
+                /** @brief Returns true if @p buffer is FatFs's window (its metadata sector) for this volume. */
+                bool isWindow(const void *buffer) const { return _fs != nullptr && buffer == _fs->win; }
 
                 /** @brief Returns the FatFs drive number. */
                 uint8_t drive() const;
@@ -100,7 +105,10 @@ namespace Fat {
          */
         Mutex &lock();
 
-        /** @brief Creates the lock (from `Vfs::init()`); idempotent. */
+        /** @brief Returns the metadata cache under FatFs (sectorcache.h). Lock held. */
+        SectorCache &cache();
+
+        /** @brief Creates the lock and the cache (from `Vfs::init()`); idempotent. */
         Error init();
 
         /** @brief Translates a FatFs result. `FR_INVALID_OBJECT` (stale after unmount) is `NoMedia`. */
