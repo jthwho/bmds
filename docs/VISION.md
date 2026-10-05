@@ -17,7 +17,7 @@ The model is **DOS, not Linux**: one user, a text console with graphics availabl
 
 ## Non-Goals (for now)
 
-- **Memory protection between programs.** There's no MMU. Like DOS, a user program can in principle crash the machine. (The P4's RISC-V PMP *may* allow some kernel self-protection later — see `docs/ARCHITECTURE.md` open questions.)
+- **Memory protection between programs.** There's no per-program address space: the P4's MMU only maps flash and PSRAM, with one table for both cores and no write protection. Like DOS, a user program can in principle crash the machine. (The P4's RISC-V PMP *may* allow some kernel self-protection later — see `docs/ARCHITECTURE.md` open questions.)
 - **Multi-user, permissions, or security boundaries.**
 - **POSIX compliance.** We may provide a POSIX-like C library subset for porting convenience, but the native API is our own.
 - **Wi-Fi / Bluetooth.** The ESP32-P4 has no radio, and the Olimex ESP32-P4-PC has no companion wireless chip. This is deferred until a board with wireless support is targeted. The architecture should not preclude it.

@@ -866,13 +866,15 @@ static long do_execve(const char *path, char *const *argv, char *const *envp) {
 }
 
 /* waitid(2); musl builds wait4 and waitpid on it. Process groups are the
- * whole family: P_PGID waits for any child. */
-static long do_waitid(long type, long id, siginfo_t *info, long options) {
+ * whole family: P_PGID waits for any child. The resource usage (the kernel's
+ * struct rusage: 18 longs) is zero: BMDS does not count CPU time. */
+static long do_waitid(long type, long id, siginfo_t *info, long options, long *usage) {
         if (type != P_ALL && type != P_PID && type != P_PGID) return -EINVAL;
         int32_t       status = 0;
         const int32_t r = bmds_proc_wait(type == P_PID ? (int32_t)id : -1, &status,
                                          (options & WNOHANG) ? BMDS_WAIT_NOHANG : 0);
         if (r < 0) return (long)(r);
+        if (usage != NULL) memset(usage, 0, 18 * sizeof(long));
         if (info != NULL) {
                 memset(info, 0, sizeof(*info));
                 if (r > 0) {
@@ -1023,7 +1025,7 @@ long __bmds_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 case SYS_exit:
                 case SYS_exit_group: return do_exit(a);
                 case SYS_execve: return do_execve((const char *)a, (char *const *)b, (char *const *)c);
-                case SYS_waitid: return do_waitid(a, b, (siginfo_t *)c, d);
+                case SYS_waitid: return do_waitid(a, b, (siginfo_t *)c, d, (long *)e);
                 case SYS_set_tid_address:
                 case SYS_gettid:
                 case SYS_getpid:

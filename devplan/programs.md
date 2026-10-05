@@ -24,6 +24,14 @@ Status: **steps 1-7, 8a and 8b done** (Phase 3), plus emulated symbolic links an
   Code in PSRAM runs as fast as the firmware's own code from flash, or code in internal RAM, once cached, and fills cache misses **5.3 times faster** than flash (about 87 MB/s of instructions). Instruction fetch from TCM is 2.3 times slower: TCM is for data, not code.
 - **Internal SRAM heap is not executable** (`CONFIG_ESP_SYSTEM_MEMPROT`: the I/D split PMP entries make the heap RW). TCM (8 KB) is executable but tiny. So **program code runs from PSRAM**, through the 16 KB L1 I-cache and the 128 KB L2 cache.
 - **Loading code:** after writing it, `esp_cache_msync(..., DIR_C2M | INVALIDATE)` writes the D-cache back and invalidates L1 I, L1 D and L2 for the range; `fence.i` alone is not enough on the P4.
+- **The MMU maps external memory only:** flash at 0x40000000 and PSRAM at 0x48000000, in 64 KB pages (`CONFIG_MMU_PAGE_SIZE`), 1024 entries each, one table for both cores (`soc/esp32p4/include/soc/ext_mem_defs.h`). An entry holds a physical page, valid and encryption bits: no write protection, no address-space id. Internal RAM is not translated. So it can't give each program its own address space or copy-on-write, and there is no `fork`; it could map scattered PSRAM pages as one range, or a file's pages, later.
+- **MMU aliases work** (spike, 2026-10-04, standalone app on the board): one physical PSRAM page can be mapped at several addresses, which is how program instances could share their code (§14).
+  - **Addresses:** the heap maps the first 32 MB of the window (0x48000000); 32 MB (512 pages) above it are free. `esp_mmu_map_reserve_block_with_caps()` (private API, permanent) reserved a block at 0x4A000000. IDF's PSRAM driver maps its own region the same way: `mmu_hal_map_region()` on MMU 1. `esp_mmu_map()` doesn't fit: it picks the address itself, one physically contiguous run per call.
+  - **Code runs through an alias:** the same page at two addresses, each followed by a different private page; a PC-relative load (`auipc` + `lw`) in it read each instance's own word.
+  - **The caches are tagged by address, not by page:** a write through one address isn't seen through another until that one is invalidated; a remapped address returns the old page's lines until invalidated; invalidating drops dirty lines (not written back). Rules: write a page back before mapping it, invalidate an address after mapping, and invalidate before unmapping (a dirty line written back to an unmapped address goes nowhere).
+  - **Mapping cost** (360 MHz): IDF's way (caches off, the other core stalled) 15,000 cycles per call; changing only the entries, in a spinlock, plus invalidating 9 pages and unmapping: 19,000 cycles in all, with the other core running. 5000 such remaps while the other core ran PSRAM traffic and code through another alias: no errors.
+  - **DMA:** GDMA (async memcpy) both ways and SDMMC reads into an alias work (the P4's SDMMC reaches PSRAM, and its driver syncs with `esp_cache_msync()`, which takes alias addresses); same speed as heap addresses. But `esp_ptr_external_ram()` is false for aliases (it checks the heap's range), so code that tests it (BMDS's SD driver, before DMA) treats them as internal RAM or bounces.
+  - **An unmapped address** reads 0x0addbad0, with no exception: a stale pointer into an ended instance isn't caught.
 - **No user mode:** IDF runs in M-mode only on the P4 (ESP-TEE supports C5/C6/H2), and its PMP entries are locked at boot. Memory protection between kernel and program is not available now (`docs/VISION.md` non-goal); the design keeps the door open (§4).
 - **Toolchain:** `riscv32-esp-elf-gcc` 15.2. The firmware uses `rv32imafc_zicsr_zifencei_zaamo_zalrsc_xesploop_xespv2p1`, `ilp32f` (no Zc* on chip revisions below 3, erratum DIG-661). The toolchain ships **picolibc** and **newlib** (and newlib-nano) multilibs for `rv32imafc_zicsr_zifencei_zaamo_zalrsc` / `ilp32f`. `-fPIC`/`-fPIE`, `-mno-relax` work.
 - **No ELF loader** in IDF or locally; Espressif's registry `elf_loader` exists but loads shared objects with a wider relocation set than we want to freeze.
@@ -273,7 +281,7 @@ Agreed 2026-10-04: the C library moves out of programs into a shared runtime lib
 - **Waiting:** a zombie stays until its parent waits for it. Children of the shell (parent 1) are waited for by the launcher. When a parent ends, its zombies go and its living children become orphans, freed as soon as they end.
 - **Jobs:** a program the shell starts is a job; its descendants inherit the job. A second Ctrl-C kills every process in the job (each with step 5's handshake), not only the first.
 
-**`vfork`, in the same task.** The child runs on the parent's stack, in its memory, until it execs or exits, while the parent waits; this is what makes it work without an MMU.
+**`vfork`, in the same task.** The child runs on the parent's stack, in its memory, until it execs or exits, while the parent waits; this is what makes it work without per-process address spaces (§2).
 - `proc_vfork()`: the kernel makes a child `Process`, with a copy of the fds and their flags, the cwd, the console and the interrupt, plus a new pid in the same job. It becomes the task's current process, at most 2 deep. System calls now act on the child's fds and cwd. Memory calls still act on the program's own `Process`: the memory is shared, so a block the child allocates belongs to the parent's heap.
 - `proc_exec(path, argv, envp)` in a child:
   1. loads the image (errors are returned, not printed);
@@ -359,3 +367,64 @@ Also `BMDS_O_CLOEXEC` (0x40) for `open`. Kernels that predate these refuse the f
 - **Host:** `Shell::runAsProgram()` (`-c` with the environment, directory and status, `-e`, a missing script, an unknown command, no terminal, no leaks).
 - **Measured:** the firmware grew 3.4 KB (435.1 → 438.5 KB); a shell process costs its 64 KB `Psram` stack and its `Shell` object, only while it runs.
 - **`$0`** was always `bmds` in the shell. It is now the script (`sh script`, a script run by name or through `#!`), the name after `sh -c command`, else `sh` for `sh -c` and `bmds` at the prompt; functions and `source` keep it, as in bash (a corpus entry checks it against bash).
+
+**8c as built** (2026-10-04): BusyBox's `find -exec` (`;`, `+`, `-ok`), `time`, `nohup` and `xargs -I` are on (`xargs` was built already and now runs its commands); 116 applet links. No kernel change: the Linux layer's `waitid` now zeroes the resource usage musl's `wait4` passes (BMDS doesn't count CPU time, so `time` shows `user` and `sys` as 0 and `real` from the monotonic clock).
+- **Verified on the board:** each applet directly and inside `hush` (`find -exec … + | sort`, `ls | xargs`); a missing command (`xargs` 127; `find` prints the error and exits 0, as BusyBox does on Linux); `time` passing on the exit status; `nohup` writing `nohup.out` and sending stderr to a redirected stdout. Ctrl-C (once and twice) ends `xargs`, `find -exec`, `time` and `hush` with their children; tasks and free memory are as before afterwards.
+- **Cost of an applet's child:** with `CONFIG_FEATURE_PREFER_APPLETS` and no `fork`, BusyBox runs its own applets by `exec`ing `/sd0/p0/bin/busybox` again: `busybox time -p busybox true` takes 0.27 s, almost all of it loading the 1 MB image from the card.
+
+## 14. Shared program images and the image cache (design, 2026-10-04)
+
+**Why.** Every `exec` reads the program from the card, checks every relocation and copies the whole image, even when the same program is already running. BusyBox makes this the common case: with no `fork`, its applets run their children by `exec`ing `/sd0/p0/bin/busybox` again, and `xargs`, `find -exec` and `hush` do so per command. `busybox time -p busybox true` takes 0.27 s (8c), almost all of it loading; two running BusyBoxes hold two 520 KB copies of the same code. Two parts, each useful alone:
+1. **The image cache:** a program's checked, unrelocated bytes and its relocation list stay in `Psram` after it runs; the next `exec` copies and relocates from memory, without the card. Every program gains; no MMU.
+2. **Shared pages:** the 64 KB pages of an image that no relocation touches and the program never writes are the same at every load address, so instances share them, each instance mapping them through the MMU next to its private pages (the spike in §2).
+
+**What a page is.** An image is cut into 64 KB pages from its start (the MMU's page; `load()` already takes the address the image will run at separately from where it is written). A page is **shared** when it holds no relocation target and lies entirely below the first writable section (`.data`, `.tdata`, `.bss`...: the lowest address of an `SHF_WRITE` section, found by `inspect()`); every other page, and every page from the first writable one on, is **private**. Code reaches its data PC-relatively, so an instance's pages keep the image's layout: one range of the window per instance, shared pages mapped where they fall, private ones between them.
+
+For BusyBox as built (516 KB image, 9 pages; relocation targets: 9 in page 5, 250 in page 6, 63 in page 7; writable from 0x7F458): pages 0-4 are shared (320 KB), pages 5-8 private (256 KB per instance). Two instances need 832 KB instead of 1040 KB; the rest comes with the SDK changes below. `progtest` (2 pages, relocations in both) has none: it runs as a plain copy, from the cache.
+
+**The cache entry** (`Psram`, owned by the cache, not by a process):
+- the key: the program's absolute path (after following emulated links), its size and its modification time;
+- `Info` (entry, stack size, ABI version, sizes);
+- the shared pages: 64 KB-aligned physical pages, filled from the file once, written back, never written again;
+- the private part's file bytes, unrelocated (BusyBox: 190 KB), and the relocation list for the whole image (offset and kind, 4 bytes each; every target lies in a private page by definition; BusyBox: 322);
+- a count of the instances using it, and when it was last used.
+
+A program without shared pages keeps its whole file part as "private" bytes.
+
+**Starting an instance** (an `exec` that finds a valid entry, or after loading one):
+1. A range of the window (the image's pages, 64 KB-aligned), and one 64 KB-aligned `Psram` page per private page, allocated separately (no contiguous run needed).
+2. Through the private pages' heap addresses: copy the private bytes, zero the bss and the rest of the last page, apply the relocations for the range's address, and write the pages back (`esp_cache_msync` C2M).
+3. Map the shared and private pages into the range, entry by entry, in a spinlock (the entries are an index/content register pair, `mmu_ll_write_entry()`), then invalidate the range. IDF's own `esp_mmu_map()` path (caches off, the other core stalled) is not used: changing entries nobody uses yet is safe without it (spike: 5000 remaps under load), and it stalls the other core.
+4. The program runs at the range's address; `Running` keeps that base (for entry, crash offsets and freeing) apart from the memory it owns.
+
+**Ending an instance:** invalidate the range (dropping its dirty lines, so none is written back to an unmapped address), unmap it, free the private pages and the range, and decrement the entry's count. Nothing is written back: the instance's data dies with it.
+
+**Plain copies** remain for what the window can't take: an image without shared pages, a full window or no 64 KB pages free. The image goes into one 4096-aligned `Psram` block, as now, copied and relocated from the cache entry. Each instance of a small program then costs its size, not whole 64 KB pages.
+
+**The window.** At boot the loader reserves a block of the PSRAM window's free addresses with `esp_mmu_map_reserve_block_with_caps()`, once, for good (a private IDF API: IDF's PSRAM driver uses the same pair with `mmu_hal_map_region()`). Its size is `CONFIG_BMDS_IMAGE_WINDOW_MB`, default 16 MB (256 pages: 28 BusyBox instances; the free window is 32 MB, the rest stays for IDF's own `esp_mmu_map()` users). Ranges come from a bitmap (one bit a page, 32 bytes), first fit, under the loader's lock.
+
+**Keeping entries valid.**
+- **Lookup:** `exec` stats the path; an entry whose size or time differs is stale.
+- **Writes:** the time on FAT moves in 2 s steps, so the VFS tells the cache when a cached path is opened for writing, truncated, renamed over or removed. A volume going away (card out, unmount) drops its entries.
+- **Running instances:** a stale entry is never used again but lives until its last instance ends; a running program keeps running its old code.
+
+**Budget and eviction.** Entries nobody uses stay until `CONFIG_BMDS_IMAGE_CACHE_KB` (default 4096) is exceeded, then go least recently used first. When a `Psram` allocation fails, the allocator asks the cache to drop unused entries and tries again, so the cache never denies a program memory. `mem` shows the cache's size.
+
+**DMA.** IDF's `esp_ptr_external_ram()` is false for window addresses (it checks the heap's range). BMDS's SD driver tests it before DMA straight into a buffer; it gets a BMDS check that knows the window (`Memory`), so program buffers in static data still go straight to DMA. The SDMMC driver itself already syncs window addresses correctly (spike).
+
+**SDK changes that make more pages shared** (later, measured one by one; old programs keep working, as plain copies or with fewer shared pages):
+- **libgcc's `lui`s:** all 12 `R_RISCV_HI20` targets in BusyBox's code are libgcc's (`__clz_tab` from the division and `clz` helpers, medlow). Building those few helpers `medany` (or replacing them) frees page 5: 384 KB shared, 192 KB private.
+- **Pointers in `.rodata`** (293 `R_RISCV_32` targets in BusyBox: tables of pointers) mark their pages private. Building with `-fPIE`-style data placement puts relocated constants in `.data.rel.ro`, which the link script could put with `.data` (whether the stock toolchain does this without a GOT is to be measured).
+- **Writable data on its own page:** a link script that starts `.data` on a 64 KB boundary in the image (address space only: the gap isn't loaded) leaves one private page for BusyBox's 7 KB of data and bss. With all three: 512 KB shared, 64 KB per instance.
+
+**Not done:** a stale pointer into an ended instance reads 0x0ADDBAD0 rather than faulting (§2), so this adds no protection, and a program that writes into its shared code corrupts the other instances (no write protection in the MMU; programs can already crash the machine, §2). Scripts (`#!`) aren't cached; their interpreter is.
+
+**ABI impact:** none. The file format, the slots and what a program sees are unchanged; a program can't tell whether its pages are shared. The SDK changes above produce programs that every kernel loads.
+
+**Budget (estimate):** firmware +4 KB; 32 bytes for the bitmap; per entry about 100 bytes plus its pages and bytes (`Psram`, within the cache budget); per instance a range and its private pages instead of a whole copy. Starting a cached instance: the private bytes' copy and a few hundred patches, about a millisecond for BusyBox (to measure), instead of 0.27 s.
+
+**Testing:**
+- **Host:** the page classification (shared/private from relocations and writable sections; images smaller than a page, an image ending exactly on a page, bss spanning pages); the relocation list split from `load()` with the same result as `load()` for any base; the cache's lookup, staleness, counts and eviction over a fake mapper and allocator.
+- **Board:** BusyBox and `progtest` instances side by side (`hush` pipelines, `xargs`, `find -exec`), each with its own data; free memory per instance before and after; time of a cached `exec`; a program rewritten (same size, within 2 s) and removed while it runs; card removal with cached entries; Ctrl-C of shared instances; a full window falling back to plain copies; the cache emptied under memory pressure; tasks, free memory and the window bitmap as before afterwards.
+
+**Phasing:** (a) the image cache with plain copies (`exec` without the card), measured; (b) shared pages through the window; (c) the SDK changes, each with its measurement.

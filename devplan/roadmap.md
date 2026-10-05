@@ -65,7 +65,10 @@ Plans: [`storage.md`](storage.md), [`time.md`](time.md). Complete; verified on h
 - [ ] POSIX completion (§12, step 8+): process creation (`vfork`/`posix_spawn`, `waitpid`, `pipe`), signals from outside, `termios`, `poll`. Yardstick: BusyBox no-MMU (shells included) runs. A shared runtime only if measurements ask for it.
   - [x] 8a: processes, `vfork`/`exec`/`posix_spawn`, `waitpid`, `pipe`, close-on-exec (`programs.md` §13); `hush` runs programs and pipelines.
   - [x] 8b: `/bin/sh` (the shell as a process) and `#!` scripts in `exec`; `system`, `popen`.
-  - [ ] 8c: BusyBox with `xargs`, `find -exec`, `time`, `nohup`.
+  - [x] 8c: BusyBox with `xargs`, `find -exec`, `time`, `nohup` (116 applets as links).
+- [ ] Shared program images and an image cache (`programs.md` §14): `exec` from memory, code pages shared between instances through the MMU.
+  - [x] MMU spike (aliases, caches, DMA) and design.
+  - [ ] Image cache (plain copies), shared pages, SDK layout changes.
 - [ ] Example programs: `hello`, `cat`, a benchmark.
 
 ## Phase 4 — Display

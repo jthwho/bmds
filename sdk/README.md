@@ -121,12 +121,14 @@ on BMDS's table; programs never see that layer. What differs from Linux:
 - **Signals:** handlers, masks and `raise`/`abort`/`kill(getpid())` work
   within the program. Ctrl-C is not a signal yet: blocking calls fail with
   `EINTR`, and the program ends with status 130 however it exits.
-- **Processes:** no `fork` (`ENOSYS`: no MMU). `vfork` + `exec`, as on
-  uClinux: the child runs in the parent's memory, on its stack, until it
-  execs or exits (`_exit`), while the parent waits; what it changes in
-  memory the parent sees, its descriptors and directory are its own.
+- **Processes:** no `fork` (`ENOSYS`: no per-process address spaces).
+  `vfork` + `exec`, as on uClinux: the child runs in the parent's memory,
+  on its stack, until it execs or exits (`_exit`), while the parent waits;
+  what it changes in memory the parent sees, its descriptors and directory
+  are its own.
   `posix_spawn` (with file actions), `waitpid`/`wait4`/`waitid`, `pipe`,
-  `O_CLOEXEC`/`FD_CLOEXEC`, `getpid`/`getppid` work. `exec` runs programs,
+  `O_CLOEXEC`/`FD_CLOEXEC`, `getpid`/`getppid` work (`wait4`'s resource
+  usage is zero: CPU time isn't counted). `exec` runs programs,
   `#!` scripts and `.sh` files; `/bin/sh` is the BMDS shell, so `system` and
   `popen` work. A Ctrl-C that ends a command's first process ends the
   processes it started too; a second Ctrl-C kills them all.
