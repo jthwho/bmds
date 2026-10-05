@@ -27,6 +27,7 @@ add_executable(bmds_host_tests
         blockdevice.cpp
         bytering.cpp
         edid.cpp
+        memtest.cpp
         error.cpp
         fdtable.cpp
         files.cpp

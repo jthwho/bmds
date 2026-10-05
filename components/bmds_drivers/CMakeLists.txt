@@ -9,6 +9,7 @@
 
 set(BMDS_DRIVERS_PORTABLE_SRCS
         src/edid.cpp
+        src/memtest.cpp
         src/videomodes.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
@@ -18,6 +19,7 @@ if(COMMAND idf_component_register)
                                     src/displaycommand.cpp
                                     src/i2cbus.cpp
                                     src/lt8912b.cpp
+                                    src/memtestcommand.cpp
                                     src/colorexpander.cpp
                                     src/paletteexpander.cpp
                                     src/scanout.cpp

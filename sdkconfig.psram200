@@ -1,0 +1,6 @@
+# PSRAM at 200 MHz, for testing only (devplan/psram.md). Not used by the normal build:
+# applied to a copy of sdkconfig in build-psram200/ (see the devplan for the commands).
+CONFIG_IDF_EXPERIMENTAL_FEATURES=y
+CONFIG_SPIRAM_SPEED_200M=y
+# IDF's own test of all the PSRAM at every boot (~1.3 s).
+CONFIG_SPIRAM_MEMTEST=y

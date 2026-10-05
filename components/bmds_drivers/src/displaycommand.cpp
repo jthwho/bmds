@@ -14,6 +14,7 @@
 #include <sdkconfig.h>
 #include <cstring>
 #include <esp_cache.h>
+#include <hal/axi_icm_ll.h>
 #include <bmds/board.h>
 #include <bmds/command.h>
 #include <bmds/displaytest.h>
@@ -282,6 +283,7 @@ namespace {
         // Bring-up knobs for 16-bit links (`display test MODE 565 ... pack=N lane24`).
         uint8_t testPacking = 0;
         bool    testFullLane = false;
+        bool    testFree = false; // `display test MODE ... free`: the free-running ring
 
         Error startTest(Lt8912b &b, const VideoTiming &timing, Scanout::Format format, uint16_t lines, uint8_t blocks,
                         bool framebuffer) {
@@ -299,6 +301,7 @@ namespace {
                 c.framebuffer = framebuffer;
                 c.linkPacking = testPacking;
                 c.fullLaneRate = testFullLane;
+                c.freeRunning = testFree;
                 // The test palette: the eight bars, then a gray ramp.
                 static uint32_t           palette[PaletteExpander::PaletteSize];
                 static constexpr uint32_t Bars[8] = {0xffffff, 0xffff00, 0x00ffff, 0x00ff00,
@@ -326,15 +329,19 @@ namespace {
                         (void)b->setOutput(false);
                         return Shell::ExitSuccess;
                 }
-                // Knobs anywhere after the mode: pack=N, lane24.
+                // Knobs anywhere after the mode: pack=N, lane24, free.
                 testPacking = 0;
                 testFullLane = false;
+                testFree = false;
                 size_t positional = args.size();
                 for (size_t i = 3; i < args.size(); ++i) {
                         const bool pack = std::strncmp(args[i], "pack=", 5) == 0;
                         if (pack) testPacking = static_cast<uint8_t>(std::atoi(args[i] + 5));
-                        if (std::strcmp(args[i], "lane24") == 0) testFullLane = true;
-                        if ((pack || testFullLane) && i < positional) positional = i;
+                        const bool lane24 = std::strcmp(args[i], "lane24") == 0;
+                        const bool free = std::strcmp(args[i], "free") == 0;
+                        if (lane24) testFullLane = true;
+                        if (free) testFree = true;
+                        if ((pack || lane24 || free) && i < positional) positional = i;
                 }
                 if (positional > 6) return ctx.usage();
                 args = Args(args.data(), positional);
@@ -432,10 +439,12 @@ namespace {
                            static_cast<unsigned long long>(us / 1000),
                            static_cast<unsigned long long>(us == 0 ? 0 : uint64_t(s.frames) * 1000000 / us),
                            static_cast<unsigned long long>(us == 0 ? 0 : uint64_t(s.frames) * 10000000 / us % 10));
-                ctx.printf("Problems: %u late, %u stalls, %u underruns, %u resyncs, %u rebuilds (%u failed)\n",
-                           static_cast<unsigned>(s.late), static_cast<unsigned>(s.stalls),
-                           static_cast<unsigned>(s.underruns), static_cast<unsigned>(s.resyncs),
-                           static_cast<unsigned>(s.rebuilds), static_cast<unsigned>(s.resyncFailures));
+                ctx.printf(
+                        "Problems: %u late, %u skipped, %u stalls, %u underruns, %u resyncs, %u rebuilds (%u failed)\n",
+                        static_cast<unsigned>(s.late), static_cast<unsigned>(s.skipped),
+                        static_cast<unsigned>(s.stalls), static_cast<unsigned>(s.underruns),
+                        static_cast<unsigned>(s.resyncs), static_cast<unsigned>(s.rebuilds),
+                        static_cast<unsigned>(s.resyncFailures));
                 ctx.printf("Sync:     %u cycles at most; stalls at blocks", static_cast<unsigned>(s.syncCyclesMax));
                 for (uint32_t at : s.stallAt) ctx.printf(" %u", static_cast<unsigned>(at));
                 ctx.printf("\n");
@@ -525,6 +534,93 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        // Bring-up: the AXI interconnect's arbitration (devplan/display.md §8,
+        // the QoS experiment). Fields of the ICM's priority and QoS registers.
+        struct QosField {
+                        const char        *name;
+                        volatile uint32_t *reg;
+                        uint8_t            shift;
+                        uint8_t            width;
+        };
+        constexpr QosField QosFields[] = {
+                {"prio.cpu", &AXI_ICM.mst_arb_priority_reg0.val, 0, 4},
+                {"prio.cache", &AXI_ICM.mst_arb_priority_reg0.val, 4, 4},
+                {"prio.dma2d", &AXI_ICM.mst_arb_priority_reg0.val, 8, 4},
+                {"prio.gdma1", &AXI_ICM.mst_arb_priority_reg0.val, 12, 4},
+                {"prio.gdma2", &AXI_ICM.mst_arb_priority_reg0.val, 16, 4},
+                {"prio.pdma", &AXI_ICM.mst_arb_priority_reg0.val, 28, 4},
+                {"slv.l2mem", &AXI_ICM.slv_arb_priority.val, 3, 3},
+                {"slv.psram", &AXI_ICM.slv_arb_priority.val, 15, 3},
+                {"arqos.cpu", &AXI_ICM.mst_arqos_reg0.val, 0, 4},
+                {"arqos.cache", &AXI_ICM.mst_arqos_reg0.val, 4, 4},
+                {"arqos.dma2d", &AXI_ICM.mst_arqos_reg0.val, 8, 4},
+                {"arqos.gdma1", &AXI_ICM.mst_arqos_reg0.val, 12, 4},
+                {"arqos.gdma2", &AXI_ICM.mst_arqos_reg0.val, 16, 4},
+                {"awqos.cpu", &AXI_ICM.mst_awqos_reg0.val, 0, 4},
+                {"awqos.cache", &AXI_ICM.mst_awqos_reg0.val, 4, 4},
+                {"awqos.dma2d", &AXI_ICM.mst_awqos_reg0.val, 8, 4},
+        };
+
+        struct QosMaster {
+                        const char *name;
+                        uint8_t     id; // axi_icm_ll_master_id_t
+        };
+        constexpr QosMaster QosMasters[] = {{"cpu", AXI_ICM_MASTER_CPU},          {"cache", AXI_ICM_MASTER_CACHE},
+                                            {"gdma1", AXI_ICM_MASTER_DW_GDMA_M0}, {"gdma2", AXI_ICM_MASTER_DW_GDMA_M1},
+                                            {"pdma", AXI_ICM_MASTER_GDMA},        {"dma2d", AXI_ICM_MASTER_DMA2D}};
+
+        // One regulator command: 0 the burstiness (data[23:16], data[0] on), 1 the rates.
+        void qosCommand(uint32_t master, uint32_t write, uint32_t cmd, uint32_t data) {
+                while (AXI_ICM_QOS.cmd.reg_axi_cmd_en) {}
+                AXI_ICM_QOS.data.val = data;
+                AXI_ICM_QOS.cmd.reg_axi_rd_wr_cmd = 1;
+                AXI_ICM_QOS.cmd.reg_rd_wr_chan = write;
+                AXI_ICM_QOS.cmd.reg_axi_master_port = master;
+                AXI_ICM_QOS.cmd.reg_axi_cmd = cmd;
+                AXI_ICM_QOS.cmd.reg_axi_cmd_en = 1;
+                while (AXI_ICM_QOS.cmd.reg_axi_cmd_en) {}
+                return;
+        }
+
+        // display qos | qos FIELD VALUE | qos limit MASTER r|w BURST PEAK RATE | qos limit MASTER r|w off
+        int runQos(CommandContext &ctx, Args args) {
+                if (args.size() == 2) {
+                        for (const QosField &f : QosFields)
+                                ctx.printf("%-12s %u\n", f.name,
+                                           static_cast<unsigned>((*f.reg >> f.shift) & ((1u << f.width) - 1)));
+                        return Shell::ExitSuccess;
+                }
+                if (args.size() == 4) {
+                        for (const QosField &f : QosFields) {
+                                if (std::strcmp(args[2], f.name) != 0) continue;
+                                const auto     v = static_cast<uint32_t>(std::atoi(args[3]));
+                                const uint32_t mask = ((1u << f.width) - 1) << f.shift;
+                                *f.reg = (*f.reg & ~mask) | ((v << f.shift) & mask);
+                                return Shell::ExitSuccess;
+                        }
+                        return ctx.usage();
+                }
+                if (args.size() >= 6 && std::strcmp(args[2], "limit") == 0) {
+                        const QosMaster *m = nullptr;
+                        for (const QosMaster &q : QosMasters)
+                                if (std::strcmp(args[3], q.name) == 0) m = &q;
+                        const uint32_t write = std::strcmp(args[4], "w") == 0 ? 1 : 0;
+                        if (m == nullptr || (write == 0 && std::strcmp(args[4], "r") != 0)) return ctx.usage();
+                        if (args.size() == 6 && std::strcmp(args[5], "off") == 0) {
+                                qosCommand(m->id, write, 0, 0); // the regulator off
+                                return Shell::ExitSuccess;
+                        }
+                        if (args.size() != 8) return ctx.usage();
+                        const int burst = std::atoi(args[5]), peak = std::atoi(args[6]), rate = std::atoi(args[7]);
+                        if (burst < 1 || burst > 256 || peak < 0 || peak >= rate || rate > 11) return ctx.usage();
+                        // Levels: 0 is 1/2 of the cycles, 11 is 1/4096 (axi_icm_ll.h).
+                        qosCommand(m->id, write, 1, (0x80000000u >> peak) + (0x8000u >> rate));
+                        qosCommand(m->id, write, 0, uint32_t(burst - 1) << 16 | 1);
+                        return Shell::ExitSuccess;
+                }
+                return ctx.usage();
+        }
+
         int runDisplay(CommandContext &ctx) {
                 const Args args = ctx.args();
                 if (args.size() == 1) return showStatus(ctx);
@@ -538,6 +634,7 @@ namespace {
                 }
                 if (args.size() == 3 && std::strcmp(args[1], "stress") == 0) return runStress(ctx, args[2]);
                 if (args.size() == 2 && std::strcmp(args[1], "check") == 0) return runCheck(ctx);
+                if (args.size() >= 2 && std::strcmp(args[1], "qos") == 0) return runQos(ctx, args);
                 return ctx.usage();
         }
 
@@ -556,9 +653,11 @@ Error DisplayTest::init() {
 #endif
 }
 
-BMDS_SHELL_COMMAND(display, runDisplay,
-                   "[edid|scan|check|stats|test 720|1080|WxH@HZ [cpu|pal|565|dma|fb] [lines] [blocks]|test off]",
-                   "Show the HDMI bridge and the monitor; 'edid' dumps the monitor's EDID, 'scan' lists the bus, "
-                   "'test' starts the test picture (bring-up), 'stats' shows the scanout's counters")
+BMDS_SHELL_COMMAND(
+        display, runDisplay,
+        "[edid|scan|check|stats|test 720|1080|WxH@HZ [cpu|pal|565|dma|fb] [lines] [blocks] [free]|test off|stress "
+        "psram|write|internal|qos [FIELD N|limit MASTER r|w BURST PEAK RATE|off]]",
+        "Show the HDMI bridge and the monitor; 'edid' dumps the monitor's EDID, 'scan' lists the bus, "
+        "'test' starts the test picture (bring-up), 'stats' shows the scanout's counters")
 
 BMDS_NAMESPACE_END

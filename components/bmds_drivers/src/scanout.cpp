@@ -96,8 +96,13 @@ struct Scanout::Hardware {
 struct ScanoutIsr {
                 BMDS_ISR_ATTR static bool blockSent(dw_gdma_channel_handle_t, const dw_gdma_trans_done_event_data_t *,
                                                     void *arg) {
-                        auto *s = static_cast<Scanout *>(arg);
-                        s->_sent.fetch_add(1, std::memory_order_relaxed);
+                        auto          *s = static_cast<Scanout *>(arg);
+                        const uint32_t n = s->_sent.fetch_add(1, std::memory_order_relaxed);
+                        // Free-running: the buffer just sent is valid again at once, so the
+                        // DMA never finds one that isn't (it goes out stale if not redrawn).
+                        if (s->_config.freeRunning)
+                                dw_gdma_ll_lli_set_block_markers(s->_hw->items[n % s->_config.blocks], true, false,
+                                                                 true);
                         s->_wake.releaseFromIsr();
                         return false; // releaseFromIsr() yields at the interrupt's exit
                 }
@@ -143,6 +148,7 @@ Error Scanout::start(const Config &config, LineSource &source) {
         _sent.store(0);
         _refilled = 0;
         _late.store(0);
+        _skipped = 0;
         _stalls.store(0);
         _underruns.store(0);
         _stalled.store(false);
@@ -532,6 +538,7 @@ Scanout::Stats Scanout::stats() const {
         }
         s.frames = _blocksPerFrame == 0 ? 0 : s.blocks / _blocksPerFrame;
         s.late = _late.load(std::memory_order_relaxed);
+        s.skipped = _skipped;
         s.stalls = _stalls.load(std::memory_order_relaxed);
         s.underruns = _underruns.load(std::memory_order_relaxed);
         s.renderCyclesMax = _renderCyclesMax;
@@ -604,7 +611,25 @@ BMDS_HOT_ATTR void Scanout::refill() {
                                 _renderCycles += cycles;
                         }
                 }
-                while (_refilled != sent) {
+                while (_config.freeRunning && !_config.framebuffer) {
+                        // The DMA is sending block `sending`; the buffers of the blocks after
+                        // it, up to a ring ahead, can be drawn. Behind: skip to the nearest.
+                        const uint32_t sending = _sent.load(std::memory_order_relaxed);
+                        uint32_t       next = _refilled + _config.blocks;
+                        if (next <= sending) {
+                                _skipped += sending + 1 - next;
+                                _refilled = sending + 1 - _config.blocks;
+                                next = sending + 1;
+                        }
+                        if (next > sending + _config.blocks - 1) break;
+                        const uint32_t start = esp_cpu_get_cycle_count();
+                        renderSlot(next);
+                        const uint32_t cycles = esp_cpu_get_cycle_count() - start;
+                        if (cycles > _renderCyclesMax) _renderCyclesMax = cycles;
+                        _renderCycles += cycles;
+                        ++_refilled;
+                }
+                while (!_config.freeRunning && _refilled != sent) {
                         const uint32_t start = esp_cpu_get_cycle_count();
                         renderSlot(_refilled + _config.blocks);
                         const uint32_t cycles = esp_cpu_get_cycle_count() - start;

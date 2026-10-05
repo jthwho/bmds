@@ -97,6 +97,8 @@ class Scanout {
                                 uint8_t linkPacking =
                                         0; ///< 16/18-bit links: the host's packing variant (0-2), the bridge's arrangement.
                                 bool            fullLaneRate = false; ///< Lanes at the 24-bit rate whatever the format.
+                                bool            freeRunning =
+                                        false; ///< The ring never stops: a late block goes out stale and is skipped.
                                 const uint32_t *palette =
                                         nullptr; ///< `Indexed8`: 256 entries (0xRRGGBB) loaded at the start.
                                 void (*onRestart)(void *arg) =
@@ -109,6 +111,7 @@ class Scanout {
                                 uint32_t blocks = 0;    ///< Buffers sent.
                                 uint32_t frames = 0;    ///< Whole frames sent.
                                 uint32_t late = 0;      ///< Buffers sent again unrefilled (the renderer fell behind).
+                                uint32_t skipped = 0;   ///< `freeRunning`: blocks not drawn in time, sent stale.
                                 uint32_t stalls = 0;    ///< The DMA found a buffer not handed back yet.
                                 uint32_t underruns = 0; ///< The DSI bridge ran dry.
                                 uint32_t resyncs = 0;   ///< Restarts of the data path after an underrun or a stall.
@@ -198,6 +201,7 @@ class Scanout {
                 std::atomic<uint32_t> _sent{0};      // buffers sent (the DMA's block interrupts)
                 uint32_t              _refilled = 0; // buffers handed back, counted like `_sent`
                 std::atomic<uint32_t> _late{0};
+                uint32_t              _skipped = 0;
                 std::atomic<uint32_t> _stalls{0};
                 std::atomic<uint32_t> _underruns{0};
                 std::atomic<bool>     _stalled{false};
