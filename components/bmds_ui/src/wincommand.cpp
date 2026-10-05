@@ -23,6 +23,7 @@
 #include <bmds/system.h>
 #include <bmds/utf8.h>
 #include <bmds/windowmanager.h>
+#include <bmds/windowpalette.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -120,8 +121,10 @@ namespace {
                         ctx.eprintf("win: the display isn't running ('display start')\n");
                         return Shell::ExitFailure;
                 }
+                WindowPalette palette;
+                palette.setColor(WindowPalette::Role::Desktop, color);
                 auto [wm, err] = WindowManager::manager(0);
-                if (err.isOk()) err = wm->start(*d, color);
+                if (err.isOk()) err = wm->start(*d, palette);
                 if (err == Error::Busy) {
                         ctx.eprintf("win: display in use by the %s\n", d->owner());
                         return Shell::ExitFailure;
@@ -223,12 +226,14 @@ namespace {
         }
 
         // What window @p w's frame shows at (@p x, @p y).
-        uint32_t frameAt(const WindowManager::Info &w, uint32_t x, uint32_t y) {
-                const uint32_t frame = w.focused ? WindowManager::FocusedColor : WindowManager::FrameColor;
+        uint32_t frameAt(const WindowPalette &palette, const WindowManager::Info &w, uint32_t x, uint32_t y) {
+                using Role = WindowPalette::Role;
+                const uint32_t frame = palette.color(w.focused ? Role::ActiveFrame : Role::InactiveFrame);
+                const uint32_t text = palette.color(w.focused ? Role::ActiveTitle : Role::InactiveTitle);
                 const Rect     box = WindowFrame::closeBox(w.rect);
                 if (inside(box, x, y)) {
                         const Rect mark{uint16_t(box.x + 4), uint16_t(box.y + 4), 4, 4};
-                        return inside(mark, x, y) ? WindowManager::CloseMark : WindowManager::CloseColor;
+                        return palette.color(inside(mark, x, y) ? Role::CloseMark : Role::CloseBox);
                 }
                 const Rect t = WindowFrame::title(w.rect);
                 if (!inside(t, x, y)) return frame;
@@ -241,7 +246,7 @@ namespace {
                         if (x < left + g.width) {
                                 const uint32_t col = x - left;
                                 const uint8_t  bits = g.rows[(y - t.y) * (g.width / 8u) + col / 8];
-                                return (bits & (0x80u >> (col % 8))) != 0 ? WindowManager::TitleColor : frame;
+                                return (bits & (0x80u >> (col % 8))) != 0 ? text : frame;
                         }
                         left += g.width;
                 }
@@ -266,10 +271,11 @@ namespace {
                         (void)esp_cache_msync(const_cast<uint8_t *>(buffer) + off,
                                               bytes - off < 64 * 1024 ? bytes - off : 64 * 1024,
                                               ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-                const uint32_t desktop = wm.desktopColor();
-                uint32_t       wrong = 0, checked = 0;
-                int            fx = -1, fy = -1;
-                uint32_t       fgot = 0, fwant = 0;
+                const WindowPalette palette = wm.palette();
+                const uint32_t      desktop = palette.color(WindowPalette::Role::Desktop);
+                uint32_t            wrong = 0, checked = 0;
+                int                 fx = -1, fy = -1;
+                uint32_t            fgot = 0, fwant = 0;
                 for (uint32_t y = 0; y < s.height(); ++y) {
                         const uint8_t *line = buffer + size_t(y) * s.stride();
                         for (uint32_t x = 0; x < s.width(); ++x) {
@@ -278,7 +284,7 @@ namespace {
                                         if (!inside(info[i].rect, x, y)) continue;
                                         const Rect &c = clients[i];
                                         want = inside(c, x, y) ? testWindow(info[i].id).at(x - c.x, y - c.y)
-                                                               : frameAt(info[i], x, y);
+                                                               : frameAt(palette, info[i], x, y);
                                         break;
                                 }
                                 ++checked;
@@ -341,6 +347,28 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        // win color [ROLE RRGGBB]
+        int runColor(CommandContext &ctx, WindowManager &wm, Args args) {
+                WindowPalette palette = wm.palette();
+                if (args.size() == 2) {
+                        for (size_t i = 0; i < WindowPalette::RoleCount; ++i) {
+                                const auto role = static_cast<WindowPalette::Role>(i);
+                                ctx.printf("%-15s %06lx\n", WindowPalette::name(role),
+                                           static_cast<unsigned long>(palette.color(role)));
+                        }
+                        return Shell::ExitSuccess;
+                }
+                auto [role, err] = WindowPalette::find(args[2]);
+                if (err.isError()) {
+                        ctx.eprintf("win: %s: not a color role ('win color' lists them)\n", args[2]);
+                        return Shell::ExitUsage;
+                }
+                uint32_t color = 0;
+                if (!parseColor(args[3], color)) return ctx.usage();
+                palette.setColor(role, color);
+                return report(ctx, wm.setPalette(palette));
+        }
+
         int runStats(CommandContext &ctx, WindowManager &wm) {
                 const WindowManager::Stats s = wm.stats();
                 ctx.printf("Rounds:   %lu (%lu pieces, %lu redraws, %lu DMA calls, %lu fallbacks, %lu errors)\n",
@@ -370,11 +398,8 @@ namespace {
                 if (std::strcmp(what, "new") == 0) return runNew(ctx, *wm, args);
                 if (args.size() == 2 && std::strcmp(what, "check") == 0) return runCheck(ctx, *wm);
                 if (args.size() == 2 && std::strcmp(what, "stats") == 0) return runStats(ctx, *wm);
-                if (args.size() == 3 && std::strcmp(what, "desktop") == 0) {
-                        uint32_t color = 0;
-                        if (!parseColor(args[2], color)) return ctx.usage();
-                        return report(ctx, wm->setDesktopColor(color));
-                }
+                if (std::strcmp(what, "color") == 0 && (args.size() == 2 || args.size() == 4))
+                        return runColor(ctx, *wm, args);
                 if (args.size() == 3 && std::strcmp(what, "shuffle") == 0) {
                         long count = 0;
                         if (!parseNumber(args[2], 1'000'000, count)) return ctx.usage();
@@ -400,8 +425,8 @@ namespace {
 
 BMDS_SHELL_COMMAND(win, runWin,
                    "[start [RRGGBB]|stop|list|new [X Y W H] [TITLE]|close N|raise N|move N X Y|drag N X Y|"
-                   "desktop RRGGBB|check|stats|shuffle N]",
+                   "color [ROLE RRGGBB]|check|stats|shuffle N]",
                    "The desktop and its windows on display 0: 'new' opens a test window, 'drag' moves one "
-                   "as an outline, 'check' compares every pixel with the stack")
+                   "as an outline, 'color' lists or sets the palette, 'check' compares every pixel with the stack")
 
 BMDS_NAMESPACE_END

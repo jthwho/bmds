@@ -1,6 +1,7 @@
 # Windows: a Desktop, a Window Manager, the Terminal as the First Program
 
-Status: **steps 1 to 3 done** (the window manager on surface 0, §9) (surface 0 runs; `display.md` §5c) (Phase 4, 2026-10-05). After measuring three ways
+Status: **steps 1 to 3 done** (surface 0, `display.md` §5c; the window manager on it, §9)
+(Phase 4, 2026-10-05). After measuring three ways
 to put windows on the screen (§4b, §4c, below), the user chose the simple one: **surface 0**,
 a double-buffered RGB888 framebuffer in PSRAM that the DW-GDMA scans directly (no ring), windows
 moved as an outline until placed. The PSRAM bandwidth is constant (166 MB/s of scan at 720p60) and
@@ -84,12 +85,13 @@ accepted. Separate surfaces that the DMA reads as rectangles of their own (§4c)
 | W3 | Buffers | **Single by default, double on request**, per surface (§0); a double surface 0 is swapped at a frame's start, and what changed is copied into the other buffer afterwards (or redrawn) | double always (2.76 MB more at 720p) |
 | W4 | Redraws | **Asked for by damage, merged per frame:** the window manager gathers the uncovered rectangles per window and asks each window once to redraw them | a redraw per change |
 | W5 | Frames (chrome) | **Drawn by the window manager on surface 0**, clipped like any window: a 1-pixel border, a title bar one font row high with the title and a close box; the focused window's title bar highlighted | — |
-| W6 | Desktop | **A flat color, `CONFIG_BMDS_DESKTOP_COLOR`** (RGB, default a dark grey), changeable at run time (`win desktop RRGGBB`), filled by the window manager where no window is (no surface) | a desktop surface (2.76 MB; a pattern or picture later can be one) |
+| W6 | Desktop | **A flat color, `CONFIG_BMDS_DESKTOP_COLOR`** (RGB, default a dark grey), changeable at run time (`win color desktop RRGGBB`, W12), filled by the window manager where no window is (no surface) | a desktop surface (2.76 MB; a pattern or picture later can be one) |
 | W7 | Font | **unscii-16** (Viznut, public domain): 8×16, the look wanted. Converted at build time from its `.hex` file to a rodata glyph table (16 bytes a glyph) with a sorted codepoint index; a missing character draws a replacement glyph. Which ranges to keep is decided by size (ASCII, Latin-1, box drawing and block elements at least) | Spleen (BSD-2), Terminus (OFL) |
 | W8 | Drawing | **A `Painter` over a surface (surface 0, clipped to a window's visible region), drawing through a strip in internal RAM:** fill, text runs (glyphs with two colors), copies. Each operation draws into the strip and copies it into the surface by 2D-DMA (RGB888 rows into PSRAM: x and width in multiples of 4 pixels, or the edges drawn by the CPU) | the CPU writing PSRAM directly (V9) |
 | W9 | Where | **A new `bmds_ui` component:** the pure parts (rectangle regions, the compose plan, the font lookup, the window stack) host-tested; the surfaces, the window manager task and the drawing on the target, over `Framebuffer`. The terminal program beside it | in `bmds_drivers` (the display drivers stay drivers) |
 | W10 | API | **Internal only** (C++ in the kernel) until the terminal and one or two more clients have proven its shape; then a C ABI under `sdk/` (§6) | an ABI now (frozen before it has users) |
 | W11 | Control without input | **A `win` command** on the serial shell: list, new terminal, move, raise, close, focus, type text into a window, desktop color. It stays as the scripting and test tool | waiting for Phase 5 |
+| W12 | Colors | **A palette by role** (`WindowPalette`): desktop, active and inactive frame, active and inactive title text, close box and its mark, an undrawn client area, the move outline. Each role has a name (`win color ROLE RRGGBB`; a settings file later); a change redraws the desktop alone or, for any other role, the screen. The desktop's default is `CONFIG_BMDS_DESKTOP_COLOR` | colors fixed in the code |
 
 ## 4. Design
 
@@ -154,7 +156,7 @@ accepted. Separate surfaces that the DMA reads as rectangles of their own (§4c)
 - **Alignment:** RGB888 rows into PSRAM start and end on 4 bytes, so window rectangles are kept on
   4-pixel columns (x and width; the frame's sides are 4 pixels), which keeps every piece of every
   plan aligned. A `Painter` fill snaps its x edges outward to the 4-pixel grid.
-- **Frames:** the whole frame in one color (the focused window's blue, the others grey): a title
+- **Frames:** the whole frame in one color (by default the focused window's blue, the others grey; W12): a title
   bar 20 pixels high (a font row and 2 pixels above and below), 4-pixel sides and bottom, a 12×12
   close box at the left of the title bar, the title in white after it. Focus is the top window.
   Windows are kept wholly on the screen.
@@ -339,7 +341,7 @@ ones once it exists.
    paths and their bring-up commands removed.
 3. **The window manager on surface 0** (done; design in §4a, as built in §9): windows, the stack, visible
    regions, damage and redraw requests, the desktop color, frames with titles, outline moves; test
-   windows that redraw a pattern; `win start/stop/list/new/move/drag/raise/close/desktop/check/stats`.
+   windows that redraw a pattern; `win start/stop/list/new/move/drag/raise/close/color/check/stats/shuffle`.
 4. **Drawing:** the `Painter` (fills, text from the glyph table, copies), clipped to visible regions.
 5. **The terminal program:** `TerminalScreen` drawn per frame, a `Console` on it, a shell in it,
    `win type`.
@@ -388,3 +390,7 @@ ones once it exists.
     full-screen desktop fill is 8.4 ms. Each change was drawn in one frame (16.6 ms a change
     through `sync`, the frame's pace). No plan needed the fallback.
   - Not yet: the SIMD glyph expansion and unaligned edges (step 4), a mouse (Phase 5).
+- **The palette** (W12, 2026-10-05, the user's request): `WindowPalette` (pure, host-tested names)
+  replaces the colors fixed in the window manager; `win color` lists the roles and sets one.
+  Measured: 0 wrong pixels after changing the desktop, a frame, the inactive title and the client
+  colors; repainting the whole screen for a role took 20 ms.

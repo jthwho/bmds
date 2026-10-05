@@ -23,6 +23,8 @@ BMDS_NAMESPACE_BEGIN
 
 namespace {
 
+        using Role = WindowPalette::Role;
+
         constexpr size_t   StripAlign = 64; // the L1 cache line
         constexpr uint16_t Align = WindowStack::Align;
 
@@ -36,7 +38,7 @@ Result<WindowManager *> WindowManager::manager(size_t number) {
         return makeResult(&*managers[number]);
 }
 
-Error WindowManager::start(Display &display, uint32_t desktopColor) {
+Error WindowManager::start(Display &display, const WindowPalette &palette) {
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface != nullptr || !display.isRunning()) return Error::InvalidState;
         Surface &surface = display.surface();
@@ -69,7 +71,7 @@ Error WindowManager::start(Display &display, uint32_t desktopColor) {
         _strip.height = Fonts::unscii16.height();
         _display = &display;
         _surface = &surface;
-        _desktop = desktopColor & 0xffffff;
+        _palette = palette;
         _stack.reset(surface.width(), surface.height()); // all damaged: the desktop drawn
         for (Window &w : _windows) w = Window();
         _dragId = 0;
@@ -183,7 +185,8 @@ void WindowManager::drawPieces(Span<const ComposePiece> pieces) {
                 if (z == windows) {
                         // The desktop's: aligned and disjoint already.
                         ++_stats.calls;
-                        if (_surface->fill(Span<const Rect>(_scratch, k), _desktop, DrawTimeoutMs).isError())
+                        if (_surface->fill(Span<const Rect>(_scratch, k), _palette.color(Role::Desktop), DrawTimeoutMs)
+                                    .isError())
                                 ++_stats.errors;
                 } else {
                         drawLayer(z, Span<const Rect>(_scratch, k));
@@ -197,7 +200,9 @@ void WindowManager::drawLayer(size_t z, Span<const Rect> clip) {
         const uint8_t  id = _stack.idAt(z);
         const Window  &w = _windows[id - 1];
         const Rect     outer = _stack.rectAt(z);
-        const uint32_t frame = z == 0 ? FocusedColor : FrameColor;
+        const bool     active = z == 0;
+        const uint32_t frame = _palette.color(active ? Role::ActiveFrame : Role::InactiveFrame);
+        const uint32_t text = _palette.color(active ? Role::ActiveTitle : Role::InactiveTitle);
 
         Painter chrome(*_surface, clip, 0, 0, _strip, DrawTimeoutMs);
         Rect    edges[3];
@@ -205,10 +210,11 @@ void WindowManager::drawLayer(size_t z, Span<const Rect> clip) {
         const Rect parts[4] = {WindowFrame::titleBar(outer), edges[0], edges[1], edges[2]};
         (void)chrome.fill(parts, frame);
         const Rect box = WindowFrame::closeBox(outer);
-        (void)chrome.fill(box, CloseColor);
-        (void)chrome.fill(Rect{uint16_t(box.x + Align), uint16_t(box.y + Align), Align, Align}, CloseMark);
+        (void)chrome.fill(box, _palette.color(Role::CloseBox));
+        (void)chrome.fill(Rect{uint16_t(box.x + Align), uint16_t(box.y + Align), Align, Align},
+                          _palette.color(Role::CloseMark));
         const Rect title = WindowFrame::title(outer);
-        (void)chrome.text(title.x, title.y, StringView(w.title), Fonts::unscii16, TitleColor, frame, title.width);
+        (void)chrome.text(title.x, title.y, StringView(w.title), Fonts::unscii16, text, frame, title.width);
         count(chrome);
 
         // The client area's part of the clip.
@@ -225,7 +231,7 @@ void WindowManager::drawLayer(size_t z, Span<const Rect> clip) {
                 ++_stats.redraws;
                 w.redraw(w.arg, painter);
         } else {
-                (void)painter.fill(Rect{0, 0, client.width, client.height}, ClientColor);
+                (void)painter.fill(Rect{0, 0, client.width, client.height}, _palette.color(Role::Client));
         }
         count(painter);
         return;
@@ -234,7 +240,7 @@ void WindowManager::drawLayer(size_t z, Span<const Rect> clip) {
 // @p rect painted from the desktop up, each window over the one under it.
 void WindowManager::drawBottomUp(const Rect &rect) {
         ++_stats.calls;
-        if (_surface->fill(rect, _desktop, DrawTimeoutMs).isError()) ++_stats.errors;
+        if (_surface->fill(rect, _palette.color(Role::Desktop), DrawTimeoutMs).isError()) ++_stats.errors;
         for (size_t z = _stack.count(); z-- > 0;) {
                 const Rect cut = rect.intersected(_stack.rectAt(z));
                 if (!cut.isEmpty()) drawLayer(z, Span<const Rect>(&cut, 1));
@@ -247,7 +253,7 @@ void WindowManager::drawOutline() {
         WindowFrame::outline(_outline, sides);
         const Rect screen = _stack.screen();
         Painter    painter(*_surface, Span<const Rect>(&screen, 1), 0, 0, _strip, DrawTimeoutMs);
-        (void)painter.fill(sides, OutlineColor);
+        (void)painter.fill(sides, _palette.color(Role::Outline));
         count(painter);
         _outlineShown = true;
         return;
@@ -365,13 +371,25 @@ Error WindowManager::invalidate(uint8_t id, const Rect &rect) {
         return Error::Ok;
 }
 
-Error WindowManager::setDesktopColor(uint32_t rgb) {
+Error WindowManager::setPalette(const WindowPalette &palette) {
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface == nullptr) return Error::InvalidState;
-        _desktop = rgb & 0xffffff;
-        _stack.invalidateDesktop(_stack.screen());
+        // The desktop alone changed: only it redrawn.
+        WindowPalette windows = palette;
+        windows.setColor(Role::Desktop, _palette.color(Role::Desktop));
+        if (windows == _palette) {
+                _stack.invalidateDesktop(_stack.screen());
+        } else {
+                _stack.invalidateScreen(_stack.screen());
+        }
+        _palette = palette;
         changed(_stack.count() > 0 ? _stack.idAt(0) : 0);
         return Error::Ok;
+}
+
+WindowPalette WindowManager::palette() {
+        Mutex::Locker lock(_lock, WaitForever);
+        return _palette;
 }
 
 Error WindowManager::drag(uint8_t id, uint16_t x, uint16_t y) {

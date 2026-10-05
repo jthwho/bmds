@@ -10,6 +10,7 @@
 set(BMDS_UI_PURE_SRCS
         src/compose.cpp
         src/font.cpp
+        src/windowpalette.cpp
         src/windowstack.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)

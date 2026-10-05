@@ -17,6 +17,7 @@
 #include <bmds/rect.h>
 #include <bmds/compose.h>
 #include <bmds/region.h>
+#include <bmds/windowpalette.h>
 #include <bmds/windowstack.h>
 
 using bmds::ComposePiece;
@@ -25,6 +26,7 @@ using bmds::Glyph;
 using bmds::Rect;
 using bmds::Region;
 using bmds::WindowFrame;
+using bmds::WindowPalette;
 using bmds::WindowStack;
 
 namespace {
@@ -404,6 +406,26 @@ TEST_CASE("WindowFrame: the parts tile the window, on 4-pixel columns") {
         Region ring;
         for (const Rect &r : outline) ring.add(r);
         CHECK(ring.area() == outer.area() - uint32_t(outer.width - 8) * (outer.height - 8));
+}
+
+TEST_CASE("WindowPalette: every role named, found by its name, colors kept to 24 bits") {
+        for (size_t i = 0; i < WindowPalette::RoleCount; ++i) {
+                const auto  role = static_cast<WindowPalette::Role>(i);
+                const char *name = WindowPalette::name(role);
+                REQUIRE(name != nullptr);
+                CHECK(WindowPalette::find(name).value() == role);
+                for (size_t k = 0; k < i; ++k)
+                        CHECK(std::strcmp(name, WindowPalette::name(static_cast<WindowPalette::Role>(k))) != 0);
+        }
+        CHECK(WindowPalette::name(static_cast<WindowPalette::Role>(WindowPalette::RoleCount)) == nullptr);
+        CHECK(WindowPalette::find("active").error() == bmds::Error::NotFound);
+        CHECK(WindowPalette::find("desktop").value() == WindowPalette::Role::Desktop);
+        CHECK(WindowPalette::find("outline").value() == WindowPalette::Role::Outline);
+        WindowPalette p;
+        CHECK(p.color(WindowPalette::Role::Desktop) == 0x404040);
+        p.setColor(WindowPalette::Role::Client, 0xff123456);
+        CHECK(p.color(WindowPalette::Role::Client) == 0x123456);
+        CHECK(!(p == WindowPalette()));
 }
 
 TEST_CASE("Font: unscii-16") {

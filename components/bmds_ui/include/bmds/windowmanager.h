@@ -22,6 +22,7 @@
 #include <bmds/span.h>
 #include <bmds/task.h>
 #include <bmds/waitlist.h>
+#include <bmds/windowpalette.h>
 #include <bmds/windowstack.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -58,15 +59,6 @@ class WindowManager {
                  */
                 using Redraw = void (*)(void *arg, Painter &painter);
 
-                /** @brief The colors (0xRRGGBB). */
-                static constexpr uint32_t FocusedColor = 0x3a6ea5; ///< The top window's frame.
-                static constexpr uint32_t FrameColor = 0x808080;   ///< The other windows' frames.
-                static constexpr uint32_t TitleColor = 0xffffff;
-                static constexpr uint32_t CloseColor = 0xd0d0d0;
-                static constexpr uint32_t CloseMark = 0x000000;   ///< The close box's middle (4×4).
-                static constexpr uint32_t ClientColor = 0xf0f0f0; ///< A client area without a redraw.
-                static constexpr uint32_t OutlineColor = 0xffffff;
-
                 /** @brief The longest title kept, in bytes. */
                 static constexpr size_t MaxTitle = 47;
 
@@ -77,7 +69,7 @@ class WindowManager {
                 struct WindowConfig {
                                 Rect        rect;             ///< Outer, frame included; snapped to 4-pixel columns.
                                 const char *title = "";       ///< Copied (`MaxTitle` bytes kept).
-                                Redraw      redraw = nullptr; ///< Null: the client area is filled light grey.
+                                Redraw      redraw = nullptr; ///< Null: the client area is filled (`Role::Client`).
                                 void       *arg = nullptr;
                 };
 
@@ -116,13 +108,13 @@ class WindowManager {
                 WindowManager &operator=(const WindowManager &) = delete;
 
                 /**
-                 * @brief Claims @p display (running) and draws the desktop in
-                 *        @p desktopColor (0xRRGGBB) on its surface 0.
+                 * @brief Claims @p display (running) and draws the desktop on its
+                 *        surface 0, in @p palette's colors.
                  * @return `Ok`, `InvalidState` (running, or the display isn't),
                  *         `Busy` (claimed by another), or `NoMem`.
                  * @blocking
                  */
-                Error start(Display &display, uint32_t desktopColor);
+                Error start(Display &display, const WindowPalette &palette);
 
                 /** @brief Closes every window and releases the display; the picture stays. Idempotent. */
                 void stop();
@@ -149,11 +141,14 @@ class WindowManager {
                 /** @brief Asks window @p id to redraw @p rect of its client area. */
                 Error invalidate(uint8_t id, const Rect &rect);
 
-                /** @brief Sets the desktop's color and redraws it. */
-                Error setDesktopColor(uint32_t rgb);
+                /**
+                 * @brief Sets the colors and redraws what they changed (the
+                 *        desktop alone, or everything).
+                 */
+                Error setPalette(const WindowPalette &palette);
 
-                /** @brief Returns the desktop's color. */
-                uint32_t desktopColor() const { return _desktop; }
+                /** @brief Returns the colors. */
+                WindowPalette palette();
 
                 /**
                  * @brief Shows window @p id's outline with its top-left corner at
@@ -208,7 +203,7 @@ class WindowManager {
                 Surface              *_surface = nullptr;
                 WindowStack           _stack{0, 0};
                 Window                _windows[WindowStack::MaxWindows]; // by number - 1
-                uint32_t              _desktop = 0;
+                WindowPalette         _palette;
                 uint8_t               _dragId = 0;
                 Rect                  _outline;
                 bool                  _outlineShown = false;
