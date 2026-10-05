@@ -17,6 +17,7 @@
 #include <bmds/rect.h>
 #include <bmds/result.h>
 #include <bmds/semaphore.h>
+#include <bmds/span.h>
 #include <bmds/waitlist.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -116,6 +117,15 @@ class Surface {
                 Error fill(const Rect &rect, uint32_t rgb, unsigned int timeoutMs);
 
                 /**
+                 * @brief Fills every rectangle of @p rects with @p rgb, as few
+                 *        2D-DMA jobs as fit (up to 32 rectangles a job): the
+                 *        cheap way to draw many.
+                 * @return As `fill()` (nothing drawn if any rectangle is `Invalid`).
+                 * @blocking As `fill()`.
+                 */
+                Error fill(Span<const Rect> rects, uint32_t rgb, unsigned int timeoutMs);
+
+                /**
                  * @brief Copies @p to's size of RGB888 pixels from @p src (internal
                  *        RAM, @p srcStride bytes a line, a multiple of 3) into @p to.
                  *        Writes @p src back from the cache first.
@@ -139,6 +149,14 @@ class Surface {
                  * @blocking
                  */
                 Error waitShown(uint32_t number, unsigned int timeoutMs);
+
+                /**
+                 * @brief Waits until the scanout begins a frame after frame
+                 *        @p seen (a value of `frames()`): a frame's pace.
+                 * @return `Ok` or `Timeout` (no scan).
+                 * @blocking
+                 */
+                Error waitFrame(uint32_t seen, unsigned int timeoutMs);
 
                 /** @brief Returns the frames the scanout has begun with it. @nonblocking */
                 uint32_t frames() const { return _frames.load(std::memory_order_acquire); }
@@ -164,6 +182,7 @@ class Surface {
                 void           swappedFromIsr();
                 void           frameFromIsr() {
                         _frames.fetch_add(1, std::memory_order_release);
+                        if (_waiters.hasWaiters()) _waiters.notifyFromIsr();
                         return;
                 }
                 void setScanning(bool scanning); // without a scan, a present swaps at once
@@ -193,7 +212,7 @@ class Surface {
                 uint16_t              _tileWords = 0;     // words a row of tiles
                 uint16_t              _tileRows = 0;
                 bool                  _forwardPending = false;
-                WaitListOf<4>         _waiters; // woken by each swap
+                WaitListOf<4>         _waiters; // woken by each swap and each frame
                 BlitChain             _chain;
                 Stats                 _stats;
 };

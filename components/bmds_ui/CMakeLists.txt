@@ -1,12 +1,16 @@
 # bmds_ui — the desktop and its windows (devplan/windows.md).
 #
-# The pure parts (the compose plan, fonts) are also built as a plain CMake
-# library for the host tests (tests/host). The font's glyph table is
-# generated from thirdparty/unscii by tools/fontconv.py.
+# The pure parts (the compose plan, the window stack, fonts) are also built
+# as a plain CMake library for the host tests (tests/host). The font's glyph
+# table is generated from thirdparty/unscii by tools/fontconv.py.
+#
+# WHOLE_ARCHIVE: nothing references wincommand.cpp by symbol -- its command
+# is found through the linker section.
 
 set(BMDS_UI_PURE_SRCS
         src/compose.cpp
-        src/font.cpp)
+        src/font.cpp
+        src/windowstack.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
@@ -16,8 +20,13 @@ set(BMDS_UI_FONT_SRC ${CMAKE_CURRENT_BINARY_DIR}/font_unscii16.cpp)
 
 if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_UI_PURE_SRCS}
+                                    src/painter.cpp
+                                    src/wincommand.cpp
+                                    src/windowmanager.cpp
                                INCLUDE_DIRS include
-                               REQUIRES bmds_core)
+                               REQUIRES bmds_core bmds_drivers bmds_kernel
+                               PRIV_REQUIRES bmds_shell esp_mm
+                               WHOLE_ARCHIVE)
         idf_build_get_property(BMDS_UI_PYTHON PYTHON)
         set(BMDS_UI_LIB ${COMPONENT_LIB})
 else()

@@ -218,30 +218,54 @@ Error Surface::copyForward(const Deadline &deadline) {
 }
 
 Error Surface::fill(const Rect &rect, uint32_t rgb, unsigned int timeoutMs) {
+        return fill(Span<const Rect>(&rect, 1), rgb, timeoutMs);
+}
+
+Error Surface::fill(Span<const Rect> rects, uint32_t rgb, unsigned int timeoutMs) {
         if (!isStarted()) return Error::InvalidState;
-        if (!fits(rect)) return Error::Invalid;
+        uint16_t widest = 0;
+        for (const Rect &rect : rects) {
+                if (!fits(rect)) return Error::Invalid;
+                if (rect.width > widest) widest = rect.width;
+        }
+        if (widest == 0) return Error::Ok;
         const Deadline deadline(timeoutMs);
         Error          err = prepare(deadline);
         if (err.isError()) return err;
+        // One line of the color, the widest's length, sent once a row by each.
         const uint8_t b = static_cast<uint8_t>(rgb), g = static_cast<uint8_t>(rgb >> 8),
                       r = static_cast<uint8_t>(rgb >> 16);
-        for (size_t x = 0; x < rect.width; ++x) {
-                _line[3 * x] = b;
-                _line[3 * x + 1] = g;
-                _line[3 * x + 2] = r;
+        const uint32_t w0 = uint32_t(b) | uint32_t(g) << 8 | uint32_t(r) << 16 | uint32_t(b) << 24;
+        const uint32_t w1 = uint32_t(g) | uint32_t(r) << 8 | uint32_t(b) << 16 | uint32_t(g) << 24;
+        const uint32_t w2 = uint32_t(r) | uint32_t(b) << 8 | uint32_t(g) << 16 | uint32_t(r) << 24;
+        auto          *words = reinterpret_cast<uint32_t *>(_line); // 4 pixels: 3 words
+        for (size_t i = 0; i < size_t(widest) / Align; ++i) {
+                words[3 * i] = w0;
+                words[3 * i + 1] = w1;
+                words[3 * i + 2] = w2;
         }
-        const size_t lineBytes = (size_t(rect.width) * BytesPerPixel + LineAlign - 1) / LineAlign * LineAlign;
+        const size_t lineBytes = (size_t(widest) * BytesPerPixel + LineAlign - 1) / LineAlign * LineAlign;
         (void)esp_cache_msync(_line, lineBytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
         const BlitChain::Picture to = picture(back());
-        for (uint32_t y = rect.y; y < rect.bottom(); y += MaxFillRows) {
-                const uint16_t rows =
-                        static_cast<uint16_t>(rect.bottom() - y < MaxFillRows ? rect.bottom() - y : MaxFillRows);
-                err = _chain.addFill(_line, to, rect.x, static_cast<uint16_t>(y), rect.width, rows);
-                if (err.isOk()) err = _chain.run(remainingMs(deadline));
-                if (err.isError()) return err;
+        for (const Rect &rect : rects) {
+                for (uint32_t y = rect.y; y < rect.bottom(); y += MaxFillRows) {
+                        const uint16_t rows = static_cast<uint16_t>(rect.bottom() - y < MaxFillRows ? rect.bottom() - y
+                                                                                                    : MaxFillRows);
+                        err = _chain.addFill(_line, to, rect.x, static_cast<uint16_t>(y), rect.width, rows);
+                        if (err == Error::Full) {
+                                err = _chain.run(remainingMs(deadline));
+                                if (err.isOk())
+                                        err = _chain.addFill(_line, to, rect.x, static_cast<uint16_t>(y), rect.width,
+                                                             rows);
+                        }
+                        if (err.isError()) {
+                                _chain.clear();
+                                return err;
+                        }
+                }
+                if (_buffering == Buffering::Double) markDamage(rect);
         }
-        if (_buffering == Buffering::Double) markDamage(rect);
-        return Error::Ok;
+        return _chain.run(remainingMs(deadline));
 }
 
 Error Surface::blit(const Rect &to, const uint8_t *src, size_t srcStride, unsigned int timeoutMs) {
@@ -284,6 +308,11 @@ Result<uint32_t> Surface::present(unsigned int timeoutMs) {
         _asked.store(true, std::memory_order_release);
         if (!_scanning.load(std::memory_order_acquire)) swapNow();
         return makeResult(_presents);
+}
+
+Error Surface::waitFrame(uint32_t seen, unsigned int timeoutMs) {
+        const Deadline deadline(timeoutMs);
+        return waitUntil([this, seen] { return _frames.load(std::memory_order_acquire) != seen; }, deadline);
 }
 
 Error Surface::waitShown(uint32_t number, unsigned int timeoutMs) {

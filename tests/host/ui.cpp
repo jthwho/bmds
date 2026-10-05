@@ -5,7 +5,8 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * The desktop's pure parts: rectangles, regions, the compose plan, fonts.
+ * The desktop's pure parts: rectangles, regions, the compose plan, the
+ * window stack, fonts.
  */
 
 #include <doctest.h>
@@ -16,12 +17,15 @@
 #include <bmds/rect.h>
 #include <bmds/compose.h>
 #include <bmds/region.h>
+#include <bmds/windowstack.h>
 
 using bmds::ComposePiece;
 using bmds::Font;
 using bmds::Glyph;
 using bmds::Rect;
 using bmds::Region;
+using bmds::WindowFrame;
+using bmds::WindowStack;
 
 namespace {
 
@@ -245,6 +249,161 @@ TEST_CASE("planCompose: too many pieces is Full") {
         ComposePiece pieces[2];
         const auto   planned = bmds::planCompose(layers, damage, bmds::Span<ComposePiece>(pieces, 2));
         CHECK(planned.error() == bmds::Error::Full);
+}
+
+namespace {
+
+        // Who shows each pixel: the topmost window's number, 0 for the desktop.
+        std::vector<int> owners(const WindowStack &stack) {
+                std::vector<int> o(Width * Height, 0);
+                for (size_t z = stack.count(); z-- > 0;) {
+                        const Rect r = stack.rectAt(z);
+                        for (uint32_t y = r.y; y < r.bottom(); ++y)
+                                for (uint32_t x = r.x; x < r.right(); ++x) o[y * Width + x] = stack.idAt(z);
+                }
+                return o;
+        }
+
+        std::vector<int> covered(const Region &region) {
+                std::vector<int> c(Width * Height, 0);
+                for (const Rect &r : region.rects())
+                        for (uint32_t y = r.y; y < r.bottom(); ++y)
+                                for (uint32_t x = r.x; x < r.right(); ++x) c[y * Width + x] = 1;
+                return c;
+        }
+
+        // A placeable rectangle: x and width on 4-pixel columns.
+        Rect windowRect(Random &rnd) {
+                Rect r = rnd.rect(false);
+                r.x = uint16_t(r.x & ~3u);
+                r.width = uint16_t((r.width + 3) & ~3u);
+                if (r.right() > Width) r.width = uint16_t(Width - r.x);
+                return r;
+        }
+
+} // namespace
+
+TEST_CASE("WindowStack: numbers, order, refusals") {
+        WindowStack stack(Width, Height);
+        CHECK(stack.damage().area() == uint32_t(Width * Height));
+        stack.clearDamage();
+        CHECK(stack.open(Rect{1, 0, 8, 8}).error() == bmds::Error::Invalid);
+        CHECK(stack.open(Rect{0, 0, 6, 8}).error() == bmds::Error::Invalid);
+        CHECK(stack.open(Rect{60, 0, 8, 8}).error() == bmds::Error::Invalid);
+        CHECK(stack.open(Rect{0, 0, 8, 8}).value() == 1);
+        CHECK(stack.open(Rect{4, 4, 8, 8}).value() == 2);
+        CHECK(stack.open(Rect{8, 8, 8, 8}).value() == 3);
+        CHECK(stack.idAt(0) == 3);
+        CHECK(stack.close(2).isOk());
+        CHECK(stack.close(2) == bmds::Error::NotFound);
+        CHECK(stack.open(Rect{0, 0, 8, 8}).value() == 2); // the lowest free number
+        CHECK(stack.raise(1).isOk());
+        CHECK(stack.idAt(0) == 1);
+        CHECK(stack.idAt(1) == 2);
+        CHECK(stack.idAt(2) == 3);
+        CHECK(stack.layerOf(3).value() == 2);
+        for (size_t i = stack.count(); i < WindowStack::MaxWindows; ++i) REQUIRE(stack.open(Rect{0, 0, 4, 4}).isOk());
+        CHECK(stack.open(Rect{0, 0, 4, 4}).error() == bmds::Error::Full);
+}
+
+TEST_CASE("WindowStack: each change damages what changed, a raise and an invalidation no more") {
+        Random rnd{77};
+        for (int t = 0; t < 300; ++t) {
+                WindowStack stack(Width, Height);
+                for (int i = 0, n = 1 + int(rnd.next(6)); i < n; ++i) REQUIRE(stack.open(windowRect(rnd)).isOk());
+                for (int step = 0; step < 6; ++step) {
+                        stack.clearDamage();
+                        const std::vector<int> before = owners(stack);
+                        const uint8_t          id = stack.idAt(rnd.next(uint32_t(stack.count())));
+                        const Rect             was = stack.rectAt(stack.layerOf(id).value());
+                        const int              op = int(rnd.next(5));
+                        Rect                   bound = was; // where damage may be
+                        Rect                   asked;
+                        if (op == 0) {
+                                const Rect r = windowRect(rnd);
+                                const auto opened = stack.open(r);
+                                if (opened.isError()) continue;
+                                bound = r;
+                        } else if (op == 1 && stack.count() > 1) {
+                                REQUIRE(stack.close(id).isOk());
+                        } else if (op == 2) {
+                                const Rect r = windowRect(rnd);
+                                REQUIRE(stack.move(id, r).isOk());
+                                bound = was.united(r);
+                        } else if (op == 3) {
+                                REQUIRE(stack.raise(id).isOk());
+                        } else {
+                                asked = rnd.rect(false);
+                                REQUIRE(stack.invalidate(id, asked).isOk());
+                        }
+                        const std::vector<int> after = owners(stack);
+                        const std::vector<int> damaged = covered(stack.damage());
+                        const bool             exact = stack.damage().rects().size() < Region::MaxRects / 2;
+                        bool                   ok = true;
+                        for (int y = 0; y < Height; ++y) {
+                                for (int x = 0; x < Width; ++x) {
+                                        const int  i = y * Width + x;
+                                        const bool d = damaged[i] != 0;
+                                        ok &= before[i] == after[i] || d; // a change is damage
+                                        ok &= !d || inside(bound, x, y);  // nothing far away
+                                        if (op == 3 && exact) ok &= d == (before[i] != after[i]);
+                                        if (op == 4 && exact) ok &= d == (inside(asked, x, y) && after[i] == id);
+                                }
+                        }
+                        REQUIRE(ok);
+                }
+        }
+}
+
+TEST_CASE("WindowStack: the plan gives each piece to the window that shows it") {
+        Random rnd{5};
+        for (int t = 0; t < 200; ++t) {
+                WindowStack stack(Width, Height);
+                for (int i = 0, n = int(rnd.next(7)); i < n; ++i) (void)stack.open(windowRect(rnd));
+                Region damage;
+                for (int i = 0, n = 1 + int(rnd.next(4)); i < n; ++i) damage.add(rnd.rect(false));
+                ComposePiece pieces[256];
+                const auto   planned = stack.plan(damage, bmds::Span<ComposePiece>(pieces, 256));
+                REQUIRE(planned.isOk());
+                const std::vector<int> o = owners(stack);
+                std::vector<int>       drawn(Width * Height, 0);
+                bool                   ok = true;
+                for (size_t i = 0; i < planned.value(); ++i) {
+                        const ComposePiece &p = pieces[i];
+                        const int           id = p.layer == stack.count() ? 0 : stack.idAt(p.layer);
+                        for (uint32_t y = p.rect.y; y < p.rect.bottom(); ++y)
+                                for (uint32_t x = p.rect.x; x < p.rect.right(); ++x) {
+                                        ok &= o[y * Width + x] == id;
+                                        ++drawn[y * Width + x];
+                                }
+                }
+                const std::vector<int> d = covered(damage);
+                for (int i = 0; i < Width * Height; ++i) ok &= drawn[i] == d[i];
+                REQUIRE(ok);
+        }
+}
+
+TEST_CASE("WindowFrame: the parts tile the window, on 4-pixel columns") {
+        const Rect outer{100, 50, 200, 120};
+        Rect       edges[3];
+        WindowFrame::edges(outer, edges);
+        Region parts;
+        parts.add(WindowFrame::titleBar(outer));
+        parts.add(WindowFrame::client(outer));
+        for (const Rect &e : edges) parts.add(e);
+        CHECK(parts.area() == outer.area());
+        CHECK(parts.bounds() == outer);
+        CHECK(WindowFrame::titleBar(outer).contains(WindowFrame::closeBox(outer)));
+        CHECK(WindowFrame::titleBar(outer).contains(WindowFrame::title(outer)));
+        CHECK(WindowFrame::client(outer).x % 4 == 0);
+        CHECK(WindowFrame::client(outer).width % 4 == 0);
+        CHECK(WindowFrame::closeBox(outer).width % 4 == 0);
+        CHECK(WindowFrame::title(outer).x % 4 == 0);
+        Rect outline[4];
+        WindowFrame::outline(outer, outline);
+        Region ring;
+        for (const Rect &r : outline) ring.add(r);
+        CHECK(ring.area() == outer.area() - uint32_t(outer.width - 8) * (outer.height - 8));
 }
 
 TEST_CASE("Font: unscii-16") {

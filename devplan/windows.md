@@ -1,6 +1,6 @@
 # Windows: a Desktop, a Window Manager, the Terminal as the First Program
 
-Status: **steps 1 and 2 done** (surface 0 runs; `display.md` §5c) (Phase 4, 2026-10-05). After measuring three ways
+Status: **steps 1 to 3 done** (the window manager on surface 0, §9) (surface 0 runs; `display.md` §5c) (Phase 4, 2026-10-05). After measuring three ways
 to put windows on the screen (§4b, §4c, below), the user chose the simple one: **surface 0**,
 a double-buffered RGB888 framebuffer in PSRAM that the DW-GDMA scans directly (no ring), windows
 moved as an outline until placed. The PSRAM bandwidth is constant (166 MB/s of scan at 720p60) and
@@ -133,6 +133,45 @@ accepted. Separate surfaces that the DMA reads as rectangles of their own (§4c)
   thus drawn once per frame however many lines it scrolled.
 - **A shell runs on it.** Until Phase 5 its input comes from `win type N TEXT` on the serial shell;
   then from the keyboard when it has the focus.
+
+## 4a. Step 3 design: the window manager on surface 0 (2026-10-05; built)
+
+- **Pure and host-tested (`bmds_ui`):** `WindowStack` holds up to 16 windows (numbered from 1,
+  the lowest free number reused), their rectangles in z-order, and one screen `Region` of damage.
+  Its changes add exactly what needs redrawing: opening adds the window's rectangle; closing and
+  moving add what it covered (and, moving, its new place); raising adds only the parts that were
+  covered (a compose of the old stack over its rectangle). A window's own invalidation is clipped
+  to its visible part before it is added, so the windows above aren't asked to redraw for it.
+  `WindowFrame` gives the frame's geometry.
+- **A round** (the window manager's task, at most once a frame): `planCompose()` over the stack
+  (top first, the desktop last) and the damage gives disjoint pieces, each owned by the topmost
+  layer; the pieces are grouped by layer; the desktop's are filled in one call; each window draws
+  its pieces once: the frame by the window manager, then its client area by its redraw callback
+  through a `Painter` clipped to the pieces inside it. Past the plan's space, each damage rectangle
+  is planned alone, and past that the rectangle is painted bottom to top (overdraw, never a hole).
+  With a double-buffered surface 0 the round ends with `present()`; the next round waits for the
+  next frame either way, so a burst of changes is drawn once.
+- **Alignment:** RGB888 rows into PSRAM start and end on 4 bytes, so window rectangles are kept on
+  4-pixel columns (x and width; the frame's sides are 4 pixels), which keeps every piece of every
+  plan aligned. A `Painter` fill snaps its x edges outward to the 4-pixel grid.
+- **Frames:** the whole frame in one color (the focused window's blue, the others grey): a title
+  bar 20 pixels high (a font row and 2 pixels above and below), 4-pixel sides and bottom, a 12×12
+  close box at the left of the title bar, the title in white after it. Focus is the top window.
+  Windows are kept wholly on the screen.
+- **Outline moves:** `drag(id, x, y)` shows a 4-pixel outline of the window at the new place, drawn
+  after each round's redraws; moving it damages the pixels it covered (their owners redraw them);
+  `drop()` moves the window there. Without a mouse, `win drag` walks the outline over 30 frames.
+- **Drawing (until the step 4 `Painter`):** fills of many rectangles of one color as one 2D-DMA job
+  (`Surface::fill(Span<const Rect>)`: the first fixed-cost lever); text through a strip in internal
+  DMA RAM (the screen's width × 16 rows: 60 KB at 720p), each glyph row expanded by two 12-byte
+  lookups (4 pixels each) in a table built per pair of colors, then copied by 2D-DMA per piece. SIMD
+  glyph expansion, unaligned edges and copies are step 4.
+- **Threads:** the window manager's state is behind a mutex; the API (the `win` command now, the
+  terminal later) changes the stack and wakes its task, which draws the round with the mutex held
+  (an API call waits at most a round). Redraw callbacks run on the window manager's task.
+- **Testing:** the test windows draw a checker of 32-pixel squares in their own color; `win check`
+  reads back the shown picture and compares every desktop and client-area pixel with what the stack
+  says should be there.
 
 ## 4b. Composing at scan time (the user's proposal, 2026-10-05; prototype)
 
@@ -298,9 +337,9 @@ ones once it exists.
 2. **Surface 0** (`display.md` §5c; done): RGB888 in PSRAM scanned directly by the DW-GDMA,
    single or double buffered (`present()` at a frame's start), the default display path; the ring
    paths and their bring-up commands removed.
-3. **The window manager on surface 0:** windows, the stack, visible regions, damage and redraw
-   requests, the desktop color, frames with titles, outline moves; test windows that redraw a
-   pattern; `win list/new/move/raise/close/desktop`.
+3. **The window manager on surface 0** (done; design in §4a, as built in §9): windows, the stack, visible
+   regions, damage and redraw requests, the desktop color, frames with titles, outline moves; test
+   windows that redraw a pattern; `win start/stop/list/new/move/drag/raise/close/desktop/check/stats`.
 4. **Drawing:** the `Painter` (fills, text from the glyph table, copies), clipped to visible regions.
 5. **The terminal program:** `TerminalScreen` drawn per frame, a `Console` on it, a shell in it,
    `win type`.
@@ -327,3 +366,25 @@ ones once it exists.
     rectangles, merging and collapsing, `planCompose()` against a topmost-layer reference (each
     damaged pixel exactly once, even inputs giving even pieces), `Full`, and glyphs checked against
     the `.hex` file's bits.
+- **Step 3** (2026-10-05): the window manager on surface 0 (§4a).
+  - `bmds_ui`, pure and host-tested: `WindowStack` and `WindowFrame`. Random opens, closes, moves,
+    raises and invalidations against pixel maps of who shows each pixel: every change of owner is
+    damaged, nothing outside the rectangles involved is, a raise damages exactly what was covered,
+    an invalidation exactly what of it shows; the plan gives each piece to the window showing it.
+  - On the target: `Painter` (fills cut to the clip and batched 32 to a job, text through the strip
+    with the nibble table), `WindowManager` (display 0's, claims the display as "desktop", a task
+    on core 0 at priority 5 with 6 KB of stack), and the `win` command.
+  - `Surface` gained `fill(Span<const Rect>)` (one line of the color, the widest's length; up to 32
+    rectangles a job; the line written 12 bytes at a time) and `waitFrame()` (each frame wakes the
+    surface's waiters when it has any).
+  - Memory: the strip is 60 KB of internal DMA RAM at 720p (the screen's width × 16 rows), a
+    round's plan and clips 6.5 KB of internal RAM, all freed by `win stop`; `bmds_ui` is 1,640 bytes
+    of `.bss` and 13 KB of code.
+  - Measured at 1280×720, 16 test windows: `win check` (every pixel of the shown picture: the
+    desktop, the frames and their titles' glyphs, the clients' patterns) found 0 wrong after
+    opening, raising, moving, dragging, closing, a desktop color change and 300-change shuffles,
+    single- and double-buffered; 0 underruns. A round averaged 2.2 to 2.7 ms single-buffered and
+    5.0 ms double-buffered (the copy forward included; 26 ms at most, the first full screen); a
+    full-screen desktop fill is 8.4 ms. Each change was drawn in one frame (16.6 ms a change
+    through `sync`, the frame's pace). No plan needed the fallback.
+  - Not yet: the SIMD glyph expansion and unaligned edges (step 4), a mouse (Phase 5).
