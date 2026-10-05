@@ -143,3 +143,20 @@ Status: **step 1 done, step 2 in progress** (Phase 4, 2026-10-04): the bridge is
   - **Measured** at 200 MHz PSRAM, 720p60, both paths: 0 stalls, 0 underruns, 0 resyncs under `display stress write`, `display stress psram`, `memtest -m 8` and full `memtest` passes (8 full passes in all), at 123-127 frames in 2 s. The strict ring under the same loads: 7-10 frames and 103-122 underruns under the stresses, 7 underruns per `memtest`.
   - `memtest` now invalidates the DMA copy's destination in 64 KB pieces: one call over 15 MB held interrupts off for many milliseconds.
   - **Left:** the skipped blocks under heavy PSRAM traffic (2,400-6,900 of about 10,800 in 2 s; few or none under `memtest`), which show as wrong lines while the load lasts. Next: render through an uncached alias of internal RAM.
+- **Prototype: an RGB565 framebuffer in PSRAM, widened by the 2D-DMA into the free-running ring** (2026-10-05, the user's design: a PSRAM framebuffer, 565, the 2D-DMA expanding it on the way out; drawing to be done in internal RAM and copied into PSRAM by DMA). The 2D-DMA can't feed the DSI bridge (its peripherals are the PPA, JPEG and memory-to-memory), so the ring in internal RAM stays: per block, the refill starts a 2D-DMA job that widens the block's lines from the framebuffer into the ring, and the CPU draws nothing. `Config::frameSource`, `display test MODE fb565 [lines] [blocks] still`; `display verify` checks the ring against the framebuffer (every line one of the picture's two kinds, every pixel's top bits right).
+  - **Correct:** 0 wrong lines in every check at 80 and 200 MHz. The 2D-DMA fills the low bits (they read 7/3/7, not 0). A rare single mismatched line at 24×3 is most likely the check reading a buffer the 2D-DMA is rewriting with the other kind of line (unproven: the check doesn't skip that buffer yet).
+  - **A bug it found:** a scanout stopped during a 2D-DMA job left that job's completion behind, so after a restart every `expand()` returned at once on the previous job's completion (impossible 9,000-cycle timings) while jobs overlapped on the same descriptors. `ColorExpander` and `PaletteExpander` now clear a stale completion at `start()` and wait for a job under way in `stop()` and before reusing the descriptors.
+  - **Measured** at 720p60, still picture (a block's time is about 67,000 CPU cycles at 8 lines; the refill task sleeps while the 2D-DMA works, so the CPU is free), skipped blocks per load:
+
+    | PSRAM, ring | 2D-DMA per block (of the block's time) | Idle | stress write (2 s) | stress psram (2 s) | memtest -m 8 | memtest (one pass) |
+    |---|---|---|---|---|---|---|
+    | 200 MHz, 3×8 | 41,300 (62%) | 0 | 2,507 | 955 | 43 | 159 |
+    | 200 MHz, 3×16 | 69,200 (52%) | 0 | 462 | 0 | 14 | 48 |
+    | 200 MHz, 4×16 | 69,300 (52%) | 0 | 457 | 0 | 13 | 47 |
+    | 200 MHz, 3×24 | 97,200 (48%) | 0 | 139 | 0 | 6 | 24 |
+    | 80 MHz, 3×16 | 98,200 (74%) | 0 | 2,786 | 1,950 | 513 | 1,797 |
+    | 80 MHz, 3×24 | 140,700 (70%) | 0 | 1,780 | 1,197 | 271 | 948 |
+
+  - **Longer jobs help, a deeper ring doesn't** (4×16 is 3×16): the skips come from the 2D-DMA's average pace under PSRAM contention, not from jitter. 24-line blocks (3 of them: 276 KB of internal RAM) skip 3.7% of blocks while the CPU writes PSRAM flat out, none under PSRAM copies, about 0.1% under `memtest`.
+  - **80 MHz works idle but not under load** (half the blocks skipped while the CPU writes PSRAM): the framebuffer wants 200 MHz.
+  - Not measured yet: a moving picture drawn the planned way (internal RAM, then DMA into the framebuffer). The test pattern's own moving stripe writes PSRAM from the CPU in the refill task (up to 5 ms a frame), which skipped blocks even idle; that's the approach the plan avoids.

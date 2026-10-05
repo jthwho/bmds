@@ -103,6 +103,8 @@ class Scanout {
                                 bool            fullLaneRate = false; ///< Lanes at the 24-bit rate whatever the format.
                                 bool            freeRunning =
                                         true; ///< The ring never stops: a late block goes out stale and is skipped.
+                                uint8_t *frameSource =
+                                        nullptr; ///< `Rgb565Expanded`: the picture from this RGB565 framebuffer (PSRAM, written back) instead of the source's lines; the source's `frame()` changes it once a frame.
                                 const uint32_t *palette =
                                         nullptr; ///< `Indexed8`: 256 entries (0xRRGGBB) loaded at the start.
                                 void (*onRestart)(void *arg) =
@@ -172,6 +174,9 @@ class Scanout {
                         _wake.release();
                         return;
                 }
+
+                /** @brief Bring-up: the ring (`ringBytes()` long), to check what the DMA sends. */
+                const uint8_t *ring() const { return _ring; }
 
                 /** @brief Returns the bytes of internal RAM the ring takes. */
                 size_t ringBytes() const { return _blockBytes * _config.blocks; }

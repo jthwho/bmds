@@ -57,6 +57,9 @@ class ColorExpander {
 
                 Hardware *_hw = nullptr;
                 Semaphore _done{1, 0};
+                bool      _busy = false; // a job enqueued and not yet seen done
+
+                Error settle(unsigned int timeoutMs); // waits for the job under way, if any
 
                 friend struct ColorExpanderIsr;
 };

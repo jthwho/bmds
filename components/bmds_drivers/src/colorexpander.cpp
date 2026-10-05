@@ -45,6 +45,8 @@ namespace {
                 return;
         }
 
+        constexpr unsigned int StopTimeoutMs = 100;
+
 } // namespace
 
 struct ColorExpander::Hardware {
@@ -99,6 +101,9 @@ struct ColorExpanderIsr {
 
 Error ColorExpander::start() {
         if (_hw != nullptr) return Error::InvalidState;
+        // A completion left from a job of an earlier start, cleared.
+        while (_done.tryAcquire().isOk()) {}
+        _busy = false;
         void *memory = Memory::alloc(MemSpace::Internal, sizeof(Hardware));
         if (memory == nullptr) return Error::NoMem;
         _hw = new (memory) Hardware();
@@ -134,6 +139,7 @@ Error ColorExpander::start() {
 
 void ColorExpander::stop() {
         if (_hw == nullptr) return;
+        (void)settle(StopTimeoutMs); // a job under way finishes before its memory goes
         Hardware &hw = *_hw;
         if (hw.pool != nullptr) (void)dma2d_release_pool(hw.pool);
         Memory::free(hw.tx);
@@ -147,13 +153,24 @@ void ColorExpander::stop() {
 
 Error ColorExpander::expand(const uint8_t *src, uint8_t *dst, size_t pixels, unsigned int timeoutMs) {
         if (_hw == nullptr) return Error::InvalidState;
+        // The last job finished (it timed out) before its descriptors change.
+        if (_busy && settle(timeoutMs).isError()) return Error::Timeout;
         if (pixels * 3 > MaxBytes) return Error::Invalid;
         Hardware &hw = *_hw;
         describe(hw.tx, src, pixels * 2, pixels * 2, true);
         describe(hw.rx, dst, 0, pixels * 3, false);
         const esp_err_t err = dma2d_enqueue(hw.pool, &hw.config, hw.job);
         if (err != ESP_OK) return Error::fromEspErr(err);
-        return _done.acquire(timeoutMs);
+        _busy = true;
+        return settle(timeoutMs);
+}
+
+// Waits for the job under way, if any.
+Error ColorExpander::settle(unsigned int timeoutMs) {
+        if (!_busy) return Error::Ok;
+        const Error err = _done.acquire(timeoutMs);
+        if (err.isOk()) _busy = false;
+        return err;
 }
 
 BMDS_NAMESPACE_END

@@ -51,6 +51,8 @@ namespace {
                 return;
         }
 
+        constexpr unsigned int StopTimeoutMs = 100;
+
 } // namespace
 
 struct PaletteExpander::Hardware {
@@ -137,6 +139,9 @@ struct PaletteExpanderIsr {
 
 Error PaletteExpander::start() {
         if (_hw != nullptr) return Error::InvalidState;
+        // A completion left from a job of an earlier start, cleared.
+        while (_done.tryAcquire().isOk()) {}
+        _busy = false;
         void *memory = Memory::alloc(MemSpace::Internal, sizeof(Hardware));
         if (memory == nullptr) return Error::NoMem;
         _hw = new (memory) Hardware();
@@ -182,6 +187,7 @@ Error PaletteExpander::start() {
 
 void PaletteExpander::stop() {
         if (_hw == nullptr) return;
+        (void)settle(StopTimeoutMs); // a job under way finishes before its memory goes
         Hardware &hw = *_hw;
         if (hw.pool != nullptr) (void)dma2d_release_pool(hw.pool);
         if (hw.clock) {
@@ -210,13 +216,24 @@ void PaletteExpander::setPalette(const uint32_t *rgb, size_t first, size_t count
 Error PaletteExpander::expand(const uint8_t *indices, uint8_t *rgb, uint16_t width, uint16_t lines,
                               unsigned int timeoutMs) {
         if (_hw == nullptr) return Error::InvalidState;
+        // The last job finished (it timed out) before its descriptors change.
+        if (_busy && settle(timeoutMs).isError()) return Error::Timeout;
         Hardware &hw = *_hw;
         describe(hw.bg, indices, width, lines, DMA2D_DESCRIPTOR_PBYTE_1B0_PER_PIXEL);
         describe(hw.fg, indices, width, lines, DMA2D_DESCRIPTOR_PBYTE_1B0_PER_PIXEL);
         describe(hw.rx, rgb, width, lines, DMA2D_DESCRIPTOR_PBYTE_3B0_PER_PIXEL);
         const esp_err_t err = dma2d_enqueue(hw.pool, &hw.config, hw.job);
         if (err != ESP_OK) return Error::fromEspErr(err);
-        return _done.acquire(timeoutMs);
+        _busy = true;
+        return settle(timeoutMs);
+}
+
+// Waits for the job under way, if any.
+Error PaletteExpander::settle(unsigned int timeoutMs) {
+        if (!_busy) return Error::Ok;
+        const Error err = _done.acquire(timeoutMs);
+        if (err.isOk()) _busy = false;
+        return err;
 }
 
 BMDS_NAMESPACE_END

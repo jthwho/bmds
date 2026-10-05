@@ -101,7 +101,14 @@ namespace {
 
                         // Framebuffer: the stripe's old place back from the line template,
                         // its new one inverted.
+                        // A still picture (`display test MODE ... still`): frame() changes nothing.
+                        void setStill(bool still) {
+                                _still = still;
+                                return;
+                        }
+
                         BMDS_HOT_ATTR void frame(uint8_t *fb, size_t stride) override {
+                                if (_still) return;
                                 const uint16_t old = static_cast<uint16_t>((_frame * 4) % (_width - 16));
                                 ++_frame;
                                 const uint16_t now = static_cast<uint16_t>((_frame * 4) % (_width - 16));
@@ -112,6 +119,12 @@ namespace {
                                         std::memcpy(line + old * _bytes, tmpl + old * _bytes, span);
                                         for (size_t k = now * _bytes; k < now * _bytes + span; ++k)
                                                 line[k] = tmpl[k] ^ 0xff;
+                                        // Written back for the DMA: the two places, as one span.
+                                        const uint16_t from = old < now ? old : now;
+                                        const uint16_t to = static_cast<uint16_t>((old < now ? now : old) + 16);
+                                        (void)esp_cache_msync(line + from * _bytes, size_t(to - from) * _bytes,
+                                                              ESP_CACHE_MSYNC_FLAG_DIR_C2M |
+                                                                      ESP_CACHE_MSYNC_FLAG_UNALIGNED);
                                 }
                                 return;
                         }
@@ -135,6 +148,7 @@ namespace {
 
                         uint8_t *_lines = nullptr;
                         size_t   _bytes = 2;
+                        bool     _still = false;
                         uint16_t _width = 0;
                         uint16_t _height = 0;
                         uint32_t _frame = 0;
@@ -284,10 +298,14 @@ namespace {
         uint8_t testPacking = 0;
         bool    testFullLane = false;
         bool    testFree = true; // the free-running ring, unless `display test MODE ... strict`
+        uint8_t *testFrame = nullptr; // `display test MODE fb565`: the RGB565 framebuffer (PSRAM)
+        bool     testStill = false;
 
         Error startTest(Lt8912b &b, const VideoTiming &timing, Scanout::Format format, uint16_t lines, uint8_t blocks,
-                        bool framebuffer) {
+                        bool framebuffer, bool fb565 = false) {
                 scanout().stop();
+                Memory::free(testFrame);
+                testFrame = nullptr;
                 const BoardDisplay &d = board().display;
                 Scanout::Config     c;
                 c.timing = timing;
@@ -314,18 +332,35 @@ namespace {
                 c.onRestartArg = &b;
                 Error err = b.configure(c.timing, c.lanes, true);
                 if (err.isOk()) err = testPattern.setUp(c.format, c.timing.hActive, c.timing.vActive);
+                testPattern.setStill(testStill);
+                if (err.isOk() && fb565) {
+                        // The picture drawn once into the framebuffer, written back in pieces
+                        // (a cache operation runs with interrupts off).
+                        const size_t stride = size_t(c.timing.hActive) * 2;
+                        const size_t bytes = stride * c.timing.vActive;
+                        testFrame = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::PsramDma, bytes, 128));
+                        if (testFrame == nullptr) return Error::NoMem;
+                        testPattern.render(0, c.timing.vActive, testFrame, stride);
+                        for (size_t off = 0; off < bytes; off += 64 * 1024)
+                                (void)esp_cache_msync(testFrame + off,
+                                                      bytes - off < 64 * 1024 ? bytes - off : 64 * 1024,
+                                                      ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                        c.frameSource = testFrame;
+                }
                 if (err.isOk()) err = scanout().start(c, testPattern);
                 if (err.isError()) return err;
                 testStartUs = System::uptimeUs();
                 return b.resetReceiver();
         }
 
-        // display test 720|1080|WxH@Hz [cpu|pal|565|dma|fb] [lines per block] [blocks] | off
+        // display test 720|1080|WxH@Hz [cpu|pal|565|dma|fb|fb565] [lines per block] [blocks] | off
         int runTest(CommandContext &ctx, Args args) {
                 Lt8912b *b = bridge(ctx);
                 if (b == nullptr) return Shell::ExitFailure;
                 if (std::strcmp(args[2], "off") == 0) {
                         scanout().stop();
+                        Memory::free(testFrame);
+                        testFrame = nullptr;
                         (void)b->setOutput(false);
                         return Shell::ExitSuccess;
                 }
@@ -333,15 +368,18 @@ namespace {
                 testPacking = 0;
                 testFullLane = false;
                 testFree = true;
+                testStill = false;
                 size_t positional = args.size();
                 for (size_t i = 3; i < args.size(); ++i) {
                         const bool pack = std::strncmp(args[i], "pack=", 5) == 0;
                         if (pack) testPacking = static_cast<uint8_t>(std::atoi(args[i] + 5));
                         const bool lane24 = std::strcmp(args[i], "lane24") == 0;
                         const bool strict = std::strcmp(args[i], "strict") == 0;
+                        const bool still = std::strcmp(args[i], "still") == 0;
+                        if (still) testStill = true;
                         if (lane24) testFullLane = true;
                         if (strict) testFree = false;
-                        if ((pack || lane24 || strict) && i < positional) positional = i;
+                        if ((pack || lane24 || strict || still) && i < positional) positional = i;
                 }
                 if (positional > 6) return ctx.usage();
                 args = Args(args.data(), positional);
@@ -378,9 +416,13 @@ namespace {
                 timing = fitted;
                 Scanout::Format format = Scanout::Format::Rgb888;
                 bool            framebuffer = false;
+                bool            fb565 = false;
                 if (args.size() > 3) {
                         if (std::strcmp(args[3], "fb") == 0) {
                                 framebuffer = true;
+                        } else if (std::strcmp(args[3], "fb565") == 0) {
+                                fb565 = true;
+                                format = Scanout::Format::Rgb565Expanded;
                         } else if (std::strcmp(args[3], "565") == 0) {
                                 format = Scanout::Format::Rgb565;
                         } else if (std::strcmp(args[3], "dma") == 0) {
@@ -403,7 +445,7 @@ namespace {
                         ctx.eprintf("display: %u lines a block doesn't divide %u lines\n", lines, timing.vActive);
                         return Shell::ExitFailure;
                 }
-                const Error err = startTest(*b, timing, format, lines, blocks, framebuffer);
+                const Error err = startTest(*b, timing, format, lines, blocks, framebuffer, fb565);
                 if (err.isError()) {
                         ctx.eprintf("display: test: %s\n", err.desc());
                         return Shell::ExitFailure;
@@ -414,6 +456,7 @@ namespace {
                            t.hActive, t.vActive, static_cast<unsigned>(mhz / 1000), static_cast<unsigned>(mhz % 1000),
                            static_cast<unsigned>(t.pixelKhz / 1000), static_cast<unsigned>(t.pixelKhz % 1000),
                            framebuffer                                 ? "framebuffer (PSRAM)"
+                           : fb565                                     ? "RGB565 framebuffer (PSRAM), 2D-DMA widened"
                            : format == Scanout::Format::Rgb565         ? "CPU (RGB565)"
                            : format == Scanout::Format::Rgb888         ? "CPU"
                            : format == Scanout::Format::Rgb565Expanded ? "2D-DMA (RGB565 widened)"
@@ -467,6 +510,52 @@ namespace {
 
         // Bring-up diagnostics: I2C read reliability at two clocks, and what the
         // bridge sees of the DSI input (main 0x9c-0x9f: the measured sync counts).
+        // Bring-up: `display verify` checks the ring against the framebuffer it was
+        // widened from (`display test MODE fb565 still`): every line one of the
+        // picture's two kinds, each RGB888 pixel's top bits its RGB565 pixel's.
+        int runVerify(CommandContext &ctx) {
+                if (testFrame == nullptr || !scanout().isRunning()) {
+                        ctx.eprintf("display: verify needs `display test MODE fb565 still`\n");
+                        return Shell::ExitFailure;
+                }
+                const VideoTiming &t = runningTiming;
+                const size_t       ringBytes = scanout().ringBytes();
+                const uint8_t     *ring = scanout().ring();
+                (void)esp_cache_msync(const_cast<uint8_t *>(ring), ringBytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+                const size_t   stride888 = size_t(t.hActive) * 3;
+                const uint8_t *kinds[2] = {testFrame, testFrame + size_t(t.vActive - 1) * t.hActive * 2};
+                size_t         lines = 0, bad = 0;
+                uint32_t       lowBits = 0;
+                for (size_t off = 0; off + stride888 <= ringBytes; off += stride888, ++lines) {
+                        const uint8_t *out = ring + off;
+                        bool           matched = false;
+                        for (const uint8_t *in : kinds) {
+                                size_t x = 0;
+                                for (; x < t.hActive; ++x) {
+                                        const uint32_t p = in[x * 2] | uint32_t(in[x * 2 + 1]) << 8;
+                                        const uint8_t  b = out[x * 3], g = out[x * 3 + 1], r = out[x * 3 + 2];
+                                        if ((r >> 3) != (p >> 11) || (g >> 2) != ((p >> 5) & 63) ||
+                                            (b >> 3) != (p & 31))
+                                                break;
+                                        lowBits |= (r & 7u) << 16 | (g & 3u) << 8 | (b & 7u);
+                                }
+                                if (x == t.hActive) matched = true;
+                        }
+                        if (!matched) {
+                                if (bad == 0) {
+                                        const uint32_t p = kinds[0][0] | uint32_t(kinds[0][1]) << 8;
+                                        ctx.printf("first bad line %u: out %02x %02x %02x, in %04x\n",
+                                                   static_cast<unsigned>(lines), out[0], out[1], out[2],
+                                                   static_cast<unsigned>(p));
+                                }
+                                ++bad;
+                        }
+                }
+                ctx.printf("verify: %u of %u ring lines wrong; low bits seen %06lx\n", static_cast<unsigned>(bad),
+                           static_cast<unsigned>(lines), static_cast<unsigned long>(lowBits));
+                return bad == 0 ? Shell::ExitSuccess : Shell::ExitFailure;
+        }
+
         int runCheck(CommandContext &ctx) {
                 Lt8912b *b = bridge(ctx);
                 if (b == nullptr) return Shell::ExitFailure;
@@ -635,6 +724,7 @@ namespace {
                 if (args.size() == 3 && std::strcmp(args[1], "stress") == 0) return runStress(ctx, args[2]);
                 if (args.size() == 2 && std::strcmp(args[1], "check") == 0) return runCheck(ctx);
                 if (args.size() >= 2 && std::strcmp(args[1], "qos") == 0) return runQos(ctx, args);
+                if (args.size() == 2 && std::strcmp(args[1], "verify") == 0) return runVerify(ctx);
                 return ctx.usage();
         }
 
@@ -653,11 +743,11 @@ Error DisplayTest::init() {
 #endif
 }
 
-BMDS_SHELL_COMMAND(
-        display, runDisplay,
-        "[edid|scan|check|stats|test 720|1080|WxH@HZ [cpu|pal|565|dma|fb] [lines] [blocks] [strict]|test off|stress "
-        "psram|write|internal|qos [FIELD N|limit MASTER r|w BURST PEAK RATE|off]]",
-        "Show the HDMI bridge and the monitor; 'edid' dumps the monitor's EDID, 'scan' lists the bus, "
-        "'test' starts the test picture (bring-up), 'stats' shows the scanout's counters")
+BMDS_SHELL_COMMAND(display, runDisplay,
+                   "[edid|scan|check|stats|test 720|1080|WxH@HZ [cpu|pal|565|dma|fb|fb565] [lines] [blocks] "
+                   "[strict]|test off|stress "
+                   "psram|write|internal|qos [FIELD N|limit MASTER r|w BURST PEAK RATE|off]]",
+                   "Show the HDMI bridge and the monitor; 'edid' dumps the monitor's EDID, 'scan' lists the bus, "
+                   "'test' starts the test picture (bring-up), 'stats' shows the scanout's counters")
 
 BMDS_NAMESPACE_END
