@@ -11,6 +11,7 @@
 
 #include <sdkconfig.h>
 #include <bmds/boot.h>
+#include <bmds/displaytest.h>
 #include <bmds/i2cbus.h>
 #include <bmds/loader.h>
 #include <bmds/ramdisk.h>
@@ -54,6 +55,7 @@ namespace {
                 {"storage", bmds::Storage::init},
                 {"ramdisk", bmds::RamDisk::init},
                 {"programs", initPrograms}, // processes, /bin/sh
+                {"display", bmds::DisplayTest::init},
                 {"shell", startSerialShell},
         };
 

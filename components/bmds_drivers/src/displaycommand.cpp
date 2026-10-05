@@ -10,17 +10,23 @@
  * lines and their order, add new ones only at the end.
  */
 
+#include <cstdlib>
+#include <sdkconfig.h>
 #include <cstring>
-#include <esp_lcd_mipi_dsi.h>
-#include <esp_lcd_panel_ops.h>
-#include <esp_ldo_regulator.h>
 #include <bmds/board.h>
 #include <bmds/command.h>
+#include <bmds/displaytest.h>
+#include <bmds/log.h>
 #include <bmds/edid.h>
 #include <bmds/i2cbus.h>
 #include <bmds/lt8912b.h>
+#include <bmds/memory.h>
+#include <bmds/placement.h>
+#include <bmds/paletteexpander.h>
+#include <bmds/scanout.h>
 #include <bmds/shell.h>
 #include <bmds/staticobject.h>
+#include <bmds/system.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -34,9 +40,8 @@ namespace {
 
         constinit StaticObject<Lt8912b> bridgeObject;
 
-        // Step 1b's bring-up (devplan/display.md): IDF's DPI panel showing the
-        // DSI controller's own bar pattern, to prove the bridge setup. The
-        // line-buffer scanout replaces it.
+        // Step 2's test picture (devplan/display.md): bars, a gray ramp and a
+        // stripe that moves each frame, so a lost or late block shows.
         struct TestMode {
                         const char *name;
                         VideoTiming timing;
@@ -46,41 +51,101 @@ namespace {
                 {"720", {80'000, 1280, 408, 32, 80, 720, 3, 5, 13, true, false, false}},
                 {"1080", {70'000, 1920, 48, 32, 80, 1080, 3, 5, 8, true, false, false}},
         };
-        esp_ldo_channel_handle_t testLdo = nullptr;
-        esp_lcd_dsi_bus_handle_t testBus = nullptr;
-        esp_lcd_panel_handle_t   testPanel = nullptr;
 
-        void stopTest() {
-                if (testPanel != nullptr) (void)esp_lcd_panel_del(testPanel);
-                if (testBus != nullptr) (void)esp_lcd_del_dsi_bus(testBus);
-                if (testLdo != nullptr) (void)esp_ldo_release_channel(testLdo);
-                testPanel = nullptr;
-                testBus = nullptr;
-                testLdo = nullptr;
-                return;
-        }
+        class TestPattern final : public LineSource {
+                public:
+                        // The two kinds of line, drawn once (internal RAM, freed by the next set-up).
+                        Error setUp(Scanout::Format format, uint16_t width, uint16_t height) {
+                                _bytes = format == Scanout::Format::Rgb565     ? 2
+                                         : format == Scanout::Format::Indexed8 ? 1
+                                                                               : 3;
+                                _width = width;
+                                _height = height;
+                                _frame = 0;
+                                Memory::free(_lines);
+                                _lines = static_cast<uint8_t *>(Memory::alloc(MemSpace::Internal, 2 * width * _bytes));
+                                if (_lines == nullptr) return Error::NoMem;
+                                static constexpr uint32_t Bars[8] = {0xffffff, 0xffff00, 0x00ffff, 0x00ff00,
+                                                                     0xff00ff, 0xff0000, 0x0000ff, 0x000000};
+                                if (_bytes == 1) {
+                                        // Indices: 0-7 the bars, 8-255 the ramp; the palette says what they are.
+                                        for (uint16_t x = 0; x < width; ++x) {
+                                                _lines[x] = static_cast<uint8_t>(x * 8 / width);
+                                                _lines[width + x] = static_cast<uint8_t>(8 + x * 248 / width);
+                                        }
+                                        return Error::Ok;
+                                }
+                                for (uint16_t x = 0; x < width; ++x) {
+                                        put(_lines, x, Bars[x * 8 / width]);
+                                        put(_lines + width * _bytes, x, (x * 256 / width) * 0x010101u);
+                                }
+                                return Error::Ok;
+                        }
 
-        // The board's bridge, attached on first use; null (with a message) if none.
-        Lt8912b *bridge(CommandContext &ctx) {
+                        BMDS_HOT_ATTR void render(uint16_t first, uint16_t count, uint8_t *dst,
+                                                  size_t stride) override {
+                                if (first == 0) ++_frame;
+                                const uint16_t stripe = static_cast<uint16_t>((_frame * 4) % (_width - 16));
+                                for (uint16_t i = 0; i < count; ++i) {
+                                        const uint16_t y = static_cast<uint16_t>(first + i);
+                                        uint8_t       *out = dst + i * stride;
+                                        std::memcpy(out, _lines + (y < _height * 3 / 4 ? 0 : _width * _bytes), stride);
+                                        for (size_t k = stripe * _bytes; k < (stripe + 16u) * _bytes; ++k)
+                                                out[k] ^= 0xff;
+                                }
+                                return;
+                        }
+
+                private:
+                        void put(uint8_t *line, uint16_t x, uint32_t rgb) const {
+                                const uint8_t r = static_cast<uint8_t>(rgb >> 16), g = static_cast<uint8_t>(rgb >> 8),
+                                              b = static_cast<uint8_t>(rgb);
+                                if (_bytes == 2) {
+                                        const uint16_t p =
+                                                static_cast<uint16_t>((r >> 3) << 11 | (g >> 2) << 5 | (b >> 3));
+                                        line[2 * x] = static_cast<uint8_t>(p);
+                                        line[2 * x + 1] = static_cast<uint8_t>(p >> 8);
+                                } else {
+                                        line[3 * x] = b;
+                                        line[3 * x + 1] = g;
+                                        line[3 * x + 2] = r;
+                                }
+                                return;
+                        }
+
+                        uint8_t *_lines = nullptr;
+                        size_t   _bytes = 2;
+                        uint16_t _width = 0;
+                        uint16_t _height = 0;
+                        uint32_t _frame = 0;
+        };
+
+        constinit StaticObject<Scanout> scanoutObject;
+        TestPattern                     testPattern;
+        uint64_t                        testStartUs = 0;
+
+        // The board's bridge, attached on first use.
+        Result<Lt8912b *> attachBridge() {
                 const BoardDisplay &d = board().display;
-                if (d.bridge != BoardDisplayBridge::Lt8912b) {
-                        ctx.eprintf("display: this board has no HDMI bridge\n");
-                        return nullptr;
-                }
+                if (d.bridge != BoardDisplayBridge::Lt8912b) return makeError<Lt8912b *>(Error::NotSupported);
                 if (!bridgeObject.isCreated()) {
                         I2cBus *bus = I2cBus::bus(static_cast<size_t>(d.i2c));
-                        if (bus == nullptr) {
-                                ctx.eprintf("display: no I2C bus %u\n", static_cast<unsigned>(d.i2c));
-                                return nullptr;
-                        }
-                        Lt8912b    &b = bridgeObject.create(*bus, d.i2cAddr);
-                        const Error err = b.attach();
-                        if (err.isError()) {
-                                ctx.eprintf("display: %s\n", err.desc());
-                                return nullptr;
-                        }
+                        if (bus == nullptr) return makeError<Lt8912b *>(Error::NotExist);
+                        const Error err = bridgeObject.create(*bus, d.i2cAddr).attach();
+                        if (err.isError()) return makeError<Lt8912b *>(err);
                 }
-                return &*bridgeObject;
+                return makeResult(&*bridgeObject);
+        }
+
+        // The bridge, or null with a message.
+        Lt8912b *bridge(CommandContext &ctx) {
+                auto [b, err] = attachBridge();
+                if (err == Error::NotSupported) {
+                        ctx.eprintf("display: this board has no HDMI bridge\n");
+                } else if (err.isError()) {
+                        ctx.eprintf("display: bridge: %s\n", err.desc());
+                }
+                return err.isOk() ? b : nullptr;
         }
 
         // EDID block @p n (0 or 1) from the monitor, over the bridge's bus.
@@ -178,82 +243,121 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
-        int runTest(CommandContext &ctx, const char *which) {
+        Scanout &scanout() {
+                if (!scanoutObject.isCreated()) scanoutObject.create(0);
+                return *scanoutObject;
+        }
+
+        // Sets the bridge up and starts the test picture in @p mode.
+        Error startTest(Lt8912b &b, const TestMode &mode, Scanout::Format format, uint16_t lines, uint8_t blocks) {
+                scanout().stop();
+                const BoardDisplay &d = board().display;
+                Scanout::Config     c;
+                c.timing = mode.timing;
+                c.format = format;
+                c.lanes = d.dsiLanes;
+                c.phyLdo = d.phyLdo;
+                c.phyLdoMv = d.phyLdoMv;
+                c.linesPerBlock = lines;
+                c.blocks = blocks;
+                // The test palette: the eight bars, then a gray ramp.
+                static uint32_t           palette[PaletteExpander::PaletteSize];
+                static constexpr uint32_t Bars[8] = {0xffffff, 0xffff00, 0x00ffff, 0x00ff00,
+                                                     0xff00ff, 0xff0000, 0x0000ff, 0x000000};
+                for (size_t i = 0; i < PaletteExpander::PaletteSize; ++i)
+                        palette[i] = i < 8 ? Bars[i] : static_cast<uint32_t>((i - 8) * 255 / 247) * 0x010101u;
+                c.palette = palette;
+                // A rebuilt link: the bridge's receiver locks onto it again.
+                c.onRestart = [](void *arg) {
+                        (void)static_cast<Lt8912b *>(arg)->resetReceiver();
+                };
+                c.onRestartArg = &b;
+                Error err = b.configure(c.timing, c.lanes, true);
+                if (err.isOk()) err = testPattern.setUp(c.format, c.timing.hActive, c.timing.vActive);
+                if (err.isOk()) err = scanout().start(c, testPattern);
+                if (err.isError()) return err;
+                testStartUs = System::uptimeUs();
+                return b.resetReceiver();
+        }
+
+        // display test 720|1080 [565|888|pal] [lines per block] [blocks] | off
+        int runTest(CommandContext &ctx, Args args) {
                 Lt8912b *b = bridge(ctx);
                 if (b == nullptr) return Shell::ExitFailure;
-                stopTest();
-                if (std::strcmp(which, "off") == 0) {
+                if (std::strcmp(args[2], "off") == 0) {
+                        scanout().stop();
                         (void)b->setOutput(false);
                         return Shell::ExitSuccess;
                 }
                 const TestMode *mode = nullptr;
                 for (const TestMode &m : TestModes) {
-                        if (std::strcmp(m.name, which) == 0) mode = &m;
+                        if (std::strcmp(m.name, args[2]) == 0) mode = &m;
                 }
-                if (mode == nullptr) return ctx.usage();
-                const VideoTiming       &t = mode->timing;
-                const BoardDisplay      &d = board().display;
-                const uint32_t           laneMbps = (t.pixelKhz * 24 / d.dsiLanes + 999) / 1000;
-                esp_err_t                err = ESP_OK;
-                const char              *step = "";
-                esp_ldo_channel_config_t ldo = {};
-                ldo.chan_id = d.phyLdo;
-                ldo.voltage_mv = d.phyLdoMv;
-                step = "LDO";
-                err = esp_ldo_acquire_channel(&ldo, &testLdo);
-                if (err == ESP_OK) {
-                        esp_lcd_dsi_bus_config_t bus = {};
-                        bus.bus_id = 0;
-                        bus.num_data_lanes = d.dsiLanes;
-                        // 0: the driver picks by chip revision (the crystal needs v3.0).
-                        bus.phy_clk_src = static_cast<mipi_dsi_phy_pllref_clock_source_t>(0);
-                        bus.lane_bit_rate_mbps = laneMbps;
-                        step = "DSI bus";
-                        err = esp_lcd_new_dsi_bus(&bus, &testBus);
-                }
-                if (err == ESP_OK) {
-                        const Error berr = b->configure(t, d.dsiLanes, true);
-                        if (berr.isError()) {
-                                ctx.eprintf("display: bridge: %s\n", berr.desc());
-                                stopTest();
-                                return Shell::ExitFailure;
+                if (mode == nullptr || args.size() > 6) return ctx.usage();
+                Scanout::Format format = Scanout::Format::Rgb888;
+                if (args.size() > 3) {
+                        if (std::strcmp(args[3], "565") == 0) {
+                                format = Scanout::Format::Rgb565;
+                        } else if (std::strcmp(args[3], "pal") == 0) {
+                                format = Scanout::Format::Indexed8;
+                        } else if (std::strcmp(args[3], "888") != 0) {
+                                return ctx.usage();
                         }
-                        esp_lcd_dpi_panel_config_t panel = {};
-                        panel.virtual_channel = 0;
-                        panel.dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT;
-                        panel.dpi_clock_freq_mhz = t.pixelKhz / 1000;
-                        panel.in_color_format = LCD_COLOR_FMT_RGB565;
-                        panel.out_color_format = LCD_COLOR_FMT_RGB888;
-                        panel.num_fbs = 1;
-                        panel.video_timing.h_size = t.hActive;
-                        panel.video_timing.v_size = t.vActive;
-                        panel.video_timing.hsync_back_porch = t.hBack;
-                        panel.video_timing.hsync_pulse_width = t.hSync;
-                        panel.video_timing.hsync_front_porch = t.hFront;
-                        panel.video_timing.vsync_back_porch = t.vBack;
-                        panel.video_timing.vsync_pulse_width = t.vSync;
-                        panel.video_timing.vsync_front_porch = t.vFront;
-                        panel.flags.disable_lp = true;
-                        step = "DPI panel";
-                        err = esp_lcd_new_panel_dpi(testBus, &panel, &testPanel);
                 }
-                if (err == ESP_OK) {
-                        step = "pattern";
-                        err = esp_lcd_dpi_panel_set_pattern(testPanel, MIPI_DSI_PATTERN_BAR_VERTICAL);
-                }
-                if (err == ESP_OK) {
-                        step = "start";
-                        err = esp_lcd_panel_init(testPanel);
-                }
-                if (err != ESP_OK) {
-                        ctx.eprintf("display: %s: %s\n", step, esp_err_to_name(err));
-                        stopTest();
+                const uint16_t lines = args.size() > 4 ? static_cast<uint16_t>(std::atoi(args[4])) : 8;
+                const uint8_t  blocks = args.size() > 5 ? static_cast<uint8_t>(std::atoi(args[5])) : 3;
+                const Error    err = startTest(*b, *mode, format, lines, blocks);
+                if (err.isError()) {
+                        ctx.eprintf("display: test: %s\n", err.desc());
                         return Shell::ExitFailure;
                 }
-                (void)b->resetReceiver();
-                ctx.printf("Test:     %ux%u, %u.%03u MHz, lanes at %u Mbps, vertical bars\n", t.hActive, t.vActive,
-                           static_cast<unsigned>(t.pixelKhz / 1000), static_cast<unsigned>(t.pixelKhz % 1000),
-                           static_cast<unsigned>(laneMbps));
+                const VideoTiming &t = mode->timing;
+                ctx.printf("Test:     %ux%u %s, %u.%03u MHz, %u blocks of %u lines (%u bytes of internal RAM)\n",
+                           t.hActive, t.vActive,
+                           format == Scanout::Format::Rgb565   ? "RGB565"
+                           : format == Scanout::Format::Rgb888 ? "RGB888"
+                                                               : "8-bit palette",
+                           static_cast<unsigned>(t.pixelKhz / 1000), static_cast<unsigned>(t.pixelKhz % 1000), blocks,
+                           lines, static_cast<unsigned>(scanout().ringBytes()));
+                return Shell::ExitSuccess;
+        }
+
+        int runStats(CommandContext &ctx) {
+                if (!scanoutObject.isCreated() || !scanout().isRunning()) {
+                        ctx.eprintf("display: no scanout running\n");
+                        return Shell::ExitFailure;
+                }
+                const Scanout::Stats s = scanout().stats();
+                const uint64_t       us = System::uptimeUs() - testStartUs;
+                const uint64_t       mhz = 360; // cycles per microsecond (the CPU clock)
+                const uint64_t       avg = s.blocks == 0 ? 0 : s.renderCycles / s.blocks;
+                const uint64_t       loadTenths = us == 0 ? 0 : s.renderCycles * 1000 / (us * mhz);
+                ctx.printf("Scanout:  %u blocks, %u frames in %llu ms (%llu.%01llu fps)\n",
+                           static_cast<unsigned>(s.blocks), static_cast<unsigned>(s.frames),
+                           static_cast<unsigned long long>(us / 1000),
+                           static_cast<unsigned long long>(us == 0 ? 0 : uint64_t(s.frames) * 1000000 / us),
+                           static_cast<unsigned long long>(us == 0 ? 0 : uint64_t(s.frames) * 10000000 / us % 10));
+                ctx.printf("Problems: %u late, %u stalls, %u underruns, %u resyncs, %u rebuilds (%u failed)\n",
+                           static_cast<unsigned>(s.late), static_cast<unsigned>(s.stalls),
+                           static_cast<unsigned>(s.underruns), static_cast<unsigned>(s.resyncs),
+                           static_cast<unsigned>(s.rebuilds), static_cast<unsigned>(s.resyncFailures));
+                ctx.printf("Sync:     %u cycles at most; stalls at blocks", static_cast<unsigned>(s.syncCyclesMax));
+                for (uint32_t at : s.stallAt) ctx.printf(" %u", static_cast<unsigned>(at));
+                ctx.printf("\n");
+                if (s.expandCycles != 0)
+                        ctx.printf("PPA:      %llu cycles a block on average, %u at most, %u errors\n",
+                                   static_cast<unsigned long long>(s.blocks == 0 ? 0 : s.expandCycles / s.blocks),
+                                   static_cast<unsigned>(s.expandCyclesMax), static_cast<unsigned>(s.expandErrors));
+                ctx.printf("DMA:      on buffer %u, events 0x%08x, %u moved; bridge FIFO %u\n",
+                           static_cast<unsigned>(s.dmaItem), static_cast<unsigned>(s.dmaStatus),
+                           static_cast<unsigned>(s.dmaAmount), static_cast<unsigned>(s.bridgeFifo));
+                ctx.printf(
+                        "Render:   %llu cycles a block on average (%llu writing back), %u at most; %llu.%01llu%% of a "
+                        "core\n",
+                        static_cast<unsigned long long>(avg),
+                        static_cast<unsigned long long>(s.blocks == 0 ? 0 : s.syncCycles / s.blocks),
+                        static_cast<unsigned>(s.renderCyclesMax), static_cast<unsigned long long>(loadTenths / 10),
+                        static_cast<unsigned long long>(loadTenths % 10));
                 return Shell::ExitSuccess;
         }
 
@@ -296,20 +400,69 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        // Bring-up: memory traffic from this task, to see what disturbs the scanout.
+        int runStress(CommandContext &ctx, const char *what) {
+                const bool   psram = std::strcmp(what, "psram") == 0;
+                const bool   write = std::strcmp(what, "write") == 0;
+                const size_t bytes = psram || write ? 1024 * 1024 : 64 * 1024;
+                auto        *a = static_cast<uint8_t *>(
+                        Memory::alloc(psram || write ? MemSpace::Psram : MemSpace::Internal, bytes));
+                auto *b = static_cast<uint8_t *>(
+                        Memory::alloc(psram || write ? MemSpace::Psram : MemSpace::Internal, bytes));
+                if (a == nullptr || b == nullptr) {
+                        Memory::free(a);
+                        Memory::free(b);
+                        return Shell::ExitFailure;
+                }
+                const uint64_t start = System::uptimeUs();
+                size_t         moved = 0;
+                while (System::uptimeUs() - start < 2'000'000) {
+                        if (write) {
+                                std::memset(a, static_cast<int>(moved), bytes);
+                        } else {
+                                std::memcpy(b, a, bytes);
+                        }
+                        moved += bytes;
+                }
+                ctx.printf("stress %s: %u MB in 2 s\n", what, static_cast<unsigned>(moved >> 20));
+                Memory::free(a);
+                Memory::free(b);
+                return Shell::ExitSuccess;
+        }
+
         int runDisplay(CommandContext &ctx) {
                 const Args args = ctx.args();
                 if (args.size() == 1) return showStatus(ctx);
                 if (args.size() == 2 && std::strcmp(args[1], "edid") == 0) return showEdid(ctx);
                 if (args.size() == 2 && std::strcmp(args[1], "scan") == 0) return scanBus(ctx);
-                if (args.size() == 3 && std::strcmp(args[1], "test") == 0) return runTest(ctx, args[2]);
+                if (args.size() >= 3 && std::strcmp(args[1], "test") == 0) return runTest(ctx, args);
+                if (args.size() == 2 && std::strcmp(args[1], "stats") == 0) return runStats(ctx);
+                if (args.size() == 3 && std::strcmp(args[1], "resync") == 0 && scanoutObject.isCreated()) {
+                        scanout().requestResync(std::atoi(args[2]));
+                        return Shell::ExitSuccess;
+                }
+                if (args.size() == 3 && std::strcmp(args[1], "stress") == 0) return runStress(ctx, args[2]);
                 if (args.size() == 2 && std::strcmp(args[1], "check") == 0) return runCheck(ctx);
                 return ctx.usage();
         }
 
 } // namespace
 
-BMDS_SHELL_COMMAND(
-        display, runDisplay, "[edid|scan]",
-        "Show the HDMI bridge and the monitor; 'edid' dumps the monitor's EDID, 'scan' lists the bus's devices")
+Error DisplayTest::init() {
+#if CONFIG_BMDS_DISPLAY_TEST_AT_BOOT
+        auto [b, err] = attachBridge();
+        if (err == Error::NotSupported) return Error::Ok; // no display on this board
+        if (err.isError()) return err;
+        err = startTest(*b, TestModes[0], Scanout::Format::Rgb888, 8, 3);
+        if (err.isOk()) bmdsInfo("Display: 720p60 test picture on HDMI ('display test off' stops it)");
+        return err;
+#else
+        return Error::Ok;
+#endif
+}
+
+BMDS_SHELL_COMMAND(display, runDisplay, "[edid|scan|check|stats|test 720|1080 [565|888|pal] [lines] [blocks]|test off]",
+                   "Show the HDMI bridge and the monitor; 'edid' dumps the monitor's EDID, 'scan' lists the bus, "
+                   "'test' starts the test picture (bring-up), 'stats' shows the scanout's counters")
 
 BMDS_NAMESPACE_END

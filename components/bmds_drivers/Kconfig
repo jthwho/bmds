@@ -1,0 +1,13 @@
+menu "BMDS drivers"
+
+    config BMDS_DISPLAY_TEST_AT_BOOT
+        bool "Show the display test picture from boot"
+        default y
+        help
+            Bring-up (devplan/display.md): at boot, set the HDMI bridge up
+            and start the 1280x720, 60 Hz test picture on the line-rendered
+            scanout, as 'display test 720' does. It takes about 92 KB of
+            internal RAM and about half of core 1 while it runs;
+            'display test off' stops it. Goes away with the text console.
+
+endmenu

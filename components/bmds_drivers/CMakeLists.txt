@@ -17,9 +17,11 @@ if(COMMAND idf_component_register)
                                     src/displaycommand.cpp
                                     src/i2cbus.cpp
                                     src/lt8912b.cpp
+                                    src/paletteexpander.cpp
+                                    src/scanout.cpp
                                INCLUDE_DIRS include
                                REQUIRES bmds_core bmds_kernel
-                               PRIV_REQUIRES bmds_board bmds_shell esp_driver_i2c esp_hw_support esp_lcd
+                               PRIV_REQUIRES bmds_board bmds_shell esp_driver_i2c esp_hw_support esp_hal_lcd esp_mm esp_timer
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})
 else()
