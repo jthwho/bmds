@@ -736,22 +736,55 @@ static long do_select(long n, fd_set *rd, fd_set *wr, fd_set *ex, const void *ti
 /* --- Memory ------------------------------------------------------------------- */
 
 /*
- * Anonymous mappings, in whole pages as Linux gives them (musl's malloc
- * keeps metadata at the end of the last page). munmap frees a whole
+ * Mappings, in whole pages as Linux gives them (musl's malloc keeps
+ * metadata at the end of the last page). A file mapping is a copy (no
+ * paging). A shared writable one keeps a descriptor of its own and is
+ * written back (the parts that changed, up to the file's size then) at
+ * msync, munmap, exec and exit: other programs see the changes from then
+ * on, and a program killed by SIGKILL loses them. munmap frees a whole
  * mapping; a part of one stays until the program ends.
  */
 typedef struct {
-        void  *addr;
-        size_t len;
+                void   *addr;
+                size_t  len;
+                int64_t offset; /* in the file */
+                int32_t fd;     /* shared and writable: the mapping's own descriptor; else -1 */
 } mapping_t;
 
 static mapping_t *maps;
 static size_t     map_count, map_room;
 
+static void map_write_back(const mapping_t *m) {
+        if (m->fd < 0) return;
+        bmds_stat_t st = {.size = sizeof(st)};
+        if (bmds_fstat(m->fd, &st) < 0 || (int64_t)st.file_size <= m->offset) return;
+        const uint64_t left = st.file_size - (uint64_t)m->offset;
+        const size_t   n = left < m->len ? (size_t)left : m->len;
+        const uint8_t *data = m->addr;
+        uint8_t        chunk[512];
+        int64_t        ignored;
+        for (size_t at = 0; at < n; at += sizeof(chunk)) {
+                const size_t  size = n - at < sizeof(chunk) ? n - at : sizeof(chunk);
+                const int64_t pos = m->offset + (int64_t)at;
+                if (bmds_seek(m->fd, pos, BMDS_SEEK_SET, &ignored) < 0) return;
+                if (bmds_read(m->fd, chunk, (uint32_t)size) == (int32_t)size && memcmp(chunk, data + at, size) == 0)
+                        continue;
+                if (bmds_seek(m->fd, pos, BMDS_SEEK_SET, &ignored) < 0) return;
+                if (bmds_write(m->fd, data + at, (uint32_t)size) != (int32_t)size) return;
+        }
+        return;
+}
+
+/* Before the program's memory goes (exit, exec): every shared mapping out.
+ * Not from a vfork child: the mappings are its parent's. */
+static void maps_write_back(void) {
+        if (__bmds_vfork_depth > 0) return;
+        for (size_t i = 0; i < map_count; ++i) map_write_back(&maps[i]);
+        return;
+}
+
 static long do_mmap(size_t len, long prot, long flags, long fd, long pgoff) {
-        (void)prot;
         if (len == 0 || (flags & MAP_FIXED)) return -EINVAL;
-        if (!(flags & MAP_ANONYMOUS) && (flags & MAP_SHARED)) return -ENODEV;
         len = (len + 4095) & ~(size_t)4095;
         if (map_count == map_room) {
                 const size_t room = map_room ? map_room * 2 : 32;
@@ -763,16 +796,21 @@ static long do_mmap(size_t len, long prot, long flags, long fd, long pgoff) {
         void *p = bmds_mem_alloc((uint32_t)len, 4096, 0);
         if (p == NULL) return -ENOMEM;
         memset(p, 0, len);
+        int32_t own = -1;
         if (!(flags & MAP_ANONYMOUS)) {
-                /* A private file mapping is a copy (no sharing, no paging). */
                 const long n = io_at(fd, p, len, (int64_t)pgoff * 4096, 0);
-                if (n < 0) {
+                /* Kept out of the low numbers the program expects to get. */
+                if (n >= 0 && (flags & MAP_SHARED) && (prot & PROT_WRITE)) own = bmds_dup((int32_t)fd, 10);
+                if (n < 0 || own < -1) {
                         bmds_mem_free(p);
-                        return n;
+                        return n < 0 ? n : (long)(own);
                 }
+                if (own >= 0) (void)bmds_fd_flags(own, BMDS_FD_CLOEXEC);
         }
         maps[map_count].addr = p;
         maps[map_count].len = len;
+        maps[map_count].offset = (int64_t)pgoff * 4096;
+        maps[map_count].fd = own;
         ++map_count;
         return (long)p;
 }
@@ -781,9 +819,20 @@ static long do_munmap(void *addr, size_t len) {
         for (size_t i = 0; i < map_count; ++i) {
                 if (maps[i].addr != addr) continue;
                 if (len < maps[i].len) return 0; /* a part: kept until exit */
+                map_write_back(&maps[i]);
+                if (maps[i].fd >= 0) (void)bmds_close(maps[i].fd);
                 bmds_mem_free(addr);
                 maps[i] = maps[--map_count];
                 return 0;
+        }
+        return 0;
+}
+
+static long do_msync(void *addr, size_t len) {
+        const uint8_t *a = addr;
+        for (size_t i = 0; i < map_count; ++i) {
+                const uint8_t *m = maps[i].addr;
+                if (a < m + maps[i].len && a + len > m) map_write_back(&maps[i]);
         }
         return 0;
 }
@@ -1007,6 +1056,7 @@ static _Noreturn void vfork_return(long pid) {
 
 static long do_exit(long status) {
         if (__bmds_vfork_depth > 0) vfork_return((long)(bmds_proc_vfork_exit((int32_t)status)));
+        maps_write_back();
         bmds_exit((int32_t)status);
         return 0;
 }
@@ -1014,6 +1064,7 @@ static long do_exit(long status) {
 /* Ends the program (or the vfork child) as killed by @p sig. */
 static _Noreturn void signal_exit(int32_t sig) {
         if (__bmds_vfork_depth > 0) vfork_return((long)(bmds_proc_exit_signal(sig)));
+        maps_write_back();
         (void)bmds_proc_exit_signal(sig);
         for (;;) {}
 }
@@ -1025,6 +1076,7 @@ _Noreturn void __bmds_vfork_child_exit(long status) {
 }
 
 static long do_execve(const char *path, char *const *argv, char *const *envp) {
+        maps_write_back();
         const int32_t r = bmds_proc_exec(path, argv, envp);
         /* Only a vfork child gets here with an id: its parent goes on. */
         if (r >= 0) vfork_return((long)r);
@@ -1197,6 +1249,7 @@ static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 /* Memory */
                 case SYS_mmap2: return do_mmap((size_t)b, c, d, e, f);
                 case SYS_munmap: return do_munmap((void *)a, (size_t)b);
+                case SYS_msync: return do_msync((void *)a, (size_t)b);
                 case SYS_brk: return 0; /* no brk: musl's malloc then maps */
                 case SYS_mremap: return -ENOMEM; /* musl falls back to copying */
                 case SYS_mprotect:

@@ -246,6 +246,7 @@ class Shell final : public LineCompleter {
 
         private:
                 void completePath(StringView word, CompletionSink &sink);
+                void completeCommand(StringView word, CompletionSink &sink);
                 void runInput();
                 void endInterrupt();
 

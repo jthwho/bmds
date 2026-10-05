@@ -346,6 +346,18 @@ TEST_CASE("Files: Tab completes paths") {
                 CHECK(f.type("cat /dev/nu\t") == "cat /dev/null ");
                 CHECK(f.type("cd /disk0/\t") == "cd /disk0/p0/");
         }
+        SUBCASE("commands on $PATH: links, .elf and .sh by the name that runs them, each once") {
+                CHECK(f.out("mkdir bin; touch bin/zzhexedit bin/zztool.elf bin/zzrun.sh bin/cat; mkdir bin/zzdir") ==
+                      "");
+                CHECK(f.out("ln -s zzhexedit bin/zzhexdump; PATH=/disk0/p0/bin") == "");
+                CHECK(f.type("zzhexe\t") == "zzhexedit ");
+                CHECK(f.type("zzhexd\t") == "zzhexdump ");
+                CHECK(f.type("zzt\t") == "zztool ");
+                CHECK(f.type("zzr\t") == "zzrun ");
+                CHECK(f.type("cat\t") == "cat "); // the built-in and bin/cat: one candidate
+                CHECK(f.type("echo | zzhex\t") == "echo | zzhex\nzzhexdump  zzhexedit  \nbmds> echo | zzhex");
+                CHECK(f.type("zzd\t") == "zzd\a"); // a directory isn't a command
+        }
 }
 
 TEST_CASE("Files: a startup script") {

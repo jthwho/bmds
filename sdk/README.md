@@ -114,7 +114,10 @@ on BMDS's table; programs never see that layer. What differs from Linux:
   `SIGWINCH`; a serial terminal's resize is only learned when something
   asks, so in practice at the next prompt.
 - **Memory:** `malloc` (musl's) over whole pages from the kernel; private
-  file `mmap` is a copy; no shared mappings; everything is freed at exit.
+  file `mmap` is a copy; a shared writable one is written back to the file
+  (what changed) at `msync`, `munmap`, `exec` and exit, so other programs
+  see the changes only then, and `SIGKILL` loses them; everything is freed
+  at exit.
 - **Terminal:** `termios` maps `ICANON` (line input), `ECHO`, `ICRNL`,
   `ISIG` (Ctrl-C) and `OPOST|ONLCR` onto the console's modes; `VMIN` 0
   with `VTIME` (a timed read) works, `VMIN` above 1 reads like 1; the other

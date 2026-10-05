@@ -283,15 +283,58 @@ void Shell::complete(StringView line, size_t wordStart, CompletionSink &sink) {
                 completePath(word, sink);
                 return;
         }
-        for (const Command &c : _commands) {
-                if (StringView(c.name).startsWith(word)) sink.add(c.name);
+        completeCommand(word, sink);
+        return;
+}
+
+// Command names: built-ins, functions, keywords and the files in $PATH's
+// directories (`name.elf` and `name.sh` as `name`, what runs them), sorted,
+// each once. Only the names are read: telling programs from other files
+// would mean opening every one.
+void Shell::completeCommand(StringView word, CompletionSink &sink) {
+        List<String> names;
+        auto         offer = [&](StringView name) {
+                if (!name.startsWith(word)) return;
+                String candidate;
+                for (char c : name) {
+                        if (EscapedInNames.contains(c)) (void)candidate.append('\\');
+                        (void)candidate.append(c);
+                }
+                (void)names.append(std::move(candidate));
+        };
+        for (const Command &c : _commands) offer(c.name);
+        for (const ShellFunction &f : _state.functions) offer(f.name);
+        for (const char *k : {"case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in", "then",
+                              "until", "while"}) {
+                offer(k);
         }
-        for (const ShellFunction &f : _state.functions) {
-                if (f.name.view().startsWith(word)) sink.add(f.name);
+        const String    *path = _state.vars.value("PATH");
+        const StringView dirs = path != nullptr ? path->view() : StringView();
+        size_t           at = 0;
+        while (path != nullptr) {
+                size_t colon = dirs.indexOf(':', at);
+                if (colon == StringView::NPos) colon = dirs.size();
+                const StringView dir = colon > at ? dirs.mid(at, colon - at) : StringView(".");
+                auto [listing, err] = Vfs::openDirectory(dir, _executor.vfs());
+                while (err.isOk()) {
+                        auto [info, nerr] = listing.next();
+                        if (nerr.isError()) break;
+                        StringView name = info.name;
+                        if (info.isDirectory() || name.startsWith('.')) continue;
+                        if (name.endsWith(StringView(".elf"))) {
+                                name = name.left(name.size() - 4);
+                        } else if (name.endsWith(StringView(".sh"))) {
+                                name = name.left(name.size() - 3);
+                        }
+                        offer(name);
+                }
+                if (err.isOk()) listing.close();
+                if (colon == dirs.size()) break;
+                at = colon + 1;
         }
-        for (const char *k2 : {"case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in",
-                               "then", "until", "while"}) {
-                if (StringView(k2).startsWith(word)) sink.add(k2);
+        Glob::sortNames(names, 0);
+        for (size_t i = 0; i < names.size(); ++i) {
+                if (i == 0 || names[i].view() != names[i - 1].view()) sink.add(names[i]);
         }
         return;
 }
