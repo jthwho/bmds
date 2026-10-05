@@ -183,7 +183,9 @@ namespace {
                                 }
                         }
                         copyUs += System::uptimeUs() - start;
-                        (void)esp_cache_msync(dst, half, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+                        // In chunks: a cache operation runs with interrupts off.
+                        for (size_t off = 0; off < half; off += Chunk)
+                                (void)esp_cache_msync(dst + off, Chunk, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
                         for (size_t off = 0; off < half && !failed && run.keepGoing(); off += Chunk) {
                                 const auto      *w = reinterpret_cast<const uint32_t *>(dst + off);
                                 MemTest::Failure f[MaxReported];

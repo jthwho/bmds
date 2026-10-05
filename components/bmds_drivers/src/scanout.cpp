@@ -75,6 +75,12 @@ namespace {
 
         constexpr unsigned int ExpandTimeoutMs = 20;
 
+        // Free-running: the DMA's list goes round the ring's buffers several
+        // times, so a block interrupt that re-validates a descriptor can be
+        // that many blocks late (63 at 8 lines a block: 11 ms at 720p60)
+        // before the DMA meets an invalid one.
+        constexpr uint32_t MaxItems = 64;
+
 } // namespace
 
 struct Scanout::Hardware {
@@ -82,13 +88,16 @@ struct Scanout::Hardware {
                 esp_ldo_channel_handle_t   ldo = nullptr;
                 dw_gdma_channel_handle_t   dma = nullptr;
                 dw_gdma_link_list_handle_t list = nullptr;
-                dw_gdma_link_list_item_t  *items[16] = {}; // the ring's descriptors (uncached addresses)
+                dw_gdma_link_list_item_t  *items[MaxItems] = {}; // the list's descriptors (uncached addresses)
                 intr_handle_t              bridgeIntr = nullptr;
                 bool                       busClock = false;
                 bool                       dpiClock = false;
                 bool                       apll = false; // the pixel clock from the APLL
                 uint32_t                   pixelHz = 0;  // the pixel clock as set
                 uint32_t                   laneMbps = 0;
+                uint8_t                    channel = 0;    // the DMA channel's number
+                uint32_t                   itemBase = 0;   // the first descriptor's address, as the DMA sees it
+                uint32_t                   itemStride = 0; // bytes from one descriptor to the next
 };
 
 // The interrupts: a buffer sent, the DMA at a buffer not handed back, the
@@ -96,13 +105,32 @@ struct Scanout::Hardware {
 struct ScanoutIsr {
                 BMDS_ISR_ATTR static bool blockSent(dw_gdma_channel_handle_t, const dw_gdma_trans_done_event_data_t *,
                                                     void *arg) {
-                        auto          *s = static_cast<Scanout *>(arg);
-                        const uint32_t n = s->_sent.fetch_add(1, std::memory_order_relaxed);
-                        // Free-running: the buffer just sent is valid again at once, so the
-                        // DMA never finds one that isn't (it goes out stale if not redrawn).
-                        if (s->_config.freeRunning)
-                                dw_gdma_ll_lli_set_block_markers(s->_hw->items[n % s->_config.blocks], true, false,
-                                                                 true);
+                        auto *s = static_cast<Scanout *>(arg);
+                        if (!s->_config.freeRunning) {
+                                s->_sent.fetch_add(1, std::memory_order_relaxed);
+                                s->_wake.releaseFromIsr();
+                                return false;
+                        }
+                        // Free-running. A late interrupt can stand for several blocks (IDF's
+                        // handler reads the status once), so the count comes from where the
+                        // DMA is: the blocks since the last interrupt, from its descriptor.
+                        Scanout::Hardware &hw = *s->_hw;
+                        const uint32_t at = ((static_cast<uint32_t>(dw_gdma_ll_channel_get_current_link_list_item_addr(
+                                                      &DW_GDMA, hw.channel)) &
+                                              0x0fffffffu) -
+                                             hw.itemBase) /
+                                            hw.itemStride;
+                        const uint32_t done = s->_sent.load(std::memory_order_relaxed);
+                        uint32_t       now = done + 1;
+                        if (s->_primed) now = done + (at + s->_items - s->_lastItem) % s->_items;
+                        s->_primed = true;
+                        s->_lastItem = at;
+                        // Every descriptor finished since, valid again (and the one before the
+                        // last: the DMA's write-back of a finished one, its valid bit cleared,
+                        // can land after the interrupt under memory load).
+                        for (uint32_t k = done == 0 ? 0 : done - 1; k < now; ++k)
+                                dw_gdma_ll_lli_set_block_markers(hw.items[k % s->_items], true, false, true);
+                        s->_sent.store(now, std::memory_order_relaxed);
                         s->_wake.releaseFromIsr();
                         return false; // releaseFromIsr() yields at the interrupt's exit
                 }
@@ -146,6 +174,7 @@ Error Scanout::start(const Config &config, LineSource &source) {
         _blockBytes = _stride * config.linesPerBlock;
         _blocksPerFrame = t.vActive / config.linesPerBlock;
         _sent.store(0);
+        _primed = false;
         _refilled = 0;
         _late.store(0);
         _skipped = 0;
@@ -350,8 +379,12 @@ Error Scanout::startDpi() {
         dma.chan_priority = 1;
         err = espError(dw_gdma_new_channel(&dma, &hw.dma));
         if (err.isError()) return err;
+        int channel = 0;
+        (void)dw_gdma_channel_get_id(hw.dma, &channel);
+        hw.channel = static_cast<uint8_t>(channel);
         dw_gdma_link_list_config_t list = {};
-        list.num_items = _config.blocks;
+        _items = _config.freeRunning ? _config.blocks * (MaxItems / _config.blocks) : _config.blocks;
+        list.num_items = _items;
         list.link_type = DW_GDMA_LINKED_LIST_TYPE_CIRCULAR;
         err = espError(dw_gdma_new_link_list(&list, &hw.list));
         if (err.isError()) return err;
@@ -374,13 +407,15 @@ Error Scanout::startDpi() {
         dw_gdma_block_markers_t markers = {};
         markers.is_valid = true;
         markers.en_trans_done_intr = true;
-        for (uint32_t i = 0; i < _config.blocks; ++i) {
-                block.src.addr = reinterpret_cast<uint32_t>(_ring + i * _blockBytes);
+        for (uint32_t i = 0; i < _items; ++i) {
+                block.src.addr = reinterpret_cast<uint32_t>(_ring + (i % _config.blocks) * _blockBytes);
                 dw_gdma_lli_handle_t lli = dw_gdma_link_list_get_item(hw.list, i);
                 hw.items[i] = reinterpret_cast<dw_gdma_link_list_item_t *>(lli);
                 (void)dw_gdma_lli_config_transfer(lli, &block);
                 (void)dw_gdma_lli_set_block_markers(lli, markers);
         }
+        hw.itemBase = reinterpret_cast<uint32_t>(hw.items[0]) & 0x0fffffffu;
+        hw.itemStride = reinterpret_cast<uint32_t>(hw.items[1]) - reinterpret_cast<uint32_t>(hw.items[0]);
 
         dsi_host_dev_t *host = hw.hal.host;
         mipi_dsi_host_ll_dpi_set_vcid(host, 0);
@@ -513,6 +548,7 @@ void Scanout::rebuild() {
         _stalled.store(false, std::memory_order_relaxed);
         _blocksBefore += _sent.load(std::memory_order_relaxed);
         _sent.store(0, std::memory_order_relaxed);
+        _primed = false;
         _refilled = 0;
         while (_wake.tryAcquire().isOk()) {}
         if (!_config.framebuffer) {
@@ -599,7 +635,7 @@ BMDS_HOT_ATTR void Scanout::refill() {
                         // The frame stays: hand the block back. At a frame's start,
                         // the source changes what moves, written back for the DMA.
                         const uint32_t slot = _refilled % _config.blocks;
-                        dw_gdma_ll_lli_set_block_markers(_hw->items[slot], true, false, true);
+                        dw_gdma_ll_lli_set_block_markers(_hw->items[_refilled % _items], true, false, true);
                         ++_refilled;
                         if (slot == 0) {
                                 const uint32_t start = esp_cpu_get_cycle_count();
@@ -615,7 +651,10 @@ BMDS_HOT_ATTR void Scanout::refill() {
                         // The DMA is sending block `sending`; the buffers of the blocks after
                         // it, up to a ring ahead, can be drawn. Behind: skip to the nearest.
                         const uint32_t sending = _sent.load(std::memory_order_relaxed);
-                        uint32_t       next = _refilled + _config.blocks;
+                        // Behind the interrupt as a backup: the descriptor just sent valid again.
+                        if (sending > 1)
+                                dw_gdma_ll_lli_set_block_markers(_hw->items[(sending - 2) % _items], true, false, true);
+                        uint32_t next = _refilled + _config.blocks;
                         if (next <= sending) {
                                 _skipped += sending + 1 - next;
                                 _refilled = sending + 1 - _config.blocks;
@@ -686,12 +725,12 @@ void Scanout::resync() {
         _stalled.store(false, std::memory_order_relaxed);
         _blocksBefore += _sent.load(std::memory_order_relaxed);
         _sent.store(0, std::memory_order_relaxed);
+        _primed = false;
         _refilled = 0;
         while (_wake.tryAcquire().isOk()) {}
-        for (uint32_t i = 0; i < _config.blocks; ++i) {
+        for (uint32_t i = 0; i < _config.blocks; ++i)
                 if (!_config.framebuffer) renderSlot(i);
-                dw_gdma_ll_lli_set_block_markers(hw.items[i], true, false, true);
-        }
+        for (uint32_t i = 0; i < _items; ++i) dw_gdma_ll_lli_set_block_markers(hw.items[i], true, false, true);
         const VideoTiming &t = _config.timing;
         mipi_dsi_brg_ll_clear_interrupt_status(bridge, MIPI_DSI_BRG_LL_EVENT_UNDERRUN);
         mipi_dsi_brg_ll_set_num_pixel_bits(bridge, uint32_t(t.hActive) * t.vActive * bytesPerPixel(_config.format) * 8);

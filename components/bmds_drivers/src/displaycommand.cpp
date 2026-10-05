@@ -283,7 +283,7 @@ namespace {
         // Bring-up knobs for 16-bit links (`display test MODE 565 ... pack=N lane24`).
         uint8_t testPacking = 0;
         bool    testFullLane = false;
-        bool    testFree = false; // `display test MODE ... free`: the free-running ring
+        bool    testFree = true; // the free-running ring, unless `display test MODE ... strict`
 
         Error startTest(Lt8912b &b, const VideoTiming &timing, Scanout::Format format, uint16_t lines, uint8_t blocks,
                         bool framebuffer) {
@@ -329,19 +329,19 @@ namespace {
                         (void)b->setOutput(false);
                         return Shell::ExitSuccess;
                 }
-                // Knobs anywhere after the mode: pack=N, lane24, free.
+                // Knobs anywhere after the mode: pack=N, lane24, strict (the ring stops for a late block).
                 testPacking = 0;
                 testFullLane = false;
-                testFree = false;
+                testFree = true;
                 size_t positional = args.size();
                 for (size_t i = 3; i < args.size(); ++i) {
                         const bool pack = std::strncmp(args[i], "pack=", 5) == 0;
                         if (pack) testPacking = static_cast<uint8_t>(std::atoi(args[i] + 5));
                         const bool lane24 = std::strcmp(args[i], "lane24") == 0;
-                        const bool free = std::strcmp(args[i], "free") == 0;
+                        const bool strict = std::strcmp(args[i], "strict") == 0;
                         if (lane24) testFullLane = true;
-                        if (free) testFree = true;
-                        if ((pack || lane24 || free) && i < positional) positional = i;
+                        if (strict) testFree = false;
+                        if ((pack || lane24 || strict) && i < positional) positional = i;
                 }
                 if (positional > 6) return ctx.usage();
                 args = Args(args.data(), positional);
@@ -655,7 +655,7 @@ Error DisplayTest::init() {
 
 BMDS_SHELL_COMMAND(
         display, runDisplay,
-        "[edid|scan|check|stats|test 720|1080|WxH@HZ [cpu|pal|565|dma|fb] [lines] [blocks] [free]|test off|stress "
+        "[edid|scan|check|stats|test 720|1080|WxH@HZ [cpu|pal|565|dma|fb] [lines] [blocks] [strict]|test off|stress "
         "psram|write|internal|qos [FIELD N|limit MASTER r|w BURST PEAK RATE|off]]",
         "Show the HDMI bridge and the monitor; 'edid' dumps the monitor's EDID, 'scan' lists the bus, "
         "'test' starts the test picture (bring-up), 'stats' shows the scanout's counters")

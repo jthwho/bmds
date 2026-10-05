@@ -63,8 +63,12 @@ class LineSource {
  * The DSI controller's DMA streams a circular ring of `blocks` buffers of
  * `linesPerBlock` lines each, in internal DMA RAM. When a buffer has been
  * sent, the refill task (pinned to a core, high priority) asks the
- * `LineSource` for the lines that buffer carries next and hands it back to
- * the DMA. The DSI bridge widens 16-bit lines to the link's 24 bits.
+ * `LineSource` for the lines that buffer carries next. Free-running (the
+ * default) the DMA never waits: the block interrupt keeps every descriptor
+ * valid, working out from the DMA's position how many blocks went out, and
+ * the refill draws the blocks ahead of the one going out, skipping any it
+ * is too late for (they go out stale). Otherwise (`freeRunning` off) the
+ * refill hands each buffer back and the DMA stops at one it hasn't.
  *
  * One scanout per DSI bus. The bridge chip (an HDMI bridge, a panel) is set
  * up by its own driver, before `start()` (it expects the video to follow).
@@ -98,7 +102,7 @@ class Scanout {
                                         0; ///< 16/18-bit links: the host's packing variant (0-2), the bridge's arrangement.
                                 bool            fullLaneRate = false; ///< Lanes at the 24-bit rate whatever the format.
                                 bool            freeRunning =
-                                        false; ///< The ring never stops: a late block goes out stale and is skipped.
+                                        true; ///< The ring never stops: a late block goes out stale and is skipped.
                                 const uint32_t *palette =
                                         nullptr; ///< `Indexed8`: 256 entries (0xRRGGBB) loaded at the start.
                                 void (*onRestart)(void *arg) =
@@ -196,6 +200,9 @@ class Scanout {
                 size_t                _blockBytes = 0;
                 size_t                _stride = 0;
                 uint32_t              _blocksPerFrame = 0;
+                uint32_t              _items = 0; // descriptors in the DMA\'s list: a multiple of the blocks
+                uint32_t _lastItem = 0;   // free-running: the descriptor the DMA was at, at the last block interrupt
+                bool     _primed = false; // that position is known (from the first block interrupt on)
                 bool                  _running = false;
                 std::atomic<bool>     _stopping{false};
                 std::atomic<uint32_t> _sent{0};      // buffers sent (the DMA's block interrupts)
