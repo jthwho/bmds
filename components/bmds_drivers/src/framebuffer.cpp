@@ -23,11 +23,18 @@ namespace {
         constexpr size_t Align = 128;                // the L2 cache line; the 2D-DMA's PSRAM alignment
         constexpr size_t WriteBackChunk = 64 * 1024; // a cache operation runs with interrupts off
 
+        // What's left of @p deadline, as a timeout (at least 1 ms).
+        unsigned int remainingMs(const Deadline &deadline) {
+                const int64_t us = deadline.remainingUs();
+                if (us == Deadline::Forever) return WaitForever;
+                return static_cast<unsigned int>(us / 1000 + 1);
+        }
+
 } // namespace
 
 Error Framebuffer::start(uint16_t width, uint16_t height) {
         if (isStarted()) return Error::InvalidState;
-        if (width == 0 || height == 0) return Error::Invalid;
+        if (width == 0 || (width & 1) != 0 || height == 0) return Error::Invalid; // rows on 4 bytes
         const size_t bytes = size_t(width) * 2 * height;
         for (uint8_t *&buffer : _buffers) {
                 buffer = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::PsramDma, bytes, Align));
@@ -40,6 +47,11 @@ Error Framebuffer::start(uint16_t width, uint16_t height) {
                         (void)esp_cache_msync(buffer + off, bytes - off < WriteBackChunk ? bytes - off : WriteBackChunk,
                                               ESP_CACHE_MSYNC_FLAG_DIR_C2M);
         }
+        const Error err = _copier.start();
+        if (err.isError()) {
+                stop();
+                return err;
+        }
         _width = width;
         _height = height;
         _front.store(0, std::memory_order_release);
@@ -50,6 +62,7 @@ Error Framebuffer::start(uint16_t width, uint16_t height) {
 }
 
 void Framebuffer::stop() {
+        _copier.stop();
         for (uint8_t *&buffer : _buffers) {
                 Memory::free(buffer);
                 buffer = nullptr;
@@ -80,6 +93,50 @@ Error Framebuffer::tryPresent() {
         if (!_take.compare_exchange_strong(idle, Asked, std::memory_order_acq_rel)) return Error::WouldBlock;
         if (!_scanning.load(std::memory_order_acquire)) swap();
         return Error::Ok;
+}
+
+Error Framebuffer::blit(const Rect &to, const uint8_t *src, size_t srcStride, unsigned int timeoutMs) {
+        if (!isStarted()) return Error::InvalidState;
+        if (src == nullptr || to.height == 0 || srcStride < size_t(to.width) * 2 || srcStride % 2 != 0 ||
+            srcStride / 2 > UINT16_MAX)
+                return Error::Invalid;
+        const Deadline deadline(timeoutMs);
+        const Error    err = waitForDrawing(deadline);
+        if (err.isError()) return err;
+        // The source out of the cache for the DMA, in pieces.
+        const size_t bytes = srcStride * (to.height - 1) + size_t(to.width) * 2;
+        for (size_t off = 0; off < bytes; off += WriteBackChunk)
+                (void)esp_cache_msync(const_cast<uint8_t *>(src) + off,
+                                      bytes - off < WriteBackChunk ? bytes - off : WriteBackChunk,
+                                      ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+        RectCopier::Picture from;
+        from.data = src;
+        from.width = static_cast<uint16_t>(srcStride / 2);
+        from.height = to.height;
+        return _copier.copy(from, 0, 0, picture(back()), to.x, to.y, to.width, to.height, remainingMs(deadline));
+}
+
+Error Framebuffer::copyFromFront(const Rect &rect, unsigned int timeoutMs) {
+        if (!isStarted()) return Error::InvalidState;
+        const Deadline deadline(timeoutMs);
+        const Error    err = waitForDrawing(deadline);
+        if (err.isError()) return err;
+        return _copier.copy(picture(front()), rect.x, rect.y, picture(back()), rect.x, rect.y, rect.width, rect.height,
+                            remainingMs(deadline));
+}
+
+// Drawing waits while a swap is pending: the back buffer is about to be shown.
+Error Framebuffer::waitForDrawing(const Deadline &deadline) {
+        if (!isSwapPending()) return Error::Ok;
+        return waitForSwap(_swaps.load(std::memory_order_acquire) + 1, deadline);
+}
+
+RectCopier::Picture Framebuffer::picture(const uint8_t *buffer) const {
+        RectCopier::Picture p;
+        p.data = buffer;
+        p.width = _width;
+        p.height = _height;
+        return p;
 }
 
 uint8_t *Framebuffer::beginFrame() {

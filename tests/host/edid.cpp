@@ -47,8 +47,21 @@ namespace {
                 const uint8_t name[18] = {0,   0,   0,   0xfc, 0,   'D', 'E', 'L',  'L',
                                           ' ', 'U', '2', '4',  '1', '2', 'M', '\n', ' '};
                 std::memcpy(b + 72, name, sizeof(name));
-                b[90 + 3] = 0x10; // dummy descriptors
-                b[108 + 3] = 0x10;
+                // Range limits: 56-76 Hz, 30-83 kHz, 170 MHz.
+                const uint8_t range[18] = {0, 0, 0, 0xfd, 0, 56, 76, 30, 83, 17, 0, '\n', ' ', ' ', ' ', ' ', ' ', ' '};
+                std::memcpy(b + 90, range, sizeof(range));
+                const uint8_t serial[18] = {0,   0,   0,   0xff, 0,   'A', 'B', 'C',  '1',
+                                            '2', '3', ' ', ' ',  ' ', ' ', ' ', '\n', ' '};
+                std::memcpy(b + 108, serial, sizeof(serial));
+                b[16] = 12; // week 12 of 2014
+                b[17] = 24;
+                b[21] = 53; // 53 x 30 cm
+                b[22] = 30;
+                b[35] = 0x21; // 640x480@60, 800x600@60
+                b[36] = 0x08; // 1024x768@60
+                // Standard timings: 1280x1024@60 (5:4), 1920x1080@60 (16:9), then unused.
+                const uint8_t std[16] = {0x81, 0x80, 0xd1, 0xc0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+                std::memcpy(b + 38, std, sizeof(std));
                 b[126] = 1;
                 seal(b);
                 return;
@@ -85,6 +98,29 @@ TEST_CASE("Edid: base block") {
         CHECK(t.hTotal() == 2200);
         CHECK(t.vTotal() == 1125);
         CHECK(t.refreshMilliHz() == 60000);
+        CHECK(e.detailedCount == 1);
+        CHECK(e.detailed[0].hActive == 1920);
+        CHECK(e.week == 12);
+        CHECK(e.year == 2014);
+        CHECK(e.widthCm == 53);
+        CHECK(e.heightCm == 30);
+        CHECK(std::strcmp(e.serial, "ABC123") == 0);
+        REQUIRE(e.range.present);
+        CHECK(e.range.minHz == 56);
+        CHECK(e.range.maxHz == 76);
+        CHECK(e.range.minKhz == 30);
+        CHECK(e.range.maxKhz == 83);
+        CHECK(e.range.maxPixelKhz == 170000);
+        CHECK(e.established == 0x210800);
+        Edid::Mode m;
+        REQUIRE(Edid::establishedMode(21, m));
+        CHECK((m.width == 640 && m.height == 480 && m.hz == 60));
+        REQUIRE(Edid::establishedMode(11, m));
+        CHECK((m.width == 1024 && m.height == 768 && m.hz == 60));
+        CHECK_FALSE(Edid::establishedMode(6, m));
+        REQUIRE(e.standardCount == 2);
+        CHECK((e.standard[0].width == 1280 && e.standard[0].height == 1024 && e.standard[0].hz == 60));
+        CHECK((e.standard[1].width == 1920 && e.standard[1].height == 1080 && e.standard[1].hz == 60));
 
         // Damage: the checksum, the header, the size.
         b[60] ^= 1;
@@ -115,6 +151,8 @@ TEST_CASE("Edid: the CEA extension marks an HDMI sink") {
         seal(x);
         CHECK(e.parseExtension(ByteSpan(x, sizeof(x))).isOk());
         CHECK(e.hdmi);
+        CHECK(e.videoModeCount == 0);
+        CHECK(e.extDetailedCount == 0);
         // Another vendor's block, or another kind of extension: still DVI.
         Edid other = e;
         other.hdmi = false;
@@ -128,6 +166,43 @@ TEST_CASE("Edid: the CEA extension marks an HDMI sink") {
         CHECK_FALSE(other.hdmi);
         x[1] ^= 1;
         CHECK(other.parseExtension(ByteSpan(x, sizeof(x))) == Error::CorruptData);
+}
+
+TEST_CASE("Edid: the CEA extension's video modes and detailed timings") {
+        uint8_t b[Edid::BlockBytes];
+        baseBlock(b);
+        auto [e, err] = Edid::parse(ByteSpan(b, sizeof(b)));
+        REQUIRE(err.isOk());
+        uint8_t x[Edid::BlockBytes] = {};
+        x[0] = 0x02;
+        x[1] = 0x03;
+        x[2] = 4 + 4; // a video block of 3, then the detailed timings
+        x[4] = 0x43;  // video data block, 3 descriptors
+        x[5] = 0x90;  // VIC 16 (1920x1080p60), native
+        x[6] = 0x04;  // VIC 4 (1280x720p60)
+        x[7] = 0x75;  // VIC 117: not named here
+        const uint8_t dtd[18] = {0x01, 0x1d, 0x00, 0x72, 0x51, 0xd0, 0x1e, 0x20, 0x6e,
+                                 0x28, 0x55, 0x00, 0,    0,    0,    0,    0,    0x1e}; // 1280x720p60, 74.25 MHz
+        std::memcpy(x + 8, dtd, sizeof(dtd));
+        seal(x);
+        REQUIRE(e.parseExtension(ByteSpan(x, sizeof(x))).isOk());
+        REQUIRE(e.videoModeCount == 3);
+        Edid::Mode m;
+        uint8_t    vic = 0;
+        bool       native = false;
+        REQUIRE(Edid::videoMode(e.videoModes[0], m, vic, native));
+        CHECK(vic == 16);
+        CHECK(native);
+        CHECK((m.width == 1920 && m.height == 1080 && m.hz == 60));
+        REQUIRE(Edid::videoMode(e.videoModes[1], m, vic, native));
+        CHECK(vic == 4);
+        CHECK_FALSE(native);
+        CHECK_FALSE(Edid::videoMode(e.videoModes[2], m, vic, native));
+        CHECK(vic == 117);
+        REQUIRE(e.extDetailedCount == 1);
+        CHECK(e.extDetailed[0].hActive == 1280);
+        CHECK(e.extDetailed[0].vActive == 720);
+        CHECK(e.extDetailed[0].pixelKhz == 74250);
 }
 
 TEST_CASE("VideoModes: standard timings, CVT reduced blanking, parsing") {

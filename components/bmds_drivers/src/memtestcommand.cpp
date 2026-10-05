@@ -205,11 +205,14 @@ namespace {
         int runMemtest(CommandContext &ctx) {
                 const Args args = ctx.args();
                 size_t     passes = 1, mb = 0;
+                bool       dmaOnly = false;
                 for (size_t i = 1; i < args.size(); ++i) {
                         if (std::strcmp(args[i], "-p") == 0 && i + 1 < args.size()) {
                                 if (!parseSize(args[++i], passes)) return ctx.usage();
                         } else if (std::strcmp(args[i], "-m") == 0 && i + 1 < args.size()) {
                                 if (!parseSize(args[++i], mb)) return ctx.usage();
+                        } else if (std::strcmp(args[i], "-d") == 0) {
+                                dmaOnly = true;
                         } else {
                                 return ctx.usage();
                         }
@@ -240,7 +243,7 @@ namespace {
                         ctx.printf("pass %u:\n", static_cast<unsigned>(pass + 1));
                         const auto seed = static_cast<uint32_t>(pass + 1);
                         for (MemTest::Pattern p : MemTest::Patterns) {
-                                if (run.interrupted) break;
+                                if (run.interrupted || dmaOnly) break;
                                 cpuPattern(run, p, seed);
                         }
                         if (mcp != nullptr && !run.interrupted) dmaPattern(run, mcp, seed);
@@ -263,7 +266,7 @@ namespace {
 
 } // namespace
 
-BMDS_SHELL_COMMAND(memtest, runMemtest, "[-p PASSES (0: until Ctrl-C)] [-m MB]",
+BMDS_SHELL_COMMAND(memtest, runMemtest, "[-p PASSES (0: until Ctrl-C)] [-m MB] [-d (the DMA test only)]",
                    "Write and verify the free PSRAM through the CPU and the DMA")
 
 BMDS_NAMESPACE_END

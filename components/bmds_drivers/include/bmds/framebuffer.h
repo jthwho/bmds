@@ -13,12 +13,21 @@
 #include <cstdint>
 #include <bmds/config.h>
 #include <bmds/error.h>
+#include <bmds/rectcopier.h>
 #include <bmds/semaphore.h>
 
 BMDS_NAMESPACE_BEGIN
 
 class Deadline;
 class Scanout;
+
+/** @brief A rectangle of pixels: its top-left corner and size. */
+struct Rect {
+                uint16_t x = 0;
+                uint16_t y = 0;
+                uint16_t width = 0;
+                uint16_t height = 0;
+};
 
 /**
  * @brief A double-buffered RGB565 picture in PSRAM (`devplan/display.md`
@@ -52,9 +61,9 @@ class Framebuffer {
 
                 /**
                  * @brief Allocates both buffers (PSRAM, DMA-capable), cleared to
-                 *        black.
-                 * @return `Ok`, `Invalid` (a zero size), `InvalidState` (started),
-                 *         or `NoMem`.
+                 *        black, and takes the 2D-DMA for drawing.
+                 * @return `Ok`, `Invalid` (a zero or odd width, a zero height),
+                 *         `InvalidState` (started), `NoMem`, or the driver's error.
                  * @blocking
                  */
                 Error start(uint16_t width, uint16_t height);
@@ -90,6 +99,27 @@ class Framebuffer {
                 uint32_t swaps() const { return _swaps.load(std::memory_order_acquire); }
 
                 /**
+                 * @brief Copies @p to's size of RGB565 pixels from @p src (internal
+                 *        RAM, @p srcStride bytes a line) to @p to in the back
+                 *        buffer, by 2D-DMA. Writes @p src back from the cache
+                 *        first. Waits while a swap is pending.
+                 * @return `Ok`, `InvalidState` (not started), `Invalid` (outside
+                 *         the picture, an odd x or width), or `Timeout`.
+                 * @blocking
+                 */
+                Error blit(const Rect &to, const uint8_t *src, size_t srcStride, unsigned int timeoutMs);
+
+                /**
+                 * @brief Copies @p rect of the front buffer to the same place in the
+                 *        back one, by 2D-DMA: after a swap the back buffer holds
+                 *        the picture of two presents ago. Waits while a swap is
+                 *        pending.
+                 * @return As `blit()`.
+                 * @blocking
+                 */
+                Error copyFromFront(const Rect &rect, unsigned int timeoutMs);
+
+                /**
                  * @brief Shows the back buffer from the start of the next frame,
                  *        and waits until it does (after any swap already pending).
                  * @return `Ok`, `InvalidState` (not started), or `Timeout`.
@@ -118,6 +148,8 @@ class Framebuffer {
 
                 void  swap(); // the swap asked for, if any
                 Error waitForSwap(uint32_t target, const Deadline &deadline);
+                Error               waitForDrawing(const Deadline &deadline); // no swap pending
+                RectCopier::Picture picture(const uint8_t *buffer) const;
 
                 uint8_t             *_buffers[2] = {};
                 uint16_t             _width = 0;
@@ -129,6 +161,7 @@ class Framebuffer {
                 std::atomic<bool>        _scanning{false};
                 std::atomic<uint32_t>    _swaps{0};
                 Semaphore                _swapped{1, 0};
+                RectCopier               _copier;
 };
 
 BMDS_NAMESPACE_END

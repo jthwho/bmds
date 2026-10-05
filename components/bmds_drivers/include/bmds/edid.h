@@ -77,6 +77,45 @@ struct Edid {
                 uint8_t     extensions = 0;  ///< Extension blocks that follow the base block.
                 bool        hdmi = false;    ///< An HDMI sink (from the CEA extension).
 
+                /** @brief A mode named by size and rate (standard, established, CEA). */
+                struct Mode {
+                                uint16_t width = 0;
+                                uint16_t height = 0;
+                                uint16_t hz = 0;
+                                bool     interlaced = false;
+                };
+
+                /** @brief The monitor's range limits descriptor (`present` false if none). */
+                struct Range {
+                                bool     present = false;
+                                uint16_t minHz = 0; ///< Vertical rate, Hz.
+                                uint16_t maxHz = 0;
+                                uint16_t minKhz = 0; ///< Horizontal (line) rate, kHz.
+                                uint16_t maxKhz = 0;
+                                uint32_t maxPixelKhz = 0; ///< Highest pixel clock (0 if unstated).
+                };
+
+                static constexpr size_t MaxDetailed = 4; ///< In the base block.
+                static constexpr size_t MaxStandard = 8;
+                static constexpr size_t MaxVideoModes = 32; ///< CEA short video descriptors kept.
+                static constexpr size_t MaxExtDetailed = 6; ///< Detailed timings kept from the extension.
+
+                uint8_t     week = 0;    ///< Week of manufacture (0 unknown, 255: `year` is a model year).
+                uint16_t    year = 0;    ///< Year of manufacture.
+                uint8_t     widthCm = 0; ///< Screen size (0 if unstated).
+                uint8_t     heightCm = 0;
+                char        serial[14] = {}; ///< Serial number descriptor; "" if none.
+                Range       range;
+                uint32_t    established = 0; ///< Established timing bits: bytes 35-37 as bits 23-0.
+                Mode        standard[MaxStandard];
+                uint8_t     standardCount = 0;
+                VideoTiming detailed[MaxDetailed]; ///< The base block's detailed timings (the first is preferred).
+                uint8_t     detailedCount = 0;
+                uint8_t     videoModes[MaxVideoModes] = {}; ///< CEA short video descriptors, as sent.
+                uint8_t     videoModeCount = 0;
+                VideoTiming extDetailed[MaxExtDetailed]; ///< The CEA extension's detailed timings.
+                uint8_t     extDetailedCount = 0;
+
                 /**
                  * @brief Parses a base block.
                  * @return The EDID, or `CorruptData` (bad header or checksum),
@@ -86,7 +125,8 @@ struct Edid {
 
                 /**
                  * @brief Takes what BMDS uses from an extension block (a CEA-861
-                 *        one: whether the sink is HDMI); other kinds are skipped.
+                 *        one: whether the sink is HDMI, its video modes and
+                 *        detailed timings); other kinds are skipped.
                  * @return `Ok`, or `CorruptData` (bad checksum), `Invalid` (size).
                  */
                 Error parseExtension(ByteSpan block);
@@ -96,6 +136,20 @@ struct Edid {
                  * @return False if it isn't one (a display descriptor).
                  */
                 static bool parseDetailedTiming(const uint8_t *d, VideoTiming &out);
+
+                /**
+                 * @brief The mode of established timing bit @p bit (23 is byte 35's
+                 *        bit 7, 7 is byte 37's).
+                 * @return False for a bit with no mode.
+                 */
+                static bool establishedMode(int bit, Mode &out);
+
+                /**
+                 * @brief The CEA-861 mode of short video descriptor @p svd; its
+                 *        number in @p vic, whether the sink calls it native.
+                 * @return False if the number isn't one BMDS knows by size.
+                 */
+                static bool videoMode(uint8_t svd, Mode &out, uint8_t &vic, bool &native);
 };
 
 BMDS_NAMESPACE_END

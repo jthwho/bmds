@@ -81,6 +81,30 @@ namespace {
         // before the DMA meets an invalid one.
         constexpr uint32_t MaxItems = 64;
 
+        // An idle DW-GDMA channel held for good, so IDF's DW-GDMA group (and
+        // its bus clock) outlives the scanout's own channel. IDF's
+        // channel_destroy() releases the group, turning the clock off with the
+        // last channel, before it frees the channel's shared interrupt: an
+        // interrupt on that line in between reads the DMA's status register
+        // with its clock off, a load access fault (seen on a mode change). It
+        // has no interrupt and never runs; it takes one of the 4 channels.
+        constinit dw_gdma_channel_handle_t dmaAnchor = nullptr;
+
+        Error holdDmaGroup() {
+                if (dmaAnchor != nullptr) return Error::Ok;
+                dw_gdma_channel_alloc_config_t c = {};
+                c.src.block_transfer_type = DW_GDMA_BLOCK_TRANSFER_CONTIGUOUS;
+                c.src.role = DW_GDMA_ROLE_MEM;
+                c.src.num_outstanding_requests = 1;
+                c.dst.block_transfer_type = DW_GDMA_BLOCK_TRANSFER_CONTIGUOUS;
+                c.dst.role = DW_GDMA_ROLE_MEM;
+                c.dst.num_outstanding_requests = 1;
+                c.flow_controller = DW_GDMA_FLOW_CTRL_SELF;
+                c.chan_priority = 0;
+                const esp_err_t err = dw_gdma_new_channel(&c, &dmaAnchor);
+                return err == ESP_OK ? Error(Error::Ok) : Error::fromEspErr(err);
+        }
+
 } // namespace
 
 struct Scanout::Hardware {
@@ -402,6 +426,8 @@ Error Scanout::startDpi() {
                                       this, &hw.bridgeIntr));
         if (err.isError()) return err;
 
+        err = holdDmaGroup();
+        if (err.isError()) return err;
         dw_gdma_channel_alloc_config_t dma = {};
         dma.src.block_transfer_type = DW_GDMA_BLOCK_TRANSFER_LIST;
         dma.src.role = DW_GDMA_ROLE_MEM;
@@ -561,6 +587,9 @@ void Scanout::stopHardware() {
                 (void)dw_gdma_channel_get_id(hw.dma, &id);
                 dw_gdma_ll_channel_abort(&DW_GDMA, static_cast<uint8_t>(id));
                 for (int i = 0; i < 100 && (DW_GDMA.chen0.val & (1u << id)) != 0; ++i) esp_rom_delay_us(100);
+                // Nothing of this channel's left to interrupt with.
+                dw_gdma_ll_channel_enable_intr_propagation(&DW_GDMA, static_cast<uint8_t>(id), UINT32_MAX, false);
+                dw_gdma_ll_channel_clear_intr(&DW_GDMA, static_cast<uint8_t>(id), UINT32_MAX);
                 (void)dw_gdma_del_channel(hw.dma);
         }
         if (hw.list != nullptr) (void)dw_gdma_del_link_list(hw.list);

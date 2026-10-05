@@ -23,6 +23,7 @@ if(COMMAND idf_component_register)
                                     src/colorexpander.cpp
                                     src/framebuffer.cpp
                                     src/paletteexpander.cpp
+                                    src/rectcopier.cpp
                                     src/scanout.cpp
                                INCLUDE_DIRS include
                                REQUIRES bmds_core bmds_kernel
