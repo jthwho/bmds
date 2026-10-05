@@ -11,6 +11,7 @@
 
 #include <sdkconfig.h>
 #include <bmds/boot.h>
+#include <bmds/i2cbus.h>
 #include <bmds/loader.h>
 #include <bmds/ramdisk.h>
 #include <bmds/shell.h>
@@ -48,6 +49,7 @@ namespace {
 
         constexpr bmds::Boot::Stage SystemStages[] = {
                 {"console", bmds::UsbSerialConsole::init},
+                {"i2c", bmds::I2cBus::init},
                 {"vfs", bmds::Vfs::init},
                 {"storage", bmds::Storage::init},
                 {"ramdisk", bmds::RamDisk::init},

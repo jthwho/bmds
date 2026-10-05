@@ -109,7 +109,7 @@ Every ESP32-P4 GPIO with a board function. Netlist names are given where they he
 | Device | 7-bit address | Notes |
 |---|---|---|
 | ES8311 codec | 0x18 | Level-shifted to the 3.3VA domain |
-| LT8912B bridge | 0x48, 0x49, 0x4A | Level-shifted to 1.8 V. The addresses come from the Espressif driver; the schematic doesn't state them. |
+| LT8912B bridge | 0x48, 0x49, 0x4A | Level-shifted to 1.8 V. **Confirmed** (Rev C board, 2026-10-04): all three answer, and 0x4B too (not used by any driver); chip id 0x12B2 in main registers 0x00/0x01. The schematic doesn't state the addresses. |
 | HDMI sink DDC | 0x50 (EDID), plus other DDC devices | Level-shifted to 5 V. **Whatever the monitor puts on DDC appears on the system bus.** |
 | DSI and CSI connectors | Panel or camera dependent | e.g. OV5647 camera at 0x36 **(unconfirmed)** |
 

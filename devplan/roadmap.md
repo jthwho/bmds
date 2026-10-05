@@ -77,6 +77,9 @@ Plans: [`storage.md`](storage.md), [`time.md`](time.md). Complete; verified on h
 
 ## Phase 4 — Display
 
+Plan: [`display.md`](display.md).
+
+- [ ] Bring-up and measurements (`display.md` §4): 1a the bridge and EDID on I²C, 1b a picture, 1c the cost of scanout.
 - [ ] DSI-to-HDMI bridge bring-up; mode selection.
 - [ ] Framebuffer in PSRAM (DMA-capable), double buffering policy.
 - [ ] Text console: `TerminalScreen` (VT subset, 24-bit color cells) + bitmap font renderer with damage tracking (`terminal.md`).
