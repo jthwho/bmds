@@ -132,9 +132,10 @@ The peripheral has 64-byte RX and TX FIFOs and a full-speed CDC-ACM endpoint. ES
   - There is **no flow control** toward the host. Input that arrives while the ring is full is dropped and counted (`rxDroppedBytes()`).
   - The 1 KB ring holds a paste of that size while a command runs. Measured: 140 commands pasted in one write (980 bytes) all ran.
   - A file transfer protocol (Phase 2) needs its own acknowledgements.
-  - **Hard-won:** the first design held input back by leaving a packet in the FIFO with the interrupt masked, so the host would be NAKed. On the ESP32-P4, a packet left in the RX FIFO is **lost when the ISR sends a TX packet** meanwhile.
-    - Instrumented: data was available before the TX write and gone right after it, in every run. The raw RX status bit stays set, but the FIFO is empty.
-    - Pastes stopped at exactly the ring size. IDF's driver never sees this because it always drains RX immediately.
+  - **Hard-won:** input waiting in the RX FIFO was destroyed by TX writes, a byte per byte sent. The cause is ESP-IDF's `usb_serial_jtag_ll_write_txfifo()` on the ESP32-P4: it writes the shared `EP1` data register with a read-modify-write, and the read pops an RX byte. The driver writes the TX FIFO with a plain store instead.
+    - First seen as the original design's flow control failing: it left a packet in the FIFO with the interrupt masked so the host would be NAKed, and the packet vanished when the ISR sent output. Taken for a silicon bug, and the design changed to drain at once.
+    - Draining at once only narrowed the window: a packet arriving while the ISR filled the TX FIFO (64 register writes, about 90 µs) still lost bytes, one per TX byte written after it arrived (the 65th byte of a typed line, a stalled YMODEM transfer). Found with an ISR trace: `OUT_EP1_REC_DATA_CNT` said 7 bytes had arrived and the FIFO was empty. A flood of 70-byte lines echoed by `cat` lost a line within 2 s before the fix, and none in 9000 after.
+    - Holding the host off with NAKs should therefore work; it is not back yet, because a Ctrl-C would then wait behind the unread input.
 - **Locking**:
   - Interrupt-enable read-modify-writes happen from both tasks and the ISR, possibly on different cores, so they are done under a `SpinLock`.
   - The ring indices are atomics with acquire/release ordering.

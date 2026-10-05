@@ -155,7 +155,7 @@ Host tests:
 
 ## 8. Open questions
 
-- **Input lost on the USB serial console under two-way traffic:** the 65th byte of a line written in one go (the first of the second 64-byte USB packet) sometimes never reaches the shell. Seen four times: twice by hand, and in `bmds-compat` runs, where the next case's line is sent while the shell is still printing (a lost `x` turned `echo a > f.txt` into `echo a > f.tt`); in one run a YMODEM transfer then stalled for 114 s with 10 retries. Not reproduced by 160 lines sent idle, after long output, or while a listing was being printed. The receive path already works around a lost packet when the chip transmits meanwhile (rev v1.3); this looks related. It makes push-and-run and the corpus flaky, so it is the next driver bug to chase (roadmap).
+- ~~Input lost on the USB serial console under two-way traffic~~ (the 65th byte of a typed line, a stalled YMODEM transfer): fixed. ESP-IDF's TX FIFO write on the ESP32-P4 reads the shared data register, which pops an input byte; `devplan/shell.md` has the details.
 
 - Fonts and Unicode coverage for HDMI (Phase 4). Wide characters need a font that has them; fall back to a replacement glyph.
 - Line editor UTF-8: done in Phase 1b.

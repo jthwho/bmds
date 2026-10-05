@@ -38,8 +38,7 @@ BMDS_NAMESPACE_BEGIN
  *   waiting, until the host reads again.
  * - **Input** goes through a ring buffer (`CONFIG_BMDS_USJ_RX_BYTES`).
  *   There is no flow control toward the host: input that arrives while
- *   the ring is full is dropped and counted (`rxDroppedBytes()`). The
- *   hardware cannot be used to hold the host off (see the ISR).
+ *   the ring is full is dropped and counted (`rxDroppedBytes()`).
  *
  * ESP-IDF's polled console code keeps using the peripheral before `init()`
  * and after a panic.

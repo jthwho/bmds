@@ -121,7 +121,7 @@ Every ESP32-P4 GPIO with a board function. Netlist names are given where they he
 
 ## Gotchas
 
-- **USB-Serial/JTAG loses a pending RX packet when TX is written.** If received data is left in the 64-byte RX FIFO (for example, to hold the host off with NAKs), it disappears when a TX packet is written. The raw RX interrupt bit stays set. Seen on chip rev v1.3. Always drain the RX FIFO immediately; there is no device-side flow control. See `devplan/shell.md`.
+- **USB-Serial/JTAG: reading `EP1` pops the RX FIFO, so TX bytes must be written with a plain store.** TX and RX share the one data register: a write queues a TX byte, a read takes an RX byte. ESP-IDF's `usb_serial_jtag_ll_write_txfifo()` for the ESP32-P4 writes each byte with `HAL_FORCE_MODIFY_U32_REG_FIELD`, a read-modify-write, so every byte it sends while input waits in the RX FIFO destroys one byte of that input (the S3 and C6 versions store directly). This was long taken for a silicon bug ("a pending RX packet is lost when TX is written"). BMDS writes the FIFO itself (`usbserialconsole.cpp`). See `devplan/shell.md`.
 - **SD card detect depends on LDO 4.** Bring up the SD IO LDO before reading card detect.
 - **GPIO35 does three jobs:** BOOT button, RMII TXD1, and a strapping pin. The button is only usable as an input while Ethernet is down.
 - **HDMI hot-plug and bridge interrupt are not on a GPIO.** Detecting a display means polling LT8912B registers. The cost should be measured, and the polling kept rare.

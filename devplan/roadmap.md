@@ -60,7 +60,7 @@ Plans: [`storage.md`](storage.md), [`time.md`](time.md). Complete; verified on h
 - [x] Emulated symbolic links on FAT/exFAT, Cygwin's format (`storage.md` §4: `symlink`, `readlink`, `lstat`); `ln -s`.
 - [x] Terminal size learned from a serial terminal (`ESC [ 18 t`, the answer taken out of the input; `terminal.md`), `COLUMNS`/`LINES`, `TIOCGWINSZ`; `clear`, `reset`.
 - [x] Distribution structure (`devplan/distribution.md`): `dist/` recipes, `tools/bmds-dist` build and install; BusyBox 1.37 (115 applets as links).
-- [ ] USB serial console: input bytes lost under two-way traffic (`terminal.md` §8; makes push-and-run and the corpus flaky).
+- [x] USB serial console: input bytes lost under two-way traffic. ESP-IDF's ESP32-P4 TX FIFO write is a read-modify-write that pops an RX byte (`shell.md`).
 - [ ] Storage: a sector cache for directories and the FAT under FatFs (`storage.md` §12; lookups in large directories, `ls -l` of BusyBox's `bin`).
 - [ ] POSIX completion (§12, step 8+): process creation (`vfork`/`posix_spawn`, `waitpid`, `pipe`), signals from outside, `termios`, `poll`. Yardstick: BusyBox no-MMU (shells included) runs. A shared runtime only if measurements ask for it.
 - [ ] Example programs: `hello`, `cat`, a benchmark.

@@ -47,6 +47,20 @@ namespace {
                 ColorDepth::TrueColor;
 #endif
 
+        // Fills the TX FIFO from @p data while it has room; returns the bytes
+        // written. Not usb_serial_jtag_ll_write_txfifo(): on the ESP32-P4 it
+        // writes each byte with a read-modify-write of the EP1 register, and
+        // reading EP1 pops a byte from the RX FIFO, so every byte sent while a
+        // packet of input waited there destroyed one byte of it.
+        size_t writeTxFifo(ByteSpan data) {
+                size_t i = 0;
+                while (i < data.size() && usb_serial_jtag_ll_txfifo_writable()) {
+                        USB_SERIAL_JTAG.ep1.val = data[i];
+                        ++i;
+                }
+                return i;
+        }
+
         ByteSpan bytes(StringView s) {
                 return ByteSpan(reinterpret_cast<const uint8_t *>(s.data()), s.size());
         }
@@ -165,8 +179,7 @@ void UsbSerialConsole::handleInterrupt() {
                                 if (chunk.isEmpty()) break;
                                 const size_t want =
                                         chunk.size() < PacketBytes - sent ? chunk.size() : PacketBytes - sent;
-                                const size_t n = static_cast<size_t>(
-                                        usb_serial_jtag_ll_write_txfifo(chunk.data(), static_cast<uint32_t>(want)));
+                                const size_t n = writeTxFifo(chunk.first(want));
                                 _tx.consume(n);
                                 sent += n;
                                 if (n < want) break;
@@ -194,10 +207,8 @@ void UsbSerialConsole::handleInterrupt() {
         }
 
         if (status & USB_SERIAL_JTAG_INTR_SERIAL_OUT_RECV_PKT) {
-                // Always drain the FIFO at once. Leaving a packet there to hold the
-                // host off does not work: the hardware loses it when a TX packet is
-                // sent meanwhile (seen on the ESP32-P4 rev v1.3). Input the ring
-                // can't take is dropped and counted.
+                // Always drain the FIFO at once; input the ring can't take is
+                // dropped and counted.
                 usb_serial_jtag_ll_clr_intsts_mask(USB_SERIAL_JTAG_INTR_SERIAL_OUT_RECV_PKT);
                 uint8_t buf[PacketBytes];
                 size_t  n = static_cast<size_t>(usb_serial_jtag_ll_read_rxfifo(buf, PacketBytes));
