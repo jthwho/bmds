@@ -8,7 +8,8 @@
 # command is found through the linker section.
 
 set(BMDS_DRIVERS_PORTABLE_SRCS
-        src/edid.cpp)
+        src/edid.cpp
+        src/videomodes.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 

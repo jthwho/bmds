@@ -12,6 +12,7 @@
 
 #include <cstring>
 #include <bmds/edid.h>
+#include <bmds/videomodes.h>
 
 using bmds::ByteSpan;
 using bmds::Edid;
@@ -127,4 +128,56 @@ TEST_CASE("Edid: the CEA extension marks an HDMI sink") {
         CHECK_FALSE(other.hdmi);
         x[1] ^= 1;
         CHECK(other.parseExtension(ByteSpan(x, sizeof(x))) == Error::CorruptData);
+}
+
+TEST_CASE("VideoModes: standard timings, CVT reduced blanking, parsing") {
+        using bmds::VideoModes::parse;
+        auto [cea, err] = parse("1280x720@60");
+        REQUIRE(err.isOk());
+        CHECK(cea.pixelKhz == 74250);
+        CHECK(cea.hTotal() == 1650);
+        CHECK(cea.vTotal() == 750);
+        CHECK(cea.refreshMilliHz() == 60000);
+        CHECK(parse("1024x768@60").value().pixelKhz == 65000);
+        CHECK(parse("1920x1080@30").value().hTotal() == 2200);
+        // CVT-RB: 1080p60 is VESA's 2080 x 1111 (138.5 MHz rounded; exact here).
+        const VideoTiming rb60 = parse("1920x1080@60").value();
+        CHECK(rb60.hTotal() == 2080);
+        CHECK(rb60.vTotal() == 1111);
+        CHECK(rb60.pixelKhz == 138652);
+        CHECK(rb60.hSyncHigh);
+        CHECK_FALSE(rb60.vSyncHigh);
+        const VideoTiming rb50 = parse("1920x1080@50").value();
+        CHECK(rb50.vTotal() == 1080 + 3 + 5 + 18);
+        CHECK(rb50.refreshMilliHz() >= 49990);
+        CHECK(rb50.refreshMilliHz() <= 50010);
+        // Bad text and values.
+        CHECK(parse("1280x720").error() == Error::Invalid);
+        CHECK(parse("1280x720@").error() == Error::Invalid);
+        CHECK(parse("x720@60").error() == Error::Invalid);
+        CHECK(parse("1280x720@60hz").error() == Error::Invalid);
+        CHECK(parse("1280x0@60").error() == Error::Invalid);
+        CHECK(parse("1280x720@300").error() == Error::Invalid);
+}
+
+TEST_CASE("VideoModes: fitting a mode to the clocks the PLLs make") {
+        using namespace bmds::VideoModes;
+        constexpr uint32_t Plls[] = {240'000, 160'000};
+        // CEA 720p60 (74.25 MHz) at 80 MHz: wider front porch, same lines, ~60 Hz.
+        const VideoTiming fit = fitToClock(parse("1280x720@60").value(), Plls, 2, 125'000).value();
+        CHECK(fit.pixelKhz == 80'000);
+        CHECK(fit.vTotal() == 750);
+        CHECK(fit.hTotal() == 1778);
+        CHECK(fit.hFront == 110 + 128);
+        CHECK(fit.refreshMilliHz() >= 59'990);
+        CHECK(fit.refreshMilliHz() <= 60'010);
+        // An exact clock stays as it is.
+        const VideoTiming esp = {80'000, 1280, 408, 32, 80, 720, 3, 5, 13, true, false, false};
+        CHECK(fitToClock(esp, Plls, 2, 125'000).value().hTotal() == esp.hTotal());
+        // 1080p50 (CVT-RB, 115 MHz) at 120 MHz.
+        const VideoTiming fhd = fitToClock(parse("1920x1080@50").value(), Plls, 2, 125'000).value();
+        CHECK(fhd.pixelKhz == 120'000);
+        CHECK(fhd.hTotal() <= 4095);
+        // Beyond the link: no clock.
+        CHECK(fitToClock(parse("1920x1080@60").value(), Plls, 2, 125'000).error() == Error::NotSupported);
 }

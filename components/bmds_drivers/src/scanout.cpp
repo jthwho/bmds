@@ -76,6 +76,9 @@ struct Scanout::Hardware {
                 intr_handle_t              bridgeIntr = nullptr;
                 bool                       busClock = false;
                 bool                       dpiClock = false;
+                bool                       apll = false; // the pixel clock from the APLL
+                uint32_t                   pixelHz = 0;  // the pixel clock as set
+                uint32_t                   laneMbps = 0;
 };
 
 // The interrupts: a buffer sent, the DMA at a buffer not handed back, the
@@ -235,6 +238,7 @@ Error Scanout::startLink() {
         mipi_dsi_hal_config_t hal = {};
         hal.bus_id = _bus;
         hal.lane_bit_rate_mbps = laneMbps;
+        hw.laneMbps = laneMbps;
         hal.num_data_lanes = _config.lanes;
         mipi_dsi_hal_init(&hw.hal, &hal);
         uint32_t refHz = 0;
@@ -280,14 +284,23 @@ Error Scanout::startDpi() {
         const lcd_color_format_t out = LCD_COLOR_FMT_RGB888;
 #endif
 
-        const mipi_dsi_dpi_clock_source_t dpiSource = MIPI_DSI_DPI_CLK_SRC_DEFAULT;
-        uint32_t                          sourceHz = 0;
-        Error err = espError(esp_clk_tree_src_get_freq_hz(static_cast<soc_module_clk_t>(dpiSource),
-                                                          ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED, &sourceHz));
-        if (err.isOk()) err = espError(esp_clk_tree_enable_src(static_cast<soc_module_clk_t>(dpiSource), true));
+        // The pixel clock: a fixed PLL divided (VideoModes::fitToClock picks a
+        // mode's clock among these). The APLL, which IDF lists as a DPI source,
+        // runs at the asked frequency but the bridge never takes pixels from it
+        // on chip revision 1.x (devplan/display.md).
+        mipi_dsi_dpi_clock_source_t dpiSource = MIPI_DSI_DPI_CLK_SRC_PLL_F240M;
+        uint32_t                    divider = 0;
+        if (240'000 % t.pixelKhz == 0) {
+                divider = 240'000 / t.pixelKhz;
+        } else if (160'000 % t.pixelKhz == 0) {
+                dpiSource = MIPI_DSI_DPI_CLK_SRC_PLL_F160M;
+                divider = 160'000 / t.pixelKhz;
+        } else {
+                return Error::NotSupported;
+        }
+        hw.pixelHz = t.pixelKhz * 1000;
+        Error err = espError(esp_clk_tree_enable_src(static_cast<soc_module_clk_t>(dpiSource), true));
         if (err.isError()) return err;
-        const uint32_t divider =
-                mipi_dsi_hal_host_dpi_calculate_divider(&hw.hal, sourceHz / 1000000, t.pixelKhz / 1000);
         PERIPH_RCC_ATOMIC() {
                 mipi_dsi_ll_set_dpi_clock_source(_bus, dpiSource);
                 mipi_dsi_ll_set_dpi_clock_div(_bus, divider);
@@ -357,21 +370,18 @@ Error Scanout::startDpi() {
         mipi_dsi_host_ll_dpi_set_video_packet_pixel_num(host, t.hActive);
         mipi_dsi_host_ll_dpi_set_trunks_num(host, 0);
         mipi_dsi_host_ll_dpi_set_null_packet_size(host, 0);
-        mipi_dsi_hal_host_dpi_set_horizontal_timing(&hw.hal, t.hSync, t.hBack, t.hActive, t.hFront);
-        mipi_dsi_hal_host_dpi_set_vertical_timing(&hw.hal, t.vSync, t.vBack, t.vActive, t.vFront);
+        // The host counts lane byte clocks, the bridge pixels: IDF's helper takes
+        // the pixel clock in whole MHz, so the ratio is worked out here exactly.
+        const double perPixel = double(hw.laneMbps) * 1e6 / (double(hw.pixelHz) * 8.0);
+        auto         bytes = [&](uint32_t pixels) {
+                return static_cast<uint32_t>(pixels * perPixel + 0.5);
+        };
+        mipi_dsi_host_ll_dpi_set_horizontal_timing(host, bytes(t.hSync), bytes(t.hBack), bytes(t.hActive),
+                                                   bytes(t.hFront));
+        mipi_dsi_host_ll_dpi_set_vertical_timing(host, t.vSync, t.vBack, t.vActive, t.vFront);
 
         dsi_brg_dev_t *bridge = hw.hal.bridge;
-        mipi_dsi_brg_ll_set_num_pixel_bits(bridge, uint32_t(t.hActive) * t.vActive * bytesPerPixel(_config.format) * 8);
-        mipi_dsi_brg_ll_set_underrun_discard_count(bridge, t.hActive);
-        mipi_dsi_brg_ll_set_input_color_format(bridge, in);
-        mipi_dsi_brg_ll_set_output_color_format(bridge, out, 0);
-        mipi_dsi_brg_ll_set_flow_controller(bridge, MIPI_DSI_LL_FLOW_CONTROLLER_DMA);
-        mipi_dsi_brg_ll_set_multi_block_number(bridge, 1);
-        mipi_dsi_brg_ll_set_burst_len(bridge, 256);
-        mipi_dsi_brg_ll_set_empty_threshold(bridge, 1024 - 256);
-        mipi_dsi_brg_ll_enable_interrupt(bridge, MIPI_DSI_BRG_LL_EVENT_UNDERRUN, true);
-        mipi_dsi_brg_ll_enable(bridge, true);
-        mipi_dsi_brg_ll_update_dpi_config(bridge);
+        configureBridge();
 
         // The DMA reads the ring ahead of everyone on the interconnect, or other
         // masters' PSRAM traffic (the caches) starves it and the bridge runs dry.
@@ -386,6 +396,33 @@ Error Scanout::startDpi() {
         mipi_dsi_brg_ll_enable_dpi_output(bridge, true);
         mipi_dsi_brg_ll_update_dpi_config(bridge);
         return Error::Ok;
+}
+
+// The DSI bridge's registers (after its reset too): the DPI timing it
+// generates, its formats, the DMA flow, the underrun interrupt; then on.
+void Scanout::configureBridge() {
+        const VideoTiming       &t = _config.timing;
+        dsi_brg_dev_t           *bridge = _hw->hal.bridge;
+        const lcd_color_format_t in = colorFormat(_config.format);
+#if HAL_CONFIG(CHIP_SUPPORT_MIN_REV) < 300
+        const lcd_color_format_t out = in;
+#else
+        const lcd_color_format_t out = LCD_COLOR_FMT_RGB888;
+#endif
+        mipi_dsi_brg_ll_set_horizontal_timing(bridge, t.hSync, t.hBack, t.hActive, t.hFront);
+        mipi_dsi_brg_ll_set_vertical_timing(bridge, t.vSync, t.vBack, t.vActive, t.vFront);
+        mipi_dsi_brg_ll_set_num_pixel_bits(bridge, uint32_t(t.hActive) * t.vActive * bytesPerPixel(_config.format) * 8);
+        mipi_dsi_brg_ll_set_underrun_discard_count(bridge, t.hActive);
+        mipi_dsi_brg_ll_set_input_color_format(bridge, in);
+        mipi_dsi_brg_ll_set_output_color_format(bridge, out, 0);
+        mipi_dsi_brg_ll_set_flow_controller(bridge, MIPI_DSI_LL_FLOW_CONTROLLER_DMA);
+        mipi_dsi_brg_ll_set_multi_block_number(bridge, 1);
+        mipi_dsi_brg_ll_set_burst_len(bridge, 256);
+        mipi_dsi_brg_ll_set_empty_threshold(bridge, 1024 - 256);
+        mipi_dsi_brg_ll_enable_interrupt(bridge, MIPI_DSI_BRG_LL_EVENT_UNDERRUN, true);
+        mipi_dsi_brg_ll_enable(bridge, true);
+        mipi_dsi_brg_ll_update_dpi_config(bridge);
+        return;
 }
 
 void Scanout::stop() {
@@ -468,6 +505,9 @@ Scanout::Stats Scanout::stats() const {
         s.resyncs = _resyncs;
         s.resyncFailures = _resyncFailures;
         s.rebuilds = _rebuilds;
+        if (_hw != nullptr) {
+                s.pixelHz = _hw->pixelHz;
+        }
         s.frames = _blocksPerFrame == 0 ? 0 : s.blocks / _blocksPerFrame;
         s.late = _late.load(std::memory_order_relaxed);
         s.stalls = _stalls.load(std::memory_order_relaxed);
@@ -558,6 +598,7 @@ void Scanout::resync() {
         dsi_brg_dev_t  *bridge = hw.hal.bridge;
         dsi_host_dev_t *host = hw.hal.host;
         const int       v = _resyncVariant;
+        _resyncVariant = 1; // a manual variant is for one resync
         mipi_dsi_brg_ll_enable_dpi_output(bridge, false);
         mipi_dsi_brg_ll_update_dpi_config(bridge);
         if (v >= 2) mipi_dsi_host_ll_enable_video_mode(host, false);

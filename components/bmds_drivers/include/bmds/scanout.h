@@ -94,6 +94,7 @@ class Scanout {
                                 uint32_t resyncs = 0;   ///< Restarts of the data path after an underrun or a stall.
                                 uint32_t resyncFailures = 0;  ///< Rebuilds that failed.
                                 uint32_t rebuilds = 0;        ///< Rebuilds of the whole DSI path (a stuck stream).
+                                uint32_t pixelHz = 0;         ///< The pixel clock as set.
                                 uint32_t renderCyclesMax = 0; ///< The slowest refill, CPU cycles.
                                 uint64_t renderCycles = 0;    ///< All refills, CPU cycles.
                                 uint64_t syncCycles = 0;      ///< Of which writing the buffers back from the cache.
@@ -159,6 +160,7 @@ class Scanout {
                 void        resync();
                 void        rebuild();
                 void        stopHardware();
+                void        configureBridge();
 
                 int                   _bus;
                 Config                _config;

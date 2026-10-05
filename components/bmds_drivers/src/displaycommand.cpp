@@ -27,6 +27,7 @@
 #include <bmds/shell.h>
 #include <bmds/staticobject.h>
 #include <bmds/system.h>
+#include <bmds/videomodes.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -249,11 +250,23 @@ namespace {
         }
 
         // Sets the bridge up and starts the test picture in @p mode.
-        Error startTest(Lt8912b &b, const TestMode &mode, Scanout::Format format, uint16_t lines, uint8_t blocks) {
+        // The mode running, for a rebuild's bridge set-up.
+        VideoTiming runningTiming;
+
+        // A rebuilt DSI link: the bridge set up again, as at the start (after a
+        // link drop its receiver alone doesn't always lock).
+        void onLinkRestart(void *arg) {
+                auto &b = *static_cast<Lt8912b *>(arg);
+                if (b.configure(runningTiming, board().display.dsiLanes, true).isOk()) (void)b.resetReceiver();
+                return;
+        }
+
+        Error startTest(Lt8912b &b, const VideoTiming &timing, Scanout::Format format, uint16_t lines, uint8_t blocks) {
                 scanout().stop();
                 const BoardDisplay &d = board().display;
                 Scanout::Config     c;
-                c.timing = mode.timing;
+                c.timing = timing;
+                runningTiming = timing;
                 c.format = format;
                 c.lanes = d.dsiLanes;
                 c.phyLdo = d.phyLdo;
@@ -267,10 +280,8 @@ namespace {
                 for (size_t i = 0; i < PaletteExpander::PaletteSize; ++i)
                         palette[i] = i < 8 ? Bars[i] : static_cast<uint32_t>((i - 8) * 255 / 247) * 0x010101u;
                 c.palette = palette;
-                // A rebuilt link: the bridge's receiver locks onto it again.
-                c.onRestart = [](void *arg) {
-                        (void)static_cast<Lt8912b *>(arg)->resetReceiver();
-                };
+                // A rebuilt link: the bridge chip set up again.
+                c.onRestart = onLinkRestart;
                 c.onRestartArg = &b;
                 Error err = b.configure(c.timing, c.lanes, true);
                 if (err.isOk()) err = testPattern.setUp(c.format, c.timing.hActive, c.timing.vActive);
@@ -280,7 +291,7 @@ namespace {
                 return b.resetReceiver();
         }
 
-        // display test 720|1080 [565|888|pal] [lines per block] [blocks] | off
+        // display test 720|1080|WxH@Hz [cpu|pal|565] [lines per block] [blocks] | off
         int runTest(CommandContext &ctx, Args args) {
                 Lt8912b *b = bridge(ctx);
                 if (b == nullptr) return Shell::ExitFailure;
@@ -289,36 +300,71 @@ namespace {
                         (void)b->setOutput(false);
                         return Shell::ExitSuccess;
                 }
-                const TestMode *mode = nullptr;
+                if (args.size() > 6) return ctx.usage();
+                VideoTiming timing;
+                bool        found = false;
                 for (const TestMode &m : TestModes) {
-                        if (std::strcmp(m.name, args[2]) == 0) mode = &m;
+                        if (std::strcmp(m.name, args[2]) == 0) {
+                                timing = m.timing;
+                                found = true;
+                        }
                 }
-                if (mode == nullptr || args.size() > 6) return ctx.usage();
+                if (!found) {
+                        auto [t, perr] = VideoModes::parse(args[2]);
+                        if (perr.isError()) {
+                                ctx.eprintf("display: %s: not a mode (720, 1080, or WIDTHxHEIGHT@HZ)\n", args[2]);
+                                return Shell::ExitUsage;
+                        }
+                        timing = t;
+                }
+                // The DSI link carries 24 bits a pixel on its lanes, 1.5 Gbps each at
+                // most; the pixel clock is a fixed PLL divided, so the mode is fitted
+                // to one (its front porch takes up the difference).
+                const BoardDisplay       &d = board().display;
+                const uint32_t            maxKhz = d.dsiLanes * 1'500'000u / 24u;
+                static constexpr uint32_t Plls[] = {240'000, 160'000};
+                auto [fitted, ferr] = VideoModes::fitToClock(timing, Plls, 2, maxKhz);
+                if (ferr.isError()) {
+                        ctx.eprintf(
+                                "display: %s needs a %u.%03u MHz pixel clock; the DSI link carries %u MHz at most\n",
+                                args[2], static_cast<unsigned>(timing.pixelKhz / 1000),
+                                static_cast<unsigned>(timing.pixelKhz % 1000), static_cast<unsigned>(maxKhz / 1000));
+                        return Shell::ExitFailure;
+                }
+                timing = fitted;
                 Scanout::Format format = Scanout::Format::Rgb888;
                 if (args.size() > 3) {
                         if (std::strcmp(args[3], "565") == 0) {
                                 format = Scanout::Format::Rgb565;
-                        } else if (std::strcmp(args[3], "pal") == 0) {
+                        } else if (std::strcmp(args[3], "pal") == 0 || std::strcmp(args[3], "ppa") == 0) {
                                 format = Scanout::Format::Indexed8;
-                        } else if (std::strcmp(args[3], "888") != 0) {
+                        } else if (std::strcmp(args[3], "888") != 0 && std::strcmp(args[3], "cpu") != 0) {
                                 return ctx.usage();
                         }
                 }
                 const uint16_t lines = args.size() > 4 ? static_cast<uint16_t>(std::atoi(args[4])) : 8;
                 const uint8_t  blocks = args.size() > 5 ? static_cast<uint8_t>(std::atoi(args[5])) : 3;
-                const Error    err = startTest(*b, *mode, format, lines, blocks);
+                if (lines == 0 || timing.vActive % lines != 0) {
+                        ctx.eprintf("display: %u lines a block doesn't divide %u lines\n", lines, timing.vActive);
+                        return Shell::ExitFailure;
+                }
+                const Error err = startTest(*b, timing, format, lines, blocks);
                 if (err.isError()) {
                         ctx.eprintf("display: test: %s\n", err.desc());
                         return Shell::ExitFailure;
                 }
-                const VideoTiming &t = mode->timing;
-                ctx.printf("Test:     %ux%u %s, %u.%03u MHz, %u blocks of %u lines (%u bytes of internal RAM)\n",
-                           t.hActive, t.vActive,
-                           format == Scanout::Format::Rgb565   ? "RGB565"
-                           : format == Scanout::Format::Rgb888 ? "RGB888"
-                                                               : "8-bit palette",
-                           static_cast<unsigned>(t.pixelKhz / 1000), static_cast<unsigned>(t.pixelKhz % 1000), blocks,
-                           lines, static_cast<unsigned>(scanout().ringBytes()));
+                const VideoTiming &t = timing;
+                const uint32_t     mhz = t.refreshMilliHz();
+                ctx.printf("Test:     %ux%u at %u.%03u Hz, %u.%03u MHz, %s path, %u blocks of %u lines (%u bytes of "
+                           "internal RAM)\n",
+                           t.hActive, t.vActive, static_cast<unsigned>(mhz / 1000), static_cast<unsigned>(mhz % 1000),
+                           static_cast<unsigned>(t.pixelKhz / 1000), static_cast<unsigned>(t.pixelKhz % 1000),
+                           format == Scanout::Format::Rgb565   ? "CPU (RGB565)"
+                           : format == Scanout::Format::Rgb888 ? "CPU"
+                                                               : "PPA (8-bit palette)",
+                           blocks, lines, static_cast<unsigned>(scanout().ringBytes()));
+                ctx.printf("Timing:   h %u %u %u %u %c, v %u %u %u %u %c\n", t.hActive, t.hFront, t.hSync, t.hBack,
+                           t.hSyncHigh ? '+' : '-', t.vActive, t.vFront, t.vSync, t.vBack, t.vSyncHigh ? '+' : '-');
                 return Shell::ExitSuccess;
         }
 
@@ -453,7 +499,7 @@ Error DisplayTest::init() {
         auto [b, err] = attachBridge();
         if (err == Error::NotSupported) return Error::Ok; // no display on this board
         if (err.isError()) return err;
-        err = startTest(*b, TestModes[0], Scanout::Format::Rgb888, 8, 3);
+        err = startTest(*b, TestModes[0].timing, Scanout::Format::Rgb888, 8, 3);
         if (err.isOk()) bmdsInfo("Display: 720p60 test picture on HDMI ('display test off' stops it)");
         return err;
 #else
@@ -461,7 +507,8 @@ Error DisplayTest::init() {
 #endif
 }
 
-BMDS_SHELL_COMMAND(display, runDisplay, "[edid|scan|check|stats|test 720|1080 [565|888|pal] [lines] [blocks]|test off]",
+BMDS_SHELL_COMMAND(display, runDisplay,
+                   "[edid|scan|check|stats|test 720|1080|WxH@HZ [cpu|pal] [lines] [blocks]|test off]",
                    "Show the HDMI bridge and the monitor; 'edid' dumps the monitor's EDID, 'scan' lists the bus, "
                    "'test' starts the test picture (bring-up), 'stats' shows the scanout's counters")
 
