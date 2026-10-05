@@ -1,7 +1,0 @@
-# The chained 2D-DMA copies run per block of the scan (devplan/windows.md
-# §4b): in internal RAM, out of the way of the L2 cache's misses.
-
-[mapping:bmds_drivers_hot]
-archive: libbmds_drivers.a
-entries:
-    blitchain (noflash)

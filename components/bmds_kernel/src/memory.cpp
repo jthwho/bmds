@@ -18,14 +18,28 @@ namespace {
                 return board().memSpace(space).heapCaps;
         }
 
+        // The largest cache line (L2, in front of the PSRAM).
+        constexpr size_t CacheLine = 128;
+
+        // A DMA buffer's size: whole cache lines, and one more. The heap keeps
+        // the next block's link in the last word of a block (TLSF's
+        // prev_phys_block) and writes it through the cache now and then: in a
+        // buffer the DMA writes, that clobbered its last bytes and wrote stale
+        // copies of its last line back (devplan/display.md §5c). With a line of
+        // its own after the buffer, no heap write shares a line with it.
+        size_t dmaSize(MemSpace space, size_t sizeBytes) {
+                if (space != MemSpace::InternalDma && space != MemSpace::PsramDma) return sizeBytes;
+                return (sizeBytes + CacheLine - 1) / CacheLine * CacheLine + CacheLine;
+        }
+
 } // namespace
 
 void *Memory::alloc(MemSpace space, size_t sizeBytes) {
-        return heap_caps_malloc(sizeBytes, capsFor(space));
+        return heap_caps_malloc(dmaSize(space, sizeBytes), capsFor(space));
 }
 
 void *Memory::allocAligned(MemSpace space, size_t sizeBytes, size_t alignBytes) {
-        return heap_caps_aligned_alloc(alignBytes, sizeBytes, capsFor(space));
+        return heap_caps_aligned_alloc(alignBytes, dmaSize(space, sizeBytes), capsFor(space));
 }
 
 void Memory::free(void *ptr) {

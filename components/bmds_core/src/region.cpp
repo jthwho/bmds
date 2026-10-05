@@ -19,9 +19,6 @@ namespace {
                 return false;
         }
 
-        // The plan's working space: rectangles still to be covered by lower layers.
-        constexpr size_t PlanWork = 128;
-
 } // namespace
 
 size_t subtract(const Rect &a, const Rect &b, Rect (&out)[4]) {
@@ -53,7 +50,16 @@ uint32_t Region::area() const {
 }
 
 void Region::add(const Rect &rect) {
-        if (rect.isEmpty()) return;
+        if (rect.isEmpty() || tryAdd(rect)) return;
+        // Too many rectangles: the cheapest neighbours merged, then once more.
+        squeeze();
+        if (!tryAdd(rect)) collapse(rect);
+        return;
+}
+
+// Adds @p rect if its pieces fit. Rectangles it holds go either way (the
+// caller covers it after a failure).
+bool Region::tryAdd(const Rect &rect) {
         // Rectangles the new one holds go; the rest of it is cut around the others.
         size_t kept = 0;
         for (size_t i = 0; i < _count; ++i) {
@@ -70,20 +76,52 @@ void Region::add(const Rect &rect) {
                 for (size_t p = 0; p < count; ++p) {
                         Rect         cut[4];
                         const size_t n = subtract(pieces[p], _rects[i], cut);
-                        if (nextCount + n > MaxRects) {
-                                collapse(rect);
-                                return;
-                        }
+                        if (nextCount + n > MaxRects) return false;
                         for (size_t k = 0; k < n; ++k) next[nextCount++] = cut[k];
                 }
                 for (size_t p = 0; p < nextCount; ++p) pieces[p] = next[p];
                 count = nextCount;
         }
-        if (_count + count > MaxRects) {
-                collapse(rect);
-                return;
-        }
+        if (_count + count > MaxRects) return false;
         for (size_t p = 0; p < count; ++p) _rects[_count++] = pieces[p];
+        merge();
+        return true;
+}
+
+// Down to half the rectangles: each time the two whose bounding box wastes
+// the least area become that box (others it overlaps cut around it), so the
+// region stays close to what was added.
+void Region::squeeze() {
+        for (size_t guard = 0; guard < 2 * MaxRects && _count > MaxRects / 2; ++guard) {
+                size_t   bi = 0, bj = 1;
+                uint32_t best = UINT32_MAX;
+                for (size_t i = 0; i < _count; ++i) {
+                        for (size_t j = i + 1; j < _count; ++j) {
+                                const uint32_t waste =
+                                        _rects[i].united(_rects[j]).area() - _rects[i].area() - _rects[j].area();
+                                if (waste >= best) continue;
+                                best = waste;
+                                bi = i;
+                                bj = j;
+                        }
+                }
+                const Rect u = _rects[bi].united(_rects[bj]);
+                Rect       kept[MaxRects];
+                size_t     n = 0;
+                for (size_t i = 0; i < _count; ++i) {
+                        if (i == bi || i == bj || u.contains(_rects[i])) continue;
+                        Rect         cut[4];
+                        const size_t pieces = subtract(_rects[i], u, cut);
+                        if (n + pieces + 1 > MaxRects) {
+                                collapse(u);
+                                return;
+                        }
+                        for (size_t k = 0; k < pieces; ++k) kept[n++] = cut[k];
+                }
+                kept[n++] = u;
+                for (size_t i = 0; i < n; ++i) _rects[i] = kept[i];
+                _count = static_cast<uint8_t>(n);
+        }
         merge();
         return;
 }
@@ -114,38 +152,6 @@ void Region::merge() {
                 }
         }
         return;
-}
-
-Result<size_t> planCompose(Span<const Rect> layers, const Region &damage, Span<ComposePiece> out) {
-        Rect   work[2][PlanWork];
-        Rect  *open = work[0];
-        Rect  *next = work[1];
-        size_t openCount = 0;
-        for (const Rect &r : damage.rects()) open[openCount++] = r;
-
-        size_t pieces = 0;
-        for (size_t layer = 0; layer < layers.size() && openCount > 0; ++layer) {
-                const Rect &l = layers[layer];
-                size_t      nextCount = 0;
-                for (size_t i = 0; i < openCount; ++i) {
-                        const Rect piece = open[i].intersected(l);
-                        if (piece.isEmpty()) {
-                                next[nextCount++] = open[i];
-                                continue;
-                        }
-                        if (pieces == out.size()) return makeError<size_t>(Error::Full);
-                        out[pieces++] = ComposePiece{static_cast<uint16_t>(layer), piece};
-                        Rect         rest[4];
-                        const size_t n = subtract(open[i], l, rest);
-                        if (nextCount + n > PlanWork) return makeError<size_t>(Error::Full);
-                        for (size_t k = 0; k < n; ++k) next[nextCount++] = rest[k];
-                }
-                Rect *t = open;
-                open = next;
-                next = t;
-                openCount = nextCount;
-        }
-        return makeResult(pieces);
 }
 
 BMDS_NAMESPACE_END

@@ -1,6 +1,6 @@
 # Display: HDMI through the LT8912B, a PSRAM Framebuffer, Text Console
 
-Status: **step 1 done, step 2 done as a line-rendered scanout, step 2b designed** (Phase 4). The first plan (2026-10-04) had no framebuffer: lines rendered into internal RAM as they were scanned out. Measurement changed it (2026-10-05, with the user, §8): the scanout became free-running, and the picture now comes from an **RGB565 double buffer in PSRAM**, widened to RGB888 by the 2D-DMA into the free-running ring of internal line buffers (§5b). It needs the PSRAM at 200 MHz (`psram.md`).
+Status: **step 1 done; the picture is surface 0, an RGB888 surface in PSRAM the DW-GDMA scans directly (§5c, done)** (Phase 4). The first plan (2026-10-04) had no framebuffer: lines rendered into internal RAM as they were scanned out. Measurement changed it twice (2026-10-05, with the user, §8): first an RGB565 double buffer widened by the 2D-DMA into a free-running ring of internal line buffers (§5b), then, with the PSRAM at 200 MHz, no ring at all: the DMA reads an RGB888 surface where it is (§5c, `windows.md` §0). It needs the PSRAM at 200 MHz (`psram.md`).
 
 ## 1. Goal
 
@@ -68,6 +68,61 @@ Status: **step 1 done, step 2 done as a line-rendered scanout, step 2b designed*
 - **Budgets (720p60):** PSRAM 3.7 MB for the two buffers; reads 110 MB/s for the scan plus the copies. Internal RAM 276 KB for the ring (494 KB was free with the 92 KB 3×8 ring, so about 310 KB remains), 4 KB of descriptors, plus the drawing strips (a 16-line text row is 40 KB). At 1080p30: 4.15 MB a buffer, 124 MB/s, and 5.76 KB a ring line (3×16 lines: 276 KB).
 - **When it falls behind:** a skipped block goes out with the lines of three blocks earlier (72 rows up) for one frame, and is counted; the link never loses sync. Measured with the prototype (3×24, 200 MHz): none idle, 3.7% of blocks while the CPU writes PSRAM flat out, about 0.1% under `memtest`.
 - **Steps:** (1) `Framebuffer` with the swap in the scanout, the test pattern drawn once; (2) `blit` and `copyFromFront`, a moving test drawn the V9 way, measured idle and under the stresses (the skips, the copy rates, the 2D-DMA priorities); (3) the default, together with 200 MHz PSRAM once `psram.md`'s checks pass; the line-rendered paths and bring-up commands removed.
+
+## 5c. Step 3: surface 0 (decided 2026-10-05; `windows.md` §0)
+
+- **The scan:** the DW-GDMA reads the shown buffer of surface 0 (RGB888 in PSRAM) straight into the
+  DSI bridge: a circular list of one descriptor a block, the frame in up to 16 blocks (the most up to
+  16 that divide the height: 45 lines at 720p), each block's interrupt making the finished
+  descriptors valid again (the DMA's write-back clears them). No ring, no refill: 276 KB of internal
+  RAM back. 166 MB/s of PSRAM reads at 720p60. Soaked 35 minutes under load: 0 underruns
+  (`windows.md` §4b).
+- **Swaps at the vertical** (a double-buffered surface): when a swap is asked for and the DMA is on
+  the frame's last block, the interrupt points the other descriptors at the new buffer; at the next
+  frame's start (the DMA on the first block) the last one too, and the swap is done. The new picture
+  starts at a frame's first line; a late interrupt only delays it a frame.
+- **`Surface`** (`bmds_drivers`): RGB888, single (the default) or double buffered. Drawing is the
+  same either way and goes to the right buffer: with two, the one not shown, waiting while a swap is
+  pending (for now; a mailbox later). `present()` asks for the swap without waiting and returns its
+  number; `waitShown(number, timeoutMs)` waits for it; `frames()` counts frames. After a swap, the
+  changes drawn since the last present are copied into the other buffer (2D-DMA) before the next
+  drawing. Without a scan, a present swaps at once.
+- **Drawing with the 2D-DMA** (`BlitChain`): copies from internal RAM (written back first, in 64 KB
+  pieces), between buffers, and fills: one line of the color in internal RAM, sent again for every
+  row by the transmit chain into one block, so a fill needs no cache work. RGB888 rows into PSRAM
+  start and end on 4 bytes: x and width in multiples of 4 pixels.
+- **Removed:** the ring and its paths (CPU lines, the PPA palette, the RGB565 framebuffer widened by
+  the 2D-DMA, the scan-time compositor), `Framebuffer`, `RectCopier`, `ColorExpander`,
+  `PaletteExpander`, and the bring-up commands (`display test` modes, `verify`, `qos`, `check`,
+  `resync`, `win proto`). `display` keeps status, `edid`, `scan`, `stats` and `stress`, and gains
+  `start`/`off` and a test picture and animation on surface 0.
+
+**As built** (2026-10-05, the 200 MHz image):
+
+- `Surface` (single or double), `Scanout` on it (16 blocks of 45 lines at 720p, a block interrupt
+  of 658 cycles at most, 2,244 with a swap's re-pointing), `Display` owning surface 0, `BlitChain`
+  with fills (one line, a transmit descriptor a row); the `DisplayBoot` stage
+  (`CONFIG_BMDS_DISPLAY_AT_BOOT`, on by default with the 200 MHz PSRAM): 720p and the test picture
+  137 ms into the boot. Internal RAM free after boot: 559 KB (482 KB with the ring). The image 34 KB
+  smaller.
+- **Drawing:** a 64×64 fill about 115 µs (mostly the 2D-DMA job's fixed cost), the test picture
+  66 ms (blits of 16-line strips). A full-screen fill wrote PSRAM at about 470 MB/s and **underran the
+  scan** once each time, with the 2D-DMA below the scan on the interconnect (QoS 4 against 15): its
+  writes are now regulated (the interconnect's token bucket, a burst per 2^6 cycles: about
+  340 MB/s, a full fill 8.1 ms), 0 underruns since. Copies (PSRAM to PSRAM) run at about 113 MB/s
+  each way and never underran it.
+- **Double buffering:** presents are frame-locked (`display present 30`: 17.4 ms each); the changes
+  are kept as a bitmap of 32×16 tiles and copied forward as rectangles (a `Region` of exact
+  rectangles cost about 280 µs of CPU a fill with many small changes: 41 fps for 16 moving
+  squares, against 60 with the tiles). 16 and 32 squares moving: 59.7 and 59.3 fps, every pixel
+  right (`display anim stop` checks the whole picture). Under CPU PSRAM stress and `memtest`: 0
+  underruns, the animation at 42-44 fps.
+- **A heap bug hit the DMA buffers:** the heap (TLSF) writes the next block's link into the last
+  word of an allocation, through the cache: the surface's last pixels showed a pointer to its own
+  heap block (found by `check` under CPU stress). `Memory` now gives every DMA allocation whole
+  cache lines plus one, so no heap write shares a line with a DMA buffer.
+- **Modes:** 1920×1080 at 30.7 Hz and 960×540 at 60 Hz (double-buffered, 32 squares at 59.3 fps)
+  run too, 0 underruns.
 
 ## 6. Later steps (outline)
 

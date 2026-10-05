@@ -1,6 +1,6 @@
 # Windows: a Desktop, a Window Manager, the Terminal as the First Program
 
-Status: **step 1 done; the display path decided** (Phase 4, 2026-10-05). After measuring three ways
+Status: **steps 1 and 2 done** (surface 0 runs; `display.md` §5c) (Phase 4, 2026-10-05). After measuring three ways
 to put windows on the screen (§4b, §4c, below), the user chose the simple one: **surface 0**,
 a double-buffered RGB888 framebuffer in PSRAM that the DW-GDMA scans directly (no ring), windows
 moved as an outline until placed. The PSRAM bandwidth is constant (166 MB/s of scan at 720p60) and
@@ -295,9 +295,9 @@ ones once it exists.
 1. **Pure foundations** (host-tested; done): rectangle regions and the compose plan; the font
    converter (a host tool over unscii's `.hex`, vendored in `thirdparty/unscii` with its notice) and
    the glyph lookup.
-2. **Surface 0** (`display.md`): RGB888 in PSRAM scanned directly by the DW-GDMA, single or
-   double buffered (`present()` at a frame's start), the default display path; the ring paths and
-   their bring-up commands removed.
+2. **Surface 0** (`display.md` §5c; done): RGB888 in PSRAM scanned directly by the DW-GDMA,
+   single or double buffered (`present()` at a frame's start), the default display path; the ring
+   paths and their bring-up commands removed.
 3. **The window manager on surface 0:** windows, the stack, visible regions, damage and redraw
    requests, the desktop color, frames with titles, outline moves; test windows that redraw a
    pattern; `win list/new/move/raise/close/desktop`.

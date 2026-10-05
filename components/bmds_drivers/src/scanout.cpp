@@ -5,15 +5,14 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * The line-rendered scanout (devplan/display.md §5). The link and DPI set-up
- * follows the register sequence of IDF's DSI bus and DPI panel
- * (esp_lcd/dsi), on the HAL; the DMA streams a circular list of line
- * buffers instead of one framebuffer.
+ * A surface on the DSI output (devplan/display.md §5c). The link and DPI
+ * set-up follows the register sequence of IDF's DSI bus and DPI panel
+ * (esp_lcd/dsi), on the HAL; the DMA streams the surface's shown buffer
+ * from PSRAM as a circular list of blocks, re-pointed at a swap.
  */
 
 #include <cstring>
 #include <new>
-#include <esp_cache.h>
 #include <esp_clk_tree.h>
 #include <esp_cpu.h>
 #include <esp_intr_alloc.h>
@@ -30,7 +29,6 @@
 #include <hal/mipi_dsi_ll.h>
 #include <hal/mipi_dsi_periph.h>
 #include <soc/reg_base.h>
-#include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/placement.h>
 #include <bmds/scanout.h>
@@ -41,45 +39,16 @@ namespace {
 
         constexpr uint32_t     TimeoutClockMhz = 10; // IDF's: the host's timeout clock
         constexpr uint32_t     EscapeClockMhz = 18;  // TX escape clock, 2-20 MHz
-        constexpr size_t       BufferAlign = 64;     // cache line, and the DMA's 64-bit words
-        constexpr unsigned int StallCheckMs = 100;
-        // A resync at most this often: one may underrun as it starts, and a
-        // monitor sees each as a glitch.
-        constexpr int64_t ResyncGapUs = 50'000;
-        // No block sent for this long while running is a failure too: a stuck
-        // stream raises no further underrun or stall to act on.
+        constexpr unsigned int CheckMs = 100;        // the supervisor's look at the stream
+        // No block sent for this long while running: a stuck stream raises no
+        // further interrupt to act on.
         constexpr int64_t StuckUs = 50'000;
+        // The 2D-DMA's write regulator (devplan/display.md §5c, measured).
+        constexpr uint32_t Dma2dWriteLevel = 5;
 
         Error espError(esp_err_t err) {
                 return err == ESP_OK ? Error(Error::Ok) : Error::fromEspErr(err);
         }
-
-        // The ring's bytes per pixel: Indexed8 and Rgb565Expanded are expanded
-        // to RGB888 into it.
-        size_t bytesPerPixel(Scanout::Format f) {
-                return f == Scanout::Format::Rgb565 ? 2 : 3;
-        }
-
-        lcd_color_format_t colorFormat(Scanout::Format f) {
-                return f == Scanout::Format::Rgb565 ? LCD_COLOR_FMT_RGB565 : LCD_COLOR_FMT_RGB888;
-        }
-
-        // The bytes per pixel the source draws.
-        size_t drawnBytesPerPixel(Scanout::Format f) {
-                return f == Scanout::Format::Indexed8 ? 1 : f == Scanout::Format::Rgb888 ? 3 : 2;
-        }
-
-        bool isExpanded(Scanout::Format f) {
-                return f == Scanout::Format::Indexed8 || f == Scanout::Format::Rgb565Expanded;
-        }
-
-        constexpr unsigned int ExpandTimeoutMs = 20;
-
-        // Free-running: the DMA's list goes round the ring's buffers several
-        // times, so a block interrupt that re-validates a descriptor can be
-        // that many blocks late (63 at 8 lines a block: 11 ms at 720p60)
-        // before the DMA meets an invalid one.
-        constexpr uint32_t MaxItems = 64;
 
         // An idle DW-GDMA channel held for good, so IDF's DW-GDMA group (and
         // its bus clock) outlives the scanout's own channel. IDF's
@@ -112,61 +81,80 @@ struct Scanout::Hardware {
                 esp_ldo_channel_handle_t   ldo = nullptr;
                 dw_gdma_channel_handle_t   dma = nullptr;
                 dw_gdma_link_list_handle_t list = nullptr;
-                dw_gdma_link_list_item_t  *items[MaxItems] = {}; // the list's descriptors (uncached addresses)
+                dw_gdma_link_list_item_t  *items[Scanout::MaxBlocks] = {}; // the descriptors (uncached addresses)
                 intr_handle_t              bridgeIntr = nullptr;
                 bool                       busClock = false;
                 bool                       dpiClock = false;
-                bool                       apll = false; // the pixel clock from the APLL
-                uint32_t                   pixelHz = 0;  // the pixel clock as set
+                uint32_t                   pixelHz = 0; // the pixel clock as set
                 uint32_t                   laneMbps = 0;
                 uint8_t                    channel = 0;    // the DMA channel's number
                 uint32_t                   itemBase = 0;   // the first descriptor's address, as the DMA sees it
                 uint32_t                   itemStride = 0; // bytes from one descriptor to the next
 };
 
-// The interrupts: a buffer sent, the DMA at a buffer not handed back, the
-// DSI bridge running dry.
+// The interrupts: a block sent, the DMA at an invalid descriptor, the DSI
+// bridge running dry.
 struct ScanoutIsr {
+                // Descriptors [from, to) read @p buffer's blocks.
+                BMDS_ISR_ATTR static void pointAt(Scanout &s, const uint8_t *buffer, uint32_t from, uint32_t to) {
+                        for (uint32_t k = from; k < to; ++k)
+                                dw_gdma_ll_lli_set_src_addr(s._hw->items[k],
+                                                            reinterpret_cast<uint32_t>(buffer + k * s._blockBytes));
+                        return;
+                }
+
                 BMDS_ISR_ATTR static bool blockSent(dw_gdma_channel_handle_t, const dw_gdma_trans_done_event_data_t *,
                                                     void *arg) {
-                        auto *s = static_cast<Scanout *>(arg);
-                        if (!s->_config.freeRunning) {
-                                s->_sent.fetch_add(1, std::memory_order_relaxed);
-                                s->_wake.releaseFromIsr();
-                                return false;
-                        }
-                        // Free-running. A late interrupt can stand for several blocks (IDF's
-                        // handler reads the status once), so the count comes from where the
-                        // DMA is: the blocks since the last interrupt, from its descriptor.
-                        Scanout::Hardware &hw = *s->_hw;
+                        const uint32_t     started = esp_cpu_get_cycle_count();
+                        auto              &s = *static_cast<Scanout *>(arg);
+                        Scanout::Hardware &hw = *s._hw;
+                        // Where the DMA is: a late interrupt can stand for several blocks
+                        // (IDF's handler reads the status once).
                         const uint32_t at = ((static_cast<uint32_t>(dw_gdma_ll_channel_get_current_link_list_item_addr(
                                                       &DW_GDMA, hw.channel)) &
                                               0x0fffffffu) -
                                              hw.itemBase) /
                                             hw.itemStride;
-                        const uint32_t done = s->_sent.load(std::memory_order_relaxed);
-                        uint32_t       now = done + 1;
-                        if (s->_primed) now = done + (at + s->_items - s->_lastItem) % s->_items;
-                        s->_primed = true;
-                        s->_lastItem = at;
-                        // Every descriptor finished since, valid again (and the one before the
-                        // last: the DMA's write-back of a finished one, its valid bit cleared,
-                        // can land after the interrupt under memory load).
-                        for (uint32_t k = done == 0 ? 0 : done - 1; k < now; ++k)
-                                dw_gdma_ll_lli_set_block_markers(hw.items[k % s->_items], true, false, true);
-                        s->_sent.store(now, std::memory_order_relaxed);
-                        s->_wake.releaseFromIsr();
-                        return false; // releaseFromIsr() yields at the interrupt's exit
+                        const uint32_t blocks = s._blocks;
+                        if (at >= blocks) return false;
+                        const bool wrapped = s._primed && at < s._lastItem;
+                        s._sent.fetch_add(s._primed ? (at + blocks - s._lastItem) % blocks : at,
+                                          std::memory_order_relaxed);
+                        // Every descriptor but the one under way valid again (a finished
+                        // one's write-back, clearing it, can land after its interrupt:
+                        // the next interrupt mends it, a frame before it is needed).
+                        for (uint32_t k = 0; k < blocks; ++k)
+                                if (k != at) dw_gdma_ll_lli_set_block_markers(hw.items[k], true, false, true);
+                        Surface &surface = *s._surface;
+                        if (s._swapPhase == 1 && at != blocks - 1) {
+                                // The new frame has begun from the new buffer: its last block too.
+                                pointAt(s, surface.askedFromIsr(), blocks - 1, blocks);
+                                s._swapPhase = 0;
+                                surface.swappedFromIsr();
+                                s._swaps.fetch_add(1, std::memory_order_relaxed);
+                        }
+                        if (s._swapPhase == 0 && at == blocks - 1 && surface.isSwapPending()) {
+                                // The frame's last block under way: the next frame from the new buffer.
+                                pointAt(s, surface.askedFromIsr(), 0, blocks - 1);
+                                s._swapPhase = 1;
+                        }
+                        if (wrapped) {
+                                s._frames.fetch_add(1, std::memory_order_relaxed);
+                                surface.frameFromIsr();
+                        }
+                        s._lastItem = at;
+                        s._primed = true;
+                        const uint32_t cycles = esp_cpu_get_cycle_count() - started;
+                        if (cycles > s._isrCyclesMax) s._isrCyclesMax = cycles;
+                        return false;
                 }
 
                 BMDS_ISR_ATTR static bool invalidBlock(dw_gdma_channel_handle_t, const dw_gdma_break_event_data_t *,
                                                        void *arg) {
-                        auto          *s = static_cast<Scanout *>(arg);
-                        const uint32_t n = s->_stalls.fetch_add(1, std::memory_order_relaxed);
-                        s->_stallAt[n % 8] = s->_sent.load(std::memory_order_relaxed);
-                        s->_resyncWanted.store(true, std::memory_order_release);
-                        s->_stalled.store(true, std::memory_order_release);
-                        s->_wake.releaseFromIsr();
+                        auto &s = *static_cast<Scanout *>(arg);
+                        s._stalls.fetch_add(1, std::memory_order_relaxed);
+                        s._stalled.store(true, std::memory_order_release);
+                        s._wake.releaseFromIsr();
                         return false;
                 }
 
@@ -181,144 +169,68 @@ struct ScanoutIsr {
                 }
 };
 
-Error Scanout::start(const Config &config, LineSource &source) {
+Error Scanout::start(const Config &config, Surface &surface) {
         if (_running) return Error::InvalidState;
-        _source = &source;
-        _frames = nullptr;
-        _blocks = nullptr;
-        return begin(config);
-}
-
-Error Scanout::start(const Config &config, BlockSource &blocks) {
-        if (_running) return Error::InvalidState;
-        if (config.format != Format::Rgb888 || config.framebuffer) return Error::Invalid;
-        _source = nullptr;
-        _frames = nullptr;
-        _blocks = &blocks;
-        return begin(config);
-}
-
-Error Scanout::start(const Config &config, Framebuffer &frames) {
-        if (_running) return Error::InvalidState;
-        if (!frames.isStarted() || frames.width() != config.timing.hActive || frames.height() != config.timing.vActive)
-                return Error::Invalid;
-        _source = nullptr;
-        _blocks = nullptr;
-        _frames = &frames;
-        return begin(config);
-}
-
-Error Scanout::begin(const Config &config) {
         const VideoTiming &t = config.timing;
-        if (config.blocks < 2 || config.blocks > 16 || config.linesPerBlock == 0 ||
-            t.vActive % config.linesPerBlock != 0 || config.lanes < 1 || config.lanes > MIPI_DSI_LL_MAX_DATA_LANES ||
-            t.pixelKhz < 1000)
+        if (!surface.isStarted() || surface.width() != t.hActive || surface.height() != t.vActive || config.lanes < 1 ||
+            config.lanes > MIPI_DSI_LL_MAX_DATA_LANES || t.pixelKhz < 1000)
                 return Error::Invalid;
-        if (_frames != nullptr && (config.format != Format::Rgb565Expanded || config.framebuffer))
-                return Error::Invalid;
-        if (config.framebuffer &&
-            (config.format != Format::Rgb888 || uint32_t(config.blocks) * config.linesPerBlock != t.vActive))
-                return Error::Invalid;
+        // The frame in as many blocks (up to MaxBlocks) as divide its lines.
+        uint32_t blocks = MaxBlocks;
+        while (t.vActive % blocks != 0) --blocks;
+        if (blocks < 2) return Error::Invalid;
+        _blockBytes = surface.stride() * (t.vActive / blocks);
+        if (_blockBytes % 8 != 0) return Error::Invalid; // the DMA moves 64-bit words
+        _blocks = blocks;
         _config = config;
-        _stride = t.hActive * bytesPerPixel(config.format);
-        if (_stride % 8 != 0) return Error::Invalid; // the DMA moves 64-bit words
-        _blockBytes = _stride * config.linesPerBlock;
-        _blocksPerFrame = t.vActive / config.linesPerBlock;
+        _surface = &surface;
         _sent.store(0);
-        _primed = false;
-        _frameData = nullptr;
-        _frameBegun = false;
-        _refilled = 0;
-        _late.store(0);
-        _skipped = 0;
+        _frames.store(1); // the first begins as the DMA starts
+        _swaps.store(0);
         _stalls.store(0);
         _underruns.store(0);
         _stalled.store(false);
-        _resyncWanted.store(false);
-        _resyncs = 0;
-        _resyncFailures = 0;
-        _rebuilds = 0;
-        _blocksBefore = 0;
-        _resyncUs = 0;
         _stopping.store(false);
-        _renderCyclesMax = 0;
-        _renderCycles = 0;
-        _syncCycles = 0;
-        _syncCyclesMax = 0;
-
+        _primed = false;
+        _swapPhase = 0;
+        _isrCyclesMax = 0;
+        _resyncs = 0;
+        _rebuilds = 0;
+        _failures = 0;
+        _blocksBefore = 0;
+        while (_wake.tryAcquire().isOk()) {}
         void *hw = Memory::alloc(MemSpace::Internal, sizeof(Hardware));
-        _ring = static_cast<uint8_t *>(
-                Memory::allocAligned(config.framebuffer ? MemSpace::PsramDma : MemSpace::InternalDma,
-                                     _blockBytes * config.blocks, BufferAlign));
-        if (hw == nullptr || _ring == nullptr) {
-                if (hw != nullptr) Memory::free(hw);
-                if (_ring != nullptr) Memory::free(_ring);
-                _ring = nullptr;
-                return Error::NoMem;
-        }
+        if (hw == nullptr) return Error::NoMem;
         _hw = new (hw) Hardware();
-        _expandCycles = 0;
-        _expandCyclesMax = 0;
-        _expandErrors = 0;
-        if (isExpanded(config.format)) {
-                const size_t drawn = size_t(t.hActive) * config.linesPerBlock * drawnBytesPerPixel(config.format);
-                // From a framebuffer, the 2D-DMA reads it directly: no staging.
-                if (_frames == nullptr)
-                        _staging =
-                                static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, drawn, BufferAlign));
-                Error err = Error::NoMem;
-                if (_staging != nullptr || _frames != nullptr)
-                        err = config.format == Format::Indexed8 ? _expander.start() : _widener.start();
-                if (err.isError()) {
-                        _expander.stop();
-                        _widener.stop();
-                        Memory::free(_staging);
-                        _staging = nullptr;
-                        _hw->~Hardware();
-                        Memory::free(_hw);
-                        Memory::free(_ring);
-                        _hw = nullptr;
-                        _ring = nullptr;
-                        return err;
-                }
-                if (config.format == Format::Indexed8 && config.palette != nullptr)
-                        _expander.setPalette(config.palette, 0, PaletteExpander::PaletteSize);
-                // Only the PPA or the 2D-DMA writes the ring: no stale lines of it may stay in the cache.
-                (void)esp_cache_msync(_ring, _blockBytes * config.blocks, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-        }
-        // A composer writes the ring by DMA too.
-        if (_blocks != nullptr) (void)esp_cache_msync(_ring, _blockBytes * config.blocks, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-        // The ring starts full: buffer i carries block i.
-        for (uint32_t i = 0; i < config.blocks; ++i) renderSlot(i);
         _running = true;
-
+        surface.setScanning(true);
         Error err = startLink();
         if (err.isOk()) err = startDpi();
         if (err.isOk()) {
                 Task::Config tc;
                 tc.name = "scanout";
-                tc.stackBytes = 4096;
+                tc.stackBytes = 3072;
                 tc.priority = configMAX_PRIORITIES - 2;
                 tc.core = config.core;
-                err = _task.start(tc, refillTask, this);
+                err = _task.start(tc, supervisorTask, this);
         }
-        if (err.isError()) {
-                stop();
-                return err;
-        }
-        if (_frames != nullptr) _frames->setScanning(true);
+        if (err.isError()) stop();
         return err;
 }
 
-// The framebuffer buffer for @p block's frame: at a frame's first block
-// (or the first filled, after a skip) the framebuffer makes a pending swap.
-BMDS_HOT_ATTR uint8_t *Scanout::frameFor(uint32_t block) {
-        const uint32_t frame = block / _blocksPerFrame;
-        if (_frameData == nullptr || frame != _frameNumber) {
-                _frameNumber = frame;
-                _frameData = _frames->beginFrame();
-        }
-        return _frameData;
+void Scanout::stop() {
+        if (!_running) return;
+        _stopping.store(true);
+        _wake.release();
+        (void)_task.stop();
+        stopHardware();
+        _hw->~Hardware();
+        Memory::free(_hw);
+        _hw = nullptr;
+        _surface->setScanning(false); // a pending swap made now
+        _surface = nullptr;
+        _running = false;
+        return;
 }
 
 // The DSI host and PHY: clocks, the PHY PLL at the lane rate, the host's
@@ -326,13 +238,7 @@ BMDS_HOT_ATTR uint8_t *Scanout::frameFor(uint32_t block) {
 Error Scanout::startLink() {
         Hardware          &hw = *_hw;
         const VideoTiming &t = _config.timing;
-#if HAL_CONFIG(CHIP_SUPPORT_MIN_REV) < 300
-        const uint32_t linkBits = static_cast<uint32_t>(bytesPerPixel(_config.format) * 8); // the buffers' format
-#else
-        const uint32_t linkBits = 24;
-#endif
-        const uint32_t laneBits = _config.fullLaneRate ? 24 : linkBits;
-        const uint32_t laneMbps = (t.pixelKhz * laneBits / _config.lanes + 999) / 1000;
+        const uint32_t     laneMbps = (t.pixelKhz * 24 / _config.lanes + 999) / 1000; // RGB888 on the link
         if (laneMbps < MIPI_DSI_LL_MIN_PHY_MBPS || laneMbps > MIPI_DSI_LL_MAX_PHY_MBPS) return Error::Invalid;
         if (_config.phyLdo >= 0) {
                 esp_ldo_channel_config_t ldo = {};
@@ -397,20 +303,13 @@ Error Scanout::startLink() {
         return Error::Ok;
 }
 
-// The DPI side: its clock, the bridge's interrupt, the DMA ring, the host's
-// video timing, the bridge's formats and flow control, then video on (IDF's
-// esp_lcd_new_panel_dpi and its init, with a ring of blocks).
+// The DPI side: its clock, the bridge's interrupt, the DMA's circular list
+// over the surface's shown buffer, the host's video timing, the bridge's
+// formats and flow control, then video on (IDF's esp_lcd_new_panel_dpi and
+// its init, with the frame in blocks).
 Error Scanout::startDpi() {
-        Hardware                &hw = *_hw;
-        const VideoTiming       &t = _config.timing;
-        const lcd_color_format_t in = colorFormat(_config.format);
-#if HAL_CONFIG(CHIP_SUPPORT_MIN_REV) < 300
-        // Before v3.0 the bridge has one format field for both sides: no
-        // conversion, so the link carries the buffers' format.
-        const lcd_color_format_t out = in;
-#else
-        const lcd_color_format_t out = LCD_COLOR_FMT_RGB888;
-#endif
+        Hardware          &hw = *_hw;
+        const VideoTiming &t = _config.timing;
 
         // The pixel clock: a fixed PLL divided (VideoModes::fitToClock picks a
         // mode's clock among these). The APLL, which IDF lists as a DPI source,
@@ -459,8 +358,7 @@ Error Scanout::startDpi() {
         (void)dw_gdma_channel_get_id(hw.dma, &channel);
         hw.channel = static_cast<uint8_t>(channel);
         dw_gdma_link_list_config_t list = {};
-        _items = _config.freeRunning ? _config.blocks * (MaxItems / _config.blocks) : _config.blocks;
-        list.num_items = _items;
+        list.num_items = _blocks;
         list.link_type = DW_GDMA_LINKED_LIST_TYPE_CIRCULAR;
         err = espError(dw_gdma_new_link_list(&list, &hw.list));
         if (err.isError()) return err;
@@ -483,19 +381,21 @@ Error Scanout::startDpi() {
         dw_gdma_block_markers_t markers = {};
         markers.is_valid = true;
         markers.en_trans_done_intr = true;
-        for (uint32_t i = 0; i < _items; ++i) {
-                block.src.addr = reinterpret_cast<uint32_t>(_ring + (i % _config.blocks) * _blockBytes);
+        const uint8_t *shown = _surface->shown();
+        for (uint32_t i = 0; i < _blocks; ++i) {
+                block.src.addr = reinterpret_cast<uint32_t>(shown + i * _blockBytes);
                 dw_gdma_lli_handle_t lli = dw_gdma_link_list_get_item(hw.list, i);
                 hw.items[i] = reinterpret_cast<dw_gdma_link_list_item_t *>(lli);
                 (void)dw_gdma_lli_config_transfer(lli, &block);
                 (void)dw_gdma_lli_set_block_markers(lli, markers);
         }
+        _swapPhase = 0;
         hw.itemBase = reinterpret_cast<uint32_t>(hw.items[0]) & 0x0fffffffu;
         hw.itemStride = reinterpret_cast<uint32_t>(hw.items[1]) - reinterpret_cast<uint32_t>(hw.items[0]);
 
         dsi_host_dev_t *host = hw.hal.host;
         mipi_dsi_host_ll_dpi_set_vcid(host, 0);
-        mipi_dsi_host_ll_dpi_set_color_coding(host, out, out == LCD_COLOR_FMT_RGB888 ? 0 : _config.linkPacking);
+        mipi_dsi_host_ll_dpi_set_color_coding(host, LCD_COLOR_FMT_RGB888, 0);
         mipi_dsi_host_ll_dpi_set_timing_polarity(host, false, false, false, false, false);
         // High speed all the time: no low-power transitions in the blanking.
         mipi_dsi_host_ll_dpi_enable_lp_horizontal_timing(host, false, false);
@@ -519,10 +419,17 @@ Error Scanout::startDpi() {
         dsi_brg_dev_t *bridge = hw.hal.bridge;
         configureBridge();
 
-        // The DMA reads the ring ahead of everyone on the interconnect, or other
+        // The DMA reads the surface ahead of everyone on the interconnect, or other
         // masters' PSRAM traffic (the caches) starves it and the bridge runs dry.
         axi_icm_ll_set_dw_gdma_qos_arbiter_prio(0, 0, 15);
         axi_icm_ll_set_dw_gdma_qos_arbiter_prio(1, 0, 15);
+        // Drawing's 2D-DMA below it: copies between PSRAM buffers mustn't hold
+        // up the scan.
+        axi_icm_ll_set_dma2d_qos_arbiter_prio(4, 4);
+        // ...and its writes regulated (a full-screen fill wrote PSRAM at about 470 MB/s
+        // and underran the scan): one burst per 2^(Level + 1) interconnect cycles.
+        axi_icm_ll_set_qos_burstiness(AXI_ICM_MASTER_DMA2D, 4, AXI_ICM_ACCESS_WRITE);
+        axi_icm_ll_set_qos_peak_transaction_rate(AXI_ICM_MASTER_DMA2D, 2, Dma2dWriteLevel, AXI_ICM_ACCESS_WRITE);
 
         err = espError(dw_gdma_channel_use_link_list(hw.dma, hw.list));
         if (err.isOk()) err = espError(dw_gdma_channel_enable_ctrl(hw.dma, true));
@@ -537,20 +444,14 @@ Error Scanout::startDpi() {
 // The DSI bridge's registers (after its reset too): the DPI timing it
 // generates, its formats, the DMA flow, the underrun interrupt; then on.
 void Scanout::configureBridge() {
-        const VideoTiming       &t = _config.timing;
-        dsi_brg_dev_t           *bridge = _hw->hal.bridge;
-        const lcd_color_format_t in = colorFormat(_config.format);
-#if HAL_CONFIG(CHIP_SUPPORT_MIN_REV) < 300
-        const lcd_color_format_t out = in;
-#else
-        const lcd_color_format_t out = LCD_COLOR_FMT_RGB888;
-#endif
+        const VideoTiming &t = _config.timing;
+        dsi_brg_dev_t     *bridge = _hw->hal.bridge;
         mipi_dsi_brg_ll_set_horizontal_timing(bridge, t.hSync, t.hBack, t.hActive, t.hFront);
         mipi_dsi_brg_ll_set_vertical_timing(bridge, t.vSync, t.vBack, t.vActive, t.vFront);
-        mipi_dsi_brg_ll_set_num_pixel_bits(bridge, uint32_t(t.hActive) * t.vActive * bytesPerPixel(_config.format) * 8);
+        mipi_dsi_brg_ll_set_num_pixel_bits(bridge, uint32_t(t.hActive) * t.vActive * Surface::BytesPerPixel * 8);
         mipi_dsi_brg_ll_set_underrun_discard_count(bridge, t.hActive);
-        mipi_dsi_brg_ll_set_input_color_format(bridge, in);
-        mipi_dsi_brg_ll_set_output_color_format(bridge, out, out == LCD_COLOR_FMT_RGB888 ? 0 : _config.linkPacking);
+        mipi_dsi_brg_ll_set_input_color_format(bridge, LCD_COLOR_FMT_RGB888);
+        mipi_dsi_brg_ll_set_output_color_format(bridge, LCD_COLOR_FMT_RGB888, 0);
         mipi_dsi_brg_ll_set_flow_controller(bridge, MIPI_DSI_LL_FLOW_CONTROLLER_DMA);
         mipi_dsi_brg_ll_set_multi_block_number(bridge, 1);
         mipi_dsi_brg_ll_set_burst_len(bridge, 256);
@@ -561,32 +462,7 @@ void Scanout::configureBridge() {
         return;
 }
 
-void Scanout::stop() {
-        if (!_running) return;
-        _stopping.store(true);
-        _wake.release();
-        (void)_task.stop();
-        stopHardware();
-        _hw->~Hardware();
-        Memory::free(_hw);
-        Memory::free(_ring);
-        _expander.stop();
-        _widener.stop();
-        Memory::free(_staging);
-        _staging = nullptr;
-        _hw = nullptr;
-        _ring = nullptr;
-        if (_frames != nullptr) _frames->setScanning(false); // a pending swap made now
-        _frames = nullptr;
-        _blocks = nullptr;
-        _frameData = nullptr;
-        _frameBegun = false;
-        _running = false;
-        return;
-}
-
-// The DSI link, the DPI side and the DMA off and released; the ring, the
-// task and the palette stay.
+// The DSI link, the DPI side and the DMA off and released; the task stays.
 void Scanout::stopHardware() {
         Hardware &hw = *_hw;
         if (hw.dpiClock) {
@@ -623,277 +499,117 @@ void Scanout::stopHardware() {
         return;
 }
 
-// The last resort: the whole DSI path rebuilt from scratch, as a fresh
-// start does (the monitor sees the link drop for a moment), then the
-// bridge chip told to lock onto it again (`Config::onRestart`).
-void Scanout::rebuild() {
-        stopHardware();
-        _resyncWanted.store(false, std::memory_order_relaxed);
-        _stalled.store(false, std::memory_order_relaxed);
-        _blocksBefore += _sent.load(std::memory_order_relaxed);
-        _sent.store(0, std::memory_order_relaxed);
-        _primed = false;
-        _frameData = nullptr;
-        _frameBegun = false;
-        _refilled = 0;
-        while (_wake.tryAcquire().isOk()) {}
-        if (!_config.framebuffer) {
-                for (uint32_t i = 0; i < _config.blocks; ++i) renderSlot(i);
-        }
-        Error err = startLink();
-        if (err.isOk()) err = startDpi();
-        if (err.isOk() && _config.onRestart != nullptr) _config.onRestart(_config.onRestartArg);
-        if (err.isError()) ++_resyncFailures;
-        ++_rebuilds;
-        _resyncUs = esp_timer_get_time();
-        return;
-}
-
-Scanout::Stats Scanout::stats() const {
-        Stats s;
-        s.blocks = _blocksBefore + _sent.load(std::memory_order_relaxed);
-        s.resyncs = _resyncs;
-        s.resyncFailures = _resyncFailures;
-        s.rebuilds = _rebuilds;
-        if (_hw != nullptr) {
-                s.pixelHz = _hw->pixelHz;
-        }
-        s.frames = _blocksPerFrame == 0 ? 0 : s.blocks / _blocksPerFrame;
-        s.late = _late.load(std::memory_order_relaxed);
-        s.skipped = _skipped;
-        s.stalls = _stalls.load(std::memory_order_relaxed);
-        s.underruns = _underruns.load(std::memory_order_relaxed);
-        s.renderCyclesMax = _renderCyclesMax;
-        s.renderCycles = _renderCycles;
-        for (int i = 0; i < 8; ++i) s.stallAt[i] = _blocksPerFrame == 0 ? 0 : _stallAt[i] % _blocksPerFrame;
-        s.syncCycles = _syncCycles;
-        s.syncCyclesMax = _syncCyclesMax;
-        s.expandCycles = _expandCycles;
-        s.expandCyclesMax = _expandCyclesMax;
-        s.expandErrors = _expandErrors;
-        if (_hw != nullptr && _hw->dma != nullptr) {
-                int id = 0;
-                (void)dw_gdma_channel_get_id(_hw->dma, &id);
-                const intptr_t item =
-                        dw_gdma_ll_channel_get_current_link_list_item_addr(&DW_GDMA, static_cast<uint8_t>(id));
-                const intptr_t base = reinterpret_cast<intptr_t>(dw_gdma_link_list_get_item(_hw->list, 0));
-                const intptr_t next = reinterpret_cast<intptr_t>(dw_gdma_link_list_get_item(_hw->list, 1));
-                s.dmaItem = next > base ? static_cast<uint32_t>((item & 0x0fffffff) - (base & 0x0fffffff)) /
-                                                  static_cast<uint32_t>(next - base)
-                                        : 0;
-                s.dmaStatus = dw_gdma_ll_channel_get_intr_status(&DW_GDMA, static_cast<uint8_t>(id));
-                s.dmaAmount = dw_gdma_ll_channel_get_trans_amount(&DW_GDMA, static_cast<uint8_t>(id));
-                s.bridgeFifo = mipi_dsi_brg_ll_get_fifo_depth(_hw->hal.bridge);
-        }
-        return s;
-}
-
-void Scanout::refillTask(void *arg) {
-        static_cast<Scanout *>(arg)->refill();
+void Scanout::supervisorTask(void *arg) {
+        static_cast<Scanout *>(arg)->supervise();
         for (;;) Task::sleep(WaitForever); // stop() deletes the task
 }
 
-// Each sent buffer gets the lines it carries next: buffer (n mod blocks),
-// just sent as block n, carries block n + blocks.
-BMDS_HOT_ATTR void Scanout::refill() {
-        uint32_t lastSent = 0;
+// Restarts the stream when the DMA meets an invalid descriptor, or the
+// whole path when the stream stops moving.
+void Scanout::supervise() {
+        uint32_t last = 0;
         int64_t  progressUs = esp_timer_get_time();
         while (!_stopping.load()) {
-                (void)_wake.acquire(StallCheckMs);
-                const uint32_t sent = _sent.load(std::memory_order_relaxed);
-                const int64_t  now = esp_timer_get_time();
-                if (sent != lastSent) {
-                        lastSent = sent;
-                        progressUs = now;
-                } else if (now - progressUs >= StuckUs) {
-                        // Stuck: no underrun or stall will come to act on.
-                        rebuild();
-                        lastSent = 0;
+                (void)_wake.acquire(CheckMs);
+                if (_stopping.load()) break;
+                if (_stalled.exchange(false, std::memory_order_acquire)) {
+                        resync();
+                        last = 0;
                         progressUs = esp_timer_get_time();
                         continue;
                 }
-                if (sent - _refilled > _config.blocks) {
-                        // The DMA lapped us: those buffers went out again as they were.
-                        _late.fetch_add(sent - _refilled - _config.blocks, std::memory_order_relaxed);
-                        _refilled = sent - _config.blocks;
-                }
-                while (_config.framebuffer && _refilled != sent) {
-                        // The frame stays: hand the block back. At a frame's start,
-                        // the source changes what moves, written back for the DMA.
-                        const uint32_t slot = _refilled % _config.blocks;
-                        dw_gdma_ll_lli_set_block_markers(_hw->items[_refilled % _items], true, false, true);
-                        ++_refilled;
-                        if (slot == 0) {
-                                const uint32_t start = esp_cpu_get_cycle_count();
-                                _source->frame(_ring, _stride);
-                                (void)esp_cache_msync(_ring, _blockBytes * _config.blocks,
-                                                      ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-                                const uint32_t cycles = esp_cpu_get_cycle_count() - start;
-                                if (cycles > _renderCyclesMax) _renderCyclesMax = cycles;
-                                _renderCycles += cycles;
-                        }
-                }
-                while (_config.freeRunning && !_config.framebuffer) {
-                        // The DMA is sending block `sending`; the buffers of the blocks after
-                        // it, up to a ring ahead, can be drawn. Behind: skip to the nearest.
-                        const uint32_t sending = _sent.load(std::memory_order_relaxed);
-                        // Behind the interrupt as a backup: the descriptor just sent valid again.
-                        if (sending > 1)
-                                dw_gdma_ll_lli_set_block_markers(_hw->items[(sending - 2) % _items], true, false, true);
-                        uint32_t next = _refilled + _config.blocks;
-                        if (next <= sending) {
-                                _skipped += sending + 1 - next;
-                                _refilled = sending + 1 - _config.blocks;
-                                next = sending + 1;
-                        }
-                        if (next > sending + _config.blocks - 1) break;
-                        const uint32_t start = esp_cpu_get_cycle_count();
-                        renderSlot(next);
-                        const uint32_t cycles = esp_cpu_get_cycle_count() - start;
-                        if (cycles > _renderCyclesMax) _renderCyclesMax = cycles;
-                        _renderCycles += cycles;
-                        ++_refilled;
-                }
-                while (!_config.freeRunning && _refilled != sent) {
-                        const uint32_t start = esp_cpu_get_cycle_count();
-                        renderSlot(_refilled + _config.blocks);
-                        const uint32_t cycles = esp_cpu_get_cycle_count() - start;
-                        if (cycles > _renderCyclesMax) _renderCyclesMax = cycles;
-                        _renderCycles += cycles;
-                        // Handed back to the DMA (inline: the IDF call is in flash).
-                        dw_gdma_ll_lli_set_block_markers(_hw->items[_refilled % _config.blocks], true, false, true);
-                        ++_refilled;
-                }
-                if (_resyncWanted.load(std::memory_order_acquire) && esp_timer_get_time() - _resyncUs >= ResyncGapUs) {
-                        resync();
-                        lastSent = 0;
+                const uint32_t sent = _sent.load(std::memory_order_relaxed);
+                const int64_t  now = esp_timer_get_time();
+                if (sent != last) {
+                        last = sent;
+                        progressUs = now;
+                } else if (now - progressUs >= StuckUs) {
+                        rebuild();
+                        last = 0;
                         progressUs = esp_timer_get_time();
-                } else if (_stalled.exchange(false, std::memory_order_acquire)) {
-                        (void)dw_gdma_channel_continue(_hw->dma);
                 }
         }
         return;
 }
 
-// After an underrun the bridge sends blue for the rest of the frame and its
-// count of the frame's data no longer matches the ring's lines: the picture
-// stays offset, or every block stalls. Only a restart of the data path
-// aligns them again: the bridge and its DPI output off (the bridge's frame
-// timing restarts with them), the DMA stopped, the ring refilled from line
-// 0, then everything on again. The DSI link and its video mode keep running.
+// The stream restarted from the frame's first block: the DMA stopped, every
+// descriptor valid and on the shown buffer (a swap half made waits for the
+// next frame), the bridge's frame count started again.
 void Scanout::resync() {
-        Hardware       &hw = *_hw;
-        dsi_brg_dev_t  *bridge = hw.hal.bridge;
-        dsi_host_dev_t *host = hw.hal.host;
-        const int       v = _resyncVariant;
-        _resyncVariant = 1; // a manual variant is for one resync
+        Hardware      &hw = *_hw;
+        dsi_brg_dev_t *bridge = hw.hal.bridge;
         mipi_dsi_brg_ll_enable_dpi_output(bridge, false);
         mipi_dsi_brg_ll_update_dpi_config(bridge);
-        if (v >= 2) mipi_dsi_host_ll_enable_video_mode(host, false);
         // Stop the DMA before touching its registers (a write to a live
         // channel's is a bus fault). A disable waits for the burst under way,
         // which a wedged bridge never takes: then rebuild everything.
-        int id = 0;
-        (void)dw_gdma_channel_get_id(hw.dma, &id);
         (void)dw_gdma_channel_enable_ctrl(hw.dma, false);
         bool stopped = false;
         for (int i = 0; i < 20 && !stopped; ++i) {
-                stopped = (DW_GDMA.chen0.val & (1u << id)) == 0;
+                stopped = (DW_GDMA.chen0.val & (1u << hw.channel)) == 0;
                 if (!stopped) esp_rom_delay_us(100);
         }
         if (!stopped) {
                 rebuild();
                 return;
         }
-        dw_gdma_ll_channel_clear_intr(&DW_GDMA, static_cast<uint8_t>(id), UINT32_MAX);
+        dw_gdma_ll_channel_clear_intr(&DW_GDMA, hw.channel, UINT32_MAX);
         Task::sleep(1); // a block interrupt already raised lands before the counters restart
-        _resyncWanted.store(false, std::memory_order_relaxed);
+        _blocksBefore += _sent.load(std::memory_order_relaxed);
+        _sent.store(0, std::memory_order_relaxed);
+        _primed = false;
+        _swapPhase = 0;
+        for (uint32_t k = 0; k < _blocks; ++k) {
+                dw_gdma_ll_lli_set_src_addr(hw.items[k],
+                                            reinterpret_cast<uint32_t>(_surface->shown() + k * _blockBytes));
+                dw_gdma_ll_lli_set_block_markers(hw.items[k], true, false, true);
+        }
+        const VideoTiming &t = _config.timing;
+        mipi_dsi_brg_ll_clear_interrupt_status(bridge, MIPI_DSI_BRG_LL_EVENT_UNDERRUN);
+        mipi_dsi_brg_ll_set_num_pixel_bits(bridge, uint32_t(t.hActive) * t.vActive * Surface::BytesPerPixel * 8);
+        (void)dw_gdma_channel_use_link_list(hw.dma, hw.list);
+        (void)dw_gdma_channel_enable_ctrl(hw.dma, true);
+        mipi_dsi_brg_ll_enable_dpi_output(bridge, true);
+        mipi_dsi_brg_ll_update_dpi_config(bridge);
+        ++_resyncs;
+        return;
+}
+
+// The last resort: the whole DSI path rebuilt from scratch, as a fresh
+// start does (the monitor sees the link drop for a moment), then the
+// bridge chip told to lock onto it again (`Config::onRestart`).
+void Scanout::rebuild() {
+        stopHardware();
         _stalled.store(false, std::memory_order_relaxed);
         _blocksBefore += _sent.load(std::memory_order_relaxed);
         _sent.store(0, std::memory_order_relaxed);
         _primed = false;
-        _frameData = nullptr;
-        _frameBegun = false;
-        _refilled = 0;
-        while (_wake.tryAcquire().isOk()) {}
-        for (uint32_t i = 0; i < _config.blocks; ++i)
-                if (!_config.framebuffer) renderSlot(i);
-        for (uint32_t i = 0; i < _items; ++i) dw_gdma_ll_lli_set_block_markers(hw.items[i], true, false, true);
-        const VideoTiming &t = _config.timing;
-        mipi_dsi_brg_ll_clear_interrupt_status(bridge, MIPI_DSI_BRG_LL_EVENT_UNDERRUN);
-        mipi_dsi_brg_ll_set_num_pixel_bits(bridge, uint32_t(t.hActive) * t.vActive * bytesPerPixel(_config.format) * 8);
-        (void)dw_gdma_channel_use_link_list(hw.dma, hw.list);
-        (void)dw_gdma_channel_enable_ctrl(hw.dma, true);
-        if (v >= 2) {
-                mipi_dsi_host_ll_enable_video_mode(host, true);
-                mipi_dsi_host_ll_set_clock_lane_state(host, MIPI_DSI_LL_CLOCK_LANE_STATE_AUTO);
-        }
-        mipi_dsi_brg_ll_enable_dpi_output(bridge, true);
-        mipi_dsi_brg_ll_update_dpi_config(bridge);
-        ++_resyncs;
-        _resyncUs = esp_timer_get_time();
+        Error err = startLink();
+        if (err.isOk()) err = startDpi();
+        if (err.isOk() && _config.onRestart != nullptr) _config.onRestart(_config.onRestartArg);
+        if (err.isError()) ++_failures;
+        ++_rebuilds;
         return;
 }
 
-// Renders block @p block (a count since the start) into its buffer and
-// writes it back from the cache for the DMA.
-BMDS_HOT_ATTR void Scanout::renderSlot(uint32_t block) {
-        uint8_t       *dst = _ring + (block % _config.blocks) * _blockBytes;
-        const uint32_t first = (block % _blocksPerFrame) * _config.linesPerBlock;
-        const uint16_t width = _config.timing.hActive;
-        if (_blocks != nullptr) {
-                // The composer's DMA writes the block; at a frame's start it takes the positions.
-                const uint32_t frame = block / _blocksPerFrame;
-                if (!_frameBegun || frame != _frameNumber) {
-                        _frameNumber = frame;
-                        _frameBegun = true;
-                        _blocks->beginFrame(frame);
-                }
-                const uint32_t started = esp_cpu_get_cycle_count();
-                _blocks->composeBlock(static_cast<uint16_t>(first), _config.linesPerBlock, dst, _stride);
-                const uint32_t cycles = esp_cpu_get_cycle_count() - started;
-                _expandCycles += cycles;
-                if (cycles > _expandCyclesMax) _expandCyclesMax = cycles;
-                return;
+Scanout::Stats Scanout::stats() const {
+        Stats s;
+        s.frames = _frames.load(std::memory_order_relaxed);
+        s.blocks = _blocksBefore + _sent.load(std::memory_order_relaxed);
+        s.blocksPerFrame = _blocks;
+        s.swaps = _swaps.load(std::memory_order_relaxed);
+        s.stalls = _stalls.load(std::memory_order_relaxed);
+        s.underruns = _underruns.load(std::memory_order_relaxed);
+        s.resyncs = _resyncs;
+        s.rebuilds = _rebuilds;
+        s.failures = _failures;
+        s.isrCyclesMax = _isrCyclesMax;
+        s.dmaItem = _lastItem;
+        if (_hw != nullptr) {
+                s.pixelHz = _hw->pixelHz;
+                s.bridgeFifo = _hw->hal.bridge != nullptr ? mipi_dsi_brg_ll_get_fifo_depth(_hw->hal.bridge) : 0;
         }
-        if (_frames != nullptr) {
-                // The 2D-DMA widens the block's lines straight from the framebuffer.
-                const uint8_t *frame = frameFor(block);
-                const uint32_t started = esp_cpu_get_cycle_count();
-                if (_widener.expand(frame + size_t(first) * width * 2, dst, size_t(width) * _config.linesPerBlock,
-                                    ExpandTimeoutMs)
-                            .isError())
-                        ++_expandErrors;
-                const uint32_t cycles = esp_cpu_get_cycle_count() - started;
-                _expandCycles += cycles;
-                if (cycles > _expandCyclesMax) _expandCyclesMax = cycles;
-                return;
-        }
-        if (isExpanded(_config.format)) {
-                // Drawn by the CPU, written back; the PPA (indices) or the
-                // 2D-DMA (RGB565) turns them into RGB888.
-                const size_t drawnStride = size_t(width) * drawnBytesPerPixel(_config.format);
-                _source->render(static_cast<uint16_t>(first), _config.linesPerBlock, _staging, drawnStride);
-                (void)esp_cache_msync(_staging, drawnStride * _config.linesPerBlock, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-                const uint32_t started = esp_cpu_get_cycle_count();
-                const Error    err =
-                        _config.format == Format::Indexed8
-                                   ? _expander.expand(_staging, dst, width, _config.linesPerBlock, ExpandTimeoutMs)
-                                   : _widener.expand(_staging, dst, size_t(width) * _config.linesPerBlock,
-                                                     ExpandTimeoutMs);
-                if (err.isError()) ++_expandErrors;
-                const uint32_t cycles = esp_cpu_get_cycle_count() - started;
-                _expandCycles += cycles;
-                if (cycles > _expandCyclesMax) _expandCyclesMax = cycles;
-                return;
-        }
-        _source->render(static_cast<uint16_t>(first), _config.linesPerBlock, dst, _stride);
-        const uint32_t synced = esp_cpu_get_cycle_count();
-        (void)esp_cache_msync(dst, _blockBytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-        const uint32_t sync = esp_cpu_get_cycle_count() - synced;
-        _syncCycles += sync;
-        if (sync > _syncCyclesMax) _syncCyclesMax = sync;
-        return;
+        return s;
 }
 
 BMDS_NAMESPACE_END

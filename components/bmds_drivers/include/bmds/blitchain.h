@@ -25,7 +25,9 @@ BMDS_NAMESPACE_BEGIN
  *
  * Every piece of a chain goes through the same conversion: none, or RGB565
  * widened to RGB888 by the transmit channel's converter. Never through the
- * CPU's cache: sources are written back by their writers.
+ * CPU's cache: sources are written back by their writers. A fill sends one
+ * line of pixels again for every row of a block (a transmit descriptor a
+ * row, one receive descriptor), so it needs no picture of its size.
  *
  * @par Thread Safety
  * One task at a time.
@@ -53,21 +55,23 @@ class BlitChain {
 
                 /**
                  * @brief Takes a 2D-DMA pool and allocates descriptors for
-                 *        @p maxPieces pieces (internal DMA RAM).
+                 *        @p maxPieces pieces and @p maxRows rows of fills
+                 *        (internal DMA RAM, 16 bytes each).
                  * @return `Ok`, `InvalidState` (started), `Invalid` (0 pieces),
                  *         `NoMem`, or the driver's error.
                  */
-                Error start(Conversion conversion, size_t maxPieces);
+                Error start(Conversion conversion, size_t maxPieces, size_t maxRows = 0);
 
                 /** @brief Waits for a job under way, frees everything. Idempotent. */
                 void stop();
 
                 /** @brief Returns the pieces added since the last run. */
-                size_t count() const { return _count; }
+                size_t count() const { return _rxCount; }
 
                 /** @brief Forgets the pieces added. */
                 void clear() {
-                        _count = 0;
+                        _txCount = 0;
+                        _rxCount = 0;
                         return;
                 }
 
@@ -80,6 +84,17 @@ class BlitChain {
                  */
                 Error add(const Picture &from, uint16_t fromX, uint16_t fromY, const Picture &to, uint16_t toX,
                           uint16_t toY, uint16_t width, uint16_t height);
+
+                /**
+                 * @brief Adds a fill of @p width × @p height pixels at (@p toX,
+                 *        @p toY) of @p to with the @p width pixels at @p line
+                 *        (in the destination's format, DMA-readable), sent once a
+                 *        row. Only without a conversion.
+                 * @return As `add()`.
+                 * @nonblocking
+                 */
+                Error addFill(const uint8_t *line, const Picture &to, uint16_t toX, uint16_t toY, uint16_t width,
+                              uint16_t height);
 
                 /**
                  * @brief Runs the pieces added as one job, waits until they are
@@ -98,8 +113,10 @@ class BlitChain {
                 Hardware  *_hw = nullptr;
                 Semaphore  _done{1, 0};
                 bool       _busy = false; // a job enqueued and not yet seen done
-                size_t     _count = 0;
-                size_t     _max = 0;
+                size_t     _txCount = 0;  // transmit descriptors written
+                size_t     _rxCount = 0;  // receive descriptors (pieces) written
+                size_t     _max = 0;      // pieces
+                size_t     _maxTx = 0;    // transmit descriptors
                 Conversion _conversion = Conversion::None;
 
                 friend struct BlitChainIsr;

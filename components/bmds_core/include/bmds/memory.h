@@ -47,7 +47,8 @@ class Memory {
                  * @brief Allocates from a memory space.
                  *
                  * DMA spaces are aligned for DMA and cache maintenance
-                 * automatically.
+                 * automatically, and get whole cache lines plus one more: no
+                 * heap bookkeeping shares a cache line with a DMA buffer.
                  *
                  * @param space     The memory space.
                  * @param sizeBytes Number of bytes.

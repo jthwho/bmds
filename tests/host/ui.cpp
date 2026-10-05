@@ -14,6 +14,7 @@
 #include <vector>
 #include <bmds/font.h>
 #include <bmds/rect.h>
+#include <bmds/compose.h>
 #include <bmds/region.h>
 
 using bmds::ComposePiece;
@@ -159,6 +160,38 @@ TEST_CASE("Region: neighbors merge; overflow collapses to the bounds") {
         }
         scattered.clear();
         CHECK(scattered.isEmpty());
+}
+
+TEST_CASE("Region: past its rectangles, the cheapest pairs merge, not everything") {
+        // Sixteen squares, each where it was and where it moved (an animation's
+        // damage): far more pieces than MaxRects.
+        Region region;
+        Bitmap want;
+        for (int i = 0; i < 16; ++i) {
+                const uint16_t x = uint16_t((i * 37) % 56), y = uint16_t((i * 23) % 40);
+                const Rect     was{x, y, 6, 6};
+                const Rect     now{uint16_t(x + 2), uint16_t(y + 1), 6, 6};
+                for (const Rect &r : {was, now}) {
+                        region.add(r);
+                        want.add(r);
+                }
+        }
+        checkDisjoint(region);
+        CHECK(region.rects().size() <= Region::MaxRects);
+        uint32_t wanted = 0;
+        bool     ok = true;
+        for (int y = 0; y < Height; ++y) {
+                for (int x = 0; x < Width; ++x) {
+                        bool covered = false;
+                        for (const Rect &r : region.rects()) covered |= inside(r, x, y);
+                        ok &= want.at(x, y) == 0 || covered;
+                        wanted += want.at(x, y) > 0 ? 1 : 0;
+                }
+        }
+        REQUIRE(ok);
+        // Close to what was added: well under the bounding box.
+        CHECK(region.area() < wanted * 2);
+        CHECK(region.area() < region.bounds().area() / 2);
 }
 
 TEST_CASE("planCompose: each damaged pixel once, from the topmost layer") {

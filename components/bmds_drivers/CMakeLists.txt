@@ -22,16 +22,12 @@ if(COMMAND idf_component_register)
                                     src/lt8912b.cpp
                                     src/memtestcommand.cpp
                                     src/blitchain.cpp
-                                    src/colorexpander.cpp
-                                    src/framebuffer.cpp
-                                    src/paletteexpander.cpp
-                                    src/rectcopier.cpp
                                     src/scanout.cpp
+                                    src/surface.cpp
                                INCLUDE_DIRS include
                                REQUIRES bmds_core bmds_kernel
                                PRIV_REQUIRES bmds_board bmds_shell esp_driver_i2c esp_hw_support esp_hal_lcd esp_mm esp_timer
-                               WHOLE_ARCHIVE
-                               LDFRAGMENTS linker.lf)
+                               WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})
 else()
         add_library(bmds_drivers STATIC ${BMDS_DRIVERS_PORTABLE_SRCS})

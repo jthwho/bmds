@@ -5,15 +5,15 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * Chained 2D-DMA rectangle copies: RectCopier's 2D descriptors, several to a
- * job, the transmit channel's converter for RGB565 sources.
+ * Chained 2D-DMA rectangle copies: 2D descriptors (a block at an offset in a
+ * picture, as IDF's 2D-DMA window test), several to a job, the transmit
+ * channel's converter for RGB565 sources; fills as one line sent per row.
  */
 
 #include <cstring>
 #include <new>
 #include <esp_cache.h>
 #include <esp_private/dma2d.h>
-#include <hal/axi_icm_ll.h>
 #include <hal/dma2d_types.h>
 #include <soc/dma2d_channel.h>
 #include <bmds/blitchain.h>
@@ -73,7 +73,8 @@ struct BlitChain::Hardware {
                 dma2d_trans_config_t config = {};
                 dma2d_descriptor_t  *tx = nullptr; // _max descriptors each
                 dma2d_descriptor_t  *rx = nullptr;
-                size_t               descriptorBytes = 0; // of each chain, rounded to the cache line
+                size_t               txBytes = 0; // each chain's bytes, rounded to the cache line
+                size_t               rxBytes = 0;
 };
 
 struct BlitChainIsr {
@@ -117,24 +118,27 @@ struct BlitChainIsr {
                 }
 };
 
-Error BlitChain::start(Conversion conversion, size_t maxPieces) {
+Error BlitChain::start(Conversion conversion, size_t maxPieces, size_t maxRows) {
         if (_hw != nullptr) return Error::InvalidState;
         if (maxPieces == 0) return Error::Invalid;
         // A completion left from a job of an earlier start, cleared.
         while (_done.tryAcquire().isOk()) {}
         _busy = false;
-        _count = 0;
+        _txCount = 0;
+        _rxCount = 0;
         _max = maxPieces;
+        _maxTx = maxPieces + maxRows;
         _conversion = conversion;
         void *memory = Memory::alloc(MemSpace::Internal, sizeof(Hardware));
         if (memory == nullptr) return Error::NoMem;
         _hw = new (memory) Hardware();
         Hardware &hw = *_hw;
-        hw.descriptorBytes = (maxPieces * DescriptorBytes + DescriptorAlign - 1) / DescriptorAlign * DescriptorAlign;
+        hw.txBytes = (_maxTx * DescriptorBytes + DescriptorAlign - 1) / DescriptorAlign * DescriptorAlign;
+        hw.rxBytes = (maxPieces * DescriptorBytes + DescriptorAlign - 1) / DescriptorAlign * DescriptorAlign;
         hw.tx = static_cast<dma2d_descriptor_t *>(
-                Memory::allocAligned(MemSpace::InternalDma, hw.descriptorBytes, DescriptorAlign));
+                Memory::allocAligned(MemSpace::InternalDma, hw.txBytes, DescriptorAlign));
         hw.rx = static_cast<dma2d_descriptor_t *>(
-                Memory::allocAligned(MemSpace::InternalDma, hw.descriptorBytes, DescriptorAlign));
+                Memory::allocAligned(MemSpace::InternalDma, hw.rxBytes, DescriptorAlign));
         hw.job = static_cast<dma2d_trans_t *>(Memory::alloc(MemSpace::Internal, dma2d_get_trans_elm_size()));
         if (hw.tx == nullptr || hw.rx == nullptr || hw.job == nullptr) {
                 stop();
@@ -147,8 +151,6 @@ Error BlitChain::start(Conversion conversion, size_t maxPieces) {
                 stop();
                 return Error::fromEspErr(err);
         }
-        // The 2D-DMA ahead of the caches on the interconnect, like the scanout's DMA.
-        axi_icm_ll_set_dma2d_qos_arbiter_prio(15, 15);
         hw.config.tx_channel_num = 1;
         hw.config.rx_channel_num = 1;
         hw.config.channel_flags = DMA2D_CHANNEL_FUNCTION_FLAG_SIBLING;
@@ -169,14 +171,15 @@ void BlitChain::stop() {
         hw.~Hardware();
         Memory::free(_hw);
         _hw = nullptr;
-        _count = 0;
+        _txCount = 0;
+        _rxCount = 0;
         return;
 }
 
 Error BlitChain::add(const Picture &from, uint16_t fromX, uint16_t fromY, const Picture &to, uint16_t toX, uint16_t toY,
                      uint16_t width, uint16_t height) {
         if (_hw == nullptr) return Error::InvalidState;
-        if (_count == _max) return Error::Full;
+        if (_rxCount == _max || _txCount == _maxTx) return Error::Full;
         if (width == 0 || height == 0 || !fits(from, fromX, fromY, width, height) || !fits(to, toX, toY, width, height))
                 return Error::Invalid;
         const bool widen = _conversion == Conversion::Rgb565ToRgb888;
@@ -185,24 +188,47 @@ Error BlitChain::add(const Picture &from, uint16_t fromX, uint16_t fromY, const 
         // The descriptors of a job under way stay until it's done.
         if (_busy && settle(StopTimeoutMs).isError()) return Error::Timeout;
         Hardware &hw = *_hw;
-        // Linked to the next slot; the last one's link is cut in `run()`.
-        describe(at(hw.tx, _count), from, fromX, fromY, width, height, false, at(hw.tx, _count + 1));
-        describe(at(hw.rx, _count), to, toX, toY, width, height, false, at(hw.rx, _count + 1));
-        ++_count;
+        // Linked to the next slot; the last ones' links are cut in `run()`.
+        describe(at(hw.tx, _txCount), from, fromX, fromY, width, height, false, at(hw.tx, _txCount + 1));
+        describe(at(hw.rx, _rxCount), to, toX, toY, width, height, false, at(hw.rx, _rxCount + 1));
+        ++_txCount;
+        ++_rxCount;
+        return Error::Ok;
+}
+
+Error BlitChain::addFill(const uint8_t *line, const Picture &to, uint16_t toX, uint16_t toY, uint16_t width,
+                         uint16_t height) {
+        if (_hw == nullptr) return Error::InvalidState;
+        if (_rxCount == _max || _txCount + height > _maxTx) return Error::Full;
+        const Picture row{line, width, 1, to.bytesPerPixel};
+        if (_conversion != Conversion::None || width == 0 || height == 0 || line == nullptr ||
+            !fits(to, toX, toY, width, height))
+                return Error::Invalid;
+        if (_busy && settle(StopTimeoutMs).isError()) return Error::Timeout;
+        Hardware &hw = *_hw;
+        for (uint16_t r = 0; r < height; ++r, ++_txCount)
+                describe(at(hw.tx, _txCount), row, 0, 0, width, 1, false, at(hw.tx, _txCount + 1));
+        describe(at(hw.rx, _rxCount), to, toX, toY, width, height, false, at(hw.rx, _rxCount + 1));
+        ++_rxCount;
         return Error::Ok;
 }
 
 Error BlitChain::run(unsigned int timeoutMs) {
         if (_hw == nullptr) return Error::InvalidState;
-        if (_count == 0) return Error::Ok;
+        if (_rxCount == 0) return Error::Ok;
         Hardware           &hw = *_hw;
-        dma2d_descriptor_t *lastTx = at(hw.tx, _count - 1);
+        dma2d_descriptor_t *lastTx = at(hw.tx, _txCount - 1);
         lastTx->suc_eof = 1;
         lastTx->next = nullptr;
-        at(hw.rx, _count - 1)->next = nullptr;
-        (void)esp_cache_msync(hw.tx, hw.descriptorBytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-        (void)esp_cache_msync(hw.rx, hw.descriptorBytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-        _count = 0;
+        at(hw.rx, _rxCount - 1)->next = nullptr;
+        (void)esp_cache_msync(hw.tx,
+                              (_txCount * DescriptorBytes + DescriptorAlign - 1) / DescriptorAlign * DescriptorAlign,
+                              ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        (void)esp_cache_msync(hw.rx,
+                              (_rxCount * DescriptorBytes + DescriptorAlign - 1) / DescriptorAlign * DescriptorAlign,
+                              ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        _txCount = 0;
+        _rxCount = 0;
         const esp_err_t err = dma2d_enqueue(hw.pool, &hw.config, hw.job);
         if (err != ESP_OK) return Error::fromEspErr(err);
         _busy = true;

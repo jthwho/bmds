@@ -5,31 +5,26 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * The `display` command: the HDMI bridge and the monitor (devplan/display.md
- * step 1). Its output format is a userspace interface once shipped: keep the
- * lines and their order, add new ones only at the end.
+ * The `display` command: the HDMI bridge, the monitor, and surface 0
+ * (devplan/display.md). Its output format is a userspace interface once
+ * shipped: keep the lines and their order, add new ones only at the end.
  */
 
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
-#include <sdkconfig.h>
 #include <cstring>
+#include <sdkconfig.h>
 #include <esp_cache.h>
-#include <esp_rom_sys.h>
-#include <hal/axi_icm_ll.h>
 #include <bmds/board.h>
 #include <bmds/command.h>
 #include <bmds/display.h>
-#include <bmds/displaytest.h>
-#include <bmds/log.h>
+#include <bmds/displayboot.h>
 #include <bmds/edid.h>
 #include <bmds/i2cbus.h>
+#include <bmds/log.h>
 #include <bmds/lt8912b.h>
 #include <bmds/memory.h>
-#include <bmds/placement.h>
-#include <bmds/paletteexpander.h>
-#include <bmds/scanout.h>
 #include <bmds/shell.h>
 #include <bmds/staticobject.h>
 #include <bmds/system.h>
@@ -46,8 +41,7 @@ namespace {
         constexpr uint32_t     DdcHz = 100'000; // DDC's standard clock
         constexpr unsigned int TimeoutMs = 100;
 
-        // Step 2's test picture (devplan/display.md): bars, a gray ramp and a
-        // stripe that moves each frame, so a lost or late block shows.
+        // Modes by name.
         struct TestMode {
                         const char *name;
                         VideoTiming timing;
@@ -58,119 +52,12 @@ namespace {
                 {"1080", {70'000, 1920, 48, 32, 80, 1080, 3, 5, 8, true, false, false}},
         };
 
-        class TestPattern final : public LineSource {
-                public:
-                        // The two kinds of line, drawn once (internal RAM, freed by the next set-up).
-                        Error setUp(Scanout::Format format, uint16_t width, uint16_t height) {
-                                _bytes = format == Scanout::Format::Indexed8 ? 1
-                                         : format == Scanout::Format::Rgb888 ? 3
-                                                                             : 2;
-                                _width = width;
-                                _height = height;
-                                _frame = 0;
-                                Memory::free(_lines);
-                                _lines = static_cast<uint8_t *>(Memory::alloc(MemSpace::Internal, 2 * width * _bytes));
-                                if (_lines == nullptr) return Error::NoMem;
-                                static constexpr uint32_t Bars[8] = {0xffffff, 0xffff00, 0x00ffff, 0x00ff00,
-                                                                     0xff00ff, 0xff0000, 0x0000ff, 0x000000};
-                                if (_bytes == 1) {
-                                        // Indices: 0-7 the bars, 8-255 the ramp; the palette says what they are.
-                                        for (uint16_t x = 0; x < width; ++x) {
-                                                _lines[x] = static_cast<uint8_t>(x * 8 / width);
-                                                _lines[width + x] = static_cast<uint8_t>(8 + x * 248 / width);
-                                        }
-                                        return Error::Ok;
-                                }
-                                for (uint16_t x = 0; x < width; ++x) {
-                                        put(_lines, x, Bars[x * 8 / width]);
-                                        put(_lines + width * _bytes, x, (x * 256 / width) * 0x010101u);
-                                }
-                                return Error::Ok;
-                        }
-
-                        BMDS_HOT_ATTR void render(uint16_t first, uint16_t count, uint8_t *dst,
-                                                  size_t stride) override {
-                                if (first == 0) ++_frame;
-                                const uint16_t stripe = static_cast<uint16_t>((_frame * 4) % (_width - 16));
-                                for (uint16_t i = 0; i < count; ++i) {
-                                        const uint16_t y = static_cast<uint16_t>(first + i);
-                                        uint8_t       *out = dst + i * stride;
-                                        std::memcpy(out, _lines + (y < _height * 3 / 4 ? 0 : _width * _bytes), stride);
-                                        for (size_t k = stripe * _bytes; k < (stripe + 16u) * _bytes; ++k)
-                                                out[k] ^= 0xff;
-                                }
-                                return;
-                        }
-
-                        // Framebuffer: the stripe's old place back from the line template,
-                        // its new one inverted.
-                        // The frame count the stripe's place follows (4 pixels a frame).
-                        void setFrame(uint32_t frame) {
-                                _frame = frame;
-                                return;
-                        }
-
-                        BMDS_HOT_ATTR void frame(uint8_t *fb, size_t stride) override {
-                                const uint16_t old = static_cast<uint16_t>((_frame * 4) % (_width - 16));
-                                ++_frame;
-                                const uint16_t now = static_cast<uint16_t>((_frame * 4) % (_width - 16));
-                                const size_t   span = 16u * _bytes;
-                                for (uint16_t y = 0; y < _height; ++y) {
-                                        uint8_t       *line = fb + y * stride;
-                                        const uint8_t *tmpl = _lines + (y < _height * 3 / 4 ? 0 : _width * _bytes);
-                                        std::memcpy(line + old * _bytes, tmpl + old * _bytes, span);
-                                        for (size_t k = now * _bytes; k < now * _bytes + span; ++k)
-                                                line[k] = tmpl[k] ^ 0xff;
-                                        // Written back for the DMA: the two places, as one span.
-                                        const uint16_t from = old < now ? old : now;
-                                        const uint16_t to = static_cast<uint16_t>((old < now ? now : old) + 16);
-                                        (void)esp_cache_msync(line + from * _bytes, size_t(to - from) * _bytes,
-                                                              ESP_CACHE_MSYNC_FLAG_DIR_C2M |
-                                                                      ESP_CACHE_MSYNC_FLAG_UNALIGNED);
-                                }
-                                return;
-                        }
-
-                private:
-                        void put(uint8_t *line, uint16_t x, uint32_t rgb) const {
-                                const uint8_t r = static_cast<uint8_t>(rgb >> 16), g = static_cast<uint8_t>(rgb >> 8),
-                                              b = static_cast<uint8_t>(rgb);
-                                if (_bytes == 2) {
-                                        const uint16_t p =
-                                                static_cast<uint16_t>((r >> 3) << 11 | (g >> 2) << 5 | (b >> 3));
-                                        line[2 * x] = static_cast<uint8_t>(p);
-                                        line[2 * x + 1] = static_cast<uint8_t>(p >> 8);
-                                } else {
-                                        line[3 * x] = b;
-                                        line[3 * x + 1] = g;
-                                        line[3 * x + 2] = r;
-                                }
-                                return;
-                        }
-
-                        uint8_t *_lines = nullptr;
-                        size_t   _bytes = 2;
-                        uint16_t _width = 0;
-                        uint16_t _height = 0;
-                        uint32_t _frame = 0;
-        };
-
-        void                            stopAnim(); // `display anim`, below
-        TestPattern                     testPattern;
-        uint64_t                        testStartUs = 0;
-
         // The board's bridge, attached on first use.
         Result<Lt8912b *> attachBridge() {
                 auto [d, err] = Display::display(0);
                 if (err.isError()) return makeError<Lt8912b *>(err);
                 return makeResult(&d->bridge());
         }
-
-        // True once display 0 (its bridge) has answered; its parts are then there.
-        bool hasDisplay() {
-                return Display::display(0).isOk();
-        }
-
         // True, with a message, while another user (the desktop) has the display.
         bool isClaimed(CommandContext &ctx) {
                 auto [d, err] = Display::display(0);
@@ -189,7 +76,6 @@ namespace {
                 }
                 return err.isOk() ? b : nullptr;
         }
-
         // EDID block @p n (0 or 1) from the monitor, over the bridge's bus.
         Error readEdid(I2cBus &bus, uint8_t n, uint8_t (&block)[Edid::BlockBytes]) {
                 auto [ddc, err] = bus.device(EdidAddress, DdcHz, TimeoutMs);
@@ -197,7 +83,6 @@ namespace {
                 const uint8_t offset = static_cast<uint8_t>(n * Edid::BlockBytes);
                 return ddc->writeRead(ByteSpan(&offset, 1), WritableByteSpan(block, sizeof(block)), TimeoutMs);
         }
-
         void printTiming(CommandContext &ctx, const VideoTiming &t, const char *note) {
                 const uint32_t mhz = t.refreshMilliHz();
                 // Interlaced: the frame's lines, the field rate.
@@ -209,7 +94,6 @@ namespace {
                            t.hSyncHigh ? '+' : '-', t.vActive, t.vFront, t.vSync, t.vBack, t.vSyncHigh ? '+' : '-');
                 return;
         }
-
         int showStatus(CommandContext &ctx) {
                 Lt8912b *b = bridge(ctx);
                 if (b == nullptr) return Shell::ExitFailure;
@@ -243,7 +127,6 @@ namespace {
                 if (edid.preferred.pixelKhz != 0) printTiming(ctx, edid.preferred, "preferred");
                 return Shell::ExitSuccess;
         }
-
         // The raw EDID: the base block and the first extension.
         // A list of modes, a few to a line under @p label.
         class ModeList {
@@ -378,328 +261,190 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
-        // Display 0's parts: only once `hasDisplay()`.
-        Framebuffer &frames() {
-                return Display::display(0).value()->framebuffer();
+        // Display 0, or null with a message.
+        Display *display0(CommandContext &ctx) {
+                auto [d, err] = Display::display(0);
+                if (err == Error::NotSupported) {
+                        ctx.eprintf("display: this board has no HDMI bridge\n");
+                } else if (err.isError()) {
+                        ctx.eprintf("display: %s\n", err.desc());
+                }
+                return err.isOk() ? d : nullptr;
         }
 
-        Scanout &scanout() {
-                return Display::display(0).value()->scanout();
+        // Display 0 if it is showing, or null with a message.
+        Display *running(CommandContext &ctx) {
+                Display *d = display0(ctx);
+                if (d != nullptr && !d->isRunning()) {
+                        ctx.eprintf("display: not started ('display start')\n");
+                        return nullptr;
+                }
+                return d;
         }
 
-        // Sets the bridge up and starts the test picture in @p mode.
-        // The mode running, for a rebuild's bridge set-up.
-        VideoTiming runningTiming;
+        void stopAnim(); // below
 
-        // A rebuilt DSI link: the bridge set up again, as at the start (after a
-        // link drop its receiver alone doesn't always lock).
-        void onLinkRestart(void *arg) {
-                auto &b = *static_cast<Lt8912b *>(arg);
-                if (b.configure(runningTiming, board().display.dsiLanes, true).isOk()) (void)b.resetReceiver();
-                return;
-        }
-
-        // Bring-up knobs for 16-bit links (`display test MODE 565 ... pack=N lane24`).
-        uint8_t testPacking = 0;
-        bool    testFullLane = false;
-        bool    testFree = true; // the free-running ring, unless `display test MODE ... strict`
-
-        Error startTest(Lt8912b &b, const VideoTiming &timing, Scanout::Format format, uint16_t lines, uint8_t blocks,
-                        bool framebuffer, bool fb565 = false) {
+        // display start [720|1080|WxH@HZ] [single|double]
+        int runStart(CommandContext &ctx, Args args) {
+                Display *d = display0(ctx);
+                if (d == nullptr || isClaimed(ctx)) return Shell::ExitFailure;
+                VideoTiming        mode = TestModes[0].timing;
+                Surface::Buffering buffering = Surface::Buffering::Single;
+                for (size_t i = 2; i < args.size(); ++i) {
+                        bool named = false;
+                        for (const TestMode &m : TestModes) {
+                                if (std::strcmp(args[i], m.name) != 0) continue;
+                                mode = m.timing;
+                                named = true;
+                        }
+                        if (named) continue;
+                        if (std::strcmp(args[i], "single") == 0) {
+                                buffering = Surface::Buffering::Single;
+                        } else if (std::strcmp(args[i], "double") == 0) {
+                                buffering = Surface::Buffering::Double;
+                        } else {
+                                auto [t, perr] = VideoModes::parse(args[i]);
+                                if (perr.isError()) {
+                                        ctx.eprintf("display: %s: not a mode (720, 1080, or WIDTHxHEIGHT@HZ)\n",
+                                                    args[i]);
+                                        return Shell::ExitUsage;
+                                }
+                                mode = t;
+                        }
+                }
                 stopAnim();
-                scanout().stop();
-                frames().stop();
-                const BoardDisplay &d = board().display;
-                Scanout::Config     c;
-                c.timing = timing;
-                runningTiming = timing;
-                c.format = format;
-                c.lanes = d.dsiLanes;
-                c.phyLdo = d.phyLdo;
-                c.phyLdoMv = d.phyLdoMv;
-                c.linesPerBlock = lines;
-                c.blocks = blocks;
-                c.framebuffer = framebuffer;
-                c.linkPacking = testPacking;
-                c.fullLaneRate = testFullLane;
-                c.freeRunning = testFree;
-                // The test palette: the eight bars, then a gray ramp.
-                static uint32_t           palette[PaletteExpander::PaletteSize];
-                static constexpr uint32_t Bars[8] = {0xffffff, 0xffff00, 0x00ffff, 0x00ff00,
-                                                     0xff00ff, 0xff0000, 0x0000ff, 0x000000};
-                for (size_t i = 0; i < PaletteExpander::PaletteSize; ++i)
-                        palette[i] = i < 8 ? Bars[i] : static_cast<uint32_t>((i - 8) * 255 / 247) * 0x010101u;
-                c.palette = palette;
-                // A rebuilt link: the bridge chip set up again.
-                c.onRestart = onLinkRestart;
-                c.onRestartArg = &b;
-                Error err = b.configure(c.timing, c.lanes, true);
-                if (err.isOk()) err = testPattern.setUp(c.format, c.timing.hActive, c.timing.vActive);
-                if (err.isOk() && fb565) {
-                        // Both buffers drawn once, the stripe in a different place in each
-                        // (`display present` shows the swaps), and written back in pieces
-                        // (a cache operation runs with interrupts off).
-                        Framebuffer &f = frames();
-                        err = f.start(c.timing.hActive, c.timing.vActive);
-                        const size_t bytes = f.stride() * f.height();
-                        for (int i = 0; i < 2 && err.isOk(); ++i) {
-                                uint8_t *buffer = i == 0 ? f.front() : f.back();
-                                testPattern.setFrame(i == 0 ? 0 : 100);
-                                testPattern.render(0, f.height(), buffer, f.stride());
-                                for (size_t off = 0; off < bytes; off += 64 * 1024)
-                                        (void)esp_cache_msync(buffer + off,
-                                                              bytes - off < 64 * 1024 ? bytes - off : 64 * 1024,
-                                                              ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-                        }
-                        if (err.isOk()) err = scanout().start(c, f);
-                } else if (err.isOk()) {
-                        err = scanout().start(c, testPattern);
-                }
-                if (err.isError()) return err;
-                testStartUs = System::uptimeUs();
-                return b.resetReceiver();
-        }
-
-        // The fewest lines a block worth taking by default: every block costs a
-        // fixed amount besides its lines (devplan/display.md §8).
-        constexpr uint16_t MinBlockLines = 4;
-
-        // display test 720|1080|WxH@Hz [cpu|pal|565|dma|fb|fb565] [lines per block] [blocks] | off
-        int runTest(CommandContext &ctx, Args args) {
-                Lt8912b *b = bridge(ctx);
-                if (b == nullptr || isClaimed(ctx)) return Shell::ExitFailure;
-                if (std::strcmp(args[2], "off") == 0) {
-                        stopAnim();
-                        scanout().stop();
-                        frames().stop();
-                        (void)b->setOutput(false);
-                        return Shell::ExitSuccess;
-                }
-                // Knobs anywhere after the mode: pack=N, lane24, strict (the ring stops for a late block).
-                testPacking = 0;
-                testFullLane = false;
-                testFree = true;
-                size_t positional = args.size();
-                for (size_t i = 3; i < args.size(); ++i) {
-                        const bool pack = std::strncmp(args[i], "pack=", 5) == 0;
-                        if (pack) testPacking = static_cast<uint8_t>(std::atoi(args[i] + 5));
-                        const bool lane24 = std::strcmp(args[i], "lane24") == 0;
-                        const bool strict = std::strcmp(args[i], "strict") == 0;
-                        if (lane24) testFullLane = true;
-                        if (strict) testFree = false;
-                        if ((pack || lane24 || strict) && i < positional) positional = i;
-                }
-                if (positional > 6) return ctx.usage();
-                args = Args(args.data(), positional);
-                VideoTiming timing;
-                bool        found = false;
-                for (const TestMode &m : TestModes) {
-                        if (std::strcmp(m.name, args[2]) == 0) {
-                                timing = m.timing;
-                                found = true;
-                        }
-                }
-                if (!found) {
-                        auto [t, perr] = VideoModes::parse(args[2]);
-                        if (perr.isError()) {
-                                ctx.eprintf("display: %s: not a mode (720, 1080, or WIDTHxHEIGHT@HZ)\n", args[2]);
-                                return Shell::ExitUsage;
-                        }
-                        timing = t;
-                }
-                // The DSI link carries 24 bits a pixel on its lanes, 1.5 Gbps each at
-                // most; the pixel clock is a fixed PLL divided, so the mode is fitted
-                // to one (its front porch takes up the difference).
-                const BoardDisplay       &d = board().display;
-                const uint32_t            maxKhz = d.dsiLanes * 1'500'000u / 24u;
-                static constexpr uint32_t Plls[] = {240'000, 160'000};
-                auto [fitted, ferr] = VideoModes::fitToClock(timing, Plls, 2, maxKhz);
-                if (ferr.isError()) {
-                        ctx.eprintf(
-                                "display: %s needs a %u.%03u MHz pixel clock; the DSI link carries %u MHz at most\n",
-                                args[2], static_cast<unsigned>(timing.pixelKhz / 1000),
-                                static_cast<unsigned>(timing.pixelKhz % 1000), static_cast<unsigned>(maxKhz / 1000));
-                        return Shell::ExitFailure;
-                }
-                timing = fitted;
-                Scanout::Format format = Scanout::Format::Rgb888;
-                bool            framebuffer = false;
-                bool            fb565 = false;
-                if (args.size() > 3) {
-                        if (std::strcmp(args[3], "fb") == 0) {
-                                framebuffer = true;
-                        } else if (std::strcmp(args[3], "fb565") == 0) {
-                                fb565 = true;
-                                format = Scanout::Format::Rgb565Expanded;
-                        } else if (std::strcmp(args[3], "565") == 0) {
-                                format = Scanout::Format::Rgb565;
-                        } else if (std::strcmp(args[3], "dma") == 0) {
-                                format = Scanout::Format::Rgb565Expanded;
-                        } else if (std::strcmp(args[3], "pal") == 0 || std::strcmp(args[3], "ppa") == 0) {
-                                format = Scanout::Format::Indexed8;
-                        } else if (std::strcmp(args[3], "888") != 0 && std::strcmp(args[3], "cpu") != 0) {
-                                return ctx.usage();
-                        }
-                }
-                // Lines a block, unless given: the most up to 24 for the framebuffer's
-                // ring (devplan/display.md V11), 8 otherwise, that divide the height.
-                uint16_t lines = 0;
-                if (args.size() > 4) {
-                        lines = static_cast<uint16_t>(std::atoi(args[4]));
-                } else {
-                        const uint16_t most = fb565 ? 24 : 8;
-                        for (lines = most; lines > 0 && timing.vActive % lines != 0; --lines) {}
-                        if (lines < MinBlockLines) {
-                                ctx.eprintf("display: no block of %u to %u lines divides %u lines; give one\n",
-                                            MinBlockLines, most, timing.vActive);
-                                return Shell::ExitFailure;
-                        }
-                }
-                uint8_t  blocks = args.size() > 5 ? static_cast<uint8_t>(std::atoi(args[5])) : 3;
-                if (framebuffer) {
-                        // The frame in as many blocks (at most 16) as divide its lines.
-                        blocks = 16;
-                        while (timing.vActive % blocks != 0) --blocks;
-                        lines = static_cast<uint16_t>(timing.vActive / blocks);
-                }
-                if (lines == 0 || timing.vActive % lines != 0) {
-                        ctx.eprintf("display: %u lines a block doesn't divide %u lines\n", lines, timing.vActive);
-                        return Shell::ExitFailure;
-                }
-                const Error err = startTest(*b, timing, format, lines, blocks, framebuffer, fb565);
+                const Error err = d->start(mode, buffering);
                 if (err.isError()) {
-                        ctx.eprintf("display: test: %s\n", err.desc());
+                        ctx.eprintf("display: start: %s\n", err.desc());
                         return Shell::ExitFailure;
                 }
-                const VideoTiming &t = timing;
+                const VideoTiming &t = d->timing();
                 const uint32_t     mhz = t.refreshMilliHz();
-                ctx.printf("Test:     %ux%u at %u.%03u Hz, %u.%03u MHz, %s path, %u blocks of %u lines (%u bytes)\n",
+                ctx.printf("Display:  %ux%u at %u.%03u Hz, %u.%03u MHz, surface 0 %s-buffered (RGB888, PSRAM)\n",
                            t.hActive, t.vActive, static_cast<unsigned>(mhz / 1000), static_cast<unsigned>(mhz % 1000),
                            static_cast<unsigned>(t.pixelKhz / 1000), static_cast<unsigned>(t.pixelKhz % 1000),
-                           framebuffer                                 ? "framebuffer (PSRAM)"
-                           : fb565                                     ? "RGB565 framebuffer (PSRAM), 2D-DMA widened"
-                           : format == Scanout::Format::Rgb565         ? "CPU (RGB565)"
-                           : format == Scanout::Format::Rgb888         ? "CPU"
-                           : format == Scanout::Format::Rgb565Expanded ? "2D-DMA (RGB565 widened)"
-                                                                       : "PPA (8-bit palette)",
-                           blocks, lines, static_cast<unsigned>(scanout().ringBytes()));
-                ctx.printf("Timing:   h %u %u %u %u %c, v %u %u %u %u %c\n", t.hActive, t.hFront, t.hSync, t.hBack,
-                           t.hSyncHigh ? '+' : '-', t.vActive, t.vFront, t.vSync, t.vBack, t.vSyncHigh ? '+' : '-');
+                           buffering == Surface::Buffering::Double ? "double" : "single");
+                return Shell::ExitSuccess;
+        }
+
+        int runOff(CommandContext &ctx) {
+                Display *d = display0(ctx);
+                if (d == nullptr || isClaimed(ctx)) return Shell::ExitFailure;
+                stopAnim();
+                d->stop();
+                (void)d->bridge().setOutput(false);
                 return Shell::ExitSuccess;
         }
 
         int runStats(CommandContext &ctx) {
-                if (!hasDisplay() || !scanout().isRunning()) {
-                        ctx.eprintf("display: no scanout running\n");
-                        return Shell::ExitFailure;
-                }
-                const Scanout::Stats s = scanout().stats();
-                const uint64_t       us = System::uptimeUs() - testStartUs;
-                const uint64_t       mhz = 360; // cycles per microsecond (the CPU clock)
-                const uint64_t       avg = s.blocks == 0 ? 0 : s.renderCycles / s.blocks;
-                const uint64_t       loadTenths = us == 0 ? 0 : s.renderCycles * 1000 / (us * mhz);
-                ctx.printf("Scanout:  %u blocks, %u frames in %llu ms (%llu.%01llu fps)\n",
-                           static_cast<unsigned>(s.blocks), static_cast<unsigned>(s.frames),
-                           static_cast<unsigned long long>(us / 1000),
-                           static_cast<unsigned long long>(us == 0 ? 0 : uint64_t(s.frames) * 1000000 / us),
-                           static_cast<unsigned long long>(us == 0 ? 0 : uint64_t(s.frames) * 10000000 / us % 10));
-                ctx.printf(
-                        "Problems: %u late, %u skipped, %u stalls, %u underruns, %u resyncs, %u rebuilds (%u failed)\n",
-                        static_cast<unsigned>(s.late), static_cast<unsigned>(s.skipped),
-                        static_cast<unsigned>(s.stalls), static_cast<unsigned>(s.underruns),
-                        static_cast<unsigned>(s.resyncs), static_cast<unsigned>(s.rebuilds),
-                        static_cast<unsigned>(s.resyncFailures));
-                ctx.printf("Sync:     %u cycles at most; stalls at blocks", static_cast<unsigned>(s.syncCyclesMax));
-                for (uint32_t at : s.stallAt) ctx.printf(" %u", static_cast<unsigned>(at));
-                ctx.printf("\n");
-                if (s.expandCycles != 0)
-                        ctx.printf("PPA:      %llu cycles a block on average, %u at most, %u errors\n",
-                                   static_cast<unsigned long long>(s.blocks == 0 ? 0 : s.expandCycles / s.blocks),
-                                   static_cast<unsigned>(s.expandCyclesMax), static_cast<unsigned>(s.expandErrors));
-                ctx.printf("DMA:      on buffer %u, events 0x%08x, %u moved; bridge FIFO %u\n",
-                           static_cast<unsigned>(s.dmaItem), static_cast<unsigned>(s.dmaStatus),
-                           static_cast<unsigned>(s.dmaAmount), static_cast<unsigned>(s.bridgeFifo));
-                ctx.printf(
-                        "Render:   %llu cycles a block on average (%llu writing back), %u at most; %llu.%01llu%% of a "
-                        "core\n",
-                        static_cast<unsigned long long>(avg),
-                        static_cast<unsigned long long>(s.blocks == 0 ? 0 : s.syncCycles / s.blocks),
-                        static_cast<unsigned>(s.renderCyclesMax), static_cast<unsigned long long>(loadTenths / 10),
-                        static_cast<unsigned long long>(loadTenths % 10));
+                Display *d = running(ctx);
+                if (d == nullptr) return Shell::ExitFailure;
+                const Scanout::Stats s = d->scanout().stats();
+                const Surface       &surface = d->surface();
+                ctx.printf("Scanout:  %u frames, %u blocks (%u a frame), %u swaps\n", static_cast<unsigned>(s.frames),
+                           static_cast<unsigned>(s.blocks), static_cast<unsigned>(s.blocksPerFrame),
+                           static_cast<unsigned>(s.swaps));
+                ctx.printf("Problems: %u underruns, %u stalls, %u resyncs, %u rebuilds (%u failed)\n",
+                           static_cast<unsigned>(s.underruns), static_cast<unsigned>(s.stalls),
+                           static_cast<unsigned>(s.resyncs), static_cast<unsigned>(s.rebuilds),
+                           static_cast<unsigned>(s.failures));
+                ctx.printf("Surface:  %ux%u %s-buffered, %u presents shown\n", surface.width(), surface.height(),
+                           surface.buffering() == Surface::Buffering::Double ? "double" : "single",
+                           static_cast<unsigned>(surface.shownPresents()));
+                const Surface::Stats ss = surface.stats();
+                if (ss.presents > 0)
+                        ctx.printf("Swaps:    %u presents; copied forward %u rectangles, %llu pixels, %llu us (%u at "
+                                   "most); waited %llu us (%u at most)\n",
+                                   static_cast<unsigned>(ss.presents), static_cast<unsigned>(ss.forwards),
+                                   static_cast<unsigned long long>(ss.forwardPixels),
+                                   static_cast<unsigned long long>(ss.forwardUs),
+                                   static_cast<unsigned>(ss.forwardUsMax), static_cast<unsigned long long>(ss.waitUs),
+                                   static_cast<unsigned>(ss.waitUsMax));
+                ctx.printf("Buffer:   shown at %p, %u bytes\n", static_cast<const void *>(surface.shown()),
+                           static_cast<unsigned>(surface.stride() * surface.height()));
+                ctx.printf("Detail:   block interrupt %u cycles at most; DMA on block %u; bridge FIFO %u\n",
+                           static_cast<unsigned>(s.isrCyclesMax), static_cast<unsigned>(s.dmaItem),
+                           static_cast<unsigned>(s.bridgeFifo));
                 return Shell::ExitSuccess;
         }
 
-        // Bring-up diagnostics: I2C read reliability at two clocks, and what the
-        // bridge sees of the DSI input (main 0x9c-0x9f: the measured sync counts).
-        // Bring-up: `display verify` checks the ring against the framebuffer it was
-        // widened from (`display test MODE fb565`): every line one of the
-        // picture's two kinds, each RGB888 pixel's top bits its RGB565 pixel's.
-        int runVerify(CommandContext &ctx) {
-                if (!hasDisplay() || !frames().isStarted() || !scanout().isRunning()) {
-                        ctx.eprintf("display: verify needs `display test MODE fb565`\n");
-                        return Shell::ExitFailure;
-                }
-                const VideoTiming &t = runningTiming;
-                const size_t       ringBytes = scanout().ringBytes();
-                const uint8_t     *ring = scanout().ring();
-                (void)esp_cache_msync(const_cast<uint8_t *>(ring), ringBytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-                const size_t   stride888 = size_t(t.hActive) * 3;
-                const uint8_t *front = frames().front();
-                const uint8_t *kinds[2] = {front, front + size_t(t.vActive - 1) * t.hActive * 2};
-                uint32_t       lowBits = 0;
-                // One of the picture's two kinds of line, each pixel's top bits right.
-                auto matches = [&](const uint8_t *out) {
-                        for (const uint8_t *in : kinds) {
-                                size_t x = 0;
-                                for (; x < t.hActive; ++x) {
-                                        const uint32_t p = in[x * 2] | uint32_t(in[x * 2 + 1]) << 8;
-                                        const uint8_t  b = out[x * 3], g = out[x * 3 + 1], r = out[x * 3 + 2];
-                                        if ((r >> 3) != (p >> 11) || (g >> 2) != ((p >> 5) & 63) ||
-                                            (b >> 3) != (p & 31))
-                                                break;
-                                        lowBits |= (r & 7u) << 16 | (g & 3u) << 8 | (b & 7u);
+        // The test picture: eight bars over three quarters, a gray ramp below;
+        // drawn into a strip of lines in internal RAM and copied in by DMA.
+        Error drawTestPicture(Surface &surface) {
+                static constexpr uint32_t Bars[8] = {0xffffff, 0xffff00, 0x00ffff, 0x00ff00,
+                                                     0xff00ff, 0xff0000, 0x0000ff, 0x000000};
+                static constexpr uint16_t StripLines = 16;
+                const uint16_t            w = surface.width(), h = surface.height();
+                auto                     *strip =
+                        static_cast<uint8_t *>(Memory::alloc(MemSpace::InternalDma, surface.stride() * StripLines));
+                if (strip == nullptr) return Error::NoMem;
+                Error err;
+                for (uint16_t y = 0; y < h && err.isOk(); y += StripLines) {
+                        const uint16_t lines = static_cast<uint16_t>(h - y < StripLines ? h - y : StripLines);
+                        for (uint16_t r = 0; r < lines; ++r) {
+                                uint8_t   *line = strip + r * surface.stride();
+                                const bool ramp = y + r >= h * 3 / 4;
+                                for (uint16_t x = 0; x < w; ++x) {
+                                        const uint32_t rgb = ramp ? (x * 256u / w) * 0x010101u : Bars[x * 8 / w];
+                                        line[3 * x] = static_cast<uint8_t>(rgb);
+                                        line[3 * x + 1] = static_cast<uint8_t>(rgb >> 8);
+                                        line[3 * x + 2] = static_cast<uint8_t>(rgb >> 16);
                                 }
-                                if (x == t.hActive) return true;
                         }
-                        return false;
-                };
-                size_t lines = 0, bad = 0, inFlight = 0;
-                for (size_t off = 0; off + stride888 <= ringBytes; off += stride888, ++lines) {
-                        const uint8_t *out = ring + off;
-                        if (matches(out)) continue;
-                        // The line the 2D-DMA is writing is part old, part new: looked at
-                        // again once it's done (a line takes about 11 us), it's right.
-                        esp_rom_delay_us(50);
-                        (void)esp_cache_msync(const_cast<uint8_t *>(out), stride888, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-                        if (matches(out)) {
-                                ++inFlight;
-                                continue;
-                        }
-                        if (bad == 0)
-                                ctx.printf("first bad line %u: out %02x %02x %02x\n", static_cast<unsigned>(lines),
-                                           out[0], out[1], out[2]);
-                        ++bad;
+                        err = surface.blit(Rect{0, y, w, lines}, strip, surface.stride(), TimeoutMs);
                 }
-                ctx.printf("verify: %u of %u ring lines wrong (%u more being written, right 50 us later); low bits "
-                           "seen %06lx\n",
-                           static_cast<unsigned>(bad), static_cast<unsigned>(lines), static_cast<unsigned>(inFlight),
-                           static_cast<unsigned long>(lowBits));
-                return bad == 0 ? Shell::ExitSuccess : Shell::ExitFailure;
+                Memory::free(strip);
+                if (err.isOk()) err = surface.present(TimeoutMs).error();
+                return err;
         }
 
-        // Bring-up: `display present [N]` swaps the test framebuffer N times,
-        // timing each present (it waits for the next frame's start).
-        int runPresent(CommandContext &ctx, const char *count) {
-                if (isClaimed(ctx)) return Shell::ExitFailure;
-                if (!hasDisplay() || !frames().isStarted() || !scanout().isRunning()) {
-                        ctx.eprintf("display: present needs `display test MODE fb565`\n");
+        int runTestPicture(CommandContext &ctx) {
+                Display *d = running(ctx);
+                if (d == nullptr || isClaimed(ctx)) return Shell::ExitFailure;
+                stopAnim();
+                const uint64_t start = System::uptimeUs();
+                const Error    err = drawTestPicture(d->surface());
+                if (err.isError()) {
+                        ctx.eprintf("display: test: %s\n", err.desc());
                         return Shell::ExitFailure;
                 }
+                ctx.printf("test:     drawn in %llu us\n", static_cast<unsigned long long>(System::uptimeUs() - start));
+                return Shell::ExitSuccess;
+        }
+
+        // display fill X Y W H RRGGBB
+        int runFill(CommandContext &ctx, Args args) {
+                if (args.size() != 7) return ctx.usage();
+                Display *d = running(ctx);
+                if (d == nullptr || isClaimed(ctx)) return Shell::ExitFailure;
+                const Rect     r{static_cast<uint16_t>(std::atoi(args[2])), static_cast<uint16_t>(std::atoi(args[3])),
+                             static_cast<uint16_t>(std::atoi(args[4])), static_cast<uint16_t>(std::atoi(args[5]))};
+                const uint32_t rgb = static_cast<uint32_t>(std::strtoul(args[6], nullptr, 16));
+                const uint64_t start = System::uptimeUs();
+                Error          err = d->surface().fill(r, rgb, TimeoutMs);
+                const uint64_t filled = System::uptimeUs();
+                if (err.isOk()) err = d->surface().present(TimeoutMs).error();
+                if (err.isError()) {
+                        ctx.eprintf("display: fill: %s\n", err.desc());
+                        return Shell::ExitFailure;
+                }
+                ctx.printf("fill:     %u pixels in %llu us\n", static_cast<unsigned>(r.area()),
+                           static_cast<unsigned long long>(filled - start));
+                return Shell::ExitSuccess;
+        }
+
+        // display present [N]: N presents, each waited for (a double buffer
+        // swaps at a frame's start: one frame each).
+        int runPresent(CommandContext &ctx, const char *count) {
+                Display *d = running(ctx);
+                if (d == nullptr || isClaimed(ctx)) return Shell::ExitFailure;
+                stopAnim();
                 const int n = count == nullptr ? 1 : std::atoi(count);
                 uint64_t  total = 0, longest = 0;
                 for (int i = 0; i < n && !ctx.isInterrupted(); ++i) {
                         const uint64_t start = System::uptimeUs();
-                        const Error    err = frames().present(100);
+                        auto [number, err] = d->surface().present(TimeoutMs);
+                        if (err.isOk()) err = d->surface().waitShown(number, TimeoutMs);
                         const uint64_t us = System::uptimeUs() - start;
                         if (err.isError()) {
                                 ctx.eprintf("display: present: %s\n", err.desc());
@@ -708,187 +453,144 @@ namespace {
                         total += us;
                         if (us > longest) longest = us;
                 }
-                ctx.printf("present: %d swaps, %llu us each on average, %llu at most (%u swaps in all)\n", n,
+                ctx.printf("present:  %d shown, %llu us each on average, %llu at most\n", n,
                            static_cast<unsigned long long>(n > 0 ? total / n : 0),
-                           static_cast<unsigned long long>(longest), static_cast<unsigned>(frames().swaps()));
+                           static_cast<unsigned long long>(longest));
                 return Shell::ExitSuccess;
         }
 
-
-        // Bring-up: a moving picture drawn the planned way (devplan/display.md §5b
-        // step 2): squares bouncing over the bars and ramp, each frame's changes
-        // drawn into a small strip in internal RAM, blitted into the back
-        // buffer, then presented. With `copy`, the back buffer is first brought
-        // up to date from the front in full (a full-frame copy's cost).
+        // `display anim`: squares bouncing on a flat background, drawn with fills
+        // and presented every frame, from a task of its own.
         class AnimTest {
                 public:
-                        static constexpr int MaxSquares = 32;
+                        static constexpr int MaxSquares = 64;
 
-                        Error start(Framebuffer &f, int squares, bool copy) {
-                                if (_running) return Error::InvalidState;
-                                _f = &f;
-                                _count = squares < 1 ? 1 : squares > MaxSquares ? MaxSquares : squares;
-                                _copy = copy;
-                                const size_t w = f.width();
-                                _templates = static_cast<uint16_t *>(Memory::alloc(MemSpace::Internal, 2 * w * 2));
-                                _strip = static_cast<uint16_t *>(
-                                        Memory::allocAligned(MemSpace::InternalDma, StripBytes, 64));
-                                if (_templates == nullptr || _strip == nullptr) {
-                                        freeAll();
-                                        return Error::NoMem;
-                                }
-                                static constexpr uint32_t Bars[8] = {0xffffff, 0xffff00, 0x00ffff, 0x00ff00,
-                                                                     0xff00ff, 0xff0000, 0x0000ff, 0x000000};
-                                for (size_t x = 0; x < w; ++x) {
-                                        _templates[x] = rgb565(Bars[x * 8 / w]);
-                                        _templates[w + x] = rgb565(static_cast<uint32_t>(x * 256 / w) * 0x010101u);
-                                }
-                                for (int i = 0; i < _count; ++i) {
-                                        Square &q = _squares[i];
-                                        q.x = static_cast<int>((i * 157) % (f.width() - Size)) & ~1;
-                                        q.y = static_cast<int>((i * 89) % (f.height() - Size));
-                                        q.dx = (i % 2 ? 4 : -2) * (1 + i % 3 / 2);
-                                        q.dy = i % 3 ? 3 : -2;
-                                        q.color = rgb565(Colors[i % 6]);
-                                        q.px[0] = q.px[1] = q.x;
-                                        q.py[0] = q.py[1] = q.y;
-                                }
+                        bool isRunning() const { return _running; }
+
+                        Error start(Surface &surface, int count) {
+                                stop();
+                                if (count < 1 || count > MaxSquares) return Error::Invalid;
+                                _surface = &surface;
+                                _count = count;
                                 _stats = Stats();
+                                const int w = surface.width(), h = surface.height();
+                                for (int i = 0; i < count; ++i) {
+                                        Square &q = _squares[i];
+                                        q.x = ((i * 97) % (w - Size)) & ~3;
+                                        q.y = (i * 53) % (h - Size);
+                                        q.dx = (4 + 4 * (i % 3)) * (i % 2 ? -1 : 1);
+                                        q.dy = (1 + i % 5) * (i % 3 ? 1 : -1);
+                                        q.px = q.x;
+                                        q.py = q.y;
+                                        q.color = Colors[i % 6];
+                                }
+                                Error err = surface.fill(surface.bounds(), Background, TimeoutMs);
+                                for (int i = 0; i < count && err.isOk(); ++i) err = draw(_squares[i]);
+                                if (err.isOk()) err = surface.present(TimeoutMs).error();
+                                if (err.isError()) return err;
                                 _stopping.store(false);
                                 _exited.store(false);
-                                // Both buffers to the plain background first.
-                                for (int b = 0; b < 2; ++b) {
-                                        const Error err = background();
-                                        if (err.isError()) {
-                                                freeAll();
-                                                return err;
-                                        }
-                                        (void)f.present(100);
-                                }
                                 Task::Config tc;
                                 tc.name = "anim";
-                                tc.stackBytes = 4096;
+                                tc.stackBytes = 3072;
                                 tc.priority = 5;
                                 tc.core = 0;
-                                const Error err = _task.start(tc, entry, this);
-                                if (err.isError()) {
-                                        freeAll();
-                                        return err;
-                                }
-                                _running = true;
-                                return Error::Ok;
+                                err = _task.start(tc, entry, this);
+                                if (err.isOk()) _running = true;
+                                return err;
                         }
 
+                        // Stops the task; the picture stays.
                         void stop() {
-                                halt();
-                                freeAll();
-                                return;
-                        }
-
-                        // Stops drawing (after the frame under way), keeping what a check needs.
-                        void halt() {
                                 if (!_running) return;
                                 _stopping.store(true);
-                                for (int i = 0; i < 100 && !_exited.load(); ++i) Task::sleep(5);
+                                for (int i = 0; i < 200 && !_exited.load(); ++i) Task::sleep(1);
                                 (void)_task.stop();
                                 _running = false;
                                 return;
                         }
 
-                        // After `halt()`: every pixel of the front buffer against the picture
-                        // last presented (the background, the squares where they were drawn).
-                        void check(CommandContext &ctx) const {
-                                if (_templates == nullptr) return;
-                                uint8_t     *front = _f->front();
-                                const size_t bytes = _f->stride() * _f->height();
-                                for (size_t off = 0; off < bytes; off += 64 * 1024)
-                                        (void)esp_cache_msync(front + off,
-                                                              bytes - off < 64 * 1024 ? bytes - off : 64 * 1024,
-                                                              ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-                                const auto *px = reinterpret_cast<const uint16_t *>(front);
-                                size_t      wrong = 0;
-                                for (int y = 0; y < _f->height(); ++y) {
-                                        for (int x = 0; x < _f->width(); ++x) {
-                                                uint16_t want = line(y)[x];
-                                                for (int j = 0; j < _count; ++j) {
-                                                        const Square &o = _squares[j];
-                                                        if (x >= o.px[1] && x < o.px[1] + Size && y >= o.py[1] &&
-                                                            y < o.py[1] + Size)
-                                                                want = o.color;
-                                                }
-                                                const uint16_t got = px[size_t(y) * _f->width() + x];
-                                                if (got == want) continue;
-                                                if (wrong == 0)
-                                                        ctx.printf("check:    first wrong pixel (%d, %d): %04x, not "
-                                                                   "%04x\n",
-                                                                   x, y, got, want);
-                                                ++wrong;
-                                        }
-                                }
-                                ctx.printf("check:    %u of %u pixels wrong\n", static_cast<unsigned>(wrong),
-                                           static_cast<unsigned>(size_t(_f->width()) * _f->height()));
+                        void report(CommandContext &ctx) const {
+                                const uint64_t us = System::uptimeUs() - _stats.startUs;
+                                const uint32_t f = _stats.frames;
+                                ctx.printf("anim:     %d squares, %u frames in %llu ms (%u.%u fps), %u errors\n",
+                                           _count, static_cast<unsigned>(f), static_cast<unsigned long long>(us / 1000),
+                                           static_cast<unsigned>(us == 0 ? 0 : uint64_t(f) * 1'000'000 / us),
+                                           static_cast<unsigned>(us == 0 ? 0 : uint64_t(f) * 10'000'000 / us % 10),
+                                           static_cast<unsigned>(_stats.errors));
+                                ctx.printf("draw:     %llu us a frame on average, %llu at most; present %llu us on "
+                                           "average, %llu at most\n",
+                                           static_cast<unsigned long long>(f == 0 ? 0 : _stats.drawUs / f),
+                                           static_cast<unsigned long long>(_stats.drawUsMax),
+                                           static_cast<unsigned long long>(f == 0 ? 0 : _stats.presentUs / f),
+                                           static_cast<unsigned long long>(_stats.presentUsMax));
                                 return;
                         }
 
-                        bool isRunning() const { return _running; }
-
-                        void report(CommandContext &ctx) const {
-                                const Stats   &s = _stats;
-                                const uint64_t us = System::uptimeUs() - s.startUs;
-                                ctx.printf(
-                                        "anim:     %d squares%s, %u frames in %llu ms (%llu.%01llu fps), %u errors\n",
-                                        _count, _copy ? ", full copy each frame" : "", static_cast<unsigned>(s.frames),
-                                        static_cast<unsigned long long>(us / 1000),
-                                        static_cast<unsigned long long>(us ? uint64_t(s.frames) * 1000000 / us : 0),
-                                        static_cast<unsigned long long>(us ? uint64_t(s.frames) * 10000000 / us % 10
-                                                                           : 0),
-                                        static_cast<unsigned>(s.errors));
-                                const unsigned f = s.frames ? s.frames : 1;
-                                ctx.printf(
-                                        "draw:     %llu us a frame on average (%llu blitting %u bytes), %llu at most\n",
-                                        static_cast<unsigned long long>(s.drawUs / f),
-                                        static_cast<unsigned long long>(s.blitUs / f),
-                                        static_cast<unsigned>(s.blitBytes / f),
-                                        static_cast<unsigned long long>(s.drawUsMax));
-                                if (_copy)
-                                        ctx.printf("copy:     %llu us a frame on average, %llu at most (%u MB/s)\n",
-                                                   static_cast<unsigned long long>(s.copyUs / f),
-                                                   static_cast<unsigned long long>(s.copyUsMax),
-                                                   static_cast<unsigned>(s.copyUs ? uint64_t(_f->stride()) *
-                                                                                            _f->height() * s.frames /
-                                                                                            s.copyUs
-                                                                                  : 0));
-                                ctx.printf("present:  %llu us waiting on average, %llu at most\n",
-                                           static_cast<unsigned long long>(s.presentUs / f),
-                                           static_cast<unsigned long long>(s.presentUsMax));
+                        // Every pixel of the shown picture: a square's color where the
+                        // topmost square is, the background elsewhere.
+                        void check(CommandContext &ctx) const {
+                                const Surface &s = *_surface;
+                                const uint8_t *buffer = s.shown();
+                                const size_t   bytes = s.stride() * s.height();
+                                for (size_t off = 0; off < bytes; off += 64 * 1024)
+                                        (void)esp_cache_msync(const_cast<uint8_t *>(buffer) + off,
+                                                              bytes - off < 64 * 1024 ? bytes - off : 64 * 1024,
+                                                              ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+                                uint32_t wrong = 0;
+                                int      fx = -1, fy = -1, lx = -1, ly = -1;
+                                uint32_t fgot = 0, fwant = 0;
+                                for (int y = 0; y < s.height(); ++y) {
+                                        const uint8_t *line = buffer + size_t(y) * s.stride();
+                                        for (int x = 0; x < s.width(); ++x) {
+                                                uint32_t want = Background;
+                                                for (int i = 0; i < _count; ++i) {
+                                                        const Square &q = _squares[i];
+                                                        if (x >= q.px && x < q.px + Size && y >= q.py &&
+                                                            y < q.py + Size)
+                                                                want = q.color;
+                                                }
+                                                const uint8_t *p = line + 3 * x;
+                                                const uint32_t got = uint32_t(p[2]) << 16 | uint32_t(p[1]) << 8 | p[0];
+                                                if (got == want) continue;
+                                                if (wrong++ == 0) {
+                                                        fx = x;
+                                                        fy = y;
+                                                        fgot = got;
+                                                        fwant = want;
+                                                }
+                                                lx = x;
+                                                ly = y;
+                                        }
+                                }
+                                ctx.printf("check:    %u of %u pixels wrong", static_cast<unsigned>(wrong),
+                                           static_cast<unsigned>(uint32_t(s.width()) * s.height()));
+                                if (wrong > 0)
+                                        ctx.printf(" (the first at %d,%d: %06lx, not %06lx; the last at %d,%d)", fx, fy,
+                                                   static_cast<unsigned long>(fgot), static_cast<unsigned long>(fwant),
+                                                   lx, ly);
+                                ctx.printf("\n");
                                 return;
                         }
 
                 private:
-                        static constexpr int      Size = 64; // a square's side
-                        static constexpr size_t   StripBytes = 1280 * 16 * 2;
+                        static constexpr int      Size = 64;
+                        static constexpr uint32_t Background = 0x303030;
                         static constexpr uint32_t Colors[6] = {0xff4040, 0x40ff40, 0x4040ff,
                                                                0xffff40, 0x40ffff, 0xff40ff};
 
                         struct Square {
                                         int      x = 0, y = 0, dx = 0, dy = 0;
-                                        int      px[2] = {}, py[2] = {}; // the last two frames' places
-                                        uint16_t color = 0;
+                                        int      px = 0, py = 0; // where it was drawn last
+                                        uint32_t color = 0;
                         };
 
                         struct Stats {
                                         uint64_t startUs = System::uptimeUs();
                                         uint32_t frames = 0;
                                         uint32_t errors = 0;
-                                        uint64_t drawUs = 0, blitUs = 0, copyUs = 0, presentUs = 0;
-                                        uint64_t drawUsMax = 0, copyUsMax = 0, presentUsMax = 0;
-                                        uint64_t blitBytes = 0;
+                                        uint64_t drawUs = 0, presentUs = 0, drawUsMax = 0, presentUsMax = 0;
                         };
-
-                        static uint16_t rgb565(uint32_t rgb) {
-                                return static_cast<uint16_t>((rgb >> 19 & 31) << 11 | (rgb >> 10 & 63) << 5 |
-                                                             (rgb >> 3 & 31));
-                        }
 
                         static void entry(void *arg) {
                                 auto *self = static_cast<AnimTest *>(arg);
@@ -897,123 +599,61 @@ namespace {
                                 for (;;) Task::sleep(1000);
                         }
 
-                        // The plain background into the back buffer, 16 lines a blit.
-                        Error background() {
-                                const uint16_t w = _f->width();
-                                for (uint16_t y = 0; y < _f->height(); y += 16) {
-                                        const uint16_t h =
-                                                static_cast<uint16_t>(_f->height() - y < 16 ? _f->height() - y : 16);
-                                        for (uint16_t r = 0; r < h; ++r)
-                                                std::memcpy(_strip + size_t(r) * w, line(y + r), size_t(w) * 2);
-                                        Rect to;
-                                        to.y = y;
-                                        to.width = w;
-                                        to.height = h;
-                                        const Error err =
-                                                _f->blit(to, reinterpret_cast<uint8_t *>(_strip), size_t(w) * 2, 100);
-                                        if (err.isError()) return err;
-                                }
-                                return Error::Ok;
+                        Error draw(const Square &q) {
+                                return _surface->fill(
+                                        Rect{uint16_t(q.x), uint16_t(q.y), uint16_t(Size), uint16_t(Size)}, q.color,
+                                        TimeoutMs);
                         }
 
-                        const uint16_t *line(int y) const {
-                                return _templates + (y < _f->height() * 3 / 4 ? 0 : _f->width());
-                        }
-
-                        // One frame: move the squares; in the back buffer (two frames old)
-                        // redraw each square's area from then to now; present.
+                        // One frame: every square's last place cleared, every square moved
+                        // and drawn (in order: later ones on top), presented.
                         void frame() {
                                 const uint64_t start = System::uptimeUs();
-                                if (_copy) {
-                                        Rect all;
-                                        all.width = _f->width();
-                                        all.height = _f->height();
-                                        if (_f->copyFromFront(all, 100).isError()) ++_stats.errors;
-                                        const uint64_t c = System::uptimeUs() - start;
-                                        _stats.copyUs += c;
-                                        if (c > _stats.copyUsMax) _stats.copyUsMax = c;
+                                Surface       &s = *_surface;
+                                for (int i = 0; i < _count; ++i) {
+                                        Square &q = _squares[i];
+                                        if (s.fill(Rect{uint16_t(q.px), uint16_t(q.py), uint16_t(Size), uint16_t(Size)},
+                                                   Background, TimeoutMs)
+                                                    .isError())
+                                                ++_stats.errors;
                                 }
                                 for (int i = 0; i < _count; ++i) {
                                         Square &q = _squares[i];
                                         q.x += q.dx;
                                         q.y += q.dy;
-                                        if (q.x < 0 || q.x > _f->width() - Size) {
+                                        if (q.x < 0 || q.x > s.width() - Size) {
                                                 q.dx = -q.dx;
                                                 q.x += 2 * q.dx;
                                         }
-                                        if (q.y < 0 || q.y > _f->height() - Size) {
+                                        if (q.y < 0 || q.y > s.height() - Size) {
                                                 q.dy = -q.dy;
                                                 q.y += 2 * q.dy;
                                         }
-                                }
-                                for (int i = 0; i < _count; ++i) {
-                                        Square &q = _squares[i];
-                                        // The area: where the square was two frames ago (what the back
-                                        // buffer shows) and where it is now; x and width even.
-                                        const int x0 = (q.x < q.px[0] ? q.x : q.px[0]) & ~1;
-                                        const int y0 = q.y < q.py[0] ? q.y : q.py[0];
-                                        int       x1 = (q.x > q.px[0] ? q.x : q.px[0]) + Size;
-                                        const int y1 = (q.y > q.py[0] ? q.y : q.py[0]) + Size;
-                                        x1 = (x1 + 1) & ~1;
-                                        const int w = x1 - x0, h = y1 - y0;
-                                        if (size_t(w) * h * 2 > StripBytes) continue;
-                                        for (int r = 0; r < h; ++r) {
-                                                uint16_t *row = _strip + size_t(r) * w;
-                                                std::memcpy(row, line(y0 + r) + x0, size_t(w) * 2);
-                                                for (int j = 0; j < _count; ++j) {
-                                                        const Square &o = _squares[j];
-                                                        if (y0 + r < o.y || y0 + r >= o.y + Size) continue;
-                                                        const int a = o.x > x0 ? o.x : x0;
-                                                        const int b = o.x + Size < x1 ? o.x + Size : x1;
-                                                        for (int x = a; x < b; ++x) row[x - x0] = o.color;
-                                                }
-                                        }
-                                        Rect to;
-                                        to.x = static_cast<uint16_t>(x0);
-                                        to.y = static_cast<uint16_t>(y0);
-                                        to.width = static_cast<uint16_t>(w);
-                                        to.height = static_cast<uint16_t>(h);
-                                        const uint64_t b0 = System::uptimeUs();
-                                        if (_f->blit(to, reinterpret_cast<uint8_t *>(_strip), size_t(w) * 2, 100)
-                                                    .isError())
-                                                ++_stats.errors;
-                                        _stats.blitUs += System::uptimeUs() - b0;
-                                        _stats.blitBytes += size_t(w) * h * 2;
-                                }
-                                for (int i = 0; i < _count; ++i) {
-                                        Square &q = _squares[i];
-                                        q.px[0] = q.px[1];
-                                        q.py[0] = q.py[1];
-                                        q.px[1] = q.x;
-                                        q.py[1] = q.y;
+                                        if (draw(q).isError()) ++_stats.errors;
+                                        q.px = q.x;
+                                        q.py = q.y;
                                 }
                                 const uint64_t drawn = System::uptimeUs();
-                                const uint64_t d = drawn - start;
+                                if (s.present(TimeoutMs).isError()) ++_stats.errors;
+                                const uint64_t presented = System::uptimeUs();
+                                // A single buffer is never waited for: a frame's pace.
+                                if (s.buffering() == Surface::Buffering::Single) {
+                                        const uint32_t seen = s.frames();
+                                        while (s.frames() == seen && !_stopping.load()) Task::sleep(1);
+                                }
+                                const uint64_t d = drawn - start, p = presented - drawn;
                                 _stats.drawUs += d;
-                                if (d > _stats.drawUsMax) _stats.drawUsMax = d;
-                                if (_f->present(100).isError()) ++_stats.errors;
-                                const uint64_t p = System::uptimeUs() - drawn;
                                 _stats.presentUs += p;
+                                if (d > _stats.drawUsMax) _stats.drawUsMax = d;
                                 if (p > _stats.presentUsMax) _stats.presentUsMax = p;
                                 ++_stats.frames;
                                 return;
                         }
 
-                        void freeAll() {
-                                Memory::free(_templates);
-                                Memory::free(_strip);
-                                _templates = nullptr;
-                                _strip = nullptr;
-                                return;
-                        }
-
-                        Framebuffer      *_f = nullptr;
+                        Surface          *_surface = nullptr;
                         Square            _squares[MaxSquares];
                         int               _count = 0;
-                        bool              _copy = false;
                         bool              _running = false;
-                        uint16_t         *_templates = nullptr;
-                        uint16_t         *_strip = nullptr;
                         Stats             _stats;
                         std::atomic<bool> _stopping{false};
                         std::atomic<bool> _exited{false};
@@ -1032,26 +672,26 @@ namespace {
                 return;
         }
 
-        // display anim start [N] [copy] | anim stop | anim
+        // display anim start [N] | anim stop | anim
         int runAnim(CommandContext &ctx, Args args) {
                 if (args.size() >= 3 && std::strcmp(args[2], "stop") == 0) {
                         if (animObject.isCreated() && anim().isRunning()) {
+                                anim().stop();
                                 anim().report(ctx);
-                                anim().halt();
-                                anim().check(ctx);
+                                Display *d = running(ctx);
+                                // The last present shown (two frames) before the picture is read.
+                                if (d != nullptr) {
+                                        Task::sleep(40);
+                                        anim().check(ctx);
+                                }
                         }
-                        if (animObject.isCreated()) anim().stop();
                         return Shell::ExitSuccess;
                 }
                 if (args.size() >= 3 && std::strcmp(args[2], "start") == 0) {
-                        if (isClaimed(ctx)) return Shell::ExitFailure;
-                        if (!hasDisplay() || !frames().isStarted() || !scanout().isRunning()) {
-                                ctx.eprintf("display: anim needs `display test MODE fb565`\n");
-                                return Shell::ExitFailure;
-                        }
+                        Display *d = running(ctx);
+                        if (d == nullptr || isClaimed(ctx)) return Shell::ExitFailure;
                         const int   n = args.size() > 3 ? std::atoi(args[3]) : 8;
-                        const bool  copy = args.size() > 4 && std::strcmp(args[4], "copy") == 0;
-                        const Error err = anim().start(frames(), n, copy);
+                        const Error err = anim().start(d->surface(), n);
                         if (err.isError()) {
                                 ctx.eprintf("display: anim: %s\n", err.desc());
                                 return Shell::ExitFailure;
@@ -1063,43 +703,6 @@ namespace {
                         return Shell::ExitSuccess;
                 }
                 return ctx.usage();
-        }
-
-        int runCheck(CommandContext &ctx) {
-                Lt8912b *b = bridge(ctx);
-                if (b == nullptr) return Shell::ExitFailure;
-                for (uint32_t hz : {400'000u, 100'000u}) {
-                        auto [d, err] = b->bus().device(b->address(), hz, TimeoutMs);
-                        if (err.isError()) return Shell::ExitFailure;
-                        unsigned bad = 0, failed = 0;
-                        for (int i = 0; i < 200; ++i) {
-                                auto [v, rerr] = d->readRegister(0x00, TimeoutMs);
-                                if (rerr.isError()) {
-                                        ++failed;
-                                } else if (v != 0x12) {
-                                        ++bad;
-                                }
-                        }
-                        ctx.printf("i2c %u kHz: 200 reads of 0x00, %u wrong, %u failed\n",
-                                   static_cast<unsigned>(hz / 1000), bad, failed);
-                }
-                auto [d, err] = b->bus().device(b->address(), 100'000, TimeoutMs);
-                if (err.isError()) return Shell::ExitFailure;
-                ctx.printf("main:");
-                for (uint8_t r : {0x9c, 0x9d, 0x9e, 0x9f, 0x33, 0x44, 0xb2, 0xab, 0xc1}) {
-                        auto [v, rerr] = d->readRegister(r, TimeoutMs);
-                        ctx.printf(" %02x=%02x%s", r, v, rerr.isError() ? "!" : "");
-                }
-                ctx.printf("\n");
-                auto [dsi, derr] = b->bus().device(static_cast<uint8_t>(b->address() + 1), 100'000, TimeoutMs);
-                if (derr.isError()) return Shell::ExitFailure;
-                ctx.printf("dsi: ");
-                for (uint8_t r : {0x10, 0x11, 0x13, 0x18, 0x19, 0x1c, 0x1d, 0x34, 0x35, 0x36, 0x37}) {
-                        auto [v, rerr] = dsi->readRegister(r, TimeoutMs);
-                        ctx.printf(" %02x=%02x%s", r, v, rerr.isError() ? "!" : "");
-                }
-                ctx.printf("\n");
-                return Shell::ExitSuccess;
         }
 
         // Bring-up: memory traffic from this task, to see what disturbs the scanout.
@@ -1132,125 +735,36 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
-        // Bring-up: the AXI interconnect's arbitration (devplan/display.md §8,
-        // the QoS experiment). Fields of the ICM's priority and QoS registers.
-        struct QosField {
-                        const char        *name;
-                        volatile uint32_t *reg;
-                        uint8_t            shift;
-                        uint8_t            width;
-        };
-        constexpr QosField QosFields[] = {
-                {"prio.cpu", &AXI_ICM.mst_arb_priority_reg0.val, 0, 4},
-                {"prio.cache", &AXI_ICM.mst_arb_priority_reg0.val, 4, 4},
-                {"prio.dma2d", &AXI_ICM.mst_arb_priority_reg0.val, 8, 4},
-                {"prio.gdma1", &AXI_ICM.mst_arb_priority_reg0.val, 12, 4},
-                {"prio.gdma2", &AXI_ICM.mst_arb_priority_reg0.val, 16, 4},
-                {"prio.pdma", &AXI_ICM.mst_arb_priority_reg0.val, 28, 4},
-                {"slv.l2mem", &AXI_ICM.slv_arb_priority.val, 3, 3},
-                {"slv.psram", &AXI_ICM.slv_arb_priority.val, 15, 3},
-                {"arqos.cpu", &AXI_ICM.mst_arqos_reg0.val, 0, 4},
-                {"arqos.cache", &AXI_ICM.mst_arqos_reg0.val, 4, 4},
-                {"arqos.dma2d", &AXI_ICM.mst_arqos_reg0.val, 8, 4},
-                {"arqos.gdma1", &AXI_ICM.mst_arqos_reg0.val, 12, 4},
-                {"arqos.gdma2", &AXI_ICM.mst_arqos_reg0.val, 16, 4},
-                {"awqos.cpu", &AXI_ICM.mst_awqos_reg0.val, 0, 4},
-                {"awqos.cache", &AXI_ICM.mst_awqos_reg0.val, 4, 4},
-                {"awqos.dma2d", &AXI_ICM.mst_awqos_reg0.val, 8, 4},
-        };
-
-        struct QosMaster {
-                        const char *name;
-                        uint8_t     id; // axi_icm_ll_master_id_t
-        };
-        constexpr QosMaster QosMasters[] = {{"cpu", AXI_ICM_MASTER_CPU},          {"cache", AXI_ICM_MASTER_CACHE},
-                                            {"gdma1", AXI_ICM_MASTER_DW_GDMA_M0}, {"gdma2", AXI_ICM_MASTER_DW_GDMA_M1},
-                                            {"pdma", AXI_ICM_MASTER_GDMA},        {"dma2d", AXI_ICM_MASTER_DMA2D}};
-
-        // One regulator command: 0 the burstiness (data[23:16], data[0] on), 1 the rates.
-        void qosCommand(uint32_t master, uint32_t write, uint32_t cmd, uint32_t data) {
-                while (AXI_ICM_QOS.cmd.reg_axi_cmd_en) {}
-                AXI_ICM_QOS.data.val = data;
-                AXI_ICM_QOS.cmd.reg_axi_rd_wr_cmd = 1;
-                AXI_ICM_QOS.cmd.reg_rd_wr_chan = write;
-                AXI_ICM_QOS.cmd.reg_axi_master_port = master;
-                AXI_ICM_QOS.cmd.reg_axi_cmd = cmd;
-                AXI_ICM_QOS.cmd.reg_axi_cmd_en = 1;
-                while (AXI_ICM_QOS.cmd.reg_axi_cmd_en) {}
-                return;
-        }
-
-        // display qos | qos FIELD VALUE | qos limit MASTER r|w BURST PEAK RATE | qos limit MASTER r|w off
-        int runQos(CommandContext &ctx, Args args) {
-                if (args.size() == 2) {
-                        for (const QosField &f : QosFields)
-                                ctx.printf("%-12s %u\n", f.name,
-                                           static_cast<unsigned>((*f.reg >> f.shift) & ((1u << f.width) - 1)));
-                        return Shell::ExitSuccess;
-                }
-                if (args.size() == 4) {
-                        for (const QosField &f : QosFields) {
-                                if (std::strcmp(args[2], f.name) != 0) continue;
-                                const auto     v = static_cast<uint32_t>(std::atoi(args[3]));
-                                const uint32_t mask = ((1u << f.width) - 1) << f.shift;
-                                *f.reg = (*f.reg & ~mask) | ((v << f.shift) & mask);
-                                return Shell::ExitSuccess;
-                        }
-                        return ctx.usage();
-                }
-                if (args.size() >= 6 && std::strcmp(args[2], "limit") == 0) {
-                        const QosMaster *m = nullptr;
-                        for (const QosMaster &q : QosMasters)
-                                if (std::strcmp(args[3], q.name) == 0) m = &q;
-                        const uint32_t write = std::strcmp(args[4], "w") == 0 ? 1 : 0;
-                        if (m == nullptr || (write == 0 && std::strcmp(args[4], "r") != 0)) return ctx.usage();
-                        if (args.size() == 6 && std::strcmp(args[5], "off") == 0) {
-                                qosCommand(m->id, write, 0, 0); // the regulator off
-                                return Shell::ExitSuccess;
-                        }
-                        if (args.size() != 8) return ctx.usage();
-                        const int burst = std::atoi(args[5]), peak = std::atoi(args[6]), rate = std::atoi(args[7]);
-                        if (burst < 1 || burst > 256 || peak < 0 || peak >= rate || rate > 11) return ctx.usage();
-                        // Levels: 0 is 1/2 of the cycles, 11 is 1/4096 (axi_icm_ll.h).
-                        qosCommand(m->id, write, 1, (0x80000000u >> peak) + (0x8000u >> rate));
-                        qosCommand(m->id, write, 0, uint32_t(burst - 1) << 16 | 1);
-                        return Shell::ExitSuccess;
-                }
-                return ctx.usage();
-        }
-
         int runDisplay(CommandContext &ctx) {
                 const Args args = ctx.args();
                 if (args.size() == 1) return showStatus(ctx);
-                if (args.size() == 2 && std::strcmp(args[1], "edid") == 0) return showEdid(ctx, false);
-                if (args.size() == 3 && std::strcmp(args[1], "edid") == 0 && std::strcmp(args[2], "raw") == 0)
+                const char *what = args[1];
+                if (args.size() == 2 && std::strcmp(what, "edid") == 0) return showEdid(ctx, false);
+                if (args.size() == 3 && std::strcmp(what, "edid") == 0 && std::strcmp(args[2], "raw") == 0)
                         return showEdid(ctx, true);
-                if (args.size() == 2 && std::strcmp(args[1], "scan") == 0) return scanBus(ctx);
-                if (args.size() >= 3 && std::strcmp(args[1], "test") == 0) return runTest(ctx, args);
-                if (args.size() == 2 && std::strcmp(args[1], "stats") == 0) return runStats(ctx);
-                if (args.size() == 3 && std::strcmp(args[1], "resync") == 0 && hasDisplay()) {
-                        scanout().requestResync(std::atoi(args[2]));
-                        return Shell::ExitSuccess;
-                }
-                if (args.size() == 3 && std::strcmp(args[1], "stress") == 0) return runStress(ctx, args[2]);
-                if (args.size() == 2 && std::strcmp(args[1], "check") == 0) return runCheck(ctx);
-                if (args.size() >= 2 && std::strcmp(args[1], "qos") == 0) return runQos(ctx, args);
-                if (args.size() == 2 && std::strcmp(args[1], "verify") == 0) return runVerify(ctx);
-                if (args.size() >= 2 && std::strcmp(args[1], "anim") == 0) return runAnim(ctx, args);
-                if (args.size() <= 3 && args.size() >= 2 && std::strcmp(args[1], "present") == 0)
+                if (args.size() == 2 && std::strcmp(what, "scan") == 0) return scanBus(ctx);
+                if (std::strcmp(what, "start") == 0) return runStart(ctx, args);
+                if (args.size() == 2 && std::strcmp(what, "off") == 0) return runOff(ctx);
+                if (args.size() == 2 && std::strcmp(what, "stats") == 0) return runStats(ctx);
+                if (args.size() == 2 && std::strcmp(what, "test") == 0) return runTestPicture(ctx);
+                if (std::strcmp(what, "fill") == 0) return runFill(ctx, args);
+                if (args.size() <= 3 && std::strcmp(what, "present") == 0)
                         return runPresent(ctx, args.size() == 3 ? args[2] : nullptr);
+                if (std::strcmp(what, "anim") == 0) return runAnim(ctx, args);
+                if (args.size() == 3 && std::strcmp(what, "stress") == 0) return runStress(ctx, args[2]);
                 return ctx.usage();
         }
 
 } // namespace
 
-Error DisplayTest::init() {
-#if CONFIG_BMDS_DISPLAY_TEST_AT_BOOT
-        auto [b, err] = attachBridge();
+Error DisplayBoot::init() {
+#if CONFIG_BMDS_DISPLAY_AT_BOOT
+        auto [d, err] = Display::display(0);
         if (err == Error::NotSupported) return Error::Ok; // no display on this board
         if (err.isError()) return err;
-        err = startTest(*b, TestModes[0].timing, Scanout::Format::Rgb888, 8, 3, false);
-        if (err.isOk()) bmdsInfo("Display: 720p60 test picture on HDMI ('display test off' stops it)");
+        err = d->start(TestModes[0].timing, Surface::Buffering::Single);
+        if (err.isOk()) err = drawTestPicture(d->surface());
+        if (err.isOk()) bmdsInfo("Display: 1280x720 at 60 Hz on HDMI, the test picture on surface 0");
         return err;
 #else
         return Error::Ok;
@@ -1258,11 +772,9 @@ Error DisplayTest::init() {
 }
 
 BMDS_SHELL_COMMAND(display, runDisplay,
-                   "[edid [raw]|scan|check|stats|test 720|1080|WxH@HZ [cpu|pal|565|dma|fb|fb565] [lines] [blocks] "
-                   "[strict]|test off|present [N]|verify|anim [start [N] [copy]|stop]|stress "
-                   "psram|write|internal|qos [FIELD N|limit MASTER r|w BURST PEAK RATE|off]]",
-                   "Show the HDMI bridge and the monitor; 'edid' decodes the monitor's EDID ('raw': its bytes), 'scan' "
-                   "lists the bus, "
-                   "'test' starts the test picture (bring-up), 'stats' shows the scanout's counters")
+                   "[edid [raw]|scan|start [720|1080|WxH@HZ] [single|double]|off|stats|test|fill X Y W H RRGGBB|"
+                   "present [N]|anim [start [N]|stop]|stress psram|write|internal]",
+                   "Show the HDMI bridge and the monitor; 'edid' decodes the monitor's EDID ('raw': its bytes), "
+                   "'scan' lists the bus, 'start' shows surface 0, 'test', 'fill' and 'anim' draw on it")
 
 BMDS_NAMESPACE_END

@@ -9,9 +9,12 @@ CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 # --- PSRAM (32 MB on the ESP32-P4NRW32 module) ---------------------------
-# 200 MHz requires IDF_EXPERIMENTAL_FEATURES; revisit in Phase 4 (framebuffer).
+# 200 MHz (devplan/psram.md): the display scans an RGB888 surface straight from
+# PSRAM (devplan/display.md §5c), which 80 MHz can't feed. IDF lists 200 MHz as
+# experimental: memtest soaks, a warm run and a 35-minute scan soak found 0 errors.
+CONFIG_IDF_EXPERIMENTAL_FEATURES=y
 CONFIG_SPIRAM=y
-CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_SPEED_200M=y
 # The boot-time PSRAM memory test costs ~1.3 s of every boot.
 CONFIG_SPIRAM_MEMTEST=n
 

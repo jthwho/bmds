@@ -12,92 +12,28 @@
 #include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
-#include <bmds/colorexpander.h>
 #include <bmds/edid.h>
-#include <bmds/framebuffer.h>
 #include <bmds/error.h>
-#include <bmds/paletteexpander.h>
 #include <bmds/semaphore.h>
+#include <bmds/surface.h>
 #include <bmds/task.h>
 
 BMDS_NAMESPACE_BEGIN
 
 /**
- * @brief Draws lines of the picture as they are about to be sent
- *        (`Scanout`).
+ * @brief A surface on the MIPI-DSI output (`devplan/display.md` §5c): the
+ *        DMA reads its shown buffer straight from PSRAM into the DSI bridge.
  *
- * Called from the scanout's refill task, never from an interrupt: it must
- * finish well within the time the lines take to send (at 1280×720, 60 Hz,
- * 22.5 µs a line), allocate nothing and not block.
- */
-class LineSource {
-        public:
-                /**
-                 * @brief Fills @p count lines starting at line @p first (0 is the
-                 *        top) into @p dst, @p stride bytes apart, in the scanout's
-                 *        format and width.
-                 * @hotpath
-                 */
-                virtual void render(uint16_t first, uint16_t count, uint8_t *dst, size_t stride) = 0;
-
-                /**
-                 * @brief A framebuffer scanout (`Config::framebuffer`) started a
-                 *        frame: change what moves in @p frame (the whole picture,
-                 *        @p stride bytes a line), and write back from the cache
-                 *        what it changed (a write-back of the whole frame would
-                 *        hold up the DMA's reads).
-                 */
-                virtual void frame(uint8_t *frame, size_t stride) {
-                        (void)frame;
-                        (void)stride;
-                        return;
-                }
-
-        protected:
-                ~LineSource() = default;
-};
-
-/**
- * @brief Composes each block of the picture straight into the scanout's ring
- *        by DMA (`devplan/windows.md` §4b): windows as sprites, no framebuffer.
+ * The DW-GDMA streams a circular list of one descriptor a block (the frame
+ * in up to `MaxBlocks` blocks); each block's interrupt makes the finished
+ * descriptors valid again (the DMA's write-back clears them) and counts the
+ * frames. A double-buffered surface's swap is made at a frame's start: when
+ * one is asked for and the DMA is on the frame's last block, the other
+ * descriptors are pointed at the new buffer, and at the next frame's start
+ * the last one too.
  *
- * Called from the scanout's refill task, never from an interrupt: a block
- * must be done well within the time its lines take to send. Nothing may
- * allocate or wait for anything but the DMA it starts.
- */
-class BlockSource {
-        public:
-                /**
-                 * @brief Frame @p frame is beginning (its first block comes next,
-                 *        or the first after skipped ones): take the positions
-                 *        and buffers it shows now. @hotpath
-                 */
-                virtual void beginFrame(uint32_t frame) = 0;
-
-                /**
-                 * @brief Writes lines @p first to @p first + @p count - 1 into
-                 *        @p dst (RGB888, @p stride bytes a line) by DMA, and
-                 *        returns when they are written. @hotpath
-                 */
-                virtual void composeBlock(uint16_t first, uint16_t count, uint8_t *dst, size_t stride) = 0;
-
-        protected:
-                ~BlockSource() = default;
-};
-
-/**
- * @brief A line-rendered picture on the MIPI-DSI output (`devplan/display.md`
- *        §5): no framebuffer.
- *
- * The DSI controller's DMA streams a circular ring of `blocks` buffers of
- * `linesPerBlock` lines each, in internal DMA RAM. When a buffer has been
- * sent, the refill task (pinned to a core, high priority) asks the
- * `LineSource` for the lines that buffer carries next. Free-running (the
- * default) the DMA never waits: the block interrupt keeps every descriptor
- * valid, working out from the DMA's position how many blocks went out, and
- * the refill draws the blocks ahead of the one going out, skipping any it
- * is too late for (they go out stale). Otherwise (`freeRunning` off) the
- * refill hands each buffer back and the DMA stops at one it hasn't.
+ * A supervisor task restarts the stream if the DMA ever meets an invalid
+ * descriptor or stops moving.
  *
  * One scanout per DSI bus. The bridge chip (an HDMI bridge, a panel) is set
  * up by its own driver, before `start()` (it expects the video to follow).
@@ -107,33 +43,16 @@ class BlockSource {
  */
 class Scanout {
         public:
-                /** @brief Line buffer pixel formats. */
-                enum class Format : uint8_t {
-                        Rgb565,   ///< 16 bits: R5 G6 B5, little-endian.
-                        Rgb888,   ///< 24 bits: B, G, R bytes.
-                        Indexed8, ///< 8-bit palette indices, expanded to RGB888 by the PPA (`palette()`).
-                        Rgb565Expanded, ///< Drawn as RGB565, widened to RGB888 by the 2D-DMA.
-                };
+                /** @brief Most blocks a frame. */
+                static constexpr uint32_t MaxBlocks = 16;
 
                 /** @brief What to send. */
                 struct Config {
-                                VideoTiming timing;                  ///< The mode (its pixel clock sets the lane rate).
-                                Format      format = Format::Rgb565; ///< Line buffer format.
-                                uint8_t     lanes = 2;               ///< DSI data lanes.
-                                uint16_t    linesPerBlock = 8;       ///< Lines per buffer; divides `timing.vActive`.
-                                uint8_t     blocks = 3;              ///< Buffers in the ring (2 or more).
-                                int8_t      phyLdo = -1;             ///< On-chip LDO for the DSI PHY, or -1.
-                                uint16_t    phyLdoMv = 0;            ///< Its voltage.
-                                int         core = 1;                ///< The refill task's core.
-                                bool        framebuffer =
-                                        false; ///< The ring is a whole frame in PSRAM (RGB888): drawn once, not per block.
-                                uint8_t linkPacking =
-                                        0; ///< 16/18-bit links: the host's packing variant (0-2), the bridge's arrangement.
-                                bool            fullLaneRate = false; ///< Lanes at the 24-bit rate whatever the format.
-                                bool            freeRunning =
-                                        true; ///< The ring never stops: a late block goes out stale and is skipped.
-                                const uint32_t *palette =
-                                        nullptr; ///< `Indexed8`: 256 entries (0xRRGGBB) loaded at the start.
+                                VideoTiming timing;       ///< The mode (its pixel clock sets the lane rate).
+                                uint8_t     lanes = 2;    ///< DSI data lanes.
+                                int8_t      phyLdo = -1;  ///< On-chip LDO for the DSI PHY, or -1.
+                                uint16_t    phyLdoMv = 0; ///< Its voltage.
+                                int         core = 1;     ///< The supervisor task's core.
                                 void (*onRestart)(void *arg) =
                                         nullptr;              ///< After a rebuild of the link: re-lock the bridge chip.
                                 void *onRestartArg = nullptr; ///< Its argument.
@@ -141,29 +60,19 @@ class Scanout {
 
                 /** @brief Counters since `start()`. */
                 struct Stats {
-                                uint32_t blocks = 0;    ///< Buffers sent.
-                                uint32_t frames = 0;    ///< Whole frames sent.
-                                uint32_t late = 0;      ///< Buffers sent again unrefilled (the renderer fell behind).
-                                uint32_t skipped = 0;   ///< `freeRunning`: blocks not drawn in time, sent stale.
-                                uint32_t stalls = 0;    ///< The DMA found a buffer not handed back yet.
-                                uint32_t underruns = 0; ///< The DSI bridge ran dry.
-                                uint32_t resyncs = 0;   ///< Restarts of the data path after an underrun or a stall.
-                                uint32_t resyncFailures = 0;  ///< Rebuilds that failed.
-                                uint32_t rebuilds = 0;        ///< Rebuilds of the whole DSI path (a stuck stream).
-                                uint32_t pixelHz = 0;         ///< The pixel clock as set.
-                                uint32_t renderCyclesMax = 0; ///< The slowest refill, CPU cycles.
-                                uint64_t renderCycles = 0;    ///< All refills, CPU cycles.
-                                uint64_t syncCycles = 0;      ///< Of which writing the buffers back from the cache.
-                                uint32_t syncCyclesMax = 0;   ///< The slowest write-back.
-                                uint64_t expandCycles = 0;    ///< Of which waiting for the PPA or the 2D-DMA.
-                                uint32_t expandCyclesMax = 0; ///< The slowest expansion.
-                                uint32_t expandErrors = 0;    ///< Expansions that failed or timed out.
-                                // Bring-up diagnostics.
-                                uint32_t dmaItem = 0;     ///< The ring buffer the DMA is on.
-                                uint32_t dmaStatus = 0;   ///< The DMA channel's raw event bits.
-                                uint32_t dmaAmount = 0;   ///< Items moved in the current block.
-                                uint32_t bridgeFifo = 0;  ///< The DSI bridge's FIFO depth.
-                                uint32_t stallAt[8] = {}; ///< Where in the frame (block) the last stalls were.
+                                uint32_t frames = 0;         ///< Frames begun.
+                                uint32_t blocks = 0;         ///< Blocks sent.
+                                uint32_t blocksPerFrame = 0; ///< The frame's blocks.
+                                uint32_t swaps = 0;          ///< Double-buffer swaps made.
+                                uint32_t stalls = 0;         ///< The DMA met an invalid descriptor.
+                                uint32_t underruns = 0;      ///< The DSI bridge ran dry.
+                                uint32_t resyncs = 0;        ///< Restarts of the stream.
+                                uint32_t rebuilds = 0;       ///< Rebuilds of the whole DSI path.
+                                uint32_t failures = 0;       ///< Restarts that failed.
+                                uint32_t pixelHz = 0;        ///< The pixel clock as set.
+                                uint32_t isrCyclesMax = 0;   ///< The slowest block interrupt.
+                                uint32_t dmaItem = 0;        ///< The block the DMA is on.
+                                uint32_t bridgeFifo = 0;     ///< The DSI bridge's FIFO depth.
                 };
 
                 /** @brief A scanout on DSI bus @p bus (0 on the ESP32-P4). */
@@ -173,32 +82,14 @@ class Scanout {
                 Scanout &operator=(const Scanout &) = delete;
 
                 /**
-                 * @brief Powers the PHY, sets up the link and the DPI timing, fills
-                 *        the ring and starts sending.
-                 * @return `Ok`, `Invalid` (the config), `NoMem`, `InvalidState`
-                 *         (running), or the driver's error.
+                 * @brief Powers the PHY, sets up the link and the DPI timing, and
+                 *        starts sending @p surface (started, the mode's size).
+                 * @return `Ok`, `Invalid` (the config, or a size the blocks don't
+                 *         divide), `NoMem`, `InvalidState` (running), or the
+                 *         driver's error.
                  * @blocking
                  */
-                Error start(const Config &config, LineSource &source);
-
-                /**
-                 * @brief Starts sending @p frames (`devplan/display.md` §5b): the
-                 *        2D-DMA widens its front buffer into the ring, and the
-                 *        scanout makes its swaps as it begins each frame.
-                 *        `config.format` is `Rgb565Expanded`, its timing the
-                 *        framebuffer's size.
-                 * @return As the other `start()`.
-                 * @blocking
-                 */
-                Error start(const Config &config, Framebuffer &frames);
-
-                /**
-                 * @brief Starts sending blocks @p blocks composes into the ring
-                 *        (`devplan/windows.md` §4b). `config.format` is `Rgb888`.
-                 * @return As the other `start()`.
-                 * @blocking
-                 */
-                Error start(const Config &config, BlockSource &blocks);
+                Error start(const Config &config, Surface &surface);
 
                 /** @brief Stops sending and frees everything. Idempotent. */
                 void stop();
@@ -209,83 +100,41 @@ class Scanout {
                 /** @brief Returns the counters. */
                 Stats stats() const;
 
-                /** @brief Returns the palette (`Indexed8`): set entries before `start()` or from the source. */
-                PaletteExpander &palette() { return _expander; }
-
-                /** @brief Bring-up: restarts the data path now; @p variant 2 also restarts the host's video mode. */
-                void requestResync(int variant) {
-                        _resyncVariant = variant;
-                        _resyncWanted.store(true);
-                        _resyncUs = 0;
-                        _wake.release();
-                        return;
-                }
-
-                /** @brief Bring-up: the ring (`ringBytes()` long), to check what the DMA sends. */
-                const uint8_t *ring() const { return _ring; }
-
-                /** @brief Returns the bytes of internal RAM the ring takes. */
-                size_t ringBytes() const { return _blockBytes * _config.blocks; }
-
         private:
                 struct Hardware; // the IDF handles
 
-                static void refillTask(void *arg);
-                void        refill();
-                Error       begin(const Config &config);
-                void        renderSlot(uint32_t block);
-                uint8_t    *frameFor(uint32_t block);
+                static void supervisorTask(void *arg);
+                void        supervise();
                 Error       startLink();
                 Error       startDpi();
+                void        configureBridge();
                 void        resync();
                 void        rebuild();
                 void        stopHardware();
-                void        configureBridge();
 
                 int                   _bus;
                 Config                _config;
-                LineSource           *_source = nullptr;
-                Framebuffer          *_frames = nullptr;    // the picture, when started on a framebuffer
-                BlockSource          *_blocks = nullptr;    // the composer, when started on one
-                bool                  _frameBegun = false;  // _blocks: _frameNumber's frame was begun
-                uint8_t              *_frameData = nullptr; // its buffer for the frame being filled
-                uint32_t              _frameNumber = 0;     // that frame, counted like the blocks
+                Surface              *_surface = nullptr;
                 Hardware             *_hw = nullptr;
-                uint8_t              *_ring = nullptr;    // blocks × _blockBytes
-                uint8_t              *_staging = nullptr; // Indexed8, Rgb565Expanded: one block as drawn
-                PaletteExpander       _expander;
-                ColorExpander         _widener;
                 size_t                _blockBytes = 0;
-                size_t                _stride = 0;
-                uint32_t              _blocksPerFrame = 0;
-                uint32_t              _items = 0; // descriptors in the DMA\'s list: a multiple of the blocks
-                uint32_t _lastItem = 0;   // free-running: the descriptor the DMA was at, at the last block interrupt
-                bool     _primed = false; // that position is known (from the first block interrupt on)
+                uint32_t              _blocks = 0;     // a frame's
+                uint32_t              _lastItem = 0;   // the descriptor the DMA was on at the last interrupt
+                bool                  _primed = false; // that is known
+                uint8_t               _swapPhase = 0;  // 1: all but the last descriptor on the new buffer
                 bool                  _running = false;
                 std::atomic<bool>     _stopping{false};
-                std::atomic<uint32_t> _sent{0};      // buffers sent (the DMA's block interrupts)
-                uint32_t              _refilled = 0; // buffers handed back, counted like `_sent`
-                std::atomic<uint32_t> _late{0};
-                uint32_t              _skipped = 0;
+                std::atomic<uint32_t> _sent{0};   // blocks sent since the last restart
+                std::atomic<uint32_t> _frames{0}; // frames begun
+                std::atomic<uint32_t> _swaps{0};
                 std::atomic<uint32_t> _stalls{0};
                 std::atomic<uint32_t> _underruns{0};
                 std::atomic<bool>     _stalled{false};
-                std::atomic<bool>     _resyncWanted{false}; // an underrun or a stall: the picture is offset
+                uint32_t              _isrCyclesMax = 0;
                 uint32_t              _resyncs = 0;
-                uint32_t              _resyncFailures = 0;
                 uint32_t              _rebuilds = 0;
-                int                   _resyncVariant = 1;
-                uint32_t              _blocksBefore = 0; // blocks sent before the last resync
-                int64_t               _resyncUs = 0;     // when the last resync was
-                uint32_t              _stallAt[8] = {};
-                uint32_t              _renderCyclesMax = 0;
-                uint64_t              _renderCycles = 0;
-                uint64_t              _syncCycles = 0;
-                uint32_t              _syncCyclesMax = 0;
-                uint64_t              _expandCycles = 0;
-                uint32_t              _expandCyclesMax = 0;
-                uint32_t              _expandErrors = 0;
-                Semaphore             _wake{64, 0};
+                uint32_t              _failures = 0;
+                uint32_t              _blocksBefore = 0; // blocks sent before the last restart
+                Semaphore             _wake{4, 0};
                 Task                  _task;
 
                 friend struct ScanoutIsr;

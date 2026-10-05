@@ -1,5 +1,9 @@
 # PSRAM at 200 MHz: Verified Before Trusted
 
+Status: **the default since 2026-10-05** (the user's decision, §4): `sdkconfig.defaults` sets
+`CONFIG_SPIRAM_SPEED_200M` (with `CONFIG_IDF_EXPERIMENTAL_FEATURES`, which IDF requires for it);
+the boot-time test stays off (1.3 s a boot). The cold-boot check was not run.
+
 ## 1. Goal
 
 Find out whether the PSRAM (32 MB, AP Memory HEX, on the ESP32-P4NRW32 module, chip revision
@@ -46,18 +50,8 @@ nothing is corrupted before 200 MHz is used for real.
 5. **Decision:** only with zero errors throughout does 200 MHz become a candidate for the
    default, and then still as a separate change the user decides.
 
-The 200 MHz build, from the repository root (the build directory is git-ignored):
-
-```bash
-mkdir -p build-psram200 && cp sdkconfig build-psram200/sdkconfig
-# in build-psram200/sdkconfig: drop the SPIRAM_SPEED_80M, SPIRAM_SPEED, SPIRAM_MEMTEST and
-# IDF_EXPERIMENTAL_FEATURES lines, then append the settings of sdkconfig.psram200
-idf.py -B build-psram200 -D SDKCONFIG=build-psram200/sdkconfig reconfigure
-cd build-psram200 && build
-idf.py -B build-psram200 -D SDKCONFIG=build-psram200/sdkconfig -p "$ESPPORT" flash
-```
-
-The resolved configuration differs from the normal one in exactly the three settings.
+(The separate build, `sdkconfig.psram200` in `build-psram200/`, served until the decision below;
+both are gone.)
 
 ## 4. Results
 
@@ -87,3 +81,9 @@ test picture scanning out the whole time. Per pass: four CPU patterns, then the 
   up 12 minutes before) under 720p from the RGB565 framebuffer with `display anim start 32`:
   **0 errors**; 86 of 4,881,807 blocks skipped, the animation 0 errors and 0 of 921,600 pixels
   wrong at the end; DMA copies 65-71 MB/s.
+- **Decision** (2026-10-05, the user): 200 MHz is the default. The display needs it (surface 0 is
+  scanned straight from PSRAM, `display.md` §5c, which 80 MHz couldn't feed), and everything run at
+  it found 0 errors: the soak, the warm run, and a 35-minute scan soak under `memtest` and CPU
+  stress with 0 underruns. Not run: a cold boot (powered off a while, tested at once). With the
+  default image: boot to the picture in 0.45 s, `memtest -p 2` 0 errors with the scan running,
+  0 underruns.

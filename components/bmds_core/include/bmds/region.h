@@ -12,18 +12,19 @@
 #include <cstdint>
 #include <bmds/config.h>
 #include <bmds/rect.h>
-#include <bmds/result.h>
 #include <bmds/span.h>
 
 BMDS_NAMESPACE_BEGIN
 
 /**
  * @brief An area of the screen as a few disjoint rectangles: the damage a
- *        window manager collects between composes (`devplan/windows.md`).
+ *        window manager or a surface collects (`devplan/windows.md`).
  *
  * Adding keeps the rectangles disjoint and merges neighbors that make a
- * rectangle together. Past `MaxRects` it collapses into the bounding box: a
- * region may grow beyond what was added, never lose any of it.
+ * rectangle together. Past `MaxRects`, pairs whose bounding box wastes the
+ * least area are merged until half the rectangles are left (and, should
+ * that not do, it collapses into the bounding box): a region may grow
+ * beyond what was added, never lose any of it.
  *
  * @par Thread Safety
  * A plain value.
@@ -58,6 +59,8 @@ class Region {
                 }
 
         private:
+                bool tryAdd(const Rect &rect);
+                void squeeze();
                 void collapse(const Rect &extra);
                 void merge();
 
@@ -71,26 +74,5 @@ class Region {
  * @return The count written.
  */
 size_t subtract(const Rect &a, const Rect &b, Rect (&out)[4]);
-
-/** @brief One copy of a compose: a rectangle of the screen from a layer. */
-struct ComposePiece {
-                uint16_t layer = 0; ///< Index into the layers given.
-                Rect     rect;      ///< Screen coordinates, inside the layer.
-};
-
-/**
- * @brief Plans a compose: which part of each layer shows in @p damage.
- *
- * @p layers are the opaque layers' screen rectangles, the top one first
- * (the desktop last, covering the screen). Each damaged pixel comes from
- * the topmost layer covering it; pixels no layer covers are left out. The
- * pieces are disjoint, so nothing is drawn twice. Horizontal edges are
- * only the inputs', so inputs on even columns give even pieces.
- *
- * @return The pieces written to @p out, or `Full` (more pieces than @p out
- *         holds, or than the plan's working space: the caller paints the
- *         damage's bounds bottom to top instead).
- */
-Result<size_t> planCompose(Span<const Rect> layers, const Region &damage, Span<ComposePiece> out);
 
 BMDS_NAMESPACE_END

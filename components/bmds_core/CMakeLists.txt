@@ -9,6 +9,7 @@ set(BMDS_CORE_SRCS
         src/clockmodel.cpp
         src/color.cpp
         src/datetime.cpp
+        src/region.cpp
         src/error.cpp
         src/string.cpp
         src/timezone.cpp

@@ -51,49 +51,22 @@ Result<VideoTiming> Display::fitMode(const VideoTiming &mode) {
         return makeResult(fitted);
 }
 
-uint16_t Display::blockLines(uint16_t height, uint16_t most) {
-        for (uint16_t lines = most; lines >= MinBlockLines; --lines) {
-                if (height % lines == 0) return lines;
-        }
-        return 0;
-}
-
-Error Display::start(const VideoTiming &mode) {
-        return begin(mode, nullptr);
-}
-
-Error Display::start(const VideoTiming &mode, BlockSource &blocks) {
-        return begin(mode, &blocks);
-}
-
-// The framebuffer's way (no @p blocks) or a composer's.
-Error Display::begin(const VideoTiming &mode, BlockSource *blocks) {
+Error Display::start(const VideoTiming &mode, Surface::Buffering buffering) {
         stop();
         auto [timing, ferr] = fitMode(mode);
         if (ferr.isError()) return ferr;
-        const uint16_t lines = blockLines(timing.vActive, MaxBlockLines);
-        if (lines == 0) return Error::Invalid;
         const BoardDisplay &d = board().display;
         Scanout::Config     c;
         c.timing = timing;
-        c.format = blocks != nullptr ? Scanout::Format::Rgb888 : Scanout::Format::Rgb565Expanded;
         c.lanes = d.dsiLanes;
         c.phyLdo = d.phyLdo;
         c.phyLdoMv = d.phyLdoMv;
-        c.linesPerBlock = lines;
-        c.blocks = 3;
-        c.freeRunning = true;
         c.onRestart = onLinkRestart;
         c.onRestartArg = this;
         _timing = timing;
-        _blockLines = lines;
-        Error err = _bridge.configure(timing, d.dsiLanes, true);
-        if (blocks != nullptr) {
-                if (err.isOk()) err = _scanout.start(c, *blocks);
-        } else {
-                if (err.isOk()) err = _framebuffer.start(timing.hActive, timing.vActive);
-                if (err.isOk()) err = _scanout.start(c, _framebuffer);
-        }
+        Error err = _surface.start(timing.hActive, timing.vActive, buffering);
+        if (err.isOk()) err = _bridge.configure(timing, d.dsiLanes, true);
+        if (err.isOk()) err = _scanout.start(c, _surface);
         if (err.isOk()) err = _bridge.resetReceiver();
         if (err.isError()) stop();
         return err;
@@ -101,8 +74,7 @@ Error Display::begin(const VideoTiming &mode, BlockSource *blocks) {
 
 void Display::stop() {
         _scanout.stop();
-        _framebuffer.stop();
-        _blockLines = 0;
+        _surface.stop();
         return;
 }
 
