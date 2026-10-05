@@ -18,6 +18,7 @@ if(COMMAND idf_component_register)
                                     src/displaycommand.cpp
                                     src/i2cbus.cpp
                                     src/lt8912b.cpp
+                                    src/colorexpander.cpp
                                     src/paletteexpander.cpp
                                     src/scanout.cpp
                                INCLUDE_DIRS include

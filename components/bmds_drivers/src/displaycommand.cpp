@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <sdkconfig.h>
 #include <cstring>
+#include <esp_cache.h>
 #include <bmds/board.h>
 #include <bmds/command.h>
 #include <bmds/displaytest.h>
@@ -57,9 +58,9 @@ namespace {
                 public:
                         // The two kinds of line, drawn once (internal RAM, freed by the next set-up).
                         Error setUp(Scanout::Format format, uint16_t width, uint16_t height) {
-                                _bytes = format == Scanout::Format::Rgb565     ? 2
-                                         : format == Scanout::Format::Indexed8 ? 1
-                                                                               : 3;
+                                _bytes = format == Scanout::Format::Indexed8 ? 1
+                                         : format == Scanout::Format::Rgb888 ? 3
+                                                                             : 2;
                                 _width = width;
                                 _height = height;
                                 _frame = 0;
@@ -93,6 +94,23 @@ namespace {
                                         std::memcpy(out, _lines + (y < _height * 3 / 4 ? 0 : _width * _bytes), stride);
                                         for (size_t k = stripe * _bytes; k < (stripe + 16u) * _bytes; ++k)
                                                 out[k] ^= 0xff;
+                                }
+                                return;
+                        }
+
+                        // Framebuffer: the stripe's old place back from the line template,
+                        // its new one inverted.
+                        BMDS_HOT_ATTR void frame(uint8_t *fb, size_t stride) override {
+                                const uint16_t old = static_cast<uint16_t>((_frame * 4) % (_width - 16));
+                                ++_frame;
+                                const uint16_t now = static_cast<uint16_t>((_frame * 4) % (_width - 16));
+                                const size_t   span = 16u * _bytes;
+                                for (uint16_t y = 0; y < _height; ++y) {
+                                        uint8_t       *line = fb + y * stride;
+                                        const uint8_t *tmpl = _lines + (y < _height * 3 / 4 ? 0 : _width * _bytes);
+                                        std::memcpy(line + old * _bytes, tmpl + old * _bytes, span);
+                                        for (size_t k = now * _bytes; k < now * _bytes + span; ++k)
+                                                line[k] = tmpl[k] ^ 0xff;
                                 }
                                 return;
                         }
@@ -261,7 +279,12 @@ namespace {
                 return;
         }
 
-        Error startTest(Lt8912b &b, const VideoTiming &timing, Scanout::Format format, uint16_t lines, uint8_t blocks) {
+        // Bring-up knobs for 16-bit links (`display test MODE 565 ... pack=N lane24`).
+        uint8_t testPacking = 0;
+        bool    testFullLane = false;
+
+        Error startTest(Lt8912b &b, const VideoTiming &timing, Scanout::Format format, uint16_t lines, uint8_t blocks,
+                        bool framebuffer) {
                 scanout().stop();
                 const BoardDisplay &d = board().display;
                 Scanout::Config     c;
@@ -273,6 +296,9 @@ namespace {
                 c.phyLdoMv = d.phyLdoMv;
                 c.linesPerBlock = lines;
                 c.blocks = blocks;
+                c.framebuffer = framebuffer;
+                c.linkPacking = testPacking;
+                c.fullLaneRate = testFullLane;
                 // The test palette: the eight bars, then a gray ramp.
                 static uint32_t           palette[PaletteExpander::PaletteSize];
                 static constexpr uint32_t Bars[8] = {0xffffff, 0xffff00, 0x00ffff, 0x00ff00,
@@ -291,7 +317,7 @@ namespace {
                 return b.resetReceiver();
         }
 
-        // display test 720|1080|WxH@Hz [cpu|pal|565] [lines per block] [blocks] | off
+        // display test 720|1080|WxH@Hz [cpu|pal|565|dma|fb] [lines per block] [blocks] | off
         int runTest(CommandContext &ctx, Args args) {
                 Lt8912b *b = bridge(ctx);
                 if (b == nullptr) return Shell::ExitFailure;
@@ -300,7 +326,18 @@ namespace {
                         (void)b->setOutput(false);
                         return Shell::ExitSuccess;
                 }
-                if (args.size() > 6) return ctx.usage();
+                // Knobs anywhere after the mode: pack=N, lane24.
+                testPacking = 0;
+                testFullLane = false;
+                size_t positional = args.size();
+                for (size_t i = 3; i < args.size(); ++i) {
+                        const bool pack = std::strncmp(args[i], "pack=", 5) == 0;
+                        if (pack) testPacking = static_cast<uint8_t>(std::atoi(args[i] + 5));
+                        if (std::strcmp(args[i], "lane24") == 0) testFullLane = true;
+                        if ((pack || testFullLane) && i < positional) positional = i;
+                }
+                if (positional > 6) return ctx.usage();
+                args = Args(args.data(), positional);
                 VideoTiming timing;
                 bool        found = false;
                 for (const TestMode &m : TestModes) {
@@ -333,35 +370,47 @@ namespace {
                 }
                 timing = fitted;
                 Scanout::Format format = Scanout::Format::Rgb888;
+                bool            framebuffer = false;
                 if (args.size() > 3) {
-                        if (std::strcmp(args[3], "565") == 0) {
+                        if (std::strcmp(args[3], "fb") == 0) {
+                                framebuffer = true;
+                        } else if (std::strcmp(args[3], "565") == 0) {
                                 format = Scanout::Format::Rgb565;
+                        } else if (std::strcmp(args[3], "dma") == 0) {
+                                format = Scanout::Format::Rgb565Expanded;
                         } else if (std::strcmp(args[3], "pal") == 0 || std::strcmp(args[3], "ppa") == 0) {
                                 format = Scanout::Format::Indexed8;
                         } else if (std::strcmp(args[3], "888") != 0 && std::strcmp(args[3], "cpu") != 0) {
                                 return ctx.usage();
                         }
                 }
-                const uint16_t lines = args.size() > 4 ? static_cast<uint16_t>(std::atoi(args[4])) : 8;
-                const uint8_t  blocks = args.size() > 5 ? static_cast<uint8_t>(std::atoi(args[5])) : 3;
+                uint16_t lines = args.size() > 4 ? static_cast<uint16_t>(std::atoi(args[4])) : 8;
+                uint8_t  blocks = args.size() > 5 ? static_cast<uint8_t>(std::atoi(args[5])) : 3;
+                if (framebuffer) {
+                        // The frame in as many blocks (at most 16) as divide its lines.
+                        blocks = 16;
+                        while (timing.vActive % blocks != 0) --blocks;
+                        lines = static_cast<uint16_t>(timing.vActive / blocks);
+                }
                 if (lines == 0 || timing.vActive % lines != 0) {
                         ctx.eprintf("display: %u lines a block doesn't divide %u lines\n", lines, timing.vActive);
                         return Shell::ExitFailure;
                 }
-                const Error err = startTest(*b, timing, format, lines, blocks);
+                const Error err = startTest(*b, timing, format, lines, blocks, framebuffer);
                 if (err.isError()) {
                         ctx.eprintf("display: test: %s\n", err.desc());
                         return Shell::ExitFailure;
                 }
                 const VideoTiming &t = timing;
                 const uint32_t     mhz = t.refreshMilliHz();
-                ctx.printf("Test:     %ux%u at %u.%03u Hz, %u.%03u MHz, %s path, %u blocks of %u lines (%u bytes of "
-                           "internal RAM)\n",
+                ctx.printf("Test:     %ux%u at %u.%03u Hz, %u.%03u MHz, %s path, %u blocks of %u lines (%u bytes)\n",
                            t.hActive, t.vActive, static_cast<unsigned>(mhz / 1000), static_cast<unsigned>(mhz % 1000),
                            static_cast<unsigned>(t.pixelKhz / 1000), static_cast<unsigned>(t.pixelKhz % 1000),
-                           format == Scanout::Format::Rgb565   ? "CPU (RGB565)"
-                           : format == Scanout::Format::Rgb888 ? "CPU"
-                                                               : "PPA (8-bit palette)",
+                           framebuffer                                 ? "framebuffer (PSRAM)"
+                           : format == Scanout::Format::Rgb565         ? "CPU (RGB565)"
+                           : format == Scanout::Format::Rgb888         ? "CPU"
+                           : format == Scanout::Format::Rgb565Expanded ? "2D-DMA (RGB565 widened)"
+                                                                       : "PPA (8-bit palette)",
                            blocks, lines, static_cast<unsigned>(scanout().ringBytes()));
                 ctx.printf("Timing:   h %u %u %u %u %c, v %u %u %u %u %c\n", t.hActive, t.hFront, t.hSync, t.hBack,
                            t.hSyncHigh ? '+' : '-', t.vActive, t.vFront, t.vSync, t.vBack, t.vSyncHigh ? '+' : '-');
@@ -499,7 +548,7 @@ Error DisplayTest::init() {
         auto [b, err] = attachBridge();
         if (err == Error::NotSupported) return Error::Ok; // no display on this board
         if (err.isError()) return err;
-        err = startTest(*b, TestModes[0].timing, Scanout::Format::Rgb888, 8, 3);
+        err = startTest(*b, TestModes[0].timing, Scanout::Format::Rgb888, 8, 3, false);
         if (err.isOk()) bmdsInfo("Display: 720p60 test picture on HDMI ('display test off' stops it)");
         return err;
 #else
@@ -508,7 +557,7 @@ Error DisplayTest::init() {
 }
 
 BMDS_SHELL_COMMAND(display, runDisplay,
-                   "[edid|scan|check|stats|test 720|1080|WxH@HZ [cpu|pal] [lines] [blocks]|test off]",
+                   "[edid|scan|check|stats|test 720|1080|WxH@HZ [cpu|pal|565|dma|fb] [lines] [blocks]|test off]",
                    "Show the HDMI bridge and the monitor; 'edid' dumps the monitor's EDID, 'scan' lists the bus, "
                    "'test' starts the test picture (bring-up), 'stats' shows the scanout's counters")
 

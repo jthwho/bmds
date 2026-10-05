@@ -54,13 +54,23 @@ namespace {
                 return err == ESP_OK ? Error(Error::Ok) : Error::fromEspErr(err);
         }
 
-        // The ring's bytes per pixel: Indexed8 is expanded to RGB888 into it.
+        // The ring's bytes per pixel: Indexed8 and Rgb565Expanded are expanded
+        // to RGB888 into it.
         size_t bytesPerPixel(Scanout::Format f) {
                 return f == Scanout::Format::Rgb565 ? 2 : 3;
         }
 
         lcd_color_format_t colorFormat(Scanout::Format f) {
                 return f == Scanout::Format::Rgb565 ? LCD_COLOR_FMT_RGB565 : LCD_COLOR_FMT_RGB888;
+        }
+
+        // The bytes per pixel the source draws.
+        size_t drawnBytesPerPixel(Scanout::Format f) {
+                return f == Scanout::Format::Indexed8 ? 1 : f == Scanout::Format::Rgb888 ? 3 : 2;
+        }
+
+        bool isExpanded(Scanout::Format f) {
+                return f == Scanout::Format::Indexed8 || f == Scanout::Format::Rgb565Expanded;
         }
 
         constexpr unsigned int ExpandTimeoutMs = 20;
@@ -121,6 +131,9 @@ Error Scanout::start(const Config &config, LineSource &source) {
             t.vActive % config.linesPerBlock != 0 || config.lanes < 1 || config.lanes > MIPI_DSI_LL_MAX_DATA_LANES ||
             t.pixelKhz < 1000)
                 return Error::Invalid;
+        if (config.framebuffer &&
+            (config.format != Format::Rgb888 || uint32_t(config.blocks) * config.linesPerBlock != t.vActive))
+                return Error::Invalid;
         _config = config;
         _source = &source;
         _stride = t.hActive * bytesPerPixel(config.format);
@@ -147,7 +160,8 @@ Error Scanout::start(const Config &config, LineSource &source) {
 
         void *hw = Memory::alloc(MemSpace::Internal, sizeof(Hardware));
         _ring = static_cast<uint8_t *>(
-                Memory::allocAligned(MemSpace::InternalDma, _blockBytes * config.blocks, BufferAlign));
+                Memory::allocAligned(config.framebuffer ? MemSpace::PsramDma : MemSpace::InternalDma,
+                                     _blockBytes * config.blocks, BufferAlign));
         if (hw == nullptr || _ring == nullptr) {
                 if (hw != nullptr) Memory::free(hw);
                 if (_ring != nullptr) Memory::free(_ring);
@@ -158,13 +172,16 @@ Error Scanout::start(const Config &config, LineSource &source) {
         _expandCycles = 0;
         _expandCyclesMax = 0;
         _expandErrors = 0;
-        if (config.format == Format::Indexed8) {
-                _indices = static_cast<uint8_t *>(Memory::allocAligned(
-                        MemSpace::InternalDma, size_t(t.hActive) * config.linesPerBlock, BufferAlign));
-                Error err = _indices == nullptr ? Error(Error::NoMem) : _expander.start();
+        if (isExpanded(config.format)) {
+                const size_t drawn = size_t(t.hActive) * config.linesPerBlock * drawnBytesPerPixel(config.format);
+                _staging = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, drawn, BufferAlign));
+                Error err = Error::NoMem;
+                if (_staging != nullptr) err = config.format == Format::Indexed8 ? _expander.start() : _widener.start();
                 if (err.isError()) {
-                        Memory::free(_indices);
-                        _indices = nullptr;
+                        _expander.stop();
+                        _widener.stop();
+                        Memory::free(_staging);
+                        _staging = nullptr;
                         _hw->~Hardware();
                         Memory::free(_hw);
                         Memory::free(_ring);
@@ -172,8 +189,9 @@ Error Scanout::start(const Config &config, LineSource &source) {
                         _ring = nullptr;
                         return err;
                 }
-                if (config.palette != nullptr) _expander.setPalette(config.palette, 0, PaletteExpander::PaletteSize);
-                // Only the PPA writes the ring: no stale lines of it may stay in the cache.
+                if (config.format == Format::Indexed8 && config.palette != nullptr)
+                        _expander.setPalette(config.palette, 0, PaletteExpander::PaletteSize);
+                // Only the PPA or the 2D-DMA writes the ring: no stale lines of it may stay in the cache.
                 (void)esp_cache_msync(_ring, _blockBytes * config.blocks, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
         }
         // The ring starts full: buffer i carries block i.
@@ -204,7 +222,8 @@ Error Scanout::startLink() {
 #else
         const uint32_t linkBits = 24;
 #endif
-        const uint32_t laneMbps = (t.pixelKhz * linkBits / _config.lanes + 999) / 1000;
+        const uint32_t laneBits = _config.fullLaneRate ? 24 : linkBits;
+        const uint32_t laneMbps = (t.pixelKhz * laneBits / _config.lanes + 999) / 1000;
         if (laneMbps < MIPI_DSI_LL_MIN_PHY_MBPS || laneMbps > MIPI_DSI_LL_MAX_PHY_MBPS) return Error::Invalid;
         if (_config.phyLdo >= 0) {
                 esp_ldo_channel_config_t ldo = {};
@@ -359,7 +378,7 @@ Error Scanout::startDpi() {
 
         dsi_host_dev_t *host = hw.hal.host;
         mipi_dsi_host_ll_dpi_set_vcid(host, 0);
-        mipi_dsi_host_ll_dpi_set_color_coding(host, out, 0);
+        mipi_dsi_host_ll_dpi_set_color_coding(host, out, out == LCD_COLOR_FMT_RGB888 ? 0 : _config.linkPacking);
         mipi_dsi_host_ll_dpi_set_timing_polarity(host, false, false, false, false, false);
         // High speed all the time: no low-power transitions in the blanking.
         mipi_dsi_host_ll_dpi_enable_lp_horizontal_timing(host, false, false);
@@ -414,7 +433,7 @@ void Scanout::configureBridge() {
         mipi_dsi_brg_ll_set_num_pixel_bits(bridge, uint32_t(t.hActive) * t.vActive * bytesPerPixel(_config.format) * 8);
         mipi_dsi_brg_ll_set_underrun_discard_count(bridge, t.hActive);
         mipi_dsi_brg_ll_set_input_color_format(bridge, in);
-        mipi_dsi_brg_ll_set_output_color_format(bridge, out, 0);
+        mipi_dsi_brg_ll_set_output_color_format(bridge, out, out == LCD_COLOR_FMT_RGB888 ? 0 : _config.linkPacking);
         mipi_dsi_brg_ll_set_flow_controller(bridge, MIPI_DSI_LL_FLOW_CONTROLLER_DMA);
         mipi_dsi_brg_ll_set_multi_block_number(bridge, 1);
         mipi_dsi_brg_ll_set_burst_len(bridge, 256);
@@ -435,8 +454,9 @@ void Scanout::stop() {
         Memory::free(_hw);
         Memory::free(_ring);
         _expander.stop();
-        Memory::free(_indices);
-        _indices = nullptr;
+        _widener.stop();
+        Memory::free(_staging);
+        _staging = nullptr;
         _hw = nullptr;
         _ring = nullptr;
         _running = false;
@@ -489,7 +509,9 @@ void Scanout::rebuild() {
         _sent.store(0, std::memory_order_relaxed);
         _refilled = 0;
         while (_wake.tryAcquire().isOk()) {}
-        for (uint32_t i = 0; i < _config.blocks; ++i) renderSlot(i);
+        if (!_config.framebuffer) {
+                for (uint32_t i = 0; i < _config.blocks; ++i) renderSlot(i);
+        }
         Error err = startLink();
         if (err.isOk()) err = startDpi();
         if (err.isOk() && _config.onRestart != nullptr) _config.onRestart(_config.onRestartArg);
@@ -566,6 +588,22 @@ BMDS_HOT_ATTR void Scanout::refill() {
                         _late.fetch_add(sent - _refilled - _config.blocks, std::memory_order_relaxed);
                         _refilled = sent - _config.blocks;
                 }
+                while (_config.framebuffer && _refilled != sent) {
+                        // The frame stays: hand the block back. At a frame's start,
+                        // the source changes what moves, written back for the DMA.
+                        const uint32_t slot = _refilled % _config.blocks;
+                        dw_gdma_ll_lli_set_block_markers(_hw->items[slot], true, false, true);
+                        ++_refilled;
+                        if (slot == 0) {
+                                const uint32_t start = esp_cpu_get_cycle_count();
+                                _source->frame(_ring, _stride);
+                                (void)esp_cache_msync(_ring, _blockBytes * _config.blocks,
+                                                      ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                                const uint32_t cycles = esp_cpu_get_cycle_count() - start;
+                                if (cycles > _renderCyclesMax) _renderCyclesMax = cycles;
+                                _renderCycles += cycles;
+                        }
+                }
                 while (_refilled != sent) {
                         const uint32_t start = esp_cpu_get_cycle_count();
                         renderSlot(_refilled + _config.blocks);
@@ -626,7 +664,7 @@ void Scanout::resync() {
         _refilled = 0;
         while (_wake.tryAcquire().isOk()) {}
         for (uint32_t i = 0; i < _config.blocks; ++i) {
-                renderSlot(i);
+                if (!_config.framebuffer) renderSlot(i);
                 dw_gdma_ll_lli_set_block_markers(hw.items[i], true, false, true);
         }
         const VideoTiming &t = _config.timing;
@@ -651,13 +689,19 @@ BMDS_HOT_ATTR void Scanout::renderSlot(uint32_t block) {
         uint8_t       *dst = _ring + (block % _config.blocks) * _blockBytes;
         const uint32_t first = (block % _blocksPerFrame) * _config.linesPerBlock;
         const uint16_t width = _config.timing.hActive;
-        if (_config.format == Format::Indexed8) {
-                // Indices by the CPU, written back; the PPA turns them into pixels.
-                _source->render(static_cast<uint16_t>(first), _config.linesPerBlock, _indices, width);
-                (void)esp_cache_msync(_indices, size_t(width) * _config.linesPerBlock, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        if (isExpanded(_config.format)) {
+                // Drawn by the CPU, written back; the PPA (indices) or the
+                // 2D-DMA (RGB565) turns them into RGB888.
+                const size_t drawnStride = size_t(width) * drawnBytesPerPixel(_config.format);
+                _source->render(static_cast<uint16_t>(first), _config.linesPerBlock, _staging, drawnStride);
+                (void)esp_cache_msync(_staging, drawnStride * _config.linesPerBlock, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
                 const uint32_t started = esp_cpu_get_cycle_count();
-                if (_expander.expand(_indices, dst, width, _config.linesPerBlock, ExpandTimeoutMs).isError())
-                        ++_expandErrors;
+                const Error    err =
+                        _config.format == Format::Indexed8
+                                   ? _expander.expand(_staging, dst, width, _config.linesPerBlock, ExpandTimeoutMs)
+                                   : _widener.expand(_staging, dst, size_t(width) * _config.linesPerBlock,
+                                                     ExpandTimeoutMs);
+                if (err.isError()) ++_expandErrors;
                 const uint32_t cycles = esp_cpu_get_cycle_count() - started;
                 _expandCycles += cycles;
                 if (cycles > _expandCyclesMax) _expandCyclesMax = cycles;

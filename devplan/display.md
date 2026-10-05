@@ -94,3 +94,27 @@ Status: **step 1 done, step 2 in progress** (Phase 4, 2026-10-04): the bridge is
   - **Resetting the DSI peripheral** (its only reset, `rst_en_dsi_brg`) resets the host too (19 of 19 tries): no way to restart the bridge alone with the link kept up.
   - **Rebuilds now set the LT8912B up in full** (`onLinkRestart`), not just its receiver: the user saw one rebuild that never recovered until `display test off` and `display test 720`.
   - **On the board, idle:** 1280×720@60, 1024×768@60, 1920×1080@30 and 1920×1080@50 stream without a problem on the CPU path (what the monitor accepts is the user's to report); the PPA path at 1280×720@50 falls behind with 8-line blocks, as measured before (16-line blocks should fit). Soak: 20 launches, three copies into the RAM disk, both PSRAM hammers: no reset, always back.
+- **A PSRAM framebuffer** (2026-10-05, the user's suggestion after reading on the 2D-DMA and PPA): `Scanout::Config::framebuffer` (the ring is a whole RGB888 frame in PSRAM in up to 16 blocks, drawn once; the source's `frame()` changes what moves and writes back only that; a write-back of the whole frame each frame would hold up the DMA), `display test MODE fb`. Measured with 80 MHz PSRAM (core 0's PSRAM copy and fill in MB per 2 s; 10 BusyBox launches):
+
+  | Scanout | The scan reads | Idle | Copy / fill | Launches |
+  |---|---|---|---|---|
+  | none | — | — | 66 / 86 | 2.31 s |
+  | CPU path, 720p60 | internal RAM | clean | 65 / 91 | 2.31 s (32 underruns, 10 rebuilds) |
+  | framebuffer, 1280×720@60 | 166 MB/s | 124 underruns in 2 s | 62 / 81 | 2.76 s |
+  | framebuffer, 1280×720@50 | 138 MB/s | 71 underruns in 2 s | 36 / 63 | 2.86 s |
+  | framebuffer, 1024×768@60 | 141 MB/s | 118 underruns in 2 s | 52 / 78 | 2.91 s |
+  | framebuffer, 800×600@60 | 86 MB/s | clean, and under load | 33 / 46 | 4.12 s |
+
+  **At 80 MHz the PSRAM can't stream much more than about 90 MB/s to the DSI DMA**, and while it does, everything else that uses PSRAM runs at half speed or worse (launches 78% slower at 800×600). The framebuffer only becomes an option with more PSRAM bandwidth: 200 MHz (2.5 times) is the experiment that decides it, and it bears on the CPU path too (shorter PSRAM waits for the other core).
+- **16-bit links, revisited** (2026-10-05, the user's challenge: does revision 1.x really not take RGB565?): `display test MODE 565 [lines] [blocks] [pack=N] [lane24]` sweeps the host's three 16-bit packings (with the bridge's matching arrangement) at the 16-bit lane rate and at the 24-bit one. With RGB888 the LT8912B measures 741 lines a frame; with RGB565 it measures 19 in every one of the six combinations: it never locks. The host sends 16-bit packets as asked; the bridge chip is what doesn't take them. Its datasheet's 16-bit input set-up is the remaining lead.
+- **RGB565 widened by the 2D-DMA** (2026-10-05): `ColorExpander`, a memory-to-memory 2D-DMA job whose transmit channel converts RGB565 to RGB888 (`DMA2D_CSC_TX_RGB565_TO_RGB888`, linear descriptors as IDF's test of it uses); `Scanout::Format::Rgb565Expanded`, the source drawing RGB565 into a one-block staging buffer (internal DMA RAM) that the 2D-DMA widens into the ring; `display test MODE dma`. Measured at 720p60, 3 blocks of 8 lines, one serial session:
+
+  | Path | Per block (8 lines), idle | Under PSRAM copy (core 0) | Under internal copy (core 0) |
+  |---|---|---|---|
+  | CPU (RGB888 copy + write-back) | 31,900 cycles | 122 underruns in 2 s | clean |
+  | 2D-DMA (RGB565 draw ~18,800 + widen ~33,900) | 52,700 cycles | 121 underruns in 2 s | 92 underruns in 2 s |
+  | PPA palette (indices + blend) | over the budget: does not stream at 720p60 | — | — |
+
+  - **The 2D-DMA widens about 4,200 cycles' worth a line**, about twice the PPA's rate, and needs no CPU for it; it is the first hardware path that keeps up with 720p60.
+  - **It is serial for now** (draw, then wait for the widening), so it uses 79% of the block time and has less slack than the CPU path, which is why an internal-RAM copy on the other core upsets it. Drawing the next block while the 2D-DMA widens this one (two staging buffers) would cut that to the larger of the two, about 34,000.
+  - **Neither path survives PSRAM traffic, and a deeper ring doesn't help:** with 6 and with 10 blocks (1.8 ms of slack) PSRAM copies still give 55-70 underruns in 2 s, and PSRAM *writes* alone (89 MB/s) do as much harm as copies. Since the CPU path survives a 534 MB/s internal copy but not a 90 MB/s PSRAM write, the PSRAM traffic itself (its cache misses and write-backs) holds up the scan, not the render's speed. The conversion path doesn't decide stability; PSRAM bandwidth (the 200 MHz experiment) or keeping the scan's path clear of it does.

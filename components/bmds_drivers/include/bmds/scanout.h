@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
+#include <bmds/colorexpander.h>
 #include <bmds/edid.h>
 #include <bmds/error.h>
 #include <bmds/paletteexpander.h>
@@ -37,6 +38,19 @@ class LineSource {
                  * @hotpath
                  */
                 virtual void render(uint16_t first, uint16_t count, uint8_t *dst, size_t stride) = 0;
+
+                /**
+                 * @brief A framebuffer scanout (`Config::framebuffer`) started a
+                 *        frame: change what moves in @p frame (the whole picture,
+                 *        @p stride bytes a line), and write back from the cache
+                 *        what it changed (a write-back of the whole frame would
+                 *        hold up the DMA's reads).
+                 */
+                virtual void frame(uint8_t *frame, size_t stride) {
+                        (void)frame;
+                        (void)stride;
+                        return;
+                }
 
         protected:
                 ~LineSource() = default;
@@ -65,18 +79,24 @@ class Scanout {
                         Rgb565,   ///< 16 bits: R5 G6 B5, little-endian.
                         Rgb888,   ///< 24 bits: B, G, R bytes.
                         Indexed8, ///< 8-bit palette indices, expanded to RGB888 by the PPA (`palette()`).
+                        Rgb565Expanded, ///< Drawn as RGB565, widened to RGB888 by the 2D-DMA.
                 };
 
                 /** @brief What to send. */
                 struct Config {
-                                VideoTiming     timing; ///< The mode (its pixel clock sets the lane rate).
-                                Format          format = Format::Rgb565; ///< Line buffer format.
-                                uint8_t         lanes = 2;               ///< DSI data lanes.
-                                uint16_t        linesPerBlock = 8; ///< Lines per buffer; divides `timing.vActive`.
-                                uint8_t         blocks = 3;        ///< Buffers in the ring (2 or more).
-                                int8_t          phyLdo = -1;       ///< On-chip LDO for the DSI PHY, or -1.
-                                uint16_t        phyLdoMv = 0;      ///< Its voltage.
-                                int             core = 1;          ///< The refill task's core.
+                                VideoTiming timing;                  ///< The mode (its pixel clock sets the lane rate).
+                                Format      format = Format::Rgb565; ///< Line buffer format.
+                                uint8_t     lanes = 2;               ///< DSI data lanes.
+                                uint16_t    linesPerBlock = 8;       ///< Lines per buffer; divides `timing.vActive`.
+                                uint8_t     blocks = 3;              ///< Buffers in the ring (2 or more).
+                                int8_t      phyLdo = -1;             ///< On-chip LDO for the DSI PHY, or -1.
+                                uint16_t    phyLdoMv = 0;            ///< Its voltage.
+                                int         core = 1;                ///< The refill task's core.
+                                bool        framebuffer =
+                                        false; ///< The ring is a whole frame in PSRAM (RGB888): drawn once, not per block.
+                                uint8_t linkPacking =
+                                        0; ///< 16/18-bit links: the host's packing variant (0-2), the bridge's arrangement.
+                                bool            fullLaneRate = false; ///< Lanes at the 24-bit rate whatever the format.
                                 const uint32_t *palette =
                                         nullptr; ///< `Indexed8`: 256 entries (0xRRGGBB) loaded at the start.
                                 void (*onRestart)(void *arg) =
@@ -99,7 +119,7 @@ class Scanout {
                                 uint64_t renderCycles = 0;    ///< All refills, CPU cycles.
                                 uint64_t syncCycles = 0;      ///< Of which writing the buffers back from the cache.
                                 uint32_t syncCyclesMax = 0;   ///< The slowest write-back.
-                                uint64_t expandCycles = 0;    ///< Of which waiting for the PPA (`Indexed8`).
+                                uint64_t expandCycles = 0;    ///< Of which waiting for the PPA or the 2D-DMA.
                                 uint32_t expandCyclesMax = 0; ///< The slowest expansion.
                                 uint32_t expandErrors = 0;    ///< Expansions that failed or timed out.
                                 // Bring-up diagnostics.
@@ -167,8 +187,9 @@ class Scanout {
                 LineSource           *_source = nullptr;
                 Hardware             *_hw = nullptr;
                 uint8_t              *_ring = nullptr;    // blocks × _blockBytes
-                uint8_t              *_indices = nullptr; // Indexed8: one block of indices
+                uint8_t              *_staging = nullptr; // Indexed8, Rgb565Expanded: one block as drawn
                 PaletteExpander       _expander;
+                ColorExpander         _widener;
                 size_t                _blockBytes = 0;
                 size_t                _stride = 0;
                 uint32_t              _blocksPerFrame = 0;
