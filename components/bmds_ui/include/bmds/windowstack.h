@@ -21,63 +21,177 @@
 BMDS_NAMESPACE_BEGIN
 
 /**
- * @brief A framed window's parts, from its outer rectangle
- *        (`devplan/windows.md` §4a): a title bar a font row high, 4-pixel
- *        sides and bottom, a close box at the title bar's left.
+ * @brief A window's parts, from its outer rectangle and the decorations it
+ *        chose (`devplan/windows.md` §4a, §4f).
  *
- * Every vertical edge is on a 4-pixel column when the outer rectangle is.
+ * The decorations are flags: a `Border` (4-pixel sides and bottom, and a
+ * top when there is no title bar), a `TitleBar` a font row high, and on it
+ * a menu button at the left and minimize, maximize and close buttons at the
+ * right. Without any, the window is its client area. Every vertical edge is
+ * on a 4-pixel column when the outer rectangle is.
+ *
+ * @par Thread Safety
+ * A plain value.
  */
 struct WindowFrame {
-                static constexpr uint16_t Border = 4;       ///< The sides' and the bottom's thickness.
+                /** @name Decorations (flags; the buttons need `TitleBar`) */
+                ///@{
+                static constexpr uint8_t Border = 1u << 0;
+                static constexpr uint8_t TitleBar = 1u << 1;
+                static constexpr uint8_t MenuButton = 1u << 2;
+                static constexpr uint8_t MinimizeButton = 1u << 3;
+                static constexpr uint8_t MaximizeButton = 1u << 4;
+                static constexpr uint8_t CloseButton = 1u << 5;
+                static constexpr uint8_t None = 0;
+                static constexpr uint8_t Standard = 0x3f; ///< All of them.
+                ///@}
+
+                /** @brief What a point of a window is on. */
+                enum class Part : uint8_t {
+                        Outside,  ///< Not the window.
+                        Client,   ///< The client area.
+                        Edge,     ///< The border.
+                        TitleBar, ///< The title bar but its buttons.
+                        Menu,     ///< The buttons.
+                        Minimize,
+                        Maximize,
+                        Close,
+                };
+
+                static constexpr uint16_t BorderWidth = 4;  ///< The border's thickness.
                 static constexpr uint16_t TitleHeight = 20; ///< A 16-pixel font row and 2 pixels above and below.
-                static constexpr uint16_t CloseSize = 12;   ///< The close box's side.
+                static constexpr uint16_t ButtonSize = 16;  ///< A button's side.
+                static constexpr uint16_t ButtonGap = 4;    ///< Between buttons, and from the title bar's ends.
                 static constexpr uint16_t OutlineWidth = 4; ///< A move's outline.
-                static constexpr uint16_t MinWidth = 64;
-                static constexpr uint16_t MinHeight = TitleHeight + Border + 8;
+                static constexpr uint16_t MinClient = 8;    ///< The smallest client side.
 
-                /** @brief Returns the client area: inside the sides, under the title bar. */
-                static constexpr Rect client(const Rect &outer) {
-                        return Rect{uint16_t(outer.x + Border), uint16_t(outer.y + TitleHeight),
-                                    uint16_t(outer.width - 2 * Border), uint16_t(outer.height - TitleHeight - Border)};
+                Rect    outer;
+                uint8_t decorations = Standard;
+
+                constexpr WindowFrame() = default;
+                constexpr WindowFrame(const Rect &rect, uint8_t flags) : outer(rect), decorations(flags) {}
+
+                /** @brief Returns true if @p flags are decorations: known bits, buttons only with a title bar. */
+                static constexpr bool isValid(uint8_t flags) {
+                        return (flags & ~Standard) == 0 &&
+                               ((flags & TitleBar) != 0 || (flags & ~(Border | TitleBar)) == 0);
                 }
 
-                /** @brief Returns the title bar. */
-                static constexpr Rect titleBar(const Rect &outer) {
-                        return Rect{outer.x, outer.y, outer.width, TitleHeight};
+                /** @brief Returns the frame's width left and right of the client area. */
+                static constexpr uint16_t sideWidth(uint8_t flags) { return (flags & Border) != 0 ? BorderWidth : 0; }
+
+                /** @brief Returns the frame's height above the client area. */
+                static constexpr uint16_t topHeight(uint8_t flags) {
+                        return (flags & TitleBar) != 0 ? TitleHeight : sideWidth(flags);
                 }
 
-                /** @brief Returns the close box. */
-                static constexpr Rect closeBox(const Rect &outer) {
-                        return Rect{uint16_t(outer.x + Border), uint16_t(outer.y + (TitleHeight - CloseSize) / 2),
-                                    CloseSize, CloseSize};
+                /** @brief Returns the outer width around a client area @p width wide. */
+                static constexpr uint16_t outerWidth(uint16_t width, uint8_t flags) {
+                        return uint16_t(width + 2 * sideWidth(flags));
+                }
+
+                /** @brief Returns the outer height around a client area @p height high. */
+                static constexpr uint16_t outerHeight(uint16_t height, uint8_t flags) {
+                        return uint16_t(height + topHeight(flags) + sideWidth(flags));
+                }
+
+                /** @brief Returns the narrowest window: its buttons and some title, or a small client area. */
+                static constexpr uint16_t minWidth(uint8_t flags) {
+                        uint16_t buttons = 0;
+                        for (uint8_t b = MenuButton; b <= CloseButton; b = uint8_t(b << 1))
+                                if ((flags & b) != 0) buttons = uint16_t(buttons + ButtonSize + ButtonGap);
+                        const uint16_t bar = uint16_t(buttons + ButtonGap + 4 * ButtonGap);
+                        const uint16_t client = outerWidth(MinClient, flags);
+                        return (flags & TitleBar) != 0 && bar > client ? bar : client;
+                }
+
+                /** @brief Returns the shortest window. */
+                static constexpr uint16_t minHeight(uint8_t flags) { return outerHeight(MinClient, flags); }
+
+                /** @brief Returns true if it has all of @p flags. */
+                constexpr bool has(uint8_t flags) const { return (decorations & flags) == flags; }
+
+                /** @brief Returns the client area: inside the border, under the title bar. */
+                constexpr Rect client() const {
+                        const uint16_t side = sideWidth(decorations), top = topHeight(decorations);
+                        return Rect{uint16_t(outer.x + side), uint16_t(outer.y + top), uint16_t(outer.width - 2 * side),
+                                    uint16_t(outer.height - top - side)};
+                }
+
+                /** @brief Returns the title bar (empty without one). */
+                constexpr Rect titleBar() const {
+                        return has(TitleBar) ? Rect{outer.x, outer.y, outer.width, TitleHeight} : Rect();
+                }
+
+                /** @brief Returns a button (empty if it has none, or @p part isn't a button). */
+                constexpr Rect button(Part part) const {
+                        const uint16_t y = uint16_t(outer.y + (TitleHeight - ButtonSize) / 2);
+                        if (part == Part::Menu)
+                                return has(MenuButton) ? Rect{uint16_t(outer.x + ButtonGap), y, ButtonSize, ButtonSize}
+                                                       : Rect();
+                        // From the right: close, maximize, minimize, each only if there.
+                        uint32_t left = outer.right() - ButtonGap;
+                        for (const Part p : {Part::Close, Part::Maximize, Part::Minimize}) {
+                                const uint8_t flag = p == Part::Close      ? CloseButton
+                                                     : p == Part::Maximize ? MaximizeButton
+                                                                           : MinimizeButton;
+                                if (!has(flag)) continue;
+                                left -= ButtonSize;
+                                if (p == part) return Rect{uint16_t(left), y, ButtonSize, ButtonSize};
+                                left -= ButtonGap;
+                        }
+                        return Rect();
                 }
 
                 /** @brief Returns where the title is written (one font row; may be empty). */
-                static constexpr Rect title(const Rect &outer) {
-                        const uint16_t left = Border + CloseSize + 8;
-                        const uint16_t width = outer.width > left + Border ? outer.width - left - Border : 0;
-                        return Rect{uint16_t(outer.x + left), uint16_t(outer.y + 2), width, uint16_t(TitleHeight - 4)};
+                constexpr Rect title() const {
+                        if (!has(TitleBar)) return Rect();
+                        const Rect     menu = button(Part::Menu);
+                        const uint32_t left = menu.isEmpty() ? outer.x + 2 * ButtonGap : menu.right() + ButtonGap;
+                        uint32_t       right = outer.right() - ButtonGap;
+                        for (const Part p : {Part::Close, Part::Maximize, Part::Minimize}) {
+                                const Rect b = button(p);
+                                if (!b.isEmpty()) right = b.x - ButtonGap;
+                        }
+                        return right > left ? Rect{uint16_t(left), uint16_t(outer.y + 2), uint16_t(right - left),
+                                                   uint16_t(TitleHeight - 4)}
+                                            : Rect();
                 }
 
-                /** @brief Writes the frame's rectangles but the title bar (sides, bottom) into @p out. */
-                static constexpr void edges(const Rect &outer, Rect (&out)[3]) {
-                        const uint16_t sideY = uint16_t(outer.y + TitleHeight);
-                        const uint16_t sideH = uint16_t(outer.height - TitleHeight);
-                        out[0] = Rect{outer.x, sideY, Border, sideH};
-                        out[1] = Rect{uint16_t(outer.right() - Border), sideY, Border, sideH};
-                        out[2] = Rect{uint16_t(outer.x + Border), uint16_t(outer.bottom() - Border),
-                                      uint16_t(outer.width - 2 * Border), Border};
-                        return;
+                /** @brief Writes the border's rectangles into @p out. @return How many (0 to 4). */
+                constexpr size_t edges(Rect (&out)[4]) const {
+                        if (!has(Border)) return 0;
+                        const uint16_t b = BorderWidth;
+                        const uint16_t top = topHeight(decorations);
+                        const uint16_t sideH = uint16_t(outer.height - top);
+                        size_t         n = 0;
+                        if (!has(TitleBar)) out[n++] = Rect{outer.x, outer.y, outer.width, b};
+                        out[n++] = Rect{outer.x, uint16_t(outer.y + top), b, sideH};
+                        out[n++] = Rect{uint16_t(outer.right() - b), uint16_t(outer.y + top), b, sideH};
+                        out[n++] = Rect{uint16_t(outer.x + b), uint16_t(outer.bottom() - b),
+                                        uint16_t(outer.width - 2 * b), b};
+                        return n;
                 }
 
-                /** @brief Writes @p outer's outline (`OutlineWidth` thick) into @p out. */
-                static constexpr void outline(const Rect &outer, Rect (&out)[4]) {
+                /** @brief Returns the part (@p x, @p y) is on. */
+                constexpr Part partAt(uint16_t x, uint16_t y) const {
+                        const Rect at{x, y, 1, 1};
+                        if (!outer.contains(at)) return Part::Outside;
+                        if (client().contains(at)) return Part::Client;
+                        if (!titleBar().contains(at)) return Part::Edge;
+                        for (const Part p : {Part::Menu, Part::Minimize, Part::Maximize, Part::Close})
+                                if (button(p).contains(at)) return p;
+                        return Part::TitleBar;
+                }
+
+                /** @brief Writes @p rect's outline (`OutlineWidth` thick) into @p out. */
+                static constexpr void outline(const Rect &rect, Rect (&out)[4]) {
                         const uint16_t t = OutlineWidth;
-                        out[0] = Rect{outer.x, outer.y, outer.width, t};
-                        out[1] = Rect{outer.x, uint16_t(outer.bottom() - t), outer.width, t};
-                        out[2] = Rect{outer.x, uint16_t(outer.y + t), t, uint16_t(outer.height - 2 * t)};
-                        out[3] = Rect{uint16_t(outer.right() - t), uint16_t(outer.y + t), t,
-                                      uint16_t(outer.height - 2 * t)};
+                        out[0] = Rect{rect.x, rect.y, rect.width, t};
+                        out[1] = Rect{rect.x, uint16_t(rect.bottom() - t), rect.width, t};
+                        out[2] = Rect{rect.x, uint16_t(rect.y + t), t, uint16_t(rect.height - 2 * t)};
+                        out[3] = Rect{uint16_t(rect.right() - t), uint16_t(rect.y + t), t,
+                                      uint16_t(rect.height - 2 * t)};
                         return;
                 }
 };
@@ -95,7 +209,9 @@ struct WindowFrame {
  * of it is visible. `plan()` then tells which layer draws each piece.
  *
  * Layers are counted from the top: layer `z` is the `z`-th window from the
- * front, layer `count()` the desktop.
+ * front, layer `count()` the desktop. Hidden windows (minimized) keep their
+ * number and rectangle but are in no layer: `hide()` damages what one
+ * showed, `show()` puts it back on top.
  *
  * @par Thread Safety
  * A plain value.
@@ -117,8 +233,14 @@ class WindowStack {
                 /** @brief Returns the screen. */
                 Rect screen() const { return _screen; }
 
-                /** @brief Returns the windows open. */
+                /** @brief Returns the windows shown (the layers above the desktop). */
                 size_t count() const { return _count; }
+
+                /** @brief Returns the windows hidden. */
+                size_t hiddenCount() const { return _hidden; }
+
+                /** @brief Returns the number of hidden window @p i (0: the last hidden). */
+                uint8_t hiddenIdAt(size_t i) const { return _ids[_count + i]; }
 
                 /** @brief Returns the number of layer @p z's window (0: the top). */
                 uint8_t idAt(size_t z) const { return _ids[z]; }
@@ -126,8 +248,14 @@ class WindowStack {
                 /** @brief Returns layer @p z's rectangle (`count()`: the screen). */
                 Rect rectAt(size_t z) const { return z < _count ? _rects[z] : _screen; }
 
-                /** @brief Returns window @p id's layer, or `NotFound`. */
+                /** @brief Returns window @p id's layer, or `NotFound` (none, or hidden). */
                 Result<size_t> layerOf(uint8_t id) const;
+
+                /** @brief Returns window @p id's rectangle, shown or hidden, or `NotFound`. */
+                Result<Rect> rectOf(uint8_t id) const;
+
+                /** @brief Returns true if window @p id is hidden. */
+                bool isHidden(uint8_t id) const;
 
                 /** @brief Returns true if @p rect may be a window's: on the screen, aligned. */
                 bool isPlaceable(const Rect &rect) const;
@@ -138,14 +266,24 @@ class WindowStack {
                  */
                 Result<uint8_t> open(const Rect &rect);
 
-                /** @brief Closes window @p id. @return `Ok` or `NotFound`. */
+                /** @brief Closes window @p id, shown or hidden. @return `Ok` or `NotFound`. */
                 Error close(uint8_t id);
 
-                /** @brief Moves window @p id to @p rect (any size). @return `Ok`, `NotFound` or `Invalid`. */
+                /**
+                 * @brief Moves window @p id to @p rect (any size); a hidden one
+                 *        is moved without damage.
+                 * @return `Ok`, `NotFound` or `Invalid`.
+                 */
                 Error move(uint8_t id, const Rect &rect);
 
-                /** @brief Puts window @p id on top. @return `Ok` or `NotFound`. */
+                /** @brief Puts shown window @p id on top. @return `Ok` or `NotFound`. */
                 Error raise(uint8_t id);
+
+                /** @brief Hides shown window @p id. @return `Ok` or `NotFound`. */
+                Error hide(uint8_t id);
+
+                /** @brief Shows hidden window @p id on top. @return `Ok` or `NotFound`. */
+                Error show(uint8_t id);
 
                 /**
                  * @brief Adds what of @p rect (screen coordinates) window @p id
@@ -176,11 +314,14 @@ class WindowStack {
         private:
                 void addShown(size_t z, const Rect &rect); // what of rect layer z shows, to the damage
                 void layers(Rect (&out)[MaxWindows + 1]) const;
+                int  find(uint8_t id) const;       // the entry, shown or hidden, or -1
+                void take(size_t from, size_t to); // moves an entry, shifting those between
 
                 Rect    _screen;
-                Rect    _rects[MaxWindows]; // top first
+                Rect    _rects[MaxWindows]; // the shown top first, then the hidden
                 uint8_t _ids[MaxWindows] = {};
                 uint8_t _count = 0;
+                uint8_t _hidden = 0;
                 Region  _damage;
 };
 

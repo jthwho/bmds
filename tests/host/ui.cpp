@@ -307,6 +307,32 @@ TEST_CASE("WindowStack: numbers, order, refusals") {
         CHECK(stack.idAt(1) == 2);
         CHECK(stack.idAt(2) == 3);
         CHECK(stack.layerOf(3).value() == 2);
+        // Hidden: in no layer, its number kept, shown again on top.
+        CHECK(stack.hide(2).isOk());
+        CHECK(stack.count() == 2);
+        CHECK(stack.hiddenCount() == 1);
+        CHECK(stack.hiddenIdAt(0) == 2);
+        CHECK(stack.isHidden(2));
+        CHECK(stack.layerOf(2).error() == bmds::Error::NotFound);
+        CHECK(stack.raise(2) == bmds::Error::NotFound);
+        CHECK(stack.hide(2) == bmds::Error::NotFound);
+        CHECK(stack.rectOf(2).value() == Rect{0, 0, 8, 8});
+        CHECK(stack.move(2, Rect{4, 0, 8, 8}).isOk());
+        CHECK(stack.open(Rect{0, 0, 8, 8}).value() == 4); // 2 is still taken
+        CHECK(stack.close(4).isOk());
+        CHECK(stack.show(2).isOk());
+        CHECK(stack.show(2) == bmds::Error::NotFound);
+        CHECK(stack.idAt(0) == 2);
+        CHECK(stack.rectAt(0) == Rect{4, 0, 8, 8});
+        CHECK(stack.hiddenCount() == 0);
+        CHECK(stack.hide(3).isOk());
+        CHECK(stack.close(3).isOk()); // hidden, closed
+        CHECK(stack.hiddenCount() == 0);
+        CHECK(stack.open(Rect{8, 8, 8, 8}).value() == 3);
+        CHECK(stack.raise(1).isOk());
+        CHECK(stack.raise(2).isOk());
+        CHECK(stack.raise(3).isOk());
+        CHECK(stack.raise(1).isOk());
         for (size_t i = stack.count(); i < WindowStack::MaxWindows; ++i) REQUIRE(stack.open(Rect{0, 0, 4, 4}).isOk());
         CHECK(stack.open(Rect{0, 0, 4, 4}).error() == bmds::Error::Full);
 }
@@ -317,14 +343,23 @@ TEST_CASE("WindowStack: each change damages what changed, a raise and an invalid
                 WindowStack stack(Width, Height);
                 for (int i = 0, n = 1 + int(rnd.next(6)); i < n; ++i) REQUIRE(stack.open(windowRect(rnd)).isOk());
                 for (int step = 0; step < 6; ++step) {
+                        if (stack.count() == 0) REQUIRE(stack.show(stack.hiddenIdAt(0)).isOk());
                         stack.clearDamage();
                         const std::vector<int> before = owners(stack);
                         const uint8_t          id = stack.idAt(rnd.next(uint32_t(stack.count())));
                         const Rect             was = stack.rectAt(stack.layerOf(id).value());
-                        const int              op = int(rnd.next(5));
+                        const int              op = int(rnd.next(7));
                         Rect                   bound = was; // where damage may be
                         Rect                   asked;
-                        if (op == 0) {
+                        if (op == 5) {
+                                REQUIRE(stack.hide(id).isOk());
+                        } else if (op == 6) {
+                                if (stack.hiddenCount() == 0) continue;
+                                const uint8_t hidden = stack.hiddenIdAt(rnd.next(uint32_t(stack.hiddenCount())));
+                                bound = stack.rectOf(hidden).value();
+                                REQUIRE(stack.show(hidden).isOk());
+                                REQUIRE(stack.idAt(0) == hidden);
+                        } else if (op == 0) {
                                 const Rect r = windowRect(rnd);
                                 const auto opened = stack.open(r);
                                 if (opened.isError()) continue;
@@ -388,22 +423,68 @@ TEST_CASE("WindowStack: the plan gives each piece to the window that shows it") 
         }
 }
 
-TEST_CASE("WindowFrame: the parts tile the window, on 4-pixel columns") {
+TEST_CASE("WindowFrame: for every set of decorations, the parts tile the window, on 4-pixel columns") {
+        using Part = WindowFrame::Part;
         const Rect outer{100, 50, 200, 120};
-        Rect       edges[3];
-        WindowFrame::edges(outer, edges);
-        Region parts;
-        parts.add(WindowFrame::titleBar(outer));
-        parts.add(WindowFrame::client(outer));
-        for (const Rect &e : edges) parts.add(e);
-        CHECK(parts.area() == outer.area());
-        CHECK(parts.bounds() == outer);
-        CHECK(WindowFrame::titleBar(outer).contains(WindowFrame::closeBox(outer)));
-        CHECK(WindowFrame::titleBar(outer).contains(WindowFrame::title(outer)));
-        CHECK(WindowFrame::client(outer).x % 4 == 0);
-        CHECK(WindowFrame::client(outer).width % 4 == 0);
-        CHECK(WindowFrame::closeBox(outer).width % 4 == 0);
-        CHECK(WindowFrame::title(outer).x % 4 == 0);
+        int        valid = 0;
+        for (unsigned flags = 0; flags < 256; ++flags) {
+                const auto d = static_cast<uint8_t>(flags);
+                if (!WindowFrame::isValid(d)) {
+                        CHECK(((d & ~WindowFrame::Standard) != 0 || (d & WindowFrame::TitleBar) == 0));
+                        continue;
+                }
+                ++valid;
+                const WindowFrame f(outer, d);
+                Rect              edges[4];
+                const size_t      n = f.edges(edges);
+                Region            parts;
+                uint32_t          area = f.titleBar().area() + f.client().area();
+                parts.add(f.titleBar());
+                parts.add(f.client());
+                for (size_t i = 0; i < n; ++i) {
+                        parts.add(edges[i]);
+                        area += edges[i].area();
+                }
+                CHECK(parts.area() == outer.area()); // the parts cover it
+                CHECK(area == outer.area());         // and don't overlap
+                CHECK(f.client().x % 4 == 0);
+                CHECK(f.client().width % 4 == 0);
+                CHECK(f.client().width == outer.width - (WindowFrame::outerWidth(0, d)));
+                CHECK(f.client().height == outer.height - (WindowFrame::outerHeight(0, d)));
+                if (d == WindowFrame::None) CHECK(f.client() == outer);
+                // Buttons on the title bar, apart from each other and the title.
+                Rect   buttons[4];
+                size_t nb = 0;
+                for (const Part p : {Part::Menu, Part::Minimize, Part::Maximize, Part::Close}) {
+                        const Rect r = f.button(p);
+                        if (r.isEmpty()) continue;
+                        CHECK(f.titleBar().contains(r));
+                        CHECK(r.x % 4 == 0);
+                        CHECK(r.width % 4 == 0);
+                        for (size_t i = 0; i < nb; ++i) CHECK(!buttons[i].intersects(r));
+                        CHECK(!r.intersects(f.title()));
+                        buttons[nb++] = r;
+                        CHECK(f.partAt(r.x, r.y) == p);
+                        CHECK(f.partAt(uint16_t(r.right() - 1), uint16_t(r.bottom() - 1)) == p);
+                }
+                CHECK(f.button(Part::Close).isEmpty() == ((d & WindowFrame::CloseButton) == 0));
+                CHECK(f.button(Part::Menu).isEmpty() == ((d & WindowFrame::MenuButton) == 0));
+                CHECK(f.titleBar().contains(f.title()));
+                CHECK(f.title().x % 4 == 0);
+                // The close button is the rightmost.
+                if (!f.button(Part::Close).isEmpty()) CHECK(f.button(Part::Close).right() == outer.right() - 4);
+                CHECK(f.partAt(outer.x, uint16_t(outer.bottom())) == Part::Outside);
+                CHECK(f.partAt(uint16_t(outer.x + outer.width / 2), uint16_t(outer.y + outer.height / 2)) ==
+                      Part::Client);
+                if (n > 0) CHECK(f.partAt(edges[n - 1].x, edges[n - 1].y) == Part::Edge);
+                if (f.has(WindowFrame::TitleBar)) CHECK(f.partAt(f.title().x, f.title().y) == Part::TitleBar);
+                CHECK(WindowFrame::minWidth(d) >= WindowFrame::outerWidth(WindowFrame::MinClient, d));
+                CHECK(WindowFrame(Rect{0, 0, WindowFrame::minWidth(d), WindowFrame::minHeight(d)}, d).title().width >=
+                      (f.has(WindowFrame::TitleBar) ? 8u : 0u));
+        }
+        CHECK(valid == 1 + 1 + 2 * 16); // none, border, and the title bar with either border and any buttons
+        CHECK(!WindowFrame::isValid(WindowFrame::CloseButton));
+        CHECK(WindowFrame::isValid(WindowFrame::Standard));
         Rect outline[4];
         WindowFrame::outline(outer, outline);
         Region ring;
@@ -581,4 +662,28 @@ TEST_CASE("Font: unscii-16") {
         CHECK(font.glyph(0x10fffd).rows == font.glyph(0x25a1).rows); // the replacement: □
         // Every printable ASCII character has its own glyph.
         for (uint32_t c = 0x20; c < 0x7f; ++c) CHECK(font.hasGlyph(c));
+}
+
+TEST_CASE("Font: the icons, 16 by 16 in the private use area") {
+        const Font &icons = bmds::Fonts::icons16;
+        CHECK(icons.glyphCount() == 6); // five icons and a blank
+        for (uint32_t cp = bmds::Icon::Menu; cp <= bmds::Icon::Close; ++cp) {
+                REQUIRE(icons.hasGlyph(cp));
+                const Glyph g = icons.glyph(cp);
+                CHECK(g.width == 16);
+                int bits = 0;
+                for (int i = 0; i < 32; ++i) bits += __builtin_popcount(g.rows[i]);
+                CHECK(bits > 0);
+                if (cp > bmds::Icon::Menu) CHECK(g.rows != icons.glyph(cp - 1).rows);
+        }
+        // The close icon is an ×: symmetric both ways.
+        const Glyph x = icons.glyph(bmds::Icon::Close);
+        for (int r = 0; r < 16; ++r)
+                for (int c = 0; c < 16; ++c) {
+                        auto bit = [&](int rr, int cc) {
+                                return (x.rows[rr * 2 + cc / 8] >> (7 - cc % 8)) & 1;
+                        };
+                        CHECK(bit(r, c) == bit(r, 15 - c));
+                        CHECK(bit(r, c) == bit(15 - r, c));
+                }
 }

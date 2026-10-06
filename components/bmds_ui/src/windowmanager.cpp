@@ -95,7 +95,9 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
         _cursorShown = false;
         _cursorMoved = false;
         _grabId = 0;
-        _closeId = 0;
+        _pressId = 0;
+        _pressShown = false;
+        _clickId = 0;
         // The keyboards' and mice's sink while it runs.
         Input::Sink sink;
         sink.key = keyEntry;
@@ -111,8 +113,8 @@ void WindowManager::stop() {
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface == nullptr) return;
         Input::setSink(nullptr);
-        for (size_t z = 0; z < _stack.count(); ++z) {
-                Window &w = _windows[_stack.idAt(z) - 1];
+        for (size_t i = 0; i < _stack.count() + _stack.hiddenCount(); ++i) {
+                Window &w = _windows[(i < _stack.count() ? _stack.idAt(i) : _stack.hiddenIdAt(i - _stack.count())) - 1];
                 if (w.closed != nullptr) w.closed(w.arg);
                 w = Window();
         }
@@ -245,6 +247,7 @@ void WindowManager::applyPointer() {
                                 (void)dragLocked(_grabId, static_cast<uint16_t>(wx < 0 ? 0 : wx),
                                                  static_cast<uint16_t>(wy < 0 ? 0 : wy));
                         }
+                        if (_pressId != 0) pressedMoved(nx, ny);
                 }
                 const uint8_t pressed = static_cast<uint8_t>(event.buttons & ~_buttons);
                 const uint8_t released = static_cast<uint8_t>(_buttons & ~event.buttons);
@@ -255,23 +258,47 @@ void WindowManager::applyPointer() {
         }
 }
 
-// The left button down at (@p x, @p y): the window there raised; on its
-// title bar, grabbed to move; on its close box, closed if released there.
+WindowFrame WindowManager::frame(uint8_t id, const Rect &outer) const {
+        return WindowFrame(outer, _windows[id - 1].decorations);
+}
+
+// The left button down at (@p x, @p y): the window there raised; on a
+// button, that button pressed (it acts if released there); on the title
+// bar, grabbed to move, or maximized or restored by a double click.
 void WindowManager::press(uint16_t x, uint16_t y) {
+        using Part = WindowFrame::Part;
         const uint8_t id = windowAt(x, y);
         if (id == 0) return;
         auto [z, err] = _stack.layerOf(id);
         if (err.isError()) return;
-        const Rect outer = _stack.rectAt(z);
-        const Rect at{x, y, 1, 1};
+        const WindowFrame f = frame(id, _stack.rectAt(z));
+        const Part        part = f.partAt(x, y);
         (void)raiseLocked(id);
-        if (WindowFrame::closeBox(outer).contains(at)) {
-                _closeId = id;
-        } else if (WindowFrame::titleBar(outer).contains(at)) {
-                _grabId = id;
-                _grabX = static_cast<uint16_t>(x - outer.x);
-                _grabY = static_cast<uint16_t>(y - outer.y);
+        if (part == Part::Menu || part == Part::Minimize || part == Part::Maximize || part == Part::Close) {
+                _pressId = id;
+                _pressPart = part;
+                _pressShown = true;
+                (void)_stack.invalidate(id, f.button(part));
+                _clickId = 0;
+                return;
         }
+        if (part != Part::TitleBar) {
+                _clickId = 0;
+                return;
+        }
+        const uint64_t now = System::uptimeUs();
+        if (_clickId == id && now - _clickUs < uint64_t(DoubleClickMs) * 1000) {
+                _clickId = 0;
+                if (f.has(WindowFrame::MaximizeButton))
+                        (void)(_windows[id - 1].maximized ? restoreLocked(id) : maximizeLocked(id));
+                return;
+        }
+        _clickId = id;
+        _clickUs = now;
+        if (_windows[id - 1].maximized) return; // stays where it is
+        _grabId = id;
+        _grabX = static_cast<uint16_t>(x - f.outer.x);
+        _grabY = static_cast<uint16_t>(y - f.outer.y);
         return;
 }
 
@@ -280,13 +307,44 @@ void WindowManager::release(uint16_t x, uint16_t y) {
                 if (_dragId == _grabId) (void)dropLocked(); // moved: put there
                 _grabId = 0;
         }
-        if (_closeId != 0) {
-                const uint8_t id = _closeId;
-                _closeId = 0;
+        if (_pressId != 0) {
+                const uint8_t           id = _pressId;
+                const WindowFrame::Part part = _pressPart;
+                pressedMoved(x, y);
+                const bool over = _pressShown;
+                _pressId = 0;
+                _pressShown = false;
                 auto [z, err] = _stack.layerOf(id);
-                if (err.isOk() && windowAt(x, y) == id &&
-                    WindowFrame::closeBox(_stack.rectAt(z)).contains(Rect{x, y, 1, 1}))
-                        (void)closeLocked(id);
+                if (err.isOk()) (void)_stack.invalidate(id, frame(id, _stack.rectAt(z)).button(part));
+                if (err.isOk() && over) act(id, part);
+        }
+        return;
+}
+
+// The pointer moved with a button pressed: drawn pressed while over it.
+void WindowManager::pressedMoved(uint16_t x, uint16_t y) {
+        auto [z, err] = _stack.layerOf(_pressId);
+        if (err.isError()) {
+                _pressId = 0;
+                return;
+        }
+        const WindowFrame f = frame(_pressId, _stack.rectAt(z));
+        const bool        over = windowAt(x, y) == _pressId && f.partAt(x, y) == _pressPart;
+        if (over == _pressShown) return;
+        _pressShown = over;
+        (void)_stack.invalidate(_pressId, f.button(_pressPart));
+        return;
+}
+
+// What a title-bar button does (the menu's: nothing until there are menus).
+void WindowManager::act(uint8_t id, WindowFrame::Part part) {
+        using Part = WindowFrame::Part;
+        if (part == Part::Close) {
+                (void)closeLocked(id);
+        } else if (part == Part::Minimize) {
+                (void)minimizeLocked(id);
+        } else if (part == Part::Maximize) {
+                (void)(_windows[id - 1].maximized ? restoreLocked(id) : maximizeLocked(id));
         }
         return;
 }
@@ -460,28 +518,57 @@ void WindowManager::drawLayer(size_t z, Span<const Rect> pieces) {
         const uint8_t  id = _stack.idAt(z);
         const Window  &w = _windows[id - 1];
         const Rect     outer = _stack.rectAt(z);
-        const bool     active = z == 0;
-        const uint32_t frame = _palette.color(active ? Role::ActiveFrame : Role::InactiveFrame);
-        const uint32_t text = _palette.color(active ? Role::ActiveTitle : Role::InactiveTitle);
-        const auto     bit = static_cast<uint16_t>(1u << (id - 1));
+        const bool        active = z == 0;
+        const uint32_t    color = _palette.color(active ? Role::ActiveFrame : Role::InactiveFrame);
+        const uint32_t    text = _palette.color(active ? Role::ActiveTitle : Role::InactiveTitle);
+        const auto        bit = static_cast<uint16_t>(1u << (id - 1));
+        const WindowFrame f = frame(id, outer);
 
-        if (!pieces.isEmpty()) {
+        if (!pieces.isEmpty() && f.decorations != WindowFrame::None) {
+                using Part = WindowFrame::Part;
                 Painter chrome(*_surface, pieces, pieces, 0, 0, _tools, DrawTimeoutMs);
-                Rect    edges[3];
-                WindowFrame::edges(outer, edges);
-                const Rect parts[4] = {WindowFrame::titleBar(outer), edges[0], edges[1], edges[2]};
-                (void)chrome.fill(parts, frame);
-                const Rect box = WindowFrame::closeBox(outer);
-                (void)chrome.fill(box, _palette.color(Role::CloseBox));
-                (void)chrome.fill(Rect{uint16_t(box.x + Align), uint16_t(box.y + Align), Align, Align},
-                                  _palette.color(Role::CloseMark));
-                const Rect title = WindowFrame::title(outer);
-                (void)chrome.text(title.x, title.y, StringView(w.title), Fonts::unscii16, text, frame, title.width);
+                Rect    edges[4];
+                Rect    parts[5];
+                size_t  n = f.edges(edges);
+                for (size_t i = 0; i < n; ++i) parts[i] = edges[i];
+                if (f.has(WindowFrame::TitleBar)) parts[n++] = f.titleBar();
+                (void)chrome.fill(Span<const Rect>(parts, n), color);
+                // Each button: an icon, a glyph as big as the button; pressed, its two colors swapped.
+                struct Button {
+                                Part     part;
+                                Role     face, mark;
+                                uint32_t icon;
+                };
+                const Button buttons[] = {
+                        {Part::Menu, Role::Button, Role::ButtonMark, Icon::Menu},
+                        {Part::Minimize, Role::Button, Role::ButtonMark, Icon::Minimize},
+                        {Part::Maximize, Role::Button, Role::ButtonMark, w.maximized ? Icon::Restore : Icon::Maximize},
+                        {Part::Close, Role::CloseBox, Role::CloseMark, Icon::Close},
+                };
+                for (const Button &b : buttons) {
+                        const Rect r = f.button(b.part);
+                        if (r.isEmpty()) continue;
+                        uint32_t face = _palette.color(b.face), mark = _palette.color(b.mark);
+                        if (_pressId == id && _pressPart == b.part && _pressShown) {
+                                const uint32_t t = face;
+                                face = mark;
+                                mark = t;
+                        }
+                        TextCell icon;
+                        icon.codepoint = b.icon;
+                        icon.fg = mark;
+                        icon.bg = face;
+                        (void)chrome.cells(r.x, r.y, Span<const TextCell>(&icon, 1), Fonts::icons16, r.width);
+                }
+                const Rect title = f.title();
+                if (!title.isEmpty())
+                        (void)chrome.text(title.x, title.y, StringView(w.title), Fonts::unscii16, text, color,
+                                          title.width);
                 count(chrome);
         }
 
         // The client area's damage; its clip, the damage or (an update) all of it that shows.
-        const Rect client = WindowFrame::client(outer);
+        const Rect client = f.client();
         Rect      *damage = _scratch + MaxPieces;
         size_t     nd = 0;
         for (const Rect &piece : pieces) {
@@ -563,11 +650,11 @@ void WindowManager::changed(uint8_t oldTop) {
                 for (const uint8_t id : {oldTop, top}) {
                         auto [z, err] = _stack.layerOf(id);
                         if (err.isError()) continue;
-                        const Rect outer = _stack.rectAt(z);
-                        Rect       edges[3];
-                        WindowFrame::edges(outer, edges);
-                        (void)_stack.invalidate(id, WindowFrame::titleBar(outer));
-                        for (const Rect &e : edges) (void)_stack.invalidate(id, e);
+                        const WindowFrame f = frame(id, _stack.rectAt(z));
+                        Rect              edges[4];
+                        const size_t      n = f.edges(edges);
+                        (void)_stack.invalidate(id, f.titleBar());
+                        for (size_t i = 0; i < n; ++i) (void)_stack.invalidate(id, edges[i]);
                 }
         }
         _requests.fetch_add(1, std::memory_order_acq_rel);
@@ -592,7 +679,8 @@ Result<uint8_t> WindowManager::open(const WindowConfig &config) {
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface == nullptr) return makeError<uint8_t>(Error::InvalidState);
         const Rect r = placed(config.rect);
-        if (r.width < WindowFrame::MinWidth || r.height < WindowFrame::MinHeight)
+        if (!WindowFrame::isValid(config.decorations) || r.width < WindowFrame::minWidth(config.decorations) ||
+            r.height < WindowFrame::minHeight(config.decorations))
                 return makeError<uint8_t>(Error::Invalid);
         const uint8_t oldTop = _stack.count() > 0 ? _stack.idAt(0) : 0;
         auto [id, err] = _stack.open(r);
@@ -606,7 +694,9 @@ Result<uint8_t> WindowManager::open(const WindowConfig &config) {
         w.redraw = config.redraw;
         w.closed = config.closed;
         w.key = config.key;
+        w.resized = config.resized;
         w.arg = config.arg;
+        w.decorations = config.decorations;
         changed(oldTop);
         return makeResult(id);
 }
@@ -625,7 +715,8 @@ Error WindowManager::closeLocked(uint8_t id) {
         _windows[id - 1] = Window();
         if (w.closed != nullptr) w.closed(w.arg);
         if (_grabId == id) _grabId = 0;
-        if (_closeId == id) _closeId = 0;
+        if (_pressId == id) _pressId = 0;
+        if (_clickId == id) _clickId = 0;
         if (_dragId == id) {
                 Rect sides[4];
                 WindowFrame::outline(_outline, sides);
@@ -640,11 +731,11 @@ Error WindowManager::closeLocked(uint8_t id) {
 Error WindowManager::move(uint8_t id, uint16_t x, uint16_t y) {
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface == nullptr) return Error::InvalidState;
-        auto [z, err] = _stack.layerOf(id);
+        auto [at, err] = _stack.rectOf(id);
         if (err.isError()) return err;
-        const Rect at = _stack.rectAt(z);
+        if (_windows[id - 1].maximized) return Error::InvalidState;
         err = _stack.move(id, placed(Rect{x, y, at.width, at.height}));
-        if (err.isOk()) changed(_stack.idAt(0));
+        if (err.isOk()) changed(_stack.count() > 0 ? _stack.idAt(0) : 0);
         return err;
 }
 
@@ -656,17 +747,108 @@ Error WindowManager::raise(uint8_t id) {
 
 Error WindowManager::raiseLocked(uint8_t id) {
         const uint8_t oldTop = _stack.count() > 0 ? _stack.idAt(0) : 0;
-        const Error   err = _stack.raise(id);
+        const Error   err = _stack.isHidden(id) ? _stack.show(id) : _stack.raise(id);
         if (err.isOk()) changed(oldTop);
         return err;
+}
+
+Error WindowManager::minimize(uint8_t id) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        return minimizeLocked(id);
+}
+
+Error WindowManager::minimizeLocked(uint8_t id) {
+        if (_stack.isHidden(id)) return Error::Ok;
+        const uint8_t oldTop = _stack.count() > 0 ? _stack.idAt(0) : 0;
+        const Error   err = _stack.hide(id);
+        if (err.isError()) return err;
+        if (_grabId == id) _grabId = 0;
+        if (_pressId == id) _pressId = 0;
+        if (_dragId == id) {
+                Rect sides[4];
+                WindowFrame::outline(_outline, sides);
+                for (const Rect &s : sides) _stack.invalidateScreen(s);
+                _dragId = 0;
+                _outlineShown = false;
+        }
+        changed(oldTop);
+        return Error::Ok;
+}
+
+Error WindowManager::maximize(uint8_t id) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        return maximizeLocked(id);
+}
+
+Error WindowManager::maximizeLocked(uint8_t id) {
+        auto [at, err] = _stack.rectOf(id);
+        if (err.isError()) return err;
+        err = raiseLocked(id);
+        if (err.isError()) return err;
+        Window &w = _windows[id - 1];
+        if (w.maximized) return Error::Ok;
+        if (_dragId == id) (void)dropLocked();
+        if (_grabId == id) _grabId = 0;
+        auto [was, rerr] = _stack.rectOf(id); // where the drop put it
+        w.restore = rerr.isOk() ? was : at;
+        w.maximized = true;
+        return resizeLocked(id, placed(_stack.screen()), w.decorations);
+}
+
+Error WindowManager::restore(uint8_t id) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        return restoreLocked(id);
+}
+
+Error WindowManager::restoreLocked(uint8_t id) {
+        if (_stack.isHidden(id)) return raiseLocked(id);
+        if (_stack.layerOf(id).isError()) return Error::NotFound;
+        Window &w = _windows[id - 1];
+        if (!w.maximized) return Error::Ok;
+        w.maximized = false;
+        return resizeLocked(id, placed(w.restore), w.decorations);
+}
+
+Error WindowManager::setDecorations(uint8_t id, uint8_t decorations) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        auto [at, err] = _stack.rectOf(id);
+        if (err.isError()) return err;
+        if (!WindowFrame::isValid(decorations) || at.width < WindowFrame::minWidth(decorations) ||
+            at.height < WindowFrame::minHeight(decorations))
+                return Error::Invalid;
+        return resizeLocked(id, at, decorations);
+}
+
+// Window @p id at @p rect with @p decorations: all of it redrawn, and told
+// its client area's size if that changed.
+Error WindowManager::resizeLocked(uint8_t id, const Rect &rect, uint8_t decorations) {
+        auto [at, err] = _stack.rectOf(id);
+        if (err.isError()) return err;
+        Window       &w = _windows[id - 1];
+        const Rect    before = WindowFrame(at, w.decorations).client();
+        const uint8_t oldTop = _stack.count() > 0 ? _stack.idAt(0) : 0;
+        err = _stack.move(id, rect);
+        if (err.isError()) return err;
+        w.decorations = decorations;
+        (void)_stack.invalidate(id, rect); // the frame changed, or the size: all of it
+        const Rect after = WindowFrame(rect, decorations).client();
+        if ((after.width != before.width || after.height != before.height) && w.resized != nullptr)
+                w.resized(w.arg, after.width, after.height);
+        changed(oldTop);
+        return Error::Ok;
 }
 
 Error WindowManager::invalidate(uint8_t id, const Rect &rect) {
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface == nullptr) return Error::InvalidState;
-        auto [z, err] = _stack.layerOf(id);
+        auto [at, err] = _stack.rectOf(id);
         if (err.isError()) return err;
-        const Rect client = WindowFrame::client(_stack.rectAt(z));
+        if (_stack.isHidden(id)) return Error::Ok; // drawn when shown
+        const Rect client = frame(id, at).client();
         const Rect local{0, 0, client.width, client.height};
         const Rect r = rect.intersected(local);
         if (r.isEmpty()) return Error::Ok;
@@ -715,6 +897,7 @@ Error WindowManager::dragLocked(uint8_t id, uint16_t x, uint16_t y) {
         if (_dragId != 0 && _dragId != id) return Error::Busy;
         auto [z, err] = _stack.layerOf(id);
         if (err.isError()) return err;
+        if (_windows[id - 1].maximized) return Error::InvalidState;
         const Rect at = _stack.rectAt(z);
         const Rect to = placed(Rect{x, y, at.width, at.height});
         if (_dragId == id && to == _outline) return Error::Ok;
@@ -757,21 +940,26 @@ Error WindowManager::dropLocked() {
 size_t WindowManager::list(Span<Info> out) {
         Mutex::Locker lock(_lock, WaitForever);
         size_t        n = 0;
-        for (size_t z = 0; z < _stack.count() && n < out.size(); ++z, ++n) {
+        const size_t  shown = _stack.count();
+        for (size_t i = 0; i < shown + _stack.hiddenCount() && n < out.size(); ++i, ++n) {
                 Info &info = out[n];
-                info.id = _stack.idAt(z);
-                info.rect = _stack.rectAt(z);
-                std::memcpy(info.title, _windows[info.id - 1].title, sizeof(info.title));
-                info.focused = z == 0;
+                info.id = i < shown ? _stack.idAt(i) : _stack.hiddenIdAt(i - shown);
+                info.rect = _stack.rectOf(info.id).value();
+                const Window &w = _windows[info.id - 1];
+                std::memcpy(info.title, w.title, sizeof(info.title));
+                info.focused = i == 0;
+                info.minimized = i >= shown;
+                info.maximized = w.maximized;
+                info.decorations = w.decorations;
         }
         return n;
 }
 
 Result<Rect> WindowManager::clientRect(uint8_t id) {
         Mutex::Locker lock(_lock, WaitForever);
-        auto [z, err] = _stack.layerOf(id);
+        auto [at, err] = _stack.rectOf(id);
         if (err.isError()) return makeError<Rect>(err);
-        return makeResult(WindowFrame::client(_stack.rectAt(z)));
+        return makeResult(frame(id, at).client());
 }
 
 Error WindowManager::sync(unsigned int timeoutMs) {

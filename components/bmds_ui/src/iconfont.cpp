@@ -1,0 +1,133 @@
+/**
+ * @file      iconfont.cpp
+ * @copyright Jason Howard. All rights reserved.
+ *
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file in the project root folder for license information.
+ *
+ * The window manager's icons: a font of 16×16 glyphs drawn here as pictures
+ * (devplan/windows.md §4f).
+ */
+
+#include <bmds/font.h>
+
+BMDS_NAMESPACE_BEGIN
+
+namespace {
+
+        constexpr size_t Icons = 5;
+        constexpr size_t Rows = 16;
+
+        // Each icon's rows, '#' the mark and '.' the button's face, in
+        // codepoint order (Icon::Menu first).
+        constexpr const char *Pictures[Icons * Rows] = {
+                // Menu
+                "................",
+                "................",
+                "................",
+                "................",
+                "...##########...",
+                "...##########...",
+                "................",
+                "...##########...",
+                "...##########...",
+                "................",
+                "...##########...",
+                "...##########...",
+                "................",
+                "................",
+                "................",
+                "................",
+                // Minimize
+                "................",
+                "................",
+                "................",
+                "................",
+                "................",
+                "................",
+                "................",
+                "................",
+                "................",
+                "................",
+                "................",
+                "....########....",
+                "....########....",
+                "................",
+                "................",
+                "................",
+                // Maximize
+                "................",
+                "................",
+                "................",
+                "...##########...",
+                "...##########...",
+                "...#........#...",
+                "...#........#...",
+                "...#........#...",
+                "...#........#...",
+                "...#........#...",
+                "...#........#...",
+                "...#........#...",
+                "...##########...",
+                "................",
+                "................",
+                "................",
+                // Restore: a window in front of another
+                "................",
+                "................",
+                "................",
+                ".....########...",
+                ".....########...",
+                "...########.#...",
+                "...########.#...",
+                "...#......#.#...",
+                "...#......#.#...",
+                "...#......#.#...",
+                "...#......###...",
+                "...#......#.....",
+                "...########.....",
+                "................",
+                "................",
+                "................",
+                // Close
+                "................",
+                "................",
+                "................",
+                "................",
+                "...##......##...",
+                "....##....##....",
+                ".....##..##.....",
+                "......####......",
+                "......####......",
+                ".....##..##.....",
+                "....##....##....",
+                "...##......##...",
+                "................",
+                "................",
+                "................",
+                "................",
+        };
+
+        struct WideBits {
+                        uint8_t bytes[Icons * Rows * 2];
+        };
+
+        consteval WideBits pack() {
+                WideBits bits{};
+                for (size_t r = 0; r < Icons * Rows; ++r)
+                        for (size_t c = 0; c < 16; ++c)
+                                if (Pictures[r][c] == '#')
+                                        bits.bytes[r * 2 + c / 8] |= static_cast<uint8_t>(0x80u >> (c % 8));
+                return bits;
+        }
+
+        constexpr Font::Range NarrowRanges[] = {{0x20, 1, 0}}; // a blank: the replacement
+        constexpr uint8_t     NarrowBits[Rows] = {};
+        constexpr Font::Range WideRanges[] = {{Icon::Menu, Icons, 0}};
+        constexpr WideBits    Wide = pack();
+
+} // namespace
+
+constinit const Font Fonts::icons16(8, 16, NarrowRanges, NarrowBits, WideRanges, Wide.bytes, 0x20);
+
+BMDS_NAMESPACE_END

@@ -16,10 +16,22 @@ namespace {
 
         // By role; the names are an interface (`win color`): append only.
         constexpr const char *Names[WindowPalette::RoleCount] = {
-                "desktop",        "active-frame",  "inactive-frame",      "active-title",
-                "inactive-title", "close-box",     "close-mark",          "client",
-                "outline",        "terminal-text", "terminal-background", "terminal-cursor",
-                "cursor-edge",    "cursor-fill",
+                "desktop",
+                "active-frame",
+                "inactive-frame",
+                "active-title",
+                "inactive-title",
+                "close-box",
+                "close-mark",
+                "client",
+                "outline",
+                "terminal-text",
+                "terminal-background",
+                "terminal-cursor",
+                "cursor-edge",
+                "cursor-fill",
+                "button",
+                "button-mark",
         };
 
 } // namespace

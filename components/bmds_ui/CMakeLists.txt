@@ -11,6 +11,7 @@ set(BMDS_UI_PURE_SRCS
         src/compose.cpp
         src/font.cpp
         src/glyphrenderer.cpp
+        src/iconfont.cpp
         src/terminalview.cpp
         src/windowpalette.cpp
         src/windowstack.cpp)

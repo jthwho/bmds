@@ -70,9 +70,12 @@ Result<uint8_t> Terminal::open(WindowManager &wm, const Rect &rect) {
         config.redraw = redraw;
         config.closed = closed;
         config.key = keyTyped;
+        config.resized = resized;
         config.arg = this;
         // Sized for the area the window gets (snapped, kept on the screen) before it draws.
-        const Rect client = WindowFrame::client(Rect{rect.x, rect.y, uint16_t((rect.width + 3) & ~3u), rect.height});
+        const Rect client =
+                WindowFrame(Rect{rect.x, rect.y, uint16_t((rect.width + 3) & ~3u), rect.height}, config.decorations)
+                        .client();
         uint16_t   columns = static_cast<uint16_t>(client.width / CellWidth);
         uint16_t   rows = static_cast<uint16_t>(client.height / CellHeight);
         if (columns > MaxColumns) columns = MaxColumns;
@@ -125,6 +128,16 @@ void Terminal::keyTyped(void *arg, const KeyEvent &event) {
         char         bytes[TerminalKeys::MaxBytes];
         const size_t n = TerminalKeys::encode(event, application, bytes);
         if (n > 0) (void)self->_console.pushInput(ByteSpan(reinterpret_cast<const uint8_t *>(bytes), n));
+        return;
+}
+
+// The client area's new size (on the window manager's task, or the caller's, locked): the
+// screen resized to the cells that fit; the window redraws all of it next.
+void Terminal::resized(void *arg, uint16_t width, uint16_t height) {
+        auto          *self = static_cast<Terminal *>(arg);
+        const uint16_t columns = static_cast<uint16_t>(width / CellWidth < MaxColumns ? width / CellWidth : MaxColumns);
+        const uint16_t rows = static_cast<uint16_t>(height / CellHeight);
+        if (columns > 0 && rows > 0) (void)self->_console.resize(columns, rows);
         return;
 }
 

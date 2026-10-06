@@ -44,11 +44,19 @@ class Surface;
  * damaged piece once, by the window that shows it, the desktop's in its
  * flat color. A double-buffered surface is presented after each round.
  *
+ * A window chooses its decorations (`WindowFrame`, `devplan/windows.md`
+ * §4f): a border, a title bar, and on it a menu button and minimize,
+ * maximize and close buttons. A minimized window is hidden until it is
+ * restored or raised; a maximized one fills the screen until restored, and
+ * isn't moved meanwhile. A window whose client area changes size is told
+ * (`Resized`).
+ *
  * Moves are shown as an outline (`drag()`) until `drop()` puts the window
  * there. Focus is the top window: keys go to it (`devplan/input.md`), the
  * window manager being the input's sink while it runs. The mouse moves a
  * pointer drawn over everything: a press raises the window under it, on a
- * title bar starts a move, and on the close box (released there) closes it.
+ * title bar starts a move (a double click maximizes or restores), and on a
+ * button (released there) does what the button does.
  *
  * One window manager per display (`manager()`); it claims the display.
  *
@@ -78,6 +86,13 @@ class WindowManager {
                  */
                 using Key = void (*)(void *arg, const KeyEvent &event);
 
+                /**
+                 * @brief Told the client area's new size, @p width × @p height
+                 *        (on the changing task, the window manager locked: it
+                 *        must not call it). Its whole area is redrawn after.
+                 */
+                using Resized = void (*)(void *arg, uint16_t width, uint16_t height);
+
                 /** @brief Looks at the screen (`capture()`). */
                 using Capture = void (*)(void *arg, const Surface &surface);
 
@@ -97,6 +112,9 @@ class WindowManager {
                 /** @brief How long drawing waits for the 2D-DMA or a swap. */
                 static constexpr unsigned int DrawTimeoutMs = 100;
 
+                /** @brief Two presses on a title bar this close together are a double click. */
+                static constexpr uint32_t DoubleClickMs = 400;
+
                 /** @brief A window to open. */
                 struct WindowConfig {
                                 Rect        rect;             ///< Outer, frame included; snapped to 4-pixel columns.
@@ -105,6 +123,8 @@ class WindowManager {
                                 void       *arg = nullptr;
                                 Closed      closed = nullptr; ///< May be null.
                                 Key         key = nullptr;    ///< May be null: keys dropped.
+                                Resized     resized = nullptr;                   ///< May be null.
+                                uint8_t     decorations = WindowFrame::Standard; ///< `WindowFrame`'s flags.
                 };
 
                 /** @brief A window, as `list()` reports it. */
@@ -113,6 +133,9 @@ class WindowManager {
                                 Rect    rect;
                                 char    title[MaxTitle + 1] = {};
                                 bool    focused = false;
+                                bool    minimized = false;
+                                bool    maximized = false;
+                                uint8_t decorations = 0;
                 };
 
                 /** @brief Counts since `start()`. */
@@ -159,18 +182,42 @@ class WindowManager {
                 /**
                  * @brief Opens a window on top (focused).
                  * @return Its number, `InvalidState` (not running), `Invalid`
-                 *         (smaller than the frame, or off the screen), or `Full`.
+                 *         (smaller than its frame's least, or decorations that
+                 *         aren't), or `Full`.
                  */
                 Result<uint8_t> open(const WindowConfig &config);
 
                 /** @brief Closes window @p id. @return `Ok`, `NotFound`, `InvalidState`. */
                 Error close(uint8_t id);
 
-                /** @brief Moves window @p id's top-left corner to (@p x, @p y), kept on the screen. */
+                /**
+                 * @brief Moves window @p id's top-left corner to (@p x, @p y), kept on the screen.
+                 * @return `Ok`, `NotFound`, or `InvalidState` (maximized, or not running).
+                 */
                 Error move(uint8_t id, uint16_t x, uint16_t y);
 
-                /** @brief Puts window @p id on top (focused). */
+                /** @brief Puts window @p id on top (focused), restoring it if minimized. */
                 Error raise(uint8_t id);
+
+                /** @brief Hides window @p id until it is restored or raised. */
+                Error minimize(uint8_t id);
+
+                /** @brief Puts window @p id on top, filling the screen until restored. */
+                Error maximize(uint8_t id);
+
+                /**
+                 * @brief Shows window @p id again if minimized, else puts it back
+                 *        where it was before it was maximized.
+                 */
+                Error restore(uint8_t id);
+
+                /**
+                 * @brief Sets window @p id's decorations (`WindowFrame`'s flags);
+                 *        the outer rectangle stays and the client area changes.
+                 * @return `Ok`, `NotFound`, `InvalidState`, or `Invalid` (not
+                 *         decorations, or too small a window for them).
+                 */
+                Error setDecorations(uint8_t id, uint8_t decorations);
 
                 /** @brief Asks window @p id to redraw @p rect of its client area. */
                 Error invalidate(uint8_t id, const Rect &rect);
@@ -233,10 +280,13 @@ class WindowManager {
                 /** @brief Ends a drag: the window raised and moved where its outline is. */
                 Error drop();
 
-                /** @brief Writes up to @p out's size of windows, top first. @return The count. */
+                /**
+                 * @brief Writes up to @p out's size of windows, top first, then the
+                 *        minimized ones (the last minimized first). @return The count.
+                 */
                 size_t list(Span<Info> out);
 
-                /** @brief Returns window @p id's client area (screen coordinates). */
+                /** @brief Returns window @p id's client area (screen coordinates; minimized too). */
                 Result<Rect> clientRect(uint8_t id);
 
                 /**
@@ -252,11 +302,15 @@ class WindowManager {
 
         private:
                 struct Window {
-                                char   title[MaxTitle + 1] = {};
-                                Redraw redraw = nullptr;
-                                Closed closed = nullptr;
-                                Key    key = nullptr;
-                                void  *arg = nullptr;
+                                char    title[MaxTitle + 1] = {};
+                                Redraw  redraw = nullptr;
+                                Closed  closed = nullptr;
+                                Key     key = nullptr;
+                                Resized resized = nullptr;
+                                void   *arg = nullptr;
+                                Rect    restore;         // where it was before it was maximized
+                                uint8_t decorations = 0; // WindowFrame's flags
+                                bool    maximized = false;
                 };
 
                 static constexpr size_t MaxPieces = 256;
@@ -269,11 +323,18 @@ class WindowManager {
                 void        applyPointer();
                 void        press(uint16_t x, uint16_t y);
                 void        release(uint16_t x, uint16_t y);
+                void        pressedMoved(uint16_t x, uint16_t y); // a button's press shown while over it
+                void        act(uint8_t id, WindowFrame::Part part);
+                WindowFrame frame(uint8_t id, const Rect &outer) const;
                 void        drawCursor();
                 Rect        cursorArea() const; // where the pointer is drawn: on the screen, 4-pixel columns
                 uint8_t     windowAt(uint16_t x, uint16_t y) const; // 0: the desktop
                 Error       closeLocked(uint8_t id);
                 Error       raiseLocked(uint8_t id);
+                Error       minimizeLocked(uint8_t id);
+                Error       maximizeLocked(uint8_t id);
+                Error       restoreLocked(uint8_t id);
+                Error       resizeLocked(uint8_t id, const Rect &rect, uint8_t decorations); // told if it changed
                 Error       dragLocked(uint8_t id, uint16_t x, uint16_t y);
                 Error       dropLocked();
                 void        run();
@@ -316,7 +377,11 @@ class WindowManager {
                 uint8_t               _grabId = 0;          // its title bar pressed: moved while held
                 uint16_t              _grabX = 0;           // the press, from the window's corner
                 uint16_t              _grabY = 0;
-                uint8_t               _closeId = 0;       // its close box pressed
+                uint8_t               _pressId = 0; // its button pressed
+                WindowFrame::Part     _pressPart = WindowFrame::Part::Outside;
+                bool                  _pressShown = false; // drawn pressed: the pointer on it
+                uint8_t               _clickId = 0;        // the last title bar press, for a double click
+                uint64_t              _clickUs = 0;
                 std::atomic<uint32_t> _requests{0};       // changes made
                 std::atomic<uint16_t> _asked{0};          // update() calls, taken by the next round
                 std::atomic<uint32_t> _drawn{0};          // changes drawn

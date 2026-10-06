@@ -33,7 +33,9 @@ class WindowManager;
  * and a shell started on it the first time it opens. A shell runs until
  * reboot, so the session outlives its window: closing the window leaves
  * the shell writing to the screen, and `open()` shows it again. The
- * window's client area sets the size, in 8×16 cells.
+ * window's client area sets the size, in 8×16 cells, and a new size
+ * (maximized, restored) resizes the screen: the shell sees `SIGWINCH`'s
+ * path, the console's resize.
  *
  * Keys typed into its window go to the shell as a terminal sends them
  * (`TerminalKeys`: xterm's sequences, application cursor keys when the
@@ -96,6 +98,7 @@ class Terminal {
                 static void redraw(void *arg, Painter &painter);
                 static void closed(void *arg);
                 static void keyTyped(void *arg, const KeyEvent &event);
+                static void resized(void *arg, uint16_t width, uint16_t height);
                 static void changed(void *arg);
                 void        draw(Painter &painter);
 

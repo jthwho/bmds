@@ -195,6 +195,14 @@ namespace {
                 return;
         }
 
+        // A test window's new client size.
+        void resizedTest(void *arg, uint16_t width, uint16_t height) {
+                TestWindow &t = *static_cast<TestWindow *>(arg);
+                t.width = width;
+                t.height = height;
+                return;
+        }
+
         // Display 0's window manager if it runs, or null with a message.
         WindowManager *running(CommandContext &ctx) {
                 auto [wm, err] = WindowManager::manager(0);
@@ -250,9 +258,12 @@ namespace {
                 for (size_t i = 0; i < n; ++i) {
                         const WindowManager::Info &w = info[i];
                         const Terminal            *term = Terminal::byWindow(w.id);
-                        ctx.printf("%-4u %-5u %-5u %-5u %-5u %s%s%s\n", w.id, w.rect.x, w.rect.y, w.rect.width,
+                        ctx.printf("%-4u %-5u %-5u %-5u %-5u %s%s%s%s\n", w.id, w.rect.x, w.rect.y, w.rect.width,
                                    w.rect.height, w.title, w.focused ? " (focus)" : "",
-                                   term != nullptr ? " (terminal)" : "");
+                                   term != nullptr ? " (terminal)" : "",
+                                   w.minimized   ? " (minimized)"
+                                   : w.maximized ? " (maximized)"
+                                                 : "");
                 }
                 return Shell::ExitSuccess;
         }
@@ -281,6 +292,7 @@ namespace {
                 }
                 config.rect.width = static_cast<uint16_t>((config.rect.width + 3) & ~3u); // as it will be placed
                 config.redraw = redrawTest;
+                config.resized = resizedTest;
                 // Numbers are the lowest free (WindowStack): the new window's is
                 // known beforehand, as only this command opens windows for now.
                 uint8_t guess = 1;
@@ -296,7 +308,7 @@ namespace {
                 t.b = Palette[(guess - 1u) % (sizeof(Palette) / sizeof(Palette[0]))][1];
                 t.offset = 0;
                 t.pending.store(0);
-                const Rect client = WindowFrame::client(config.rect);
+                const Rect client = WindowFrame(config.rect, config.decorations).client();
                 t.width = client.width; // until the window is placed (below)
                 t.height = client.height;
                 config.arg = &t;
@@ -353,31 +365,54 @@ namespace {
                 return x >= r.x && x < r.right() && y >= r.y && y < r.bottom();
         }
 
-        // What window @p w's frame shows at (@p x, @p y).
-        uint32_t frameAt(const WindowPalette &palette, const WindowManager::Info &w, uint32_t x, uint32_t y) {
-                using Role = WindowPalette::Role;
-                const uint32_t frame = palette.color(w.focused ? Role::ActiveFrame : Role::InactiveFrame);
-                const uint32_t text = palette.color(w.focused ? Role::ActiveTitle : Role::InactiveTitle);
-                const Rect     box = WindowFrame::closeBox(w.rect);
-                if (inside(box, x, y)) {
-                        const Rect mark{uint16_t(box.x + 4), uint16_t(box.y + 4), 4, 4};
-                        return palette.color(inside(mark, x, y) ? Role::CloseMark : Role::CloseBox);
-                }
-                const Rect t = WindowFrame::title(w.rect);
-                if (!inside(t, x, y)) return frame;
-                const StringView title(w.title);
-                const Font      &font = Fonts::unscii16;
-                uint32_t         left = t.x;
-                for (size_t i = 0; i < title.size();) {
-                        const Glyph g = font.glyph(Utf8::decode(title, i));
-                        if (left + g.width - t.x > t.width) break;
-                        if (x < left + g.width) {
+        // What @p text written at (@p left, @p top), @p width at most, shows
+        // at (@p x, @p y) of its row: @p fg on its glyphs' bits, else @p bg.
+        uint32_t textAt(StringView text, uint32_t left, uint32_t top, uint32_t width, uint32_t x, uint32_t y,
+                        uint32_t fg, uint32_t bg) {
+                const Font    &font = Fonts::unscii16;
+                const uint32_t end = left + width;
+                for (size_t i = 0; i < text.size();) {
+                        const Glyph g = font.glyph(Utf8::decode(text, i));
+                        if (left + g.width > end) break;
+                        if (x >= left && x < left + g.width) {
                                 const uint32_t col = x - left;
-                                const uint8_t  bits = g.rows[(y - t.y) * (g.width / 8u) + col / 8];
-                                return (bits & (0x80u >> (col % 8))) != 0 ? text : frame;
+                                const uint8_t  bits = g.rows[(y - top) * (g.width / 8u) + col / 8];
+                                return (bits & (0x80u >> (col % 8))) != 0 ? fg : bg;
                         }
                         left += g.width;
                 }
+                return bg;
+        }
+
+        // What window @p w's frame shows at (@p x, @p y): its border, title
+        // bar, title, and buttons (none pressed).
+        uint32_t frameAt(const WindowPalette &palette, const WindowManager::Info &w, uint32_t x, uint32_t y) {
+                using Role = WindowPalette::Role;
+                using Part = WindowFrame::Part;
+                const WindowFrame f(w.rect, w.decorations);
+                const uint32_t    frame = palette.color(w.focused ? Role::ActiveFrame : Role::InactiveFrame);
+                const uint32_t    text = palette.color(w.focused ? Role::ActiveTitle : Role::InactiveTitle);
+                struct Button {
+                                Part     part;
+                                Role     face, mark;
+                                uint32_t icon;
+                };
+                const Button buttons[] = {
+                        {Part::Menu, Role::Button, Role::ButtonMark, Icon::Menu},
+                        {Part::Minimize, Role::Button, Role::ButtonMark, Icon::Minimize},
+                        {Part::Maximize, Role::Button, Role::ButtonMark, w.maximized ? Icon::Restore : Icon::Maximize},
+                        {Part::Close, Role::CloseBox, Role::CloseMark, Icon::Close},
+                };
+                for (const Button &b : buttons) {
+                        const Rect r = f.button(b.part);
+                        if (!inside(r, x, y)) continue;
+                        const Glyph    g = Fonts::icons16.glyph(b.icon);
+                        const uint32_t col = x - r.x;
+                        const bool     on = (g.rows[(y - r.y) * 2 + col / 8] & (0x80u >> (col % 8))) != 0;
+                        return palette.color(on ? b.mark : b.face);
+                }
+                const Rect t = f.title();
+                if (inside(t, x, y)) return textAt(StringView(w.title), t.x, t.y, t.width, x, y, text, frame);
                 return frame;
         }
 
@@ -392,7 +427,7 @@ namespace {
                 WindowManager::Info info[WindowStack::MaxWindows];
                 const size_t        n = wm.list(info);
                 Rect                clients[WindowStack::MaxWindows];
-                for (size_t i = 0; i < n; ++i) clients[i] = WindowFrame::client(info[i].rect);
+                for (size_t i = 0; i < n; ++i) clients[i] = WindowFrame(info[i].rect, info[i].decorations).client();
                 const uint8_t *buffer = s.shown();
                 const size_t   bytes = s.stride() * s.height();
                 for (size_t off = 0; off < bytes; off += 64 * 1024)
@@ -422,7 +457,7 @@ namespace {
                 uint8_t *images[WindowStack::MaxWindows] = {};
                 for (size_t i = 0; i < n; ++i) {
                         Terminal *term = Terminal::byWindow(info[i].id);
-                        if (term == nullptr) continue;
+                        if (term == nullptr || info[i].minimized) continue;
                         const Rect  &c = clients[i];
                         const size_t stride = size_t(c.width) * 3;
                         images[i] = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, stride * c.height));
@@ -463,7 +498,7 @@ namespace {
                                 if (inside(pointer, x, y)) continue;
                                 uint32_t want = desktop;
                                 for (size_t i = 0; i < n; ++i) {
-                                        if (!inside(info[i].rect, x, y)) continue;
+                                        if (info[i].minimized || !inside(info[i].rect, x, y)) continue;
                                         const Rect &c = clients[i];
                                         if (!inside(c, x, y)) {
                                                 want = frameAt(palette, info[i], x, y);
@@ -645,8 +680,8 @@ namespace {
                 if (err.isError()) return report(ctx, err);
                 // 100 × 30 cells, cascading.
                 const uint16_t at = static_cast<uint16_t>(32 + 32 * number);
-                auto [id, oerr] = term->open(wm, Rect{at, at, 100 * 8 + 2 * WindowFrame::Border,
-                                                      30 * 16 + WindowFrame::TitleHeight + WindowFrame::Border});
+                auto [id, oerr] = term->open(wm, Rect{at, at, WindowFrame::outerWidth(100 * 8, WindowFrame::Standard),
+                                                      WindowFrame::outerHeight(30 * 16, WindowFrame::Standard)});
                 if (oerr.isError()) return report(ctx, oerr);
                 ctx.printf("win %u: terminal %u, %ux%u\n", id, unsigned(number), term->console().size().columns,
                            term->console().size().rows);
@@ -719,6 +754,65 @@ namespace {
                 }
                 ctx.printf("cursor:   row %u, column %u%s\n", screen.cursorRow(), screen.cursorColumn(),
                            screen.isCursorVisible() ? "" : " (hidden)");
+                return Shell::ExitSuccess;
+        }
+
+        // The decorations' names, as `win decorate` takes and prints them.
+        struct DecorationName {
+                        const char *name;
+                        uint8_t     flag;
+        };
+        constexpr DecorationName DecorationNames[] = {
+                {"border", WindowFrame::Border},           {"title", WindowFrame::TitleBar},
+                {"menu", WindowFrame::MenuButton},         {"minimize", WindowFrame::MinimizeButton},
+                {"maximize", WindowFrame::MaximizeButton}, {"close", WindowFrame::CloseButton},
+        };
+
+        // win decorate N [all|none|+NAME|-NAME...]: changed in order, then printed.
+        int runDecorate(CommandContext &ctx, WindowManager &wm, Args args) {
+                uint8_t id = 0;
+                if (!parseId(ctx, args[2], id)) return Shell::ExitUsage;
+                WindowManager::Info        info[WindowStack::MaxWindows];
+                const size_t               n = wm.list(info);
+                const WindowManager::Info *w = nullptr;
+                for (size_t i = 0; i < n; ++i)
+                        if (info[i].id == id) w = &info[i];
+                if (w == nullptr) return report(ctx, Error::NotFound);
+                uint8_t flags = w->decorations;
+                for (size_t a = 3; a < args.size(); ++a) {
+                        const char *arg = args[a];
+                        if (std::strcmp(arg, "all") == 0) {
+                                flags = WindowFrame::Standard;
+                                continue;
+                        }
+                        if (std::strcmp(arg, "none") == 0) {
+                                flags = WindowFrame::None;
+                                continue;
+                        }
+                        uint8_t flag = 0;
+                        for (const DecorationName &d : DecorationNames)
+                                if ((arg[0] == '+' || arg[0] == '-') && std::strcmp(arg + 1, d.name) == 0)
+                                        flag = d.flag;
+                        if (flag == 0) {
+                                ctx.eprintf("win: %s: not a decoration (all, none, +NAME or -NAME: border, title, "
+                                            "menu, minimize, maximize, close)\n",
+                                            arg);
+                                return Shell::ExitUsage;
+                        }
+                        flags = static_cast<uint8_t>(arg[0] == '+' ? flags | flag : flags & ~flag);
+                }
+                if (args.size() > 3) {
+                        const Error err = wm.setDecorations(id, flags);
+                        if (err == Error::Invalid) {
+                                ctx.eprintf("win: buttons need the title; or too small a window for them\n");
+                                return Shell::ExitFailure;
+                        }
+                        if (err.isError()) return report(ctx, err);
+                }
+                ctx.printf("decorations:");
+                for (const DecorationName &d : DecorationNames)
+                        if ((flags & d.flag) != 0) ctx.printf(" %s", d.name);
+                ctx.printf("%s\n", flags == WindowFrame::None ? " none" : "");
                 return Shell::ExitSuccess;
         }
 
@@ -816,6 +910,13 @@ namespace {
                         return parseId(ctx, args[2], id) ? report(ctx, wm->close(id)) : Shell::ExitUsage;
                 if (args.size() == 3 && std::strcmp(what, "raise") == 0)
                         return parseId(ctx, args[2], id) ? report(ctx, wm->raise(id)) : Shell::ExitUsage;
+                if (args.size() >= 3 && std::strcmp(what, "decorate") == 0) return runDecorate(ctx, *wm, args);
+                if (args.size() == 3 && std::strcmp(what, "minimize") == 0)
+                        return parseId(ctx, args[2], id) ? report(ctx, wm->minimize(id)) : Shell::ExitUsage;
+                if (args.size() == 3 && std::strcmp(what, "maximize") == 0)
+                        return parseId(ctx, args[2], id) ? report(ctx, wm->maximize(id)) : Shell::ExitUsage;
+                if (args.size() == 3 && std::strcmp(what, "restore") == 0)
+                        return parseId(ctx, args[2], id) ? report(ctx, wm->restore(id)) : Shell::ExitUsage;
                 if (args.size() == 5 && (std::strcmp(what, "move") == 0 || std::strcmp(what, "drag") == 0)) {
                         long x = 0, y = 0;
                         if (!parseId(ctx, args[2], id)) return Shell::ExitUsage;
@@ -833,9 +934,10 @@ BMDS_SHELL_COMMAND(
         win, runWin,
         "[start [RRGGBB]|stop|list|new [X Y W H] [TITLE]|close N|raise N|move N X Y|drag N X Y|"
         "term [N]|type N TEXT|dump N|scroll N DY|textbench N|color [ROLE RRGGBB]|check|stats|shuffle N|bench [CELLS]|"
-        "pointer DX DY [BUTTONS]]",
+        "pointer DX DY [BUTTONS]|decorate N [all|none|+NAME|-NAME...]|minimize N|maximize N|restore N]",
         "The desktop and its windows on display 0: 'new' opens a test window, 'drag' moves one "
         "as an outline, 'color' lists or sets the palette, 'check' compares every pixel with the stack, "
-        "'pointer' moves the pointer as a mouse would (BUTTONS: 1 left, 2 right, 4 middle)")
+        "'pointer' moves the pointer as a mouse would (BUTTONS: 1 left, 2 right, 4 middle), "
+        "'decorate' sets a window's frame (border, title, menu, minimize, maximize, close)")
 
 BMDS_NAMESPACE_END

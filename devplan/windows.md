@@ -360,6 +360,55 @@ odd 1-pixel line.
   (`win dump N`), and every pixel of the window against the model (`win check` learns terminals:
   the cells rendered by the scalar kernel as the reference).
 
+## 4f. Step 8a design: decorations, title-bar buttons, minimize and maximize (2026-10-05; built)
+
+The first of step 8's affordances. Resize handles, pointer shapes, the wheel and menus follow.
+
+- **Decorations are flags the window chooses** (`WindowFrame::Decoration`, a byte): `Border`
+  (4-pixel sides, a bottom, and a top when there is no title bar), `TitleBar`, and four buttons
+  that need the title bar: `MenuButton`, `MinimizeButton`, `MaximizeButton`, `CloseButton`.
+  `Standard` is all of them; `None` is a bare client area (the window is its client). The flags are
+  set in `WindowConfig` and changed by `setDecorations()`. The outer rectangle stays put and the
+  client area grows or shrinks.
+- **`WindowFrame` becomes a value**: the outer rectangle and the flags, with `client()`,
+  `titleBar()`, `title()`, `button()`, `edges()` and `partAt()` (which part a point is on, so the
+  pointer code and, later, resize handles and pointer shapes use the same geometry). Static
+  `outerWidth()`/`outerHeight()` give the outer size for a client size (the terminal sizes itself
+  in cells), and `minWidth()`/`minHeight()` the smallest window for a set of flags.
+- **Buttons:** 16 × 16, 2 pixels below the title bar's top, 4 pixels apart and 4 in from its ends,
+  so every edge stays on a 4-pixel column. The menu button is at the left; minimize, maximize and
+  close are at the right in that order. Each is one 16 × 16 glyph from a small icon font of BMDS's
+  own (`Fonts::icons16`, drawn as pictures in its source, in the private use area): menu (≡),
+  minimize, maximize, restore (when maximized) and close (×). A button is then one `cells()` call,
+  and `win check` models it from the same bits. (unscii's □ was tried first: its squares are 8 × 8
+  cells doubled, so they draw as tall bars.) The close button keeps the `close-box` and
+  `close-mark` roles; the others use two roles appended to the palette, `button` and
+  `button-mark`. A button pressed
+  with the pointer still on it is drawn with its two colors swapped. It acts on release over it,
+  as a close does now. The menu button does nothing until there are context menus.
+- **Minimize** hides the window: `WindowStack` keeps hidden windows after the shown ones (they keep
+  their number, are in no layer, and are never drawn), `hide()` damages what the window showed,
+  and `show()` puts it back on top like an open. Focus goes to the new top window. With no panel
+  yet, `raise()`/`win raise N` restores a hidden window, and `list()` reports the hidden ones last,
+  marked minimized.
+- **Maximize** moves the window to the whole screen (the work area, once a panel takes the top)
+  and keeps its old rectangle; the button again, a double click on the title bar (400 ms), or
+  `restore()` puts it back. A maximized window isn't moved (`move()`/`drag()` give `InvalidState`,
+  and its title bar doesn't grab).
+- **A window is told its client size** when it changes (maximize, restore, decorations; resize
+  handles later): a `Resized` callback, like `Closed`, called with the lock held. The terminal
+  resizes its screen (`ScreenConsole::resize()`, which raises the console's resize interrupt, the
+  shell's `SIGWINCH` path); the test windows take the new size. The window's whole rectangle is
+  already damage from the change.
+- **Commands** (appended): `win decorate N [FLAG...]` with `all`, `none`, `+name` and `-name`
+  (`border title menu minimize maximize close`), printing the flags; `win minimize N`,
+  `win maximize N`, `win restore N`. `win list` appends ` (minimized)` or ` (maximized)` after
+  the existing marks. `win check` models the new frames: buttons and their glyphs, frames without
+  a title bar or border, and hidden windows (not drawn).
+- **Cost:** no new allocation; a window's state grows by its decorations, flags and restore
+  rectangle (about 12 bytes each, 16 windows). Drawing a frame adds up to four small fills and
+  four one-glyph texts, only where damaged.
+
 ## 5. Budgets (estimates; measured as the steps land)
 
 At 720p:
@@ -428,10 +477,11 @@ ones once it exists.
    DMA, §4c), chosen per window.
 8. **Window manager affordances** (asked for 2026-10-05, after the keyboard and mouse landed,
    `input.md`); roughly in this order:
-   - **Decorations under the application's control:** a window says which it has (a frame at
-     all, a title bar, each title-bar button, resize handles), set at open and changeable.
-   - **Title-bar buttons:** minimize, maximize and close on the right; the button on the left
-     becomes the window's menu once there are context menus.
+   - **Decorations under the application's control** (done, §4f): a window says which it has (a
+     frame at all, a title bar, each title-bar button; resize handles with them), set at open and
+     changeable.
+   - **Title-bar buttons** (done, §4f): minimize, maximize and close on the right; the button on
+     the left becomes the window's menu once there are context menus.
    - **Resize handles** on the frame's edges and corners, with the pointer's shape changing over
      them (and over other hot spots); an outline resize like the outline move; a window told
      its new size (a terminal resizes its screen, `SIGWINCH`).
@@ -554,3 +604,26 @@ ones once it exists.
     into a shown window (the window redrawn each frame: all 30 rows change while it scrolls, a
     round of about 7.3 ms). The two lock changes above took it from 0.58 s to 0.55 s.
   - The `wm` task kept at least 3.9 KB of its 8 KB stack in these tests.
+- **Step 8a** (2026-10-05): decorations, title-bar buttons, minimize and maximize (§4f).
+  - `WindowFrame` is a value (the outer rectangle and the flags) with `partAt()`; host-tested for
+    every valid set of flags (34 of the 256 bytes): the parts tile the window without overlap,
+    the buttons sit on the title bar apart from each other and the title, on 4-pixel columns, and
+    `partAt()` agrees with the rectangles. `WindowStack` gained hidden windows (`hide()`, `show()`,
+    `rectOf()`), added to the random damage test (a hide damages what the window showed, a show
+    what it covers).
+  - `Fonts::icons16`: five 16 × 16 icons (216 bytes of rodata). Palette roles appended: `button`,
+    `button-mark`; the close button is now red with a white ×.
+  - The terminal resizes its screen when its window does: maximized at 720p, `$COLUMNS x $LINES`
+    is `159 x 43` and `stty size` says `43 159`; restored, `100 x 30` again.
+  - `win check` found 0 wrong pixels with windows with every decoration, none, the border alone,
+    and the title bar with only a close button; after maximizing and restoring the terminal
+    and a test window, minimizing and raising, and with the pointer pressing buttons. By the
+    pointer: a button is drawn with its colors swapped while held and acts on release over it
+    (moving off first cancels), minimize hides, maximize fills the screen, a double click on the
+    title bar restores, close closes.
+  - Rounds measured with `win stats` at 720p, double-buffered: maximizing the terminal 26.8 ms
+    (the whole screen of cells), restoring it 60.0 ms (four test windows and the desktop under it
+    redrawn); maximizing a test window 135.0 ms, all of it its pattern's hundreds of fills and
+    one-pixel lines (a test window draws slowly on purpose; a terminal is the real case).
+  - Size: the window manager's code grew by 3,357 bytes and its `.bss` by 256 (the restore
+    rectangle, flags and resize callback of 16 windows).

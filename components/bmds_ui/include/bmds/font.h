@@ -97,6 +97,18 @@ class Font {
 namespace Fonts {
         /** @brief unscii-16 by Viznut (public domain): 8×16, the system font. */
         extern const Font unscii16;
+
+        /** @brief The window manager's icons (`Icon`), 16×16: BMDS's own. */
+        extern const Font icons16;
 } // namespace Fonts
+
+/** @brief `Fonts::icons16`'s glyphs, in the private use area. Append only. */
+namespace Icon {
+        constexpr uint32_t Menu = 0xe000;     ///< ≡
+        constexpr uint32_t Minimize = 0xe001; ///< A bar at the bottom.
+        constexpr uint32_t Maximize = 0xe002; ///< A window.
+        constexpr uint32_t Restore = 0xe003;  ///< A window in front of another.
+        constexpr uint32_t Close = 0xe004;    ///< ×
+} // namespace Icon
 
 BMDS_NAMESPACE_END
