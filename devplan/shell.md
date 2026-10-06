@@ -208,7 +208,7 @@ Echo uses relative cursor movement (`ESC[nD`, `ESC[nC`, `ESC[K`), so the editor 
 | `help [command]` | Command list (name + one-line help), or one command's usage. |
 | `version` | `BMDS <ver> (build <git>, ESP-IDF <ver>)`, `Board: <name>`, `Chip: ESP32-P4 rev vX.Y, N cores @ M MHz`. |
 | `uptime` | `up <d>d <hh>:<mm>:<ss>.<mmm>` |
-| `mem` | One row per MemSpace: total, free, min free, largest free block (bytes). |
+| `mem [-h]` | One row per MemSpace: total, free, min free, largest free block (bytes; `-h`: powers of 1024 with two decimals, `16.55M`, `432.43k`). Then a `cached` line for the loader's image cache: the bytes it holds (counted as used above, given back when memory runs short), then `programs N, hits N, misses N, given back N` (lookups since boot, and how often a failed allocation emptied it). |
 | `tasks` | One row per task: name, state, priority, core (`-` = any), stack high-water (bytes free). Needs `CONFIG_FREERTOS_USE_TRACE_FACILITY`. |
 | `log` | Level and the debug modules (on/off). |
 | `log level info\|warn\|err` | Set the level. (Debug output is controlled per module, not by level.) |

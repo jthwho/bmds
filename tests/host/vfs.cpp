@@ -12,6 +12,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 #include <bmds/blockdevices.h>
 #include <bmds/builtinprograms.h>
@@ -670,6 +671,58 @@ TEST_CASE("Vfs: file identity") {
         const uint64_t null = Vfs::stat("/dev/null", Root).value().id;
         CHECK(null == open("/dev/null", Vfs::Write)->id());
         CHECK(Vfs::stat("/dev/null", Root).value().device == 0);
+}
+
+namespace {
+
+        // What the change hook was told, in order.
+        std::vector<std::pair<uint32_t, uint64_t>> changes;
+
+        void recordChange(uint32_t device, uint64_t id) {
+                changes.emplace_back(device, id);
+                return;
+        }
+
+} // namespace
+
+TEST_CASE("Vfs: the change hook") {
+        fresh(FsFormat::Fat32);
+        put("/ram0/p0/prog", "one");
+        CHECK(Vfs::symlink("prog", "/ram0/p0/link", Root).isOk());
+        const FileInfo prog = Vfs::stat("/ram0/p0/prog", Root).value();
+        const auto     told = std::make_pair(prog.device, prog.id);
+        Vfs::setChangeHook(recordChange);
+        changes.clear();
+        // Reading tells nothing; a write handle's close does (through a link: the file's id).
+        CHECK(get("/ram0/p0/link") == "one");
+        CHECK(changes.empty());
+        {
+                FileHandle::Ptr h = open("/ram0/p0/link", Vfs::Write | Vfs::Truncate);
+                FileHandle::Ptr d = h; // the last handle's close, once
+                CHECK(changes.empty());
+        }
+        REQUIRE(changes.size() == 1);
+        CHECK(changes[0] == told);
+        changes.clear();
+        CHECK(Vfs::setModified("/ram0/p0/link", bmds::Timestamp::fromSeconds(1700000000), Root).isOk());
+        CHECK(Vfs::rename("/ram0/p0/prog", "/ram0/p0/moved", Root).isOk());
+        const FileInfo moved = Vfs::stat("/ram0/p0/moved", Root).value();
+        CHECK(Vfs::remove("/ram0/p0/moved", Root).isOk());
+        REQUIRE(changes.size() == 3);
+        CHECK(changes[0] == told); // touched (through the link)
+        CHECK(changes[1] == told); // renamed: its old name
+        CHECK(changes[2] == std::make_pair(moved.device, moved.id));
+        CHECK(moved.id != prog.id);
+        changes.clear();
+        // Failures tell nothing; an unmount tells everything.
+        CHECK(Vfs::remove("/ram0/p0/moved", Root) == Error::NotExist);
+        CHECK(changes.empty());
+        CHECK(Vfs::unmount("/ram0/p0").isOk());
+        REQUIRE(changes.size() == 1);
+        CHECK(changes[0] == std::make_pair(uint32_t(0), uint64_t(0)));
+        Vfs::setChangeHook(nullptr);
+        changes.clear();
+        fresh(FsFormat::Fat32);
 }
 
 TEST_CASE("Vfs: symbolic links") {

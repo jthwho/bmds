@@ -6,6 +6,7 @@
  * See LICENSE file in the project root folder for license information.
  */
 
+#include <atomic>
 #include <esp_heap_caps.h>
 #include <bmds/board.h>
 #include <bmds/memory.h>
@@ -16,6 +17,15 @@ namespace {
 
         uint32_t capsFor(MemSpace space) {
                 return board().memSpace(space).heapCaps;
+        }
+
+        constinit std::atomic<Memory::Reclaimer *> reclaimer{nullptr};
+
+        // A failed allocation in @p space: true if the reclaimer freed something to try again with.
+        bool reclaimed(MemSpace space, size_t sizeBytes) {
+                if (space != MemSpace::Psram && space != MemSpace::PsramDma) return false;
+                Memory::Reclaimer *r = reclaimer.load();
+                return r != nullptr && r->reclaim(space, sizeBytes) != 0;
         }
 
         // The largest cache line (L2, in front of the PSRAM).
@@ -35,16 +45,34 @@ namespace {
 } // namespace
 
 void *Memory::alloc(MemSpace space, size_t sizeBytes) {
-        return heap_caps_malloc(dmaSize(space, sizeBytes), capsFor(space));
+        void *p = heap_caps_malloc(dmaSize(space, sizeBytes), capsFor(space));
+        if (p == nullptr && reclaimed(space, sizeBytes))
+                p = heap_caps_malloc(dmaSize(space, sizeBytes), capsFor(space));
+        return p;
 }
 
 void *Memory::allocAligned(MemSpace space, size_t sizeBytes, size_t alignBytes) {
-        return heap_caps_aligned_alloc(alignBytes, dmaSize(space, sizeBytes), capsFor(space));
+        void *p = heap_caps_aligned_alloc(alignBytes, dmaSize(space, sizeBytes), capsFor(space));
+        if (p == nullptr && reclaimed(space, sizeBytes + alignBytes))
+                p = heap_caps_aligned_alloc(alignBytes, dmaSize(space, sizeBytes), capsFor(space));
+        return p;
 }
 
 void Memory::free(void *ptr) {
         heap_caps_free(ptr);
         return;
+}
+
+void Memory::setReclaimer(Reclaimer *r) {
+        reclaimer.store(r);
+        return;
+}
+
+bool Memory::reclaimerUsage(Reclaimer::Usage &usage) {
+        Reclaimer *r = reclaimer.load();
+        if (r == nullptr) return false;
+        usage = r->usage();
+        return true;
 }
 
 MemStats Memory::stats(MemSpace space) {

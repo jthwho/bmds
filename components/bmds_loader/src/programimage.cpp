@@ -260,6 +260,13 @@ namespace {
                 return Error::Ok;
         }
 
+        // Adds @p base to the word or upper immediate @p word.
+        uint32_t patched(uint32_t word, uint32_t base, bool upper) {
+                // lui/auipc: imm[31:12] += base >> 12 (base is 4096-aligned).
+                if (upper) return (word & 0xfffu) | (((word & 0xfffff000u) + base) & 0xfffff000u);
+                return word + base;
+        }
+
         // Walks the relocations of the allocated sections: checks each one,
         // counts the patches and, given an image, applies them.
         class Relocator {
@@ -274,11 +281,14 @@ namespace {
                         Relocator(const Relocator &) = delete;
                         Relocator &operator=(const Relocator &) = delete;
 
-                        // @p image null: check and count only.
-                        Error run(uint8_t *image, uint32_t base, uint32_t &patches) {
+                        // @p image null: check and count only. @p record: the patches
+                        // are written there, not applied (@p base is then 0).
+                        Error run(uint8_t *image, uint32_t base, uint32_t &patches,
+                                  ProgramImage::Patch *record = nullptr) {
                                 patches = 0;
                                 _image = image;
                                 _base = base;
+                                _record = record;
                                 if (_eh.shentsize != sizeof(Shdr) || _eh.shnum == 0 || _eh.shnum > MaxShdrs ||
                                     !within(_eh.shoff, uint64_t(_eh.shnum) * sizeof(Shdr), _fileSize))
                                         return fail(_problem, Error::NotSupported,
@@ -441,14 +451,16 @@ namespace {
                                         return Error::Ok;
                                 }
                                 if (fixed) return Error::Ok;
-                                ++patches;
-                                if (_image == nullptr) return Error::Ok;
-                                if (action == Action::Word) {
-                                        word += _base;
-                                } else {
-                                        // lui/auipc: imm[31:12] += base >> 12 (base is 4096-aligned).
-                                        word = (word & 0xfffu) | (((word & 0xfffff000u) + _base) & 0xfffff000u);
+                                if (_record != nullptr) {
+                                        // inspect() counted them: a file that has more changed.
+                                        if (patches == _info.relocations)
+                                                return fail(_problem, Error::Invalid, "the file changed while loading");
+                                        _record[patches] =
+                                                r.offset | (action == Action::Upper ? ProgramImage::PatchUpper : 0);
                                 }
+                                ++patches;
+                                if (_image == nullptr || _record != nullptr) return Error::Ok;
+                                word = patched(word, _base, action == Action::Upper);
                                 std::memcpy(_image + r.offset, &word, 4);
                                 return Error::Ok;
                         }
@@ -464,7 +476,21 @@ namespace {
                         Shdr                     *_headers = nullptr; // the section headers, if there was memory
                         uint8_t                  *_image = nullptr;
                         uint32_t                  _base = 0;
+                        ProgramImage::Patch      *_record = nullptr;
         };
+
+        // Rereads the headers of a program inspected as @p expected (the file
+        // may have changed since).
+        Error recheck(ProgramImage::Source &source, uint32_t fileSize, const ProgramImage::Info &expected, Ehdr &eh,
+                      ProgramImage::Info &info, Problem &problem) {
+                Error err = readHeaders(source, fileSize, eh, info, problem);
+                if (err.isError()) return err;
+                if (info.fileOffset != expected.fileOffset || info.fileSize != expected.fileSize ||
+                    info.imageSize != expected.imageSize || info.entry != expected.entry)
+                        return fail(problem, Error::Invalid, "the file changed while loading");
+                return Error::Ok;
+        }
+
 
 } // namespace
 
@@ -491,11 +517,8 @@ Error ProgramImage::load(Source &source, uint32_t fileSize, const Info &expected
         // The file may have changed since it was inspected: check it again.
         Ehdr  eh;
         Info  info;
-        Error err = readHeaders(source, fileSize, eh, info, problem);
+        Error err = recheck(source, fileSize, expected, eh, info, problem);
         if (err.isError()) return err;
-        if (info.fileOffset != expected.fileOffset || info.fileSize != expected.fileSize ||
-            info.imageSize != expected.imageSize || info.entry != expected.entry)
-                return fail(problem, Error::Invalid, "the file changed while loading");
         err = source.readAt(info.fileOffset, WritableByteSpan(image, info.fileSize));
         if (err.isError()) return err;
         std::memset(image + info.fileSize, 0, info.imageSize - info.fileSize);
@@ -505,6 +528,38 @@ Error ProgramImage::load(Source &source, uint32_t fileSize, const Info &expected
         if (err.isOk() && patches != expected.relocations)
                 return fail(problem, Error::Invalid, "the file changed while loading");
         return err;
+}
+
+Error ProgramImage::read(Source &source, uint32_t fileSize, const Info &expected, uint8_t *bytes, Patch *patches,
+                         Problem &problem) {
+        problem = Problem();
+        Ehdr  eh;
+        Info  info;
+        Error err = recheck(source, fileSize, expected, eh, info, problem);
+        if (err.isError()) return err;
+        err = source.readAt(info.fileOffset, WritableByteSpan(bytes, info.fileSize));
+        if (err.isError()) return err;
+        // load()'s walk at base 0 (no change), writing the patches down.
+        info.relocations = expected.relocations;
+        Relocator relocator(source, fileSize, eh, info, problem);
+        uint32_t  count = 0;
+        err = relocator.run(bytes, 0, count, patches);
+        if (err.isOk() && count != expected.relocations)
+                return fail(problem, Error::Invalid, "the file changed while loading");
+        return err;
+}
+
+void ProgramImage::place(const Info &info, const uint8_t *bytes, const Patch *patches, uint8_t *image, uint32_t base) {
+        std::memcpy(image, bytes, info.fileSize);
+        std::memset(image + info.fileSize, 0, info.imageSize - info.fileSize);
+        for (uint32_t i = 0; i < info.relocations; ++i) {
+                const uint32_t at = patches[i] & ~PatchUpper;
+                uint32_t       word;
+                std::memcpy(&word, image + at, 4);
+                word = patched(word, base, (patches[i] & PatchUpper) != 0);
+                std::memcpy(image + at, &word, 4);
+        }
+        return;
 }
 
 BMDS_NAMESPACE_END

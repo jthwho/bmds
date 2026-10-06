@@ -182,6 +182,24 @@ namespace {
                 return image;
         }
 
+        // Reads @p file for placing (read()) and places it at @p base; the image.
+        std::vector<uint8_t> placeAt(const std::vector<uint8_t> &file, uint32_t base, Error &err) {
+                Checked c = check(file);
+                err = c.err;
+                if (err.isError()) return {};
+                std::vector<uint8_t>             bytes(c.info.fileSize, 0x55);
+                std::vector<ProgramImage::Patch> patches(c.info.relocations + 1, 0xFFFFFFFF);
+                ProgramImage::MemorySource       source(bmds::ByteSpan(file.data(), file.size()));
+                ProgramImage::Problem            problem;
+                err = ProgramImage::read(source, static_cast<uint32_t>(file.size()), c.info, bytes.data(),
+                                         patches.data(), problem);
+                if (err.isError()) return {};
+                CHECK(patches.back() == 0xFFFFFFFF); // no more than counted
+                std::vector<uint8_t> image(c.info.imageSize, 0xAA);
+                ProgramImage::place(c.info, bytes.data(), patches.data(), image.data(), base);
+                return image;
+        }
+
 } // namespace
 
 TEST_CASE("Program format: what is not a BMDS program") {
@@ -284,9 +302,17 @@ TEST_CASE("Program format: relocation") {
         CHECK(get32(&image[16]) == 0x00000537u);
         CHECK(get32(&image[20]) == 0x000005b7u);
         for (size_t i = 64; i < 96; ++i) CHECK(image[i] == 0); // bss
+        // Read once and placed: the same image, at any base.
+        for (uint32_t base : {0u, 0x2000u, 0x48003000u}) {
+                CAPTURE(base);
+                Error placed;
+                CHECK(placeAt(b.build(), base, placed) == loadAt(b.build(), base, err));
+                CHECK(placed == Error::Ok);
+        }
         // The upper immediate wraps; the register and opcode stay.
         b.words[0] = 0xfffff537;
         CHECK(get32(&loadAt(b.build(), 0x2000, err)[0]) == 0x00001537u);
+        CHECK(get32(&placeAt(b.build(), 0x2000, err)[0]) == 0x00001537u);
         // Not 4096-aligned: refused.
         (void)loadAt(b.build(), 0x48003010, err);
         CHECK(err == Error::Invalid);
@@ -420,6 +446,13 @@ TEST_CASE("Program format: the SDK's hello.elf") {
                 if (!found) break;
         }
         CHECK(differing == c.info.relocations);
+        // Read once and placed: load()'s image at any base.
+        for (uint32_t base : {0u, b1, b2}) {
+                CAPTURE(base);
+                Error placed;
+                CHECK(placeAt(file, base, placed) == loadAt(file, base, err));
+                CHECK(placed == Error::Ok);
+        }
 }
 #endif
 
@@ -459,7 +492,11 @@ TEST_CASE("Program format: damaged files are refused, never crash") {
                 if (next() % 8 == 0) file.resize(next() % file.size()); // truncated
                 Error                      err;
                 const std::vector<uint8_t> image = loadAt(file, 0x48010000, err);
-                if (err.isOk()) ++accepted;
+                if (err.isOk()) {
+                        ++accepted;
+                        // Read once and placed, an accepted file gives the same image.
+                        CHECK(placeAt(file, 0x48010000, err) == image);
+                }
         }
         CHECK(accepted > 0); // some damage lands where nothing checks (code, debug info)
 }

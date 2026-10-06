@@ -133,13 +133,18 @@ namespace Fat {
          * @brief Opens the file at @p path (a FatFs path on @p volume) as a
          *        stream behind a FileHandle. Lock held.
          * @param flags `Vfs::OpenFlag` bits.
+         * @param device, id The file's identity (`FileInfo`): opened for writing,
+         *              its last handle's close calls the change hook with them.
          * @param raw   [out] FatFs's result, if not null (`FR_NO_PATH` tells a
          *              missing directory from a missing file).
          * @param link  [out] If not null and the file is an emulated symbolic
          *              link: its target, and the file is closed again (`Invalid`).
          */
-        Result<FileHandle::Ptr> openFile(FatVolume &volume, const char *path, uint8_t flags, FRESULT *raw = nullptr,
-                                         String *link = nullptr);
+        Result<FileHandle::Ptr> openFile(FatVolume &volume, const char *path, uint8_t flags, uint32_t device,
+                                         uint64_t id, FRESULT *raw = nullptr, String *link = nullptr);
+
+        /** @brief Calls the change hook, if any (`Vfs::setChangeHook()`). Lock held. */
+        void changedLocked(uint32_t device, uint64_t id);
 
         /** @brief The largest file that can be an emulated symbolic link. */
         constexpr size_t MaxLinkFile = 10 + 2 + 2 * 1024 + 2;

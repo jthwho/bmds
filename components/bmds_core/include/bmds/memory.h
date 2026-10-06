@@ -9,6 +9,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <bmds/config.h>
 #include <bmds/memspace.h>
 
@@ -44,6 +45,41 @@ struct MemStats {
 class Memory {
         public:
                 /**
+                 * @brief Memory held for later that can be given back when an
+                 *        allocation fails (the loader's image cache).
+                 *
+                 * `reclaim()` runs inside the failed allocation, in the allocating
+                 * task: it must not allocate, and nothing that holds a lock it takes
+                 * may allocate.
+                 */
+                class Reclaimer {
+                        public:
+                                /** @brief What it holds, and how it has done (`mem`). */
+                                struct Usage {
+                                                const char *items = "";      ///< What it holds, plural ("programs").
+                                                size_t      bytes = 0;       ///< Bytes it holds.
+                                                size_t      count = 0;       ///< Items it holds.
+                                                size_t      reclaimable = 0; ///< Bytes `reclaim()` could free now.
+                                                uint32_t    hits = 0;        ///< Lookups that found an item.
+                                                uint32_t    misses = 0;      ///< Lookups that didn't.
+                                                uint32_t    reclaims = 0; ///< `reclaim()` calls that freed something.
+                                };
+
+                                /**
+                                 * @brief Frees what it holds in @p space, at least @p bytes
+                                 *        if it can.
+                                 * @return The bytes freed.
+                                 */
+                                virtual size_t reclaim(MemSpace space, size_t bytes) = 0;
+
+                                /** @brief Returns what it holds now, and its counts since boot. */
+                                virtual Usage usage() const = 0;
+
+                        protected:
+                                ~Reclaimer() = default;
+                };
+
+                /**
                  * @brief Allocates from a memory space.
                  *
                  * DMA spaces are aligned for DMA and cache maintenance
@@ -74,6 +110,20 @@ class Memory {
 
                 /** @brief Returns current usage statistics for @p space. */
                 static MemStats stats(MemSpace space);
+
+                /**
+                 * @brief Installs @p reclaimer (null: none): a `Psram` or `PsramDma`
+                 *        allocation that fails asks it, then tries once more if it
+                 *        freed anything.
+                 * @param reclaimer Lives as long as it is installed.
+                 */
+                static void setReclaimer(Reclaimer *reclaimer);
+
+                /**
+                 * @brief Returns the reclaimer's usage into @p usage.
+                 * @return False if none is installed.
+                 */
+                static bool reclaimerUsage(Reclaimer::Usage &usage);
 };
 
 BMDS_NAMESPACE_END

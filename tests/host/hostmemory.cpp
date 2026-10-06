@@ -18,6 +18,14 @@ namespace {
         std::atomic<size_t> live{0};
         std::atomic<long>   remaining{-1};
 
+        std::atomic<bmds::Memory::Reclaimer *> reclaimer{nullptr};
+
+        bool reclaimed(bmds::MemSpace space, size_t sizeBytes) {
+                if (space != bmds::MemSpace::Psram && space != bmds::MemSpace::PsramDma) return false;
+                bmds::Memory::Reclaimer *r = reclaimer.load();
+                return r != nullptr && r->reclaim(space, sizeBytes) != 0;
+        }
+
         bool mayAllocate() {
                 long r = remaining.load();
                 for (;;) {
@@ -43,12 +51,14 @@ void HostMemory::failAfter(long successes) {
         return;
 }
 
-void *bmds::Memory::alloc(MemSpace, size_t sizeBytes) {
-        return mayAllocate() ? counted(std::malloc(sizeBytes)) : nullptr;
+// A failure injected by failAfter() asks the reclaimer, as the target's would.
+void *bmds::Memory::alloc(MemSpace space, size_t sizeBytes) {
+        if (mayAllocate() || (reclaimed(space, sizeBytes) && mayAllocate())) return counted(std::malloc(sizeBytes));
+        return nullptr;
 }
 
-void *bmds::Memory::allocAligned(MemSpace, size_t sizeBytes, size_t alignBytes) {
-        if (!mayAllocate()) return nullptr;
+void *bmds::Memory::allocAligned(MemSpace space, size_t sizeBytes, size_t alignBytes) {
+        if (!mayAllocate() && !(reclaimed(space, sizeBytes) && mayAllocate())) return nullptr;
         // aligned_alloc wants the size to be a multiple of the alignment.
         return counted(std::aligned_alloc(alignBytes, (sizeBytes + alignBytes - 1) & ~(alignBytes - 1)));
 }
@@ -58,6 +68,18 @@ void bmds::Memory::free(void *ptr) {
         --live;
         std::free(ptr);
         return;
+}
+
+void bmds::Memory::setReclaimer(Reclaimer *r) {
+        reclaimer.store(r);
+        return;
+}
+
+bool bmds::Memory::reclaimerUsage(Reclaimer::Usage &usage) {
+        Reclaimer *r = reclaimer.load();
+        if (r == nullptr) return false;
+        usage = r->usage();
+        return true;
 }
 
 bmds::MemStats bmds::Memory::stats(MemSpace) {

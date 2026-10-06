@@ -78,8 +78,12 @@ Plans: [`storage.md`](storage.md), [`time.md`](time.md). Complete; verified on h
   - [x] 5: program threads: pthreads through musl (slots 53-57: thread start/exit/kill/clear, futex), signals per thread.
 - [ ] Shared program images and an image cache (`programs.md` §14): `exec` from memory, code pages shared between instances through the MMU.
   - [x] MMU spike (aliases, caches, DMA) and design.
-  - [ ] Image cache (plain copies), shared pages, SDK layout changes.
+  - [x] (a) The image cache with plain copies (`programs.md` §14.1): `exec` from memory, without the card.
+  - [ ] (b) Shared pages through the MMU window.
+  - [ ] (c) SDK layout changes, each measured.
 - [ ] Example programs: `hello`, `cat`, a benchmark.
+- [ ] Partition editing (`storage.md` §14): BusyBox `fdisk` (MBR) on the card, not built in; raw block device nodes as streams, writes kept out of mounted partitions, the table re-read on close; extended partitions read.
+- [ ] A time zone database (`time.md` §9): zone names (`TZ=Europe/Berlin`, `clock zone Europe/Berlin`) from one bundle on the card, shown to programs as `/share/zoneinfo` (musl's own path: history included); looked up at boot, when a filesystem mounts and when `TZ` changes.
 
 ## Phase 4 — Display
 

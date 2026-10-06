@@ -376,3 +376,26 @@ and a read of everything (the measure of whether FAT on wear levelling is enough
   than a frame. The scan's interrupts are now IRAM-safe (`display.md` §5c''): 0 underruns since.
 - **Size:** `/boot` uses 3 KB of 3,984 KB with the scripts and a note. The worker's 3 KB stack and
   the cache's 4 KB (PSRAM) are the RAM it costs, with FatFs's volume.
+
+## 14. Editing partitions: `fdisk` (planned, 2026-10-06)
+
+**Why.** `mkfs` writes a new table with one partition (§5), but nothing changes a table: adding a second partition, resizing, or changing a type takes a PC. It is rarely needed, so it isn't built into the firmware: it is a program on the card.
+
+**The tool: BusyBox's `fdisk`**, an applet of the BusyBox already installed (not built in; it costs only BusyBox's image, size to measure). It is off in our build today (`CONFIG_FDISK`, `FEATURE_FDISK_WRITABLE`).
+- It edits MBR tables: primary, extended and logical partitions, and types.
+- `FEATURE_GPT_LABEL` only shows GPT tables. `mkfs` writes GPT on cards from 128 GB, so editing those needs another program later. util-linux's `sfdisk`/`fdisk` (C, MBR and GPT, through libfdisk) is the candidate when it is wanted; `gdisk` is C++.
+
+**What the kernel must add:**
+- **Raw block devices as streams.** `/dev/sd0` and `/dev/sd0p0` can't be opened yet (§4: "raw access is a later need"). They become readable and writable at any byte offset (whole sectors read, changed and written back), and seekable. The size comes from `lseek(SEEK_END)`, which is BusyBox's fallback when its `BLKGETSIZE64` `ioctl` fails, so no new slot is needed. Sectors are 512 bytes.
+- **Mounted filesystems stay safe.** A write to a whole device is refused (`Busy`) in sectors that belong to a mounted partition, and so is any write to a mounted partition's own node. The table's sectors (the MBR, extended boot records, GPT headers) lie outside every partition, so `fdisk` can write a table while `/sd0/p0`, where BusyBox itself lives, stays mounted. Reads are always allowed.
+- **The new table takes effect** when the handle that wrote to the device closes. The kernel then reads the table again:
+  - partitions that aren't mounted are registered anew (new ones appear and are mounted if they hold FAT; removed ones go);
+  - a mounted partition whose entry changed keeps its old extent until it is unmounted, with a warning in the log. This is Linux's "the kernel still uses the old table", which `fdisk` prints itself when its `BLKRRPART` fails.
+  - Removing and inserting the card, or a reboot, reads everything again.
+- **Extended partitions** (logical, inside an MBR extended partition) aren't read by BMDS yet (§4). `fdisk` can make them, so reading them comes in the same step.
+
+**ABI impact:** append-only. Block device nodes, refused today (`NotSupported`), open as streams. No new slot.
+
+**Testing:**
+- **Host** (`RamBlockDevice`): raw reads and writes through the VFS at odd offsets; writes refused inside mounted partitions and allowed in the table's sectors; the re-read on close (a new partition registered and mounted, a mounted one kept); logical partitions read.
+- **Board** (a scratch card): `fdisk` adds a second partition; `mkfs /dev/sd0p1`; it mounts at `/sd0/p1`; a GPT card is listed.

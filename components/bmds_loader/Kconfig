@@ -1,0 +1,13 @@
+menu "BMDS loader"
+
+    config BMDS_IMAGE_CACHE_KB
+        int "Program image cache (KB, PSRAM)"
+        default 4096
+        range 0 65536
+        help
+            Programs read from files are kept, checked and unrelocated, for
+            the next exec of the same file, which then needs no card reads
+            (devplan/programs.md section 14.1). Least recently used programs
+            go first; all of them when memory runs short. 0 keeps none.
+
+endmenu

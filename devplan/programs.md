@@ -430,6 +430,59 @@ A program without shared pages keeps its whole file part as "private" bytes.
 
 **Phasing:** (a) the image cache with plain copies (`exec` without the card), measured; (b) shared pages through the window; (c) the SDK changes, each with its measurement.
 
+### 14.1 Phase (a): the image cache with plain copies (design, 2026-10-06)
+
+What (a) builds of the above, and the details the outline left open.
+
+**The key without a path.** `Vfs::stat()` follows links and gives `FileInfo::id` (a hash of the physical path, case folded: the same for every name of a file) and `device` (the mount slot + 1). The key is `(device, id, size, modified)`: no path is stored, and every BusyBox link finds the one entry. A file with `id` or `device` 0 (outside the filesystems, a device node) isn't cached.
+
+**`ProgramImage` gains two calls.** `read()` checks the file again (as `load()` does), reads its segment unrelocated and records each patch `load()` would apply as one word: the offset (below 16 MB, `MaxImageBytes`) and bit 31 for a `lui`/`auipc` (`HI20`), clear for a word (`R_RISCV_32`). Recording is `load()`'s walk at base 0 with the patches written down instead of applied, so both check exactly the same things. `place()` copies the bytes into an image, zeroes the bss and applies the patches for a base. A host test checks that `read()` + `place()` gives `load()`'s image byte for byte, at several bases.
+
+**One path for every file program.** `exec` stats the file and looks the key up. A hit copies and relocates from the entry, without opening the file. A miss opens it, inspects it, allocates an entry, reads the file into it once, and places the image from it; the entry is then kept (or freed, when the cache can't keep it). A program is thus read from the card once either way. Only when there is no memory for an entry does the loader fall back to `load()` straight into the image. The extra memory is transient: the entry and the image exist side by side, as the image and the old relocation buffers did.
+
+**An entry** is one `Psram` block: its header (list links, key, `Info`, pins, generation), the patches, then the file bytes. BusyBox: 516 KB of bytes, 322 patches. An entry is pinned while an image is placed from it. An entry that is dropped while pinned is freed by its last unpin.
+
+**Staleness.**
+- `Vfs::setChangeHook()` installs a hook that the VFS calls, with the storage lock held, with a file's `(device, id)` when the file:
+  - is closed after writing: when a handle opened for writing closes, rather than when it opens, so an `exec` while a file is being rewritten runs the cached whole program, not a half-written file;
+  - is removed, renamed (its old name) or touched.
+- After an unmount it calls the hook with `(0, 0)`, which drops everything: removing a mount shifts the slots after it, so a slot number names a different filesystem afterwards.
+- The hook drops matching entries and bumps the cache's **generation**. The loader reads the generation before its `stat`, and an entry created under an older one isn't kept. This closes the gap between `stat` and reading the file: a write that ends in between bumps the generation, and one that ends later drops the entry.
+
+**Locks.** The cache has one `Mutex`, and nothing done under it allocates or calls the VFS: a lookup, a pin, linking an entry, freeing ones dropped. Lock order: the storage lock, then the cache's lock (the hook). The reclaim hook (below) takes the cache's lock, so an allocation made under it would deadlock; none is.
+
+**Memory pressure.** `Memory::setReclaimer()` installs a reclaimer (an interface: `reclaim(space, bytes)`, and `usage()`: bytes and items held, bytes reclaimable now, hits, misses, reclaims); one may be set. When a `Psram` or `PsramDma` allocation fails, `Memory` asks the reclaimer, then tries again once if it freed anything. The cache frees its unpinned entries, least recently used first, until enough is free.
+
+**Monitoring:** `mem` gains one line after its table, `cached  528485  programs 1, hits 1, misses 1, given back 0`: the bytes held, the programs, lookups since boot, and how often a failed allocation emptied the cache. The table is unchanged; `mem -h` prints every size for people (`16.55M`, `432.43k`).
+
+**Budget:** `CONFIG_BMDS_IMAGE_CACHE_KB` (new `bmds_loader` Kconfig), default 4096; 0 turns the cache off. Keeping an entry evicts the least recently used unpinned entries until it fits. An entry bigger than the whole budget isn't kept.
+
+**Testing (a):**
+- **Host:** `read()` + `place()` against `load()` (the hand-built files and `hello.elf`, several bases); the cache's hits, misses, key mismatches (size, time, device), LRU eviction, the budget, pins (dropped while pinned), the generation, `changed()` by id and `(0, 0)`, and `reclaim()`; the VFS hook's calls (a write handle's close, remove, rename, touch, unmount), and none for a read-only file.
+- **Board:**
+  - `busybox time -p busybox true` before and after (0.27 s, 8c);
+  - BusyBox applets through links sharing one entry;
+  - `progtest` suites;
+  - a program rewritten while cached runs the new one;
+  - card removal;
+  - memory after rounds.
+
+**Phase (a) as built (2026-10-06).** As designed above.
+- **Time:**
+  - `busybox time -p busybox true` takes 0.01–0.02 s, from 0.34–0.35 s before;
+  - `progtest` on a hit: 0.00 s (BusyBox's `time` counts in 10 ms steps), from 0.11–0.14 s on a miss;
+  - ten `busybox true` from a hush loop: 0.22 s in all;
+  - a miss costs what a load cost before (`progtest`: 0.11 s, three times, as before the cache): the file is read once, into the entry.
+- **Memory:**
+  - BusyBox's entry is 528,485 bytes and `progtest`'s 131,076;
+  - free `Psram` and the task count are the same after rounds of the `threads`, `signals`, `spawn` and `poll` suites;
+  - an unmount empties the cache and returns free `Psram` to its figure at boot.
+- **Staleness on the board:**
+  - one byte of a cached program rewritten in place (same size, within FAT's 2 s) and the next `exec` refuses the file;
+  - a removed one's entry goes.
+- **Pressure:** a program's 25.4 MB allocation, failing, emptied the cache and still failed: the 0.66 MB given back lay apart from the largest free block, with BusyBox's running image between them (largest block 25.69 MB with the cache, 26.74 MB without it and with no program running). The same request succeeded with the cache empty. Giving memory back doesn't defragment the heap; images in 64 KB pages of the window (b) need no contiguous block.
+- **Size:** firmware +3,520 bytes with `mem`'s line and `-h`, `.bss` +136.
+
 ## 15. Step 9: signals (design, 2026-10-04)
 
 **Goal:** signals between processes, as Linux has them for one user on one terminal: `kill`, Ctrl-C as `SIGINT` to the job, `SIGPIPE`, `SIGCHLD`, `SIGWINCH`, handlers, masks, `sigsuspend`. Yardstick: BusyBox `kill`, `timeout` and `watch` work, `yes | head` ends `yes` by `SIGPIPE`, `hush` traps and Ctrl-C at its prompt behave as on Linux. It replaces step 4's rule (a Ctrl-C makes blocking calls fail with `EINTR` until the program exits, which then reports 130) and 8b's (an interrupted job ends with its first process).

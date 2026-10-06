@@ -30,6 +30,7 @@ add_executable(bmds_host_tests
         bytering.cpp
         edid.cpp
         futex.cpp
+        imagecache.cpp
         memtest.cpp
         error.cpp
         fdtable.cpp

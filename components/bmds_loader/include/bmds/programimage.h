@@ -103,6 +103,36 @@ namespace ProgramImage {
         Error load(Source &source, uint32_t fileSize, const Info &info, uint8_t *image, uint32_t base,
                    Problem &problem);
 
+        /**
+         * @brief A patch `read()` records: the offset of the word to patch, and
+         *        `PatchUpper` for a `lui`/`auipc` (else a word gains the base).
+         */
+        using Patch = uint32_t;
+
+        /** @brief In a `Patch`: the base goes into the upper immediate (`R_RISCV_HI20`). */
+        inline constexpr Patch PatchUpper = 1u << 31;
+
+        static_assert(MaxImageBytes <= PatchUpper, "a patch's offset fits below PatchUpper");
+
+        /**
+         * @brief Reads an inspected program (@p fileSize bytes from @p source) for
+         *        placing later, any number of times: its segment, unrelocated, into
+         *        @p bytes (`info.fileSize` bytes), and the patches `load()` would
+         *        apply into @p patches (`info.relocations`).
+         * @return As `load()`.
+         * @blocking
+         */
+        Error read(Source &source, uint32_t fileSize, const Info &info, uint8_t *bytes, Patch *patches,
+                   Problem &problem);
+
+        /**
+         * @brief Places a program `read()` gave: copies @p bytes into @p image
+         *        (`info.imageSize` bytes), zeroes its bss and applies @p patches
+         *        for @p base (a multiple of 4096). The same image as `load()`'s.
+         * @nonblocking
+         */
+        void place(const Info &info, const uint8_t *bytes, const Patch *patches, uint8_t *image, uint32_t base);
+
 } // namespace ProgramImage
 
 BMDS_NAMESPACE_END

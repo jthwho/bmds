@@ -189,6 +189,22 @@ namespace Vfs {
         Error init();
 
         /**
+         * @brief Told that a file's contents or name may have changed: its
+         *        `FileInfo::device` and `id`, or `(0, 0)` for every file.
+         *
+         * Called with the storage lock held, so it must not call the VFS.
+         */
+        using ChangeHook = void (*)(uint32_t device, uint64_t id);
+
+        /**
+         * @brief Installs @p hook (null: none), called when a handle open for
+         *        writing closes, a file is removed, renamed (with its old name)
+         *        or touched (`setModified()`), and after an unmount (`(0, 0)`:
+         *        mount slots move).
+         */
+        void setChangeHook(ChangeHook hook);
+
+        /**
          * @brief Mounts the FAT or exFAT filesystem on @p device at @p path.
          * @param path Absolute (normalized here); not `/`, not in `/dev`, not
          *        inside or above another mount; at most `MaxMountPath` bytes.

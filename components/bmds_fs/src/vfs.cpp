@@ -37,6 +37,8 @@ namespace {
 
         constinit NullStream devNull;
 
+        constinit Vfs::ChangeHook changeHook = nullptr; // under the storage lock
+
         // The fixed device nodes in /dev, listed before the block devices.
         constexpr const char *DevNames[] = {"console", "null"};
 
@@ -484,6 +486,8 @@ namespace {
                 mounts[index].volume->release();
                 for (size_t j = index + 1; j < mountCount; ++j) mounts[j - 1] = mounts[j];
                 mounts[--mountCount] = Mount();
+                // Every file: the slots after this one moved.
+                Fat::changedLocked(0, 0);
                 mountChanges.notify();
                 return;
         }
@@ -617,6 +621,17 @@ Result<FileInfo> Directory::next() {
 }
 
 // --- Vfs: paths and mounts --------------------------------------------------
+
+void Fat::changedLocked(uint32_t device, uint64_t id) {
+        if (changeHook != nullptr) changeHook(device, id);
+        return;
+}
+
+void Vfs::setChangeHook(ChangeHook hook) {
+        Mutex::Locker lock(Fat::lock(), WaitForever);
+        changeHook = hook;
+        return;
+}
 
 Error Vfs::init() {
         return Fat::init();
@@ -838,7 +853,8 @@ Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context 
                         }
                 }
                 FRESULT                 raw = FR_OK;
-                Result<FileHandle::Ptr> handle = Fat::openFile(*node.volume, fat.cStr(), flags, &raw, &target);
+                Result<FileHandle::Ptr> handle = Fat::openFile(*node.volume, fat.cStr(), flags, node.mount,
+                                                               pathId(storage.view()), &raw, &target);
                 if (handle.error().isError()) {
                         // A link as the last component (openFile read it), or along the way.
                         if (!target.isEmpty()) {
@@ -1095,7 +1111,9 @@ Error Vfs::remove(StringView path, const Context &context) {
                 if (raw == FR_NO_PATH && followPathLocked(storage, false)) continue;
                 if (info.error().isError()) return info.error();
                 if (info.value().isDirectory()) return Error::IsDir;
-                return Fat::toError(f_unlink(fat.cStr()), *node.volume);
+                err = Fat::toError(f_unlink(fat.cStr()), *node.volume);
+                if (err.isOk()) Fat::changedLocked(node.mount, pathId(storage.view()));
+                return err;
         }
         return err;
 }
@@ -1125,6 +1143,7 @@ Error Vfs::rename(StringView from, StringView to, const Context &context) {
                 const FRESULT result = f_rename(fromFat.cStr(), toFat.cStr());
                 if (result == FR_NO_PATH && (followPathLocked(fromStorage, false) || followPathLocked(toStorage, false)))
                         continue;
+                if (result == FR_OK) Fat::changedLocked(fromNode.mount, pathId(fromStorage.view()));
                 return Fat::toError(result, *fromNode.volume);
         }
         return err;
@@ -1152,6 +1171,7 @@ Error Vfs::setModified(StringView path, Timestamp time, const Context &context) 
         entry->ftime = static_cast<WORD>(packed & 0xffff);
         err = Fat::toError(f_utime(fat.cStr(), entry), *node.volume);
         Memory::free(entry);
+        if (err.isOk()) Fat::changedLocked(node.mount, pathId(storage.view()));
         return err;
 }
 

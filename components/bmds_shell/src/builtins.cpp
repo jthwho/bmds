@@ -52,16 +52,64 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        // A size for people (mem -h): powers of 1024 with two decimals
+        // (16.55M, 432.43k); under 1024, the bytes as they are.
+        void humanBytes(uint64_t bytes, char (&out)[24]) {
+                static constexpr char Units[] = "kMGT";
+                if (bytes < 1024) {
+                        std::snprintf(out, sizeof(out), "%llu", static_cast<unsigned long long>(bytes));
+                        return;
+                }
+                uint64_t unit = 1024;
+                size_t   u = 0;
+                // Rounding may reach the next unit (1023.999k is 1.00M).
+                while (u + 1 < sizeof(Units) - 1 && (bytes * 100 + unit / 2) / unit >= 1024 * 100) {
+                        unit *= 1024;
+                        ++u;
+                }
+                const uint64_t hundredths = (bytes * 100 + unit / 2) / unit;
+                std::snprintf(out, sizeof(out), "%llu.%02llu%c", static_cast<unsigned long long>(hundredths / 100),
+                              static_cast<unsigned long long>(hundredths % 100), Units[u]);
+                return;
+        }
+
+        // @p bytes in mem's columns: as they are, or for people.
+        void memCell(uint64_t bytes, bool human, char (&out)[24]) {
+                if (human) {
+                        humanBytes(bytes, out);
+                } else {
+                        std::snprintf(out, sizeof(out), "%llu", static_cast<unsigned long long>(bytes));
+                }
+                return;
+        }
+
         int runMem(CommandContext &ctx) {
                 const Args args = ctx.args();
-                if (args.size() != 1) return ctx.usage();
+                bool       human = false;
+                for (size_t i = 1; i < args.size(); ++i) {
+                        if (StringView(args[i]) != "-h") return ctx.usage();
+                        human = true;
+                }
                 ctx.printf("%-11s %10s %10s %10s %10s\n", "space", "total", "free", "min_free", "largest");
+                char cells[4][24];
                 for (size_t i = 0; i < MemSpaceCount; ++i) {
                         const MemSpace space = static_cast<MemSpace>(i);
                         const MemStats s = Memory::stats(space);
-                        ctx.printf("%-11s %10u %10u %10u %10u\n", memSpaceName(space),
-                                   static_cast<unsigned>(s.totalBytes), static_cast<unsigned>(s.freeBytes),
-                                   static_cast<unsigned>(s.minFreeBytes), static_cast<unsigned>(s.largestFreeBlock));
+                        memCell(s.totalBytes, human, cells[0]);
+                        memCell(s.freeBytes, human, cells[1]);
+                        memCell(s.minFreeBytes, human, cells[2]);
+                        memCell(s.largestFreeBlock, human, cells[3]);
+                        ctx.printf("%-11s %10s %10s %10s %10s\n", memSpaceName(space), cells[0], cells[1], cells[2],
+                                   cells[3]);
+                }
+                // What a cache holds (the loader's programs): counted as used above,
+                // given back when an allocation would fail.
+                Memory::Reclaimer::Usage u;
+                if (Memory::reclaimerUsage(u)) {
+                        memCell(u.bytes, human, cells[0]);
+                        ctx.printf("%-11s %10s  %s %u, hits %u, misses %u, given back %u\n", "cached", cells[0],
+                                   u.items, static_cast<unsigned>(u.count), static_cast<unsigned>(u.hits),
+                                   static_cast<unsigned>(u.misses), static_cast<unsigned>(u.reclaims));
                 }
                 return Shell::ExitSuccess;
         }
@@ -271,7 +319,8 @@ namespace {
 BMDS_SHELL_COMMAND(help, Shell::runHelp, "[command]", "List commands, or show one command's usage")
 BMDS_SHELL_COMMAND(log, runLog, "[level info|warn|err | on <module>...|all | off <module>...|all | show]",
                    "Show or set the log level and debug modules; show the log history")
-BMDS_SHELL_COMMAND(mem, runMem, "", "Show memory usage per memory space (bytes)")
+BMDS_SHELL_COMMAND(mem, runMem, "[-h]",
+                   "Show memory usage per memory space, and what caches hold (bytes; -h: 16.55M, 432.43k)")
 BMDS_SHELL_COMMAND(reboot, runReboot, "", "Restart the system")
 BMDS_SHELL_COMMAND(sleep, runSleep, "<seconds>", "Wait for a number of seconds (fractions allowed, e.g. 0.5)")
 BMDS_SHELL_COMMAND(tasks, runTasks, "", "List tasks: state, priority, core, free stack (bytes)")

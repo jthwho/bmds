@@ -24,6 +24,7 @@
 #include <bmds/deadline.h>
 #include <bmds/errno.h>
 #include <bmds/futex.h>
+#include <bmds/imagecache.h>
 #include <bmds/interrupt.h>
 #include <bmds/list.h>
 #include <bmds/loader.h>
@@ -74,6 +75,15 @@ namespace {
 
         // Program threads waiting on words (the futex call).
         constinit StaticObject<FutexTable> futexes;
+
+        // Programs read from files, for the next exec (devplan/programs.md §14.1).
+        constinit StaticObject<ImageCache> imageCache;
+
+        // The VFS's change hook (storage lock held).
+        void fileChanged(uint32_t device, uint64_t id) {
+                imageCache->changed(device, id);
+                return;
+        }
 
         // Thread ids (but each process's first thread's, its pid): above every pid, below 2^30.
         constexpr int32_t              FirstThreadId = 32768;
@@ -147,40 +157,41 @@ namespace {
                 return Vfs::Context{cwd.isEmpty() ? StringView("/") : cwd, nullptr};
         }
 
-        // Opens the file at @p path (relative to @p cwd) to run it.
-        Error openProgram(StringView path, StringView cwd, FileHandle::Ptr &file, uint32_t &size) {
-                const Vfs::Context     context = contextFor(cwd);
-                const Result<FileInfo> info = Vfs::stat(path, context);
+        // A program file, as an exec finds it: its cache key (links followed)
+        // and its size; and the cache's generation from before it was looked at.
+        struct ProgramFile {
+                        ImageCache::Key key;
+                        uint32_t        size = 0;
+                        uint32_t        generation = 0;
+        };
+
+        // Looks at the file at @p path (relative to @p cwd) to run it.
+        Error statProgram(StringView path, StringView cwd, ProgramFile &file) {
+                file.generation = imageCache->generation();
+                const Result<FileInfo> info = Vfs::stat(path, contextFor(cwd));
                 Error                  err = info.error();
                 if (err.isOk() && info.value().isDirectory()) err = Error::IsDir;
                 if (err.isOk() && info.value().size > UINT32_MAX) err = Error::NotSupported;
                 if (err.isError()) return err;
-                auto [opened, oerr] = Vfs::open(path, Vfs::Read, context);
-                if (oerr.isError()) return oerr;
-                file = std::move(opened);
-                size = static_cast<uint32_t>(info.value().size);
+                file.key.device = info.value().device;
+                file.key.id = info.value().id;
+                file.key.size = info.value().size;
+                file.key.modified = info.value().modified.ns;
+                file.size = static_cast<uint32_t>(info.value().size);
                 return Error::Ok;
         }
 
-        // Loads the program in @p file (@p fileSize bytes).
-        Error loadFrom(FileHandle &file, uint32_t fileSize, Image &image, LoadFailure &failure) {
-                FileSource         source(file);
-                ProgramImage::Info header;
-                Error              err;
-                err = ProgramImage::inspect(source, fileSize, header, failure.problem);
-                if (err.isError()) {
-                        if (failure.problem.what != nullptr) failure.stage = "cannot execute";
-                        return err == Error::Invalid ? Error::NotSupported : err;
-                }
-                // Its memory: the image, 4096-aligned and whole pages (so the
-                // cache sync covers whole lines), then loaded and relocated in place.
+        // The memory for a program of @p header: 4096-aligned and whole pages (so
+        // the cache sync covers whole lines).
+        Error allocateImage(const ProgramImage::Info &header, Image &image) {
                 image.bytes = (header.imageSize + BMDS_LOAD_ALIGN - 1) & ~size_t(BMDS_LOAD_ALIGN - 1);
                 image.memory =
                         static_cast<uint8_t *>(Memory::allocAligned(MemSpace::Psram, image.bytes, BMDS_LOAD_ALIGN));
-                if (image.memory == nullptr) return Error::NoMem;
-                err = ProgramImage::load(source, fileSize, header, image.memory,
-                                         static_cast<uint32_t>(reinterpret_cast<uintptr_t>(image.memory)),
-                                         failure.problem);
+                return image.memory != nullptr ? Error::Ok : Error::NoMem;
+        }
+
+        // A loaded image (@p err: how loading went) made ready to run, or freed.
+        Error finishImage(Error err, const ProgramImage::Info &header, Image &image, LoadFailure &failure) {
                 if (err.isOk()) {
                         // Write the image back from the D-cache and drop stale lines
                         // everywhere, including the I-cache (fence.i isn't enough here).
@@ -199,6 +210,62 @@ namespace {
                 return Error::Ok;
         }
 
+        // Places the program of a cache entry in memory of its own.
+        Error placeFrom(ImageCache::Entry &entry, Image &image, LoadFailure &failure) {
+                const ProgramImage::Info &header = entry.info();
+                Error                     err = allocateImage(header, image);
+                if (err.isError()) return err;
+                ProgramImage::place(header, entry.bytes(), entry.patches(), image.memory,
+                                    static_cast<uint32_t>(reinterpret_cast<uintptr_t>(image.memory)));
+                return finishImage(Error::Ok, header, image, failure);
+        }
+
+        // Loads the program in @p file (@p program, unchanged since it was
+        // looked at): read into a cache entry once and placed from it, the
+        // entry then kept; straight from the file without memory for one.
+        Error loadFrom(FileHandle &file, const ProgramFile &program, Image &image, LoadFailure &failure) {
+                FileSource         source(file);
+                ProgramImage::Info header;
+                Error              err;
+                err = ProgramImage::inspect(source, program.size, header, failure.problem);
+                if (err.isError()) {
+                        if (failure.problem.what != nullptr) failure.stage = "cannot execute";
+                        return err == Error::Invalid ? Error::NotSupported : err;
+                }
+                if (ImageCache::Entry *entry = imageCache->create(program.key, header, program.generation)) {
+                        err = ProgramImage::read(source, program.size, header, entry->bytes(), entry->patches(),
+                                                 failure.problem);
+                        if (err.isError()) {
+                                imageCache->release(entry);
+                                failure.stage = "cannot load";
+                                return err;
+                        }
+                        err = placeFrom(*entry, image, failure);
+                        // The entry is good either way; but without memory for the
+                        // image, it may be what is in the way (below).
+                        if (err != Error::NoMem) {
+                                (void)imageCache->keep(entry);
+                                return err;
+                        }
+                        imageCache->release(entry);
+                }
+                err = allocateImage(header, image);
+                if (err.isError()) return err;
+                err = ProgramImage::load(source, program.size, header, image.memory,
+                                         static_cast<uint32_t>(reinterpret_cast<uintptr_t>(image.memory)),
+                                         failure.problem);
+                return finishImage(err, header, image, failure);
+        }
+
+        // An exec of @p program that the cache can serve: true with @p err set if it did.
+        bool loadCached(const ProgramFile &program, Image &image, LoadFailure &failure, Error &err) {
+                ImageCache::Entry *entry = imageCache->acquire(program.key);
+                if (entry == nullptr) return false;
+                err = placeFrom(*entry, image, failure);
+                imageCache->release(entry);
+                return true;
+        }
+
         // Loads the program at @p path (relative to @p cwd).
         // A program file, or a program built into the firmware (/bin/NAME: devplan/programs.md §17).
         Error loadImage(StringView path, StringView cwd, Image &image, LoadFailure &failure) {
@@ -207,10 +274,11 @@ namespace {
                         image.stackBytes = static_cast<uint32_t>(builtin->program.stackBytes);
                         return Error::Ok;
                 }
-                FileHandle::Ptr file;
-                uint32_t        size = 0;
-                const Error     err = openProgram(path, cwd, file, size);
-                return err.isError() ? err : loadFrom(*file, size, image, failure);
+                ProgramFile program;
+                Error       err = statProgram(path, cwd, program);
+                if (err.isError() || loadCached(program, image, failure, err)) return err;
+                auto [file, oerr] = Vfs::open(path, Vfs::Read, contextFor(cwd));
+                return oerr.isError() ? oerr : loadFrom(*file, program, image, failure);
         }
 
         // @p args with @p front in place of its first element.
@@ -241,10 +309,12 @@ namespace {
                         image.stackBytes = static_cast<uint32_t>(builtin->program.stackBytes);
                         return Error::Ok;
                 }
-                FileHandle::Ptr file;
-                uint32_t        size = 0;
-                Error           err = openProgram(path, cwd, file, size);
-                if (err.isError()) return err;
+                // A program cached: it was an ELF file (scripts aren't cached).
+                ProgramFile program;
+                Error       err = statProgram(path, cwd, program);
+                if (err.isError() || loadCached(program, image, failure, err)) return err;
+                auto [file, oerr] = Vfs::open(path, Vfs::Read, contextFor(cwd));
+                if (oerr.isError()) return oerr;
                 char   head[Shebang::HeadBytes];
                 size_t got = 0;
                 while (got < sizeof(head)) {
@@ -258,11 +328,11 @@ namespace {
                 const StringView headView(head, got);
                 if (headView.startsWith(StringView("\x7f"
                                                    "ELF")))
-                        return loadFrom(*file, size, image, failure);
+                        return loadFrom(*file, program, image, failure);
                 file = FileHandle::Ptr();
                 if (Shebang::isScript(headView)) {
                         Shebang line;
-                        if (!Shebang::parse(headView, size <= got, line) || line.interpreter.isEmpty())
+                        if (!Shebang::parse(headView, program.size <= got, line) || line.interpreter.isEmpty())
                                 return Error::NotSupported;
                         // Copies: the views point into head, and path may be an element of args.
                         auto [script, cerr] = String::fromView(path);
@@ -1510,6 +1580,11 @@ Error Loader::init() {
         if (!groupLock.isCreated()) groupLock.create();
         if (!processes.isCreated()) processes.create();
         if (!futexes.isCreated()) futexes.create();
+        if (!imageCache.isCreated()) {
+                imageCache.create(size_t(CONFIG_BMDS_IMAGE_CACHE_KB) * 1024);
+                Vfs::setChangeHook(fileChanged);
+                Memory::setReclaimer(&*imageCache);
+        }
         Error err = processes->init();
         if (err.isOk() && signalQueue == nullptr) {
                 signalQueue = xQueueCreate(SignalQueueLength, sizeof(Console *));
