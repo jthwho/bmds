@@ -121,7 +121,8 @@ As POSIX has them, for one user:
   controlling terminal; its children inherit both.
 - **The foreground group** is the console's (`TIOCSPGRP` and `TIOCGPGRP` take effect; `tcsetpgrp`).
   The console sends, to its foreground group: Ctrl-C `SIGINT`, Ctrl-\ `SIGQUIT`, Ctrl-Z `SIGTSTP`,
-  a size change `SIGWINCH`; when it hangs up, `SIGHUP` to its session (then `SIGCONT`). The rule
+  a size change `SIGWINCH`; when it hangs up, `SIGHUP` (then `SIGCONT`) to its session leader and
+  its foreground group, and the shell passes it on to its jobs (§3.7.1). The rule
   that a Ctrl-C after an unanswered one sends `SIGKILL` (§15) moves with it. `bmds_console` sees
   only an opaque target and a hook the loader installs.
 - **Background reads:** a process outside the foreground that reads its controlling terminal gets
@@ -175,6 +176,76 @@ As POSIX has them, for one user:
 - The parent learns of it: `SIGCHLD`, and `proc_wait` with a new flag reporting stopped and
   continued children (`WUNTRACED`, `WCONTINUED` through musl's `waitid`). The shell prints
   `[1]+  Stopped  sleep 10`.
+
+### 3.7.1 How it is built (step 4)
+
+- **Signals.** `SIGSTOP`, `SIGTSTP`, `SIGTTIN` and `SIGTTOU` stop by default (blocked: pending
+  until unblocked, then they stop at the next system call's end); ignored ones are dropped.
+  `SIGCONT` always continues a stopped process, then is dropped by default (caught: pending as any
+  other). A stop signal discards a pending `SIGCONT` and `SIGCONT` discards pending stop signals.
+  While stopped, other signals stay pending (a terminating one acts at the continue); only
+  `SIGKILL` ends a stopped process at once. `Signals` keeps the stopped state; `post()` says
+  `Stop` or `Continue` for the sender to act on.
+- **Parking.** `Interrupt` gains a hold: `hold()` wakes its waiters, and while held `wait()` and
+  `sleep()` park (they neither return nor time out; a semaphore taken meanwhile is given back),
+  then go on; `park()` waits out a hold, for code between waits. A stopped process's interrupt is
+  held, so every kernel-code thread of it (a shell, its pipeline workers, a call in progress)
+  parks at its next wait or check: the shell's interruption checks (`Executor::interrupted()`,
+  `CommandContext::isInterrupted()`) park.
+- **The handshake** (as the kill's, beside it): the sender holds the interrupt, then suspends the
+  task and reads `inKernel`: in program code the task stays suspended (the stop is done); in a
+  system call it is resumed and parks in its waits or at `leave()`. `SIGCONT` releases the hold
+  and resumes a task suspended for the stop. Senders run under the process table's lock, which
+  serializes stops, continues and kills.
+- **The parent learns of it:** the table records "stopped by N" or "continued" until the parent
+  takes it, releases the parent's semaphore and sends it `SIGCHLD`. `proc_wait` gains
+  `BMDS_WAIT_UNTRACED` and `BMDS_WAIT_CONTINUED` (Linux's statuses: `0x7f | sig << 8`,
+  `0xffff`), which `linux.c` maps from `waitid`'s `WSTOPPED` and `WCONTINUED`. `ps` shows `T`.
+- **A stopped process left alone:** when a process ends, or disowns a child (a shell that exits
+  disowns its jobs), its stopped children get `SIGHUP` then `SIGCONT` (Linux's orphaned-group
+  rule, per process); a hangup sends `SIGCONT` after `SIGHUP`.
+- **Hangups** (as Linux and bash): a terminal's hangup goes to its session leader (its shell) and
+  its foreground group, not the whole session; the interactive shell, ending with its terminal
+  (or by a signal), sends `SIGHUP` to its jobs (and `SIGCONT` to stopped ones), except those
+  `disown -h` kept. A disowned job, one under `nohup` or one under `setsid` (BusyBox's, now
+  built, with a patch for its no-MMU re-exec) outlives the terminal; after `exit` the jobs live on
+  (no `huponexit`). An interactive shell takes the terminal at each prompt, as bash does, and
+  when a read fails because it isn't the foreground (a job's group left empty by `setsid`).
+- **Ctrl-Z** is the third signal key (`SIGTSTP` to the foreground group, input before it
+  flushed), on every console, with `TermMode::signals`.
+- **Background reads:** a console asks a hook (the loader's) before each read: a process of the
+  console's session outside its foreground group gets `SIGTTIN` (its group), parks while stopped,
+  and checks again once continued; with `SIGTTIN` ignored or blocked the read fails (`EIO`); a
+  caught one interrupts it. Kernel tasks and other terminals' processes read as before. Writes
+  are allowed (no `TOSTOP`); `SIGTTOU` is only ever sent by `kill`.
+- **The launcher:** a request may ask to hear of a stop (`stopped`, an out pid): `run()` then
+  returns 128 + the signal (bash's `$?`, 148 for Ctrl-Z) as the program stops, the terminal goes
+  back to the caller's group with the caller's modes, and the program stays the caller's child
+  (taken with `waitChild()`). `ProcessControl` gains `waitChild()` flags (block, stopped,
+  continued), `signal()` (a process or `-group`) and `setForeground()` (the caller's terminal).
+- **The shell** (job control on: an interactive shell):
+  - a foreground program that stops becomes a stopped job (`^Z`, then `[1]+  Stopped  cmd`,
+    status 148) and the rest of the command line is abandoned (a loop ends; bash goes on with the
+    commands after a `;`, so `make; ./run` would run `./run`);
+  - a foreground pipeline whose last stage is a program runs as a subshell process in a group of
+    its own in the foreground, as a background job does, so the whole of it stops and continues as
+    one job. One that ends in the shell's own code (a built-in, a function, a loop) runs in the
+    shell as before, so lastpipe holds (`cmd | while read x` sets `x`; bash turns lastpipe off
+    under job control instead), and can't be stopped: its programs ignore the stop signals. Nor
+    can one with a here-document whose body follows the line (it isn't in the job's text);
+  - command substitutions run without job control: their programs ignore the stop signals, as
+    bash's do (their output goes to memory the shell owns);
+  - `fg [%N]` gives the job the terminal, continues it and waits (until it ends or stops again);
+    `bg [%N...]` continues jobs in the background (both, and `disown`, take a bare number as a
+    job number, as bash: `bg 1`); `jobs` shows `Stopped` (with the signal when it
+    isn't `SIGTSTP`: `Stopped(SIGTTIN)`); `kill %N` with `SIGTERM` or `SIGHUP` also continues
+    the job, as bash does; ended, stopped and continued jobs are reported before the prompt;
+  - `exit` with stopped jobs says "There are stopped jobs." once; a second `exit` ends the shell
+    (the kernel then hangs up its stopped jobs, above); `disown -h` keeps a job in the table but
+    not to be hung up with the shell;
+  - with job control a background job's stdin is the terminal (bash), else `/dev/null`;
+  - the interactive shell ignores `SIGTSTP`, `SIGTTIN` and `SIGTTOU`, so what runs in it (a loop
+    of built-in commands, `sleep`) can't be stopped, as in bash; Ctrl-C ends it.
 
 ### 3.8 The shell's job control
 
@@ -396,3 +467,47 @@ ABI 1 has not shipped, but these are recorded as `ABI:` lines because they chang
     groups of their own, a pipeline's in one, Ctrl-C to the foreground job only, `kill %1`). It
     still prints `fcntl(0,F_DUPFD,255): Invalid argument` as it starts (16 descriptors here) and
     goes on with a lower one.
+- **Step 4** (2026-10-06): stopping and continuing.
+  - `Interrupt` gains a hold (`hold()`, `resume()`, `park()`): while held its waits park, neither
+    returning nor timing out. `Signals`: the stop signals stop (`Posted::Stop`), `SIGCONT`
+    continues (`Continue`), other signals wait for the continue, `SIGKILL` continues to end;
+    `stopSignal()` for one blocked until a call unblocks it. The continue raises the interrupt
+    for what came meanwhile before it releases the hold (else a woken reader read again first).
+  - The loader: the stop handshake beside the kill's (`suspendedForStop`), `leave()` parks,
+    stops and continues recorded in the table after the senders' lock and reported to the parent
+    (its semaphore, `SIGCHLD`); `proc_wait` and `waitChild()` flags; `ps` state `T`. A stopped
+    child is hung up and continued when its parent ends or disowns it. Consoles: Ctrl-Z, and the
+    read hook (`SIGTTIN`). `run()` returns on a stop when asked (`Request::stopped`), giving the
+    terminal back; `Request::ignoreStops`.
+  - The shell: stopped foreground programs and pipelines (those ending in a program run as a
+    subshell process) become jobs; `fg`, `bg`; `jobs` shows `Stopped`; changes are reported
+    before the prompt; "There are stopped jobs."; `kill %N` continues a stopped job after `TERM`
+    or `HUP`; `disown` warns of a stopped job; command substitutions can't stop; background jobs
+    read the terminal with job control; the interactive shell ignores the stop signals; the
+    shell's interruption checks park. `linux.c` maps `WSTOPPED` and `WCONTINUED`.
+  - Host-tested: holds (parking, deadlines and raises while held), the stop/continue rules,
+    the table's reports, the shell's stopped jobs, `fg`, `bg`, pipelines as jobs and lastpipe,
+    substitutions, the reports and the exit warning.
+  - On the board: Ctrl-Z on `busybox sleep` (`$?` 148, `ps` T), `bg`, `kill -STOP %1`
+    (`Stopped(SIGSTOP)`), `fg`; Ctrl-Z on a two-program pipeline and on a built-in loop piped to
+    a program (the subshell, its pipe thread and its programs all stopped), `fg`, Ctrl-C (`^C`);
+    a loop of programs ends at Ctrl-Z; `busybox cat &` and `read x &` stop with `SIGTTIN`, `fg`
+    then reads typed lines; Ctrl-Z on a foreground `busybox cat` lets the shell read, `fg` gives
+    it the terminal back; `kill %N` ends stopped jobs; a nested `sh` warns once on `exit`, then
+    its stopped job is hung up and its running one goes on; BusyBox `hush`: Ctrl-Z, `jobs`,
+    `bg`, `fg`, and its stopped job is hung up when it exits. The tasks are the same after rounds of
+    stop, continue and kill, and internal RAM; PSRAM is 212 or 220 bytes lower after the first
+    rounds (two runs), then unchanged over six more. The image grew 5,902 bytes, `.bss` 76 (6,322 and 76 with the
+    hangup work below).
+  - Afterwards (asked for): hangups to the leader and the foreground group, the shell hanging
+    up its jobs, `disown -h`, BusyBox `setsid` (patched: upstream re-execs on no-MMU with the
+    arguments after the options, so the child ran the command without `setsid()`). On the board:
+    in a nested `sh`, `kill -HUP $$` ends a plain job and leaves a `disown -h` one and a `setsid`
+    one (its own session) running. Found there: a job whose group was left empty (`setsid` typed
+    at the prompt: its parent ended before the child left the group) kept the terminal, so the
+    serial shell's reads failed (`EIO`, it ignores `SIGTTIN`) and its loop spun on CPU 0; the
+    launcher now gives the terminal back once the group is empty, and the shell takes it at each
+    prompt and on such a failure.
+  - Found: `while :; do :; done` typed alone runs in the interactive shell, which ignores
+    Ctrl-Z (as bash); it held CPU 0 until Ctrl-C (the task watchdog complained). Not tried on
+    the board: Ctrl-Z typed in a terminal window (the pty uses the same byte check).

@@ -141,6 +141,76 @@ TEST_CASE("Interrupt: many raises racing waiters that come and go") {
         raiser.join();
 }
 
+TEST_CASE("Interrupt: a hold parks waiters until resumed") {
+        Interrupt         intr;
+        Semaphore         sem(1, 0);
+        std::atomic<int>  state{0};
+        std::atomic<bool> gotIt{false};
+        std::thread       waiter([&] {
+                state = 1;
+                gotIt = intr.wait(sem, Deadline(bmds::WaitForever)).isOk();
+                state = 2;
+        });
+        while (state.load() == 0) pause(1);
+        pause(20);
+        intr.hold();
+        CHECK(intr.isHeld());
+        // What comes while held isn't taken until the hold ends.
+        sem.release();
+        pause(50);
+        CHECK(state.load() == 1);
+        intr.resume();
+        waiter.join();
+        CHECK(gotIt.load());
+        CHECK_FALSE(intr.isHeld());
+}
+
+TEST_CASE("Interrupt: while held, a deadline and a raise wait for the resume") {
+        Interrupt intr;
+        Semaphore sem(1, 0);
+        intr.hold();
+        std::atomic<bool> done{false};
+        Error             result = Error::Ok;
+        std::thread       waiter([&] {
+                result = intr.wait(sem, Deadline(10));
+                done = true;
+        });
+        pause(60);
+        CHECK_FALSE(done.load()); // the deadline passed, but it is held
+        intr.resume();
+        waiter.join();
+        CHECK(result == Error::Timeout);
+
+        intr.hold();
+        done = false;
+        std::thread second([&] {
+                result = intr.wait(sem, Deadline(bmds::WaitForever));
+                done = true;
+        });
+        pause(20);
+        intr.raise();
+        pause(30);
+        CHECK_FALSE(done.load());
+        intr.resume();
+        second.join();
+        CHECK(result == Error::Interrupted);
+
+        // park() returns at once when not held, and waits out a hold.
+        intr.clear();
+        intr.park();
+        intr.hold();
+        std::atomic<bool> parked{true};
+        std::thread       third([&] {
+                intr.park();
+                parked = false;
+        });
+        pause(30);
+        CHECK(parked.load());
+        intr.resume();
+        third.join();
+        CHECK_FALSE(parked.load());
+}
+
 TEST_CASE("Deadline") {
         Deadline forever(bmds::WaitForever);
         CHECK(forever.isForever());

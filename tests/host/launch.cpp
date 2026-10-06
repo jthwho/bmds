@@ -46,6 +46,7 @@ namespace {
                         struct Child {
                                         bool    ended = false;
                                         int32_t status = 0; // a wait status
+                                        int32_t change = 0; // a stop or continue to report (its wait status)
                         };
 
                         int32_t processId() const override { return 7; }
@@ -54,13 +55,21 @@ namespace {
 
                         bool isEnding() const override { return false; }
 
-                        bmds::Result<int32_t> waitChild(int32_t pid, bool block, int32_t &status) override {
+                        bmds::Result<int32_t> waitChild(int32_t pid, uint32_t flags, int32_t &status) override {
                                 auto it = children.find(pid);
                                 if (it == children.end()) return bmds::makeError<int32_t>(Error::NotExist);
-                                if (!it->second.ended && !block) return bmds::makeResult<int32_t>(0);
-                                if (!it->second.ended && interruptWaits)
-                                        return bmds::makeError<int32_t>(Error::Interrupted);
-                                status = it->second.status;
+                                Child &c = it->second;
+                                // A stop or continue to report first, when asked for.
+                                if (c.change != 0 && ((c.change & 0xff) == 0x7f ? (flags & WaitStopped) != 0
+                                                                                : (flags & WaitContinued) != 0)) {
+                                        status = c.change;
+                                        c.change = 0;
+                                        return bmds::makeResult(pid);
+                                }
+                                const bool block = (flags & WaitBlock) != 0;
+                                if (!c.ended && !block) return bmds::makeResult<int32_t>(0);
+                                if (!c.ended && interruptWaits) return bmds::makeError<int32_t>(Error::Interrupted);
+                                status = c.status;
                                 children.erase(it);
                                 return bmds::makeResult(pid);
                         }
@@ -70,9 +79,34 @@ namespace {
                                 children.erase(pid);
                         }
 
-                        std::map<int32_t, Child> children;
-                        std::vector<int32_t>     disowned;
-                        bool                     interruptWaits = false;
+                        Error signal(int32_t target, int sig) override {
+                                signals.push_back({target, sig});
+                                // SIGCONT to a stopped job's group: what `fg` waits for next.
+                                if (sig == 18 && target < 0) {
+                                        auto it = children.find(-target);
+                                        if (it != children.end() && afterContinue != 0) {
+                                                it->second.change = afterContinue == -1 ? 0 : afterContinue;
+                                                if (afterContinue != -1 && (afterContinue & 0xff) != 0x7f) {
+                                                        it->second.ended = true;
+                                                        it->second.status = afterContinue;
+                                                        it->second.change = 0;
+                                                }
+                                        }
+                                }
+                                return Error::Ok;
+                        }
+
+                        Error setForeground(int32_t group) override {
+                                foregrounds.push_back(group);
+                                return Error::Ok;
+                        }
+
+                        std::map<int32_t, Child>             children;
+                        std::vector<int32_t>                 disowned;
+                        std::vector<std::pair<int32_t, int>> signals;
+                        std::vector<int32_t>                 foregrounds;
+                        bool                                 interruptWaits = false;
+                        int32_t afterContinue = 0; // what a continued job does next: a stop or an end
         };
 
         // Records each request; runs nothing, except kernel code a start names (a background
@@ -82,6 +116,14 @@ namespace {
                         bmds::Result<int> run(const Request &r) override {
                                 std::lock_guard<std::mutex> lock(_lock);
                                 calls.push_back(record(r));
+                                // Ctrl-Z while it runs: it stops, and stays the caller's child.
+                                if (stopNext && r.stopped != nullptr && process != nullptr) {
+                                        stopNext = false;
+                                        const int32_t pid = nextPid++;
+                                        process->children[pid] = FakeProcess::Child();
+                                        *r.stopped = pid;
+                                        return bmds::makeResult(128 + 20);
+                                }
                                 // Ctrl-C while it runs (the loader would send it SIGINT).
                                 if (pressCtrlC && r.interrupt != nullptr) r.interrupt->raise();
                                 // The program "writes" to its stdout.
@@ -100,6 +142,7 @@ namespace {
                                         c.waited = r.waited;
                                         c.subshell = r.builtin != nullptr;
                                         c.group = r.group != nullptr;
+                                        c.foreground = r.group != nullptr && r.group->foreground;
                                         calls.push_back(c);
                                         pid = nextPid++;
                                 }
@@ -116,6 +159,11 @@ namespace {
                                 context.data = r.data;
                                 const int code = r.builtin->program.main(context);
                                 if (process != nullptr && r.waited) process->children[pid] = {true, (code & 0xff) << 8};
+                                // Ctrl-Z while the subshell runs.
+                                if (process != nullptr && r.waited && stopNext) {
+                                        stopNext = false;
+                                        process->children[pid] = {false, 0, (20 << 8) | 0x7f};
+                                }
                                 return bmds::makeResult(pid);
                         }
 
@@ -130,11 +178,15 @@ namespace {
                                         bool                     waited = false;   // start(): the shell's child
                                         bool                     subshell = false; // start(): kernel code
                                         bool                     group = false;    // a group was named
+                                        bool                     foreground = false; // ... in the foreground
+                                        bool                     stoppable = false;  // run(): a stop ends the wait
+                                        bool                     ignoreStops = false;
                         };
                         std::vector<Call> calls;
                         int               status = 0;
                         Error             fail;
                         bool              pressCtrlC = false;
+                        bool              stopNext = false; // the next program (or subshell) stops
                         int32_t           nextPid = 100;
                         FakeProcess      *process = nullptr;
 
@@ -147,6 +199,8 @@ namespace {
                                 c.cwd.assign(r.cwd.data(), r.cwd.size());
                                 c.console = r.console;
                                 c.interrupt = r.interrupt;
+                                c.stoppable = r.stopped != nullptr;
+                                c.ignoreStops = r.ignoreStops;
                                 return c;
                         }
 
@@ -158,14 +212,12 @@ namespace {
         namespace T = bmds::TextCommands;
 
         constexpr bmds::Command Commands[] = {
-                {"[", "", "", L::test},          {"cd", "", "", F::cd},
-                {"command", "", "", L::command}, {"disown", "", "", L::disown},
-                {"echo", "", "", T::echo},       {"env", "", "", L::env},
-                {"exit", "", "", L::exitCmd},    {"export", "", "", L::exportCmd},
-                {"false", "", "", L::falseCmd},  {"jobs", "", "", L::jobs},
-                {"read", "", "", L::read},       {"sh", "", "", L::sh},
-                {"type", "", "", L::type},       {"wait", "", "", L::wait},
-                {"wc", "", "", T::wc},
+                {"[", "", "", L::test},          {"bg", "", "", L::bg},         {"cd", "", "", F::cd},
+                {"command", "", "", L::command}, {"disown", "", "", L::disown}, {"echo", "", "", T::echo},
+                {"env", "", "", L::env},         {"exit", "", "", L::exitCmd},  {"export", "", "", L::exportCmd},
+                {"false", "", "", L::falseCmd},  {"fg", "", "", L::fg},         {"jobs", "", "", L::jobs},
+                {"read", "", "", L::read},       {"sh", "", "", L::sh},         {"type", "", "", L::type},
+                {"wait", "", "", L::wait},       {"wc", "", "", T::wc},
         };
 
         int unusedMain(const bmds::BuiltinProgram::Context &) {
@@ -235,6 +287,12 @@ namespace {
                                 launcher.process = &process;
                                 shell->setProcess(&process);
                                 REQUIRE(shell->execute("PATH=.") == 0);
+                        }
+
+                        // An interactive shell's job control (devplan/processes.md §3.7.1).
+                        void beInteractive() {
+                                beProcess();
+                                shell->setJobControl(true);
                         }
 
                         const FakeLauncher::Call &last() {
@@ -577,4 +635,136 @@ TEST_CASE("Jobs: here-documents") {
               "a here-document after a background job (&) is not supported\n");
         // Inside the job's text, it is.
         CHECK(f.out("{ wc -l <<EOF\nhi\nEOF\n} &", 0) == "1\n");
+}
+
+TEST_CASE("Stopping: a foreground program that stops is a stopped job") {
+        Fixture f;
+        f.program("prog");
+        f.beInteractive();
+        f.launcher.stopNext = true;
+        // The rest of the command line goes (a loop ends).
+        CHECK(f.out("for i in 1 2 3; do prog $i; done; echo after", 148) ==
+              "^Z\n[1]+  Stopped                 prog 1\n");
+        CHECK(f.launcher.calls.size() == 1);
+        CHECK(f.out("echo after", 0) == "after\n");
+        CHECK(f.last().stoppable);
+        CHECK(f.out("jobs -l", 0) == "[1]+ 100 Stopped                 prog 1\n");
+        CHECK(f.out("echo $?", 0) == "0\n");
+        // Without job control a program can't be stopped this way.
+        f.shell->setJobControl(false);
+        CHECK(f.out("prog", 0) == "ran\n");
+        CHECK_FALSE(f.last().stoppable);
+}
+
+TEST_CASE("Stopping: fg continues a job in the foreground; bg in the background") {
+        Fixture f;
+        f.program("prog");
+        f.beInteractive();
+        f.launcher.stopNext = true;
+        CHECK(f.out("prog a", 148) == "^Z\n[1]+  Stopped                 prog a\n");
+        // It stops again: still a job.
+        f.process.afterContinue = (20 << 8) | 0x7f;
+        CHECK(f.out("fg", 148) == "prog a\n^Z\n[1]+  Stopped                 prog a\n");
+        REQUIRE(f.process.signals.size() == 1);
+        CHECK(f.process.signals[0] == std::pair<int32_t, int>{-100, 18});
+        CHECK(f.process.foregrounds == std::vector<int32_t>{100, 0});
+        // bg continues it in the background; once only.
+        f.process.afterContinue = -1;
+        CHECK(f.out("bg 1", 0) == "[1]+ prog a &\n"); // a bare number is a job number, as bash
+        CHECK(f.out("jobs", 0) == "[1]+  Running                 prog a &\n");
+        CHECK(f.out("bg", 0) == "bg: job 1 already in background\n");
+        // fg until it ends: its status, and the job is gone.
+        f.process.children[100].status = 3 << 8;
+        CHECK(f.out("fg %prog", 3) == "prog a\n");
+        CHECK(f.out("jobs", 0) == "");
+        CHECK(f.out("fg", 1) == "fg: current: no such job\n");
+        CHECK(f.out("bg %4", 1) == "bg: %4: no such job\n");
+        f.shell->setJobControl(false);
+        CHECK(f.out("fg", 1) == "fg: no job control\n");
+}
+
+TEST_CASE("Stopping: a pipeline ending in a program is one job, a subshell in the foreground") {
+        Fixture f;
+        f.program("prog");
+        f.beInteractive();
+        CHECK(f.out("echo hi | prog", 0) == "ran\n");
+        const FakeLauncher::Call &job = f.launcher.calls[f.launcher.calls.size() - 2];
+        CHECK(job.subshell);
+        CHECK(job.foreground);
+        CHECK(job.args == Args{"sh", "-c", "echo hi | prog"});
+        CHECK_FALSE(f.last().stoppable); // the subshell's own program: it has no job control
+        CHECK(f.process.foregrounds == std::vector<int32_t>{0});
+        // Its status, negated as the pipeline says.
+        CHECK(f.out("! echo hi | prog", 1) == "ran\n");
+        // It stops as a whole.
+        f.launcher.stopNext = true;
+        CHECK(f.out("echo a | prog", 148) == "ran\n^Z\n[1]+  Stopped                 echo a | prog\n");
+        // Ending in the shell's own code it runs here (lastpipe), and can't stop.
+        size_t calls = f.launcher.calls.size();
+        CHECK(f.out("echo hi | read x; echo $x", 0) == "hi\n");
+        CHECK(f.launcher.calls.size() == calls);
+        // So does one with a here-document whose body is outside its text.
+        CHECK(f.out("wc -l <<EOF | prog\na\nb\nEOF", 0) == "ran\n");
+        CHECK_FALSE(f.last().subshell);
+        CHECK(f.last().ignoreStops);
+}
+
+TEST_CASE("Stopping: command substitutions can't stop; stopped jobs are reported") {
+        Fixture f;
+        f.program("prog");
+        f.beInteractive();
+        f.launcher.stopNext = true;
+        CHECK(f.out("x=$(prog); echo $x", 0) == "ran\n");
+        CHECK_FALSE(f.last().stoppable);
+        CHECK(f.last().ignoreStops);
+        f.launcher.stopNext = false;
+        // A background job stopped by a read of the terminal is reported before the prompt.
+        CHECK(f.out("prog &", 0) == "[1] 100\n");
+        f.process.children[100].change = (21 << 8) | 0x7f;
+        f.shell->start();
+        CHECK(f.con.take().find("[1]+  Stopped(SIGTTIN)        prog\n") != std::string::npos);
+        f.shell->start();
+        CHECK(f.con.take().find("Stopped") == std::string::npos); // once
+}
+
+TEST_CASE("Stopping: exit with stopped jobs warns once") {
+        Fixture f;
+        f.program("prog");
+        f.beInteractive();
+        f.launcher.stopNext = true;
+        CHECK(f.out("prog", 148) == "^Z\n[1]+  Stopped                 prog\n");
+        CHECK(f.out("exit", 148) == "There are stopped jobs.\n");
+        CHECK(f.out("echo hi", 0) == "hi\n");
+        CHECK(f.out("exit", 0) == "There are stopped jobs.\n");
+        CHECK(f.out("exit", 0) == "");
+}
+
+TEST_CASE("Hangup: the shell's jobs are hung up, but not disowned ones") {
+        Fixture f;
+        f.program("prog");
+        f.beInteractive();
+        CHECK(f.out("prog &", 0) == "[1] 100\n");
+        CHECK(f.out("prog &", 0) == "[2] 101\n");
+        CHECK(f.out("prog &", 0) == "[3] 102\n");
+        f.launcher.stopNext = true;
+        CHECK(f.out("prog", 148) == "^Z\n[4]+  Stopped                 prog\n");
+        CHECK(f.out("disown -h %1", 0) == "");
+        CHECK(f.out("disown 2", 0) == "");
+        CHECK(f.out("jobs", 0) == "[1]   Running                 prog &\n[3]-  Running                 prog &\n"
+                                  "[4]+  Stopped                 prog\n");
+        CHECK(f.out("disown -x", Shell::ExitUsage) == "usage: disown\n");
+        f.shell->state().jobs.hangUp();
+        // SIGHUP to job 3's group; SIGHUP then SIGCONT to job 4's (stopped).
+        CHECK(f.process.signals == std::vector<std::pair<int32_t, int>>{{-102, 1}, {-103, 1}, {-103, 18}});
+}
+
+TEST_CASE("Stopping: disowning a stopped job warns") {
+        Fixture f;
+        f.program("prog");
+        f.beInteractive();
+        f.launcher.stopNext = true;
+        CHECK(f.out("prog", 148) == "^Z\n[1]+  Stopped                 prog\n");
+        CHECK(f.out("disown", 0) == "disown: warning: deleting stopped job 1 with process group 100\n");
+        CHECK(f.process.disowned == std::vector<int32_t>{100});
+        CHECK(f.out("jobs", 0) == "");
 }

@@ -121,6 +121,7 @@ ColorDepth CommandContext::colorDepth() {
 }
 
 bool CommandContext::isInterrupted() const {
+        _shell.interrupt().park(); // a stopped shell process stops here (devplan/processes.md §3.7.1)
         return _outputBroken || _shell.interrupt().isRaised();
 }
 

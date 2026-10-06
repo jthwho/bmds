@@ -26,24 +26,70 @@ namespace {
 
 Signals::Posted Signals::post(int sig, int code) {
         const uint32_t b = bit(sig);
-        if ((_ignored.load() & b) != 0) return Posted::Dropped;
-        if ((_interrupting.load() & b) != 0) {
-                _interrupt.raise();
-                return Posted::Taken;
+        // SIGCONT continues whatever its action; it and the stop signals cancel each other's
+        // pending ones; SIGKILL continues a stopped process to end it.
+        if (sig == BMDS_SIGCONT) {
+                _pending.fetch_and(~StopSignals);
+                const bool   continued = resume();
+                const Posted posted = deliver(sig, code);
+                return continued ? Posted::Continue : posted;
         }
-        if ((_caught.load() & b) == 0 && !endsByDefault(sig)) return Posted::Dropped;
+        if ((b & StopSignals) != 0) _pending.fetch_and(~bit(BMDS_SIGCONT));
+        if (sig == BMDS_SIGKILL && _stopped.load()) {
+                // Pending before the continue, so its waiters wake to it (resume() raises).
+                markPending(b, code);
+                (void)resume();
+                return Posted::Terminate;
+        }
+        return deliver(sig, code);
+}
+
+void Signals::markPending(uint32_t b, int code) {
         if (code == BMDS_SI_KERNEL) {
                 _kernelSent.fetch_or(b);
         } else {
                 _kernelSent.fetch_and(~b);
         }
         _pending.fetch_or(b);
+        return;
+}
+
+Signals::Posted Signals::deliver(int sig, int code) {
+        const uint32_t b = bit(sig);
+        if ((_ignored.load() & b) != 0) return Posted::Dropped;
+        if ((_interrupting.load() & b) != 0) {
+                _interrupt.raise();
+                return Posted::Taken;
+        }
+        const bool caught = (_caught.load() & b) != 0;
+        if (!caught && !endsByDefault(sig) && (b & StopSignals) == 0) return Posted::Dropped;
+        // A stop signal stops at once unless blocked (then at its unblocking: stopSignal()).
+        if (!caught && (b & StopSignals) != 0 && (_blocked.load() & b) == 0)
+                return stop() ? Posted::Stop : Posted::Dropped;
+        markPending(b, code);
         if (ending() != 0) {
                 _interrupt.raise();
                 return Posted::Terminate;
         }
         if ((dueCaught() & b) != 0) _interrupt.raise();
         return Posted::Pending;
+}
+
+bool Signals::stop() {
+        bool running = false;
+        if (!_stopped.compare_exchange_strong(running, true)) return false;
+        _interrupt.hold();
+        return true;
+}
+
+bool Signals::resume() {
+        bool stopped = true;
+        if (!_stopped.compare_exchange_strong(stopped, false)) return false;
+        // What came while it was stopped acts now: raised before its waiters go on, so none of
+        // them misses it (and, say, reads the terminal again).
+        if (ending() != 0 || dueCaught() != 0) _interrupt.raise();
+        _interrupt.resume();
+        return true;
 }
 
 Signals::Action Signals::action(int sig) const {
@@ -90,8 +136,15 @@ void Signals::setBlocked(uint32_t set) {
 }
 
 uint32_t Signals::ending() const {
+        // Nothing ends a stopped process but SIGKILL, which continues it first.
+        if (_stopped.load()) return 0;
         const uint32_t live = _pending.load() & ~_blocked.load();
-        return live & ~_caught.load() & ~_ignored.load() & ~DroppedByDefault;
+        return live & ~_caught.load() & ~_ignored.load() & ~DroppedByDefault & ~StopSignals;
+}
+
+int Signals::stopSignal() const {
+        const uint32_t live = _pending.load() & ~_blocked.load() & StopSignals;
+        return lowest(live & ~_caught.load() & ~_ignored.load() & ~_interrupting.load());
 }
 
 int Signals::terminateSignal() const {
@@ -103,6 +156,7 @@ Signals::Taken Signals::take() {
         Taken          taken;
         const uint32_t live = _pending.load() & ~_blocked.load();
         const uint32_t caught = _caught.load();
+        if (_stopped.load()) return taken;
         const uint32_t dropped = live & (_ignored.load() | (DroppedByDefault & ~caught));
         if (dropped != 0) _pending.fetch_and(~dropped);
         if (const int sig = terminateSignal(); sig != 0) {
@@ -133,6 +187,7 @@ void Signals::inherit(const Signals &parent) {
         _blocked.store(parent._blocked.load());
         _pending.store(0);
         _kernelSent.store(0);
+        _stopped.store(false);
         return;
 }
 

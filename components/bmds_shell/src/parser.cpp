@@ -119,6 +119,9 @@ namespace {
                         // Here-documents whose bodies are still to come (at the next newline).
                         unsigned pendingHereDocs() const { return _hereCount; }
 
+                        // Here-documents seen so far.
+                        unsigned hereDocsSeen() const { return _hereSeen; }
+
                         void reset(size_t pos) {
                                 _pos = pos;
                                 return;
@@ -166,6 +169,7 @@ namespace {
                         Error addHereDoc(Redirection *r, const Token &delimiter) {
                                 if (_hereCount == MaxHereDocs) return fail("too many here-documents", StringView());
                                 HereDoc &h = _hereDocs[_hereCount++];
+                                ++_hereSeen;
                                 h.redir = r;
                                 h.quoted = delimiter.word->hasQuotes;
                                 const Word *w = delimiter.word;
@@ -764,6 +768,7 @@ namespace {
                         Arena       &_arena;
                         SyntaxError &_error;
                         HereDoc      _hereDocs[MaxHereDocs];
+                        unsigned     _hereSeen = 0;
                         unsigned     _hereCount = 0;
         };
 
@@ -1004,7 +1009,11 @@ class ParserImpl {
                                 (void)take();
                                 negated = true;
                         }
-                        Node *first = parseCommand();
+                        const Token &head = peek(true);
+                        if (head.kind == Tok::Error) return nullptr;
+                        const size_t   start = head.start;
+                        const unsigned hereDocs = _lex.hereDocsSeen();
+                        Node          *first = parseCommand();
                         if (first == nullptr) return nullptr;
                         Node  *tail = first;
                         size_t count = 1;
@@ -1025,6 +1034,8 @@ class ParserImpl {
                         if (p == nullptr) return nullptr;
                         p->commands = first;
                         p->negated = negated;
+                        p->source = _p._source.mid(start, _lastEnd - start);
+                        p->hasHereDoc = _lex.hereDocsSeen() != hereDocs;
                         return p;
                 }
 

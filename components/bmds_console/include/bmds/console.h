@@ -39,15 +39,17 @@ BMDS_NAMESPACE_BEGIN
  * A console is a `Stream` (it is what fds 0/1/2 refer to in an
  * interactive shell) and a controlling terminal (devplan/processes.md
  * §3.6): it has a session and a foreground process group, opaque ids the
- * process manager sets. With `TermMode::signals` set, a Ctrl-C or Ctrl-\
- * byte in the input is not queued but sends `SIGINT` or `SIGQUIT`, straight
- * from the receive path, so it stops a running command even when nothing
- * is reading input; a size change sends `SIGWINCH`, a hangup `SIGHUP`. A
- * signal sent is added to the console's set and the signal hook is called,
- * which delivers the set to the foreground group (`SIGHUP`: the session).
- * Without a hook, Ctrl-C raises `interrupt()` instead. Like every stream,
- * a `read()` waits through the calling task's interrupt
- * (`Interrupt::current()`).
+ * process manager sets. With `TermMode::signals` set, a Ctrl-C, Ctrl-\ or
+ * Ctrl-Z byte in the input is not queued but sends `SIGINT`, `SIGQUIT` or
+ * `SIGTSTP`, straight from the receive path, so it stops a running command
+ * even when nothing is reading input; a size change sends `SIGWINCH`, a
+ * hangup `SIGHUP`. A signal sent is added to the console's set and the
+ * signal hook is called, which delivers the set to the foreground group
+ * (`SIGHUP`: the session). Without a hook, Ctrl-C raises `interrupt()`
+ * instead. Like every stream, a `read()` waits through the calling task's
+ * interrupt (`Interrupt::current()`); while the console has a session, it
+ * first asks the read hook whether the caller may read (a background
+ * process gets `SIGTTIN`, devplan/processes.md §3.7.1).
  *
  * For `poll`, a console is readable while input is waiting (the terminal's
  * size answer, which `read()` takes out, counts until then) and always
@@ -71,7 +73,8 @@ class Console : public Stream {
 
                 /** @brief Terminal modes ("termios-lite"). */
                 struct TermMode {
-                                bool signals = true; ///< Ctrl-C and Ctrl-\ send signals instead of being read (ISIG).
+                                bool signals =
+                                        true; ///< Ctrl-C, Ctrl-\, Ctrl-Z send signals instead of being read (ISIG).
                                 bool nlToCrNl =
                                         true; ///< Output `\n` is sent as CR LF where the terminal needs it (ONLCR).
                                 bool colors = true; ///< Output SGR colors are fitted to `colorDepth()`.
@@ -85,6 +88,7 @@ class Console : public Stream {
                 static constexpr int SignalHangUp = 1;        ///< `SIGHUP`: the terminal went.
                 static constexpr int SignalInterrupt = 2;     ///< `SIGINT`: Ctrl-C.
                 static constexpr int SignalQuit = 3;          ///< `SIGQUIT`: Ctrl-\.
+                static constexpr int SignalSuspend = 20;      ///< `SIGTSTP`: Ctrl-Z.
                 static constexpr int SignalWindowChange = 28; ///< `SIGWINCH`: a new size.
 
                 /**
@@ -96,6 +100,29 @@ class Console : public Stream {
 
                 /** @brief Installs the signal hook (null: none, Ctrl-C raises `interrupt()`). */
                 static void setSignalHook(SignalHook hook);
+
+                /**
+                 * @brief Says whether the calling task may read a console that has a
+                 *        session; installed by the process manager. It may wait (a
+                 *        stopped reader parks in it).
+                 * @return `Ok`, or the read's error (`IoError`, `Interrupted`).
+                 */
+                using ReadHook = Error (*)(Console &console);
+
+                /** @brief Installs the read hook (null: every task may read). */
+                static void setReadHook(ReadHook hook);
+
+                /**
+                 * @brief Returns the signal a byte typed sends with `TermMode::signals`
+                 *        (Ctrl-C, Ctrl-\, Ctrl-Z), or 0.
+                 * @isrsafe
+                 */
+                static constexpr int signalFor(uint8_t byte) {
+                        return byte == 0x03   ? SignalInterrupt
+                               : byte == 0x1c ? SignalQuit
+                               : byte == 0x1a ? SignalSuspend
+                                              : 0;
+                }
 
                 /** @brief Terminal size in character cells. */
                 struct Size {
@@ -369,7 +396,8 @@ class Console : public Stream {
                 }
 
         private:
-                void signal(int sig, bool fromIsr);
+                void  signal(int sig, bool fromIsr);
+                Error admitReader();
 
                 Interrupt             _interrupt;
                 Interrupt             _resized;

@@ -51,14 +51,21 @@ struct ShellOptions {
                 bool noclobber = false; ///< `-C`: `>` doesn't overwrite an existing file (`>|` does).
 };
 
-/** @brief A background job: what `&` started (devplan/processes.md §3.8.1). */
+/**
+ * @brief A job: what `&` started, or a foreground job that stopped
+ *        (devplan/processes.md §3.8.1, §3.7.1).
+ */
 struct Job {
-                int     number = 0;    ///< `%N`
-                int32_t pid = 0;       ///< Its process, which leads its group.
-                String  command;       ///< As typed.
-                bool    ended = false; ///< Ended and taken (`status` is how).
-                int     status = 0;    ///< Once ended: the exit status, or 128 + the signal.
-                int     signal = 0;    ///< Once ended: the signal that ended it (0: it exited).
+                int     number = 0;           ///< `%N`
+                int32_t pid = 0;              ///< Its process, which leads its group.
+                String  command;              ///< As typed.
+                bool    ended = false;        ///< Ended and taken (`status` is how).
+                bool    stopped = false;      ///< Stopped (`stopSignal` by), until continued.
+                bool    notify = false;       ///< Stopped meanwhile: to report before the prompt.
+                bool    keepOnHangUp = false; ///< `disown -h`: not hung up with the shell.
+                int     status = 0;           ///< Once ended: the exit status, or 128 + the signal.
+                int     signal = 0;           ///< Once ended: the signal that ended it (0: it exited).
+                int     stopSignal = 0;       ///< While stopped: the signal that stopped it.
 };
 
 /**
@@ -92,8 +99,28 @@ class JobTable {
                  */
                 Job *add(ProcessControl &process, int32_t pid, StringView command);
 
-                /** @brief Takes the ends of jobs that have ended (not blocking). */
+                /** @brief Takes the ends, stops and continues of jobs (not blocking). */
                 void poll();
+
+                /**
+                 * @brief Gives @p job the terminal, continues it if stopped, and waits
+                 *        until it ends or stops (`fg`); the terminal is the shell's again.
+                 * @return `Ok`, or `Interrupted` (the process's interrupt).
+                 * @blocking
+                 */
+                Error foreground(Job &job);
+
+                /** @brief Continues @p job in the background (`bg`); false if it wasn't stopped. */
+                bool continueJob(Job &job);
+
+                /** @brief Returns true if a job is stopped. */
+                bool hasStopped() const;
+
+                /**
+                 * @brief The shell's terminal went: `SIGHUP` to each job's group (and
+                 *        `SIGCONT` to a stopped one), except those kept (`disown -h`).
+                 */
+                void hangUp();
 
                 /**
                  * @brief Waits for @p job to end and takes it.
@@ -125,7 +152,8 @@ class JobTable {
 
                 /**
                  * @brief Appends how @p job stands, as bash's `jobs` puts it: `Running`, `Done`,
-                 *        `Exit N`, or the signal (`Terminated`, `Killed`...).
+                 *        `Exit N`, the signal (`Terminated`, `Killed`...), `Stopped`
+                 *        (`Stopped(SIGTTIN)` for a stop signal other than `SIGTSTP`).
                  */
                 static void appendState(const Job &job, String &out);
 
@@ -417,6 +445,9 @@ class Executor {
                 int            runCase(const CaseNode *n);
                 int            runSubshell(const Node *body);
                 int            runBackground(const BackgroundNode *n);
+                int            runForegroundJob(const PipelineNode *p);
+                int            stoppedJob(int32_t pid, StringView command, int status);
+                bool           hasJobControl() const;
                 bool           isLoneProgram(const Node *n);
                 int            runCommand(List<String> &args, const Redirection *redirects);
                 int            callFunction(const ShellFunction &fn, List<String> &args);
@@ -455,6 +486,7 @@ class Executor {
                 bool             _overflowed = false; // ran out of stack: abandon everything
                 ProgramLauncher::JobGroup *_job = nullptr;      // the pipeline's job (interactive), if any
                 int32_t                   *_starting = nullptr; // runProgram() starts the program, its pid here (`&`)
+                bool             _noJobs = false; // no job control here (a command substitution): programs can't stop
                 int              _errorStatus = 1;    // status of the last fatal expansion error
 };
 

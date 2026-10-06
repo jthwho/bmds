@@ -45,7 +45,9 @@ namespace LangBuiltins {
         int sh(CommandContext &ctx);          ///< `sh [-c command [name] | file] [arg]...`
         int jobs(CommandContext &ctx);        ///< `jobs [-l | -p]`
         int wait(CommandContext &ctx);        ///< `wait [%N | pid]...`
-        int disown(CommandContext &ctx);      ///< `disown [-a | %N...]`
+        int disown(CommandContext &ctx);      ///< `disown [-h] [-a | %N...]`
+        int fg(CommandContext &ctx);          ///< `fg [%N]`
+        int bg(CommandContext &ctx);          ///< `bg [%N...]`
 
 } // namespace LangBuiltins
 

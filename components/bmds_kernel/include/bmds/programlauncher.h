@@ -84,12 +84,29 @@ class ProgramLauncher {
                                 const ProgramEntry *builtin = nullptr;
                                 /** @brief `builtin`'s `Context::data`: its own once it starts. */
                                 void *data = nullptr;
+                                /**
+                                 * @brief `run()`: also return when the program stops (a shell's
+                                 *        foreground job, devplan/processes.md §3.7.1), its pid
+                                 *        stored here; null: a stop is waited out.
+                                 */
+                                int32_t *stopped = nullptr;
+                                /**
+                                 * @brief The stop signals are ignored in the new process (what
+                                 *        a shell runs without job control in a job-control
+                                 *        shell: a command substitution's programs).
+                                 */
+                                bool ignoreStops = false;
                 };
 
                 /**
                  * @brief Runs the program in @p request and waits for it to end.
                  *
                  * Problems are reported on the request's stderr, as `path: reason`.
+                 *
+                 * With `stopped`, a program that stops ends the wait too: its pid is
+                 * stored there, the terminal goes back to the caller's group with
+                 * the caller's modes, and it stays the caller's child (taken with
+                 * `ProcessControl::waitChild()`); the status is 128 + the signal.
                  *
                  * @return The exit status (0-255), or the error: `NotExist` (no such
                  *         file), `IsDir`, `NotSupported` (not a program it can run),
@@ -147,20 +164,43 @@ class ProcessControl {
                 /** @brief Returns true once the process is being ended (a signal, a kill): stop. */
                 virtual bool isEnding() const = 0;
 
+                /** @brief `waitChild()` flags. */
+                enum WaitFlag : uint32_t {
+                        WaitBlock = 1u << 0,     ///< Wait for it (the process's interrupt stops the wait).
+                        WaitStopped = 1u << 1,   ///< Also take a stop (once per stop).
+                        WaitContinued = 1u << 2, ///< Also take a continue (once).
+                };
+
                 /**
-                 * @brief Takes the end of child @p pid, one started with `waited`.
+                 * @brief Takes the end (or with @p flags a stop or continue) of child
+                 *        @p pid, one started with `waited` or kept by a stop.
                  * @param pid    The child.
-                 * @param block  Wait until it ends (the process's interrupt stops the wait).
-                 * @param status [out] How it ended, when taken: a wait status
-                 *               (Linux's layout, as `proc_wait` gives it).
-                 * @return Its pid once taken; 0 if it hasn't ended (not blocking);
+                 * @param flags  `WaitFlag`s.
+                 * @param status [out] What happened, when taken: a wait status
+                 *               (Linux's layout, as `proc_wait` gives it: `0x7f |
+                 *               sig << 8` stopped, `0xffff` continued).
+                 * @return Its pid once taken; 0 if nothing happened (not blocking);
                  *         `NotExist` (not a child, or already taken), `Interrupted`.
-                 * @blocking With @p block.
+                 * @blocking With `WaitBlock`.
                  */
-                virtual Result<int32_t> waitChild(int32_t pid, bool block, int32_t &status) = 0;
+                virtual Result<int32_t> waitChild(int32_t pid, uint32_t flags, int32_t &status) = 0;
 
                 /** @brief Leaves child @p pid to end on its own: freed when it ends, not kept. */
                 virtual void disownChild(int32_t pid) = 0;
+
+                /**
+                 * @brief Sends @p sig to process @p target, or to group `-target`
+                 *        (`kill()`).
+                 * @return `Ok`, `NotExist` (none), `PermissionDenied`, `Invalid`.
+                 */
+                virtual Error signal(int32_t target, int sig) = 0;
+
+                /**
+                 * @brief Gives the process's terminal to group @p group of its session
+                 *        (0: the process's own), as `tcsetpgrp()`.
+                 * @return `Ok`, or `NotSupported` (no terminal it controls), `PermissionDenied`.
+                 */
+                virtual Error setForeground(int32_t group) = 0;
 
         protected:
                 ~ProcessControl() = default;

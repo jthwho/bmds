@@ -141,6 +141,79 @@ TEST_CASE("Signals: the Interrupt action raises the interrupt, nothing pending")
         CHECK(s.action(BMDS_SIGTERM) == Action::Default);
 }
 
+TEST_CASE("Signals: stop signals stop, SIGCONT continues") {
+        Signals s;
+        CHECK(Signals::stopsByDefault(BMDS_SIGTSTP));
+        CHECK(Signals::stopsByDefault(BMDS_SIGSTOP));
+        CHECK_FALSE(Signals::stopsByDefault(BMDS_SIGCONT));
+        CHECK_FALSE(Signals::endsByDefault(BMDS_SIGCONT));
+
+        // SIGCONT to a running process is dropped.
+        CHECK(s.post(BMDS_SIGCONT, BMDS_SI_USER) == Posted::Dropped);
+        CHECK(s.post(BMDS_SIGTSTP, BMDS_SI_KERNEL) == Posted::Stop);
+        CHECK(s.isStopped());
+        CHECK(s.interrupt().isHeld());
+        CHECK(s.pending() == 0);
+        // Stopped already: nothing more to do.
+        CHECK(s.post(BMDS_SIGSTOP, BMDS_SI_USER) == Posted::Dropped);
+        // Other signals wait for the continue; nothing is due meanwhile.
+        CHECK(s.post(BMDS_SIGTERM, BMDS_SI_USER) == Posted::Pending);
+        CHECK(s.terminateSignal() == 0);
+        CHECK_FALSE(s.isDue());
+        CHECK(s.take().signal == 0);
+        CHECK(s.post(BMDS_SIGCONT, BMDS_SI_USER) == Posted::Continue);
+        CHECK_FALSE(s.isStopped());
+        CHECK_FALSE(s.interrupt().isHeld());
+        CHECK(s.terminateSignal() == BMDS_SIGTERM);
+        CHECK(s.interrupt().isRaised());
+}
+
+TEST_CASE("Signals: SIGKILL ends a stopped process; ignored and caught stop signals") {
+        Signals s;
+        CHECK(s.post(BMDS_SIGTTIN, BMDS_SI_KERNEL) == Posted::Stop);
+        CHECK(s.post(BMDS_SIGKILL, BMDS_SI_USER) == Posted::Terminate);
+        CHECK_FALSE(s.isStopped());
+        CHECK_FALSE(s.interrupt().isHeld());
+        CHECK(s.terminateSignal() == BMDS_SIGKILL);
+
+        Signals t;
+        CHECK(t.setAction(BMDS_SIGTSTP, Action::Ignore));
+        CHECK(t.post(BMDS_SIGTSTP, BMDS_SI_KERNEL) == Posted::Dropped);
+        CHECK_FALSE(t.isStopped());
+        CHECK_FALSE(t.setAction(BMDS_SIGSTOP, Action::Ignore));
+        CHECK(t.setAction(BMDS_SIGTTOU, Action::Catch));
+        CHECK(t.post(BMDS_SIGTTOU, BMDS_SI_USER) == Posted::Pending);
+        CHECK_FALSE(t.isStopped());
+        CHECK(t.take().signal == BMDS_SIGTTOU);
+
+        // A caught SIGCONT continues and is pending for its handler.
+        CHECK(t.setAction(BMDS_SIGCONT, Action::Catch));
+        CHECK(t.post(BMDS_SIGSTOP, BMDS_SI_USER) == Posted::Stop);
+        CHECK(t.post(BMDS_SIGCONT, BMDS_SI_USER) == Posted::Continue);
+        CHECK(t.take().signal == BMDS_SIGCONT);
+}
+
+TEST_CASE("Signals: a blocked stop signal waits; SIGCONT and stops cancel each other") {
+        Signals s;
+        s.setBlocked(Signals::bit(BMDS_SIGTSTP) | Signals::bit(BMDS_SIGSTOP));
+        CHECK(s.blocked() == Signals::bit(BMDS_SIGTSTP)); // SIGSTOP can't be blocked
+        CHECK(s.post(BMDS_SIGTSTP, BMDS_SI_KERNEL) == Posted::Pending);
+        CHECK_FALSE(s.isStopped());
+        CHECK(s.stopSignal() == 0); // still blocked
+        s.setBlocked(0);
+        CHECK(s.stopSignal() == BMDS_SIGTSTP);
+        CHECK(s.stopWith(BMDS_SIGTSTP));
+        CHECK(s.isStopped());
+        CHECK(s.pending() == 0);
+        CHECK(s.post(BMDS_SIGCONT, BMDS_SI_USER) == Posted::Continue);
+
+        // SIGCONT drops a pending stop signal.
+        s.setBlocked(Signals::bit(BMDS_SIGTTIN));
+        CHECK(s.post(BMDS_SIGTTIN, BMDS_SI_KERNEL) == Posted::Pending);
+        CHECK(s.post(BMDS_SIGCONT, BMDS_SI_USER) == Posted::Dropped);
+        CHECK(s.pending() == 0);
+}
+
 TEST_CASE("Signals: exec and vfork children") {
         Signals parent;
         CHECK(parent.setAction(BMDS_SIGUSR1, Action::Catch));

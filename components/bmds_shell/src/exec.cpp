@@ -258,8 +258,12 @@ int Executor::runProgram(StringView path, List<String> &args) {
         request.interrupt = &_shell.interrupt();
         request.console = &_shell.console();
         // An interactive shell's programs are jobs: a pipeline's share one (devplan/processes.md §3.6.1).
+        // One that stops becomes a stopped job; where there is no job control it can't stop (§3.7.1).
         ProgramLauncher::JobGroup own;
+        int32_t                   stopped = 0;
         if (_shell.hasJobControl()) request.group = _job != nullptr ? _job : &own;
+        if (hasJobControl()) request.stopped = &stopped;
+        request.ignoreStops = _shell.hasJobControl() && _noJobs;
         if (_starting != nullptr) {
                 // `&`: started as a job of its own (a group of its own), not waited for.
                 int32_t *const started = _starting;
@@ -275,6 +279,14 @@ int Executor::runProgram(StringView path, List<String> &args) {
         }
         const uint32_t raises = _shell.interrupt().raises();
         auto [status, lerr] = _shell.launcher()->run(request);
+        if (lerr.isOk() && stopped != 0) {
+                String command;
+                for (const String &a : args) {
+                        if (!command.isEmpty()) (void)command.append(' ');
+                        (void)command.append(a);
+                }
+                return stoppedJob(stopped, command, status);
+        }
         // Ctrl-C sent the program SIGINT. If that didn't end it (caught or
         // ignored), the shell goes on with the commands after it, as bash does.
         if (lerr.isOk() && status != Shell::ExitInterrupted && _shell.interrupt().raises() != raises && raises == 0)

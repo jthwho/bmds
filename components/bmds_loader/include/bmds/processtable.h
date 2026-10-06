@@ -34,7 +34,9 @@ BMDS_NAMESPACE_BEGIN
  *
  * Each entry has the semaphore to release when it ends (its parent's, for
  * waiting) and an opaque pointer for its runner (the loader's running
- * program).
+ * program). A process that stops or continues is reported to its parent
+ * the same way (the semaphore), until the parent takes it with `reap()`
+ * (devplan/processes.md §3.7.1).
  *
  * @par Thread Safety
  * Thread-safe. One lock covers every method; the `forEach` methods and
@@ -68,6 +70,21 @@ class ProcessTable {
 
                 /** @brief The wait status of a process killed by signal @p signal. */
                 static constexpr int32_t killedStatus(int32_t signal) { return signal & 0x7f; }
+
+                /** @brief The wait status of a process stopped by signal @p signal. */
+                static constexpr int32_t stoppedStatus(int32_t signal) { return ((signal & 0xff) << 8) | 0x7f; }
+
+                /** @brief The wait status of a process that continued. */
+                static constexpr int32_t ContinuedStatus = 0xffff;
+
+                /** @brief Returns true if @p status is `stoppedStatus()`'s. */
+                static constexpr bool isStoppedStatus(int32_t status) { return (status & 0xff) == 0x7f; }
+
+                /** @brief `reap()` flags. */
+                enum ReapFlag : uint32_t {
+                        ReapStopped = 1u << 0,   ///< Also a child that stopped (once per stop).
+                        ReapContinued = 1u << 1, ///< Also a child that continued (once).
+                };
 
                 ProcessTable() = default;
                 ~ProcessTable();
@@ -132,11 +149,31 @@ class ProcessTable {
                 void exited(int32_t pid, int32_t status);
 
                 /**
-                 * @brief Frees an ended child of @p parent: @p pid, or any if -1.
-                 * @return The child, `WouldBlock` (matching children, none ended yet),
-                 *         or `NotExist` (no such child).
+                 * @brief Records that @p pid stopped (by @p signal) or, with 0, continued:
+                 *        its parent is told (its semaphore) until it `reap()`s it.
+                 * @return Its parent (to send `SIGCHLD`), or 0 (none, or not running).
                  */
-                Result<Ended> reap(int32_t parent, int32_t pid);
+                int32_t setStopped(int32_t pid, int signal);
+
+                /** @brief Returns true if @p pid is stopped. */
+                bool isStopped(int32_t pid);
+
+                /**
+                 * @brief Puts @p parent's stopped children in @p out (as many as fit).
+                 * @return How many there are.
+                 */
+                size_t stoppedChildren(int32_t parent, int32_t *out, size_t capacity);
+
+                /** @brief Changes the semaphore released when @p pid ends, stops or continues. */
+                void setNotify(int32_t pid, Semaphore *notify);
+
+                /**
+                 * @brief Frees an ended child of @p parent: @p pid, or any if -1; with
+                 *        @p flags (`ReapFlag`), takes a stop or continue instead.
+                 * @return The child (its status says which), `WouldBlock` (matching
+                 *         children, none to take yet), or `NotExist` (no such child).
+                 */
+                Result<Ended> reap(int32_t parent, int32_t pid, uint32_t flags = 0);
 
                 /** @brief Returns @p pid's parent: an id, `KernelParent`, or 0 (none, or no such process). */
                 int32_t parentOf(int32_t pid);
@@ -195,6 +232,7 @@ class ProcessTable {
                                 int32_t status;  ///< How it ended (a zombie).
                                 void   *runtime; ///< Its runner's object (running only; may be null).
                                 bool    ended;   ///< A zombie.
+                                bool    stopped; ///< Stopped.
                 };
 
                 /**
@@ -215,7 +253,7 @@ class ProcessTable {
                                 if (next == nullptr) return;
                                 last = next->pid;
                                 fn(View{next->pid, next->parent, next->group, next->session, next->status,
-                                        next->ended ? nullptr : next->runtime, next->ended});
+                                        next->ended ? nullptr : next->runtime, next->ended, next->stopped});
                         }
                 }
 
@@ -249,7 +287,9 @@ class ProcessTable {
                                 int32_t    status;
                                 Semaphore *notify;
                                 void      *runtime;
+                                int32_t    change; // a stop or continue to report (its status), or 0
                                 bool       ended;
+                                bool       stopped;
                 };
 
                 Entry *find(int32_t pid);

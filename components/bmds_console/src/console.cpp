@@ -63,12 +63,23 @@ namespace {
         }
 
         constinit std::atomic<Console::SignalHook> signalHook{nullptr};
+        constinit std::atomic<Console::ReadHook>   readHook{nullptr};
 
 } // namespace
 
 void Console::setSignalHook(SignalHook hook) {
         signalHook.store(hook);
         return;
+}
+
+void Console::setReadHook(ReadHook hook) {
+        readHook.store(hook);
+        return;
+}
+
+Error Console::admitReader() {
+        const ReadHook hook = readHook.load();
+        return hook != nullptr && _session.load() != 0 ? hook(*this) : Error(Error::Ok);
 }
 
 void Console::signal(int sig, bool fromIsr) {
@@ -164,6 +175,7 @@ Result<size_t> Console::filter(WritableByteSpan buf, size_t n) {
 
 Result<size_t> Console::read(WritableByteSpan buf, unsigned int timeoutMs) {
         if (buf.isEmpty()) return makeError<size_t>(Error::Invalid);
+        if (const Error err = admitReader(); err.isError()) return makeError<size_t>(err);
         if (size_t n = drainHeld(buf); n > 0) return makeResult(n);
         // No answer expected: the device's input as it is.
         if (_requestDeadlineUs.load(std::memory_order_relaxed) == 0 && _heldCount == 0)
@@ -198,6 +210,7 @@ Result<size_t> Console::read(WritableByteSpan buf, unsigned int timeoutMs) {
 
 Result<size_t> Console::tryRead(WritableByteSpan buf) {
         if (buf.isEmpty()) return makeError<size_t>(Error::Invalid);
+        if (const Error err = admitReader(); err.isError()) return makeError<size_t>(err);
         if (size_t n = drainHeld(buf); n > 0) return makeResult(n);
         if (_requestDeadlineUs.load(std::memory_order_relaxed) == 0 && _heldCount == 0) return tryReadInput(buf);
         for (;;) {

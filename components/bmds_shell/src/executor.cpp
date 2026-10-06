@@ -30,6 +30,7 @@ namespace {
 
         constexpr StringView ShellName = "bmds";
         constexpr StringView DefaultIfs = " \t\n";
+        constexpr int        SigTstp = 20; // Ctrl-Z
 
         // Stack the executor's callers use above the point where it starts
         // measuring (the shell's read loop and line editor).
@@ -611,7 +612,7 @@ Executor::Executor(Shell &shell, ShellState &state, FdTable &fds, size_t stackBy
 Executor::Executor(Executor &parent, ShellState &state, FdTable &fds)
     : _shell(parent._shell), _state(state), _fds(&fds), _ownArena(MemSpace::Psram, 4096), _arena(parent._arena),
       _stackBase(parent._stackBase), _stackBudget(parent._stackBudget), _loopDepth(parent._loopDepth),
-      _callDepth(parent._callDepth), _sourceDepth(parent._sourceDepth), _job(parent._job) {}
+      _callDepth(parent._callDepth), _sourceDepth(parent._sourceDepth), _job(parent._job), _noJobs(parent._noJobs) {}
 
 // The real stack position. (Not the address of a local: sanitizers may
 // put locals on a separate "fake stack".)
@@ -635,6 +636,7 @@ void Executor::inheritAbort(const Executor &child) {
 }
 
 bool Executor::interrupted() {
+        _shell.interrupt().park(); // a stopped shell process stops here (devplan/processes.md §3.7.1)
         if (!_shell.interrupt().isRaised()) return false;
         setFlow(Flow::Interrupt);
         return true;
@@ -934,9 +936,12 @@ int Executor::runBackground(const BackgroundNode *n) {
                 return finish(Shell::ExitFailure, false);
         }
         _state.jobs.poll();
+        // With job control it reads the terminal (and is stopped by SIGTTIN if it does), as in bash.
         FdTable fds = *_fds;
-        auto [null, nerr] = Vfs::open("/dev/null", Vfs::Read, vfs());
-        if (nerr.isOk()) (void)fds.set(FdTable::Stdin, std::move(null));
+        if (!hasJobControl()) {
+                auto [null, nerr] = Vfs::open("/dev/null", Vfs::Read, vfs());
+                if (nerr.isOk()) (void)fds.set(FdTable::Stdin, std::move(null));
+        }
         int32_t pid = 0;
         if (isLoneProgram(n->body)) {
                 FdTable *saved = _fds;
@@ -952,7 +957,7 @@ int Executor::runBackground(const BackgroundNode *n) {
                 report("a here-document after a background job (&) is not supported");
                 return finish(Shell::ExitUsage, false);
         } else {
-                const Result<int32_t> started = _shell.startBackground(_state, n->source, fds);
+                const Result<int32_t> started = _shell.startSubshell(_state, n->source, fds, nullptr);
                 if (started.isError()) return finish(Shell::ExitCannotRun, false);
                 pid = started.value();
         }
@@ -1010,6 +1015,8 @@ Result<String> Executor::substitute(StringView source) {
                 FdTable fds = *_fds;
                 (void)fds.set(FdTable::Stdout, std::move(handle));
                 Executor child(*this, state, fds);
+                // Its output is memory this frame owns: nothing in it may stop and outlive it.
+                child._noJobs = true;
                 status = child.runSource(source);
                 inheritAbort(child);
         }
@@ -1402,6 +1409,67 @@ void Executor::stageMain(void *arg) {
         return;
 }
 
+// With job control (devplan/processes.md §3.7.1): a pipeline ending in a program is one job, a
+// subshell process in a group of its own in the foreground, so all of it stops and continues.
+bool Executor::hasJobControl() const {
+        return _shell.hasJobControl() && !_noJobs && _shell.process() != nullptr && _shell.launcher() != nullptr;
+}
+
+int Executor::runForegroundJob(const PipelineNode *p) {
+        if (interrupted()) return finish(Shell::ExitInterrupted, false);
+        ProcessControl           *process = _shell.process();
+        ProgramLauncher::JobGroup group{0, true};
+        const Console::TermMode   mode = _shell.console().mode();
+        const Result<int32_t>     started = _shell.startSubshell(_state, p->source, *_fds, &group);
+        if (started.isError()) return finish(Shell::ExitCannotRun, true);
+        const int32_t pid = started.value();
+        int32_t       waitStatus = 0;
+        for (;;) {
+                const Result<int32_t> r =
+                        process->waitChild(pid, ProcessControl::WaitBlock | ProcessControl::WaitStopped, waitStatus);
+                if (r.isOk()) break;
+                if (r.error() == Error::Interrupted && !process->isEnding()) continue;
+                process->disownChild(pid);
+                return finish(Shell::ExitInterrupted, false);
+        }
+        // The terminal is the shell's again (an ended job's group gives it back by itself).
+        (void)process->setForeground(0);
+        _shell.console().setMode(mode);
+        int status = 0;
+        if ((waitStatus & 0xff) == 0x7f) {
+                status = stoppedJob(pid, p->source, 128 + ((waitStatus >> 8) & 0x7f));
+        } else if ((waitStatus & 0x7f) != 0) {
+                status = 128 + (waitStatus & 0x7f);
+                // Ended by Ctrl-C: the shell's commands stop too (a loop ends), as for a program.
+                if (status == Shell::ExitInterrupted) _shell.interrupt().raise();
+        } else {
+                status = (waitStatus >> 8) & 0xff;
+        }
+        if (p->negated) status = status == 0;
+        return finish(status, !p->negated);
+}
+
+// A foreground job (program @p pid, @p command) stopped with @p status (128 + the signal): it is a
+// job of the shell's now, and the rest of the command is abandoned (bash: a loop ends).
+int Executor::stoppedJob(int32_t pid, StringView command, int status) {
+        JobTable &jobs = _shell.state().jobs;
+        Job      *job = jobs.add(*_shell.process(), pid, command);
+        String    line;
+        if (job != nullptr) {
+                job->stopped = true;
+                job->stopSignal = status - 128;
+                // The terminal swallowed the ^Z: echo it here, as a terminal would.
+                (void)line.append(job->stopSignal == SigTstp ? "^Z\n" : "\n");
+                jobs.appendLine(*job, false, line);
+                (void)line.append('\n');
+                FileHandle *err = _fds->handle(FdTable::Stderr);
+                if (err != nullptr) (void)err->write(line, WaitForever);
+        }
+        setFlow(Flow::Abort);
+        _state.lastStatus = status;
+        return status;
+}
+
 int Executor::runPipeline(const PipelineNode *p) {
         size_t count = 0;
         for (const Node *c = p->commands; c != nullptr; c = c->next) ++count;
@@ -1411,6 +1479,13 @@ int Executor::runPipeline(const PipelineNode *p) {
                 if (p->negated) --_errexitSuppressed;
                 return finish(p->negated ? status == 0 : status, false);
         }
+        // With job control, a pipeline ending in a program is a job (it can stop); one ending in the
+        // shell's own code keeps it there (lastpipe: `cmd | while read x` sets x) and can't stop,
+        // nor can one with a here-document whose body is outside its text.
+        const Node *lastStage = p->commands;
+        while (lastStage->next != nullptr) lastStage = lastStage->next;
+        if (hasJobControl() && !p->hasHereDoc && count <= Shell::MaxStages && isLoneProgram(lastStage))
+                return runForegroundJob(p);
         if (count > Shell::MaxStages) {
                 report("too many pipeline stages (at most %u)", static_cast<unsigned>(Shell::MaxStages));
                 return finish(1, true);
@@ -1440,6 +1515,8 @@ int Executor::runPipeline(const PipelineNode *p) {
         ProgramLauncher::JobGroup        job;
         ProgramLauncher::JobGroup *const outerJob = _job;
         if (_shell.hasJobControl() && _job == nullptr) _job = &job;
+        const bool outerNoJobs = _noJobs;
+        if (_shell.hasJobControl()) _noJobs = true;
         // Earlier stages are subshells on workers; the last runs here.
         for (size_t i = 0; i + 1 < count; ++i) {
                 StageRun &run = runs[i];
@@ -1469,6 +1546,7 @@ int Executor::runPipeline(const PipelineNode *p) {
                 if (run.worker != nullptr) _shell.workers().wait(run.worker);
         }
         _job = outerJob;
+        _noJobs = outerNoJobs;
         const int status = p->negated ? last.status == 0 : last.status;
         return finish(status, !p->negated);
 }

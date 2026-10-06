@@ -1102,8 +1102,10 @@ static long do_execve(const char *path, char *const *argv, char *const *envp) {
 static long do_waitid(long type, long id, siginfo_t *info, long options, long *usage) {
         if (type != P_ALL && type != P_PID && type != P_PGID) return -EINVAL;
         int32_t       status = 0;
-        const int32_t r = bmds_proc_wait(type == P_PID ? (int32_t)id : -1, &status,
-                                         (options & WNOHANG) ? BMDS_WAIT_NOHANG : 0);
+        const uint32_t flags = ((options & WNOHANG) ? BMDS_WAIT_NOHANG : 0u) |
+                               ((options & WSTOPPED) ? BMDS_WAIT_UNTRACED : 0u) |
+                               ((options & WCONTINUED) ? BMDS_WAIT_CONTINUED : 0u);
+        const int32_t  r = bmds_proc_wait(type == P_PID ? (int32_t)id : -1, &status, flags);
         if (r < 0) return (long)(r);
         if (usage != NULL) memset(usage, 0, 18 * sizeof(long));
         if (info != NULL) {
@@ -1111,7 +1113,13 @@ static long do_waitid(long type, long id, siginfo_t *info, long options, long *u
                 if (r > 0) {
                         info->si_signo = SIGCHLD;
                         info->si_pid = r;
-                        if (status & 0x7f) {
+                        if (status == 0xffff) {
+                                info->si_code = CLD_CONTINUED;
+                                info->si_status = SIGCONT;
+                        } else if ((status & 0xff) == 0x7f) {
+                                info->si_code = CLD_STOPPED;
+                                info->si_status = (status >> 8) & 0xff;
+                        } else if (status & 0x7f) {
                                 info->si_code = CLD_KILLED;
                                 info->si_status = status & 0x7f;
                         } else {

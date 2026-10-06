@@ -801,6 +801,55 @@ TEST_CASE("ProcessTable") {
         CHECK(HostMemory::liveAllocations() == base);
 }
 
+TEST_CASE("ProcessTable: stops and continues are reported once") {
+        using bmds::Error;
+        using bmds::ProcessTable;
+        ProcessTable table;
+        REQUIRE(table.init().isOk());
+        bmds::Semaphore parentEvent{1, 0};
+        bmds::Semaphore other{1, 0};
+        const int32_t   parent =
+                table.add(ProcessTable::KernelParent, ProcessTable::Inherit, ProcessTable::Inherit, nullptr, nullptr)
+                        .value();
+        const int32_t child =
+                table.add(parent, ProcessTable::Inherit, ProcessTable::Inherit, &parentEvent, nullptr).value();
+
+        CHECK(table.setStopped(child, BMDS_SIGTSTP) == parent);
+        CHECK(table.isStopped(child));
+        CHECK(parentEvent.tryAcquire().isOk());
+        CHECK(table.setStopped(child, BMDS_SIGTSTP) == 0); // stopped already
+        int32_t stopped[4] = {};
+        CHECK(table.stoppedChildren(parent, stopped, 4) == 1);
+        CHECK(stopped[0] == child);
+        // Not asked for: only the end counts.
+        CHECK(table.reap(parent, child).error() == Error::WouldBlock);
+        auto r = table.reap(parent, child, ProcessTable::ReapStopped);
+        REQUIRE(r.isOk());
+        CHECK(r.value().status == ProcessTable::stoppedStatus(BMDS_SIGTSTP));
+        CHECK(ProcessTable::isStoppedStatus(r.value().status));
+        CHECK(table.reap(parent, child, ProcessTable::ReapStopped).error() == Error::WouldBlock);
+        bool seen = false;
+        table.forEach([&](const ProcessTable::View &v) {
+                if (v.pid == child) seen = v.stopped;
+        });
+        CHECK(seen);
+
+        // The semaphore can change (a stopped foreground job becomes the shell's).
+        table.setNotify(child, &other);
+        CHECK(table.setStopped(child, 0) == parent);
+        CHECK_FALSE(table.isStopped(child));
+        CHECK(other.tryAcquire().isOk());
+        CHECK(table.reap(parent, child, ProcessTable::ReapStopped).error() == Error::WouldBlock);
+        r = table.reap(parent, -1, ProcessTable::ReapContinued);
+        REQUIRE(r.isOk());
+        CHECK(r.value().status == ProcessTable::ContinuedStatus);
+        CHECK_FALSE(ProcessTable::isStoppedStatus(r.value().status));
+
+        table.exited(child, ProcessTable::exitStatus(0));
+        CHECK(table.reap(parent, child, ProcessTable::ReapStopped).isOk());
+        CHECK(table.setStopped(child, BMDS_SIGTSTP) == 0);
+}
+
 TEST_CASE("ProcessTable: process groups and sessions") {
         using bmds::Error;
         using bmds::ProcessTable;

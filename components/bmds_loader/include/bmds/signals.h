@@ -34,6 +34,13 @@ constexpr uint32_t signalBit(int sig) {
  * the mask of the moment, so a signal racing a change of its action is
  * handled as if it came just before or just after the change.
  *
+ * **Stopping** (devplan/processes.md §3.7.1): `SIGSTOP`, `SIGTSTP`,
+ * `SIGTTIN` and `SIGTTOU` stop the process by default (`post()` says
+ * `Stop`; a blocked one stays pending, `stopSignal()`); `SIGCONT` continues
+ * it whatever its action (`Continue`). While stopped the interrupt is held
+ * (its waits park) and other signals stay pending; `SIGKILL` continues it
+ * to end it.
+ *
  * The interrupt is raised when a sent signal is due. `prepare()`, at the
  * start of each system call, clears it while nothing is due.
  *
@@ -65,6 +72,8 @@ class Signals {
                         Pending,   ///< Pending: blocked, or caught (then due: the interrupt is raised).
                         Taken,     ///< An `Interrupt` action: the interrupt is raised, nothing pending.
                         Terminate, ///< The process must end (`terminateSignal()`); the interrupt is raised.
+                        Stop,      ///< It stopped (`isStopped()`): the interrupt is held.
+                        Continue,  ///< It was stopped and goes on: the hold is released.
                 };
 
                 /** @brief A taken signal. */
@@ -84,8 +93,11 @@ class Signals {
                 /** @brief Returns true if @p sig is 1-31. */
                 static constexpr bool isValid(int sig) { return sig >= 1 && sig < Count; }
 
-                /** @brief Returns true if @p sig ends the process by default (else it is dropped). */
-                static bool endsByDefault(int sig) { return (bit(sig) & DroppedByDefault) == 0; }
+                /** @brief Returns true if @p sig ends the process by default (else it is dropped or stops it). */
+                static bool endsByDefault(int sig) { return (bit(sig) & (DroppedByDefault | StopSignals)) == 0; }
+
+                /** @brief Returns true if @p sig stops the process by default. */
+                static bool stopsByDefault(int sig) { return (bit(sig) & StopSignals) != 0; }
 
                 /**
                  * @brief Sends @p sig (1-31) with code @p code.
@@ -117,9 +129,29 @@ class Signals {
                 /** @brief Returns the signal that ends the process now (due, not caught), or 0. */
                 int terminateSignal() const;
 
+                /** @brief Returns true while stopped. */
+                bool isStopped() const { return _stopped.load(); }
+
+                /**
+                 * @brief Stops the process with a pending stop signal (`stopSignal()`),
+                 *        taking it off the pending set.
+                 * @return True if it stopped (it wasn't already).
+                 */
+                bool stopWith(int sig) {
+                        _pending.fetch_and(~bit(sig));
+                        return stop();
+                }
+
+                /**
+                 * @brief Returns a stop signal pending and no longer blocked (its
+                 *        default action), or 0: the process stops itself with it.
+                 */
+                int stopSignal() const;
+
                 /**
                  * @brief Takes the lowest due signal: a caught one, off the pending
                  *        set; or the one that ends the process (left pending).
+                 *        Nothing while stopped.
                  */
                 Taken take();
 
@@ -136,14 +168,21 @@ class Signals {
                 void resetForExec();
 
         private:
-                // SIGCHLD, SIGCONT, SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU, SIGURG, SIGWINCH.
-                static constexpr uint32_t DroppedByDefault = signalBit(17) | signalBit(18) | signalBit(19) |
-                                                             signalBit(20) | signalBit(21) | signalBit(22) |
-                                                             signalBit(23) | signalBit(28);
+                // SIGCHLD, SIGCONT, SIGURG, SIGWINCH.
+                static constexpr uint32_t DroppedByDefault =
+                        signalBit(17) | signalBit(18) | signalBit(23) | signalBit(28);
+                // SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU.
+                static constexpr uint32_t StopSignals = signalBit(19) | signalBit(20) | signalBit(21) | signalBit(22);
                 static constexpr uint32_t Unblockable = signalBit(9) | signalBit(19); // SIGKILL, SIGSTOP
 
-                uint32_t dueCaught() const { return _pending.load() & ~_blocked.load() & _caught.load(); }
+                uint32_t dueCaught() const {
+                        return _stopped.load() ? 0 : _pending.load() & ~_blocked.load() & _caught.load();
+                }
                 uint32_t ending() const; // pending, not blocked, ending the process
+                Posted   deliver(int sig, int code); // post() past stopping and continuing
+                void     markPending(uint32_t b, int code);
+                bool     stop();   // true if it wasn't stopped
+                bool     resume(); // ends a stop; true if stopped
 
                 Interrupt             _interrupt;
                 std::atomic<uint32_t> _pending{0};
@@ -152,6 +191,7 @@ class Signals {
                 std::atomic<uint32_t> _caught{0};
                 std::atomic<uint32_t> _ignored{0};
                 std::atomic<uint32_t> _interrupting{0}; // Action::Interrupt
+                std::atomic<bool>     _stopped{false};
 };
 
 BMDS_NAMESPACE_END

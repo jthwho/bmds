@@ -160,7 +160,9 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_FD_CLOEXEC 0x1u /**< Closed by `bmds_proc_exec`. */
 
 /** @brief `proc_wait` flags. */
-#define BMDS_WAIT_NOHANG 0x1u /**< Return 0 at once if no child has ended. */
+#define BMDS_WAIT_NOHANG 0x1u    /**< Return 0 at once if no child has ended. */
+#define BMDS_WAIT_UNTRACED 0x2u  /**< Also a child that stopped: status `0x7f | sig << 8`, once per stop. */
+#define BMDS_WAIT_CONTINUED 0x4u /**< Also a child that continued: status `0xffff`, once. */
 
 /** @brief `proc_id`. */
 #define BMDS_PROC_SELF 0u   /**< The calling process's id. */
@@ -191,11 +193,11 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SIGTERM 15
 #define BMDS_SIGSTKFLT 16
 #define BMDS_SIGCHLD 17 /**< A child ended (dropped by default). */
-#define BMDS_SIGCONT 18 /**< Dropped by default. */
-#define BMDS_SIGSTOP 19 /**< Can't be caught, ignored or blocked; nothing stops (dropped). */
-#define BMDS_SIGTSTP 20 /**< Dropped by default. */
-#define BMDS_SIGTTIN 21 /**< Dropped by default. */
-#define BMDS_SIGTTOU 22 /**< Dropped by default. */
+#define BMDS_SIGCONT 18 /**< Continues a stopped process (whatever its action); then dropped by default. */
+#define BMDS_SIGSTOP 19 /**< Stops the process; can't be caught, ignored or blocked. */
+#define BMDS_SIGTSTP 20 /**< Ctrl-Z: stops the process by default. */
+#define BMDS_SIGTTIN 21 /**< A background read of the terminal: stops the process by default. */
+#define BMDS_SIGTTOU 22 /**< Stops the process by default (only `kill` sends it). */
 #define BMDS_SIGURG 23  /**< Dropped by default. */
 #define BMDS_SIGXCPU 24
 #define BMDS_SIGXFSZ 25
@@ -677,7 +679,8 @@ static inline int32_t bmds_proc_vfork_exit(int32_t status) {
  * @param status Gets how it ended (may be NULL), in Linux's layout: the
  *               exit status in bits 8-15, or for a killed child the signal
  *               in bits 0-6 (2, SIGINT, for Ctrl-C).
- * @param flags  `BMDS_WAIT_NOHANG`.
+ * @param flags  `BMDS_WAIT_NOHANG`, `BMDS_WAIT_UNTRACED`, `BMDS_WAIT_CONTINUED`
+ *               (a stopped or continued child is reported, not freed).
  * @return The child's id, 0 with `BMDS_WAIT_NOHANG` if none has ended,
  *         `BMDS_ECHILD` (no such child), `BMDS_EINTR` (a signal is due).
  */

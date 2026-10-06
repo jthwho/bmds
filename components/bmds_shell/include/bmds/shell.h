@@ -192,19 +192,28 @@ class Shell final : public LineCompleter {
                 void setProcess(ProcessControl *process);
 
                 /**
-                 * @brief Starts @p source as a background job: a subshell process over a
-                 *        copy of @p state (devplan/processes.md §3.8.1), on @p fds, in a
-                 *        group of its own; this shell's process takes its end.
+                 * @brief Starts @p source as a job: a subshell process over a copy of
+                 *        @p state (devplan/processes.md §3.8.1), on @p fds; this shell's
+                 *        process takes its end (and its stops).
                  *
                  * Problems are reported on @p fds' stderr.
+                 * @param group The job's group (a foreground pipeline, §3.7.1); null:
+                 *              a group of its own, not in the foreground (`&`).
                  * @return Its pid, or `NoMem`, `Invalid` (no launcher or process), or
                  *         the launcher's error.
                  */
-                Result<int32_t> startBackground(const ShellState &state, StringView source, const FdTable &fds);
+                Result<int32_t> startSubshell(const ShellState &state, StringView source, const FdTable &fds,
+                                              ProgramLauncher::JobGroup *group);
 
 
                 /** @brief Returns true if foreground pipelines of programs are jobs (interactive). */
                 bool hasJobControl() const { return _jobControl; }
+
+                /** @brief Turns job control on or off (`interact()` turns it on). */
+                void setJobControl(bool on) {
+                        _jobControl = on;
+                        return;
+                }
 
                 /**
                  * @brief Takes the chance to be the program's interactive shell: true
@@ -293,6 +302,7 @@ class Shell final : public LineCompleter {
                 void endInterrupt();
                 void prepareInteractive(bool login); // target: the defaults, the boot (shellesp.cpp)
                 void       reportJobs();                   // jobs that ended, before a prompt (jobs.cpp)
+                bool       isEnding() const { return _process != nullptr && _process->isEnding(); }
                 static int backgroundMain(const BuiltinProgram::Context &context);
 
                 Console            &_console;
@@ -310,6 +320,8 @@ class Shell final : public LineCompleter {
                 uint32_t            _sizeSeen = UINT32_MAX; // the console's size generation exported
                 bool                _exited = false;        // `exit` ran at the prompt
                 bool                _jobControl = false;    // interactive: programs run as jobs
+                bool                _warnedStopped = false; // "There are stopped jobs." said for this exit
+                bool                _hungUp = false;        // run() ended with the terminal (or the process)
                 bool                _programShell = false;  // runAsProgram()'s `sh` may interact()
 };
 

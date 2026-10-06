@@ -57,6 +57,7 @@ namespace {
                         case Loader::ProcessInfo::State::Running: return 'R';
                         case Loader::ProcessInfo::State::Vfork: return 'V';
                         case Loader::ProcessInfo::State::Ending: return 'E';
+                        case Loader::ProcessInfo::State::Stopped: return 'T';
                         default: return 'Z';
                 }
         }
@@ -135,10 +136,13 @@ namespace {
                 int status = Shell::ExitSuccess;
                 for (; i < args.size(); ++i) {
                         long pid = 0;
+                        bool wake = false; // a stopped job, which a TERM or HUP also continues (as bash)
                         if (args[i][0] == '%') {
-                                // A job of this shell: its process group.
+                                // A job of this shell: its process group (its state as of now: stopped?).
+                                JobTable &jobs = ctx.executor().state().jobs;
+                                jobs.poll();
                                 Job                  *job = nullptr;
-                                const JobTable::Match m = ctx.executor().state().jobs.find(StringView(args[i]), job);
+                                const JobTable::Match m = jobs.find(StringView(args[i]), job);
                                 if (m != JobTable::Match::Found) {
                                         ctx.eprintf("kill: %s: %s\n", args[i],
                                                     m == JobTable::Match::Ambiguous ? "ambiguous job spec"
@@ -147,12 +151,14 @@ namespace {
                                         continue;
                                 }
                                 pid = -static_cast<long>(job->pid);
+                                wake = job->stopped && (sig == BMDS_SIGTERM || sig == BMDS_SIGHUP);
                         } else if (!parseNumber(args[i], INT32_MIN, INT32_MAX, pid) || pid == 0 || pid == -1) {
                                 ctx.eprintf("kill: %s: not a process or group id\n", args[i]);
                                 status = Shell::ExitFailure;
                                 continue;
                         }
                         const Error err = Loader::signal(static_cast<int32_t>(pid), sig);
+                        if (err.isOk() && wake) (void)Loader::signal(static_cast<int32_t>(pid), BMDS_SIGCONT);
                         if (err.isOk()) continue;
                         status = Shell::ExitFailure;
                         if (err == Error::NotExist)

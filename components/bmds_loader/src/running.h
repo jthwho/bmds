@@ -48,6 +48,11 @@ BMDS_NAMESPACE_BEGIN
  * program when one that ends it is due, and sets the program's hint word
  * while one is due for the current process (the SDK then takes it).
  *
+ * Stopping (devplan/processes.md §3.7.1) uses the same handshake: the
+ * stopper holds the process's interrupt, suspends the task and reads
+ * `inKernel`: clear, the task stays suspended (`suspendedForStop`) until
+ * continued; set, it is resumed and parks in its waits or in `leave()`.
+ *
  * It is the owner of the process's tasks (`TaskOwner`, devplan/processes.md
  * §3.1): its own task, and the `Thread`s they start, which run kernel code
  * (a built-in program's) and share the process's interrupt. The process
@@ -80,6 +85,7 @@ struct Running final : TaskOwner, ProcessControl {
                 std::atomic<int32_t>  killStatus{0};      // what a kill ends it with
                 std::atomic<bool>     inKernel{false};
                 std::atomic<bool>     kill{false};
+                bool                  suspendedForStop = false;           // under the process table's lock
                 char                  command[Loader::CommandBytes] = {}; // argv joined, cut (ps)
                 Mutex                 threadsLock;                        // the fields below
                 Member               *threads = nullptr;                  // its Threads (not its own task)
@@ -101,8 +107,10 @@ struct Running final : TaskOwner, ProcessControl {
                 bool    isEnding() const override {
                         return kill.load() || (process != nullptr && process->signals().terminateSignal() != 0);
                 }
-                Result<int32_t> waitChild(int32_t child, bool block, int32_t &status) override;
+                Result<int32_t> waitChild(int32_t child, uint32_t flags, int32_t &status) override;
                 void            disownChild(int32_t child) override;
+                Error           signal(int32_t target, int sig) override;
+                Error           setForeground(int32_t group) override;
 
                 /** @brief No more threads; waits for those left, interrupting them first. */
                 void endThreads();

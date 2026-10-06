@@ -29,6 +29,9 @@ namespace {
         constexpr int SigInt = 2;
         constexpr int SigQuit = 3;
         constexpr int SigTerm = 15;
+        constexpr int SigTstp = 20;
+        constexpr int SigTtin = 21;
+        constexpr int SigTtou = 22;
 
         // Characters a completed file name escapes with a backslash.
         constexpr StringView EscapedInNames = " \t'\"\\$`|&;()<>*?[]!{}";
@@ -130,7 +133,8 @@ namespace {
 
 } // namespace
 
-Result<int32_t> Shell::startBackground(const ShellState &state, StringView source, const FdTable &fds) {
+Result<int32_t> Shell::startSubshell(const ShellState &state, StringView source, const FdTable &fds,
+                                     ProgramLauncher::JobGroup *group) {
         // The subshell runs as a program does, with a pipeline worker's stack (it runs what a stage would).
         static constexpr ProgramEntry Subshell = {"sh", {&Shell::backgroundMain, WorkerStackBytes}};
         if (_launcher == nullptr || _process == nullptr) return makeError<int32_t>(Error::Invalid);
@@ -158,6 +162,7 @@ Result<int32_t> Shell::startBackground(const ShellState &state, StringView sourc
         request.cwd = state.cwd.isEmpty() ? StringView("/") : state.cwd.view();
         request.interrupt = _interrupt;
         request.console = &_console;
+        request.group = group;
         request.waited = true;
         request.builtin = &Subshell;
         request.data = run;
@@ -195,10 +200,11 @@ int Shell::backgroundMain(const BuiltinProgram::Context &context) {
 int Shell::interact(bool login) {
         _jobControl = true;
         if (_process != nullptr) {
-                // Ctrl-C stops what runs here; the shell itself isn't ended by TERM or QUIT (as bash).
+                // Ctrl-C stops what runs here; the shell itself isn't ended by TERM or QUIT, nor
+                // stopped (as bash).
                 (void)_process->setSignalAction(SigInt, ProcessControl::SignalAction::Interrupt);
-                (void)_process->setSignalAction(SigTerm, ProcessControl::SignalAction::Ignore);
-                (void)_process->setSignalAction(SigQuit, ProcessControl::SignalAction::Ignore);
+                for (int sig : {SigTerm, SigQuit, SigTstp, SigTtin, SigTtou})
+                        (void)_process->setSignalAction(sig, ProcessControl::SignalAction::Ignore);
         }
         prepareInteractive(login);
         (void)sourceIfExists(ProfilePath);
@@ -206,6 +212,9 @@ int Shell::interact(bool login) {
         int status = run();
         // Pid 1 is the system's shell: it never ends (nothing can end its process).
         while (_process != nullptr && _process->processId() == 1 && !_process->isEnding()) status = run();
+        // The terminal went (or a signal ends the shell): its jobs go with it, as bash's, except
+        // those disowned (devplan/processes.md §3.7.1). After `exit` they live on.
+        if (_hungUp) _state.jobs.hangUp();
         return status;
 }
 
@@ -268,8 +277,12 @@ const Command *Shell::findCommand(StringView name) const {
 }
 
 void Shell::start() {
-        // Jobs that ended since the last prompt, as bash reports them.
-        if (_jobControl && !isContinuing()) reportJobs();
+        // Jobs that ended since the last prompt, as bash reports them; the terminal is the
+        // shell's at its prompt, whatever its last job left (as bash takes it).
+        if (_jobControl && !isContinuing()) {
+                reportJobs();
+                if (_process != nullptr) (void)_process->setForeground(0);
+        }
         // A serial terminal may have been resized since: ask again (the answer
         // is taken out of the input as the line is typed).
         _console.requestSize();
@@ -502,7 +515,7 @@ void Shell::feed(char c) {
                 case LineEditor::Event::Line:
                         if (_console.sizeGeneration() != _sizeSeen) exportTerminal();
                         (void)execute(_editor.line());
-                        if (!_exited) start(); // no prompt after `exit`
+                        if (!_exited && !isEnding()) start(); // no prompt after `exit`, or as it ends
                         break;
                 case LineEditor::Event::Cancel:
                         _input.clear(); // abandon an incomplete command too
@@ -561,9 +574,19 @@ void Shell::runInput() {
                                 continue;
                         }
                         // At the prompt, `exit` and stray break/continue/return end the input here;
-                        // `exit` ends run() too.
+                        // `exit` ends run() too. With stopped jobs the first `exit` only warns, as
+                        // bash's does.
+                        const bool exiting = _executor.flow() == Executor::Flow::Exit;
+                        if (exiting && _jobControl && !_warnedStopped && _state.jobs.hasStopped()) {
+                                _executor.report("There are stopped jobs.");
+                                _warnedStopped = true;
+                                _executor.clearFlow();
+                                consumed = _input.size();
+                                break;
+                        }
+                        _warnedStopped = false;
                         if (_executor.flow() != Executor::Flow::Normal) {
-                                if (_executor.flow() == Executor::Flow::Exit) _exited = true;
+                                if (exiting) _exited = true;
                                 _executor.clearFlow();
                                 consumed = _input.size();
                                 break;
@@ -576,8 +599,9 @@ void Shell::runInput() {
 }
 
 void Shell::endInterrupt() {
-        // The console swallowed the ^C, so echo it here, as a terminal would.
-        (void)_console.write(StringView("^C\n"), WaitForever);
+        // The console swallowed the ^C, so echo it here, as a terminal would (not for the signal
+        // that ends the shell: it was no Ctrl-C).
+        if (!isEnding()) (void)_console.write(StringView("^C\n"), WaitForever);
         _executor.clearFlow();
         _state.lastStatus = ExitInterrupted;
         interrupt().clear();
@@ -622,7 +646,10 @@ int Shell::run() {
         start();
         while (!_exited) {
                 // Its process is being ended (SIGHUP, a kill): the shell ends, whatever it was doing.
-                if (_process != nullptr && _process->isEnding()) break;
+                if (_process != nullptr && _process->isEnding()) {
+                        _hungUp = true;
+                        break;
+                }
                 uint8_t buf[32];
                 // An idle shell waits for input indefinitely; it uses no CPU
                 // while it waits.
@@ -635,7 +662,12 @@ int Shell::run() {
                         continue;
                 }
                 // The terminal hung up (a pseudo-terminal's window closed): the shell ends, as on exit.
-                if (err == Error::EndOfFile) break;
+                if (err == Error::EndOfFile) {
+                        _hungUp = true;
+                        break;
+                }
+                // Not the terminal's foreground (it ignores SIGTTIN): take it back, or this spins.
+                if (err == Error::IoError && _jobControl && _process != nullptr) (void)_process->setForeground(0);
                 if (err.isError()) continue;
                 for (size_t i = 0; i < n && !_exited; ++i) feed(static_cast<char>(buf[i]));
         }

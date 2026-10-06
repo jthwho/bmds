@@ -55,6 +55,7 @@ class Loader final : public ProgramLauncher {
                                         Vfork,   ///< A vfork child, running in its parent's task.
                                         Ending,  ///< Its program returned; its threads are ending.
                                         Zombie,  ///< Ended: its parent hasn't waited for it.
+                                        Stopped, ///< Stopped by a signal, until continued.
                                 };
 
                                 int32_t pid;                   ///< Its id.

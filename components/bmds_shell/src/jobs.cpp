@@ -5,12 +5,13 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * Background jobs: the job table and `jobs`, `wait`, `disown`
- * (devplan/processes.md §3.8.1).
+ * Jobs: the job table and `jobs`, `fg`, `bg`, `wait`, `disown`
+ * (devplan/processes.md §3.8.1, §3.7.1).
  */
 
 #include <cstdlib>
 #include <cstring>
+#include <bmds/console.h>
 #include <bmds/executor.h>
 #include <bmds/langbuiltins.h>
 #include <bmds/shell.h>
@@ -39,6 +40,30 @@ namespace {
                 "Terminated",
         };
         constexpr int SignalWordCount = static_cast<int>(sizeof(SignalWords) / sizeof(SignalWords[0]));
+
+        // The stop signals' names, for `Stopped(SIGTTIN)` (SIGTSTP is plain `Stopped`).
+        constexpr int SigHup = 1;
+        constexpr int SigCont = 18;
+        constexpr int SigStop = 19;
+        constexpr int SigTstp = 20;
+        constexpr int SigTtin = 21;
+        constexpr int SigTtou = 22;
+
+        const char *stopSignalName(int sig) {
+                switch (sig) {
+                        case SigStop: return "SIGSTOP";
+                        case SigTtin: return "SIGTTIN";
+                        case SigTtou: return "SIGTTOU";
+                        default: return nullptr;
+                }
+        }
+
+        // A wait status that says the child stopped (Linux's layout), and the signal.
+        bool isStopStatus(int32_t waitStatus) {
+                return (waitStatus & 0xff) == 0x7f;
+        }
+
+        constexpr int32_t ContinuedStatus = 0xffff;
 
         // A wait status (Linux's layout) as the job's status and signal.
         void setEnded(Job &job, int32_t waitStatus) {
@@ -112,13 +137,23 @@ Job *JobTable::add(ProcessControl &process, int32_t pid, StringView command) {
 void JobTable::poll() {
         if (_process == nullptr) return;
         for (Job &job : _jobs) {
-                if (job.ended) continue;
-                int32_t               status = 0;
-                const Result<int32_t> r = _process->waitChild(job.pid, false, status);
-                if (r.isOk() && r.value() == job.pid) {
-                        setEnded(job, status);
-                } else if (r.isError()) {
-                        setEnded(job, 127 << 8); // gone: not ours to take any more
+                // Every change since the last look: stops and continues, then perhaps the end.
+                while (!job.ended) {
+                        int32_t               status = 0;
+                        const Result<int32_t> r = _process->waitChild(
+                                job.pid, ProcessControl::WaitStopped | ProcessControl::WaitContinued, status);
+                        if (r.isError()) {
+                                setEnded(job, 127 << 8); // gone: not ours to take any more
+                        } else if (r.value() != job.pid) {
+                                break;
+                        } else if (isStopStatus(status)) {
+                                job.stopped = job.notify = true;
+                                job.stopSignal = (status >> 8) & 0xff;
+                        } else if (status == ContinuedStatus) {
+                                job.stopped = job.notify = false;
+                        } else {
+                                setEnded(job, status);
+                        }
                 }
         }
         return;
@@ -127,10 +162,62 @@ void JobTable::poll() {
 Error JobTable::wait(Job &job) {
         if (job.ended || _process == nullptr) return Error::Ok;
         int32_t               status = 0;
-        const Result<int32_t> r = _process->waitChild(job.pid, true, status);
+        const Result<int32_t> r = _process->waitChild(job.pid, ProcessControl::WaitBlock, status);
         if (r.isError() && r.error() == Error::Interrupted) return Error::Interrupted;
         setEnded(job, r.isOk() ? status : 127 << 8);
         return Error::Ok;
+}
+
+Error JobTable::foreground(Job &job) {
+        if (job.ended || _process == nullptr) return Error::Ok;
+        // Its group is its pid (it leads it).
+        (void)_process->setForeground(job.pid);
+        if (job.stopped) (void)_process->signal(-job.pid, SigCont);
+        job.stopped = job.notify = false;
+        Error err = Error::Ok;
+        for (;;) {
+                int32_t               status = 0;
+                const Result<int32_t> r =
+                        _process->waitChild(job.pid, ProcessControl::WaitBlock | ProcessControl::WaitStopped, status);
+                if (r.isError() && r.error() == Error::Interrupted) {
+                        if (!_process->isEnding()) continue;
+                        err = Error::Interrupted;
+                } else if (r.isError()) {
+                        setEnded(job, 127 << 8);
+                } else if (isStopStatus(status)) {
+                        job.stopped = true;
+                        job.stopSignal = (status >> 8) & 0xff;
+                } else {
+                        setEnded(job, status);
+                }
+                break;
+        }
+        (void)_process->setForeground(0);
+        return err;
+}
+
+bool JobTable::continueJob(Job &job) {
+        if (job.ended || !job.stopped || _process == nullptr) return false;
+        (void)_process->signal(-job.pid, SigCont);
+        job.stopped = job.notify = false;
+        return true;
+}
+
+void JobTable::hangUp() {
+        if (_process == nullptr) return;
+        for (const Job &job : _jobs) {
+                if (job.ended || job.keepOnHangUp) continue;
+                (void)_process->signal(-job.pid, SigHup);
+                if (job.stopped) (void)_process->signal(-job.pid, SigCont);
+        }
+        return;
+}
+
+bool JobTable::hasStopped() const {
+        for (const Job &job : _jobs) {
+                if (job.stopped && !job.ended) return true;
+        }
+        return false;
 }
 
 void JobTable::remove(Job &job) {
@@ -193,7 +280,14 @@ JobTable::Match JobTable::find(StringView spec, Job *&out) {
 }
 
 void JobTable::appendState(const Job &job, String &out) {
-        if (!job.ended) {
+        if (!job.ended && job.stopped) {
+                const char *name = stopSignalName(job.stopSignal);
+                if (name != nullptr) {
+                        (void)out.appendf("Stopped(%s)", name);
+                } else {
+                        (void)out.append("Stopped");
+                }
+        } else if (!job.ended) {
                 (void)out.append("Running");
         } else if (job.signal > 0 && job.signal < SignalWordCount) {
                 (void)out.append(SignalWords[job.signal]);
@@ -214,16 +308,21 @@ void Shell::reportJobs() {
         String line;
         for (size_t i = 0; i < jobs.jobs().size();) {
                 Job &job = jobs.jobs()[i];
-                if (!job.ended) {
+                if (!job.ended && !job.notify) {
                         ++i;
                         continue;
                 }
+                job.notify = false;
                 line.clear();
                 jobs.appendLine(job, false, line);
                 (void)line.append('\n');
                 FileHandle *err = _fds.handle(FdTable::Stderr);
                 if (err != nullptr) (void)err->write(line, WaitForever);
-                jobs.remove(job);
+                if (job.ended) {
+                        jobs.remove(job);
+                } else {
+                        ++i;
+                }
         }
         return;
 }
@@ -240,7 +339,7 @@ void JobTable::appendLine(const Job &job, bool withPid, String &out) {
         appendState(job, out);
         while (out.size() < at + 24) (void)out.append(' ');
         (void)out.append(job.command);
-        if (!job.ended) (void)out.append(" &");
+        if (!job.ended && !job.stopped) (void)out.append(" &");
         return;
 }
 
@@ -266,6 +365,7 @@ namespace LangBuiltins {
                 table.poll();
                 String line;
                 for (Job &job : table.jobs()) {
+                        job.notify = false; // reported here
                         if (pids) {
                                 ctx.printf("%ld\n", static_cast<long>(job.pid));
                                 continue;
@@ -320,40 +420,162 @@ namespace LangBuiltins {
                 return status;
         }
 
-        // disown [-a | %N...]
+        // fg, bg and disown take a bare number as a job number, as bash does (`bg 1` is `bg %1`);
+        // wait and kill take it as a pid.
+        JobTable::Match findJob(JobTable &table, const char *spec, Job *&job) {
+                long n = 0;
+                if (!parseNumber(StringView(spec), n)) return table.find(StringView(spec), job);
+                String numbered;
+                (void)numbered.appendf("%%%ld", n);
+                return table.find(numbered, job);
+        }
+
+        // The job @p spec names (none: the current one) for fg and bg; reported if there is none.
+        Job *jobFor(CommandContext &ctx, const char *command, const char *spec) {
+                JobTable &table = ctx.executor().state().jobs;
+                table.poll();
+                Job *job = nullptr;
+                if (spec == nullptr) {
+                        job = table.current();
+                        if (job == nullptr) ctx.eprintf("%s: current: no such job\n", command);
+                        return job;
+                }
+                const JobTable::Match m = findJob(table, spec, job);
+                if (m == JobTable::Match::Ambiguous) {
+                        ctx.eprintf("%s: %s: ambiguous job spec\n", command, spec);
+                } else if (m != JobTable::Match::Found || job->ended) {
+                        ctx.eprintf("%s: %s: no such job\n", command, spec);
+                        job = nullptr;
+                }
+                return job;
+        }
+
+        // fg [%N]
+        int fg(CommandContext &ctx) {
+                const Span<char *const> args = ctx.args();
+                if (args.size() > 2) return ctx.usage();
+                if (!ctx.shell().hasJobControl()) {
+                        ctx.eprint("fg: no job control\n");
+                        return Shell::ExitFailure;
+                }
+                JobTable &table = ctx.executor().state().jobs;
+                Job      *job = jobFor(ctx, "fg", args.size() == 2 ? args[1] : nullptr);
+                if (job == nullptr) return Shell::ExitFailure;
+                // As bash: the command, then it runs in the foreground until it ends or stops. The
+                // shell's terminal modes come back after it (the job may change them).
+                ctx.printf("%s\n", job->command.cStr());
+                const Console::TermMode mode = ctx.shell().console().mode();
+                const Error             err = table.foreground(*job);
+                ctx.shell().console().setMode(mode);
+                if (err.isError()) return Shell::ExitInterrupted;
+                if (job->stopped) {
+                        String line;
+                        (void)line.append(job->stopSignal == SigTstp ? "^Z\n" : "\n");
+                        table.appendLine(*job, false, line);
+                        (void)line.append('\n');
+                        ctx.eprint(line);
+                        return 128 + job->stopSignal;
+                }
+                const int status = job->status;
+                table.remove(*job);
+                // Ended by Ctrl-C: the shell's commands stop too, as for a program run here.
+                if (status == Shell::ExitInterrupted) ctx.shell().interrupt().raise();
+                return status;
+        }
+
+        // bg [%N...]
+        int bg(CommandContext &ctx) {
+                const Span<char *const> args = ctx.args();
+                if (!ctx.shell().hasJobControl()) {
+                        ctx.eprint("bg: no job control\n");
+                        return Shell::ExitFailure;
+                }
+                JobTable &table = ctx.executor().state().jobs;
+                int       status = Shell::ExitSuccess;
+                for (size_t i = 1; i == 1 || i < args.size(); ++i) {
+                        Job *job = jobFor(ctx, "bg", i < args.size() ? args[i] : nullptr);
+                        if (job == nullptr) {
+                                status = Shell::ExitFailure;
+                                continue;
+                        }
+                        if (!table.continueJob(*job)) {
+                                ctx.eprintf("bg: job %d already in background\n", job->number);
+                                continue;
+                        }
+                        // As bash: "[1]+ sleep 10 &".
+                        ctx.printf("[%d]%c %s &\n", job->number, table.mark(*job), job->command.cStr());
+                }
+                return status;
+        }
+
+        // Disowns @p job; a stopped one is hung up (nobody could continue it), as bash warns.
+        void disownJob(CommandContext &ctx, JobTable &table, Job &job) {
+                if (job.stopped && !job.ended)
+                        ctx.eprintf("disown: warning: deleting stopped job %d with process group %ld\n", job.number,
+                                    static_cast<long>(job.pid));
+                table.remove(job);
+                return;
+        }
+
+        // disown [-h] [-a | %N...]: forgets jobs; with -h keeps them, but not to be hung up.
         int disown(CommandContext &ctx) {
                 const Span<char *const> args = ctx.args();
                 JobTable               &table = ctx.executor().state().jobs;
-                if (args.size() == 2 && std::strcmp(args[1], "-a") == 0) {
-                        while (!table.isEmpty()) table.remove(table.jobs()[0]);
+                size_t                  first = 1;
+                bool                    keep = false, all = false;
+                for (; first < args.size() && args[first][0] == '-'; ++first) {
+                        if (std::strcmp(args[first], "-h") == 0) {
+                                keep = true;
+                        } else if (std::strcmp(args[first], "-a") == 0) {
+                                all = true;
+                        } else {
+                                return ctx.usage();
+                        }
+                }
+                auto act = [&](Job &job) {
+                        if (keep) {
+                                job.keepOnHangUp = true;
+                        } else {
+                                disownJob(ctx, table, job);
+                        }
+                };
+                if (all) {
+                        if (keep) {
+                                for (Job &job : table.jobs()) act(job);
+                        } else {
+                                while (!table.isEmpty()) act(table.jobs()[0]);
+                        }
                         return Shell::ExitSuccess;
                 }
-                if (args.size() == 1) {
+                if (first == args.size()) {
                         Job *job = table.current();
                         if (job == nullptr) {
                                 ctx.eprintf("disown: current: no such job\n");
                                 return Shell::ExitFailure;
                         }
-                        table.remove(*job);
+                        act(*job);
                         return Shell::ExitSuccess;
                 }
                 int status = Shell::ExitSuccess;
-                for (size_t i = 1; i < args.size(); ++i) {
+                for (size_t i = first; i < args.size(); ++i) {
                         Job *job = nullptr;
-                        if (table.find(StringView(args[i]), job) != JobTable::Match::Found) {
+                        if (findJob(table, args[i], job) != JobTable::Match::Found) {
                                 ctx.eprintf("disown: %s: no such job\n", args[i]);
                                 status = Shell::ExitFailure;
                                 continue;
                         }
-                        table.remove(*job);
+                        act(*job);
                 }
                 return status;
         }
 
 } // namespace LangBuiltins
 
-BMDS_SHELL_BUILTIN(disown, LangBuiltins::disown, "[-a | %N...]", "Forget jobs: they go on, and end on their own")
-BMDS_SHELL_BUILTIN(jobs, LangBuiltins::jobs, "[-l | -p]", "List background jobs (-l: with pids, -p: only pids)")
+BMDS_SHELL_BUILTIN(bg, LangBuiltins::bg, "[%N...]", "Continue stopped jobs in the background")
+BMDS_SHELL_BUILTIN(disown, LangBuiltins::disown, "[-h] [-a | %N...]",
+                   "Forget jobs: they go on, and end on their own (-h: keep them, but not hung up with the shell)")
+BMDS_SHELL_BUILTIN(fg, LangBuiltins::fg, "[%N]", "Continue a job in the foreground and wait for it")
+BMDS_SHELL_BUILTIN(jobs, LangBuiltins::jobs, "[-l | -p]", "List jobs (-l: with pids, -p: only pids)")
 BMDS_SHELL_BUILTIN(wait, LangBuiltins::wait, "[%N | pid]...",
                    "Wait for jobs to end (all of them without arguments); the last one's status")
 

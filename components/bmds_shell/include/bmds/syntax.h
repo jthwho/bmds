@@ -141,10 +141,17 @@ struct SimpleNode : Node {
                 SimpleNode() : Node(NodeKind::Simple) {}
 };
 
-/** @brief `[!] a | b | c` (also a lone `! a`). `|&` adds `2>&1` to the left command. */
+/**
+ * @brief `[!] a | b | c` (also a lone `! a`). `|&` adds `2>&1` to the left command.
+ *
+ * `source` is the commands' text (without `!`), which a job-control shell
+ * runs as a subshell process (devplan/processes.md §3.7.1).
+ */
 struct PipelineNode : Node {
-                Node *commands = nullptr;
-                bool  negated = false;
+                Node      *commands = nullptr;
+                StringView source; ///< The commands as written.
+                bool       negated = false;
+                bool       hasHereDoc = false; ///< A command has a here-document (its body may be outside `source`).
                 PipelineNode() : Node(NodeKind::Pipeline) {}
 };
 

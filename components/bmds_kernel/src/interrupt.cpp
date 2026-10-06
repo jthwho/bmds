@@ -11,6 +11,13 @@
 
 BMDS_NAMESPACE_BEGIN
 
+namespace {
+
+        // How often a parked waiter without a slot in the list looks at the hold.
+        constexpr unsigned int UnwatchedParkMs = 10;
+
+} // namespace
+
 // Lost wakeup: a waiter publishes its semaphore (WaitList::add), then reads
 // the flag; a raiser sets the flag, then releases the waiters. At least one
 // sees the other (both sequentially consistent).
@@ -27,14 +34,51 @@ void Interrupt::raiseFromIsr() {
         return;
 }
 
-Error Interrupt::wait(Semaphore &semaphore, const Deadline &deadline, uint32_t seen) {
-        Error err;
-        {
-                WaitList::Entry entry(_waiters, semaphore);
-                err = raises() != seen ? Error(Error::Interrupted) : semaphore.acquire(deadline);
+void Interrupt::hold() {
+        _held.store(true);
+        _waiters.notify();
+        return;
+}
+
+void Interrupt::resume() {
+        _held.store(false);
+        _waiters.notify();
+        return;
+}
+
+void Interrupt::park() {
+        // As for a raise: the waiter publishes its semaphore, then reads the hold.
+        while (_held.load()) {
+                Semaphore       wake(1, 0);
+                WaitList::Entry entry(_waiters, wake);
+                if (!_held.load()) break;
+                // Without a slot nothing releases it: look again now and then.
+                (void)wake.acquire(entry.isAdded() ? WaitForever : UnwatchedParkMs);
         }
-        if (raises() != seen) return Error::Interrupted;
-        return err;
+        return;
+}
+
+Error Interrupt::wait(Semaphore &semaphore, const Deadline &deadline, uint32_t seen) {
+        for (;;) {
+                park();
+                Error err;
+                bool  waited = false;
+                {
+                        WaitList::Entry entry(_waiters, semaphore);
+                        if (raises() == seen && !_held.load()) {
+                                err = semaphore.acquire(deadline);
+                                waited = true;
+                        }
+                }
+                if (_held.load()) {
+                        // Held meanwhile: what was taken is taken after the hold.
+                        if (waited && err.isOk()) semaphore.release();
+                        continue;
+                }
+                if (raises() != seen) return Error::Interrupted;
+                if (!waited) continue; // held, and resumed already
+                return err;
+        }
 }
 
 Interrupt::Watch::Watch(Interrupt &interrupt, Semaphore &semaphore) : _entry(interrupt._waiters, semaphore) {}

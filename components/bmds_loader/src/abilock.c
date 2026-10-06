@@ -84,6 +84,7 @@ _Static_assert(BMDS_O_READ == 0x01 && BMDS_O_WRITE == 0x02 && BMDS_O_CREATE == 0
 _Static_assert(BMDS_O_TRUNC == 0x08 && BMDS_O_APPEND == 0x10 && BMDS_O_EXCL == 0x20, "ABI: open flags");
 _Static_assert(BMDS_O_CLOEXEC == 0x40 && BMDS_FD_CLOEXEC == 0x1, "ABI: close-on-exec flags");
 _Static_assert(BMDS_WAIT_NOHANG == 0x1 && BMDS_PROC_SELF == 0 && BMDS_PROC_PARENT == 1, "ABI: process flags");
+_Static_assert(BMDS_WAIT_UNTRACED == 0x2 && BMDS_WAIT_CONTINUED == 0x4, "ABI: wait flags");
 _Static_assert(BMDS_TYPE_FILE == 1 && BMDS_TYPE_DIRECTORY == 2 && BMDS_TYPE_DEVICE == 3, "ABI: file types");
 _Static_assert(BMDS_ATTR_READONLY == 0x01 && BMDS_ATTR_HIDDEN == 0x02, "ABI: attributes");
 _Static_assert(BMDS_ATTR_SYSTEM == 0x04 && BMDS_ATTR_ARCHIVE == 0x20, "ABI: attributes");

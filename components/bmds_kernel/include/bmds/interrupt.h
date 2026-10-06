@@ -38,6 +38,11 @@ BMDS_NAMESPACE_BEGIN
  * used with `wait()` must be an "event happened" signal whose takers
  * re-check their condition (the usual loop).
  *
+ * It can also be **held** (a stopped process's, devplan/processes.md
+ * §3.7.1): `wait()` and `sleep()` then park until it is resumed, neither
+ * returning nor timing out meanwhile, and code between waits parks in
+ * `park()`. A raise while held is seen once resumed.
+ *
  * No allocation, no FreeRTOS objects of its own; constant-initializable.
  *
  * @par Thread Safety
@@ -82,6 +87,30 @@ class Interrupt {
                 void clear() { _raises.store(0); }
 
                 /**
+                 * @brief Holds its waiters: they park until `resume()` (task context).
+                 * @nonblocking
+                 */
+                void hold();
+
+                /**
+                 * @brief Ends a hold: parked waiters go on (task context).
+                 * @nonblocking
+                 */
+                void resume();
+
+                /**
+                 * @brief Returns true while held.
+                 * @isrsafe
+                 */
+                bool isHeld() const { return _held.load(); }
+
+                /**
+                 * @brief Waits while held (at once if not): for code between waits.
+                 * @blocking
+                 */
+                void park();
+
+                /**
                  * @brief Takes @p semaphore, giving up at @p deadline or when raised.
                  * @return `Ok`, `Timeout`, or `Interrupted` (also if already raised).
                  * @blocking
@@ -94,6 +123,9 @@ class Interrupt {
                  *
                  * For a waiter that has handled the raises so far and waits for
                  * the next (with @p seen 0, the same as the plain `wait()`).
+                 *
+                 * While held it parks: it returns only once resumed (a deadline that
+                 * passed meanwhile then times out, a raise meanwhile interrupts).
                  *
                  * @return `Ok`, `Timeout`, or `Interrupted` (also if already past @p seen).
                  * @blocking
@@ -173,6 +205,7 @@ class Interrupt {
 
         private:
                 std::atomic<uint32_t>  _raises{0}; // since clear(); raised while non-zero
+                std::atomic<bool>      _held{false};
                 WaitListOf<MaxWaiters> _waiters;
 };
 

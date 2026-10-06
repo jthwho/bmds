@@ -281,6 +281,7 @@ namespace {
                 Running &run = *static_cast<Running *>(arg);
                 TaskOwner::setCurrent(&run);
                 Interrupt::setCurrent(&run.process->signals().interrupt());
+                run.process->signals().interrupt().park(); // stopped before it ran
                 using Entry = int32_t (*)(const bmds_sys_t *, int32_t, char **, char **);
                 const Entry   entry = reinterpret_cast<Entry>(run.entry);
                 const int32_t status =
@@ -296,6 +297,7 @@ namespace {
                 TaskOwner::setCurrent(&run);
                 Interrupt::setCurrent(&run.process->signals().interrupt());
                 run.inKernel.store(true);
+                run.process->signals().interrupt().park(); // stopped before it ran
                 int status = 0;
                 {
                         Process         &p = *run.process;
@@ -412,13 +414,25 @@ namespace {
                 for (;;) vTaskSuspend(nullptr);
         }
 
-        // Sends signals (programs.md §15). `post()` and `killTask()` run with
-        // the process table locked; programs caught in program code are ended
-        // when the Sender goes, after the lock.
+        void tellParent(int32_t parent);
+
+        // Records that @p pid stopped (by @p sig) or continued (0), and tells its parent.
+        void recordChange(int32_t pid, int sig) {
+                const int32_t parent = processes->setStopped(pid, sig);
+                if (parent > 0) tellParent(parent);
+                return;
+        }
+
+        // Sends signals (programs.md §15). `post()`, `killTask()` and the stop handshake run with
+        // the process table locked; programs caught in program code are ended, and stops and
+        // continues recorded, when the Sender goes, after the lock.
         class Sender {
                 public:
                         Sender() : _self(Running::ofCurrentTask()) {}
-                        ~Sender() { endFrozen(); }
+                        ~Sender() {
+                                endFrozen();
+                                for (int i = 0; i < _changeCount; ++i) recordChange(_changes[i].pid, _changes[i].sig);
+                        }
                         Sender(const Sender &) = delete;
                         Sender &operator=(const Sender &) = delete;
 
@@ -433,10 +447,14 @@ namespace {
                                         return false;
                                 const Signals::Posted posted = s.post(sig, code);
                                 if (posted == Signals::Posted::Dropped) return false;
+                                if (posted == Signals::Posted::Stop) stopTask(run, *p, pid, sig);
+                                if (posted == Signals::Posted::Continue) continueTask(run, pid);
                                 // A vfork child (or its parent while it runs) ends through
-                                // the SDK; SIGKILL takes the whole task.
-                                if (posted == Signals::Posted::Terminate && p == run.process &&
-                                    (run.depth == 0 || sig == BMDS_SIGKILL)) {
+                                // the SDK; SIGKILL takes the whole task. A continue may let a
+                                // signal that came while it was stopped end it.
+                                const bool ends = posted == Signals::Posted::Terminate ||
+                                                  (posted == Signals::Posted::Continue && s.terminateSignal() != 0);
+                                if (ends && p == run.process && (run.depth == 0 || sig == BMDS_SIGKILL)) {
                                         const int ending = sig == BMDS_SIGKILL ? sig : s.terminateSignal();
                                         killTask(run, ProcessTable::killedStatus(ending));
                                 }
@@ -460,7 +478,41 @@ namespace {
                                 return;
                         }
 
+                        // Process @p pid of @p run stopped (its interrupt is held): a task in
+                        // program code is suspended there, one in a call parks.
+                        void stopTask(Running &run, Process &p, int32_t pid, int sig) {
+                                noteChange(pid, sig);
+                                if (&p != run.current || &run == _self || run.kill.load() || run.suspendedForStop)
+                                        return;
+                                (void)run.task.suspend();
+                                if (run.inKernel.load()) {
+                                        (void)run.task.resume();
+                                } else {
+                                        run.suspendedForStop = true;
+                                }
+                                return;
+                        }
+
+                        // Process @p pid of @p run continued (the hold is released).
+                        void continueTask(Running &run, int32_t pid) {
+                                noteChange(pid, 0);
+                                if (!run.suspendedForStop) return;
+                                run.suspendedForStop = false;
+                                (void)run.task.resume();
+                                return;
+                        }
+
                 private:
+                        struct Change {
+                                        int32_t pid;
+                                        int     sig; // 0: continued
+                        };
+
+                        void noteChange(int32_t pid, int sig) {
+                                if (_changeCount < ProcessTable::Capacity) _changes[_changeCount++] = Change{pid, sig};
+                                return;
+                        }
+
                         // Suspended in program code: nothing else touches them now.
                         void endFrozen() {
                                 for (int i = 0; i < _count; ++i) {
@@ -475,7 +527,25 @@ namespace {
                         Running *_self;
                         Running *_frozen[ProcessTable::Capacity];
                         int      _count = 0;
+                        Change   _changes[ProcessTable::Capacity];
+                        int      _changeCount = 0;
         };
+
+        // Sends @p sig to process @p pid from the kernel.
+        void signalProcess(int32_t pid, int sig) {
+                Sender sender;
+                (void)processes->withProcess(pid, [&](void *runtime) {
+                        if (runtime != nullptr)
+                                (void)sender.post(*static_cast<Running *>(runtime), pid, sig, BMDS_SI_KERNEL);
+                });
+                return;
+        }
+
+        // A child of @p parent ended, stopped or continued: SIGCHLD.
+        void tellParent(int32_t parent) {
+                signalProcess(parent, BMDS_SIGCHLD);
+                return;
+        }
 
         // Sends @p sig to every process of group @p group; false if none took it.
         bool signalGroup(int32_t group, int sig, int code) {
@@ -488,16 +558,6 @@ namespace {
                 return taken;
         }
 
-        // Sends @p sig to every process of session @p session.
-        void signalSession(int32_t session, int sig) {
-                Sender sender;
-                processes->forEachInSession(session, [&](int32_t pid, void *runtime) {
-                        if (runtime != nullptr)
-                                (void)sender.post(*static_cast<Running *>(runtime), pid, sig, BMDS_SI_KERNEL);
-                });
-                return;
-        }
-
         // Returns true if a process of group @p group has @p sig pending.
         bool groupHasPending(int32_t group, int sig) {
                 bool pending = false;
@@ -508,15 +568,26 @@ namespace {
                 return pending;
         }
 
-        // The console's signals, to its foreground group (SIGHUP: its session). A Ctrl-C after one
-        // no process took, or that is still pending, ends the group (SIGKILL).
+        // The console's signals, to its foreground group. A hangup goes to the session's leader (the
+        // shell, which hangs up its own jobs) and the foreground group, as Linux's: a job its shell
+        // disowned, or one run by nohup or setsid, lives on. A Ctrl-C after one no process took, or
+        // that is still pending, ends the group (SIGKILL).
         void deliverConsoleSignals(Console &console) {
                 const uint32_t set = console.takeSignals();
                 for (int sig = 1; sig < Signals::Count; ++sig) {
                         if ((set & Signals::bit(sig)) == 0) continue;
                         if (sig == BMDS_SIGHUP) {
-                                if (const int32_t session = console.session(); session > 0)
-                                        signalSession(session, BMDS_SIGHUP);
+                                // Continued after it, or a stopped process would never see it.
+                                const int32_t session = console.session();
+                                const int32_t foreground = console.foreground();
+                                if (session > 0) {
+                                        signalProcess(session, BMDS_SIGHUP);
+                                        signalProcess(session, BMDS_SIGCONT);
+                                }
+                                if (foreground > 0 && foreground != session) {
+                                        (void)signalGroup(foreground, BMDS_SIGHUP, BMDS_SI_KERNEL);
+                                        (void)signalGroup(foreground, BMDS_SIGCONT, BMDS_SI_KERNEL);
+                                }
                                 continue;
                         }
                         const int32_t group = console.foreground();
@@ -558,6 +629,30 @@ namespace {
                 return;
         }
 
+        // The consoles' read hook: a process of the console's session outside its foreground group
+        // gets SIGTTIN (its group) and parks while stopped, then looks again; with SIGTTIN ignored or
+        // blocked the read fails (EIO), caught it is interrupted (devplan/processes.md §3.7.1).
+        Error admitReader(Console &console) {
+                Running *const run = Running::ofCurrentTask();
+                if (run == nullptr) return Error::Ok;
+                for (;;) {
+                        // A signal due (one that came while it was stopped, say) comes first.
+                        if (run->current->signals().interrupt().isRaised()) return Error::Interrupted;
+                        const int32_t session = console.session();
+                        const int32_t pid = run->currentPid;
+                        const int32_t group = processes->groupOf(pid);
+                        if (session == 0 || processes->sessionOf(pid) != session || console.foreground() == group)
+                                return Error::Ok;
+                        Signals &s = run->current->signals();
+                        if (s.action(BMDS_SIGTTIN) == Signals::Action::Ignore ||
+                            (s.blocked() & Signals::bit(BMDS_SIGTTIN)) != 0)
+                                return Error::IoError;
+                        (void)signalGroup(group, BMDS_SIGTTIN, BMDS_SI_KERNEL);
+                        if (!s.isStopped()) return Error::Interrupted;
+                        s.interrupt().park();
+                }
+        }
+
         // Process @p pid (of @p p) is ending: a terminal's foreground it held goes back to its
         // parent's group (or the session's) once no other process of its group runs; a session
         // leader's terminal has no session any more, and its foreground group gets SIGHUP.
@@ -581,21 +676,26 @@ namespace {
                                 console->setForeground(inSession ? processes->groupOf(parent) : session);
                         }
                 }
-                if (hangUp != 0) (void)signalGroup(hangUp, BMDS_SIGHUP, BMDS_SI_KERNEL);
+                if (hangUp != 0) {
+                        (void)signalGroup(hangUp, BMDS_SIGHUP, BMDS_SI_KERNEL);
+                        (void)signalGroup(hangUp, BMDS_SIGCONT, BMDS_SI_KERNEL);
+                }
                 return;
         }
 
-        // Records that @p pid ended with @p status, and tells its parent (SIGCHLD).
+        // Records that @p pid ended with @p status, and tells its parent (SIGCHLD). Its stopped
+        // children, which nobody would continue now, are hung up and continued (Linux's rule for
+        // orphaned process groups, per process).
         void recordEnd(int32_t pid, int32_t status) {
+                int32_t       stopped[ProcessTable::Capacity];
+                const size_t  count = processes->stoppedChildren(pid, stopped, ProcessTable::Capacity);
                 const int32_t parent = processes->parentOf(pid);
                 processes->exited(pid, status);
-                if (parent <= 0) return;
-                Sender sender;
-                (void)processes->withProcess(parent, [&](void *runtime) {
-                        if (runtime != nullptr)
-                                (void)sender.post(*static_cast<Running *>(runtime), parent, BMDS_SIGCHLD,
-                                                  BMDS_SI_KERNEL);
-                });
+                for (size_t i = 0; i < count && i < ProcessTable::Capacity; ++i) {
+                        signalProcess(stopped[i], BMDS_SIGHUP);
+                        signalProcess(stopped[i], BMDS_SIGCONT);
+                }
+                if (parent > 0) tellParent(parent);
                 return;
         }
 
@@ -623,15 +723,23 @@ namespace {
 // --- Running ------------------------------------------------------------------
 
 void Running::leave() {
-        Signals &s = current->signals();
-        // A vfork child is ended by the SDK (the hint); its parent once it is back.
-        if (depth == 0) {
-                if (const int sig = s.terminateSignal(); sig != 0) finish(ProcessTable::killedStatus(sig));
+        for (;;) {
+                Signals &s = current->signals();
+                // A stop signal the call unblocked stops it now; a stopped process parks here.
+                if (const int sig = s.stopSignal(); sig != 0 && s.stopWith(sig)) recordChange(currentPid, sig);
+                s.interrupt().park();
+                // A vfork child is ended by the SDK (the hint); its parent once it is back.
+                if (depth == 0) {
+                        if (const int sig = s.terminateSignal(); sig != 0) finish(ProcessTable::killedStatus(sig));
+                }
+                if (hint != nullptr) *hint = s.isDue() ? 1 : 0;
+                inKernel.store(false);
+                if (kill.load()) finish(killStatus.load());
+                // Stopped meanwhile: a stopper that saw it in the kernel left it to park (the
+                // handshake); one that saw it out suspended it before this.
+                if (!s.isStopped()) return;
+                inKernel.store(true);
         }
-        if (hint != nullptr) *hint = s.isDue() ? 1 : 0;
-        inKernel.store(false);
-        if (kill.load()) finish(killStatus.load());
-        return;
 }
 
 Process *Running::processOf(int32_t id) const {
@@ -841,9 +949,12 @@ int32_t Running::exec(const char *path, char *const *argv, char *const *envp) {
 }
 
 int32_t Running::wait(int32_t child, int32_t *status, uint32_t flags) {
-        if ((flags & ~BMDS_WAIT_NOHANG) != 0) return -BMDS_EINVAL;
+        if ((flags & ~(BMDS_WAIT_NOHANG | BMDS_WAIT_UNTRACED | BMDS_WAIT_CONTINUED)) != 0) return -BMDS_EINVAL;
+        uint32_t reap = 0;
+        if ((flags & BMDS_WAIT_UNTRACED) != 0) reap |= ProcessTable::ReapStopped;
+        if ((flags & BMDS_WAIT_CONTINUED) != 0) reap |= ProcessTable::ReapContinued;
         for (;;) {
-                const Result<ProcessTable::Ended> ended = processes->reap(currentPid, child);
+                const Result<ProcessTable::Ended> ended = processes->reap(currentPid, child, reap);
                 if (ended.isOk()) {
                         if (status != nullptr) *status = ended.value().status;
                         return ended.value().pid;
@@ -853,7 +964,7 @@ int32_t Running::wait(int32_t child, int32_t *status, uint32_t flags) {
                 const Error err = current->signals().interrupt().wait(current->childEvent(), Deadline(WaitForever));
                 if (err != Error::Interrupted) continue;
                 // A child that ended meanwhile (its SIGCHLD may be the signal) still counts.
-                const Result<ProcessTable::Ended> late = processes->reap(currentPid, child);
+                const Result<ProcessTable::Ended> late = processes->reap(currentPid, child, reap);
                 if (late.isOk()) {
                         if (status != nullptr) *status = late.value().status;
                         return late.value().pid;
@@ -990,15 +1101,47 @@ int32_t Running::termForeground(int32_t fd, int32_t pgid) {
         return pgid;
 }
 
-Result<int32_t> Running::waitChild(int32_t child, bool block, int32_t &status) {
+Result<int32_t> Running::waitChild(int32_t child, uint32_t flags, int32_t &status) {
         if (child <= 0) return makeError<int32_t>(Error::NotExist);
-        const int32_t r = wait(child, &status, block ? 0 : BMDS_WAIT_NOHANG);
+        const uint32_t how = ((flags & WaitBlock) == 0 ? BMDS_WAIT_NOHANG : 0u) |
+                             ((flags & WaitStopped) != 0 ? BMDS_WAIT_UNTRACED : 0u) |
+                             ((flags & WaitContinued) != 0 ? BMDS_WAIT_CONTINUED : 0u);
+        const int32_t r = wait(child, &status, how);
         if (r >= 0) return makeResult(r);
         return makeError<int32_t>(r == -BMDS_EINTR ? Error::Interrupted : Error::NotExist);
 }
 
+Error Running::signal(int32_t target, int sig) {
+        switch (sendSignalFrom(currentPid, target, sig)) {
+                case 0: return Error::Ok;
+                case -BMDS_ESRCH: return Error::NotExist;
+                case -BMDS_EPERM: return Error::PermissionDenied;
+                default: return Error::Invalid;
+        }
+}
+
+Error Running::setForeground(int32_t group) {
+        Console *console = current != nullptr ? current->console() : nullptr;
+        if (console == nullptr) return Error::NotSupported;
+        Mutex::Locker locker(*groupLock, WaitForever);
+        const int32_t session = processes->sessionOf(currentPid);
+        if (session == 0 || console->session() != session) return Error::NotSupported;
+        const int32_t to = group != 0 ? group : processes->groupOf(currentPid);
+        if (!processes->hasGroupInSession(to, session)) return Error::PermissionDenied;
+        console->setForeground(to);
+        console->setUnansweredGroup(0);
+        return Error::Ok;
+}
+
 void Running::disownChild(int32_t child) {
-        if (child > 0 && processes->parentOf(child) == currentPid) processes->detach(child);
+        if (child <= 0 || processes->parentOf(child) != currentPid) return;
+        const bool stopped = processes->isStopped(child);
+        processes->detach(child);
+        // An orphan now: if stopped, nobody would continue it (the rule of recordEnd()).
+        if (stopped) {
+                signalProcess(child, BMDS_SIGHUP);
+                signalProcess(child, BMDS_SIGCONT);
+        }
         return;
 }
 
@@ -1029,7 +1172,10 @@ Error Loader::init() {
                 config.priority = CONFIG_BMDS_SHELL_PRIORITY + 1;
                 err = signalTask.start(config, signalTaskMain, nullptr);
         }
-        if (err.isOk()) Console::setSignalHook(queueConsoleSignals);
+        if (err.isOk()) {
+                Console::setSignalHook(queueConsoleSignals);
+                Console::setReadHook(admitReader);
+        }
         return err;
 }
 
@@ -1047,7 +1193,9 @@ size_t Loader::listProcesses(Span<ProcessInfo> out) {
                         p.group = v.group;
                         p.session = v.session;
                         p.status = v.status;
-                        p.state = v.ended ? ProcessInfo::State::Zombie : ProcessInfo::State::Running;
+                        p.state = v.ended     ? ProcessInfo::State::Zombie
+                                  : v.stopped ? ProcessInfo::State::Stopped
+                                              : ProcessInfo::State::Running;
                         if (const auto *run = static_cast<Running *>(v.runtime); run != nullptr) {
                                 std::memcpy(p.command, run->command, sizeof(p.command));
                                 const Process *process = run->processOf(v.pid);
@@ -1134,6 +1282,21 @@ namespace {
                 return;
         }
 
+
+        // A job (group @p group) that stopped, or (not @p stopped) ended leaving nobody in its group,
+        // had @p console's foreground: it goes back to the group of @p parent, the shell that waited
+        // for it (devplan/processes.md §3.7.1).
+        void giveTerminalBack(Console *console, int32_t group, int32_t parent, bool stopped) {
+                if (console == nullptr || parent <= 0 || group <= 0) return;
+                Mutex::Locker locker(*groupLock, WaitForever);
+                const int32_t session = processes->sessionOf(parent);
+                if (session == 0 || console->session() != session || console->foreground() != group) return;
+                if (!stopped && processes->hasRunningInGroup(group, 0)) return;
+                console->setForeground(processes->groupOf(parent));
+                console->setUnansweredGroup(0);
+                return;
+        }
+
 } // namespace
 
 // Loads and starts the program in @p request, its end to release @p ended: its pid. The terminal's
@@ -1184,6 +1347,11 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
                 report(request, "out of memory");
                 Memory::free(image.memory);
                 return makeError<int32_t>(Error::NoMem);
+        }
+        // What a job-control shell runs without job control can't be stopped (devplan/processes.md §3.7.1).
+        if (request.ignoreStops) {
+                for (int sig : {BMDS_SIGTSTP, BMDS_SIGTTIN, BMDS_SIGTTOU})
+                        (void)process->signals().setAction(sig, Signals::Action::Ignore);
         }
         List<StringView> environment;
         String           tz;
@@ -1278,21 +1446,39 @@ Result<int> Loader::run(const Request &request) {
         const Result<int32_t> started = begin(request, ended, savedMode, parent);
         if (started.isError()) return makeError<int>(started.error());
         const int32_t pid = started.value();
+        const int32_t group = processes->groupOf(pid);
         // Signals reach the program from its terminal (its foreground group). One the caller
         // catches (an interactive shell's SIGINT) leaves it waiting; one that ends the caller
         // leaves the child an orphan (it won't release `ended`, about to go).
-        Running *const self = Running::ofCurrentTask();
+        Running *const              self = Running::ofCurrentTask();
+        const bool                  untraced = request.stopped != nullptr && self != nullptr;
+        Result<ProcessTable::Ended> result = makeError<ProcessTable::Ended>(Error::NotExist);
         for (Interrupt *interrupt = request.interrupt;;) {
                 const uint32_t seen = interrupt != nullptr ? interrupt->raises() : 0;
                 const Error    err = interrupt != nullptr ? interrupt->wait(ended, Deadline(WaitForever), seen)
                                                           : ended.acquire(WaitForever);
-                if (err != Error::Interrupted) break;
-                if (self != nullptr && !self->isEnding()) continue;
-                processes->detach(pid);
-                if (request.console != nullptr) request.console->setMode(savedMode);
-                return makeError<int>(Error::Interrupted);
+                if (err == Error::Interrupted) {
+                        if (self != nullptr && !self->isEnding()) continue;
+                        processes->detach(pid);
+                        if (request.console != nullptr) request.console->setMode(savedMode);
+                        return makeError<int>(Error::Interrupted);
+                }
+                // Ended, or stopped or continued (`ended` is released for each).
+                result = processes->reap(parent, pid, untraced ? uint32_t(ProcessTable::ReapStopped) : 0u);
+                if (result.isError() && result.error() == Error::WouldBlock) continue;
+                if (result.isOk() && ProcessTable::isStoppedStatus(result.value().status)) {
+                        // Stopped: the caller's child from now on, and the terminal is the caller's again.
+                        processes->setNotify(pid, &self->current->childEvent());
+                        giveTerminalBack(request.console, group, parent, true);
+                        if (request.console != nullptr) request.console->setMode(savedMode);
+                        *request.stopped = pid;
+                        return makeResult(static_cast<int>(128 + ((result.value().status >> 8) & 0x7f)));
+                }
+                break;
         }
-        const Result<ProcessTable::Ended> result = processes->reap(parent, pid);
+        // Its group may outlive it with nobody in it (its last member made a session of its own
+        // after it ended: setsid): the terminal is the caller's again all the same.
+        giveTerminalBack(request.console, group, parent, false);
         if (request.console != nullptr) request.console->setMode(savedMode);
         drainStops();
         const int32_t status = result.isOk() ? result.value().status : ProcessTable::exitStatus(127);

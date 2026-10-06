@@ -90,8 +90,9 @@ Result<int32_t> ProcessTable::add(int32_t parent, int32_t group, int32_t session
                 pid = pid >= MaxPid ? InitPid + 1 : pid + 1;
         } while (isIdInUse(pid));
         _lastPid = pid;
-        *slot = Entry{pid,     parent, groupId > 0 ? groupId : pid, sessionId != 0 ? sessionId : pid, 0, notify,
-                      runtime, false};
+        *slot = Entry{
+                pid,   parent, groupId > 0 ? groupId : pid, sessionId != 0 ? sessionId : pid, 0, notify, runtime, 0,
+                false, false};
         return makeResult(pid);
 }
 
@@ -182,7 +183,41 @@ void ProcessTable::exited(int32_t pid, int32_t status) {
         return;
 }
 
-Result<ProcessTable::Ended> ProcessTable::reap(int32_t parent, int32_t pid) {
+int32_t ProcessTable::setStopped(int32_t pid, int signal) {
+        Mutex::Locker locker(_lock, WaitForever);
+        Entry        *e = find(pid);
+        if (e == nullptr || e->ended || e->stopped == (signal != 0)) return 0;
+        e->stopped = signal != 0;
+        e->change = signal != 0 ? stoppedStatus(signal) : ContinuedStatus;
+        if (e->notify != nullptr) e->notify->release();
+        return e->parent > 0 ? e->parent : 0;
+}
+
+bool ProcessTable::isStopped(int32_t pid) {
+        Mutex::Locker locker(_lock, WaitForever);
+        const Entry  *e = find(pid);
+        return e != nullptr && !e->ended && e->stopped;
+}
+
+size_t ProcessTable::stoppedChildren(int32_t parent, int32_t *out, size_t capacity) {
+        Mutex::Locker locker(_lock, WaitForever);
+        size_t        n = 0;
+        for (int i = 0; _entries != nullptr && i < Capacity; ++i) {
+                const Entry &c = _entries[i];
+                if (c.pid == 0 || c.ended || !c.stopped || c.parent != parent) continue;
+                if (n < capacity) out[n] = c.pid;
+                ++n;
+        }
+        return n;
+}
+
+void ProcessTable::setNotify(int32_t pid, Semaphore *notify) {
+        Mutex::Locker locker(_lock, WaitForever);
+        if (Entry *e = find(pid); e != nullptr && !e->ended) e->notify = notify;
+        return;
+}
+
+Result<ProcessTable::Ended> ProcessTable::reap(int32_t parent, int32_t pid, uint32_t flags) {
         Mutex::Locker locker(_lock, WaitForever);
         if (_entries == nullptr) return makeError<Ended>(Error::NotExist);
         bool waiting = false;
@@ -190,6 +225,13 @@ Result<ProcessTable::Ended> ProcessTable::reap(int32_t parent, int32_t pid) {
                 Entry &c = _entries[i];
                 if (c.pid == 0 || c.parent != parent || (pid != -1 && c.pid != pid)) continue;
                 if (!c.ended) {
+                        const bool wanted = c.change != 0 && (isStoppedStatus(c.change) ? (flags & ReapStopped) != 0
+                                                                                        : (flags & ReapContinued) != 0);
+                        if (wanted) {
+                                const Ended changed{c.pid, c.change};
+                                c.change = 0;
+                                return makeResult(changed);
+                        }
                         waiting = true;
                         continue;
                 }
