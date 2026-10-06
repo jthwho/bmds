@@ -750,7 +750,36 @@ void TerminalScreen::softReset() {
         return;
 }
 
+// OSC 0 (the icon's name and the title) and OSC 2 (the title) set the title; the rest are ignored.
+void TerminalScreen::oscDispatch(StringView data) {
+        if (data.size() < 2 || data[1] != ';' || (data[0] != '0' && data[0] != '2')) return;
+        setTitle(data.mid(2));
+        return;
+}
+
+// The title, cut to MaxTitle bytes on a character's boundary, an incomplete last character left
+// out (the parser cuts long OSC strings anywhere).
+void TerminalScreen::setTitle(StringView title) {
+        size_t n = title.size() < MaxTitle ? title.size() : MaxTitle;
+        if (n < title.size())
+                while (n > 0 && Utf8::isContinuation(static_cast<uint8_t>(title[n]))) --n;
+        size_t lead = n;
+        while (lead > 0 && Utf8::isContinuation(static_cast<uint8_t>(title[lead - 1]))) --lead;
+        if (lead > 0) {
+                const auto   b = static_cast<uint8_t>(title[lead - 1]);
+                const size_t length = b >= 0xf0 ? 4 : b >= 0xe0 ? 3 : b >= 0xc0 ? 2 : 1;
+                if (n - (lead - 1) < length) n = lead - 1;
+        }
+        if (n == _titleLength && std::memcmp(_title, title.data(), n) == 0) return;
+        std::memcpy(_title, title.data(), n);
+        _title[n] = '\0';
+        _titleLength = static_cast<uint8_t>(n);
+        ++_titleGeneration;
+        return;
+}
+
 void TerminalScreen::hardReset() {
+        setTitle(StringView());
         _cursor = Cursor();
         _saved[0] = _saved[1] = Cursor();
         _top = 0;

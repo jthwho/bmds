@@ -9,8 +9,11 @@
  * shell tasks.
  */
 
+#include <atomic>
 #include <new>
 #include <sdkconfig.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <bmds/boot.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
@@ -37,6 +40,10 @@ namespace {
                         Task           task;
         };
 
+        // Sessions that ended, suspended until the next spawn() frees them (a task can't end itself).
+        constexpr size_t                 MaxEnded = 8;
+        constinit std::atomic<Session *> ended[MaxEnded] = {};
+
         void sessionMain(void *arg) {
                 // Keep the first prompt out of the boot report. Boot always
                 // completes, so there is nothing to time out on.
@@ -44,7 +51,31 @@ namespace {
                 Session *session = static_cast<Session *>(arg);
                 if (session->startup.wait != nullptr) session->startup.wait();
                 if (session->startup.script != nullptr) (void)session->shell.sourceIfExists(session->startup.script);
-                session->shell.run();
+                int status = session->shell.run();
+                while (session->startup.exited == nullptr) status = session->shell.run(); // a new prompt
+                session->startup.exited(session->startup.exitedArg, status);
+                bool listed = false;
+                for (std::atomic<Session *> &slot : ended) {
+                        Session *none = nullptr;
+                        if (slot.compare_exchange_strong(none, session, std::memory_order_acq_rel)) {
+                                listed = true;
+                                break;
+                        }
+                }
+                if (!listed) bmdsWarn("Shell: no room to free an ended session: it stays");
+                for (;;) vTaskSuspend(nullptr); // stopped and freed by the next spawn()
+        }
+
+        // The ended sessions' tasks deleted, their memory freed.
+        void reapEnded() {
+                for (std::atomic<Session *> &slot : ended) {
+                        Session *session = slot.exchange(nullptr, std::memory_order_acq_rel);
+                        if (session == nullptr) continue;
+                        (void)session->task.stop();
+                        session->~Session();
+                        Memory::free(session);
+                }
+                return;
         }
 
 } // namespace
@@ -58,6 +89,7 @@ Span<const Command> Shell::registeredCommands() {
 }
 
 Error Shell::spawn(Console &console, const char *name, const Startup &startup) {
+        reapEnded();
         void *mem = Memory::alloc(MemSpace::Psram, sizeof(Session));
         if (mem == nullptr) {
                 bmdsErr("Shell: no memory for session '%s'", name);

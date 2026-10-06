@@ -51,7 +51,6 @@ void Terminal::setLauncher(ProgramLauncher *programs) {
 
 Terminal::Terminal(uint8_t number) : _console(_name, MemSpace::Psram), _number(number) {
         std::snprintf(_name, sizeof(_name), "term%u", number);
-        std::snprintf(_title, sizeof(_title), "Terminal %u", number);
 }
 
 Result<uint8_t> Terminal::open(WindowManager &wm, const Rect &rect) {
@@ -64,9 +63,17 @@ Result<uint8_t> Terminal::open(WindowManager &wm, const Rect &rect) {
                 _cells = static_cast<TextCell *>(Memory::alloc(MemSpace::Internal, sizeof(TextCell) * MaxColumns));
                 if (_cells == nullptr) return makeError<uint8_t>(Error::NoMem);
         }
+        // A new session (the first, or after its shell exited): a fresh screen.
+        if (!isStarted()) {
+                ScreenConsole::Locked locked(_console);
+                locked.screen().reset();
+                (void)locked.screen().setHistory(HistoryLines); // emptied; none without the memory
+        }
+        char title[96];
+        composeTitle(title);
         WindowManager::WindowConfig config;
         config.rect = rect;
-        config.title = _title;
+        config.title = title;
         config.redraw = redraw;
         config.closed = closed;
         config.key = keyTyped;
@@ -87,10 +94,6 @@ Result<uint8_t> Terminal::open(WindowManager &wm, const Rect &rect) {
         if (columns == 0 || rows == 0) return makeError<uint8_t>(Error::Invalid);
         Error err = _console.resize(columns, rows);
         if (err.isError()) return makeError<uint8_t>(err);
-        {
-                ScreenConsole::Locked locked(_console);
-                if (locked.screen().historyCount() == 0) (void)locked.screen().setHistory(HistoryLines); // or none
-        }
         _offset.store(0, std::memory_order_relaxed);
         _all = true;
         _wm = &wm;
@@ -108,12 +111,18 @@ Result<uint8_t> Terminal::open(WindowManager &wm, const Rect &rect) {
                 (void)wm.update(id);
         }
         _console.setChangedHook(changed, this);
-        if (!_started) {
+        _console.setTitleHook(titleChanged, this);
+        if (!isStarted()) {
                 Shell::Startup startup;
                 startup.launcher = launcher;
+                startup.exited = shellExited;
+                startup.exitedArg = this;
+                _started.store(true, std::memory_order_release);
                 err = Shell::spawn(_console, _name, startup);
-                if (err.isError()) return makeError<uint8_t>(err);
-                _started = true;
+                if (err.isError()) {
+                        _started.store(false, std::memory_order_release);
+                        return makeError<uint8_t>(err);
+                }
         }
         return makeResult(id);
 }
@@ -205,6 +214,38 @@ void Terminal::resized(void *arg, uint16_t width, uint16_t height) {
         const uint16_t columns = static_cast<uint16_t>(width / CellWidth < MaxColumns ? width / CellWidth : MaxColumns);
         const uint16_t rows = static_cast<uint16_t>(height / CellHeight);
         if (columns > 0 && rows > 0) (void)self->_console.resize(columns, rows);
+        return;
+}
+
+// The window's title: the program's (OSC 0 or 2) and " - Terminal", or "Terminal".
+void Terminal::composeTitle(char (&out)[96]) {
+        ScreenConsole::Locked locked(_console);
+        const StringView      title = locked.screen().title();
+        if (title.isEmpty()) {
+                std::snprintf(out, sizeof(out), "Terminal");
+        } else {
+                std::snprintf(out, sizeof(out), "%.*s - Terminal", int(title.size()), title.data());
+        }
+        return;
+}
+
+// The program set the title (on the writer's task, no lock held): the window's follows.
+void Terminal::titleChanged(void *arg) {
+        auto         *self = static_cast<Terminal *>(arg);
+        char          title[96];
+        const uint8_t id = self->window();
+        if (id == 0 || self->_wm == nullptr) return;
+        self->composeTitle(title);
+        (void)self->_wm->setTitle(id, StringView(title));
+        return;
+}
+
+// The shell exited (on its task, which then ends): the window closes; the next open() starts anew.
+void Terminal::shellExited(void *arg, int) {
+        auto *self = static_cast<Terminal *>(arg);
+        self->_started.store(false, std::memory_order_release);
+        const uint8_t id = self->window();
+        if (id != 0 && self->_wm != nullptr) (void)self->_wm->close(id);
         return;
 }
 

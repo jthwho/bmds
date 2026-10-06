@@ -21,6 +21,7 @@
 #include <bmds/result.h>
 #include <bmds/semaphore.h>
 #include <bmds/spinlock.h>
+#include <bmds/stringview.h>
 #include <bmds/span.h>
 #include <bmds/task.h>
 #include <bmds/waitlist.h>
@@ -104,6 +105,16 @@ class WindowManager {
                  *        must not call it).
                  */
                 using Wheel = void (*)(void *arg, int notches);
+
+                /**
+                 * @brief A window's icon: @p width × @p height pixels, 0xRRGGBB, rows
+                 *        top first. Kept by the window's owner while it is set.
+                 */
+                struct Icon {
+                                uint16_t        width = 0;
+                                uint16_t        height = 0;
+                                const uint32_t *pixels = nullptr;
+                };
 
                 /** @brief The pointer's shapes. Append only. */
                 enum class Pointer : uint8_t {
@@ -243,6 +254,20 @@ class WindowManager {
                 Error restore(uint8_t id);
 
                 /**
+                 * @brief Sets window @p id's title (copied, `MaxTitle` bytes kept, cut
+                 *        on a character's boundary) and redraws its title bar.
+                 * @return `Ok`, `NotFound`, or `InvalidState` (not running).
+                 */
+                Error setTitle(uint8_t id, StringView title);
+
+                /**
+                 * @brief Sets window @p id's icon (null: none). Kept, not drawn yet:
+                 *        the window menu's button and the panel will (§4j).
+                 * @return `Ok`, `NotFound`, or `InvalidState` (not running).
+                 */
+                Error setIcon(uint8_t id, const Icon *icon);
+
+                /**
                  * @brief Sets window @p id's decorations (`WindowFrame`'s flags);
                  *        the outer rectangle stays and the client area changes.
                  * @return `Ok`, `NotFound`, `InvalidState`, or `Invalid` (not
@@ -356,6 +381,7 @@ class WindowManager {
                                 uint16_t heightStep = 1;
                                 Pointer  pointer = Pointer::Arrow;
                                 bool     hideWhileTyping = false;
+                                const Icon *icon = nullptr; // not drawn yet
                                 Wheel    wheel = nullptr;
                 };
 

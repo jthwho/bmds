@@ -31,6 +31,16 @@ namespace {
 
         constinit StaticObject<WindowManager> managers[WindowManager::MaxManagers];
 
+        // @p title into @p out (MaxTitle bytes at most, cut on a character's boundary), terminated.
+        void copyTitle(char (&out)[WindowManager::MaxTitle + 1], StringView title) {
+                size_t n = title.size() < WindowManager::MaxTitle ? title.size() : WindowManager::MaxTitle;
+                if (n < title.size())
+                        while (n > 0 && (static_cast<uint8_t>(title[n]) & 0xc0u) == 0x80u) --n;
+                std::memcpy(out, title.data(), n);
+                out[n] = '\0';
+                return;
+        }
+
 } // namespace
 
 Result<WindowManager *> WindowManager::manager(size_t number) {
@@ -688,10 +698,11 @@ void WindowManager::drawLayer(size_t z, Span<const Rect> pieces) {
                                 uint32_t icon;
                 };
                 const Button buttons[] = {
-                        {Part::Menu, Role::Button, Role::ButtonMark, Icon::Menu},
-                        {Part::Minimize, Role::Button, Role::ButtonMark, Icon::Minimize},
-                        {Part::Maximize, Role::Button, Role::ButtonMark, w.maximized ? Icon::Restore : Icon::Maximize},
-                        {Part::Close, Role::CloseBox, Role::CloseMark, Icon::Close},
+                        {Part::Menu, Role::Button, Role::ButtonMark, bmds::Icon::Menu},
+                        {Part::Minimize, Role::Button, Role::ButtonMark, bmds::Icon::Minimize},
+                        {Part::Maximize, Role::Button, Role::ButtonMark,
+                         w.maximized ? bmds::Icon::Restore : bmds::Icon::Maximize},
+                        {Part::Close, Role::CloseBox, Role::CloseMark, bmds::Icon::Close},
                 };
                 for (const Button &b : buttons) {
                         const Rect r = f.button(b.part);
@@ -835,10 +846,7 @@ Result<uint8_t> WindowManager::open(const WindowConfig &config) {
         if (err.isError()) return makeError<uint8_t>(err);
         Window &w = _windows[id - 1];
         w = Window();
-        if (config.title != nullptr) {
-                std::strncpy(w.title, config.title, MaxTitle);
-                w.title[MaxTitle] = '\0';
-        }
+        if (config.title != nullptr) copyTitle(w.title, StringView(config.title));
         w.redraw = config.redraw;
         w.closed = config.closed;
         w.key = config.key;
@@ -979,6 +987,25 @@ Error WindowManager::restoreLocked(uint8_t id) {
         if (!w.maximized) return Error::Ok;
         w.maximized = false;
         return resizeLocked(id, placed(w.restore), w.decorations);
+}
+
+Error WindowManager::setTitle(uint8_t id, StringView title) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        auto [at, err] = _stack.rectOf(id);
+        if (err.isError()) return err;
+        copyTitle(_windows[id - 1].title, title);
+        if (!_stack.isHidden(id)) (void)_stack.invalidate(id, frame(id, at).titleBar());
+        changed(_stack.count() > 0 ? _stack.idAt(0) : 0);
+        return Error::Ok;
+}
+
+Error WindowManager::setIcon(uint8_t id, const Icon *icon) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        if (_stack.rectOf(id).isError()) return Error::NotFound;
+        _windows[id - 1].icon = icon;
+        return Error::Ok;
 }
 
 Error WindowManager::setDecorations(uint8_t id, uint8_t decorations) {

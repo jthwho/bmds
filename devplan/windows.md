@@ -489,6 +489,28 @@ The first of step 8's affordances. Resize handles, pointer shapes, the wheel and
   allocated when its window first opens. `win check` draws a terminal from the same view,
   scrolled back or not; `win dump` adds a line with the history's size and the view's place.
 
+## 4j. Window titles and icons from the application; `exit` closes a terminal (2026-10-05; built)
+
+Asked for by the user after 8d.
+
+- **`setTitle(id, text)`** changes a window's title (copied, `MaxTitle` bytes) and redraws its
+  title bar; **`setIcon(id, icon)`** gives it an icon (`WindowManager::Icon`: a size and 0xRRGGBB
+  pixels, kept by the caller). The icon is a skeleton: kept, not drawn yet (the window menu's
+  button and the panel's window list will). `win title N TEXT` sets a title from the shell.
+- **The terminal's title from the program:** `TerminalScreen` takes `OSC 0` and `OSC 2` (xterm's
+  "set the window title"; `OSC 1`, the icon's name, is ignored) and keeps the title (up to 63
+  bytes, cut on a UTF-8 boundary; the parser keeps 62 of an OSC string, cutting anywhere, so an
+  incomplete last character is left out), cleared by `RIS`. `ScreenConsole` calls a title hook, on the
+  writer's task with no lock held, when it changes. The terminal's window is then titled
+  "TITLE - Terminal", or "Terminal" when the title is empty. The session number leaves the title.
+- **`exit` ends a terminal's shell:** `Shell::run()` returns at `exit` (at the prompt) with its
+  status. `Shell::Startup` gains an `exited` callback; a shell spawned without one (the serial
+  console's) starts a new prompt instead, so the serial console never loses its shell. A finished
+  session can't free its own task (a task doesn't end by returning; `Task::stop()` is called from
+  another task): it is put on a list and suspends itself, and the next `Shell::spawn()` stops and
+  frees the ones on the list. The terminal's callback closes its window and marks the session
+  not started, so `win term N` opens a fresh one (the screen reset, the history emptied).
+
 ## 5. Budgets (estimates; measured as the steps land)
 
 At 720p:
@@ -761,3 +783,12 @@ ones once it exists.
     a round takes the count before it delivers them.
   - Size (with step 8c): `bmds_ui` 1,806 bytes more flash and 272 more `.bss`; `bmds_console`
     1,072 more code.
+- **Titles, icons, `exit`** (2026-10-05, §4j): `WindowManager::setTitle()`, `setIcon()` (kept,
+  not drawn), `win title N TEXT`; `TerminalScreen::title()` from `OSC 0`/`OSC 2`;
+  `ScreenConsole::setTitleHook()`; `Shell::run()` returns at `exit`, `Startup::exited`, ended
+  sessions reaped by the next `spawn()`. Host-tested: titles by BEL and ST, `OSC 1` and others
+  ignored, a repeat not reported, a long title cut whole, the empty title, `RIS`. On the board:
+  `printf '\033]2;hello there\007'` titled the window "hello there - Terminal" and an empty one
+  "Terminal" again (`win check` 0 wrong); `exit` closed the window, its task waited suspended,
+  and `win term` reaped it and opened a fresh session (row 0, no history); two exit-and-reopen
+  cycles left free PSRAM at 26,885,076, 26,885,324 and 26,885,332 bytes.

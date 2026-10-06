@@ -94,13 +94,22 @@ class Shell final : public LineCompleter {
                                 const char *script = nullptr;
                                 /** @brief Runs program files (see `setLauncher()`); may be null. */
                                 ProgramLauncher *launcher = nullptr;
+                                /**
+                                 * @brief Called on the shell's task when it exits (`exit` at the
+                                 *        prompt) with its status; the session then ends. Null: a
+                                 *        new prompt instead (the shell never ends).
+                                 */
+                                void (*exited)(void *arg, int status) = nullptr;
+                                void *exitedArg = nullptr; ///< Passed to `exited`.
                 };
 
                 /**
                  * @brief Starts a shell on @p console in its own task.
                  *
                  * Target only. The shell and its stack are allocated from
-                 * `Psram` and run until reboot.
+                 * `Psram`. It runs until it exits with `startup.exited` set
+                 * (else forever); an ended session's task and memory are freed
+                 * by the next `spawn()`.
                  * @param console The console to run on.
                  * @param name    Task name.
                  * @param startup What to do before the first prompt.
@@ -221,10 +230,12 @@ class Shell final : public LineCompleter {
                 int sourceIfExists(StringView path);
 
                 /**
-                 * @brief Runs the shell: prompt, read, execute, forever.
+                 * @brief Runs the shell: prompt, read, execute, until `exit` at
+                 *        the prompt.
+                 * @return The exit status.
                  * @blocking Waits for console input indefinitely.
                  */
-                [[noreturn]] void run();
+                int run();
 
                 /**
                  * @brief Renders a prompt string: backslash escapes (`\h \u \w \W \s \v
@@ -262,6 +273,7 @@ class Shell final : public LineCompleter {
                 ProgramLauncher    *_launcher = nullptr;
                 LineEditor          _editor;
                 uint32_t            _sizeSeen = UINT32_MAX; // the console's size generation exported
+                bool                _exited = false;        // `exit` ran at the prompt
 };
 
 BMDS_NAMESPACE_END

@@ -34,7 +34,8 @@ BMDS_NAMESPACE_BEGIN
  * Whoever draws the screen reads it through `Locked`. After output that
  * changed the screen or moved the cursor, the `changed` hook is called (on
  * the writer's task, no lock held) once, until the owner calls `drawn()`: a
- * burst of output asks for one redraw.
+ * burst of output asks for one redraw. When output changes the screen's
+ * title (`OSC 0`, `OSC 2`), the `title` hook is called, likewise.
  *
  * @par Thread Safety
  * Thread-safe: writers, one reader, the input's producers and the renderer
@@ -59,6 +60,12 @@ class ScreenConsole final : public Console {
 
                 /** @brief Sets the hook called when the screen needs drawing. */
                 void setChangedHook(Changed hook, void *arg);
+
+                /**
+                 * @brief Sets the hook called (on the writer's task, no lock held)
+                 *        each time output changes the screen's title.
+                 */
+                void setTitleHook(Changed hook, void *arg);
 
                 /** @brief The owner drew the screen: the next change calls the hook again. */
                 void drawn() {
@@ -116,6 +123,8 @@ class ScreenConsole final : public Console {
                 std::atomic<bool>     _asked{false}; // the hook called, not yet drawn
                 Changed               _changed = nullptr;
                 void                 *_changedArg = nullptr;
+                Changed               _titleHook = nullptr;
+                void                 *_titleArg = nullptr;
 };
 
 BMDS_NAMESPACE_END

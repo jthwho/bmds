@@ -389,7 +389,7 @@ void Shell::feed(char c) {
                 case LineEditor::Event::Line:
                         if (_console.sizeGeneration() != _sizeSeen) exportTerminal();
                         (void)execute(_editor.line());
-                        start();
+                        if (!_exited) start(); // no prompt after `exit`
                         break;
                 case LineEditor::Event::Cancel:
                         _input.clear(); // abandon an incomplete command too
@@ -447,8 +447,10 @@ void Shell::runInput() {
                                 _executor.clearFlow();
                                 continue;
                         }
-                        // At the prompt, `exit` and stray break/continue/return end the input here.
+                        // At the prompt, `exit` and stray break/continue/return end the input here;
+                        // `exit` ends run() too.
                         if (_executor.flow() != Executor::Flow::Normal) {
+                                if (_executor.flow() == Executor::Flow::Exit) _exited = true;
                                 _executor.clearFlow();
                                 consumed = _input.size();
                                 break;
@@ -502,10 +504,10 @@ int Shell::sourceIfExists(StringView path) {
         return _state.lastStatus;
 }
 
-void Shell::run() {
+int Shell::run() {
         Interrupt::setCurrent(_interrupt);
         start();
-        for (;;) {
+        while (!_exited) {
                 uint8_t buf[32];
                 // An idle shell waits for input indefinitely; it uses no CPU
                 // while it waits.
@@ -518,8 +520,10 @@ void Shell::run() {
                         continue;
                 }
                 if (err.isError()) continue;
-                for (size_t i = 0; i < n; ++i) feed(static_cast<char>(buf[i]));
+                for (size_t i = 0; i < n && !_exited; ++i) feed(static_cast<char>(buf[i]));
         }
+        _exited = false;
+        return _state.lastStatus;
 }
 
 int Shell::runHelp(CommandContext &ctx) {

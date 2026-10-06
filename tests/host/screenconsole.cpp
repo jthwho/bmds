@@ -118,3 +118,43 @@ TEST_CASE("ScreenConsole: the hook is asked once until the screen is drawn") {
         CHECK(console.write(bytes("\x1b[H"), 0).isOk()); // nothing changed
         CHECK(hooks == 2);
 }
+
+TEST_CASE("ScreenConsole: OSC 0 and 2 set the screen's title; the title hook is called on a change") {
+        ScreenConsole console("test", MemSpace::Psram);
+        REQUIRE(console.resize(20, 4).isOk());
+        int titles = 0;
+        console.setTitleHook([](void *arg) { ++*static_cast<int *>(arg); }, &titles);
+        auto title = [&console] {
+                ScreenConsole::Locked locked(console);
+                return std::string(locked.screen().title().data(), locked.screen().title().size());
+        };
+        CHECK(title().empty());
+        CHECK(console.write(bytes("\x1b]0;vi notes.txt\x07"), 0).isOk()); // BEL ends it
+        CHECK(title() == "vi notes.txt");
+        CHECK(titles == 1);
+        CHECK(console.write(bytes("\x1b]2;make\x1b\\"), 0).isOk()); // ST ends it
+        CHECK(title() == "make");
+        CHECK(titles == 2);
+        CHECK(console.write(bytes("\x1b]2;make\x07text"), 0).isOk()); // the same: no call
+        CHECK(titles == 2);
+        CHECK(console.write(bytes("\x1b]1;icon name\x07\x1b]7;file://x\x07"), 0).isOk()); // not the title
+        CHECK(title() == "make");
+        CHECK(titles == 2);
+        // Long titles are cut on a character's boundary: the parser keeps 62 bytes of it, 20
+        // three-byte characters and two bytes of the 21st, which is left out.
+        std::string longTitle = "\x1b]2;";
+        for (int i = 0; i < 30; ++i) longTitle += "\xe2\x96\x91"; // ░
+        longTitle += "\x07";
+        CHECK(console.write(bytes(longTitle.c_str()), 0).isOk());
+        CHECK(title().size() == 60);
+        CHECK(titles == 3);
+        CHECK(console.write(bytes("\x1b]2;\x07"), 0).isOk()); // empty: none
+        CHECK(title().empty());
+        CHECK(titles == 4);
+        CHECK(console.write(bytes("\x1b]0;x\x07\x1b"
+                                  "c"),
+                            0)
+                      .isOk()); // RIS clears it
+        CHECK(title().empty());
+        CHECK(titles == 5); // set and cleared in one write: a call, the title as it was
+}

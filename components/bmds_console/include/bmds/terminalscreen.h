@@ -159,6 +159,15 @@ class TerminalScreen final : private VtHandler {
                 /** @brief Returns true if the program asked for the application keypad (DECKPAM). */
                 bool isApplicationKeypad() const { return _applicationKeypad; }
 
+                /** @brief The longest title kept, in bytes. */
+                static constexpr size_t MaxTitle = 63;
+
+                /** @brief Returns the title the program set (`OSC 0` or `OSC 2`; empty: none). */
+                StringView title() const { return StringView(_title, _titleLength); }
+
+                /** @brief Returns a number that changes whenever the title does. */
+                uint32_t titleGeneration() const { return _titleGeneration; }
+
                 /** @brief Returns true if the program asked for bracketed paste (mode 2004). */
                 bool isBracketedPaste() const { return _bracketedPaste; }
 
@@ -202,7 +211,8 @@ class TerminalScreen final : private VtHandler {
                 void execute(uint8_t control) override;
                 void csiDispatch(const VtParams &params, StringView intermediates, uint8_t final) override;
                 void escDispatch(StringView intermediates, uint8_t final) override;
-                void oscDispatch(StringView) override {}
+                void oscDispatch(StringView data) override;
+                void setTitle(StringView title);
 
                 TerminalCell       *rowOf(uint8_t screen, uint16_t row);
                 const TerminalCell *rowOf(uint8_t screen, uint16_t row) const;
@@ -268,6 +278,9 @@ class TerminalScreen final : private VtHandler {
                 uint16_t      _historyHead = 0;
                 uint16_t      _historyCount = 0;
                 uint32_t      _historyAdded = 0;
+                char          _title[MaxTitle + 1] = {};
+                uint8_t       _titleLength = 0;
+                uint32_t      _titleGeneration = 0;
                 ReplySink     _replySink = nullptr;
                 void         *_replyContext = nullptr;
 };

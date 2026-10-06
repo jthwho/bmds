@@ -984,6 +984,17 @@ namespace {
                 if (args.size() == 3 && std::strcmp(what, "raise") == 0)
                         return parseId(ctx, args[2], id) ? report(ctx, wm->raise(id)) : Shell::ExitUsage;
                 if (args.size() >= 3 && std::strcmp(what, "decorate") == 0) return runDecorate(ctx, *wm, args);
+                if (args.size() >= 3 && std::strcmp(what, "title") == 0) {
+                        if (!parseId(ctx, args[2], id)) return Shell::ExitUsage;
+                        char title[WindowManager::MaxTitle + 1] = {}; // the words joined by spaces
+                        for (size_t i = 3, used = 0; i < args.size() && used < WindowManager::MaxTitle; ++i) {
+                                const int n = std::snprintf(title + used, sizeof(title) - used, "%s%s",
+                                                            i > 3 ? " " : "", args[i]);
+                                if (n < 0) break;
+                                used += size_t(n);
+                        }
+                        return report(ctx, wm->setTitle(id, StringView(title)));
+                }
                 if (args.size() == 3 && std::strcmp(what, "minimize") == 0)
                         return parseId(ctx, args[2], id) ? report(ctx, wm->minimize(id)) : Shell::ExitUsage;
                 if (args.size() == 3 && std::strcmp(what, "maximize") == 0)
@@ -1015,7 +1026,7 @@ BMDS_SHELL_COMMAND(
         "[start [RRGGBB]|stop|list|new [X Y W H] [TITLE]|close N|raise N|move N X Y|drag N X Y|"
         "term [N]|type N TEXT|dump N|scroll N DY|textbench N|color [ROLE RRGGBB]|check|stats|shuffle N|bench [CELLS]|"
         "pointer DX DY [BUTTONS [WHEEL]]|decorate N [all|none|+NAME|-NAME...]|minimize N|maximize N|restore N|"
-        "resize N W H|pointer on/off|key TEXT]",
+        "resize N W H|pointer on/off|key TEXT|title N [TEXT]]",
         "The desktop and its windows on display 0: 'new' opens a test window, 'drag' moves one "
         "as an outline, 'color' lists or sets the palette, 'check' compares every pixel with the stack, "
         "'pointer' moves the pointer as a mouse would (BUTTONS: 1 left, 2 right, 4 middle; WHEEL: notches, "

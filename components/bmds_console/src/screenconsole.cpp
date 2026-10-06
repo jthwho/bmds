@@ -43,11 +43,21 @@ void ScreenConsole::setChangedHook(Changed hook, void *arg) {
         return;
 }
 
+void ScreenConsole::setTitleHook(Changed hook, void *arg) {
+        Mutex::Locker lock(_lock, WaitForever);
+        _titleHook = hook;
+        _titleArg = arg;
+        return;
+}
+
 Result<size_t> ScreenConsole::write(ByteSpan data, unsigned int) {
         Changed hook = nullptr;
         void   *arg = nullptr;
+        Changed titleHook = nullptr;
+        void   *titleArg = nullptr;
         {
                 Mutex::Locker  lock(_lock, WaitForever);
+                const uint32_t title = _screen.titleGeneration();
                 const bool     crlf = mode().nlToCrNl;
                 const uint16_t column = _screen.cursorColumn(), row = _screen.cursorRow();
                 char           out[Chunk + 1];
@@ -67,9 +77,14 @@ Result<size_t> ScreenConsole::write(ByteSpan data, unsigned int) {
                         hook = _changed;
                         arg = _changedArg;
                 }
+                if (_screen.titleGeneration() != title) {
+                        titleHook = _titleHook;
+                        titleArg = _titleArg;
+                }
         }
-        // Without the lock: the hook may wait for whoever draws, who takes it.
+        // Without the lock: the hooks may wait for whoever draws, who takes it.
         if (hook != nullptr) hook(arg);
+        if (titleHook != nullptr) titleHook(titleArg);
         return makeResult(data.size());
 }
 

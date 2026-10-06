@@ -46,6 +46,11 @@ class WindowManager;
  * it; a key typed returns to the bottom. On the alternate screen the wheel
  * sends arrow keys instead.
  *
+ * The window's title is the program's (`OSC 0` or `OSC 2`) and " - Terminal",
+ * or "Terminal" without one. When its shell exits (`exit`), the window
+ * closes and the session ends: `open()` starts a new shell on a fresh screen
+ * (`devplan/windows.md` §4j).
+ *
  * Output asks the window manager for an update; at the next round the
  * window draws the rows that changed, those under any damage, and where
  * the cursor was and is (rows are redrawn, never scrolled: faster here).
@@ -99,8 +104,8 @@ class Terminal {
                 /** @brief Returns its window's number, or 0 (not shown). */
                 uint8_t window() const { return _window.load(std::memory_order_acquire); }
 
-                /** @brief Returns true once its shell runs. */
-                bool isStarted() const { return _started; }
+                /** @brief Returns true while its shell runs. */
+                bool isStarted() const { return _started.load(std::memory_order_acquire); }
 
                 /** @brief Returns how far back the view is scrolled, in lines (0: at the bottom). */
                 size_t scrollback() const { return _offset.load(std::memory_order_relaxed); }
@@ -114,13 +119,15 @@ class Terminal {
                 static void keyTyped(void *arg, const KeyEvent &event);
                 static void resized(void *arg, uint16_t width, uint16_t height);
                 static void wheeled(void *arg, int notches);
+                static void titleChanged(void *arg);
+                static void shellExited(void *arg, int status);
+                void        composeTitle(char (&out)[96]); // the window's, from the screen's
                 void        scrollBy(int lines); // back (positive) or forward, clamped; redrawn
                 size_t      send(const KeyEvent &event);
                 static void changed(void *arg);
                 void        draw(Painter &painter);
 
-                char                 _name[8] = {}; // the console's and shell's name: "termN"
-                char                 _title[16] = {};
+                char                  _name[8] = {}; // the console's and shell's name: "termN"
                 ScreenConsole        _console;
                 WindowManager       *_wm = nullptr;
                 std::atomic<uint8_t> _window{0};
@@ -130,7 +137,7 @@ class Terminal {
                 uint32_t              _added = 0;   // the history's count of lines added, as last drawn
                 bool                  _all = false; // every row to redraw (the view moved)
                 uint8_t              _number;
-                bool                 _started = false;
+                std::atomic<bool>     _started{false}; // its shell runs (cleared on the shell's task at exit)
 };
 
 BMDS_NAMESPACE_END
