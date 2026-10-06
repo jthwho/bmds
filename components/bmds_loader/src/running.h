@@ -18,7 +18,7 @@
 #include <sdkconfig.h>
 #include <bmds/config.h>
 #include <bmds/process.h>
-#include <bmds/programlauncher.h>
+#include <bmds/builtinprograms.h>
 #include <bmds/task.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -66,7 +66,7 @@ struct Running {
                 Child                 children[MaxVforkDepth] = {};
                 int                   depth = 0;
                 uint8_t              *image = nullptr;
-                const BuiltinProgram *builtin = nullptr; // the shell as /bin/sh: no image
+                const ProgramEntry   *builtin = nullptr; // a program built in (/bin/NAME): no image
                 uintptr_t             entry = 0;         // the program's _start
                 Task                  task;
                 Running              *nextStop = nullptr; // in the stop queue

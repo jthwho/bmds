@@ -612,9 +612,9 @@ ones once it exists.
      fails (`NotRunning`) when no window manager runs, and every window belongs to a connection.
      When the window manager stops, each connection is told (its windows close, and further calls
      report it gone); when an application disconnects, or ends without closing its windows, they
-     close with it. Run from the serial shell, `term` opens its window on the desktop; the shell
-     waits for it as for any program (`term &` doesn't), and Ctrl-C there ends it.
-   - **The terminal is `/bin/term`:** a program (`BMDS_PROGRAM`) in its own component, depending
+     close with it. Run from the serial shell, `terminal` opens its window on the desktop; the shell
+     waits for it as for any program (`terminal &` doesn't), and Ctrl-C there ends it.
+   - **The terminal is `/bin/terminal`:** a program (`BMDS_PROGRAM`) in its own component, depending
      only on the GUI API, the console's pty and the program launcher, as a program built
      separately would. One process per window: it connects, opens a window and a pty, starts
      `/bin/sh` on the pty (`ProgramLauncher::start()`), and applies what comes out of the pty to
@@ -624,7 +624,7 @@ ones once it exists.
    - **Its colors are its own:** the `terminal-*` roles leave the window manager's palette; `win
      color` keeps accepting their names (an interface), passed on to the terminal's settings.
    - **`win` knows no application:**
-     - `win term` runs `/bin/term` in the background (kept: shell commands are frozen).
+     - `win term` runs `/bin/terminal` in the background (kept: shell commands are frozen).
      - `win type N TEXT` becomes key events for window N (as `win key`, to a chosen window).
      - `win dump N` asks window N for its text through an optional callback any window may
        offer; the terminal offers its screen.
@@ -635,7 +635,7 @@ ones once it exists.
      `bmds_ui`, `ScreenConsole` as the terminal's console (kept for a local console without the
      window manager, roadmap Phase 5).
    - **Order:** `/bin` (`programs.md` §17), the pty (`pty.md` steps 1-2), `connect()` and window
-     ownership, then the terminal as `/bin/term` with its colors and the `win` changes.
+     ownership, then the terminal as `/bin/terminal` with its colors and the `win` changes.
 
 ## 9. As built
 

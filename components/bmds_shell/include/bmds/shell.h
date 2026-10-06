@@ -140,10 +140,11 @@ class Shell final : public LineCompleter {
 
                 /**
                  * @brief `programMain()` with a command table and a stack budget
-                 *        (portable; the host tests use it).
+                 *        (portable; the host tests use it): runs @p command
+                 *        (`sh`, or an applet's) with the program's arguments.
                  */
                 static int runAsProgram(const BuiltinProgram::Context &context, Span<const Command> commands,
-                                        size_t stackBytes);
+                                        size_t stackBytes, StringView command);
 
                 /** @brief The `help` command (registered by the built-ins). */
                 static int runHelp(CommandContext &ctx);

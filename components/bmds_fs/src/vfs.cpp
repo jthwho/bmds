@@ -9,6 +9,7 @@
 #include <cstring>
 #include <new>
 #include <utility>
+#include <bmds/builtinprograms.h>
 #include <bmds/memory.h>
 #include <bmds/memorystream.h>
 #include <bmds/partitions.h>
@@ -46,12 +47,18 @@ namespace {
                 DevNull,
                 DevConsole,
                 DevBlock,
-                Fat
+                Fat,
+                BinDir,     // /bin: the programs built in (devplan/programs.md §17)
+                BinProgram, // /bin/NAME
         };
 
+        // Where the programs built into the firmware are listed (read-only).
+        constexpr StringView BinPath("/bin");
+
         struct Node {
-                        Kind         kind = Kind::Virtual;
-                        FatVolume   *volume = nullptr;
+                        Kind                kind = Kind::Virtual;
+                        const ProgramEntry *program = nullptr; // BinProgram
+                        FatVolume          *volume = nullptr;
                         BlockDevice *device = nullptr;
                         StringView   name; // The last component ("" for /).
                         StringView   rest; // Fat: within the volume, "" for its root, else "/dir/file".
@@ -113,6 +120,17 @@ namespace {
                         }
                         return makeResult(node);
                 }
+                if (isAtOrBelow(path, BinPath)) {
+                        if (path == BinPath) {
+                                node.kind = Kind::BinDir;
+                                return makeResult(node);
+                        }
+                        node.program =
+                                path.lastIndexOf('/') == BinPath.size() ? BuiltinPrograms::find(node.name) : nullptr;
+                        if (node.program == nullptr) return makeError<Node>(Error::NotExist);
+                        node.kind = Kind::BinProgram;
+                        return makeResult(node);
+                }
                 for (size_t i = 0; i < mountCount; ++i) {
                         const StringView mp(mounts[i].path);
                         if (isAtOrBelow(path, mp)) {
@@ -171,7 +189,12 @@ namespace {
                 if (raw != nullptr) *raw = FR_OK;
                 switch (node.kind) {
                         case Kind::Virtual:
+                        case Kind::BinDir:
                         case Kind::DevDir: return makeResult(directoryInfo(node.name));
+                        case Kind::BinProgram:
+                                (void)info.name.assign(node.name);
+                                info.type = FileType::File; // empty: run, not read
+                                return makeResult(std::move(info));
                         case Kind::DevNull:
                         case Kind::DevConsole:
                         case Kind::DevBlock:
@@ -437,8 +460,9 @@ namespace {
         StringView virtualChild(StringView dir, size_t index) {
                 size_t emitted = 0;
                 if (dir == "/") {
-                        if (index == 0) return StringView("dev");
-                        emitted = 1;
+                        if (index == 0) return StringView("bin");
+                        if (index == 1) return StringView("dev");
+                        emitted = 2;
                 }
                 for (size_t i = 0; i < mountCount; ++i) {
                         const StringView mp(mounts[i].path);
@@ -545,6 +569,15 @@ Result<FileInfo> Directory::next() {
                         info.id = idAppend(idAppend(s.idPrefix, "/"), child);
                         return makeResult(std::move(info));
                 }
+                case Kind::BinDir: {
+                        const Span<const ProgramEntry> programs = BuiltinPrograms::all();
+                        if (s.index >= programs.size()) return makeError<FileInfo>(Error::EndOfFile);
+                        (void)info.name.assign(programs[s.index].name);
+                        info.type = FileType::File;
+                        info.id = idAppend(idAppend(s.idPrefix, "/"), info.name.view());
+                        ++s.index;
+                        return makeResult(std::move(info));
+                }
                 case Kind::DevDir: {
                         constexpr size_t Fixed = sizeof(DevNames) / sizeof(DevNames[0]);
                         if (s.index < Fixed) {
@@ -623,7 +656,8 @@ Error Vfs::mount(StringView path, BlockDevice &device) {
         const Result<String> normalized = normalize(path, "/");
         if (normalized.error().isError()) return normalized.error();
         const StringView p = normalized.value().view();
-        if (p == "/" || isAtOrBelow(p, "/dev") || p.size() > MaxMountPath) return Error::Invalid;
+        if (p == "/" || isAtOrBelow(p, "/dev") || isAtOrBelow(p, BinPath) || p.size() > MaxMountPath)
+                return Error::Invalid;
         Mutex::Locker lock(Fat::lock(), WaitForever);
         for (size_t i = 0; i < mountCount; ++i) {
                 const StringView mp(mounts[i].path);
@@ -763,12 +797,22 @@ Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context 
                 if (hops > MaxLinks) return makeError<FileHandle::Ptr>(Error::TooManyLinks);
                 const Result<Node> found = resolveLocked(storage.view());
                 if (found.error() == Error::NotExist && (flags & Create) != 0 && outsideFilesystemsLocked(storage))
-                        return makeError<FileHandle::Ptr>(Error::PermissionDenied);
+                        return makeError<FileHandle::Ptr>(
+                                isAtOrBelow(storage.view(), BinPath) ? Error::ReadOnly : Error::PermissionDenied);
                 if (found.error().isError()) return makeError<FileHandle::Ptr>(found.error());
                 const Node &node = found.value();
                 switch (node.kind) {
                         case Kind::Virtual:
+                        case Kind::BinDir:
                         case Kind::DevDir: return makeError<FileHandle::Ptr>(Error::IsDir);
+                        case Kind::BinProgram: {
+                                // Read-only, and empty: a built-in is run, not read.
+                                if ((flags & (Write | Truncate | Append)) != 0)
+                                        return makeError<FileHandle::Ptr>(Error::ReadOnly);
+                                Result<FileHandle::Ptr> handle = FileHandle::open(devNull, mode);
+                                if (handle.error().isOk()) handle.value()->setIdentity(pathId(storage.view()), 0);
+                                return handle;
+                        }
                         case Kind::DevNull: return FileHandle::open(devNull, mode);
                         case Kind::DevConsole:
                                 if (context.terminal == nullptr) return makeError<FileHandle::Ptr>(Error::NotExist);
@@ -873,6 +917,7 @@ Error Vfs::symlink(StringView target, StringView path, const Context &context) {
         Result<String> normalized = normalize(path, context.cwd);
         if (normalized.error().isError()) return normalized.error();
         String storage = std::move(normalized).value();
+        if (isAtOrBelow(storage.view(), BinPath)) return Error::ReadOnly; // the built-ins
         for (int hops = 0;; ++hops) {
                 if (hops > MaxLinks) return Error::TooManyLinks;
                 const Result<Node> found = resolveLocked(storage.view());
@@ -890,6 +935,17 @@ Error Vfs::symlink(StringView target, StringView path, const Context &context) {
                 if (raw == FR_INVALID_NAME) return Error::Invalid;
                 return Fat::toError(raw, *node.volume);
         }
+}
+
+const ProgramEntry *Vfs::builtinProgram(StringView path, const Context &context) {
+        Mutex::Locker  lock(Fat::lock(), WaitForever);
+        Result<String> normalized = normalize(path, context.cwd);
+        if (normalized.error().isError()) return nullptr;
+        String                 storage = std::move(normalized).value();
+        Node                   node;
+        const Result<FileInfo> info = statFollowLocked(storage, true, node); // links followed
+        if (info.error().isError() || node.kind != Kind::BinProgram) return nullptr;
+        return node.program;
 }
 
 Result<String> Vfs::realPath(StringView path, const Context &context) {
@@ -913,7 +969,8 @@ Result<Directory> Vfs::openDirectory(StringView path, const Context &context) {
                 const Result<Node> found = resolveLocked(storage.view());
                 if (found.error().isError()) return makeError<Directory>(found.error());
                 const Node &node = found.value();
-                if (node.kind == Kind::DevNull || node.kind == Kind::DevConsole || node.kind == Kind::DevBlock)
+                if (node.kind == Kind::DevNull || node.kind == Kind::DevConsole || node.kind == Kind::DevBlock ||
+                    node.kind == Kind::BinProgram)
                         return makeError<Directory>(Error::NotDir);
                 String fat;
                 if (node.kind == Kind::Fat) {
@@ -980,6 +1037,7 @@ Error Vfs::mkdir(StringView path, const Context &context) {
         Mutex::Locker lock(Fat::lock(), WaitForever);
         String        storage;
         Error         err = normalizeInto(path, context, storage);
+        if (err.isOk() && isAtOrBelow(storage.view(), BinPath)) return Error::ReadOnly; // the built-ins
         for (int hops = 0; err.isOk(); ++hops) {
                 if (hops > MaxLinks) return Error::TooManyLinks;
                 String fat;
@@ -998,6 +1056,7 @@ Error Vfs::rmdir(StringView path, const Context &context) {
         Mutex::Locker lock(Fat::lock(), WaitForever);
         String        storage;
         Error         err = normalizeInto(path, context, storage);
+        if (err.isOk() && isAtOrBelow(storage.view(), BinPath)) return Error::ReadOnly; // the built-ins
         for (int hops = 0; err.isOk(); ++hops) {
                 if (hops > MaxLinks) return Error::TooManyLinks;
                 String fat;
@@ -1021,6 +1080,7 @@ Error Vfs::remove(StringView path, const Context &context) {
         Mutex::Locker lock(Fat::lock(), WaitForever);
         String        storage;
         Error         err = normalizeInto(path, context, storage);
+        if (err.isOk() && isAtOrBelow(storage.view(), BinPath)) return Error::ReadOnly; // the built-ins
         for (int hops = 0; err.isOk(); ++hops) {
                 if (hops > MaxLinks) return Error::TooManyLinks;
                 String     fat;
@@ -1046,6 +1106,8 @@ Error Vfs::rename(StringView from, StringView to, const Context &context) {
         String        toStorage;
         Error         err = normalizeInto(from, context, fromStorage);
         if (err.isOk()) err = normalizeInto(to, context, toStorage);
+        if (err.isOk() && (isAtOrBelow(fromStorage.view(), BinPath) || isAtOrBelow(toStorage.view(), BinPath)))
+                return Error::ReadOnly; // the built-ins
         for (int hops = 0; err.isOk(); ++hops) {
                 if (hops > MaxLinks) return Error::TooManyLinks;
                 String fromFat;
@@ -1072,6 +1134,7 @@ Error Vfs::setModified(StringView path, Timestamp time, const Context &context) 
         Mutex::Locker lock(Fat::lock(), WaitForever);
         String        storage;
         Error         err = normalizeInto(path, context, storage);
+        if (err.isOk() && isAtOrBelow(storage.view(), BinPath)) return Error::ReadOnly; // the built-ins
         if (err.isError()) return err;
         // The file a link leads to, as `touch` does.
         Node                   found;

@@ -110,7 +110,7 @@ Status: **steps 1-10 done** (Phase 3), plus emulated symbolic links and the dist
 - **Launch by content** (`Executor::runFile`, used for every file a command names, so scripts and programs are interchangeable wherever a command goes): the first 256 bytes decide.
   - `\x7fELF`: the launcher (it does the full check of the BMDS note and reports its own refusals).
   - `#!` (D7): the line must end within the 256 bytes (else `interpreter line too long (at most 255 bytes)`, 126; a file with no newline at all is all line). It is trimmed at both ends, so a CR from a PC's CR LF is dropped (Linux keeps it and fails), then split as Linux does: the interpreter up to the first blank, the rest (trimmed) as at most one argument, kept whole (`#!/x -f  two words` passes `-f  two words`). The command run is `interpreter [arg] path original-args...` (the interpreter's `argv[0]` is the interpreter as written, or the built-in's or command's name when one stands in for a missing path; then the script's path as found), through `runFile` again, at most 4 interpreters deep (`path: too many levels of interpreters`, 126). An empty interpreter is `cannot execute: no interpreter after #!` (126).
-  - Interpreter resolution: an existing file is run as such (a program or another script). Scripts written on a PC say `#!/bin/sh` or `#!/usr/bin/env name`, paths BMDS doesn't have, so if the path doesn't exist: `.../env name` looks `name` up like a command (built-ins, then `$PATH`; not found: `name: command not found`, 127); otherwise its last component names a built-in (`bash` meaning `sh`), which runs (`#!/bin/sh -e` is `sh -e path args...`: `sh` takes `set`'s `-Ceux` options for this). Else `path: interpreter: No such file or directory` (127, as bash 5.2).
+  - *Superseded 2026-10-05 (§17): nothing is guessed any more; the interpreter must exist (a file or a built-in in `/bin`, `#!/bin/sh`, `#!/bin/env name`).* Interpreter resolution: an existing file is run as such (a program or another script). Scripts written on a PC say `#!/bin/sh` or `#!/usr/bin/env name`, paths BMDS doesn't have, so if the path doesn't exist: `.../env name` looks `name` up like a command (built-ins, then `$PATH`; not found: `name: command not found`, 127); otherwise its last component names a built-in (`bash` meaning `sh`), which runs (`#!/bin/sh -e` is `sh -e path args...`: `sh` takes `set`'s `-Ceux` options for this). Else `path: interpreter: No such file or directory` (127, as bash 5.2).
   - A file ending in `.sh` without `#!` is a shell script: the built-in `sh` runs it, as if it started with `#!/bin/sh`. FAT has no execute bit, so the name is the only other sign of what a file is; BMDS has no `sh` program to point a `#!` at, so scripts shouldn't need one.
   - Anything else is `path: cannot execute: not a program or script` (126). Unlike bash, a text file without `#!` and without `.sh` is not run as a script (decided 2026-10-04): without an execute bit, BMDS can't tell a script from any other text file.
   - `test -x` is: directories, and files that would run (BMDS ELF, `#!`, `*.sh`); `./script.sh` works with no `sh` in front (`storage.md` §5 promised this for Phase 3).
@@ -568,14 +568,15 @@ The SDK maps `ECHO`, `ICRNL` both ways, keeps `VMIN` and `VTIME` itself (per pro
 - **Host:** `WaitList` (notify, a full list, waiters leaving while notified), pipe readiness and notification, `Process::poll` (arguments, pipes, a file, `POLLNVAL`, the timeout, woken by a write and by a signal, the console in line and raw mode, both ends closing), raw input with `ICRNL` and echo, lines without echo.
 - **Measured:** firmware +2.5 KB (441,982 → 444,528 bytes).
 
-## 17. `/bin`: built-in programs as files (design, 2026-10-05; not started)
+## 17. `/bin`: built-in programs as files (design, 2026-10-05; built)
 
 **Goal** (the user's): every program built into the OS is a file in a read-only `/bin`, so anything
 that runs programs (the shell's lookup, `exec`, `#!`, `posix_spawn`, the desktop's menu and the
 panel's launcher) finds and runs it as it would a program on the card, with nothing special for
 it. A built-in pulled out of the OS becomes a file elsewhere, and what runs it doesn't change.
 With the decision in `windows.md` §0 (built-in applications are ordinary applications) and the
-pseudo-terminals of `pty.md`, it makes the terminal `/bin/term`.
+pseudo-terminals of `pty.md`, it makes the terminal application `/bin/terminal` (`term` is
+already a shell command, the serial terminal's size).
 
 - **What's in it: programs, not the shell's commands.** A built-in program runs as a process (its
   own task, descriptors, signals: a `BuiltinProgram`, as `sh` is today). The shell's built-in
@@ -588,11 +589,13 @@ pseudo-terminals of `pty.md`, it makes the terminal `/bin/term`.
 - **In the VFS:** `/bin` is a virtual directory, like `/dev`: `ls /bin` lists the registry, `stat`
   gives each an empty regular file (size 0; reading one gives nothing), and nothing in it can be
   made, written, renamed or removed (`ReadOnly`, `EROFS`). `Vfs::builtinProgram(path)` says which
-  program a path names, symbolic links followed, so a link on the card to `/bin/term` runs it.
+  program a path names, symbolic links followed, so a link on the card to `/bin/terminal` runs it.
 - **The loader** asks the VFS for every path it runs: a built-in runs as `sh` does now. The
   special case for `/bin/sh` and `/bin/bash` and `Loader::setShell()` go; `sh` registers itself.
-  `#!/bin/sh` scripts written on a PC now name a real file; D7's fallback (an interpreter path that
-  doesn't exist names a built-in by its last component) stays for paths outside `/bin`.
+  `#!/bin/sh` scripts written on a PC now name a real file. Nothing is guessed for an interpreter
+  path that doesn't exist (the user, 2026-10-05: porting Linux scripts unchanged isn't a goal):
+  D7's fallbacks (`/usr/bin/env name`; a missing path's last component as a built-in) are gone;
+  `#!/bin/env name` does what `/usr/bin/env` did.
 - **`PATH`** defaults to `/bin:/sd0/p0/bin` (the user's choice, 2026-10-05): the built-ins first,
   so a program on the card can't take a built-in's name, and they are found without the card. It is
   set in `/boot/profile` (`storage.md` §13), so the order is one line to change.
@@ -601,3 +604,51 @@ pseudo-terminals of `pty.md`, it makes the terminal `/bin/term`.
 - **Testing:** host: the registry, the VFS's `/bin` (listing, `stat`, refusals, a link to a
   built-in); board: `sh` from `/bin` (`exec`, `#!/bin/sh`, `system()`), `ls /bin`, `PATH` order
   with a card program shadowing a built-in, the corpus and `progtest` as before.
+
+**As built** (2026-10-05):
+- **The registry** (`bmds_kernel`): `ProgramEntry` (a name and a `BuiltinProgram`),
+  `BuiltinPrograms::all()` and `find()` (a binary search: the linker sorts `.bmds_prog.NAME` by
+  name, `linker.lf`), `BMDS_PROGRAM(Name, Main, StackBytes)`. The host tests set their own table.
+  `sh` and `bash` are registered next to `Shell::programMain` (`shellesp.cpp`); `main` no longer
+  sets the shell up (`Loader::setShell()` is gone).
+- **The VFS:** `/bin` and `/bin/NAME` are node kinds of their own; `/` lists `bin` before `dev`;
+  opening a built-in for reading gives an empty file, for writing `ReadOnly`, as do creating,
+  `mkdir`, `rmdir`, `remove`, `rename` (either end), `symlink` and `setModified` in `/bin`;
+  `mount` over `/bin` is `Invalid`. `Vfs::builtinProgram(path)` follows links.
+- **Running one:** the loader's `loadImage()` (the shell running a command) and `resolveExec()`
+  (`exec`) ask the VFS first. The kernel shell looks at a file's first bytes itself before running
+  it (`Executor::runFile()`, `isExecutable()`), so it asks too: an empty `/bin` file was refused
+  as "not a program or script" until then. A `#!` interpreter path that doesn't exist here runs the
+  built-in its last component names (`#!/usr/bin/bash`).
+- **Verified on the board:** `ls /` (`bin boot dev ram0 sd0`), `ls -l /bin` (`bash`, `sh`, size 0);
+  `bash -c`, `/bin/sh -c '...; exit 3'` (status 3), a `#!/bin/sh` script, a `.sh` file, BusyBox's
+  `system()`, a link on the RAM disk to `/bin/sh`; `echo x > /bin/sh`, `rm /bin/sh`, `touch
+  /bin/new` refused ("Read-only file system"); `progtest spawn`, `scripts`, `signals` and `poll`
+  all pass (pushed with `bmds-run`); no task left behind.
+- **Host:** the registry and `/bin` in the VFS (listing, `stat`, reading, every refusal, mounting
+  over it, `builtinProgram()` by path and through a link); the listings of `/` updated.
+- **Known:** the shell as a program always calls itself `sh` (`$0` in `bash -c 'echo $0'` is
+  `sh`, where bash says `bash`): it runs its built-in `sh` by that name.
+- **Applets** (the user's, 2026-10-05): every shell command is also `/bin/NAME`, as a
+  program of its own, except the ones that only work inside a shell (they change it: `.`, `:`,
+  `break`, `cd`, `command`, `continue`, `eval`, `exit`, `export`, `local`, `read`, `readonly`,
+  `return`, `set`, `sh`, `shift`, `source`, `type`, `unset`). `BMDS_SHELL_COMMAND` registers both
+  (the command, and a `ProgramEntry` running `shellAppletMain`: a shell of its own running the
+  command named by the program's name, `BuiltinProgram::Context::program`, which the loader now
+  fills); `BMDS_SHELL_BUILTIN` registers a shell-only one. Typed at a prompt a command runs in the
+  shell as before (`type ls`: a shell builtin); run by path from the shell (`/bin/ls`, a `#!`) one
+  of the shell's own commands also runs in the shell, as if typed; run by another program
+  (`exec`) it is a process. Built-ins win names over the card (`PATH=/bin:/sd0/p0/bin`): a program
+  that runs `ls` gets this `ls`. An entry is 12 bytes of flash (49 programs at present).
+- **`env`** (new, an applet): `env [name=value]... [command [arg]...]` runs the command with the
+  variables set and exported, putting them back afterwards; without a command it lists the
+  environment. It is what `#!/bin/env name` scripts use.
+- **Verified on the board (applets):** `ls /bin` lists 49 (the shell-only ones absent: `ls /bin/cd`
+  fails); `/bin/ls`, `/bin/win list` by path; by `exec` from BusyBox (`busybox env /bin/ls /boot`,
+  `/bin/date`, `/bin/win list`, `/bin/[ 1 -lt 2 ]` 0 and `3 -lt 2` 1, `/bin/env Q=7 /bin/sh -c
+  ...`): each a process of its own, no task left behind; `#!/bin/env sh` runs, `#!/usr/bin/env
+  sh` fails ("No such file or directory"); `progtest spawn`, `scripts`, `signals`, `poll` pass.
+- **Host (applets):** `#!/bin/sh` (in the shell), `#!/bin/bash` (by the launcher, with its
+  argument), `#!/bin/env sh` and `#!/bin/env hello` ($PATH), `#!/usr/bin/env` and
+  `#!/usr/bin/bash` refused; `env` (set and put back, unset again, a name twice, the listing
+  without unexported variables, a missing command).

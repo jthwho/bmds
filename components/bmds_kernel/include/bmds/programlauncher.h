@@ -82,6 +82,7 @@ struct BuiltinProgram {
                                 Console               *console = nullptr;   ///< The terminal (may be null).
                                 Interrupt             *interrupt = nullptr; ///< Ctrl-C (may be null).
                                 ProgramLauncher       *launcher = nullptr;  ///< Runs the programs it starts.
+                                StringView             program; ///< Its name in `/bin` (an applet: its command).
                 };
 
                 /** @brief The program: returns its exit status (0-255). */

@@ -540,6 +540,64 @@ int LangBuiltins::command(CommandContext &ctx) {
         return ctx.executor().invoke(words, false);
 }
 
+int LangBuiltins::env(CommandContext &ctx) {
+        const Args args = ctx.args();
+        Variables &vars = ctx.executor().state().vars;
+        struct Saved {
+                        String  name;
+                        String  value;
+                        uint8_t flags = 0;
+                        bool    existed = false;
+        };
+        List<Saved> saved;
+        Error       err;
+        size_t      i = 1;
+        for (; err.isOk() && i < args.size(); ++i) {
+                const StringView assignment(args[i]);
+                const size_t     eq = assignment.indexOf('=');
+                if (eq == StringView::NPos || eq == 0) break; // the command
+                const StringView        name = assignment.left(eq);
+                const Variables::Entry *entry = vars.find(name);
+                Saved                   was;
+                was.existed = entry != nullptr;
+                err = was.name.assign(name);
+                if (err.isOk() && entry != nullptr) {
+                        err = was.value.assign(entry->value.view());
+                        was.flags = entry->flags;
+                }
+                if (err.isOk()) err = saved.append(std::move(was));
+                if (err.isOk()) err = vars.set(name, assignment.mid(eq + 1));
+                if (err.isOk()) err = vars.addFlags(name, Variables::Exported);
+        }
+        int status = Shell::ExitSuccess;
+        if (err.isError()) {
+                ctx.eprintf("env: %s\n", err == Error::ReadOnly ? "read-only variable" : "out of memory");
+                status = Shell::ExitFailure;
+        } else if (i == args.size()) {
+                // No command: the environment, as programs get it.
+                for (const Variables::Entry &e : vars.entries())
+                        if ((e.flags & Variables::Exported) != 0 && (e.flags & Variables::IsSet) != 0)
+                                ctx.printf("%s=%s\n", e.name.cStr(), e.value.cStr());
+        } else {
+                List<String> words;
+                err = words.reserve(args.size() - i);
+                for (size_t k = i; err.isOk() && k < args.size(); ++k) {
+                        auto [w, werr] = String::fromView(args[k]);
+                        err = werr.isOk() ? words.append(std::move(w)) : werr;
+                }
+                if (err.isError()) {
+                        ctx.eprint("env: out of memory\n");
+                        status = Shell::ExitFailure;
+                } else {
+                        status = ctx.executor().invoke(words, false);
+                }
+        }
+        // As they were, the last set first (a name given twice ends as before the first).
+        for (size_t k = saved.size(); k-- > 0;)
+                (void)vars.restore(saved[k].name.view(), saved[k].existed, saved[k].value.view(), saved[k].flags);
+        return status;
+}
+
 int LangBuiltins::colon(CommandContext &) {
         return Shell::ExitSuccess;
 }
@@ -828,31 +886,33 @@ int LangBuiltins::local(CommandContext &ctx) {
         return status;
 }
 
-BMDS_SHELL_COMMAND_AS(dot, ".", LangBuiltins::source, "file [arg]...", "Run a script in this shell (as source)")
-BMDS_SHELL_COMMAND_AS(colon, ":", LangBuiltins::colon, "[arg]...", "Do nothing, successfully")
+BMDS_SHELL_BUILTIN_AS(dot, ".", LangBuiltins::source, "file [arg]...", "Run a script in this shell (as source)")
+BMDS_SHELL_BUILTIN_AS(colon, ":", LangBuiltins::colon, "[arg]...", "Do nothing, successfully")
 BMDS_SHELL_COMMAND_AS(bracket, "[", LangBuiltins::test, "expr ]", "Evaluate a conditional expression (as test)")
-BMDS_SHELL_COMMAND_AS(breakCmd, "break", LangBuiltins::breakCmd, "[n]", "Leave n enclosing loops")
-BMDS_SHELL_COMMAND(command, LangBuiltins::command, "[-vV] name [arg]...",
+BMDS_SHELL_BUILTIN_AS(breakCmd, "break", LangBuiltins::breakCmd, "[n]", "Leave n enclosing loops")
+BMDS_SHELL_BUILTIN(command, LangBuiltins::command, "[-vV] name [arg]...",
                    "Run a built-in, ignoring functions; or say what a name is")
-BMDS_SHELL_COMMAND_AS(continueCmd, "continue", LangBuiltins::continueCmd, "[n]",
+BMDS_SHELL_BUILTIN_AS(continueCmd, "continue", LangBuiltins::continueCmd, "[n]",
                       "Start the next iteration of the n-th enclosing loop")
-BMDS_SHELL_COMMAND(eval, LangBuiltins::eval, "[word]...", "Run the words as a command")
-BMDS_SHELL_COMMAND_AS(exitCmd, "exit", LangBuiltins::exitCmd, "[n]", "Leave the shell (at the prompt: the input)")
-BMDS_SHELL_COMMAND_AS(exportCmd, "export", LangBuiltins::exportCmd, "[-p] [name[=value]]...",
+BMDS_SHELL_COMMAND(env, LangBuiltins::env, "[name=value]... [command [arg]...]",
+                   "Run a command with variables set and exported, or list the environment")
+BMDS_SHELL_BUILTIN(eval, LangBuiltins::eval, "[word]...", "Run the words as a command")
+BMDS_SHELL_BUILTIN_AS(exitCmd, "exit", LangBuiltins::exitCmd, "[n]", "Leave the shell (at the prompt: the input)")
+BMDS_SHELL_BUILTIN_AS(exportCmd, "export", LangBuiltins::exportCmd, "[-p] [name[=value]]...",
                       "Mark variables for export to programs, or list them")
 BMDS_SHELL_COMMAND_AS(falseCmd, "false", LangBuiltins::falseCmd, "", "Do nothing, unsuccessfully")
-BMDS_SHELL_COMMAND(local, LangBuiltins::local, "name[=value]...", "Make variables local to the function")
-BMDS_SHELL_COMMAND(readonly, LangBuiltins::readonly, "[-p] [name[=value]]...", "Make variables read-only, or list them")
-BMDS_SHELL_COMMAND_AS(returnCmd, "return", LangBuiltins::returnCmd, "[n]", "Return from a function")
-BMDS_SHELL_COMMAND(set, LangBuiltins::set, "[-+Ceux] [-+o name] [--] [arg]...",
+BMDS_SHELL_BUILTIN(local, LangBuiltins::local, "name[=value]...", "Make variables local to the function")
+BMDS_SHELL_BUILTIN(readonly, LangBuiltins::readonly, "[-p] [name[=value]]...", "Make variables read-only, or list them")
+BMDS_SHELL_BUILTIN_AS(returnCmd, "return", LangBuiltins::returnCmd, "[n]", "Return from a function")
+BMDS_SHELL_BUILTIN(set, LangBuiltins::set, "[-+Ceux] [-+o name] [--] [arg]...",
                    "Set shell options and positional parameters, or list variables")
-BMDS_SHELL_COMMAND(sh, LangBuiltins::sh, "[-+Ceux] [-c command [name] | file] [arg]...",
+BMDS_SHELL_BUILTIN(sh, LangBuiltins::sh, "[-+Ceux] [-c command [name] | file] [arg]...",
                    "Run a script in a subshell (from stdin without arguments)")
-BMDS_SHELL_COMMAND(shift, LangBuiltins::shift, "[n]", "Drop the first n positional parameters")
-BMDS_SHELL_COMMAND(source, LangBuiltins::source, "file [arg]...", "Run a script in this shell")
+BMDS_SHELL_BUILTIN(shift, LangBuiltins::shift, "[n]", "Drop the first n positional parameters")
+BMDS_SHELL_BUILTIN(source, LangBuiltins::source, "file [arg]...", "Run a script in this shell")
 BMDS_SHELL_COMMAND(test, LangBuiltins::test, "expr", "Evaluate a conditional expression")
-BMDS_SHELL_COMMAND(type, LangBuiltins::type, "[-t] name...", "Say whether names are keywords, functions or built-ins")
+BMDS_SHELL_BUILTIN(type, LangBuiltins::type, "[-t] name...", "Say whether names are keywords, functions or built-ins")
 BMDS_SHELL_COMMAND_AS(trueCmd, "true", LangBuiltins::colon, "", "Do nothing, successfully")
-BMDS_SHELL_COMMAND(unset, LangBuiltins::unset, "[-fv] name...", "Remove variables or functions")
+BMDS_SHELL_BUILTIN(unset, LangBuiltins::unset, "[-fv] name...", "Remove variables or functions")
 
 BMDS_NAMESPACE_END

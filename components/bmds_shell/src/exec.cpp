@@ -23,11 +23,6 @@ BMDS_NAMESPACE_BEGIN
 
 namespace {
 
-        StringView baseName(StringView path) {
-                const size_t slash = path.lastIndexOf('/');
-                return slash == StringView::NPos ? path : path.mid(slash + 1);
-        }
-
         Error appendCopy(List<String> &list, StringView text) {
                 auto [s, err] = String::fromView(text);
                 return err.isOk() ? list.append(std::move(s)) : err;
@@ -129,6 +124,7 @@ Error Executor::readHead(StringView path, char (&head)[HeadBytes], size_t &size,
 }
 
 bool Executor::isExecutable(StringView path) {
+        if (Vfs::builtinProgram(path, vfs()) != nullptr) return true; // /bin/NAME (devplan/programs.md §17)
         const Result<FileInfo> info = Vfs::stat(path, vfs());
         if (info.isError()) return false;
         if (info.value().isDirectory()) return true;
@@ -142,6 +138,13 @@ bool Executor::isExecutable(StringView path) {
 }
 
 int Executor::runFile(StringView path, List<String> &args, int depth) {
+        // A program built into the firmware (/bin/NAME, or a link to one): one of this shell's own
+        // commands runs here, as if typed; another program by the launcher.
+        if (const ProgramEntry *builtin = Vfs::builtinProgram(path, vfs()); builtin != nullptr) {
+                if (const Command *cmd = _shell.findCommand(builtin->name); cmd != nullptr)
+                        return runBuiltin(*cmd, args);
+                if (_shell.launcher() != nullptr) return runProgram(path, args);
+        }
         char   head[HeadBytes];
         size_t size = 0;
         bool   whole = false;
@@ -193,45 +196,22 @@ int Executor::runInterpreter(StringView path, StringView head, bool whole, List<
                 report("%.*s: too many levels of interpreters", pathLen, path.data());
                 return Shell::ExitCannotRun;
         }
-        // The interpreter's own path: an existing file, else what a PC
-        // script means by it (/bin/sh, /usr/bin/env name).
-        const Result<FileInfo> info = Vfs::stat(line.interpreter, vfs());
-        StringView             name = line.interpreter;
-        StringView             argument = line.argument;
-        const Command         *builtin = nullptr;
-        bool                   lookUp = false;
-        if (info.isError()) {
-                StringView base = baseName(line.interpreter);
-                if (base == "env" && !argument.isEmpty()) {
-                        name = argument;
-                        argument = StringView();
-                        lookUp = true;
-                } else {
-                        if (base == "bash") base = "sh";
-                        builtin = _shell.findCommand(base);
-                        if (builtin == nullptr) {
-                                report("%.*s: %.*s: No such file or directory", pathLen, path.data(),
-                                       static_cast<int>(line.interpreter.size()), line.interpreter.data());
-                                return Shell::ExitNotFound;
-                        }
-                        name = base;
-                }
+        // The interpreter as named: a file, or a program built in (/bin/sh, /bin/env). Nothing is
+        // guessed for a path this system doesn't have (devplan/programs.md §17).
+        if (Vfs::stat(line.interpreter, vfs()).isError()) {
+                report("%.*s: %.*s: No such file or directory", pathLen, path.data(),
+                       static_cast<int>(line.interpreter.size()), line.interpreter.data());
+                return Shell::ExitNotFound;
         }
         List<String> newArgs;
         Error        err = newArgs.reserve(args.size() + 2);
-        if (err.isOk()) err = appendCopy(newArgs, name);
-        if (err.isOk() && !argument.isEmpty()) err = appendCopy(newArgs, argument);
+        if (err.isOk()) err = appendCopy(newArgs, line.interpreter);
+        if (err.isOk() && !line.argument.isEmpty()) err = appendCopy(newArgs, line.argument);
         if (err.isOk()) err = appendCopy(newArgs, path);
         for (size_t i = 1; err.isOk() && i < args.size(); ++i) err = newArgs.append(std::move(args[i]));
-        if (err.isError()) {
-                report("out of memory");
-                return Shell::ExitFailure;
-        }
-        if (builtin != nullptr) return runBuiltin(*builtin, newArgs);
-        if (lookUp) return invoke(newArgs, false);
         // newArgs[0] is a copy: path and head may point into args or the caller's buffer.
         auto [interpreter, cerr] = String::fromView(line.interpreter);
-        if (cerr.isError()) {
+        if (err.isError() || cerr.isError()) {
                 report("out of memory");
                 return Shell::ExitFailure;
         }

@@ -765,7 +765,7 @@ int FileCommands::hexdump(CommandContext &ctx) {
         return Shell::ExitSuccess;
 }
 
-BMDS_SHELL_COMMAND(cd, FileCommands::cd, "[dir | -]", "Change the current directory ($HOME without a dir)")
+BMDS_SHELL_BUILTIN(cd, FileCommands::cd, "[dir | -]", "Change the current directory ($HOME without a dir)")
 BMDS_SHELL_COMMAND(cp, FileCommands::cp, "[-r] source... target", "Copy files (-r: directories too)")
 BMDS_SHELL_COMMAND(hexdump, FileCommands::hexdump, "[-C] [file]", "Show a file (or standard input) in hex and ASCII")
 BMDS_SHELL_COMMAND(ln, FileCommands::ln, "-s [-f] target name | -s [-f] target... dir",

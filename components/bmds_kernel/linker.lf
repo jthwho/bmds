@@ -17,3 +17,21 @@ archive: *
 entries:
     * (bmds_debug_default);
         bmds_debug -> flash_rodata KEEP() SURROUND(bmds_debug)
+
+# Built-in program table (devplan/programs.md §17): BMDS_PROGRAM places each
+# ProgramEntry in .bmds_prog.<name>; collected sorted by section name -- and so by
+# program name -- into one array, bounded by _bmds_prog_start / _bmds_prog_end.
+
+[sections:bmds_prog]
+entries:
+    .bmds_prog+
+
+[scheme:bmds_prog_default]
+entries:
+    bmds_prog -> flash_rodata
+
+[mapping:bmds_prog]
+archive: *
+entries:
+    * (bmds_prog_default);
+        bmds_prog -> flash_rodata KEEP() SORT(name) SURROUND(bmds_prog)

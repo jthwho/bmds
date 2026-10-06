@@ -15,6 +15,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <bmds/boot.h>
+#include <bmds/builtinprograms.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/shell.h>
@@ -83,8 +84,17 @@ namespace {
 } // namespace
 
 int Shell::programMain(const BuiltinProgram::Context &context) {
-        return runAsProgram(context, registeredCommands(), CONFIG_BMDS_SHELL_STACK_BYTES);
+        return runAsProgram(context, registeredCommands(), CONFIG_BMDS_SHELL_STACK_BYTES, "sh");
 }
+
+int shellAppletMain(const BuiltinProgram::Context &context) {
+        return Shell::runAsProgram(context, Shell::registeredCommands(), CONFIG_BMDS_SHELL_STACK_BYTES,
+                                   context.program);
+}
+
+// The shell as a program: /bin/sh, and /bin/bash for scripts that ask for it (devplan/programs.md §17).
+BMDS_PROGRAM(bash, Shell::programMain, CONFIG_BMDS_SHELL_STACK_BYTES)
+BMDS_PROGRAM(sh, Shell::programMain, CONFIG_BMDS_SHELL_STACK_BYTES)
 
 Span<const Command> Shell::registeredCommands() {
         return Span<const Command>(_bmds_cmd_start, static_cast<size_t>(_bmds_cmd_end - _bmds_cmd_start));

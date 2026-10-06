@@ -13,6 +13,7 @@
 #include <bmds/datetime.h>
 #include <bmds/error.h>
 #include <bmds/filehandle.h>
+#include <bmds/builtinprograms.h>
 #include <bmds/result.h>
 #include <bmds/span.h>
 #include <bmds/string.h>
@@ -27,7 +28,7 @@ class Stream;
 /** @brief What a path names. */
 enum class FileType : uint8_t {
         File,      ///< A regular file.
-        Directory, ///< A directory (also `/`, `/dev` and mount points).
+        Directory, ///< A directory (also `/`, `/bin`, `/dev` and mount points).
         Device,    ///< A device node (`/dev/null`, `/dev/console`).
         Link,      ///< A symbolic link (only from `lstat()` and `Directory::next()`).
 };
@@ -123,7 +124,9 @@ class Directory {
  *        filesystems and the device nodes.
  *
  * ```
- * /              virtual: /dev, and the directories leading to mounts
+ * /              virtual: /bin, /dev, and the directories leading to mounts
+ * /bin/NAME      a program built into the firmware (BuiltinPrograms): an
+ *                empty file, run by the loader; /bin is read-only (ReadOnly)
  * /dev/null      discards writes, reads end at once
  * /dev/console   the caller's terminal (Context::terminal)
  * /dev/sd0       a block device (BlockDevices); /dev/sd0p0 a partition
@@ -208,6 +211,13 @@ namespace Vfs {
          * @return `Ok` or `NotExist`.
          */
         Error pin(StringView path);
+
+        /**
+         * @brief Returns the program built into the firmware that @p path
+         *        names (`/bin/NAME`, or a link to it), or null
+         *        (`devplan/programs.md` §17).
+         */
+        const ProgramEntry *builtinProgram(StringView path, const Context &context);
 
         /** @brief Returns true if a filesystem is mounted at @p path (absolute). */
         bool isMounted(StringView path);

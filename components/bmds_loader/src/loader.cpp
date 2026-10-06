@@ -16,6 +16,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/timers.h>
 #include <sdkconfig.h>
+#include <bmds/builtinprograms.h>
 #include <bmds/clock.h>
 #include <bmds/console.h>
 #include <bmds/deadline.h>
@@ -58,9 +59,8 @@ namespace {
 
         constinit StaticObject<ProcessTable> processes;
 
-        // `/bin/sh` (Loader::setShell()), and what runs the programs it starts.
-        constinit BuiltinProgram shellProgram;
-        constinit Loader         builtinLauncher;
+        // What runs the programs a built-in program starts.
+        constinit Loader builtinLauncher;
 
         // Deepest nesting of `#!` interpreters in an exec (the shell's limit).
         constexpr int MaxInterpreterDepth = 4;
@@ -99,7 +99,7 @@ namespace {
                         size_t                bytes = 0;
                         uint32_t              entry = 0;
                         uint32_t              stackBytes = 0;
-                        const BuiltinProgram *builtin = nullptr;
+                        const ProgramEntry   *builtin = nullptr; // a program built in: no image
         };
 
         // Why a load failed: the error, and for messages a stage ("cannot
@@ -177,54 +177,17 @@ namespace {
         }
 
         // Loads the program at @p path (relative to @p cwd).
+        // A program file, or a program built into the firmware (/bin/NAME: devplan/programs.md §17).
         Error loadImage(StringView path, StringView cwd, Image &image, LoadFailure &failure) {
+                if (const ProgramEntry *builtin = Vfs::builtinProgram(path, contextFor(cwd)); builtin != nullptr) {
+                        image.builtin = builtin;
+                        image.stackBytes = static_cast<uint32_t>(builtin->program.stackBytes);
+                        return Error::Ok;
+                }
                 FileHandle::Ptr file;
                 uint32_t        size = 0;
                 const Error     err = openProgram(path, cwd, file, size);
                 return err.isError() ? err : loadFrom(*file, size, image, failure);
-        }
-
-        StringView baseName(StringView path) {
-                const size_t slash = path.lastIndexOf('/');
-                return slash == StringView::NPos ? path : path.mid(slash + 1);
-        }
-
-        bool isFile(StringView path, StringView cwd) {
-                const Result<FileInfo> info = Vfs::stat(path, contextFor(cwd));
-                return info.isOk() && info.value().type == FileType::File;
-        }
-
-        // Finds @p name as the shell would on the `PATH` in @p env: in each
-        // directory `name`, `name.elf`, `name.sh`.
-        Error findInPath(StringView name, Span<const StringView> env, StringView cwd, String &out) {
-                StringView dirs;
-                bool       found = false;
-                for (StringView e : env) {
-                        if (e.startsWith("PATH=")) {
-                                dirs = e.mid(5);
-                                found = true;
-                        }
-                }
-                if (!found || name.isEmpty() || name.contains('/')) return Error::NotExist;
-                static const char *const suffixes[] = {"", ".elf", ".sh"};
-                size_t                   at = 0;
-                for (;;) {
-                        size_t colon = dirs.indexOf(':', at);
-                        if (colon == StringView::NPos) colon = dirs.size();
-                        const StringView dir = colon > at ? dirs.mid(at, colon - at) : StringView(".");
-                        for (const char *suffix : suffixes) {
-                                out.clear();
-                                Error err = out.append(dir);
-                                if (err.isOk() && !dir.endsWith('/')) err = out.append('/');
-                                if (err.isOk()) err = out.append(name);
-                                if (err.isOk()) err = out.append(suffix);
-                                if (err.isError()) return err;
-                                if (isFile(out.view(), cwd)) return Error::Ok;
-                        }
-                        if (colon == dirs.size()) break;
-                        at = colon + 1;
-                }
-                return Error::NotExist;
         }
 
         // @p args with @p front in place of its first element.
@@ -241,19 +204,18 @@ namespace {
                 return err;
         }
 
-        // What runs @p path for an exec (devplan/programs.md §13, 8b): a
-        // program; a `#!` script's interpreter (an existing file, `/bin/sh`
-        // or `/bin/bash` the shell, `/usr/bin/env name` looked up on `PATH`),
-        // in front of the script in @p args; the shell for a `.sh` file and
-        // for `/bin/sh`.
+        // What runs @p path for an exec (devplan/programs.md §13, 8b, §17): a
+        // program built into the firmware (`/bin/NAME`) or in a file; a `#!`
+        // script's interpreter as named (a file or a built-in: `#!/bin/sh`,
+        // `#!/bin/env name`; a path that doesn't exist fails), in front of the
+        // script in @p args; the shell for a `.sh` file.
         Error resolveExec(StringView path, StringView cwd, Span<const StringView> env, List<String> &args, Image &image,
                           LoadFailure &failure, int depth) {
                 if (depth > MaxInterpreterDepth) return Error::TooManyLinks;
-                const bool isShell = path == "/bin/sh" || path == "/bin/bash";
-                if (isShell && !isFile(path, cwd)) {
-                        if (shellProgram.main == nullptr) return Error::NotExist;
-                        image.builtin = &shellProgram;
-                        image.stackBytes = static_cast<uint32_t>(shellProgram.stackBytes);
+                // A program built into the firmware: `/bin/NAME`, or a link to one (devplan/programs.md §17).
+                if (const ProgramEntry *builtin = Vfs::builtinProgram(path, contextFor(cwd)); builtin != nullptr) {
+                        image.builtin = builtin;
+                        image.stackBytes = static_cast<uint32_t>(builtin->program.stackBytes);
                         return Error::Ok;
                 }
                 FileHandle::Ptr file;
@@ -284,16 +246,10 @@ namespace {
                         auto [interp, ierr] = String::fromView(line.interpreter);
                         auto [arg, aerr] = String::fromView(line.argument);
                         if (cerr.isError() || ierr.isError() || aerr.isError()) return Error::NoMem;
-                        if (!isFile(interp.view(), cwd) && baseName(interp.view()) == "env" && !arg.isEmpty()) {
-                                String found;
-                                err = findInPath(arg.view(), env, cwd, found);
-                                if (err.isOk()) err = withFront(args, {arg.view(), script.view()});
-                                if (err.isError()) return err;
-                                return resolveExec(found.view(), cwd, env, args, image, failure, depth + 1);
-                        }
                         err = arg.isEmpty() ? withFront(args, {interp.view(), script.view()})
                                             : withFront(args, {interp.view(), arg.view(), script.view()});
                         if (err.isError()) return err;
+                        // The interpreter as named: a file or a built-in (/bin/sh, /bin/env); nothing guessed.
                         return resolveExec(interp.view(), cwd, env, args, image, failure, depth + 1);
                 }
                 if (path.endsWith(StringView(".sh"))) {
@@ -345,7 +301,8 @@ namespace {
                         context.console = p.console();
                         context.interrupt = &p.signals().interrupt();
                         context.launcher = &builtinLauncher;
-                        status = err.isOk() ? run.builtin->main(context) : 126;
+                        context.program = run.builtin->name;
+                        status = err.isOk() ? run.builtin->program.main(context) : 126;
                 }
                 if (run.kill.load()) run.finish(run.killStatus.load());
                 const int ending = run.process->signals().terminateSignal();
@@ -826,11 +783,6 @@ int32_t Running::exitSignal(int32_t sig) {
 }
 
 // --- Loader -------------------------------------------------------------------
-
-void Loader::setShell(const BuiltinProgram &shell) {
-        shellProgram = shell;
-        return;
-}
 
 Error Loader::init() {
         if (!stopLock.isCreated()) stopLock.create();

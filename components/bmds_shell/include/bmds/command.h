@@ -30,6 +30,10 @@
 
 #include <cstdarg>
 #include <cstddef>
+#if defined(ESP_PLATFORM)
+#include <sdkconfig.h>
+#endif
+#include <bmds/builtinprograms.h>
 #include <bmds/color.h>
 #include <bmds/config.h>
 #include <bmds/error.h>
@@ -222,9 +226,29 @@ class CommandContext {
 
 BMDS_NAMESPACE_END
 
+BMDS_NAMESPACE_BEGIN
+
 /**
- * @def BMDS_SHELL_COMMAND
- * @brief Registers a shell command. Use at namespace scope in a source file.
+ * @brief Runs a shell command as a program of its own: what `/bin/NAME` runs
+ *        for each command registered with `BMDS_SHELL_COMMAND` (an applet,
+ *        `devplan/programs.md` §17). The command is the program's name.
+ */
+int shellAppletMain(const BuiltinProgram::Context &context);
+
+/** @brief An applet's stack: a shell of its own runs the command. */
+inline constexpr size_t ShellAppletStackBytes =
+#if defined(CONFIG_BMDS_SHELL_STACK_BYTES)
+        CONFIG_BMDS_SHELL_STACK_BYTES;
+#else
+        64 * 1024;
+#endif
+
+BMDS_NAMESPACE_END
+
+/**
+ * @def BMDS_SHELL_BUILTIN
+ * @brief Registers a command that only works inside the shell (it changes
+ *        the shell itself: `cd`, `export`, `exit`): not in `/bin`.
  *
  * Each command gets its own input section, `.bmds_cmd.<Name>`; the
  * `bmds_shell` linker fragment collects them sorted by name into one
@@ -241,16 +265,35 @@ BMDS_NAMESPACE_END
  * @param Usage Argument synopsis string (may be empty).
  * @param Help  One-line description string.
  */
-#define BMDS_SHELL_COMMAND(Name, Fn, Usage, Help)                                                                      \
+#define BMDS_SHELL_BUILTIN(Name, Fn, Usage, Help)                                                                      \
         [[gnu::used, gnu::section(".bmds_cmd." #Name)]] constexpr ::bmds::Command bmdsShellCommand_##Name = {          \
                 #Name, Usage, Help, Fn};
 
 /**
- * @def BMDS_SHELL_COMMAND_AS
- * @brief Registers a command whose name isn't an identifier (`:`, `[`, `.`).
+ * @def BMDS_SHELL_BUILTIN_AS
+ * @brief `BMDS_SHELL_BUILTIN` for a name that isn't an identifier (`.`, `:`).
  * @param Id   An identifier for the object.
  * @param Name The name, a string literal.
  */
-#define BMDS_SHELL_COMMAND_AS(Id, Name, Fn, Usage, Help)                                                               \
+#define BMDS_SHELL_BUILTIN_AS(Id, Name, Fn, Usage, Help)                                                               \
         [[gnu::used, gnu::section(".bmds_cmd." Name)]] constexpr ::bmds::Command bmdsShellCommand_##Id = {Name, Usage, \
                                                                                                           Help, Fn};
+
+/**
+ * @def BMDS_SHELL_COMMAND
+ * @brief Registers a shell command, and the same command as a program in
+ *        `/bin` (an applet: `shellAppletMain`). Typed at a prompt it runs in
+ *        the shell; run by path (`exec`, a script, `/bin/NAME`) as its own
+ *        process. Parameters as `BMDS_SHELL_BUILTIN`.
+ */
+#define BMDS_SHELL_COMMAND(Name, Fn, Usage, Help)                                                                      \
+        BMDS_SHELL_BUILTIN(Name, Fn, Usage, Help)                                                                      \
+        BMDS_PROGRAM(Name, ::bmds::shellAppletMain, ::bmds::ShellAppletStackBytes)
+
+/**
+ * @def BMDS_SHELL_COMMAND_AS
+ * @brief `BMDS_SHELL_COMMAND` for a name that isn't an identifier (`[`).
+ */
+#define BMDS_SHELL_COMMAND_AS(Id, Name, Fn, Usage, Help)                                                               \
+        BMDS_SHELL_BUILTIN_AS(Id, Name, Fn, Usage, Help)                                                               \
+        BMDS_PROGRAM_AS(Id, Name, ::bmds::shellAppletMain, ::bmds::ShellAppletStackBytes)

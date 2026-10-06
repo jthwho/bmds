@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 #include <bmds/blockdevices.h>
+#include <bmds/builtinprograms.h>
 #include <bmds/clock.h>
 #include <bmds/fscommands.h>
 #include <bmds/memorystream.h>
@@ -258,7 +259,7 @@ TEST_CASE("Vfs: devices, partitions and mounts") {
         CHECK(Vfs::findDevice("/dev/null", Root) == nullptr);
         CHECK(mountList() == std::vector<std::string>{"ram0p0 /ram0/p0 fat32"});
 
-        CHECK(list("/") == std::vector<std::string>{"dev/", "ram0/"});
+        CHECK(list("/") == std::vector<std::string>{"bin/", "dev/", "ram0/"});
         CHECK(list("/ram0") == std::vector<std::string>{"p0/"});
         CHECK(list("/dev") == std::vector<std::string>{"console", "null", "ram0", "ram0p0"});
         CHECK(Vfs::stat("/ram0", Root).value().isDirectory());
@@ -276,11 +277,11 @@ TEST_CASE("Vfs: devices, partitions and mounts") {
         SUBCASE("mounting by hand, and what is refused") {
                 CHECK(Vfs::unmount("/ram0/p0").isOk());
                 CHECK(Vfs::unmount("/ram0/p0") == Error::NotExist);
-                CHECK(list("/") == std::vector<std::string>{"dev/"});
+                CHECK(list("/") == std::vector<std::string>{"bin/", "dev/"});
                 CHECK(Vfs::stat("/ram0", Root).error() == Error::NotExist);
                 CHECK(Vfs::mount("/data/main", *p0).isOk());
                 CHECK(Vfs::stat("/data/../data/main/../main/.", Root).value().isDirectory());
-                CHECK(list("/") == std::vector<std::string>{"data/", "dev/"});
+                CHECK(list("/") == std::vector<std::string>{"bin/", "data/", "dev/"});
                 CHECK(Vfs::mount("/data/main", *p0) == Error::Exists);
                 CHECK(Vfs::mount("/other", *p0) == Error::Busy);
                 CHECK(Vfs::mount("/other", ram) == Error::Busy); // the whole device under a mounted partition
@@ -364,6 +365,69 @@ TEST_CASE("Vfs: devices, partitions and mounts") {
                 REQUIRE(Vfs::automount(ram).value() == 1);
                 CHECK(mountList() == std::vector<std::string>{"ram0p0 /ram0/p0 fat16"}); // FatFs's choice for 64 MB
         }
+}
+
+namespace {
+
+        int testProgram(const bmds::BuiltinProgram::Context &) {
+                return 7;
+        }
+
+        // A registry for the tests, sorted by name (as the linker sorts the firmware's).
+        constexpr bmds::ProgramEntry TestPrograms[] = {
+                {"bash", {testProgram, 4096}},
+                {"sh", {testProgram, 4096}},
+                {"term", {testProgram, 8192}},
+        };
+
+} // namespace
+
+TEST_CASE("Vfs: /bin lists the programs built in, read-only") {
+        bmds::BuiltinPrograms::detail::setForHost(bmds::Span<const bmds::ProgramEntry>(TestPrograms));
+        CHECK(bmds::BuiltinPrograms::find("sh") == &TestPrograms[1]);
+        CHECK(bmds::BuiltinPrograms::find("term") == &TestPrograms[2]);
+        CHECK(bmds::BuiltinPrograms::find("ls") == nullptr);
+        fresh(FsFormat::Fat32);
+        CHECK(list("/bin") == std::vector<std::string>{"bash", "sh", "term"});
+        CHECK(Vfs::stat("/bin", Root).value().isDirectory());
+        {
+                const auto info = Vfs::stat("/bin/sh", Root);
+                REQUIRE(info.isOk());
+                CHECK(info.value().type == FileType::File);
+                CHECK(info.value().size == 0);
+        }
+        CHECK(Vfs::stat("/bin/ls", Root).error() == Error::NotExist);
+        CHECK(Vfs::stat("/bin/sh/x", Root).error() == Error::NotExist);
+        // Read: empty. Written, made, removed, renamed: refused.
+        {
+                auto [file, err] = Vfs::open("/bin/sh", Vfs::Read, Root);
+                REQUIRE(err.isOk());
+                uint8_t    buf[4];
+                const auto got = file->read(bmds::WritableByteSpan(buf, sizeof(buf)), 0);
+                CHECK((got.isError() || got.value() == 0));
+        }
+        CHECK(Vfs::open("/bin/sh", Vfs::Write, Root).error() == Error::ReadOnly);
+        CHECK(Vfs::open("/bin/new", Vfs::Write | Vfs::Create, Root).error() == Error::ReadOnly);
+        CHECK(Vfs::open("/bin", Vfs::Read, Root).error() == Error::IsDir);
+        CHECK(Vfs::mkdir("/bin/dir", Root) == Error::ReadOnly);
+        CHECK(Vfs::remove("/bin/sh", Root) == Error::ReadOnly);
+        CHECK(Vfs::rmdir("/bin", Root) == Error::ReadOnly);
+        CHECK(Vfs::rename("/bin/sh", "/bin/zsh", Root) == Error::ReadOnly);
+        CHECK(Vfs::rename("/ram0/p0", "/bin/x", Root) == Error::ReadOnly);
+        CHECK(Vfs::symlink("/bin/sh", "/bin/link", Root) == Error::ReadOnly);
+        CHECK(Vfs::openDirectory("/bin/sh", Root).error() == Error::NotDir);
+        bmds::BlockDevice *p0 = bmds::BlockDevices::find("ram0p0");
+        REQUIRE(p0 != nullptr);
+        CHECK(Vfs::mount("/bin", *p0) == Error::Invalid);
+        // What a path runs: a built-in by its path, or through a link to it.
+        CHECK(Vfs::builtinProgram("/bin/sh", Root) == &TestPrograms[1]);
+        CHECK(Vfs::builtinProgram("/bin/../bin/term", Root) == &TestPrograms[2]);
+        CHECK(Vfs::builtinProgram("/bin/ls", Root) == nullptr);
+        CHECK(Vfs::symlink("/bin/sh", "/ram0/p0/mysh", Root).isOk());
+        CHECK(Vfs::builtinProgram("/ram0/p0/mysh", Root) == &TestPrograms[1]);
+        CHECK(Vfs::builtinProgram("/ram0/p0", Root) == nullptr);
+        bmds::BuiltinPrograms::detail::setForHost(bmds::Span<const bmds::ProgramEntry>());
+        CHECK(list("/bin").empty());
 }
 
 TEST_CASE("Vfs: files") {

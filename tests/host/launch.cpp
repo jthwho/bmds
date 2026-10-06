@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 #include <bmds/blockdevices.h>
+#include <bmds/builtinprograms.h>
 #include <bmds/filecommands.h>
 #include <bmds/langbuiltins.h>
 #include <bmds/programlauncher.h>
@@ -81,16 +82,22 @@ namespace {
         namespace T = bmds::TextCommands;
 
         constexpr bmds::Command Commands[] = {
-                {"[", "", "", L::test},
-                {"cd", "", "", F::cd},
-                {"command", "", "", L::command},
-                {"echo", "", "", T::echo},
-                {"exit", "", "", L::exitCmd},
-                {"export", "", "", L::exportCmd},
-                {"false", "", "", L::falseCmd},
-                {"sh", "", "", L::sh},
-                {"type", "", "", L::type},
-                {"wc", "", "", T::wc},
+                {"[", "", "", L::test},           {"cd", "", "", F::cd},          {"command", "", "", L::command},
+                {"echo", "", "", T::echo},        {"env", "", "", L::env},        {"exit", "", "", L::exitCmd},
+                {"export", "", "", L::exportCmd}, {"false", "", "", L::falseCmd}, {"sh", "", "", L::sh},
+                {"type", "", "", L::type},        {"wc", "", "", T::wc},
+        };
+
+        int unusedMain(const bmds::BuiltinProgram::Context &) {
+                return 0;
+        }
+
+        // /bin for the tests (sorted by name): sh and env are shell commands (run in the shell),
+        // bash isn't (the launcher runs it).
+        constexpr bmds::ProgramEntry BinPrograms[] = {
+                {"bash", {unusedMain, 4096}},
+                {"env", {unusedMain, 4096}},
+                {"sh", {unusedMain, 4096}},
         };
 
         // A RAM disk at /<name>/p0 for the files, removed afterwards (the
@@ -99,6 +106,8 @@ namespace {
                         Fixture() : disk(512) {
                                 REQUIRE(disk.allocate(4 * 2048, bmds::MemSpace::Psram).isOk());
                                 REQUIRE(Vfs::init().isOk());
+                                bmds::BuiltinPrograms::detail::setForHost(
+                                        bmds::Span<const bmds::ProgramEntry>(BinPrograms));
                                 char name[bmds::BlockDevices::MaxName + 1];
                                 REQUIRE(bmds::BlockDevices::addNumbered(disk, "ldisk", name).isOk());
                                 root = std::string("/") + name + "/p0";
@@ -115,6 +124,7 @@ namespace {
                         }
 
                         ~Fixture() {
+                                bmds::BuiltinPrograms::detail::setForHost(bmds::Span<const bmds::ProgramEntry>());
                                 shell.reset();
                                 Vfs::eject(disk);
                                 bmds::BlockDevices::remove(disk);
@@ -279,20 +289,28 @@ TEST_CASE("Launch: #! scripts") {
         REQUIRE(f.out("PATH=" + f.root + "/bin", 0) == "");
         const std::string bin = f.root + "/bin";
 
-        // Paths a PC script names: built-ins by their last component.
+        // The programs built in (/bin), as named: one of the shell's commands runs in the shell...
         f.put("a", "#!/bin/sh\necho \"sh $# $1\"\n");
         CHECK(f.out("./a x", 0) == "sh 1 x\n");
-        f.put("b", "#!/bin/bash -e\nfalse\necho not reached\n");
-        CHECK(f.out("./b", 1) == "");
-        f.put("c", "#!/usr/bin/env sh\necho env-sh $1\n");
+        // ...another by the launcher, with its argument.
+        f.put("b", "#!/bin/bash -e\nfalse\n");
+        CHECK(f.out("./b", 0) == "ran\n");
+        CHECK(f.last().path == "/bin/bash");
+        CHECK(f.last().args == Args{"/bin/bash", "-e", "./b"});
+        // /bin/env looks the name up as a command ($PATH too).
+        f.put("c", "#!/bin/env sh\necho env-sh $1\n");
         CHECK(f.out("./c y", 0) == "env-sh y\n");
-        // /usr/bin/env looks the name up as a command ($PATH too).
-        f.put("d", "#!/usr/bin/env hello\r\nanything\n");
+        f.put("d", "#!/bin/env hello\r\nanything\n");
         CHECK(f.out("./d 1 2", 0) == "ran\n");
         CHECK(f.last().path == bin + "/hello.elf");
         CHECK(f.last().args == Args{"hello", "./d", "1", "2"});
-        f.put("e", "#!/usr/bin/env nope\n");
+        f.put("e", "#!/bin/env nope\n");
         CHECK(f.out("./e", Shell::ExitNotFound) == "nope: command not found\n");
+        // Paths this system doesn't have aren't guessed.
+        f.put("n", "#!/usr/bin/env sh\n");
+        CHECK(f.out("./n", Shell::ExitNotFound) == "./n: /usr/bin/env: No such file or directory\n");
+        f.put("o", "#!/usr/bin/bash\n");
+        CHECK(f.out("./o", Shell::ExitNotFound) == "./o: /usr/bin/bash: No such file or directory\n");
 
         // A program as the interpreter, with its one argument (the rest of the line).
         f.put("g", "#!" + bin + "/interp.elf  -f  two words \nbody\n");
@@ -331,4 +349,15 @@ TEST_CASE("Launch: test -x") {
         f.put("text", "hello\n");
         CHECK(f.out("for x in prog s.sh script dir text nope; do [ -x $x ] && echo $x; done", 1) ==
               "prog\ns.sh\nscript\ndir\n");
+}
+
+TEST_CASE("Launch: env runs a command with variables set, then puts them back") {
+        Fixture f;
+        CHECK(f.out("X=a; env X=b sh -c 'echo $X'; echo $X", 0) == "b\na\n");
+        CHECK(f.out("env Y=1 echo; echo ${Y-unset}", 0) == "\nunset\n");
+        CHECK(f.out("env Z=1 Z=2 sh -c 'echo $Z'; echo ${Z-unset}", 0) == "2\nunset\n");
+        const std::string listed = f.out("export W=w; V=hidden; env", 0);
+        CHECK(listed.find("W=w\n") != std::string::npos);
+        CHECK(listed.find("V=") == std::string::npos); // not exported
+        CHECK(f.out("env nope", Shell::ExitNotFound) == "nope: command not found\n");
 }

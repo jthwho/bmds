@@ -351,7 +351,7 @@ TEST_CASE("Shell: as a program (/bin/sh)") {
                 const auto run = [&](std::initializer_list<bmds::StringView> args) {
                         std::vector<bmds::StringView> v(args);
                         context.args = Span<const bmds::StringView>(v.data(), v.size());
-                        return Shell::runAsProgram(context, ShCommands, 1 << 20);
+                        return Shell::runAsProgram(context, ShCommands, 1 << 20, "sh");
                 };
 
                 // sh -c: the environment exported, the directory, the status.

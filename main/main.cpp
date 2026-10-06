@@ -37,11 +37,6 @@ namespace {
                 return bmds::Shell::spawn(bmds::UsbSerialConsole::instance(), "shell", startup);
         }
 
-        // The process table, and the shell as /bin/sh for exec (system(), popen()).
-        bmds::Error initPrograms() {
-                bmds::Loader::setShell(bmds::BuiltinProgram{bmds::Shell::programMain, CONFIG_BMDS_SHELL_STACK_BYTES});
-                return bmds::Loader::init();
-        }
 
         constexpr bmds::Boot::Stage SystemStages[] = {
                 {"console", bmds::UsbSerialConsole::init},
@@ -50,7 +45,7 @@ namespace {
                 {"boot", bmds::BootDisk::init}, // /boot: the profile and autoexec.sh
                 {"storage", bmds::Storage::init},
                 {"ramdisk", bmds::RamDisk::init},
-                {"programs", initPrograms}, // processes, /bin/sh
+                {"programs", bmds::Loader::init}, // the process table
                 {"input", bmds::Input::init},
                 {"usb", bmds::UsbHost::init},
                 {"shell", startSerialShell},

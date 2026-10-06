@@ -444,7 +444,7 @@ int LangBuiltins::read(CommandContext &ctx) {
 
 BMDS_SHELL_COMMAND_AS(printfCmd, "printf", LangBuiltins::printfCmd, "[-v var] format [arg]...",
                       "Print the arguments under the control of the format")
-BMDS_SHELL_COMMAND(read, LangBuiltins::read, "[-r] [-p prompt] [name]...",
+BMDS_SHELL_BUILTIN(read, LangBuiltins::read, "[-r] [-p prompt] [name]...",
                    "Read a line from standard input into variables")
 
 BMDS_NAMESPACE_END

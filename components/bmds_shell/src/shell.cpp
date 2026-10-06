@@ -50,7 +50,8 @@ Shell::Shell(Console &console, Span<const Command> commands, size_t stackBytes)
         }
 }
 
-int Shell::runAsProgram(const BuiltinProgram::Context &context, Span<const Command> commands, size_t stackBytes) {
+int Shell::runAsProgram(const BuiltinProgram::Context &context, Span<const Command> commands, size_t stackBytes,
+                        StringView command) {
         FileHandle *err = context.fds != nullptr ? context.fds->handle(FdTable::Stderr) : nullptr;
         auto        fail = [&](const char *message) {
                 if (err != nullptr)
@@ -79,10 +80,10 @@ int Shell::runAsProgram(const BuiltinProgram::Context &context, Span<const Comma
                 e = state.vars.set(name, entry.mid(eq + 1));
                 if (e.isOk()) e = state.vars.addFlags(name, Variables::Exported);
         }
-        // The built-in `sh` does the rest (`-c`, a script, options).
+        // The command does the rest (`sh`: `-c`, a script, options; an applet: its own).
         if (e.isOk()) e = args.reserve(context.args.size() + 1);
         if (e.isOk()) e = args.append(String());
-        if (e.isOk()) e = args[0].assign("sh");
+        if (e.isOk()) e = args[0].assign(command);
         for (size_t i = 1; e.isOk() && i < context.args.size(); ++i) {
                 auto [arg, aerr] = String::fromView(context.args[i]);
                 e = aerr.isOk() ? args.append(std::move(arg)) : aerr;
@@ -554,5 +555,12 @@ int Shell::runHelp(CommandContext &ctx) {
         }
         return ExitSuccess;
 }
+
+#if !defined(ESP_PLATFORM)
+// The host has no registered command table: applets aren't run there (shellesp.cpp on the target).
+int shellAppletMain(const BuiltinProgram::Context &) {
+        return Shell::ExitCannotRun;
+}
+#endif
 
 BMDS_NAMESPACE_END
