@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <bmds/command.h>
+#include <bmds/executor.h>
 #include <bmds/loader.h>
 #include <bmds/memory.h>
 #include <bmds/processtable.h>
@@ -111,7 +112,7 @@ namespace {
                 return ctx.usage();
         }
 
-        // kill [-s SIG | -SIG] [--] PID|-PGID...   kill -l
+        // kill [-s SIG | -SIG] [--] PID|-PGID|%JOB...   kill -l
         int runKill(CommandContext &ctx) {
                 const Args args = ctx.args();
                 if (args.size() == 2 && std::strcmp(args[1], "-l") == 0) {
@@ -134,7 +135,19 @@ namespace {
                 int status = Shell::ExitSuccess;
                 for (; i < args.size(); ++i) {
                         long pid = 0;
-                        if (!parseNumber(args[i], INT32_MIN, INT32_MAX, pid) || pid == 0 || pid == -1) {
+                        if (args[i][0] == '%') {
+                                // A job of this shell: its process group.
+                                Job                  *job = nullptr;
+                                const JobTable::Match m = ctx.executor().state().jobs.find(StringView(args[i]), job);
+                                if (m != JobTable::Match::Found) {
+                                        ctx.eprintf("kill: %s: %s\n", args[i],
+                                                    m == JobTable::Match::Ambiguous ? "ambiguous job spec"
+                                                                                    : "no such job");
+                                        status = Shell::ExitFailure;
+                                        continue;
+                                }
+                                pid = -static_cast<long>(job->pid);
+                        } else if (!parseNumber(args[i], INT32_MIN, INT32_MAX, pid) || pid == 0 || pid == -1) {
                                 ctx.eprintf("kill: %s: not a process or group id\n", args[i]);
                                 status = Shell::ExitFailure;
                                 continue;
@@ -154,7 +167,7 @@ namespace {
 
 } // namespace
 
-BMDS_SHELL_COMMAND(kill, runKill, "[-s SIG | -SIG] [--] PID|-PGID... | -l",
+BMDS_SHELL_COMMAND(kill, runKill, "[-s SIG | -SIG] [--] PID|-PGID|%JOB... | -l",
                    "Send a signal (TERM by default) to processes or process groups; -l lists the signals")
 BMDS_SHELL_COMMAND(ps, runPs, "[-T]", "List processes (-T: their tasks)")
 

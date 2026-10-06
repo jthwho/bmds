@@ -260,6 +260,19 @@ int Executor::runProgram(StringView path, List<String> &args) {
         // An interactive shell's programs are jobs: a pipeline's share one (devplan/processes.md §3.6.1).
         ProgramLauncher::JobGroup own;
         if (_shell.hasJobControl()) request.group = _job != nullptr ? _job : &own;
+        if (_starting != nullptr) {
+                // `&`: started as a job of its own (a group of its own), not waited for.
+                int32_t *const started = _starting;
+                _starting = nullptr;
+                request.waited = true;
+                request.group = nullptr;
+                const Result<int32_t> r = _shell.launcher()->start(request);
+                if (r.isOk()) {
+                        *started = r.value();
+                        return Shell::ExitSuccess;
+                }
+                return r.error() == Error::NotExist ? Shell::ExitNotFound : Shell::ExitCannotRun;
+        }
         const uint32_t raises = _shell.interrupt().raises();
         auto [status, lerr] = _shell.launcher()->run(request);
         // Ctrl-C sent the program SIGINT. If that didn't end it (caught or

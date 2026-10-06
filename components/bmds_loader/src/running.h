@@ -72,6 +72,7 @@ struct Running final : TaskOwner, ProcessControl {
                 int                   depth = 0;
                 uint8_t              *image = nullptr;
                 const ProgramEntry   *builtin = nullptr; // a program built in (/bin/NAME): no image
+                void                 *data = nullptr;    // the builtin's (Context::data)
                 uintptr_t             entry = 0;         // the program's _start
                 Task                  task;
                 Running              *nextStop = nullptr; // in the stop queue
@@ -100,6 +101,8 @@ struct Running final : TaskOwner, ProcessControl {
                 bool    isEnding() const override {
                         return kill.load() || (process != nullptr && process->signals().terminateSignal() != 0);
                 }
+                Result<int32_t> waitChild(int32_t child, bool block, int32_t &status) override;
+                void            disownChild(int32_t child) override;
 
                 /** @brief No more threads; waits for those left, interrupting them first. */
                 void endThreads();

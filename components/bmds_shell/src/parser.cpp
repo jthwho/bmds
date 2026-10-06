@@ -116,6 +116,9 @@ namespace {
 
                         size_t position() const { return _pos; }
 
+                        // Here-documents whose bodies are still to come (at the next newline).
+                        unsigned pendingHereDocs() const { return _hereCount; }
+
                         void reset(size_t pos) {
                                 _pos = pos;
                                 return;
@@ -898,21 +901,38 @@ class ParserImpl {
                         return p;
                 }
 
-                // and_or ((';' and_or)*) up to a newline or the end.
+                // An and-or list; with a `&` after it, a Background node around it (with its text,
+                // which a subshell process parses again).
+                Node *parseItem() {
+                        const Token &first = peek(true);
+                        if (first.kind == Tok::Error) return nullptr;
+                        const size_t start = first.start;
+                        Node        *n = parseAndOr();
+                        if (n == nullptr || peek().kind != Tok::Amp) return n;
+                        BackgroundNode *b = make<BackgroundNode>();
+                        if (b == nullptr) return nullptr;
+                        b->body = n;
+                        b->source = _p._source.mid(start, _lastEnd - start);
+                        b->hereDocAfter = _lex.pendingHereDocs() > 0;
+                        (void)take();
+                        return b;
+                }
+
+                // and_or (('&' | ';') and_or)* up to a newline or the end.
                 Node *parseList() {
-                        Node *first = parseAndOr();
+                        Node *first = parseItem();
                         if (first == nullptr) return nullptr;
                         ListNode *list = nullptr;
                         Node     *tail = first;
                         for (;;) {
-                                const Token &t = peek();
-                                if (t.kind == Tok::Amp)
-                                        return fail("background jobs (&) are not supported", t.text, t.start);
-                                if (t.kind != Tok::Semi) break;
-                                (void)take();
+                                // `&` separates as `;` does.
+                                if (tail->kind != NodeKind::Background) {
+                                        if (peek().kind != Tok::Semi) break;
+                                        (void)take();
+                                }
                                 const Token &n = peek(true);
                                 if (n.kind == Tok::Newline || n.kind == Tok::End) break;
-                                Node *next = parseAndOr();
+                                Node *next = parseItem();
                                 if (next == nullptr) return nullptr;
                                 if (list == nullptr) {
                                         list = make<ListNode>();
@@ -931,21 +951,21 @@ class ParserImpl {
                         skipNewlines();
                         const Token &t = peek(true);
                         if (isTerminator(t)) return unexpected(t);
-                        Node *first = parseAndOr();
+                        Node *first = parseItem();
                         if (first == nullptr) return nullptr;
                         ListNode *list = nullptr;
                         Node     *tail = first;
                         for (;;) {
-                                const Token &s = peek();
-                                if (s.kind == Tok::Amp)
-                                        return fail("background jobs (&) are not supported", s.text, s.start);
-                                if (s.kind != Tok::Semi && s.kind != Tok::Newline) break;
-                                (void)take();
+                                if (tail->kind != NodeKind::Background) {
+                                        const Token &s = peek();
+                                        if (s.kind != Tok::Semi && s.kind != Tok::Newline) break;
+                                        (void)take();
+                                }
                                 skipNewlines();
                                 const Token &n = peek(true);
                                 if (n.kind == Tok::Error) return nullptr;
                                 if (isTerminator(n)) break;
-                                Node *next = parseAndOr();
+                                Node *next = parseItem();
                                 if (next == nullptr) return nullptr;
                                 if (list == nullptr) {
                                         list = make<ListNode>();

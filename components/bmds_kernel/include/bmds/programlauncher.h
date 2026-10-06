@@ -20,6 +20,7 @@ BMDS_NAMESPACE_BEGIN
 
 class Console;
 class Interrupt;
+struct ProgramEntry;
 
 /**
  * @brief Runs program files for the shell (bmds_loader implements it; the
@@ -69,6 +70,20 @@ class ProgramLauncher {
                                  *        (a shell the system starts on a terminal).
                                  */
                                 bool session = false;
+                                /**
+                                 * @brief `start()`: the caller's child, kept once it ends until
+                                 *        the caller takes it (`ProcessControl::waitChild()`, a
+                                 *        shell's job); otherwise nobody waits for it.
+                                 */
+                                bool waited = false;
+                                /**
+                                 * @brief Kernel code to run as the process instead of the file
+                                 *        at `path`, which names it (a shell's background
+                                 *        subshell, devplan/processes.md §3.8.1); null: the file.
+                                 */
+                                const ProgramEntry *builtin = nullptr;
+                                /** @brief `builtin`'s `Context::data`: its own once it starts. */
+                                void *data = nullptr;
                 };
 
                 /**
@@ -86,9 +101,14 @@ class ProgramLauncher {
                 /**
                  * @brief Starts the program in @p request without waiting for it:
                  *        nobody waits, and it is freed when it ends (a GUI program
-                 *        started from a command, `devplan/pty.md`).
+                 *        started from a command, `devplan/pty.md`); or, with `waited`,
+                 *        the caller takes its end later (a shell's job).
+                 *
+                 * Without a group, it gets one of its own, not in the foreground.
+                 *
                  * @return Its process id, or the errors of `run()`; `NotSupported`
-                 *         by a launcher that can't.
+                 *         by a launcher that can't, `Invalid` for `waited` from
+                 *         outside a process. When it fails, `data` stays the caller's.
                  */
                 virtual Result<int32_t> start(const Request &request) {
                         (void)request;
@@ -127,6 +147,21 @@ class ProcessControl {
                 /** @brief Returns true once the process is being ended (a signal, a kill): stop. */
                 virtual bool isEnding() const = 0;
 
+                /**
+                 * @brief Takes the end of child @p pid, one started with `waited`.
+                 * @param pid    The child.
+                 * @param block  Wait until it ends (the process's interrupt stops the wait).
+                 * @param status [out] How it ended, when taken: a wait status
+                 *               (Linux's layout, as `proc_wait` gives it).
+                 * @return Its pid once taken; 0 if it hasn't ended (not blocking);
+                 *         `NotExist` (not a child, or already taken), `Interrupted`.
+                 * @blocking With @p block.
+                 */
+                virtual Result<int32_t> waitChild(int32_t pid, bool block, int32_t &status) = 0;
+
+                /** @brief Leaves child @p pid to end on its own: freed when it ends, not kept. */
+                virtual void disownChild(int32_t pid) = 0;
+
         protected:
                 ~ProcessControl() = default;
 };
@@ -152,6 +187,7 @@ struct BuiltinProgram {
                                 ProgramLauncher       *launcher = nullptr;  ///< Runs the programs it starts.
                                 StringView             program; ///< Its name in `/bin` (an applet: its command).
                                 ProcessControl        *process = nullptr; ///< Its process (may be null).
+                                void                  *data = nullptr; ///< The request's `data` (kernel code it named).
                 };
 
                 /** @brief The program: returns its exit status (0-255). */

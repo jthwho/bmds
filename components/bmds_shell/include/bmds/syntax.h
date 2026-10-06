@@ -120,6 +120,7 @@ enum class NodeKind : uint8_t {
         Subshell,   ///< `BodyNode`: `( ... )`
         Function,   ///< `FunctionNode`
         Arithmetic, ///< `ArithNode`: `(( ... ))`
+        Background, ///< `BackgroundNode`: `... &`
 };
 
 /**
@@ -226,6 +227,19 @@ struct FunctionNode : Node {
                 Node      *body = nullptr;
                 StringView source;
                 FunctionNode() : Node(NodeKind::Function) {}
+};
+
+/**
+ * @brief `body &`: an and-or list run as a job, not waited for.
+ *
+ * `source` is its text, which a subshell process parses again (the tree
+ * goes with the parser's arena).
+ */
+struct BackgroundNode : Node {
+                Node      *body = nullptr;
+                StringView source;               ///< The and-or list as written.
+                bool       hereDocAfter = false; ///< A here-document's body follows the line (not in `source`).
+                BackgroundNode() : Node(NodeKind::Background) {}
 };
 
 /** @brief `(( expression ))` */

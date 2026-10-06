@@ -185,6 +185,24 @@ class Shell final : public LineCompleter {
                 /** @brief Returns the shell's process (running as `/bin/sh`), or null. */
                 ProcessControl *process() const { return _process; }
 
+                /**
+                 * @brief Sets the process the shell runs as (`$$` is its pid; background
+                 *        jobs are its children). `runAsProgram()` does; null: none.
+                 */
+                void setProcess(ProcessControl *process);
+
+                /**
+                 * @brief Starts @p source as a background job: a subshell process over a
+                 *        copy of @p state (devplan/processes.md §3.8.1), on @p fds, in a
+                 *        group of its own; this shell's process takes its end.
+                 *
+                 * Problems are reported on @p fds' stderr.
+                 * @return Its pid, or `NoMem`, `Invalid` (no launcher or process), or
+                 *         the launcher's error.
+                 */
+                Result<int32_t> startBackground(const ShellState &state, StringView source, const FdTable &fds);
+
+
                 /** @brief Returns true if foreground pipelines of programs are jobs (interactive). */
                 bool hasJobControl() const { return _jobControl; }
 
@@ -274,6 +292,8 @@ class Shell final : public LineCompleter {
                 void runInput();
                 void endInterrupt();
                 void prepareInteractive(bool login); // target: the defaults, the boot (shellesp.cpp)
+                void       reportJobs();                   // jobs that ended, before a prompt (jobs.cpp)
+                static int backgroundMain(const BuiltinProgram::Context &context);
 
                 Console            &_console;
                 Interrupt          *_interrupt;

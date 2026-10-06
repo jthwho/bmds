@@ -13,6 +13,7 @@
 
 #include <doctest.h>
 
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -38,19 +39,49 @@ namespace {
                 return bmds::StringView(s.data(), s.size());
         }
 
-        // Records each request; runs nothing.
+        // The shell's process: its children are the jobs the launcher started. A child that
+        // hasn't ended ends with its `status` when waited for.
+        class FakeProcess final : public bmds::ProcessControl {
+                public:
+                        struct Child {
+                                        bool    ended = false;
+                                        int32_t status = 0; // a wait status
+                        };
+
+                        int32_t processId() const override { return 7; }
+
+                        Error setSignalAction(int, SignalAction) override { return Error::Ok; }
+
+                        bool isEnding() const override { return false; }
+
+                        bmds::Result<int32_t> waitChild(int32_t pid, bool block, int32_t &status) override {
+                                auto it = children.find(pid);
+                                if (it == children.end()) return bmds::makeError<int32_t>(Error::NotExist);
+                                if (!it->second.ended && !block) return bmds::makeResult<int32_t>(0);
+                                if (!it->second.ended && interruptWaits)
+                                        return bmds::makeError<int32_t>(Error::Interrupted);
+                                status = it->second.status;
+                                children.erase(it);
+                                return bmds::makeResult(pid);
+                        }
+
+                        void disownChild(int32_t pid) override {
+                                disowned.push_back(pid);
+                                children.erase(pid);
+                        }
+
+                        std::map<int32_t, Child> children;
+                        std::vector<int32_t>     disowned;
+                        bool                     interruptWaits = false;
+        };
+
+        // Records each request; runs nothing, except kernel code a start names (a background
+        // subshell), on the caller's thread before start() returns.
         class FakeLauncher final : public bmds::ProgramLauncher {
                 public:
                         bmds::Result<int> run(const Request &r) override {
                                 std::lock_guard<std::mutex> lock(_lock);
-                                Call                        c;
-                                c.path.assign(r.path.data(), r.path.size());
-                                for (bmds::StringView a : r.args) c.args.emplace_back(a.data(), a.size());
-                                for (bmds::StringView e : r.environment) c.env.emplace_back(e.data(), e.size());
-                                c.cwd.assign(r.cwd.data(), r.cwd.size());
-                                c.console = r.console;
-                                c.interrupt = r.interrupt;
-                                calls.push_back(c);
+                                calls.push_back(record(r));
                                 // Ctrl-C while it runs (the loader would send it SIGINT).
                                 if (pressCtrlC && r.interrupt != nullptr) r.interrupt->raise();
                                 // The program "writes" to its stdout.
@@ -60,6 +91,34 @@ namespace {
                                 return bmds::makeResult(status);
                         }
 
+                        bmds::Result<int32_t> start(const Request &r) override {
+                                int32_t pid = 0;
+                                {
+                                        std::lock_guard<std::mutex> lock(_lock);
+                                        Call                        c = record(r);
+                                        c.started = true;
+                                        c.waited = r.waited;
+                                        c.subshell = r.builtin != nullptr;
+                                        c.group = r.group != nullptr;
+                                        calls.push_back(c);
+                                        pid = nextPid++;
+                                }
+                                if (process != nullptr && r.waited) process->children[pid] = FakeProcess::Child();
+                                if (r.builtin == nullptr) return bmds::makeResult(pid);
+                                bmds::BuiltinProgram::Context context;
+                                context.fds = r.fds;
+                                context.cwd = r.cwd;
+                                context.args = r.args;
+                                context.environment = r.environment;
+                                context.console = r.console;
+                                context.launcher = this;
+                                context.program = "sh";
+                                context.data = r.data;
+                                const int code = r.builtin->program.main(context);
+                                if (process != nullptr && r.waited) process->children[pid] = {true, (code & 0xff) << 8};
+                                return bmds::makeResult(pid);
+                        }
+
                         struct Call {
                                         std::string              path;
                                         std::vector<std::string> args;
@@ -67,13 +126,30 @@ namespace {
                                         std::string              cwd;
                                         bmds::Console           *console = nullptr;
                                         bmds::Interrupt         *interrupt = nullptr;
+                                        bool                     started = false;  // start(), not run()
+                                        bool                     waited = false;   // start(): the shell's child
+                                        bool                     subshell = false; // start(): kernel code
+                                        bool                     group = false;    // a group was named
                         };
                         std::vector<Call> calls;
                         int               status = 0;
                         Error             fail;
                         bool              pressCtrlC = false;
+                        int32_t           nextPid = 100;
+                        FakeProcess      *process = nullptr;
 
                 private:
+                        static Call record(const Request &r) {
+                                Call c;
+                                c.path.assign(r.path.data(), r.path.size());
+                                for (bmds::StringView a : r.args) c.args.emplace_back(a.data(), a.size());
+                                for (bmds::StringView e : r.environment) c.env.emplace_back(e.data(), e.size());
+                                c.cwd.assign(r.cwd.data(), r.cwd.size());
+                                c.console = r.console;
+                                c.interrupt = r.interrupt;
+                                return c;
+                        }
+
                         std::mutex _lock;
         };
 
@@ -82,10 +158,14 @@ namespace {
         namespace T = bmds::TextCommands;
 
         constexpr bmds::Command Commands[] = {
-                {"[", "", "", L::test},           {"cd", "", "", F::cd},          {"command", "", "", L::command},
-                {"echo", "", "", T::echo},        {"env", "", "", L::env},        {"exit", "", "", L::exitCmd},
-                {"export", "", "", L::exportCmd}, {"false", "", "", L::falseCmd}, {"sh", "", "", L::sh},
-                {"type", "", "", L::type},        {"wc", "", "", T::wc},
+                {"[", "", "", L::test},          {"cd", "", "", F::cd},
+                {"command", "", "", L::command}, {"disown", "", "", L::disown},
+                {"echo", "", "", T::echo},       {"env", "", "", L::env},
+                {"exit", "", "", L::exitCmd},    {"export", "", "", L::exportCmd},
+                {"false", "", "", L::falseCmd},  {"jobs", "", "", L::jobs},
+                {"read", "", "", L::read},       {"sh", "", "", L::sh},
+                {"type", "", "", L::type},       {"wait", "", "", L::wait},
+                {"wc", "", "", T::wc},
         };
 
         int unusedMain(const bmds::BuiltinProgram::Context &) {
@@ -150,6 +230,13 @@ namespace {
                                 return con.take();
                         }
 
+                        // The shell as a process: background jobs work.
+                        void beProcess() {
+                                launcher.process = &process;
+                                shell->setProcess(&process);
+                                REQUIRE(shell->execute("PATH=.") == 0);
+                        }
+
                         const FakeLauncher::Call &last() {
                                 REQUIRE_FALSE(launcher.calls.empty());
                                 return launcher.calls.back();
@@ -159,6 +246,7 @@ namespace {
                         std::string            root;
                         FakeConsole            con;
                         FakeLauncher           launcher;
+                        FakeProcess            process;
                         std::unique_ptr<Shell> shell;
         };
 
@@ -364,4 +452,129 @@ TEST_CASE("Launch: env runs a command with variables set, then puts them back") 
         CHECK(listed.find("W=w\n") != std::string::npos);
         CHECK(listed.find("V=") == std::string::npos); // not exported
         CHECK(f.out("env nope", Shell::ExitNotFound) == "nope: command not found\n");
+}
+
+TEST_CASE("Jobs: a lone program is started as a job") {
+        Fixture f;
+        f.program("prog");
+        f.beProcess();
+        CHECK(f.out("prog a 'b c' &", 0) == "");
+        REQUIRE(f.launcher.calls.size() == 1);
+        const auto &c = f.launcher.calls[0];
+        CHECK(c.started);
+        CHECK(c.waited);
+        CHECK_FALSE(c.subshell);
+        CHECK_FALSE(c.group); // the launcher gives it a group of its own
+        CHECK(c.args == Args{"prog", "a", "b c"});
+        CHECK(f.out("echo $! $$", 0) == "100 7\n");
+        CHECK(f.out("jobs", 0) == "[1]+  Running                 prog a 'b c' &\n");
+        CHECK(f.out("jobs -l", 0) == "[1]+ 100 Running                 prog a 'b c' &\n");
+        CHECK(f.out("jobs -p", 0) == "100\n");
+        // Ended: reported once.
+        f.process.children[100] = {true, 3 << 8};
+        CHECK(f.out("jobs", 0) == "[1]+  Exit 3                  prog a 'b c'\n");
+        CHECK(f.out("jobs", 0) == "");
+        // Redirections apply to it; `&` separates commands as `;` does.
+        CHECK(f.out("prog > out.txt & echo next", 0) == "next\n");
+        CHECK(f.launcher.calls.size() == 2);
+}
+
+TEST_CASE("Jobs: anything else is a subshell process") {
+        Fixture f;
+        f.program("prog");
+        f.beProcess();
+        CHECK(f.out("f() { echo in f $1; }; x=5", 0) == "");
+        // The subshell has the shell's functions and variables (the fake runs it at once).
+        CHECK(f.out("f $x && echo after &", 0) == "in f 5\nafter\n");
+        const auto &c = f.last();
+        CHECK(c.started);
+        CHECK(c.waited);
+        CHECK(c.subshell);
+        CHECK(c.args == Args{"sh", "-c", "f $x && echo after"});
+        CHECK(f.out("jobs", 0) == "[1]+  Done                    f $x && echo after\n");
+        // Its stdin is /dev/null; its exit status is the job's.
+        CHECK(f.out("{ read line; echo \"got [$line] $?\"; } &", 0) == "got [] 1\n");
+        CHECK(f.out("exit 4 & wait $!; echo $?", 0) == "4\n");
+        // What it changes stays its own.
+        CHECK(f.out("x=6 & echo $x", 0) == "5\n");
+        // $$ is the shell's in it too.
+        CHECK(f.out("echo $$ &", 0) == "7\n");
+        // A program in a pipeline or a compound command isn't a lone program.
+        f.launcher.calls.clear();
+        CHECK(f.out("prog | wc -l &", 0) == "1\n");
+        CHECK(f.launcher.calls.size() == 2);
+        CHECK(f.launcher.calls[0].subshell);
+        CHECK_FALSE(f.launcher.calls[1].started); // run by the subshell
+}
+
+TEST_CASE("Jobs: wait") {
+        Fixture f;
+        f.program("prog");
+        f.beProcess();
+        CHECK(f.out("prog & prog &", 0) == "");
+        f.process.children[100].status = 1 << 8;
+        // All of them: status 0, and they are gone.
+        CHECK(f.out("wait; echo $?; jobs", 0) == "0\n");
+        CHECK(f.process.children.empty());
+        // One: its status (a signal's: 128 + it).
+        CHECK(f.out("prog &", 0) == "");
+        f.process.children[102].status = 5 << 8;
+        CHECK(f.out("wait %1; echo $?", 0) == "5\n");
+        CHECK(f.out("prog &", 0) == "");
+        f.process.children[103].status = 15;
+        CHECK(f.out("jobs; wait $!; echo $?", 0) == "[1]+  Running                 prog &\n143\n");
+        CHECK(f.out("prog &", 0) == "");
+        f.process.children[104] = {true, 9};
+        CHECK(f.out("jobs", 0) == "[1]+  Killed                  prog\n");
+        // Not jobs.
+        CHECK(f.out("wait 99", Shell::ExitNotFound) == "wait: pid 99 is not a child of this shell\n");
+        CHECK(f.out("wait %3", Shell::ExitNotFound) == "wait: %3: no such job\n");
+        // Interrupted (Ctrl-C): 130, the job stays.
+        CHECK(f.out("prog &", 0) == "");
+        f.process.interruptWaits = true;
+        CHECK(f.out("wait", Shell::ExitInterrupted) == "");
+        CHECK(f.out("jobs", 0) == "[1]+  Running                 prog &\n");
+}
+
+TEST_CASE("Jobs: specs and disown") {
+        Fixture f;
+        f.program("prog");
+        f.beProcess();
+        CHECK(f.out("prog one & prog two & prog three &", 0) == "");
+        CHECK(f.out("jobs", 0) == "[1]   Running                 prog one &\n"
+                                  "[2]-  Running                 prog two &\n"
+                                  "[3]+  Running                 prog three &\n");
+        CHECK(f.out("wait %pro", Shell::ExitNotFound) == "wait: %pro: ambiguous job spec\n");
+        CHECK(f.out("disown %?wo", 0) == "");
+        CHECK(f.process.disowned == std::vector<int32_t>{101});
+        CHECK(f.out("jobs", 0) == "[1]-  Running                 prog one &\n"
+                                  "[3]+  Running                 prog three &\n");
+        CHECK(f.out("disown %-; disown", 0) == "");
+        CHECK(f.process.disowned == std::vector<int32_t>{101, 100, 102});
+        CHECK(f.out("jobs; disown", Shell::ExitFailure) == "disown: current: no such job\n");
+        // Numbers go on from the highest.
+        CHECK(f.out("prog & prog & disown %1; prog & jobs -l", 0) == "[2]- 104 Running                 prog &\n"
+                                                                     "[3]+ 105 Running                 prog &\n");
+}
+
+TEST_CASE("Jobs: a subshell's jobs are disowned when it ends") {
+        Fixture f;
+        f.program("prog");
+        f.beProcess();
+        CHECK(f.out("( prog & jobs ); jobs", 0) == "[1]+  Running                 prog &\n");
+        CHECK(f.process.disowned == std::vector<int32_t>{100});
+}
+
+TEST_CASE("Jobs: here-documents") {
+        Fixture f;
+        f.program("prog");
+        f.beProcess();
+        // A lone program gets its here-document as any command does.
+        CHECK(f.out("prog <<EOF &\nhi\nEOF", 0) == "");
+        CHECK(f.last().started);
+        // A subshell parses the job's text again, and the body isn't in it.
+        CHECK(f.out("wc -l <<EOF &\nhi\nEOF", Shell::ExitUsage) ==
+              "a here-document after a background job (&) is not supported\n");
+        // Inside the job's text, it is.
+        CHECK(f.out("{ wc -l <<EOF\nhi\nEOF\n} &", 0) == "1\n");
 }

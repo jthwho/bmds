@@ -108,7 +108,7 @@ Modeled on bash. Anything not listed is out of scope until someone needs it.
 | Area | Included | Deferred / excluded |
 |---|---|---|
 | Lexing | words, `'…'`, `"…"`, `\`, `#` comments, line continuation, multi-line input with the `PS2` prompt | `$'…'` ANSI-C quotes (later, cheap), brace expansion `{a,b}`, tilde expansion |
-| Lists | `;`, newline, `&&`, `\|\|`, `!`, `{ …; }`, `( … )` (runs on the same task with saved and restored variables) | `&` background jobs, job control (`jobs`/`fg`/Ctrl-Z), coprocesses |
+| Lists | `;`, newline, `&&`, `\|\|`, `!`, `{ …; }`, `( … )` (runs on the same task with saved and restored variables); `&` background jobs with `jobs`, `wait`, `kill %N`, `disown`, `$!` (`processes.md` §3.8.1) | `fg`/`bg`/Ctrl-Z (`processes.md` step 4), coprocesses |
 | Pipes and redirection | `\|`, `\|&`, `<`, `>`, `>>`, `>\|`, `<>`, `2>`, `2>>`, `&>`, `&>>`, `n>&m`, `n<&m`, `>&-`, `<<EOF`/`<<-EOF` here-docs, `<<<` here-strings. Files relative to the cwd (Phase 2); noclobber (`set -C`, `>\|`) | process substitution `<(…)` |
 | Parameters | `NAME=value`, `VAR=x cmd` prefix assignments, `$NAME`, `${NAME}`, `${NAME:-w}` `:=` `:+` `:?`, `${#NAME}`, `${NAME#p}` `##` `%` `%%` (glob patterns), `$?`, `$#`, `$@`, `$*`, `$0`–`$9` (`$0`: the script for `sh script` and scripts run by name, the name after `sh -c command`, else `bmds`; functions and `source` keep it), `${10}`, `$$`, `export`, `unset`, `local`, `readonly`, `shift` | arrays, associative arrays, `${NAME/pat/rep}` (later, cheap), `${!NAME}` indirection |
 | Expansion | command substitution `$(…)` (and backquotes), arithmetic `$((…))`, word splitting on `IFS`, quote removal, `"$@"` semantics; pathname globbing `*.txt` and tilde `~`, `~/…` (Phase 2) | `~user`, brace expansion |
@@ -238,5 +238,5 @@ For scale: dash, a full POSIX shell, is about 100 KB on x86-64. A Kconfig switch
 ## 9. Open questions
 
 - Should `( … )` subshells run on a worker task, for true isolation, or on the same task with saved and restored state? Recommended: same task. It is cheaper, and nothing can tell the difference without background jobs.
-- Background jobs (`&`) need job control on the console. Defer until there's a need, probably with programs in Phase 3.
+- Background jobs (`&`) need job control on the console. Defer until there's a need, probably with programs in Phase 3. (Done: `processes.md` §3.8.1.)
 - Program pipelines and concurrent residency (section 2), to be decided in the Phase 3 ABI design.

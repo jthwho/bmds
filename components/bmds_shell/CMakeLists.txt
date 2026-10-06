@@ -13,6 +13,7 @@ set(BMDS_SHELL_PURE_SRCS
         src/fscommands.cpp
         src/glob.cpp
         src/iobuiltins.cpp
+        src/jobs.cpp
         src/langbuiltins.cpp
         src/parser.cpp
         src/regex.cpp

@@ -517,7 +517,32 @@ f() echo hi
 
 === background jobs
 sleep 1 &
---- unsupported 1: background jobs (&) are not supported
+--- ok
+(& (cmd sleep 1))
+
+=== background jobs in a list
+a && b & c; d &
+--- ok
+(; (& (&& (cmd a) (cmd b))) (cmd c) (& (cmd d)))
+
+=== background job inside a group
+{ a & b; }
+--- ok
+(group (; (& (cmd a)) (cmd b)))
+
+=== background job then a newline in a loop
+while x; do a &
+done
+--- ok
+(while (cmd x) (& (cmd a)))
+
+=== semicolon after a background job
+a & ;
+--- error 1: syntax error near unexpected token `;'
+
+=== background job with nothing before it
+& a
+--- error 1: syntax error near unexpected token `&'
 
 === substring expansion
 echo ${x:1:2}

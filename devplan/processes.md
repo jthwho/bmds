@@ -185,6 +185,42 @@ As POSIX has them, for one user:
 - Done jobs are reported before the next prompt (`[1]+  Done  sleep 10`), as bash does.
 - A shell that exits with stopped jobs warns once (bash's "There are stopped jobs.").
 
+### 3.8.1 How it is built (step 3)
+
+- **`&`** ends an and-or list as `;` does; the parser wraps the and-or in a `Background` node with
+  its text.
+- **A lone program** (a simple command without assignments whose name is a plain word, not a
+  function or a built-in command, found as a program file or a `/bin` program the shell doesn't run
+  itself) is expanded and redirected by the shell as any command is, then started by the launcher's
+  `start()` with `waited`: it stays the shell's child (a zombie once it ends, until the shell takes
+  it), in a new group not in the foreground. `$!` is its pid.
+- **Anything else is a subshell process.** The launch request names kernel code to run instead of
+  a file (`builtin`, with `data` for it): the loader starts it as a process, as it starts `/bin/sh`.
+  It is a new `Shell` with a copy of the state (variables, functions, positional parameters,
+  options, `$$`, the directory), which parses the job's text again and runs it, not interactively,
+  and ends with its status (`ps` shows `sh -c TEXT`). Its pipeline stages are its threads, its
+  programs its children, in its group: the job's. A here-document whose body follows the line is
+  outside that text, so such a job is refused (a lone program with one works).
+- **Every job has a group of its own**, in a non-interactive shell too (POSIX keeps the shell's
+  group and ignores `SIGINT` and `SIGQUIT` there; the effect, the terminal's Ctrl-C not reaching
+  the job, is the same). Its stdin is `/dev/null` until step 4, which gives it the terminal and
+  `SIGTTIN`; its stdout and stderr are the command's.
+- **Taking ended jobs:** `ProcessControl::waitChild(pid, block, status)` (blocking: the process's
+  interrupt stops it) and `disownChild(pid)`. The shell waits only for its jobs' pids, never for
+  any child: a pipeline stage's program on another thread is its own launcher call's to wait for.
+  Ended jobs are taken before each prompt (an interactive shell reports them, as bash: `[1]+  Done
+  sleep 10`, `Exit 2`, `Terminated`), before a new job starts, and by `jobs` and `wait`.
+- **The job table** is the `ShellState`'s and isn't copied into a subshell's (`( … )`, a pipeline
+  stage, a background subshell start with none). When a state with jobs goes (a `( sleep 9 & )`),
+  its jobs are disowned: freed when they end, as orphans. 32 processes at most (the table's
+  capacity) bounds the jobs.
+- **Commands:** `jobs [-l|-p]`; `wait [%N|pid...]` (none: all jobs, status 0; else the last one's;
+  127 for one that isn't a job; Ctrl-C ends it with 130); `kill %N` (the job's group); `disown
+  [%N...]`. Job specs: `%N`, `%%` and `%+` (the newest), `%-` (the one before), `%name` (its
+  command starts with), `%?text` (contains). An interactive shell prints `[N] pid` as a job starts.
+  `$$` is the shell's pid (a subshell keeps its parent's), `$!` the newest job's.
+- **`fg` and `bg`** come with stopping (step 4).
+
 ### 3.9 Seeing processes
 
 - `ps`: pid, parent, group, state (running, sleeping, stopped, zombie, ending), threads, memory the
@@ -329,4 +365,34 @@ ABI 1 has not shipped, but these are recorded as `ABI:` lines because they chang
     `.bss` 232.
   - Found: BusyBox `hush` runs and takes Ctrl-C, but its job control stays off: its
     `fcntl(0, F_DUPFD, 255)` fails (`EINVAL`: fewer descriptors), so `setpgid` and `tcsetpgrp`
-    from a program are host-reviewed only, not exercised on the board.
+    from a program are host-reviewed only, not exercised on the board. (Wrong cause: BusyBox
+    was linked with an SDK build from before step 2, where they did nothing; see step 3.)
+- **Step 3** (2026-10-06): jobs.
+  - The parser makes `&` a `Background` node (the and-or list and its text); `&` separates as `;`
+    does. A lone program is started by the launcher's `start()` with `waited` (the shell's child,
+    kept once it ends); anything else is a subshell process: the request names kernel code
+    (`builtin`, `data`), which the loader runs as it runs `/bin/sh` (`ps`: `sh -c TEXT`), a new
+    `Shell` over a copy of the state, with a pipeline worker's stack (32 KB, `Psram`). A built-in
+    program is "in the kernel" from its creation, so a kill before it runs still lets it free its
+    data.
+  - `ProcessControl` gains `waitChild()` and `disownChild()`. `JobTable` in `ShellState` (not
+    cloned; a table that goes disowns its running jobs); `jobs [-l|-p]`, `wait`, `disown`, `kill
+    %N`; `$!`; `$$` is the shell's pid (it was always 1). Ended jobs are reported before the
+    prompt by an interactive shell, which also says `[N] pid` as a job starts (not in its
+    subshells or `sh -c`).
+  - Host-tested: the corpus (`&` in lists, groups, loops; `a & ;` and `& a` are errors, as in
+    bash), lone programs against subshells, `wait` statuses and its interruption, job specs,
+    `disown`, a subshell's jobs disowned, here-documents.
+  - On the board: `busybox sleep 5 &` (pid, `jobs -l`, `$!`), built-ins, loops, functions and a
+    two-program pipeline in the background (`ps` shows the subshell with its `pipe` thread and
+    both programs in its group); `wait`, `wait %N`, Ctrl-C ending a `wait` (130, the job goes on);
+    Ctrl-C at the prompt and in a terminal leaves jobs alone; `kill %N` (`Terminated` reported);
+    closing a terminal window ends its jobs (`SIGHUP`); a job started in `( … )` is freed when it
+    ends; `sh -c '… & … wait $!'`. Free memory and tasks are the same after each round. The
+    image grew 7,074 bytes, `.bss` none.
+  - Found and fixed: step 2 had dropped `Loader::begin()`'s check of a failed load (it went on
+    with no image). The SDK build that BusyBox was linked with predated step 2, so its `setpgid`
+    and `tcsetpgrp` did nothing; rebuilt, BusyBox `hush` has job control on the board (its jobs in
+    groups of their own, a pipeline's in one, Ctrl-C to the foreground job only, `kill %1`). It
+    still prints `fcntl(0,F_DUPFD,255): Invalid argument` as it starts (16 descriptors here) and
+    goes on with a lower one.

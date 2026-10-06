@@ -255,6 +255,11 @@ namespace {
                         case NodeKind::Arithmetic:
                                 o << "(arith " << static_cast<const ArithNode *>(n)->expression << ')';
                                 break;
+                        case NodeKind::Background:
+                                o << "(&";
+                                body(o, static_cast<const BackgroundNode *>(n)->body);
+                                o << ')';
+                                break;
                 }
                 if (wrap) {
                         redirections(o, n->redirects);

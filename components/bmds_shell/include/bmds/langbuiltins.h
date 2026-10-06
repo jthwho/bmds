@@ -43,6 +43,9 @@ namespace LangBuiltins {
         int reset(CommandContext &ctx);       ///< `reset`: the terminal and the console's modes back to their start
         int source(CommandContext &ctx);      ///< `source file [arg]...`, `. file [arg]...`
         int sh(CommandContext &ctx);          ///< `sh [-c command [name] | file] [arg]...`
+        int jobs(CommandContext &ctx);        ///< `jobs [-l | -p]`
+        int wait(CommandContext &ctx);        ///< `wait [%N | pid]...`
+        int disown(CommandContext &ctx);      ///< `disown [-a | %N...]`
 
 } // namespace LangBuiltins
 

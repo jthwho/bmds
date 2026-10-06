@@ -13,6 +13,7 @@
 #include <cstring>
 #include <new>
 #include <bmds/arith.h>
+#include <bmds/builtinprograms.h>
 #include <bmds/console.h>
 #include <bmds/executor.h>
 #include <bmds/glob.h>
@@ -165,6 +166,8 @@ Result<ShellState> ShellState::clone() const {
         if (err.isOk()) err = copy.scriptName.assign(scriptName.view());
         copy.options = options;
         copy.lastStatus = lastStatus;
+        copy.shellPid = shellPid;
+        copy.lastJobPid = lastJobPid;
         if (err.isOk()) err = copy.cwd.assign(cwd.view());
         return Result<ShellState>(std::move(copy), err);
 }
@@ -386,9 +389,9 @@ class Expander {
                 bool lookup(StringView name, StringView &value, String &scratch) {
                         ShellState &st = _ex._state;
                         if (name == "?" || name == "#" || name == "$") {
-                                const long n = name == "?"
-                                                       ? st.lastStatus
-                                                       : (name == "#" ? static_cast<long>(st.positional.size()) : 1);
+                                const long n = name == "?"   ? st.lastStatus
+                                               : name == "#" ? static_cast<long>(st.positional.size())
+                                                             : (st.shellPid > 0 ? static_cast<long>(st.shellPid) : 1);
                                 if (scratch.appendf("%ld", n).isError()) return false;
                                 value = scratch;
                                 return true;
@@ -398,7 +401,12 @@ class Expander {
                                 value = scratch;
                                 return true;
                         }
-                        if (name == "!") return false;
+                        if (name == "!") {
+                                if (st.lastJobPid <= 0) return false;
+                                if (scratch.appendf("%ld", static_cast<long>(st.lastJobPid)).isError()) return false;
+                                value = scratch;
+                                return true;
+                        }
                         if (name == "@" || name == "*") {
                                 const char sep = name == "*" ? (_ifs.isEmpty() ? '\0' : _ifs[0]) : ' ';
                                 for (size_t i = 0; i < st.positional.size(); ++i) {
@@ -701,6 +709,7 @@ int Executor::execute(const Node *n) {
                         }
                         return status;
                 }
+                case NodeKind::Background: return runBackground(static_cast<const BackgroundNode *>(n));
                 case NodeKind::Function: {
                         const auto *f = static_cast<const FunctionNode *>(n);
                         Error       err = _state.defineFunction(f->name, f->source);
@@ -881,6 +890,83 @@ int Executor::runSubshell(const Node *body) {
         const int status = child.execute(body);
         inheritAbort(child);
         return finish(status, true);
+}
+
+// A lone program, which `&` starts directly (no subshell): a simple command without assignments
+// whose name is a plain word, no function or built-in command, found as a program file, or a /bin
+// program that runFile() hands the launcher.
+bool Executor::isLoneProgram(const Node *n) {
+        if (n->kind == NodeKind::Pipeline) {
+                const auto *p = static_cast<const PipelineNode *>(n);
+                if (p->negated || p->commands == nullptr || p->commands->next != nullptr) return false;
+                n = p->commands;
+        }
+        if (n->kind != NodeKind::Simple) return false;
+        const auto *s = static_cast<const SimpleNode *>(n);
+        if (s->assignments != nullptr || s->words == nullptr) return false;
+        const WordPart *part = s->words->parts;
+        if (part == nullptr || part->next != nullptr || part->kind != WordPart::Kind::Literal) return false;
+        const StringView name = part->text;
+        for (char c : name) {
+                if (c == '*' || c == '?' || c == '[' || c == '~') return false; // expands to something else
+        }
+        if (_state.findFunction(name) != nullptr || _shell.findCommand(name) != nullptr) return false;
+        String path;
+        if (name.contains('/') ? path.assign(name).isError() : findInPath(name, path).isError()) return false;
+        if (const ProgramEntry *builtin = Vfs::builtinProgram(path, vfs()); builtin != nullptr) {
+                const StringView program = builtin->name;
+                return program == "sh" || program == "bash" || _shell.findCommand(program) == nullptr;
+        }
+        char   head[HeadBytes];
+        size_t size = 0;
+        bool   whole = false;
+        if (readHead(path, head, size, whole).isError()) return false;
+        return classify(path, StringView(head, size)) == FileKind::Program;
+}
+
+// `body &`: a job (devplan/processes.md §3.8.1). A lone program is started directly; anything
+// else is a subshell process. Its stdin is /dev/null; it is not waited for.
+int Executor::runBackground(const BackgroundNode *n) {
+        if (interrupted()) return finish(Shell::ExitInterrupted, false);
+        ProcessControl *process = _shell.process();
+        if (process == nullptr || _shell.launcher() == nullptr) {
+                report("background jobs (&) need the shell to run as a process");
+                return finish(Shell::ExitFailure, false);
+        }
+        _state.jobs.poll();
+        FdTable fds = *_fds;
+        auto [null, nerr] = Vfs::open("/dev/null", Vfs::Read, vfs());
+        if (nerr.isOk()) (void)fds.set(FdTable::Stdin, std::move(null));
+        int32_t pid = 0;
+        if (isLoneProgram(n->body)) {
+                FdTable *saved = _fds;
+                _fds = &fds;
+                _starting = &pid;
+                ++_errexitSuppressed;
+                const int status = execute(n->body);
+                --_errexitSuppressed;
+                _starting = nullptr;
+                _fds = saved;
+                if (pid == 0) return finish(status, false);
+        } else if (n->hereDocAfter) {
+                report("a here-document after a background job (&) is not supported");
+                return finish(Shell::ExitUsage, false);
+        } else {
+                const Result<int32_t> started = _shell.startBackground(_state, n->source, fds);
+                if (started.isError()) return finish(Shell::ExitCannotRun, false);
+                pid = started.value();
+        }
+        _state.lastJobPid = pid;
+        const Job *job = _state.jobs.add(*process, pid, n->source);
+        // An interactive shell says what it started, as bash: "[1] 12" (not its subshells).
+        if (job != nullptr && _shell.hasJobControl() && &_state == &_shell.state()) {
+                char        line[32];
+                const int   len = std::snprintf(line, sizeof(line), "[%d] %ld\n", job->number, static_cast<long>(pid));
+                FileHandle *err = _fds->handle(FdTable::Stderr);
+                if (err != nullptr && len > 0)
+                        (void)err->write(StringView(line, static_cast<size_t>(len)), WaitForever);
+        }
+        return finish(Shell::ExitSuccess, false);
 }
 
 Error Executor::evaluate(StringView expression, int64_t &value) {

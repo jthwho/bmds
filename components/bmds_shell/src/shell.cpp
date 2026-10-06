@@ -75,7 +75,7 @@ int Shell::runAsProgram(const BuiltinProgram::Context &context, Span<const Comma
         if (e.isOk()) {
                 shell->_fds = *context.fds;
                 shell->setLauncher(context.launcher);
-                shell->_process = context.process;
+                shell->setProcess(context.process);
                 shell->_programShell = true;
                 if (context.interrupt != nullptr) shell->_interrupt = context.interrupt;
                 if (!context.cwd.isEmpty()) e = state.cwd.assign(context.cwd);
@@ -104,6 +104,91 @@ int Shell::runAsProgram(const BuiltinProgram::Context &context, Span<const Comma
         args = List<String>();
         shell->~Shell();
         Memory::free(memory);
+        return status;
+}
+
+void Shell::setProcess(ProcessControl *process) {
+        _process = process;
+        _state.shellPid = process != nullptr ? process->processId() : 0;
+        return;
+}
+
+namespace {
+
+        // What a background subshell process starts with (its own once it starts).
+        struct BackgroundRun {
+                        ShellState          state;
+                        String              source;
+                        Span<const Command> commands;
+        };
+
+        void destroy(BackgroundRun *run) {
+                run->~BackgroundRun();
+                Memory::free(run);
+                return;
+        }
+
+} // namespace
+
+Result<int32_t> Shell::startBackground(const ShellState &state, StringView source, const FdTable &fds) {
+        // The subshell runs as a program does, with a pipeline worker's stack (it runs what a stage would).
+        static constexpr ProgramEntry Subshell = {"sh", {&Shell::backgroundMain, WorkerStackBytes}};
+        if (_launcher == nullptr || _process == nullptr) return makeError<int32_t>(Error::Invalid);
+        void *memory = Memory::alloc(MemSpace::Psram, sizeof(BackgroundRun));
+        if (memory == nullptr) {
+                _executor.report("out of memory");
+                return makeError<int32_t>(Error::NoMem);
+        }
+        auto *run = new (memory) BackgroundRun;
+        auto [copy, err] = state.clone();
+        run->state = std::move(copy);
+        run->commands = _commands;
+        if (err.isOk()) err = run->source.assign(source);
+        if (err.isError()) {
+                destroy(run);
+                _executor.report("out of memory");
+                return makeError<int32_t>(Error::NoMem);
+        }
+        // `ps` shows it as `sh -c TEXT`.
+        const StringView         args[] = {"sh", "-c", run->source.view()};
+        ProgramLauncher::Request request;
+        request.path = "/bin/sh";
+        request.args = Span<const StringView>(args, 3);
+        request.fds = &fds;
+        request.cwd = state.cwd.isEmpty() ? StringView("/") : state.cwd.view();
+        request.interrupt = _interrupt;
+        request.console = &_console;
+        request.waited = true;
+        request.builtin = &Subshell;
+        request.data = run;
+        const Result<int32_t> started = _launcher->start(request);
+        if (started.isError()) destroy(run);
+        return started;
+}
+
+// A background subshell process: a shell over the job's state runs its text, then goes.
+int Shell::backgroundMain(const BuiltinProgram::Context &context) {
+        auto *run = static_cast<BackgroundRun *>(context.data);
+        if (run == nullptr) return ExitCannotRun;
+        int   status = ExitCannotRun;
+        void *memory = context.console != nullptr && context.fds != nullptr
+                               ? Memory::alloc(MemSpace::Psram, sizeof(Shell))
+                               : nullptr;
+        if (memory != nullptr) {
+                Shell *shell = new (memory) Shell(*context.console, run->commands, WorkerStackBytes);
+                shell->_fds = *context.fds;
+                shell->setLauncher(context.launcher);
+                shell->_process = context.process; // $$ stays the parent's (in the state)
+                if (context.interrupt != nullptr) shell->_interrupt = context.interrupt;
+                shell->_state = std::move(run->state);
+                {
+                        Interrupt::Scope scope(shell->_interrupt);
+                        status = shell->_executor.runSource(run->source);
+                }
+                shell->~Shell();
+                Memory::free(memory);
+        }
+        destroy(run);
         return status;
 }
 
@@ -183,6 +268,8 @@ const Command *Shell::findCommand(StringView name) const {
 }
 
 void Shell::start() {
+        // Jobs that ended since the last prompt, as bash reports them.
+        if (_jobControl && !isContinuing()) reportJobs();
         // A serial terminal may have been resized since: ask again (the answer
         // is taken out of the input as the line is typed).
         _console.requestSize();

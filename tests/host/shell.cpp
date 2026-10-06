@@ -245,7 +245,8 @@ TEST_CASE("Shell: redirections") {
                 CHECK(f.out("| cat", Shell::ExitUsage) == "syntax error near unexpected token `|'\n");
                 CHECK(f.out("echo >", Shell::ExitUsage) == "syntax error near unexpected token `newline'\n");
                 CHECK(f.out("echo > | cat", Shell::ExitUsage) == "syntax error near unexpected token `|'\n");
-                CHECK(f.out("a &", Shell::ExitUsage) == "background jobs (&) are not supported\n");
+                // Jobs need the shell to be a process (tests/host/launch.cpp has them).
+                CHECK(f.out("a &", Shell::ExitFailure) == "background jobs (&) need the shell to run as a process\n");
         }
 }
 

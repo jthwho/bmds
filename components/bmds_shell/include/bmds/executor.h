@@ -51,9 +51,101 @@ struct ShellOptions {
                 bool noclobber = false; ///< `-C`: `>` doesn't overwrite an existing file (`>|` does).
 };
 
+/** @brief A background job: what `&` started (devplan/processes.md §3.8.1). */
+struct Job {
+                int     number = 0;    ///< `%N`
+                int32_t pid = 0;       ///< Its process, which leads its group.
+                String  command;       ///< As typed.
+                bool    ended = false; ///< Ended and taken (`status` is how).
+                int     status = 0;    ///< Once ended: the exit status, or 128 + the signal.
+                int     signal = 0;    ///< Once ended: the signal that ended it (0: it exited).
+};
+
+/**
+ * @brief A shell's jobs, until they are reported or waited for.
+ *
+ * Ended jobs are taken (their processes freed) by `poll()`. A table that
+ * goes with jobs still running disowns them: they are freed when they end.
+ *
+ * @par Thread Safety
+ * Thread-affine, as the `ShellState` that holds it.
+ */
+class JobTable {
+        public:
+                /** @brief How a job spec (`%N`, `%%`, `%+`, `%-`, `%name`, `%?text`) or pid matched. */
+                enum class Match : uint8_t {
+                        Found,     ///< One job.
+                        None,      ///< No such job.
+                        Ambiguous, ///< `%name`, `%?text`: more than one.
+                };
+
+                JobTable() = default;
+                ~JobTable();
+                JobTable(JobTable &&other);
+                JobTable &operator=(JobTable &&other);
+                JobTable(const JobTable &) = delete;
+                JobTable &operator=(const JobTable &) = delete;
+
+                /**
+                 * @brief Adds a job started as @p process's child @p pid.
+                 * @return The job, or null (`NoMem`: it is disowned).
+                 */
+                Job *add(ProcessControl &process, int32_t pid, StringView command);
+
+                /** @brief Takes the ends of jobs that have ended (not blocking). */
+                void poll();
+
+                /**
+                 * @brief Waits for @p job to end and takes it.
+                 * @return `Ok`, or `Interrupted` (the process's interrupt).
+                 * @blocking
+                 */
+                Error wait(Job &job);
+
+                /** @brief Removes @p job (reported, waited for); still running, it is disowned. */
+                void remove(Job &job);
+
+                /** @brief Finds the job @p spec names (`%...`), or a pid's. */
+                Match find(StringView spec, Job *&out);
+
+                /** @brief Returns the current job (`%+`, the newest), or null. */
+                Job *current();
+
+                /** @brief Returns the previous job (`%-`), or null. */
+                Job *previous();
+
+                /** @brief Returns the jobs, oldest first. */
+                List<Job> &jobs() { return _jobs; }
+
+                /** @brief Returns true if there are none. */
+                bool isEmpty() const { return _jobs.isEmpty(); }
+
+                /** @brief Returns `+`, `-` or a space: @p job's mark in `jobs`. */
+                char mark(const Job &job);
+
+                /**
+                 * @brief Appends how @p job stands, as bash's `jobs` puts it: `Running`, `Done`,
+                 *        `Exit N`, or the signal (`Terminated`, `Killed`...).
+                 */
+                static void appendState(const Job &job, String &out);
+
+                /**
+                 * @brief Appends @p job's line as `jobs` shows it (`[1]+  Running    sleep 10 &`),
+                 *        with its pid for `jobs -l`.
+                 */
+                void appendLine(const Job &job, bool withPid, String &out);
+
+        private:
+                void disownAll();
+
+                ProcessControl *_process = nullptr;
+                List<Job>       _jobs;
+};
+
 /**
  * @brief Everything a subshell gets a copy of: variables, functions,
- *        positional parameters, options, `$?` and the current directory.
+ *        positional parameters, options, `$?`, `$$`, `$!` and the current
+ *        directory (not the jobs: a subshell has its own).
  */
 class ShellState {
         public:
@@ -64,6 +156,9 @@ class ShellState {
                 ShellOptions        options;
                 int                 lastStatus = 0;
                 String              cwd; ///< Current directory (absolute, normalized); empty means `/`.
+                int32_t             shellPid = 0;   ///< `$$`: the shell's process (0: none, `$$` is 1).
+                int32_t             lastJobPid = 0; ///< `$!` (0: unset).
+                JobTable            jobs;           ///< Not copied by `clone()`.
 
                 ShellState() = default;
                 ShellState(ShellState &&) = default;
@@ -321,6 +416,8 @@ class Executor {
                 int            runArithFor(const ArithForNode *n);
                 int            runCase(const CaseNode *n);
                 int            runSubshell(const Node *body);
+                int            runBackground(const BackgroundNode *n);
+                bool           isLoneProgram(const Node *n);
                 int            runCommand(List<String> &args, const Redirection *redirects);
                 int            callFunction(const ShellFunction &fn, List<String> &args);
                 int            runBuiltin(const Command &cmd, List<String> &args);
@@ -357,6 +454,7 @@ class Executor {
                 bool             _substRan = false;
                 bool             _overflowed = false; // ran out of stack: abandon everything
                 ProgramLauncher::JobGroup *_job = nullptr;      // the pipeline's job (interactive), if any
+                int32_t                   *_starting = nullptr; // runProgram() starts the program, its pid here (`&`)
                 int              _errorStatus = 1;    // status of the last fatal expansion error
 };
 

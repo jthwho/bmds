@@ -316,6 +316,7 @@ namespace {
                         context.launcher = &builtinLauncher;
                         context.program = run.builtin->name;
                         context.process = &run;
+                        context.data = run.data;
                         status = err.isOk() ? run.builtin->program.main(context) : 126;
                 }
                 if (run.kill.load()) run.finish(run.killStatus.load());
@@ -332,6 +333,9 @@ namespace {
                 run->pid = run->currentPid = pid;
                 run->image = image.memory;
                 run->builtin = image.builtin;
+                // A built-in program is kernel code from the start: a kill before it runs leaves it
+                // to end itself, so it always gets its data (devplan/processes.md §3.8.1).
+                run->inKernel.store(image.builtin != nullptr);
                 run->entry = image.builtin != nullptr ? 0 : reinterpret_cast<uintptr_t>(image.memory) + image.entry;
                 // Its command line for ps, cut to fit.
                 size_t used = 0;
@@ -986,6 +990,18 @@ int32_t Running::termForeground(int32_t fd, int32_t pgid) {
         return pgid;
 }
 
+Result<int32_t> Running::waitChild(int32_t child, bool block, int32_t &status) {
+        if (child <= 0) return makeError<int32_t>(Error::NotExist);
+        const int32_t r = wait(child, &status, block ? 0 : BMDS_WAIT_NOHANG);
+        if (r >= 0) return makeResult(r);
+        return makeError<int32_t>(r == -BMDS_EINTR ? Error::Interrupted : Error::NotExist);
+}
+
+void Running::disownChild(int32_t child) {
+        if (child > 0 && processes->parentOf(child) == currentPid) processes->detach(child);
+        return;
+}
+
 Error Running::setSignalAction(int sig, SignalAction action) {
         if (!Signals::isValid(sig) || process == nullptr) return Error::Invalid;
         Signals::Action to = Signals::Action::Default;
@@ -1138,7 +1154,29 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
         // Called by a process (a shell, a built-in program's thread): its child.
         const Running *caller = Running::ofCurrentTask();
         parent = caller != nullptr ? caller->currentPid : ProcessTable::KernelParent;
-        Error err = loadImage(request.path, cwd, image, failure);
+        Error err = Error::Ok;
+        if (request.builtin != nullptr) {
+                image.builtin = request.builtin;
+                image.stackBytes = static_cast<uint32_t>(request.builtin->program.stackBytes);
+        } else {
+                err = loadImage(request.path, cwd, image, failure);
+        }
+        if (err.isError()) {
+                const ProgramImage::Problem &problem = failure.problem;
+                if (failure.stage == nullptr || problem.what == nullptr) {
+                        if (failure.stage != nullptr)
+                                report(request, "%s: %s", failure.stage, errorText(err));
+                        else
+                                report(request, "%s", errorText(err));
+                } else if (problem.hasValue) {
+                        report(request, "%s: %s (0x%x)", failure.stage, problem.what,
+                               static_cast<unsigned>(problem.value));
+                } else {
+                        report(request, "%s: %s", failure.stage, problem.what);
+                }
+                return makeError<int32_t>(err);
+        }
+
         // Its resources. The environment gets the kernel's time zone as TZ
         // unless it has one (the C library's localtime reads TZ).
         Process *process = Process::create(*request.fds, request.console);
@@ -1180,6 +1218,7 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
                 Memory::free(image.memory);
                 return makeError<int32_t>(Error::NoMem);
         }
+        run->data = request.data;
         // Its group and session, and the terminal's foreground (devplan/processes.md §3.6.1).
         Result<int32_t> added = makeError<int32_t>(Error::Busy);
         {
@@ -1266,14 +1305,18 @@ Result<int32_t> Loader::start(const Request &request) {
         Semaphore         ended{1, 0};
         Console::TermMode savedMode;
         int32_t           parent = 0;
-        // Not waited for: a group of its own, not in the foreground (unless asked otherwise).
+        // A waited-for child tells its parent's process as it ends, as a vfork child does.
+        Running *const caller = Running::ofCurrentTask();
+        if (request.waited && caller == nullptr) return makeError<int32_t>(Error::Invalid);
+        Semaphore &notify = request.waited ? caller->current->childEvent() : ended;
+        // A group of its own, not in the foreground (unless asked otherwise).
         ProgramLauncher::JobGroup background{0, false};
         Request                   own = request;
         if (own.group == nullptr && !own.session) own.group = &background;
-        const Result<int32_t> started = begin(own, ended, savedMode, parent);
+        const Result<int32_t> started = begin(own, notify, savedMode, parent);
         if (started.isError()) return started;
         // Nobody waits: an orphan, freed when it ends (at once if it already has).
-        processes->detach(started.value());
+        if (!request.waited) processes->detach(started.value());
         return started;
 }
 

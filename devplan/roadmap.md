@@ -73,7 +73,7 @@ Plans: [`storage.md`](storage.md), [`time.md`](time.md). Complete; verified on h
 - [ ] Processes, threads and jobs (`processes.md`): a process is one or more threads; every shell and program is one; process groups, the console's foreground group; `&`, `jobs`, `fg`, `bg`, `wait`, Ctrl-Z; `ps`.
   - [x] 1: processes own threads; `ps`, `ps -T`, `kill` any pid.
   - [x] 2: process groups, sessions, the foreground group and the console's signals (Ctrl-C, Ctrl-\, `SIGWINCH`, hangup); shells are processes: pid 1 is the serial shell (`/bin/sh -l`), the terminal's shell is its child (`/bin/sh -i`).
-  - [ ] 3: `&` and the job table: `jobs`, `wait`, `kill %N`, `$!`.
+  - [x] 3: `&` and the job table: `jobs`, `wait`, `kill %N`, `disown`, `$!`; background subshells are processes.
   - [ ] 4: stopping and continuing: Ctrl-Z, `fg`, `bg`, `SIGTTIN`, `WUNTRACED`.
 - [ ] Shared program images and an image cache (`programs.md` §14): `exec` from memory, code pages shared between instances through the MMU.
   - [x] MMU spike (aliases, caches, DMA) and design.
