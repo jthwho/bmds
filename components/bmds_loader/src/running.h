@@ -19,14 +19,13 @@
 #include <bmds/config.h>
 #include <bmds/process.h>
 #include <bmds/builtinprograms.h>
+#include <bmds/loader.h>
+#include <bmds/mutex.h>
+#include <bmds/semaphore.h>
 #include <bmds/task.h>
+#include <bmds/taskowner.h>
 
 BMDS_NAMESPACE_BEGIN
-
-/** @brief The FreeRTOS thread-local pointer of a program's task that holds its `Running`. */
-inline constexpr BaseType_t RunningTlsIndex = 1;
-static_assert(CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS >= 3,
-              "programs need thread-local pointers 1 and 2 (CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS >= 3)");
 
 /**
  * @brief A running program: its image, its task, its process, and the
@@ -48,8 +47,14 @@ static_assert(CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS >= 3,
  * Signals (devplan/programs.md §15) are each Process's; `leave()` ends the
  * program when one that ends it is due, and sets the program's hint word
  * while one is due for the current process (the SDK then takes it).
+ *
+ * It is the owner of the process's tasks (`TaskOwner`, devplan/processes.md
+ * §3.1): its own task, and the `Thread`s they start, which run kernel code
+ * (a built-in program's) and share the process's interrupt. The process
+ * ends once they have: a built-in program joins its threads before it
+ * returns; any left are interrupted and waited for.
  */
-struct Running {
+struct Running final : TaskOwner {
                 /** @brief How deep vfork children may nest in one task. */
                 static constexpr int MaxVforkDepth = 2;
 
@@ -74,11 +79,24 @@ struct Running {
                 std::atomic<int32_t>  killStatus{0};      // what a kill ends it with
                 std::atomic<bool>     inKernel{false};
                 std::atomic<bool>     kill{false};
+                char                  command[Loader::CommandBytes] = {}; // argv joined, cut (ps)
+                Mutex                 threadsLock;                        // the fields below
+                Member               *threads = nullptr;                  // its Threads (not its own task)
+                int                   threadCount = 0;
+                bool                  ending = false; // no more Threads; the last one releases:
+                Semaphore             threadsGone{1, 0};
 
                 /** @brief The running program of the calling task. */
-                static Running &self() {
-                        return *static_cast<Running *>(pvTaskGetThreadLocalStoragePointer(nullptr, RunningTlsIndex));
-                }
+                static Running &self() { return *static_cast<Running *>(TaskOwner::current()); }
+
+                /** @brief The running program of the calling task, or null (a kernel task). */
+                static Running *ofCurrentTask() { return static_cast<Running *>(TaskOwner::current()); }
+
+                Error attach(Member &member) override;
+                void  detach(Member &member) override;
+
+                /** @brief No more threads; waits for those left, interrupting them first. */
+                void endThreads();
 
                 /**
                  * @brief Ends the calling program with wait status @p status: its

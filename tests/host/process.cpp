@@ -725,6 +725,15 @@ TEST_CASE("ProcessTable") {
                 CHECK(table.parentOf(parent) == ProcessTable::ShellPid);
                 CHECK(table.parentOf(99) == 0);
                 CHECK(table.count() == 3);
+                // forEach: every entry in pid order, zombies with their status and no runtime.
+                std::vector<int32_t> seen;
+                table.forEach([&](const ProcessTable::View &v) {
+                        seen.push_back(v.pid);
+                        CHECK_FALSE(v.ended);
+                        CHECK(v.runtime == (v.pid == parent ? &tag : nullptr));
+                        CHECK(v.parent == (v.pid == parent ? ProcessTable::ShellPid : parent));
+                });
+                CHECK(seen == std::vector<int32_t>{parent, a, b});
                 int inJob = 0;
                 table.forEachInJob(parent, [&](int32_t, void *) { ++inJob; });
                 CHECK(inJob == 3);
@@ -736,6 +745,15 @@ TEST_CASE("ProcessTable") {
                 table.exited(b, ProcessTable::exitStatus(3));
                 CHECK(parentEvent.tryAcquire().isOk());
                 table.exited(b, ProcessTable::exitStatus(9)); // once only
+                int zombies = 0;
+                table.forEach([&](const ProcessTable::View &v) {
+                        if (!v.ended) return;
+                        ++zombies;
+                        CHECK(v.pid == b);
+                        CHECK(v.status == ProcessTable::exitStatus(3));
+                        CHECK(v.runtime == nullptr);
+                });
+                CHECK(zombies == 1);
                 inJob = 0;
                 table.forEachInJob(parent, [&](int32_t, void *) { ++inJob; });
                 CHECK(inJob == 2);

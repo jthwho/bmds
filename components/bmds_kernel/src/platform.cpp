@@ -61,12 +61,22 @@ void Detail::resumeScheduler() {
 
 namespace {
 
-        // Index 0 is IDF's pthread's, 1 the loader's (a program's Running).
+        // Index 0 is IDF's pthread's, 1 the task's owner (its process: the loader's Running).
+        constexpr BaseType_t OwnerTlsIndex = 1;
         constexpr BaseType_t InterruptTlsIndex = 2;
         static_assert(CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS > InterruptTlsIndex,
                       "Interrupt::current() needs thread-local pointer 2");
 
 } // namespace
+
+void *Detail::taskOwner() {
+        return pvTaskGetThreadLocalStoragePointer(nullptr, OwnerTlsIndex);
+}
+
+void Detail::setTaskOwner(void *owner) {
+        vTaskSetThreadLocalStoragePointer(nullptr, OwnerTlsIndex, owner);
+        return;
+}
 
 void *Detail::taskInterrupt() {
         return pvTaskGetThreadLocalStoragePointer(nullptr, InterruptTlsIndex);

@@ -9,11 +9,15 @@
 #include <doctest.h>
 
 #include <atomic>
+#include <mutex>
+#include <vector>
+#include <bmds/taskowner.h>
 #include <bmds/thread.h>
 #include <bmds/workerpool.h>
 #include "hostmemory.h"
 
 using bmds::Error;
+using bmds::TaskOwner;
 using bmds::Thread;
 using bmds::WorkerPool;
 
@@ -23,7 +27,85 @@ namespace {
                 static_cast<std::atomic<int> *>(arg)->fetch_add(1);
         }
 
+        // A process as the loader keeps one: its threads, and whether it takes more.
+        class FakeOwner final : public TaskOwner {
+                public:
+                        Error attach(Member &member) override {
+                                std::lock_guard<std::mutex> lock(_mutex);
+                                if (refusing) return Error::InvalidState;
+                                members.push_back(&member);
+                                ++attached;
+                                return Error::Ok;
+                        }
+
+                        void detach(Member &member) override {
+                                std::lock_guard<std::mutex> lock(_mutex);
+                                std::erase(members, &member);
+                                ++detached;
+                                return;
+                        }
+
+                        std::vector<Member *> members;
+                        int                   attached = 0;
+                        int                   detached = 0;
+                        bool                  refusing = false;
+
+                private:
+                        std::mutex _mutex;
+        };
+
+        struct Seen {
+                        TaskOwner *owner = nullptr;
+                        Thread     inner; // started by the thread itself
+                        TaskOwner *innerOwner = nullptr;
+        };
+
+        void noteInner(void *arg) {
+                static_cast<Seen *>(arg)->innerOwner = TaskOwner::current();
+                return;
+        }
+
+        void noteOwner(void *arg) {
+                auto *seen = static_cast<Seen *>(arg);
+                seen->owner = TaskOwner::current();
+                REQUIRE(seen->inner.start(Thread::Config(), noteInner, seen).isOk());
+                seen->inner.join();
+                return;
+        }
+
 } // namespace
+
+TEST_CASE("Thread: in its starter's process (TaskOwner)") {
+        // A kernel task starts kernel threads.
+        REQUIRE(TaskOwner::current() == nullptr);
+        Seen   kernel;
+        Thread t;
+        REQUIRE(t.start(Thread::Config(), noteOwner, &kernel).isOk());
+        t.join();
+        CHECK(kernel.owner == nullptr);
+        CHECK(kernel.innerOwner == nullptr);
+
+        // A process's task starts threads of that process, and they start more of it; each
+        // attaches before it runs and detaches once its entry has returned.
+        FakeOwner owner;
+        TaskOwner::setCurrent(&owner);
+        Seen seen;
+        REQUIRE(t.start(Thread::Config(), noteOwner, &seen).isOk());
+        t.join();
+        CHECK(seen.owner == &owner);
+        CHECK(seen.innerOwner == &owner);
+        CHECK(owner.attached == 2);
+        CHECK(owner.detached == 2);
+        CHECK(owner.members.empty());
+
+        // An ending process takes no more threads: the start fails and nothing runs.
+        owner.refusing = true;
+        std::atomic<int> n{0};
+        CHECK(t.start(Thread::Config(), bump, &n) == Error::InvalidState);
+        CHECK_FALSE(t.isStarted());
+        CHECK(n.load() == 0);
+        TaskOwner::setCurrent(nullptr);
+}
 
 TEST_CASE("Thread: start, join, restart") {
         Thread           t;

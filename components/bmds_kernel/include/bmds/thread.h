@@ -20,7 +20,11 @@ BMDS_NAMESPACE_BEGIN
  *
  * Unlike `Task` (kernel-lifetime), a Thread's entry function returns, and
  * `join()` waits for that and frees the stack and control block. Pipeline
- * workers are Threads; so will programs be.
+ * workers are Threads.
+ *
+ * A Thread started by a task that belongs to a process (`TaskOwner`) is one
+ * of that process's threads; started by a kernel task it is a kernel
+ * thread (`devplan/processes.md` §3.1).
  *
  * The control block comes from `MemSpace::Internal` (the scheduler requires
  * it) and the stack from `Config::stackSpace`, PSRAM by default. A thread
@@ -56,7 +60,8 @@ class Thread {
 
                 /**
                  * @brief Starts running @p entry(@p arg).
-                 * @return `Ok`, `InvalidState` if already started, or `NoMem`.
+                 * @return `Ok`, `InvalidState` if already started (or the process is
+                 *         ending), or `NoMem`.
                  */
                 Error start(const Config &config, Entry entry, void *arg);
 

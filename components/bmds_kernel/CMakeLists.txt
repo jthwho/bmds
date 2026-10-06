@@ -15,6 +15,7 @@ set(BMDS_KERNEL_PORTABLE_SRCS
         src/interrupt.cpp
         src/memorystream.cpp
         src/pipe.cpp
+        src/taskowner.cpp
         src/waitlist.cpp
         src/workerpool.cpp)
 

@@ -20,11 +20,15 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_LOADER_PURE_SRCS}
                                     src/loader.cpp
+                                    src/proccommand.cpp
                                     src/syscalls.cpp
                                     src/systable.c
                                INCLUDE_DIRS include ${BMDS_SDK_INCLUDE}
                                REQUIRES bmds_core bmds_kernel bmds_console bmds_fs
-                               PRIV_REQUIRES esp_hw_support esp_mm freertos)
+                               PRIV_REQUIRES bmds_shell esp_hw_support esp_mm freertos
+                               # proccommand.cpp's commands are found through their linker
+                               # section, not by symbol.
+                               WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})
 else()
         add_library(bmds_loader STATIC ${BMDS_LOADER_PURE_SRCS})

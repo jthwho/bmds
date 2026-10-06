@@ -144,6 +144,38 @@ class ProcessTable {
                         return;
                 }
 
+                /** @brief An entry, as `forEach()` shows it. */
+                struct View {
+                                int32_t pid;     ///< Its id.
+                                int32_t parent;  ///< Its parent's (`ShellPid`; 0: an orphan).
+                                int32_t job;     ///< Its job.
+                                int32_t status;  ///< How it ended (a zombie).
+                                void   *runtime; ///< Its runner's object (running only; may be null).
+                                bool    ended;   ///< A zombie.
+                };
+
+                /**
+                 * @brief Calls @p fn(const View &) for each entry, zombies included,
+                 *        in pid order, with the table locked.
+                 */
+                template <typename Fn> void forEach(Fn &&fn) {
+                        Mutex::Locker locker(_lock, WaitForever);
+                        if (_entries == nullptr) return;
+                        // Pids are few (Capacity): a selection by pid, no sorting space.
+                        int32_t last = 0;
+                        for (;;) {
+                                Entry *next = nullptr;
+                                for (int i = 0; i < Capacity; ++i) {
+                                        Entry &e = _entries[i];
+                                        if (e.pid > last && (next == nullptr || e.pid < next->pid)) next = &e;
+                                }
+                                if (next == nullptr) return;
+                                last = next->pid;
+                                fn(View{next->pid, next->parent, next->job, next->status,
+                                        next->ended ? nullptr : next->runtime, next->ended});
+                        }
+                }
+
                 /** @brief Returns how many entries are in use, zombies included. */
                 int count();
 

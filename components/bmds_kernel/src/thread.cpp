@@ -13,6 +13,7 @@
 #include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/semaphore.h>
+#include <bmds/taskowner.h>
 #include <bmds/thread.h>
 
 BMDS_DEBUG(Thread)
@@ -28,12 +29,16 @@ namespace {
                         uint8_t      *stack = nullptr;
                         Thread::Entry entry = nullptr;
                         void         *arg = nullptr;
+                        TaskOwner        *owner = nullptr; // its process (the starter's), or null
+                        TaskOwner::Member member;
                         Semaphore     done{1, 0};
         };
 
         void trampoline(void *p) {
                 Record *rec = static_cast<Record *>(p);
+                TaskOwner::setCurrent(rec->owner);
                 rec->entry(rec->arg);
+                if (rec->owner != nullptr) rec->owner->detach(rec->member);
                 rec->done.release();
                 // Park: join() deletes the task once it sees it suspended, so
                 // the task is never deleted while it is still running.
@@ -61,6 +66,19 @@ Error Thread::start(const Config &config, Entry entry, void *arg) {
         rec->stack = stack;
         rec->entry = entry;
         rec->arg = arg;
+        // In the starter's process, if it has one (devplan/processes.md §3.1). A static task's
+        // handle is its TCB, known before it exists.
+        rec->owner = TaskOwner::current();
+        rec->member.task = &rec->tcb;
+        if (rec->owner != nullptr) {
+                const Error err = rec->owner->attach(rec->member);
+                if (err.isError()) {
+                        rec->~Record();
+                        Memory::free(mem);
+                        Memory::free(stack);
+                        return err;
+                }
+        }
         _impl = rec;
         // ESP-IDF stack depth is in bytes (StackType_t is uint8_t).
         rec->handle = xTaskCreateStaticPinnedToCore(trampoline, config.name, config.stackBytes / sizeof(StackType_t),

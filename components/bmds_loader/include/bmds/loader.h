@@ -12,6 +12,7 @@
 #include <bmds/console.h>
 #include <bmds/programlauncher.h>
 #include <bmds/semaphore.h>
+#include <bmds/span.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -37,8 +38,63 @@ class Loader final : public ProgramLauncher {
         public:
                 constexpr Loader() = default;
 
+                /** @brief Bytes of a process's command line kept for `ps` (cut to fit). */
+                static constexpr size_t CommandBytes = 48;
+
+                /** @brief Bytes of a task's name (FreeRTOS's limit). */
+                static constexpr size_t TaskNameBytes = 16;
+
+                /** @brief A process, as `ps` shows it. */
+                struct ProcessInfo {
+                                /** @brief What it is doing. */
+                                enum class State : uint8_t {
+                                        Running, ///< Its threads run.
+                                        Vfork,   ///< A vfork child, running in its parent's task.
+                                        Ending,  ///< Its program returned; its threads are ending.
+                                        Zombie,  ///< Ended: its parent hasn't waited for it.
+                                };
+
+                                int32_t pid;                   ///< Its id.
+                                int32_t parent;                ///< Its parent's (1: the shell; 0: none).
+                                int32_t job;                   ///< Its job.
+                                int32_t status;                ///< How it ended (`Zombie`).
+                                State   state;                 ///< What it is doing.
+                                uint8_t threads;               ///< Its tasks (its own and its `Thread`s).
+                                size_t  memory;                ///< Bytes it has allocated.
+                                char    command[CommandBytes]; ///< Its command line, cut.
+                };
+
+                /** @brief A task of a process, as `ps -T` shows it. */
+                struct ThreadInfo {
+                                int32_t  pid;                 ///< Its process.
+                                char     name[TaskNameBytes]; ///< The task's name.
+                                char     state;               ///< R (ready or running), S (blocked), T (suspended).
+                                bool     main;                ///< The process's own task (else a `Thread`).
+                                uint32_t stackFree;           ///< Bytes of stack never used.
+                };
+
                 /** @brief Sets up the process table (a boot stage). */
                 static Error init();
+
+                /**
+                 * @brief Fills @p out with the processes, zombies included, in pid order.
+                 * @return How many there are (more than `out.size()`: those past it are left out).
+                 */
+                static size_t listProcesses(Span<ProcessInfo> out);
+
+                /**
+                 * @brief Fills @p out with the tasks of every running process.
+                 * @return How many there are (more than `out.size()`: those past it are left out).
+                 */
+                static size_t listThreads(Span<ThreadInfo> out);
+
+                /**
+                 * @brief Sends signal @p sig to process @p pid (> 1), or to job
+                 *        `-pid` (< -1), as `kill()` does (0 only checks).
+                 * @return `Ok`, `NotExist` (no such process), `Invalid` (the signal
+                 *         or pid), or `PermissionDenied` (pid 1, the shell).
+                 */
+                static Error signal(int32_t pid, int sig);
 
                 /** @copydoc ProgramLauncher::run */
                 Result<int> run(const Request &request) override;

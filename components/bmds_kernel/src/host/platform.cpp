@@ -18,6 +18,7 @@
 #include <bmds/detail/platform.h>
 #include <bmds/mutex.h>
 #include <bmds/semaphore.h>
+#include <bmds/taskowner.h>
 #include <bmds/thread.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -87,8 +88,18 @@ void Detail::resumeScheduler() {
 namespace {
 
         thread_local void *taskInterruptPointer = nullptr;
+        thread_local void *taskOwnerPointer = nullptr;
 
 } // namespace
+
+void *Detail::taskOwner() {
+        return taskOwnerPointer;
+}
+
+void Detail::setTaskOwner(void *owner) {
+        taskOwnerPointer = owner;
+        return;
+}
 
 void *Detail::taskInterrupt() {
         return taskInterruptPointer;
@@ -179,16 +190,40 @@ Thread::~Thread() {
         // Joined or never started; a joinable std::thread would terminate().
 }
 
+namespace {
+
+        // A thread, and its membership of its starter's owner.
+        struct HostThread {
+                        std::thread       thread;
+                        TaskOwner::Member member;
+        };
+
+} // namespace
+
 Error Thread::start(const Config &, Entry entry, void *arg) {
         if (_impl != nullptr) return Error::InvalidState;
-        _impl = new std::thread(entry, arg);
+        auto      *t = new HostThread;
+        TaskOwner *owner = TaskOwner::current();
+        if (owner != nullptr) {
+                const Error err = owner->attach(t->member);
+                if (err.isError()) {
+                        delete t;
+                        return err;
+                }
+        }
+        t->thread = std::thread([t, owner, entry, arg] {
+                TaskOwner::setCurrent(owner);
+                entry(arg);
+                if (owner != nullptr) owner->detach(t->member);
+        });
+        _impl = t;
         return Error::Ok;
 }
 
 void Thread::join() {
-        auto *t = static_cast<std::thread *>(_impl);
+        auto *t = static_cast<HostThread *>(_impl);
         if (t == nullptr) return;
-        t->join();
+        t->thread.join();
         delete t;
         _impl = nullptr;
         return;

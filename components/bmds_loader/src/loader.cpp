@@ -266,7 +266,7 @@ namespace {
         // _start, end with what it returns (or with exit(), from inside).
         void programMain(void *arg) {
                 Running &run = *static_cast<Running *>(arg);
-                vTaskSetThreadLocalStoragePointer(nullptr, RunningTlsIndex, &run);
+                TaskOwner::setCurrent(&run);
                 Interrupt::setCurrent(&run.process->signals().interrupt());
                 using Entry = int32_t (*)(const bmds_sys_t *, int32_t, char **, char **);
                 const Entry   entry = reinterpret_cast<Entry>(run.entry);
@@ -280,7 +280,7 @@ namespace {
         // interrupt stops the shell).
         void builtinMain(void *arg) {
                 Running &run = *static_cast<Running *>(arg);
-                vTaskSetThreadLocalStoragePointer(nullptr, RunningTlsIndex, &run);
+                TaskOwner::setCurrent(&run);
                 Interrupt::setCurrent(&run.process->signals().interrupt());
                 run.inKernel.store(true);
                 int status = 0;
@@ -320,6 +320,14 @@ namespace {
                 run->image = image.memory;
                 run->builtin = image.builtin;
                 run->entry = image.builtin != nullptr ? 0 : reinterpret_cast<uintptr_t>(image.memory) + image.entry;
+                // Its command line for ps, cut to fit.
+                size_t used = 0;
+                for (char **a = process->argv(); a != nullptr && *a != nullptr; ++a) {
+                        const int n = std::snprintf(run->command + used, sizeof(run->command) - used, "%s%s",
+                                                    used > 0 ? " " : "", *a);
+                        if (n < 0 || used + size_t(n) >= sizeof(run->command)) break;
+                        used += size_t(n);
+                }
                 return run;
         }
 
@@ -390,9 +398,7 @@ namespace {
         // when the Sender goes, after the lock.
         class Sender {
                 public:
-                        Sender()
-                            : _self(static_cast<Running *>(
-                                      pvTaskGetThreadLocalStoragePointer(nullptr, RunningTlsIndex))) {}
+                        Sender() : _self(Running::ofCurrentTask()) {}
                         ~Sender() { endFrozen(); }
                         Sender(const Sender &) = delete;
                         Sender &operator=(const Sender &) = delete;
@@ -540,7 +546,42 @@ void Running::setCurrent(Process *p, int32_t id) {
         return;
 }
 
+Error Running::attach(Member &member) {
+        Mutex::Locker locker(threadsLock, WaitForever);
+        if (ending) return Error::InvalidState;
+        member.next = threads;
+        threads = &member;
+        ++threadCount;
+        return Error::Ok;
+}
+
+void Running::detach(Member &member) {
+        Mutex::Locker locker(threadsLock, WaitForever);
+        for (Member **m = &threads; *m != nullptr; m = &(*m)->next) {
+                if (*m != &member) continue;
+                *m = member.next;
+                break;
+        }
+        if (--threadCount == 0 && ending) threadsGone.release();
+        return;
+}
+
+void Running::endThreads() {
+        {
+                Mutex::Locker locker(threadsLock, WaitForever);
+                ending = true;
+                if (threadCount == 0) return;
+        }
+        // A built-in program that didn't join its threads: they run kernel code, so they are
+        // asked to stop (the process's interrupt) and waited for, never stopped by force.
+        bmdsWarn("Loader: %s (pid %d) ended with threads running: interrupting them", command, static_cast<int>(pid));
+        if (process != nullptr) process->signals().interrupt().raise();
+        (void)threadsGone.acquire(WaitForever);
+        return;
+}
+
 void Running::end(int32_t status) {
+        endThreads();
         // Innermost first; each releases before it is recorded (its pipes are
         // at EOF when its parent wakes), and is freed after (the record no
         // longer points its children at it).
@@ -750,29 +791,40 @@ int32_t Running::sigSuspend(uint32_t mask) {
         return -BMDS_EINTR;
 }
 
-int32_t Running::sendSignal(int32_t target, int32_t sig) {
-        if (sig < 0 || sig >= Signals::Count) return -BMDS_EINVAL;
-        if (target == ProcessTable::ShellPid) return -BMDS_EPERM;
-        bool found = false;
-        {
-                Sender sender;
-                auto   send = [&](int32_t id, void *runtime) {
-                        found = true;
-                        if (sig != 0 && runtime != nullptr)
-                                (void)sender.post(*static_cast<Running *>(runtime), id, sig, BMDS_SI_USER);
-                };
-                if (target > 0) {
-                        found = processes->withProcess(target, [&](void *runtime) { send(target, runtime); }) !=
-                                ProcessTable::Found::None;
-                } else if (target == -1) {
-                        processes->forEachRunning([&](int32_t id, void *runtime) {
-                                if (id != currentPid) send(id, runtime);
-                        });
-                } else {
-                        processes->forEachInJob(target == 0 ? job : -target, send);
+namespace {
+
+        // kill(): @p sig (0: only a check) to @p target as `proc_kill` takes it, from process
+        // @p self in job @p selfJob (0: from the kernel, which has neither).
+        int32_t sendSignalFrom(int32_t self, int32_t selfJob, int32_t target, int32_t sig) {
+                if (sig < 0 || sig >= Signals::Count) return -BMDS_EINVAL;
+                if (target == ProcessTable::ShellPid) return -BMDS_EPERM;
+                if (target == 0 && selfJob == 0) return -BMDS_EINVAL;
+                bool found = false;
+                {
+                        Sender sender;
+                        auto   send = [&](int32_t id, void *runtime) {
+                                found = true;
+                                if (sig != 0 && runtime != nullptr)
+                                        (void)sender.post(*static_cast<Running *>(runtime), id, sig, BMDS_SI_USER);
+                        };
+                        if (target > 0) {
+                                found = processes->withProcess(target, [&](void *runtime) { send(target, runtime); }) !=
+                                        ProcessTable::Found::None;
+                        } else if (target == -1) {
+                                processes->forEachRunning([&](int32_t id, void *runtime) {
+                                        if (id != self) send(id, runtime);
+                                });
+                        } else {
+                                processes->forEachInJob(target == 0 ? selfJob : -target, send);
+                        }
                 }
+                return found ? 0 : -BMDS_ESRCH;
         }
-        return found ? 0 : -BMDS_ESRCH;
+
+} // namespace
+
+int32_t Running::sendSignal(int32_t target, int32_t sig) {
+        return sendSignalFrom(currentPid, job, target, sig);
 }
 
 int32_t Running::exitSignal(int32_t sig) {
@@ -788,6 +840,84 @@ Error Loader::init() {
         if (!stopLock.isCreated()) stopLock.create();
         if (!processes.isCreated()) processes.create();
         return processes->init();
+}
+
+size_t Loader::listProcesses(Span<ProcessInfo> out) {
+        size_t n = 0;
+        if (!processes.isCreated()) return 0;
+        // Under the table's lock a running entry's Running and Process are alive: both are
+        // freed only after the entry ends (Running::end()).
+        processes->forEach([&](const ProcessTable::View &v) {
+                if (n < out.size()) {
+                        ProcessInfo &p = out[n];
+                        p = ProcessInfo{};
+                        p.pid = v.pid;
+                        p.parent = v.parent;
+                        p.job = v.job;
+                        p.status = v.status;
+                        p.state = v.ended ? ProcessInfo::State::Zombie : ProcessInfo::State::Running;
+                        if (const auto *run = static_cast<Running *>(v.runtime); run != nullptr) {
+                                std::memcpy(p.command, run->command, sizeof(p.command));
+                                const Process *process = run->processOf(v.pid);
+                                p.memory = process != nullptr ? process->allocatedBytes() : 0;
+                                if (v.pid != run->pid) {
+                                        p.state = ProcessInfo::State::Vfork;
+                                } else {
+                                        Mutex::Locker locker(const_cast<Running *>(run)->threadsLock, WaitForever);
+                                        p.threads = static_cast<uint8_t>(1 + run->threadCount);
+                                        if (run->ending) p.state = ProcessInfo::State::Ending;
+                                }
+                        }
+                }
+                ++n;
+        });
+        return n;
+}
+
+namespace {
+
+        void describeTask(TaskHandle_t task, int32_t pid, bool main, Loader::ThreadInfo &out) {
+                out.pid = pid;
+                out.main = main;
+                std::snprintf(out.name, sizeof(out.name), "%s", pcTaskGetName(task));
+                switch (eTaskGetState(task)) {
+                        case eRunning:
+                        case eReady: out.state = 'R'; break;
+                        case eBlocked: out.state = 'S'; break;
+                        default: out.state = 'T'; break;
+                }
+                out.stackFree = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(task));
+                return;
+        }
+
+} // namespace
+
+size_t Loader::listThreads(Span<ThreadInfo> out) {
+        size_t n = 0;
+        if (!processes.isCreated()) return 0;
+        processes->forEach([&](const ProcessTable::View &v) {
+                auto *run = static_cast<Running *>(v.runtime);
+                if (run == nullptr || v.pid != run->pid || !run->task.isRunning()) return;
+                if (n < out.size()) describeTask(run->task.handle(), v.pid, true, out[n]);
+                ++n;
+                // A Thread's task is deleted only after it detaches, which takes this lock.
+                Mutex::Locker locker(run->threadsLock, WaitForever);
+                for (const TaskOwner::Member *m = run->threads; m != nullptr; m = m->next) {
+                        if (n < out.size()) describeTask(static_cast<TaskHandle_t>(m->task), v.pid, false, out[n]);
+                        ++n;
+                }
+        });
+        return n;
+}
+
+Error Loader::signal(int32_t pid, int sig) {
+        if (!processes.isCreated()) return Error::NotExist;
+        switch (const int32_t r = sendSignalFrom(0, 0, pid, sig); r) {
+                case 0: return Error::Ok;
+                case -BMDS_ESRCH: return Error::NotExist;
+                case -BMDS_EPERM: return Error::PermissionDenied;
+                default: return Error::Invalid;
+        }
 }
 
 namespace {
@@ -866,7 +996,7 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
         Image            image;
         LoadFailure      failure;
         // Called by a process (the shell as /bin/sh): its child, in its job.
-        const auto *caller = static_cast<const Running *>(pvTaskGetThreadLocalStoragePointer(nullptr, RunningTlsIndex));
+        const Running *caller = Running::ofCurrentTask();
         parent = caller != nullptr ? caller->currentPid : ProcessTable::ShellPid;
         parentJob = caller != nullptr ? caller->job : 0;
         fromProcess = caller != nullptr;

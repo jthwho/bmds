@@ -53,6 +53,12 @@ namespace Detail {
         /** @brief Sets the calling task's pointer for `Interrupt::current()`. */
         void setTaskInterrupt(void *interrupt);
 
+        /** @brief Returns the calling task's `TaskOwner` (null if none). */
+        void *taskOwner();
+
+        /** @brief Sets the calling task's `TaskOwner`. */
+        void setTaskOwner(void *owner);
+
         /** @brief The system clock as carried across a reset (`Clock`). */
         struct ClockRecord {
                         int64_t wallMinusPersistentNs = 0; ///< Wall time minus `persistentTimeUs()` (in ns).
