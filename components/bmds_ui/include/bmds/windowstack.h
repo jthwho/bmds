@@ -27,14 +27,16 @@ BMDS_NAMESPACE_BEGIN
  * The decorations are flags: a `Border` (4-pixel sides and bottom, and a
  * top when there is no title bar), a `TitleBar` a font row high, and on it
  * a menu button at the left and minimize, maximize and close buttons at the
- * right. Without any, the window is its client area. Every vertical edge is
- * on a 4-pixel column when the outer rectangle is.
+ * right. Without any, the window is its client area. A `Resizable` window
+ * (it needs the border) is sized by handles: the outer 4-pixel ring, each
+ * corner's within 16 pixels of it (§4g). Every vertical edge is on a 4-pixel
+ * column when the outer rectangle is.
  *
  * @par Thread Safety
  * A plain value.
  */
 struct WindowFrame {
-                /** @name Decorations (flags; the buttons need `TitleBar`) */
+                /** @name Decorations (flags; the buttons need `TitleBar`, `Resizable` needs `Border`) */
                 ///@{
                 static constexpr uint8_t Border = 1u << 0;
                 static constexpr uint8_t TitleBar = 1u << 1;
@@ -42,8 +44,17 @@ struct WindowFrame {
                 static constexpr uint8_t MinimizeButton = 1u << 3;
                 static constexpr uint8_t MaximizeButton = 1u << 4;
                 static constexpr uint8_t CloseButton = 1u << 5;
+                static constexpr uint8_t Resizable = 1u << 6;
                 static constexpr uint8_t None = 0;
-                static constexpr uint8_t Standard = 0x3f; ///< All of them.
+                static constexpr uint8_t Standard = 0x7f; ///< All of them.
+                ///@}
+
+                /** @name The edges a resize handle holds (`edgesOf()`) */
+                ///@{
+                static constexpr uint8_t LeftEdge = 1u << 0;
+                static constexpr uint8_t RightEdge = 1u << 1;
+                static constexpr uint8_t TopEdge = 1u << 2;
+                static constexpr uint8_t BottomEdge = 1u << 3;
                 ///@}
 
                 /** @brief What a point of a window is on. */
@@ -56,6 +67,14 @@ struct WindowFrame {
                         Minimize,
                         Maximize,
                         Close,
+                        ResizeLeft, ///< The resize handles (a resizable window's).
+                        ResizeRight,
+                        ResizeTop,
+                        ResizeBottom,
+                        ResizeTopLeft,
+                        ResizeTopRight,
+                        ResizeBottomLeft,
+                        ResizeBottomRight,
                 };
 
                 static constexpr uint16_t BorderWidth = 4;  ///< The border's thickness.
@@ -64,6 +83,7 @@ struct WindowFrame {
                 static constexpr uint16_t ButtonGap = 4;    ///< Between buttons, and from the title bar's ends.
                 static constexpr uint16_t OutlineWidth = 4; ///< A move's outline.
                 static constexpr uint16_t MinClient = 8;    ///< The smallest client side.
+                static constexpr uint16_t HandleCorner = 16; ///< How far a corner's handle reaches along the ring.
 
                 Rect    outer;
                 uint8_t decorations = Standard;
@@ -71,10 +91,29 @@ struct WindowFrame {
                 constexpr WindowFrame() = default;
                 constexpr WindowFrame(const Rect &rect, uint8_t flags) : outer(rect), decorations(flags) {}
 
-                /** @brief Returns true if @p flags are decorations: known bits, buttons only with a title bar. */
+                /**
+                 * @brief Returns true if @p flags are decorations: known bits,
+                 *        buttons only with a title bar, handles only with a border.
+                 */
                 static constexpr bool isValid(uint8_t flags) {
-                        return (flags & ~Standard) == 0 &&
-                               ((flags & TitleBar) != 0 || (flags & ~(Border | TitleBar)) == 0);
+                        constexpr uint8_t Buttons = MenuButton | MinimizeButton | MaximizeButton | CloseButton;
+                        return (flags & ~Standard) == 0 && ((flags & TitleBar) != 0 || (flags & Buttons) == 0) &&
+                               ((flags & Border) != 0 || (flags & Resizable) == 0);
+                }
+
+                /** @brief Returns the edges resize handle @p part holds (none for other parts). */
+                static constexpr uint8_t edgesOf(Part part) {
+                        switch (part) {
+                                case Part::ResizeLeft: return LeftEdge;
+                                case Part::ResizeRight: return RightEdge;
+                                case Part::ResizeTop: return TopEdge;
+                                case Part::ResizeBottom: return BottomEdge;
+                                case Part::ResizeTopLeft: return TopEdge | LeftEdge;
+                                case Part::ResizeTopRight: return TopEdge | RightEdge;
+                                case Part::ResizeBottomLeft: return BottomEdge | LeftEdge;
+                                case Part::ResizeBottomRight: return BottomEdge | RightEdge;
+                                default: return 0;
+                        }
                 }
 
                 /** @brief Returns the frame's width left and right of the client area. */
@@ -173,15 +212,86 @@ struct WindowFrame {
                         return n;
                 }
 
-                /** @brief Returns the part (@p x, @p y) is on. */
+                /** @brief Returns the part (@p x, @p y) is on: a button, then a handle, then the rest. */
                 constexpr Part partAt(uint16_t x, uint16_t y) const {
                         const Rect at{x, y, 1, 1};
                         if (!outer.contains(at)) return Part::Outside;
+                        if (titleBar().contains(at))
+                                for (const Part p : {Part::Menu, Part::Minimize, Part::Maximize, Part::Close})
+                                        if (button(p).contains(at)) return p;
+                        if (has(Resizable)) {
+                                const uint32_t b = BorderWidth, c = HandleCorner;
+                                const bool     onL = x < outer.x + b, onR = x >= outer.right() - b;
+                                const bool     onT = y < outer.y + b, onB = y >= outer.bottom() - b;
+                                if (onL || onR || onT || onB) {
+                                        const bool nearL = x < outer.x + c, nearR = x >= outer.right() - c;
+                                        const bool nearT = y < outer.y + c, nearB = y >= outer.bottom() - c;
+                                        const bool l = onL || (nearL && (onT || onB));
+                                        const bool r = !l && (onR || (nearR && (onT || onB)));
+                                        const bool t = onT || (nearT && (onL || onR));
+                                        const bool bo = !t && (onB || (nearB && (onL || onR)));
+                                        if (t)
+                                                return l   ? Part::ResizeTopLeft
+                                                       : r ? Part::ResizeTopRight
+                                                           : Part::ResizeTop;
+                                        if (bo)
+                                                return l   ? Part::ResizeBottomLeft
+                                                       : r ? Part::ResizeBottomRight
+                                                           : Part::ResizeBottom;
+                                        return l ? Part::ResizeLeft : Part::ResizeRight;
+                                }
+                        }
                         if (client().contains(at)) return Part::Client;
                         if (!titleBar().contains(at)) return Part::Edge;
-                        for (const Part p : {Part::Menu, Part::Minimize, Part::Maximize, Part::Close})
-                                if (button(p).contains(at)) return p;
                         return Part::TitleBar;
+                }
+
+                /**
+                 * @brief Returns where a resize from @p start puts the window: the
+                 *        @p edges held moved by (@p dx, @p dy), the others kept;
+                 *        the client area in steps of @p widthStep × @p heightStep
+                 *        on the axes sized (the width's rounded up to a multiple
+                 *        of 4), no smaller
+                 *        than @p decorations allow, on @p screen, x and width on
+                 *        4-pixel columns (as @p start is).
+                 */
+                static constexpr Rect resizedRect(const Rect &start, uint8_t edges, int dx, int dy, uint8_t decorations,
+                                                  uint16_t widthStep, uint16_t heightStep, const Rect &screen) {
+                        int left = start.x, top = start.y, right = int(start.right()), bottom = int(start.bottom());
+                        if ((edges & LeftEdge) != 0) left += dx;
+                        if ((edges & RightEdge) != 0) right += dx;
+                        if ((edges & TopEdge) != 0) top += dy;
+                        if ((edges & BottomEdge) != 0) bottom += dy;
+                        if (left < screen.x) left = screen.x;
+                        if (top < screen.y) top = screen.y;
+                        if (right > int(screen.right())) right = int(screen.right());
+                        if (bottom > int(screen.bottom())) bottom = int(screen.bottom());
+                        // The client area in whole steps, down; then up to the least.
+                        int ws = widthStep < 1 ? 1 : widthStep, hs = heightStep < 1 ? 1 : heightStep;
+                        while (ws % 4 != 0) ws += widthStep < 1 ? 1 : widthStep;
+                        const int extraW = outerWidth(0, decorations), extraH = outerHeight(0, decorations);
+                        int       cw = (right - left - extraW) / ws * ws;
+                        int       ch = (bottom - top - extraH) / hs * hs;
+                        const int minW = minWidth(decorations) - extraW, minH = minHeight(decorations) - extraH;
+                        while (cw < minW) cw += ws;
+                        while (ch < minH) ch += hs;
+                        // An axis not being sized keeps its size, in steps or not.
+                        const bool sizingW = (edges & (LeftEdge | RightEdge)) != 0;
+                        const bool sizingH = (edges & (TopEdge | BottomEdge)) != 0;
+                        const int  width = sizingW ? cw + extraW : start.width;
+                        const int  height = sizingH ? ch + extraH : start.height;
+                        if ((edges & LeftEdge) != 0) {
+                                left = right - width;
+                                if (left < screen.x) left = screen.x;
+                        }
+                        if ((edges & TopEdge) != 0) {
+                                top = bottom - height;
+                                if (top < screen.y) top = screen.y;
+                        }
+                        // Not past the screen's far edges either (only a window at its least could be).
+                        if (left + width > int(screen.right())) left = int(screen.right()) - width;
+                        if (top + height > int(screen.bottom())) top = int(screen.bottom()) - height;
+                        return Rect{uint16_t(left), uint16_t(top), uint16_t(width), uint16_t(height)};
                 }
 
                 /** @brief Writes @p rect's outline (`OutlineWidth` thick) into @p out. */

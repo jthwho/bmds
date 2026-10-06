@@ -11,6 +11,7 @@
 
 #include <doctest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 #include <bmds/font.h>
@@ -430,7 +431,8 @@ TEST_CASE("WindowFrame: for every set of decorations, the parts tile the window,
         for (unsigned flags = 0; flags < 256; ++flags) {
                 const auto d = static_cast<uint8_t>(flags);
                 if (!WindowFrame::isValid(d)) {
-                        CHECK(((d & ~WindowFrame::Standard) != 0 || (d & WindowFrame::TitleBar) == 0));
+                        CHECK(((d & ~WindowFrame::Standard) != 0 || (d & WindowFrame::TitleBar) == 0 ||
+                               ((d & WindowFrame::Resizable) != 0 && (d & WindowFrame::Border) == 0)));
                         continue;
                 }
                 ++valid;
@@ -476,13 +478,20 @@ TEST_CASE("WindowFrame: for every set of decorations, the parts tile the window,
                 CHECK(f.partAt(outer.x, uint16_t(outer.bottom())) == Part::Outside);
                 CHECK(f.partAt(uint16_t(outer.x + outer.width / 2), uint16_t(outer.y + outer.height / 2)) ==
                       Part::Client);
-                if (n > 0) CHECK(f.partAt(edges[n - 1].x, edges[n - 1].y) == Part::Edge);
-                if (f.has(WindowFrame::TitleBar)) CHECK(f.partAt(f.title().x, f.title().y) == Part::TitleBar);
+                if (n > 0)
+                        CHECK(f.partAt(edges[n - 1].x, edges[n - 1].y) ==
+                              (f.has(WindowFrame::Resizable) ? Part::ResizeBottomLeft : Part::Edge));
+                if (f.has(WindowFrame::TitleBar))
+                        CHECK(f.partAt(f.title().x, uint16_t(f.title().y + 8)) == Part::TitleBar);
                 CHECK(WindowFrame::minWidth(d) >= WindowFrame::outerWidth(WindowFrame::MinClient, d));
                 CHECK(WindowFrame(Rect{0, 0, WindowFrame::minWidth(d), WindowFrame::minHeight(d)}, d).title().width >=
                       (f.has(WindowFrame::TitleBar) ? 8u : 0u));
         }
-        CHECK(valid == 1 + 1 + 2 * 16); // none, border, and the title bar with either border and any buttons
+        // None, the border (resizable or not), and the title bar with any buttons and no border, a
+        // border, or a resizable border.
+        CHECK(valid == 3 + 3 * 16);
+        CHECK(!WindowFrame::isValid(WindowFrame::Resizable));
+        CHECK(!WindowFrame::isValid(WindowFrame::TitleBar | WindowFrame::Resizable));
         CHECK(!WindowFrame::isValid(WindowFrame::CloseButton));
         CHECK(WindowFrame::isValid(WindowFrame::Standard));
         Rect outline[4];
@@ -490,6 +499,106 @@ TEST_CASE("WindowFrame: for every set of decorations, the parts tile the window,
         Region ring;
         for (const Rect &r : outline) ring.add(r);
         CHECK(ring.area() == outer.area() - uint32_t(outer.width - 8) * (outer.height - 8));
+}
+
+TEST_CASE("WindowFrame: resize handles around the ring, corners near the corners, buttons first") {
+        using Part = WindowFrame::Part;
+        const Rect        outer{100, 50, 200, 120};
+        const WindowFrame f(outer, WindowFrame::Standard);
+        const uint16_t    l = 100, r = 299, t = 50, b = 169;
+        CHECK(f.partAt(l, 100) == Part::ResizeLeft);
+        CHECK(f.partAt(l + 3, 100) == Part::ResizeLeft);
+        CHECK(f.partAt(l + 4, 100) == Part::Client);
+        CHECK(f.partAt(r, 100) == Part::ResizeRight);
+        CHECK(f.partAt(200, b) == Part::ResizeBottom);
+        CHECK(f.partAt(200, t) == Part::ResizeTop); // the title bar's top rows
+        CHECK(f.partAt(200, t + 4) == Part::TitleBar);
+        CHECK(f.partAt(l, t) == Part::ResizeTopLeft);
+        CHECK(f.partAt(l + 15, t) == Part::ResizeTopLeft); // along the top, near the corner
+        CHECK(f.partAt(l + 16, t) == Part::ResizeTop);
+        CHECK(f.partAt(l, t + 15) == Part::ResizeTopLeft); // down the side
+        CHECK(f.partAt(l, t + 16) == Part::ResizeLeft);
+        CHECK(f.partAt(r, t) == Part::ResizeTopRight);
+        CHECK(f.partAt(l, b) == Part::ResizeBottomLeft);
+        CHECK(f.partAt(r, b) == Part::ResizeBottomRight);
+        CHECK(f.partAt(r - 15, b) == Part::ResizeBottomRight);
+        CHECK(f.partAt(r, b - 15) == Part::ResizeBottomRight);
+        const Rect close = f.button(Part::Close);
+        CHECK(f.partAt(close.x, close.y) == Part::Close); // over the ring's top rows: the button
+        CHECK(f.partAt(close.x, uint16_t(close.y - 1)) == Part::ResizeTop);
+        // Not resizable: the border is just the border.
+        const WindowFrame fixed(outer, WindowFrame::Standard & ~WindowFrame::Resizable);
+        CHECK(fixed.partAt(l, 100) == Part::Edge);
+        CHECK(fixed.partAt(200, t) == Part::TitleBar);
+        CHECK(WindowFrame::edgesOf(Part::ResizeTopRight) == (WindowFrame::TopEdge | WindowFrame::RightEdge));
+        CHECK(WindowFrame::edgesOf(Part::Close) == 0);
+}
+
+TEST_CASE("WindowFrame: a resize keeps the other edges, the screen, the least size and the steps") {
+        using Part = WindowFrame::Part;
+        Random         rnd{91};
+        const Rect     screen{0, 0, 640, 480};
+        const Part     handles[] = {Part::ResizeLeft,       Part::ResizeRight,      Part::ResizeTop,
+                                    Part::ResizeBottom,     Part::ResizeTopLeft,    Part::ResizeTopRight,
+                                    Part::ResizeBottomLeft, Part::ResizeBottomRight};
+        const uint8_t  decorations[] = {WindowFrame::Standard, WindowFrame::Border | WindowFrame::Resizable,
+                                        WindowFrame::Border | WindowFrame::TitleBar | WindowFrame::Resizable |
+                                                WindowFrame::CloseButton};
+        const uint16_t steps[][2] = {{1, 1}, {8, 16}, {3, 5}, {4, 1}};
+        for (int i = 0; i < 20000; ++i) {
+                const uint8_t  d = decorations[rnd.next(3)];
+                const uint16_t ws = steps[rnd.next(4)][0], hs = steps[rnd.next(4)][1];
+                const uint16_t minW = WindowFrame::minWidth(d), minH = WindowFrame::minHeight(d);
+                Rect           start;
+                start.width = uint16_t((minW + rnd.next(400)) & ~3u);
+                if (start.width < minW) start.width = uint16_t(start.width + 4);
+                start.height = uint16_t(minH + rnd.next(300));
+                start.x = uint16_t(rnd.next(screen.width - start.width + 1) & ~3u);
+                start.y = uint16_t(rnd.next(screen.height - start.height + 1));
+                const uint8_t edges = WindowFrame::edgesOf(handles[rnd.next(8)]);
+                const int     dx = int(rnd.next(1400)) - 700, dy = int(rnd.next(1000)) - 500;
+                const Rect    r = WindowFrame::resizedRect(start, edges, dx, dy, d, ws, hs, screen);
+                REQUIRE(screen.contains(r));
+                REQUIRE(r.x % 4 == 0);
+                REQUIRE(r.width % 4 == 0);
+                REQUIRE(r.width >= minW);
+                REQUIRE(r.height >= minH);
+                const Rect client = WindowFrame(r, d).client();
+                int        wstep = ws;
+                while (wstep % 4 != 0) wstep += ws;
+                const bool sizingW = (edges & (WindowFrame::LeftEdge | WindowFrame::RightEdge)) != 0;
+                const bool sizingH = (edges & (WindowFrame::TopEdge | WindowFrame::BottomEdge)) != 0;
+                if (sizingW) REQUIRE(client.width % wstep == 0);
+                if (sizingH) REQUIRE(client.height % hs == 0);
+                if (!sizingW) REQUIRE(r.width == start.width);
+                if (!sizingH) REQUIRE(r.height == start.height);
+                // The least size: the decorations' least client area, up to whole steps.
+                const int extraW = WindowFrame::outerWidth(0, d), extraH = WindowFrame::outerHeight(0, d);
+                const int leastW = extraW + (minW - extraW + wstep - 1) / wstep * wstep;
+                const int leastH = extraH + (minH - extraH + hs - 1) / hs * hs;
+                // An edge not held stays, unless the least size pushed the window off the screen.
+                if ((edges & WindowFrame::LeftEdge) == 0 && r.width <= start.width) REQUIRE(r.x == start.x);
+                if ((edges & WindowFrame::RightEdge) == 0 && r.width <= start.width)
+                        REQUIRE(r.right() == start.right());
+                if ((edges & WindowFrame::TopEdge) == 0 && r.height <= start.height) REQUIRE(r.y == start.y);
+                if ((edges & WindowFrame::BottomEdge) == 0 && r.height <= start.height)
+                        REQUIRE(r.bottom() == start.bottom());
+                // A held edge goes where the pointer took it, to within a step (and the screen).
+                if ((edges & WindowFrame::RightEdge) != 0 && r.width > leastW) {
+                        const int want = std::clamp(int(start.right()) + dx, 0, int(screen.right()));
+                        REQUIRE(int(r.right()) <= want);
+                        REQUIRE(int(r.right()) > want - wstep);
+                }
+                if ((edges & WindowFrame::TopEdge) != 0 && r.height > leastH) {
+                        const int want = std::clamp(int(start.y) + dy, 0, int(screen.bottom()));
+                        REQUIRE(int(r.y) >= want);
+                        REQUIRE(int(r.y) < want + hs);
+                }
+        }
+        // Not moved: unchanged when the size is already in steps.
+        const Rect start{40, 30, 216, 200};
+        CHECK(WindowFrame::resizedRect(start, WindowFrame::RightEdge | WindowFrame::BottomEdge, 0, 0,
+                                       WindowFrame::Standard, 1, 1, screen) == start);
 }
 
 TEST_CASE("WindowPalette: every role named, found by its name, colors kept to 24 bits") {

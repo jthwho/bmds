@@ -98,6 +98,8 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
         _pressId = 0;
         _pressShown = false;
         _clickId = 0;
+        _sizeId = 0;
+        _shape = Shape::Arrow;
         // The keyboards' and mice's sink while it runs.
         Input::Sink sink;
         sink.key = keyEntry;
@@ -236,17 +238,17 @@ void WindowManager::applyPointer() {
                 const int  x = _pointerX + event.dx, y = _pointerY + event.dy;
                 const auto nx = static_cast<uint16_t>(x < 0 ? 0 : x >= screen.width ? screen.width - 1 : x);
                 const auto ny = static_cast<uint16_t>(y < 0 ? 0 : y >= screen.height ? screen.height - 1 : y);
-                if (nx != _pointerX || ny != _pointerY || !_cursorShown) {
-                        if (_cursorShown) _stack.invalidateScreen(cursorArea()); // what it covered, redrawn
+                const Rect was = cursorArea();
+                const bool moved = nx != _pointerX || ny != _pointerY;
+                if (moved) {
                         _pointerX = nx;
                         _pointerY = ny;
-                        _cursorShown = true;
-                        _cursorMoved = true;
                         if (_grabId != 0) {
                                 const int wx = int(nx) - _grabX, wy = int(ny) - _grabY;
                                 (void)dragLocked(_grabId, static_cast<uint16_t>(wx < 0 ? 0 : wx),
                                                  static_cast<uint16_t>(wy < 0 ? 0 : wy));
                         }
+                        if (_sizeId != 0) sizeTo(nx, ny);
                         if (_pressId != 0) pressedMoved(nx, ny);
                 }
                 const uint8_t pressed = static_cast<uint8_t>(event.buttons & ~_buttons);
@@ -254,6 +256,13 @@ void WindowManager::applyPointer() {
                 _buttons = event.buttons;
                 if ((pressed & PointerEvent::Left) != 0) press(nx, ny);
                 if ((released & PointerEvent::Left) != 0) release(nx, ny);
+                const Shape shape = shapeAt(nx, ny);
+                if (moved || shape != _shape || !_cursorShown) {
+                        if (_cursorShown) _stack.invalidateScreen(was); // what it covered, redrawn
+                        _shape = shape;
+                        _cursorShown = true;
+                        _cursorMoved = true;
+                }
                 _requests.fetch_add(1, std::memory_order_acq_rel);
         }
 }
@@ -274,6 +283,17 @@ void WindowManager::press(uint16_t x, uint16_t y) {
         const WindowFrame f = frame(id, _stack.rectAt(z));
         const Part        part = f.partAt(x, y);
         (void)raiseLocked(id);
+        const uint8_t edges = WindowFrame::edgesOf(part);
+        if (edges != 0) {
+                _clickId = 0;
+                if (_windows[id - 1].maximized) return; // sized with the screen
+                _sizeId = id;
+                _sizeEdges = edges;
+                _sizeStart = f.outer;
+                _sizeX = x;
+                _sizeY = y;
+                return;
+        }
         if (part == Part::Menu || part == Part::Minimize || part == Part::Maximize || part == Part::Close) {
                 _pressId = id;
                 _pressPart = part;
@@ -307,6 +327,10 @@ void WindowManager::release(uint16_t x, uint16_t y) {
                 if (_dragId == _grabId) (void)dropLocked(); // moved: put there
                 _grabId = 0;
         }
+        if (_sizeId != 0) {
+                if (_dragId == _sizeId) (void)dropLocked(); // resized: put there, told its size
+                _sizeId = 0;
+        }
         if (_pressId != 0) {
                 const uint8_t           id = _pressId;
                 const WindowFrame::Part part = _pressPart;
@@ -334,6 +358,36 @@ void WindowManager::pressedMoved(uint16_t x, uint16_t y) {
         _pressShown = over;
         (void)_stack.invalidate(_pressId, f.button(_pressPart));
         return;
+}
+
+// A resize under way, the pointer at (@p x, @p y): the outline where the window would be.
+void WindowManager::sizeTo(uint16_t x, uint16_t y) {
+        const Window &w = _windows[_sizeId - 1];
+        const Rect    to = WindowFrame::resizedRect(_sizeStart, _sizeEdges, int(x) - _sizeX, int(y) - _sizeY,
+                                                    w.decorations, w.widthStep, w.heightStep, _stack.screen());
+        (void)outlineLocked(_sizeId, to);
+        return;
+}
+
+// The pointer's picture at (@p x, @p y): the resize's under way, a handle's, or the arrow.
+WindowManager::Shape WindowManager::shapeAt(uint16_t x, uint16_t y) const {
+        uint8_t edges = _sizeEdges;
+        if (_sizeId == 0) {
+                if (_grabId != 0 || _pressId != 0) return Shape::Arrow;
+                const uint8_t id = windowAt(x, y);
+                if (id == 0 || _windows[id - 1].maximized) return Shape::Arrow;
+                auto [z, err] = _stack.layerOf(id);
+                if (err.isError()) return Shape::Arrow;
+                edges = WindowFrame::edgesOf(frame(id, _stack.rectAt(z)).partAt(x, y));
+        }
+        constexpr uint8_t Horizontal = WindowFrame::LeftEdge | WindowFrame::RightEdge;
+        constexpr uint8_t Vertical = WindowFrame::TopEdge | WindowFrame::BottomEdge;
+        if (edges == 0) return Shape::Arrow;
+        if ((edges & Vertical) == 0) return Shape::Horizontal;
+        if ((edges & Horizontal) == 0) return Shape::Vertical;
+        const bool down = edges == (WindowFrame::TopEdge | WindowFrame::LeftEdge) ||
+                          edges == (WindowFrame::BottomEdge | WindowFrame::RightEdge);
+        return down ? Shape::DiagonalDown : Shape::DiagonalUp;
 }
 
 // What a title-bar button does (the menu's: nothing until there are menus).
@@ -372,52 +426,96 @@ Rect WindowManager::pointerArea() {
         return _surface != nullptr && _cursorShown ? cursorArea() : Rect();
 }
 
-// The pointer's rectangle on the screen, widened to 4-pixel columns.
-Rect WindowManager::cursorArea() const {
-        const Rect     screen = _stack.screen();
-        const uint32_t left = _pointerX & ~(Align - 1u);
-        uint32_t       right = (uint32_t(_pointerX) + CursorWidth + Align - 1u) & ~(Align - 1u);
-        uint32_t       bottom = uint32_t(_pointerY) + CursorHeight;
-        if (right > screen.width) right = screen.width;
-        if (bottom > screen.height) bottom = screen.height;
-        return Rect{static_cast<uint16_t>(left), _pointerY, static_cast<uint16_t>(right - left),
-                    static_cast<uint16_t>(bottom - _pointerY)};
-}
-
 namespace {
 
-        // The arrow: 'X' its edge, 'o' its fill, '.' what shows through.
-        constexpr const char *CursorShape[WindowManager::CursorHeight] = {
+        // A pointer's picture: 'X' its edge, 'o' its fill, '.' what shows
+        // through; the hot spot is where the pointer is.
+        struct Picture {
+                        uint8_t            width, height, hotX, hotY;
+                        const char *const *rows;
+        };
+
+        constexpr const char *ArrowRows[] = {
                 "X...........", "XX..........", "XoX.........", "XooX........", "XoooX.......",
                 "XooooX......", "XoooooX.....", "XooooooX....", "XoooooooX...", "XooooooooX..",
                 "XoooooooooX.", "XooooooXXXXX", "XoooXooX....", "XooXXooX....", "XoX..XooX...",
                 "XX...XooX...", "X.....XooX..", "......XooX..", ".......XX...",
         };
 
+        constexpr const char *HorizontalRows[] = {
+                "...XXX.......XXX...", "..XXoX.......XoXX..", ".XXooX.......XooXX.",
+                "XXoooXXXXXXXXXoooXX", "XoooooooooooooooooX", "XXoooXXXXXXXXXoooXX",
+                ".XXooX.......XooXX.", "..XXoX.......XoXX..", "...XXX.......XXX...",
+        };
+
+        constexpr const char *VerticalRows[] = {
+                "...XXX...", "..XXoXX..", ".XXoooXX.", "XXoooooXX", "XoooooooX", "XXXXoXXXX", "...XoX...",
+                "...XoX...", "...XoX...", "...XoX...", "...XoX...", "...XoX...", "...XoX...", "XXXXoXXXX",
+                "XoooooooX", "XXoooooXX", ".XXoooXX.", "..XXoXX..", "...XXX...",
+        };
+
+        constexpr const char *DiagonalDownRows[] = {
+                "XXXXXXX........", "XoooooX........", "XooooXX........", "XoooXX.........", "XooXoXX........",
+                "XoXXXoXX.......", "XXX.XXoXX......", ".....XXoXX.....", "......XXoXX.XXX", ".......XXoXXXoX",
+                "........XXoXooX", ".........XXoooX", "........XXooooX", "........XoooooX", "........XXXXXXX",
+        };
+
+        constexpr const char *DiagonalUpRows[] = {
+                "........XXXXXXX", "........XoooooX", "........XXooooX", ".........XXoooX", "........XXoXooX",
+                ".......XXoXXXoX", "......XXoXX.XXX", ".....XXoXX.....", "XXX.XXoXX......", "XoXXXoXX.......",
+                "XooXoXX........", "XoooXX.........", "XooooXX........", "XoooooX........", "XXXXXXX........",
+        };
+
+        // By WindowManager::Shape.
+        constexpr Picture Pictures[] = {
+                {12, 19, 0, 0, ArrowRows},        {19, 9, 9, 4, HorizontalRows},  {9, 19, 4, 9, VerticalRows},
+                {15, 15, 7, 7, DiagonalDownRows}, {15, 15, 7, 7, DiagonalUpRows},
+        };
+
         struct CursorJob {
-                        uint16_t column; // the area's first column, from the tip's
-                        uint16_t width;
-                        uint16_t rows;
-                        uint32_t edge;
-                        uint32_t fill;
+                        const Picture *picture;
+                        int            column; // the picture's first column, from the area's
+                        int            row;    // and its first row
+                        uint16_t       width;  // the area's
+                        uint16_t       rows;
+                        uint32_t       edge;
+                        uint32_t       fill;
         };
 
 } // namespace
 
-// The arrow over what @p pixels holds (the cursor area, from its 4-pixel column).
+// The pointer's picture on the screen, widened to 4-pixel columns.
+Rect WindowManager::cursorArea() const {
+        const Picture &p = Pictures[static_cast<size_t>(_shape)];
+        const Rect     screen = _stack.screen();
+        const int      x = int(_pointerX) - p.hotX, y = int(_pointerY) - p.hotY;
+        const uint32_t left = uint32_t(x < 0 ? 0 : x) & ~(Align - 1u);
+        const uint32_t top = uint32_t(y < 0 ? 0 : y);
+        uint32_t       right = (uint32_t(x + p.width) + Align - 1u) & ~(Align - 1u);
+        uint32_t       bottom = uint32_t(y + p.height);
+        if (right > screen.width) right = screen.width;
+        if (bottom > screen.height) bottom = screen.height;
+        return Rect{static_cast<uint16_t>(left), static_cast<uint16_t>(top), static_cast<uint16_t>(right - left),
+                    static_cast<uint16_t>(bottom - top)};
+}
+
+// The picture over what @p pixels holds (the cursor area).
 void WindowManager::drawCursorPixels(void *arg, uint8_t *pixels, size_t stride) {
-        const auto *job = static_cast<const CursorJob *>(arg);
+        const auto    *job = static_cast<const CursorJob *>(arg);
+        const Picture &p = *job->picture;
         for (uint16_t r = 0; r < job->rows; ++r) {
-                const char *shape = CursorShape[r];
+                const int sr = int(r) - job->row; // the picture's row
+                if (sr < 0 || sr >= p.height) continue;
+                const char *shape = p.rows[sr];
                 uint8_t    *row = pixels + size_t(r) * stride;
                 for (uint16_t c = 0; c < job->width; ++c) {
-                        const int sc = int(c) - job->column; // the shape's column
-                        if (sc < 0 || sc >= CursorWidth || shape[sc] == '.') continue;
+                        const int sc = int(c) - job->column; // the picture's column
+                        if (sc < 0 || sc >= p.width || shape[sc] == '.') continue;
                         const uint32_t rgb = shape[sc] == 'X' ? job->edge : job->fill;
-                        uint8_t       *p = row + size_t(c) * Surface::BytesPerPixel;
-                        p[0] = static_cast<uint8_t>(rgb);
-                        p[1] = static_cast<uint8_t>(rgb >> 8);
-                        p[2] = static_cast<uint8_t>(rgb >> 16);
+                        uint8_t       *px = row + size_t(c) * Surface::BytesPerPixel;
+                        px[0] = static_cast<uint8_t>(rgb);
+                        px[1] = static_cast<uint8_t>(rgb >> 8);
+                        px[2] = static_cast<uint8_t>(rgb >> 16);
                 }
         }
         return;
@@ -427,9 +525,12 @@ void WindowManager::drawCursorPixels(void *arg, uint8_t *pixels, size_t stride) 
 void WindowManager::drawCursor() {
         _cursorMoved = false;
         if (!_cursorShown) return;
-        const Rect area = cursorArea();
-        CursorJob  job;
-        job.column = static_cast<uint16_t>(_pointerX - area.x);
+        const Picture &p = Pictures[static_cast<size_t>(_shape)];
+        const Rect     area = cursorArea();
+        CursorJob      job;
+        job.picture = &p;
+        job.column = int(_pointerX) - p.hotX - area.x;
+        job.row = int(_pointerY) - p.hotY - area.y;
         job.width = area.width;
         job.rows = area.height;
         job.edge = _palette.color(Role::CursorEdge);
@@ -697,6 +798,8 @@ Result<uint8_t> WindowManager::open(const WindowConfig &config) {
         w.resized = config.resized;
         w.arg = config.arg;
         w.decorations = config.decorations;
+        w.widthStep = config.widthStep > 0 ? config.widthStep : 1;
+        w.heightStep = config.heightStep > 0 ? config.heightStep : 1;
         changed(oldTop);
         return makeResult(id);
 }
@@ -715,6 +818,7 @@ Error WindowManager::closeLocked(uint8_t id) {
         _windows[id - 1] = Window();
         if (w.closed != nullptr) w.closed(w.arg);
         if (_grabId == id) _grabId = 0;
+        if (_sizeId == id) _sizeId = 0;
         if (_pressId == id) _pressId = 0;
         if (_clickId == id) _clickId = 0;
         if (_dragId == id) {
@@ -737,6 +841,19 @@ Error WindowManager::move(uint8_t id, uint16_t x, uint16_t y) {
         err = _stack.move(id, placed(Rect{x, y, at.width, at.height}));
         if (err.isOk()) changed(_stack.count() > 0 ? _stack.idAt(0) : 0);
         return err;
+}
+
+Error WindowManager::resize(uint8_t id, uint16_t width, uint16_t height) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        auto [at, err] = _stack.rectOf(id);
+        if (err.isError()) return err;
+        const Window &w = _windows[id - 1];
+        if (w.maximized) return Error::InvalidState;
+        const Rect to = placed(Rect{at.x, at.y, width, height});
+        if (to.width < WindowFrame::minWidth(w.decorations) || to.height < WindowFrame::minHeight(w.decorations))
+                return Error::Invalid;
+        return resizeLocked(id, to, w.decorations);
 }
 
 Error WindowManager::raise(uint8_t id) {
@@ -764,6 +881,7 @@ Error WindowManager::minimizeLocked(uint8_t id) {
         const Error   err = _stack.hide(id);
         if (err.isError()) return err;
         if (_grabId == id) _grabId = 0;
+        if (_sizeId == id) _sizeId = 0;
         if (_pressId == id) _pressId = 0;
         if (_dragId == id) {
                 Rect sides[4];
@@ -791,6 +909,7 @@ Error WindowManager::maximizeLocked(uint8_t id) {
         if (w.maximized) return Error::Ok;
         if (_dragId == id) (void)dropLocked();
         if (_grabId == id) _grabId = 0;
+        if (_sizeId == id) _sizeId = 0;
         auto [was, rerr] = _stack.rectOf(id); // where the drop put it
         w.restore = rerr.isOk() ? was : at;
         w.maximized = true;
@@ -899,7 +1018,12 @@ Error WindowManager::dragLocked(uint8_t id, uint16_t x, uint16_t y) {
         if (err.isError()) return err;
         if (_windows[id - 1].maximized) return Error::InvalidState;
         const Rect at = _stack.rectAt(z);
-        const Rect to = placed(Rect{x, y, at.width, at.height});
+        return outlineLocked(id, placed(Rect{x, y, at.width, at.height}));
+}
+
+// Window @p id's outline shown at @p to (placed): a move or a resize under way.
+Error WindowManager::outlineLocked(uint8_t id, const Rect &to) {
+        if (_dragId != 0 && _dragId != id) return Error::Busy;
         if (_dragId == id && to == _outline) return Error::Ok;
         if (_outlineShown) {
                 // What the outline covered, redrawn by its owners.
@@ -932,7 +1056,7 @@ Error WindowManager::dropLocked() {
         _dragId = 0;
         _outlineShown = false;
         Error err = _stack.raise(id);
-        if (err.isOk()) err = _stack.move(id, _outline);
+        if (err.isOk()) err = resizeLocked(id, _outline, _windows[id - 1].decorations); // told if resized
         changed(oldTop);
         return err;
 }

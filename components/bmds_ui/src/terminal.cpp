@@ -71,6 +71,8 @@ Result<uint8_t> Terminal::open(WindowManager &wm, const Rect &rect) {
         config.closed = closed;
         config.key = keyTyped;
         config.resized = resized;
+        config.widthStep = CellWidth; // sized by hand in whole cells
+        config.heightStep = CellHeight;
         config.arg = this;
         // Sized for the area the window gets (snapped, kept on the screen) before it draws.
         const Rect client =

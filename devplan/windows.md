@@ -409,6 +409,32 @@ The first of step 8's affordances. Resize handles, pointer shapes, the wheel and
   rectangle (about 12 bytes each, 16 windows). Drawing a frame adds up to four small fills and
   four one-glyph texts, only where damaged.
 
+## 4g. Step 8b design: resize handles and pointer shapes (2026-10-05; built)
+
+- **`Resizable` is a decoration** (a seventh flag; it needs `Border`, and `Standard` now includes
+  it). A resizable window's handles are the outer 4-pixel ring, its title bar's ends and top
+  included, so a frame with a title bar can be sized from the top too. Within 16 pixels of a corner
+  the ring is that corner's handle. The title-bar buttons win where they overlap the ring.
+  `partAt()` names the eight handles (parts appended after `Close`).
+- **Outline resizes**, like outline moves: pressing a handle raises the window and remembers the
+  rectangle and the press. Motion moves the edges the handle holds, shown as the outline. Release
+  puts the window there and tells it its client size (`Resized`, from §4f) once, not on every
+  motion; a terminal reallocates its screen once per resize. The computation is pure and
+  host-tested (`WindowFrame::resizedRect()`): the edges not held stay put, the window stays on the
+  screen, no smaller than its decorations allow, x and width on 4-pixel columns.
+- **Size steps:** a window may ask for its client size in steps (`WindowConfig::widthStep`,
+  `heightStep`; X11's size increments). The terminal asks for 8 × 16, so a hand resize leaves no
+  margin and the shell gets whole cells. Width steps are rounded up to a multiple of 4.
+  `maximize()` and `resize()` (programmatic) don't snap.
+- **Pointer shapes:** the arrow, a horizontal and a vertical double arrow, and the two diagonals.
+  Each is a picture with a hot spot. The pointer takes the shape of the handle under it, and keeps
+  it while a resize is under way. Applications choosing a shape for their client area (an I-beam
+  in the terminal) comes with pointer control (the next item).
+- **Commands** (appended): `win resize N W H` (the top-left corner stays, no snapping), and
+  `resize` in `win decorate`'s names.
+- **Cost:** shapes are rodata pictures; the state is a resize's start (a rectangle, edges and the
+  press) and two step sizes per window. The same outline drawing as a move.
+
 ## 5. Budgets (estimates; measured as the steps land)
 
 At 720p:
@@ -482,7 +508,7 @@ ones once it exists.
      changeable.
    - **Title-bar buttons** (done, §4f): minimize, maximize and close on the right; the button on
      the left becomes the window's menu once there are context menus.
-   - **Resize handles** on the frame's edges and corners, with the pointer's shape changing over
+   - **Resize handles** (done, §4g) on the frame's edges and corners, with the pointer's shape changing over
      them (and over other hot spots); an outline resize like the outline move; a window told
      its new size (a terminal resizes its screen, `SIGWINCH`).
    - **Pointer control:** shown or hidden on request; a window can ask for it to hide while it
@@ -627,3 +653,20 @@ ones once it exists.
     one-pixel lines (a test window draws slowly on purpose; a terminal is the real case).
   - Size: the window manager's code grew by 3,357 bytes and its `.bss` by 256 (the restore
     rectangle, flags and resize callback of 16 windows).
+- **Step 8b** (2026-10-05): resize handles and pointer shapes (§4g).
+  - `WindowFrame`: `Resizable` (in `Standard`), the eight handles from `partAt()`, `edgesOf()` and
+    `resizedRect()`. Host-tested: the handles around the ring and near the corners, buttons first;
+    20,000 random resizes (three sets of decorations, four pairs of steps, every handle) stay on
+    the screen, on 4-pixel columns, no smaller than allowed, in steps on the axes sized, with the
+    edges not held kept and a held edge within a step of the pointer. The first run caught a bug:
+    a handle holding one axis snapped the other one to its steps too, so dragging a terminal's
+    top edge moved its right edge.
+  - On the board, by the pointer: the terminal's right edge dragged 80 pixels gave 110 columns
+    (`$COLUMNS`), its bottom-right corner 120 × 26 (whole cells, no margin); a test window's
+    top-left corner moved its left and top edges only, and shrinking it past the least stopped at
+    100 × 32 with its far edges kept. `win resize 2 333 211` gave 336 × 211, moved up to stay on
+    the screen; too small is `Invalid`. `win check` found 0 wrong pixels after each. Each shape
+    was checked in screenshots over its handle, and the outline and the diagonal pointer
+    mid-resize.
+  - Size: the window manager's code and rodata grew by 2,634 bytes (the five pictures among
+    them) and its `.bss` by 80.

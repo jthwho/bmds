@@ -48,15 +48,17 @@ class Surface;
  * §4f): a border, a title bar, and on it a menu button and minimize,
  * maximize and close buttons. A minimized window is hidden until it is
  * restored or raised; a maximized one fills the screen until restored, and
- * isn't moved meanwhile. A window whose client area changes size is told
- * (`Resized`).
+ * isn't moved meanwhile. A resizable window is sized from the handles on
+ * its border, shown as an outline until released (§4g), in the size steps it
+ * asked for. A window whose client area changes size is told (`Resized`).
  *
  * Moves are shown as an outline (`drag()`) until `drop()` puts the window
  * there. Focus is the top window: keys go to it (`devplan/input.md`), the
  * window manager being the input's sink while it runs. The mouse moves a
- * pointer drawn over everything: a press raises the window under it, on a
- * title bar starts a move (a double click maximizes or restores), and on a
- * button (released there) does what the button does.
+ * pointer drawn over everything, shaped by what is under it (a double arrow
+ * over a resize handle): a press raises the window under it, on a title bar
+ * starts a move (a double click maximizes or restores), on a handle a
+ * resize, and on a button (released there) does what the button does.
  *
  * One window manager per display (`manager()`); it claims the display.
  *
@@ -102,10 +104,6 @@ class WindowManager {
                 /** @brief Pointer events queued (motion without a button change is merged). */
                 static constexpr size_t PointerQueue = 16;
 
-                /** @brief The pointer's size. */
-                static constexpr uint16_t CursorWidth = 12;
-                static constexpr uint16_t CursorHeight = 19;
-
                 /** @brief The longest title kept, in bytes. */
                 static constexpr size_t MaxTitle = 47;
 
@@ -125,6 +123,8 @@ class WindowManager {
                                 Key         key = nullptr;    ///< May be null: keys dropped.
                                 Resized     resized = nullptr;                   ///< May be null.
                                 uint8_t     decorations = WindowFrame::Standard; ///< `WindowFrame`'s flags.
+                                uint16_t    widthStep = 1;  ///< Resizing by hand: the client width in steps of this.
+                                uint16_t    heightStep = 1; ///< And its height.
                 };
 
                 /** @brief A window, as `list()` reports it. */
@@ -195,6 +195,14 @@ class WindowManager {
                  * @return `Ok`, `NotFound`, or `InvalidState` (maximized, or not running).
                  */
                 Error move(uint8_t id, uint16_t x, uint16_t y);
+
+                /**
+                 * @brief Sets window @p id's size to @p width × @p height (outer),
+                 *        its top-left corner kept where it fits on the screen.
+                 * @return `Ok`, `NotFound`, `Invalid` (smaller than its frame's
+                 *         least), or `InvalidState` (maximized, or not running).
+                 */
+                Error resize(uint8_t id, uint16_t width, uint16_t height);
 
                 /** @brief Puts window @p id on top (focused), restoring it if minimized. */
                 Error raise(uint8_t id);
@@ -301,6 +309,15 @@ class WindowManager {
                 Stats stats();
 
         private:
+                /** @brief The pointer's pictures. */
+                enum class Shape : uint8_t {
+                        Arrow,
+                        Horizontal,
+                        Vertical,
+                        DiagonalDown,
+                        DiagonalUp
+                };
+
                 struct Window {
                                 char    title[MaxTitle + 1] = {};
                                 Redraw  redraw = nullptr;
@@ -309,8 +326,10 @@ class WindowManager {
                                 Resized resized = nullptr;
                                 void   *arg = nullptr;
                                 Rect    restore;         // where it was before it was maximized
-                                uint8_t decorations = 0; // WindowFrame's flags
-                                bool    maximized = false;
+                                uint8_t  decorations = 0; // WindowFrame's flags
+                                bool     maximized = false;
+                                uint16_t widthStep = 1; // a resize by hand's client steps
+                                uint16_t heightStep = 1;
                 };
 
                 static constexpr size_t MaxPieces = 256;
@@ -324,6 +343,8 @@ class WindowManager {
                 void        press(uint16_t x, uint16_t y);
                 void        release(uint16_t x, uint16_t y);
                 void        pressedMoved(uint16_t x, uint16_t y); // a button's press shown while over it
+                void        sizeTo(uint16_t x, uint16_t y);       // a resize under way: the outline there
+                Shape       shapeAt(uint16_t x, uint16_t y) const;
                 void        act(uint8_t id, WindowFrame::Part part);
                 WindowFrame frame(uint8_t id, const Rect &outer) const;
                 void        drawCursor();
@@ -336,6 +357,7 @@ class WindowManager {
                 Error       restoreLocked(uint8_t id);
                 Error       resizeLocked(uint8_t id, const Rect &rect, uint8_t decorations); // told if it changed
                 Error       dragLocked(uint8_t id, uint16_t x, uint16_t y);
+                Error       outlineLocked(uint8_t id, const Rect &rect);
                 Error       dropLocked();
                 void        run();
                 void        round();
@@ -377,6 +399,12 @@ class WindowManager {
                 uint8_t               _grabId = 0;          // its title bar pressed: moved while held
                 uint16_t              _grabX = 0;           // the press, from the window's corner
                 uint16_t              _grabY = 0;
+                Shape                 _shape = Shape::Arrow;
+                uint8_t               _sizeId = 0;    // its resize handle pressed: resized while held
+                uint8_t               _sizeEdges = 0; // the edges it holds
+                Rect                  _sizeStart;     // the window at the press
+                uint16_t              _sizeX = 0;     // the press
+                uint16_t              _sizeY = 0;
                 uint8_t               _pressId = 0; // its button pressed
                 WindowFrame::Part     _pressPart = WindowFrame::Part::Outside;
                 bool                  _pressShown = false; // drawn pressed: the pointer on it

@@ -766,6 +766,7 @@ namespace {
                 {"border", WindowFrame::Border},           {"title", WindowFrame::TitleBar},
                 {"menu", WindowFrame::MenuButton},         {"minimize", WindowFrame::MinimizeButton},
                 {"maximize", WindowFrame::MaximizeButton}, {"close", WindowFrame::CloseButton},
+                {"resize", WindowFrame::Resizable},
         };
 
         // win decorate N [all|none|+NAME|-NAME...]: changed in order, then printed.
@@ -795,7 +796,7 @@ namespace {
                                         flag = d.flag;
                         if (flag == 0) {
                                 ctx.eprintf("win: %s: not a decoration (all, none, +NAME or -NAME: border, title, "
-                                            "menu, minimize, maximize, close)\n",
+                                            "menu, minimize, maximize, close, resize)\n",
                                             arg);
                                 return Shell::ExitUsage;
                         }
@@ -804,7 +805,8 @@ namespace {
                 if (args.size() > 3) {
                         const Error err = wm.setDecorations(id, flags);
                         if (err == Error::Invalid) {
-                                ctx.eprintf("win: buttons need the title; or too small a window for them\n");
+                                ctx.eprintf("win: buttons need the title, resize the border; or too small a "
+                                            "window for them\n");
                                 return Shell::ExitFailure;
                         }
                         if (err.isError()) return report(ctx, err);
@@ -917,6 +919,13 @@ namespace {
                         return parseId(ctx, args[2], id) ? report(ctx, wm->maximize(id)) : Shell::ExitUsage;
                 if (args.size() == 3 && std::strcmp(what, "restore") == 0)
                         return parseId(ctx, args[2], id) ? report(ctx, wm->restore(id)) : Shell::ExitUsage;
+                if (args.size() == 5 && std::strcmp(what, "resize") == 0) {
+                        long w = 0, h = 0;
+                        if (!parseId(ctx, args[2], id)) return Shell::ExitUsage;
+                        if (!parseNumber(args[3], UINT16_MAX, w) || !parseNumber(args[4], UINT16_MAX, h))
+                                return ctx.usage();
+                        return report(ctx, wm->resize(id, uint16_t(w), uint16_t(h)));
+                }
                 if (args.size() == 5 && (std::strcmp(what, "move") == 0 || std::strcmp(what, "drag") == 0)) {
                         long x = 0, y = 0;
                         if (!parseId(ctx, args[2], id)) return Shell::ExitUsage;
@@ -934,10 +943,10 @@ BMDS_SHELL_COMMAND(
         win, runWin,
         "[start [RRGGBB]|stop|list|new [X Y W H] [TITLE]|close N|raise N|move N X Y|drag N X Y|"
         "term [N]|type N TEXT|dump N|scroll N DY|textbench N|color [ROLE RRGGBB]|check|stats|shuffle N|bench [CELLS]|"
-        "pointer DX DY [BUTTONS]|decorate N [all|none|+NAME|-NAME...]|minimize N|maximize N|restore N]",
+        "pointer DX DY [BUTTONS]|decorate N [all|none|+NAME|-NAME...]|minimize N|maximize N|restore N|resize N W H]",
         "The desktop and its windows on display 0: 'new' opens a test window, 'drag' moves one "
         "as an outline, 'color' lists or sets the palette, 'check' compares every pixel with the stack, "
         "'pointer' moves the pointer as a mouse would (BUTTONS: 1 left, 2 right, 4 middle), "
-        "'decorate' sets a window's frame (border, title, menu, minimize, maximize, close)")
+        "'decorate' sets a window's frame (border, title, menu, minimize, maximize, close, resize)")
 
 BMDS_NAMESPACE_END
