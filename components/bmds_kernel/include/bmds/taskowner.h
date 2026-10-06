@@ -19,7 +19,7 @@ BMDS_NAMESPACE_BEGIN
  *
  * Each task has an owner pointer (null: a kernel task). The loader, which
  * owns processes, sets it on a process's tasks. A `Thread` started by a
- * task with an owner joins that owner: `attach()` before it starts,
+ * task with an owner joins that owner's `threadOwner()`: `attach()` before it starts,
  * `detach()` once its entry function has returned. A `Task` never does:
  * tasks are the kernel's.
  *
@@ -52,6 +52,13 @@ class TaskOwner {
 
                 /** @brief The thread's entry function has returned (called by the thread). */
                 virtual void detach(Member &member) = 0;
+
+                /**
+                 * @brief Returns the owner a `Thread` started by a task of this owner
+                 *        joins: this one, or the one it belongs to (a program thread's
+                 *        record gives its process, devplan/processes.md §3.10).
+                 */
+                virtual TaskOwner *threadOwner() { return this; }
 
         protected:
                 TaskOwner() = default;

@@ -39,8 +39,14 @@
  *   progtest winch        wait up to 5 s for SIGWINCH, print the new size to stderr
  *   progtest poll SELF    poll, ppoll, select, O_NONBLOCK, termios: pipes, timeouts, hang-ups, signals
  *   progtest later MS FD  after MS ms write "x" to FD
+ *   progtest threads SELF pthreads: mutexes, condition variables, TLS, signals, spawn, cancel, exit, exec
+ *   progtest threadspin N threads computing, sleeping and waiting (N > 0: for N seconds; for Ctrl-C, ps -T)
+ *   progtest threadexit   a thread calls exit(9)
+ *   progtest mainexit     the first thread ends (pthread_exit) before the other (200 ms)
+ *   progtest threadexec SELF  a thread execs SELF status 42
  */
 
+#define _GNU_SOURCE /* gettid() */
 #include <dirent.h>
 #include <stdarg.h>
 #include <errno.h>
@@ -51,6 +57,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <poll.h>
+#include <pthread.h>
+#include <semaphore.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
 #include <sys/stat.h>
@@ -618,7 +626,8 @@ static int signals(const char *self) {
         // The job and errors.
         CHECK(kill(0, SIGUSR2) == 0 && got[SIGUSR2] == 2);
         CHECK(kill(-getpgrp(), SIGUSR2) == 0 && got[SIGUSR2] == 3);
-        CHECK(kill(1, 0) == -1 && errno == EPERM);
+        CHECK(kill(1, 0) == 0);                          /* pid 1, the serial shell, is there (one user: root) */
+        CHECK(kill(1, SIGKILL) == -1 && errno == EPERM); /* but can't be killed */
         CHECK(kill(30000, 0) == -1 && errno == ESRCH);
         CHECK(kill(getpid(), 40) == -1 && errno == EINVAL);
         CHECK(sigaction(SIGKILL, &sa, NULL) == -1 && errno == EINVAL);
@@ -816,11 +825,255 @@ static int polling(const char *self) {
         return 0;
 }
 
+/* --- Threads (processes.md §3.10) ------------------------------------------------ */
+
+static pthread_mutex_t   count_lock = PTHREAD_MUTEX_INITIALIZER;
+static long              count_total;
+static _Thread_local int tls_value = 7;
+
+/* Counts to 10000 under the lock; its TLS and errno are its own. */
+static void *counter(void *arg) {
+        tls_value = (int)(intptr_t)arg;
+        errno = 0;
+        (void)close(-1); /* EBADF: this thread's errno */
+        for (int i = 0; i < 10000; ++i) {
+                pthread_mutex_lock(&count_lock);
+                ++count_total;
+                pthread_mutex_unlock(&count_lock);
+        }
+        const int ok = tls_value == (int)(intptr_t)arg && errno == EBADF;
+        return (void *)(intptr_t)(ok ? gettid() : 0);
+}
+
+static pthread_mutex_t ping_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  ping_cond = PTHREAD_COND_INITIALIZER;
+static int             ping_turn; /* 0: main's, 1: the other's */
+static int             ping_rounds;
+
+static void *ponger(void *arg) {
+        (void)arg;
+        for (int i = 0; i < 1000; ++i) {
+                pthread_mutex_lock(&ping_lock);
+                while (ping_turn != 1) pthread_cond_wait(&ping_cond, &ping_lock);
+                ping_turn = 0;
+                ++ping_rounds;
+                pthread_cond_signal(&ping_cond);
+                pthread_mutex_unlock(&ping_lock);
+        }
+        return NULL;
+}
+
+static volatile pthread_t handled_on; /* the thread a handler ran on */
+
+static void note_thread(int sig) {
+        got[sig]++;
+        handled_on = pthread_self();
+        return;
+}
+
+/* Waits for signals with SIGUSR2 unblocked (the main thread blocks it). */
+static void *signal_taker(void *arg) {
+        sigset_t set;
+        sigemptyset(&set);
+        sigaddset(&set, SIGUSR2);
+        pthread_sigmask(SIG_UNBLOCK, &set, NULL);
+        sem_post((sem_t *)arg);
+        for (int i = 0; i < 50 && got[SIGUSR2] == 0; ++i) usleep(10000);
+        return NULL;
+}
+
+static void *sleeper(void *arg) {
+        usleep((useconds_t)(intptr_t)arg * 1000);
+        return (void *)42;
+}
+
+static void *spawner(void *arg) {
+        const pid_t c = start((const char *)arg, NULL, NULL, "status", "5", NULL);
+        return (void *)(intptr_t)(c > 0 ? status_of(c) : -1);
+}
+
+static void *blocked_reader(void *arg) {
+        char b;
+        (void)read((int)(intptr_t)arg, &b, 1); /* a cancellation point */
+        return NULL;
+}
+
+static int deep_stack(int n) {
+        volatile char pad[256];
+        pad[0] = (char)n;
+        return n == 0 ? pad[0] : deep_stack(n - 1) + 1;
+}
+
+static void *stack_user(void *arg) {
+        return (void *)(intptr_t)deep_stack((int)(intptr_t)arg);
+}
+
+static pthread_barrier_t barrier;
+
+static void *at_barrier(void *arg) {
+        (void)arg;
+        return (void *)(intptr_t)pthread_barrier_wait(&barrier);
+}
+
+static size_t program_bytes(void) {
+        bmds_mem_info_t m = {.size = sizeof(m)};
+        return bmds_mem_info(0, &m) == 0 ? m.program_bytes : 0;
+}
+
+static int threads(const char *self) {
+        // Counting under a mutex; ids, TLS and errno apart; join's values.
+        pthread_t t[4];
+        for (int i = 0; i < 4; ++i) CHECK(pthread_create(&t[i], NULL, counter, (void *)(intptr_t)(100 + i)) == 0);
+        pid_t ids[4];
+        for (int i = 0; i < 4; ++i) {
+                void *r = NULL;
+                CHECK(pthread_join(t[i], &r) == 0);
+                ids[i] = (pid_t)(intptr_t)r;
+                CHECK(ids[i] > 0 && ids[i] != getpid());
+                for (int j = 0; j < i; ++j) CHECK(ids[j] != ids[i]);
+        }
+        CHECK(count_total == 40000 && tls_value == 7 && gettid() == getpid());
+        // A condition variable ping-pong.
+        pthread_t p;
+        CHECK(pthread_create(&p, NULL, ponger, NULL) == 0);
+        for (int i = 0; i < 1000; ++i) {
+                pthread_mutex_lock(&ping_lock);
+                ping_turn = 1;
+                pthread_cond_signal(&ping_cond);
+                while (ping_turn != 0) pthread_cond_wait(&ping_cond, &ping_lock);
+                pthread_mutex_unlock(&ping_lock);
+        }
+        CHECK(pthread_join(p, NULL) == 0 && ping_rounds == 1000);
+        // Detached threads: their memory comes back once they have ended.
+        const size_t   before = program_bytes();
+        pthread_attr_t attr;
+        CHECK(pthread_attr_init(&attr) == 0 && pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED) == 0);
+        for (int i = 0; i < 3; ++i) CHECK(pthread_create(&p, &attr, sleeper, (void *)20) == 0);
+        usleep(200000);
+        CHECK(program_bytes() == before);
+        // Stack sizes: small (raised to the minimum) and large.
+        void *depth = NULL;
+        CHECK(pthread_attr_init(&attr) == 0 && pthread_attr_setstacksize(&attr, 4096) == 0);
+        CHECK(pthread_create(&p, &attr, stack_user, (void *)10) == 0 && pthread_join(p, &depth) == 0);
+        CHECK((intptr_t)depth == 10);
+        CHECK(pthread_attr_setstacksize(&attr, 128 * 1024) == 0);
+        CHECK(pthread_create(&p, &attr, stack_user, (void *)300) == 0 && pthread_join(p, &depth) == 0);
+        CHECK((intptr_t)depth == 300);
+        // A barrier: one of three is the serial thread.
+        CHECK(pthread_barrier_init(&barrier, NULL, 3) == 0);
+        pthread_t b[2];
+        for (int i = 0; i < 2; ++i) CHECK(pthread_create(&b[i], NULL, at_barrier, NULL) == 0);
+        int serial = pthread_barrier_wait(&barrier) == PTHREAD_BARRIER_SERIAL_THREAD;
+        for (int i = 0; i < 2; ++i) {
+                void *r = NULL;
+                CHECK(pthread_join(b[i], &r) == 0);
+                serial += (intptr_t)r == PTHREAD_BARRIER_SERIAL_THREAD;
+        }
+        CHECK(serial == 1 && pthread_barrier_destroy(&barrier) == 0);
+        // pthread_kill: the handler runs on that thread.
+        CHECK(catch_signal(SIGUSR1, note_thread, 0) == 0);
+        CHECK(pthread_create(&p, NULL, sleeper, (void *)300) == 0);
+        usleep(50000);
+        const int before_usr1 = got[SIGUSR1];
+        CHECK(pthread_kill(p, SIGUSR1) == 0);
+        void *r = NULL;
+        CHECK(pthread_join(p, &r) == 0 && (intptr_t)r == 42); /* its sleep ended early */
+        CHECK(got[SIGUSR1] == before_usr1 + 1 && pthread_equal(handled_on, p));
+        // A signal to the process goes to the thread that doesn't block it.
+        CHECK(catch_signal(SIGUSR2, note_thread, 0) == 0);
+        sigset_t set, old;
+        sigemptyset(&set);
+        sigaddset(&set, SIGUSR2);
+        CHECK(pthread_sigmask(SIG_BLOCK, &set, &old) == 0);
+        sem_t ready;
+        CHECK(sem_init(&ready, 0, 0) == 0);
+        CHECK(pthread_create(&p, NULL, signal_taker, &ready) == 0 && sem_wait(&ready) == 0);
+        CHECK(kill(getpid(), SIGUSR2) == 0 && pthread_join(p, NULL) == 0);
+        CHECK(got[SIGUSR2] == 1 && pthread_equal(handled_on, p));
+        CHECK(pthread_sigmask(SIG_SETMASK, &old, NULL) == 0 && got[SIGUSR2] == 1);
+        // posix_spawn from a thread.
+        CHECK(pthread_create(&p, NULL, spawner, (void *)self) == 0 && pthread_join(p, &r) == 0);
+        CHECK((intptr_t)r == 5);
+        // A thread blocked in a read is cancelled.
+        int fds[2];
+        CHECK(pipe(fds) == 0);
+        CHECK(pthread_create(&p, NULL, blocked_reader, (void *)(intptr_t)fds[0]) == 0);
+        usleep(50000);
+        CHECK(pthread_cancel(p) == 0 && pthread_join(p, &r) == 0 && r == PTHREAD_CANCELED);
+        CHECK(close(fds[0]) == 0 && close(fds[1]) == 0);
+        // Processes with threads: exit() from a thread; the first thread ending first; exec
+        // from a thread; killed while their threads compute, sleep and wait.
+        pid_t c = start(self, NULL, NULL, "threadexit", NULL);
+        CHECK(c > 0 && status_of(c) == 9);
+        struct timespec t0;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        c = start(self, NULL, NULL, "mainexit", NULL);
+        CHECK(c > 0 && status_of(c) == 0 && ms_since(&t0) >= 200);
+        c = start(self, NULL, NULL, "threadexec", self, NULL);
+        CHECK(c > 0 && status_of(c) == 42);
+        c = start(self, NULL, NULL, "threadspin", "0", NULL);
+        CHECK(c > 0 && usleep(200000) == 0 && kill(c, SIGTERM) == 0 && ending_of(c) == 1000 + SIGTERM);
+        c = start(self, NULL, NULL, "threadspin", "0", NULL);
+        CHECK(c > 0 && usleep(200000) == 0 && kill(c, SIGKILL) == 0 && ending_of(c) == 1000 + SIGKILL);
+        printf("threads: all passed\n");
+        return 0;
+}
+
+/* Threads that compute, sleep and wait on a lock and a condition variable, for
+ * Ctrl-C, Ctrl-Z, kill and ps -T; with N > 0, ends after N seconds. */
+static void *spinning(void *arg) {
+        (void)arg;
+        for (volatile uint32_t n = 0;; ++n) {}
+        return NULL;
+}
+
+static void *napping(void *arg) {
+        (void)arg;
+        for (;;) usleep(100000);
+        return NULL;
+}
+
+static void *waiting(void *arg) {
+        (void)arg;
+        pthread_mutex_lock(&ping_lock);
+        for (;;) pthread_cond_wait(&ping_cond, &ping_lock);
+        return NULL;
+}
+
+static int threadspin(int seconds) {
+        pthread_t t;
+        if (pthread_create(&t, NULL, spinning, NULL) != 0 || pthread_create(&t, NULL, napping, NULL) != 0 ||
+            pthread_create(&t, NULL, waiting, NULL) != 0)
+                return 1;
+        printf("threadspin: 4 threads\n");
+        fflush(stdout);
+        if (seconds > 0) {
+                sleep((unsigned)seconds);
+                return 0;
+        }
+        for (;;) pause();
+}
+
+static void *exit_nine(void *arg) {
+        (void)arg;
+        usleep(50000);
+        exit(9);
+}
+
+static void *exec_self(void *arg) {
+        char *eargv[] = {"progtest", "status", "42", NULL};
+        usleep(50000);
+        execve((const char *)arg, eargv, environ);
+        return NULL;
+}
+
 int main(int argc, char **argv) {
         if (argc < 2) {
                 fprintf(stderr,
                         "usage: progtest status|exit|leak|env|tty|float|files|time|sleep|term|lines|raw|mem|random|cwd|"
-                        "spin|calls|posix|abort|spawn|scripts|signals|catch|ignore|fd|ppid|exec|orphan|tree|poll "
+                        "spin|calls|posix|abort|spawn|scripts|signals|catch|ignore|fd|ppid|exec|orphan|tree|poll|"
+                        "threads|"
+                        "threadspin "
                         "[arg]\n");
                 return 2;
         }
@@ -899,6 +1152,23 @@ int main(int argc, char **argv) {
                 for (;;) sleep(1);
         }
         if (strcmp(what, "poll") == 0) return polling(arg);
+        if (strcmp(what, "threads") == 0) return threads(arg);
+        if (strcmp(what, "threadspin") == 0) return threadspin(atoi(arg));
+        if (strcmp(what, "threadexit") == 0) {
+                pthread_t t;
+                if (pthread_create(&t, NULL, exit_nine, NULL) != 0) return 1;
+                for (;;) pause();
+        }
+        if (strcmp(what, "mainexit") == 0) {
+                pthread_t t;
+                if (pthread_create(&t, NULL, sleeper, (void *)200) != 0) return 1;
+                pthread_exit(NULL);
+        }
+        if (strcmp(what, "threadexec") == 0) {
+                pthread_t t;
+                if (pthread_create(&t, NULL, exec_self, (void *)arg) != 0) return 1;
+                for (;;) pause();
+        }
         if (strcmp(what, "later") == 0) {
                 usleep((useconds_t)atoi(arg) * 1000);
                 return argc > 3 && write(atoi(argv[3]), "x", 1) == 1 ? 0 : 1;

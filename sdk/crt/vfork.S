@@ -11,10 +11,14 @@
  * (linux.c) calls __bmds_vfork_resume(), which returns from vfork or
  * __clone a second time, in the parent, with the child's id.
  *
- * What survives a call is saved here, in __bmds_vfork_regs[depth] (linux.c):
- * ra, sp, s0-s11, fs0-fs11 (26 words; single-precision float registers,
- * ilp32f). vfork has no stack frame of its own, so the caller's frame is
- * all the parent needs back, as with Linux's vfork.
+ * What survives a call is saved in the room __bmds_vfork_prepare gives
+ * (linux.c, on the heap with the child's tables; each thread vforks on its
+ * own): ra, sp, s0-s11, fs0-fs11 (26 words; single-precision float
+ * registers, ilp32f). vfork has no stack frame of its own, so the caller's
+ * frame is all the parent needs back, as with Linux's vfork.
+ *
+ * __clone for a thread (devplan/processes.md §3.10) goes to the C side,
+ * __bmds_thread_clone.
  */
 
 #if __riscv_flen != 32
@@ -23,20 +27,32 @@
 
 #define CLONE_VM 0x100
 #define CLONE_VFORK 0x4000
-#define REGS_BYTES 104
 
         .text
 
-/* t6 = &__bmds_vfork_regs[__bmds_vfork_depth]; saves the registers there
- * (ra from t0). Branches to \full if the depth is at its limit. */
-.macro save_registers full
-        lw      t3, __bmds_vfork_depth
-        li      t4, 2
-        bgeu    t3, t4, \full
-        li      t4, REGS_BYTES
-        mul     t5, t3, t4
-        la      t6, __bmds_vfork_regs
-        add     t6, t6, t5
+/* t6 = the room for the registers (__bmds_vfork_prepare), or a branch to
+ * \fail (too deep, or no memory). a0-a3 and ra are kept, on the stack
+ * across the call (the child's frames aren't there yet). */
+.macro prepare fail
+        addi    sp, sp, -32
+        sw      ra, 28(sp)
+        sw      a0, 24(sp)
+        sw      a1, 20(sp)
+        sw      a2, 16(sp)
+        sw      a3, 12(sp)
+        call    __bmds_vfork_prepare
+        mv      t6, a0
+        lw      ra, 28(sp)
+        lw      a0, 24(sp)
+        lw      a1, 20(sp)
+        lw      a2, 16(sp)
+        lw      a3, 12(sp)
+        addi    sp, sp, 32
+        beqz    t6, \fail
+.endm
+
+/* Saves the registers at t6 (ra from t0). */
+.macro save_registers
         sw      t0, 0(t6)
         sw      sp, 4(t6)
         sw      s0, 8(t6)
@@ -69,20 +85,23 @@
         .globl  vfork
         .type   vfork, @function
 vfork:
+        prepare 1f
         mv      t0, ra
-        save_registers 1f
+        save_registers
         mv      s1, t6                  /* survives the call (saved above) */
-        call    __bmds_vfork_enter      /* 0: now the child; or -errno */
+        call    __bmds_vfork_enter      /* 0: now the child; or -errno (the room stays) */
         lw      ra, 0(s1)
         lw      s1, 12(s1)
         bnez    a0, 2f
         ret
-1:      li      a0, -11                 /* EAGAIN: vforks nested too deep */
+1:      li      a0, -11                 /* EAGAIN: vforks nested too deep, or no memory */
 2:      tail    __syscall_ret           /* -1 with errno set */
         .size   vfork, . - vfork
 
 /* int __clone(int (*fn)(void *), void *stack, int flags, void *arg, ...):
- * the child calls fn(arg); returns the child's id, or -errno. Not on the
+ * the child calls fn(arg); returns the child's id, or -errno. A thread
+ * (not CLONE_VFORK) goes to __bmds_thread_clone with all the arguments.
+ * A vfork child is not on the
  * stack given: musl's posix_spawn passes 5 KB in its own frame, enough
  * where exec runs on a kernel stack, but BMDS's exec runs on the caller's.
  * Below the caller's frames there is the whole program stack, and the
@@ -93,8 +112,9 @@ __clone:
         li      t1, CLONE_VM | CLONE_VFORK
         and     t2, a2, t1
         bne     t2, t1, 3f
+        prepare 4f
         mv      t0, ra
-        save_registers 4f
+        save_registers
         mv      s1, t6
         mv      s2, a0                  /* fn */
         mv      s4, a3                  /* arg */
@@ -103,8 +123,7 @@ __clone:
         mv      a0, s4
         jalr    s2
         call    __bmds_vfork_child_exit /* with fn's result; does not return */
-3:      li      a0, -38                 /* ENOSYS: fork-like clones */
-        ret
+3:      tail    __bmds_thread_clone     /* a thread; ENOSYS for fork-like clones */
 4:      li      a0, -11
         ret
 5:      lw      ra, 0(s1)
@@ -115,12 +134,12 @@ __clone:
         .size   __clone, . - __clone
 
 /* _Noreturn void __bmds_vfork_resume(long pid, const uint32_t *regs):
- * back to where vfork or __clone saved regs, returning pid there. */
+ * back to where vfork or __clone saved regs, returning pid there. regs may
+ * be on the stack below the parent's sp: sp is loaded last. */
         .globl  __bmds_vfork_resume
         .type   __bmds_vfork_resume, @function
 __bmds_vfork_resume:
         lw      ra, 0(a1)
-        lw      sp, 4(a1)
         lw      s0, 8(a1)
         lw      s1, 12(a1)
         lw      s2, 16(a1)
@@ -145,6 +164,7 @@ __bmds_vfork_resume:
         flw     fs9, 92(a1)
         flw     fs10, 96(a1)
         flw     fs11, 100(a1)
+        lw      sp, 4(a1)
         ret
         .size   __bmds_vfork_resume, . - __bmds_vfork_resume
 

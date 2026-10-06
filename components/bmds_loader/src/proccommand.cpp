@@ -8,6 +8,7 @@
  * `ps` and `kill`: the processes, seen and signalled (devplan/processes.md §3.9).
  */
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <bmds/command.h>
@@ -95,11 +96,14 @@ namespace {
                         return Shell::ExitFailure;
                 }
                 const size_t n = Loader::listThreads(Span<Loader::ThreadInfo>(list, max));
-                ctx.printf("  PID TASK             S STACK_FREE\n");
+                // TID: a program thread's id (its first's is the pid); "-" for a kernel Thread.
+                ctx.printf("  PID   TID TASK             S STACK_FREE\n");
                 for (size_t i = 0; i < n && i < max; ++i) {
                         const Loader::ThreadInfo &t = list[i];
-                        ctx.printf("%5ld %c%-15s %c %10lu\n", static_cast<long>(t.pid), t.main ? ' ' : '+', t.name,
-                                   t.state, static_cast<unsigned long>(t.stackFree));
+                        char                      tid[12] = "-";
+                        if (t.tid != 0) std::snprintf(tid, sizeof(tid), "%ld", static_cast<long>(t.tid));
+                        ctx.printf("%5ld %5s %c%-15s %c %10lu\n", static_cast<long>(t.pid), tid, t.main ? ' ' : '+',
+                                   t.name, t.state, static_cast<unsigned long>(t.stackFree));
                 }
                 Memory::free(list);
                 return Shell::ExitSuccess;

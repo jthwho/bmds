@@ -72,6 +72,7 @@ class Loader final : public ProgramLauncher {
                 /** @brief A task of a process, as `ps -T` shows it. */
                 struct ThreadInfo {
                                 int32_t  pid;                 ///< Its process.
+                                int32_t  tid;                 ///< A program thread's id (0: a kernel `Thread`).
                                 char     name[TaskNameBytes]; ///< The task's name.
                                 char     state;               ///< R (ready or running), S (blocked), T (suspended).
                                 bool     main;                ///< The process's own task (else a `Thread`).

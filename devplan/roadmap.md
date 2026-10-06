@@ -70,11 +70,12 @@ Plans: [`storage.md`](storage.md), [`time.md`](time.md). Complete; verified on h
   - [x] 9b: `SIGWINCH`; BusyBox with `kill`, `timeout`, `watch` (119 applets as links).
   - [x] 10a: `poll` in the kernel (`programs.md` §16): stream readiness, `io_poll`; `poll`, `ppoll`, `select`, `pselect`.
   - [x] 10b: `termios`: `ECHO`, `ICRNL`, `VMIN`/`VTIME`, `O_NONBLOCK`; BusyBox `vi`, `less`, `hush` `read -t`/`-n`/`-s`.
-- [ ] Processes, threads and jobs (`processes.md`): a process is one or more threads; every shell and program is one; process groups, the console's foreground group; `&`, `jobs`, `fg`, `bg`, `wait`, Ctrl-Z; `ps`.
+- [x] Processes, threads and jobs (`processes.md`): a process is one or more threads; every shell and program is one; process groups, the console's foreground group; `&`, `jobs`, `fg`, `bg`, `wait`, Ctrl-Z; `ps`.
   - [x] 1: processes own threads; `ps`, `ps -T`, `kill` any pid.
   - [x] 2: process groups, sessions, the foreground group and the console's signals (Ctrl-C, Ctrl-\, `SIGWINCH`, hangup); shells are processes: pid 1 is the serial shell (`/bin/sh -l`), the terminal's shell is its child (`/bin/sh -i`).
   - [x] 3: `&` and the job table: `jobs`, `wait`, `kill %N`, `disown`, `$!`; background subshells are processes.
   - [x] 4: stopping and continuing: Ctrl-Z, `fg`, `bg`, `SIGTTIN`, `WUNTRACED`.
+  - [x] 5: program threads: pthreads through musl (slots 53-57: thread start/exit/kill/clear, futex), signals per thread.
 - [ ] Shared program images and an image cache (`programs.md` §14): `exec` from memory, code pages shared between instances through the MMU.
   - [x] MMU spike (aliases, caches, DMA) and design.
   - [ ] Image cache (plain copies), shared pages, SDK layout changes.

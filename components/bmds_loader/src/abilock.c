@@ -73,6 +73,11 @@ _Static_assert(BMDS_SYS_PROC_EXIT_SIGNAL == 49, "ABI: slot PROC_EXIT_SIGNAL");
 _Static_assert(BMDS_SYS_IO_POLL == 50, "ABI: slot IO_POLL");
 _Static_assert(BMDS_SYS_PROC_GROUP == 51, "ABI: slot PROC_GROUP");
 _Static_assert(BMDS_SYS_TERM_FOREGROUND == 52, "ABI: slot TERM_FOREGROUND");
+_Static_assert(BMDS_SYS_THREAD_START == 53, "ABI: slot THREAD_START");
+_Static_assert(BMDS_SYS_THREAD_EXIT == 54, "ABI: slot THREAD_EXIT");
+_Static_assert(BMDS_SYS_FUTEX == 55, "ABI: slot FUTEX");
+_Static_assert(BMDS_SYS_THREAD_KILL == 56, "ABI: slot THREAD_KILL");
+_Static_assert(BMDS_SYS_THREAD_CLEAR == 57, "ABI: slot THREAD_CLEAR");
 _Static_assert(BMDS_TYPE_LINK == 4, "ABI: file type LINK");
 _Static_assert(BMDS_ABI_VERSION == 1, "ABI: version (raise it with every addition once shipped)");
 _Static_assert(BMDS_STDIN == 0 && BMDS_STDOUT == 1 && BMDS_STDERR == 2, "ABI: standard fds");
@@ -93,6 +98,9 @@ _Static_assert(BMDS_TERM_SIGNALS == 0x01 && BMDS_TERM_ONLCR == 0x02 && BMDS_TERM
 _Static_assert(BMDS_TERM_LOGS == 0x08 && BMDS_TERM_LINE == 0x10, "ABI: term flags");
 _Static_assert(BMDS_TERM_ECHO == 0x20 && BMDS_TERM_ICRNL == 0x40, "ABI: term flags");
 _Static_assert(BMDS_PROC_JOB == 2, "ABI: proc_id JOB");
+_Static_assert(BMDS_PROC_THREAD == 3, "ABI: proc_id THREAD");
+_Static_assert(BMDS_FUTEX_WAIT == 0 && BMDS_FUTEX_WAKE == 1 && BMDS_FUTEX_REQUEUE == 2, "ABI: futex operations");
+_Static_assert(BMDS_THREAD_WAKE == 0x1 && BMDS_THREAD_STACK_MIN == 8192, "ABI: thread values");
 _Static_assert(BMDS_GROUP_GET == 0 && BMDS_GROUP_SET == 1 && BMDS_GROUP_SESSION == 2 && BMDS_GROUP_NEW_SESSION == 3,
                "ABI: proc_group operations");
 _Static_assert(BMDS_SIGHUP == 1 && BMDS_SIGINT == 2 && BMDS_SIGQUIT == 3 && BMDS_SIGILL == 4, "ABI: signals 1-4");
@@ -152,6 +160,18 @@ _Static_assert(offsetof(bmds_pollfd_t, fd) == 4, "ABI: pollfd.fd");
 _Static_assert(offsetof(bmds_pollfd_t, events) == 8, "ABI: pollfd.events");
 _Static_assert(offsetof(bmds_pollfd_t, revents) == 12, "ABI: pollfd.revents");
 _Static_assert(sizeof(bmds_pollfd_t) == 16, "ABI: bmds_pollfd_t size");
+
+#if UINTPTR_MAX == 0xffffffffu
+_Static_assert(offsetof(bmds_thread_t, size) == 0, "ABI: thread.size");
+_Static_assert(offsetof(bmds_thread_t, entry) == 4, "ABI: thread.entry");
+_Static_assert(offsetof(bmds_thread_t, arg) == 8, "ABI: thread.arg");
+_Static_assert(offsetof(bmds_thread_t, tls) == 12, "ABI: thread.tls");
+_Static_assert(offsetof(bmds_thread_t, stack_size) == 16, "ABI: thread.stack_size");
+_Static_assert(offsetof(bmds_thread_t, hint) == 20, "ABI: thread.hint");
+_Static_assert(offsetof(bmds_thread_t, clear) == 24, "ABI: thread.clear");
+_Static_assert(offsetof(bmds_thread_t, tid) == 28, "ABI: thread.tid");
+_Static_assert(sizeof(bmds_thread_t) == 32, "ABI: bmds_thread_t size");
+#endif
 
 _Static_assert(offsetof(bmds_sys_t, magic) == 0, "ABI: bmds_sys_t.magic");
 _Static_assert(offsetof(bmds_sys_t, abi_version) == 4, "ABI: bmds_sys_t.abi_version");

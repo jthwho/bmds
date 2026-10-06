@@ -123,6 +123,11 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_IO_POLL 50u          /**< `int32_t io_poll(fds, count, timeout_ms, mask)`: see `bmds_io_poll`. */
 #define BMDS_SYS_PROC_GROUP 51u       /**< `int32_t proc_group(uint32_t op, int32_t pid, int32_t pgid)`. */
 #define BMDS_SYS_TERM_FOREGROUND 52u  /**< `int32_t term_foreground(int32_t fd, int32_t pgid)`. */
+#define BMDS_SYS_THREAD_START 53u     /**< `int32_t thread_start(const bmds_thread_t *thread)`: its id. */
+#define BMDS_SYS_THREAD_EXIT 54u      /**< `void thread_exit(int32_t status, void *release)`. */
+#define BMDS_SYS_FUTEX 55u            /**< `int32_t futex(word, op, value, timeout_ns, word2, count2)`. */
+#define BMDS_SYS_THREAD_KILL 56u      /**< `int32_t thread_kill(int32_t tid, int32_t sig, uint32_t flags)`. */
+#define BMDS_SYS_THREAD_CLEAR 57u     /**< `int32_t thread_clear(volatile int32_t *word)`: its id. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -168,6 +173,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_PROC_SELF 0u   /**< The calling process's id. */
 #define BMDS_PROC_PARENT 1u /**< Its parent's (1 for an orphan, as Linux reports it). */
 #define BMDS_PROC_JOB 2u    /**< Its job: its process group. */
+#define BMDS_PROC_THREAD 3u /**< The calling thread's id (the first thread's is the pid). */
 
 /** @brief `proc_group` operations. */
 #define BMDS_GROUP_GET 0u         /**< @p pid's process group (0: the caller's). */
@@ -328,6 +334,32 @@ typedef struct bmds_mem_info_t {
                 uint32_t program_blocks; /**< How many allocations that is. */
 } bmds_mem_info_t;
 
+/**
+ * @brief A thread to start with `thread_start` (devplan/processes.md §3.10).
+ *        The caller sets `size`; the kernel reads the fields that fit in it.
+ */
+typedef struct bmds_thread_t {
+                uint32_t size;               /**< Set by the caller: `sizeof(bmds_thread_t)`. */
+                int32_t (*entry)(void *arg); /**< What the thread runs; it ends with what this returns. */
+                void    *arg;                /**< `entry`'s argument. */
+                void    *tls;                /**< Its thread pointer (`tp`). */
+                uint32_t stack_size; /**< Its stack (0: `BMDS_DEFAULT_STACK_SIZE`; at least `BMDS_THREAD_STACK_MIN`). */
+                volatile uint32_t *hint;  /**< Its signal hint word (`sig_setup`), or NULL. */
+                volatile int32_t  *clear; /**< Its clear word (`thread_clear`), or NULL. */
+                int32_t           *tid;   /**< Where its id goes before it runs, or NULL. */
+} bmds_thread_t;
+
+/** @brief The smallest stack `thread_start` gives a thread: system calls run on it. */
+#define BMDS_THREAD_STACK_MIN 8192u
+
+/** @brief `futex` operations. */
+#define BMDS_FUTEX_WAIT 0u    /**< Sleep while `*word == value`: woken, the timeout, or a signal. */
+#define BMDS_FUTEX_WAKE 1u    /**< Wake up to `value` waiters on `word`. */
+#define BMDS_FUTEX_REQUEUE 2u /**< Wake up to `value`, move up to `count2` more to wait on `word2`. */
+
+/** @brief `thread_kill` flags. */
+#define BMDS_THREAD_WAKE 0x1u /**< Also end the call the thread is blocked in, or its next one (`BMDS_EINTR`). */
+
 /* --- Calls ----------------------------------------------------------- */
 
 typedef void (*bmds_sys_exit_fn)(int32_t status);
@@ -371,6 +403,12 @@ typedef int32_t (*bmds_sys_proc_kill_fn)(int32_t pid, int32_t sig);
 typedef int32_t (*bmds_sys_io_poll_fn)(bmds_pollfd_t *fds, uint32_t count, int32_t timeout_ms, const uint32_t *mask);
 typedef int32_t (*bmds_sys_proc_group_fn)(uint32_t op, int32_t pid, int32_t pgid);
 typedef int32_t (*bmds_sys_term_foreground_fn)(int32_t fd, int32_t pgid);
+typedef int32_t (*bmds_sys_thread_start_fn)(const bmds_thread_t *thread);
+typedef void (*bmds_sys_thread_exit_fn)(int32_t status, void *release);
+typedef int32_t (*bmds_sys_futex_fn)(volatile int32_t *word, uint32_t op, int32_t value, int64_t timeout_ns,
+                                     volatile int32_t *word2, int32_t count2);
+typedef int32_t (*bmds_sys_thread_kill_fn)(int32_t tid, int32_t sig, uint32_t flags);
+typedef int32_t (*bmds_sys_thread_clear_fn)(volatile int32_t *word);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -697,7 +735,7 @@ static inline int32_t bmds_pipe(int32_t *fds, uint32_t flags) {
         return ((bmds_sys_pipe_fn)bmds_sys->slot[BMDS_SYS_PIPE])(fds, flags);
 }
 
-/** @brief Returns the calling process's id, its parent's or its process group's (`BMDS_PROC_...`). */
+/** @brief Returns the calling process's id, its parent's, its process group's or the calling thread's (`BMDS_PROC_...`). */
 static inline int32_t bmds_proc_id(uint32_t which) {
         return ((bmds_sys_uint_fn)bmds_sys->slot[BMDS_SYS_PROC_ID])(which);
 }
@@ -842,6 +880,71 @@ static inline int32_t bmds_proc_group(uint32_t op, int32_t pid, int32_t pgid) {
  */
 static inline int32_t bmds_term_foreground(int32_t fd, int32_t pgid) {
         return ((bmds_sys_term_foreground_fn)bmds_sys->slot[BMDS_SYS_TERM_FOREGROUND])(fd, pgid);
+}
+
+/*
+ * Threads (devplan/processes.md §3.10): a process's threads share its
+ * memory, descriptors, directory and signal actions; each has its own
+ * stack, thread pointer, signal mask and hint word. musl's pthreads are
+ * built on these calls; programs use those.
+ */
+
+/**
+ * @brief Starts a thread in the calling process: `thread->entry(thread->arg)`
+ *        with `tp` = `thread->tls`, the caller's signal mask, and a stack of
+ *        `thread->stack_size` bytes the kernel allocates. Its id is written to
+ *        `*thread->tid` before it runs. When `entry` returns, the thread ends
+ *        with that status (`thread_exit`).
+ * @return Its id (> 0), or `BMDS_EAGAIN` (the process is ending), `BMDS_ENOMEM`,
+ *         `BMDS_EINVAL`.
+ */
+static inline int32_t bmds_thread_start(const bmds_thread_t *thread) {
+        return ((bmds_sys_thread_start_fn)bmds_sys->slot[BMDS_SYS_THREAD_START])(thread);
+}
+
+/**
+ * @brief Ends the calling thread. @p release (a block from `mem_alloc`, or
+ *        NULL) is freed as it ends. Once it is gone, its clear word (if any)
+ *        becomes 0 and one `futex` waiter on it is woken. The last thread's
+ *        end ends the process with @p status, as `exit`.
+ */
+static inline void bmds_thread_exit(int32_t status, void *release) {
+        ((bmds_sys_thread_exit_fn)bmds_sys->slot[BMDS_SYS_THREAD_EXIT])(status, release);
+}
+
+/**
+ * @brief Waits on, or wakes, threads waiting on @p word (`BMDS_FUTEX_...`).
+ *
+ * `BMDS_FUTEX_WAIT` sleeps while `*word == value`, checked atomically
+ * against wakes, until woken, @p timeout_ns passes (negative: never), or a
+ * signal is due for the thread.
+ * @return `WAIT`: 0, or `BMDS_EAGAIN` (the word held another value),
+ *         `BMDS_ETIMEDOUT`, `BMDS_EINTR`; `WAKE`, `REQUEUE`: how many were
+ *         woken. `BMDS_EINVAL` for a misaligned word or an unknown operation.
+ */
+static inline int32_t bmds_futex(volatile int32_t *word, uint32_t op, int32_t value, int64_t timeout_ns,
+                                 volatile int32_t *word2, int32_t count2) {
+        return ((bmds_sys_futex_fn)bmds_sys->slot[BMDS_SYS_FUTEX])(word, op, value, timeout_ns, word2, count2);
+}
+
+/**
+ * @brief Sends @p sig (0: only a check) to thread @p tid of the calling
+ *        process. Caught, it is due for that thread only; otherwise it acts on
+ *        the process as any signal. `BMDS_THREAD_WAKE` also ends the call the
+ *        thread is blocked in, or its next one (`BMDS_EINTR`).
+ * @return 0, or `BMDS_ESRCH`, `BMDS_EINVAL`.
+ */
+static inline int32_t bmds_thread_kill(int32_t tid, int32_t sig, uint32_t flags) {
+        return ((bmds_sys_thread_kill_fn)bmds_sys->slot[BMDS_SYS_THREAD_KILL])(tid, sig, flags);
+}
+
+/**
+ * @brief Sets the calling thread's clear word (`set_tid_address`): when the
+ *        thread has ended it becomes 0 and one `futex` waiter on it is woken.
+ * @return The thread's id.
+ */
+static inline int32_t bmds_thread_clear(volatile int32_t *word) {
+        return ((bmds_sys_thread_clear_fn)bmds_sys->slot[BMDS_SYS_THREAD_CLEAR])(word);
 }
 
 #ifdef __cplusplus

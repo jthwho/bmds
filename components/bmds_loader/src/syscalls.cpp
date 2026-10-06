@@ -14,17 +14,23 @@
 #include <esp_random.h>
 #include <bmds/errno.h>
 #include <bmds/sys.h>
+#include <bmds/deadline.h>
+#include <bmds/futex.h>
+#include <bmds/interrupt.h>
 #include <bmds/processtable.h>
 #include "running.h"
 
+using bmds::Deadline;
+using bmds::Error;
+using bmds::Interrupt;
 using bmds::KernelCall;
-using bmds::Running;
+using bmds::ProgramThread;
 using bmds::Signals;
 
 extern "C" {
 
 void bmds_k_exit(int32_t status) {
-        Running::self().finish(bmds::ProcessTable::exitStatus(status));
+        ProgramThread::self().endProcess(bmds::ProcessTable::exitStatus(status));
 }
 
 int32_t bmds_k_read(int32_t fd, void *buf, uint32_t size) {
@@ -202,22 +208,22 @@ int32_t bmds_k_lstat(const char *path, bmds_stat_t *info) {
 
 int32_t bmds_k_proc_vfork(void) {
         KernelCall call;
-        return call.running().vfork();
+        return call.thread().vfork();
 }
 
 int32_t bmds_k_proc_exec(const char *path, char *const *argv, char *const *envp) {
         KernelCall call;
-        return call.running().exec(path, argv, envp);
+        return call.thread().exec(path, argv, envp);
 }
 
 int32_t bmds_k_proc_vfork_exit(int32_t status) {
         KernelCall call;
-        return call.running().vforkExit(status);
+        return call.thread().vforkExit(status);
 }
 
 int32_t bmds_k_proc_wait(int32_t pid, int32_t *status, uint32_t flags) {
         KernelCall call;
-        return call.running().wait(pid, status, flags);
+        return call.thread().wait(pid, status, flags);
 }
 
 int32_t bmds_k_pipe(int32_t *fds, uint32_t flags) {
@@ -227,7 +233,7 @@ int32_t bmds_k_pipe(int32_t *fds, uint32_t flags) {
 
 int32_t bmds_k_proc_id(uint32_t which) {
         KernelCall call;
-        return call.running().id(which);
+        return call.thread().id(which);
 }
 
 int32_t bmds_k_fd_flags(int32_t fd, int32_t flags) {
@@ -237,7 +243,7 @@ int32_t bmds_k_fd_flags(int32_t fd, int32_t flags) {
 
 int32_t bmds_k_sig_setup(volatile uint32_t *hint) {
         KernelCall call;
-        return call.running().sigSetup(hint);
+        return call.thread().sigSetup(hint);
 }
 
 int32_t bmds_k_sig_action(int32_t sig, uint32_t action) {
@@ -250,14 +256,15 @@ int32_t bmds_k_sig_action(int32_t sig, uint32_t action) {
 }
 
 int32_t bmds_k_sig_mask(uint32_t how, uint32_t set) {
-        KernelCall     call;
-        Signals       &s = call->signals();
-        const uint32_t old = s.blocked();
+        KernelCall       call;
+        Signals         &s = call->signals();
+        Signals::Thread &mine = call.thread().currentSignals();
+        const uint32_t   old = Signals::blocked(mine);
         set &= (1u << (Signals::Count - 1)) - 1; // signals 1-31
         switch (how) {
-                case BMDS_SIG_BLOCK: s.setBlocked(old | set); break;
-                case BMDS_SIG_UNBLOCK: s.setBlocked(old & ~set); break;
-                case BMDS_SIG_SETMASK: s.setBlocked(set); break;
+                case BMDS_SIG_BLOCK: s.setBlocked(mine, old | set); break;
+                case BMDS_SIG_UNBLOCK: s.setBlocked(mine, old & ~set); break;
+                case BMDS_SIG_SETMASK: s.setBlocked(mine, set); break;
                 default: return -BMDS_EINVAL;
         }
         return static_cast<int32_t>(old);
@@ -265,27 +272,27 @@ int32_t bmds_k_sig_mask(uint32_t how, uint32_t set) {
 
 int32_t bmds_k_sig_pending(void) {
         KernelCall call;
-        return static_cast<int32_t>(call->signals().pending());
+        return static_cast<int32_t>(call->signals().pending(call.thread().currentSignals()));
 }
 
 int32_t bmds_k_sig_take(bmds_siginfo_t *info) {
         KernelCall call;
-        return call.running().sigTake(info);
+        return call.thread().sigTake(info);
 }
 
 int32_t bmds_k_sig_suspend(uint32_t mask) {
         KernelCall call;
-        return call.running().sigSuspend(mask & ((1u << (Signals::Count - 1)) - 1));
+        return call.thread().sigSuspend(mask & ((1u << (Signals::Count - 1)) - 1));
 }
 
 int32_t bmds_k_proc_kill(int32_t pid, int32_t sig) {
         KernelCall call;
-        return call.running().sendSignal(pid, sig);
+        return call.thread().sendSignal(pid, sig);
 }
 
 int32_t bmds_k_proc_exit_signal(int32_t sig) {
         KernelCall call;
-        return call.running().exitSignal(sig);
+        return call.thread().exitSignal(sig);
 }
 
 int32_t bmds_k_io_poll(bmds_pollfd_t *fds, uint32_t count, int32_t timeout_ms, const uint32_t *mask) {
@@ -293,21 +300,73 @@ int32_t bmds_k_io_poll(bmds_pollfd_t *fds, uint32_t count, int32_t timeout_ms, c
         if (mask != nullptr) {
                 // Set for the wait and left so: the SDK runs the handlers under
                 // it. A signal it unblocks is due now, but nothing raised for it.
-                Signals &s = call->signals();
-                s.setBlocked(*mask & ((1u << (Signals::Count - 1)) - 1));
-                if (s.isDue()) s.interrupt().raise();
+                Signals         &s = call->signals();
+                Signals::Thread &mine = call.thread().currentSignals();
+                s.setBlocked(mine, *mask & ((1u << (Signals::Count - 1)) - 1));
+                if (s.isDue(mine)) mine.interrupt.raise();
         }
         return call->poll(fds, count, timeout_ms);
 }
 
 int32_t bmds_k_proc_group(uint32_t op, int32_t pid, int32_t pgid) {
         KernelCall call;
-        return call.running().group(op, pid, pgid);
+        return call.thread().group(op, pid, pgid);
 }
 
 int32_t bmds_k_term_foreground(int32_t fd, int32_t pgid) {
         KernelCall call;
-        return call.running().termForeground(fd, pgid);
+        return call.thread().termForeground(fd, pgid);
+}
+
+int32_t bmds_k_thread_start(const bmds_thread_t *thread) {
+        KernelCall call;
+        return call.thread().startThread(thread);
+}
+
+void bmds_k_thread_exit(int32_t status, void *release) {
+        ProgramThread::self().exitThread(status, release);
+}
+
+int32_t bmds_k_futex(volatile int32_t *word, uint32_t op, int32_t value, int64_t timeout_ns, volatile int32_t *word2,
+                     int32_t count2) {
+        KernelCall call;
+        if (word == nullptr || (reinterpret_cast<uintptr_t>(word) & 3u) != 0) return -BMDS_EINVAL;
+        bmds::FutexTable &futexes = bmds::programFutexes();
+        switch (op) {
+                case BMDS_FUTEX_WAIT: {
+                        // Whole milliseconds, rounded up: at least what was asked.
+                        constexpr int64_t NsPerMs = 1'000'000;
+                        constexpr int64_t MaxMs = UINT32_MAX - 1;
+                        unsigned int      ms = bmds::WaitForever;
+                        if (timeout_ns >= 0) {
+                                const int64_t m = timeout_ns / NsPerMs + (timeout_ns % NsPerMs != 0 ? 1 : 0);
+                                if (m == 0) return *word != value ? -BMDS_EAGAIN : -BMDS_ETIMEDOUT;
+                                ms = static_cast<unsigned int>(m < MaxMs ? m : MaxMs);
+                        }
+                        const Error err = futexes.wait(word, value, Deadline(ms), Interrupt::current());
+                        switch (err.code()) {
+                                case Error::Ok: return 0;
+                                case Error::WouldBlock: return -BMDS_EAGAIN;
+                                case Error::Timeout: return -BMDS_ETIMEDOUT;
+                                default: return -BMDS_EINTR;
+                        }
+                }
+                case BMDS_FUTEX_WAKE: return value > 0 ? futexes.wake(word, value) : 0;
+                case BMDS_FUTEX_REQUEUE:
+                        if (word2 == nullptr || (reinterpret_cast<uintptr_t>(word2) & 3u) != 0) return -BMDS_EINVAL;
+                        return futexes.requeue(word, value > 0 ? value : 0, word2, count2 > 0 ? count2 : 0);
+                default: return -BMDS_EINVAL;
+        }
+}
+
+int32_t bmds_k_thread_kill(int32_t tid, int32_t sig, uint32_t flags) {
+        KernelCall call;
+        return call.thread().killThread(tid, sig, flags);
+}
+
+int32_t bmds_k_thread_clear(volatile int32_t *word) {
+        KernelCall call;
+        return call.thread().setClear(word);
 }
 
 } // extern "C"

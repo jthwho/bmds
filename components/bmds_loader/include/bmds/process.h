@@ -14,6 +14,7 @@
 #include <bmds/error.h>
 #include <bmds/fdtable.h>
 #include <bmds/memspace.h>
+#include <bmds/mutex.h>
 #include <bmds/semaphore.h>
 #include <bmds/signals.h>
 #include <bmds/span.h>
@@ -50,8 +51,13 @@ class Console;
  * same arguments, results >= 0 or a negated `BMDS_E...` number.
  *
  * @par Thread Safety
- * A program has one thread, so a Process is used by its program's task
- * only (and by the loader before it starts and after it ends).
+ * The system calls are thread-safe: a program's threads share its Process
+ * (devplan/processes.md §3.10). Its descriptor table, memory blocks and
+ * directories are under one lock (a call holds a reference to the handle
+ * it uses), the working directory under another while a path uses it, and
+ * console input is read in turns. The rest (creating, `prepareExec()`,
+ * `release()`, the accessors a built-in program uses) is for one thread:
+ * the loader's, before the program's threads run or after they have gone.
  */
 class Process {
         public:
@@ -79,11 +85,11 @@ class Process {
                 /**
                  * @brief Creates a vfork child's Process (`Psram`): a copy of this
                  *        one's fds (with their flags), directory, console and
-                 *        signal actions and mask; no memory, directories,
-                 *        arguments or pending signals.
+                 *        signal actions, and the mask of @p thread (the one that
+                 *        vforks); no memory, directories, arguments or pending signals.
                  * @return The child (free it with `destroy()`), or null (no memory).
                  */
-                Process *createChild() const;
+                Process *createChild(const Signals::Thread &thread);
 
                 /** @brief Releases and frees a Process from `createChild()` or `create()`. */
                 static void destroy(Process *process);
@@ -209,6 +215,11 @@ class Process {
                 uint8_t      readiness(FileHandle &h);
                 int32_t      rawRead(uint8_t *out, int32_t n);
                 int32_t      path(const char *path, StringView &out) const;
+                FileHandle::Ptr handleOf(int32_t fd) const; // a reference to fd's handle, or none
+
+                mutable Mutex _lock;              // the fds, the memory blocks, the directories
+                Mutex         _pathLock;          // _cwd while a path call uses it
+                Semaphore     _consoleTurn{1, 1}; // the console's input (_line and the modes' use of it)
 
                 FdTable    _fds;
                 Console   *_console;

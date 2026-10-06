@@ -18,10 +18,17 @@ musl, <https://musl.libc.org/>, the C library BMDS programs link statically
     `fsw`/`flw`; double with `fsd`/`fld` as before.
   - Removed `src/thread/riscv32/clone.s`, `syscall_cp.s`, `__unmapself.s` and
     `src/signal/riscv32/restore.s`, which issue `ecall` themselves: musl's
-    generic C versions take their place (`clone` returns `ENOSYS`).
-- **Not built:** `src/process/vfork.c` (generic: `fork`) and
-  `src/thread/clone.c` (`ENOSYS`); the SDK's `crt/vfork.S` has `vfork` and
-  `__clone` for `CLONE_VM|CLONE_VFORK` (`posix_spawn`, `system`, `popen`).
+    generic C versions take their place (`clone` returns `ENOSYS`), or the
+    SDK's (`crt/syscall_cp.S`).
+  - Threads (devplan/processes.md §3.10): `src/thread/pthread_create.c` maps
+    only the TLS, thread data and start arguments (the kernel allocates the
+    stack) and passes the stack size to `__clone` as an eighth argument;
+    `src/internal/pthread_impl.h`: a 32 KB default stack, no guard pages.
+- **Not built:** `src/process/vfork.c` (generic: `fork`),
+  `src/thread/clone.c` (`ENOSYS`) and `src/thread/__unmapself.c`; the SDK's
+  `crt/vfork.S` has `vfork` and `__clone` (`CLONE_VM|CLONE_VFORK` for
+  `posix_spawn`, `system`, `popen`; threads go to `crt/linux.c`), and
+  `crt/linux.c` has `__unmapself`.
 
 To update: unpack the new release, prune it the same way, apply
 `patches/bmds.diff` (fixing what no longer applies), regenerate the diff

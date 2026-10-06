@@ -301,12 +301,107 @@ As POSIX has them, for one user:
   refusing pid 1 only where it says so (`SIGKILL`/`SIGSTOP` to pid 1 stay refused).
 - Later, if wanted: `/proc/N` files. Not now.
 
-### 3.10 Threads for programs (later)
+### 3.10 Threads for programs (step 5)
 
-pthreads for loaded programs: appended system calls (thread create, exit, join; a futex), a thread
-record per task as above, TLS blocks per thread (musl's), `errno` per thread (it already is, through
-TLS). Signals to the process go to one thread that doesn't block them. Designed when a program needs
-it (a toolkit, a compiler); the model above is built for it, nothing more is done now.
+pthreads for loaded programs, through musl (2026-10-06, the user: "We can start the next step").
+A program's threads are FreeRTOS tasks of its process, each with its own record, signal mask and
+interrupt; they share everything else.
+
+**What programs get.** musl's pthreads and C11 threads: create, join, detach, exit, mutexes,
+condition variables, rwlocks, barriers, semaphores, once, keys, thread-local storage
+(`_Thread_local`, so `errno` per thread), `pthread_kill` and `raise` to a thread,
+`pthread_sigmask` per thread, `exit()` from any thread ending them all, `posix_spawn` from any
+thread, deferred cancellation. Not now: asynchronous cancellation, `sigwait` and friends,
+priority-inheritance and robust mutexes across processes, scheduling attributes (`ENOSYS`), the
+`setuid` family's all-thread calls (no-ops: one user).
+
+**System calls (appended).**
+- `thread_start(const bmds_thread_t *t)` (53): a new thread of the calling process runs
+  `t->entry(t->arg)` with `tp` = `t->tls`, the caller's signal mask, and a stack of
+  `t->stack_size` bytes that the kernel allocates (at least `BMDS_THREAD_STACK_MIN`, 8 KB: system
+  calls run on it). Its id goes to `*t->tid` before it runs; the kernel sets its signal hint word
+  (`t->hint`, in the new thread's TLS) and its clear word (`t->clear`). Returns the id. When the
+  entry returns, the thread ends with that status (`thread_exit`).
+- `thread_exit(int32_t status, void *release)` (54): ends the calling thread. `release`, a block
+  from `mem_alloc` (musl's mapping of a detached thread's TLS), is freed as it ends. Once the
+  thread is gone, 0 goes to its clear word and one waiter there is woken (Linux's
+  `CLONE_CHILD_CLEARTID`: musl's thread-list lock, which `pthread_join` waits for before it frees
+  the thread's memory). The last thread's end ends the process with `status`, as `exit()`.
+- `futex(word, op, value, timeout_ns, word2, count2)` (55): `BMDS_FUTEX_WAIT` sleeps while
+  `*word == value` until woken, the timeout (negative: none), or a signal (`EINTR`), the
+  comparison and the queueing atomic against wakes; `BMDS_FUTEX_WAKE` wakes up to `value`
+  waiters; `BMDS_FUTEX_REQUEUE` wakes up to `value` and moves up to `count2` more to `word2`.
+  Keyed by address: there is one address space.
+- `thread_kill(int32_t tid, int32_t sig, uint32_t flags)` (56): `sig` (0: a check) to one thread
+  of the calling process; `BMDS_THREAD_WAKE` also ends the call it is blocked in, or its next one
+  (`EINTR`, once): musl's `SIGCANCEL`, a real-time signal the kernel doesn't have.
+- `thread_clear(volatile int32_t *word)` (57): sets the calling thread's clear word; returns its
+  id (`set_tid_address`).
+- `proc_id(BMDS_PROC_THREAD)` (3): the calling thread's id (`gettid`). A process's first thread's
+  id is its pid; the others' are numbered from 32768 (pids stop at 32767), below 2^30 (musl keeps
+  owners' ids in a mutex's lock word with flags above).
+
+**Thread records.** `Running` (the process: its `Process`, image, pid, command, kernel `Thread`s,
+the kill) gains `ProgramThread`s, one per program task: its `Task`, id, the kill/stop handshake
+flags (`inKernel`, `kill`, `suspendedForStop`), hint word, clear word, vfork children (`current`
+and the stack of children: a thread vforks on its own), its `Signals::Thread`, the next record.
+The first thread's is part of `Running` (a program without threads pays nothing more); the
+others are `Psram` records, their TCBs and stacks the `Task`'s (internal RAM if there is room to
+spare, as a program's first stack). FreeRTOS pointer 1, the task's owner, is the `ProgramThread`
+for a program task and the `Running` for a kernel `Thread` of the process; both start with the
+loader's `ProcessOwner` (the `Running`, the thread or null). `TaskOwner` gains `threadOwner()`:
+a `Thread` started from a program task joins its process, not the thread (a built-in program's
+pipeline workers).
+
+**Signals per thread** (POSIX's): actions, the process's pending set and stopping are the
+process's; the mask, a pending set for signals sent to the thread, and an `Interrupt` are each
+thread's (`Signals::Thread`; the first one's, which kernel-code threads share, is in `Signals`).
+A signal sent to the process is due for every thread that doesn't block it: the first such
+thread (the first thread first) has its interrupt raised, and every thread it is due for has its
+hint set; whichever takes it first runs the handler. One that ends the process does so unless
+every thread blocks it; a stop holds every thread's interrupt, a continue releases them, a kill
+raises them all. `Signals` keeps its threads' list under its own lock (a thread may be attached
+while a stop is posted: attaching holds it if the process is stopped). A vfork child runs on its
+parent thread with its own `Signals`, as now.
+
+**Ending.** A kill sets every thread's `kill` and runs the handshake on each: those in program
+code are ended on the spot, those in a call end as it returns; the last thread to end ends the
+process (its status: the first kill's, or the last thread's exit status). Thread stacks are
+kernel memory, so no kernel code ever runs on program memory: the process's memory goes as the
+last thread ends, while ended threads' tasks may still wait in the stop queue. `exit()` is a kill
+of the whole process with the exit status. `exec` from one thread ends the others first and
+waits for them, then replaces the program, as Linux's. A thread's end, as the kill's, goes
+through the stop queue, which stops its task and frees its record; the `Running` goes with its
+last record.
+
+**Shared state is locked.** `Process` gains a lock for its descriptor table (a call holds a
+reference to the handle it uses, so another thread's `close` can't free it under a read), its
+memory blocks and its directories; a second lock while a relative path uses the working
+directory (`chdir` replaces it under that lock); console input (the line editor's state) is taken
+in turns, interruptibly. `linux.c` locks its tables (directory descriptors, mappings, signal
+handlers) with musl's internal lock, which costs nothing until a second thread starts; its signal
+hint and vfork state are thread-local (`vfork.S` reaches them through `tp`); a vfork child gets a
+copy of the handler, directory, umask and terminal-mode tables instead of changing the parent's
+while its other threads run.
+
+**musl.** `__clone` takes a thread path (`CLONE_VM|CLONE_THREAD|CLONE_SETTLS`) to
+`thread_start`; `pthread_create` maps only TLS and thread-specific data (the kernel allocates
+stacks) and passes the stack size; the default stack is `BMDS_DEFAULT_STACK_SIZE` (32 KB, musl's
+128 KB is too much here) and there are no guard pages (no MMU). A stack given with
+`pthread_attr_setstack` holds the TLS only; the thread runs on a kernel stack of that size.
+`__unmapself` (a detached thread freeing its own mapping) is `thread_exit` with the mapping;
+`__syscall_cp_asm` checks the cancel flag before the call (deferred cancellation, woken by
+`BMDS_THREAD_WAKE`). `SYS_exit` ends the thread, `SYS_exit_group` the process; `gettid`,
+`set_tid_address`, `tkill`/`tgkill` and the futex go to the new calls.
+
+**Not changed.** Built-in programs' threads stay kernel `Thread`s sharing the process's interrupt
+(§3.2). Signals are still taken between calls (programs.md §15): a thread computing without
+calls takes its signals at its next call.
+
+**Steps** (all in step 5): (a) `Signals::Thread` and the futex table, host-tested; (b) `Process`
+locking; (c) `ProgramThread` records, the handshake per thread, `thread_start`/`thread_exit`/
+`thread_kill`/`thread_clear`/`futex`, exec and exit with threads, `ps -T`; (d) the SDK and musl;
+(e) `progtest threads` on the board.
 
 ## 4. ABI impact
 
@@ -320,6 +415,9 @@ ABI 1 has not shipped, but these are recorded as `ABI:` lines because they chang
 - Shell: new `jobs`, `fg`, `bg`, `wait`, `disown`, `ps`; `&` accepted; `kill` takes `%N`; `$!`.
 - `/bin/sh -i`, `-l`.
 - `tasks` unchanged.
+- Step 5: slots 53-57 (`thread_start`, `thread_exit`, `futex`, `thread_kill`, `thread_clear`),
+  `bmds_thread_t`, `BMDS_PROC_THREAD`; the signal mask is per thread (one thread: unchanged);
+  `SYS_exit` from musl ends the thread (it ended the program, the same while there is one).
 
 ## 5. Costs
 
@@ -331,6 +429,10 @@ ABI 1 has not shipped, but these are recorded as `ABI:` lines because they chang
   `Session` and its reaping go.
 - Background jobs: a subshell's thread (its stack, `CONFIG_BMDS_SHELL_STACK_BYTES`, in `Psram`)
   plus its cloned `ShellState`; a single program as now.
+- Program threads (step 5): a `ProgramThread` record (`Psram`) and a `Task` (TCB internal, the
+  stack where the first thread's would go) per thread beyond the first, and musl's TLS mapping
+  (a page, `Psram`) in the program's memory. Per process: three locks (`Signals`' thread list,
+  `Process`'s table and path locks), about 280 bytes of `Psram`.
 - No polling anywhere: stops and continues park on semaphores; the console signals from its input
   path.
 - Each is measured as it lands (`idf.py size`, `mem` before and after).
@@ -345,6 +447,16 @@ ABI 1 has not shipped, but these are recorded as `ABI:` lines because they chang
   on one blocked in a read, on a built-in (`seq 1 1000000 | cat`), then `fg`; a background `cat`
   reading the terminal stops (`SIGTTIN`); closing a terminal window with a background job (`SIGHUP`
   ends it); killing `terminal` from the serial shell; BusyBox `hush` job control; `ps`, `ps -T`;
+  `tasks` and `mem` unchanged after each.
+- **Step 5, host:** per-thread masks and pending sets (a process signal to the thread that
+  doesn't block it, one blocked everywhere stays pending, a thread's own signal, a stop holding a
+  thread attached late), the futex table (a changed word, wakes and counts, requeue, timeouts,
+  interrupts, stops).
+- **Step 5, board:** `progtest threads`: threads counting under a mutex, a condition variable
+  ping-pong, join and detach (memory back after), TLS and `errno` apart, `pthread_kill` to a
+  thread with a handler, a signal to the process taken by the thread that doesn't block it,
+  `exit()` from a thread, `posix_spawn` from a thread, a thread blocked in a read cancelled;
+  Ctrl-C, Ctrl-Z and `fg`, and `kill` on a program whose threads compute, sleep and wait; `ps -T`;
   `tasks` and `mem` unchanged after each.
 
 ## 7. Steps
@@ -365,7 +477,7 @@ ABI 1 has not shipped, but these are recorded as `ABI:` lines because they chang
    `wait`, `kill %N`, `$!`, done-job reports.
 4. **Stopping.** Stop signals, the stop handshake and parking, `SIGCONT`, `SIGTTIN`, `WUNTRACED`;
    Ctrl-Z, `fg`, `bg`.
-5. **Program threads** (§3.10), when wanted.
+5. **Program threads** (§3.10): pthreads for loaded programs.
 
 ## 8. Open questions
 
@@ -511,3 +623,46 @@ ABI 1 has not shipped, but these are recorded as `ABI:` lines because they chang
   - Found: `while :; do :; done` typed alone runs in the interactive shell, which ignores
     Ctrl-Z (as bash); it held CPU 0 until Ctrl-C (the task watchdog complained). Not tried on
     the board: Ctrl-Z typed in a terminal window (the pty uses the same byte check).
+- **Step 5** (2026-10-06): program threads (§3.10).
+  - `Signals`: `Signals::Thread` (mask, a pending set of its own, interrupt) for each program
+    thread, the first one's inside it; `attach()`/`detach()` (a late one held if stopped, raised if
+    ending), `postTo()`, `wake()`, `current()`; the mask blocked by every thread kept as one word,
+    so the hot paths (`prepare()`, `leave()`) take no lock. `FutexTable` (wait, wake, requeue; each
+    waiter's record on its stack). `Process`: a lock for the descriptors, memory blocks and
+    directories (calls hold a `FileHandle::Ptr`, `FdTable::ref()`), one for the working directory
+    during path calls, console input in turns (interruptible).
+  - The loader: `Running` (the process) and `ProgramThread` (each program task, the first inside
+    the `Running`), both `ProcessOwner`s (pointer 1); `TaskOwner::threadOwner()`. The handshake,
+    stops, hints and vfork children per thread; the last thread to end ends the process; ended
+    threads go through the stop queue, which frees each record, the `Running` with the last.
+    Kernel-allocated thread stacks (internal RAM if there is room to spare). Slots 53-57,
+    `BMDS_PROC_THREAD`; `ps -T` gains a TID column.
+  - The SDK: `linux.c`'s tables (directory fds, O_NONBLOCK and VMIN/VTIME, handlers, umask) under
+    musl's lock, a vfork child working on a copy; each thread's hint word and vfork depth in TLS
+    (16 bytes: musl's built-in TLS still holds the first thread's), the vfork registers in the
+    heap block; `__clone`'s thread path, `__unmapself`, the futex, `tkill` (SIGCANCEL wakes),
+    `SYS_exit` per thread, `set_tid_address` registering the first thread's hint once musl has set
+    `tp` up; `crt/syscall_cp.S` for cancellation points. musl: `pthread_create` maps only TLS,
+    thread data and start arguments and passes the stack size; 32 KB default stacks, no guards.
+  - Host-tested: per-thread masks and pending sets, a process signal to the thread that doesn't
+    block it, blocked everywhere, sent to a thread, stops holding late threads, the first thread
+    gone, `wake()`; the futex table (values, order, requeue, timeouts, interrupts, holds).
+  - On the board: `progtest threads` passes (four threads counting to 40,000 under a mutex,
+    distinct ids, TLS and `errno`; a condition-variable ping-pong of 1,000 rounds; detached
+    threads' memory back; 4 KB and 128 KB stacks; a barrier; `pthread_kill` handled on its thread;
+    a process signal taken by the thread not blocking it; `posix_spawn` from a thread; a thread
+    blocked in a read cancelled; `exit()` from a thread, the first thread ending first, `exec`
+    from a thread, `SIGTERM` and `SIGKILL` to a process whose threads compute, sleep and wait),
+    three runs leaving free memory and the task count unchanged; `progtest signals`, `spawn` and
+    `poll` still pass. `threadspin`: Ctrl-Z stops all four threads (the computing one suspended,
+    the others parked), `bg`, `fg`, Ctrl-C (130), `kill %1`; `ps -T` lists them with their ids.
+    The image grew 7,448 bytes, `.bss` 96.
+  - Found: `exit()` marked the other threads killed without raising their interrupts, so one in
+    a futex wait kept the process alive (fixed: every kill raises them). Per-thread vfork
+    registers in TLS made every program's TLS 224 bytes, past musl's built-in area (a 4 KB
+    mapping per program); they moved to the vfork's heap block. `progtest signals` expected
+    `kill(1, 0)` to fail, stale since step 2 made pid 1 a process (root may signal it; `SIGKILL`
+    is refused).
+  - Not done: asynchronous cancellation, `sigwait`, scheduling attributes, `sched_yield` (a
+    no-op). Not tried on the board: `exec` from a thread after the first one ended, a kill while
+    a thread runs a vfork child.

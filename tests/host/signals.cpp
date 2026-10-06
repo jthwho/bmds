@@ -222,7 +222,7 @@ TEST_CASE("Signals: exec and vfork children") {
         CHECK(parent.post(BMDS_SIGUSR2, BMDS_SI_USER) == Posted::Pending);
 
         Signals child;
-        child.inherit(parent);
+        child.inherit(parent, parent.mainThread());
         CHECK(child.action(BMDS_SIGUSR1) == Action::Catch);
         CHECK(child.action(BMDS_SIGHUP) == Action::Ignore);
         CHECK(child.blocked() == Signals::bit(BMDS_SIGUSR2));
@@ -262,6 +262,167 @@ TEST_CASE("Signals: a signal sent during prepare() still leaves the interrupt ra
         CHECK(lost == 0);
 }
 
+TEST_CASE("Signals: a process's signal goes to a thread that doesn't block it") {
+        Signals         s;
+        Signals::Thread t;
+        s.attach(t);
+        REQUIRE(s.setAction(BMDS_SIGUSR1, Action::Catch));
+        s.setBlocked(Signals::bit(BMDS_SIGUSR1)); // the main thread blocks it
+        CHECK(s.post(BMDS_SIGUSR1, BMDS_SI_USER) == Posted::Pending);
+        CHECK_FALSE(s.interrupt().isRaised());
+        CHECK(t.interrupt.isRaised());
+        CHECK_FALSE(s.isDue());
+        CHECK(s.isDue(t));
+        CHECK(s.pending(t) == Signals::bit(BMDS_SIGUSR1));
+        CHECK(s.take().signal == 0); // not the main thread's to take
+        const Signals::Taken taken = s.take(t);
+        CHECK(taken.signal == BMDS_SIGUSR1);
+        CHECK(taken.code == BMDS_SI_USER);
+        CHECK(s.pending() == 0);
+
+        // The main thread first when neither blocks it.
+        t.interrupt.clear();
+        s.setBlocked(0);
+        CHECK(s.post(BMDS_SIGUSR1, BMDS_SI_USER) == Posted::Pending);
+        CHECK(s.interrupt().isRaised());
+        CHECK_FALSE(t.interrupt.isRaised());
+        CHECK(s.isDue(t)); // due for both: whichever takes it first
+        CHECK(s.take(t).signal == BMDS_SIGUSR1);
+        CHECK(s.take().signal == 0);
+        s.detach(t);
+}
+
+TEST_CASE("Signals: one that ends the process waits while every thread blocks it") {
+        Signals         s;
+        Signals::Thread t;
+        s.attach(t);
+        s.setBlocked(Signals::bit(BMDS_SIGTERM));
+        s.setBlocked(t, Signals::bit(BMDS_SIGTERM));
+        CHECK(s.post(BMDS_SIGTERM, BMDS_SI_USER) == Posted::Pending);
+        CHECK(s.terminateSignal() == 0);
+        // One thread unblocking it is enough: the process ends.
+        s.setBlocked(t, 0);
+        CHECK(s.terminateSignal() == BMDS_SIGTERM);
+        CHECK(s.isDue());
+        CHECK(s.isDue(t));
+        // And a thread blocking it doesn't stop a new one from ending it.
+        s.detach(t);
+        Signals         s2;
+        Signals::Thread u;
+        s2.attach(u);
+        s2.setBlocked(Signals::bit(BMDS_SIGTERM));
+        CHECK(s2.post(BMDS_SIGTERM, BMDS_SI_USER) == Posted::Terminate);
+        CHECK(s2.interrupt().isRaised());
+        CHECK(u.interrupt.isRaised());
+        s2.detach(u);
+}
+
+TEST_CASE("Signals: a signal sent to a thread is that thread's") {
+        Signals         s;
+        Signals::Thread t;
+        s.attach(t);
+        REQUIRE(s.setAction(BMDS_SIGUSR1, Action::Catch));
+        CHECK(s.postTo(t, BMDS_SIGUSR1, BMDS_SI_KERNEL) == Posted::Pending);
+        CHECK(t.interrupt.isRaised());
+        CHECK_FALSE(s.interrupt().isRaised());
+        CHECK_FALSE(s.isDue());
+        CHECK(s.pending() == 0);
+        CHECK(s.pending(t) == Signals::bit(BMDS_SIGUSR1));
+        const Signals::Taken taken = s.take(t);
+        CHECK(taken.signal == BMDS_SIGUSR1);
+        CHECK(taken.code == BMDS_SI_KERNEL);
+
+        // Blocked by it, it waits for it alone; an uncaught one acts on the process once unblocked.
+        s.setBlocked(t, Signals::bit(BMDS_SIGTERM));
+        CHECK(s.postTo(t, BMDS_SIGTERM, BMDS_SI_USER) == Posted::Pending);
+        CHECK(s.terminateSignal() == 0);
+        s.setBlocked(t, 0);
+        CHECK(s.terminateSignal() == BMDS_SIGTERM);
+        s.detach(t);
+
+        // Not blocked, an uncaught one ends the process even though the main thread blocks it.
+        Signals         s2;
+        Signals::Thread u;
+        s2.attach(u);
+        s2.setBlocked(Signals::bit(BMDS_SIGTERM));
+        CHECK(s2.postTo(u, BMDS_SIGTERM, BMDS_SI_USER) == Posted::Terminate);
+        s2.detach(u);
+}
+
+TEST_CASE("Signals: stopping holds every thread, one attached late too") {
+        Signals         s;
+        Signals::Thread t;
+        s.attach(t);
+        CHECK(s.post(BMDS_SIGTSTP, BMDS_SI_KERNEL) == Posted::Stop);
+        CHECK(s.interrupt().isHeld());
+        CHECK(t.interrupt.isHeld());
+        Signals::Thread late;
+        s.attach(late);
+        CHECK(late.interrupt.isHeld());
+        CHECK(s.post(BMDS_SIGCONT, BMDS_SI_USER) == Posted::Continue);
+        CHECK_FALSE(s.interrupt().isHeld());
+        CHECK_FALSE(t.interrupt.isHeld());
+        CHECK_FALSE(late.interrupt.isHeld());
+        // A kill raises them all; one attached afterwards is raised as it comes.
+        CHECK(s.post(BMDS_SIGKILL, BMDS_SI_USER) == Posted::Terminate);
+        CHECK(t.interrupt.isRaised());
+        CHECK(late.interrupt.isRaised());
+        Signals::Thread after;
+        s.attach(after);
+        CHECK(after.interrupt.isRaised());
+        s.detach(after);
+        s.detach(late);
+        s.detach(t);
+}
+
+TEST_CASE("Signals: a stop signal blocked by a thread stops the process when it unblocks it") {
+        Signals         s;
+        Signals::Thread t;
+        s.attach(t);
+        s.setBlocked(t, Signals::bit(BMDS_SIGTSTP));
+        CHECK(s.postTo(t, BMDS_SIGTSTP, BMDS_SI_USER) == Posted::Pending);
+        CHECK_FALSE(s.isStopped());
+        CHECK(s.stopSignal(t) == 0);
+        s.setBlocked(t, 0);
+        CHECK(s.stopSignal(t) == BMDS_SIGTSTP);
+        CHECK(s.stopWith(t, BMDS_SIGTSTP));
+        CHECK(s.isStopped());
+        CHECK(s.pending(t) == 0);
+        CHECK(t.interrupt.isHeld());
+        s.detach(t);
+}
+
+TEST_CASE("Signals: after the main thread ends, the others take the process's signals") {
+        Signals         s;
+        Signals::Thread t;
+        s.attach(t);
+        REQUIRE(s.setAction(BMDS_SIGUSR1, Action::Catch));
+        s.detach(s.mainThread());
+        CHECK(s.post(BMDS_SIGUSR1, BMDS_SI_USER) == Posted::Pending);
+        CHECK(t.interrupt.isRaised());
+        CHECK(s.take(t).signal == BMDS_SIGUSR1);
+        s.detach(t);
+}
+
+TEST_CASE("Signals: wake() ends one call; current() finds the calling thread's part") {
+        Signals         s;
+        Signals::Thread t;
+        s.attach(t);
+        s.wake(t);
+        s.prepare(t); // a call starts: the wake stays
+        CHECK(t.interrupt.isRaised());
+        Signals::clearWake(t); // that call returned
+        s.prepare(t);
+        CHECK_FALSE(t.interrupt.isRaised());
+
+        CHECK(&s.current() == &s.mainThread());
+        {
+                Interrupt::Scope scope(&t.interrupt);
+                CHECK(&s.current() == &t);
+        }
+        s.detach(t);
+}
+
 TEST_CASE("Interrupt: current() is the calling thread's, set by Scope") {
         Interrupt a, b;
         CHECK(Interrupt::current() == nullptr);
@@ -298,7 +459,7 @@ TEST_CASE("Process: signals of its own; SIGPIPE on a write nobody reads") {
 
                 // The child gets the actions and mask, not the pending signals.
                 REQUIRE(p->signals().setAction(BMDS_SIGPIPE, Action::Ignore));
-                Process *child = p->createChild();
+                Process *child = p->createChild(p->signals().mainThread());
                 REQUIRE(child != nullptr);
                 CHECK(child->signals().action(BMDS_SIGINT) == Action::Catch);
                 CHECK(child->signals().action(BMDS_SIGPIPE) == Action::Ignore);

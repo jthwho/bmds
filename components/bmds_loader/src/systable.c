@@ -67,8 +67,14 @@ int32_t bmds_k_proc_exit_signal(int32_t sig);
 int32_t bmds_k_io_poll(bmds_pollfd_t *fds, uint32_t count, int32_t timeout_ms, const uint32_t *mask);
 int32_t bmds_k_proc_group(uint32_t op, int32_t pid, int32_t pgid);
 int32_t bmds_k_term_foreground(int32_t fd, int32_t pgid);
+int32_t bmds_k_thread_start(const bmds_thread_t *thread);
+void    bmds_k_thread_exit(int32_t status, void *release);
+int32_t bmds_k_futex(volatile int32_t *word, uint32_t op, int32_t value, int64_t timeout_ns, volatile int32_t *word2,
+                     int32_t count2);
+int32_t bmds_k_thread_kill(int32_t tid, int32_t sig, uint32_t flags);
+int32_t bmds_k_thread_clear(volatile int32_t *word);
 
-#define SLOTS 53
+#define SLOTS 58
 
 /* bmds_sys_t with its slots spelled out (same layout; checked below). */
 static const struct {
@@ -136,10 +142,15 @@ static const struct {
                 [BMDS_SYS_IO_POLL] = (bmds_sys_fn_t)bmds_k_io_poll,
                 [BMDS_SYS_PROC_GROUP] = (bmds_sys_fn_t)bmds_k_proc_group,
                 [BMDS_SYS_TERM_FOREGROUND] = (bmds_sys_fn_t)bmds_k_term_foreground,
+                [BMDS_SYS_THREAD_START] = (bmds_sys_fn_t)bmds_k_thread_start,
+                [BMDS_SYS_THREAD_EXIT] = (bmds_sys_fn_t)bmds_k_thread_exit,
+                [BMDS_SYS_FUTEX] = (bmds_sys_fn_t)bmds_k_futex,
+                [BMDS_SYS_THREAD_KILL] = (bmds_sys_fn_t)bmds_k_thread_kill,
+                [BMDS_SYS_THREAD_CLEAR] = (bmds_sys_fn_t)bmds_k_thread_clear,
         },
 };
 
-_Static_assert(SLOTS == BMDS_SYS_TERM_FOREGROUND + 1, "every slot is in the table");
+_Static_assert(SLOTS == BMDS_SYS_THREAD_CLEAR + 1, "every slot is in the table");
 _Static_assert(sizeof(table) == 16 + SLOTS * sizeof(bmds_sys_fn_t), "table layout");
 
 const bmds_sys_t *bmds_k_sys_table(void) {

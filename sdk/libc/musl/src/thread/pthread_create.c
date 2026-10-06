@@ -285,9 +285,12 @@ int __pthread_create(pthread_t *restrict res, const pthread_attr_t *restrict att
 		}
 		guard = 0;
 	} else {
-		guard = ROUND(attr._a_guardsize);
-		size = guard + ROUND(attr._a_stacksize
-			+ libc.tls_size +  __pthread_tsd_size);
+		/* BMDS: the kernel allocates the stack (thread_start, given
+		 * the size below); the mapping holds the TLS, the thread data
+		 * and the start arguments only. */
+		guard = 0;
+		size = ROUND(libc.tls_size + __pthread_tsd_size
+			+ sizeof(struct start_args) + 16);
 	}
 
 	if (!tsd) {
@@ -352,7 +355,9 @@ int __pthread_create(pthread_t *restrict res, const pthread_attr_t *restrict att
 
 	__tl_lock();
 	if (!libc.threads_minus_1++) libc.need_locks = 1;
-	ret = __clone((c11 ? start_c11 : start), stack, flags, args, &new->tid, TP_ADJ(new), &__thread_list_lock);
+	/* BMDS: the stack size goes to the kernel as an eighth argument. */
+	ret = __clone((c11 ? start_c11 : start), stack, flags, args, &new->tid, TP_ADJ(new), &__thread_list_lock,
+		(size_t)attr._a_stacksize);
 
 	/* All clone failures translate to EAGAIN. If explicit scheduling
 	 * was requested, attempt it before unlocking the thread list so

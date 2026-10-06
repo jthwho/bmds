@@ -68,7 +68,8 @@ Error Thread::start(const Config &config, Entry entry, void *arg) {
         rec->arg = arg;
         // In the starter's process, if it has one (devplan/processes.md §3.1). A static task's
         // handle is its TCB, known before it exists.
-        rec->owner = TaskOwner::current();
+        TaskOwner *const starter = TaskOwner::current();
+        rec->owner = starter != nullptr ? starter->threadOwner() : nullptr;
         rec->member.task = &rec->tcb;
         if (rec->owner != nullptr) {
                 const Error err = rec->owner->attach(rec->member);

@@ -58,6 +58,13 @@ class FdTable {
                  */
                 FileHandle *handle(int fd) const { return isValid(fd) ? _fds[fd].get() : nullptr; }
 
+                /**
+                 * @brief Returns a reference to the handle on @p fd, which keeps it
+                 *        open after @p fd is closed.
+                 * @return The reference, or an empty one if @p fd is closed or out of range.
+                 */
+                FileHandle::Ptr ref(int fd) const { return isValid(fd) ? _fds[fd] : FileHandle::Ptr(); }
+
                 /** @brief Returns true if @p fd is open. */
                 bool isOpen(int fd) const { return handle(fd) != nullptr; }
 

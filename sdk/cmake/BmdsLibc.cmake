@@ -90,8 +90,10 @@ foreach(dir IN LISTS _bmds_dirs)
 endforeach()
 
 # The SDK's vfork.S has vfork and __clone (musl's generic ones are fork and
-# ENOSYS).
-list(REMOVE_ITEM _bmds_srcs "${_bmds_musl}/src/process/vfork.c" "${_bmds_musl}/src/thread/clone.c")
+# ENOSYS); its linux.c has __unmapself (musl's generic one switches to a
+# shared stack to unmap its own: BMDS's thread_exit frees the mapping).
+list(REMOVE_ITEM _bmds_srcs "${_bmds_musl}/src/process/vfork.c" "${_bmds_musl}/src/thread/clone.c"
+     "${_bmds_musl}/src/thread/__unmapself.c")
 
 add_library(bmds_libc STATIC ${_bmds_srcs})
 set_target_properties(bmds_libc PROPERTIES OUTPUT_NAME c ARCHIVE_OUTPUT_DIRECTORY "${BMDS_LIBC_LIB}")

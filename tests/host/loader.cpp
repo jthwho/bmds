@@ -376,7 +376,10 @@ TEST_CASE("Program format: the SDK's hello.elf") {
         REQUIRE(c.err == Error::Ok);
         CHECK(c.info.abiVersion == BMDS_ABI_VERSION);
         CHECK(c.info.relocations > 0);
-        CHECK(c.info.tlsSize == 0); // musl keeps errno in its thread descriptor
+        // musl keeps errno in its thread descriptor; the SDK's own is each thread's signal hint
+        // and vfork state (linux.c), small enough for musl's built-in TLS (no mapping at start).
+        CHECK(c.info.tlsSize > 0);
+        CHECK(c.info.tlsSize <= 16);
 
         // Loaded at 0 it is the file's segment; loaded anywhere else, exactly
         // the patched words differ, by the distance (whole words, or upper

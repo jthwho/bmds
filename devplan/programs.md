@@ -294,6 +294,7 @@ Agreed 2026-10-04: the C library moves out of programs into a shared runtime lib
   - `vfork` saves `ra`, `sp`, `s0`-`s11` and `fs0`-`fs11` in a static buffer per depth, calls the slot, and returns 0. `execve` or `_exit` in the child jumps back to that point with the pid, so `vfork` returns a second time, in the parent.
   - `__clone(fn, stack, CLONE_VM|CLONE_VFORK, arg)` does the same with `fn` on the given stack, so musl's `posix_spawn` (its error pipe included), `system` and `popen` work as written. Other `clone` flags and `fork` are `ENOSYS`.
   - What Linux keeps per process but the SDK keeps in program memory is saved at `vfork` and restored on return: signal dispositions, mask, pending signals, `umask`, the directory-fd table. musl's `posix_spawn` child resets dispositions, which must not reach the parent.
+  - Since program threads (processes.md §3.10): the registers go in a heap block per `vfork` (with the depth, thread-local: each thread vforks on its own), and the child works on a copy of those tables instead of the parent's being saved and restored, so the parent's other threads never see its changes.
 - **Linux layer:** `execve`, `waitid` (`P_PID`, `P_ALL`; `P_PGID` as `P_ALL`; musl builds `wait4`/`waitpid` on it), `pipe2`, `getpid`/`getppid`, `F_GETFD`/`F_SETFD`, `O_CLOEXEC`, `F_DUPFD_CLOEXEC`.
 
 **New slots** (appended to ABI 1, which hasn't shipped):

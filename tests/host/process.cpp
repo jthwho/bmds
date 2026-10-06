@@ -948,7 +948,7 @@ TEST_CASE("Process: vfork children, pipes, close-on-exec, exec") {
                 // A child: the fds (and flags) and directory copied; its changes
                 // stay its own; its memory calls aren't its own (the kernel
                 // routes them to the parent).
-                Process *child = parent->createChild();
+                Process *child = parent->createChild(parent->signals().mainThread());
                 REQUIRE(child != nullptr);
                 CHECK(child->cwd() == parent->cwd());
                 CHECK(child->fdFlags(f, -1) == static_cast<int32_t>(BMDS_FD_CLOEXEC));

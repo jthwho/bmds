@@ -22,6 +22,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <sched.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -41,6 +42,14 @@
 #include <time.h>
 #include <bmds/errno.h>
 #include <bmds/sys.h>
+
+/* Linux's futex operations (musl's public headers don't have them). */
+#define FUTEX_WAIT 0
+#define FUTEX_WAKE 1
+#define FUTEX_REQUEUE 3
+#define FUTEX_CMP_REQUEUE 4
+#define FUTEX_PRIVATE_FLAG 128
+#define FUTEX_CLOCK_REALTIME 256
 
 #ifndef RENAME_NOREPLACE
 #define RENAME_NOREPLACE 1 /* renameat2() flags, as Linux */
@@ -103,19 +112,84 @@ static long sleep_ns(int64_t ns) {
 #define DIR_FDS 8
 #define DIR_FD0 0x4000
 
-static struct {
-        int32_t     handle; /* -1: free */
-        char       *path;   /* as opened, for fchdir, rewinding and openat */
-        uint32_t    pos;    /* entries returned (for "." and "..", and d_off) */
-        char       *held;   /* an entry's name that didn't fit, or NULL */
-        bmds_stat_t held_info;
-} dirs[DIR_FDS] = {
-        [0 ... DIR_FDS - 1] = {.handle = -1},
+typedef struct {
+                int32_t     handle; /* -1: free */
+                char       *path;   /* as opened, for fchdir, rewinding and openat */
+                uint32_t    pos;    /* entries returned (for "." and "..", and d_off) */
+                char       *held;   /* an entry's name that didn't fit, or NULL */
+                bmds_stat_t held_info;
+} dir_t;
+
+/* What Linux keeps per open file or per terminal and this layer keeps per
+ * program (programs.md §16): O_NONBLOCK by descriptor number (a dup'd
+ * descriptor and other programs don't share it), and the terminal's VMIN
+ * and VTIME. A non-blocking read or write polls first and fails with
+ * EAGAIN if it would wait; a raw terminal read with VMIN 0 polls for VTIME
+ * tenths of a second and returns 0 if nothing came. */
+typedef struct {
+                uint32_t nonblock; /* a bit per descriptor (atomic) */
+                uint8_t  vmin;
+                uint8_t  vtime;
+                uint8_t  timed; /* raw with VMIN 0: terminal reads poll first */
+} io_modes_t;
+
+/* musl's k_sigaction (src/internal/ksigaction.h, with SA_RESTORER as riscv32 has it). */
+struct k_sigaction {
+                void (*handler)(int);
+                unsigned long flags;
+                void (*restorer)(void);
+                unsigned mask[2];
 };
+
+/*
+ * What Linux keeps per process and this layer keeps in the program's memory:
+ * the directory descriptors, O_NONBLOCK and the terminal's VMIN and VTIME,
+ * the signal handlers, the umask. A vfork child works on a copy (see
+ * __bmds_vfork_enter), so the parent's other threads never see its changes.
+ * The process's own are shared by its threads: changes are made under
+ * tables_lock (O_NONBLOCK's bits atomically).
+ */
+typedef struct {
+                dir_t              dirs[DIR_FDS];
+                io_modes_t         io_modes;
+                struct k_sigaction actions[_NSIG];
+                mode_t             umask;
+} tables_t;
+
+static tables_t process_tables = {
+        .dirs = {[0 ... DIR_FDS - 1] = {.handle = -1}},
+        .io_modes = {0, 1, 0, 0},
+        .umask = 022,
+};
+
+/* musl's internal lock (src/thread/__lock.c): it costs nothing until a second thread starts. */
+void __lock(volatile int *);
+void __unlock(volatile int *);
+
+static volatile int tables_lock[1];
+
+/* vfork state, per thread: how deep the vfork children running on it are,
+ * and for each the parent's registers (vfork.S) and the child's tables. */
+#define VFORK_DEPTH 2
+
+typedef struct {
+                uint32_t regs[26];
+                tables_t tables;
+} vfork_saved_t;
+
+_Thread_local int                   __bmds_vfork_depth;
+static _Thread_local vfork_saved_t *vfork_saved[VFORK_DEPTH];
+
+static int tp_ready; /* musl has set tp up: thread-local variables are there */
+
+/* The tables the calling thread works on: the process's, or its vfork child's copy. */
+static tables_t *tables(void) {
+        return tp_ready && __bmds_vfork_depth > 0 ? &vfork_saved[__bmds_vfork_depth - 1]->tables : &process_tables;
+}
 
 static int dir_index(long fd) {
         const long i = fd - DIR_FD0;
-        return i >= 0 && i < DIR_FDS && dirs[i].handle >= 0 ? (int)i : -1;
+        return i >= 0 && i < DIR_FDS && tables()->dirs[i].handle >= 0 ? (int)i : -1;
 }
 
 static char *copy_string(const char *s) {
@@ -133,14 +207,18 @@ static char *copy_string(const char *s) {
 static const char *at_path(long dirfd, const char *path, char *buf, size_t size) {
         if (path == NULL) return NULL;
         if (path[0] == '/' || dirfd == AT_FDCWD) return path;
-        const int i = dir_index(dirfd);
-        if (i < 0) return NULL;
-        const size_t a = strlen(dirs[i].path), b = strlen(path);
-        if (a + 1 + b + 1 > size) return NULL;
-        memcpy(buf, dirs[i].path, a);
-        buf[a] = '/';
-        memcpy(buf + a + 1, path, b + 1);
-        return buf;
+        __lock(tables_lock);
+        const int    i = dir_index(dirfd);
+        const char  *dir = i >= 0 ? tables()->dirs[i].path : NULL;
+        const size_t a = dir != NULL ? strlen(dir) : 0, b = strlen(path);
+        const int    fits = dir != NULL && a + 1 + b + 1 <= size;
+        if (fits) {
+                memcpy(buf, dir, a);
+                buf[a] = '/';
+                memcpy(buf + a + 1, path, b + 1);
+        }
+        __unlock(tables_lock);
+        return fits ? buf : NULL;
 }
 
 #define AT_PATH(dirfd, path)                                                                                           \
@@ -149,46 +227,57 @@ static const char *at_path(long dirfd, const char *path, char *buf, size_t size)
         if (p == NULL) return (path) == 0 ? -EFAULT : -EBADF
 
 static long open_dir(const char *path) {
-        for (int i = 0; i < DIR_FDS; ++i) {
-                if (dirs[i].handle >= 0) continue;
-                char *copy = copy_string(path);
-                if (copy == NULL) return -ENOMEM;
-                const int32_t h = bmds_opendir(path);
-                if (h < 0) {
-                        bmds_mem_free(copy);
-                        return (long)(h);
-                }
+        char *copy = copy_string(path);
+        if (copy == NULL) return -ENOMEM;
+        const int32_t h = bmds_opendir(path);
+        if (h < 0) {
+                bmds_mem_free(copy);
+                return (long)(h);
+        }
+        __lock(tables_lock);
+        dir_t *dirs = tables()->dirs;
+        int    i = 0;
+        while (i < DIR_FDS && dirs[i].handle >= 0) ++i;
+        if (i < DIR_FDS) {
                 dirs[i].handle = h;
                 dirs[i].path = copy;
                 dirs[i].pos = 0;
                 dirs[i].held = NULL;
-                return DIR_FD0 + i;
         }
-        return -EMFILE;
+        __unlock(tables_lock);
+        if (i == DIR_FDS) {
+                (void)bmds_closedir(h);
+                bmds_mem_free(copy);
+                return -EMFILE;
+        }
+        return DIR_FD0 + i;
 }
 
-int __bmds_vfork_depth;
-
 static long close_dir(int i) {
+        __lock(tables_lock);
+        dir_t        *d = &tables()->dirs[i];
+        const int32_t handle = d->handle;
+        char         *path = d->path, *held = d->held;
+        d->handle = -1;
+        __unlock(tables_lock);
         /* A vfork child has no directories of its own (they are per process):
-         * the entry, and the memory it points to, are the parent's. */
+         * the handle, and the memory the entry points to, are the parent's. */
         if (__bmds_vfork_depth > 0) return 0;
-        const int32_t r = bmds_closedir(dirs[i].handle);
-        bmds_mem_free(dirs[i].path);
-        bmds_mem_free(dirs[i].held);
-        dirs[i].handle = -1;
+        const int32_t r = bmds_closedir(handle);
+        bmds_mem_free(path);
+        bmds_mem_free(held);
         return (long)(r);
 }
 
-/* Back to the first entry: BMDS directories don't rewind, so reopen. */
-static long rewind_dir(int i) {
-        const int32_t h = bmds_opendir(dirs[i].path);
+/* Back to the first entry: BMDS directories don't rewind, so reopen. Under tables_lock. */
+static long rewind_dir(dir_t *d) {
+        const int32_t h = bmds_opendir(d->path);
         if (h < 0) return (long)(h);
-        (void)bmds_closedir(dirs[i].handle);
-        bmds_mem_free(dirs[i].held);
-        dirs[i].handle = h;
-        dirs[i].pos = 0;
-        dirs[i].held = NULL;
+        (void)bmds_closedir(d->handle);
+        bmds_mem_free(d->held);
+        d->handle = h;
+        d->pos = 0;
+        d->held = NULL;
         return 0;
 }
 
@@ -213,42 +302,49 @@ static size_t put_dirent(char *buf, size_t room, const char *name, uint64_t ino,
         return size;
 }
 
-static long do_getdents(long fd, char *buf, size_t len) {
-        const int i = dir_index(fd);
-        if (i < 0) return -EBADF;
+/* One call's worth of entries from directory @p d (under tables_lock). */
+static long read_dir(dir_t *d, char *buf, size_t len) {
         size_t at = 0;
         for (;;) {
                 char        name[BMDS_NAME_MAX + 1];
                 bmds_stat_t st = {.size = sizeof(st)};
                 const char *entry = name;
-                if (dirs[i].pos < 2) {
-                        entry = dirs[i].pos == 0 ? "." : "..";
+                if (d->pos < 2) {
+                        entry = d->pos == 0 ? "." : "..";
                         st.type = BMDS_TYPE_DIRECTORY;
-                } else if (dirs[i].held != NULL) {
-                        entry = dirs[i].held;
-                        st = dirs[i].held_info;
+                } else if (d->held != NULL) {
+                        entry = d->held;
+                        st = d->held_info;
                 } else {
-                        const int32_t n = bmds_readdir(dirs[i].handle, &st, name, sizeof(name));
+                        const int32_t n = bmds_readdir(d->handle, &st, name, sizeof(name));
                         if (n < 0) return at > 0 ? (long)at : (long)(n);
                         if (n == 0) return (long)at;
                 }
-                const size_t put = put_dirent(buf + at, len - at, entry, st.file_id, d_type(st.type), dirs[i].pos + 1);
+                const size_t put = put_dirent(buf + at, len - at, entry, st.file_id, d_type(st.type), d->pos + 1);
                 if (put == 0) {
                         if (at == 0) return -EINVAL;
                         if (entry == name) {
-                                dirs[i].held = copy_string(name);
-                                dirs[i].held_info = st;
-                                if (dirs[i].held == NULL) return -ENOMEM;
+                                d->held = copy_string(name);
+                                d->held_info = st;
+                                if (d->held == NULL) return -ENOMEM;
                         }
                         return (long)at;
                 }
-                if (entry == dirs[i].held) {
-                        bmds_mem_free(dirs[i].held);
-                        dirs[i].held = NULL;
+                if (entry == d->held) {
+                        bmds_mem_free(d->held);
+                        d->held = NULL;
                 }
                 at += put;
-                ++dirs[i].pos;
+                ++d->pos;
         }
+}
+
+static long do_getdents(long fd, char *buf, size_t len) {
+        __lock(tables_lock);
+        const int  i = dir_index(fd);
+        const long r = i >= 0 ? read_dir(&tables()->dirs[i], buf, len) : -EBADF;
+        __unlock(tables_lock);
+        return r;
 }
 
 /* --- Files ------------------------------------------------------------------ */
@@ -270,37 +366,30 @@ static uint32_t open_flags(long flags) {
         return f;
 }
 
-/* What Linux keeps per open file or per terminal and this layer keeps per
- * program (programs.md §16): O_NONBLOCK by descriptor number (a dup'd
- * descriptor and other programs don't share it), and the terminal's VMIN
- * and VTIME. A non-blocking read or write polls first and fails with
- * EAGAIN if it would wait; a raw terminal read with VMIN 0 polls for VTIME
- * tenths of a second and returns 0 if nothing came. */
-static struct {
-                uint32_t nonblock; /* a bit per descriptor */
-                uint8_t  vmin;
-                uint8_t  vtime;
-                uint8_t  timed; /* raw with VMIN 0: terminal reads poll first */
-} io_modes = {0, 1, 0, 0};
-
 static void set_nonblock(long fd, int on) {
         if (fd < 0 || fd >= 32) return;
+        uint32_t *bits = &tables()->io_modes.nonblock;
         if (on) {
-                io_modes.nonblock |= 1u << fd;
+                __atomic_fetch_or(bits, 1u << fd, __ATOMIC_RELAXED);
         } else {
-                io_modes.nonblock &= ~(1u << fd);
+                __atomic_fetch_and(bits, ~(1u << fd), __ATOMIC_RELAXED);
         }
         return;
+}
+
+static int is_nonblock(long fd) {
+        return fd >= 0 && fd < 32 && (__atomic_load_n(&tables()->io_modes.nonblock, __ATOMIC_RELAXED) >> fd & 1u);
 }
 
 /* Before a read or write: 1 to go on; 0, a timed terminal read that got
  * nothing (the read returns 0); or -EAGAIN, -EINTR. */
 static long io_gate(long fd, int writing) {
-        const int nonblock = fd >= 0 && fd < 32 && (io_modes.nonblock >> fd & 1u);
-        int32_t   ms = 0;
+        const int         nonblock = is_nonblock(fd);
+        const io_modes_t *modes = &tables()->io_modes;
+        int32_t           ms = 0;
         if (!nonblock) {
-                if (writing || !io_modes.timed || bmds_isatty((int32_t)fd) != 1) return 1;
-                ms = io_modes.vtime * 100;
+                if (writing || !modes->timed || bmds_isatty((int32_t)fd) != 1) return 1;
+                ms = modes->vtime * 100;
         }
         bmds_pollfd_t p = {.size = sizeof(p), .fd = (int32_t)fd, .events = writing ? BMDS_POLL_OUT : BMDS_POLL_IN};
         const int32_t r = bmds_io_poll(&p, 1, ms, NULL);
@@ -367,10 +456,12 @@ static long io_at(long fd, void *buf, size_t size, int64_t offset, int writing) 
 }
 
 static long do_llseek(long fd, int64_t offset, int64_t *out, long whence) {
-        const int i = dir_index(fd);
-        if (i >= 0) {
+        if (dir_index(fd) >= 0) {
                 if (offset != 0 || whence != SEEK_SET) return -EINVAL;
-                const long r = rewind_dir(i);
+                __lock(tables_lock);
+                const int  i = dir_index(fd);
+                const long r = i >= 0 ? rewind_dir(&tables()->dirs[i]) : -EBADF;
+                __unlock(tables_lock);
                 if (r == 0) *out = 0;
                 return r;
         }
@@ -438,11 +529,14 @@ static long do_statx(long dirfd, const char *path, long flags, struct statx *out
         bmds_stat_t st = {.size = sizeof(st)};
         if (out == NULL) return -EFAULT;
         if ((flags & AT_EMPTY_PATH) && (path == NULL || path[0] == '\0')) {
-                const int i = dir_index(dirfd);
-                if (i >= 0) {
-                        const int32_t r = bmds_stat(dirs[i].path, &st);
+                if (dir_index(dirfd) >= 0) {
+                        /* Its path, as openat() would join it. */
+                        char path_buf[BMDS_PATH_MAX + 1];
+                        if (at_path(dirfd, ".", path_buf, sizeof(path_buf)) == NULL) return -EBADF;
+                        path_buf[strlen(path_buf) - 2] = '\0'; /* without its "/." */
+                        const int32_t r = bmds_stat(path_buf, &st);
                         if (r < 0) return (long)(r);
-                        to_statx(&st, dirs[i].path, dirfd, out);
+                        to_statx(&st, path_buf, dirfd, out);
                         return 0;
                 }
                 const int32_t r = bmds_fstat((int32_t)dirfd, &st);
@@ -552,7 +646,7 @@ static long do_fcntl(long fd, long cmd, long arg) {
                         if (r < 0) return (long)(r);
                         const uint32_t rw = st.open_flags & (BMDS_O_READ | BMDS_O_WRITE);
                         const long     mode = rw == BMDS_O_WRITE ? O_WRONLY : rw == BMDS_O_READ ? O_RDONLY : O_RDWR;
-                        return mode | ((fd < 32 && (io_modes.nonblock >> fd & 1u)) ? O_NONBLOCK : 0);
+                        return mode | (is_nonblock(fd) ? O_NONBLOCK : 0);
                 }
                 case F_GETLK: ((struct flock *)arg)->l_type = F_UNLCK; return 0;
                 case F_SETLK:
@@ -586,8 +680,8 @@ static long tc_get(long fd, struct termios *t) {
         t->c_cc[VSTART] = 17;
         t->c_cc[VSTOP] = 19;
         t->c_cc[VSUSP] = 26;
-        t->c_cc[VMIN] = io_modes.vmin;
-        t->c_cc[VTIME] = io_modes.vtime;
+        t->c_cc[VMIN] = tables()->io_modes.vmin;
+        t->c_cc[VTIME] = tables()->io_modes.vtime;
         t->__c_ispeed = t->__c_ospeed = B115200;
         return 0;
 }
@@ -604,9 +698,10 @@ static long tc_set(long fd, const struct termios *t) {
         if ((t->c_oflag & OPOST) && (t->c_oflag & ONLCR)) flags |= BMDS_TERM_ONLCR;
         const int32_t s = bmds_term_set((int32_t)fd, flags);
         if (s < 0) return (long)(s);
-        io_modes.vmin = t->c_cc[VMIN];
-        io_modes.vtime = t->c_cc[VTIME];
-        io_modes.timed = !(t->c_lflag & ICANON) && t->c_cc[VMIN] == 0;
+        io_modes_t *modes = &tables()->io_modes;
+        modes->vmin = t->c_cc[VMIN];
+        modes->vtime = t->c_cc[VTIME];
+        modes->timed = !(t->c_lflag & ICANON) && t->c_cc[VMIN] == 0;
         return 0;
 }
 
@@ -764,8 +859,9 @@ typedef struct {
                 int32_t fd;     /* shared and writable: the mapping's own descriptor; else -1 */
 } mapping_t;
 
-static mapping_t *maps;
-static size_t     map_count, map_room;
+static mapping_t   *maps;
+static size_t       map_count, map_room;
+static volatile int maps_lock[1];
 
 static void map_write_back(const mapping_t *m) {
         if (m->fd < 0) return;
@@ -792,20 +888,26 @@ static void map_write_back(const mapping_t *m) {
  * Not from a vfork child: the mappings are its parent's. */
 static void maps_write_back(void) {
         if (__bmds_vfork_depth > 0) return;
+        __lock(maps_lock);
         for (size_t i = 0; i < map_count; ++i) map_write_back(&maps[i]);
+        __unlock(maps_lock);
         return;
+}
+
+/* Room for one more mapping (under maps_lock): 0, or -ENOMEM. */
+static long map_room_for_one(void) {
+        if (map_count < map_room) return 0;
+        const size_t room = map_room ? map_room * 2 : 32;
+        mapping_t   *more = bmds_mem_realloc(maps, (uint32_t)(room * sizeof(*maps)), 0);
+        if (more == NULL) return -ENOMEM;
+        maps = more;
+        map_room = room;
+        return 0;
 }
 
 static long do_mmap(size_t len, long prot, long flags, long fd, long pgoff) {
         if (len == 0 || (flags & MAP_FIXED)) return -EINVAL;
         len = (len + 4095) & ~(size_t)4095;
-        if (map_count == map_room) {
-                const size_t room = map_room ? map_room * 2 : 32;
-                mapping_t   *more = bmds_mem_realloc(maps, (uint32_t)(room * sizeof(*maps)), 0);
-                if (more == NULL) return -ENOMEM;
-                maps = more;
-                map_room = room;
-        }
         void *p = bmds_mem_alloc((uint32_t)len, 4096, 0);
         if (p == NULL) return -ENOMEM;
         memset(p, 0, len);
@@ -820,33 +922,56 @@ static long do_mmap(size_t len, long prot, long flags, long fd, long pgoff) {
                 }
                 if (own >= 0) (void)bmds_fd_flags(own, BMDS_FD_CLOEXEC);
         }
-        maps[map_count].addr = p;
-        maps[map_count].len = len;
-        maps[map_count].offset = (int64_t)pgoff * 4096;
-        maps[map_count].fd = own;
-        ++map_count;
+        __lock(maps_lock);
+        const long room = map_room_for_one();
+        if (room == 0) {
+                maps[map_count].addr = p;
+                maps[map_count].len = len;
+                maps[map_count].offset = (int64_t)pgoff * 4096;
+                maps[map_count].fd = own;
+                ++map_count;
+        }
+        __unlock(maps_lock);
+        if (room < 0) {
+                if (own >= 0) (void)bmds_close(own);
+                bmds_mem_free(p);
+                return room;
+        }
         return (long)p;
 }
 
-static long do_munmap(void *addr, size_t len) {
+/* Takes the mapping at @p addr (at least @p len long) off the list: 1 and its entry in @p out, or 0. */
+static int take_mapping(void *addr, size_t len, mapping_t *out) {
+        int found = 0;
+        __lock(maps_lock);
         for (size_t i = 0; i < map_count; ++i) {
-                if (maps[i].addr != addr) continue;
-                if (len < maps[i].len) return 0; /* a part: kept until exit */
-                map_write_back(&maps[i]);
-                if (maps[i].fd >= 0) (void)bmds_close(maps[i].fd);
-                bmds_mem_free(addr);
+                if (maps[i].addr != addr || len < maps[i].len) continue; /* a part: kept until exit */
+                *out = maps[i];
                 maps[i] = maps[--map_count];
-                return 0;
+                found = 1;
+                break;
         }
+        __unlock(maps_lock);
+        return found;
+}
+
+static long do_munmap(void *addr, size_t len) {
+        mapping_t m;
+        if (!take_mapping(addr, len, &m)) return 0;
+        map_write_back(&m);
+        if (m.fd >= 0) (void)bmds_close(m.fd);
+        bmds_mem_free(addr);
         return 0;
 }
 
 static long do_msync(void *addr, size_t len) {
         const uint8_t *a = addr;
+        __lock(maps_lock);
         for (size_t i = 0; i < map_count; ++i) {
                 const uint8_t *m = maps[i].addr;
                 if (a < m + maps[i].len && a + len > m) map_write_back(&maps[i]);
         }
+        __unlock(maps_lock);
         return 0;
 }
 
@@ -855,22 +980,16 @@ static long do_msync(void *addr, size_t len) {
 /*
  * The kernel keeps each process's actions, mask and pending signals
  * (programs.md §15); this layer keeps the handlers and runs them. The
- * kernel sets sig_hint while a signal is due: after each call,
+ * kernel sets a thread's sig_hint while a signal is due for it: after each call,
  * __bmds_syscall takes the due signals (bmds_sig_take) and runs their
  * handlers, then makes an interrupted call again if they all asked for
  * SA_RESTART. Realtime signals (32-64) are only recorded here: the kernel
  * never delivers them.
  */
-/* musl's k_sigaction (src/internal/ksigaction.h, with SA_RESTORER as riscv32 has it). */
-struct k_sigaction {
-        void (*handler)(int);
-        unsigned long flags;
-        void (*restorer)(void);
-        unsigned mask[2];
-};
-
-static struct k_sigaction actions[_NSIG];
-static volatile uint32_t  sig_hint;
+/* Each thread's: the kernel sets it while a signal is due for the thread.
+ * Thread-local, so only once musl has set tp up (tp_ready): before that, tp
+ * is the kernel's and TLS isn't there. */
+static _Thread_local volatile uint32_t sig_hint;
 
 /* The kernel's part of a sigset: signals 1-31. */
 static uint32_t kernel_set(uint64_t set) {
@@ -882,18 +1001,21 @@ static long do_sigaction(long sig, const struct k_sigaction *act, struct k_sigac
         if (act != NULL && (sig == SIGKILL || sig == SIGSTOP)) return -EINVAL;
         struct k_sigaction next;
         if (act != NULL) next = *act;
-        if (old != NULL) *old = actions[sig];
+        long r = 0;
+        __lock(tables_lock);
+        struct k_sigaction *a = &tables()->actions[sig];
+        if (old != NULL) *old = *a;
         if (act != NULL) {
                 if (sig < BMDS_SIG_COUNT) {
                         const uint32_t action = next.handler == SIG_DFL   ? BMDS_SIG_DEFAULT
                                                 : next.handler == SIG_IGN ? BMDS_SIG_IGNORE
                                                                           : BMDS_SIG_CATCH;
-                        const int32_t  r = bmds_sig_action((int32_t)sig, action);
-                        if (r < 0) return (long)(r);
+                        r = bmds_sig_action((int32_t)sig, action);
                 }
-                actions[sig] = next;
+                if (r >= 0) *a = next;
         }
-        return 0;
+        __unlock(tables_lock);
+        return r < 0 ? r : 0;
 }
 
 static long do_sigprocmask(long how, const uint64_t *set, uint64_t *old) {
@@ -914,19 +1036,20 @@ static _Noreturn void signal_exit(int32_t sig);
 /* Runs the handler of the taken signal @p info; returns whether it asked
  * for SA_RESTART. */
 static int run_handler(const bmds_siginfo_t *info) {
-        const int           sig = info->signo;
-        struct k_sigaction *a = &actions[sig];
+        const int sig = info->signo;
+        __lock(tables_lock);
+        struct k_sigaction *a = &tables()->actions[sig];
         void (*handler)(int) = a->handler;
         const unsigned long flags = a->flags;
+        const unsigned      mask[2] = {a->mask[0], a->mask[1]};
+        if ((flags & SA_RESETHAND) && handler != SIG_DFL && handler != SIG_IGN) a->handler = SIG_DFL;
+        __unlock(tables_lock);
         /* Changed here since the kernel took it: nothing to run. */
         if (handler == SIG_DFL || handler == SIG_IGN) return 1;
-        uint32_t block = kernel_set((uint64_t)a->mask[1] << 32 | a->mask[0]);
+        uint32_t block = kernel_set((uint64_t)mask[1] << 32 | mask[0]);
         if (!(flags & SA_NODEFER)) block |= 1u << (sig - 1);
         const int32_t saved = bmds_sig_mask(BMDS_SIG_BLOCK, block);
-        if (flags & SA_RESETHAND) {
-                a->handler = SIG_DFL;
-                (void)bmds_sig_action(sig, BMDS_SIG_DEFAULT);
-        }
+        if (flags & SA_RESETHAND) (void)bmds_sig_action(sig, BMDS_SIG_DEFAULT);
         if (flags & SA_SIGINFO) {
                 siginfo_t si;
                 memset(&si, 0, sizeof(si));
@@ -1012,59 +1135,52 @@ static long do_times(struct tms *t) {
         return (long)(now(BMDS_CLOCK_MONOTONIC) / (1000000000 / 100));
 }
 
-static mode_t umask_value = 022;
-
 /* --- Processes ----------------------------------------------------------------- */
 
 /*
  * vfork (vfork.S saves the registers; programs.md §13). A vfork child runs
- * in its parent's memory, so what Linux keeps per process but this layer
- * keeps in that memory is saved at the vfork and put back when the parent
- * resumes: the signal handlers (musl's posix_spawn child resets them; the
- * kernel keeps the child's actions and mask apart), the umask, the
- * directory-fd table, O_NONBLOCK and VMIN/VTIME. The copy lives
- * on the heap while the child runs: programs that never vfork pay nothing.
+ * on its parent's thread, in its parent's memory, so what Linux keeps per
+ * process but this layer keeps in that memory (tables_t: the signal
+ * handlers, which musl's posix_spawn child resets, the umask, the
+ * directory-fd table, O_NONBLOCK and VMIN/VTIME) is copied for the child,
+ * which works on the copy while the parent's other threads go on with
+ * theirs; the kernel keeps the child's actions and mask apart. The copy
+ * lives on the heap while the child runs: programs that never vfork pay
+ * nothing.
  */
-#define VFORK_DEPTH 2
-
-typedef struct {
-        struct k_sigaction actions[_NSIG];
-        mode_t               umask;
-        __typeof__(dirs)     dirs;
-        __typeof__(io_modes) io_modes;
-} vfork_saved_t;
-
-uint32_t              __bmds_vfork_regs[VFORK_DEPTH][26];
-static vfork_saved_t *vfork_saved[VFORK_DEPTH];
-
 _Noreturn void __bmds_vfork_resume(long pid, const uint32_t *regs);
+
+/* From vfork.S: the room for the registers, with the child's copy of the
+ * tables; NULL if vforks are nested too deep or there is no memory. A
+ * room a failed vfork left is used again. */
+uint32_t *__bmds_vfork_prepare(void) {
+        if (__bmds_vfork_depth >= VFORK_DEPTH) return NULL;
+        vfork_saved_t *saved = vfork_saved[__bmds_vfork_depth];
+        if (saved == NULL) saved = bmds_mem_alloc(sizeof(*saved), 0, 0);
+        if (saved == NULL) return NULL;
+        vfork_saved[__bmds_vfork_depth] = saved;
+        __lock(tables_lock);
+        saved->tables = *tables();
+        __unlock(tables_lock);
+        return saved->regs;
+}
 
 /* From vfork.S, registers saved: 0 (now the child), or -errno. */
 long __bmds_vfork_enter(void) {
-        vfork_saved_t *saved = bmds_mem_alloc(sizeof(*saved), 0, 0);
-        if (saved == NULL) return -ENOMEM;
-        memcpy(saved->actions, actions, sizeof(actions));
-        saved->umask = umask_value;
-        memcpy(saved->dirs, dirs, sizeof(dirs));
-        saved->io_modes = io_modes;
         const int32_t r = bmds_proc_vfork();
-        if (r < 0) {
-                bmds_mem_free(saved);
-                return (long)(r);
-        }
-        vfork_saved[__bmds_vfork_depth++] = saved;
+        if (r < 0) return (long)(r);
+        ++__bmds_vfork_depth;
         return 0;
 }
 
 /* The child has exec'd or exited: the parent goes on, vfork returning @p pid. */
 static _Noreturn void vfork_return(long pid) {
         vfork_saved_t *saved = vfork_saved[--__bmds_vfork_depth];
-        memcpy(actions, saved->actions, sizeof(actions));
-        umask_value = saved->umask;
-        memcpy(dirs, saved->dirs, sizeof(dirs));
-        io_modes = saved->io_modes;
+        uint32_t       regs[26]; /* above sp until __bmds_vfork_resume has read them */
+        memcpy(regs, saved->regs, sizeof(regs));
+        vfork_saved[__bmds_vfork_depth] = NULL;
         bmds_mem_free(saved);
-        __bmds_vfork_resume(pid, __bmds_vfork_regs[__bmds_vfork_depth]);
+        __bmds_vfork_resume(pid, regs);
 }
 
 static long do_exit(long status) {
@@ -1072,6 +1188,95 @@ static long do_exit(long status) {
         maps_write_back();
         bmds_exit((int32_t)status);
         return 0;
+}
+
+/* --- Threads (devplan/processes.md §3.10) ------------------------------------------ */
+
+/* SYS_exit: the calling thread ends (a kernel without threads: the program). */
+static long do_exit_thread(long status) {
+        if (__bmds_vfork_depth > 0 || !bmds_sys_has(BMDS_SYS_THREAD_EXIT)) return do_exit(status);
+        bmds_thread_exit((int32_t)status, NULL);
+        return 0;
+}
+
+/* musl's pthread_exit for a detached thread: its mapping (TLS, thread data)
+ * goes as it ends. The kernel frees it once no program code runs on it: the
+ * thread's stack is the kernel's. */
+_Noreturn void __unmapself(void *base, size_t size) {
+        mapping_t m;
+        if (!take_mapping(base, size, &m)) base = NULL; /* not one of ours: left alone */
+        bmds_thread_exit(0, base);
+        for (;;) {}
+}
+
+/* __clone (vfork.S) for a thread: CLONE_VM|CLONE_THREAD|CLONE_SETTLS, as
+ * musl's pthread_create asks, plus the stack size it passes (the kernel
+ * allocates the stack; musl's @p stack is unused). The child runs fn(arg). */
+long __bmds_thread_clone(int (*fn)(void *), void *stack, long flags, void *arg, pid_t *ptid, void *tls, pid_t *ctid,
+                         size_t stack_size) {
+        (void)stack;
+        const long needed = CLONE_VM | CLONE_THREAD | CLONE_SIGHAND | CLONE_SETTLS;
+        if ((flags & needed) != needed || !bmds_sys_has(BMDS_SYS_THREAD_START)) return -ENOSYS;
+        /* The new thread's hint word: where its TLS puts this thread's. */
+        const uintptr_t     hint_offset = (uintptr_t)&sig_hint - (uintptr_t)__builtin_thread_pointer();
+        const bmds_thread_t t = {
+                .size = sizeof(t),
+                .entry = (int32_t(*)(void *))fn,
+                .arg = arg,
+                .tls = tls,
+                .stack_size = (uint32_t)stack_size,
+                .hint = (volatile uint32_t *)((uintptr_t)tls + hint_offset),
+                .clear = (flags & CLONE_CHILD_CLEARTID) ? (volatile int32_t *)ctid : NULL,
+                .tid = (flags & CLONE_PARENT_SETTID) ? (int32_t *)ptid : NULL,
+        };
+        return (long)(bmds_thread_start(&t));
+}
+
+/* Linux's futex on the kernel's: WAIT (a relative time64 timeout), WAKE,
+ * REQUEUE and CMP_REQUEUE (the comparison made here, not atomically with the
+ * move); the priority-inheritance and bitset operations aren't there. */
+static long do_futex(volatile int *addr, long op, long val, const void *timeout, volatile int *addr2, long val3) {
+        if (!bmds_sys_has(BMDS_SYS_FUTEX)) return (op & 0x7f) == FUTEX_WAIT ? -EAGAIN : 0; /* one thread */
+        volatile int32_t *word = (volatile int32_t *)addr;
+        switch (op & ~(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME)) {
+                case FUTEX_WAIT: {
+                        int64_t ns = -1; /* none: no timeout */
+                        if (timeout != NULL) ns = ts_read(timeout) < 0 ? 0 : ts_read(timeout);
+                        return (long)(bmds_futex(word, BMDS_FUTEX_WAIT, (int32_t)val, ns, NULL, 0));
+                }
+                case FUTEX_WAKE: return (long)(bmds_futex(word, BMDS_FUTEX_WAKE, (int32_t)val, 0, NULL, 0));
+                case FUTEX_CMP_REQUEUE:
+                        if (*addr != (int)val3) return -EAGAIN;
+                        /* fall through */
+                case FUTEX_REQUEUE:
+                        /* The timeout argument is the count to move. */
+                        return (long)(bmds_futex(word, BMDS_FUTEX_REQUEUE, (int32_t)val, 0, (volatile int32_t *)addr2,
+                                                 (int32_t)(uintptr_t)timeout));
+                default: return -ENOSYS;
+        }
+}
+
+/* tkill/tgkill: a signal to one thread. musl's SIGCANCEL (33) only wakes
+ * the thread from the call it is blocked in, to see its cancel flag; the
+ * other real-time signals aren't sent. */
+static long do_tkill(long tid, long sig) {
+        if (!bmds_sys_has(BMDS_SYS_THREAD_KILL)) return do_kill(tid, sig);
+        if (sig == 33) return (long)(bmds_thread_kill((int32_t)tid, 0, BMDS_THREAD_WAKE));
+        if (sig < 0 || sig >= BMDS_SIG_COUNT) return -EINVAL;
+        return (long)(bmds_thread_kill((int32_t)tid, (int32_t)sig, 0));
+}
+
+static long do_gettid(void) {
+        return bmds_sys_has(BMDS_SYS_THREAD_START) ? (long)(bmds_proc_id(BMDS_PROC_THREAD)) : self();
+}
+
+/* musl calls it once tp is set up (__init_tp): the first thread's hint word is there now. */
+static long do_set_tid_address(volatile int *word) {
+        if (!tp_ready) {
+                tp_ready = 1;
+                if (bmds_sys_has(BMDS_SYS_SIG_SETUP)) (void)bmds_sig_setup(&sig_hint);
+        }
+        return bmds_sys_has(BMDS_SYS_THREAD_CLEAR) ? (long)(bmds_thread_clear((volatile int32_t *)word)) : self();
 }
 
 /* Ends the program (or the vfork child) as killed by @p sig. */
@@ -1147,11 +1352,10 @@ static long do_pipe2(int *fds, long flags) {
 void __bmds_linux_start(void) {
         started_ns = now(BMDS_CLOCK_MONOTONIC);
         if (bmds_sys_has(BMDS_SYS_SIG_SETUP)) {
-                (void)bmds_sig_setup(&sig_hint);
                 /* Ignored signals survive exec (nohup, a shell's trap ''). */
                 for (int sig = 1; sig < BMDS_SIG_COUNT; ++sig) {
                         if (bmds_sig_action(sig, BMDS_SIG_QUERY) == (int32_t)BMDS_SIG_IGNORE)
-                                actions[sig].handler = SIG_IGN;
+                                process_tables.actions[sig].handler = SIG_IGN;
                 }
         }
         return;
@@ -1203,11 +1407,7 @@ static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 case SYS_symlinkat: return do_symlink((const char *)a, b, (const char *)c);
                 case SYS_linkat: /* no hard links on FAT */
                 case SYS_mknodat: return -EPERM;
-                case SYS_umask: {
-                        const mode_t old = umask_value;
-                        umask_value = (mode_t)a & 0777;
-                        return old;
-                }
+                case SYS_umask: return (long)__atomic_exchange_n(&tables()->umask, (mode_t)a & 0777, __ATOMIC_RELAXED);
 
                 /* Directories */
                 case SYS_getcwd: {
@@ -1216,8 +1416,10 @@ static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 }
                 case SYS_chdir: return (long)(bmds_chdir((const char *)a));
                 case SYS_fchdir: {
-                        const int i = dir_index(a);
-                        return i >= 0 ? (long)(bmds_chdir(dirs[i].path)) : -ENOTDIR;
+                        char path_buf[BMDS_PATH_MAX + 1];
+                        if (dir_index(a) < 0 || at_path(a, ".", path_buf, sizeof(path_buf)) == NULL) return -ENOTDIR;
+                        path_buf[strlen(path_buf) - 2] = '\0'; /* without its "/." */
+                        return (long)(bmds_chdir(path_buf));
                 }
                 case SYS_mkdirat: {
                         AT_PATH(a, b);
@@ -1278,12 +1480,12 @@ static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 case SYS_membarrier: return 0;
 
                 /* The program */
-                case SYS_exit:
+                case SYS_exit: return do_exit_thread(a);
                 case SYS_exit_group: return do_exit(a);
                 case SYS_execve: return do_execve((const char *)a, (char *const *)b, (char *const *)c);
                 case SYS_waitid: return do_waitid(a, b, (siginfo_t *)c, d, (long *)e);
-                case SYS_set_tid_address:
-                case SYS_gettid:
+                case SYS_set_tid_address: return do_set_tid_address((volatile int *)a);
+                case SYS_gettid: return do_gettid();
                 case SYS_getpid: return self();
                 case SYS_getppid: return (long)(bmds_proc_id(BMDS_PROC_PARENT));
                 case SYS_getpgid: return (long)(bmds_proc_group(BMDS_GROUP_GET, (int32_t)a, 0));
@@ -1309,7 +1511,7 @@ static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
                         return r < 0 ? (long)(r) : b;
                 }
                 case SYS_sched_yield: return 0;
-                case SYS_futex: return (b & 0x7f) == 0 ? -EAGAIN : 0; /* one thread: a wait would never end */
+                case SYS_futex: return do_futex((volatile int *)a, b, c, (const void *)d, (volatile int *)e, f);
 
                 /* Signals */
                 case SYS_rt_sigaction: return do_sigaction(a, (const struct k_sigaction *)b, (struct k_sigaction *)c);
@@ -1318,8 +1520,8 @@ static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 case SYS_rt_sigsuspend: return do_sigsuspend(kernel_set(*(const uint64_t *)a));
                 case SYS_sigaltstack: return 0;
                 case SYS_kill: return do_kill(a, b);
-                case SYS_tkill: return do_kill(a, b);
-                case SYS_tgkill: return do_kill(b, c);
+                case SYS_tkill: return do_tkill(a, b);
+                case SYS_tgkill: return do_tkill(b, c);
 
                 /* Waiting */
                 case SYS_ppoll_time64:
@@ -1352,7 +1554,7 @@ static int restartable(long n) {
 long __bmds_syscall(long n, long a, long b, long c, long d, long e, long f) {
         for (;;) {
                 const long r = do_syscall(n, a, b, c, d, e, f);
-                if (!sig_hint) return r;
+                if (!tp_ready || !sig_hint) return r;
                 /* A signal is due: its handler runs as the call returns. */
                 const int restart = deliver_due();
                 if (r != -EINTR || !restart || !restartable(n)) return r;
