@@ -19,30 +19,43 @@
 BMDS_NAMESPACE_BEGIN
 
 /**
- * @brief The processes: ids, parents, jobs, and how ended ones ended until
- *        their parents wait for them (devplan/programs.md §13).
+ * @brief The processes: ids, parents, process groups and sessions, and how
+ *        ended ones ended until their parents wait for them
+ *        (devplan/programs.md §13, devplan/processes.md §3.6).
  *
  * An entry is added when a process starts. When it ends it becomes a
  * zombie (only its id and status are kept) until its parent waits for it;
- * a process without a parent left is freed at once. The shell is
- * `ShellPid` to the programs it starts: not an entry, but their parent,
- * so the launcher waits for them as a program waits for its children.
+ * a process without a parent left is freed at once. Pid 1 is the first
+ * process (the serial shell). Kernel code that starts a process and waits
+ * for it is `KernelParent` to it: not an entry, but its parent.
+ *
+ * Each process is in a group (what the shell calls a job) and a session,
+ * as POSIX has them. A new pid is never one in use as a group or session.
  *
  * Each entry has the semaphore to release when it ends (its parent's, for
  * waiting) and an opaque pointer for its runner (the loader's running
  * program).
  *
  * @par Thread Safety
- * Thread-safe. `lock()` covers every method; `forEachInJob()` calls its
- * function with it held.
+ * Thread-safe. One lock covers every method; the `forEach` methods and
+ * `withProcess()` call their function with it held.
  */
 class ProcessTable {
         public:
                 /** @brief How many processes there may be at once, zombies included. */
                 static constexpr int Capacity = 32;
 
-                /** @brief The parent of the programs the shell starts. */
-                static constexpr int32_t ShellPid = 1;
+                /** @brief The first process: the serial shell (devplan/processes.md §3.4). */
+                static constexpr int32_t InitPid = 1;
+
+                /** @brief The parent of a process kernel code starts and waits for (not an entry). */
+                static constexpr int32_t KernelParent = -1;
+
+                /** @brief `add()`: the parent's group or session (a new one without a parent). */
+                static constexpr int32_t Inherit = -1;
+
+                /** @brief `add()`: a new group or session, led by the new process. */
+                static constexpr int32_t New = 0;
 
                 /** @brief An ended child, from `reap()`. */
                 struct Ended {
@@ -69,13 +82,42 @@ class ProcessTable {
 
                 /**
                  * @brief Adds a running process.
-                 * @param parent  Its parent's id (`ShellPid` for the shell's programs).
-                 * @param job     Its job (the shell's program it descends from); 0: its own id.
+                 * @param parent  Its parent's id; `KernelParent`; 0: none (an orphan).
+                 * @param group   Its group: `Inherit`, `New`, or one in its session to join.
+                 * @param session Its session: `Inherit` or `New`.
                  * @param notify  Released when it ends (the parent's waits); may be null.
                  * @param runtime Its runner's object (`runtime()`).
-                 * @return Its id, or `Full` (`Capacity` reached), `InvalidState` (not initialized).
+                 * @return Its id, or `Full` (`Capacity` reached), `InvalidState` (not
+                 *         initialized), `PermissionDenied` (@p group is another session's).
                  */
-                Result<int32_t> add(int32_t parent, int32_t job, Semaphore *notify, void *runtime);
+                Result<int32_t> add(int32_t parent, int32_t group, int32_t session, Semaphore *notify, void *runtime);
+
+                /**
+                 * @brief `setpgid()`: puts @p pid (0: @p caller) in group @p group
+                 *        (0: a new one, @p pid's own).
+                 * @return `Ok`; `NotExist` (@p pid is neither @p caller nor its
+                 *         running child), `PermissionDenied` (another session, a
+                 *         session leader, or no such group in the session), `Invalid`.
+                 */
+                Error setGroup(int32_t caller, int32_t pid, int32_t group);
+
+                /**
+                 * @brief `setsid()`: makes @p pid the leader of a new session and group.
+                 * @return The session's id, or `PermissionDenied` (it leads a group already).
+                 */
+                Result<int32_t> newSession(int32_t pid);
+
+                /** @brief Returns @p pid's group, or 0 (no such process). */
+                int32_t groupOf(int32_t pid);
+
+                /** @brief Returns @p pid's session, or 0 (no such process). */
+                int32_t sessionOf(int32_t pid);
+
+                /** @brief Returns true if a process of @p group other than @p except is running. */
+                bool hasRunningInGroup(int32_t group, int32_t except);
+
+                /** @brief Returns true if @p group has a running process in session @p session. */
+                bool hasGroupInSession(int32_t group, int32_t session);
 
                 /** @brief Changes the runner's object of running process @p pid (an exec). */
                 void setRuntime(int32_t pid, void *runtime);
@@ -96,7 +138,7 @@ class ProcessTable {
                  */
                 Result<Ended> reap(int32_t parent, int32_t pid);
 
-                /** @brief Returns @p pid's parent: an id, `ShellPid`, or 0 (none, or no such process). */
+                /** @brief Returns @p pid's parent: an id, `KernelParent`, or 0 (none, or no such process). */
                 int32_t parentOf(int32_t pid);
 
                 /** @brief Returns true if @p pid has ended (a zombie) or doesn't exist. */
@@ -147,8 +189,9 @@ class ProcessTable {
                 /** @brief An entry, as `forEach()` shows it. */
                 struct View {
                                 int32_t pid;     ///< Its id.
-                                int32_t parent;  ///< Its parent's (`ShellPid`; 0: an orphan).
-                                int32_t job;     ///< Its job.
+                                int32_t parent;  ///< Its parent's (`KernelParent`; 0: an orphan).
+                                int32_t group;   ///< Its process group.
+                                int32_t session; ///< Its session.
                                 int32_t status;  ///< How it ended (a zombie).
                                 void   *runtime; ///< Its runner's object (running only; may be null).
                                 bool    ended;   ///< A zombie.
@@ -171,7 +214,7 @@ class ProcessTable {
                                 }
                                 if (next == nullptr) return;
                                 last = next->pid;
-                                fn(View{next->pid, next->parent, next->job, next->status,
+                                fn(View{next->pid, next->parent, next->group, next->session, next->status,
                                         next->ended ? nullptr : next->runtime, next->ended});
                         }
                 }
@@ -180,19 +223,20 @@ class ProcessTable {
                 int count();
 
                 /**
-                 * @brief Calls @p fn(pid, runtime) for each running process in job
-                 *        @p job, with the table locked.
+                 * @brief Calls @p fn(pid, runtime) for each running process in group
+                 *        @p group, with the table locked.
                  *
                  * @p fn must not call the table (its lock isn't recursive); the
-                 * same holds for `withProcess()` and `forEachRunning()`.
+                 * same holds for every method taking a function.
                  */
-                template <typename Fn> void forEachInJob(int32_t job, Fn &&fn) {
-                        Mutex::Locker locker(_lock, WaitForever);
-                        if (_entries == nullptr) return;
-                        for (int i = 0; i < Capacity; ++i) {
-                                Entry &e = _entries[i];
-                                if (e.pid != 0 && e.job == job && !e.ended) fn(e.pid, e.runtime);
-                        }
+                template <typename Fn> void forEachInGroup(int32_t group, Fn &&fn) {
+                        forEachWhere([group](const Entry &e) { return e.group == group; }, fn);
+                        return;
+                }
+
+                /** @brief Calls @p fn(pid, runtime) for each running process in session @p session. */
+                template <typename Fn> void forEachInSession(int32_t session, Fn &&fn) {
+                        forEachWhere([session](const Entry &e) { return e.session == session; }, fn);
                         return;
                 }
 
@@ -200,7 +244,8 @@ class ProcessTable {
                 struct Entry {
                                 int32_t    pid; // 0: free
                                 int32_t    parent;
-                                int32_t    job;
+                                int32_t    group;
+                                int32_t    session;
                                 int32_t    status;
                                 Semaphore *notify;
                                 void      *runtime;
@@ -209,10 +254,22 @@ class ProcessTable {
 
                 Entry *find(int32_t pid);
                 void   free(Entry &e);
+                bool   isIdInUse(int32_t id) const;
+                bool   isGroupInSession(int32_t group, int32_t session) const;
+
+                template <typename Match, typename Fn> void forEachWhere(Match &&match, Fn &&fn) {
+                        Mutex::Locker locker(_lock, WaitForever);
+                        if (_entries == nullptr) return;
+                        for (int i = 0; i < Capacity; ++i) {
+                                Entry &e = _entries[i];
+                                if (e.pid != 0 && !e.ended && match(e)) fn(e.pid, e.runtime);
+                        }
+                        return;
+                }
 
                 Mutex   _lock;
                 Entry  *_entries = nullptr;
-                int32_t _lastPid = ShellPid;
+                int32_t _lastPid = 0;
 };
 
 BMDS_NAMESPACE_END

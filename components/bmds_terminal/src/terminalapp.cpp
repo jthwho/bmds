@@ -7,9 +7,11 @@
  *
  * The terminal application, /bin/terminal (devplan/windows.md §8 step 9): a
  * window on the window manager, a pseudo-terminal (devplan/pty.md), and an
- * interactive shell on the pseudo-terminal's console. One process a window. It
- * uses only what any program may: the window manager's API, a pty, the shell's
- * spawn, and the font and glyph drawing of the GUI.
+ * interactive shell on the pseudo-terminal's console: `/bin/sh -i`, its child
+ * process, leading a session there (devplan/processes.md §3.3). One process
+ * a window. It uses only what any program may: the window manager's API, a
+ * pty, the program launcher, a thread, and the font and glyph drawing of the
+ * GUI.
  *
  *   terminal [X Y]   a window with its top-left corner at X, Y (100 x 30 cells)
  */
@@ -27,12 +29,13 @@
 #include <bmds/memory.h>
 #include <bmds/mutex.h>
 #include <bmds/painter.h>
+#include <bmds/programlauncher.h>
 #include <bmds/pty.h>
-#include <bmds/semaphore.h>
-#include <bmds/shell.h>
+#include <bmds/string.h>
 #include <bmds/terminalkeys.h>
 #include <bmds/terminalscreen.h>
 #include <bmds/terminalview.h>
+#include <bmds/thread.h>
 #include <bmds/utf8.h>
 #include <bmds/windowmanager.h>
 
@@ -47,6 +50,7 @@ namespace {
         constexpr int      WheelLines = 3; // a notch of the wheel
         constexpr uint16_t Columns = 100;  // a new window's
         constexpr uint16_t Rows = 30;
+        constexpr size_t   ShellThreadStackBytes = 8192; // starts the shell and waits for it
 
         class TerminalApp {
                 public:
@@ -65,9 +69,9 @@ namespace {
                         static void dump(void *arg, Stream &out);
                         static void reference(void *arg, uint8_t *pixels, size_t stride, uint16_t width,
                                               uint16_t height, const WindowPalette &palette);
-                        // The connection's and the shell's.
+                        // The connection's, and the thread that runs the shell.
                         static void gone(void *arg);
-                        static void shellExited(void *arg, int status);
+                        static void shellMain(void *arg);
                         static void reply(void *context, StringView text);
 
                         void   say(const char *text); // to stderr
@@ -83,7 +87,7 @@ namespace {
                         std::atomic<uint8_t>           _window{0};
                         std::atomic<bool>              _gone{false}; // the window manager stopped
                         Pty                           *_pty = nullptr;
-                        char                           _name[8] = {}; // the shell's task: "termN"
+                        char                           _name[8] = {}; // the shell's thread: "termN"
                         Mutex                          _lock;         // the screen
                         TerminalScreen                 _screen{MemSpace::Psram};
                         uint32_t                       _titleSeen = 0;
@@ -92,7 +96,7 @@ namespace {
                         uint32_t                       _added = 0;       // the history's lines added, as drawn
                         bool                           _all = false;     // every row to redraw
                         uint32_t                       _cursorRows[(TerminalScreen::MaxSide + 31) / 32] = {};
-                        Semaphore                      _shellDone{1, 0};
+                        Thread                         _shell; // runs the shell, until it ends
         };
 
         void TerminalApp::say(const char *text) {
@@ -165,11 +169,14 @@ namespace {
                         // Placed smaller than asked (the screen's edge): the size it got.
                         auto [placed, cerr] = _wm->clientRect(id);
                         if (cerr.isOk()) resized(this, placed.width, placed.height);
-                        Shell::Startup startup;
-                        startup.launcher = _context.launcher;
-                        startup.exited = shellExited;
-                        startup.exitedArg = this;
-                        err = Shell::spawn(_pty->console(), _name, startup);
+                        if (_context.launcher == nullptr) err = Error::NotSupported;
+                }
+                if (err.isOk()) {
+                        Thread::Config config;
+                        config.name = _name;
+                        config.stackBytes = ShellThreadStackBytes;
+                        config.priority = CONFIG_BMDS_SHELL_PRIORITY;
+                        err = _shell.start(config, shellMain, this);
                 }
                 if (err.isError()) {
                         say("terminal: ");
@@ -210,10 +217,9 @@ namespace {
                                 }
                         }
                 }
-                if (quitting) {
-                        _pty->hangUp();
-                        (void)_shellDone.acquire(WaitForever); // its end (it reads end of input)
-                }
+                // The shell ends at the hangup (SIGHUP, end of input), if it hasn't.
+                if (quitting) _pty->hangUp();
+                _shell.join();
                 // The window closes with the connection (if the window manager still runs).
                 if (!_gone.load(std::memory_order_acquire)) _wm->disconnect(_client);
                 _pty->release();
@@ -239,11 +245,38 @@ namespace {
                 return;
         }
 
-        // The shell ended (exit, or the hangup): the output's end, which ends the loop above.
-        void TerminalApp::shellExited(void *arg, int) {
-                auto *self = static_cast<TerminalApp *>(arg);
+        // The shell: `/bin/sh -i` on the pseudo-terminal, a session of its own, until it ends (exit,
+        // or the hangup); then the output's end, which ends the loop in run().
+        void TerminalApp::shellMain(void *arg) {
+                auto       *self = static_cast<TerminalApp *>(arg);
+                PtyConsole &console = self->_pty->console();
+                auto [handle, err] = FileHandle::open(console, FileHandle::ReadWrite);
+                if (err.isOk()) {
+                        FdTable fds;
+                        (void)fds.set(FdTable::Stdin, handle);
+                        (void)fds.set(FdTable::Stdout, handle);
+                        (void)fds.set(FdTable::Stderr, std::move(handle));
+                        static constexpr StringView Args[] = {"sh", "-i"};
+                        ProgramLauncher::Request    request;
+                        request.path = "/bin/sh";
+                        request.args = Span<const StringView>(Args, 2);
+                        request.environment = self->_context.environment;
+                        request.fds = &fds;
+                        request.cwd = self->_context.cwd;
+                        request.console = &console;
+                        request.session = true;
+                        // No interrupt: the terminal waits for its shell even while it ends (the
+                        // hangup ends the shell), so the pty outlives it.
+                        auto [status, rerr] = self->_context.launcher->run(request);
+                        (void)status;
+                        err = rerr;
+                }
+                if (err.isError()) {
+                        const char *why = err.desc();
+                        (void)self->_pty->console().write(StringView("terminal: can't start the shell: "), 100);
+                        (void)self->_pty->console().write(StringView(why), 100);
+                }
                 self->_pty->programEnded();
-                self->_shellDone.release();
                 return;
         }
 

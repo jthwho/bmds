@@ -62,7 +62,30 @@ namespace {
                 return Match::Partial;
         }
 
+        constinit std::atomic<Console::SignalHook> signalHook{nullptr};
+
 } // namespace
+
+void Console::setSignalHook(SignalHook hook) {
+        signalHook.store(hook);
+        return;
+}
+
+void Console::signal(int sig, bool fromIsr) {
+        const SignalHook hook = signalHook.load();
+        if (hook == nullptr) {
+                if (sig != SignalInterrupt) return;
+                if (fromIsr) {
+                        _interrupt.raiseFromIsr();
+                } else {
+                        _interrupt.raise();
+                }
+                return;
+        }
+        _signalSet.fetch_or(1u << (sig - 1));
+        hook(*this, fromIsr);
+        return;
+}
 
 void Console::requestSize() {
         if ((capabilities() & SizeQuery) == 0 || _unanswered >= MaxUnanswered) return;

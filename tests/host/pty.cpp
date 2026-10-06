@@ -53,6 +53,14 @@ namespace {
                 return out;
         }
 
+        std::vector<bmds::Console *> hookCalls;
+
+        void recordHook(bmds::Console &console, bool fromIsr) {
+                CHECK_FALSE(fromIsr);
+                hookCalls.push_back(&console);
+                return;
+        }
+
         struct Opened {
                         Pty *pty;
                         Opened() {
@@ -119,6 +127,38 @@ TEST_CASE("Pty: Ctrl-C raises the console's interrupt and drops the input before
         CHECK(pty.write(bytes("a\x03"), 0).value() == 2);
         CHECK(!pty.console().interrupt().isRaised());
         CHECK(typed(pty) == "a\x03");
+}
+
+TEST_CASE("Pty: with a signal hook, Ctrl-C, Ctrl-\\, a resize and the hangup are signals") {
+        hookCalls.clear();
+        Opened o;
+        Pty   &pty = *o.pty;
+        CHECK(pty.console().session() == 0);
+        CHECK(pty.console().foreground() == 0);
+        pty.console().setSession(5);
+        pty.console().setForeground(7);
+        bmds::Console::setSignalHook(&recordHook);
+        CHECK(pty.write(bytes("ab\x03"
+                              "c\x1c"
+                              "d"),
+                        0)
+                      .value() == 6);
+        CHECK(hookCalls.size() == 2);
+        CHECK(hookCalls[0] == &pty.console());
+        CHECK(pty.console().takeSignals() ==
+              ((1u << (bmds::Console::SignalInterrupt - 1)) | (1u << (bmds::Console::SignalQuit - 1))));
+        CHECK(pty.console().takeSignals() == 0);
+        CHECK_FALSE(pty.console().interrupt().isRaised()); // the hook's now
+        CHECK(typed(pty) == "d");
+        pty.setSize(bmds::Console::Size{90, 20});
+        pty.setSize(bmds::Console::Size{90, 20}); // no change: no signal
+        CHECK(pty.console().takeSignals() == 1u << (bmds::Console::SignalWindowChange - 1));
+        pty.hangUp();
+        pty.hangUp(); // once
+        CHECK(hookCalls.size() == 4);
+        CHECK(pty.console().takeSignals() == 1u << (bmds::Console::SignalHangUp - 1));
+        bmds::Console::setSignalHook(nullptr);
+        // A pair opened again starts with no session, foreground or signals.
 }
 
 TEST_CASE("Pty: a full output waits for the emulator; nothing is dropped") {

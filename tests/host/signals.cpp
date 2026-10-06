@@ -121,6 +121,26 @@ TEST_CASE("Signals: ignoring drops signals, a pending one too") {
         CHECK(s.post(BMDS_SIGINT, BMDS_SI_KERNEL) == Posted::Terminate);
 }
 
+TEST_CASE("Signals: the Interrupt action raises the interrupt, nothing pending") {
+        Signals s;
+        REQUIRE(s.setAction(BMDS_SIGINT, Action::Interrupt));
+        CHECK(s.action(BMDS_SIGINT) == Action::Interrupt);
+        CHECK(s.post(BMDS_SIGINT, BMDS_SI_KERNEL) == Posted::Taken);
+        CHECK(s.interrupt().isRaised());
+        CHECK(s.pending() == 0);
+        CHECK_FALSE(s.isDue());
+        CHECK(s.terminateSignal() == 0);
+        // SIGKILL can't have it; another action replaces it; exec drops it.
+        CHECK_FALSE(s.setAction(BMDS_SIGKILL, Action::Interrupt));
+        REQUIRE(s.setAction(BMDS_SIGINT, Action::Ignore));
+        s.interrupt().clear();
+        CHECK(s.post(BMDS_SIGINT, BMDS_SI_KERNEL) == Posted::Dropped);
+        CHECK_FALSE(s.interrupt().isRaised());
+        REQUIRE(s.setAction(BMDS_SIGTERM, Action::Interrupt));
+        s.resetForExec();
+        CHECK(s.action(BMDS_SIGTERM) == Action::Default);
+}
+
 TEST_CASE("Signals: exec and vfork children") {
         Signals parent;
         CHECK(parent.setAction(BMDS_SIGUSR1, Action::Catch));

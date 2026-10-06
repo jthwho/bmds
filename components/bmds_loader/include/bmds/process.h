@@ -181,6 +181,9 @@ class Process {
                 int32_t interrupted();
                 int32_t termGet(int32_t fd, bmds_term_t *term);
                 int32_t termSet(int32_t fd, uint32_t flags);
+
+                /** @brief The terminal @p fd is (this process's console): 0, or `-BMDS_EBADF`, `-BMDS_ENOTTY`. */
+                int32_t terminalOf(int32_t fd, Console *&out) const;
                 int32_t memInfo(uint32_t flags, bmds_mem_info_t *info);
                 int32_t setMtime(const char *path, int64_t ns);
                 int32_t ftruncate(int32_t fd, int64_t size);

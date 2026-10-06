@@ -27,9 +27,9 @@ BMDS_NAMESPACE_BEGIN
  *
  * Output is applied to the screen (`\n` as CR LF when the mode says so);
  * input is what the owner pushes (`pushInput()`: typed keys), with the
- * screen's replies (status and size reports) added to it. A Ctrl-C pushed
- * while signals are on raises the console's interrupt and drops the input
- * before it, as on a tty.
+ * screen's replies (status and size reports) added to it. A Ctrl-C (or
+ * Ctrl-\) pushed while signals are on sends `SIGINT` (`SIGQUIT`) and drops
+ * the input before it, as on a tty.
  *
  * Whoever draws the screen reads it through `Locked`. After output that
  * changed the screen or moved the cursor, the `changed` hook is called (on
@@ -118,7 +118,7 @@ class ScreenConsole final : public Console {
                 uint8_t               _inputStorage[InputBytes] = {};
                 ByteRing              _input;
                 Semaphore             _ready{1, 0};
-                std::atomic<bool>     _flush{false}; // input before a Ctrl-C to drop
+                std::atomic<bool>     _flush{false}; // input before a Ctrl-C or Ctrl-\ to drop
                 std::atomic<uint32_t> _flushTo{0};
                 std::atomic<bool>     _asked{false}; // the hook called, not yet drawn
                 Changed               _changed = nullptr;

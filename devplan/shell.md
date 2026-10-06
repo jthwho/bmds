@@ -108,7 +108,7 @@ Phase 1b changed the command signature to `int (*run)(CommandContext &ctx)`: com
 
 ### Composition
 
-`main.cpp` is where the system is put together. It passes its stages to `Boot::run()`: `console` (`UsbSerialConsole::init`) and `shell` (`Shell::spawn(UsbSerialConsole::instance(), "shell")`). The kernel never depends on the console or the shell. A later HDMI console and a second shell are just more stages.
+`main.cpp` is where the system is put together. It passes its stages to `Boot::run()`: `console` (`UsbSerialConsole::init`) and `shell`, which starts pid 1, `/bin/sh -l` on the serial console, through the loader (since `processes.md` step 2; before, `Shell::spawn()` ran a shell on a bare task). The kernel never depends on the console or the shell.
 
 A shell task waits in `Boot::waitUntilComplete()` before its first prompt. It runs at a higher priority than the boot task, so otherwise its prompt lands in the middle of the boot report. The wait is a binary semaphore used as a gate: each waiter takes it and puts it straight back. It isn't an event group, because event groups link in the FreeRTOS timer service task (2 KB stack plus TCB, about 2.8 KB of internal RAM; measured). IDF's `main_task: Returned from app_main()` line is set to warning level for the same reason.
 
@@ -196,7 +196,7 @@ Echo uses relative cursor movement (`ESC[nD`, `ESC[nC`, `ESC[K`), so the editor 
   - The exit code is kept in `lastExitCode()` (later `$?`).
   - Ctrl-C interrupts a running command (Phase 1b; see [`shell-language.md`](shell-language.md)): the command sees `isInterrupted()`, the shell echoes `^C`, and the exit code is 130.
 - **Output:** `printf` formats into a 256-byte stack buffer; longer output is truncated, so commands print line by line. The write timeout is 100 ms; a stalled console fails fast, as described above.
-- **Instances:** `Shell::spawn()` allocates the `Shell` (about 1.7 KB) in `Psram` and starts a `Task` running `run()`:
+- **Instances:** every shell is `/bin/sh`, a process (`processes.md` §3.4; `Shell::spawn()` until then): `runAsProgram()` allocates the `Shell` in `Psram`, and `sh -i` runs `run()` on the process's task:
   - stack: `CONFIG_BMDS_SHELL_STACK_BYTES` (64 KB since Phase 1b step 5a), `Psram` (Phase 1: 4 KB `Internal`; the deepest use then was 2,036 bytes, by `tasks`/`log show`);
   - priority: `CONFIG_BMDS_SHELL_PRIORITY` (2);
   - core: none (no affinity).

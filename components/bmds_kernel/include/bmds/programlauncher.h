@@ -9,6 +9,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <bmds/config.h>
 #include <bmds/fdtable.h>
 #include <bmds/result.h>
@@ -27,8 +28,8 @@ class Interrupt;
  * The shell hands over a command whose name is a path: the file, its
  * arguments (`args[0]` as typed), the exported environment as "NAME=value"
  * strings, the command's file descriptors and current directory, its
- * terminal. The call returns when the program has ended; the terminal's
- * modes are as they were.
+ * terminal, its process group. The call returns when the program has
+ * ended; the terminal's modes are as they were.
  *
  * @par Thread Safety
  * Called from the task running the command (a shell or a pipeline worker);
@@ -36,6 +37,18 @@ class Interrupt;
  */
 class ProgramLauncher {
         public:
+                /**
+                 * @brief A job's process group, shared by the programs of one
+                 *        pipeline (a shell's job control, devplan/processes.md §3.6).
+                 *
+                 * The first program started with it makes the group; the others
+                 * join it. Lives until the last of them has been started.
+                 */
+                struct JobGroup {
+                                int32_t id = 0;            ///< The group (0: the next program makes it).
+                                bool    foreground = true; ///< The terminal's foreground while it runs.
+                };
+
                 /** @brief What a launch needs. */
                 struct Request {
                                 StringView             path;                ///< The file, as typed.
@@ -43,8 +56,19 @@ class ProgramLauncher {
                                 Span<const StringView> environment;         ///< "NAME=value" each.
                                 const FdTable         *fds = nullptr;       ///< The command's descriptors.
                                 StringView             cwd;                 ///< Its current directory.
-                                Interrupt             *interrupt = nullptr; ///< Ctrl-C (the console's).
+                                Interrupt             *interrupt = nullptr; ///< The caller's (stops the wait).
                                 Console               *console = nullptr;   ///< The terminal (`/dev/console`).
+                                /**
+                                 * @brief Its group: null, the caller's; else the job's (see
+                                 *        `JobGroup`). Ignored with `session`.
+                                 */
+                                JobGroup *group = nullptr;
+                                /**
+                                 * @brief A new session with `console` as its controlling
+                                 *        terminal, the program leading it and in the foreground
+                                 *        (a shell the system starts on a terminal).
+                                 */
+                                bool session = false;
                 };
 
                 /**
@@ -76,12 +100,44 @@ class ProgramLauncher {
 };
 
 /**
+ * @brief What a built-in program can ask of its own process (the loader
+ *        implements it; devplan/processes.md §3.6.1).
+ *
+ * @par Thread Safety
+ * Any of the process's threads.
+ */
+class ProcessControl {
+        public:
+                /** @brief What a signal does to a built-in program. */
+                enum class SignalAction : uint8_t {
+                        Default,   ///< As for any process: dropped, or it ends the process.
+                        Ignore,    ///< Dropped.
+                        Interrupt, ///< Raises the process's interrupt (kernel code's catch).
+                };
+
+                /** @brief Returns the process's id. */
+                virtual int32_t processId() const = 0;
+
+                /**
+                 * @brief Sets what @p sig (1-31) does.
+                 * @return `Ok`, or `Invalid` (`SIGKILL`, `SIGSTOP`, not a signal).
+                 */
+                virtual Error setSignalAction(int sig, SignalAction action) = 0;
+
+                /** @brief Returns true once the process is being ended (a signal, a kill): stop. */
+                virtual bool isEnding() const = 0;
+
+        protected:
+                ~ProcessControl() = default;
+};
+
+/**
  * @brief A program built into the firmware, run as a process: the shell as
  *        `/bin/sh` (devplan/programs.md §13, step 8b).
  *
  * The loader runs `main` in a task of its own, as it runs a program file,
  * and the process ends with what it returns. It sees what a program gets
- * at its start; it calls no system calls, so it must notice Ctrl-C itself
+ * at its start; it calls no system calls, so it must notice signals itself
  * (the interrupt), as the shell does.
  */
 struct BuiltinProgram {
@@ -92,9 +148,10 @@ struct BuiltinProgram {
                                 Span<const StringView> args;                ///< argv, args[0] included.
                                 Span<const StringView> environment;         ///< "NAME=value" each.
                                 Console               *console = nullptr;   ///< The terminal (may be null).
-                                Interrupt             *interrupt = nullptr; ///< Ctrl-C (may be null).
+                                Interrupt             *interrupt = nullptr; ///< Its signals (may be null).
                                 ProgramLauncher       *launcher = nullptr;  ///< Runs the programs it starts.
                                 StringView             program; ///< Its name in `/bin` (an applet: its command).
+                                ProcessControl        *process = nullptr; ///< Its process (may be null).
                 };
 
                 /** @brief The program: returns its exit status (0-255). */

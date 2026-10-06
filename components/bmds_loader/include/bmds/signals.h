@@ -52,12 +52,18 @@ class Signals {
                         Default, ///< Dropped, or ends the process (`endsByDefault()`).
                         Ignore,  ///< Dropped (a pending one too).
                         Catch,   ///< Pending until `take()`n.
+                        /**
+                         * Raises the interrupt, nothing pending: a built-in program's
+                         * catch (kernel code has no handlers; the interactive shell's `SIGINT`).
+                         */
+                        Interrupt,
                 };
 
                 /** @brief What `post()` did. */
                 enum class Posted : uint8_t {
                         Dropped,   ///< Ignored, or dropped by default.
                         Pending,   ///< Pending: blocked, or caught (then due: the interrupt is raised).
+                        Taken,     ///< An `Interrupt` action: the interrupt is raised, nothing pending.
                         Terminate, ///< The process must end (`terminateSignal()`); the interrupt is raised.
                 };
 
@@ -145,6 +151,7 @@ class Signals {
                 std::atomic<uint32_t> _blocked{0};
                 std::atomic<uint32_t> _caught{0};
                 std::atomic<uint32_t> _ignored{0};
+                std::atomic<uint32_t> _interrupting{0}; // Action::Interrupt
 };
 
 BMDS_NAMESPACE_END

@@ -12,11 +12,11 @@
 #include <sdkconfig.h>
 #include <bmds/boot.h>
 #include <bmds/bootdisk.h>
+#include <bmds/filehandle.h>
 #include <bmds/i2cbus.h>
 #include <bmds/input.h>
 #include <bmds/loader.h>
 #include <bmds/ramdisk.h>
-#include <bmds/shell.h>
 #include <bmds/storage.h>
 #include <bmds/usbhost.h>
 #include <bmds/usbserialconsole.h>
@@ -24,17 +24,29 @@
 
 namespace {
 
-        // Runs program files for the shells (stateless).
+        // Runs programs (stateless).
         constinit bmds::Loader loader;
 
+        // Pid 1: the serial shell, a login shell (devplan/processes.md §3.4), leading a session on
+        // the serial console. It never ends.
         bmds::Error startSerialShell() {
-                bmds::Shell::Startup startup;
-                // At once: a script that wants the card waits for it (waitmount, devplan/storage.md §13).
-                startup.script = "/boot/autoexec.sh";
-                startup.launcher = &loader;
-                return bmds::Shell::spawn(bmds::UsbSerialConsole::instance(), "shell", startup);
+                bmds::Console &console = bmds::UsbSerialConsole::instance();
+                auto [handle, err] = bmds::FileHandle::open(console, bmds::FileHandle::ReadWrite);
+                if (err.isError()) return err;
+                bmds::FdTable fds;
+                (void)fds.set(bmds::FdTable::Stdin, handle);
+                (void)fds.set(bmds::FdTable::Stdout, handle);
+                (void)fds.set(bmds::FdTable::Stderr, handle);
+                static constexpr bmds::StringView Args[] = {"sh", "-l"};
+                bmds::ProgramLauncher::Request    request;
+                request.path = "/bin/sh";
+                request.args = bmds::Span<const bmds::StringView>(Args, 2);
+                request.fds = &fds;
+                request.cwd = "/";
+                request.console = &console;
+                request.session = true;
+                return loader.start(request).error();
         }
-
 
         constexpr bmds::Boot::Stage SystemStages[] = {
                 {"console", bmds::UsbSerialConsole::init},

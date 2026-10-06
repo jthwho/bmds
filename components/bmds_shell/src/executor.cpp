@@ -603,7 +603,7 @@ Executor::Executor(Shell &shell, ShellState &state, FdTable &fds, size_t stackBy
 Executor::Executor(Executor &parent, ShellState &state, FdTable &fds)
     : _shell(parent._shell), _state(state), _fds(&fds), _ownArena(MemSpace::Psram, 4096), _arena(parent._arena),
       _stackBase(parent._stackBase), _stackBudget(parent._stackBudget), _loopDepth(parent._loopDepth),
-      _callDepth(parent._callDepth), _sourceDepth(parent._sourceDepth) {}
+      _callDepth(parent._callDepth), _sourceDepth(parent._sourceDepth), _job(parent._job) {}
 
 // The real stack position. (Not the address of a local: sanitizers may
 // put locals on a separate "fake stack".)
@@ -1309,6 +1309,7 @@ void Executor::stageMain(void *arg) {
         Executor         child(run->parent->_shell, run->state, run->fds, Shell::WorkerStackBytes);
         child._callDepth = run->parent->_callDepth;
         child._sourceDepth = run->parent->_sourceDepth;
+        child._job = run->parent->_job;
         run->status = child.execute(run->node);
         // Closing this stage's ends gives its neighbors EOF / a broken pipe.
         run->fds.closeAll();
@@ -1349,6 +1350,10 @@ int Executor::runPipeline(const PipelineNode *p) {
                 (void)runs[i].fds.set(FdTable::Stdout, std::move(ends.write));
                 (void)runs[i + 1].fds.set(FdTable::Stdin, std::move(ends.read));
         }
+        // An interactive shell's pipeline is one job: its programs share a process group.
+        ProgramLauncher::JobGroup        job;
+        ProgramLauncher::JobGroup *const outerJob = _job;
+        if (_shell.hasJobControl() && _job == nullptr) _job = &job;
         // Earlier stages are subshells on workers; the last runs here.
         for (size_t i = 0; i + 1 < count; ++i) {
                 StageRun &run = runs[i];
@@ -1377,6 +1382,7 @@ int Executor::runPipeline(const PipelineNode *p) {
         for (StageRun &run : runs) {
                 if (run.worker != nullptr) _shell.workers().wait(run.worker);
         }
+        _job = outerJob;
         const int status = p->negated ? last.status == 0 : last.status;
         return finish(status, !p->negated);
 }

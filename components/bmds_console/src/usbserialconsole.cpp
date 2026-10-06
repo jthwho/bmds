@@ -29,6 +29,7 @@ namespace {
         constexpr size_t PacketBytes = 64;
 
         constexpr uint8_t CtrlC = 0x03;
+        constexpr uint8_t CtrlBackslash = 0x1c;
 
         static_assert((CONFIG_BMDS_USJ_TX_BYTES & (CONFIG_BMDS_USJ_TX_BYTES - 1)) == 0, "TX size: power of two");
         static_assert((CONFIG_BMDS_USJ_RX_BYTES & (CONFIG_BMDS_USJ_RX_BYTES - 1)) == 0, "RX size: power of two");
@@ -213,26 +214,28 @@ void UsbSerialConsole::handleInterrupt() {
                 uint8_t buf[PacketBytes];
                 size_t  n = static_cast<size_t>(usb_serial_jtag_ll_read_rxfifo(buf, PacketBytes));
                 if (signalsEnabled()) {
-                        // Ctrl-C interrupts the foreground job now, instead of
-                        // waiting in the ring for a reader that may never come.
-                        // Like a tty, it also flushes the input before it: the
-                        // rest of this packet up to it is dropped here, and the
+                        // Ctrl-C and Ctrl-\ signal the foreground group now, instead
+                        // of waiting in the ring for a reader that may never come.
+                        // Like a tty, they also flush the input before them: the
+                        // rest of this packet up to one is dropped here, and the
                         // reader discards what the ring already holds.
                         size_t kept = 0;
-                        bool   interrupted = false;
+                        bool   interrupted = false, quit = false;
                         for (size_t i = 0; i < n; ++i) {
-                                if (buf[i] == CtrlC) {
-                                        interrupted = true;
+                                if (buf[i] == CtrlC || buf[i] == CtrlBackslash) {
+                                        interrupted = interrupted || buf[i] == CtrlC;
+                                        quit = quit || buf[i] == CtrlBackslash;
                                         kept = 0;
                                 } else {
                                         buf[kept++] = buf[i];
                                 }
                         }
                         n = kept;
-                        if (interrupted) {
+                        if (interrupted || quit) {
                                 _rxFlushTo.store(_rx.writePosition(), std::memory_order_relaxed);
                                 _rxFlush.store(true, std::memory_order_release);
-                                interrupt().raiseFromIsr();
+                                if (interrupted) sendSignalFromIsr(SignalInterrupt);
+                                if (quit) sendSignalFromIsr(SignalQuit);
                         }
                 }
                 const size_t pushed = _rx.push(ByteSpan(buf, n));

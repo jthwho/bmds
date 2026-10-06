@@ -27,6 +27,10 @@ namespace {
 Signals::Posted Signals::post(int sig, int code) {
         const uint32_t b = bit(sig);
         if ((_ignored.load() & b) != 0) return Posted::Dropped;
+        if ((_interrupting.load() & b) != 0) {
+                _interrupt.raise();
+                return Posted::Taken;
+        }
         if ((_caught.load() & b) == 0 && !endsByDefault(sig)) return Posted::Dropped;
         if (code == BMDS_SI_KERNEL) {
                 _kernelSent.fetch_or(b);
@@ -46,6 +50,7 @@ Signals::Action Signals::action(int sig) const {
         const uint32_t b = bit(sig);
         if ((_ignored.load() & b) != 0) return Action::Ignore;
         if ((_caught.load() & b) != 0) return Action::Catch;
+        if ((_interrupting.load() & b) != 0) return Action::Interrupt;
         return Action::Default;
 }
 
@@ -56,15 +61,24 @@ bool Signals::setAction(int sig, Action action) {
                 case Action::Default:
                         _caught.fetch_and(~b);
                         _ignored.fetch_and(~b);
+                        _interrupting.fetch_and(~b);
                         break;
                 case Action::Ignore:
                         _caught.fetch_and(~b);
+                        _interrupting.fetch_and(~b);
                         _ignored.fetch_or(b);
                         _pending.fetch_and(~b);
                         break;
                 case Action::Catch:
                         _ignored.fetch_and(~b);
+                        _interrupting.fetch_and(~b);
                         _caught.fetch_or(b);
+                        break;
+                case Action::Interrupt:
+                        _caught.fetch_and(~b);
+                        _ignored.fetch_and(~b);
+                        _interrupting.fetch_or(b);
+                        _pending.fetch_and(~b);
                         break;
         }
         return true;
@@ -115,6 +129,7 @@ void Signals::prepare() {
 void Signals::inherit(const Signals &parent) {
         _caught.store(parent._caught.load());
         _ignored.store(parent._ignored.load());
+        _interrupting.store(parent._interrupting.load());
         _blocked.store(parent._blocked.load());
         _pending.store(0);
         _kernelSent.store(0);
@@ -123,6 +138,7 @@ void Signals::inherit(const Signals &parent) {
 
 void Signals::resetForExec() {
         _caught.store(0);
+        _interrupting.store(0);
         return;
 }
 

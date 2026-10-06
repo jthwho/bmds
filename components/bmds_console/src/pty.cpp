@@ -21,6 +21,7 @@ BMDS_NAMESPACE_BEGIN
 namespace {
 
         constexpr uint8_t CtrlC = 0x03;
+        constexpr uint8_t CtrlBackslash = 0x1c;
         constexpr size_t  Chunk = 64; // output converted (CR LF) and pushed at a time
 
         constinit StaticObject<Pty> ptys[Pty::MaxPtys];
@@ -64,9 +65,14 @@ Error Pty::reset(MemSpace space) {
         (void)_outputReady.tryAcquire();
         (void)_outputSpace.tryAcquire();
         (void)_inputReady.tryAcquire();
+        // No session first: the size reset signals nobody.
+        _console.setSession(0);
+        _console.setForeground(0);
+        _console.setUnansweredGroup(0);
         _console.setMode(Console::TermMode());
         _console.setSize(Console::Size());
         _console.interrupt().clear();
+        (void)_console.takeSignals();
         return Error::Ok;
 }
 
@@ -115,7 +121,8 @@ uint8_t Pty::readiness() {
 }
 
 void Pty::hangUp() {
-        _hungUp.store(true, std::memory_order_release);
+        // Once: the session hears of it (SIGHUP), and readers get the end of input.
+        if (!_hungUp.exchange(true, std::memory_order_acq_rel)) _console.sendSignal(Console::SignalHangUp);
         _inputReady.release();  // a reader of the program's end: end of input
         _outputSpace.release(); // a writer waiting for room: its output is dropped
         _console.inputArrived();
@@ -175,15 +182,15 @@ size_t PtyConsole::push(ByteSpan data) {
         size_t        taken = 0;
         size_t        from = 0;
         if (signalsEnabled()) {
-                // Ctrl-C interrupts the foreground job now, and drops the input
-                // before it (what the ring holds, at the next read).
+                // Ctrl-C and Ctrl-\ signal the foreground group now, and drop the
+                // input before them (what the ring holds, at the next read).
                 for (size_t i = 0; i < data.size(); ++i) {
-                        if (data[i] != CtrlC) continue;
+                        if (data[i] != CtrlC && data[i] != CtrlBackslash) continue;
                         taken += i + 1 - from;
                         from = i + 1;
                         _flushTo.store(_pty._input->writePosition(), std::memory_order_relaxed);
                         _flush.store(true, std::memory_order_release);
-                        interrupt().raise();
+                        sendSignal(data[i] == CtrlC ? SignalInterrupt : SignalQuit);
                 }
         }
         taken += _pty._input->push(ByteSpan(data.data() + from, data.size() - from));

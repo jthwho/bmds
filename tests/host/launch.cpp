@@ -289,10 +289,13 @@ TEST_CASE("Launch: #! scripts") {
         REQUIRE(f.out("PATH=" + f.root + "/bin", 0) == "");
         const std::string bin = f.root + "/bin";
 
-        // The programs built in (/bin), as named: one of the shell's commands runs in the shell...
+        // The programs built in (/bin), as named, by the launcher: the shell itself is a process
+        // (devplan/processes.md §3.4)...
         f.put("a", "#!/bin/sh\necho \"sh $# $1\"\n");
-        CHECK(f.out("./a x", 0) == "sh 1 x\n");
-        // ...another by the launcher, with its argument.
+        CHECK(f.out("./a x", 0) == "ran\n");
+        CHECK(f.last().path == "/bin/sh");
+        CHECK(f.last().args == Args{"/bin/sh", "./a", "x"});
+        // ...and any other, with its argument.
         f.put("b", "#!/bin/bash -e\nfalse\n");
         CHECK(f.out("./b", 0) == "ran\n");
         CHECK(f.last().path == "/bin/bash");
@@ -336,7 +339,8 @@ TEST_CASE("Launch: #! scripts") {
         f.put("l", "#!" + std::string(300, 'x') + "\n");
         CHECK(f.out("./l", Shell::ExitCannotRun) == "./l: interpreter line too long (at most 255 bytes)\n");
         f.put("m", "#!/bin/sh"); // no newline: the whole file is the line
-        CHECK(f.out("./m", 0) == "");
+        CHECK(f.out("./m", 0) == "ran\n");
+        CHECK(f.last().args == Args{"/bin/sh", "./m"});
         f.put("loop", "#!" + f.root + "/loop\n");
         CHECK(f.out("./loop", Shell::ExitCannotRun) == f.root + "/loop: too many levels of interpreters\n");
 }

@@ -52,9 +52,10 @@ BMDS_NAMESPACE_BEGIN
  * §3.1): its own task, and the `Thread`s they start, which run kernel code
  * (a built-in program's) and share the process's interrupt. The process
  * ends once they have: a built-in program joins its threads before it
- * returns; any left are interrupted and waited for.
+ * returns; any left are interrupted and waited for. A built-in program
+ * reaches its process through it (`ProcessControl`).
  */
-struct Running final : TaskOwner {
+struct Running final : TaskOwner, ProcessControl {
                 /** @brief How deep vfork children may nest in one task. */
                 static constexpr int MaxVforkDepth = 2;
 
@@ -65,7 +66,6 @@ struct Running final : TaskOwner {
 
                 Process              *process = nullptr; // the program's own (memory is always its)
                 int32_t               pid = 0;
-                int32_t               job = 0;
                 Process              *current = nullptr; // process, or the innermost vfork child
                 int32_t               currentPid = 0;
                 Child                 children[MaxVforkDepth] = {};
@@ -94,6 +94,12 @@ struct Running final : TaskOwner {
 
                 Error attach(Member &member) override;
                 void  detach(Member &member) override;
+
+                int32_t processId() const override { return pid; }
+                Error   setSignalAction(int sig, SignalAction action) override;
+                bool    isEnding() const override {
+                        return kill.load() || (process != nullptr && process->signals().terminateSignal() != 0);
+                }
 
                 /** @brief No more threads; waits for those left, interrupting them first. */
                 void endThreads();
@@ -135,6 +141,8 @@ struct Running final : TaskOwner {
                 int32_t sigSuspend(uint32_t mask);
                 int32_t sendSignal(int32_t target, int32_t sig);
                 int32_t exitSignal(int32_t sig);
+                int32_t group(uint32_t op, int32_t target, int32_t pgid);
+                int32_t termForeground(int32_t fd, int32_t pgid);
 
         private:
                 int32_t endChild(int32_t waitStatus);

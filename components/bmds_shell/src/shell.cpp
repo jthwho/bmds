@@ -15,6 +15,7 @@
 #include <bmds/glob.h>
 #include <bmds/memory.h>
 #include <bmds/parser.h>
+#include <bmds/programlauncher.h>
 #include <bmds/shell.h>
 #include <bmds/vfs.h>
 
@@ -23,6 +24,11 @@ BMDS_NAMESPACE_BEGIN
 namespace {
 
         constexpr char CtrlC = 0x03;
+
+        // Signals the interactive shell sets actions for (Linux's numbers).
+        constexpr int SigInt = 2;
+        constexpr int SigQuit = 3;
+        constexpr int SigTerm = 15;
 
         // Characters a completed file name escapes with a backslash.
         constexpr StringView EscapedInNames = " \t'\"\\$`|&;()<>*?[]!{}";
@@ -69,6 +75,8 @@ int Shell::runAsProgram(const BuiltinProgram::Context &context, Span<const Comma
         if (e.isOk()) {
                 shell->_fds = *context.fds;
                 shell->setLauncher(context.launcher);
+                shell->_process = context.process;
+                shell->_programShell = true;
                 if (context.interrupt != nullptr) shell->_interrupt = context.interrupt;
                 if (!context.cwd.isEmpty()) e = state.cwd.assign(context.cwd);
                 if (e.isOk()) e = state.vars.set("PWD", state.cwd.view());
@@ -96,6 +104,23 @@ int Shell::runAsProgram(const BuiltinProgram::Context &context, Span<const Comma
         args = List<String>();
         shell->~Shell();
         Memory::free(memory);
+        return status;
+}
+
+int Shell::interact(bool login) {
+        _jobControl = true;
+        if (_process != nullptr) {
+                // Ctrl-C stops what runs here; the shell itself isn't ended by TERM or QUIT (as bash).
+                (void)_process->setSignalAction(SigInt, ProcessControl::SignalAction::Interrupt);
+                (void)_process->setSignalAction(SigTerm, ProcessControl::SignalAction::Ignore);
+                (void)_process->setSignalAction(SigQuit, ProcessControl::SignalAction::Ignore);
+        }
+        prepareInteractive(login);
+        (void)sourceIfExists(ProfilePath);
+        if (login) (void)sourceIfExists(LoginScriptPath);
+        int status = run();
+        // Pid 1 is the system's shell: it never ends (nothing can end its process).
+        while (_process != nullptr && _process->processId() == 1 && !_process->isEnding()) status = run();
         return status;
 }
 
@@ -509,6 +534,8 @@ int Shell::run() {
         Interrupt::setCurrent(_interrupt);
         start();
         while (!_exited) {
+                // Its process is being ended (SIGHUP, a kill): the shell ends, whatever it was doing.
+                if (_process != nullptr && _process->isEnding()) break;
                 uint8_t buf[32];
                 // An idle shell waits for input indefinitely; it uses no CPU
                 // while it waits.
@@ -562,6 +589,11 @@ int Shell::runHelp(CommandContext &ctx) {
 // The host has no registered command table: applets aren't run there (shellesp.cpp on the target).
 int shellAppletMain(const BuiltinProgram::Context &) {
         return Shell::ExitCannotRun;
+}
+
+// Nothing to wait for, no defaults beyond init()'s (shellesp.cpp on the target).
+void Shell::prepareInteractive(bool) {
+        return;
 }
 #endif
 

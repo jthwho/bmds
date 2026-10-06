@@ -625,12 +625,25 @@ static long do_ioctl(long fd, unsigned long request, void *arg) {
                         w->ws_xpixel = w->ws_ypixel = 0;
                         return 0;
                 }
-                case TIOCGPGRP:
-                        /* One terminal: the caller's job is the one in front. */
-                        if (bmds_isatty((int32_t)fd) != 1) return -ENOTTY;
-                        *(pid_t *)arg = (pid_t)(bmds_proc_id(BMDS_PROC_JOB));
+                case TIOCGPGRP: {
+                        const int32_t group = bmds_term_foreground((int32_t)fd, 0);
+                        if (group < 0) return (long)(group);
+                        *(pid_t *)arg = (pid_t)(group);
                         return 0;
-                case TIOCSPGRP:
+                }
+                case TIOCSPGRP: {
+                        const pid_t group = *(const pid_t *)arg;
+                        if (group <= 0) return -EINVAL;
+                        const int32_t r = bmds_term_foreground((int32_t)fd, (int32_t)group);
+                        return r < 0 ? (long)(r) : 0;
+                }
+                case TIOCGSID: {
+                        /* The caller's session, if this is its terminal. */
+                        const int32_t r = bmds_term_foreground((int32_t)fd, 0);
+                        if (r < 0) return (long)(r);
+                        *(pid_t *)arg = (pid_t)(bmds_proc_group(BMDS_GROUP_SESSION, 0, 0));
+                        return 0;
+                }
                 case TCFLSH:
                 case TCXONC:
                 case TCSBRK:
@@ -1263,13 +1276,12 @@ static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 case SYS_waitid: return do_waitid(a, b, (siginfo_t *)c, d, (long *)e);
                 case SYS_set_tid_address:
                 case SYS_gettid:
-                case SYS_getpid:
-                case SYS_setsid: return self();
+                case SYS_getpid: return self();
                 case SYS_getppid: return (long)(bmds_proc_id(BMDS_PROC_PARENT));
-                /* Process groups are jobs; they can't be changed (no job control). */
-                case SYS_getpgid:
-                case SYS_getsid: return (long)(bmds_proc_id(BMDS_PROC_JOB));
-                case SYS_setpgid: return 0;
+                case SYS_getpgid: return (long)(bmds_proc_group(BMDS_GROUP_GET, (int32_t)a, 0));
+                case SYS_getsid: return (long)(bmds_proc_group(BMDS_GROUP_SESSION, (int32_t)a, 0));
+                case SYS_setpgid: return (long)(bmds_proc_group(BMDS_GROUP_SET, (int32_t)a, (int32_t)b));
+                case SYS_setsid: return (long)(bmds_proc_group(BMDS_GROUP_NEW_SESSION, 0, 0));
                 case SYS_getuid:
                 case SYS_geteuid:
                 case SYS_getgid:

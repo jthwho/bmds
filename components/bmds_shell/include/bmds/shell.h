@@ -27,6 +27,7 @@
 BMDS_NAMESPACE_BEGIN
 
 class Console;
+class ProcessControl;
 class ProgramLauncher;
 
 /**
@@ -40,10 +41,14 @@ class ProgramLauncher;
  *
  * - Pipelines run concurrently: the last stage on the shell's task, the
  *   others on worker threads (PSRAM stacks), each over a copy of the state.
- * - Ctrl-C (the console's interrupt) stops blocked pipes and running
- *   commands; the shell echoes `^C` and the exit status is 130.
- * - `exit` at the prompt ends the running input and sets `$?`; the console
- *   shell itself keeps running.
+ * - Ctrl-C (`SIGINT` to the shell's process, or the console's interrupt
+ *   without one) stops blocked pipes and running commands; the shell
+ *   echoes `^C` and the exit status is 130.
+ * - Interactive (`sh -i`, `interact()`): each foreground pipeline of
+ *   programs is a job, a process group with the terminal's foreground
+ *   while it runs (devplan/processes.md §3.6.1).
+ * - `exit` at the prompt ends the shell; pid 1 (the serial shell) gives a
+ *   new prompt instead.
  * - The prompt is `PS1` (`PS2` while continuing) with bash's backslash
  *   escapes, then parameter expansion; Tab completes command names (and
  *   functions, keywords) where a command starts, and variable names after `$`.
@@ -86,45 +91,14 @@ class Shell final : public LineCompleter {
                  */
                 static Span<const Command> registeredCommands();
 
-                /** @brief What a spawned shell does before its first prompt. */
-                struct Startup {
-                                /** @brief Called on the shell's task first (e.g. to wait for the SD card); may be null. */
-                                void (*wait)() = nullptr;
-                                /**
-                                 * @brief A script to source if it exists, after the profile
-                                 *        (`/boot/autoexec.sh`); may be null.
-                                 */
-                                const char *script = nullptr;
-                                /** @brief Runs program files (see `setLauncher()`); may be null. */
-                                ProgramLauncher *launcher = nullptr;
-                                /**
-                                 * @brief Called on the shell's task when it exits (`exit` at the
-                                 *        prompt) with its status; the session then ends. Null: a
-                                 *        new prompt instead (the shell never ends).
-                                 */
-                                void (*exited)(void *arg, int status) = nullptr;
-                                void *exitedArg = nullptr; ///< Passed to `exited`.
-                };
-
                 /**
-                 * @brief What every interactive shell (a `spawn()`) sources as it
-                 *        starts: the environment for all of them (`devplan/storage.md` §13).
+                 * @brief What every interactive shell sources as it starts: the
+                 *        environment for all of them (`devplan/storage.md` §13).
                  */
                 static constexpr const char *ProfilePath = "/boot/profile";
 
-                /**
-                 * @brief Starts a shell on @p console in its own task.
-                 *
-                 * Target only. The shell and its stack are allocated from
-                 * `Psram`. It runs until it exits with `startup.exited` set
-                 * (else forever); an ended session's task and memory are freed
-                 * by the next `spawn()`.
-                 * @param console The console to run on.
-                 * @param name    Task name.
-                 * @param startup What to do before the first prompt.
-                 * @return `Ok`, or `NoMem`.
-                 */
-                static Error spawn(Console &console, const char *name, const Startup &startup);
+                /** @brief What a login shell (`sh -l`, the serial shell) sources after the profile. */
+                static constexpr const char *LoginScriptPath = "/boot/autoexec.sh";
 
                 /**
                  * @brief Runs a shell as a program: `/bin/sh` for `exec`, and so for
@@ -132,7 +106,8 @@ class Shell final : public LineCompleter {
                  *
                  * A shell on the context's descriptors, directory and environment
                  * (all exported) runs the built-in `sh` with the context's
-                 * arguments (`sh -c command`, `sh script args`), then is freed.
+                 * arguments (`sh -c command`, `sh script args`, `sh -i`: an
+                 * interactive shell, `interact()`), then is freed.
                  * Target only (the registered commands, the configured stack).
                  * @return Its exit status; 126 without a console or memory.
                  */
@@ -207,6 +182,34 @@ class Shell final : public LineCompleter {
                 /** @brief Returns the program launcher, or null. */
                 ProgramLauncher *launcher() const { return _launcher; }
 
+                /** @brief Returns the shell's process (running as `/bin/sh`), or null. */
+                ProcessControl *process() const { return _process; }
+
+                /** @brief Returns true if foreground pipelines of programs are jobs (interactive). */
+                bool hasJobControl() const { return _jobControl; }
+
+                /**
+                 * @brief Takes the chance to be the program's interactive shell: true
+                 *        once, for the `sh` that `runAsProgram()` runs (a nested `sh`
+                 *        is a process of its own).
+                 */
+                bool takeProgramShell() {
+                        const bool can = _programShell;
+                        _programShell = false;
+                        return can;
+                }
+
+                /**
+                 * @brief Runs as an interactive shell: job control; `SIGINT` stops
+                 *        the command running here, `SIGTERM` and `SIGQUIT` are
+                 *        ignored; the profile (and with @p login, after the system
+                 *        has booted, `LoginScriptPath`) sourced; then prompts until
+                 *        `exit` or the end of input (never, as pid 1).
+                 * @return The exit status.
+                 * @blocking
+                 */
+                int interact(bool login);
+
                 /** @brief Returns the exit status of the last command (`$?`). */
                 int lastExitCode() const { return _state.lastStatus; }
 
@@ -270,6 +273,7 @@ class Shell final : public LineCompleter {
                 void completeCommand(StringView word, CompletionSink &sink);
                 void runInput();
                 void endInterrupt();
+                void prepareInteractive(bool login); // target: the defaults, the boot (shellesp.cpp)
 
                 Console            &_console;
                 Interrupt          *_interrupt;
@@ -281,9 +285,12 @@ class Shell final : public LineCompleter {
                 String              _input;  // lines of an incomplete command
                 String              _prompt; // what the editor shows
                 ProgramLauncher    *_launcher = nullptr;
+                ProcessControl     *_process = nullptr;
                 LineEditor          _editor;
                 uint32_t            _sizeSeen = UINT32_MAX; // the console's size generation exported
                 bool                _exited = false;        // `exit` ran at the prompt
+                bool                _jobControl = false;    // interactive: programs run as jobs
+                bool                _programShell = false;  // runAsProgram()'s `sh` may interact()
 };
 
 BMDS_NAMESPACE_END

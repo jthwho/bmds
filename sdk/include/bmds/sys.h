@@ -121,6 +121,8 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_PROC_KILL 48u       /**< `int32_t proc_kill(int32_t pid, int32_t sig)`. */
 #define BMDS_SYS_PROC_EXIT_SIGNAL 49u /**< `int32_t proc_exit_signal(int32_t sig)`. */
 #define BMDS_SYS_IO_POLL 50u          /**< `int32_t io_poll(fds, count, timeout_ms, mask)`: see `bmds_io_poll`. */
+#define BMDS_SYS_PROC_GROUP 51u       /**< `int32_t proc_group(uint32_t op, int32_t pid, int32_t pgid)`. */
+#define BMDS_SYS_TERM_FOREGROUND 52u  /**< `int32_t term_foreground(int32_t fd, int32_t pgid)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -162,8 +164,14 @@ static inline int bmds_sys_has(uint32_t n) {
 
 /** @brief `proc_id`. */
 #define BMDS_PROC_SELF 0u   /**< The calling process's id. */
-#define BMDS_PROC_PARENT 1u /**< Its parent's (1: the shell). */
-#define BMDS_PROC_JOB 2u    /**< Its job: the id of the shell's program it descends from (its process group). */
+#define BMDS_PROC_PARENT 1u /**< Its parent's (1 for an orphan, as Linux reports it). */
+#define BMDS_PROC_JOB 2u    /**< Its job: its process group. */
+
+/** @brief `proc_group` operations. */
+#define BMDS_GROUP_GET 0u         /**< @p pid's process group (0: the caller's). */
+#define BMDS_GROUP_SET 1u         /**< `setpgid(pid, pgid)`: @p pid 0 is the caller, @p pgid 0 is @p pid. */
+#define BMDS_GROUP_SESSION 2u     /**< @p pid's session (0: the caller's). */
+#define BMDS_GROUP_NEW_SESSION 3u /**< `setsid()`: the caller leads a new session and group. */
 
 /** @brief Signals: Linux's numbers. Signals 1-31 are delivered; a mask has bit `sig - 1`. */
 #define BMDS_SIGHUP 1
@@ -359,6 +367,8 @@ typedef int32_t (*bmds_sys_sig_mask_fn)(uint32_t how, uint32_t set);
 typedef int32_t (*bmds_sys_sig_take_fn)(bmds_siginfo_t *info);
 typedef int32_t (*bmds_sys_proc_kill_fn)(int32_t pid, int32_t sig);
 typedef int32_t (*bmds_sys_io_poll_fn)(bmds_pollfd_t *fds, uint32_t count, int32_t timeout_ms, const uint32_t *mask);
+typedef int32_t (*bmds_sys_proc_group_fn)(uint32_t op, int32_t pid, int32_t pgid);
+typedef int32_t (*bmds_sys_term_foreground_fn)(int32_t fd, int32_t pgid);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -684,7 +694,7 @@ static inline int32_t bmds_pipe(int32_t *fds, uint32_t flags) {
         return ((bmds_sys_pipe_fn)bmds_sys->slot[BMDS_SYS_PIPE])(fds, flags);
 }
 
-/** @brief Returns the calling process's id, its parent's or its job's (`BMDS_PROC_...`). */
+/** @brief Returns the calling process's id, its parent's or its process group's (`BMDS_PROC_...`). */
 static inline int32_t bmds_proc_id(uint32_t which) {
         return ((bmds_sys_uint_fn)bmds_sys->slot[BMDS_SYS_PROC_ID])(which);
 }
@@ -765,11 +775,13 @@ static inline int32_t bmds_sig_suspend(uint32_t mask) {
 }
 
 /**
- * @brief Sends @p sig (0: only checks) to @p pid: > 1 that process (one that
- *        ended and hasn't been waited for too); 0 the caller's job; -1 every
- *        process but the caller; < -1 the job -@p pid.
+ * @brief Sends @p sig (0: only checks) to @p pid: > 0 that process (one that
+ *        ended and hasn't been waited for too); 0 the caller's process group;
+ *        -1 every process but the caller; < -1 the group -@p pid.
+ *
+ * Pid 1 (the serial shell) gets only the signals it has an action for.
  * @return 0, or `BMDS_ESRCH` (no such process), `BMDS_EINVAL` (not 0-31),
- *         `BMDS_EPERM` (pid 1, the shell).
+ *         `BMDS_EPERM` (`SIGKILL` or `SIGSTOP` to pid 1).
  */
 static inline int32_t bmds_proc_kill(int32_t pid, int32_t sig) {
         return ((bmds_sys_proc_kill_fn)bmds_sys->slot[BMDS_SYS_PROC_KILL])(pid, sig);
@@ -800,6 +812,33 @@ static inline int32_t bmds_proc_exit_signal(int32_t sig) {
  */
 static inline int32_t bmds_io_poll(bmds_pollfd_t *fds, uint32_t count, int32_t timeout_ms, const uint32_t *mask) {
         return ((bmds_sys_io_poll_fn)bmds_sys->slot[BMDS_SYS_IO_POLL])(fds, count, timeout_ms, mask);
+}
+
+/**
+ * @brief Process groups and sessions (`BMDS_GROUP_...`), as `getpgid`,
+ *        `setpgid`, `getsid` and `setsid` (devplan/processes.md §3.6).
+ *
+ * `BMDS_GROUP_SET` moves the caller or a child of it, in its session and
+ * not a session leader, to a group of that session or one of its own.
+ * `BMDS_GROUP_NEW_SESSION` fails for a process that leads a group.
+ * @return The group or session's id (`GET`, `SESSION`, `NEW_SESSION`), 0
+ *         (`SET`); or `BMDS_ESRCH`, `BMDS_EPERM`, `BMDS_EINVAL`.
+ */
+static inline int32_t bmds_proc_group(uint32_t op, int32_t pid, int32_t pgid) {
+        return ((bmds_sys_proc_group_fn)bmds_sys->slot[BMDS_SYS_PROC_GROUP])(op, pid, pgid);
+}
+
+/**
+ * @brief The foreground process group of the terminal @p fd, the caller's
+ *        controlling terminal: sets it to @p pgid (> 0; a group of the
+ *        caller's session), or with @p pgid 0 only reads it (`tcsetpgrp`,
+ *        `tcgetpgrp`).
+ * @return The foreground group; or `BMDS_EBADF`, `BMDS_ENOTTY` (not a
+ *         terminal, or not the caller's), `BMDS_EPERM` (no such group in the
+ *         session), `BMDS_EINVAL`.
+ */
+static inline int32_t bmds_term_foreground(int32_t fd, int32_t pgid) {
+        return ((bmds_sys_term_foreground_fn)bmds_sys->slot[BMDS_SYS_TERM_FOREGROUND])(fd, pgid);
 }
 
 #ifdef __cplusplus

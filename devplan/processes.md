@@ -129,6 +129,41 @@ As POSIX has them, for one user:
 - **Interactive shells** catch `SIGINT` (it interrupts the command running in the shell, as
   Ctrl-C does now), and ignore `SIGTSTP`, `SIGTTIN`, `SIGTTOU` and `SIGTERM`, as bash does.
 
+### 3.6.1 How it is built (step 2)
+
+- **The table** keeps a group and a session per entry. `add()` takes each as "the parent's", "a
+  new one (led by the new process)" or an id to join; a new pid is never one in use as a group or
+  session id. `setGroup()` and `newSession()` follow `setpgid()` and `setsid()`'s rules (the
+  caller or its child, in the caller's session; a group leader can't make a session).
+- **The console** holds its session and its foreground group (opaque ids, 0: none) and a pending
+  signal set. Ctrl-C, Ctrl-\, a size change and a hangup add `SIGINT`, `SIGQUIT`, `SIGWINCH`,
+  `SIGHUP` to the set and call a hook (ISR-safe; the USB console's Ctrl-C comes in its receive
+  interrupt). Without a hook (the host tests), Ctrl-C raises the console's interrupt as before.
+- **Delivery** is the loader's: its hook queues the console for a kernel task (`sig`, above the
+  shells' priority, so a busy program can't hold Ctrl-C up), which takes the set and sends each
+  signal to the console's foreground group (`SIGHUP`: to its session). A Ctrl-C after one that no
+  process took, or that is still pending, sends `SIGKILL` to the group instead.
+- **Launching:** a request may make a new session on its console (`session`: the shells the
+  system starts, pid 1 and each terminal's) or name a `JobGroup`: the first program of a pipeline
+  starts the group, the others join it, and with `foreground` the console gets it. Without either,
+  the program is in its caller's group.
+- **Giving the terminal back:** when the last process of the foreground group ends, the console's
+  foreground goes to its parent's group (the shell that started it), or to the session's. When a
+  session leader ends, its console has no session or foreground any more, and the foreground group
+  gets `SIGHUP`.
+- **Built-in programs and signals:** a built-in program can set a signal to `Interrupt` (raise its
+  process's interrupt, nothing pending: the kernel-code form of catching it) or `Ignore`, through
+  `ProcessControl`, which the loader passes in the program's context. Pid 1 gets only the signals
+  it set an action for (as Linux's init); `kill` of pid 1 with `SIGKILL` or `SIGSTOP` is refused.
+- **The interactive shell** (`/bin/sh -i`, or no script on a terminal) sets `SIGINT` to
+  `Interrupt` and ignores `SIGTERM`, `SIGQUIT` (the stop signals in step 4), and starts each
+  foreground pipeline of programs in a `JobGroup`. A program killed by `SIGINT` (status 130)
+  interrupts the shell as Ctrl-C would, as bash does: a loop of programs stops. Pid 1 never ends:
+  `exit` gives a new prompt.
+- **System calls:** `proc_group(op, pid, pgid)` (get or set a group, get a session, make a
+  session) and `term_foreground(fd, pgid)` are appended; `linux.c` maps `getpgid`, `setpgid`,
+  `getsid`, `setsid`, `TIOCGPGRP`, `TIOCSPGRP` and `TIOCGSID` to them.
+
 ### 3.7 Stopping and continuing
 
 - `SIGSTOP`, `SIGTSTP`, `SIGTTIN`, `SIGTTOU` stop a process by default; `SIGCONT` continues it (and
@@ -260,3 +295,38 @@ ABI 1 has not shipped, but these are recorded as `ABI:` lines because they chang
   - Found: `/bin/sh` typed in a shell runs in that shell (it is the `sh` built-in), not as a
     process; step 2 changes that when shells become processes. Not exercised on the board: a
     built-in program returning with its threads still running (the warning path).
+- **Step 2** (2026-10-06): groups, sessions, the foreground; shells are processes.
+  - `ProcessTable`: a group and a session per entry (`add()` with "the parent's", "new", or a
+    group to join), `setGroup()`, `newSession()`, pids from 1 skipping ids in use as a group or
+    session. `KernelParent` replaces the pretend `ShellPid` for what kernel code starts and waits
+    for. `Signals` gains the `Interrupt` action; `ProcessControl` (`bmds_kernel`) lets a built-in
+    program set it (and `Ignore`), see its pid and whether it is ending.
+  - Consoles keep their session, foreground group and a pending signal set; Ctrl-C, Ctrl-\, a
+    new size and a pty's hangup go through the hook to the loader's `sig` task (8 KB `Psram`
+    stack, the shells' priority + 1, a 16-entry queue). The launcher's Ctrl-C forwarding is gone:
+    `run()` has one wait, which a caught signal doesn't end.
+  - Launch requests carry `session` or a `JobGroup`; `start()` without either gives a group of its
+    own, not in the foreground (`win term`'s terminals don't get the serial console's Ctrl-C).
+    When a foreground group's last process ends, the terminal goes to its parent's group; a
+    session leader's end clears the terminal and hangs up its foreground group.
+  - `/bin/sh -i` and `-l` (`Shell::interact()`); typed `sh` with a terminal is a process of its
+    own; `/bin/sh` and `/bin/bash` by path (and so `#!/bin/sh`) run as processes, not in the
+    shell. Pid 1 is `/bin/sh -l` started by `main` (at the shells' priority); `Shell::spawn()`,
+    `Session` and `Startup` are gone. The terminal runs `/bin/sh -i` with the launcher on a
+    `Thread` of its own and joins it.
+  - System calls `proc_group` (51) and `term_foreground` (52); `linux.c` maps the group calls and
+    `TIOCGPGRP`, `TIOCSPGRP`, `TIOCGSID`. `ps` shows PGID and SID.
+  - Host-tested: the table's groups and sessions (setpgid's rules, setsid, a group outliving its
+    leader), the `Interrupt` action, a pty's signals through the hook.
+  - On the board: `ps` shows pid 1 (`sh -l`, session 1), `terminal` in its own group of session
+    1, its `sh -i` leading session 3; Ctrl-C at the prompt, on `sleep` (a built-in), on a
+    program (130), on a loop of programs (the loop stops, 130), in the serial shell and in a
+    terminal; a second Ctrl-C kills a program ignoring `SIGINT` (137); Ctrl-\ ends a program
+    (131) and not the shell; `busybox sleep 2 | busybox sleep 2` share one group; closing a
+    terminal window with a program or a pipeline running ends all of it, as do `exit` and
+    `kill -KILL`; `kill -KILL 1` is refused, `TERM` and `HUP` to pid 1 do nothing, `exit` there
+    gives a new prompt. Free memory the same over terminal cycles. The image grew 3,460 bytes,
+    `.bss` 232.
+  - Found: BusyBox `hush` runs and takes Ctrl-C, but its job control stays off: its
+    `fcntl(0, F_DUPFD, 255)` fails (`EINVAL`: fewer descriptors), so `setpgid` and `tcsetpgrp`
+    from a program are host-reviewed only, not exercised on the board.

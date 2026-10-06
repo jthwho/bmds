@@ -69,12 +69,13 @@ namespace {
                         return Shell::ExitFailure;
                 }
                 const size_t n = Loader::listProcesses(Span<Loader::ProcessInfo>(list, Max));
-                ctx.printf("  PID  PPID   JOB S THR    MEMORY COMMAND\n");
+                ctx.printf("  PID  PPID  PGID   SID S THR    MEMORY COMMAND\n");
                 for (size_t i = 0; i < n && i < Max; ++i) {
                         const Loader::ProcessInfo &p = list[i];
-                        ctx.printf("%5ld %5ld %5ld %c %3u %9lu %s\n", static_cast<long>(p.pid),
-                                   static_cast<long>(p.parent), static_cast<long>(p.job), stateLetter(p.state),
-                                   static_cast<unsigned>(p.threads), static_cast<unsigned long>(p.memory),
+                        ctx.printf("%5ld %5ld %5ld %5ld %c %3u %9lu %s\n", static_cast<long>(p.pid),
+                                   static_cast<long>(p.parent > 0 ? p.parent : 0), static_cast<long>(p.group),
+                                   static_cast<long>(p.session), stateLetter(p.state), static_cast<unsigned>(p.threads),
+                                   static_cast<unsigned long>(p.memory),
                                    p.state == Loader::ProcessInfo::State::Zombie ? "<ended>" : p.command);
                 }
                 Memory::free(list);
@@ -110,7 +111,7 @@ namespace {
                 return ctx.usage();
         }
 
-        // kill [-s SIG | -SIG] [--] PID|-JOB...   kill -l
+        // kill [-s SIG | -SIG] [--] PID|-PGID...   kill -l
         int runKill(CommandContext &ctx) {
                 const Args args = ctx.args();
                 if (args.size() == 2 && std::strcmp(args[1], "-l") == 0) {
@@ -134,7 +135,7 @@ namespace {
                 for (; i < args.size(); ++i) {
                         long pid = 0;
                         if (!parseNumber(args[i], INT32_MIN, INT32_MAX, pid) || pid == 0 || pid == -1) {
-                                ctx.eprintf("kill: %s: not a process or job id\n", args[i]);
+                                ctx.eprintf("kill: %s: not a process or group id\n", args[i]);
                                 status = Shell::ExitFailure;
                                 continue;
                         }
@@ -153,8 +154,8 @@ namespace {
 
 } // namespace
 
-BMDS_SHELL_COMMAND(kill, runKill, "[-s SIG | -SIG] [--] PID|-JOB... | -l",
-                   "Send a signal (TERM by default) to processes or jobs; -l lists the signals")
+BMDS_SHELL_COMMAND(kill, runKill, "[-s SIG | -SIG] [--] PID|-PGID... | -l",
+                   "Send a signal (TERM by default) to processes or process groups; -l lists the signals")
 BMDS_SHELL_COMMAND(ps, runPs, "[-T]", "List processes (-T: their tasks)")
 
 BMDS_NAMESPACE_END

@@ -71,6 +71,8 @@ _Static_assert(BMDS_SYS_SIG_SUSPEND == 47, "ABI: slot SIG_SUSPEND");
 _Static_assert(BMDS_SYS_PROC_KILL == 48, "ABI: slot PROC_KILL");
 _Static_assert(BMDS_SYS_PROC_EXIT_SIGNAL == 49, "ABI: slot PROC_EXIT_SIGNAL");
 _Static_assert(BMDS_SYS_IO_POLL == 50, "ABI: slot IO_POLL");
+_Static_assert(BMDS_SYS_PROC_GROUP == 51, "ABI: slot PROC_GROUP");
+_Static_assert(BMDS_SYS_TERM_FOREGROUND == 52, "ABI: slot TERM_FOREGROUND");
 _Static_assert(BMDS_TYPE_LINK == 4, "ABI: file type LINK");
 _Static_assert(BMDS_ABI_VERSION == 1, "ABI: version (raise it with every addition once shipped)");
 _Static_assert(BMDS_STDIN == 0 && BMDS_STDOUT == 1 && BMDS_STDERR == 2, "ABI: standard fds");
@@ -90,6 +92,8 @@ _Static_assert(BMDS_TERM_SIGNALS == 0x01 && BMDS_TERM_ONLCR == 0x02 && BMDS_TERM
 _Static_assert(BMDS_TERM_LOGS == 0x08 && BMDS_TERM_LINE == 0x10, "ABI: term flags");
 _Static_assert(BMDS_TERM_ECHO == 0x20 && BMDS_TERM_ICRNL == 0x40, "ABI: term flags");
 _Static_assert(BMDS_PROC_JOB == 2, "ABI: proc_id JOB");
+_Static_assert(BMDS_GROUP_GET == 0 && BMDS_GROUP_SET == 1 && BMDS_GROUP_SESSION == 2 && BMDS_GROUP_NEW_SESSION == 3,
+               "ABI: proc_group operations");
 _Static_assert(BMDS_SIGHUP == 1 && BMDS_SIGINT == 2 && BMDS_SIGQUIT == 3 && BMDS_SIGILL == 4, "ABI: signals 1-4");
 _Static_assert(BMDS_SIGTRAP == 5 && BMDS_SIGABRT == 6 && BMDS_SIGBUS == 7 && BMDS_SIGFPE == 8, "ABI: signals 5-8");
 _Static_assert(BMDS_SIGKILL == 9 && BMDS_SIGUSR1 == 10 && BMDS_SIGSEGV == 11 && BMDS_SIGUSR2 == 12,

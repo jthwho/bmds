@@ -37,13 +37,17 @@ BMDS_NAMESPACE_BEGIN
  * as it writes.
  *
  * A console is a `Stream` (it is what fds 0/1/2 refer to in an
- * interactive shell) and owns the `Interrupt` of the job in its foreground:
- * with `TermMode::signals` set, a Ctrl-C byte in the input is not queued
- * but raises that interrupt, straight from the receive path, so it stops
- * a running command even when nothing is reading input (programs get
- * `SIGINT` from the loader, which waits on it). Like every stream, a
- * `read()` waits through the calling task's interrupt
- * (`Interrupt::current()`): the shell's tasks have this one.
+ * interactive shell) and a controlling terminal (devplan/processes.md
+ * §3.6): it has a session and a foreground process group, opaque ids the
+ * process manager sets. With `TermMode::signals` set, a Ctrl-C or Ctrl-\
+ * byte in the input is not queued but sends `SIGINT` or `SIGQUIT`, straight
+ * from the receive path, so it stops a running command even when nothing
+ * is reading input; a size change sends `SIGWINCH`, a hangup `SIGHUP`. A
+ * signal sent is added to the console's set and the signal hook is called,
+ * which delivers the set to the foreground group (`SIGHUP`: the session).
+ * Without a hook, Ctrl-C raises `interrupt()` instead. Like every stream,
+ * a `read()` waits through the calling task's interrupt
+ * (`Interrupt::current()`).
  *
  * For `poll`, a console is readable while input is waiting (the terminal's
  * size answer, which `read()` takes out, counts until then) and always
@@ -67,7 +71,7 @@ class Console : public Stream {
 
                 /** @brief Terminal modes ("termios-lite"). */
                 struct TermMode {
-                                bool signals = true; ///< Ctrl-C raises `interrupt()` instead of being read (ISIG).
+                                bool signals = true; ///< Ctrl-C and Ctrl-\ send signals instead of being read (ISIG).
                                 bool nlToCrNl =
                                         true; ///< Output `\n` is sent as CR LF where the terminal needs it (ONLCR).
                                 bool colors = true; ///< Output SGR colors are fitted to `colorDepth()`.
@@ -76,6 +80,22 @@ class Console : public Stream {
                                 /** @brief Everything off: bytes pass both ways untouched (a file transfer). */
                                 static constexpr TermMode binary() { return TermMode{false, false, false, false}; }
                 };
+
+                /** @brief Signals a console sends (Linux's numbers). */
+                static constexpr int SignalHangUp = 1;        ///< `SIGHUP`: the terminal went.
+                static constexpr int SignalInterrupt = 2;     ///< `SIGINT`: Ctrl-C.
+                static constexpr int SignalQuit = 3;          ///< `SIGQUIT`: Ctrl-\.
+                static constexpr int SignalWindowChange = 28; ///< `SIGWINCH`: a new size.
+
+                /**
+                 * @brief Delivers a console's signals (`takeSignals()`); installed by the
+                 *        process manager. Called from task or ISR context (@p fromIsr):
+                 *        it must not block.
+                 */
+                using SignalHook = void (*)(Console &console, bool fromIsr);
+
+                /** @brief Installs the signal hook (null: none, Ctrl-C raises `interrupt()`). */
+                static void setSignalHook(SignalHook hook);
 
                 /** @brief Terminal size in character cells. */
                 struct Size {
@@ -104,13 +124,14 @@ class Console : public Stream {
 
                 /**
                  * @brief Records the terminal size; if it changed, `sizeGeneration()`
-                 *        changes and `resized()` is raised. Task context.
+                 *        changes, `resized()` is raised and `SIGWINCH` sent. Task context.
                  */
                 void setSize(Size size) {
                         const uint32_t v = (static_cast<uint32_t>(size.columns) << 16) | size.rows;
                         if (_size.exchange(v, std::memory_order_relaxed) != v) {
                                 _sizeGeneration.fetch_add(1, std::memory_order_relaxed);
                                 _resized.raise();
+                                sendSignal(SignalWindowChange);
                         }
                         return;
                 }
@@ -229,8 +250,59 @@ class Console : public Stream {
                 /** @brief Consoles are terminals. */
                 bool isTerminal() const override { return true; }
 
-                /** @brief Returns the interrupt Ctrl-C raises (the foreground job's). */
+                /** @brief Returns the interrupt Ctrl-C raises when there is no signal hook. */
                 Interrupt &interrupt() { return _interrupt; }
+
+                /**
+                 * @brief Sends @p sig (1-31) to the foreground group (`SignalHangUp`:
+                 *        the session) through the hook. Task context.
+                 */
+                void sendSignal(int sig) {
+                        signal(sig, false);
+                        return;
+                }
+
+                /**
+                 * @brief `sendSignal()` from a receive interrupt.
+                 * @isrsafe
+                 */
+                void sendSignalFromIsr(int sig) {
+                        signal(sig, true);
+                        return;
+                }
+
+                /** @brief Takes the set of signals sent and not yet delivered (the hook's deliverer). */
+                uint32_t takeSignals() { return _signalSet.exchange(0); }
+
+                /** @brief Returns the session this is the controlling terminal of (0: none). */
+                int32_t session() const { return _session.load(); }
+
+                /** @brief Sets the session (0: none). */
+                void setSession(int32_t session) {
+                        _session.store(session);
+                        return;
+                }
+
+                /** @brief Returns the foreground process group (0: none). */
+                int32_t foreground() const { return _foreground.load(); }
+
+                /** @brief Sets the foreground process group (0: none). */
+                void setForeground(int32_t group) {
+                        _foreground.store(group);
+                        return;
+                }
+
+                /**
+                 * @brief The group a Ctrl-C last reached without effect (0: none): the
+                 *        deliverer's, so the next one ends it (`SIGKILL`).
+                 */
+                int32_t unansweredGroup() const { return _unansweredGroup.load(); }
+
+                /** @brief Sets the group a Ctrl-C reached without effect (0: none). */
+                void setUnansweredGroup(int32_t group) {
+                        _unansweredGroup.store(group);
+                        return;
+                }
 
                 /** @brief Returns the terminal modes. */
                 TermMode mode() const {
@@ -297,6 +369,8 @@ class Console : public Stream {
                 }
 
         private:
+                void signal(int sig, bool fromIsr);
+
                 Interrupt             _interrupt;
                 Interrupt             _resized;
                 WaitListOf<4>         _inputWaiters;
@@ -307,6 +381,10 @@ class Console : public Stream {
                 std::atomic<uint8_t>  _depth;
                 std::atomic<uint32_t> _size{(80u << 16) | 24u};
                 std::atomic<uint32_t> _sizeGeneration{0};
+                std::atomic<uint32_t> _signalSet{0}; // sent, not yet delivered (bit sig - 1)
+                std::atomic<int32_t>  _session{0};
+                std::atomic<int32_t>  _foreground{0};
+                std::atomic<int32_t>  _unansweredGroup{0};
 
                 // The size answer filter (the reader's; requestSize() starts it).
                 Result<size_t> filter(WritableByteSpan buf, size_t n);

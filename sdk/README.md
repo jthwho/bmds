@@ -129,15 +129,22 @@ on BMDS's table; programs never see that layer. What differs from Linux:
   count whole milliseconds and aren't written back. `O_NONBLOCK` belongs to
   the descriptor number in one program: a `dup`'d descriptor or another
   program doesn't share it.
-- **Signals** (signals 1-31): `kill` between processes (`0` the job, `-1`
-  all, `-job`), handlers (`SA_SIGINFO`, `SA_RESTART`, `SA_RESETHAND`,
-  `SA_NODEFER`), masks, `sigpending`, `sigsuspend`, `pause`; Ctrl-C sends
-  `SIGINT` to the job, a write to a pipe nobody reads `SIGPIPE`, a child's
-  end `SIGCHLD`. Handlers run between system calls: a program computing
-  without calls takes a caught signal at its next one (one that ends it
-  ends it at once). A Ctrl-C while the last one had no effect (ignored, or
-  still pending) kills the job. Process groups are jobs; nothing stops
-  (`SIGSTOP`, `SIGTSTP` are dropped).
+- **Signals** (signals 1-31): `kill` between processes (`0` the caller's
+  process group, `-1` all, `-pgid`), handlers (`SA_SIGINFO`, `SA_RESTART`,
+  `SA_RESETHAND`, `SA_NODEFER`), masks, `sigpending`, `sigsuspend`, `pause`;
+  the terminal sends its foreground process group `SIGINT` (Ctrl-C),
+  `SIGQUIT` (Ctrl-\\) and `SIGWINCH`, and its session `SIGHUP` when it goes;
+  a write to a pipe nobody reads `SIGPIPE`, a child's end `SIGCHLD`.
+  Handlers run between system calls: a program computing without calls
+  takes a caught signal at its next one (one that ends it ends it at once).
+  A Ctrl-C while the last one had no effect (ignored, or still pending)
+  kills the group. Pid 1 (the serial shell) gets only the signals it
+  handles. Nothing stops yet (`SIGSTOP`, `SIGTSTP` are dropped).
+- **Process groups and sessions,** as POSIX has them: `setpgid`, `getpgid`,
+  `setsid`, `getsid`, `tcsetpgrp`/`tcgetpgrp` (`TIOCSPGRP`, `TIOCGPGRP`,
+  `TIOCGSID`). An interactive shell runs each foreground pipeline as a
+  group with the terminal's foreground; it goes back to the shell when the
+  group ends.
 - **Processes:** no `fork` (`ENOSYS`: no per-process address spaces).
   `vfork` + `exec`, as on uClinux: the child runs in the parent's memory,
   on its stack, until it execs or exits (`_exit`), while the parent waits;

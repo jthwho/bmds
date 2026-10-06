@@ -899,6 +899,14 @@ int32_t Process::termGet(int32_t fd, bmds_term_t *term) {
         return copyOut(t, term);
 }
 
+int32_t Process::terminalOf(int32_t fd, Console *&out) const {
+        const FileHandle *h = _fds.handle(fd);
+        if (h == nullptr) return -BMDS_EBADF;
+        if (!isConsole(h)) return -BMDS_ENOTTY;
+        out = _console;
+        return 0;
+}
+
 int32_t Process::termSet(int32_t fd, uint32_t flags) {
         FileHandle *h = _fds.handle(fd);
         if (h == nullptr) return -BMDS_EBADF;

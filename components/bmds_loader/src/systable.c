@@ -65,8 +65,10 @@ int32_t bmds_k_sig_suspend(uint32_t mask);
 int32_t bmds_k_proc_kill(int32_t pid, int32_t sig);
 int32_t bmds_k_proc_exit_signal(int32_t sig);
 int32_t bmds_k_io_poll(bmds_pollfd_t *fds, uint32_t count, int32_t timeout_ms, const uint32_t *mask);
+int32_t bmds_k_proc_group(uint32_t op, int32_t pid, int32_t pgid);
+int32_t bmds_k_term_foreground(int32_t fd, int32_t pgid);
 
-#define SLOTS 51
+#define SLOTS 53
 
 /* bmds_sys_t with its slots spelled out (same layout; checked below). */
 static const struct {
@@ -132,10 +134,12 @@ static const struct {
                 [BMDS_SYS_PROC_KILL] = (bmds_sys_fn_t)bmds_k_proc_kill,
                 [BMDS_SYS_PROC_EXIT_SIGNAL] = (bmds_sys_fn_t)bmds_k_proc_exit_signal,
                 [BMDS_SYS_IO_POLL] = (bmds_sys_fn_t)bmds_k_io_poll,
+                [BMDS_SYS_PROC_GROUP] = (bmds_sys_fn_t)bmds_k_proc_group,
+                [BMDS_SYS_TERM_FOREGROUND] = (bmds_sys_fn_t)bmds_k_term_foreground,
         },
 };
 
-_Static_assert(SLOTS == BMDS_SYS_IO_POLL + 1, "every slot is in the table");
+_Static_assert(SLOTS == BMDS_SYS_TERM_FOREGROUND + 1, "every slot is in the table");
 _Static_assert(sizeof(table) == 16 + SLOTS * sizeof(bmds_sys_fn_t), "table layout");
 
 const bmds_sys_t *bmds_k_sys_table(void) {

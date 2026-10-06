@@ -692,14 +692,57 @@ int LangBuiltins::sh(CommandContext &ctx) {
         Args         params;
         StringView   name = args[0]; // $0: as bash, the shell's name for `-c` without one
         ShellOptions options = ctx.executor().state().options;
-        // Options first (`#!/bin/sh -e` comes here as `sh -e script`).
+        bool         interactive = false, login = false;
+        // Options first (`#!/bin/sh -e` comes here as `sh -e script`); -i and -l are the shell's.
         size_t first = 1;
         while (first < args.size()) {
                 const StringView a = args[first];
                 if (a.size() < 2 || (a[0] != '-' && a[0] != '+') || a == "-c") break;
                 ++first;
                 if (a == "--") break;
-                if (!applyOptionLetters(ctx, a, options)) return Shell::ExitUsage;
+                if (a == "--login") {
+                        login = true;
+                        continue;
+                }
+                String letters;
+                for (size_t k = 0; k < a.size(); ++k) {
+                        if (k > 0 && a[0] == '-' && a[k] == 'i') {
+                                interactive = true;
+                        } else if (k > 0 && a[0] == '-' && a[k] == 'l') {
+                                login = true;
+                        } else {
+                                (void)letters.append(a[k]);
+                        }
+                }
+                if (letters.size() > 1 && !applyOptionLetters(ctx, letters.view(), options)) return Shell::ExitUsage;
+        }
+        // Interactive: asked for, or no script and a terminal for input (as POSIX has it).
+        if (first == args.size() && !interactive) {
+                FileHandle *in = ctx.fds().handle(FdTable::Stdin);
+                interactive = in != nullptr && in->stream().isTerminal();
+        }
+        if (interactive && first == args.size()) {
+                Shell &shell = ctx.shell();
+                // The program's own shell prompts; any other (typed at a prompt) is a process of its own.
+                if (shell.takeProgramShell()) {
+                        shell.state().options = options;
+                        return shell.interact(login);
+                }
+                List<String> again;
+                Error        err = again.reserve(args.size());
+                for (size_t i = 0; err.isOk() && i < args.size(); ++i) {
+                        auto [arg, aerr] = String::fromView(args[i]);
+                        err = aerr.isOk() ? again.append(std::move(arg)) : aerr;
+                }
+                if (err.isError()) {
+                        ctx.eprint("sh: out of memory\n");
+                        return Shell::ExitFailure;
+                }
+                if (shell.launcher() == nullptr) {
+                        ctx.eprint("sh: no interactive shell here\n");
+                        return Shell::ExitUsage;
+                }
+                return ctx.executor().runFile("/bin/sh", again);
         }
         if (first < args.size() && StringView(args[first]) == "-c") {
                 // `sh -c command [name [arg]...]`: name would be $0.
@@ -722,9 +765,9 @@ int LangBuiltins::sh(CommandContext &ctx) {
                 name = args[first];
                 params = args.mid(first + 1);
         } else {
-                // The script on stdin; an interactive subshell is not supported.
+                // The script on stdin.
                 FileHandle *in = ctx.fds().handle(FdTable::Stdin);
-                if (in == nullptr || in->stream().isTerminal()) return ctx.usage();
+                if (in == nullptr) return ctx.usage();
                 uint8_t buf[256];
                 for (;;) {
                         auto [n, err] = ctx.read(WritableByteSpan(buf));

@@ -14,6 +14,7 @@
 #include <optional>
 #include <esp_cache.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include <freertos/timers.h>
 #include <sdkconfig.h>
 #include <bmds/builtinprograms.h>
@@ -68,6 +69,18 @@ namespace {
         // Ended programs whose tasks wait to be stopped (see queueStop()).
         constinit StaticObject<Mutex> stopLock;
         constinit Running            *stopQueue = nullptr;
+
+        // Who has a terminal's foreground: held while a program joins or makes a job's group and
+        // takes the foreground, and while one that ends gives it back (devplan/processes.md §3.6.1).
+        constinit StaticObject<Mutex> groupLock;
+
+        // Consoles with signals to deliver (their hook queues them; a console may be queued more
+        // than once: a later delivery finds its set empty) and the task that delivers them,
+        // above the shells' priority so a busy program can't hold a Ctrl-C up.
+        constexpr UBaseType_t   SignalQueueLength = 16;
+        constexpr size_t        SignalTaskStackBytes = 8192; // it may end programs (close their files)
+        constinit QueueHandle_t signalQueue = nullptr;
+        constinit Task          signalTask;
 
         // A file through the VFS, as the format check reads it.
         class FileSource final : public ProgramImage::Source {
@@ -302,6 +315,7 @@ namespace {
                         context.interrupt = &p.signals().interrupt();
                         context.launcher = &builtinLauncher;
                         context.program = run.builtin->name;
+                        context.process = &run;
                         status = err.isOk() ? run.builtin->program.main(context) : 126;
                 }
                 if (run.kill.load()) run.finish(run.killStatus.load());
@@ -310,13 +324,12 @@ namespace {
         }
 
         // A Running for @p image and @p process (owned once it starts), not yet started.
-        Running *createRunning(const Image &image, Process *process, int32_t pid, int32_t job) {
+        Running *createRunning(const Image &image, Process *process, int32_t pid) {
                 void *memory = Memory::alloc(MemSpace::Psram, sizeof(Running));
                 if (memory == nullptr) return nullptr;
                 auto *run = new (memory) Running;
                 run->process = run->current = process;
                 run->pid = run->currentPid = pid;
-                run->job = job;
                 run->image = image.memory;
                 run->builtin = image.builtin;
                 run->entry = image.builtin != nullptr ? 0 : reinterpret_cast<uintptr_t>(image.memory) + image.entry;
@@ -352,7 +365,9 @@ namespace {
                                                                       config.stackBytes + InternalReserveBytes
                                             ? MemSpace::Internal
                                             : MemSpace::Psram;
-                config.priority = uxTaskPriorityGet(nullptr);
+                // Its starter's priority; the shells' for one the kernel starts (pid 1).
+                config.priority =
+                        Running::ofCurrentTask() != nullptr ? uxTaskPriorityGet(nullptr) : CONFIG_BMDS_SHELL_PRIORITY;
                 const Error err = run.task.start(config, run.builtin != nullptr ? builtinMain : programMain, &run);
                 if (err.isOk())
                         bmdsDebug("Loader: %s (pid %d) at %p, stack %u in %s", name, static_cast<int>(run.pid),
@@ -408,7 +423,10 @@ namespace {
                         bool post(Running &run, int32_t pid, int sig, int code) {
                                 Process *p = run.processOf(pid);
                                 if (p == nullptr) return false;
-                                Signals              &s = p->signals();
+                                Signals &s = p->signals();
+                                // Pid 1 gets only what it set an action for (as Linux's init).
+                                if (pid == ProcessTable::InitPid && s.action(sig) == Signals::Action::Default)
+                                        return false;
                                 const Signals::Posted posted = s.post(sig, code);
                                 if (posted == Signals::Posted::Dropped) return false;
                                 // A vfork child (or its parent while it runs) ends through
@@ -455,38 +473,119 @@ namespace {
                         int      _count = 0;
         };
 
-        // Sends @p sig to every process of job @p job; false if none took it.
-        bool signalJob(int32_t job, int sig, int code) {
+        // Sends @p sig to every process of group @p group; false if none took it.
+        bool signalGroup(int32_t group, int sig, int code) {
                 Sender sender;
                 bool   taken = false;
-                processes->forEachInJob(job, [&](int32_t pid, void *runtime) {
+                processes->forEachInGroup(group, [&](int32_t pid, void *runtime) {
                         if (runtime != nullptr && sender.post(*static_cast<Running *>(runtime), pid, sig, code))
                                 taken = true;
                 });
                 return taken;
         }
 
-        // Ends every process of job @p job (SIGKILL).
-        void killJob(int32_t job) {
-                (void)signalJob(job, BMDS_SIGKILL, BMDS_SI_KERNEL);
+        // Sends @p sig to every process of session @p session.
+        void signalSession(int32_t session, int sig) {
+                Sender sender;
+                processes->forEachInSession(session, [&](int32_t pid, void *runtime) {
+                        if (runtime != nullptr)
+                                (void)sender.post(*static_cast<Running *>(runtime), pid, sig, BMDS_SI_KERNEL);
+                });
                 return;
         }
 
-        // Returns true if a process of job @p job has @p sig pending.
-        bool jobHasPending(int32_t job, int sig) {
+        // Returns true if a process of group @p group has @p sig pending.
+        bool groupHasPending(int32_t group, int sig) {
                 bool pending = false;
-                processes->forEachInJob(job, [&](int32_t pid, void *runtime) {
+                processes->forEachInGroup(group, [&](int32_t pid, void *runtime) {
                         Process *p = runtime != nullptr ? static_cast<Running *>(runtime)->processOf(pid) : nullptr;
                         if (p != nullptr && (p->signals().pending() & Signals::bit(sig)) != 0) pending = true;
                 });
                 return pending;
         }
 
+        // The console's signals, to its foreground group (SIGHUP: its session). A Ctrl-C after one
+        // no process took, or that is still pending, ends the group (SIGKILL).
+        void deliverConsoleSignals(Console &console) {
+                const uint32_t set = console.takeSignals();
+                for (int sig = 1; sig < Signals::Count; ++sig) {
+                        if ((set & Signals::bit(sig)) == 0) continue;
+                        if (sig == BMDS_SIGHUP) {
+                                if (const int32_t session = console.session(); session > 0)
+                                        signalSession(session, BMDS_SIGHUP);
+                                continue;
+                        }
+                        const int32_t group = console.foreground();
+                        if (group <= 0) continue;
+                        if (sig != BMDS_SIGINT) {
+                                (void)signalGroup(group, sig, BMDS_SI_KERNEL);
+                                continue;
+                        }
+                        if (console.unansweredGroup() == group || groupHasPending(group, BMDS_SIGINT)) {
+                                (void)signalGroup(group, BMDS_SIGKILL, BMDS_SI_KERNEL);
+                                console.setUnansweredGroup(0);
+                        } else {
+                                const bool taken = signalGroup(group, BMDS_SIGINT, BMDS_SI_KERNEL);
+                                console.setUnansweredGroup(taken ? 0 : group);
+                        }
+                }
+                return;
+        }
+
+        void signalTaskMain(void *) {
+                for (;;) {
+                        Console *console = nullptr;
+                        if (xQueueReceive(signalQueue, &console, portMAX_DELAY) == pdTRUE && console != nullptr)
+                                deliverConsoleSignals(*console);
+                }
+        }
+
+        // The consoles' hook: queues the console for the signal task (a full queue leaves the
+        // set for the next signal's delivery).
+        void queueConsoleSignals(Console &console, bool fromIsr) {
+                Console *c = &console;
+                if (!fromIsr) {
+                        (void)xQueueSend(signalQueue, &c, 0);
+                        return;
+                }
+                BaseType_t woken = pdFALSE;
+                (void)xQueueSendFromISR(signalQueue, &c, &woken);
+                portYIELD_FROM_ISR(woken);
+                return;
+        }
+
+        // Process @p pid (of @p p) is ending: a terminal's foreground it held goes back to its
+        // parent's group (or the session's) once no other process of its group runs; a session
+        // leader's terminal has no session any more, and its foreground group gets SIGHUP.
+        void leaveTerminal(const Process &p, int32_t pid) {
+                Console *console = p.console();
+                if (console == nullptr) return;
+                int32_t hangUp = 0; // signalled after the lock (an end it causes comes back here)
+                {
+                        Mutex::Locker locker(*groupLock, WaitForever);
+                        const int32_t session = processes->sessionOf(pid);
+                        const int32_t group = processes->groupOf(pid);
+                        if (session == 0 || console->session() != session) return;
+                        if (pid == session) {
+                                const int32_t foreground = console->foreground();
+                                console->setSession(0);
+                                console->setForeground(0);
+                                if (foreground > 0 && foreground != group) hangUp = foreground;
+                        } else if (console->foreground() == group && !processes->hasRunningInGroup(group, pid)) {
+                                const int32_t parent = processes->parentOf(pid);
+                                const bool    inSession = parent > 0 && processes->sessionOf(parent) == session;
+                                console->setForeground(inSession ? processes->groupOf(parent) : session);
+                        }
+                }
+                if (hangUp != 0) (void)signalGroup(hangUp, BMDS_SIGHUP, BMDS_SI_KERNEL);
+                return;
+        }
+
         // Records that @p pid ended with @p status, and tells its parent (SIGCHLD).
         void recordEnd(int32_t pid, int32_t status) {
                 const int32_t parent = processes->parentOf(pid);
                 processes->exited(pid, status);
-                if (parent <= ProcessTable::ShellPid) return;
+                if (parent <= 0) return;
                 Sender sender;
                 (void)processes->withProcess(parent, [&](void *runtime) {
                         if (runtime != nullptr)
@@ -587,6 +686,7 @@ void Running::end(int32_t status) {
         // longer points its children at it).
         while (depth > 0) {
                 const Child c = children[--depth];
+                leaveTerminal(*c.process, c.pid);
                 c.process->release();
                 recordEnd(c.pid, status);
                 Process::destroy(c.process);
@@ -594,6 +694,7 @@ void Running::end(int32_t status) {
         current = process;
         currentPid = pid;
         if (process != nullptr) {
+                leaveTerminal(*process, pid);
                 process->release();
                 recordEnd(pid, status);
                 Process::destroy(process);
@@ -615,7 +716,8 @@ int32_t Running::vfork() {
         Process *child = current->createChild();
         if (child == nullptr) return -BMDS_ENOMEM;
         // Its runner is this task's, until it execs (signals find it there).
-        const Result<int32_t> added = processes->add(currentPid, job, &current->childEvent(), this);
+        const Result<int32_t> added =
+                processes->add(currentPid, ProcessTable::Inherit, ProcessTable::Inherit, &current->childEvent(), this);
         if (added.isError()) {
                 Process::destroy(child);
                 return -BMDS_EAGAIN;
@@ -633,6 +735,7 @@ int32_t Running::endChild(int32_t waitStatus) {
         } else {
                 setCurrent(process, pid);
         }
+        leaveTerminal(*c.process, c.pid);
         c.process->release();
         recordEnd(c.pid, waitStatus);
         Process::destroy(c.process);
@@ -692,7 +795,7 @@ int32_t Running::exec(const char *path, char *const *argv, char *const *envp) {
         }
         // From here on the old program's memory is gone (in place) or its
         // child's process belongs to the new task (a vfork child).
-        Running *run = createRunning(loaded, target, targetPid, job);
+        Running *run = createRunning(loaded, target, targetPid);
         if (run != nullptr) {
                 processes->setRuntime(targetPid, run);
                 err = startRunning(*run, p, loaded.stackBytes);
@@ -712,6 +815,7 @@ int32_t Running::exec(const char *path, char *const *argv, char *const *envp) {
                         setCurrent(process, pid);
                 }
                 if (run == nullptr) {
+                        leaveTerminal(*target, targetPid);
                         target->release();
                         recordEnd(targetPid, ProcessTable::exitStatus(127));
                         Process::destroy(target);
@@ -758,10 +862,11 @@ int32_t Running::id(uint32_t which) {
         switch (which) {
                 case BMDS_PROC_SELF: return currentPid;
                 case BMDS_PROC_PARENT: {
+                        // An orphan's parent is 1, as Linux reports it.
                         const int32_t parent = processes->parentOf(currentPid);
-                        return parent != 0 ? parent : ProcessTable::ShellPid;
+                        return parent > 0 ? parent : ProcessTable::InitPid;
                 }
-                case BMDS_PROC_JOB: return job;
+                case BMDS_PROC_JOB: return processes->groupOf(currentPid);
                 default: return -BMDS_EINVAL;
         }
 }
@@ -794,11 +899,12 @@ int32_t Running::sigSuspend(uint32_t mask) {
 namespace {
 
         // kill(): @p sig (0: only a check) to @p target as `proc_kill` takes it, from process
-        // @p self in job @p selfJob (0: from the kernel, which has neither).
-        int32_t sendSignalFrom(int32_t self, int32_t selfJob, int32_t target, int32_t sig) {
+        // @p self (0: from the kernel, which has no group).
+        int32_t sendSignalFrom(int32_t self, int32_t target, int32_t sig) {
                 if (sig < 0 || sig >= Signals::Count) return -BMDS_EINVAL;
-                if (target == ProcessTable::ShellPid) return -BMDS_EPERM;
-                if (target == 0 && selfJob == 0) return -BMDS_EINVAL;
+                if (target == ProcessTable::InitPid && (sig == BMDS_SIGKILL || sig == BMDS_SIGSTOP)) return -BMDS_EPERM;
+                const int32_t selfGroup = self != 0 ? processes->groupOf(self) : 0;
+                if (target == 0 && selfGroup == 0) return -BMDS_EINVAL;
                 bool found = false;
                 {
                         Sender sender;
@@ -815,16 +921,25 @@ namespace {
                                         if (id != self) send(id, runtime);
                                 });
                         } else {
-                                processes->forEachInJob(target == 0 ? selfJob : -target, send);
+                                processes->forEachInGroup(target == 0 ? selfGroup : -target, send);
                         }
                 }
                 return found ? 0 : -BMDS_ESRCH;
         }
 
+        int32_t errnoOf(Error err) {
+                switch (err.code()) {
+                        case Error::Ok: return 0;
+                        case Error::NotExist: return -BMDS_ESRCH;
+                        case Error::PermissionDenied: return -BMDS_EPERM;
+                        default: return -BMDS_EINVAL;
+                }
+        }
+
 } // namespace
 
 int32_t Running::sendSignal(int32_t target, int32_t sig) {
-        return sendSignalFrom(currentPid, job, target, sig);
+        return sendSignalFrom(currentPid, target, sig);
 }
 
 int32_t Running::exitSignal(int32_t sig) {
@@ -834,12 +949,72 @@ int32_t Running::exitSignal(int32_t sig) {
         finish(status);
 }
 
+int32_t Running::group(uint32_t op, int32_t target, int32_t pgid) {
+        if (target < 0) return -BMDS_EINVAL;
+        const int32_t who = target != 0 ? target : currentPid;
+        switch (op) {
+                case BMDS_GROUP_GET:
+                case BMDS_GROUP_SESSION: {
+                        const int32_t id = op == BMDS_GROUP_GET ? processes->groupOf(who) : processes->sessionOf(who);
+                        return id != 0 ? id : -BMDS_ESRCH;
+                }
+                case BMDS_GROUP_SET: {
+                        Mutex::Locker locker(*groupLock, WaitForever);
+                        return errnoOf(processes->setGroup(currentPid, target, pgid));
+                }
+                case BMDS_GROUP_NEW_SESSION: {
+                        Mutex::Locker         locker(*groupLock, WaitForever);
+                        const Result<int32_t> made = processes->newSession(currentPid);
+                        return made.isOk() ? made.value() : errnoOf(made.error());
+                }
+                default: return -BMDS_EINVAL;
+        }
+}
+
+int32_t Running::termForeground(int32_t fd, int32_t pgid) {
+        if (pgid < 0) return -BMDS_EINVAL;
+        Console      *console = nullptr;
+        const int32_t r = current->terminalOf(fd, console);
+        if (r < 0) return r;
+        Mutex::Locker locker(*groupLock, WaitForever);
+        const int32_t session = processes->sessionOf(currentPid);
+        if (console == nullptr || session == 0 || console->session() != session) return -BMDS_ENOTTY;
+        if (pgid == 0) return console->foreground();
+        if (!processes->hasGroupInSession(pgid, session)) return -BMDS_EPERM;
+        console->setForeground(pgid);
+        console->setUnansweredGroup(0);
+        return pgid;
+}
+
+Error Running::setSignalAction(int sig, SignalAction action) {
+        if (!Signals::isValid(sig) || process == nullptr) return Error::Invalid;
+        Signals::Action to = Signals::Action::Default;
+        if (action == SignalAction::Ignore) to = Signals::Action::Ignore;
+        if (action == SignalAction::Interrupt) to = Signals::Action::Interrupt;
+        return process->signals().setAction(sig, to) ? Error::Ok : Error::Invalid;
+}
+
 // --- Loader -------------------------------------------------------------------
 
 Error Loader::init() {
         if (!stopLock.isCreated()) stopLock.create();
+        if (!groupLock.isCreated()) groupLock.create();
         if (!processes.isCreated()) processes.create();
-        return processes->init();
+        Error err = processes->init();
+        if (err.isOk() && signalQueue == nullptr) {
+                signalQueue = xQueueCreate(SignalQueueLength, sizeof(Console *));
+                if (signalQueue == nullptr) err = Error::NoMem;
+        }
+        if (err.isOk() && !signalTask.isRunning()) {
+                Task::Config config;
+                config.name = "sig";
+                config.stackBytes = SignalTaskStackBytes;
+                config.stackSpace = MemSpace::Psram;
+                config.priority = CONFIG_BMDS_SHELL_PRIORITY + 1;
+                err = signalTask.start(config, signalTaskMain, nullptr);
+        }
+        if (err.isOk()) Console::setSignalHook(queueConsoleSignals);
+        return err;
 }
 
 size_t Loader::listProcesses(Span<ProcessInfo> out) {
@@ -853,7 +1028,8 @@ size_t Loader::listProcesses(Span<ProcessInfo> out) {
                         p = ProcessInfo{};
                         p.pid = v.pid;
                         p.parent = v.parent;
-                        p.job = v.job;
+                        p.group = v.group;
+                        p.session = v.session;
                         p.status = v.status;
                         p.state = v.ended ? ProcessInfo::State::Zombie : ProcessInfo::State::Running;
                         if (const auto *run = static_cast<Running *>(v.runtime); run != nullptr) {
@@ -912,7 +1088,7 @@ size_t Loader::listThreads(Span<ThreadInfo> out) {
 
 Error Loader::signal(int32_t pid, int sig) {
         if (!processes.isCreated()) return Error::NotExist;
-        switch (const int32_t r = sendSignalFrom(0, 0, pid, sig); r) {
+        switch (const int32_t r = sendSignalFrom(0, pid, sig); r) {
                 case 0: return Error::Ok;
                 case -BMDS_ESRCH: return Error::NotExist;
                 case -BMDS_EPERM: return Error::PermissionDenied;
@@ -942,47 +1118,11 @@ namespace {
                 return;
         }
 
-        // Waits for the shell's program @p pid to end (@p ended is released).
-        // Each Ctrl-C (@p interrupt raised) sends SIGINT to its job, @p job;
-        // one that comes while the previous had no effect (all ignored it, or
-        // it is still pending somewhere) sends SIGKILL instead. A change of
-        // @p console's size sends SIGWINCH.
-        void waitForJob(int32_t pid, int32_t job, Semaphore &ended, Interrupt *interrupt, Console *console) {
-                Interrupt  none;
-                Interrupt &ctrlC = interrupt != nullptr ? *interrupt : none;
-                // Resizes release `ended` too, so each wake checks what happened.
-                const std::optional<Interrupt::Watch> resizes =
-                        console != nullptr ? std::optional<Interrupt::Watch>(std::in_place, console->resized(), ended)
-                                           : std::nullopt;
-                const Deadline forever(WaitForever);
-                uint32_t       seen = ctrlC.raises();
-                uint32_t       size = console != nullptr ? console->sizeGeneration() : 0;
-                bool           unanswered = false;
-                for (;;) {
-                        (void)ctrlC.wait(ended, forever, seen);
-                        if (ctrlC.raises() != seen) {
-                                seen = ctrlC.raises();
-                                if (unanswered || jobHasPending(job, BMDS_SIGINT)) {
-                                        killJob(job);
-                                        unanswered = false;
-                                } else {
-                                        unanswered = !signalJob(job, BMDS_SIGINT, BMDS_SI_KERNEL);
-                                }
-                        }
-                        if (console != nullptr && console->sizeGeneration() != size) {
-                                size = console->sizeGeneration();
-                                (void)signalJob(job, BMDS_SIGWINCH, BMDS_SI_KERNEL);
-                        }
-                        if (processes->isEnded(pid)) return;
-                }
-        }
-
 } // namespace
 
 // Loads and starts the program in @p request, its end to release @p ended: its pid. The terminal's
-// modes as they were, in @p savedMode (the program may change them); @p parent and @p parentJob its.
-Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console::TermMode &savedMode, int32_t &parent,
-                              int32_t &parentJob, bool &fromProcess) {
+// modes as they were, in @p savedMode (the program may change them); @p parent its parent.
+Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console::TermMode &savedMode, int32_t &parent) {
         if (+_thread_local_bss_end != +_thread_local_data_start) {
                 report(request, "cannot run programs: the kernel has thread-local storage");
                 return makeError<int32_t>(Error::NotSupported);
@@ -995,28 +1135,10 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
         const StringView cwd = request.cwd.isEmpty() ? StringView("/") : request.cwd;
         Image            image;
         LoadFailure      failure;
-        // Called by a process (the shell as /bin/sh): its child, in its job.
+        // Called by a process (a shell, a built-in program's thread): its child.
         const Running *caller = Running::ofCurrentTask();
-        parent = caller != nullptr ? caller->currentPid : ProcessTable::ShellPid;
-        parentJob = caller != nullptr ? caller->job : 0;
-        fromProcess = caller != nullptr;
-        Error         err = loadImage(request.path, cwd, image, failure);
-        if (err.isError()) {
-                const ProgramImage::Problem &problem = failure.problem;
-                if (failure.stage == nullptr || problem.what == nullptr) {
-                        if (failure.stage != nullptr)
-                                report(request, "%s: %s", failure.stage, errorText(err));
-                        else
-                                report(request, "%s", errorText(err));
-                } else if (problem.hasValue) {
-                        report(request, "%s: %s (0x%x)", failure.stage, problem.what,
-                               static_cast<unsigned>(problem.value));
-                } else {
-                        report(request, "%s: %s", failure.stage, problem.what);
-                }
-                return makeError<int32_t>(err);
-        }
-
+        parent = caller != nullptr ? caller->currentPid : ProcessTable::KernelParent;
+        Error err = loadImage(request.path, cwd, image, failure);
         // Its resources. The environment gets the kernel's time zone as TZ
         // unless it has one (the C library's localtime reads TZ).
         Process *process = Process::create(*request.fds, request.console);
@@ -1051,30 +1173,55 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
         }
 
         // Its process and its task.
-        Running  *run = createRunning(image, process, 0, 0);
+        Running *run = createRunning(image, process, 0);
         if (run == nullptr) {
                 report(request, "out of memory");
                 Process::destroy(process);
                 Memory::free(image.memory);
                 return makeError<int32_t>(Error::NoMem);
         }
-        const Result<int32_t> added = processes->add(parent, parentJob, &ended, run);
+        // Its group and session, and the terminal's foreground (devplan/processes.md §3.6.1).
+        Result<int32_t> added = makeError<int32_t>(Error::Busy);
+        {
+                Mutex::Locker              groups(*groupLock, WaitForever);
+                ProgramLauncher::JobGroup *job = request.session ? nullptr : request.group;
+                int32_t                    group = ProcessTable::Inherit;
+                if (request.session) group = ProcessTable::New;
+                if (job != nullptr) group = job->id != 0 ? job->id : ProcessTable::New;
+                added = processes->add(parent, group, request.session ? ProcessTable::New : ProcessTable::Inherit,
+                                       &ended, run);
+                Console *console = request.console;
+                if (added.isOk()) {
+                        const int32_t pid = added.value();
+                        if (job != nullptr && job->id == 0) job->id = pid;
+                        if (console != nullptr && request.session) {
+                                console->setSession(pid);
+                                console->setForeground(pid);
+                                console->setUnansweredGroup(0);
+                        } else if (console != nullptr && job != nullptr && job->foreground &&
+                                   console->session() == processes->sessionOf(pid)) {
+                                console->setForeground(job->id);
+                                console->setUnansweredGroup(0);
+                        }
+                }
+        }
         if (added.isError()) {
-                report(request, "cannot start: too many processes");
+                report(request, "cannot start: %s",
+                       added.error() == Error::Full ? "too many processes" : "not in that process group");
                 destroyRunning(run);
                 Process::destroy(process);
                 Memory::free(image.memory);
-                return makeError<int32_t>(Error::Busy);
+                return makeError<int32_t>(added.error() == Error::Full ? Error::Busy : added.error());
         }
         const int32_t pid = added.value();
         run->pid = run->currentPid = pid;
-        run->job = parentJob != 0 ? parentJob : pid;
         // The program may change the terminal's modes: the shell gets its own back.
         savedMode = request.console != nullptr ? request.console->mode() : Console::TermMode();
         err = startRunning(*run, request.path, image.stackBytes);
         if (err.isError()) {
                 report(request, "cannot start: %s", errorText(err));
                 processes->setRuntime(pid, nullptr);
+                leaveTerminal(*process, pid);
                 processes->exited(pid, ProcessTable::exitStatus(127));
                 (void)processes->reap(parent, pid);
                 destroyRunning(run);
@@ -1088,17 +1235,20 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
 Result<int> Loader::run(const Request &request) {
         Semaphore             ended{1, 0};
         Console::TermMode     savedMode;
-        int32_t               parent = 0, parentJob = 0;
-        bool                  fromProcess = false;
-        const Result<int32_t> started = begin(request, ended, savedMode, parent, parentJob, fromProcess);
+        int32_t               parent = 0;
+        const Result<int32_t> started = begin(request, ended, savedMode, parent);
         if (started.isError()) return makeError<int>(started.error());
         const int32_t pid = started.value();
-        if (!fromProcess) {
-                // Not run->job: a program that ended already may have been freed.
-                waitForJob(pid, parentJob != 0 ? parentJob : pid, ended, request.interrupt, request.console);
-        } else if (Interrupt::wait(request.interrupt, ended, Deadline(WaitForever)) == Error::Interrupted) {
-                // The calling process is being ended by a signal: its child goes
-                // on, an orphan (and won't release `ended`, about to go).
+        // Signals reach the program from its terminal (its foreground group). One the caller
+        // catches (an interactive shell's SIGINT) leaves it waiting; one that ends the caller
+        // leaves the child an orphan (it won't release `ended`, about to go).
+        Running *const self = Running::ofCurrentTask();
+        for (Interrupt *interrupt = request.interrupt;;) {
+                const uint32_t seen = interrupt != nullptr ? interrupt->raises() : 0;
+                const Error    err = interrupt != nullptr ? interrupt->wait(ended, Deadline(WaitForever), seen)
+                                                          : ended.acquire(WaitForever);
+                if (err != Error::Interrupted) break;
+                if (self != nullptr && !self->isEnding()) continue;
                 processes->detach(pid);
                 if (request.console != nullptr) request.console->setMode(savedMode);
                 return makeError<int>(Error::Interrupted);
@@ -1113,11 +1263,14 @@ Result<int> Loader::run(const Request &request) {
 }
 
 Result<int32_t> Loader::start(const Request &request) {
-        Semaphore             ended{1, 0};
-        Console::TermMode     savedMode;
-        int32_t               parent = 0, parentJob = 0;
-        bool                  fromProcess = false;
-        const Result<int32_t> started = begin(request, ended, savedMode, parent, parentJob, fromProcess);
+        Semaphore         ended{1, 0};
+        Console::TermMode savedMode;
+        int32_t           parent = 0;
+        // Not waited for: a group of its own, not in the foreground (unless asked otherwise).
+        ProgramLauncher::JobGroup background{0, false};
+        Request                   own = request;
+        if (own.group == nullptr && !own.session) own.group = &background;
+        const Result<int32_t> started = begin(own, ended, savedMode, parent);
         if (started.isError()) return started;
         // Nobody waits: an orphan, freed when it ends (at once if it already has).
         processes->detach(started.value());

@@ -29,8 +29,8 @@ class Pty;
  * @brief A pseudo-terminal's program end: the console a shell or program
  *        runs on (`devplan/pty.md`).
  *
- * A `Console` like any other: its modes, Ctrl-C raising its interrupt, its
- * size and `resized()`, its readiness. What is written goes to the
+ * A `Console` like any other: its modes, Ctrl-C and Ctrl-\ sending signals,
+ * its size and `resized()`, its readiness. What is written goes to the
  * emulator's end (`\n` as CR LF while the mode says so); what is read is
  * what the emulator wrote. Once the emulator has hung up, reads end
  * (`EndOfFile`) and writes are dropped.
@@ -56,12 +56,12 @@ class PtyConsole final : public Console {
                 friend class Pty;
 
                 explicit PtyConsole(Pty &pty) : _pty(pty) {}
-                size_t push(ByteSpan data); // typed input (the emulator's writes), Ctrl-C handled
+                size_t push(ByteSpan data); // typed input (the emulator's writes), Ctrl-C and Ctrl-\ handled
 
                 Pty                  &_pty;
                 char                  _name[8] = {}; // "ptyN"
                 Mutex                 _inputLock;    // the input's producers
-                std::atomic<bool>     _flush{false}; // input before a Ctrl-C to drop
+                std::atomic<bool>     _flush{false}; // input before a Ctrl-C or Ctrl-\ to drop
                 std::atomic<uint32_t> _flushTo{0};
 };
 
@@ -120,7 +120,7 @@ class Pty final : public Stream {
 
                 /**
                  * @brief Gives the program input (keys), as much as fits; a Ctrl-C
-                 *        raises the console's interrupt while its signals are on.
+                 *        sends `SIGINT` (Ctrl-\ `SIGQUIT`) while its signals are on.
                  * @return The bytes taken, or `BrokenPipe` (the program's end is done).
                  * @nonblocking
                  */
@@ -140,7 +140,10 @@ class Pty final : public Stream {
                         return;
                 }
 
-                /** @brief The emulator's end closes: the program's reads end, its writes are dropped. */
+                /**
+                 * @brief The emulator's end closes: the session gets `SIGHUP` (once), the
+                 *        program's reads end, its writes are dropped.
+                 */
                 void hangUp();
 
                 /** @brief The program's end is done: the emulator's reads end once its output is read. */

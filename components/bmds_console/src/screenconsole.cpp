@@ -17,6 +17,7 @@ BMDS_NAMESPACE_BEGIN
 namespace {
 
         constexpr uint8_t CtrlC = 0x03;
+        constexpr uint8_t CtrlBackslash = 0x1c;
         constexpr size_t  Chunk = 128; // output translated a piece at a time
 
 } // namespace
@@ -97,15 +98,15 @@ size_t ScreenConsole::push(ByteSpan data) {
         size_t taken = 0;
         size_t from = 0;
         if (signalsEnabled()) {
-                // Ctrl-C interrupts the foreground job now, and drops the input
-                // before it (what the ring holds, at the next read).
+                // Ctrl-C and Ctrl-\ signal the foreground group now, and drop the
+                // input before them (what the ring holds, at the next read).
                 for (size_t i = 0; i < data.size(); ++i) {
-                        if (data[i] != CtrlC) continue;
+                        if (data[i] != CtrlC && data[i] != CtrlBackslash) continue;
                         taken += i + 1 - from;
                         from = i + 1;
                         _flushTo.store(_input.writePosition(), std::memory_order_relaxed);
                         _flush.store(true, std::memory_order_release);
-                        interrupt().raise();
+                        sendSignal(data[i] == CtrlC ? SignalInterrupt : SignalQuit);
                 }
         }
         taken += _input.push(ByteSpan(data.data() + from, data.size() - from));

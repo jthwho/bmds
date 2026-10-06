@@ -704,39 +704,49 @@ TEST_CASE("Process: clocks, sleeping, memory") {
 TEST_CASE("ProcessTable") {
         using bmds::Error;
         using bmds::ProcessTable;
-        const size_t base = HostMemory::liveAllocations();
+        constexpr int32_t Kernel = ProcessTable::KernelParent;
+        constexpr int32_t Inherit = ProcessTable::Inherit;
+        const size_t      base = HostMemory::liveAllocations();
         {
                 ProcessTable table;
-                CHECK(table.add(ProcessTable::ShellPid, 0, nullptr, nullptr).error() == Error::InvalidState);
+                CHECK(table.add(Kernel, Inherit, Inherit, nullptr, nullptr).error() == Error::InvalidState);
                 REQUIRE(table.init().isOk());
                 REQUIRE(table.init().isOk());
-                bmds::Semaphore shellEvent{1, 0};
+                bmds::Semaphore kernelEvent{1, 0};
                 bmds::Semaphore parentEvent{1, 0};
                 int             tag = 0;
 
-                // A shell program and two children; ids count up from 2.
-                const int32_t parent = table.add(ProcessTable::ShellPid, 0, &shellEvent, &tag).value();
-                CHECK(parent == 2);
-                const int32_t a = table.add(parent, parent, &parentEvent, nullptr).value();
-                const int32_t b = table.add(parent, parent, &parentEvent, nullptr).value();
-                CHECK(a == 3);
-                CHECK(b == 4);
+                // A program started by the kernel and two children; ids count up from 1.
+                const int32_t parent = table.add(Kernel, Inherit, Inherit, &kernelEvent, &tag).value();
+                CHECK(parent == ProcessTable::InitPid);
+                const int32_t a = table.add(parent, Inherit, Inherit, &parentEvent, nullptr).value();
+                const int32_t b = table.add(parent, Inherit, Inherit, &parentEvent, nullptr).value();
+                CHECK(a == 2);
+                CHECK(b == 3);
                 CHECK(table.parentOf(a) == parent);
-                CHECK(table.parentOf(parent) == ProcessTable::ShellPid);
+                CHECK(table.parentOf(parent) == Kernel);
                 CHECK(table.parentOf(99) == 0);
                 CHECK(table.count() == 3);
+                // Without a parent entry: a group and a session of its own; children inherit both.
+                CHECK(table.groupOf(parent) == parent);
+                CHECK(table.sessionOf(parent) == parent);
+                CHECK(table.groupOf(a) == parent);
+                CHECK(table.sessionOf(b) == parent);
                 // forEach: every entry in pid order, zombies with their status and no runtime.
                 std::vector<int32_t> seen;
                 table.forEach([&](const ProcessTable::View &v) {
                         seen.push_back(v.pid);
                         CHECK_FALSE(v.ended);
                         CHECK(v.runtime == (v.pid == parent ? &tag : nullptr));
-                        CHECK(v.parent == (v.pid == parent ? ProcessTable::ShellPid : parent));
+                        CHECK(v.parent == (v.pid == parent ? Kernel : parent));
+                        CHECK(v.group == parent);
+                        CHECK(v.session == parent);
                 });
                 CHECK(seen == std::vector<int32_t>{parent, a, b});
-                int inJob = 0;
-                table.forEachInJob(parent, [&](int32_t, void *) { ++inJob; });
-                CHECK(inJob == 3);
+                int inGroup = 0;
+                table.forEachInGroup(parent, [&](int32_t, void *) { ++inGroup; });
+                CHECK(inGroup == 3);
+                CHECK(table.hasRunningInGroup(parent, parent));
 
                 // Waiting: none ended yet; a wrong id; then one ended.
                 CHECK(table.reap(parent, -1).error() == Error::WouldBlock);
@@ -754,9 +764,9 @@ TEST_CASE("ProcessTable") {
                         CHECK(v.runtime == nullptr);
                 });
                 CHECK(zombies == 1);
-                inJob = 0;
-                table.forEachInJob(parent, [&](int32_t, void *) { ++inJob; });
-                CHECK(inJob == 2);
+                inGroup = 0;
+                table.forEachInGroup(parent, [&](int32_t, void *) { ++inGroup; });
+                CHECK(inGroup == 2);
                 CHECK(table.reap(parent, a).error() == Error::WouldBlock);
                 const ProcessTable::Ended e = table.reap(parent, -1).value();
                 CHECK(e.pid == b);
@@ -765,27 +775,94 @@ TEST_CASE("ProcessTable") {
 
                 // The parent ends: its zombie goes, its living child is an
                 // orphan, freed when it ends.
-                const int32_t c = table.add(parent, parent, &parentEvent, nullptr).value();
+                const int32_t c = table.add(parent, Inherit, Inherit, &parentEvent, nullptr).value();
                 table.exited(c, ProcessTable::killedStatus(2));
                 table.exited(parent, ProcessTable::exitStatus(0));
-                CHECK(shellEvent.tryAcquire().isOk());
+                CHECK(kernelEvent.tryAcquire().isOk());
                 CHECK(table.count() == 2); // the parent's zombie and the orphan a
                 CHECK(table.parentOf(a) == 0);
                 table.exited(a, 0);
                 CHECK(table.count() == 1);
-                CHECK(table.reap(ProcessTable::ShellPid, parent).value().status == 0);
+                CHECK(table.reap(Kernel, parent).value().status == 0);
                 CHECK(table.count() == 0);
 
                 // Full, and ids skip those in use.
                 std::vector<int32_t> pids;
                 for (int i = 0; i < ProcessTable::Capacity; ++i)
-                        pids.push_back(table.add(ProcessTable::ShellPid, 0, nullptr, nullptr).value());
-                CHECK(table.add(ProcessTable::ShellPid, 0, nullptr, nullptr).error() == Error::Full);
+                        pids.push_back(table.add(Kernel, Inherit, Inherit, nullptr, nullptr).value());
+                CHECK(table.add(Kernel, Inherit, Inherit, nullptr, nullptr).error() == Error::Full);
                 for (size_t i = 1; i < pids.size(); ++i) CHECK(pids[i] == pids[i - 1] + 1);
                 for (int32_t p : pids) {
                         table.exited(p, 0);
-                        (void)table.reap(ProcessTable::ShellPid, p);
+                        (void)table.reap(Kernel, p);
                 }
+                CHECK(table.count() == 0);
+        }
+        CHECK(HostMemory::liveAllocations() == base);
+}
+
+TEST_CASE("ProcessTable: process groups and sessions") {
+        using bmds::Error;
+        using bmds::ProcessTable;
+        constexpr int32_t Kernel = ProcessTable::KernelParent;
+        constexpr int32_t Inherit = ProcessTable::Inherit;
+        constexpr int32_t New = ProcessTable::New;
+        const size_t      base = HostMemory::liveAllocations();
+        {
+                ProcessTable table;
+                REQUIRE(table.init().isOk());
+                // A shell leading its session; a job of two programs; a program in the shell's group.
+                const int32_t shell = table.add(Kernel, New, New, nullptr, nullptr).value();
+                const int32_t first = table.add(shell, New, Inherit, nullptr, nullptr).value();
+                const int32_t second = table.add(shell, first, Inherit, nullptr, nullptr).value();
+                const int32_t plain = table.add(shell, Inherit, Inherit, nullptr, nullptr).value();
+                CHECK(table.groupOf(first) == first);
+                CHECK(table.groupOf(second) == first);
+                CHECK(table.groupOf(plain) == shell);
+                CHECK(table.sessionOf(second) == shell);
+                CHECK(table.hasRunningInGroup(first, first));
+                CHECK_FALSE(table.hasRunningInGroup(plain, -1));
+
+                // Another session's group can't be joined.
+                const int32_t other = table.add(Kernel, New, New, nullptr, nullptr).value();
+                CHECK(table.add(shell, other, Inherit, nullptr, nullptr).error() == Error::PermissionDenied);
+                CHECK(table.add(other, first, Inherit, nullptr, nullptr).error() == Error::PermissionDenied);
+
+                // setpgid: itself or a child, in its session, to a group of the session or its own.
+                CHECK(table.setGroup(shell, plain, 0).isOk());
+                CHECK(table.groupOf(plain) == plain);
+                CHECK(table.setGroup(shell, plain, first).isOk());
+                CHECK(table.groupOf(plain) == first);
+                CHECK(table.setGroup(plain, 0, 0).isOk());
+                CHECK(table.groupOf(plain) == plain);
+                CHECK(table.setGroup(shell, plain, other) == Error::PermissionDenied); // another session's
+                CHECK(table.setGroup(plain, first, 0) == Error::NotExist);             // not its child
+                CHECK(table.setGroup(shell, other, 0) == Error::NotExist);
+                CHECK(table.setGroup(shell, 0, first) == Error::PermissionDenied); // a session leader
+                CHECK(table.setGroup(shell, plain, -2) == Error::Invalid);
+                int inGroup = 0;
+                table.forEachInGroup(first, [&](int32_t, void *) { ++inGroup; });
+                CHECK(inGroup == 2);
+                int inSession = 0;
+                table.forEachInSession(shell, [&](int32_t, void *) { ++inSession; });
+                CHECK(inSession == 4);
+
+                // setsid: not by a group leader; then a session and group of its own.
+                CHECK(table.newSession(first).error() == Error::PermissionDenied);
+                CHECK(table.newSession(second).value() == second);
+                CHECK(table.groupOf(second) == second);
+                CHECK(table.sessionOf(second) == second);
+                CHECK_FALSE(table.hasRunningInGroup(first, first));
+
+                // A group outlives its leader while it has processes.
+                CHECK(table.setGroup(shell, plain, first).isOk());
+                table.exited(first, 0);
+                (void)table.reap(shell, first);
+                CHECK(table.groupOf(plain) == first);
+                CHECK(table.hasRunningInGroup(first, -1));
+                for (int32_t pid : {plain, second, other, shell}) table.exited(pid, 0);
+                (void)table.reap(Kernel, shell);
+                (void)table.reap(Kernel, other);
                 CHECK(table.count() == 0);
         }
         CHECK(HostMemory::liveAllocations() == base);

@@ -24,8 +24,11 @@ BMDS_NAMESPACE_BEGIN
  *        (`Process`), then frees everything it had.
  *
  * Every program is a process (`ProcessTable`); programs start others with
- * vfork and exec (devplan/programs.md §13). A program the shell starts is
- * a job: a second Ctrl-C kills it and every process it started.
+ * vfork and exec (devplan/programs.md §13). Processes are in process groups
+ * and sessions; a console signals its foreground group (Ctrl-C, Ctrl-\, a
+ * resize; a hangup its session), which the loader delivers from a task of
+ * its own: a Ctrl-C after one that had no effect ends the group
+ * (devplan/processes.md §3.6).
  *
  * Target only. The object is stateless: one serves every shell, and
  * several programs may run at once (pipeline stages). The processes are
@@ -55,8 +58,9 @@ class Loader final : public ProgramLauncher {
                                 };
 
                                 int32_t pid;                   ///< Its id.
-                                int32_t parent;                ///< Its parent's (1: the shell; 0: none).
-                                int32_t job;                   ///< Its job.
+                                int32_t parent;                ///< Its parent's (0: none; -1: the kernel).
+                                int32_t group;                 ///< Its process group.
+                                int32_t session;               ///< Its session.
                                 int32_t status;                ///< How it ended (`Zombie`).
                                 State   state;                 ///< What it is doing.
                                 uint8_t threads;               ///< Its tasks (its own and its `Thread`s).
@@ -73,7 +77,7 @@ class Loader final : public ProgramLauncher {
                                 uint32_t stackFree;           ///< Bytes of stack never used.
                 };
 
-                /** @brief Sets up the process table (a boot stage). */
+                /** @brief Sets up the process table and the console signals' delivery (a boot stage). */
                 static Error init();
 
                 /**
@@ -89,10 +93,10 @@ class Loader final : public ProgramLauncher {
                 static size_t listThreads(Span<ThreadInfo> out);
 
                 /**
-                 * @brief Sends signal @p sig to process @p pid (> 1), or to job
+                 * @brief Sends signal @p sig to process @p pid (> 0), or to group
                  *        `-pid` (< -1), as `kill()` does (0 only checks).
                  * @return `Ok`, `NotExist` (no such process), `Invalid` (the signal
-                 *         or pid), or `PermissionDenied` (pid 1, the shell).
+                 *         or pid), or `PermissionDenied` (`SIGKILL`, `SIGSTOP` to pid 1).
                  */
                 static Error signal(int32_t pid, int sig);
 
@@ -104,7 +108,7 @@ class Loader final : public ProgramLauncher {
 
         private:
                 Result<int32_t> begin(const Request &request, Semaphore &ended, Console::TermMode &savedMode,
-                                      int32_t &parent, int32_t &parentJob, bool &fromProcess);
+                                      int32_t &parent);
 };
 
 BMDS_NAMESPACE_END

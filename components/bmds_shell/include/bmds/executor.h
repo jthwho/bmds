@@ -16,6 +16,7 @@
 #include <bmds/error.h>
 #include <bmds/fdtable.h>
 #include <bmds/list.h>
+#include <bmds/programlauncher.h>
 #include <bmds/result.h>
 #include <bmds/shebang.h>
 #include <bmds/span.h>
@@ -355,6 +356,7 @@ class Executor {
                 int              _substStatus = 0; // status of the last command substitution
                 bool             _substRan = false;
                 bool             _overflowed = false; // ran out of stack: abandon everything
+                ProgramLauncher::JobGroup *_job = nullptr;      // the pipeline's job (interactive), if any
                 int              _errorStatus = 1;    // status of the last fatal expansion error
 };
 

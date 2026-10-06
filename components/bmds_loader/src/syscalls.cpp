@@ -300,4 +300,14 @@ int32_t bmds_k_io_poll(bmds_pollfd_t *fds, uint32_t count, int32_t timeout_ms, c
         return call->poll(fds, count, timeout_ms);
 }
 
+int32_t bmds_k_proc_group(uint32_t op, int32_t pid, int32_t pgid) {
+        KernelCall call;
+        return call.running().group(op, pid, pgid);
+}
+
+int32_t bmds_k_term_foreground(int32_t fd, int32_t pgid) {
+        KernelCall call;
+        return call.running().termForeground(fd, pgid);
+}
+
 } // extern "C"

@@ -139,9 +139,12 @@ bool Executor::isExecutable(StringView path) {
 
 int Executor::runFile(StringView path, List<String> &args, int depth) {
         // A program built into the firmware (/bin/NAME, or a link to one): one of this shell's own
-        // commands runs here, as if typed; another program by the launcher.
+        // commands runs here, as if typed; another program, and the shell itself (/bin/sh is a
+        // process: devplan/processes.md §3.4), by the launcher.
         if (const ProgramEntry *builtin = Vfs::builtinProgram(path, vfs()); builtin != nullptr) {
-                if (const Command *cmd = _shell.findCommand(builtin->name); cmd != nullptr)
+                const StringView name = builtin->name;
+                const bool       isShell = name == "sh" || name == "bash";
+                if (const Command *cmd = _shell.findCommand(name); cmd != nullptr && !(isShell && _shell.launcher()))
                         return runBuiltin(*cmd, args);
                 if (_shell.launcher() != nullptr) return runProgram(path, args);
         }
@@ -254,12 +257,17 @@ int Executor::runProgram(StringView path, List<String> &args) {
         request.cwd = vfs().cwd;
         request.interrupt = &_shell.interrupt();
         request.console = &_shell.console();
+        // An interactive shell's programs are jobs: a pipeline's share one (devplan/processes.md §3.6.1).
+        ProgramLauncher::JobGroup own;
+        if (_shell.hasJobControl()) request.group = _job != nullptr ? _job : &own;
         const uint32_t raises = _shell.interrupt().raises();
         auto [status, lerr] = _shell.launcher()->run(request);
         // Ctrl-C sent the program SIGINT. If that didn't end it (caught or
         // ignored), the shell goes on with the commands after it, as bash does.
         if (lerr.isOk() && status != Shell::ExitInterrupted && _shell.interrupt().raises() != raises && raises == 0)
                 _shell.interrupt().clear();
+        // A job ended by Ctrl-C (its own group's) stops the shell's commands too: a loop ends.
+        if (lerr.isOk() && status == Shell::ExitInterrupted && _shell.hasJobControl()) _shell.interrupt().raise();
         if (lerr.isOk()) return status;
         if (lerr == Error::Interrupted) return Shell::ExitInterrupted;
         return lerr == Error::NotExist ? Shell::ExitNotFound : Shell::ExitCannotRun;

@@ -13,7 +13,8 @@ BMDS_NAMESPACE_BEGIN
 
 namespace {
 
-        // Ids count up to here, then start again at 2, skipping those in use.
+        // Ids count up to here, then start again at 2 (1 is the first process's for good),
+        // skipping those in use as a process, group or session.
         constexpr int32_t MaxPid = 32767;
 
 } // namespace
@@ -32,7 +33,7 @@ Error ProcessTable::init() {
 }
 
 ProcessTable::Entry *ProcessTable::find(int32_t pid) {
-        if (_entries == nullptr || pid <= ShellPid) return nullptr;
+        if (_entries == nullptr || pid <= 0) return nullptr;
         for (int i = 0; i < Capacity; ++i) {
                 if (_entries[i].pid == pid) return &_entries[i];
         }
@@ -44,7 +45,23 @@ void ProcessTable::free(Entry &e) {
         return;
 }
 
-Result<int32_t> ProcessTable::add(int32_t parent, int32_t job, Semaphore *notify, void *runtime) {
+bool ProcessTable::isIdInUse(int32_t id) const {
+        for (int i = 0; i < Capacity; ++i) {
+                const Entry &e = _entries[i];
+                if (e.pid == id || (e.pid != 0 && (e.group == id || e.session == id))) return true;
+        }
+        return false;
+}
+
+bool ProcessTable::isGroupInSession(int32_t group, int32_t session) const {
+        for (int i = 0; i < Capacity; ++i) {
+                const Entry &e = _entries[i];
+                if (e.pid != 0 && !e.ended && e.group == group && e.session == session) return true;
+        }
+        return false;
+}
+
+Result<int32_t> ProcessTable::add(int32_t parent, int32_t group, int32_t session, Semaphore *notify, void *runtime) {
         Mutex::Locker locker(_lock, WaitForever);
         if (_entries == nullptr) return makeError<int32_t>(Error::InvalidState);
         Entry *slot = nullptr;
@@ -52,14 +69,83 @@ Result<int32_t> ProcessTable::add(int32_t parent, int32_t job, Semaphore *notify
                 if (_entries[i].pid == 0) slot = &_entries[i];
         }
         if (slot == nullptr) return makeError<int32_t>(Error::Full);
+        // The parent's group and session, when it has them.
+        const Entry *from = find(parent);
+        if (from != nullptr && from->ended) from = nullptr;
+        const int32_t sessionId = session == Inherit && from != nullptr ? from->session : 0;
+        int32_t       groupId = group;
+        if (group == Inherit) groupId = from != nullptr && session == Inherit ? from->group : 0;
+        // A group to join is one of the session's; or none now (its processes ended), its id
+        // still kept from new processes until the last of them is gone.
+        if (groupId > 0 && sessionId != 0) {
+                for (int i = 0; i < Capacity; ++i) {
+                        const Entry &e = _entries[i];
+                        if (e.pid != 0 && e.group == groupId && e.session != sessionId)
+                                return makeError<int32_t>(Error::PermissionDenied);
+                }
+        }
         // The next id not in use (there are more ids than entries).
         int32_t pid = _lastPid;
         do {
-                pid = pid >= MaxPid ? ShellPid + 1 : pid + 1;
-        } while (find(pid) != nullptr);
+                pid = pid >= MaxPid ? InitPid + 1 : pid + 1;
+        } while (isIdInUse(pid));
         _lastPid = pid;
-        *slot = Entry{pid, parent, job != 0 ? job : pid, 0, notify, runtime, false};
+        *slot = Entry{pid,     parent, groupId > 0 ? groupId : pid, sessionId != 0 ? sessionId : pid, 0, notify,
+                      runtime, false};
         return makeResult(pid);
+}
+
+Error ProcessTable::setGroup(int32_t caller, int32_t pid, int32_t group) {
+        if (group < 0) return Error::Invalid;
+        Mutex::Locker locker(_lock, WaitForever);
+        const Entry  *self = find(caller);
+        Entry        *target = find(pid == 0 ? caller : pid);
+        if (self == nullptr || target == nullptr || target->ended || (target != self && target->parent != caller))
+                return Error::NotExist;
+        if (target->session != self->session || target->session == target->pid) return Error::PermissionDenied;
+        const int32_t to = group == 0 ? target->pid : group;
+        if (to != target->pid && !isGroupInSession(to, self->session)) return Error::PermissionDenied;
+        target->group = to;
+        return Error::Ok;
+}
+
+Result<int32_t> ProcessTable::newSession(int32_t pid) {
+        Mutex::Locker locker(_lock, WaitForever);
+        Entry        *e = find(pid);
+        if (e == nullptr || e->ended) return makeError<int32_t>(Error::NotExist);
+        for (int i = 0; i < Capacity; ++i) {
+                if (_entries[i].pid != 0 && _entries[i].group == pid)
+                        return makeError<int32_t>(Error::PermissionDenied);
+        }
+        e->group = e->session = pid;
+        return makeResult(pid);
+}
+
+int32_t ProcessTable::groupOf(int32_t pid) {
+        Mutex::Locker locker(_lock, WaitForever);
+        const Entry  *e = find(pid);
+        return e != nullptr ? e->group : 0;
+}
+
+int32_t ProcessTable::sessionOf(int32_t pid) {
+        Mutex::Locker locker(_lock, WaitForever);
+        const Entry  *e = find(pid);
+        return e != nullptr ? e->session : 0;
+}
+
+bool ProcessTable::hasGroupInSession(int32_t group, int32_t session) {
+        Mutex::Locker locker(_lock, WaitForever);
+        return _entries != nullptr && isGroupInSession(group, session);
+}
+
+bool ProcessTable::hasRunningInGroup(int32_t group, int32_t except) {
+        Mutex::Locker locker(_lock, WaitForever);
+        if (_entries == nullptr) return false;
+        for (int i = 0; i < Capacity; ++i) {
+                const Entry &e = _entries[i];
+                if (e.pid != 0 && e.pid != except && !e.ended && e.group == group) return true;
+        }
+        return false;
 }
 
 void ProcessTable::setRuntime(int32_t pid, void *runtime) {
