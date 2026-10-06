@@ -162,7 +162,7 @@ Error BlitChain::start(Conversion conversion, size_t maxPieces, size_t maxRows) 
 
 void BlitChain::stop() {
         if (_hw == nullptr) return;
-        (void)settle(StopTimeoutMs); // a job under way finishes before its memory goes
+        (void)wait(StopTimeoutMs); // a job under way finishes before its memory goes
         Hardware &hw = *_hw;
         if (hw.pool != nullptr) (void)dma2d_release_pool(hw.pool);
         Memory::free(hw.tx);
@@ -186,7 +186,7 @@ Error BlitChain::add(const Picture &from, uint16_t fromX, uint16_t fromY, const 
         if (widen ? (from.bytesPerPixel != 2 || to.bytesPerPixel != 3) : from.bytesPerPixel != to.bytesPerPixel)
                 return Error::Invalid;
         // The descriptors of a job under way stay until it's done.
-        if (_busy && settle(StopTimeoutMs).isError()) return Error::Timeout;
+        if (_busy && wait(StopTimeoutMs).isError()) return Error::Timeout;
         Hardware &hw = *_hw;
         // Linked to the next slot; the last ones' links are cut in `run()`.
         describe(at(hw.tx, _txCount), from, fromX, fromY, width, height, false, at(hw.tx, _txCount + 1));
@@ -204,7 +204,7 @@ Error BlitChain::addFill(const uint8_t *line, const Picture &to, uint16_t toX, u
         if (_conversion != Conversion::None || width == 0 || height == 0 || line == nullptr ||
             !fits(to, toX, toY, width, height))
                 return Error::Invalid;
-        if (_busy && settle(StopTimeoutMs).isError()) return Error::Timeout;
+        if (_busy && wait(StopTimeoutMs).isError()) return Error::Timeout;
         Hardware &hw = *_hw;
         for (uint16_t r = 0; r < height; ++r, ++_txCount)
                 describe(at(hw.tx, _txCount), row, 0, 0, width, 1, false, at(hw.tx, _txCount + 1));
@@ -214,6 +214,11 @@ Error BlitChain::addFill(const uint8_t *line, const Picture &to, uint16_t toX, u
 }
 
 Error BlitChain::run(unsigned int timeoutMs) {
+        const Error err = submit();
+        return err.isError() ? err : wait(timeoutMs);
+}
+
+Error BlitChain::submit() {
         if (_hw == nullptr) return Error::InvalidState;
         if (_rxCount == 0) return Error::Ok;
         Hardware           &hw = *_hw;
@@ -232,11 +237,11 @@ Error BlitChain::run(unsigned int timeoutMs) {
         const esp_err_t err = dma2d_enqueue(hw.pool, &hw.config, hw.job);
         if (err != ESP_OK) return Error::fromEspErr(err);
         _busy = true;
-        return settle(timeoutMs);
+        return Error::Ok;
 }
 
 // Waits for the job under way, if any.
-Error BlitChain::settle(unsigned int timeoutMs) {
+Error BlitChain::wait(unsigned int timeoutMs) {
         if (!_busy) return Error::Ok;
         const Error err = _done.acquire(timeoutMs);
         if (err.isOk()) _busy = false;

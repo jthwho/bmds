@@ -105,10 +105,27 @@ class BlitChain {
                  */
                 Error run(unsigned int timeoutMs);
 
+                /**
+                 * @brief Starts the pieces added as one job and forgets them,
+                 *        without waiting: the next `add()`, `addFill()` or `run()`
+                 *        waits for it, or `wait()`. Sources stay untouched until then.
+                 * @return `Ok` (also for no pieces), `InvalidState`, or the driver's error.
+                 * @nonblocking
+                 */
+                Error submit();
+
+                /**
+                 * @brief Waits for the job under way, if any.
+                 * @return `Ok` or `Timeout`.
+                 * @blocking
+                 */
+                Error wait(unsigned int timeoutMs);
+
+                /** @brief Returns true while a job is under way (or not yet seen done). */
+                bool isBusy() const { return _busy; }
+
         private:
                 struct Hardware;
-
-                Error settle(unsigned int timeoutMs); // waits for the job under way, if any
 
                 Hardware  *_hw = nullptr;
                 Semaphore  _done{1, 0};

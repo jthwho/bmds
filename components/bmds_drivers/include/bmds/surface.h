@@ -41,8 +41,9 @@ struct ScanoutIsr;
  * drawing waits for it (a mailbox mode, which doesn't, is planned).
  *
  * The CPU never writes the buffers: drawing is by 2D-DMA, from internal
- * RAM. Rows written into PSRAM start and end on 4 bytes, so x and widths
- * are multiples of 4 pixels.
+ * RAM. Rows written into PSRAM start and end on 4 bytes, so copies take x
+ * and widths in multiples of 4 pixels (`Align`); fills take any rectangle,
+ * their edges' groups of 4 pixels read, patched and written back.
  *
  * @par Thread Safety
  * One drawing task at a time; `frames()` and `waitShown()` from any task.
@@ -64,6 +65,13 @@ class Surface {
                                 uint32_t forwardUsMax = 0;
                                 uint64_t waitUs = 0; ///< Drawing waiting for a pending swap.
                                 uint32_t waitUsMax = 0;
+                };
+
+                /** @brief A copy inside the surface: @p from to (@p toX, @p toY). */
+                struct Copy {
+                                Rect     from;
+                                uint16_t toX = 0;
+                                uint16_t toY = 0;
                 };
 
                 /** @brief Bytes a pixel. */
@@ -108,10 +116,11 @@ class Surface {
                 Rect bounds() const { return Rect{0, 0, _width, _height}; }
 
                 /**
-                 * @brief Fills @p rect with @p rgb (0xRRGGBB).
-                 * @return `Ok`, `InvalidState` (not started), `Invalid` (outside,
-                 *         or x or width not a multiple of `Align`), `Timeout`, or
-                 *         the driver's error.
+                 * @brief Fills @p rect with @p rgb (0xRRGGBB). Sides off the 4-pixel
+                 *        columns cost a read and a write of their groups (two
+                 *        jobs for all of a call's).
+                 * @return `Ok`, `InvalidState` (not started), `Invalid` (outside),
+                 *         `Timeout`, or the driver's error.
                  * @blocking Only while a swap is pending, and for the DMA.
                  */
                 Error fill(const Rect &rect, uint32_t rgb, unsigned int timeoutMs);
@@ -133,6 +142,34 @@ class Surface {
                  * @blocking As `fill()`.
                  */
                 Error blit(const Rect &to, const uint8_t *src, size_t srcStride, unsigned int timeoutMs);
+
+                /**
+                 * @brief Starts copying what of @p to lies in @p clip (rectangles
+                 *        on 4-pixel columns) from @p src as in `blit()`, as one job,
+                 *        and returns: @p src stays untouched until `wait()` or the
+                 *        next drawing call returns.
+                 * @return As `blit()`.
+                 * @blocking Only while a swap is pending, or for an earlier job.
+                 */
+                Error startBlit(const Rect &to, const uint8_t *src, size_t srcStride, Span<const Rect> clip,
+                                unsigned int timeoutMs);
+
+                /**
+                 * @brief Waits for a started copy.
+                 * @return `Ok` or `Timeout`.
+                 * @blocking
+                 */
+                Error wait(unsigned int timeoutMs);
+
+                /**
+                 * @brief Makes @p copies inside the surface, in order, a later one
+                 *        reading what an earlier one wrote (up to 32 a job). All
+                 *        on 4-pixel columns; a copy's source and destination may
+                 *        overlap only moving up or left.
+                 * @return As `fill()`.
+                 * @blocking As `fill()`.
+                 */
+                Error copy(Span<const Copy> copies, unsigned int timeoutMs);
 
                 /**
                  * @brief Shows what was drawn: with two buffers, swaps them at the
@@ -191,13 +228,16 @@ class Surface {
                 BlitChain::Picture picture(const uint8_t *buffer) const;
                 Error              prepare(const Deadline &deadline); // the swap done, the last changes copied
                 void               swapNow();
-                bool               fits(const Rect &rect) const;
+                bool               fits(const Rect &rect) const;   // inside, on 4-pixel columns
+                bool               inside(const Rect &rect) const; // inside
+                Error              fillEdges(Span<const Rect> rects, uint32_t rgb, const Deadline &deadline);
                 void               markDamage(const Rect &rect);
                 Error              copyForward(const Deadline &deadline);
                 template <typename Done> Error waitUntil(Done done, const Deadline &deadline);
 
                 uint8_t              *_buffers[2] = {};
-                uint8_t              *_line = nullptr; // a fill's line, internal RAM
+                uint8_t              *_line = nullptr;  // a fill's line, internal RAM
+                uint8_t              *_edges = nullptr; // fills' edge groups being patched, internal RAM
                 uint16_t              _width = 0;
                 uint16_t              _height = 0;
                 Buffering             _buffering = Buffering::Single;

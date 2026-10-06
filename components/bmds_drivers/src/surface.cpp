@@ -118,9 +118,12 @@ BlitChain::Picture Surface::picture(const uint8_t *buffer) const {
         return BlitChain::Picture{buffer, _width, _height, BytesPerPixel};
 }
 
+bool Surface::inside(const Rect &rect) const {
+        return !rect.isEmpty() && rect.right() <= _width && rect.bottom() <= _height;
+}
+
 bool Surface::fits(const Rect &rect) const {
-        return !rect.isEmpty() && rect.right() <= _width && rect.bottom() <= _height && rect.x % Align == 0 &&
-               rect.width % Align == 0;
+        return inside(rect) && rect.x % Align == 0 && rect.width % Align == 0;
 }
 
 // Before drawing into the back buffer: a pending swap made, and what the
@@ -223,49 +226,138 @@ Error Surface::fill(const Rect &rect, uint32_t rgb, unsigned int timeoutMs) {
 
 Error Surface::fill(Span<const Rect> rects, uint32_t rgb, unsigned int timeoutMs) {
         if (!isStarted()) return Error::InvalidState;
-        uint16_t widest = 0;
+        constexpr uint32_t Mask = Align - 1u;
+        uint16_t           widest = 0; // the widest middle: whole groups of 4
+        bool               edges = false;
         for (const Rect &rect : rects) {
-                if (!fits(rect)) return Error::Invalid;
-                if (rect.width > widest) widest = rect.width;
+                if (!inside(rect)) return Error::Invalid;
+                const uint32_t left = (rect.x + Mask) & ~Mask, right = rect.right() & ~Mask;
+                if (right > left && right - left > widest) widest = static_cast<uint16_t>(right - left);
+                edges |= ((rect.x | rect.width) & Mask) != 0;
         }
-        if (widest == 0) return Error::Ok;
         const Deadline deadline(timeoutMs);
         Error          err = prepare(deadline);
         if (err.isError()) return err;
-        // One line of the color, the widest's length, sent once a row by each.
-        const uint8_t b = static_cast<uint8_t>(rgb), g = static_cast<uint8_t>(rgb >> 8),
-                      r = static_cast<uint8_t>(rgb >> 16);
-        const uint32_t w0 = uint32_t(b) | uint32_t(g) << 8 | uint32_t(r) << 16 | uint32_t(b) << 24;
-        const uint32_t w1 = uint32_t(g) | uint32_t(r) << 8 | uint32_t(b) << 16 | uint32_t(g) << 24;
-        const uint32_t w2 = uint32_t(r) | uint32_t(b) << 8 | uint32_t(g) << 16 | uint32_t(r) << 24;
-        auto          *words = reinterpret_cast<uint32_t *>(_line); // 4 pixels: 3 words
-        for (size_t i = 0; i < size_t(widest) / Align; ++i) {
-                words[3 * i] = w0;
-                words[3 * i + 1] = w1;
-                words[3 * i + 2] = w2;
-        }
-        const size_t lineBytes = (size_t(widest) * BytesPerPixel + LineAlign - 1) / LineAlign * LineAlign;
-        (void)esp_cache_msync(_line, lineBytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-        const BlitChain::Picture to = picture(back());
-        for (const Rect &rect : rects) {
-                for (uint32_t y = rect.y; y < rect.bottom(); y += MaxFillRows) {
-                        const uint16_t rows = static_cast<uint16_t>(rect.bottom() - y < MaxFillRows ? rect.bottom() - y
-                                                                                                    : MaxFillRows);
-                        err = _chain.addFill(_line, to, rect.x, static_cast<uint16_t>(y), rect.width, rows);
-                        if (err == Error::Full) {
-                                err = _chain.run(remainingMs(deadline));
-                                if (err.isOk())
-                                        err = _chain.addFill(_line, to, rect.x, static_cast<uint16_t>(y), rect.width,
-                                                             rows);
-                        }
-                        if (err.isError()) {
-                                _chain.clear();
-                                return err;
+        if (widest > 0) {
+                // One line of the color, the widest middle's length, sent once a row by each.
+                const uint8_t b = static_cast<uint8_t>(rgb), g = static_cast<uint8_t>(rgb >> 8),
+                              r = static_cast<uint8_t>(rgb >> 16);
+                const uint32_t w0 = uint32_t(b) | uint32_t(g) << 8 | uint32_t(r) << 16 | uint32_t(b) << 24;
+                const uint32_t w1 = uint32_t(g) | uint32_t(r) << 8 | uint32_t(b) << 16 | uint32_t(g) << 24;
+                const uint32_t w2 = uint32_t(r) | uint32_t(b) << 8 | uint32_t(g) << 16 | uint32_t(r) << 24;
+                auto          *words = reinterpret_cast<uint32_t *>(_line); // 4 pixels: 3 words
+                for (size_t i = 0; i < size_t(widest) / Align; ++i) {
+                        words[3 * i] = w0;
+                        words[3 * i + 1] = w1;
+                        words[3 * i + 2] = w2;
+                }
+                const size_t lineBytes = (size_t(widest) * BytesPerPixel + LineAlign - 1) / LineAlign * LineAlign;
+                (void)esp_cache_msync(_line, lineBytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                const BlitChain::Picture to = picture(back());
+                for (const Rect &rect : rects) {
+                        const uint32_t left = (rect.x + Mask) & ~Mask, right = rect.right() & ~Mask;
+                        if (right <= left) continue;
+                        const auto x = static_cast<uint16_t>(left), w = static_cast<uint16_t>(right - left);
+                        for (uint32_t y = rect.y; y < rect.bottom(); y += MaxFillRows) {
+                                const uint16_t rows = static_cast<uint16_t>(
+                                        rect.bottom() - y < MaxFillRows ? rect.bottom() - y : MaxFillRows);
+                                err = _chain.addFill(_line, to, x, static_cast<uint16_t>(y), w, rows);
+                                if (err == Error::Full) {
+                                        err = _chain.run(remainingMs(deadline));
+                                        if (err.isOk())
+                                                err = _chain.addFill(_line, to, x, static_cast<uint16_t>(y), w, rows);
+                                }
+                                if (err.isError()) {
+                                        _chain.clear();
+                                        return err;
+                                }
                         }
                 }
-                if (_buffering == Buffering::Double) markDamage(rect);
+                err = _chain.run(remainingMs(deadline));
         }
-        return _chain.run(remainingMs(deadline));
+        if (err.isOk() && edges) err = fillEdges(rects, rgb, deadline);
+        if (_buffering == Buffering::Double)
+                for (const Rect &rect : rects) markDamage(rect);
+        return err;
+}
+
+// The groups of 4 pixels a fill's sides cut: read into internal RAM (the
+// fill's line, free again), the fill's pixels set, written back.
+Error Surface::fillEdges(Span<const Rect> rects, uint32_t rgb, const Deadline &deadline) {
+        struct Edge {
+                        uint16_t x; // the group's first column
+                        uint16_t y;
+                        uint16_t rows;
+                        uint8_t  from; // the pixels set: [from, to) of the group
+                        uint8_t  to;
+                        uint16_t offset; // its first row in the buffer
+        };
+        constexpr uint32_t       Mask = Align - 1u;
+        constexpr size_t         GroupBytes = Align * BytesPerPixel;
+        const size_t             capacity = ((stride() + LineAlign - 1) / LineAlign * LineAlign) / GroupBytes; // rows
+        const BlitChain::Picture surface = picture(back());
+        const BlitChain::Picture buffer{_line, Align, static_cast<uint16_t>(capacity), BytesPerPixel};
+        Edge                     batch[MaxPieces];
+        size_t                   count = 0, used = 0;
+        Error                    err;
+
+        auto flush = [&]() {
+                if (count == 0 || err.isError()) return;
+                for (size_t i = 0; i < count && err.isOk(); ++i) {
+                        const Edge &e = batch[i];
+                        err = _chain.add(surface, e.x, e.y, buffer, 0, e.offset, Align, e.rows);
+                }
+                if (err.isOk()) err = _chain.run(remainingMs(deadline));
+                const size_t bytes = (used * GroupBytes + LineAlign - 1) / LineAlign * LineAlign;
+                if (err.isOk()) (void)esp_cache_msync(_line, bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+                for (size_t i = 0; i < count && err.isOk(); ++i) {
+                        const Edge &e = batch[i];
+                        for (uint16_t r = 0; r < e.rows; ++r) {
+                                uint8_t *p =
+                                        _line + (size_t(e.offset) + r) * GroupBytes + size_t(e.from) * BytesPerPixel;
+                                for (uint8_t x = e.from; x < e.to; ++x, p += BytesPerPixel) {
+                                        p[0] = static_cast<uint8_t>(rgb);
+                                        p[1] = static_cast<uint8_t>(rgb >> 8);
+                                        p[2] = static_cast<uint8_t>(rgb >> 16);
+                                }
+                        }
+                }
+                if (err.isOk()) (void)esp_cache_msync(_line, bytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                for (size_t i = 0; i < count && err.isOk(); ++i) {
+                        const Edge &e = batch[i];
+                        err = _chain.add(buffer, 0, e.offset, surface, e.x, e.y, Align, e.rows);
+                }
+                if (err.isOk()) err = _chain.run(remainingMs(deadline));
+                if (err.isError()) _chain.clear();
+                count = 0;
+                used = 0;
+        };
+        auto addEdge = [&](uint16_t x, uint16_t y, uint16_t rows, uint8_t from, uint8_t to) {
+                while (rows > 0 && err.isOk()) {
+                        if (count == MaxPieces || used == capacity) flush();
+                        const auto n = static_cast<uint16_t>(rows < capacity - used ? rows : capacity - used);
+                        batch[count++] = Edge{x, y, n, from, to, static_cast<uint16_t>(used)};
+                        used += n;
+                        y = static_cast<uint16_t>(y + n);
+                        rows = static_cast<uint16_t>(rows - n);
+                }
+        };
+        for (const Rect &rect : rects) {
+                const uint32_t right = rect.right();
+                const uint32_t leftGroup = rect.x & ~Mask, rightGroup = right & ~Mask;
+                if ((rect.x & Mask) != 0) {
+                        const uint32_t to = right < leftGroup + Align ? right : leftGroup + Align;
+                        addEdge(static_cast<uint16_t>(leftGroup), rect.y, rect.height,
+                                static_cast<uint8_t>(rect.x - leftGroup), static_cast<uint8_t>(to - leftGroup));
+                }
+                if ((right & Mask) != 0 && !((rect.x & Mask) != 0 && rightGroup == leftGroup)) {
+                        const uint32_t from = rect.x > rightGroup ? rect.x : rightGroup;
+                        addEdge(static_cast<uint16_t>(rightGroup), rect.y, rect.height,
+                                static_cast<uint8_t>(from - rightGroup), static_cast<uint8_t>(right - rightGroup));
+                }
+        }
+        flush();
+        return err;
 }
 
 Error Surface::blit(const Rect &to, const uint8_t *src, size_t srcStride, unsigned int timeoutMs) {
@@ -289,6 +381,66 @@ Error Surface::blit(const Rect &to, const uint8_t *src, size_t srcStride, unsign
         return err;
 }
 
+Error Surface::startBlit(const Rect &to, const uint8_t *src, size_t srcStride, Span<const Rect> clip,
+                         unsigned int timeoutMs) {
+        if (!isStarted()) return Error::InvalidState;
+        if (!fits(to) || src == nullptr || srcStride % BytesPerPixel != 0 ||
+            srcStride < size_t(to.width) * BytesPerPixel || srcStride / BytesPerPixel > UINT16_MAX)
+                return Error::Invalid;
+        for (const Rect &piece : clip)
+                if (to.intersects(piece) && !fits(to.intersected(piece))) return Error::Invalid;
+        const Deadline deadline(timeoutMs);
+        Error          err = prepare(deadline);
+        if (err.isOk()) err = _chain.wait(remainingMs(deadline)); // the source of a job under way may be ours
+        if (err.isError()) return err;
+        const size_t bytes = srcStride * (to.height - 1) + size_t(to.width) * BytesPerPixel;
+        for (size_t off = 0; off < bytes; off += WriteBackChunk)
+                (void)esp_cache_msync(const_cast<uint8_t *>(src) + off,
+                                      bytes - off < WriteBackChunk ? bytes - off : WriteBackChunk,
+                                      ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+        const BlitChain::Picture from{src, static_cast<uint16_t>(srcStride / BytesPerPixel), to.height, BytesPerPixel};
+        const BlitChain::Picture into = picture(back());
+        for (const Rect &piece : clip) {
+                const Rect cut = to.intersected(piece);
+                if (cut.isEmpty()) continue;
+                if (_chain.count() == MaxPieces) err = _chain.run(remainingMs(deadline));
+                if (err.isOk())
+                        err = _chain.add(from, static_cast<uint16_t>(cut.x - to.x), static_cast<uint16_t>(cut.y - to.y),
+                                         into, cut.x, cut.y, cut.width, cut.height);
+                if (err.isError()) {
+                        _chain.clear();
+                        return err;
+                }
+                if (_buffering == Buffering::Double) markDamage(cut);
+        }
+        return _chain.submit();
+}
+
+Error Surface::wait(unsigned int timeoutMs) {
+        return _chain.wait(timeoutMs);
+}
+
+Error Surface::copy(Span<const Copy> copies, unsigned int timeoutMs) {
+        if (!isStarted()) return Error::InvalidState;
+        for (const Copy &c : copies)
+                if (!fits(c.from) || !fits(Rect{c.toX, c.toY, c.from.width, c.from.height})) return Error::Invalid;
+        const Deadline deadline(timeoutMs);
+        Error          err = prepare(deadline);
+        if (err.isError()) return err;
+        const BlitChain::Picture pic = picture(back());
+        for (const Copy &c : copies) {
+                if (_chain.count() == MaxPieces) err = _chain.run(remainingMs(deadline));
+                if (err.isOk())
+                        err = _chain.add(pic, c.from.x, c.from.y, pic, c.toX, c.toY, c.from.width, c.from.height);
+                if (err.isError()) {
+                        _chain.clear();
+                        return err;
+                }
+                if (_buffering == Buffering::Double) markDamage(Rect{c.toX, c.toY, c.from.width, c.from.height});
+        }
+        return _chain.run(remainingMs(deadline));
+}
+
 Result<uint32_t> Surface::present(unsigned int timeoutMs) {
         if (!isStarted()) return makeError<uint32_t>(Error::InvalidState);
         if (_buffering == Buffering::Single) {
@@ -297,7 +449,8 @@ Result<uint32_t> Surface::present(unsigned int timeoutMs) {
                 return makeResult(_presents);
         }
         const Deadline deadline(timeoutMs);
-        const Error    err = prepare(deadline);
+        Error          err = prepare(deadline);
+        if (err.isOk()) err = _chain.wait(remainingMs(deadline)); // a started copy, finished before the swap
         if (err.isError()) return makeError<uint32_t>(err);
         const size_t words = size_t(_tileWords) * _tileRows;
         std::memcpy(_forward, _damage, words * sizeof(uint32_t));

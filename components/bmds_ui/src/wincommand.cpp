@@ -11,14 +11,19 @@
  * their order, add new ones only at the end.
  */
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 #include <sdkconfig.h>
 #include <esp_cache.h>
+#include <esp_cpu.h>
 #include <bmds/command.h>
 #include <bmds/display.h>
 #include <bmds/font.h>
+#include <bmds/glyphrenderer.h>
+#include <bmds/memory.h>
 #include <bmds/shell.h>
 #include <bmds/system.h>
 #include <bmds/utf8.h>
@@ -35,52 +40,156 @@ namespace {
         constexpr uint16_t     Square = 32; // the test pattern's squares
         constexpr int          DragSteps = 30;
 
-        // A test window: a checker of two colors.
-        struct TestWindow {
-                        uint32_t a = 0;
-                        uint32_t b = 0;
+        constexpr uint32_t LineColor = 0x202020; // the grid's 1-pixel lines
+        constexpr uint32_t LineX = 5, LineY = 9; // where in each square (off the 4-pixel columns)
+        constexpr uint16_t LabelX = 8, LabelY = 8;
+        constexpr uint16_t Fixed = 32;      // rows at the top not scrolled (the label's)
+        constexpr uint32_t Bias = 1u << 20; // keeps content rows positive (a multiple of Square)
+        constexpr size_t   MaxLabel = 40;
+        constexpr size_t   MaxRowCells = 240; // a text bench's row (1920 pixels)
 
+        // A test window: a checker of two colors under a grid of 1-pixel lines,
+        // scrolled by `offset` rows (`win scroll`) below a fixed band, and a
+        // label of styled cells.
+        struct TestWindow {
+                        uint8_t              id = 0;
+                        uint32_t             a = 0;
+                        uint32_t             b = 0;
+                        uint16_t             width = 0; // the client area's
+                        uint16_t             height = 0;
+                        int32_t              offset = 0;
+                        std::atomic<int32_t> pending{0};       // rows to scroll at the next redraw
+                        std::atomic<bool>    textBench{false}; // at the next redraw: the client area as text, timed
+                        uint32_t             textUs = 0;
+                        uint32_t             scrollUs = 0; // the last scroll
+
+                        // The pattern at (@p x, @p y) of the client area.
                         uint32_t at(uint32_t x, uint32_t y) const {
-                                return ((x / Square + y / Square) & 1u) != 0 ? a : b;
+                                const uint32_t cy = y + Bias + uint32_t(offset);
+                                if (x % Square == LineX || cy % Square == LineY) return LineColor;
+                                return ((x / Square + cy / Square) & 1u) != 0 ? a : b;
                         }
         };
 
-        constexpr TestWindow Palette[] = {
+        constexpr uint32_t Palette[][2] = {
                 {0xc04040, 0x803030}, {0x40c040, 0x308030}, {0x4060d0, 0x3040a0}, {0xc0c040, 0x909030},
                 {0x40c0c0, 0x309090}, {0xc040c0, 0x903090}, {0xd08040, 0xa06030}, {0xa0a0a0, 0x707070},
         };
 
-        // Window @p id's colors.
-        const TestWindow &testWindow(uint8_t id) {
-                return Palette[(id - 1u) % (sizeof(Palette) / sizeof(Palette[0]))];
+        constinit TestWindow testWindows[WindowStack::MaxWindows]; // by number - 1
+
+        // Window @p id's label: plain, bold, underlined and colored cells.
+        size_t makeLabel(uint8_t id, TextCell (&out)[MaxLabel]) {
+                char number[8];
+                std::snprintf(number, sizeof(number), "%u ", id);
+                struct Part {
+                                const char *text;
+                                uint32_t    fg, bg;
+                                uint8_t     flags;
+                };
+                const Part parts[] = {
+                        {"Win ", 0xffffff, 0x000000, TextCell::Bold},
+                        {number, 0xffffff, 0x000000, 0},
+                        {"under", 0xffff40, 0x2040a0, TextCell::Underline},
+                        {" ░▒▓☺Ä ", 0x40ff40, 0x000000, 0},
+                        {"both", 0xff8080, 0x202020, TextCell::Bold | TextCell::Underline},
+                };
+                size_t n = 0;
+                for (const Part &part : parts) {
+                        const StringView text(part.text);
+                        for (size_t i = 0; i < text.size() && n < MaxLabel;) {
+                                out[n].codepoint = Utf8::decode(text, i);
+                                out[n].fg = part.fg;
+                                out[n].bg = part.bg;
+                                out[n].flags = part.flags;
+                                ++n;
+                        }
+                }
+                return n;
         }
 
-        // The squares in the painter's clip, a fill a color (32 rectangles a call).
-        void redrawTest(void *arg, Painter &painter) {
-                const TestWindow &t = *static_cast<const TestWindow *>(arg);
-                const Rect        b = painter.clipBounds();
-                Rect              as[32], bs[32];
-                size_t            na = 0, nb = 0;
-                for (uint32_t y = b.y / Square * Square; y < b.bottom(); y += Square) {
-                        for (uint32_t x = b.x / Square * Square; x < b.right(); x += Square) {
-                                const Rect r{uint16_t(x), uint16_t(y), Square, Square};
-                                if (t.at(x, y) == t.a) {
+        uint16_t labelWidth(const TestWindow &t) {
+                return t.width > 2 * LabelX ? static_cast<uint16_t>(t.width - 2 * LabelX) : 0;
+        }
+
+        // The pattern over @p area (the client's coordinates): squares, then lines.
+        void drawPattern(Painter &painter, const TestWindow &t, const Rect &area) {
+                Rect   as[32], bs[32], lines[32];
+                size_t na = 0, nb = 0, nl = 0;
+                auto   flush = [&](Rect *list, size_t &n, uint32_t color) {
+                        (void)painter.fill(Span<const Rect>(list, n), color);
+                        n = 0;
+                };
+                const uint32_t top = area.y + Bias + uint32_t(t.offset), bottom = top + area.height;
+                for (uint32_t cy = top / Square * Square; cy < bottom; cy += Square) {
+                        const uint32_t y0 = cy > top ? cy : top, y1 = cy + Square < bottom ? cy + Square : bottom;
+                        for (uint32_t x = area.x / Square * Square; x < area.right(); x += Square) {
+                                const uint32_t x0 = x > area.x ? x : area.x;
+                                const uint32_t x1 = x + Square < area.right() ? x + Square : area.right();
+                                const Rect     r{uint16_t(x0), uint16_t(y0 - top + area.y), uint16_t(x1 - x0),
+                                             uint16_t(y1 - y0)};
+                                if (((x / Square + cy / Square) & 1u) != 0) {
                                         as[na++] = r;
+                                        if (na == 32) flush(as, na, t.a);
                                 } else {
                                         bs[nb++] = r;
-                                }
-                                if (na == 32) {
-                                        (void)painter.fill(as, t.a);
-                                        na = 0;
-                                }
-                                if (nb == 32) {
-                                        (void)painter.fill(bs, t.b);
-                                        nb = 0;
+                                        if (nb == 32) flush(bs, nb, t.b);
                                 }
                         }
                 }
-                (void)painter.fill(Span<const Rect>(as, na), t.a);
-                (void)painter.fill(Span<const Rect>(bs, nb), t.b);
+                flush(as, na, t.a);
+                flush(bs, nb, t.b);
+                for (uint32_t x = area.x / Square * Square + LineX; x < area.right(); x += Square) {
+                        if (x < area.x) continue;
+                        lines[nl++] = Rect{uint16_t(x), area.y, 1, area.height};
+                        if (nl == 32) flush(lines, nl, LineColor);
+                }
+                for (uint32_t cy = top / Square * Square + LineY; cy < bottom; cy += Square) {
+                        if (cy < top) continue;
+                        lines[nl++] = Rect{area.x, uint16_t(cy - top + area.y), area.width, 1};
+                        if (nl == 32) flush(lines, nl, LineColor);
+                }
+                flush(lines, nl, LineColor);
+                return;
+        }
+
+        // A pending scroll made (the band under the label moved, the rest
+        // redrawn), the damage redrawn, the label drawn over it.
+        void redrawTest(void *arg, Painter &painter) {
+                TestWindow   &t = *static_cast<TestWindow *>(arg);
+                Region        todo;
+                const int32_t dy = t.pending.exchange(0);
+                if (dy != 0 && t.height > Fixed) {
+                        const uint64_t start = System::uptimeUs();
+                        t.offset += dy;
+                        todo.add(painter.scroll(Rect{0, Fixed, t.width, uint16_t(t.height - Fixed)}, -dy));
+                        todo.add(Rect{0, 0, t.width, Fixed});
+                        t.scrollUs = static_cast<uint32_t>(System::uptimeUs() - start);
+                }
+                for (size_t i = 0; i < painter.damageCount(); ++i) todo.add(painter.damageAt(i));
+                for (const Rect &r : todo.rects()) drawPattern(painter, t, r);
+                if (t.textBench.exchange(false)) {
+                        // A terminal's full redraw: rows of cells across the client area.
+                        const uint64_t start = System::uptimeUs();
+                        auto          *row = static_cast<TextCell *>(
+                                Memory::alloc(MemSpace::Internal, sizeof(TextCell) * MaxRowCells));
+                        if (row == nullptr) return;
+                        const size_t columns = t.width / 8u < MaxRowCells ? t.width / 8u : MaxRowCells;
+                        for (uint16_t y = 0; y + 16u <= t.height; y = static_cast<uint16_t>(y + 16)) {
+                                for (size_t c = 0; c < columns; ++c) {
+                                        row[c].codepoint = 0x21 + (c + y / 16u) % 94;
+                                        row[c].fg = 0xc0c0c0;
+                                        row[c].bg = 0x000000;
+                                }
+                                (void)painter.cells(0, y, Span<const TextCell>(row, columns), Fonts::unscii16, t.width);
+                        }
+                        t.textUs = static_cast<uint32_t>(System::uptimeUs() - start);
+                        Memory::free(row);
+                        return;
+                }
+                TextCell     label[MaxLabel];
+                const size_t n = makeLabel(t.id, label);
+                (void)painter.cells(LabelX, LabelY, Span<const TextCell>(label, n), Fonts::unscii16, labelWidth(t));
                 return;
         }
 
@@ -166,6 +275,7 @@ namespace {
                         used += size_t(wrote);
                         if (used >= sizeof(title)) break;
                 }
+                config.rect.width = static_cast<uint16_t>((config.rect.width + 3) & ~3u); // as it will be placed
                 config.redraw = redrawTest;
                 // Numbers are the lowest free (WindowStack): the new window's is
                 // known beforehand, as only this command opens windows for now.
@@ -176,11 +286,25 @@ namespace {
                         if (used) ++guess;
                 }
                 if (guess > WindowStack::MaxWindows) return report(ctx, Error::Full);
-                config.arg = const_cast<TestWindow *>(&testWindow(guess));
+                TestWindow &t = testWindows[guess - 1];
+                t.id = guess;
+                t.a = Palette[(guess - 1u) % (sizeof(Palette) / sizeof(Palette[0]))][0];
+                t.b = Palette[(guess - 1u) % (sizeof(Palette) / sizeof(Palette[0]))][1];
+                t.offset = 0;
+                t.pending.store(0);
+                const Rect client = WindowFrame::client(config.rect);
+                t.width = client.width; // until the window is placed (below)
+                t.height = client.height;
+                config.arg = &t;
                 if (title[0] == '\0') std::snprintf(title, sizeof(title), "Window %u", guess);
                 config.title = title;
                 auto [id, err] = wm.open(config);
                 if (err.isError()) return report(ctx, err);
+                auto [placed, perr] = wm.clientRect(id);
+                if (perr.isOk()) {
+                        t.width = placed.width;
+                        t.height = placed.height;
+                }
                 ctx.printf("win %u\n", id);
                 return Shell::ExitSuccess;
         }
@@ -271,6 +395,24 @@ namespace {
                         (void)esp_cache_msync(const_cast<uint8_t *>(buffer) + off,
                                               bytes - off < 64 * 1024 ? bytes - off : 64 * 1024,
                                               ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+                // Each window's label, drawn by the scalar kernel (a reference for the painter's).
+                constexpr uint16_t LabelPixels = MaxLabel * 16;
+                const size_t       labelBytes = size_t(LabelPixels) * 3 * Fonts::unscii16.height();
+                auto *labels = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, labelBytes * (n > 0 ? n : 1)));
+                if (labels == nullptr) return report(ctx, Error::NoMem);
+                Rect          labelRects[WindowStack::MaxWindows];
+                GlyphRenderer reference(GlyphRenderer::Kernel::Scalar);
+                for (size_t i = 0; i < n; ++i) {
+                        const TestWindow &t = testWindows[info[i].id - 1];
+                        TextCell          cells[MaxLabel];
+                        const size_t      count = makeLabel(t.id, cells);
+                        size_t            used = 0;
+                        const uint16_t    w = reference.drawCells(Span<const TextCell>(cells, count), Fonts::unscii16,
+                                                                  labels + i * labelBytes, size_t(LabelPixels) * 3,
+                                                                  labelWidth(t), used);
+                        labelRects[i] = Rect{uint16_t(clients[i].x + LabelX), uint16_t(clients[i].y + LabelY), w,
+                                             Fonts::unscii16.height()};
+                }
                 const WindowPalette palette = wm.palette();
                 const uint32_t      desktop = palette.color(WindowPalette::Role::Desktop);
                 uint32_t            wrong = 0, checked = 0;
@@ -283,8 +425,16 @@ namespace {
                                 for (size_t i = 0; i < n; ++i) {
                                         if (!inside(info[i].rect, x, y)) continue;
                                         const Rect &c = clients[i];
-                                        want = inside(c, x, y) ? testWindow(info[i].id).at(x - c.x, y - c.y)
-                                                               : frameAt(palette, info[i], x, y);
+                                        if (!inside(c, x, y)) {
+                                                want = frameAt(palette, info[i], x, y);
+                                        } else if (inside(labelRects[i], x, y)) {
+                                                const uint8_t *q = labels + i * labelBytes +
+                                                                   (y - labelRects[i].y) * size_t(LabelPixels) * 3 +
+                                                                   (x - labelRects[i].x) * 3;
+                                                want = uint32_t(q[2]) << 16 | uint32_t(q[1]) << 8 | q[0];
+                                        } else {
+                                                want = testWindows[info[i].id - 1].at(x - c.x, y - c.y);
+                                        }
                                         break;
                                 }
                                 ++checked;
@@ -305,6 +455,7 @@ namespace {
                         ctx.printf(" (the first at %d,%d: %06lx, not %06lx)", fx, fy, static_cast<unsigned long>(fgot),
                                    static_cast<unsigned long>(fwant));
                 ctx.printf("\n");
+                Memory::free(labels);
                 return wrong == 0 ? Shell::ExitSuccess : Shell::ExitFailure;
         }
 
@@ -369,6 +520,68 @@ namespace {
                 return report(ctx, wm.setPalette(palette));
         }
 
+        // win bench: the glyph kernels on a 1280-pixel row of cells, timed and
+        // compared byte for byte.
+        int runBench(CommandContext &ctx, unsigned Cells) {
+                constexpr unsigned MaxCells = 160, Rounds = 50;
+                if (Cells == 0 || Cells > MaxCells) Cells = MaxCells;
+                const unsigned Width = Cells * 8;
+                const Font    &font = Fonts::unscii16;
+                const size_t   stride = size_t(Width) * 3, bytes = stride * font.height();
+                uint8_t       *strips[2] = {};
+                for (uint8_t *&strip : strips)
+                        strip = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::Internal, bytes, 64));
+                if (strips[0] == nullptr || strips[1] == nullptr) {
+                        Memory::free(strips[0]);
+                        Memory::free(strips[1]);
+                        return report(ctx, Error::NoMem);
+                }
+                // A terminal-like row: text, a color change every 7 cells, some styled.
+                // In internal RAM: the shell's stack is in PSRAM.
+                struct Work {
+                                TextCell      cells[MaxCells];
+                                GlyphRenderer renderers[2] = {GlyphRenderer(GlyphRenderer::Kernel::Scalar),
+                                                              GlyphRenderer(GlyphRenderer::Kernel::Pie)};
+                };
+                void *workMemory = Memory::allocAligned(MemSpace::Internal, sizeof(Work), 16);
+                if (workMemory == nullptr) {
+                        Memory::free(strips[0]);
+                        Memory::free(strips[1]);
+                        return report(ctx, Error::NoMem);
+                }
+                Work     *work = new (workMemory) Work();
+                TextCell *cells = work->cells;
+                for (unsigned i = 0; i < Cells; ++i) {
+                        cells[i].codepoint = 0x21 + (i * 7) % 94;
+                        cells[i].fg = (i / 7) % 2 != 0 ? 0xffff40 : 0xc0c0c0;
+                        cells[i].bg = (i / 7) % 3 != 0 ? 0x000000 : 0x202080;
+                        cells[i].flags = i % 11 == 0 ? TextCell::Bold : (i % 13 == 0 ? TextCell::Underline : 0);
+                }
+                const GlyphRenderer::Kernel kernels[2] = {GlyphRenderer::Kernel::Scalar, GlyphRenderer::Kernel::Pie};
+                uint32_t                    cycles[2] = {};
+                for (int k = 0; k < 2; ++k) {
+                        GlyphRenderer &renderer = work->renderers[k];
+                        std::memset(strips[k], 0, bytes);
+                        const uint32_t start = esp_cpu_get_cycle_count();
+                        size_t         used = 0;
+                        for (unsigned r = 0; r < Rounds; ++r)
+                                (void)renderer.drawCells(Span<const TextCell>(cells, Cells), font, strips[k], stride,
+                                                         uint16_t(Width), used);
+                        cycles[k] = esp_cpu_get_cycle_count() - start;
+                }
+                const bool same = std::memcmp(strips[0], strips[1], bytes) == 0;
+                for (int k = 0; k < 2; ++k)
+                        ctx.printf("%-8s %lu cycles a cell (%lu us a 1280-pixel row)%s\n", k == 0 ? "scalar:" : "pie:",
+                                   static_cast<unsigned long>(cycles[k] / (Cells * Rounds)),
+                                   static_cast<unsigned long>(cycles[k] / (Cells * Rounds) * 160 / 360),
+                                   GlyphRenderer::isSupported(kernels[k]) ? "" : " (not in this build: scalar)");
+                ctx.printf("compare:  %s\n", same ? "the same bytes" : "DIFFERENT");
+                Memory::free(strips[0]);
+                Memory::free(strips[1]);
+                Memory::free(workMemory);
+                return same ? Shell::ExitSuccess : Shell::ExitFailure;
+        }
+
         int runStats(CommandContext &ctx, WindowManager &wm) {
                 const WindowManager::Stats s = wm.stats();
                 ctx.printf("Rounds:   %lu (%lu pieces, %lu redraws, %lu DMA calls, %lu fallbacks, %lu errors)\n",
@@ -390,6 +603,8 @@ namespace {
                         if (err.isOk()) wm->stop();
                         return Shell::ExitSuccess;
                 }
+                if (args.size() >= 2 && std::strcmp(args[1], "bench") == 0)
+                        return runBench(ctx, args.size() > 2 ? unsigned(std::atoi(args[2])) : 0);
                 WindowManager *wm = running(ctx);
                 if (wm == nullptr) return Shell::ExitFailure;
                 if (args.size() == 1 || (args.size() == 2 && std::strcmp(args[1], "list") == 0))
@@ -406,6 +621,34 @@ namespace {
                         return runShuffle(ctx, *wm, count);
                 }
                 uint8_t id = 0;
+                if (args.size() == 4 && std::strcmp(what, "scroll") == 0) {
+                        if (!parseId(ctx, args[2], id)) return Shell::ExitUsage;
+                        char      *end = nullptr;
+                        const long dy = std::strtol(args[3], &end, 0);
+                        if (end == args[3] || *end != '\0' || dy < -4096 || dy > 4096) return ctx.usage();
+                        testWindows[id - 1].pending.fetch_add(int32_t(dy));
+                        Error e = wm->update(id);
+                        if (e.isOk()) e = wm->sync(SyncTimeoutMs);
+                        if (e.isOk())
+                                ctx.printf("scroll:   %lu us\n",
+                                           static_cast<unsigned long>(testWindows[id - 1].scrollUs));
+                        return report(ctx, e);
+                }
+                if (args.size() == 3 && std::strcmp(what, "textbench") == 0) {
+                        if (!parseId(ctx, args[2], id)) return Shell::ExitUsage;
+                        TestWindow &t = testWindows[id - 1];
+                        t.textBench.store(true);
+                        Error e = wm->update(id);
+                        if (e.isOk()) e = wm->sync(SyncTimeoutMs);
+                        if (e.isError()) return report(ctx, e);
+                        ctx.printf("text:     %u rows of %u cells in %lu us\n", t.height / 16u,
+                                   unsigned(t.width / 8u < MaxRowCells ? t.width / 8u : MaxRowCells),
+                                   static_cast<unsigned long>(t.textUs));
+                        // The pattern back.
+                        e = wm->invalidate(id, Rect{0, 0, t.width, t.height});
+                        if (e.isOk()) e = wm->sync(SyncTimeoutMs);
+                        return report(ctx, e);
+                }
                 if (args.size() == 3 && std::strcmp(what, "close") == 0)
                         return parseId(ctx, args[2], id) ? report(ctx, wm->close(id)) : Shell::ExitUsage;
                 if (args.size() == 3 && std::strcmp(what, "raise") == 0)
@@ -425,7 +668,7 @@ namespace {
 
 BMDS_SHELL_COMMAND(win, runWin,
                    "[start [RRGGBB]|stop|list|new [X Y W H] [TITLE]|close N|raise N|move N X Y|drag N X Y|"
-                   "color [ROLE RRGGBB]|check|stats|shuffle N]",
+                   "scroll N DY|textbench N|color [ROLE RRGGBB]|check|stats|shuffle N|bench [CELLS]]",
                    "The desktop and its windows on display 0: 'new' opens a test window, 'drag' moves one "
                    "as an outline, 'color' lists or sets the palette, 'check' compares every pixel with the stack")
 

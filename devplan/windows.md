@@ -1,6 +1,6 @@
 # Windows: a Desktop, a Window Manager, the Terminal as the First Program
 
-Status: **steps 1 to 3 done** (surface 0, `display.md` §5c; the window manager on it, §9)
+Status: **steps 1 to 4 done** (surface 0, `display.md` §5c; the window manager on it; the Painter, §9)
 (Phase 4, 2026-10-05). After measuring three ways
 to put windows on the screen (§4b, §4c, below), the user chose the simple one: **surface 0**,
 a double-buffered RGB888 framebuffer in PSRAM that the DW-GDMA scans directly (no ring), windows
@@ -287,6 +287,46 @@ the desktop, straight into the bridge's FIFO. Moving a window is a different lis
 Designed, not built: the user chose surface 0 alone first (§0); this is the plan for later
 surfaces.
 
+## 4d. Step 4 design: the Painter (2026-10-05; built)
+
+What step 5's terminal needs, made fast: rows of cells (each its own colors), scrolling, and the
+odd 1-pixel line.
+
+- **Cells:** `Painter::cells(x, y, cells, font)` draws a run of `TextCell`s (a codepoint, fg, bg,
+  underline and bold flags; bold is the glyph smeared one pixel right); `text()` is a run of one
+  pair of colors. Glyphs are expanded into the strip by a kernel, then copied by 2D-DMA piece by
+  piece (the clip).
+- **Kernels, measured against each other** (`win bench`, which also checks they agree byte for
+  byte):
+  - *Scalar* (pure, host-tested against the font's bits): a 16-entry table of 4 pixels (12 bytes,
+    three words) per nibble, rebuilt only when a cell's colors differ from the last cell's; a glyph
+    row is two lookups and six word stores.
+  - *PIE*: the glyph row's byte broadcast into a 128-bit register (`esp.vldbc.8.ip`), masked with
+    the bit of each pixel's 3 bytes and compared (`esp.andq`, `esp.vcmp.eq.u8`) into a 24-byte
+    mask, blended `bg ^ (mask & (fg ^ bg))`, stored as three 64-bit halves; no table, colors in
+    registers, a hardware loop (`esp.lp.setup`) over the rows.
+  - The font lookup gets a fast path for its first run (ASCII), and a cell repeating the last
+    codepoint reuses its glyph.
+- **Overlap:** the strip is used in two halves: while the 2D-DMA copies one half's glyphs into the
+  surface, the CPU expands the next cells into the other. `Surface` gains a started copy that
+  doesn't wait (`startBlit()`; the next drawing call, or `wait()`, waits for it).
+- **Scrolling:** `Painter::scroll(area, dy)` moves what of `area` is visible by `dy` rows with
+  2D-DMA copies inside the surface (`Surface::copy()`, in an order that never reads a row already
+  overwritten: top first moving up; bottom first moving down, in bands no taller than `dy`). Only
+  pixels whose source is visible and not damaged are copied; the rest is returned as a region the
+  window redraws.
+- **Unaligned edges:** a fill whose sides aren't on 4-pixel columns writes its whole groups of 4
+  in the middle as now, and the edge groups by read-modify-write: the 2D-DMA reads them into
+  internal RAM, the CPU sets the pixels inside the fill, the 2D-DMA writes them back (two jobs a
+  fill call, for all its rectangles' edges together). Text still starts on a 4-pixel column.
+- **Window updates:** a window may draw outside of damage (a terminal's new rows, a scroll):
+  `WindowManager::update(id)` asks for a call at the next round, with the painter's clip all of its
+  visible client area. The redraw callback always gets the damage to redraw (`Painter::damage()`),
+  and may draw anything else in the clip.
+- **Tests:** the test windows add a label of cells in two colors, 1-pixel grid lines at unaligned
+  columns, and `win scroll N DY` (the pattern moves; the exposed rows are redrawn); `win check`
+  models all of it.
+
 ## 5. Budgets (estimates; measured as the steps land)
 
 At 720p:
@@ -304,8 +344,8 @@ At 720p:
   terminal (800×16×3).
 - **The hard case is a scrolling terminal:** every row changes each frame: about 1.5 MB drawn a
   frame for the 100×40 terminal, 92 MB/s at 60 frames a second, beside the scan. The terminal draws
-  at most once a frame and may drop to every other one under load; scrolling the window's part of
-  surface 0 by a 2D-DMA copy (instead of redrawing its rows) is the next lever, measured in step 5.
+  at most once a frame and may drop to every other one under load. Scrolling by a 2D-DMA copy
+  inside surface 0 was measured in step 4 and loses to redrawing the rows (§9).
 
 ## 6. ABI (later)
 
@@ -342,7 +382,8 @@ ones once it exists.
 3. **The window manager on surface 0** (done; design in §4a, as built in §9): windows, the stack, visible
    regions, damage and redraw requests, the desktop color, frames with titles, outline moves; test
    windows that redraw a pattern; `win start/stop/list/new/move/drag/raise/close/color/check/stats/shuffle`.
-4. **Drawing:** the `Painter` (fills, text from the glyph table, copies), clipped to visible regions.
+4. **Drawing** (done; design in §4d, as built in §9): the `Painter` (cells with a PIE kernel, overlapped
+   with the 2D-DMA, scrolling, unaligned edges), window updates, `win bench`, `win scroll`.
 5. **The terminal program:** `TerminalScreen` drawn per frame, a `Console` on it, a shell in it,
    `win type`.
 6. **At boot:** the desktop and a terminal start with the display.
@@ -394,3 +435,42 @@ ones once it exists.
   replaces the colors fixed in the window manager; `win color` lists the roles and sets one.
   Measured: 0 wrong pixels after changing the desktop, a frame, the inactive title and the client
   colors; repainting the whole screen for a role took 20 ms.
+- **Step 4** (2026-10-05): the Painter (§4d).
+  - `GlyphRenderer` (`bmds_ui`; the scalar kernel host-tested against the font's bits, bold and
+    underline, and runs against single glyphs): `drawCells()` and `drawText()` keep the PIE
+    registers loaded over a run and reload the colors only when they change. Measured with
+    `win bench` (160 cells, a color change every 7, some styled; PIE and scalar give the same
+    bytes), in cycles a cell:
+
+    | Version | Scalar | PIE |
+    |---|---|---|
+    | First (a glyph a call, a table rebuilt per color) | 1,398 | 479 |
+    | PIE with a 256-entry mask table, two rows interleaved | | 503 |
+    | Colors set with word operations | 860 | 462 |
+    | Runs (registers kept), the font's ASCII fast path inline | 818 | 360 |
+
+    The PIE kernel alone is 236 cycles a cell (16 rows of 13 instructions, near one a cycle); the
+    mask table was slower (326 alone) and costs 8 KB, so it went. Raw stores into internal RAM:
+    `esp.vst.128` 7 to 13 bytes a cycle, `memset` 2.6, so the kernels aren't store-bound.
+  - `Surface`: `fill()` takes any rectangle (sides off the 4-pixel columns: their groups read into
+    the fill's line buffer, patched, written back: two jobs a call, no extra memory);
+    `startBlit()`/`wait()` (a copy cut to a clip as one job, not waited for); `copy()` (in order).
+    `BlitChain` gained `submit()`/`wait()`.
+  - `Painter`: exact fills, `cells()` and `text()` through two strip halves (the strip is still
+    60 KB at 720p: 2 × 640 × 16 pixels), `scroll()` (only visible, undamaged sources; the rest
+    returned to redraw), the damage (`damageAt()`, `damageBounds()`).
+  - `WindowManager::update()`: a redraw without damage, clipped to all of the visible client
+    area. The `wm` task's stack is 8 KB (2.9 KB left at worst in the tests).
+  - Test windows: 1-pixel grid lines off the 4-pixel columns, a label of cells (bold, underline,
+    colors, ░▒▓☺Ä), `win scroll N DY`; `win check` models them (the label drawn by the scalar
+    kernel as the reference): 0 wrong pixels after shuffles, scrolls both ways (partly covered
+    windows among them), text, drags and palette changes, single- and double-buffered, 0
+    underruns.
+  - Measured at 720p, a full-screen window (`win textbench`): 43 rows of 159 cells in 11.7 ms,
+    18.4 ms with the overlap turned off. Scrolling the same window by 16 rows (a 1272 × 664 copy
+    inside PSRAM) takes 23.0 ms: PSRAM to PSRAM runs at the 110 MB/s each way of step 2. **A
+    terminal redraws its rows rather than scrolling them;** `scroll()` is for content that costs
+    more to draw than to copy.
+  - Size: `bmds_ui` 20 KB of code, 2.5 KB of `.bss` (the test windows' state among it).
+  - Next levers, not taken: the 2D-DMA job's fixed cost (about 86 jobs in the full-screen text,
+    one per strip half), by driving the 2D-DMA directly (§7).

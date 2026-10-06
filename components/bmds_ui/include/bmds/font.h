@@ -49,7 +49,10 @@ class Font {
                                const uint8_t (&narrowBits)[NarrowBytes], const Range (&wide)[WideRuns],
                                const uint8_t (&wideBits)[WideBytes], uint32_t replacement)
                     : _narrow(narrow, NarrowRuns), _wide(wide, WideRuns), _narrowBits(narrowBits), _wideBits(wideBits),
-                      _replacement(replacement), _width(width), _height(height) {}
+                      _replacement(replacement), _glyphBytes(static_cast<uint16_t>(height * (width / 8))),
+                      _width(width), _height(height) {
+                        static_assert(NarrowRuns > 0, "a font has narrow glyphs");
+                }
 
                 Font(const Font &) = delete;
                 Font &operator=(const Font &) = delete;
@@ -64,19 +67,28 @@ class Font {
                 bool hasGlyph(uint32_t codepoint) const;
 
                 /** @brief Returns @p codepoint's glyph, or the replacement glyph. @hotpath */
-                Glyph glyph(uint32_t codepoint) const;
+                Glyph glyph(uint32_t codepoint) const {
+                        // The first narrow run (ASCII, in unscii) inline, without a search.
+                        const Range &first = _narrow[0];
+                        if (codepoint - first.first < first.count)
+                                return Glyph{_narrowBits + (first.index + (codepoint - first.first)) * _glyphBytes,
+                                             _width};
+                        return lookup(codepoint);
+                }
 
                 /** @brief Returns the glyph count. */
                 size_t glyphCount() const;
 
         private:
-                bool find(uint32_t codepoint, Glyph &out) const;
+                bool  find(uint32_t codepoint, Glyph &out) const;
+                Glyph lookup(uint32_t codepoint) const;
 
                 Span<const Range> _narrow;
                 Span<const Range> _wide;
                 const uint8_t    *_narrowBits;
                 const uint8_t    *_wideBits;
                 uint32_t          _replacement;
+                uint16_t          _glyphBytes; // a narrow glyph's
                 uint8_t           _width;
                 uint8_t           _height;
 };

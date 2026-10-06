@@ -54,8 +54,10 @@ class Surface;
 class WindowManager {
         public:
                 /**
-                 * @brief Draws what @p painter's clip holds of a client area (the
-                 *        painter's origin is the area's top-left corner).
+                 * @brief Draws a client area: at least the painter's damage, and
+                 *        anything else in its clip (all of the area that shows,
+                 *        after `update()`). The painter's origin is the area's
+                 *        top-left corner.
                  */
                 using Redraw = void (*)(void *arg, Painter &painter);
 
@@ -142,6 +144,14 @@ class WindowManager {
                 Error invalidate(uint8_t id, const Rect &rect);
 
                 /**
+                 * @brief Asks window @p id's redraw to be called at the next round
+                 *        even without damage, its painter clipped to all of its
+                 *        client area that shows (a terminal's new rows, a scroll).
+                 * @return `Ok`, `NotFound`, `InvalidState`.
+                 */
+                Error update(uint8_t id);
+
+                /**
                  * @brief Sets the colors and redraws what they changed (the
                  *        desktop alone, or everything).
                  */
@@ -191,7 +201,8 @@ class WindowManager {
                 void        run();
                 void        round();
                 void        drawPieces(Span<const ComposePiece> pieces);
-                void        drawLayer(size_t z, Span<const Rect> clip);
+                void        drawLayer(size_t z, Span<const Rect> pieces);
+                void        drawUpdates(); // windows asking for an update and not drawn yet this round
                 void        drawBottomUp(const Rect &rect);
                 void        drawOutline();
                 void        changed(uint8_t oldTop); // wakes the task; repaints titles if the focus moved
@@ -207,9 +218,11 @@ class WindowManager {
                 uint8_t               _dragId = 0;
                 Rect                  _outline;
                 bool                  _outlineShown = false;
-                Painter::Strip        _strip;
+                Painter::Tools        _tools;
+                GlyphRenderer         _renderer{GlyphRenderer::best()};
+                uint16_t              _updates = 0;       // windows asking for an update, a bit by number - 1
                 ComposePiece         *_pieces = nullptr;  // a round's plan
-                Rect                 *_scratch = nullptr; // a layer's clip
+                Rect                 *_scratch = nullptr; // a layer's pieces, client damage, and visible client
                 uint32_t              _requests = 0;      // changes made
                 std::atomic<uint32_t> _drawn{0};          // changes drawn
                 uint32_t              _presented = 0;     // the last present's number

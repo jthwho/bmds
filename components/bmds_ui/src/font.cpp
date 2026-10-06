@@ -40,7 +40,7 @@ bool Font::hasGlyph(uint32_t codepoint) const {
         return find(codepoint, g);
 }
 
-Glyph Font::glyph(uint32_t codepoint) const {
+Glyph Font::lookup(uint32_t codepoint) const {
         Glyph g;
         if (find(codepoint, g)) return g;
         find(_replacement, g);

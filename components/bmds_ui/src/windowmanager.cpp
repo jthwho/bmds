@@ -42,33 +42,38 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface != nullptr || !display.isRunning()) return Error::InvalidState;
         Surface &surface = display.surface();
-        // A text row at the screen's width, and a round's plan and clips.
-        const size_t stripBytes = size_t(surface.stride()) * Fonts::unscii16.height();
-        _strip.data = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, stripBytes, StripAlign));
+        // A text row at the screen's width in two halves (each a multiple of 64
+        // pixels: its own cache lines), and a round's plan and clips.
+        const uint16_t half = static_cast<uint16_t>((surface.width() / 2 + 63) & ~63u);
+        const size_t   stripBytes = 2 * size_t(half) * Surface::BytesPerPixel * Fonts::unscii16.height();
+        _tools.strip = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, stripBytes, StripAlign));
         _pieces = static_cast<ComposePiece *>(Memory::alloc(MemSpace::Internal, MaxPieces * sizeof(ComposePiece)));
-        _scratch = static_cast<Rect *>(Memory::alloc(MemSpace::Internal, 2 * MaxPieces * sizeof(Rect)));
-        Error err = _strip.data == nullptr || _pieces == nullptr || _scratch == nullptr ? Error(Error::NoMem)
-                                                                                        : display.claim("desktop");
+        _scratch = static_cast<Rect *>(Memory::alloc(MemSpace::Internal, 3 * MaxPieces * sizeof(Rect)));
+        Error err = _tools.strip == nullptr || _pieces == nullptr || _scratch == nullptr ? Error(Error::NoMem)
+                                                                                         : display.claim("desktop");
         if (err.isOk() && !_task.isRunning()) {
                 Task::Config tc;
                 tc.name = "wm";
-                tc.stackBytes = 6144;
+                tc.stackBytes = 8192;
                 tc.priority = 5;
                 tc.core = 0;
                 err = _task.start(tc, entry, this);
                 if (err.isError()) display.release();
         }
         if (err.isError()) {
-                Memory::free(_strip.data);
+                Memory::free(_tools.strip);
                 Memory::free(_pieces);
                 Memory::free(_scratch);
-                _strip = Painter::Strip();
+                _tools = Painter::Tools();
                 _pieces = nullptr;
                 _scratch = nullptr;
                 return err;
         }
-        _strip.width = surface.width();
-        _strip.height = Fonts::unscii16.height();
+        _tools.halfWidth = half;
+        _tools.height = Fonts::unscii16.height();
+        _tools.renderer = &_renderer;
+        _tools.busyHalf = -1;
+        _updates = 0;
         _display = &display;
         _surface = &surface;
         _palette = palette;
@@ -85,13 +90,14 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
 void WindowManager::stop() {
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface == nullptr) return;
+        (void)_surface->wait(DrawTimeoutMs); // the strip's last copy
         _surface = nullptr;
         _display->release();
         _display = nullptr;
-        Memory::free(_strip.data);
+        Memory::free(_tools.strip);
         Memory::free(_pieces);
         Memory::free(_scratch);
-        _strip = Painter::Strip();
+        _tools = Painter::Tools();
         _pieces = nullptr;
         _scratch = nullptr;
         _stack.reset(0, 0);
@@ -131,7 +137,7 @@ void WindowManager::round() {
         const uint32_t requests = _requests;
         const Region   damage = _stack.damage();
         _stack.clearDamage();
-        const bool drawing = !damage.isEmpty() || (_dragId != 0 && !_outlineShown);
+        const bool drawing = !damage.isEmpty() || _updates != 0 || (_dragId != 0 && !_outlineShown);
         if (!drawing) {
                 _drawn.store(requests, std::memory_order_release);
                 return;
@@ -156,6 +162,7 @@ void WindowManager::round() {
                         }
                 }
         }
+        drawUpdates();
         if (_dragId != 0) drawOutline();
         const auto us = static_cast<uint32_t>(System::uptimeUs() - start);
         ++_stats.rounds;
@@ -195,38 +202,61 @@ void WindowManager::drawPieces(Span<const ComposePiece> pieces) {
         return;
 }
 
-// Window @p z's frame and client area, inside @p clip.
-void WindowManager::drawLayer(size_t z, Span<const Rect> clip) {
+// Window @p z's frame and client area inside @p pieces (its damage); after
+// `update()`, its redraw clipped to all of its client area that shows.
+void WindowManager::drawLayer(size_t z, Span<const Rect> pieces) {
         const uint8_t  id = _stack.idAt(z);
         const Window  &w = _windows[id - 1];
         const Rect     outer = _stack.rectAt(z);
         const bool     active = z == 0;
         const uint32_t frame = _palette.color(active ? Role::ActiveFrame : Role::InactiveFrame);
         const uint32_t text = _palette.color(active ? Role::ActiveTitle : Role::InactiveTitle);
+        const auto     bit = static_cast<uint16_t>(1u << (id - 1));
 
-        Painter chrome(*_surface, clip, 0, 0, _strip, DrawTimeoutMs);
-        Rect    edges[3];
-        WindowFrame::edges(outer, edges);
-        const Rect parts[4] = {WindowFrame::titleBar(outer), edges[0], edges[1], edges[2]};
-        (void)chrome.fill(parts, frame);
-        const Rect box = WindowFrame::closeBox(outer);
-        (void)chrome.fill(box, _palette.color(Role::CloseBox));
-        (void)chrome.fill(Rect{uint16_t(box.x + Align), uint16_t(box.y + Align), Align, Align},
-                          _palette.color(Role::CloseMark));
-        const Rect title = WindowFrame::title(outer);
-        (void)chrome.text(title.x, title.y, StringView(w.title), Fonts::unscii16, text, frame, title.width);
-        count(chrome);
-
-        // The client area's part of the clip.
-        const Rect client = WindowFrame::client(outer);
-        Rect      *cut = _scratch + MaxPieces;
-        size_t     k = 0;
-        for (const Rect &piece : clip) {
-                const Rect r = piece.intersected(client);
-                if (!r.isEmpty()) cut[k++] = r;
+        if (!pieces.isEmpty()) {
+                Painter chrome(*_surface, pieces, pieces, 0, 0, _tools, DrawTimeoutMs);
+                Rect    edges[3];
+                WindowFrame::edges(outer, edges);
+                const Rect parts[4] = {WindowFrame::titleBar(outer), edges[0], edges[1], edges[2]};
+                (void)chrome.fill(parts, frame);
+                const Rect box = WindowFrame::closeBox(outer);
+                (void)chrome.fill(box, _palette.color(Role::CloseBox));
+                (void)chrome.fill(Rect{uint16_t(box.x + Align), uint16_t(box.y + Align), Align, Align},
+                                  _palette.color(Role::CloseMark));
+                const Rect title = WindowFrame::title(outer);
+                (void)chrome.text(title.x, title.y, StringView(w.title), Fonts::unscii16, text, frame, title.width);
+                count(chrome);
         }
-        if (k == 0) return;
-        Painter painter(*_surface, Span<const Rect>(cut, k), client.x, client.y, _strip, DrawTimeoutMs);
+
+        // The client area's damage; its clip, the damage or (an update) all of it that shows.
+        const Rect client = WindowFrame::client(outer);
+        Rect      *damage = _scratch + MaxPieces;
+        size_t     nd = 0;
+        for (const Rect &piece : pieces) {
+                const Rect r = piece.intersected(client);
+                if (!r.isEmpty()) damage[nd++] = r;
+        }
+        Span<const Rect> clip(damage, nd);
+        if ((_updates & bit) != 0) {
+                // Planned in the third part of the scratch space, then kept there.
+                Rect        *visible = _scratch + 2 * MaxPieces;
+                auto        *plan = reinterpret_cast<ComposePiece *>(visible);
+                const size_t room = MaxPieces * sizeof(Rect) / sizeof(ComposePiece);
+                Region       area;
+                area.add(client);
+                auto [n, err] = _stack.plan(area, Span<ComposePiece>(plan, room));
+                if (err.isOk()) {
+                        size_t nv = 0;
+                        for (size_t i = 0; i < n; ++i) {
+                                const ComposePiece piece = plan[i]; // its slot may be overwritten below
+                                if (piece.layer == z) visible[nv++] = piece.rect;
+                        }
+                        clip = Span<const Rect>(visible, nv);
+                        _updates = static_cast<uint16_t>(_updates & ~bit);
+                }
+        }
+        if (clip.isEmpty()) return;
+        Painter painter(*_surface, clip, Span<const Rect>(damage, nd), client.x, client.y, _tools, DrawTimeoutMs);
         if (w.redraw != nullptr) {
                 ++_stats.redraws;
                 w.redraw(w.arg, painter);
@@ -234,6 +264,13 @@ void WindowManager::drawLayer(size_t z, Span<const Rect> clip) {
                 (void)painter.fill(Rect{0, 0, client.width, client.height}, _palette.color(Role::Client));
         }
         count(painter);
+        return;
+}
+
+void WindowManager::drawUpdates() {
+        for (size_t z = 0; z < _stack.count() && _updates != 0; ++z)
+                if ((_updates & (1u << (_stack.idAt(z) - 1))) != 0) drawLayer(z, Span<const Rect>());
+        _updates = 0; // windows closed since asking
         return;
 }
 
@@ -252,7 +289,8 @@ void WindowManager::drawOutline() {
         Rect sides[4];
         WindowFrame::outline(_outline, sides);
         const Rect screen = _stack.screen();
-        Painter    painter(*_surface, Span<const Rect>(&screen, 1), 0, 0, _strip, DrawTimeoutMs);
+        Painter    painter(*_surface, Span<const Rect>(&screen, 1), Span<const Rect>(&screen, 1), 0, 0, _tools,
+                           DrawTimeoutMs);
         (void)painter.fill(sides, _palette.color(Role::Outline));
         count(painter);
         _outlineShown = true;
@@ -367,6 +405,16 @@ Error WindowManager::invalidate(uint8_t id, const Rect &rect) {
         const Rect r = rect.intersected(local);
         if (r.isEmpty()) return Error::Ok;
         (void)_stack.invalidate(id, Rect{uint16_t(client.x + r.x), uint16_t(client.y + r.y), r.width, r.height});
+        changed(_stack.idAt(0));
+        return Error::Ok;
+}
+
+Error WindowManager::update(uint8_t id) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        const Error err = _stack.layerOf(id).error();
+        if (err.isError()) return err;
+        _updates = static_cast<uint16_t>(_updates | 1u << (id - 1));
         changed(_stack.idAt(0));
         return Error::Ok;
 }

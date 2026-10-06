@@ -14,6 +14,7 @@
 #include <cstring>
 #include <vector>
 #include <bmds/font.h>
+#include <bmds/glyphrenderer.h>
 #include <bmds/rect.h>
 #include <bmds/compose.h>
 #include <bmds/region.h>
@@ -426,6 +427,85 @@ TEST_CASE("WindowPalette: every role named, found by its name, colors kept to 24
         p.setColor(WindowPalette::Role::Client, 0xff123456);
         CHECK(p.color(WindowPalette::Role::Client) == 0x123456);
         CHECK(!(p == WindowPalette()));
+}
+
+TEST_CASE("GlyphRenderer: the scalar kernel draws each glyph's bits, bold and underlined") {
+        using bmds::GlyphRenderer;
+        using bmds::TextCell;
+        const Font &font = bmds::Fonts::unscii16;
+        CHECK(GlyphRenderer::isSupported(GlyphRenderer::Kernel::Scalar));
+        GlyphRenderer      renderer(GlyphRenderer::Kernel::Scalar);
+        constexpr size_t   Stride = 64 * 3; // 64 pixels a row
+        alignas(8) uint8_t out[Stride * 16];
+        const uint32_t     codepoints[] = {'A', 'g', 0x2591, 0x263a, 0xff21, 0x4dc0, '|', ' '};
+        const uint32_t     colors[][2] = {{0xffffff, 0x000000}, {0x123456, 0xfedcba}, {0x00ff00, 0x00ff00}};
+        bool               ok = true;
+        for (const uint32_t cp : codepoints) {
+                for (const auto &c : colors) {
+                        for (uint8_t flags = 0; flags < 4; ++flags) {
+                                const Glyph g = font.glyph(cp);
+                                std::memset(out, 0xaa, sizeof(out));
+                                renderer.draw(g, font.height(), flags, c[0], c[1], out + 8 * 3, Stride);
+                                for (unsigned y = 0; y < font.height(); ++y) {
+                                        for (unsigned x = 0; x < 64; ++x) {
+                                                const uint8_t *p = out + y * Stride + x * 3;
+                                                const uint32_t got = uint32_t(p[2]) << 16 | uint32_t(p[1]) << 8 | p[0];
+                                                if (x < 8 || x >= 8u + g.width) {
+                                                        ok &= got == 0xaaaaaa; // nothing outside
+                                                        continue;
+                                                }
+                                                const unsigned col = x - 8, bpr = g.width / 8u;
+                                                auto           bit = [&](unsigned cx) {
+                                                        return (g.rows[y * bpr + cx / 8] & (0x80u >> (cx % 8))) != 0;
+                                                };
+                                                bool on = bit(col);
+                                                if ((flags & TextCell::Bold) != 0 && col > 0) on |= bit(col - 1);
+                                                if ((flags & TextCell::Underline) != 0 && y == font.height() - 1u)
+                                                        on = true;
+                                                ok &= got == (on ? c[0] : c[1]);
+                                        }
+                                }
+                        }
+                }
+        }
+        CHECK(ok);
+        CHECK(font.glyph('A').rows == font.glyph(0x41).rows);
+}
+
+TEST_CASE("GlyphRenderer: runs of cells and text match glyph by glyph, cut at the width") {
+        using bmds::GlyphRenderer;
+        using bmds::TextCell;
+        const Font        &font = bmds::Fonts::unscii16;
+        GlyphRenderer      renderer(GlyphRenderer::Kernel::Scalar);
+        constexpr size_t   Pixels = 128, Stride = Pixels * 3;
+        alignas(8) uint8_t runOut[Stride * 16], oneOut[Stride * 16];
+        TextCell           cells[6];
+        const uint32_t     cps[6] = {'a', 0xff21, 'b', 'b', 0x2591, 'c'}; // a wide one
+        for (int i = 0; i < 6; ++i) {
+                cells[i].codepoint = cps[i];
+                cells[i].fg = 0x102030u * uint32_t(i + 1);
+                cells[i].bg = i % 2 != 0 ? 0x000000 : 0xffffff;
+                cells[i].flags = static_cast<uint8_t>(i % 4);
+        }
+        std::memset(runOut, 0, sizeof(runOut));
+        std::memset(oneOut, 0, sizeof(oneOut));
+        size_t         used = 0;
+        const uint16_t w = renderer.drawCells(bmds::Span<const TextCell>(cells, 6), font, runOut, Stride, 50, used);
+        CHECK(w == 48); // 8 + 16 + 8 + 8 + 8, then 'c' (8) past 50
+        CHECK(used == 5);
+        uint16_t x = 0;
+        for (size_t i = 0; i < used; ++i) {
+                const Glyph g = font.glyph(cells[i].codepoint);
+                renderer.draw(g, font.height(), cells[i].flags, cells[i].fg, cells[i].bg, oneOut + x * 3, Stride);
+                x = static_cast<uint16_t>(x + g.width);
+        }
+        CHECK(std::memcmp(runOut, oneOut, sizeof(runOut)) == 0);
+        size_t         bytes = 0;
+        const uint16_t tw = renderer.drawText("ab\xe2\x96\x91"
+                                              "cd",
+                                              font, 0xffffff, 0, runOut, Stride, 28, bytes);
+        CHECK(tw == 24); // a, b, the shade; 'c' would pass 28
+        CHECK(bytes == 5);
 }
 
 TEST_CASE("Font: unscii-16") {
