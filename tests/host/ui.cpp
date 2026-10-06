@@ -18,6 +18,8 @@
 #include <bmds/rect.h>
 #include <bmds/compose.h>
 #include <bmds/region.h>
+#include <bmds/terminalscreen.h>
+#include <bmds/terminalview.h>
 #include <bmds/windowpalette.h>
 #include <bmds/windowstack.h>
 
@@ -422,6 +424,7 @@ TEST_CASE("WindowPalette: every role named, found by its name, colors kept to 24
         CHECK(WindowPalette::find("active").error() == bmds::Error::NotFound);
         CHECK(WindowPalette::find("desktop").value() == WindowPalette::Role::Desktop);
         CHECK(WindowPalette::find("outline").value() == WindowPalette::Role::Outline);
+        CHECK(WindowPalette::find("terminal-cursor").value() == WindowPalette::Role::TerminalCursor);
         WindowPalette p;
         CHECK(p.color(WindowPalette::Role::Desktop) == 0x404040);
         p.setColor(WindowPalette::Role::Client, 0xff123456);
@@ -506,6 +509,48 @@ TEST_CASE("GlyphRenderer: runs of cells and text match glyph by glyph, cut at th
                                               font, 0xffffff, 0, runOut, Stride, 28, bytes);
         CHECK(tw == 24); // a, b, the shade; 'c' would pass 28
         CHECK(bytes == 5);
+}
+
+TEST_CASE("TerminalView: cells with defaults, attributes, wide characters and the cursor") {
+        using bmds::TerminalScreen;
+        using bmds::TextCell;
+        using Role = WindowPalette::Role;
+        TerminalScreen screen(bmds::MemSpace::Psram);
+        REQUIRE(screen.resize(10, 2).isOk());
+        // Plain, bold red, reverse, dim, invisible + underline, a wide character, RGB on blue.
+        screen.write("a\x1b[1;31mb\x1b[0;7mc\x1b[0;2md\x1b[0;8;4me\x1b[0m\xef\xbc\xa1\x1b[38;2;1;2;3;44mf");
+        WindowPalette p;
+        p.setColor(Role::TerminalText, 0xc0c0c0);
+        p.setColor(Role::TerminalBackground, 0x000010);
+        p.setColor(Role::TerminalCursor, 0x00ff00);
+        TextCell     out[10];
+        const size_t n = bmds::TerminalView::row(screen, 0, p, 1, out, 10);
+        CHECK(n == 9); // 10 columns, the wide one's tail left out
+        CHECK(out[0].codepoint == 'a');
+        CHECK(out[0].fg == 0xc0c0c0);
+        CHECK(out[0].bg == 0x000010);
+        CHECK(out[0].flags == 0);
+        CHECK(out[1].flags == TextCell::Bold); // the cursor's cell
+        CHECK(out[1].bg == 0x00ff00);
+        CHECK(out[1].fg == 0x000010);
+        CHECK(out[2].fg == 0x000010); // reverse
+        CHECK(out[2].bg == 0xc0c0c0);
+        CHECK(out[3].fg == 0x606060);  // dim
+        CHECK(out[4].fg == out[4].bg); // invisible
+        CHECK(out[4].flags == TextCell::Underline);
+        CHECK(out[5].codepoint == 0xff21);
+        CHECK(out[6].codepoint == 'f');
+        CHECK(out[6].fg == 0x010203);
+        CHECK(out[6].bg == bmds::TerminalView::rgb(bmds::Color::indexed(4), 0));
+        CHECK(out[7].codepoint == ' ');
+        // Without a cursor, the bold red keeps its colors.
+        bmds::TerminalView::row(screen, 0, p, -1, out, 10);
+        CHECK(out[1].fg == bmds::TerminalView::rgb(bmds::Color::indexed(1), 0));
+        CHECK(out[1].bg == 0x000010);
+        // The cursor on a wide character's tail is on the character.
+        bmds::TerminalView::row(screen, 0, p, 6, out, 10);
+        CHECK(out[5].bg == 0x00ff00);
+        CHECK(out[6].bg != 0x00ff00);
 }
 
 TEST_CASE("Font: unscii-16") {

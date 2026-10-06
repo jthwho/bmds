@@ -72,6 +72,7 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
         _tools.halfWidth = half;
         _tools.height = Fonts::unscii16.height();
         _tools.renderer = &_renderer;
+        _tools.palette = &_palette;
         _tools.busyHalf = -1;
         _updates = 0;
         _display = &display;
@@ -82,7 +83,7 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
         _dragId = 0;
         _outlineShown = false;
         _stats = Stats();
-        ++_requests;
+        _requests.fetch_add(1, std::memory_order_acq_rel);
         _wake.release();
         return Error::Ok;
 }
@@ -90,6 +91,11 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
 void WindowManager::stop() {
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface == nullptr) return;
+        for (size_t z = 0; z < _stack.count(); ++z) {
+                Window &w = _windows[_stack.idAt(z) - 1];
+                if (w.closed != nullptr) w.closed(w.arg);
+                w = Window();
+        }
         (void)_surface->wait(DrawTimeoutMs); // the strip's last copy
         _surface = nullptr;
         _display->release();
@@ -102,7 +108,8 @@ void WindowManager::stop() {
         _scratch = nullptr;
         _stack.reset(0, 0);
         _dragId = 0;
-        _drawn.store(_requests, std::memory_order_release); // nothing more will be
+        _asked.store(0, std::memory_order_release);
+        _drawn.store(_requests.load(std::memory_order_acquire), std::memory_order_release); // nothing more will be
         _idle.notify();
         return;
 }
@@ -134,8 +141,9 @@ void WindowManager::run() {
 // Everything damaged drawn by whoever shows it, the outline over it; then
 // (double-buffered) presented. With the lock held.
 void WindowManager::round() {
-        const uint32_t requests = _requests;
-        const Region   damage = _stack.damage();
+        const uint32_t requests = _requests.load(std::memory_order_acquire);
+        _updates = static_cast<uint16_t>(_updates | _asked.exchange(0, std::memory_order_acq_rel)); // after the count
+        const Region damage = _stack.damage();
         _stack.clearDamage();
         const bool drawing = !damage.isEmpty() || _updates != 0 || (_dragId != 0 && !_outlineShown);
         if (!drawing) {
@@ -318,7 +326,7 @@ void WindowManager::changed(uint8_t oldTop) {
                         for (const Rect &e : edges) (void)_stack.invalidate(id, e);
                 }
         }
-        ++_requests;
+        _requests.fetch_add(1, std::memory_order_acq_rel);
         _wake.release();
         return;
 }
@@ -352,6 +360,7 @@ Result<uint8_t> WindowManager::open(const WindowConfig &config) {
                 w.title[MaxTitle] = '\0';
         }
         w.redraw = config.redraw;
+        w.closed = config.closed;
         w.arg = config.arg;
         changed(oldTop);
         return makeResult(id);
@@ -363,7 +372,9 @@ Error WindowManager::close(uint8_t id) {
         const uint8_t oldTop = _stack.count() > 0 ? _stack.idAt(0) : 0;
         const Error   err = _stack.close(id);
         if (err.isError()) return err;
+        const Window w = _windows[id - 1];
         _windows[id - 1] = Window();
+        if (w.closed != nullptr) w.closed(w.arg);
         if (_dragId == id) {
                 Rect sides[4];
                 WindowFrame::outline(_outline, sides);
@@ -410,12 +421,11 @@ Error WindowManager::invalidate(uint8_t id, const Rect &rect) {
 }
 
 Error WindowManager::update(uint8_t id) {
-        Mutex::Locker lock(_lock, WaitForever);
-        if (_surface == nullptr) return Error::InvalidState;
-        const Error err = _stack.layerOf(id).error();
-        if (err.isError()) return err;
-        _updates = static_cast<uint16_t>(_updates | 1u << (id - 1));
-        changed(_stack.idAt(0));
+        if (id == 0 || id > WindowStack::MaxWindows) return Error::NotFound;
+        // Without the lock: a writer on another task doesn't wait for a round.
+        _asked.fetch_or(static_cast<uint16_t>(1u << (id - 1)), std::memory_order_acq_rel);
+        _requests.fetch_add(1, std::memory_order_acq_rel);
+        _wake.release();
         return Error::Ok;
 }
 
@@ -506,7 +516,7 @@ Error WindowManager::sync(unsigned int timeoutMs) {
         {
                 Mutex::Locker lock(_lock, WaitForever);
                 if (_surface == nullptr) return Error::InvalidState;
-                target = _requests;
+                target = _requests.load(std::memory_order_acquire);
         }
         auto drawn = [this, target] {
                 return static_cast<int32_t>(_drawn.load(std::memory_order_acquire) - target) >= 0;

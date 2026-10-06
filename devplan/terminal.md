@@ -156,7 +156,8 @@ As built: `bmds/terminalscreen.h` / `terminalscreen.cpp`, as above. Host-tested
 regions with IL/DL/RI/SU/SD and origin mode, erasing in the current background, SGR in the cells,
 wide characters (wrapping, split halves, DCH), ICH/DCH/IRM/ECH/REP, both alternate-screen modes,
 the line-drawing set with SO/SI, tab stops, DECSTR and RIS, the DA/DSR/size replies, resizing,
-input split byte by byte, and 20,000 junk bytes. Not yet in the firmware (nothing uses it).
+input split byte by byte, and 20,000 junk bytes. In the firmware since `windows.md` step 5: the
+terminal windows' `ScreenConsole`.
 
 ## 4. IDF usage
 

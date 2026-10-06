@@ -11,6 +11,7 @@ set(BMDS_UI_PURE_SRCS
         src/compose.cpp
         src/font.cpp
         src/glyphrenderer.cpp
+        src/terminalview.cpp
         src/windowpalette.cpp
         src/windowstack.cpp)
 
@@ -23,10 +24,11 @@ set(BMDS_UI_FONT_SRC ${CMAKE_CURRENT_BINARY_DIR}/font_unscii16.cpp)
 if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_UI_PURE_SRCS}
                                     src/painter.cpp
+                                    src/terminal.cpp
                                     src/wincommand.cpp
                                     src/windowmanager.cpp
                                INCLUDE_DIRS include
-                               REQUIRES bmds_core bmds_drivers bmds_kernel
+                               REQUIRES bmds_console bmds_core bmds_drivers bmds_kernel
                                PRIV_REQUIRES bmds_shell esp_mm
                                WHOLE_ARCHIVE)
         idf_build_get_property(BMDS_UI_PYTHON PYTHON)
@@ -36,7 +38,7 @@ else()
         set(BMDS_UI_PYTHON ${Python3_EXECUTABLE})
         add_library(bmds_ui STATIC ${BMDS_UI_PURE_SRCS})
         target_include_directories(bmds_ui PUBLIC include)
-        target_link_libraries(bmds_ui PUBLIC bmds_core)
+        target_link_libraries(bmds_ui PUBLIC bmds_core bmds_console)
         set(BMDS_UI_LIB bmds_ui)
 endif()
 

@@ -140,6 +140,12 @@ class TerminalScreen final : private VtHandler {
                 /** @brief Marks every row clean. */
                 void clearDamage();
 
+                /** @brief Marks row @p row clean (a renderer took it). */
+                void clearRowDamage(uint16_t row) {
+                        if (row < _rows) _dirty[row / 32] &= ~(1u << (row % 32));
+                        return;
+                }
+
         private:
                 // The cursor and what DECSC saves with it.
                 struct Cursor {

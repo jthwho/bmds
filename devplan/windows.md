@@ -1,6 +1,7 @@
 # Windows: a Desktop, a Window Manager, the Terminal as the First Program
 
-Status: **steps 1 to 4 done** (surface 0, `display.md` §5c; the window manager on it; the Painter, §9)
+Status: **steps 1 to 5 done** (surface 0, `display.md` §5c; the window manager on it; the Painter;
+the terminal program, §9)
 (Phase 4, 2026-10-05). After measuring three ways
 to put windows on the screen (§4b, §4c, below), the user chose the simple one: **surface 0**,
 a double-buffered RGB888 framebuffer in PSRAM that the DW-GDMA scans directly (no ring), windows
@@ -327,6 +328,38 @@ odd 1-pixel line.
   columns, and `win scroll N DY` (the pattern moves; the exposed rows are redrawn); `win check`
   models all of it.
 
+## 4e. Step 5 design: the terminal program (2026-10-05; built)
+
+- **`ScreenConsole`** (`bmds_console`, pure, host-tested): a `Console` whose output is applied to
+  a `TerminalScreen` and whose input is a ring the owner fills (`pushInput()`: `win type` now, the
+  keyboard in Phase 5). Writes translate `\n` to CR LF as the mode says; a Ctrl-C pushed raises
+  the console's interrupt when signals are on; the screen's replies (DSR, DA, the size report) go
+  into the input. A mutex serializes the writers and the renderer (`Locked` access to the screen).
+  After a write that changed the screen it calls the owner's `changed` hook (at most once until
+  the owner says it drew: a burst of output asks for one redraw).
+- **`TerminalView`** (`bmds_ui`, pure, host-tested): a row of `TerminalCell`s into the painter's
+  `TextCell`s: default colors from the palette (new roles, appended: `terminal-text`,
+  `terminal-background`, `terminal-cursor`), indexed and RGB colors through `Color::toRgb()`,
+  bold, underline, reverse, dim (half the foreground), invisible, the tail of a wide character
+  dropped (its glyph is two cells wide), the cursor as a cell in the cursor color.
+- **`Terminal`** (`bmds_ui`, target): a numbered session (`MaxTerminals` = 4): a `ScreenConsole`,
+  its screen in PSRAM, and a shell spawned on it the first time it opens. A shell's task never
+  ends, so **a session outlives its window**: closing the window detaches it (output still goes to
+  the screen), and `win term N` opens a window on it again. The window's client area sets the
+  size (columns × rows of 8×16 cells; `setSize()` tells the shell). Its redraw, on the window
+  manager's task, draws the dirty rows, the rows under the damage, the rows where the cursor was
+  and is, and the margin past the last cell; the console's `changed` hook asks for an update.
+  Rows are redrawn, not scrolled (step 4: a redraw is twice as fast as a PSRAM copy).
+- **The window manager** gains a `closed` callback per window (so a terminal knows its window
+  went); the shell gets the program launcher from `main` (`Terminal::setLauncher()`).
+- **Commands:** `win term [N]` (a new or detached session, or session N, in a new window);
+  `win type N TEXT` (window N's terminal; `\n`, `\r`, `\t`, `\e`, `\xHH` and `^C` style escapes);
+  `win list` marks terminals.
+- **Tests:** host tests for `ScreenConsole` and `TerminalView`; on the board, a shell in a window:
+  commands typed with `win type`, output checked by reading the screen model back
+  (`win dump N`), and every pixel of the window against the model (`win check` learns terminals:
+  the cells rendered by the scalar kernel as the reference).
+
 ## 5. Budgets (estimates; measured as the steps land)
 
 At 720p:
@@ -384,8 +417,8 @@ ones once it exists.
    windows that redraw a pattern; `win start/stop/list/new/move/drag/raise/close/color/check/stats/shuffle`.
 4. **Drawing** (done; design in §4d, as built in §9): the `Painter` (cells with a PIE kernel, overlapped
    with the 2D-DMA, scrolling, unaligned edges), window updates, `win bench`, `win scroll`.
-5. **The terminal program:** `TerminalScreen` drawn per frame, a `Console` on it, a shell in it,
-   `win type`.
+5. **The terminal program** (done; design in §4e, as built in §9): `TerminalScreen` drawn per frame, a
+   `Console` on it, a shell in it, `win type`.
 6. **At boot:** the desktop and a terminal start with the display.
 7. **Later:** backing surfaces (copied by the window manager) and secondary surfaces (read by the
    DMA, §4c), chosen per window.
@@ -474,3 +507,28 @@ ones once it exists.
   - Size: `bmds_ui` 20 KB of code, 2.5 KB of `.bss` (the test windows' state among it).
   - Next levers, not taken: the 2D-DMA job's fixed cost (about 86 jobs in the full-screen text,
     one per strip half), by driving the 2D-DMA directly (§7).
+- **Step 5** (2026-10-05): the terminal program (§4e).
+  - `ScreenConsole` (`bmds_console`, host-tested: output with and without CR LF, input, Ctrl-C
+    dropping what came before it, replies as input, one redraw asked per burst) and `TerminalView`
+    (`bmds_ui`, host-tested: defaults, bold, underline, reverse, dim, invisible, wide characters,
+    the cursor, also on a wide character's tail). Three palette roles appended: `terminal-text`,
+    `terminal-background`, `terminal-cursor`. `TerminalScreen` gained `clearRowDamage()`.
+  - `Terminal` (`bmds_ui`): four numbered sessions; a session keeps its shell (task `termN`, its
+    64 KB stack in PSRAM) and screen when its window closes, and `win term N` shows it again.
+    `main` gives the terminals the program launcher.
+  - The redraw locks the screen a row at a time (output goes on while rows are drawn; a row
+    written meanwhile is dirty again), and `WindowManager::update()` no longer takes the window
+    manager's lock (an atomic mask taken by the next round): a writer never waits for a round.
+  - Commands: `win term [N]`, `win type N TEXT` (escapes and `^C`), `win dump N`; `win list` marks
+    terminals; `win check` draws each terminal's client area from its screen with the scalar
+    kernel and compares every pixel.
+  - Measured at 720p: a shell in a 100 × 30 window runs commands typed with `win type` (`ls`,
+    `help`, `printf` with colors, reverse, underline and a wide character, `clear`, `seq`);
+    `$COLUMNS x $LINES` is `100 x 30`; Ctrl-C stops `seq 1 10000000`. `win check` found 0 wrong
+    pixels with output scrolled, two overlapping terminals, a window closed and its session shown
+    again, terminal colors changed, drags and shuffles, single- and double-buffered; 0 underruns.
+  - Output speed, `time seq 1 3000`: 0.31 s to `/dev/null`, 0.41 s on the serial console, 0.43 s
+    into a terminal whose window is covered (the screen model and the console: 0.12 s), 0.55 s
+    into a shown window (the window redrawn each frame: all 30 rows change while it scrolls, a
+    round of about 7.3 ms). The two lock changes above took it from 0.58 s to 0.55 s.
+  - The `wm` task kept at least 3.9 KB of its 8 KB stack in these tests.

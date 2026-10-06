@@ -30,19 +30,22 @@ class WindowPalette {
         public:
                 /** @brief What a color is for. Append only: the names are an interface. */
                 enum class Role : uint8_t {
-                        Desktop,       ///< Where no window is.
-                        ActiveFrame,   ///< The focused window's frame and title bar.
-                        InactiveFrame, ///< The other windows' frames and title bars.
-                        ActiveTitle,   ///< The focused window's title text.
-                        InactiveTitle, ///< The other windows' title text.
-                        CloseBox,      ///< The close box.
-                        CloseMark,     ///< The mark in the close box's middle.
-                        Client,        ///< A client area that draws nothing itself.
-                        Outline,       ///< A window's outline while it is moved.
+                        Desktop,            ///< Where no window is.
+                        ActiveFrame,        ///< The focused window's frame and title bar.
+                        InactiveFrame,      ///< The other windows' frames and title bars.
+                        ActiveTitle,        ///< The focused window's title text.
+                        InactiveTitle,      ///< The other windows' title text.
+                        CloseBox,           ///< The close box.
+                        CloseMark,          ///< The mark in the close box's middle.
+                        Client,             ///< A client area that draws nothing itself.
+                        Outline,            ///< A window's outline while it is moved.
+                        TerminalText,       ///< A terminal's default foreground.
+                        TerminalBackground, ///< A terminal's default background.
+                        TerminalCursor,     ///< A terminal's cursor (its text in the cell's background).
                 };
 
                 /** @brief The number of roles. */
-                static constexpr size_t RoleCount = 9;
+                static constexpr size_t RoleCount = 12;
 
                 /** @brief The standard colors: a dark grey desktop, blue for the focused window. */
                 constexpr WindowPalette() = default;
@@ -75,6 +78,9 @@ class WindowPalette {
                         0x000000, // CloseMark
                         0xf0f0f0, // Client
                         0xffffff, // Outline
+                        0xc0c0c0, // TerminalText
+                        0x000000, // TerminalBackground
+                        0xc0c0c0, // TerminalCursor
                 };
 };
 

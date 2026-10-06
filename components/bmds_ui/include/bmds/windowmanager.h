@@ -61,6 +61,12 @@ class WindowManager {
                  */
                 using Redraw = void (*)(void *arg, Painter &painter);
 
+                /**
+                 * @brief Told that the window closed (on the closing task, the
+                 *        window manager locked: it must not call it).
+                 */
+                using Closed = void (*)(void *arg);
+
                 /** @brief The longest title kept, in bytes. */
                 static constexpr size_t MaxTitle = 47;
 
@@ -73,6 +79,7 @@ class WindowManager {
                                 const char *title = "";       ///< Copied (`MaxTitle` bytes kept).
                                 Redraw      redraw = nullptr; ///< Null: the client area is filled (`Role::Client`).
                                 void       *arg = nullptr;
+                                Closed      closed = nullptr; ///< May be null.
                 };
 
                 /** @brief A window, as `list()` reports it. */
@@ -147,7 +154,10 @@ class WindowManager {
                  * @brief Asks window @p id's redraw to be called at the next round
                  *        even without damage, its painter clipped to all of its
                  *        client area that shows (a terminal's new rows, a scroll).
-                 * @return `Ok`, `NotFound`, `InvalidState`.
+                 *        Doesn't wait for a round being drawn (an ask for a window
+                 *        not open is dropped).
+                 * @return `Ok`, or `NotFound` (no such number).
+                 * @nonblocking
                  */
                 Error update(uint8_t id);
 
@@ -192,6 +202,7 @@ class WindowManager {
                 struct Window {
                                 char   title[MaxTitle + 1] = {};
                                 Redraw redraw = nullptr;
+                                Closed closed = nullptr;
                                 void  *arg = nullptr;
                 };
 
@@ -223,7 +234,8 @@ class WindowManager {
                 uint16_t              _updates = 0;       // windows asking for an update, a bit by number - 1
                 ComposePiece         *_pieces = nullptr;  // a round's plan
                 Rect                 *_scratch = nullptr; // a layer's pieces, client damage, and visible client
-                uint32_t              _requests = 0;      // changes made
+                std::atomic<uint32_t> _requests{0};       // changes made
+                std::atomic<uint16_t> _asked{0};          // update() calls, taken by the next round
                 std::atomic<uint32_t> _drawn{0};          // changes drawn
                 uint32_t              _presented = 0;     // the last present's number
                 Stats                 _stats;

@@ -17,6 +17,7 @@
 #include <bmds/ramdisk.h>
 #include <bmds/shell.h>
 #include <bmds/storage.h>
+#include <bmds/terminal.h>
 #include <bmds/usbserialconsole.h>
 #include <bmds/vfs.h>
 
@@ -39,6 +40,7 @@ namespace {
                 startup.wait = waitForStorage;
                 startup.script = "/sd0/p0/autoexec.sh";
                 startup.launcher = &loader;
+                bmds::Terminal::setLauncher(&loader); // the terminal windows' shells
                 return bmds::Shell::spawn(bmds::UsbSerialConsole::instance(), "shell", startup);
         }
 

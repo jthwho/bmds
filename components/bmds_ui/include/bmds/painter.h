@@ -18,6 +18,7 @@
 #include <bmds/region.h>
 #include <bmds/span.h>
 #include <bmds/stringview.h>
+#include <bmds/windowpalette.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -51,11 +52,12 @@ class Painter {
                  *        RAM, RGB888) and the glyph renderer, kept by the window manager.
                  */
                 struct Tools {
-                                uint8_t       *strip = nullptr; ///< Two halves, one after the other.
-                                uint16_t       halfWidth = 0;   ///< Pixels a half's row (a multiple of 64).
-                                uint16_t       height = 0;      ///< Rows: at least a font's height.
-                                GlyphRenderer *renderer = nullptr;
-                                int8_t         busyHalf = -1; ///< The half a started copy reads, or -1.
+                                uint8_t             *strip = nullptr; ///< Two halves, one after the other.
+                                uint16_t             halfWidth = 0;   ///< Pixels a half's row (a multiple of 64).
+                                uint16_t             height = 0;      ///< Rows: at least a font's height.
+                                GlyphRenderer       *renderer = nullptr;
+                                const WindowPalette *palette = nullptr; ///< The window manager's colors.
+                                int8_t               busyHalf = -1;     ///< The half a started copy reads, or -1.
                 };
 
                 /**
@@ -119,6 +121,9 @@ class Painter {
                  * @return The pixels to redraw, in the painter's coordinates.
                  */
                 Region scroll(const Rect &area, int dy);
+
+                /** @brief Returns the window manager's colors. */
+                const WindowPalette &palette() const { return *_tools.palette; }
 
                 /** @brief Returns the first error, or `Ok`. */
                 Error error() const { return _error; }

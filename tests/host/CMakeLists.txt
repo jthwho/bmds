@@ -46,6 +46,7 @@ add_executable(bmds_host_tests
         regex.cpp
         result.cpp
         run.cpp
+        screenconsole.cpp
         shell.cpp
         signals.cpp
         span.cpp

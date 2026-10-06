@@ -26,6 +26,8 @@
 #include <bmds/memory.h>
 #include <bmds/shell.h>
 #include <bmds/system.h>
+#include <bmds/terminal.h>
+#include <bmds/terminalview.h>
 #include <bmds/utf8.h>
 #include <bmds/windowmanager.h>
 #include <bmds/windowpalette.h>
@@ -247,8 +249,10 @@ namespace {
                 ctx.printf("Win  X     Y     W     H     Title\n");
                 for (size_t i = 0; i < n; ++i) {
                         const WindowManager::Info &w = info[i];
-                        ctx.printf("%-4u %-5u %-5u %-5u %-5u %s%s\n", w.id, w.rect.x, w.rect.y, w.rect.width,
-                                   w.rect.height, w.title, w.focused ? " (focus)" : "");
+                        const Terminal            *term = Terminal::byWindow(w.id);
+                        ctx.printf("%-4u %-5u %-5u %-5u %-5u %s%s%s\n", w.id, w.rect.x, w.rect.y, w.rect.width,
+                                   w.rect.height, w.title, w.focused ? " (focus)" : "",
+                                   term != nullptr ? " (terminal)" : "");
                 }
                 return Shell::ExitSuccess;
         }
@@ -414,10 +418,44 @@ namespace {
                                              Fonts::unscii16.height()};
                 }
                 const WindowPalette palette = wm.palette();
-                const uint32_t      desktop = palette.color(WindowPalette::Role::Desktop);
-                uint32_t            wrong = 0, checked = 0;
-                int                 fx = -1, fy = -1;
-                uint32_t            fgot = 0, fwant = 0;
+                // Each terminal's client area, drawn from its screen by the scalar kernel.
+                uint8_t *images[WindowStack::MaxWindows] = {};
+                for (size_t i = 0; i < n; ++i) {
+                        Terminal *term = Terminal::byWindow(info[i].id);
+                        if (term == nullptr) continue;
+                        const Rect  &c = clients[i];
+                        const size_t stride = size_t(c.width) * 3;
+                        images[i] = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, stride * c.height));
+                        if (images[i] == nullptr) {
+                                for (uint8_t *image : images) Memory::free(image);
+                                Memory::free(labels);
+                                return report(ctx, Error::NoMem);
+                        }
+                        const uint32_t back = palette.color(WindowPalette::Role::TerminalBackground);
+                        for (size_t px = 0; px < size_t(c.width) * c.height; ++px) {
+                                images[i][3 * px] = static_cast<uint8_t>(back);
+                                images[i][3 * px + 1] = static_cast<uint8_t>(back >> 8);
+                                images[i][3 * px + 2] = static_cast<uint8_t>(back >> 16);
+                        }
+                        ScreenConsole::Locked locked(term->console());
+                        const TerminalScreen &screen = locked.screen();
+                        TextCell              row[Terminal::MaxColumns];
+                        for (uint16_t r = 0; r < screen.rows(); ++r) {
+                                const int    cursor = screen.isCursorVisible() && r == screen.cursorRow()
+                                                              ? screen.cursorColumn()
+                                                              : -1;
+                                const size_t cells =
+                                        TerminalView::row(screen, r, palette, cursor, row, Terminal::MaxColumns);
+                                size_t used = 0;
+                                (void)reference.drawCells(Span<const TextCell>(row, cells), Fonts::unscii16,
+                                                          images[i] + size_t(r) * 16 * stride, stride,
+                                                          uint16_t(screen.columns() * 8), used);
+                        }
+                }
+                const uint32_t desktop = palette.color(WindowPalette::Role::Desktop);
+                uint32_t       wrong = 0, checked = 0;
+                int            fx = -1, fy = -1;
+                uint32_t       fgot = 0, fwant = 0;
                 for (uint32_t y = 0; y < s.height(); ++y) {
                         const uint8_t *line = buffer + size_t(y) * s.stride();
                         for (uint32_t x = 0; x < s.width(); ++x) {
@@ -427,6 +465,10 @@ namespace {
                                         const Rect &c = clients[i];
                                         if (!inside(c, x, y)) {
                                                 want = frameAt(palette, info[i], x, y);
+                                        } else if (images[i] != nullptr) {
+                                                const uint8_t *q =
+                                                        images[i] + (size_t(y - c.y) * c.width + (x - c.x)) * 3;
+                                                want = uint32_t(q[2]) << 16 | uint32_t(q[1]) << 8 | q[0];
                                         } else if (inside(labelRects[i], x, y)) {
                                                 const uint8_t *q = labels + i * labelBytes +
                                                                    (y - labelRects[i].y) * size_t(LabelPixels) * 3 +
@@ -455,6 +497,7 @@ namespace {
                         ctx.printf(" (the first at %d,%d: %06lx, not %06lx)", fx, fy, static_cast<unsigned long>(fgot),
                                    static_cast<unsigned long>(fwant));
                 ctx.printf("\n");
+                for (uint8_t *image : images) Memory::free(image);
                 Memory::free(labels);
                 return wrong == 0 ? Shell::ExitSuccess : Shell::ExitFailure;
         }
@@ -582,6 +625,101 @@ namespace {
                 return same ? Shell::ExitSuccess : Shell::ExitFailure;
         }
 
+        // win term [N]: terminal N (or the first not shown) in a window.
+        int runTerm(CommandContext &ctx, WindowManager &wm, Args args) {
+                size_t number = Terminal::MaxTerminals;
+                if (args.size() == 3) {
+                        long v = 0;
+                        if (!parseNumber(args[2], long(Terminal::MaxTerminals) - 1, v)) return ctx.usage();
+                        number = size_t(v);
+                } else {
+                        for (size_t i = 0; i < Terminal::MaxTerminals && number == Terminal::MaxTerminals; ++i) {
+                                auto [t, err] = Terminal::terminal(i);
+                                if (err.isOk() && t->window() == 0) number = i;
+                        }
+                        if (number == Terminal::MaxTerminals) return report(ctx, Error::Full);
+                }
+                auto [term, err] = Terminal::terminal(number);
+                if (err.isError()) return report(ctx, err);
+                // 100 × 30 cells, cascading.
+                const uint16_t at = static_cast<uint16_t>(32 + 32 * number);
+                auto [id, oerr] = term->open(wm, Rect{at, at, 100 * 8 + 2 * WindowFrame::Border,
+                                                      30 * 16 + WindowFrame::TitleHeight + WindowFrame::Border});
+                if (oerr.isError()) return report(ctx, oerr);
+                ctx.printf("win %u: terminal %u, %ux%u\n", id, unsigned(number), term->console().size().columns,
+                           term->console().size().rows);
+                return Shell::ExitSuccess;
+        }
+
+        // The terminal in window @p text, or null with a message.
+        Terminal *terminalIn(CommandContext &ctx, const char *text) {
+                uint8_t id = 0;
+                if (!parseId(ctx, text, id)) return nullptr;
+                Terminal *term = Terminal::byWindow(id);
+                if (term == nullptr) ctx.eprintf("win: %u: not a terminal\n", id);
+                return term;
+        }
+
+        // win type N TEXT...: typed into window N's terminal; C escapes and ^X controls.
+        int runType(CommandContext &ctx, Args args) {
+                Terminal *term = terminalIn(ctx, args[2]);
+                if (term == nullptr) return Shell::ExitFailure;
+                uint8_t buf[256];
+                size_t  n = 0;
+                for (size_t a = 3; a < args.size(); ++a) {
+                        if (a > 3 && n < sizeof(buf)) buf[n++] = ' ';
+                        for (const char *p = args[a]; *p != '\0' && n < sizeof(buf); ++p) {
+                                char c = *p;
+                                if (c == '^' && p[1] >= '@' && p[1] <= '_') {
+                                        c = static_cast<char>(*++p - '@');
+                                } else if (c == '\\' && p[1] != '\0') {
+                                        switch (*++p) {
+                                                case 'n': c = '\n'; break;
+                                                case 'r': c = '\r'; break;
+                                                case 't': c = '\t'; break;
+                                                case 'e': c = '\x1b'; break;
+                                                case 'x': {
+                                                        char       hex[3] = {p[1], p[1] != '\0' ? p[2] : '\0', '\0'};
+                                                        char      *end = nullptr;
+                                                        const long v = std::strtol(hex, &end, 16);
+                                                        p += end - hex;
+                                                        c = static_cast<char>(v);
+                                                        break;
+                                                }
+                                                default: c = *p; break;
+                                        }
+                                }
+                                buf[n++] = static_cast<uint8_t>(c);
+                        }
+                }
+                const size_t taken = term->console().pushInput(ByteSpan(buf, n));
+                if (taken < n) ctx.eprintf("win: input full: %u of %u bytes typed\n", unsigned(taken), unsigned(n));
+                return taken == n ? Shell::ExitSuccess : Shell::ExitFailure;
+        }
+
+        // win dump N: window N's terminal screen as text, the cursor's place.
+        int runDump(CommandContext &ctx, const char *text) {
+                Terminal *term = terminalIn(ctx, text);
+                if (term == nullptr) return Shell::ExitFailure;
+                ScreenConsole::Locked locked(term->console());
+                const TerminalScreen &screen = locked.screen();
+                for (uint16_t r = 0; r < screen.rows(); ++r) {
+                        char   line[Terminal::MaxColumns * 4 + 1];
+                        size_t n = 0, end = 0;
+                        for (uint16_t c = 0; c < screen.columns(); ++c) {
+                                const TerminalCell &cell = screen.row(r)[c];
+                                if (cell.tail != 0) continue;
+                                n += Utf8::encode(cell.codepoint, line + n);
+                                if (cell.codepoint != ' ') end = n;
+                        }
+                        line[end] = '\0';
+                        ctx.printf("%2u|%s\n", r, line);
+                }
+                ctx.printf("cursor:   row %u, column %u%s\n", screen.cursorRow(), screen.cursorColumn(),
+                           screen.isCursorVisible() ? "" : " (hidden)");
+                return Shell::ExitSuccess;
+        }
+
         int runStats(CommandContext &ctx, WindowManager &wm) {
                 const WindowManager::Stats s = wm.stats();
                 ctx.printf("Rounds:   %lu (%lu pieces, %lu redraws, %lu DMA calls, %lu fallbacks, %lu errors)\n",
@@ -621,6 +759,9 @@ namespace {
                         return runShuffle(ctx, *wm, count);
                 }
                 uint8_t id = 0;
+                if (args.size() <= 3 && std::strcmp(what, "term") == 0) return runTerm(ctx, *wm, args);
+                if (args.size() >= 4 && std::strcmp(what, "type") == 0) return runType(ctx, args);
+                if (args.size() == 3 && std::strcmp(what, "dump") == 0) return runDump(ctx, args[2]);
                 if (args.size() == 4 && std::strcmp(what, "scroll") == 0) {
                         if (!parseId(ctx, args[2], id)) return Shell::ExitUsage;
                         char      *end = nullptr;
@@ -666,10 +807,11 @@ namespace {
 
 } // namespace
 
-BMDS_SHELL_COMMAND(win, runWin,
-                   "[start [RRGGBB]|stop|list|new [X Y W H] [TITLE]|close N|raise N|move N X Y|drag N X Y|"
-                   "scroll N DY|textbench N|color [ROLE RRGGBB]|check|stats|shuffle N|bench [CELLS]]",
-                   "The desktop and its windows on display 0: 'new' opens a test window, 'drag' moves one "
-                   "as an outline, 'color' lists or sets the palette, 'check' compares every pixel with the stack")
+BMDS_SHELL_COMMAND(
+        win, runWin,
+        "[start [RRGGBB]|stop|list|new [X Y W H] [TITLE]|close N|raise N|move N X Y|drag N X Y|"
+        "term [N]|type N TEXT|dump N|scroll N DY|textbench N|color [ROLE RRGGBB]|check|stats|shuffle N|bench [CELLS]]",
+        "The desktop and its windows on display 0: 'new' opens a test window, 'drag' moves one "
+        "as an outline, 'color' lists or sets the palette, 'check' compares every pixel with the stack")
 
 BMDS_NAMESPACE_END
