@@ -146,6 +146,32 @@ desktop started from `autoexec.sh`. Found:
 - Ruled out on the way: the DSI frame acknowledgement, the LT8912B receiver reset (it only
   moved the moment), the time since the display started, and the regulator taking hold late.
 
+## 5c''. Flash writes and the scan (2026-10-05)
+
+- **The finding:** with `/boot` on the flash (`storage.md` §13), every write blinked the screen: two
+  underruns, stalls and resyncs per file written (`display stats`), none for reads served by the
+  sector cache. A flash erase or write turns off the cache and shuts out every interrupt not
+  marked IRAM-safe for its length (a 4 KB erase: tens of milliseconds). The scan's DMA clears
+  each descriptor's valid mark as it finishes a block, and the block interrupt sets them again;
+  shut out for more than a frame, the DMA reaches a cleared descriptor and stops.
+- **The fix:** the scan's interrupts are IRAM-safe. `BMDS_SCANOUT_IRAM_SAFE` (`bmds_drivers`'
+  Kconfig) selects IDF's `DW_GDMA_ISR_IRAM_SAFE` (the DMA's interrupt allocated with
+  `ESP_INTR_FLAG_IRAM`; IDF checks that the callbacks are in IRAM and their argument internal);
+  the bridge's interrupt gets `ESP_INTR_FLAG_IRAM`. Everything they touch is in internal RAM: the
+  `Display` and its `Scanout` (static), the hardware state and the descriptors; the helpers they
+  call moved to IRAM (`WaitList::notifyFromIsr()`, `hasWaiters()`, `release()`,
+  `Semaphore::releaseFromIsr()`, `Surface::swappedFromIsr()`).
+- **One rule while the cache is off:** a surface's waiters can have their semaphores on stacks in
+  PSRAM (a shell running `screenshot`), which an interrupt can't touch then. While
+  `spi_flash_cache_enabled()` says the cache is off, the block interrupt only re-arms the
+  descriptors and counts; it wakes the surface's waiters at the next interrupt with the cache on,
+  a few blocks later.
+- **The DMA reads PSRAM with the cache off:** it reaches PSRAM over the AXI bus, not through the
+  cache, so the picture goes on.
+- **Measured:** files created, written (8.9 KB and 107 KB), read and removed on `/boot`, also while
+  a terminal scrolled `seq 1 20000` and a screenshot was taken: 0 underruns, 0 stalls, 0 resyncs;
+  `win check` 0 wrong.
+
 ## 5d. Screenshots (2026-10-05; `input.md` §7 step 4)
 
 `screenshot PATH` saves what is on the screen as a PNG (truecolor, 8 bits a channel). A

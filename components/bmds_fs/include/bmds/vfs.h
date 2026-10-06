@@ -17,6 +17,7 @@
 #include <bmds/span.h>
 #include <bmds/string.h>
 #include <bmds/stringview.h>
+#include <bmds/waitlist.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -195,8 +196,24 @@ namespace Vfs {
          */
         Error mount(StringView path, BlockDevice &device);
 
-        /** @brief Unmounts the filesystem at @p path; `NotExist` if nothing is mounted there. */
+        /**
+         * @brief Unmounts the filesystem at @p path.
+         * @return `Ok`, `NotExist` (nothing mounted there), or `Busy` (pinned).
+         */
         Error unmount(StringView path);
+
+        /**
+         * @brief Pins the mount at @p path: `unmount()` refuses it for good
+         *        (`/boot`, `devplan/storage.md` §13).
+         * @return `Ok` or `NotExist`.
+         */
+        Error pin(StringView path);
+
+        /** @brief Returns true if a filesystem is mounted at @p path (absolute). */
+        bool isMounted(StringView path);
+
+        /** @brief Released after each mount and unmount: wait on it for a mount (`waitmount`). */
+        WaitList &mountWaiters();
 
         /**
          * @brief Unmounts everything on @p device and its partitions (a medium went).

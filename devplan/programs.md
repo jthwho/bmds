@@ -567,3 +567,37 @@ The SDK maps `ECHO`, `ICRNL` both ways, keeps `VMIN` and `VTIME` itself (per pro
 - **Verified on the board:** `progtest poll` (the list in Testing, plus `O_NONBLOCK` on a pipe and the terminal, `ECHO` and `ICRNL` both ways, `VMIN` 0 with `VTIME` 1 returning 0 after 100 ms), `progtest signals`, `spawn`, `scripts`, the corpus; `hush` `read -t 1` on the terminal and on a pipe (1 s, then status 1; a line typed in time; data already there), `read -n 1` (echoed), `read -s` (unseen); interactive `hush` (editing, Ctrl-C at the prompt and to a program); `vi` (insert, Esc, `x`, arrow keys, `:wq`, the file right); `less` on a file (paging, `G`, `/150`) and on a pipe filling in two parts 2 s apart (`G` reaches the end); step 9's Ctrl-C cases and `SIGWINCH`. Free memory and tasks as before afterwards (the shell keeps up to two idle pipeline workers).
 - **Host:** `WaitList` (notify, a full list, waiters leaving while notified), pipe readiness and notification, `Process::poll` (arguments, pipes, a file, `POLLNVAL`, the timeout, woken by a write and by a signal, the console in line and raw mode, both ends closing), raw input with `ICRNL` and echo, lines without echo.
 - **Measured:** firmware +2.5 KB (441,982 → 444,528 bytes).
+
+## 17. `/bin`: built-in programs as files (design, 2026-10-05; not started)
+
+**Goal** (the user's): every program built into the OS is a file in a read-only `/bin`, so anything
+that runs programs (the shell's lookup, `exec`, `#!`, `posix_spawn`, the desktop's menu and the
+panel's launcher) finds and runs it as it would a program on the card, with nothing special for
+it. A built-in pulled out of the OS becomes a file elsewhere, and what runs it doesn't change.
+With the decision in `windows.md` §0 (built-in applications are ordinary applications) and the
+pseudo-terminals of `pty.md`, it makes the terminal `/bin/term`.
+
+- **What's in it: programs, not the shell's commands.** A built-in program runs as a process (its
+  own task, descriptors, signals: a `BuiltinProgram`, as `sh` is today). The shell's built-in
+  commands (`ls`, `win`, ...) stay the shell's; they could appear as BusyBox-style applets later,
+  if something needs to `exec` them.
+- **The registry:** `BMDS_PROGRAM(name, main, stackBytes)` puts an entry in a linker section, as
+  `BMDS_SHELL_COMMAND` does, so a program registers itself where it is defined; nothing in `main`
+  adds any. Names are an interface once shipped (append only). An alias is a second entry with the
+  same `main` (`bash` for `sh`).
+- **In the VFS:** `/bin` is a virtual directory, like `/dev`: `ls /bin` lists the registry, `stat`
+  gives each an empty regular file (size 0; reading one gives nothing), and nothing in it can be
+  made, written, renamed or removed (`ReadOnly`, `EROFS`). `Vfs::builtinProgram(path)` says which
+  program a path names, symbolic links followed, so a link on the card to `/bin/term` runs it.
+- **The loader** asks the VFS for every path it runs: a built-in runs as `sh` does now. The
+  special case for `/bin/sh` and `/bin/bash` and `Loader::setShell()` go; `sh` registers itself.
+  `#!/bin/sh` scripts written on a PC now name a real file; D7's fallback (an interpreter path that
+  doesn't exist names a built-in by its last component) stays for paths outside `/bin`.
+- **`PATH`** defaults to `/bin:/sd0/p0/bin` (the user's choice, 2026-10-05): the built-ins first,
+  so a program on the card can't take a built-in's name, and they are found without the card. It is
+  set in `/boot/profile` (`storage.md` §13), so the order is one line to change.
+- **ABI impact:** the paths `/bin/NAME` and the names; the default `PATH` gains `/bin` (appended).
+  Recorded with an `ABI:` line.
+- **Testing:** host: the registry, the VFS's `/bin` (listing, `stat`, refusals, a link to a
+  built-in); board: `sh` from `/bin` (`exec`, `#!/bin/sh`, `system()`), `ls /bin`, `PATH` order
+  with a card program shadowing a built-in, the corpus and `progtest` as before.

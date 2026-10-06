@@ -90,7 +90,10 @@ class Shell final : public LineCompleter {
                 struct Startup {
                                 /** @brief Called on the shell's task first (e.g. to wait for the SD card); may be null. */
                                 void (*wait)() = nullptr;
-                                /** @brief A script to source if it exists (`/sd0/p0/autoexec.sh`); may be null. */
+                                /**
+                                 * @brief A script to source if it exists, after the profile
+                                 *        (`/boot/autoexec.sh`); may be null.
+                                 */
                                 const char *script = nullptr;
                                 /** @brief Runs program files (see `setLauncher()`); may be null. */
                                 ProgramLauncher *launcher = nullptr;
@@ -102,6 +105,12 @@ class Shell final : public LineCompleter {
                                 void (*exited)(void *arg, int status) = nullptr;
                                 void *exitedArg = nullptr; ///< Passed to `exited`.
                 };
+
+                /**
+                 * @brief What every interactive shell (a `spawn()`) sources as it
+                 *        starts: the environment for all of them (`devplan/storage.md` §13).
+                 */
+                static constexpr const char *ProfilePath = "/boot/profile";
 
                 /**
                  * @brief Starts a shell on @p console in its own task.

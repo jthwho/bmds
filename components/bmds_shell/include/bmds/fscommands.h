@@ -32,6 +32,13 @@ namespace FsCommands {
         /** @brief `mkfs [-t auto|fat32|exfat] -y DEVICE`: format, then mount. */
         int mkfs(CommandContext &ctx);
 
+        /**
+         * @brief `waitmount PATH MS`: waits up to MS milliseconds for a
+         *        filesystem at PATH; 0 if one is there, 1 if none came, 130
+         *        on Ctrl-C (`devplan/storage.md` §13).
+         */
+        int waitmount(CommandContext &ctx);
+
 } // namespace FsCommands
 
 BMDS_NAMESPACE_END

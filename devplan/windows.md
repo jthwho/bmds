@@ -48,6 +48,14 @@ accepted. Separate surfaces that the DMA reads as rectangles of their own (§4c)
 - **Moves:** an outline while dragging; one redraw (or copy) when the window is placed.
 - **Superseded:** the RGB565 framebuffer widened into a ring (`display.md` §5b) and the scan-time
   compositor prototype (§4b), once surface 0 runs.
+- **Built-in applications are ordinary applications** (the user, 2026-10-05): the terminal, and
+  every application built into the OS, is written against the GUI API exactly as a separately
+  built program would be. Building it in is packaging (always there, smaller, faster), never a
+  reason for access others don't have; pulling it out into its own executable must need no
+  change to the OS. So no window manager or OS code knows a particular application: no
+  application's settings in the window manager's palette, no application in `win`, no hooks for
+  one in `main`. Test aids go through generic interfaces. Step 9 (§8) removes what breaks this
+  today.
 
 ## 1. Goal
 
@@ -596,6 +604,38 @@ ones once it exists.
    - **A panel along the top:** a program launcher button and a list of the windows (minimized
      ones restored from it). The real launcher lives there; the desktop menu stays the quick
      way.
+
+9. **Built-in applications as ordinary applications** (the decision in §0; designed 2026-10-05
+   with the user; with `programs.md` §17, `/bin`, and `pty.md`, pseudo-terminals):
+   - **Connecting first:** a GUI application starts with `WindowManager::connect(display)`
+     (display 0 for now; a parameter, not an environment variable: one user, no `DISPLAY`). It
+     fails (`NotRunning`) when no window manager runs, and every window belongs to a connection.
+     When the window manager stops, each connection is told (its windows close, and further calls
+     report it gone); when an application disconnects, or ends without closing its windows, they
+     close with it. Run from the serial shell, `term` opens its window on the desktop; the shell
+     waits for it as for any program (`term &` doesn't), and Ctrl-C there ends it.
+   - **The terminal is `/bin/term`:** a program (`BMDS_PROGRAM`) in its own component, depending
+     only on the GUI API, the console's pty and the program launcher, as a program built
+     separately would. One process per window: it connects, opens a window and a pty, starts
+     `/bin/sh` on the pty (`ProgramLauncher::start()`), and applies what comes out of the pty to
+     its screen model, which its window draws. The shell exiting closes the window and ends the
+     process; the window closing hangs up the pty, so the shell ends too. The numbered sessions
+     that outlive their windows go.
+   - **Its colors are its own:** the `terminal-*` roles leave the window manager's palette; `win
+     color` keeps accepting their names (an interface), passed on to the terminal's settings.
+   - **`win` knows no application:**
+     - `win term` runs `/bin/term` in the background (kept: shell commands are frozen).
+     - `win type N TEXT` becomes key events for window N (as `win key`, to a chosen window).
+     - `win dump N` asks window N for its text through an optional callback any window may
+       offer; the terminal offers its screen.
+     - `win check` compares each window against a reference picture that the window may draw
+       through another optional callback; the test windows and the terminal offer theirs.
+     - `win list` drops the "(terminal)" mark.
+   - **What goes:** `Terminal::setLauncher()` in `main`, `Terminal::byWindow()`, the terminal in
+     `bmds_ui`, `ScreenConsole` as the terminal's console (kept for a local console without the
+     window manager, roadmap Phase 5).
+   - **Order:** `/bin` (`programs.md` §17), the pty (`pty.md` steps 1-2), `connect()` and window
+     ownership, then the terminal as `/bin/term` with its colors and the `win` changes.
 
 ## 9. As built
 

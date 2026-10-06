@@ -1,0 +1,280 @@
+/**
+ * @file      bootdisk.cpp
+ * @copyright Jason Howard. All rights reserved.
+ *
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file in the project root folder for license information.
+ *
+ * /boot: FAT on the flash partition "boot" through ESP-IDF's wear levelling
+ * (devplan/storage.md §13).
+ */
+
+#include <cstdint>
+#include <cstring>
+#include <utility>
+#include <sdkconfig.h>
+#include <esp_memory_utils.h>
+#include <esp_partition.h>
+#include <wear_levelling.h>
+#include <bmds/blockdevice.h>
+#include <bmds/blockdevices.h>
+#include <bmds/bootdisk.h>
+#include <bmds/log.h>
+#include <bmds/memory.h>
+#include <bmds/mutex.h>
+#include <bmds/semaphore.h>
+#include <bmds/staticobject.h>
+#include <bmds/task.h>
+#include <bmds/vfs.h>
+
+BMDS_NAMESPACE_BEGIN
+
+namespace {
+
+        constexpr const char *PartitionLabel = "boot";
+
+        // A flash partition through wear levelling, as whole sectors (512 bytes: FatFs's).
+        //
+        // Writes go through a write-back cache of one 4 KB flash block: wear levelling rewrites a
+        // whole flash sector (twice, in its safe mode) for each 512-byte write, so the sectors of
+        // a block written together (a file's data; the FAT and the directory, rewritten again and
+        // again) cost one erase and one write when the block is flushed: on sync() (FatFs's on
+        // close), when another block is needed, or after IdleFlushMs without writes. A write of
+        // whole blocks goes straight to the flash.
+        //
+        // A flash operation turns off the cache PSRAM is reached through, so it must run on a stack
+        // in internal RAM (IDF asserts it): a caller whose stack is in PSRAM (the shells, programs)
+        // hands the operation to the device's worker task, whose stack is internal, and waits.
+        class FlashBlockDevice final : public BlockDevice {
+                public:
+                        static constexpr uint32_t     BlockBytes = 4096; // a flash sector
+                        static constexpr unsigned int IdleFlushMs = 1000;
+
+                        FlashBlockDevice() : _request(1, 0), _done(1, 0) {}
+
+                        // Mounts wear levelling on the partition labelled @p label; starts the worker.
+                        Error open(const char *label) {
+                                const esp_partition_t *partition = esp_partition_find_first(
+                                        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_FAT, label);
+                                if (partition == nullptr) return Error::NotExist;
+                                if (wl_mount(partition, &_handle) != ESP_OK) return Error::IoError;
+                                _sectorSize = static_cast<uint32_t>(wl_sector_size(_handle));
+                                _sectors = wl_size(_handle) / _sectorSize;
+                                _block = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, BlockBytes));
+                                if (_block == nullptr) return Error::NoMem;
+                                Task::Config config;
+                                config.name = "flash0";
+                                config.stackBytes = 3072;
+                                config.stackSpace = MemSpace::Internal;
+                                config.priority = CONFIG_BMDS_STORAGE_PRIORITY;
+                                return _worker.start(config, workerMain, this);
+                        }
+
+                        uint32_t sectorSize() const override { return _sectorSize; }
+                        uint32_t eraseBlockSectors() const override { return BlockBytes / _sectorSize; }
+                        uint64_t sectorCount() const override { return _sectors; }
+
+                        Error sync() override { return run(Op::Sync, 0, nullptr, 0); }
+
+                protected:
+                        Error readSectors(uint64_t sector, WritableByteSpan buf) override {
+                                return run(Op::Read, size_t(sector) * _sectorSize, buf.data(), buf.size());
+                        }
+
+                        Error writeSectors(uint64_t sector, ByteSpan data) override {
+                                return run(Op::Write, size_t(sector) * _sectorSize, const_cast<uint8_t *>(data.data()),
+                                           data.size());
+                        }
+
+                private:
+                        enum class Op : uint8_t {
+                                Read,
+                                Write,
+                                Sync
+                        };
+
+                        static constexpr size_t NoBlock = SIZE_MAX;
+
+                        // One operation, on this task if its stack is internal, else on the worker's.
+                        Error run(Op op, size_t at, uint8_t *data, size_t bytes) {
+                                Mutex::Locker lock(_lock, WaitForever); // also: wear levelling isn't thread-safe
+                                if (esp_ptr_internal(__builtin_frame_address(0))) return perform(op, at, data, bytes);
+                                _op = op;
+                                _at = at;
+                                _data = data;
+                                _bytes = bytes;
+                                _request.release();
+                                (void)_done.acquire(WaitForever);
+                                return _result;
+                        }
+
+                        Error perform(Op op, size_t at, uint8_t *data, size_t bytes) {
+                                switch (op) {
+                                        case Op::Read: return read(at, data, bytes);
+                                        case Op::Write: return write(at, data, bytes);
+                                        default: return flush();
+                                }
+                        }
+
+                        // The cached block's sectors from the cache, the rest from the flash.
+                        Error read(size_t at, uint8_t *data, size_t bytes) {
+                                while (bytes > 0) {
+                                        const size_t block = at / BlockBytes, offset = at % BlockBytes;
+                                        const size_t n = bytes < BlockBytes - offset ? bytes : BlockBytes - offset;
+                                        if (block == _cached) {
+                                                std::memcpy(data, _block + offset, n);
+                                        } else if (wl_read(_handle, at, data, n) != ESP_OK) {
+                                                return Error::IoError;
+                                        }
+                                        at += n;
+                                        data += n;
+                                        bytes -= n;
+                                }
+                                return Error::Ok;
+                        }
+
+                        // Whole blocks straight to the flash; parts of one into the cache.
+                        Error write(size_t at, const uint8_t *data, size_t bytes) {
+                                while (bytes > 0) {
+                                        const size_t block = at / BlockBytes, offset = at % BlockBytes;
+                                        const size_t n = bytes < BlockBytes - offset ? bytes : BlockBytes - offset;
+                                        if (n == BlockBytes) {
+                                                if (block == _cached) _cached = NoBlock; // replaced whole
+                                                const Error err = program(at, data);
+                                                if (err.isError()) return err;
+                                        } else {
+                                                if (block != _cached) {
+                                                        const Error err = load(block);
+                                                        if (err.isError()) return err;
+                                                }
+                                                std::memcpy(_block + offset, data, n);
+                                                _dirty = true;
+                                        }
+                                        at += n;
+                                        data += n;
+                                        bytes -= n;
+                                }
+                                return Error::Ok;
+                        }
+
+                        // Block @p block into the cache, the one there flushed first.
+                        Error load(size_t block) {
+                                const Error err = flush();
+                                if (err.isError()) return err;
+                                _cached = NoBlock;
+                                if (wl_read(_handle, block * BlockBytes, _block, BlockBytes) != ESP_OK)
+                                        return Error::IoError;
+                                _cached = block;
+                                return Error::Ok;
+                        }
+
+                        Error flush() {
+                                if (!_dirty) return Error::Ok;
+                                const Error err = program(_cached * BlockBytes, _block);
+                                if (err.isOk()) _dirty = false;
+                                return err;
+                        }
+
+                        // A whole block: erased (one flash sector, so no read-modify-write), then written.
+                        Error program(size_t at, const uint8_t *data) {
+                                esp_err_t err = wl_erase_range(_handle, at, BlockBytes);
+                                if (err == ESP_OK) err = wl_write(_handle, at, data, BlockBytes);
+                                return err == ESP_OK ? Error::Ok : Error::IoError;
+                        }
+
+                        // Requests from tasks whose stacks are in PSRAM; a dirty block flushed when idle.
+                        static void workerMain(void *arg) {
+                                auto *self = static_cast<FlashBlockDevice *>(arg);
+                                for (;;) {
+                                        // The requester holds the lock, so a request is performed without it.
+                                        if (self->_request.acquire(self->_dirty ? IdleFlushMs : WaitForever).isOk()) {
+                                                self->_result =
+                                                        self->perform(self->_op, self->_at, self->_data, self->_bytes);
+                                                self->_done.release();
+                                        } else if (self->_lock.tryLock().isOk()) { // idle: flush, unless busy
+                                                (void)self->flush();
+                                                self->_lock.unlock();
+                                        }
+                                }
+                        }
+
+                        Mutex       _lock; // one operation at a time, whoever runs it
+                        Semaphore   _request;
+                        Semaphore   _done;
+                        Task        _worker;
+                        wl_handle_t _handle = WL_INVALID_HANDLE;
+                        uint32_t    _sectorSize = 512;
+                        uint64_t    _sectors = 0;
+                        uint8_t    *_block = nullptr; // the cached block (Psram)
+                        size_t      _cached = NoBlock;
+                        bool        _dirty = false;
+                        Op          _op = Op::Read; // the worker's request, under _lock
+                        size_t      _at = 0;
+                        uint8_t    *_data = nullptr;
+                        size_t      _bytes = 0;
+                        Error       _result;
+        };
+
+        constinit StaticObject<FlashBlockDevice> flash;
+
+        // The defaults written on the first boot (devplan/storage.md §13).
+        constexpr const char Profile[] = "# /boot/profile: read by every interactive shell as it starts.\n"
+                                         "export HOME=/boot\n"
+                                         "export PATH=/bin:/sd0/p0/bin\n";
+
+        constexpr const char Autoexec[] = "# /boot/autoexec.sh: run by the first shell at startup.\n"
+                                          "# Run the SD card's autoexec.sh too, if there is a card.\n"
+                                          "if waitmount /sd0/p0 3000; then\n"
+                                          "        [ -f /sd0/p0/autoexec.sh ] && . /sd0/p0/autoexec.sh\n"
+                                          "fi\n";
+
+        Error writeFile(const char *path, StringView text) {
+                Vfs::Context context;
+                auto [file, err] = Vfs::open(path, Vfs::Write | Vfs::Create | Vfs::Exclusive, context);
+                if (err.isError()) return err;
+                auto [n, werr] = file->write(text, WaitForever);
+                if (werr.isOk() && n != text.size()) werr = Error::IoError;
+                return werr;
+        }
+
+} // namespace
+
+Error BootDisk::init() {
+        Error err = Vfs::init();
+        if (err.isError()) return err;
+        FlashBlockDevice &device = flash.create();
+        err = device.open(PartitionLabel);
+        char name[BlockDevices::MaxName + 1];
+        if (err.isOk()) err = BlockDevices::addNumbered(device, "flash", name);
+        if (err.isError()) {
+                bmdsErr("BootDisk: the flash partition '%s': %s", PartitionLabel, err.desc());
+                return err;
+        }
+        err = Vfs::mount(Path, device);
+        bool formatted = false;
+        if (err == Error::NoFilesystem) {
+                // The first boot: a new filesystem with the default scripts.
+                bmdsInfo("BootDisk: /dev/%s has no filesystem: formatting it", name);
+                err = Vfs::format(device, FsFormat::Auto);
+                if (err.isOk()) err = Vfs::mount(Path, device);
+                formatted = err.isOk();
+        }
+        if (err.isOk()) err = Vfs::pin(Path);
+        if (err.isError()) {
+                bmdsErr("BootDisk: /dev/%s on %s: %s", name, Path, err.desc());
+                return err;
+        }
+        if (formatted) {
+                for (const auto &[path, text] : {std::pair{"/boot/profile", StringView(Profile)},
+                                                 std::pair{"/boot/autoexec.sh", StringView(Autoexec)}}) {
+                        const Error werr = writeFile(path, text);
+                        if (werr.isError()) bmdsWarn("BootDisk: %s: %s", path, werr.desc());
+                }
+        }
+        bmdsInfo("BootDisk: /dev/%s mounted on %s, %u KB%s", name, Path,
+                 static_cast<unsigned>(device.sectorCount() * device.sectorSize() / 1024),
+                 formatted ? " (formatted)" : "");
+        return Error::Ok;
+}
+
+BMDS_NAMESPACE_END

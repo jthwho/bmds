@@ -14,6 +14,7 @@
 #include <esp_timer.h>
 #include <bmds/deadline.h>
 #include <bmds/memory.h>
+#include <bmds/placement.h>
 #include <bmds/surface.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -516,11 +517,11 @@ template <typename Done> Error Surface::waitUntil(Done done, const Deadline &dea
 }
 
 // The scanout has started a frame from the asked-for buffer.
-void Surface::swappedFromIsr() {
+BMDS_ISR_ATTR void Surface::swappedFromIsr(bool notify) {
         _front.store(_front.load(std::memory_order_relaxed) ^ 1, std::memory_order_release);
         _shown.store(_presents, std::memory_order_release);
         _asked.store(false, std::memory_order_release);
-        _waiters.notifyFromIsr();
+        if (notify) _waiters.notifyFromIsr();
         return;
 }
 

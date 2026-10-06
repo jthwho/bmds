@@ -9,7 +9,11 @@
  */
 
 #include <cstdio>
+#include <cstdlib>
 #include <bmds/blockdevices.h>
+#include <bmds/deadline.h>
+#include <bmds/interrupt.h>
+#include <bmds/semaphore.h>
 #include <bmds/console.h>
 #include <bmds/fscommands.h>
 #include <bmds/shell.h>
@@ -223,11 +227,41 @@ int FsCommands::mkfs(CommandContext &ctx) {
         return err.isOk() ? Shell::ExitSuccess : Shell::ExitFailure;
 }
 
+int FsCommands::waitmount(CommandContext &ctx) {
+        const Args args = ctx.args();
+        if (args.size() != 3) return ctx.usage();
+        char      *end = nullptr;
+        const long ms = std::strtol(args[2], &end, 10);
+        if (end == args[2] || *end != '\0' || ms < 0 || ms > 600000) return ctx.usage();
+        const Result<String> path = Vfs::normalize(args[1], ctx.cwd());
+        if (path.error().isError()) return ctx.usage();
+        if (ms == 0) return Vfs::isMounted(path.value().view()) ? Shell::ExitSuccess : Shell::ExitFailure;
+        // Woken by each mount (or Ctrl-C); the mount table is looked at after registering, so a
+        // mount in between isn't missed.
+        Interrupt     &interrupt = ctx.shell().interrupt();
+        const Deadline deadline(static_cast<unsigned int>(ms));
+        for (;;) {
+                Semaphore        woken(1, 0);
+                WaitList::Entry  entry(Vfs::mountWaiters(), woken);
+                Interrupt::Watch watch(interrupt, woken);
+                if (Vfs::isMounted(path.value().view())) return Shell::ExitSuccess;
+                if (interrupt.isRaised()) return Shell::ExitInterrupted;
+                if (deadline.isExpired()) return Shell::ExitFailure;
+                if (entry.isAdded()) {
+                        (void)woken.acquire(deadline);
+                } else {
+                        (void)woken.acquire(10); // every waiter's slot taken: look again shortly
+                }
+        }
+}
+
 BMDS_SHELL_COMMAND(df, FsCommands::df, "[-h]", "Show size and free space of the mounted filesystems")
 BMDS_SHELL_COMMAND(mkfs, FsCommands::mkfs, "[-t auto|fat32|exfat] -y DEVICE",
                    "Format a device (a whole card: new partition table) or partition, then mount it")
 BMDS_SHELL_COMMAND(mount, FsCommands::mount, "[DEVICE PATH]",
                    "List the mounts; mount a device's filesystem (e.g. mount /dev/sd0p0 /data)")
 BMDS_SHELL_COMMAND(umount, FsCommands::umount, "PATH", "Unmount the filesystem at PATH")
+BMDS_SHELL_COMMAND(waitmount, FsCommands::waitmount, "PATH MS",
+                   "Wait up to MS milliseconds for a filesystem at PATH (e.g. waitmount /sd0/p0 3000)")
 
 BMDS_NAMESPACE_END

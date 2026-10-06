@@ -7,6 +7,10 @@ CONFIG_IDF_TARGET="esp32p4"
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# /boot's wear levelling (devplan/storage.md §13): FatFs's 512-byte sectors, each
+# 4 KB flash sector rewritten through a spare so a power cut doesn't lose it.
+CONFIG_WL_SECTOR_SIZE_512=y
+CONFIG_WL_SECTOR_MODE_SAFE=y
 
 # --- PSRAM (32 MB on the ESP32-P4NRW32 module) ---------------------------
 # 200 MHz (devplan/psram.md): the display scans an RGB888 surface straight from

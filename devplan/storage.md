@@ -260,3 +260,119 @@ Step 2b measured: the image grew by 10.9 KB (331.7 → 342.7 KB); the linker sti
 - Commands ignore write errors, so `echo x > f` on a full or pulled card succeeds silently. GNU tools report `write error: No space left on device` and fail; `CommandContext::print()`/`write()` should remember the first error and the built-ins return 1.
 - The removal of a card is noticed only after the write in flight times out (about 4 s): shorter IDF timeouts, or the card-detect interrupt failing transfers early, would shorten it.
 - ~~A `/ram` RAM disk on `RamBlockDevice` for scratch files and tests on the board.~~ Done in Phase 3 step 6: `ram0` at `/ram0/p0`, sparse (`programs.md` §6).
+
+## 13. `/boot`: a persistent partition on the flash (design, 2026-10-05; built)
+
+**Goal** (the user's): files and settings that persist without a card, on a partition of the
+board's flash that is **always** mounted at `/boot`. `autoexec.sh` moves there: the system starts
+the same with or without a card, and a script that wants the card checks for it itself.
+
+**Facts:** 16 MB of flash; the table has `nvs` (24 KB at 0x9000) and the 4 MB factory app at
+0x10000 (the firmware is 597 KB today), so about 11.9 MB is free. The VFS mounts FAT on any
+`BlockDevice` through FatFs, with 512-byte sectors (`FF_MAX_SS`). ESP-IDF's `wear_levelling`
+gives a sector device over a flash partition (IDF's own flash FAT is FatFs on it); `spiffs` has no
+directories; LittleFS isn't in IDF (a managed component).
+
+**Decisions (proposed):**
+- **FAT on IDF's wear levelling.** A `FlashBlockDevice` (`bmds_storage`) puts the `BlockDevice`
+  interface over `wl_read`/`wl_write`/`wl_erase_range` with 512-byte sectors in wear levelling's
+  safe mode (a 4 KB flash sector is rewritten through a spare, so a power cut doesn't lose the
+  sector). The VFS mounts it as it mounts a card: one file system implementation (FatFs) for
+  everything, the same names, links and tools, and little new code. FAT's own metadata isn't
+  power-safe (a cut during a write can leave a lost cluster or a stale directory entry, as on a
+  card); settings are written rarely, and FatFs mounts what it finds. If that proves not enough,
+  LittleFS (power-safe by design, a second implementation in the VFS) is the alternative.
+- **The partition:** `boot, data, fat, 0x410000, 4M` in `partitions.csv`, after the app. That
+  leaves 7.9 MB for later (a second app slot for updates over the air, 4 MB, or a larger `/boot`).
+  Changing the table means flashing it once (`idf.py flash` writes it); `nvs` keeps its place.
+- **Names, no singletons:** the device is `flash0` (`/dev/flash0`: the partition named `boot`,
+  through wear levelling), mounted at `/boot` (not `/flash0/p0`: the path is the point, and fixed
+  as `/sd0/p0` isn't). The mount is made at boot, before the shell, and can't be unmounted.
+- **Two scripts, as Unix has them** (agreed with the user, 2026-10-05): `/boot/autoexec.sh` runs
+  once, in the first shell, at startup (what is done once: `display start`, `win start`...);
+  `/boot/profile` is read by **every** interactive shell as it starts (the serial console's, each
+  terminal window's), so the environment set there (`HOME`, `PATH`, the prompt) reaches every
+  shell. A variable set in `autoexec.sh` stays in the first shell, as on Unix. The shell's
+  built-in defaults stay as fallbacks (`HOME=/boot`, `PATH=/bin:/sd0/p0/bin`), so a missing or
+  broken profile still gives a working shell.
+- **First boot:** a partition without a file system is formatted (FatFs's choice by size: FAT12),
+  and the two scripts written. `/boot/profile`:
+
+  ```sh
+  # /boot/profile: read by every interactive shell as it starts.
+  export HOME=/boot
+  export PATH=/bin:/sd0/p0/bin
+  ```
+
+  `HOME` on the card instead is one line: `export HOME=/sd0/p0`, or only when there is a card:
+  `[ -d /sd0/p0 ] && export HOME=/sd0/p0`. `/boot/autoexec.sh` keeps today's behavior:
+
+  ```sh
+  # /boot/autoexec.sh: run by the first shell at startup.
+  # Run the SD card's autoexec.sh too, if there is a card.
+  if waitmount /sd0/p0 3000; then
+          [ -f /sd0/p0/autoexec.sh ] && . /sd0/p0/autoexec.sh
+  fi
+  ```
+
+- **Startup:** the first shell sources `/boot/autoexec.sh` at once; it no longer waits for a card
+  (`Shell::Startup::wait` and `Storage::waitForFirstMount` in `main` go). `waitmount PATH MS` (a
+  new shell command) waits up to `MS` for a file system at `PATH` and fails if none comes, so
+  scripts wait for the card only when they want it.
+- **`HOME`** becomes `/boot` (it is `/sd0/p0`, chosen because `autoexec.sh` lived there), and
+  `PATH` `/bin:/sd0/p0/bin` (the built-ins first: a program on the card can't take a built-in's
+  name; the order is the profile's to change).
+- **The firmware's image** doesn't touch the partition: reflashing the app keeps `/boot`. A later
+  `idf.py` target can build a FAT image from a directory of defaults (`fatfsgen.py`) for a fresh
+  board.
+
+**ABI impact:** the path `/boot`, `/boot/autoexec.sh` and `/boot/profile` and their roles,
+`waitmount`, the defaults of `HOME` and `PATH`. Recorded
+with an `ABI:` line.
+
+**Budget (estimate):** code for the block device and the wear levelling (IDF's: a few KB of flash);
+RAM: the FatFs volume (about 1 KB, internal) and wear levelling's state (a few hundred bytes plus a
+sector buffer). The partition is 4 MB of flash.
+
+**Testing:** host: the shell reading the profile at start (interactive shells only; `sh -c` and
+scripts don't), its variables reaching the session, a missing or failing profile leaving the
+defaults. Board: first boot formats and writes the default scripts; `HOME` changed in the profile
+reaching a new terminal window's shell; files written survive a reset and a reflash of the
+app; `df /boot`; the boot with and without a card (the SD's script runs, or the wait times out
+after 3 s and the system is up without it); a power cut during writes, a few times, then a mount
+and a read of everything (the measure of whether FAT on wear levelling is enough).
+
+**As built** (2026-10-05):
+- **`BootDisk`** (`bmds_storage`): the boot stage `boot`, after `vfs`. `FlashBlockDevice` over
+  `wl_read`/`wl_write`/`wl_erase_range`; `Vfs::format()` on the whole device (a partition table
+  with one partition, which FatFs finds by itself when mounting the whole device) and `Vfs::mount()`
+  at `/boot`; `Vfs::pin()` makes `umount` refuse it (`Busy`). `Vfs::isMounted()` and
+  `Vfs::mountWaiters()` (a `WaitList` released after each mount and unmount) serve `waitmount`.
+- **Two findings on the board:**
+  - **A flash operation needs an internal stack.** It turns off the cache PSRAM is reached through,
+    and IDF asserts (`esp_task_stack_is_sane_cache_disabled`) when the calling task's stack is in
+    PSRAM: the shells', programs' and the storage task's are. The device runs an operation on the
+    caller when its stack is internal, else hands it to its worker task (`flash0`, 3 KB internal
+    stack) and waits. Buffers in PSRAM are fine: IDF's flash driver bounces them.
+  - **Each 512-byte write costs a whole flash sector.** Wear levelling's 512-byte mode erases and
+    rewrites the 4 KB sector for every sector written (twice in safe mode): creating a tiny file
+    took 0.95 s, writing 8.9 KB (`seq 1 2000`) 5.22 s. The device now keeps a write-back cache of
+    one 4 KB block (in PSRAM): a block's sectors are flushed together, in one aligned erase and
+    write (wear levelling erases an aligned flash sector without its read-modify-write), on
+    `sync()` (FatFs's, at each close), when another block is needed, or after a second without
+    writes. Measured: a tiny file 0.30 s, an append 0.15 s, `seq 1 2000` 0.80 s, removing three
+    files 0.45 s (1.56 s before).
+- **Verified on the board:** the first boot formatted `/dev/flash0` (4040 KB) and wrote the two
+  scripts; the boot then ran `/boot/autoexec.sh`, which waited for the card and ran its
+  `autoexec.sh` (the desktop and a terminal came up as before); `HOME` and `PATH` as the profile
+  sets them; `df` shows `/dev/flash0` at 3.9 MB; `umount /boot` refused; `waitmount` returns 0
+  for a mounted path, 1 after the timeout (10.04 s for 10 s), and ends at once on Ctrl-C; a file
+  written survived resets and a reflash of the app. Three resets in the middle of a
+  large write (`seq 1 200000`): `/boot` mounted each time, the other files whole, the file being
+  written empty (FAT records it at its close), no space lost. A chip reset isn't a power cut (the
+  flash chip finishes an erase under way), so pulling the power during writes is still to be done
+  by hand.
+- **Writes blinked the screen** (the user saw it): each one shut out the scan's interrupt for longer
+  than a frame. The scan's interrupts are now IRAM-safe (`display.md` §5c''): 0 underruns since.
+- **Size:** `/boot` uses 3 KB of 3,984 KB with the scripts and a note. The worker's 3 KB stack and
+  the cache's 4 KB (PSRAM) are the RAM it costs, with FatFs's volume.

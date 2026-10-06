@@ -26,11 +26,13 @@ namespace {
                         char         path[MaxMountPath + 1] = {};
                         FatVolume   *volume = nullptr;
                         BlockDevice *device = nullptr;
+                        bool         pinned = false; // never unmounted (/boot)
         };
 
         // The mount table, in mount order; under the storage lock.
         constinit Mount  mounts[MaxMounts];
         constinit size_t mountCount = 0;
+        constinit WaitListOf<4> mountChanges; // released after each mount and unmount
 
         constinit NullStream devNull;
 
@@ -458,6 +460,7 @@ namespace {
                 mounts[index].volume->release();
                 for (size_t j = index + 1; j < mountCount; ++j) mounts[j - 1] = mounts[j];
                 mounts[--mountCount] = Mount();
+                mountChanges.notify();
                 return;
         }
 
@@ -643,7 +646,30 @@ Error Vfs::mount(StringView path, BlockDevice &device) {
         m.path[p.size()] = '\0';
         m.volume = volume;
         m.device = &device;
+        mountChanges.notify();
         return Error();
+}
+
+Error Vfs::pin(StringView path) {
+        Mutex::Locker lock(Fat::lock(), WaitForever);
+        for (size_t i = 0; i < mountCount; ++i) {
+                if (path == StringView(mounts[i].path)) {
+                        mounts[i].pinned = true;
+                        return Error();
+                }
+        }
+        return Error::NotExist;
+}
+
+bool Vfs::isMounted(StringView path) {
+        Mutex::Locker lock(Fat::lock(), WaitForever);
+        for (size_t i = 0; i < mountCount; ++i)
+                if (path == StringView(mounts[i].path)) return true;
+        return false;
+}
+
+WaitList &Vfs::mountWaiters() {
+        return mountChanges;
 }
 
 Error Vfs::unmount(StringView path) {
@@ -652,6 +678,7 @@ Error Vfs::unmount(StringView path) {
         Mutex::Locker lock(Fat::lock(), WaitForever);
         for (size_t i = 0; i < mountCount; ++i) {
                 if (normalized.value().view() == StringView(mounts[i].path)) {
+                        if (mounts[i].pinned) return Error::Busy;
                         removeMountLocked(i);
                         return Error();
                 }

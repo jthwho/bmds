@@ -1,0 +1,11 @@
+menu "BMDS drivers"
+
+    # The scanout's interrupts must run while the flash is being written (/boot,
+    # devplan/storage.md §13): an erase shuts out other interrupts for tens of
+    # milliseconds, longer than the DMA's descriptors last (devplan/display.md §5c'').
+    config BMDS_SCANOUT_IRAM_SAFE
+        bool
+        default y
+        select DW_GDMA_ISR_IRAM_SAFE
+
+endmenu

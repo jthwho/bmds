@@ -21,6 +21,8 @@
 #include <bmds/ramblockdevice.h>
 #include <bmds/shell.h>
 #include <bmds/vfs.h>
+#include <bmds/waitlist.h>
+#include <bmds/semaphore.h>
 #include "fakeconsole.h"
 #include "hostmemory.h"
 
@@ -295,6 +297,29 @@ TEST_CASE("Vfs: devices, partitions and mounts") {
                 REQUIRE(blank.allocate(256, bmds::MemSpace::Psram).isOk());
                 CHECK(Vfs::mount("/blank", blank) == Error::NoFilesystem);
                 CHECK(mountList().empty());
+        }
+
+        SUBCASE("a whole device formatted and mounted at /boot, pinned; mounts announced") {
+                // As /boot on the flash (devplan/storage.md §13): FatFs finds the partition.
+                bmds::RamBlockDevice flash(512);
+                REQUIRE(flash.allocate(8192, bmds::MemSpace::Psram).isOk()); // 4 MB
+                CHECK(Vfs::mount("/boot", flash) == Error::NoFilesystem);
+                CHECK(Vfs::format(flash, FsFormat::Auto).isOk());
+                bmds::Semaphore       woken(1, 0);
+                bmds::WaitList::Entry entry(Vfs::mountWaiters(), woken);
+                REQUIRE(entry.isAdded());
+                CHECK(!Vfs::isMounted("/boot"));
+                CHECK(Vfs::mount("/boot", flash).isOk());
+                CHECK(woken.acquire(1).isOk()); // the mount announced
+                CHECK(Vfs::isMounted("/boot"));
+                CHECK(!Vfs::isMounted("/boo"));
+                CHECK(Vfs::pin("/boot").isOk());
+                CHECK(Vfs::pin("/nothing") == Error::NotExist);
+                CHECK(Vfs::unmount("/boot") == Error::Busy); // pinned
+                CHECK(Vfs::isMounted("/boot"));
+                CHECK(Vfs::unmountDevice(flash) == 1); // the device itself going still takes it
+                CHECK(woken.acquire(1).isOk());        // the unmount announced
+                CHECK(!Vfs::isMounted("/boot"));
         }
 
         SUBCASE("formatting a partition alone") {

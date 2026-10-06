@@ -50,6 +50,8 @@ namespace {
                 (void)Boot::waitUntilComplete(WaitForever);
                 Session *session = static_cast<Session *>(arg);
                 if (session->startup.wait != nullptr) session->startup.wait();
+                // Every interactive shell reads the profile (the environment), then its startup script.
+                (void)session->shell.sourceIfExists(Shell::ProfilePath);
                 if (session->startup.script != nullptr) (void)session->shell.sourceIfExists(session->startup.script);
                 int status = session->shell.run();
                 while (session->startup.exited == nullptr) status = session->shell.run(); // a new prompt
@@ -99,10 +101,10 @@ Error Shell::spawn(Console &console, const char *name, const Startup &startup) {
         Error err = session->shell.init();
         session->shell.setLauncher(startup.launcher);
         if (err.isOk()) err = session->shell.state().vars.set("BMDS_VERSION", System::info().bmdsVersion);
-        // The first partition of the first SD card (where autoexec.sh lives).
-        if (err.isOk()) err = session->shell.state().vars.set("HOME", "/sd0/p0");
+        // The defaults /boot/profile normally sets (devplan/storage.md §13), for a shell without it.
+        if (err.isOk()) err = session->shell.state().vars.set("HOME", "/boot");
         // Where commands that aren't built-ins are looked for (name, name.elf, name.sh).
-        if (err.isOk()) err = session->shell.state().vars.set("PATH", "/sd0/p0/bin");
+        if (err.isOk()) err = session->shell.state().vars.set("PATH", "/bin:/sd0/p0/bin");
         if (err.isOk()) err = session->shell.state().vars.addFlags("PATH", Variables::Exported);
         // A colored prompt with the directory; the console fits the color to its terminal.
         if (err.isOk())

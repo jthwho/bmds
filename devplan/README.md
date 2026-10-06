@@ -13,6 +13,7 @@ Design notes and implementation plans for BMDS subsystems. Write a plan here **b
 - [`distribution.md`](distribution.md) — Phase 3: the programs shipped on the card (`dist/` recipes, `tools/bmds-dist`), BusyBox.
 - [`display.md`](display.md), [`windows.md`](windows.md) — Phase 4: HDMI, surface 0, the window manager, the terminal program, screenshots.
 - [`input.md`](input.md) — Phase 5: USB host (TinyUSB, split transactions through the board's hub), HID boot keyboards and mice, the pointer.
+- [`pty.md`](pty.md) — pseudo-terminals: a terminal emulator as an ordinary program (with `/bin`, `programs.md` §17).
 
 ## Plan Document Template
 

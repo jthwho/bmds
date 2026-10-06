@@ -234,10 +234,16 @@ class Surface {
                 friend struct ScanoutIsr;
 
                 // For the scanout (its interrupt).
+                // While the flash is written (the cache off), @p notify false: the waiters, whose
+                // semaphores may be on stacks in PSRAM, are woken by notifyFromIsr() afterwards.
                 const uint8_t *askedFromIsr() const { return _buffers[_front.load(std::memory_order_relaxed) ^ 1]; }
-                void           swappedFromIsr();
-                void           frameFromIsr() {
+                void           swappedFromIsr(bool notify);
+                void           frameFromIsr(bool notify) {
                         _frames.fetch_add(1, std::memory_order_release);
+                        if (notify) notifyFromIsr();
+                        return;
+                }
+                void notifyFromIsr() {
                         if (_waiters.hasWaiters()) _waiters.notifyFromIsr();
                         return;
                 }

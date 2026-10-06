@@ -9,6 +9,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <bmds/detail/ticks.h>
+#include <bmds/placement.h>
 #include <bmds/semaphore.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -50,7 +51,7 @@ void Semaphore::release() {
         return;
 }
 
-void Semaphore::releaseFromIsr() {
+BMDS_ISR_ATTR void Semaphore::releaseFromIsr() {
         // If this wakes a higher-priority task, the switch happens once, at
         // interrupt exit (the RISC-V port defers portYIELD_FROM_ISR()).
         BaseType_t woken = pdFALSE;

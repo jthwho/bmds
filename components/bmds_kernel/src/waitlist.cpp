@@ -7,6 +7,7 @@
  */
 
 #include <bmds/detail/platform.h>
+#include <bmds/placement.h>
 #include <bmds/waitlist.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -41,7 +42,8 @@ void WaitList::remove(size_t slot) {
         return;
 }
 
-bool WaitList::hasWaiters() const {
+// The ISR-safe part in IRAM: it runs while the flash is written (devplan/storage.md §13).
+BMDS_ISR_ATTR bool WaitList::hasWaiters() const {
         for (size_t i = 0; i < _count; ++i) {
                 if (_slots[i].load() != nullptr) return true;
         }
@@ -59,13 +61,13 @@ void WaitList::notify() {
         return;
 }
 
-void WaitList::notifyFromIsr() {
+BMDS_ISR_ATTR void WaitList::notifyFromIsr() {
         std::atomic_thread_fence(std::memory_order_seq_cst);
         release(true);
         return;
 }
 
-void WaitList::release(bool fromIsr) {
+BMDS_ISR_ATTR void WaitList::release(bool fromIsr) {
         _busy.fetch_add(1);
         for (size_t i = 0; i < _count; ++i) {
                 Semaphore *semaphore = _slots[i].load();

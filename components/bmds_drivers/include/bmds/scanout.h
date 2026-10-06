@@ -121,6 +121,7 @@ class Scanout {
                 uint32_t              _lastItem = 0;   // the descriptor the DMA was on at the last interrupt
                 bool                  _primed = false; // that is known
                 uint8_t               _swapPhase = 0;  // 1: all but the last descriptor on the new buffer
+                bool                  _notifyPending = false; // the surface's waiters to wake (the cache was off)
                 bool                  _running = false;
                 std::atomic<bool>     _stopping{false};
                 std::atomic<uint32_t> _sent{0};   // blocks sent since the last restart

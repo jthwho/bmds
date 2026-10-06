@@ -20,6 +20,7 @@
 #include <esp_timer.h>
 #include <esp_rom_sys.h>
 #include <esp_private/dw_gdma.h>
+#include <esp_private/cache_utils.h>
 #include <esp_private/esp_clk_tree_common.h>
 #include <esp_private/periph_ctrl.h>
 #include <freertos/FreeRTOS.h>
@@ -110,6 +111,14 @@ struct ScanoutIsr {
                                                     void *arg) {
                         const uint32_t     started = esp_cpu_get_cycle_count();
                         auto              &s = *static_cast<Scanout *>(arg);
+                        // While the flash is written this runs with the cache off (an IRAM-safe
+                        // interrupt): only internal RAM may be touched, so the surface's waiters
+                        // are woken at the next interrupt with the cache on.
+                        const bool notify = spi_flash_cache_enabled();
+                        if (notify && s._notifyPending) {
+                                s._notifyPending = false;
+                                s._surface->notifyFromIsr();
+                        }
                         Scanout::Hardware &hw = *s._hw;
                         // Where the DMA is: a late interrupt can stand for several blocks
                         // (IDF's handler reads the status once).
@@ -133,7 +142,8 @@ struct ScanoutIsr {
                                 // The new frame has begun from the new buffer: its last block too.
                                 pointAt(s, surface.askedFromIsr(), blocks - 1, blocks);
                                 s._swapPhase = 0;
-                                surface.swappedFromIsr();
+                                surface.swappedFromIsr(notify);
+                                s._notifyPending = s._notifyPending || !notify;
                                 s._swaps.fetch_add(1, std::memory_order_relaxed);
                         }
                         if (s._swapPhase == 0 && at == blocks - 1 && surface.isSwapPending()) {
@@ -143,7 +153,8 @@ struct ScanoutIsr {
                         }
                         if (wrapped) {
                                 s._frames.fetch_add(1, std::memory_order_relaxed);
-                                surface.frameFromIsr();
+                                surface.frameFromIsr(notify);
+                                s._notifyPending = s._notifyPending || !notify;
                         }
                         s._lastItem = at;
                         s._primed = true;
@@ -202,6 +213,7 @@ Error Scanout::start(const Config &config, Surface &surface) {
         _stopping.store(false);
         _primed = false;
         _swapPhase = 0;
+        _notifyPending = false;
         _isrCyclesMax = 0;
         _resyncs = 0;
         _rebuilds = 0;
@@ -344,8 +356,8 @@ Error Scanout::startDpi() {
         }
         hw.dpiClock = true;
 
-        err = espError(esp_intr_alloc(soc_mipi_dsi_signals[_bus].brg_irq_id, ESP_INTR_FLAG_LOWMED, ScanoutIsr::bridge,
-                                      this, &hw.bridgeIntr));
+        err = espError(esp_intr_alloc(soc_mipi_dsi_signals[_bus].brg_irq_id, ESP_INTR_FLAG_LOWMED | ESP_INTR_FLAG_IRAM,
+                                      ScanoutIsr::bridge, this, &hw.bridgeIntr));
         if (err.isError()) return err;
 
         err = holdDmaGroup();
@@ -399,6 +411,7 @@ Error Scanout::startDpi() {
                 (void)dw_gdma_lli_set_block_markers(lli, markers);
         }
         _swapPhase = 0;
+        _notifyPending = false;
         hw.itemBase = reinterpret_cast<uint32_t>(hw.items[0]) & 0x0fffffffu;
         hw.itemStride = reinterpret_cast<uint32_t>(hw.items[1]) - reinterpret_cast<uint32_t>(hw.items[0]);
 
@@ -575,6 +588,7 @@ void Scanout::resync() {
         _sent.store(0, std::memory_order_relaxed);
         _primed = false;
         _swapPhase = 0;
+        _notifyPending = false;
         for (uint32_t k = 0; k < _blocks; ++k) {
                 dw_gdma_ll_lli_set_src_addr(hw.items[k],
                                             reinterpret_cast<uint32_t>(_surface->shown() + k * _blockBytes));
