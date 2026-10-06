@@ -73,6 +73,9 @@ Result<uint8_t> Terminal::open(WindowManager &wm, const Rect &rect) {
         config.resized = resized;
         config.widthStep = CellWidth; // sized by hand in whole cells
         config.heightStep = CellHeight;
+        config.pointer = WindowManager::Pointer::Text;
+        config.hidePointerWhileTyping = true;
+        config.wheel = wheeled;
         config.arg = this;
         // Sized for the area the window gets (snapped, kept on the screen) before it draws.
         const Rect client =
@@ -84,6 +87,12 @@ Result<uint8_t> Terminal::open(WindowManager &wm, const Rect &rect) {
         if (columns == 0 || rows == 0) return makeError<uint8_t>(Error::Invalid);
         Error err = _console.resize(columns, rows);
         if (err.isError()) return makeError<uint8_t>(err);
+        {
+                ScreenConsole::Locked locked(_console);
+                if (locked.screen().historyCount() == 0) (void)locked.screen().setHistory(HistoryLines); // or none
+        }
+        _offset.store(0, std::memory_order_relaxed);
+        _all = true;
         _wm = &wm;
         for (uint32_t &w : _cursorRows) w = 0;
         auto [id, oerr] = wm.open(config);
@@ -120,16 +129,72 @@ void Terminal::closed(void *arg) {
 }
 
 // A key, as a terminal sends it, into the shell's input. On the window manager's task.
+// Shift+Page Up and Down scroll the view instead; any other key returns it to the bottom.
 void Terminal::keyTyped(void *arg, const KeyEvent &event) {
         auto *self = static_cast<Terminal *>(arg);
-        bool  application = false;
+        bool  alternate = false;
+        int   rows = 0;
         {
                 ScreenConsole::Locked locked(self->_console);
+                alternate = locked.screen().isAlternateScreen();
+                rows = locked.screen().rows();
+        }
+        const bool page = event.usage == HidKey::PageUp || event.usage == HidKey::PageDown;
+        if (page && event.hasShift() && !alternate) {
+                if (event.action != KeyEvent::Action::Release)
+                        self->scrollBy(event.usage == HidKey::PageUp ? rows - 1 : 1 - rows);
+                return;
+        }
+        if (self->send(event) > 0 && self->_offset.load(std::memory_order_relaxed) != 0)
+                self->scrollBy(-int(HistoryLines)); // typing: back to the bottom
+        return;
+}
+
+// The bytes @p event sends, into the input. @return Their count.
+size_t Terminal::send(const KeyEvent &event) {
+        bool application = false;
+        {
+                ScreenConsole::Locked locked(_console);
                 application = locked.screen().isApplicationCursorKeys();
         }
         char         bytes[TerminalKeys::MaxBytes];
         const size_t n = TerminalKeys::encode(event, application, bytes);
-        if (n > 0) (void)self->_console.pushInput(ByteSpan(reinterpret_cast<const uint8_t *>(bytes), n));
+        if (n > 0) (void)_console.pushInput(ByteSpan(reinterpret_cast<const uint8_t *>(bytes), n));
+        return n;
+}
+
+// The wheel over the window (on the window manager's task): the view scrolled, or on the
+// alternate screen (a full-screen program) arrow keys sent.
+void Terminal::wheeled(void *arg, int notches) {
+        auto *self = static_cast<Terminal *>(arg);
+        bool  alternate = false;
+        {
+                ScreenConsole::Locked locked(self->_console);
+                alternate = locked.screen().isAlternateScreen();
+        }
+        if (!alternate) {
+                self->scrollBy(notches * WheelLines);
+                return;
+        }
+        KeyEvent key;
+        key.usage = notches > 0 ? HidKey::Up : HidKey::Down;
+        for (int i = 0; i < (notches > 0 ? notches : -notches) * WheelLines; ++i) (void)self->send(key);
+        return;
+}
+
+void Terminal::scrollBy(int lines) {
+        size_t history = 0;
+        {
+                ScreenConsole::Locked locked(_console);
+                history = locked.screen().historyCount();
+        }
+        const int64_t want = int64_t(_offset.load(std::memory_order_relaxed)) + lines;
+        const auto    to = static_cast<uint32_t>(want < 0 ? 0 : want > int64_t(history) ? history : want);
+        if (to == _offset.load(std::memory_order_relaxed)) return;
+        _offset.store(to, std::memory_order_relaxed);
+        _all = true;
+        const uint8_t id = window();
+        if (id != 0 && _wm != nullptr) (void)_wm->update(id);
         return;
 }
 
@@ -161,11 +226,26 @@ void Terminal::draw(Painter &painter) {
         const WindowPalette &palette = painter.palette();
         _console.drawn();
         uint16_t columns = 0, rows = 0;
+        size_t   offset = 0;
+        bool     all = _all;
         {
                 ScreenConsole::Locked locked(_console);
-                columns = locked.screen().columns();
-                rows = locked.screen().rows();
+                TerminalScreen       &screen = locked.screen();
+                columns = screen.columns();
+                rows = screen.rows();
+                // Scrolled back: the view stays on the same lines as output adds to the history, and
+                // is redrawn whole on any change.
+                const uint32_t added = screen.historyAdded();
+                offset = _offset.load(std::memory_order_relaxed);
+                if (offset > 0) {
+                        offset += added - _added;
+                        if (offset > screen.historyCount()) offset = screen.historyCount();
+                        if (added != _added || screen.hasDamage()) all = true;
+                        _offset.store(uint32_t(offset), std::memory_order_relaxed);
+                }
+                _added = added;
         }
+        _all = false;
         uint32_t   damaged[(TerminalScreen::MaxSide + 31) / 32] = {};
         const Rect cellsArea{0, 0, uint16_t(columns * CellWidth), uint16_t(rows * CellHeight)};
         for (size_t i = 0; i < painter.damageCount(); ++i) {
@@ -182,12 +262,14 @@ void Terminal::draw(Painter &painter) {
                         ScreenConsole::Locked locked(_console);
                         TerminalScreen       &screen = locked.screen();
                         if (screen.rows() != rows || screen.columns() != columns) break; // resized: all dirty
-                        cursorHere = screen.isCursorVisible() && screen.cursorRow() == r;
-                        const bool need = screen.isRowDirty(r) || (damaged[r / 32] & bit) != 0 ||
+                        cursorHere = TerminalView::viewCursorRow(screen, offset) == r;
+                        const bool need = all || screen.isRowDirty(r) || (damaged[r / 32] & bit) != 0 ||
                                           (_cursorRows[r / 32] & bit) != 0 || cursorHere;
                         if (!need) continue;
-                        n = TerminalView::row(screen, r, palette, cursorHere ? screen.cursorColumn() : -1, _cells,
-                                              MaxColumns);
+                        uint16_t            length = 0;
+                        const TerminalCell *line = TerminalView::viewRow(screen, offset, r, length);
+                        n = TerminalView::cells(line, length, columns, palette, cursorHere ? screen.cursorColumn() : -1,
+                                                _cells, MaxColumns);
                         screen.clearRowDamage(r);
                 }
                 if (cursorHere) {

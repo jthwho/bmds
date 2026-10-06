@@ -41,6 +41,11 @@ class WindowManager;
  * (`TerminalKeys`: xterm's sequences, application cursor keys when the
  * program asks).
  *
+ * It keeps `HistoryLines` of scrollback (`devplan/windows.md` §4i): the
+ * wheel over its window, or Shift+Page Up and Down, scroll back through
+ * it; a key typed returns to the bottom. On the alternate screen the wheel
+ * sends arrow keys instead.
+ *
  * Output asks the window manager for an update; at the next round the
  * window draws the rows that changed, those under any damage, and where
  * the cursor was and is (rows are redrawn, never scrolled: faster here).
@@ -52,6 +57,12 @@ class Terminal {
         public:
                 /** @brief Sessions there can be. */
                 static constexpr size_t MaxTerminals = 4;
+
+                /** @brief The scrollback kept, in lines. */
+                static constexpr uint16_t HistoryLines = 1000;
+
+                /** @brief Lines a notch of the wheel scrolls. */
+                static constexpr int WheelLines = 3;
 
                 /** @brief The widest row drawn, in cells (1920 pixels). */
                 static constexpr uint16_t MaxColumns = 240;
@@ -91,6 +102,9 @@ class Terminal {
                 /** @brief Returns true once its shell runs. */
                 bool isStarted() const { return _started; }
 
+                /** @brief Returns how far back the view is scrolled, in lines (0: at the bottom). */
+                size_t scrollback() const { return _offset.load(std::memory_order_relaxed); }
+
                 /** @brief Returns the console (typed keys go in with `pushInput()`). */
                 ScreenConsole &console() { return _console; }
 
@@ -99,6 +113,9 @@ class Terminal {
                 static void closed(void *arg);
                 static void keyTyped(void *arg, const KeyEvent &event);
                 static void resized(void *arg, uint16_t width, uint16_t height);
+                static void wheeled(void *arg, int notches);
+                void        scrollBy(int lines); // back (positive) or forward, clamped; redrawn
+                size_t      send(const KeyEvent &event);
                 static void changed(void *arg);
                 void        draw(Painter &painter);
 
@@ -109,6 +126,9 @@ class Terminal {
                 std::atomic<uint8_t> _window{0};
                 TextCell            *_cells = nullptr;                                      // a row's, internal RAM
                 uint32_t             _cursorRows[(TerminalScreen::MaxSide + 31) / 32] = {}; // rows drawn with it
+                std::atomic<uint32_t> _offset{0};   // lines scrolled back (written on the window manager's task)
+                uint32_t              _added = 0;   // the history's count of lines added, as last drawn
+                bool                  _all = false; // every row to redraw (the view moved)
                 uint8_t              _number;
                 bool                 _started = false;
 };

@@ -99,7 +99,9 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
         _pressShown = false;
         _clickId = 0;
         _sizeId = 0;
-        _shape = Shape::Arrow;
+        _shape = Pointer::Arrow;
+        _pointerHidden = false;
+        _typingHidden = false;
         // The keyboards' and mice's sink while it runs.
         Input::Sink sink;
         sink.key = keyEntry;
@@ -152,10 +154,13 @@ void WindowManager::run() {
                         Mutex::Locker lock(_lock, WaitForever);
                         surface = _surface;
                         if (surface != nullptr) {
+                                // Counted before the keys are taken: a key queued later is not
+                                // reported drawn (sync()) before it is delivered.
+                                const uint32_t requests = _requests.load(std::memory_order_acquire);
                                 deliverKeys();
                                 applyPointer();
                                 frame = surface->frames();
-                                round();
+                                round(requests);
                         }
                 }
                 _idle.notify();
@@ -176,6 +181,7 @@ void WindowManager::key(const KeyEvent &event) {
                 _keys[(_keyHead + _keyCount) % KeyQueue] = event;
                 ++_keyCount;
         }
+        _requests.fetch_add(1, std::memory_order_acq_rel); // a change: sync() waits for its delivery
         _wake.release();
         return;
 }
@@ -193,6 +199,14 @@ void WindowManager::deliverKeys() {
                 }
                 if (_stack.count() == 0) continue;
                 const Window &w = _windows[_stack.idAt(0) - 1];
+                // Typing hides the pointer from a window asking (not a modifier or a lock alone).
+                const bool typing = event.action != KeyEvent::Action::Release && event.usage < 0xe0 &&
+                                    event.usage != HidKey::CapsLock && event.usage != HidKey::NumLock &&
+                                    event.usage != HidKey::ScrollLock;
+                if (typing && w.hideWhileTyping && !_typingHidden) {
+                        if (isCursorDrawn()) _stack.invalidateScreen(cursorArea());
+                        _typingHidden = true;
+                }
                 if (w.key != nullptr) w.key(w.arg, event);
         }
 }
@@ -239,7 +253,9 @@ void WindowManager::applyPointer() {
                 const auto nx = static_cast<uint16_t>(x < 0 ? 0 : x >= screen.width ? screen.width - 1 : x);
                 const auto ny = static_cast<uint16_t>(y < 0 ? 0 : y >= screen.height ? screen.height - 1 : y);
                 const Rect was = cursorArea();
+                const bool wasDrawn = isCursorDrawn();
                 const bool moved = nx != _pointerX || ny != _pointerY;
+                if (moved || event.buttons != _buttons || event.wheel != 0) _typingHidden = false; // the mouse is back
                 if (moved) {
                         _pointerX = nx;
                         _pointerY = ny;
@@ -256,13 +272,19 @@ void WindowManager::applyPointer() {
                 _buttons = event.buttons;
                 if ((pressed & PointerEvent::Left) != 0) press(nx, ny);
                 if ((released & PointerEvent::Left) != 0) release(nx, ny);
-                const Shape shape = shapeAt(nx, ny);
-                if (moved || shape != _shape || !_cursorShown) {
-                        if (_cursorShown) _stack.invalidateScreen(was); // what it covered, redrawn
-                        _shape = shape;
-                        _cursorShown = true;
-                        _cursorMoved = true;
+                if (event.wheel != 0) {
+                        // To the window under the pointer, focused or not.
+                        const uint8_t id = windowAt(nx, ny);
+                        const Window *w = id != 0 ? &_windows[id - 1] : nullptr;
+                        if (w != nullptr && w->wheel != nullptr) w->wheel(w->arg, event.wheel);
                 }
+                const Pointer shape = shapeAt(nx, ny);
+                const bool    changed = moved || shape != _shape;
+                _shape = shape;
+                _cursorShown = true;
+                const bool drawn = isCursorDrawn();
+                if (wasDrawn && (changed || !drawn)) _stack.invalidateScreen(was); // what it covered, redrawn
+                if (drawn && (changed || !wasDrawn)) _cursorMoved = true;
                 _requests.fetch_add(1, std::memory_order_acq_rel);
         }
 }
@@ -370,24 +392,28 @@ void WindowManager::sizeTo(uint16_t x, uint16_t y) {
 }
 
 // The pointer's picture at (@p x, @p y): the resize's under way, a handle's, or the arrow.
-WindowManager::Shape WindowManager::shapeAt(uint16_t x, uint16_t y) const {
+WindowManager::Pointer WindowManager::shapeAt(uint16_t x, uint16_t y) const {
         uint8_t edges = _sizeEdges;
         if (_sizeId == 0) {
-                if (_grabId != 0 || _pressId != 0) return Shape::Arrow;
+                if (_grabId != 0 || _pressId != 0) return Pointer::Arrow;
                 const uint8_t id = windowAt(x, y);
-                if (id == 0 || _windows[id - 1].maximized) return Shape::Arrow;
+                if (id == 0) return Pointer::Arrow;
                 auto [z, err] = _stack.layerOf(id);
-                if (err.isError()) return Shape::Arrow;
-                edges = WindowFrame::edgesOf(frame(id, _stack.rectAt(z)).partAt(x, y));
+                if (err.isError()) return Pointer::Arrow;
+                const Window           &w = _windows[id - 1];
+                const WindowFrame::Part part = frame(id, _stack.rectAt(z)).partAt(x, y);
+                if (part == WindowFrame::Part::Client) return w.pointer;
+                if (w.maximized) return Pointer::Arrow; // sized with the screen
+                edges = WindowFrame::edgesOf(part);
         }
         constexpr uint8_t Horizontal = WindowFrame::LeftEdge | WindowFrame::RightEdge;
         constexpr uint8_t Vertical = WindowFrame::TopEdge | WindowFrame::BottomEdge;
-        if (edges == 0) return Shape::Arrow;
-        if ((edges & Vertical) == 0) return Shape::Horizontal;
-        if ((edges & Horizontal) == 0) return Shape::Vertical;
+        if (edges == 0) return Pointer::Arrow;
+        if ((edges & Vertical) == 0) return Pointer::Horizontal;
+        if ((edges & Horizontal) == 0) return Pointer::Vertical;
         const bool down = edges == (WindowFrame::TopEdge | WindowFrame::LeftEdge) ||
                           edges == (WindowFrame::BottomEdge | WindowFrame::RightEdge);
-        return down ? Shape::DiagonalDown : Shape::DiagonalUp;
+        return down ? Pointer::DiagonalDown : Pointer::DiagonalUp;
 }
 
 // What a title-bar button does (the menu's: nothing until there are menus).
@@ -423,7 +449,23 @@ Error WindowManager::capture(Capture fn, void *arg, unsigned int timeoutMs) {
 
 Rect WindowManager::pointerArea() {
         Mutex::Locker lock(_lock, WaitForever);
-        return _surface != nullptr && _cursorShown ? cursorArea() : Rect();
+        return _surface != nullptr && isCursorDrawn() ? cursorArea() : Rect();
+}
+
+void WindowManager::setPointerVisible(bool visible) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr || _pointerHidden == !visible) return;
+        const bool wasDrawn = isCursorDrawn();
+        if (wasDrawn) _stack.invalidateScreen(cursorArea());
+        _pointerHidden = !visible;
+        if (!wasDrawn && isCursorDrawn()) _cursorMoved = true;
+        changed(_stack.count() > 0 ? _stack.idAt(0) : 0);
+        return;
+}
+
+bool WindowManager::isPointerVisible() {
+        Mutex::Locker lock(_lock, WaitForever);
+        return !_pointerHidden;
 }
 
 namespace {
@@ -460,16 +502,21 @@ namespace {
                 "........XXoXooX", ".........XXoooX", "........XXooooX", "........XoooooX", "........XXXXXXX",
         };
 
+        constexpr const char *TextRows[] = {
+                "XXX.XXX", "XooXooX", "XXXoXXX", "..XoX..", "..XoX..", "..XoX..", "..XoX..", "..XoX..", "..XoX..",
+                "..XoX..", "..XoX..", "..XoX..", "..XoX..", "..XoX..", "XXXoXXX", "XooXooX", "XXX.XXX",
+        };
+
         constexpr const char *DiagonalUpRows[] = {
                 "........XXXXXXX", "........XoooooX", "........XXooooX", ".........XXoooX", "........XXoXooX",
                 ".......XXoXXXoX", "......XXoXX.XXX", ".....XXoXX.....", "XXX.XXoXX......", "XoXXXoXX.......",
                 "XooXoXX........", "XoooXX.........", "XooooXX........", "XoooooX........", "XXXXXXX........",
         };
 
-        // By WindowManager::Shape.
+        // By WindowManager::Pointer.
         constexpr Picture Pictures[] = {
                 {12, 19, 0, 0, ArrowRows},        {19, 9, 9, 4, HorizontalRows},  {9, 19, 4, 9, VerticalRows},
-                {15, 15, 7, 7, DiagonalDownRows}, {15, 15, 7, 7, DiagonalUpRows},
+                {15, 15, 7, 7, DiagonalDownRows}, {15, 15, 7, 7, DiagonalUpRows}, {7, 17, 3, 8, TextRows},
         };
 
         struct CursorJob {
@@ -524,7 +571,7 @@ void WindowManager::drawCursorPixels(void *arg, uint8_t *pixels, size_t stride) 
 // The pointer over everything drawn this round (drawing it again where it was is harmless).
 void WindowManager::drawCursor() {
         _cursorMoved = false;
-        if (!_cursorShown) return;
+        if (!isCursorDrawn()) return;
         const Picture &p = Pictures[static_cast<size_t>(_shape)];
         const Rect     area = cursorArea();
         CursorJob      job;
@@ -542,8 +589,8 @@ void WindowManager::drawCursor() {
 
 // Everything damaged drawn by whoever shows it, the outline over it; then
 // (double-buffered) presented. With the lock held.
-void WindowManager::round() {
-        const uint32_t requests = _requests.load(std::memory_order_acquire);
+// The changes counted up to @p requests are drawn by it.
+void WindowManager::round(uint32_t requests) {
         _updates = static_cast<uint16_t>(_updates | _asked.exchange(0, std::memory_order_acq_rel)); // after the count
         const Region damage = _stack.damage();
         _stack.clearDamage();
@@ -800,6 +847,9 @@ Result<uint8_t> WindowManager::open(const WindowConfig &config) {
         w.decorations = config.decorations;
         w.widthStep = config.widthStep > 0 ? config.widthStep : 1;
         w.heightStep = config.heightStep > 0 ? config.heightStep : 1;
+        w.pointer = config.pointer;
+        w.hideWhileTyping = config.hidePointerWhileTyping;
+        w.wheel = config.wheel;
         changed(oldTop);
         return makeResult(id);
 }

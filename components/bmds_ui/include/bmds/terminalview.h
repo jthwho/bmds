@@ -45,6 +45,27 @@ namespace TerminalView {
         size_t row(const TerminalScreen &screen, uint16_t row, const WindowPalette &palette, int cursor, TextCell *out,
                    size_t max);
 
+        /**
+         * @brief Writes a row @p columns wide into @p out as `row()` does,
+         *        from @p length of @p cells (a screen row, or a history line
+         *        of any length): blanks past them, and a wide character cut
+         *        at the last column blanked.
+         * @return The cells written.
+         * @hotpath
+         */
+        size_t cells(const TerminalCell *cells, uint16_t length, uint16_t columns, const WindowPalette &palette,
+                     int cursor, TextCell *out, size_t max);
+
+        /**
+         * @brief Returns what shown row @p row is, scrolled back @p offset
+         *        lines (clamped to the history): a history line or a screen
+         *        row (§4i), @p length cells of it.
+         */
+        const TerminalCell *viewRow(const TerminalScreen &screen, size_t offset, uint16_t row, uint16_t &length);
+
+        /** @brief Returns the shown row the cursor is on, scrolled back @p offset lines, or -1 (none). */
+        int viewCursorRow(const TerminalScreen &screen, size_t offset);
+
 } // namespace TerminalView
 
 BMDS_NAMESPACE_END

@@ -13,6 +13,7 @@
 #include <bmds/config.h>
 #include <bmds/error.h>
 #include <bmds/keyboarddecoder.h>
+#include <bmds/mouselayout.h>
 #include <bmds/mutex.h>
 #include <bmds/result.h>
 #include <bmds/span.h>
@@ -132,7 +133,8 @@ class UsbHost {
                 void mounted(uint8_t address);
                 void unmounted(uint8_t address);
                 void stringArrived(uint8_t address, bool product, bool ok);
-                void hidMounted(uint8_t address, uint8_t instance);
+                void hidMounted(uint8_t address, uint8_t instance, Span<const uint8_t> descriptor);
+                void hidProtocolSet(uint8_t address, uint8_t instance, uint8_t protocol);
                 void hidUnmounted(uint8_t address, uint8_t instance);
                 void hidReport(uint8_t address, uint8_t instance, const uint8_t *data, uint16_t length);
                 /// @endcond
@@ -155,7 +157,9 @@ class UsbHost {
                                 uint8_t         address = 0;
                                 uint8_t         instance = 0;
                                 uint8_t         leds = 0; // the LED report being sent (it must stay put)
+                                bool            reportProtocol = false; // a mouse's reports decoded by layout
                                 KeyboardDecoder keys;
+                                MouseLayout     layout; // a mouse's, from its report descriptor
                 };
 
                 static void entry(void *arg);

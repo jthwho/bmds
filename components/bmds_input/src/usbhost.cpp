@@ -310,13 +310,17 @@ void UsbHost::stringArrived(uint8_t address, bool product, bool ok) {
         return;
 }
 
-// A HID interface: a boot keyboard or mouse gets a slot and its reports.
-void UsbHost::hidMounted(uint8_t address, uint8_t instance) {
-        const uint8_t protocol = tuh_hid_interface_protocol(address, instance);
-        Hid::Kind     kind = protocol == HID_ITF_PROTOCOL_KEYBOARD ? Hid::Kind::Keyboard
-                             : protocol == HID_ITF_PROTOCOL_MOUSE  ? Hid::Kind::Mouse
-                                                                   : Hid::Kind::None;
-        if (kind == Hid::Kind::None) return; // report protocol only: later (devplan/input.md §8)
+// A HID interface: a boot keyboard, or a mouse (boot or not), gets a slot and its reports. A mouse
+// whose report descriptor gives its layout goes to report protocol (where its wheel is: boot
+// protocol may leave it out), decoded by the layout (devplan/input.md §5a).
+void UsbHost::hidMounted(uint8_t address, uint8_t instance, Span<const uint8_t> descriptor) {
+        const uint8_t     protocol = tuh_hid_interface_protocol(address, instance);
+        Hid::Kind         kind = protocol == HID_ITF_PROTOCOL_KEYBOARD ? Hid::Kind::Keyboard
+                                 : protocol == HID_ITF_PROTOCOL_MOUSE  ? Hid::Kind::Mouse
+                                                                       : Hid::Kind::None;
+        const MouseLayout layout = kind == Hid::Kind::Keyboard ? MouseLayout() : MouseLayout::parse(descriptor);
+        if (kind == Hid::Kind::None && layout.isValid()) kind = Hid::Kind::Mouse; // in report protocol already
+        if (kind == Hid::Kind::None) return; // other report-protocol devices: later (devplan/input.md §8)
         Hid    *free = nullptr;
         uint8_t locks = 0;
         for (Hid &h : _hid) {
@@ -331,17 +335,35 @@ void UsbHost::hidMounted(uint8_t address, uint8_t instance) {
         free->kind = kind;
         free->address = address;
         free->instance = instance;
+        free->layout = layout;
+        free->reportProtocol = kind == Hid::Kind::Mouse && protocol == HID_ITF_PROTOCOL_NONE;
         {
                 Mutex::Locker lock(_lock, WaitForever);
                 ++(kind == Hid::Kind::Keyboard ? _stats.keyboards : _stats.mice);
         }
-        bmdsInfo("USB: %u: %s", address, kind == Hid::Kind::Keyboard ? "keyboard" : "mouse");
+        if (kind == Hid::Kind::Keyboard) {
+                bmdsInfo("USB: %u: keyboard", address);
+        } else {
+                bmdsInfo("USB: %u: mouse, %u buttons%s%s", address,
+                         unsigned(layout.isValid() ? layout.buttonCount() : 3u), layout.hasWheel() ? ", a wheel" : "",
+                         layout.isValid() ? "" : " (boot protocol)");
+                // To report protocol; decoded as boot reports until the device says it switched.
+                if (layout.isValid() && protocol == HID_ITF_PROTOCOL_MOUSE)
+                        (void)tuh_hid_set_protocol(address, instance, HID_PROTOCOL_REPORT);
+        }
         if (kind == Hid::Kind::Keyboard) {
                 free->keys.setLocks(locks);
                 free->leds = locks;
                 (void)tuh_hid_set_report(address, instance, 0, HID_REPORT_TYPE_OUTPUT, &free->leds, 1);
         }
         (void)tuh_hid_receive_report(address, instance);
+        return;
+}
+
+void UsbHost::hidProtocolSet(uint8_t address, uint8_t instance, uint8_t protocol) {
+        Hid *h = hid(address, instance);
+        if (h != nullptr && h->kind == Hid::Kind::Mouse)
+                h->reportProtocol = protocol == HID_PROTOCOL_REPORT && h->layout.isValid();
         return;
 }
 
@@ -367,6 +389,9 @@ void UsbHost::hidReport(uint8_t address, uint8_t instance, const uint8_t *data, 
         if (h != nullptr && h->kind == Hid::Kind::Keyboard) {
                 const auto now = static_cast<uint32_t>(System::uptimeUs() / 1000);
                 if (h->keys.report(Span<const uint8_t>(data, length), now, emitKey, this)) setLocks(h->keys.locks());
+        } else if (h != nullptr && h->kind == Hid::Kind::Mouse && h->reportProtocol) {
+                PointerEvent p;
+                if (h->layout.decode(Span<const uint8_t>(data, length), p)) Input::pointer(p); // else another ID's
         } else if (h != nullptr && h->kind == Hid::Kind::Mouse && length >= 3) {
                 // Boot mouse: buttons, x, y (signed), and a wheel byte on many.
                 PointerEvent p;
@@ -403,9 +428,15 @@ void tuh_umount_cb(uint8_t daddr) {
         return;
 }
 
-void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t idx, const uint8_t *, uint16_t) {
+void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t idx, const uint8_t *desc_report, uint16_t desc_len) {
         bmds::UsbHost *host = bmds::detail::activeUsbHost();
-        if (host != nullptr) host->hidMounted(dev_addr, idx);
+        if (host != nullptr) host->hidMounted(dev_addr, idx, bmds::Span<const uint8_t>(desc_report, desc_len));
+        return;
+}
+
+void tuh_hid_set_protocol_complete_cb(uint8_t dev_addr, uint8_t idx, uint8_t protocol) {
+        bmds::UsbHost *host = bmds::detail::activeUsbHost();
+        if (host != nullptr) host->hidProtocolSet(dev_addr, idx, protocol);
         return;
 }
 

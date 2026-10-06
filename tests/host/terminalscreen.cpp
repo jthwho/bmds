@@ -11,7 +11,9 @@
 
 #include <doctest.h>
 
+#include <cstdlib>
 #include <string>
+#include <vector>
 #include <bmds/terminalscreen.h>
 #include <bmds/utf8.h>
 
@@ -46,6 +48,20 @@ namespace {
                                 std::string         out;
                                 const TerminalCell *cells = screen.row(r);
                                 for (uint16_t c = 0; c < screen.columns(); ++c) {
+                                        if (cells[c].tail) continue;
+                                        char         utf8[4];
+                                        const size_t n = bmds::Utf8::encode(cells[c].codepoint, utf8);
+                                        out.append(utf8, n);
+                                }
+                                return out;
+                        }
+
+                        // History line @p i as UTF-8 (0: the oldest), as kept (no trailing blanks).
+                        std::string history(size_t i) const {
+                                std::string         out;
+                                uint16_t            length = 0;
+                                const TerminalCell *cells = screen.historyRow(i, length);
+                                for (uint16_t c = 0; c < length; ++c) {
                                         if (cells[c].tail) continue;
                                         char         utf8[4];
                                         const size_t n = bmds::Utf8::encode(cells[c].codepoint, utf8);
@@ -113,6 +129,164 @@ TEST_CASE("TerminalScreen: scrolling at the bottom moves rows") {
         CHECK(s.text() == "5   |    |    ");
         s.write("\x1b[T");
         CHECK(s.text() == "    |5   |    ");
+}
+
+TEST_CASE("TerminalScreen: the history keeps rows scrolled off the top of the primary screen") {
+        Screen s(4, 3);
+        CHECK(s.screen.historyCount() == 0);
+        s.write("0\r\n\r\n\r\n"); // no history asked for: none kept
+        CHECK(s.screen.historyCount() == 0);
+        CHECK(s.screen.historyAdded() == 0);
+        s.write("\x1b[2J\x1b[H");
+        REQUIRE(s.screen.setHistory(5).isOk());
+        s.write("1\r\n2\r\n3\r\n4\r\n5");
+        CHECK(s.text() == "3   |4   |5   ");
+        REQUIRE(s.screen.historyCount() == 2);
+        CHECK(s.history(0) == "1"); // without its trailing blanks
+        CHECK(s.history(1) == "2");
+        CHECK(s.screen.historyAdded() == 2);
+        // Past five lines, the oldest go.
+        s.write("\r\n6\r\n7\r\n8\r\n9\r\nA");
+        CHECK(s.text() == "8   |9   |A   ");
+        REQUIRE(s.screen.historyCount() == 5);
+        CHECK(s.history(0) == "3");
+        CHECK(s.history(4) == "7");
+        CHECK(s.screen.historyAdded() == 7);
+        // A scroll region below the top keeps none; nor does the alternate screen.
+        s.write("\x1b[2;3r\x1b[3;1H\r\nX\x1b[r");
+        CHECK(s.text() == "8   |A   |X   ");
+        s.write("\x1b[?1049h\r\n\r\n\r\n\r\n\x1b[?1049l");
+        CHECK(s.screen.historyAdded() == 7);
+        // SU at the top scrolls rows off too.
+        s.write("\x1b[S");
+        CHECK(s.screen.historyAdded() == 8);
+        CHECK(s.history(4) == "8");
+        CHECK(s.text() == "A   |X   |    ");
+        // A resize keeps the rows it drops from the top; lines keep their length. A colored
+        // blank is not a trailing blank.
+        s.write("\x1b[3;1HZ\x1b[41m \x1b[m");
+        REQUIRE(s.screen.resize(6, 2).isOk());
+        CHECK(s.text() == "X     |Z     ");
+        CHECK(s.screen.historyAdded() == 9);
+        REQUIRE(s.screen.historyCount() == 5);
+        CHECK(s.history(3) == "8");
+        CHECK(s.history(4) == "A");
+        s.write("\x1b[2;1H\r\n");
+        CHECK(s.history(4) == "X");
+        s.write("\r\n");
+        CHECK(s.history(4) == "Z ");
+        REQUIRE(s.screen.resize(2, 2).isOk());
+        CHECK(s.history(4) == "Z ");
+        // ED 3 empties it; the count of lines added goes on.
+        const uint32_t added = s.screen.historyAdded();
+        s.write("\x1b[2J\x1b[3J");
+        CHECK(s.screen.historyCount() == 0);
+        s.write("\x1b[2;1Hq\r\n\r\n"); // a blank row 0 scrolls off, then q
+        REQUIRE(s.screen.historyCount() == 2);
+        CHECK(s.history(0).empty());
+        CHECK(s.history(1) == "q");
+        CHECK(s.screen.historyAdded() == added + 2);
+        // A row erased in a color goes in whole; one erased plainly, empty.
+        s.write("\x1b[2;1H\x1b[41m\x1b[2K\x1b[m\r\n\r\n"); // the second pushes it
+        CHECK(s.history(s.screen.historyCount() - 1) == "  ");
+        // A new size empties it.
+        REQUIRE(s.screen.setHistory(1).isOk());
+        CHECK(s.screen.historyCount() == 0);
+        REQUIRE(s.screen.setHistory(0).isOk());
+        CHECK(s.screen.historyCount() == 0);
+}
+
+TEST_CASE("TerminalScreen: the history and the screen stay one sequence through scrolls, resizes and clears") {
+        Screen   s(160, 4);
+        uint32_t state = 12345;
+        auto     next = [&state](uint32_t limit) {
+                state = state * 1103515245u + 12345u;
+                return (state >> 8) % limit;
+        };
+        // Line N: its number, then a run of x's (145 characters at most: never wrapped; longer than
+        // the history's room a line on average, so lines are lost for their cells, not only their
+        // count).
+        auto lineOf = [](int n) {
+                return std::to_string(n) + std::string(size_t(n * 37 % 141), 'x');
+        };
+        REQUIRE(s.screen.setHistory(30).isOk()); // 1,920 cells for 30 lines of 72 on average
+        std::vector<std::string> model;          // every line written, in order; a quarter of them empty
+        for (int step = 0; step < 20000; ++step) {
+                const uint32_t op = next(40);
+                if (op == 0) {
+                        REQUIRE(s.screen.resize(uint16_t(150 + next(60)), uint16_t(1 + next(6))).isOk());
+                } else if (op == 1) {
+                        s.write("\x1b[3J");
+                } else if (op == 2) {
+                        s.write("\x1b[?1049hx\r\nx\r\nx\r\nx\r\nx\r\nx\r\n\x1b[?1049l");
+                } else if (op == 3) {
+                        REQUIRE(s.screen.setHistory(uint16_t(next(40))).isOk());
+                } else {
+                        model.push_back(next(4) == 0 ? std::string() : lineOf(int(model.size())));
+                        s.write(model.back() + "\r\n");
+                }
+                // The history, then the rows above the cursor: the newest lines written, in order.
+                std::vector<std::string> seen;
+                for (size_t i = 0; i < s.screen.historyCount(); ++i) seen.push_back(s.history(i));
+                for (uint16_t r = 0; r < s.screen.cursorRow(); ++r) {
+                        std::string row = s.row(r);
+                        row.erase(row.find_last_not_of(' ') + 1);
+                        seen.push_back(row);
+                }
+                bool ok = s.screen.cursorColumn() == 0 &&
+                          s.row(s.screen.cursorRow()).find_first_not_of(' ') == std::string::npos &&
+                          seen.size() <= model.size();
+                for (size_t i = 0; ok && i < seen.size(); ++i) ok &= seen[i] == model[model.size() - seen.size() + i];
+                REQUIRE(ok);
+        }
+        CHECK(model.size() > 15000);
+}
+
+TEST_CASE("TerminalScreen: a row goes into the history whole, however it was written") {
+        uint32_t state = 777;
+        auto     next = [&state](uint32_t limit) {
+                state = state * 1103515245u + 12345u;
+                return (state >> 8) % limit;
+        };
+        for (int trial = 0; trial < 500; ++trial) {
+                Screen s(20, 6);
+                REQUIRE(s.screen.setHistory(100).isOk());
+                for (int op = 0; op < 60; ++op) {
+                        switch (next(10)) {
+                                case 0:
+                                        s.write("\x1b[" + std::to_string(1 + next(6)) + ";" +
+                                                std::to_string(1 + next(20)) + "H");
+                                        break;
+                                case 1: s.write("\x1b[" + std::to_string(next(3)) + "K"); break;
+                                case 2: s.write("\x1b[" + std::to_string(next(2)) + "J"); break;
+                                case 3: s.write("\x1b[" + std::to_string(1 + next(5)) + "@"); break;
+                                case 4: s.write("\x1b[" + std::to_string(1 + next(5)) + "P"); break;
+                                case 5: s.write("\x1b[" + std::to_string(1 + next(5)) + "X"); break;
+                                case 6: s.write(next(2) == 0 ? "\x1b[41m" : "\x1b[m"); break;
+                                case 7: s.write("\xef\xbc\xa1"); break; // a wide character
+                                default: s.write(std::string(1 + next(6), char('a' + next(26)))); break;
+                        }
+                }
+                // Each row's cells up to its last that isn't a default blank.
+                std::vector<std::vector<TerminalCell>> rows;
+                for (uint16_t r = 0; r < 6; ++r) {
+                        const TerminalCell *cells = s.screen.row(r);
+                        uint16_t            n = 20;
+                        while (n > 0 && cells[n - 1] == TerminalCell()) --n;
+                        rows.emplace_back(cells, cells + n);
+                }
+                // All six scrolled off the top: the history's last six lines are them, whole.
+                s.write("\x1b[m\x1b[6;1H\n\n\n\n\n\n");
+                REQUIRE(s.screen.historyCount() >= 6);
+                bool ok = true;
+                for (uint16_t r = 0; r < 6; ++r) {
+                        uint16_t            length = 0;
+                        const TerminalCell *line = s.screen.historyRow(s.screen.historyCount() - 6 + r, length);
+                        ok &= length == rows[r].size();
+                        for (uint16_t c = 0; ok && c < length; ++c) ok &= line[c] == rows[r][c];
+                }
+                REQUIRE(ok);
+        }
 }
 
 TEST_CASE("TerminalScreen: scroll region, insert and delete lines") {

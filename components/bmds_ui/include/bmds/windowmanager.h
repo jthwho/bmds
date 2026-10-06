@@ -56,7 +56,10 @@ class Surface;
  * there. Focus is the top window: keys go to it (`devplan/input.md`), the
  * window manager being the input's sink while it runs. The mouse moves a
  * pointer drawn over everything, shaped by what is under it (a double arrow
- * over a resize handle): a press raises the window under it, on a title bar
+ * over a resize handle, the window's own shape over its client area), shown
+ * or hidden on request, and hidden while a window that asks for it is typed
+ * into, until the mouse moves again (§4h). The wheel goes to the window
+ * under the pointer (§4i). A press raises the window under it, on a title bar
  * starts a move (a double click maximizes or restores), on a handle a
  * resize, and on a button (released there) does what the button does.
  *
@@ -95,6 +98,23 @@ class WindowManager {
                  */
                 using Resized = void (*)(void *arg, uint16_t width, uint16_t height);
 
+                /**
+                 * @brief Takes the wheel turned over the window: @p notches, positive
+                 *        away from the user (on the window manager's task, locked: it
+                 *        must not call it).
+                 */
+                using Wheel = void (*)(void *arg, int notches);
+
+                /** @brief The pointer's shapes. Append only. */
+                enum class Pointer : uint8_t {
+                        Arrow,
+                        Horizontal,   ///< A double arrow: a left or right edge's resize.
+                        Vertical,     ///< A top or bottom edge's.
+                        DiagonalDown, ///< The top-left and bottom-right corners'.
+                        DiagonalUp,   ///< The top-right and bottom-left corners'.
+                        Text,         ///< An I-beam: text to select or type into.
+                };
+
                 /** @brief Looks at the screen (`capture()`). */
                 using Capture = void (*)(void *arg, const Surface &surface);
 
@@ -125,6 +145,9 @@ class WindowManager {
                                 uint8_t     decorations = WindowFrame::Standard; ///< `WindowFrame`'s flags.
                                 uint16_t    widthStep = 1;  ///< Resizing by hand: the client width in steps of this.
                                 uint16_t    heightStep = 1; ///< And its height.
+                                Pointer     pointer = Pointer::Arrow;       ///< The shape over the client area.
+                                bool        hidePointerWhileTyping = false; ///< Until the mouse moves again.
+                                Wheel       wheel = nullptr;                ///< May be null: the wheel ignored over it.
                 };
 
                 /** @brief A window, as `list()` reports it. */
@@ -265,6 +288,15 @@ class WindowManager {
                  */
                 Error capture(Capture fn, void *arg, unsigned int timeoutMs);
 
+                /**
+                 * @brief Shows or hides the pointer (it still moves and presses
+                 *        while hidden).
+                 */
+                void setPointerVisible(bool visible);
+
+                /** @brief Returns true unless the pointer was hidden by `setPointerVisible()`. */
+                bool isPointerVisible();
+
                 /** @brief Returns where the pointer is drawn (4-pixel columns), or an empty rectangle. */
                 Rect pointerArea();
 
@@ -299,7 +331,8 @@ class WindowManager {
 
                 /**
                  * @brief Waits until every change made before the call is drawn
-                 *        and (double-buffered) shown.
+                 *        and (double-buffered) shown, and every key queued before
+                 *        it delivered.
                  * @return `Ok`, `Timeout`, or `InvalidState`.
                  * @blocking
                  */
@@ -309,15 +342,6 @@ class WindowManager {
                 Stats stats();
 
         private:
-                /** @brief The pointer's pictures. */
-                enum class Shape : uint8_t {
-                        Arrow,
-                        Horizontal,
-                        Vertical,
-                        DiagonalDown,
-                        DiagonalUp
-                };
-
                 struct Window {
                                 char    title[MaxTitle + 1] = {};
                                 Redraw  redraw = nullptr;
@@ -330,6 +354,9 @@ class WindowManager {
                                 bool     maximized = false;
                                 uint16_t widthStep = 1; // a resize by hand's client steps
                                 uint16_t heightStep = 1;
+                                Pointer  pointer = Pointer::Arrow;
+                                bool     hideWhileTyping = false;
+                                Wheel    wheel = nullptr;
                 };
 
                 static constexpr size_t MaxPieces = 256;
@@ -344,7 +371,8 @@ class WindowManager {
                 void        release(uint16_t x, uint16_t y);
                 void        pressedMoved(uint16_t x, uint16_t y); // a button's press shown while over it
                 void        sizeTo(uint16_t x, uint16_t y);       // a resize under way: the outline there
-                Shape       shapeAt(uint16_t x, uint16_t y) const;
+                Pointer     shapeAt(uint16_t x, uint16_t y) const;
+                bool        isCursorDrawn() const { return _cursorShown && !_pointerHidden && !_typingHidden; }
                 void        act(uint8_t id, WindowFrame::Part part);
                 WindowFrame frame(uint8_t id, const Rect &outer) const;
                 void        drawCursor();
@@ -360,7 +388,7 @@ class WindowManager {
                 Error       outlineLocked(uint8_t id, const Rect &rect);
                 Error       dropLocked();
                 void        run();
-                void        round();
+                void        round(uint32_t requests);
                 void        drawPieces(Span<const ComposePiece> pieces);
                 void        drawLayer(size_t z, Span<const Rect> pieces);
                 void        drawUpdates(); // windows asking for an update and not drawn yet this round
@@ -399,7 +427,9 @@ class WindowManager {
                 uint8_t               _grabId = 0;          // its title bar pressed: moved while held
                 uint16_t              _grabX = 0;           // the press, from the window's corner
                 uint16_t              _grabY = 0;
-                Shape                 _shape = Shape::Arrow;
+                Pointer               _shape = Pointer::Arrow;
+                bool                  _pointerHidden = false; // by setPointerVisible()
+                bool                  _typingHidden = false;  // a key went to a window asking: until a move
                 uint8_t               _sizeId = 0;    // its resize handle pressed: resized while held
                 uint8_t               _sizeEdges = 0; // the edges it holds
                 Rect                  _sizeStart;     // the window at the press

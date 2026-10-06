@@ -56,6 +56,14 @@ static_assert(sizeof(TerminalCell) == 12);
  * Nothing allocates after `resize()`: the cells live in one allocation in
  * the `MemSpace` given at construction.
  *
+ * A history (scrollback) is kept when asked for (`setHistory()`, a second
+ * allocation): rows that scroll off the top of the primary screen, and those
+ * a resize drops from its top, are copied in without their trailing blank
+ * cells, so a short line costs a few cells, not a row (the screen's rows stay
+ * few and in the cache). It holds up to so many lines or `HistoryCellsPerLine`
+ * times as many cells (`MaxSide` at least: a line is never cut), the oldest
+ * lost first; a line keeps its length across resizes. `CSI 3 J` empties it (`devplan/windows.md` §4i).
+ *
  * @par Thread Safety
  * Not thread-safe: the owner serializes writes and the renderer's reads.
  */
@@ -63,6 +71,9 @@ class TerminalScreen final : private VtHandler {
         public:
                 /** @brief Receives replies to the program (status reports), for the input. */
                 using ReplySink = void (*)(void *context, StringView reply);
+
+                /** @brief The history's cells for each line it may hold (an average line's room). */
+                static constexpr size_t HistoryCellsPerLine = 64;
 
                 /** @brief Largest size `resize()` takes, either way. */
                 static constexpr uint16_t MaxSide = 1024;
@@ -82,6 +93,28 @@ class TerminalScreen final : private VtHandler {
                  *         screen is unchanged).
                  */
                 Error resize(uint16_t columns, uint16_t rows);
+
+                /**
+                 * @brief Keeps up to @p lines of history (0: none), emptied.
+                 * @return `Ok` or `NoMem` (no history then).
+                 */
+                Error setHistory(uint16_t lines);
+
+                /** @brief Returns the history lines kept. */
+                size_t historyCount() const { return _historyCount; }
+
+                /**
+                 * @brief Returns history line @p i (0: the oldest kept): @p length
+                 *        cells, the rest of the row blank (any width).
+                 */
+                const TerminalCell *historyRow(size_t i, uint16_t &length) const {
+                        const HistoryLine &line = _historyLines[(_historyHead + i) % _historyRoom];
+                        length = line.length;
+                        return _historyCells + line.start;
+                }
+
+                /** @brief Returns the lines ever added to the history (wraps): a view's anchor. */
+                uint32_t historyAdded() const { return _historyAdded; }
 
                 /** @brief Returns the width in cells. */
                 uint16_t columns() const { return _columns; }
@@ -147,6 +180,12 @@ class TerminalScreen final : private VtHandler {
                 }
 
         private:
+                // Where a history line's cells are.
+                struct HistoryLine {
+                                uint32_t start;
+                                uint16_t length;
+                };
+
                 // The cursor and what DECSC saves with it.
                 struct Cursor {
                                 uint16_t  column = 0;
@@ -192,6 +231,12 @@ class TerminalScreen final : private VtHandler {
                 void                softReset();
                 void                hardReset();
                 void                reply(StringView text);
+                void                pushHistory(const TerminalCell *row, uint16_t end);
+                // Where the stored row shown as @p row ends: no written cell past it.
+                uint16_t &endOf(uint8_t screen, uint16_t row) {
+                        return _rowEnd[size_t(screen) * _rows + _rowMap[screen][row]];
+                }
+                void dropOldestLine();
 
                 VtParser      _parser;
                 MemSpace      _space;
@@ -202,6 +247,7 @@ class TerminalScreen final : private VtHandler {
                 uint16_t     *_rowMap[2] = {};  // per screen: shown row → stored row
                 uint32_t     *_tabs = nullptr;  // a bit per column
                 uint32_t     *_dirty = nullptr; // a bit per row
+                uint16_t     *_rowEnd = nullptr; // per stored row: past it, default blank cells only
                 uint8_t       _screen = 0;      // 0 primary, 1 alternate
                 Cursor        _cursor;
                 Cursor        _saved[2]; // DECSC, per screen
@@ -213,6 +259,15 @@ class TerminalScreen final : private VtHandler {
                 bool          _applicationCursorKeys = false;
                 bool          _applicationKeypad = false;
                 bool          _bracketedPaste = false;
+                void         *_historyBlock = nullptr; // the history's allocation
+                HistoryLine  *_historyLines = nullptr; // a ring of _historyRoom lines, the oldest at the head
+                TerminalCell *_historyCells = nullptr; // their cells, written in turn, wrapping
+                uint32_t      _historyCellRoom = 0;
+                uint32_t      _historyWrite = 0; // where the next line's cells go
+                uint16_t      _historyRoom = 0;
+                uint16_t      _historyHead = 0;
+                uint16_t      _historyCount = 0;
+                uint32_t      _historyAdded = 0;
                 ReplySink     _replySink = nullptr;
                 void         *_replyContext = nullptr;
 };

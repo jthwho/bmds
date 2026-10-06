@@ -744,6 +744,54 @@ TEST_CASE("TerminalView: cells with defaults, attributes, wide characters and th
         CHECK(out[6].bg != 0x00ff00);
 }
 
+TEST_CASE("TerminalView: a view scrolled back shows history lines, then the screen's rows") {
+        using bmds::TerminalScreen;
+        using bmds::TerminalView::viewCursorRow;
+        using bmds::TerminalView::viewRow;
+        TerminalScreen screen(bmds::MemSpace::Psram);
+        REQUIRE(screen.resize(3, 2).isOk());
+        REQUIRE(screen.setHistory(10).isOk());
+        const char *text = "a\r\nb\r\nc\r\nd"; // a and b scroll off; c, d shown
+        screen.write(bmds::StringView(text));
+        REQUIRE(screen.historyCount() == 2);
+        auto first = [&](size_t offset, uint16_t row) {
+                uint16_t                  length = 0;
+                const bmds::TerminalCell *line = viewRow(screen, offset, row, length);
+                return length > 0 ? char(line[0].codepoint) : ' ';
+        };
+        CHECK(first(0, 0) == 'c');
+        CHECK(first(0, 1) == 'd');
+        CHECK(first(1, 0) == 'b');
+        CHECK(first(1, 1) == 'c');
+        CHECK(first(2, 0) == 'a');
+        CHECK(first(2, 1) == 'b');
+        CHECK(first(9, 0) == 'a'); // clamped to the history
+        CHECK(viewCursorRow(screen, 0) == 1);
+        CHECK(viewCursorRow(screen, 1) == -1); // scrolled below the view
+        screen.write(bmds::StringView("\x1b[H"));
+        CHECK(viewCursorRow(screen, 1) == 1);
+        screen.write(bmds::StringView("\x1b[?25l"));
+        CHECK(viewCursorRow(screen, 0) == -1);
+        // A history line padded to the width; a wide character cut at the edge blanked.
+        uint16_t                  length = 0;
+        const bmds::TerminalCell *line = viewRow(screen, 2, 0, length);
+        CHECK(length == 1);
+        bmds::TextCell out[8];
+        WindowPalette  p;
+        CHECK(bmds::TerminalView::cells(line, length, 3, p, -1, out, 8) == 3);
+        CHECK(out[0].codepoint == 'a');
+        CHECK(out[2].codepoint == ' ');
+        bmds::TerminalCell wide[3];
+        wide[0].codepoint = 'x';
+        wide[1].codepoint = 0xff21;
+        wide[1].wide = 1;
+        wide[2].tail = 1;
+        CHECK(bmds::TerminalView::cells(wide, 3, 3, p, -1, out, 8) == 2); // x, then the wide one
+        CHECK(out[1].codepoint == 0xff21);
+        CHECK(bmds::TerminalView::cells(wide, 3, 2, p, -1, out, 8) == 2); // cut: x and a blank
+        CHECK(out[1].codepoint == ' ');
+}
+
 TEST_CASE("Font: unscii-16") {
         const Font &font = bmds::Fonts::unscii16;
         CHECK(font.width() == 8);

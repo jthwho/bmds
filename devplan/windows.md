@@ -435,6 +435,60 @@ The first of step 8's affordances. Resize handles, pointer shapes, the wheel and
 - **Cost:** shapes are rodata pictures; the state is a resize's start (a rectangle, edges and the
   press) and two step sizes per window. The same outline drawing as a move.
 
+## 4h. Step 8c design: pointer control (2026-10-05; built)
+
+- **Shown or hidden on request:** `setPointerVisible()`. A hidden pointer still moves and still
+  presses (its place is kept); only its drawing stops, and what it covered is redrawn. `win
+  pointer on|off`.
+- **Hidden while typing:** a window opened with `WindowConfig::hidePointerWhileTyping` hides the
+  pointer when a key goes to it (a press or repeat of anything but a modifier or a lock key), and
+  the pointer comes back at the next motion or button change. The terminal asks for it.
+- **A window's pointer shape:** `WindowConfig::pointer` sets the shape over the client area. The
+  shapes become a public enum, `WindowManager::Pointer` (append only): the arrow, the four resize
+  shapes, and a text I-beam. The terminal shows the I-beam.
+- **`win key TEXT`** (a test aid like `win pointer`): each character sent through the window
+  manager as a keyboard would send it (press, then release, with the usage and modifiers a US
+  keyboard needs, and the same escapes as `win type`), so the keyboard path (focus, the terminal's
+  key encoding, the hiding) is testable from a script.
+- **`win check`** already leaves the pointer's area out; a hidden pointer has none, so every pixel
+  is checked.
+
+## 4i. Step 8d design: the mouse wheel and a terminal's scrollback (2026-10-05; built)
+
+- **The wheel goes to the window under the pointer**, not the focus (`WindowConfig::wheel`, a
+  callback with the notches: positive away from the user). It also brings back a pointer hidden
+  by typing. `win pointer DX DY [BUTTONS [WHEEL]]` gains the wheel (an optional argument appended).
+- **Scrollback lives in `TerminalScreen`** (`bmds_console`, host-tested): `setHistory(lines)`
+  gives it a second allocation in its `MemSpace`. Rows that scroll off the top of the primary
+  screen (a scroll region starting at row 0), and rows a resize drops from its top, are copied in
+  **without their trailing blank cells**: a ring of cells written in turn (a line in one piece,
+  from the start when it doesn't fit before the end) and a ring of lines (where each starts, how
+  long). It holds `lines` lines or 64 times as many cells (1,024 at least, so a line is never
+  cut), the oldest lost first. A line keeps its length across resizes; the view pads or cuts it.
+  The alternate screen (full-screen programs) keeps none, as in xterm. `ED 3` (`CSI 3 J`) empties
+  it. `historyCount()`, `historyRow(i, length)`, and `historyAdded()` (lines added ever, for a
+  view that stays on the same lines).
+- **Why compact, measured:** the screen's rows (36 KB at 100 × 30, both screens 72 KB) stay in
+  the cache while they rotate; a history that copies or swaps whole rows touches a new 1.2 KB of
+  PSRAM every line. Copying whole rows into a ring cost 15 µs a line in the screen model (45 ms
+  for 3,000 lines over a 69 ms model); swapping rows into the ring by pointer instead wasn't
+  better end to end (`time seq 1 3000` into a shown terminal: 0.70 s against HEAD's 0.50 s).
+  Even finding where a line ends cost the cache misses: the scan reads the whole row from its
+  end. So the screen keeps, per stored row, where its written cells end (an upper bound kept by
+  every write and erase: colored blanks are written cells), and a push reads only those cells.
+- **The view:** the terminal keeps how far it is scrolled back. `TerminalView::viewRow()` (pure,
+  host-tested) maps a shown row to a history line or a screen row, and `cells()` pads a line to
+  the width and blanks a wide character cut at the edge. While scrolled back, new output keeps
+  the view on the same lines (moved by `historyAdded()`), and every row is redrawn on any change;
+  at the bottom, drawing is as before (dirty rows only). The cursor shows only where its row is in
+  view. A key that sends anything returns to the bottom; Shift+Page Up and Shift+Page Down scroll
+  a page and aren't sent.
+- **On the alternate screen** the wheel sends Up and Down arrow keys instead (xterm's alternate
+  scroll), so `less` and `vi` scroll with it. Three lines a notch either way.
+- **Memory:** 1,000 lines a terminal (64,000 cells: 768 KB, and 8 KB of line records, in PSRAM),
+  allocated when its window first opens. `win check` draws a terminal from the same view,
+  scrolled back or not; `win dump` adds a line with the history's size and the view's place.
+
 ## 5. Budgets (estimates; measured as the steps land)
 
 At 720p:
@@ -508,13 +562,13 @@ ones once it exists.
      changeable.
    - **Title-bar buttons** (done, §4f): minimize, maximize and close on the right; the button on
      the left becomes the window's menu once there are context menus.
-   - **Resize handles** (done, §4g) on the frame's edges and corners, with the pointer's shape changing over
-     them (and over other hot spots); an outline resize like the outline move; a window told
-     its new size (a terminal resizes its screen, `SIGWINCH`).
-   - **Pointer control:** shown or hidden on request; a window can ask for it to hide while it
-     is typed into and to come back on the next move (the terminal does).
-   - **Mouse wheel:** delivered to the window under the pointer; the terminal scrolls back
-     through its history with it (needs a scrollback in `TerminalScreen`).
+   - **Resize handles** (done, §4g) on the frame's edges and corners, with the pointer's shape
+     changing over them (and over other hot spots); an outline resize like the outline move; a
+     window told its new size (a terminal resizes its screen, `SIGWINCH`).
+   - **Pointer control** (done, §4h): shown or hidden on request; a window can ask for it to
+     hide while it is typed into and to come back on the next move (the terminal does).
+   - **Mouse wheel** (done, §4i): delivered to the window under the pointer; the terminal
+     scrolls back through its history with it (needs a scrollback in `TerminalScreen`).
    - **Context menus:** a right click on the desktop opens one that starts programs (a terminal
      first), the title bar's left button opens the window's.
    - **A panel along the top:** a program launcher button and a list of the windows (minimized
@@ -670,3 +724,40 @@ ones once it exists.
     mid-resize.
   - Size: the window manager's code and rodata grew by 2,634 bytes (the five pictures among
     them) and its `.bss` by 80.
+- **Step 8c** (2026-10-05): pointer control (§4h).
+  - `WindowManager::Pointer` is public (the five shapes of 8b and an I-beam, `Text`);
+    `setPointerVisible()`; `WindowConfig::pointer` and `hidePointerWhileTyping`, both taken by the
+    terminal. `win pointer on|off` and `win key TEXT` (a US keyboard's usages and modifiers for
+    each byte, a press and a release, through the window manager's queue, synced every 8 keys so
+    the 32-event queue doesn't overflow); `win type`'s escapes are shared with it.
+  - On the board: over the terminal's text the pointer is the I-beam; `win key 'echo hi from
+    keys\r'` ran the command through the keyboard path and hid the pointer (`win check` then
+    compared all 921,600 pixels: 0 wrong); a 1-pixel move brought it back. Hidden with `win
+    pointer off`, it stayed hidden while moved (0 wrong of all pixels) and came back with `on`.
+    `^C` typed with `win key` stopped `sleep 30`.
+  - Size: the window manager's code and rodata grew by 486 bytes (the I-beam among them) and
+    its `.bss` by 16.
+- **Step 8d** (2026-10-05): the mouse wheel and a terminal's scrollback (§4i).
+  - Host-tested: the history's rules (what goes in, the alternate screen and lower scroll regions
+    keeping none, resizes, `ED 3`, colored blanks kept); 20,000 random steps (scrolling, resizes,
+    clears, alternate-screen excursions, history sizes, a quarter of the lines empty, lines up to
+    145 cells so the cells run out before the lines do) against a model of every line written; 500
+    random screens (printing, wide characters, erasing in and out of color, inserting and deleting
+    cells) whose rows must reach the history whole. Each rule was checked by breaking it on
+    purpose: letting an empty line stop the eviction scan, skipping the wrap's eviction, not
+    counting a colored erase or an insertion in a row's end all fail the tests. One run caught a
+    real bug: an empty line (no cells) at the write point was dropped by the next line.
+  - On the board: the wheel over the terminal scrolled back three lines a notch and forward again;
+    output arriving while scrolled back kept the view on the same lines (6 back became 8 back as
+    two lines came); maximized while scrolled back, the history lines were padded to 159 columns;
+    a key returned to the bottom. In `vi` the wheel moved the cursor (arrow keys), and `vi` quit
+    back to the shell's screen with its history. `win check` found 0 wrong pixels in each state.
+  - `time seq 1 3000` into a shown 100 × 30 terminal: 0.51 s (eight runs of ten; two 0.45 s)
+    against 0.50 s before (ten of ten). The screen model alone: 73.9 ms for 3,000 lines with the
+    history full against 70.6 ms without (1.1 µs a line).
+  - A bug found on the way, and fixed: `win key` lost characters past the 24th now and then. A
+    queued key wasn't counted as a change, so `sync()` (which `win key` waits on every 8 keys)
+    returned before the keys were delivered and the 32-event queue overflowed. Keys now count, and
+    a round takes the count before it delivers them.
+  - Size (with step 8c): `bmds_ui` 1,806 bytes more flash and 272 more `.bss`; `bmds_console`
+    1,072 more code.

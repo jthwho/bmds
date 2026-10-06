@@ -23,6 +23,7 @@
 #include <bmds/display.h>
 #include <bmds/font.h>
 #include <bmds/glyphrenderer.h>
+#include <bmds/keyboarddecoder.h>
 #include <bmds/memory.h>
 #include <bmds/shell.h>
 #include <bmds/system.h>
@@ -476,11 +477,14 @@ namespace {
                         const TerminalScreen &screen = locked.screen();
                         TextCell              row[Terminal::MaxColumns];
                         for (uint16_t r = 0; r < screen.rows(); ++r) {
-                                const int    cursor = screen.isCursorVisible() && r == screen.cursorRow()
-                                                              ? screen.cursorColumn()
-                                                              : -1;
-                                const size_t cells =
-                                        TerminalView::row(screen, r, palette, cursor, row, Terminal::MaxColumns);
+                                // As the terminal shows it: scrolled back, maybe.
+                                const size_t offset = term->scrollback();
+                                const int    cursor =
+                                        TerminalView::viewCursorRow(screen, offset) == r ? screen.cursorColumn() : -1;
+                                uint16_t            length = 0;
+                                const TerminalCell *line = TerminalView::viewRow(screen, offset, r, length);
+                                const size_t        cells = TerminalView::cells(line, length, screen.columns(), palette,
+                                                                                cursor, row, Terminal::MaxColumns);
                                 size_t used = 0;
                                 (void)reference.drawCells(Span<const TextCell>(row, cells), Fonts::unscii16,
                                                           images[i] + size_t(r) * 16 * stride, stride,
@@ -698,13 +702,11 @@ namespace {
         }
 
         // win type N TEXT...: typed into window N's terminal; C escapes and ^X controls.
-        int runType(CommandContext &ctx, Args args) {
-                Terminal *term = terminalIn(ctx, args[2]);
-                if (term == nullptr) return Shell::ExitFailure;
-                uint8_t buf[256];
-                size_t  n = 0;
-                for (size_t a = 3; a < args.size(); ++a) {
-                        if (a > 3 && n < sizeof(buf)) buf[n++] = ' ';
+        // The bytes of args[from...], joined by spaces: C escapes (\\n \\r \\t \\e \\xHH) and ^X controls.
+        size_t typed(Args args, size_t from, uint8_t (&buf)[256]) {
+                size_t n = 0;
+                for (size_t a = from; a < args.size(); ++a) {
+                        if (a > from && n < sizeof(buf)) buf[n++] = ' ';
                         for (const char *p = args[a]; *p != '\0' && n < sizeof(buf); ++p) {
                                 char c = *p;
                                 if (c == '^' && p[1] >= '@' && p[1] <= '_') {
@@ -729,9 +731,68 @@ namespace {
                                 buf[n++] = static_cast<uint8_t>(c);
                         }
                 }
+                return n;
+        }
+
+        int runType(CommandContext &ctx, Args args) {
+                Terminal *term = terminalIn(ctx, args[2]);
+                if (term == nullptr) return Shell::ExitFailure;
+                uint8_t      buf[256];
+                const size_t n = typed(args, 3, buf);
                 const size_t taken = term->console().pushInput(ByteSpan(buf, n));
                 if (taken < n) ctx.eprintf("win: input full: %u of %u bytes typed\n", unsigned(taken), unsigned(n));
                 return taken == n ? Shell::ExitSuccess : Shell::ExitFailure;
+        }
+
+        // The key a US keyboard types @p c with: its usage and modifiers. False: none does.
+        bool keyFor(uint8_t c, uint8_t &usage, uint8_t &modifiers) {
+                modifiers = 0;
+                switch (c) {
+                        case '\r':
+                        case '\n': usage = HidKey::Enter; return true;
+                        case '\t': usage = HidKey::Tab; return true;
+                        case 0x1b: usage = HidKey::Escape; return true;
+                        case 0x7f: usage = HidKey::Backspace; return true;
+                        default: break;
+                }
+                if (c >= 1 && c <= 26) { // ^A..^Z
+                        usage = static_cast<uint8_t>(HidKey::A + c - 1);
+                        modifiers = KeyEvent::LeftCtrl;
+                        return true;
+                }
+                for (const uint8_t mods : {uint8_t(0), uint8_t(KeyEvent::LeftShift)})
+                        for (uint8_t u = HidKey::A; u <= HidKey::NonUsBackslash; ++u)
+                                if (Keymap::us(u, mods, 0) == c) {
+                                        usage = u;
+                                        modifiers = mods;
+                                        return true;
+                                }
+                return false;
+        }
+
+        // win key TEXT...: typed as a keyboard would, through the window manager (to the focus).
+        int runKey(CommandContext &ctx, WindowManager &wm, Args args) {
+                uint8_t      buf[256];
+                const size_t n = typed(args, 2, buf);
+                for (size_t i = 0; i < n; ++i) {
+                        KeyEvent e;
+                        if (!keyFor(buf[i], e.usage, e.modifiers)) {
+                                ctx.eprintf("win: no key types 0x%02x\n", buf[i]);
+                                return Shell::ExitFailure;
+                        }
+                        e.codepoint = Keymap::us(e.usage, e.modifiers, 0);
+                        e.action = KeyEvent::Action::Press;
+                        wm.key(e);
+                        e.action = KeyEvent::Action::Release;
+                        e.codepoint = 0;
+                        wm.key(e);
+                        // Delivered a few at a time: the queue holds KeyQueue events.
+                        if (i % 8 == 7) {
+                                const Error err = wm.sync(SyncTimeoutMs);
+                                if (err.isError()) return report(ctx, err);
+                        }
+                }
+                return report(ctx, wm.sync(SyncTimeoutMs));
         }
 
         // win dump N: window N's terminal screen as text, the cursor's place.
@@ -754,6 +815,8 @@ namespace {
                 }
                 ctx.printf("cursor:   row %u, column %u%s\n", screen.cursorRow(), screen.cursorColumn(),
                            screen.isCursorVisible() ? "" : " (hidden)");
+                ctx.printf("history:  %u lines, the view %u back\n", unsigned(screen.historyCount()),
+                           unsigned(term->scrollback()));
                 return Shell::ExitSuccess;
         }
 
@@ -873,9 +936,15 @@ namespace {
                                            static_cast<unsigned long>(testWindows[id - 1].scrollUs));
                         return report(ctx, e);
                 }
-                if ((args.size() == 4 || args.size() == 5) && std::strcmp(what, "pointer") == 0) {
-                        // As a mouse: motion, then the buttons (a mask) down after it.
-                        long v[3] = {};
+                if (args.size() == 3 && std::strcmp(what, "pointer") == 0) {
+                        if (std::strcmp(args[2], "on") != 0 && std::strcmp(args[2], "off") != 0) return ctx.usage();
+                        wm->setPointerVisible(args[2][1] == 'n');
+                        return report(ctx, wm->sync(SyncTimeoutMs));
+                }
+                if (args.size() >= 3 && std::strcmp(what, "key") == 0) return runKey(ctx, *wm, args);
+                if (args.size() >= 4 && args.size() <= 6 && std::strcmp(what, "pointer") == 0) {
+                        // As a mouse: motion, then the buttons (a mask) down after it, and the wheel.
+                        long v[4] = {};
                         for (size_t i = 2; i < args.size(); ++i) {
                                 char *end = nullptr;
                                 v[i - 2] = std::strtol(args[i], &end, 0);
@@ -886,6 +955,8 @@ namespace {
                         e.dx = static_cast<int16_t>(v[0]);
                         e.dy = static_cast<int16_t>(v[1]);
                         e.buttons = static_cast<uint8_t>(v[2]);
+                        if (v[3] < -127 || v[3] > 127) return ctx.usage();
+                        e.wheel = static_cast<int8_t>(v[3]);
                         wm->pointer(e);
                         const Error err = wm->sync(SyncTimeoutMs);
                         const Rect  at = wm->pointerArea();
@@ -943,10 +1014,13 @@ BMDS_SHELL_COMMAND(
         win, runWin,
         "[start [RRGGBB]|stop|list|new [X Y W H] [TITLE]|close N|raise N|move N X Y|drag N X Y|"
         "term [N]|type N TEXT|dump N|scroll N DY|textbench N|color [ROLE RRGGBB]|check|stats|shuffle N|bench [CELLS]|"
-        "pointer DX DY [BUTTONS]|decorate N [all|none|+NAME|-NAME...]|minimize N|maximize N|restore N|resize N W H]",
+        "pointer DX DY [BUTTONS [WHEEL]]|decorate N [all|none|+NAME|-NAME...]|minimize N|maximize N|restore N|"
+        "resize N W H|pointer on/off|key TEXT]",
         "The desktop and its windows on display 0: 'new' opens a test window, 'drag' moves one "
         "as an outline, 'color' lists or sets the palette, 'check' compares every pixel with the stack, "
-        "'pointer' moves the pointer as a mouse would (BUTTONS: 1 left, 2 right, 4 middle), "
+        "'pointer' moves the pointer as a mouse would (BUTTONS: 1 left, 2 right, 4 middle; WHEEL: notches, "
+        "positive away), "
+        "'key' types TEXT as a keyboard would (escapes as 'type'), "
         "'decorate' sets a window's frame (border, title, menu, minimize, maximize, close, resize)")
 
 BMDS_NAMESPACE_END

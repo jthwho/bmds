@@ -22,16 +22,36 @@ namespace TerminalView {
 
         size_t row(const TerminalScreen &screen, uint16_t row, const WindowPalette &palette, int cursor, TextCell *out,
                    size_t max) {
+                return TerminalView::cells(screen.row(row), screen.columns(), screen.columns(), palette, cursor, out,
+                                           max);
+        }
+
+        const TerminalCell *viewRow(const TerminalScreen &screen, size_t offset, uint16_t row, uint16_t &length) {
+                const size_t history = screen.historyCount();
+                const size_t at = history - (offset < history ? offset : history) + row; // in history, then screen
+                if (at < history) return screen.historyRow(at, length);
+                length = screen.columns();
+                return screen.row(static_cast<uint16_t>(at - history));
+        }
+
+        int viewCursorRow(const TerminalScreen &screen, size_t offset) {
+                const size_t history = screen.historyCount();
+                const size_t shown = screen.cursorRow() + (offset < history ? offset : history);
+                return screen.isCursorVisible() && shown < screen.rows() ? int(shown) : -1;
+        }
+
+        size_t cells(const TerminalCell *cells, uint16_t length, uint16_t columns, const WindowPalette &palette,
+                     int cursor, TextCell *out, size_t max) {
                 using Role = WindowPalette::Role;
-                const uint32_t      text = palette.color(Role::TerminalText);
-                const uint32_t      back = palette.color(Role::TerminalBackground);
-                const TerminalCell *cells = screen.row(row);
-                const uint16_t      columns = screen.columns();
+                const uint32_t     text = palette.color(Role::TerminalText);
+                const uint32_t     back = palette.color(Role::TerminalBackground);
+                const TerminalCell blank;
                 // The cursor on a wide character's tail: on the character.
-                if (cursor > 0 && cursor < columns && cells[cursor].tail != 0) --cursor;
+                if (cursor > 0 && cursor < length && cursor < columns && cells[cursor].tail != 0) --cursor;
                 size_t n = 0;
                 for (uint16_t c = 0; c < columns && n < max; ++c) {
-                        const TerminalCell &cell = cells[c];
+                        const bool          cut = c + 1 == columns && c < length && cells[c].wide != 0;
+                        const TerminalCell &cell = c < length && !cut ? cells[c] : blank;
                         if (cell.tail != 0) continue;
                         const uint8_t a = static_cast<uint8_t>(cell.attributes);
                         uint32_t      fg = rgb(cell.foreground, text);

@@ -121,6 +121,29 @@ wm task, each round: drain keys ─► focused window's key callback (Terminal �
   the 2D-DMA, invalidate the cache lines under it, write, write back, mark the tiles drawn
   (double buffering copies them forward).
 
+## 5a. Report-protocol mice (2026-10-05, the wheel didn't work; built)
+
+- **The finding:** the user's mouse sends no wheel in boot protocol. A boot mouse report is only
+  required to be 3 bytes (buttons, x, y); a wheel is a fourth byte on some mice and absent on
+  others. TinyUSB sets every boot interface to boot protocol while enumerating, so a wheel was
+  only ever seen on mice that add it there. The wheel was tested only with injected events.
+- **The fix:** mice are switched to report protocol, and their reports decoded by the layout
+  their report descriptor gives (TinyUSB hands the descriptor to the mount callback; its 256-byte
+  enumeration buffer bounds it).
+- **`MouseLayout` (pure, host-tested, `bmds_input`):** a parser of the descriptor's short items
+  (the global state with push and pop, the local usages, usage ranges and extended usages, the
+  main items) that finds the first application collection of a mouse (Generic Desktop, Mouse)
+  and in it, for input reports, the buttons (the Button page, up to 8), X, Y and the wheel
+  (Generic Desktop 0x38): each field's report ID, bit offset, size and sign. `decode()` turns a
+  report with that ID into a `PointerEvent` (values clamped to the event's ranges); a report with
+  another ID (a keyboard's or media keys' in the same interface) is not the mouse's.
+- **On mount:** a boot mouse whose descriptor parses (X and Y found) is set to report protocol,
+  and decoded by its layout once the switch is confirmed; until then, or when the descriptor
+  doesn't parse, it is decoded as before. A HID interface that isn't a boot device but whose
+  descriptor has a mouse collection (some gaming mice) is used too (it is in report protocol
+  already). Keyboards stay in boot protocol.
+- **Cost:** a layout is about 40 bytes, one per HID slot (8); parsing runs once per mount.
+
 ## 6. Resource budget (estimates; measured as the steps land)
 
 | What | Where | Estimate / measured |
@@ -146,8 +169,7 @@ wm task, each round: drain keys ─► focused window's key callback (Terminal �
 ## 8. Later
 
 - DMA mode for bulk devices (storage), with the cache maintenance TinyUSB's ESP32 port has.
-- Report-protocol HID (a report descriptor parser): wheels on mice that only report them
-  there, media keys, game controllers.
+- Report-protocol HID beyond mice (§5a did mice): media keys, game controllers.
 - Layouts beyond US; a `keymap` command and a setting.
 - An input ABI for programs (raw key and pointer events, e.g. for a game or a paint program),
   and pointer events for windows' client areas.
@@ -193,3 +215,9 @@ wm task, each round: drain keys ─► focused window's key callback (Terminal �
   tests; `win check` skips the pointer's area and stays at 0 wrong pixels with it shown.
   Verified with the user's mouse: drags and raises through 1,503 reports.
 - **Step 4, screenshots:** `display.md` §5d.
+- **Report-protocol mice** (§5a, 2026-10-05): `MouseLayout` (`bmds_input`, pure). Host-tested
+  with a classic wheel mouse's descriptor, a receiver's (a keyboard with report ID 1 before a
+  mouse with ID 2: 16 buttons, 12-bit X and Y, a wheel, AC Pan; the keyboard's reports refused),
+  the same mouse with 4-byte usages, every truncation of a descriptor, and 20,000 random ones.
+  On the board the user's Logitech mouse (046d:c077, low speed) mounts as "3 buttons, a wheel"
+  and is switched to report protocol; the wheel needs the user's hand to confirm.

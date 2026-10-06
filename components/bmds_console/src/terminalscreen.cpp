@@ -9,6 +9,7 @@
  */
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
 #include <new>
 #include <bmds/memory.h>
@@ -48,6 +49,83 @@ namespace {
 
 TerminalScreen::~TerminalScreen() {
         Memory::free(_block);
+        Memory::free(_historyBlock);
+        return;
+}
+
+Error TerminalScreen::setHistory(uint16_t lines) {
+        Memory::free(_historyBlock);
+        _historyBlock = nullptr;
+        _historyLines = nullptr;
+        _historyCells = nullptr;
+        _historyRoom = 0;
+        _historyCellRoom = 0;
+        _historyHead = 0;
+        _historyCount = 0;
+        _historyWrite = 0;
+        if (lines == 0) return Error::Ok;
+        // Room for the longest row at least: a line is never cut.
+        const size_t cells = std::max<size_t>(size_t(lines) * HistoryCellsPerLine, MaxSide);
+        const size_t lineBytes = (size_t(lines) * sizeof(HistoryLine) + 3) & ~size_t(3);
+        void        *block = Memory::alloc(_space, lineBytes + cells * sizeof(TerminalCell));
+        if (block == nullptr) return Error::NoMem;
+        _historyBlock = block;
+        _historyLines = static_cast<HistoryLine *>(block);
+        _historyCells = reinterpret_cast<TerminalCell *>(static_cast<uint8_t *>(block) + lineBytes);
+        _historyRoom = lines;
+        _historyCellRoom = static_cast<uint32_t>(cells);
+        return Error::Ok;
+}
+
+void TerminalScreen::dropOldestLine() {
+        _historyHead = static_cast<uint16_t>((_historyHead + 1) % _historyRoom);
+        --_historyCount;
+        return;
+}
+
+// A row leaving the top of the primary screen, into the history without its trailing blank
+// cells: its cells in one piece after the last line's (from the start when they don't fit
+// before the end), the lines whose cells they overwrite (the oldest) dropped.
+void TerminalScreen::pushHistory(const TerminalCell *row, uint16_t end) {
+        if (_historyRoom == 0) return;
+        // Its trailing blank cells left out, compared as three words inline (operator== goes field by
+        // field, and memcmp is a call a cell: both several times slower over a row of blanks).
+        struct Words {
+                        uint32_t w[3];
+        };
+        static_assert(sizeof(Words) == sizeof(TerminalCell));
+        constexpr Words blank = std::bit_cast<Words>(TerminalCell());
+        uint32_t        n = end; // past it, blank: only the cells written are read
+        while (n > 0) {
+                const Words c = std::bit_cast<Words>(row[n - 1]);
+                if (c.w[0] != blank.w[0] || c.w[1] != blank.w[1] || c.w[2] != blank.w[2]) break;
+                --n;
+        }
+        if (_historyCount == _historyRoom) dropOldestLine();
+        // Drops the oldest lines through the last that @p hits (in order; the empty lines, which
+        // hold no cells, go only with older ones).
+        auto dropThrough = [this](auto hits) {
+                int last = -1;
+                for (uint16_t i = 0; i < _historyCount; ++i) {
+                        const HistoryLine &line = _historyLines[(_historyHead + i) % _historyRoom];
+                        if (line.length == 0) continue;
+                        if (!hits(line)) break;
+                        last = i;
+                }
+                for (int i = 0; i <= last; ++i) dropOldestLine();
+        };
+        uint32_t at = _historyWrite;
+        if (at + n > _historyCellRoom) {
+                // Wrapping: the lines after the write point (the oldest) go first.
+                dropThrough([at](const HistoryLine &line) { return line.start >= at; });
+                at = 0;
+        }
+        dropThrough([at, n](const HistoryLine &line) { return line.start < at + n && line.start + line.length > at; });
+        if (n > 0) std::memcpy(static_cast<void *>(_historyCells + at), row, n * sizeof(TerminalCell));
+        _historyLines[(_historyHead + _historyCount) % _historyRoom] = HistoryLine{at, static_cast<uint16_t>(n)};
+        ++_historyCount;
+        _historyWrite = at + n;
+        ++_historyAdded;
         return;
 }
 
@@ -57,7 +135,8 @@ Error TerminalScreen::resize(uint16_t columns, uint16_t rows) {
         const size_t mapBytes = (size_t(rows) * 2 * sizeof(uint16_t) + 3) & ~size_t(3);
         const size_t tabBytes = words(columns) * sizeof(uint32_t);
         const size_t dirtyBytes = words(rows) * sizeof(uint32_t);
-        void        *block = Memory::alloc(_space, cellBytes + mapBytes + tabBytes + dirtyBytes);
+        const size_t endBytes = size_t(rows) * 2 * sizeof(uint16_t);
+        void        *block = Memory::alloc(_space, cellBytes + mapBytes + tabBytes + dirtyBytes + endBytes);
         if (block == nullptr) return Error::NoMem;
 
         uint8_t      *bytes = static_cast<uint8_t *>(block);
@@ -66,12 +145,16 @@ Error TerminalScreen::resize(uint16_t columns, uint16_t rows) {
         const size_t  count = size_t(columns) * rows * 2;
         for (size_t i = 0; i < count; ++i) new (&cells[i]) TerminalCell();
         for (uint16_t r = 0; r < rows; ++r) maps[r] = maps[rows + r] = r;
+        auto *ends = reinterpret_cast<uint16_t *>(bytes + cellBytes + mapBytes + tabBytes + dirtyBytes);
+        for (uint32_t r = 0; r < uint32_t(rows) * 2; ++r) ends[r] = 0;
 
         // Each screen keeps its top-left; when rows go, the top ones go
         // first, as far as keeping its cursor's row on the screen needs.
         for (uint8_t s = 0; s < 2; ++s) {
                 Cursor        &cursor = s == _screen ? _cursor : _saved[s];
                 const uint16_t drop = cursor.row >= rows ? static_cast<uint16_t>(cursor.row - rows + 1) : 0;
+                if (_cells != nullptr && s == 0)
+                        for (uint16_t r = 0; r < drop; ++r) pushHistory(rowOf(0, r), endOf(0, r)); // off the top: kept
                 if (_cells != nullptr) {
                         const uint16_t keepRows = static_cast<uint16_t>(std::min<int>(rows, _rows - drop));
                         const uint16_t keepColumns = std::min(columns, _columns);
@@ -80,6 +163,8 @@ Error TerminalScreen::resize(uint16_t columns, uint16_t rows) {
                                 std::memcpy(to, rowOf(s, static_cast<uint16_t>(r + drop)),
                                             keepColumns * sizeof(TerminalCell));
                                 if (to[keepColumns - 1].wide) to[keepColumns - 1] = TerminalCell();
+                                ends[size_t(s) * rows + r] =
+                                        std::min(endOf(s, static_cast<uint16_t>(r + drop)), keepColumns);
                         }
                 }
                 cursor.row = static_cast<uint16_t>(std::min<int>(cursor.row - drop, rows - 1));
@@ -98,6 +183,7 @@ Error TerminalScreen::resize(uint16_t columns, uint16_t rows) {
         _rowMap[1] = maps + rows;
         _tabs = reinterpret_cast<uint32_t *>(bytes + cellBytes + mapBytes);
         _dirty = reinterpret_cast<uint32_t *>(bytes + cellBytes + mapBytes + tabBytes);
+        _rowEnd = ends;
         _columns = columns;
         _rows = rows;
         _top = 0;
@@ -191,6 +277,8 @@ void TerminalScreen::put(uint32_t codepoint, int width) {
                 c.tail = 1;
                 cells[column + 1] = c;
         }
+        uint16_t &end = endOf(_screen, row);
+        end = std::max(end, static_cast<uint16_t>(column + width));
         markDirty(row);
         if (column + width >= _columns) {
                 _cursor.column = static_cast<uint16_t>(_columns - 1);
@@ -261,6 +349,8 @@ void TerminalScreen::reverseIndex() {
 void TerminalScreen::scrollUp(uint16_t top, uint16_t bottom, uint16_t count) {
         count = std::min(count, static_cast<uint16_t>(bottom - top + 1));
         if (count == 0) return;
+        if (_screen == 0 && top == 0)
+                for (uint16_t r = 0; r < count; ++r) pushHistory(line(r), endOf(_screen, r)); // off the top: kept
         uint16_t *map = _rowMap[_screen];
         std::rotate(map + top, map + top + count, map + bottom + 1);
         eraseRows(static_cast<uint16_t>(bottom + 1 - count), static_cast<uint16_t>(bottom + 1));
@@ -286,6 +376,12 @@ void TerminalScreen::eraseCells(uint16_t row, uint16_t from, uint16_t to) {
         TerminalCell      *cells = line(row);
         const TerminalCell b = blank();
         for (uint16_t c = from; c < to; ++c) cells[c] = b;
+        uint16_t &end = endOf(_screen, row);
+        if (!b.background.isDefault()) {
+                end = std::max(end, to); // colored blanks are written cells
+        } else if (to >= end) {
+                end = std::min(end, from);
+        }
         markDirty(row);
         return;
 }
@@ -295,6 +391,7 @@ void TerminalScreen::eraseRows(uint16_t from, uint16_t to) {
         for (uint16_t r = from; r < to; ++r) {
                 TerminalCell *cells = line(r);
                 for (uint16_t c = 0; c < _columns; ++c) cells[c] = b;
+                endOf(_screen, r) = b.background.isDefault() ? 0 : _columns;
                 markDirty(r);
         }
         return;
@@ -310,6 +407,8 @@ void TerminalScreen::insertCells(uint16_t count) {
         const TerminalCell b = blank();
         for (uint16_t c = column; c < column + count; ++c) cells[c] = b;
         if (cells[_columns - 1].wide) cells[_columns - 1] = b; // its tail went off the end
+        uint16_t &end = endOf(_screen, row);
+        end = b.background.isDefault() ? std::min<uint16_t>(_columns, static_cast<uint16_t>(end + count)) : _columns;
         _cursor.pendingWrap = false;
         markDirty(row);
         return;
@@ -325,6 +424,7 @@ void TerminalScreen::deleteCells(uint16_t count) {
         std::memmove(cells + column, cells + column + count, (_columns - column - count) * sizeof(TerminalCell));
         const TerminalCell b = blank();
         for (uint16_t c = static_cast<uint16_t>(_columns - count); c < _columns; ++c) cells[c] = b;
+        if (!b.background.isDefault()) endOf(_screen, row) = _columns; // else the end only moves left
         _cursor.pendingWrap = false;
         markDirty(row);
         return;
@@ -417,6 +517,7 @@ void TerminalScreen::escDispatch(StringView intermediates, uint8_t final) {
                                         for (uint16_t r = 0; r < _rows; ++r) {
                                                 TerminalCell *cells = line(r);
                                                 for (uint16_t c = 0; c < _columns; ++c) cells[c] = e;
+                                                endOf(_screen, r) = _columns;
                                                 markDirty(r);
                                         }
                                         moveTo(0, 0);
@@ -485,7 +586,11 @@ void TerminalScreen::csiDispatch(const VtParams &params, StringView intermediate
                                         eraseCells(_cursor.row, 0, static_cast<uint16_t>(_cursor.column + 1));
                                         break;
                                 case 2: eraseRows(0, _rows); break;
-                                default: break; // 3: the scrollback, which there isn't
+                                case 3: // the history emptied
+                                        _historyHead = 0;
+                                        _historyCount = 0;
+                                        _historyWrite = 0;
+                                        break;
                         }
                         _cursor.pendingWrap = false;
                         break;

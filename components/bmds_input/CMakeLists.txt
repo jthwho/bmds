@@ -9,6 +9,7 @@
 
 set(BMDS_INPUT_PURE_SRCS
         src/keyboarddecoder.cpp
+        src/mouselayout.cpp
         src/terminalkeys.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)

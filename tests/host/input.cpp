@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 #include <bmds/keyboarddecoder.h>
+#include <bmds/mouselayout.h>
 #include <bmds/terminalkeys.h>
 
 using bmds::KeyboardDecoder;
@@ -249,4 +250,220 @@ TEST_CASE("TerminalKeys: the keypad without Num Lock is navigation") {
         CHECK(encode(key(HidKey::KeypadPeriod)) == "\x1b[3~");
         CHECK(encode(key(HidKey::Keypad1 + 4)).empty()); // 5: nothing
         CHECK(encode(key(HidKey::Keypad1 + 7, 0, KeyEvent::NumLock)) == "8");
+}
+
+namespace {
+
+        // A classic wheel mouse: 3 buttons, padding, X, Y and the wheel, a byte each, no report ID.
+        const uint8_t WheelMouse[] = {
+                0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0x09, 0x01, 0xa1, 0x00, 0x05, 0x09, 0x19,
+                0x01, 0x29, 0x03, 0x15, 0x00, 0x25, 0x01, 0x95, 0x03, 0x75, 0x01, 0x81, 0x02,
+                0x95, 0x01, 0x75, 0x05, 0x81, 0x03, 0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x09,
+                0x38, 0x15, 0x81, 0x25, 0x7f, 0x75, 0x08, 0x95, 0x03, 0x81, 0x06, 0xc0, 0xc0,
+        };
+
+        // A receiver's: a keyboard (ID 1), then a mouse (ID 2) with 16 buttons, 12-bit X and Y, a
+        // wheel and AC Pan.
+        const uint8_t ReceiverMouse[] = {
+                // The keyboard.
+                0x05,
+                0x01,
+                0x09,
+                0x06,
+                0xa1,
+                0x01,
+                0x85,
+                0x01,
+                0x05,
+                0x07,
+                0x19,
+                0xe0,
+                0x29,
+                0xe7,
+                0x15,
+                0x00,
+                0x25,
+                0x01,
+                0x75,
+                0x01,
+                0x95,
+                0x08,
+                0x81,
+                0x02,
+                0x95,
+                0x01,
+                0x75,
+                0x08,
+                0x81,
+                0x03,
+                0x95,
+                0x06,
+                0x75,
+                0x08,
+                0x15,
+                0x00,
+                0x26,
+                0xff,
+                0x00,
+                0x05,
+                0x07,
+                0x19,
+                0x00,
+                0x2a,
+                0xff,
+                0x00,
+                0x81,
+                0x00,
+                0xc0,
+                // The mouse.
+                0x05,
+                0x01,
+                0x09,
+                0x02,
+                0xa1,
+                0x01,
+                0x85,
+                0x02,
+                0x09,
+                0x01,
+                0xa1,
+                0x00,
+                0x05,
+                0x09,
+                0x19,
+                0x01,
+                0x29,
+                0x10,
+                0x15,
+                0x00,
+                0x25,
+                0x01,
+                0x95,
+                0x10,
+                0x75,
+                0x01,
+                0x81,
+                0x02,
+                0x05,
+                0x01,
+                0x16,
+                0x01,
+                0xf8,
+                0x26,
+                0xff,
+                0x07,
+                0x75,
+                0x0c,
+                0x95,
+                0x02,
+                0x09,
+                0x30,
+                0x09,
+                0x31,
+                0x81,
+                0x06,
+                0x15,
+                0x81,
+                0x25,
+                0x7f,
+                0x75,
+                0x08,
+                0x95,
+                0x01,
+                0x09,
+                0x38,
+                0x81,
+                0x06,
+                0x05,
+                0x0c,
+                0x0a,
+                0x38,
+                0x02,
+                0x95,
+                0x01,
+                0x81,
+                0x06,
+                0xc0,
+                0xc0,
+        };
+
+        bmds::MouseLayout layoutOf(const uint8_t *d, size_t n) {
+                return bmds::MouseLayout::parse(Span<const uint8_t>(d, n));
+        }
+
+} // namespace
+
+TEST_CASE("MouseLayout: a classic wheel mouse") {
+        const bmds::MouseLayout m = layoutOf(WheelMouse, sizeof(WheelMouse));
+        REQUIRE(m.isValid());
+        CHECK(m.reportId() == 0);
+        CHECK(m.hasWheel());
+        CHECK(m.buttonCount() == 3);
+        const uint8_t      report[] = {0x05, 0xfe, 0x03, 0x01};
+        bmds::PointerEvent e;
+        REQUIRE(m.decode(Span<const uint8_t>(report, 4), e));
+        CHECK(e.buttons == (bmds::PointerEvent::Left | bmds::PointerEvent::Middle));
+        CHECK(e.dx == -2);
+        CHECK(e.dy == 3);
+        CHECK(e.wheel == 1);
+        const uint8_t down[] = {0x00, 0x00, 0x00, 0xff};
+        REQUIRE(m.decode(Span<const uint8_t>(down, 4), e));
+        CHECK(e.wheel == -1);
+        CHECK(!m.decode(Span<const uint8_t>(report, 2), e)); // too short for Y
+}
+
+TEST_CASE("MouseLayout: a receiver's mouse after its keyboard, 12-bit motion, by report ID") {
+        const bmds::MouseLayout m = layoutOf(ReceiverMouse, sizeof(ReceiverMouse));
+        REQUIRE(m.isValid());
+        CHECK(m.reportId() == 2);
+        CHECK(m.hasWheel());
+        CHECK(m.buttonCount() == 8); // 16 on the device, 8 kept
+        // X -5 and Y 300 in 12 bits each (0x12cffb), the wheel down, the right button.
+        const uint8_t      report[] = {0x02, 0x02, 0x00, 0xfb, 0xcf, 0x12, 0xff, 0x00};
+        bmds::PointerEvent e;
+        REQUIRE(m.decode(Span<const uint8_t>(report, sizeof(report)), e));
+        CHECK(e.buttons == bmds::PointerEvent::Right);
+        CHECK(e.dx == -5);
+        CHECK(e.dy == 300);
+        CHECK(e.wheel == -1);
+        const uint8_t keys[] = {0x01, 0x00, 0x00, 0x04, 0, 0, 0, 0, 0};
+        CHECK(!m.decode(Span<const uint8_t>(keys, sizeof(keys)), e)); // the keyboard's report
+}
+
+TEST_CASE("MouseLayout: extended usages, a keyboard alone, truncated and random descriptors") {
+        // The wheel mouse with its X as a 4-byte usage (the page in its high half).
+        uint8_t extended[sizeof(WheelMouse) + 3];
+        size_t  n = 0;
+        for (size_t i = 0; i < sizeof(WheelMouse); ++i) {
+                if (WheelMouse[i] == 0x09 && WheelMouse[i + 1] == 0x30) {
+                        const uint8_t x[] = {0x0b, 0x30, 0x00, 0x01, 0x00};
+                        for (const uint8_t b : x) extended[n++] = b;
+                        ++i;
+                        continue;
+                }
+                extended[n++] = WheelMouse[i];
+        }
+        REQUIRE(n == sizeof(extended));
+        const bmds::MouseLayout m = layoutOf(extended, n);
+        REQUIRE(m.isValid());
+        const uint8_t      report[] = {0x00, 0x07, 0xf9, 0x00};
+        bmds::PointerEvent e;
+        REQUIRE(m.decode(Span<const uint8_t>(report, 4), e));
+        CHECK(e.dx == 7);
+        CHECK(e.dy == -7);
+        // A keyboard has no mouse.
+        CHECK(!layoutOf(ReceiverMouse, 49).isValid());
+        // Cut anywhere: no harm, and no mouse until X and Y are in.
+        for (size_t cut = 0; cut < sizeof(WheelMouse); ++cut) CHECK(layoutOf(WheelMouse, cut).isValid() == (cut >= 50));
+        // Random bytes: parsed and decoded without reading past either.
+        uint32_t state = 99;
+        for (int t = 0; t < 20000; ++t) {
+                uint8_t bytes[64];
+                for (uint8_t &b : bytes) {
+                        state = state * 1103515245u + 12345u;
+                        b = static_cast<uint8_t>(state >> 16);
+                }
+                const bmds::MouseLayout r = layoutOf(bytes, 1 + t % 64);
+                if (r.isValid()) (void)r.decode(Span<const uint8_t>(bytes, t % 16), e);
+        }
 }
