@@ -453,12 +453,14 @@ namespace {
                         }
                 }
                 const uint32_t desktop = palette.color(WindowPalette::Role::Desktop);
+                const Rect     pointer = wm.pointerArea(); // over everything: not modelled
                 uint32_t       wrong = 0, checked = 0;
                 int            fx = -1, fy = -1;
                 uint32_t       fgot = 0, fwant = 0;
                 for (uint32_t y = 0; y < s.height(); ++y) {
                         const uint8_t *line = buffer + size_t(y) * s.stride();
                         for (uint32_t x = 0; x < s.width(); ++x) {
+                                if (inside(pointer, x, y)) continue;
                                 uint32_t want = desktop;
                                 for (size_t i = 0; i < n; ++i) {
                                         if (!inside(info[i].rect, x, y)) continue;
@@ -775,6 +777,26 @@ namespace {
                                            static_cast<unsigned long>(testWindows[id - 1].scrollUs));
                         return report(ctx, e);
                 }
+                if ((args.size() == 4 || args.size() == 5) && std::strcmp(what, "pointer") == 0) {
+                        // As a mouse: motion, then the buttons (a mask) down after it.
+                        long v[3] = {};
+                        for (size_t i = 2; i < args.size(); ++i) {
+                                char *end = nullptr;
+                                v[i - 2] = std::strtol(args[i], &end, 0);
+                                if (end == args[i] || *end != '\0' || v[i - 2] < -4096 || v[i - 2] > 4096)
+                                        return ctx.usage();
+                        }
+                        PointerEvent e;
+                        e.dx = static_cast<int16_t>(v[0]);
+                        e.dy = static_cast<int16_t>(v[1]);
+                        e.buttons = static_cast<uint8_t>(v[2]);
+                        wm->pointer(e);
+                        const Error err = wm->sync(SyncTimeoutMs);
+                        const Rect  at = wm->pointerArea();
+                        if (err.isOk())
+                                ctx.printf("pointer:  drawn in %ux%u at %u,%u\n", at.width, at.height, at.x, at.y);
+                        return report(ctx, err);
+                }
                 if (args.size() == 3 && std::strcmp(what, "textbench") == 0) {
                         if (!parseId(ctx, args[2], id)) return Shell::ExitUsage;
                         TestWindow &t = testWindows[id - 1];
@@ -810,8 +832,10 @@ namespace {
 BMDS_SHELL_COMMAND(
         win, runWin,
         "[start [RRGGBB]|stop|list|new [X Y W H] [TITLE]|close N|raise N|move N X Y|drag N X Y|"
-        "term [N]|type N TEXT|dump N|scroll N DY|textbench N|color [ROLE RRGGBB]|check|stats|shuffle N|bench [CELLS]]",
+        "term [N]|type N TEXT|dump N|scroll N DY|textbench N|color [ROLE RRGGBB]|check|stats|shuffle N|bench [CELLS]|"
+        "pointer DX DY [BUTTONS]]",
         "The desktop and its windows on display 0: 'new' opens a test window, 'drag' moves one "
-        "as an outline, 'color' lists or sets the palette, 'check' compares every pixel with the stack")
+        "as an outline, 'color' lists or sets the palette, 'check' compares every pixel with the stack, "
+        "'pointer' moves the pointer as a mouse would (BUTTONS: 1 left, 2 right, 4 middle)")
 
 BMDS_NAMESPACE_END

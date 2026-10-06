@@ -425,6 +425,7 @@ TEST_CASE("WindowPalette: every role named, found by its name, colors kept to 24
         CHECK(WindowPalette::find("desktop").value() == WindowPalette::Role::Desktop);
         CHECK(WindowPalette::find("outline").value() == WindowPalette::Role::Outline);
         CHECK(WindowPalette::find("terminal-cursor").value() == WindowPalette::Role::TerminalCursor);
+        CHECK(WindowPalette::find("cursor-fill").value() == WindowPalette::Role::CursorFill);
         WindowPalette p;
         CHECK(p.color(WindowPalette::Role::Desktop) == 0x404040);
         p.setColor(WindowPalette::Role::Client, 0xff123456);

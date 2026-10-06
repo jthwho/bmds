@@ -104,7 +104,8 @@ Status: **step 1 done; the picture is surface 0, an RGB888 surface in PSRAM the 
   with fills (one line, a transmit descriptor a row); the `DisplayBoot` stage
   (`CONFIG_BMDS_DISPLAY_AT_BOOT`, on by default with the 200 MHz PSRAM): 720p and the test picture
   137 ms into the boot. Internal RAM free after boot: 559 KB (482 KB with the ring). The image 34 KB
-  smaller.
+  smaller. (The stage and its option were removed on 2026-10-05: the display starts off, and
+  `/sd0/p0/autoexec.sh` starts it, `windows.md` §8 step 6.)
 - **Drawing:** a 64×64 fill about 115 µs (mostly the 2D-DMA job's fixed cost), the test picture
   66 ms (blits of 16-line strips). A full-screen fill wrote PSRAM at about 470 MB/s and **underran the
   scan** once each time, with the 2D-DMA below the scan on the interconnect (QoS 4 against 15): its
@@ -123,6 +124,69 @@ Status: **step 1 done; the picture is surface 0, an RGB888 surface in PSRAM the 
   cache lines plus one, so no heap write shares a line with a DMA buffer.
 - **Modes:** 1920×1080 at 30.7 Hz and 960×540 at 60 Hz (double-buffered, 32 squares at 59.3 fps)
   run too, 0 underruns.
+
+## 5c'. The boot-time underrun (2026-10-05)
+
+The user saw the picture come up shifted (the terminal's bottom wrapped to the top) once the
+desktop started from `autoexec.sh`. Found:
+
+- **One underrun on every boot, never later.** `display start 720 double`, `win start` and
+  `win term` back to back: the window manager's first round (a full-screen fill) and the new
+  shell's start (a 64 KB PSRAM stack, filled by FreeRTOS) at the same moment. With a second
+  between the two commands, or the desktop restarted later, nothing. The 2D-DMA filled the
+  screen in 8 ms (about 340 MB/s of PSRAM writes) on top of the scan's 166 MB/s.
+- **An underrun was counted but not cured** since the framebuffer path: the bridge drops what
+  it missed, so everything after lands lower until the stream restarts at a frame's top. The
+  ring path's rule is back: an underrun asks the supervisor for a resync (at most one every
+  50 ms; what the restart itself raises is ignored), and a resync that can't stop the DMA
+  rebuilds the path (a brief link drop).
+- **The 2D-DMA's write regulator one step tighter** (level 5 → 6): a full-screen fill 16 ms
+  instead of 8, `seq 1 3000` in a terminal unchanged (0.52 s), 0 underruns on 7 boots with the
+  three commands back to back.
+- Ruled out on the way: the DSI frame acknowledgement, the LT8912B receiver reset (it only
+  moved the moment), the time since the display started, and the regulator taking hold late.
+
+## 5d. Screenshots (2026-10-05; `input.md` §7 step 4)
+
+`screenshot PATH` saves what is on the screen as a PNG (truecolor, 8 bits a channel). A
+command of its own in `bmds_ui` (it needs the window manager, which `bmds_drivers` can't see).
+
+- **What is read:** the buffer being shown (`Surface::shown()`), copied whole into PSRAM while
+  the window manager draws nothing (`WindowManager::capture()`: its lock held, any swap shown
+  first), then encoded from the copy with drawing going on. The copy is the screen's size
+  (2.7 MB at 720p) for the shot's length; holding the lock only for the copy keeps the desktop
+  live while the slow part runs.
+- **Deflate from the ROM:** the P4's ROM has miniz's compressor (`tdefl_init`,
+  `tdefl_compress`, in both ROM linker scripts we use; the header is ESP-IDF's
+  `esp_rom/include/miniz.h`, built with `TDEFL_LESS_MEMORY`). No compressor in flash. Its state,
+  `tdefl_compressor`, is 167,744 bytes: in PSRAM, for the shot only.
+- **Rows filtered** before compression: each row is tried with the PNG filters None, Sub and Up
+  and the one with the smallest sum of absolute values kept (the standard heuristic); a desktop
+  of flat colors and text then compresses to a small fraction. A row is read from PSRAM into an
+  internal-RAM buffer (the previous row kept for Up), filtered there, and fed to the compressor.
+- **CRC-32 from the ROM** (`esp_rom_crc32_le`), Adler-32 from the compressor
+  (`TDEFL_WRITE_ZLIB_HEADER`). Output goes through a buffer in internal RAM to the file, one IDAT
+  chunk per buffer.
+- **As built** (2026-10-05): `screenshot [-0..-9] PATH` (`bmds_ui`, `Png::write()`), the
+  compressor's state in internal RAM when it fits (it did), PSRAM otherwise. A 1280×720 desktop
+  with a full terminal and a test window:
+
+  | Level | Bytes | Total | Copy | Read | Filter | Deflate |
+  |---|---|---|---|---|---|---|
+  | 1 | 33,017 | 687 ms | 81 | (in filter) | 251 | 350 |
+  | 2 (default) | 32,204 | 679 ms | 81 | 61 | 193 | 340 |
+  | 6 | 24,892 | 756 ms | 81 | 61 | 193 | 417 |
+  | 9 | 25,077 | 1,202 ms | 81 | | 251 | 867 |
+  | 0 (stored) | 2,769,504 | 2,223 ms (a desktop-only screen) | 81 | | 446 | 1,692 |
+
+  Levels 1, 9 and 0 were measured with the first filter (three filterings written, then
+  scored); the score-first filter (2 and 6) took 251 → 193 ms plus 61 of reading.
+
+  The file decodes with zlib and every chunk's CRC checks (verified on the host after fetching
+  it with YMODEM). On that picture zlib's RLE-only matching beats one probe, but the ROM's
+  miniz with `TDEFL_RLE_MATCHES` came out larger (38,259 bytes) and no faster: not used. The
+  filter's 193 ms is plain arithmetic (about 25 cycles a byte at `-O2`); a PIE scoring pass
+  would cut most of it if screenshots ever need to be quick. The ROM's deflate is the floor.
 
 ## 6. Later steps (outline)
 

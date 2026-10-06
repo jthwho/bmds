@@ -14,6 +14,7 @@
 #include <bmds/config.h>
 #include <bmds/error.h>
 #include <bmds/glyphrenderer.h>
+#include <bmds/inputevent.h>
 #include <bmds/rect.h>
 #include <bmds/result.h>
 #include <bmds/screenconsole.h>
@@ -33,6 +34,10 @@ class WindowManager;
  * reboot, so the session outlives its window: closing the window leaves
  * the shell writing to the screen, and `open()` shows it again. The
  * window's client area sets the size, in 8×16 cells.
+ *
+ * Keys typed into its window go to the shell as a terminal sends them
+ * (`TerminalKeys`: xterm's sequences, application cursor keys when the
+ * program asks).
  *
  * Output asks the window manager for an update; at the next round the
  * window draws the rows that changed, those under any damage, and where
@@ -90,6 +95,7 @@ class Terminal {
         private:
                 static void redraw(void *arg, Painter &painter);
                 static void closed(void *arg);
+                static void keyTyped(void *arg, const KeyEvent &event);
                 static void changed(void *arg);
                 void        draw(Painter &painter);
 

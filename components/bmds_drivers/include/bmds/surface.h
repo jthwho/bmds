@@ -43,7 +43,9 @@ struct ScanoutIsr;
  * The CPU never writes the buffers: drawing is by 2D-DMA, from internal
  * RAM. Rows written into PSRAM start and end on 4 bytes, so copies take x
  * and widths in multiples of 4 pixels (`Align`); fills take any rectangle,
- * their edges' groups of 4 pixels read, patched and written back.
+ * their edges' groups of 4 pixels read, patched and written back. Small
+ * pictures with transparency (a pointer) are drawn the same way
+ * (`patch()`).
  *
  * @par Thread Safety
  * One drawing task at a time; `frames()` and `waitShown()` from any task.
@@ -66,6 +68,12 @@ class Surface {
                                 uint64_t waitUs = 0; ///< Drawing waiting for a pending swap.
                                 uint32_t waitUsMax = 0;
                 };
+
+                /**
+                 * @brief Changes pixels in place (`patch()`): @p pixels is the
+                 *        rectangle's first, B, G, R bytes, @p stride bytes a line.
+                 */
+                using Patcher = void (*)(void *arg, uint8_t *pixels, size_t stride);
 
                 /** @brief A copy inside the surface: @p from to (@p toX, @p toY). */
                 struct Copy {
@@ -160,6 +168,17 @@ class Surface {
                  * @blocking
                  */
                 Error wait(unsigned int timeoutMs);
+
+                /**
+                 * @brief Reads @p rect (any x and width) into internal RAM, lets
+                 *        @p patcher change it there, and writes it back: two 2D-DMA
+                 *        jobs, for something small drawn over what is there (the
+                 *        pointer). At most a surface line's bytes in all (its 4-pixel
+                 *        groups, a row each).
+                 * @return As `fill()`; `Invalid` too for a rectangle that is too big.
+                 * @blocking As `fill()`.
+                 */
+                Error patch(const Rect &rect, Patcher patcher, void *arg, unsigned int timeoutMs);
 
                 /**
                  * @brief Makes @p copies inside the surface, in order, a later one

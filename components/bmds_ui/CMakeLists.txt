@@ -24,13 +24,17 @@ set(BMDS_UI_FONT_SRC ${CMAKE_CURRENT_BINARY_DIR}/font_unscii16.cpp)
 if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_UI_PURE_SRCS}
                                     src/painter.cpp
+                                    src/png.cpp
+                                    src/screenshotcommand.cpp
                                     src/terminal.cpp
                                     src/wincommand.cpp
                                     src/windowmanager.cpp
                                INCLUDE_DIRS include
-                               REQUIRES bmds_console bmds_core bmds_drivers bmds_kernel
-                               PRIV_REQUIRES bmds_shell esp_mm
+                               REQUIRES bmds_console bmds_core bmds_drivers bmds_input bmds_kernel
+                               PRIV_REQUIRES bmds_fs bmds_shell esp_mm esp_rom
                                WHOLE_ARCHIVE)
+        # Screenshots move megabytes through the filters: speed over size here.
+        set_source_files_properties(src/png.cpp PROPERTIES COMPILE_OPTIONS -O2)
         idf_build_get_property(BMDS_UI_PYTHON PYTHON)
         set(BMDS_UI_LIB ${COMPONENT_LIB})
 else()
@@ -38,7 +42,7 @@ else()
         set(BMDS_UI_PYTHON ${Python3_EXECUTABLE})
         add_library(bmds_ui STATIC ${BMDS_UI_PURE_SRCS})
         target_include_directories(bmds_ui PUBLIC include)
-        target_link_libraries(bmds_ui PUBLIC bmds_core bmds_console)
+        target_link_libraries(bmds_ui PUBLIC bmds_core bmds_console bmds_input)
         set(BMDS_UI_LIB bmds_ui)
 endif()
 

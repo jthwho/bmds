@@ -11,6 +11,8 @@ Design notes and implementation plans for BMDS subsystems. Write a plan here **b
 - [`storage.md`](storage.md) — Phase 2: SD card driver and hot-plug, FatFs (exFAT) under the BMDS VFS, files in the shell, YMODEM transfer.
 - [`programs.md`](programs.md) — Phase 3: executables (relocatable ELF), the loader, the syscall table (ABI v1-3), the SDK (static musl), push-and-run.
 - [`distribution.md`](distribution.md) — Phase 3: the programs shipped on the card (`dist/` recipes, `tools/bmds-dist`), BusyBox.
+- [`display.md`](display.md), [`windows.md`](windows.md) — Phase 4: HDMI, surface 0, the window manager, the terminal program, screenshots.
+- [`input.md`](input.md) — Phase 5: USB host (TinyUSB, split transactions through the board's hub), HID boot keyboards and mice, the pointer.
 
 ## Plan Document Template
 

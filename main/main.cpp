@@ -11,13 +11,14 @@
 
 #include <sdkconfig.h>
 #include <bmds/boot.h>
-#include <bmds/displayboot.h>
 #include <bmds/i2cbus.h>
+#include <bmds/input.h>
 #include <bmds/loader.h>
 #include <bmds/ramdisk.h>
 #include <bmds/shell.h>
 #include <bmds/storage.h>
 #include <bmds/terminal.h>
+#include <bmds/usbhost.h>
 #include <bmds/usbserialconsole.h>
 #include <bmds/vfs.h>
 
@@ -57,7 +58,8 @@ namespace {
                 {"storage", bmds::Storage::init},
                 {"ramdisk", bmds::RamDisk::init},
                 {"programs", initPrograms}, // processes, /bin/sh
-                {"display", bmds::DisplayBoot::init},
+                {"input", bmds::Input::init},
+                {"usb", bmds::UsbHost::init},
                 {"shell", startSerialShell},
         };
 

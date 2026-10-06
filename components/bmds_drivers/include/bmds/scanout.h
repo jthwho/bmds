@@ -129,6 +129,7 @@ class Scanout {
                 std::atomic<uint32_t> _stalls{0};
                 std::atomic<uint32_t> _underruns{0};
                 std::atomic<bool>     _stalled{false};
+                std::atomic<bool>     _underran{false}; // the bridge ran dry: the picture is out of step
                 uint32_t              _isrCyclesMax = 0;
                 uint32_t              _resyncs = 0;
                 uint32_t              _rebuilds = 0;

@@ -43,8 +43,11 @@ namespace {
         // No block sent for this long while running: a stuck stream raises no
         // further interrupt to act on.
         constexpr int64_t StuckUs = 50'000;
-        // The 2D-DMA's write regulator (devplan/display.md §5c, measured).
-        constexpr uint32_t Dma2dWriteLevel = 5;
+        constexpr int64_t ResyncGapUs = 50'000; // at most one resync for underruns this often
+        // The 2D-DMA's write regulator (devplan/display.md §5c, measured): 6 since
+        // 2026-10-05, a full-screen fill 16 ms (5 gave 8 ms, and underran the scan
+        // when a shell started meanwhile).
+        constexpr uint32_t Dma2dWriteLevel = 6;
 
         Error espError(esp_err_t err) {
                 return err == ESP_OK ? Error(Error::Ok) : Error::fromEspErr(err);
@@ -163,8 +166,13 @@ struct ScanoutIsr {
                         dsi_brg_dev_t *dev = s->_hw->hal.bridge;
                         const uint32_t status = mipi_dsi_brg_ll_get_interrupt_status(dev);
                         mipi_dsi_brg_ll_clear_interrupt_status(dev, status);
-                        if (status & MIPI_DSI_BRG_LL_EVENT_UNDERRUN)
+                        if (status & MIPI_DSI_BRG_LL_EVENT_UNDERRUN) {
+                                // Lines were dropped: what follows lands lower on the screen
+                                // until the stream restarts at a frame's top.
                                 s->_underruns.fetch_add(1, std::memory_order_relaxed);
+                                s->_underran.store(true, std::memory_order_release);
+                                s->_wake.releaseFromIsr();
+                        }
                         return;
                 }
 };
@@ -190,6 +198,7 @@ Error Scanout::start(const Config &config, Surface &surface) {
         _stalls.store(0);
         _underruns.store(0);
         _stalled.store(false);
+        _underran.store(false);
         _stopping.store(false);
         _primed = false;
         _swapPhase = 0;
@@ -504,16 +513,23 @@ void Scanout::supervisorTask(void *arg) {
         for (;;) Task::sleep(WaitForever); // stop() deletes the task
 }
 
-// Restarts the stream when the DMA meets an invalid descriptor, or the
-// whole path when the stream stops moving.
+// Restarts the stream when the DMA meets an invalid descriptor or the bridge
+// runs dry (the picture would stay offset: the bridge drops what it missed),
+// or the whole path when the stream stops moving.
 void Scanout::supervise() {
         uint32_t last = 0;
         int64_t  progressUs = esp_timer_get_time();
+        int64_t  resyncUs = 0;
         while (!_stopping.load()) {
                 (void)_wake.acquire(CheckMs);
                 if (_stopping.load()) break;
-                if (_stalled.exchange(false, std::memory_order_acquire)) {
+                const bool underran =
+                        _underran.load(std::memory_order_acquire) && esp_timer_get_time() - resyncUs >= ResyncGapUs;
+                if (_stalled.exchange(false, std::memory_order_acquire) || underran) {
                         resync();
+                        // What the restart itself raised (the output off and on) is no news.
+                        _underran.store(false, std::memory_order_relaxed);
+                        resyncUs = esp_timer_get_time();
                         last = 0;
                         progressUs = esp_timer_get_time();
                         continue;
@@ -581,6 +597,7 @@ void Scanout::resync() {
 void Scanout::rebuild() {
         stopHardware();
         _stalled.store(false, std::memory_order_relaxed);
+        _underran.store(false, std::memory_order_relaxed);
         _blocksBefore += _sent.load(std::memory_order_relaxed);
         _sent.store(0, std::memory_order_relaxed);
         _primed = false;

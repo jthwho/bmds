@@ -42,10 +42,12 @@ class WindowPalette {
                         TerminalText,       ///< A terminal's default foreground.
                         TerminalBackground, ///< A terminal's default background.
                         TerminalCursor,     ///< A terminal's cursor (its text in the cell's background).
+                        CursorEdge,         ///< The mouse pointer's outline.
+                        CursorFill,         ///< The mouse pointer's inside.
                 };
 
                 /** @brief The number of roles. */
-                static constexpr size_t RoleCount = 12;
+                static constexpr size_t RoleCount = 14;
 
                 /** @brief The standard colors: a dark grey desktop, blue for the focused window. */
                 constexpr WindowPalette() = default;
@@ -81,6 +83,8 @@ class WindowPalette {
                         0xc0c0c0, // TerminalText
                         0x000000, // TerminalBackground
                         0xc0c0c0, // TerminalCursor
+                        0x000000, // CursorEdge
+                        0xffffff, // CursorFill
                 };
 };
 

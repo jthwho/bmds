@@ -360,6 +360,34 @@ Error Surface::fillEdges(Span<const Rect> rects, uint32_t rgb, const Deadline &d
         return err;
 }
 
+Error Surface::patch(const Rect &rect, Patcher patcher, void *arg, unsigned int timeoutMs) {
+        if (!isStarted()) return Error::InvalidState;
+        if (!inside(rect) || patcher == nullptr) return Error::Invalid;
+        constexpr uint32_t Mask = Align - 1u;
+        const auto         left = static_cast<uint16_t>(rect.x & ~Mask);
+        const auto         width = static_cast<uint16_t>(((rect.right() + Mask) & ~Mask) - left);
+        const size_t       rowBytes = size_t(width) * BytesPerPixel;
+        const size_t       bytes = (rowBytes * rect.height + LineAlign - 1) / LineAlign * LineAlign;
+        if (bytes > (stride() + LineAlign - 1) / LineAlign * LineAlign) return Error::Invalid;
+        const Deadline deadline(timeoutMs);
+        Error          err = prepare(deadline);
+        if (err.isError()) return err;
+        const BlitChain::Picture surface = picture(back());
+        const BlitChain::Picture buffer{_line, width, rect.height, BytesPerPixel};
+        err = _chain.add(surface, left, rect.y, buffer, 0, 0, width, rect.height);
+        if (err.isOk()) err = _chain.run(remainingMs(deadline));
+        if (err.isOk()) {
+                (void)esp_cache_msync(_line, bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+                patcher(arg, _line + size_t(rect.x - left) * BytesPerPixel, rowBytes);
+                (void)esp_cache_msync(_line, bytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                err = _chain.add(buffer, 0, 0, surface, left, rect.y, width, rect.height);
+        }
+        if (err.isOk()) err = _chain.run(remainingMs(deadline));
+        if (err.isError()) _chain.clear();
+        if (err.isOk() && _buffering == Buffering::Double) markDamage(Rect{left, rect.y, width, rect.height});
+        return err;
+}
+
 Error Surface::blit(const Rect &to, const uint8_t *src, size_t srcStride, unsigned int timeoutMs) {
         if (!isStarted()) return Error::InvalidState;
         if (!fits(to) || src == nullptr || srcStride % BytesPerPixel != 0 ||

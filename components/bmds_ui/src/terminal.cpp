@@ -15,6 +15,7 @@
 #include <bmds/shell.h>
 #include <bmds/staticobject.h>
 #include <bmds/terminal.h>
+#include <bmds/terminalkeys.h>
 #include <bmds/terminalview.h>
 #include <bmds/windowmanager.h>
 
@@ -68,6 +69,7 @@ Result<uint8_t> Terminal::open(WindowManager &wm, const Rect &rect) {
         config.title = _title;
         config.redraw = redraw;
         config.closed = closed;
+        config.key = keyTyped;
         config.arg = this;
         // Sized for the area the window gets (snapped, kept on the screen) before it draws.
         const Rect client = WindowFrame::client(Rect{rect.x, rect.y, uint16_t((rect.width + 3) & ~3u), rect.height});
@@ -109,6 +111,20 @@ void Terminal::redraw(void *arg, Painter &painter) {
 
 void Terminal::closed(void *arg) {
         static_cast<Terminal *>(arg)->_window.store(0, std::memory_order_release);
+        return;
+}
+
+// A key, as a terminal sends it, into the shell's input. On the window manager's task.
+void Terminal::keyTyped(void *arg, const KeyEvent &event) {
+        auto *self = static_cast<Terminal *>(arg);
+        bool  application = false;
+        {
+                ScreenConsole::Locked locked(self->_console);
+                application = locked.screen().isApplicationCursorKeys();
+        }
+        char         bytes[TerminalKeys::MaxBytes];
+        const size_t n = TerminalKeys::encode(event, application, bytes);
+        if (n > 0) (void)self->_console.pushInput(ByteSpan(reinterpret_cast<const uint8_t *>(bytes), n));
         return;
 }
 

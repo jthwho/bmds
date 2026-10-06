@@ -14,15 +14,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <sdkconfig.h>
 #include <esp_cache.h>
 #include <bmds/board.h>
 #include <bmds/command.h>
 #include <bmds/display.h>
-#include <bmds/displayboot.h>
 #include <bmds/edid.h>
 #include <bmds/i2cbus.h>
-#include <bmds/log.h>
 #include <bmds/lt8912b.h>
 #include <bmds/memory.h>
 #include <bmds/shell.h>
@@ -756,20 +753,6 @@ namespace {
         }
 
 } // namespace
-
-Error DisplayBoot::init() {
-#if CONFIG_BMDS_DISPLAY_AT_BOOT
-        auto [d, err] = Display::display(0);
-        if (err == Error::NotSupported) return Error::Ok; // no display on this board
-        if (err.isError()) return err;
-        err = d->start(TestModes[0].timing, Surface::Buffering::Single);
-        if (err.isOk()) err = drawTestPicture(d->surface());
-        if (err.isOk()) bmdsInfo("Display: 1280x720 at 60 Hz on HDMI, the test picture on surface 0");
-        return err;
-#else
-        return Error::Ok;
-#endif
-}
 
 BMDS_SHELL_COMMAND(display, runDisplay,
                    "[edid [raw]|scan|start [720|1080|WxH@HZ] [single|double]|off|stats|test|fill X Y W H RRGGBB|"

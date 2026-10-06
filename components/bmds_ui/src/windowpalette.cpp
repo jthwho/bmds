@@ -19,6 +19,7 @@ namespace {
                 "desktop",        "active-frame",  "inactive-frame",      "active-title",
                 "inactive-title", "close-box",     "close-mark",          "client",
                 "outline",        "terminal-text", "terminal-background", "terminal-cursor",
+                "cursor-edge",    "cursor-fill",
         };
 
 } // namespace

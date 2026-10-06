@@ -419,9 +419,31 @@ ones once it exists.
    with the 2D-DMA, scrolling, unaligned edges), window updates, `win bench`, `win scroll`.
 5. **The terminal program** (done; design in §4e, as built in §9): `TerminalScreen` drawn per frame, a
    `Console` on it, a shell in it, `win type`.
-6. **At boot:** the desktop and a terminal start with the display.
+6. **At boot** (done 2026-10-05, decided with the user): BMDS boots minimal, the display and
+   the desktop off; `/sd0/p0/autoexec.sh` brings up whatever environment it wants. The card's
+   script now holds `display start 720 double`, `win start`, `win term`: the desktop with a
+   focused terminal, verified with a screenshot after a reset. The display boot stage and
+   `CONFIG_BMDS_DISPLAY_AT_BOOT` are gone (the test picture stays: `display test`).
 7. **Later:** backing surfaces (copied by the window manager) and secondary surfaces (read by the
    DMA, §4c), chosen per window.
+8. **Window manager affordances** (asked for 2026-10-05, after the keyboard and mouse landed,
+   `input.md`); roughly in this order:
+   - **Decorations under the application's control:** a window says which it has (a frame at
+     all, a title bar, each title-bar button, resize handles), set at open and changeable.
+   - **Title-bar buttons:** minimize, maximize and close on the right; the button on the left
+     becomes the window's menu once there are context menus.
+   - **Resize handles** on the frame's edges and corners, with the pointer's shape changing over
+     them (and over other hot spots); an outline resize like the outline move; a window told
+     its new size (a terminal resizes its screen, `SIGWINCH`).
+   - **Pointer control:** shown or hidden on request; a window can ask for it to hide while it
+     is typed into and to come back on the next move (the terminal does).
+   - **Mouse wheel:** delivered to the window under the pointer; the terminal scrolls back
+     through its history with it (needs a scrollback in `TerminalScreen`).
+   - **Context menus:** a right click on the desktop opens one that starts programs (a terminal
+     first), the title bar's left button opens the window's.
+   - **A panel along the top:** a program launcher button and a list of the windows (minimized
+     ones restored from it). The real launcher lives there; the desktop menu stays the quick
+     way.
 
 ## 9. As built
 

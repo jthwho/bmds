@@ -14,11 +14,13 @@
 #include <bmds/compose.h>
 #include <bmds/config.h>
 #include <bmds/error.h>
+#include <bmds/inputevent.h>
 #include <bmds/mutex.h>
 #include <bmds/painter.h>
 #include <bmds/rect.h>
 #include <bmds/result.h>
 #include <bmds/semaphore.h>
+#include <bmds/spinlock.h>
 #include <bmds/span.h>
 #include <bmds/task.h>
 #include <bmds/waitlist.h>
@@ -43,7 +45,10 @@ class Surface;
  * flat color. A double-buffered surface is presented after each round.
  *
  * Moves are shown as an outline (`drag()`) until `drop()` puts the window
- * there. Focus is the top window.
+ * there. Focus is the top window: keys go to it (`devplan/input.md`), the
+ * window manager being the input's sink while it runs. The mouse moves a
+ * pointer drawn over everything: a press raises the window under it, on a
+ * title bar starts a move, and on the close box (released there) closes it.
  *
  * One window manager per display (`manager()`); it claims the display.
  *
@@ -67,6 +72,25 @@ class WindowManager {
                  */
                 using Closed = void (*)(void *arg);
 
+                /**
+                 * @brief Takes a key typed while the window has the focus (on the
+                 *        window manager's task, locked: it must not call it).
+                 */
+                using Key = void (*)(void *arg, const KeyEvent &event);
+
+                /** @brief Looks at the screen (`capture()`). */
+                using Capture = void (*)(void *arg, const Surface &surface);
+
+                /** @brief Key events queued for the window manager's task. */
+                static constexpr size_t KeyQueue = 32;
+
+                /** @brief Pointer events queued (motion without a button change is merged). */
+                static constexpr size_t PointerQueue = 16;
+
+                /** @brief The pointer's size. */
+                static constexpr uint16_t CursorWidth = 12;
+                static constexpr uint16_t CursorHeight = 19;
+
                 /** @brief The longest title kept, in bytes. */
                 static constexpr size_t MaxTitle = 47;
 
@@ -80,6 +104,7 @@ class WindowManager {
                                 Redraw      redraw = nullptr; ///< Null: the client area is filled (`Role::Client`).
                                 void       *arg = nullptr;
                                 Closed      closed = nullptr; ///< May be null.
+                                Key         key = nullptr;    ///< May be null: keys dropped.
                 };
 
                 /** @brief A window, as `list()` reports it. */
@@ -162,6 +187,33 @@ class WindowManager {
                 Error update(uint8_t id);
 
                 /**
+                 * @brief Queues a key for the focused window, delivered by the
+                 *        window manager's task (dropped when the queue is full or
+                 *        it is stopped).
+                 * @nonblocking
+                 */
+                void key(const KeyEvent &event);
+
+                /**
+                 * @brief Queues a mouse's motion and buttons, applied by the window
+                 *        manager's task once a round. The pointer shows from the
+                 *        first.
+                 * @nonblocking
+                 */
+                void pointer(const PointerEvent &event);
+
+                /**
+                 * @brief Calls @p fn with the screen still: nothing drawn
+                 *        meanwhile, the last present shown (a screenshot's copy).
+                 *        Keep it short: the desktop waits.
+                 * @return `Ok`, `InvalidState` (stopped), or `Timeout` (the swap). @blocking
+                 */
+                Error capture(Capture fn, void *arg, unsigned int timeoutMs);
+
+                /** @brief Returns where the pointer is drawn (4-pixel columns), or an empty rectangle. */
+                Rect pointerArea();
+
+                /**
                  * @brief Sets the colors and redraws what they changed (the
                  *        desktop alone, or everything).
                  */
@@ -203,12 +255,27 @@ class WindowManager {
                                 char   title[MaxTitle + 1] = {};
                                 Redraw redraw = nullptr;
                                 Closed closed = nullptr;
+                                Key    key = nullptr;
                                 void  *arg = nullptr;
                 };
 
                 static constexpr size_t MaxPieces = 256;
 
                 static void entry(void *arg);
+                static void keyEntry(void *arg, const KeyEvent &event);
+                static void pointerEntry(void *arg, const PointerEvent &event);
+                static void drawCursorPixels(void *arg, uint8_t *pixels, size_t stride);
+                void        deliverKeys();
+                void        applyPointer();
+                void        press(uint16_t x, uint16_t y);
+                void        release(uint16_t x, uint16_t y);
+                void        drawCursor();
+                Rect        cursorArea() const; // where the pointer is drawn: on the screen, 4-pixel columns
+                uint8_t     windowAt(uint16_t x, uint16_t y) const; // 0: the desktop
+                Error       closeLocked(uint8_t id);
+                Error       raiseLocked(uint8_t id);
+                Error       dragLocked(uint8_t id, uint16_t x, uint16_t y);
+                Error       dropLocked();
                 void        run();
                 void        round();
                 void        drawPieces(Span<const ComposePiece> pieces);
@@ -234,6 +301,22 @@ class WindowManager {
                 uint16_t              _updates = 0;       // windows asking for an update, a bit by number - 1
                 ComposePiece         *_pieces = nullptr;  // a round's plan
                 Rect                 *_scratch = nullptr; // a layer's pieces, client damage, and visible client
+                SpinLock              _inputLock;         // the two queues
+                KeyEvent              _keys[KeyQueue];
+                uint8_t               _keyHead = 0; // the next to deliver
+                uint8_t               _keyCount = 0;
+                PointerEvent          _pointers[PointerQueue];
+                uint8_t               _pointerHead = 0;
+                uint8_t               _pointerCount = 0;
+                uint16_t              _pointerX = 0; // the pointer's tip
+                uint16_t              _pointerY = 0;
+                uint8_t               _buttons = 0;         // down, as last applied
+                bool                  _cursorShown = false; // a mouse has moved it
+                bool                  _cursorMoved = false; // to draw this round
+                uint8_t               _grabId = 0;          // its title bar pressed: moved while held
+                uint16_t              _grabX = 0;           // the press, from the window's corner
+                uint16_t              _grabY = 0;
+                uint8_t               _closeId = 0;       // its close box pressed
                 std::atomic<uint32_t> _requests{0};       // changes made
                 std::atomic<uint16_t> _asked{0};          // update() calls, taken by the next round
                 std::atomic<uint32_t> _drawn{0};          // changes drawn
