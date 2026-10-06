@@ -520,6 +520,8 @@ int Shell::run() {
                         feed(CtrlC);
                         continue;
                 }
+                // The terminal hung up (a pseudo-terminal's window closed): the shell ends, as on exit.
+                if (err == Error::EndOfFile) break;
                 if (err.isError()) continue;
                 for (size_t i = 0; i < n && !_exited; ++i) feed(static_cast<char>(buf[i]));
         }

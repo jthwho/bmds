@@ -9,7 +9,9 @@
 #pragma once
 
 #include <bmds/config.h>
+#include <bmds/console.h>
 #include <bmds/programlauncher.h>
+#include <bmds/semaphore.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -40,6 +42,13 @@ class Loader final : public ProgramLauncher {
 
                 /** @copydoc ProgramLauncher::run */
                 Result<int> run(const Request &request) override;
+
+                /** @copydoc ProgramLauncher::start */
+                Result<int32_t> start(const Request &request) override;
+
+        private:
+                Result<int32_t> begin(const Request &request, Semaphore &ended, Console::TermMode &savedMode,
+                                      int32_t &parent, int32_t &parentJob, bool &fromProcess);
 };
 
 BMDS_NAMESPACE_END

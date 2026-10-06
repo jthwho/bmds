@@ -66,3 +66,18 @@ wired straight into its screen model; that is what goes.
 1. `Pty`, `PtyConsole`, `PtyMaster` and their host tests; `/dev/ptyN`.
 2. `ProgramLauncher::start()`, `wait()`, `signal()`.
 3. The terminal on a pty (with `windows.md` §8 step 9): `ScreenConsole` no longer used by it.
+
+## 6. As built (2026-10-06)
+
+- `Pty` (the emulator's end, a `Stream`; the design's `PtyMaster`) and `PtyConsole` in
+  `bmds_console`, 8 numbered pairs as static objects; each open allocates its rings (4 KB output,
+  512 bytes input) in the space the caller names (the terminal: PSRAM). Host-tested
+  (`tests/host/pty.cpp`): order, a full ring holding the writer, Ctrl-C, sizes, both hangups,
+  readiness.
+- The terminal's shell is not a launched program: `Shell::spawn()` runs a session on the pty's
+  console (as the serial shell's), which costs no process and no program load. `Shell::run()`
+  returns at the end of input (the hangup).
+- `ProgramLauncher::start()` exists (the loader's detaches the process; nobody waits) for
+  `win term`; `wait()` and `signal()` wait for a user. `/dev/ptyN` and `/dev/ptmx` wait for the
+  program ABI to need them.
+- Measured: `time seq 1 3000` 0.45 s, against 0.51 s with `ScreenConsole` (`windows.md` §9).

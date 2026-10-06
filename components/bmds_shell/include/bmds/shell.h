@@ -241,7 +241,7 @@ class Shell final : public LineCompleter {
 
                 /**
                  * @brief Runs the shell: prompt, read, execute, until `exit` at
-                 *        the prompt.
+                 *        the prompt or the end of its input (a hung-up terminal).
                  * @return The exit status.
                  * @blocking Waits for console input indefinitely.
                  */

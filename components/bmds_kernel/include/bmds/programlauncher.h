@@ -59,6 +59,18 @@ class ProgramLauncher {
                  */
                 virtual Result<int> run(const Request &request) = 0;
 
+                /**
+                 * @brief Starts the program in @p request without waiting for it:
+                 *        nobody waits, and it is freed when it ends (a GUI program
+                 *        started from a command, `devplan/pty.md`).
+                 * @return Its process id, or the errors of `run()`; `NotSupported`
+                 *         by a launcher that can't.
+                 */
+                virtual Result<int32_t> start(const Request &request) {
+                        (void)request;
+                        return makeError<int32_t>(Error::NotSupported);
+                }
+
         protected:
                 ~ProgramLauncher() = default;
 };

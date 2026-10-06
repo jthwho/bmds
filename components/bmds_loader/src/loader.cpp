@@ -849,14 +849,17 @@ namespace {
 
 } // namespace
 
-Result<int> Loader::run(const Request &request) {
+// Loads and starts the program in @p request, its end to release @p ended: its pid. The terminal's
+// modes as they were, in @p savedMode (the program may change them); @p parent and @p parentJob its.
+Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console::TermMode &savedMode, int32_t &parent,
+                              int32_t &parentJob, bool &fromProcess) {
         if (+_thread_local_bss_end != +_thread_local_data_start) {
                 report(request, "cannot run programs: the kernel has thread-local storage");
-                return makeError<int>(Error::NotSupported);
+                return makeError<int32_t>(Error::NotSupported);
         }
         if (!processes.isCreated()) {
                 report(request, "cannot run programs: no process table");
-                return makeError<int>(Error::InvalidState);
+                return makeError<int32_t>(Error::InvalidState);
         }
         drainStops();
         const StringView cwd = request.cwd.isEmpty() ? StringView("/") : request.cwd;
@@ -864,8 +867,9 @@ Result<int> Loader::run(const Request &request) {
         LoadFailure      failure;
         // Called by a process (the shell as /bin/sh): its child, in its job.
         const auto *caller = static_cast<const Running *>(pvTaskGetThreadLocalStoragePointer(nullptr, RunningTlsIndex));
-        const int32_t parent = caller != nullptr ? caller->currentPid : ProcessTable::ShellPid;
-        const int32_t parentJob = caller != nullptr ? caller->job : 0;
+        parent = caller != nullptr ? caller->currentPid : ProcessTable::ShellPid;
+        parentJob = caller != nullptr ? caller->job : 0;
+        fromProcess = caller != nullptr;
         Error         err = loadImage(request.path, cwd, image, failure);
         if (err.isError()) {
                 const ProgramImage::Problem &problem = failure.problem;
@@ -880,7 +884,7 @@ Result<int> Loader::run(const Request &request) {
                 } else {
                         report(request, "%s: %s", failure.stage, problem.what);
                 }
-                return makeError<int>(err);
+                return makeError<int32_t>(err);
         }
 
         // Its resources. The environment gets the kernel's time zone as TZ
@@ -889,7 +893,7 @@ Result<int> Loader::run(const Request &request) {
         if (process == nullptr) {
                 report(request, "out of memory");
                 Memory::free(image.memory);
-                return makeError<int>(Error::NoMem);
+                return makeError<int32_t>(Error::NoMem);
         }
         List<StringView> environment;
         String           tz;
@@ -913,17 +917,16 @@ Result<int> Loader::run(const Request &request) {
                 report(request, "%s", err == Error::NoMem ? "out of memory" : "argument list too long");
                 Process::destroy(process);
                 Memory::free(image.memory);
-                return makeError<int>(err);
+                return makeError<int32_t>(err);
         }
 
         // Its process and its task.
-        Semaphore ended{1, 0};
         Running  *run = createRunning(image, process, 0, 0);
         if (run == nullptr) {
                 report(request, "out of memory");
                 Process::destroy(process);
                 Memory::free(image.memory);
-                return makeError<int>(Error::NoMem);
+                return makeError<int32_t>(Error::NoMem);
         }
         const Result<int32_t> added = processes->add(parent, parentJob, &ended, run);
         if (added.isError()) {
@@ -931,13 +934,13 @@ Result<int> Loader::run(const Request &request) {
                 destroyRunning(run);
                 Process::destroy(process);
                 Memory::free(image.memory);
-                return makeError<int>(Error::Busy);
+                return makeError<int32_t>(Error::Busy);
         }
         const int32_t pid = added.value();
         run->pid = run->currentPid = pid;
         run->job = parentJob != 0 ? parentJob : pid;
         // The program may change the terminal's modes: the shell gets its own back.
-        const Console::TermMode savedMode = request.console != nullptr ? request.console->mode() : Console::TermMode();
+        savedMode = request.console != nullptr ? request.console->mode() : Console::TermMode();
         err = startRunning(*run, request.path, image.stackBytes);
         if (err.isError()) {
                 report(request, "cannot start: %s", errorText(err));
@@ -947,9 +950,20 @@ Result<int> Loader::run(const Request &request) {
                 destroyRunning(run);
                 Process::destroy(process);
                 Memory::free(image.memory);
-                return makeError<int>(err);
+                return makeError<int32_t>(err);
         }
-        if (caller == nullptr) {
+        return makeResult(pid);
+}
+
+Result<int> Loader::run(const Request &request) {
+        Semaphore             ended{1, 0};
+        Console::TermMode     savedMode;
+        int32_t               parent = 0, parentJob = 0;
+        bool                  fromProcess = false;
+        const Result<int32_t> started = begin(request, ended, savedMode, parent, parentJob, fromProcess);
+        if (started.isError()) return makeError<int>(started.error());
+        const int32_t pid = started.value();
+        if (!fromProcess) {
                 // Not run->job: a program that ended already may have been freed.
                 waitForJob(pid, parentJob != 0 ? parentJob : pid, ended, request.interrupt, request.console);
         } else if (Interrupt::wait(request.interrupt, ended, Deadline(WaitForever)) == Error::Interrupted) {
@@ -966,6 +980,18 @@ Result<int> Loader::run(const Request &request) {
         // Exited: its status; killed: 128 + the signal, as in bash.
         if ((status & 0x7f) != 0) return makeResult(static_cast<int>(128 + (status & 0x7f)));
         return makeResult(static_cast<int>((status >> 8) & 0xff));
+}
+
+Result<int32_t> Loader::start(const Request &request) {
+        Semaphore             ended{1, 0};
+        Console::TermMode     savedMode;
+        int32_t               parent = 0, parentJob = 0;
+        bool                  fromProcess = false;
+        const Result<int32_t> started = begin(request, ended, savedMode, parent, parentJob, fromProcess);
+        if (started.isError()) return started;
+        // Nobody waits: an orphan, freed when it ends (at once if it already has).
+        processes->detach(started.value());
+        return started;
 }
 
 BMDS_NAMESPACE_END

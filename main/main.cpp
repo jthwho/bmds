@@ -18,7 +18,6 @@
 #include <bmds/ramdisk.h>
 #include <bmds/shell.h>
 #include <bmds/storage.h>
-#include <bmds/terminal.h>
 #include <bmds/usbhost.h>
 #include <bmds/usbserialconsole.h>
 #include <bmds/vfs.h>
@@ -33,7 +32,6 @@ namespace {
                 // At once: a script that wants the card waits for it (waitmount, devplan/storage.md §13).
                 startup.script = "/boot/autoexec.sh";
                 startup.launcher = &loader;
-                bmds::Terminal::setLauncher(&loader); // the terminal windows' shells
                 return bmds::Shell::spawn(bmds::UsbSerialConsole::instance(), "shell", startup);
         }
 

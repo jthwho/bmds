@@ -27,7 +27,6 @@ if(COMMAND idf_component_register)
                                     src/painter.cpp
                                     src/png.cpp
                                     src/screenshotcommand.cpp
-                                    src/terminal.cpp
                                     src/wincommand.cpp
                                     src/windowmanager.cpp
                                INCLUDE_DIRS include

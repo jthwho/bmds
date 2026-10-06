@@ -132,6 +132,11 @@ void WindowManager::stop() {
                 if (w.closed != nullptr) w.closed(w.arg);
                 w = Window();
         }
+        // The applications told: their windows are gone, and so is the window manager.
+        for (Client &c : _clients) {
+                if (c.used && c.gone != nullptr) c.gone(c.arg);
+                c = Client();
+        }
         (void)_surface->wait(DrawTimeoutMs); // the strip's last copy
         _surface = nullptr;
         _display->release();
@@ -185,10 +190,17 @@ void WindowManager::keyEntry(void *arg, const KeyEvent &event) {
 }
 
 void WindowManager::key(const KeyEvent &event) {
+        keyTo(0, event);
+        return;
+}
+
+void WindowManager::keyTo(uint8_t id, const KeyEvent &event) {
         {
                 SpinLock::Locker keys(_inputLock);
                 if (_keyCount == KeyQueue) return; // nobody is taking them
-                _keys[(_keyHead + _keyCount) % KeyQueue] = event;
+                const size_t at = (_keyHead + _keyCount) % KeyQueue;
+                _keys[at] = event;
+                _keyTargets[at] = id;
                 ++_keyCount;
         }
         _requests.fetch_add(1, std::memory_order_acq_rel); // a change: sync() waits for its delivery
@@ -200,15 +212,19 @@ void WindowManager::key(const KeyEvent &event) {
 void WindowManager::deliverKeys() {
         for (;;) {
                 KeyEvent event;
+                uint8_t  target = 0;
                 {
                         SpinLock::Locker keys(_inputLock);
                         if (_keyCount == 0) return;
                         event = _keys[_keyHead];
+                        target = _keyTargets[_keyHead];
                         _keyHead = static_cast<uint8_t>((_keyHead + 1) % KeyQueue);
                         --_keyCount;
                 }
-                if (_stack.count() == 0) continue;
-                const Window &w = _windows[_stack.idAt(0) - 1];
+                // To its window if it names one (still open), else the focus.
+                if (target != 0 && _stack.rectOf(target).isError()) continue;
+                if (target == 0 && _stack.count() == 0) continue;
+                const Window &w = _windows[(target != 0 ? target : _stack.idAt(0)) - 1];
                 // Typing hides the pointer from a window asking (not a modifier or a lock alone).
                 const bool typing = event.action != KeyEvent::Action::Release && event.usage < 0xe0 &&
                                     event.usage != HidKey::CapsLock && event.usage != HidKey::NumLock &&
@@ -858,6 +874,13 @@ Result<uint8_t> WindowManager::open(const WindowConfig &config) {
         w.pointer = config.pointer;
         w.hideWhileTyping = config.hidePointerWhileTyping;
         w.wheel = config.wheel;
+        w.client = config.client < MaxClients + 1 ? config.client : 0;
+        w.dump = config.dump;
+        w.reference = config.reference;
+        if (config.kind != nullptr) {
+                std::strncpy(w.kind, config.kind, MaxKind);
+                w.kind[MaxKind] = '\0';
+        }
         changed(oldTop);
         return makeResult(id);
 }
@@ -987,6 +1010,47 @@ Error WindowManager::restoreLocked(uint8_t id) {
         if (!w.maximized) return Error::Ok;
         w.maximized = false;
         return resizeLocked(id, placed(w.restore), w.decorations);
+}
+
+Result<uint8_t> WindowManager::connect(Gone gone, void *arg) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return makeError<uint8_t>(Error::InvalidState); // no window system
+        for (size_t i = 0; i < MaxClients; ++i) {
+                if (_clients[i].used) continue;
+                _clients[i] = Client{gone, arg, true};
+                return makeResult(static_cast<uint8_t>(i + 1));
+        }
+        return makeError<uint8_t>(Error::Full);
+}
+
+void WindowManager::disconnect(uint8_t client) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (client == 0 || client > MaxClients || !_clients[client - 1].used) return;
+        _clients[client - 1] = Client();
+        // Its windows, shown or hidden, closed.
+        for (uint8_t id = 1; id <= WindowStack::MaxWindows; ++id)
+                if (_windows[id - 1].client == client && _stack.rectOf(id).isOk()) (void)closeLocked(id);
+        return;
+}
+
+Error WindowManager::dump(uint8_t id, Stream &out) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        if (id == 0 || id > WindowStack::MaxWindows || _stack.rectOf(id).isError()) return Error::NotFound;
+        const Window &w = _windows[id - 1];
+        if (w.dump == nullptr) return Error::NotSupported;
+        w.dump(w.arg, out);
+        return Error::Ok;
+}
+
+Error WindowManager::reference(uint8_t id, uint8_t *pixels, size_t stride, uint16_t width, uint16_t height) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        if (id == 0 || id > WindowStack::MaxWindows || _stack.rectOf(id).isError()) return Error::NotFound;
+        const Window &w = _windows[id - 1];
+        if (w.reference == nullptr) return Error::NotSupported;
+        w.reference(w.arg, pixels, stride, width, height, _palette);
+        return Error::Ok;
 }
 
 Error WindowManager::setTitle(uint8_t id, StringView title) {
@@ -1152,6 +1216,7 @@ size_t WindowManager::list(Span<Info> out) {
                 info.minimized = i >= shown;
                 info.maximized = w.maximized;
                 info.decorations = w.decorations;
+                std::memcpy(info.kind, w.kind, sizeof(info.kind));
         }
         return n;
 }

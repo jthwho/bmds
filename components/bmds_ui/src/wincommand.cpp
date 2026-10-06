@@ -27,8 +27,7 @@
 #include <bmds/memory.h>
 #include <bmds/shell.h>
 #include <bmds/system.h>
-#include <bmds/terminal.h>
-#include <bmds/terminalview.h>
+#include <bmds/task.h>
 #include <bmds/utf8.h>
 #include <bmds/windowmanager.h>
 #include <bmds/windowpalette.h>
@@ -258,10 +257,10 @@ namespace {
                 ctx.printf("Win  X     Y     W     H     Title\n");
                 for (size_t i = 0; i < n; ++i) {
                         const WindowManager::Info &w = info[i];
-                        const Terminal            *term = Terminal::byWindow(w.id);
-                        ctx.printf("%-4u %-5u %-5u %-5u %-5u %s%s%s%s\n", w.id, w.rect.x, w.rect.y, w.rect.width,
-                                   w.rect.height, w.title, w.focused ? " (focus)" : "",
-                                   term != nullptr ? " (terminal)" : "",
+
+                        ctx.printf("%-4u %-5u %-5u %-5u %-5u %s%s%s%s%s%s\n", w.id, w.rect.x, w.rect.y, w.rect.width,
+                                   w.rect.height, w.title, w.focused ? " (focus)" : "", w.kind[0] != '\0' ? " (" : "",
+                                   w.kind, w.kind[0] != '\0' ? ")" : "",
                                    w.minimized   ? " (minimized)"
                                    : w.maximized ? " (maximized)"
                                                  : "");
@@ -454,11 +453,10 @@ namespace {
                                              Fonts::unscii16.height()};
                 }
                 const WindowPalette palette = wm.palette();
-                // Each terminal's client area, drawn from its screen by the scalar kernel.
+                // Each window that offers it: its client area as it should be (a terminal's, from its screen).
                 uint8_t *images[WindowStack::MaxWindows] = {};
                 for (size_t i = 0; i < n; ++i) {
-                        Terminal *term = Terminal::byWindow(info[i].id);
-                        if (term == nullptr || info[i].minimized) continue;
+                        if (info[i].minimized) continue;
                         const Rect  &c = clients[i];
                         const size_t stride = size_t(c.width) * 3;
                         images[i] = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, stride * c.height));
@@ -467,28 +465,9 @@ namespace {
                                 Memory::free(labels);
                                 return report(ctx, Error::NoMem);
                         }
-                        const uint32_t back = palette.color(WindowPalette::Role::TerminalBackground);
-                        for (size_t px = 0; px < size_t(c.width) * c.height; ++px) {
-                                images[i][3 * px] = static_cast<uint8_t>(back);
-                                images[i][3 * px + 1] = static_cast<uint8_t>(back >> 8);
-                                images[i][3 * px + 2] = static_cast<uint8_t>(back >> 16);
-                        }
-                        ScreenConsole::Locked locked(term->console());
-                        const TerminalScreen &screen = locked.screen();
-                        TextCell              row[Terminal::MaxColumns];
-                        for (uint16_t r = 0; r < screen.rows(); ++r) {
-                                // As the terminal shows it: scrolled back, maybe.
-                                const size_t offset = term->scrollback();
-                                const int    cursor =
-                                        TerminalView::viewCursorRow(screen, offset) == r ? screen.cursorColumn() : -1;
-                                uint16_t            length = 0;
-                                const TerminalCell *line = TerminalView::viewRow(screen, offset, r, length);
-                                const size_t        cells = TerminalView::cells(line, length, screen.columns(), palette,
-                                                                                cursor, row, Terminal::MaxColumns);
-                                size_t used = 0;
-                                (void)reference.drawCells(Span<const TextCell>(row, cells), Fonts::unscii16,
-                                                          images[i] + size_t(r) * 16 * stride, stride,
-                                                          uint16_t(screen.columns() * 8), used);
+                        if (wm.reference(info[i].id, images[i], stride, c.width, c.height).isError()) {
+                                Memory::free(images[i]); // a test window: its pattern, below
+                                images[i] = nullptr;
                         }
                 }
                 const uint32_t desktop = palette.color(WindowPalette::Role::Desktop);
@@ -666,42 +645,60 @@ namespace {
                 return same ? Shell::ExitSuccess : Shell::ExitFailure;
         }
 
-        // win term [N]: terminal N (or the first not shown) in a window.
+        // win term [N]: /bin/terminal in a window, started and not waited for (the Nth cascaded:
+        // its top-left corner at 32 + 32 N); its window's number and size when it shows.
         int runTerm(CommandContext &ctx, WindowManager &wm, Args args) {
-                size_t number = Terminal::MaxTerminals;
-                if (args.size() == 3) {
-                        long v = 0;
-                        if (!parseNumber(args[2], long(Terminal::MaxTerminals) - 1, v)) return ctx.usage();
-                        number = size_t(v);
-                } else {
-                        for (size_t i = 0; i < Terminal::MaxTerminals && number == Terminal::MaxTerminals; ++i) {
-                                auto [t, err] = Terminal::terminal(i);
-                                if (err.isOk() && t->window() == 0) number = i;
-                        }
-                        if (number == Terminal::MaxTerminals) return report(ctx, Error::Full);
+                long number = 0;
+                if (args.size() == 3 && !parseNumber(args[2], 15, number)) return ctx.usage();
+                if (ctx.shell().launcher() == nullptr) return report(ctx, Error::NotSupported);
+                WindowManager::Info before[WindowStack::MaxWindows];
+                const size_t        had = wm.list(before);
+                char                at[8];
+                std::snprintf(at, sizeof(at), "%ld", 32 + 32 * number);
+                const StringView argv[] = {"terminal", at, at};
+                List<String>     env;
+                List<StringView> envViews;
+                Error            err;
+                for (const Variables::Entry &e : ctx.executor().state().vars.entries()) {
+                        if ((e.flags & Variables::Exported) == 0 || (e.flags & Variables::IsSet) == 0) continue;
+                        String line;
+                        err = line.append(e.name);
+                        if (err.isOk()) err = line.append('=');
+                        if (err.isOk()) err = line.append(e.value);
+                        if (err.isOk()) err = env.append(std::move(line));
+                        if (err.isError()) return report(ctx, err);
                 }
-                auto [term, err] = Terminal::terminal(number);
-                if (err.isError()) return report(ctx, err);
-                // 100 × 30 cells, cascading.
-                const uint16_t at = static_cast<uint16_t>(32 + 32 * number);
-                auto [id, oerr] = term->open(wm, Rect{at, at, WindowFrame::outerWidth(100 * 8, WindowFrame::Standard),
-                                                      WindowFrame::outerHeight(30 * 16, WindowFrame::Standard)});
-                if (oerr.isError()) return report(ctx, oerr);
-                ctx.printf("win %u: terminal %u, %ux%u\n", id, unsigned(number), term->console().size().columns,
-                           term->console().size().rows);
-                return Shell::ExitSuccess;
+                if (envViews.reserve(env.size()).isError()) return report(ctx, Error::NoMem);
+                for (const String &e : env) (void)envViews.append(e.view());
+                ProgramLauncher::Request request;
+                request.path = "/bin/terminal";
+                request.args = Span<const StringView>(argv);
+                request.environment = Span<const StringView>(envViews.data(), envViews.size());
+                request.fds = &ctx.fds();
+                request.cwd = ctx.cwd();
+                request.console = &ctx.shell().console();
+                auto [pid, serr] = ctx.shell().launcher()->start(request);
+                if (serr.isError()) return report(ctx, serr);
+                // Its window, once it shows (up to 2 s).
+                for (int tries = 0; tries < 200; ++tries) {
+                        WindowManager::Info now[WindowStack::MaxWindows];
+                        const size_t        n = wm.list(now);
+                        for (size_t i = 0; i < n; ++i) {
+                                bool old = false;
+                                for (size_t k = 0; k < had; ++k) old = old || before[k].id == now[i].id;
+                                if (old) continue;
+                                auto [client, cerr] = wm.clientRect(now[i].id);
+                                if (cerr.isError()) continue;
+                                ctx.printf("win %u: terminal, %ux%u\n", now[i].id, client.width / 8u,
+                                           client.height / 16u);
+                                return Shell::ExitSuccess;
+                        }
+                        Task::sleep(10);
+                }
+                ctx.eprintf("win: terminal started (process %ld) but no window showed\n", static_cast<long>(pid));
+                return Shell::ExitFailure;
         }
 
-        // The terminal in window @p text, or null with a message.
-        Terminal *terminalIn(CommandContext &ctx, const char *text) {
-                uint8_t id = 0;
-                if (!parseId(ctx, text, id)) return nullptr;
-                Terminal *term = Terminal::byWindow(id);
-                if (term == nullptr) ctx.eprintf("win: %u: not a terminal\n", id);
-                return term;
-        }
-
-        // win type N TEXT...: typed into window N's terminal; C escapes and ^X controls.
         // The bytes of args[from...], joined by spaces: C escapes (\\n \\r \\t \\e \\xHH) and ^X controls.
         size_t typed(Args args, size_t from, uint8_t (&buf)[256]) {
                 size_t n = 0;
@@ -734,16 +731,6 @@ namespace {
                 return n;
         }
 
-        int runType(CommandContext &ctx, Args args) {
-                Terminal *term = terminalIn(ctx, args[2]);
-                if (term == nullptr) return Shell::ExitFailure;
-                uint8_t      buf[256];
-                const size_t n = typed(args, 3, buf);
-                const size_t taken = term->console().pushInput(ByteSpan(buf, n));
-                if (taken < n) ctx.eprintf("win: input full: %u of %u bytes typed\n", unsigned(taken), unsigned(n));
-                return taken == n ? Shell::ExitSuccess : Shell::ExitFailure;
-        }
-
         // The key a US keyboard types @p c with: its usage and modifiers. False: none does.
         bool keyFor(uint8_t c, uint8_t &usage, uint8_t &modifiers) {
                 modifiers = 0;
@@ -770,10 +757,10 @@ namespace {
                 return false;
         }
 
-        // win key TEXT...: typed as a keyboard would, through the window manager (to the focus).
-        int runKey(CommandContext &ctx, WindowManager &wm, Args args) {
+        // Keys for @p text's bytes, as a keyboard would send them, to window @p id (0: the focus).
+        int sendKeys(CommandContext &ctx, WindowManager &wm, Args args, size_t from, uint8_t id) {
                 uint8_t      buf[256];
-                const size_t n = typed(args, 2, buf);
+                const size_t n = typed(args, from, buf);
                 for (size_t i = 0; i < n; ++i) {
                         KeyEvent e;
                         if (!keyFor(buf[i], e.usage, e.modifiers)) {
@@ -782,10 +769,10 @@ namespace {
                         }
                         e.codepoint = Keymap::us(e.usage, e.modifiers, 0);
                         e.action = KeyEvent::Action::Press;
-                        wm.key(e);
+                        wm.keyTo(id, e);
                         e.action = KeyEvent::Action::Release;
                         e.codepoint = 0;
-                        wm.key(e);
+                        wm.keyTo(id, e);
                         // Delivered a few at a time: the queue holds KeyQueue events.
                         if (i % 8 == 7) {
                                 const Error err = wm.sync(SyncTimeoutMs);
@@ -795,29 +782,30 @@ namespace {
                 return report(ctx, wm.sync(SyncTimeoutMs));
         }
 
-        // win dump N: window N's terminal screen as text, the cursor's place.
-        int runDump(CommandContext &ctx, const char *text) {
-                Terminal *term = terminalIn(ctx, text);
-                if (term == nullptr) return Shell::ExitFailure;
-                ScreenConsole::Locked locked(term->console());
-                const TerminalScreen &screen = locked.screen();
-                for (uint16_t r = 0; r < screen.rows(); ++r) {
-                        char   line[Terminal::MaxColumns * 4 + 1];
-                        size_t n = 0, end = 0;
-                        for (uint16_t c = 0; c < screen.columns(); ++c) {
-                                const TerminalCell &cell = screen.row(r)[c];
-                                if (cell.tail != 0) continue;
-                                n += Utf8::encode(cell.codepoint, line + n);
-                                if (cell.codepoint != ' ') end = n;
-                        }
-                        line[end] = '\0';
-                        ctx.printf("%2u|%s\n", r, line);
+        // win key TEXT...: typed as a keyboard would, through the window manager (to the focus).
+        int runKey(CommandContext &ctx, WindowManager &wm, Args args) {
+                return sendKeys(ctx, wm, args, 2, 0);
+        }
+
+        // win type N TEXT...: typed into window N, as keys; C escapes and ^X controls.
+        int runType(CommandContext &ctx, WindowManager &wm, Args args) {
+                uint8_t id = 0;
+                if (!parseId(ctx, args[2], id)) return Shell::ExitUsage;
+                return sendKeys(ctx, wm, args, 3, id);
+        }
+
+        // win dump N: window N's contents as text (a terminal: its screen, the cursor's place).
+        int runDump(CommandContext &ctx, WindowManager &wm, const char *text) {
+                uint8_t id = 0;
+                if (!parseId(ctx, text, id)) return Shell::ExitUsage;
+                FileHandle *out = ctx.fds().handle(FdTable::Stdout);
+                if (out == nullptr) return report(ctx, Error::InvalidState);
+                const Error err = wm.dump(id, out->stream());
+                if (err == Error::NotSupported) {
+                        ctx.eprintf("win: %u: has no text\n", id);
+                        return Shell::ExitFailure;
                 }
-                ctx.printf("cursor:   row %u, column %u%s\n", screen.cursorRow(), screen.cursorColumn(),
-                           screen.isCursorVisible() ? "" : " (hidden)");
-                ctx.printf("history:  %u lines, the view %u back\n", unsigned(screen.historyCount()),
-                           unsigned(term->scrollback()));
-                return Shell::ExitSuccess;
+                return report(ctx, err);
         }
 
         // The decorations' names, as `win decorate` takes and prints them.
@@ -921,8 +909,8 @@ namespace {
                 }
                 uint8_t id = 0;
                 if (args.size() <= 3 && std::strcmp(what, "term") == 0) return runTerm(ctx, *wm, args);
-                if (args.size() >= 4 && std::strcmp(what, "type") == 0) return runType(ctx, args);
-                if (args.size() == 3 && std::strcmp(what, "dump") == 0) return runDump(ctx, args[2]);
+                if (args.size() >= 4 && std::strcmp(what, "type") == 0) return runType(ctx, *wm, args);
+                if (args.size() == 3 && std::strcmp(what, "dump") == 0) return runDump(ctx, *wm, args[2]);
                 if (args.size() == 4 && std::strcmp(what, "scroll") == 0) {
                         if (!parseId(ctx, args[2], id)) return Shell::ExitUsage;
                         char      *end = nullptr;

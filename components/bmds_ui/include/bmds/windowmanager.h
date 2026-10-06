@@ -21,6 +21,7 @@
 #include <bmds/result.h>
 #include <bmds/semaphore.h>
 #include <bmds/spinlock.h>
+#include <bmds/stream.h>
 #include <bmds/stringview.h>
 #include <bmds/span.h>
 #include <bmds/task.h>
@@ -116,6 +117,29 @@ class WindowManager {
                                 const uint32_t *pixels = nullptr;
                 };
 
+                /**
+                 * @brief Told that the window manager stopped (on the stopping
+                 *        task, locked: it must not call it); the connection's
+                 *        windows were closed first.
+                 */
+                using Gone = void (*)(void *arg);
+
+                /** @brief Writes the window's contents as text to @p out (`win dump`; a test aid). */
+                using Dump = void (*)(void *arg, Stream &out);
+
+                /**
+                 * @brief Draws what the window's client area should show into @p pixels
+                 *        (B, G, R, @p stride bytes a row; `win check`; a test aid).
+                 */
+                using Reference = void (*)(void *arg, uint8_t *pixels, size_t stride, uint16_t width, uint16_t height,
+                                           const WindowPalette &palette);
+
+                /** @brief Connections at once. */
+                static constexpr size_t MaxClients = 16;
+
+                /** @brief The longest kind kept, in bytes. */
+                static constexpr size_t MaxKind = 15;
+
                 /** @brief The pointer's shapes. Append only. */
                 enum class Pointer : uint8_t {
                         Arrow,
@@ -159,6 +183,10 @@ class WindowManager {
                                 Pointer     pointer = Pointer::Arrow;       ///< The shape over the client area.
                                 bool        hidePointerWhileTyping = false; ///< Until the mouse moves again.
                                 Wheel       wheel = nullptr;                ///< May be null: the wheel ignored over it.
+                                uint8_t     client = 0;     ///< Its application's connection (`connect()`); 0: none.
+                                const char *kind = nullptr; ///< What it is, for `win list` (copied, `MaxKind` bytes).
+                                Dump        dump = nullptr; ///< May be null.
+                                Reference   reference = nullptr; ///< May be null.
                 };
 
                 /** @brief A window, as `list()` reports it. */
@@ -170,6 +198,7 @@ class WindowManager {
                                 bool    minimized = false;
                                 bool    maximized = false;
                                 uint8_t decorations = 0;
+                                char    kind[MaxKind + 1] = {}; ///< Empty: none.
                 };
 
                 /** @brief Counts since `start()`. */
@@ -212,6 +241,18 @@ class WindowManager {
 
                 /** @brief Returns true between `start()` and `stop()`. */
                 bool isRunning() const { return _surface != nullptr; }
+
+                /**
+                 * @brief Connects a GUI application (`devplan/windows.md` §8 step 9):
+                 *        its windows (`WindowConfig::client`) close with it, and
+                 *        @p gone is called if the window manager stops first.
+                 * @return Its connection, `InvalidState` (not running: no window
+                 *         system), or `Full`.
+                 */
+                Result<uint8_t> connect(Gone gone, void *arg);
+
+                /** @brief Ends connection @p client: its windows close. */
+                void disconnect(uint8_t client);
 
                 /**
                  * @brief Opens a window on top (focused).
@@ -296,6 +337,18 @@ class WindowManager {
                  * @nonblocking
                  */
                 void key(const KeyEvent &event);
+
+                /** @brief Queues a key for window @p id rather than the focused one (`win type`). */
+                void keyTo(uint8_t id, const KeyEvent &event);
+
+                /** @brief Writes window @p id's contents as text. @return `Ok`, `NotFound`, or `NotSupported`. */
+                Error dump(uint8_t id, Stream &out);
+
+                /**
+                 * @brief Draws what window @p id's client area should show.
+                 * @return `Ok`, `NotFound`, or `NotSupported` (the window offers none).
+                 */
+                Error reference(uint8_t id, uint8_t *pixels, size_t stride, uint16_t width, uint16_t height);
 
                 /**
                  * @brief Queues a mouse's motion and buttons, applied by the window
@@ -383,6 +436,16 @@ class WindowManager {
                                 bool     hideWhileTyping = false;
                                 const Icon *icon = nullptr; // not drawn yet
                                 Wheel    wheel = nullptr;
+                                uint8_t     client = 0;
+                                char        kind[MaxKind + 1] = {};
+                                Dump        dump = nullptr;
+                                Reference   reference = nullptr;
+                };
+
+                struct Client {
+                                Gone  gone = nullptr;
+                                void *arg = nullptr;
+                                bool  used = false;
                 };
 
                 static constexpr size_t MaxPieces = 256;
@@ -440,6 +503,8 @@ class WindowManager {
                 Rect                 *_scratch = nullptr; // a layer's pieces, client damage, and visible client
                 SpinLock              _inputLock;         // the two queues
                 KeyEvent              _keys[KeyQueue];
+                uint8_t               _keyTargets[KeyQueue] = {}; // the window a key is for; 0: the focus
+                Client                _clients[MaxClients];
                 uint8_t               _keyHead = 0; // the next to deliver
                 uint8_t               _keyCount = 0;
                 PointerEvent          _pointers[PointerQueue];

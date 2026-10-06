@@ -832,3 +832,24 @@ ones once it exists.
   "Terminal" again (`win check` 0 wrong); `exit` closed the window, its task waited suspended,
   and `win term` reaped it and opened a fresh session (row 0, no history); two exit-and-reopen
   cycles left free PSRAM at 26,885,076, 26,885,324 and 26,885,332 bytes.
+- **Step 9: built-in applications as ordinary applications** (2026-10-06, §8 step 9, `pty.md`):
+  - `WindowManager::connect(gone, arg)` (`InvalidState` when no window manager runs) and
+    `disconnect(client)`, which closes the client's windows; `stop()` tells each client it is
+    gone. A window's config names its client, a kind (`win list` shows it, as "(terminal)" was),
+    and two optional callbacks: `dump` (its text, for `win dump`) and `reference` (its client area
+    as it should look, for `win check`). `keyTo(id, event)` sends a key to a chosen window.
+  - The terminal is `/bin/terminal` (`components/bmds_terminal`, `BMDS_PROGRAM`, linked whole
+    because `main` requires it; 3,928 bytes of code, no `.bss`). It uses only the GUI API, a
+    `Pty` and `Shell::spawn()`: the session's shell runs on the pty's console in its own task,
+    and the program's task reads the pty into its `TerminalScreen`. The shell exiting ends the
+    pty's reads, so the program closes its window and ends; the close button hangs up the pty, so
+    the shell ends. The old `Terminal` in `bmds_ui`, `Terminal::setLauncher()` and
+    `Terminal::byWindow()` are gone. `win term`, `type`, `dump`, `check` and `list` use the
+    generic calls above; `win term` starts the program with `ProgramLauncher::start()`.
+  - Not yet: the terminal's colors are still the palette's `terminal-*` roles.
+  - On the board: `terminal` without the window manager printed "terminal: the window system
+    isn't running ('win start')"; run from the serial shell it held the shell until Ctrl-C closed
+    it; `exit` in a window closed it; `win stop` ended every terminal process. `win type`,
+    `win dump` and `win check` (0 wrong of 921,600) worked on a pty terminal. `time seq 1 3000`
+    into a shown 100 × 30 terminal: 0.45 s (0.51 s before). Five open-and-exit cycles: internal
+    RAM free the same (451,295), PSRAM 8 bytes less.
