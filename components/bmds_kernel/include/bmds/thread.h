@@ -74,6 +74,14 @@ class Thread {
                  */
                 void join();
 
+                /**
+                 * @brief Lets the thread end on its own: called by the thread itself,
+                 *        its stack and record are freed once its entry returns (by
+                 *        the system, not a `join()`), and this object is no longer
+                 *        tied to it (it may be destroyed at once).
+                 */
+                void detach();
+
                 /** @brief Returns true between `start()` and `join()`. */
                 bool isStarted() const { return _impl != nullptr; }
 

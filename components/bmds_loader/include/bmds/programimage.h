@@ -133,6 +133,24 @@ namespace ProgramImage {
          */
         void place(const Info &info, const uint8_t *bytes, const Patch *patches, uint8_t *image, uint32_t base);
 
+        /** @brief Where a program file's icon is (`bmds_icon_note_t`, `devplan/gui.md` §4j). */
+        struct IconRef {
+                        uint16_t width = 0;
+                        uint16_t height = 0;
+                        uint32_t format = 0; ///< `BMDS_ICON_FORMAT_PNG`.
+                        uint32_t offset = 0; ///< The image's bytes in the file.
+                        uint32_t length = 0;
+        };
+
+        /**
+         * @brief Finds the icon of the program in @p source (@p fileSize bytes)
+         *        nearest @p side pixels: that size, else the next bigger, else
+         *        the biggest. Only its place is found (nothing big is read).
+         * @return `Ok`, `NotFound` (none: no icon notes, or not an ELF file),
+         *         or an error reading.
+         */
+        Error findIcon(Source &source, uint32_t fileSize, uint16_t side, IconRef &out);
+
 } // namespace ProgramImage
 
 BMDS_NAMESPACE_END

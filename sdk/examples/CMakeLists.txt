@@ -6,7 +6,7 @@ project(bmds_examples C ASM)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/BmdsProgram.cmake)
 
-bmds_add_program(hello SOURCES hello/hello.c)
+bmds_add_program(hello SOURCES hello/hello.c ICONS hello/hello-16.png hello/hello-32.png)
 bmds_add_program(cat SOURCES cat/cat.c)
 bmds_add_program(ls SOURCES ls/ls.c)
 

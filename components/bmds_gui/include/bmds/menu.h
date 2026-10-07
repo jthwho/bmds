@@ -52,13 +52,14 @@ class Menu : public GuiWindow {
                  *        `Checked`), its shortcut's text shown at the right.
                  * @return `Ok` or `Full`.
                  */
-                Error addItem(StringView text, int item, uint8_t flags = 0, StringView shortcut = StringView());
+                Error addItem(StringView text, int item, uint8_t flags = 0, StringView shortcut = StringView(),
+                              const Icon *icon = nullptr);
 
                 /** @brief Adds a line. @return `Ok` or `Full`. */
                 Error addSeparator();
 
                 /** @brief Adds an item opening @p submenu (kept by the caller). @return `Ok` or `Full`. */
-                Error addSubmenu(StringView text, Menu &submenu);
+                Error addSubmenu(StringView text, Menu &submenu, const Icon *icon = nullptr);
 
                 /** @brief Removes every item (closing it). */
                 void clear();
@@ -90,6 +91,9 @@ class Menu : public GuiWindow {
                  */
                 Error popup(const Rect &anchor, bool submenu = false);
 
+                /** @brief Highlights its first item that can be chosen (opened from the keyboard). */
+                void highlightFirst() { highlight(_layout.next(-1, 1)); }
+
                 /** @brief Closes it, its open submenu, and its parents. */
                 void dismiss();
 
@@ -105,14 +109,16 @@ class Menu : public GuiWindow {
 
         private:
                 struct Item {
-                                char    text[MaxText + 1] = {};
-                                char    shortcut[MaxShortcut + 1] = {};
-                                int     number = 0;
-                                uint8_t flags = 0;
-                                Menu   *submenu = nullptr;
+                                char        text[MaxText + 1] = {};
+                                char        shortcut[MaxShortcut + 1] = {};
+                                int         number = 0;
+                                uint8_t     flags = 0;
+                                Menu       *submenu = nullptr;
+                                const Icon *icon = nullptr; ///< Kept by the caller.
                 };
 
-                Error add(StringView text, int number, uint8_t flags, StringView shortcut, Menu *submenu);
+                Error add(StringView text, int number, uint8_t flags, StringView shortcut, Menu *submenu,
+                          const Icon *icon);
                 void  highlight(int item);
                 void  choose(int item);
                 void  openSubmenu(int item, bool select);

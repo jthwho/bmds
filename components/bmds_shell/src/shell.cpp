@@ -44,6 +44,7 @@ namespace {
                 config.thread.stackSpace = MemSpace::Psram;
                 config.maxWorkers = Shell::MaxStages - 1;
                 config.maxIdle = 2;
+                config.idleTimeoutMs = 5000; // a few seconds for the next pipeline, then freed
                 return config;
         }
 

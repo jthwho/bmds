@@ -14,6 +14,7 @@
 #include <bmds/error.h>
 #include <bmds/font.h>
 #include <bmds/glyphrenderer.h>
+#include <bmds/icon.h>
 #include <bmds/rect.h>
 #include <bmds/region.h>
 #include <bmds/span.h>
@@ -111,6 +112,14 @@ class Painter {
                  * @hotpath
                  */
                 Error cells(uint16_t x, uint16_t y, Span<const TextCell> cells, const Font &font, uint16_t maxWidth);
+
+                /**
+                 * @brief Draws @p icon with its top-left corner at (@p x, @p y) (x on a
+                 *        4-pixel column), its alpha blended over @p bg (0xRRGGBB: the
+                 *        face it sits on; nothing is read back from the surface).
+                 *        Any height, in bands of the strip's.
+                 */
+                Error image(uint16_t x, uint16_t y, const Icon &icon, uint32_t bg);
 
                 /**
                  * @brief Moves what shows of @p area by @p dy rows (down if

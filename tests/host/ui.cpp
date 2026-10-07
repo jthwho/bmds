@@ -885,17 +885,17 @@ TEST_CASE("Font: unscii-16") {
 TEST_CASE("Font: the icons, 16 by 16 in the private use area") {
         const Font &icons = bmds::Fonts::icons16;
         CHECK(icons.glyphCount() == 8); // seven icons and a blank
-        for (uint32_t cp = bmds::Icon::Menu; cp <= bmds::Icon::Submenu; ++cp) {
+        for (uint32_t cp = bmds::IconGlyph::Menu; cp <= bmds::IconGlyph::Submenu; ++cp) {
                 REQUIRE(icons.hasGlyph(cp));
                 const Glyph g = icons.glyph(cp);
                 CHECK(g.width == 16);
                 int bits = 0;
                 for (int i = 0; i < 32; ++i) bits += __builtin_popcount(g.rows[i]);
                 CHECK(bits > 0);
-                if (cp > bmds::Icon::Menu) CHECK(g.rows != icons.glyph(cp - 1).rows);
+                if (cp > bmds::IconGlyph::Menu) CHECK(g.rows != icons.glyph(cp - 1).rows);
         }
         // The close icon is an ×: symmetric both ways.
-        const Glyph x = icons.glyph(bmds::Icon::Close);
+        const Glyph x = icons.glyph(bmds::IconGlyph::Close);
         for (int r = 0; r < 16; ++r)
                 for (int c = 0; c < 16; ++c) {
                         auto bit = [&](int rr, int cc) {

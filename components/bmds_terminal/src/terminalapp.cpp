@@ -32,6 +32,7 @@
 #include <bmds/fdtable.h>
 #include <bmds/font.h>
 #include <bmds/glyphrenderer.h>
+#include <bmds/icontheme.h>
 #include <bmds/memory.h>
 #include <bmds/mutex.h>
 #include <bmds/painter.h>
@@ -45,6 +46,8 @@
 #include <bmds/utf8.h>
 #include <bmds/vfs.h>
 #include <bmds/windowmanager.h>
+
+#include "terminalicons.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -105,6 +108,7 @@ namespace {
                         bool                           _all = false;     // every row to redraw
                         uint32_t                       _cursorRows[(TerminalScreen::MaxSide + 31) / 32] = {};
                         Thread                         _shell; // runs the shell, until it ends
+                        IconTheme                      _icons; // its own icon, for its window
         };
 
         void TerminalApp::say(const char *text) {
@@ -182,6 +186,12 @@ namespace {
                 }
                 if (err.isOk()) {
                         _window.store(id, std::memory_order_release);
+                        // Its own icon (built into it) on its title bar and in the window lists.
+                        char path[48];
+                        std::snprintf(path, sizeof(path), "/bin/%.*s", int(_context.program.size()),
+                                      _context.program.data());
+                        const Icon *icon = _icons.program(StringView(path), 16);
+                        if (icon != nullptr) (void)_wm->setIcon(id, icon);
                         // Placed smaller than asked (the screen's edge): the size it got.
                         auto [placed, cerr] = _wm->clientRect(id);
                         if (cerr.isOk()) resized(this, placed.width, placed.height);
@@ -573,6 +583,6 @@ namespace {
 
 } // namespace
 
-BMDS_PROGRAM(terminal, terminalMain, 16 * 1024)
+BMDS_PROGRAM_ICONS(terminal, terminalMain, 16 * 1024, TerminalIcons)
 
 BMDS_NAMESPACE_END

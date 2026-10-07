@@ -1,8 +1,9 @@
 # GUI: a Toolkit, Menus, and the Panel
 
 Status: **steps 1-7 built** (2026-10-06; Phase 4, `windows.md` §8 step 8: context menus and the
-panel), then the 3D look (§4e) and cascading windows (§4f), asked for by the user. As built and
-measured: §9.
+panel), then, asked for by the user: the 3D look (§4e), cascading windows (§4f), window
+management keys and Always on Top (§4g), icons (§4h, §4j), the Windows key, snapping and rolling
+up (§4k). As built and measured: §9.
 
 ## 1. Goal
 
@@ -70,7 +71,7 @@ measured: §9.
 | G14 | Defaults on `/boot` | **The files under `boot/` in the repo are embedded in the firmware** (a generated table, as the font is) and installed: every default file missing from `/boot` and not listed in `/boot/.defaults` is written, and its name added there. So a new release's new defaults reach boards formatted before it, and a default the user deleted stays deleted (to have it back: remove its line, or the whole `.defaults`). `/boot/profile` and `/boot/autoexec.sh` move there from `bootdisk.cpp`'s constants. Reading `.defaults` each boot costs a small read; writing happens once per new default | written only at the first format (as now) |
 | G15 | Run in a terminal | **`Terminal=true` runs `terminal -e COMMAND [ARG...]`:** the terminal gains `-e` (appended to its interface), which runs the command (through `PATH`) on its pty instead of an interactive shell, and closes when it ends. | `/bin/sh -c` in a terminal (a shell process more) |
 | G16 | `Exec` | **Split into arguments by the specification's quoting** (double quotes, backslash escapes), not run by a shell; field codes (`%f`, `%u`, ...) dropped (nothing passes files yet); the program found through `PATH`. A shell line is `Exec=sh -c "..."` | every entry through `/bin/sh -c` |
-| G17 | Icons | **Names, kept and not drawn yet.** Every place that will show one keeps room for 16 × 16 (menu items, panel buttons, the window menu button). Later: PNG files (`ICON.png`, 16 × 16 and 24 × 24) looked up in `/boot/icons` then `/sd0/p0/share/icons`, decoded once into 0xRRGGBB (`WindowManager::Icon`'s form), a few cached | — |
+| G17 | Icons | **16 and 32 pixel PNG files in a theme on the card**, rendered from SVG by a script and kept in the repository (§4h), and **icons built into programs** (§4j). (First: names kept, not drawn) | a multi-size container of our own |
 | G18 | Colors | **The toolkit's colors are palette roles,** appended: `face` (menus, the panel, buttons), `face-text`, the face's four shades for its bevels (`face-highlight`, `face-light`, `face-shadow`, `face-dark`: §4e), `highlight` (the menu item under the pointer), `highlight-text`, `disabled-text`. Every application's widgets look alike and `win color` restyles them. The defaults are the classic grey (`c0c0c0`) with a navy highlight | colors per application |
 
 ## 4. Design
@@ -265,41 +266,115 @@ left, their edges bevelled.
 - **Not yet:** a key to open the panel's launcher (the Windows key) needs a way for a program to
   claim a global key (`WindowManager::grabKey()`, a later step).
 
-### 4h. Icons (proposed, 2026-10-06: the user's to decide)
+### 4h. Icons (decided by the user, 2026-10-06; built)
 
 The user's set: icons8's **Flat Color Icons** (github.com/icons8/flat-color-icons; MIT, or
 icons8's "Good Boy License"): 329 icons, SVG only, on a 48 × 48 grid, flat shapes with alpha.
-Rendered with `rsvg-convert` they read well at both 32 and 16 pixels (checked: calculator,
-command line, document, electronics, folder, settings).
+Rendered with `rsvg-convert` they read well at both 32 and 16 pixels.
 
-Proposal:
+- **Sizes: 16 and 32** (the user's choice), the two the classic desktops used: 16 for menus,
+  panel buttons, title bars and Alt+Tab's rows; 32 for desktop icons and a bigger switcher later.
+- **In the repository** (the user's: rendered by a script, not by the build, both kept, PNGs in
+  Git LFS): `thirdparty/flat-color-icons/` holds upstream's `svg/`, license and readme at a pinned
+  commit (`BMDS.md`: version, commit, how to update) and the rendered `png/16x16/`, `png/32x32/`.
+  `tools/render-icons` renders them (rsvg-convert; the output is the same bytes run to run) and
+  removes PNGs left without an SVG. `.gitattributes` puts every `*.png` in LFS.
+- **On the card:** the `icons` distribution package (`dist/icons/`: `source_tree`, `sdk = false`)
+  installs the theme as `/sd0/p0/share/icons/flat-color/16x16/NAME.png` and `32x32/`, with
+  `index.theme` and a link per alias (`dist/icons/aliases`: the freedesktop.org names Desktop
+  Entries use, `utilities-terminal` → `command_line`, `start-here` → `services`,
+  `application-x-executable` → `template`, ...). The build refuses LFS pointers ("git lfs pull").
+- **PNG decoding** (`bmds_core`, pure, host-tested): `Inflate` (RFC 1951 and the zlib wrapper,
+  Adler-32 checked; canonical Huffman codes decoded a bit at a time, the output its own window,
+  small rather than fast) and `Png` (8-bit grey, RGB, palette of 1 to 8 bits with `tRNS`, grey
+  with alpha, RGBA, every filter, chunk CRCs checked; 16-bit and interlaced refused) into
+  0xAARRGGBB.
+- **Drawing:** `Icon` (`bmds/icon.h`: a size and 0xAARRGGBB pixels its owner keeps) and
+  `Painter::image()`, which blends the alpha over the background color the caller names (the
+  face, a menu row's highlight, the title bar) while filling the strip: nothing is read back from
+  the surface. Any height, in bands of the strip's. The old glyph namespace `Icon` became
+  `IconGlyph`.
+- **Where they show:** menu items (`MenuLayout::Item::icon`, the toolkit's `Menu::addItem(...,
+  icon)`), buttons (`Button::setIcon()`, before the text), the title bar (a window's 16 × 16 icon
+  replaces its menu button's ≡, as the classic title bars showed theirs; it still opens the menu),
+  Alt+Tab's rows (copied when the list opens), the panel's window buttons (copied with
+  `WindowManager::copyIcon()`: another program's pixels can't be kept). `win check` models the
+  title bar's icon.
+- **`IconTheme`** (`bmds_gui`; one in each `GuiApplication`): `find(name, side)` looks for
+  `SIDExSIDE/NAME.png` in `/boot/icons` (the user's), the theme on the card, then `hicolor`; an
+  absolute path as it is. `program(path, side)` is a program's own (§4j). `forProgram()` is a
+  launcher entry's: its `Icon=`, else its program's own, else `application-x-executable`. Icons
+  found are decoded once and kept, each in one allocation sized to it (a 24-byte header, its
+  name, its pixels: about 1.1 KB for 16 × 16) on a list, nothing before the first (the user's
+  suggestion: a table of 32 fixed slots, each with a 96-byte name, was mostly empty). Past
+  `MaxBytes` (64 KB) the icon used longest ago goes. One not found isn't kept, so it is found
+  once the card mounts.
 
-- **Sizes: 16 and 32,** the two the classic desktops used: 16 for menus, panel buttons, title
-  bars and the switcher's rows (they all leave a 16-pixel column); 32 for a bigger switcher (a
-  row of icons, as Windows 95's) and desktop icons later. Other sizes can be added as more
-  directories without changing anything.
-- **Files: plain PNG, one per size,** in a freedesktop.org-style theme tree on the card:
-  `/sd0/p0/share/icons/flat-color/16x16/NAME.png` and `32x32/...`, with `index.theme`. Any tool
-  makes them, a user can drop in their own, and other icon themes can be installed beside it. A
-  multi-size container (as `.ico`) saves nothing a directory doesn't, and needs tools of our own.
-- **Built by the distribution** (`dist/icons-flat-color/`, `source_tree` or the pinned upstream
-  release): `rsvg-convert` renders each SVG at 16 and 32 on the build host (no SVG on the
-  board), optimized PNGs, RGBA with alpha. Several hundred files of a few hundred bytes.
-- **Names:** Desktop Entry `Icon=` keys are freedesktop names (`utilities-terminal`,
-  `accessories-text-editor`) or file paths. icons8's names are their own (`command_line`,
-  `document`); the package adds aliases (a file mapping standard names to its icons, or copies
-  under both names) so standard entries find icons. Lookup: an absolute path as is, else the
-  configured theme, then `hicolor` (the freedesktop fallback), then a generic icon.
-- **On the board:** a PNG reader for what we write (8-bit RGBA or RGB, not interlaced) and an
-  inflate (about 5 KB of code; the screenshot code only deflates). Decoded once into 0xAARRGGBB
-  and cached (16 × 16 is 1 KB, 32 × 32 4 KB; a few dozen in PSRAM). Drawn by a new
-  `Painter::image()` that blends the alpha over the background color the widget knows (a menu
-  row's face or highlight, a button's face) in the strip, so no read back from PSRAM.
-- **Who loads them:** the toolkit (`GuiIcons`, by name and size) for menus and buttons; windows
-  set theirs (`WindowManager::setIcon()` already exists) for title bars, the panel's buttons and
-  Alt+Tab. Today an `Icon` is pixels the caller keeps; the window manager would then draw it.
-- **Alternative considered:** a single bundle file of raw pixels (as `zoneinfo.bin`): faster to
-  load and no inflate, but 1.6 MB for the set at two sizes, not standard, and not editable.
+- **A second theme: Glyphs** (the user's choice, 2026-10-06, after looking at Streamline's
+  set: CC BY 4.0 and 30,547 icons, mostly thin line or flat ones that wash out at 16 pixels).
+  gorango's Glyphs (MIT) keeps its icons as JSON exported from Figma; `tools/import-glyphs`
+  (a pinned commit, fetched into a temporary directory) writes the core set's coloured variant
+  (`poly`, 860 icons; the other four are one light grey) as `thirdparty/glyphs/svg/`, and
+  `tools/render-icons` renders it. The `icons-glyphs` package installs the `glyphs` theme with
+  its own aliases (`start-here` → `venn`, `utilities-terminal` → `laptop-code`, ...) and
+  `Inherits=flat-color`; both packages share `tools/install-icon-theme`. **Flat Color stays
+  the default** (the user's); `IconTheme=` in `[Panel]` picks another.
+- **Theme lookup, as built with the second theme:** `/boot/icons`, the theme, the theme it
+  inherits (its `index.theme`'s `Inherits=`, the first; read once the card is there), the
+  default theme, `hicolor`. A file of the wrong size for a name is passed over (the first
+  build kept it, and returned it the second time it was asked for).
+
+### 4j. Icons built into programs (the user's question, 2026-10-06; built)
+
+As a Windows `.exe` carries its icons, a BMDS program does: launchers and title bars show it with
+no icon file installed and no `Icon=` written.
+
+- **The format** (`sdk/include/bmds/program.h`, appended; frozen once shipped): notes with the
+  name "BMDS" and type `BMDS_NOTE_ICON` (2), in a section `.note.bmds.icon` that isn't allocated:
+  not loaded with the program, read from the file only when something shows it. Each note's
+  descriptor is a `bmds_icon_note_t` (`size` of the header, `width`, `height`, `format`:
+  `BMDS_ICON_FORMAT_PNG`, `length`), then the image. One note a size. The ABI lock checks the
+  layout.
+- **The SDK:** `bmds_add_program(name SOURCES ... ICONS a.png b.png)` reads each PNG's size from
+  its header and writes an assembler file of the notes (`.incbin` of the images): no other tool.
+  The linker keeps a non-allocated section as it is; `strip --strip-unneeded` keeps it. `hello`
+  has one (16 and 32: the theme's `idea`).
+- **Built-in programs:** `BMDS_PROGRAM_ICONS(name, main, stack, icons)` (an array of
+  `ProgramIcon`: size and PNG bytes in rodata, made from PNGs by `bmds_embed_icons()` in CMake,
+  `tools/embedicons.py`). The terminal has `command_line`, the panel `services`.
+- **Reading one:** `ProgramImage::findIcon()` (pure, host-tested on the SDK's `hello.elf`) finds
+  the note nearest a size (that size, else the next bigger, else the biggest) without reading the
+  images; `ProgramIcons::read(path, ...)` returns the PNG of a built-in (`/bin/NAME`, links
+  followed) or a file.
+- **Used by:** `IconTheme::program()`; the panel's launcher (an entry without a usable `Icon=`
+  shows its program's); the terminal sets its window's icon from its own (`/bin/terminal`), so
+  its title bar, panel button and Alt+Tab row show it.
+
+### 4k. The Windows key, snapping, rolling up (the user's request, 2026-10-06; built)
+
+- **Global keys:** `WindowManager::grabKey(client, usage, modifiers, fn, arg)` (8 at most,
+  released with the connection): a key with exactly those modifiers (left and right alike) is
+  told on its press and not delivered. A modifier key with no modifiers is a **tap**: told on its
+  release when no other key came while it was down, its press and release kept from windows (the
+  Windows key; Win+E is still E with Gui to the window). The window manager's own keys come
+  first. The toolkit's `GuiApplication::grabKey(usage, modifiers, fn, arg)` posts the call to
+  the loop.
+- **The panel** claims both Windows keys (`0xe3`, `0xe7`): a tap opens the launcher's menu at its
+  button with the first item highlighted (the arrows, Return and Escape work), the button pressed
+  in; another tap closes it.
+- **Snapping:** a window dragged by its title bar with the pointer at or above the work area's
+  top (on the panel) is maximized when dropped; within 2 pixels of a side, it takes that half of
+  the work area. The outline shows where it will go. A snapped window keeps its size and place:
+  dragged by its title bar again it takes its size back under the pointer (the same place across
+  its title bar), and Restore (the window menu, `restore()`) puts it back. Maximizing a snapped
+  window keeps the size from before it snapped. Only windows that can be maximized snap to the
+  top, and resizable ones to the sides.
+- **Rolling up** ("shading", as X window managers call it): `shade(id, on)`, the window menu's
+  "Roll Up" / "Roll Down", or the wheel over the title bar (away from the user rolls up). The
+  window becomes its frame's top and bottom; its application isn't told (its client area keeps
+  its size, hidden), and it keeps the focus and its keys. A rolled-up window isn't resized by its
+  handles; maximizing, restoring or snapping rolls it down first. `win shade N on|off`, and `win
+  list` marks `(shaded)`.
 
 ## 5. Budget (estimates)
 
@@ -428,3 +503,49 @@ palette's role names), `/boot/.defaults`' format (a file name a line).
     focusable window). `win check`: 0 wrong pixels throughout.
   - Host-tested: `setLevel()` (up to `Above`, a raise under it, back down on top of the normal
     windows, a hidden window shown on top of its new level).
+- **Icons, the Windows key, snapping, rolling up** (§4h-§4k; 2026-10-06):
+  - Host-tested: `Png` on 12 images written by `tests/host/png/make.py` (every kind and depth,
+    each row a different filter, stored, fixed and dynamic blocks, IDAT split, a colour key) and
+    two real icons, each against its pixels (Python's own encoding, ImageMagick's decoding of the
+    icons): all equal; a bad CRC, a cut file, interlacing and 16 bits refused; `Inflate`'s
+    checks; CRC-32 and Adler-32 against their check values. `findIcon()` on `hello.elf` (16, 32,
+    24 → 32, 48 → 32, 8 → 16; the bytes are the PNGs it was built with, and they decode); `cat`
+    has none; a text file isn't ELF. The SDK test (`bmds-elfcheck`) still passes `hello.elf` with
+    its notes.
+  - `tools/render-icons`: 658 PNGs (2.6 MB on disk) in 21 s, the same bytes run to run.
+    `bmds-dist build icons`: 706 files and the alias links; installed on the card in 49 s with
+    BusyBox (now with `vi.desktop`) and the time zones.
+  - On the board (screenshots): icons on the launcher button, the menu's entries, the window
+    buttons, the title bars and Alt+Tab's rows; `win check` 0 wrong with icons on title bars and
+    with a rolled-up window. The Windows key: a tap opens the launcher at its button, Escape
+    closes it, Win+E opens nothing, a tap of either key closes it. Snapping: left half (0, 28,
+    640 × 692), dragged away its size back under the pointer (808 × 504), the top maximized under
+    the panel with the outline shown there while dragging, the right half, `restore` back each
+    time. Rolling up by the wheel (808 × 24) and down, by the window menu from the keyboard; a
+    rolled-up terminal still took typing.
+  - Found on the board: the user's `/boot/autoexec.sh` starts the panel before the card mounts,
+    so its entries and the card's icons weren't there yet. Now `IconTheme` keeps no misses, and
+    the panel reads its entries again when the launcher opens if a directory was missing.
+  - Memory: the panel running, 41.7 KB of PSRAM with icons and a table of 64 slots (28.9
+    before); with the cache an allocation an icon, 34.5 KB. Start-and-kill cycles (with and
+    without the launcher opened, one at a time and in a shell loop): unchanged.
+  - The drop seen after a boot (about 40 KB once, then steady), tracked down with `mem mark`
+    and `mem new` (new: the heap's blocks in use now that weren't at the mark, from IDF's heap
+    walk): 33,464 bytes were the shell's idle pipeline worker (a `pipe` thread: a 32 KB stack
+    in PSRAM, 496 bytes internal, a 200-byte record), which the first pipeline after boot
+    (`mem | grep Psram` in the test loop) starts and the shell's `WorkerPool` keeps for the
+    next one (`maxIdle` 2: a three-stage pipeline leaves a second; no more). The user chose to
+    free idle workers after a few seconds: `WorkerPool::Config::idleTimeoutMs` (the shell's
+    5 s; `Thread::detach()` lets a worker end itself, the timer task freeing its stack). Host-
+    tested (a worker gone after its timeout with its memory; 300 rounds of jobs started around
+    the timeouts, each run once), and under ThreadSanitizer, which caught a real race on the
+    way: the pool's destructor could destroy its lock while a worker that had just left was
+    still unlocking it (now counted and waited for). On the board, ten pipelines and 6 quiet
+    seconds left none of their 67 KB. The
+    rest is the shell's own (command-line buffers, the job table grown once from 288 to 432
+    bytes, a 992-byte copy of the environment). A panel run under a mark leaves 0 new blocks.
+    A further 6,144 bytes seen once in an earlier session didn't come back in three replays
+    of that sequence with the mark set.
+  - Size: the image 781,960 bytes (765,482 before: +16,478: the decoder, the icons built into the
+    terminal and the panel, the theme lookup, the key grabs, snapping and rolling up); `.bss`
+    +224.

@@ -1,0 +1,11 @@
+<svg width="80" height="80" viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M31 12L8 12C5.79086 12 4 13.7909 4 16L4 33" stroke="#2F80ED" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M31 68H8C5.79086 68 4 66.2091 4 64L4 47" stroke="#2F80ED" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M49 12L72 12C74.2091 12 76 13.7909 76 16V33" stroke="#2F80ED" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M49 68H72C74.2091 68 76 66.2091 76 64V47" stroke="#2F80ED" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+  <rect x="16" y="24" width="6.19355" height="32" rx="1" fill="#56CCF2" stroke="#56CCF2" stroke-width="4" stroke-linecap="round" />
+  <rect x="28.3872" y="24" width="0.774195" height="32" rx="0.387097" fill="#56CCF2" stroke="#56CCF2" stroke-width="4" stroke-linecap="round" />
+  <rect x="35.355" y="24" width="0.774193" height="32" rx="0.387096" fill="#56CCF2" stroke="#56CCF2" stroke-width="4" stroke-linecap="round" />
+  <rect x="42.3228" y="24" width="6.19355" height="32" rx="1" fill="#56CCF2" stroke="#56CCF2" stroke-width="4" stroke-linecap="round" />
+  <rect x="54.7095" y="24" width="9.29032" height="32" rx="1" fill="#56CCF2" stroke="#56CCF2" stroke-width="4" stroke-linecap="round" />
+</svg>

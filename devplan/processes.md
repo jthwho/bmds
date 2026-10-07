@@ -103,6 +103,11 @@ they had; free memory and the task list are the same after any of it.
 - **Built-in commands** run on the shell's thread, as now.
 - **Pipeline stages** that are built-in commands run on the shell's `WorkerPool` threads: threads
   of the shell's process. Program stages are child processes, as now.
+  The pool keeps up to two idle workers (a 32 KB stack in PSRAM and 496 bytes internal each) for
+  the next pipeline, and since 2026-10-06 frees one idle for 5 seconds (`WorkerPool::Config::
+  idleTimeoutMs`): the worker takes itself off the list under the pool's lock and ends with its
+  thread detached (`Thread::detach()`: FreeRTOS's timer task frees its stack and record once it
+  has parked); the pool's destructor waits for a worker still leaving (`gui.md` §9).
 - **A background job** (`cmd &`, any command: a simple command, a pipeline, a compound command) is
   one new process, a subshell: the kernel starts a process that runs kernel code (a cloned
   `ShellState` on a new thread, as `( … )` runs today, but in its own process with its own fds and

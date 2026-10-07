@@ -194,6 +194,13 @@ _Static_assert(offsetof(bmds_program_note_t, size) == 0, "ABI: note.size");
 _Static_assert(offsetof(bmds_program_note_t, abi_version) == 4, "ABI: note.abi_version");
 _Static_assert(offsetof(bmds_program_note_t, stack_size) == 8, "ABI: note.stack_size");
 _Static_assert(offsetof(bmds_program_note_t, flags) == 12, "ABI: note.flags");
+_Static_assert(BMDS_NOTE_ICON == 2 && BMDS_ICON_FORMAT_PNG == 1, "ABI: icon note type and format");
+_Static_assert(sizeof(bmds_icon_note_t) == 16, "ABI: bmds_icon_note_t size");
+_Static_assert(offsetof(bmds_icon_note_t, size) == 0, "ABI: icon.size");
+_Static_assert(offsetof(bmds_icon_note_t, width) == 4, "ABI: icon.width");
+_Static_assert(offsetof(bmds_icon_note_t, height) == 6, "ABI: icon.height");
+_Static_assert(offsetof(bmds_icon_note_t, format) == 8, "ABI: icon.format");
+_Static_assert(offsetof(bmds_icon_note_t, length) == 12, "ABI: icon.length");
 
 // --- bmds/errno.h ---------------------------------------------------------
 

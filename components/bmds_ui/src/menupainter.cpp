@@ -64,14 +64,18 @@ void drawMenu(Painter &painter, const MenuLayout &layout, Span<const MenuLayout:
                 mark.fg = fg;
                 mark.bg = bg;
                 const uint16_t iy = static_cast<uint16_t>(row.y + (row.height - MenuLayout::IconSize) / 2);
+                const Icon    *icon = items[i].icon;
+                if ((flags & MenuLayout::Checked) == 0 && icon != nullptr && icon->isValid() &&
+                    icon->width <= MenuLayout::IconSize && icon->height <= MenuLayout::IconSize)
+                        (void)painter.image(MenuLayout::IconX, iy, *icon, bg);
                 if ((flags & MenuLayout::Checked) != 0) {
-                        mark.codepoint = Icon::Check;
+                        mark.codepoint = IconGlyph::Check;
                         (void)painter.cells(MenuLayout::IconX, iy, Span<const TextCell>(&mark, 1), Fonts::icons16,
                                             MenuLayout::IconSize);
                 }
                 if ((flags & MenuLayout::Submenu) != 0) {
                         // The arrow's picture is in its glyph's middle columns.
-                        mark.codepoint = Icon::Submenu;
+                        mark.codepoint = IconGlyph::Submenu;
                         (void)painter.cells(static_cast<uint16_t>(layout.arrowX() - 4), iy,
                                             Span<const TextCell>(&mark, 1), Fonts::icons16, MenuLayout::IconSize);
                 }

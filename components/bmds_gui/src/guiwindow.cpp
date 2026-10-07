@@ -79,6 +79,7 @@ Error GuiWindow::show(const Rect &rect) {
         auto [id, err] = wm.open(c);
         if (err.isError()) return err;
         _id.store(id, std::memory_order_release);
+        if (_icon != nullptr) (void)wm.setIcon(id, _icon);
         auto [client, cerr] = wm.clientRect(id);
         _screen = cerr.isOk() ? client : Rect();
         _dirty.clear();
@@ -92,6 +93,13 @@ void GuiWindow::close() {
         _screen = Rect();
         _grab = _hover = nullptr;
         _dirty.clear();
+        return;
+}
+
+void GuiWindow::setIcon(const Icon *icon) {
+        _icon = icon;
+        const uint8_t id = this->id();
+        if (id != 0) (void)_app.windowManager().setIcon(id, icon);
         return;
 }
 

@@ -46,6 +46,25 @@ void GuiApplication::watched(void *arg) {
         return;
 }
 
+Error GuiApplication::grabKey(uint8_t usage, uint8_t modifiers, Callback fn, void *arg) {
+        if (fn == nullptr) return Error::Invalid;
+        for (KeyGrab &g : _grabs) {
+                if (g.fn != nullptr) continue;
+                g = KeyGrab{this, fn, arg};
+                const Error err = _wm->grabKey(_client, usage, modifiers, keyGrabbed, &g);
+                if (err.isError()) g = KeyGrab();
+                return err;
+        }
+        return Error::Full;
+}
+
+// A claimed key, on the window manager's task: the call posted to the loop.
+void GuiApplication::keyGrabbed(void *arg, uint8_t) {
+        const KeyGrab &g = *static_cast<const KeyGrab *>(arg);
+        (void)g.app->post(g.fn, g.arg);
+        return;
+}
+
 Error GuiApplication::setWindowsChanged(Callback fn, void *arg) {
         _watchFn = fn;
         _watchArg = arg;

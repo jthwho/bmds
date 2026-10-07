@@ -562,4 +562,89 @@ void ProgramImage::place(const Info &info, const uint8_t *bytes, const Patch *pa
         return;
 }
 
+Error ProgramImage::findIcon(Source &source, uint32_t fileSize, uint16_t side, IconRef &out) {
+        constexpr uint32_t ShtNote = 7, ShfAlloc = 2, ShdrBytes = 40, MaxSections = 256;
+        const auto         u16 = [](const uint8_t *p) {
+                return uint16_t(p[0] | p[1] << 8);
+        };
+        const auto u32 = [](const uint8_t *p) {
+                return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
+        };
+        const auto within = [fileSize](uint32_t offset, uint32_t size) {
+                return offset <= fileSize && size <= fileSize - offset;
+        };
+        uint8_t ehdr[52];
+        if (fileSize < sizeof(ehdr)) return Error::NotFound;
+        Error err = source.readAt(0, WritableByteSpan(ehdr, sizeof(ehdr)));
+        if (err.isError()) return err;
+        if (std::memcmp(ehdr,
+                        "\x7f"
+                        "ELF",
+                        4) != 0 ||
+            ehdr[4] != 1 || ehdr[5] != 1)
+                return Error::NotFound;
+        const uint32_t shoff = u32(ehdr + 32);
+        const uint16_t shentsize = u16(ehdr + 46);
+        const uint16_t shnum = u16(ehdr + 48);
+        if (shentsize < ShdrBytes || shnum > MaxSections || !within(shoff, uint32_t(shnum) * shentsize))
+                return Error::NotFound;
+        IconRef best;
+        bool    found = false;
+        // Better for @p side: the same size, else the smallest bigger one, else the biggest.
+        const auto better = [side](const IconRef &a, const IconRef &b) {
+                if (a.width == side) return b.width != side;
+                if (b.width == side) return false;
+                if ((a.width > side) != (b.width > side)) return a.width > side;
+                return a.width > side ? a.width < b.width : a.width > b.width;
+        };
+        for (uint16_t i = 0; i < shnum; ++i) {
+                uint8_t sh[ShdrBytes];
+                err = source.readAt(shoff + uint32_t(i) * shentsize, WritableByteSpan(sh, sizeof(sh)));
+                if (err.isError()) return err;
+                if (u32(sh + 4) != ShtNote || (u32(sh + 8) & ShfAlloc) != 0) continue;
+                const uint32_t start = u32(sh + 16);
+                const uint32_t size = u32(sh + 20);
+                if (!within(start, size)) continue;
+                // Its notes: Elf32_Nhdr, the name and the descriptor, each padded to 4.
+                for (uint32_t at = 0; size - at >= 12;) {
+                        uint8_t nh[12 + 8];
+                        err = source.readAt(start + at, WritableByteSpan(nh, 12));
+                        if (err.isError()) return err;
+                        const uint32_t namesz = u32(nh);
+                        const uint32_t descsz = u32(nh + 4);
+                        const uint32_t type = u32(nh + 8);
+                        const uint32_t desc = at + 12 + ((namesz + 3) & ~3u);
+                        if (namesz > 64 || descsz > size || desc > size || descsz > size - desc) break;
+                        bool ours = false;
+                        if (namesz == 5) {
+                                err = source.readAt(start + at + 12, WritableByteSpan(nh + 12, 5));
+                                if (err.isError()) return err;
+                                ours = std::memcmp(nh + 12, BMDS_NOTE_NAME, 5) == 0;
+                        }
+                        if (ours && type == BMDS_NOTE_ICON && descsz >= 16) {
+                                uint8_t d[16];
+                                err = source.readAt(start + desc, WritableByteSpan(d, sizeof(d)));
+                                if (err.isError()) return err;
+                                IconRef        r;
+                                const uint32_t header = u32(d);
+                                r.width = u16(d + 4);
+                                r.height = u16(d + 6);
+                                r.format = u32(d + 8);
+                                r.length = u32(d + 12);
+                                r.offset = start + desc + header;
+                                if (header >= 16 && header <= descsz && r.length <= descsz - header &&
+                                    r.format == BMDS_ICON_FORMAT_PNG && r.width != 0 && r.height != 0 &&
+                                    (!found || better(r, best))) {
+                                        best = r;
+                                        found = true;
+                                }
+                        }
+                        at = desc + ((descsz + 3) & ~3u);
+                }
+        }
+        if (!found) return Error::NotFound;
+        out = best;
+        return Error();
+}
+
 BMDS_NAMESPACE_END

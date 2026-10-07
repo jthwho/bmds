@@ -15,6 +15,7 @@
 #include <bmds/bevel.h>
 #include <bmds/config.h>
 #include <bmds/error.h>
+#include <bmds/icon.h>
 #include <bmds/inputevent.h>
 #include <bmds/memory.h>
 #include <bmds/painter.h>
@@ -32,6 +33,8 @@ namespace GuiStyle {
         constexpr uint16_t ButtonPad = 8;     ///< A button's text from its left edge.
         constexpr uint16_t ButtonHeight = 22; ///< A button's height (a panel's row).
         constexpr uint16_t Column = 4;        ///< Text starts on a multiple of this.
+        constexpr uint16_t IconSize = 16;     ///< A button's or a menu item's icon.
+        constexpr uint16_t IconGap = 4;       ///< Between an icon and its text.
 } // namespace GuiStyle
 
 /** @brief A width and a height. */
@@ -236,7 +239,6 @@ class Button : public Widget {
                 using Pressed = void (*)(void *arg, Button &button, uint8_t which, uint16_t screenX, uint16_t screenY);
 
                 static constexpr size_t MaxText = 63;
-                static constexpr size_t MaxIcon = 31;
 
                 Button(Widget *parent, StringView text = StringView());
 
@@ -246,8 +248,11 @@ class Button : public Widget {
                 /** @brief Returns the text. */
                 StringView text() const { return StringView(_text); }
 
-                /** @brief Sets the icon's name (kept, not drawn yet: `devplan/gui.md` G17). */
-                void setIcon(StringView name);
+                /**
+                 * @brief Shows @p icon before the text (null: none), kept by the
+                 *        caller; 16 × 16 (a bigger one isn't drawn).
+                 */
+                void setIcon(const Icon *icon);
 
                 /** @brief How it stands. */
                 enum class Look : uint8_t {
@@ -294,17 +299,17 @@ class Button : public Widget {
         private:
                 bool inside(int x, int y) const;
 
-                char      _text[MaxText + 1] = {};
-                char      _icon[MaxIcon + 1] = {};
-                Clicked   _clicked = nullptr;
-                void     *_clickedArg = nullptr;
-                Pressed   _pressed = nullptr;
-                void     *_pressedArg = nullptr;
-                uintptr_t _data = 0;
-                Look      _look = Look::Raised;
-                bool      _checked = false;
-                bool      _down = false; // the left button pressed over it
-                bool      _over = false; // the pointer on it
+                char        _text[MaxText + 1] = {};
+                const Icon *_icon = nullptr;
+                Clicked     _clicked = nullptr;
+                void       *_clickedArg = nullptr;
+                Pressed     _pressed = nullptr;
+                void       *_pressedArg = nullptr;
+                uintptr_t   _data = 0;
+                Look        _look = Look::Raised;
+                bool        _checked = false;
+                bool        _down = false; // the left button pressed over it
+                bool        _over = false; // the pointer on it
 };
 
 /**

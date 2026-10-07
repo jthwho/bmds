@@ -14,6 +14,7 @@
 #include <bmds/compose.h>
 #include <bmds/config.h>
 #include <bmds/error.h>
+#include <bmds/icon.h>
 #include <bmds/inputevent.h>
 #include <bmds/menulayout.h>
 #include <bmds/mutex.h>
@@ -83,7 +84,15 @@ class Surface;
  * through it, the window chosen raised when Alt is released (Escape: none);
  * Alt+F4 closes the focused window, Alt+Space opens its menu. Alt and a
  * left press anywhere in a window moves it. A window may be kept above the
- * others (`setAbove()`, the window menu's "Always on Top").
+ * others (`setAbove()`, the window menu's "Always on Top"). A program may
+ * claim a key (`grabKey()`: the panel takes the Windows key for its
+ * launcher).
+ *
+ * A window dragged by its title bar to the work area's top edge is maximized
+ * when dropped, to a side, it fills that half (snapped; dragged away again,
+ * it takes back its size). A window may be rolled up to its title bar
+ * (`shade()`, the window menu, the wheel over its title bar): its client
+ * area hidden, its application not told.
  *
  * One window manager per display (`manager()`); it claims the display.
  *
@@ -128,14 +137,11 @@ class WindowManager {
                 using Wheel = void (*)(void *arg, int notches);
 
                 /**
-                 * @brief A window's icon: @p width × @p height pixels, 0xRRGGBB, rows
-                 *        top first. Kept by the window's owner while it is set.
+                 * @brief A window's icon (`bmds::Icon`: 0xAARRGGBB), kept by the
+                 *        window's owner while it is set. 16 × 16 is drawn (the title
+                 *        bar, Alt+Tab's list); a panel copies it (`copyIcon()`).
                  */
-                struct Icon {
-                                uint16_t        width = 0;
-                                uint16_t        height = 0;
-                                const uint32_t *pixels = nullptr;
-                };
+                using Icon = bmds::Icon;
 
                 /**
                  * @brief Told that the window manager stopped (on the stopping
@@ -261,6 +267,7 @@ class WindowManager {
                                 char    kind[MaxKind + 1] = {}; ///< Empty: none.
                                 Level   level = Level::Normal;
                                 bool    hasIcon = false;
+                                bool    shaded = false; ///< Rolled up to its title bar.
                 };
 
                 /** @brief Counts since `start()`. */
@@ -379,6 +386,33 @@ class WindowManager {
                 Error setAbove(uint8_t id, bool above);
 
                 /**
+                 * @brief Rolls window @p id up to its title bar (its client area
+                 *        hidden, its application not told: its size is the same),
+                 *        or down again.
+                 * @return `Ok`, `NotFound`, or `InvalidState` (no title bar,
+                 *         minimized, or not an application's window).
+                 */
+                Error shade(uint8_t id, bool shaded);
+
+                /** @brief Told a key claimed with `grabKey()` (on the window manager's task, locked). */
+                using Grab = void (*)(void *arg, uint8_t usage);
+
+                /** @brief Key claims at once. */
+                static constexpr size_t MaxGrabs = 8;
+
+                /**
+                 * @brief Claims a key for connection @p client: HID @p usage with
+                 *        exactly @p modifiers (`KeyEvent::Modifier`; left and right
+                 *        alike) on its press. A modifier key with no modifiers (the
+                 *        Windows key, `0xe3`/`0xe7`) is claimed as a tap: told on its
+                 *        release when no other key came while it was down. Claimed
+                 *        keys aren't delivered to windows. Released with the
+                 *        connection.
+                 * @return `Ok`, `NotFound` (no such connection), `Exists`, `Full`.
+                 */
+                Error grabKey(uint8_t client, uint8_t usage, uint8_t modifiers, Grab fn, void *arg);
+
+                /**
                  * @brief Puts window @p id on top, filling the work area until restored.
                  * @return `Ok`, `NotFound`, or `InvalidState` (not a normal window: a panel's).
                  */
@@ -398,11 +432,21 @@ class WindowManager {
                 Error setTitle(uint8_t id, StringView title);
 
                 /**
-                 * @brief Sets window @p id's icon (null: none). Kept, not drawn yet:
-                 *        the window menu's button and the panel will (§4j).
+                 * @brief Sets window @p id's icon (null: none), kept by the caller
+                 *        until another is set or the window closes. A 16 × 16 one
+                 *        replaces the title bar's menu button (as the classic title
+                 *        bars showed theirs) and shows in Alt+Tab's list.
                  * @return `Ok`, `NotFound`, or `InvalidState` (not running).
                  */
                 Error setIcon(uint8_t id, const Icon *icon);
+
+                /**
+                 * @brief Copies window @p id's icon's pixels into @p out (a window
+                 *        list's buttons; another program's icon can't be kept).
+                 * @return Its size; `NotFound`, `NotSupported` (it has none), or
+                 *         `BufferTooSmall`.
+                 */
+                Result<Icon> copyIcon(uint8_t id, Span<uint32_t> out);
 
                 /**
                  * @brief Sets window @p id's decorations (`WindowFrame`'s flags);
@@ -526,14 +570,17 @@ class WindowManager {
                                 Key         key = nullptr;
                                 Resized     resized = nullptr;
                                 void       *arg = nullptr;
-                                Rect        restore;         // where it was before it was maximized
+                                Rect        restore;         // where it was before it was maximized or snapped
                                 uint8_t     decorations = 0; // WindowFrame's flags
                                 bool        maximized = false;
-                                uint16_t    widthStep = 1; // a resize by hand's client steps
+                                bool        snapped = false; // to half of the work area
+                                bool        shaded = false;  // rolled up to its title bar
+                                uint16_t    shadeHeight = 0; // its height unrolled
+                                uint16_t    widthStep = 1;   // a resize by hand's client steps
                                 uint16_t    heightStep = 1;
                                 Pointer     pointer = Pointer::Arrow;
                                 bool        hideWhileTyping = false;
-                                const Icon *icon = nullptr; // not drawn yet
+                                const Icon *icon = nullptr; // the owner's
                                 Wheel       wheel = nullptr;
                                 uint8_t     client = 0;
                                 char        kind[MaxKind + 1] = {};
@@ -552,16 +599,33 @@ class WindowManager {
                                 void *watchArg = nullptr;
                 };
 
+                struct KeyGrab {
+                                Grab    fn = nullptr;
+                                void   *arg = nullptr;
+                                uint8_t client = 0; // 0: free
+                                uint8_t usage = 0;
+                                uint8_t modifiers = 0; // left and right folded together
+                };
+
+                // Where a dragged window's outline went to snap.
+                enum class Snap : uint8_t {
+                        None,
+                        Maximize,
+                        Left,
+                        Right
+                };
+
                 // The window menu's items (separators between).
                 enum class MenuChoice : uint8_t {
                         Restore,
                         Minimize,
                         Maximize,
+                        Shade,
                         Above,
                         Close,
                         None
                 };
-                static constexpr size_t MenuItems = 7;
+                static constexpr size_t MenuItems = 8;
                 struct Switcher; // Alt+Tab's list, while it shows
 
                 static constexpr size_t MaxPieces = 256;
@@ -611,7 +675,14 @@ class WindowManager {
                 Error           minimizeLocked(uint8_t id);
                 Error           maximizeLocked(uint8_t id);
                 Error           restoreLocked(uint8_t id);
-                Error           resizeLocked(uint8_t id, const Rect &rect, uint8_t decorations); // told if it changed
+                Error           resizeLocked(uint8_t id, const Rect &rect, uint8_t decorations,
+                                             bool tell = true); // told if it changed (and asked)
+                Error           shadeLocked(uint8_t id, bool shaded);
+                Error           snapLocked(uint8_t id, Snap snap);
+                Snap            snapAt(uint8_t id, uint16_t x, uint16_t y) const;
+                Rect            snapRect(Snap snap) const;
+                void            hideOutline();
+                bool            grabbed(const KeyEvent &event); // a key a program claimed
                 Error           dragLocked(uint8_t id, uint16_t x, uint16_t y);
                 Error           outlineLocked(uint8_t id, const Rect &rect);
                 Error           dropLocked();
@@ -685,10 +756,15 @@ class WindowManager {
                 uint8_t               _switchId = 0;       // its popup
                 uint8_t               _modifiers = 0;      // the keyboard's, as of the last key
                 uint8_t               _focusId = 0;        // the focusable window raised last (focusId())
-                std::atomic<uint32_t> _requests{0};        // changes made
-                std::atomic<uint16_t> _asked{0};           // update() calls, taken by the next round
-                std::atomic<uint32_t> _drawn{0};           // changes drawn
-                uint32_t              _presented = 0;      // the last present's number
+                KeyGrab               _grabs[MaxGrabs];
+                uint8_t               _tapUsage = 0;      // a claimed modifier down (a tap if nothing else comes)
+                bool                  _tapClean = false;  // nothing else pressed while it was down
+                Snap                  _snap = Snap::None; // the drag's outline is a snap's
+                uint8_t               _unsnapId = 0;      // a snapped window grabbed: its size back when it moves
+                std::atomic<uint32_t> _requests{0};       // changes made
+                std::atomic<uint16_t> _asked{0};          // update() calls, taken by the next round
+                std::atomic<uint32_t> _drawn{0};          // changes drawn
+                uint32_t              _presented = 0;     // the last present's number
                 Stats                 _stats;
                 Semaphore             _wake{1, 0};
                 WaitListOf<4>         _idle; // woken after each round

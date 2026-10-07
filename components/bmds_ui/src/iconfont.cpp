@@ -19,7 +19,7 @@ namespace {
         constexpr size_t Rows = 16;
 
         // Each icon's rows, '#' the mark and '.' the button's face, in
-        // codepoint order (Icon::Menu first).
+        // codepoint order (IconGlyph::Menu first).
         constexpr const char *Pictures[Icons * Rows] = {
                 // Menu
                 "................",
@@ -157,7 +157,7 @@ namespace {
 
         constexpr Font::Range NarrowRanges[] = {{0x20, 1, 0}}; // a blank: the replacement
         constexpr uint8_t     NarrowBits[Rows] = {};
-        constexpr Font::Range WideRanges[] = {{Icon::Menu, Icons, 0}};
+        constexpr Font::Range WideRanges[] = {{IconGlyph::Menu, Icons, 0}};
         constexpr WideBits    Wide = pack();
 
 } // namespace

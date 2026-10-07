@@ -14,6 +14,7 @@ set(BMDS_LOADER_PURE_SRCS
         src/imagecache.cpp
         src/process.cpp
         src/processtable.cpp
+        src/programicons.cpp
         src/programimage.cpp
         src/signals.cpp)
 

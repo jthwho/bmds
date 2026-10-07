@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Imports the Glyphs icon set (github.com/gorango/glyphs, MIT; devplan/gui.md §4h)
+# into thirdparty/glyphs/: upstream keeps its SVGs as JSON (exported from Figma),
+# so the core set's coloured variant ("poly") is written out as one SVG a name
+# (camelCase made kebab-case: folderOpen -> folder-open), with upstream's license
+# and its categories. Run tools/render-icons thirdparty/glyphs after it.
+#
+#   tools/import-glyphs [CHECKOUT]   (default: fetch the pinned commit below)
+set -euo pipefail
+
+COMMIT=771993addf00d5a7080fadb763f0da72ddc0f716 # 2023-02-21, @glyphs/core 0.8.12
+VARIANT=poly
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+out="$root/thirdparty/glyphs"
+src="${1:-}"
+tmp=""
+cleanup() { [ -n "$tmp" ] && rm -rf "$tmp"; return 0; }
+trap cleanup EXIT
+if [ -z "$src" ]; then
+        tmp="$(mktemp -d "${TMPDIR:-/tmp}/import-glyphs.XXXXXX")"
+        git -C "$tmp" init -q
+        git -C "$tmp" fetch -q --depth 1 https://github.com/gorango/glyphs "$COMMIT"
+        git -C "$tmp" checkout -q FETCH_HEAD
+        src="$tmp"
+fi
+
+rm -rf "$out/svg"
+mkdir -p "$out/svg"
+cp "$src/license" "$out/LICENSE"
+python3 - "$src/packages/svg/core" "$out" "$VARIANT" <<'PY'
+import json, os, re, sys
+core, out, variant = sys.argv[1:4]
+svgs = json.load(open(os.path.join(core, "map.json")))
+components = json.load(open(os.path.join(core, "components.json")))
+
+def kebab(name):
+    # lodash's kebabCase as upstream's own exporter names files: words and numbers apart.
+    words = re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|[0-9]+", name)
+    return "-".join(w.lower() for w in words)
+
+index = []
+seen = set()
+for c in components:
+    name = kebab(c["name"])
+    if name in seen:
+        sys.exit("import-glyphs: two icons named %s" % name)
+    seen.add(name)
+    with open(os.path.join(out, "svg", name + ".svg"), "w") as f:
+        f.write(svgs[c["variants"][variant]].rstrip() + "\n")
+    index.append("%s\t%s" % (name, ",".join(c["categories"])))
+with open(os.path.join(out, "categories"), "w") as f:
+    f.write("# Each icon's name and upstream's categories (tools/import-glyphs).\n")
+    f.write("\n".join(sorted(index)) + "\n")
+print("import-glyphs: %d icons (%s) in %s/svg" % (len(index), variant, out))
+PY
+echo "import-glyphs: commit $COMMIT; now run tools/render-icons $out"

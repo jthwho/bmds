@@ -220,8 +220,10 @@ void Button::setText(StringView text) {
         return;
 }
 
-void Button::setIcon(StringView name) {
-        copyText(_icon, sizeof(_icon), name);
+void Button::setIcon(const Icon *icon) {
+        if (icon == _icon) return;
+        _icon = icon;
+        update();
         return;
 }
 
@@ -239,7 +241,10 @@ void Button::setChecked(bool checked) {
 }
 
 GuiSize Button::sizeHint() const {
-        return GuiSize{columnUp(Fonts::unscii16.textWidth(StringView(_text)) + 2 * GuiStyle::ButtonPad),
+        const uint32_t icon = _icon != nullptr && _icon->isValid() ? GuiStyle::IconSize + GuiStyle::IconGap : 0;
+        if (_text[0] == '\0' && icon != 0)
+                return GuiSize{columnUp(GuiStyle::IconSize + GuiStyle::ButtonPad), GuiStyle::ButtonHeight};
+        return GuiSize{columnUp(Fonts::unscii16.textWidth(StringView(_text)) + 2 * GuiStyle::ButtonPad + icon),
                        GuiStyle::ButtonHeight};
 }
 
@@ -265,7 +270,15 @@ void Button::paint(Painter &painter) {
         const uint32_t fg = isEnabled() ? p.color(Role::FaceText) : p.color(Role::DisabledText);
         if (edged) drawBevel(painter, r, style);
         (void)painter.fill(face, bg);
-        const uint16_t x = columnUp(r.x + GuiStyle::ButtonPad);
+        uint16_t x = columnUp(r.x + GuiStyle::ButtonPad);
+        if (_icon != nullptr && _icon->isValid() && _icon->width <= GuiStyle::IconSize &&
+            _icon->height <= GuiStyle::IconSize && x + _icon->width <= r.right()) {
+                // The icon first, a pixel lower pressed in as the text, then the text after a gap.
+                const uint16_t ix = columnUp(r.x + GuiStyle::ButtonPad / 2);
+                const uint16_t iy = static_cast<uint16_t>(textTop(r, in) + (GuiStyle::TextHeight - _icon->height) / 2);
+                (void)painter.image(ix, iy, *_icon, bg);
+                x = columnUp(ix + _icon->width + GuiStyle::IconGap);
+        }
         if (_text[0] != '\0' && x + GuiStyle::ButtonPad / 2 < r.right()) {
                 // Cut to the room, with the pad at the right kept; a pixel lower pressed in.
                 const uint32_t room = r.right() - x - GuiStyle::ButtonPad / 2;

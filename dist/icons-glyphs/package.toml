@@ -1,0 +1,10 @@
+# Glyphs (devplan/gui.md §4h): gorango's Glyphs core set, its coloured variant,
+# imported (tools/import-glyphs) and rendered at 16 and 32 pixels in this
+# repository (tools/render-icons), installed as the glyphs theme.
+name = "icons-glyphs"
+version = "0.8.12"
+description = "Glyphs core icons (coloured) at 16x16 and 32x32: an icon theme (IconTheme=glyphs)"
+license = "MIT"
+source_tree = "thirdparty/glyphs"
+license_files = ["LICENSE"]
+sdk = false

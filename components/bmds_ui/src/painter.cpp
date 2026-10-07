@@ -160,6 +160,32 @@ Error Painter::text(uint16_t x, uint16_t y, StringView utf8, const Font &font, u
         });
 }
 
+Error Painter::image(uint16_t x, uint16_t y, const Icon &icon, uint32_t bg) {
+        if (!icon.isValid()) return _error;
+        const uint16_t width = static_cast<uint16_t>(icon.width & ~3u); // whole groups of 4
+        for (uint16_t top = 0; top < icon.height && width != 0; top = static_cast<uint16_t>(top + _tools.height)) {
+                const uint16_t rows =
+                        static_cast<uint16_t>(icon.height - top < _tools.height ? icon.height - top : _tools.height);
+                (void)run(x, static_cast<uint16_t>(y + top), width, rows,
+                          [&](uint8_t *strip, size_t stride, uint16_t room, bool &more) {
+                                  const uint16_t w = room < width ? static_cast<uint16_t>(room & ~3u) : width;
+                                  for (uint16_t r = 0; r < rows; ++r) {
+                                          const uint32_t *src = icon.pixels + size_t(top + r) * icon.width;
+                                          uint8_t        *out = strip + size_t(r) * stride;
+                                          for (uint16_t c = 0; c < w; ++c, out += 3) {
+                                                  const uint32_t rgb = blendOver(src[c], bg);
+                                                  out[0] = static_cast<uint8_t>(rgb);
+                                                  out[1] = static_cast<uint8_t>(rgb >> 8);
+                                                  out[2] = static_cast<uint8_t>(rgb >> 16);
+                                          }
+                                  }
+                                  more = false;
+                                  return w;
+                          });
+        }
+        return _error;
+}
+
 Error Painter::cells(uint16_t x, uint16_t y, Span<const TextCell> cells, const Font &font, uint16_t maxWidth) {
         size_t at = 0;
         return run(x, y, maxWidth, font.height(), [&](uint8_t *strip, size_t stride, uint16_t room, bool &more) {

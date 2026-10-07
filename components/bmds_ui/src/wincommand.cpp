@@ -265,13 +265,13 @@ namespace {
                 for (size_t i = 0; i < n; ++i) {
                         const WindowManager::Info &w = info[i];
 
-                        ctx.printf("%-4u %-5u %-5u %-5u %-5u %s%s%s%s%s%s%s\n", w.id, w.rect.x, w.rect.y, w.rect.width,
-                                   w.rect.height, w.title, w.focused ? " (focus)" : "", w.kind[0] != '\0' ? " (" : "",
-                                   w.kind, w.kind[0] != '\0' ? ")" : "",
+                        ctx.printf("%-4u %-5u %-5u %-5u %-5u %s%s%s%s%s%s%s%s\n", w.id, w.rect.x, w.rect.y,
+                                   w.rect.width, w.rect.height, w.title, w.focused ? " (focus)" : "",
+                                   w.kind[0] != '\0' ? " (" : "", w.kind, w.kind[0] != '\0' ? ")" : "",
                                    w.minimized   ? " (minimized)"
                                    : w.maximized ? " (maximized)"
                                                  : "",
-                                   w.level == WindowStack::Level::Above ? " (above)" : "");
+                                   w.level == WindowStack::Level::Above ? " (above)" : "", w.shaded ? " (shaded)" : "");
                 }
                 return Shell::ExitSuccess;
         }
@@ -395,7 +395,8 @@ namespace {
 
         // What window @p w's frame shows at (@p x, @p y): its border, title
         // bar, title, and buttons (none pressed).
-        uint32_t frameAt(const WindowPalette &palette, const WindowManager::Info &w, uint32_t x, uint32_t y) {
+        uint32_t frameAt(const WindowPalette &palette, const WindowManager::Info &w, const Icon &icon, uint32_t x,
+                         uint32_t y) {
                 using Role = WindowPalette::Role;
                 using Part = WindowFrame::Part;
                 const WindowFrame f(w.rect, w.decorations);
@@ -407,14 +408,21 @@ namespace {
                                 uint32_t icon;
                 };
                 const Button buttons[] = {
-                        {Part::Menu, Role::Button, Role::ButtonMark, Icon::Menu},
-                        {Part::Minimize, Role::Button, Role::ButtonMark, Icon::Minimize},
-                        {Part::Maximize, Role::Button, Role::ButtonMark, w.maximized ? Icon::Restore : Icon::Maximize},
-                        {Part::Close, Role::CloseBox, Role::CloseMark, Icon::Close},
+                        {Part::Menu, Role::Button, Role::ButtonMark, IconGlyph::Menu},
+                        {Part::Minimize, Role::Button, Role::ButtonMark, IconGlyph::Minimize},
+                        {Part::Maximize, Role::Button, Role::ButtonMark,
+                         w.maximized ? IconGlyph::Restore : IconGlyph::Maximize},
+                        {Part::Close, Role::CloseBox, Role::CloseMark, IconGlyph::Close},
                 };
                 for (const Button &b : buttons) {
                         const Rect r = f.button(b.part);
                         if (!inside(r, x, y)) continue;
+                        if (b.part == Part::Menu && icon.isValid() && icon.width <= r.width &&
+                            icon.height <= r.height) {
+                                // The window's icon in the menu button's place, over the title bar.
+                                if (x - r.x >= icon.width || y - r.y >= icon.height) return frame;
+                                return blendOver(icon.pixels[(y - r.y) * icon.width + (x - r.x)], frame);
+                        }
                         Bevel::Edge  edges[Bevel::MaxEdges];
                         const size_t n = Bevel::edges(r, Bevel::Style::Raised, edges);
                         for (size_t i = 0; i < n; ++i)
@@ -466,16 +474,27 @@ namespace {
                                              Fonts::unscii16.height()};
                 }
                 const WindowPalette palette = wm.palette();
+                // Each window's icon (the title bar shows a 16 x 16 one).
+                constexpr size_t IconPixels = 16 * 16;
+                auto            *iconPixels = static_cast<uint32_t *>(
+                        Memory::alloc(MemSpace::Psram, sizeof(uint32_t) * IconPixels * (n > 0 ? n : 1)));
+                Icon icons[WindowStack::MaxWindows];
+                for (size_t i = 0; i < n && iconPixels != nullptr; ++i) {
+                        auto [icon, ierr] =
+                                wm.copyIcon(info[i].id, Span<uint32_t>(iconPixels + i * IconPixels, IconPixels));
+                        if (ierr.isOk()) icons[i] = icon;
+                }
                 // Each window that offers it: its client area as it should be (a terminal's, from its screen).
                 uint8_t *images[WindowStack::MaxWindows] = {};
                 for (size_t i = 0; i < n; ++i) {
-                        if (info[i].minimized) continue;
+                        if (info[i].minimized || clients[i].isEmpty()) continue; // a rolled-up one shows none
                         const Rect  &c = clients[i];
                         const size_t stride = size_t(c.width) * 3;
                         images[i] = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, stride * c.height));
                         if (images[i] == nullptr) {
                                 for (uint8_t *image : images) Memory::free(image);
                                 Memory::free(labels);
+                                Memory::free(iconPixels);
                                 return report(ctx, Error::NoMem);
                         }
                         if (wm.reference(info[i].id, images[i], stride, c.width, c.height).isError()) {
@@ -501,7 +520,7 @@ namespace {
                                             testWindows[info[i].id - 1].id != info[i].id) {
                                                 known = false; // a client area offering no reference (a menu)
                                         } else if (!inside(c, x, y)) {
-                                                want = frameAt(palette, info[i], x, y);
+                                                want = frameAt(palette, info[i], icons[i], x, y);
                                         } else if (images[i] != nullptr) {
                                                 const uint8_t *q =
                                                         images[i] + (size_t(y - c.y) * c.width + (x - c.x)) * 3;
@@ -543,6 +562,7 @@ namespace {
                 ctx.printf("\n");
                 for (uint8_t *image : images) Memory::free(image);
                 Memory::free(labels);
+                Memory::free(iconPixels);
                 return wrong == 0 ? Shell::ExitSuccess : Shell::ExitFailure;
         }
 
@@ -1011,6 +1031,13 @@ namespace {
                         return parseId(ctx, args[2], id) ? report(ctx, wm->minimize(id)) : Shell::ExitUsage;
                 if (args.size() == 3 && std::strcmp(what, "maximize") == 0)
                         return parseId(ctx, args[2], id) ? report(ctx, wm->maximize(id)) : Shell::ExitUsage;
+                if (args.size() == 4 && std::strcmp(what, "shade") == 0) {
+                        if (!parseId(ctx, args[2], id)) return Shell::ExitUsage;
+                        if (std::strcmp(args[3], "on") != 0 && std::strcmp(args[3], "off") != 0) return ctx.usage();
+                        Error e = wm->shade(id, args[3][1] == 'n');
+                        if (e.isOk()) e = wm->sync(SyncTimeoutMs);
+                        return report(ctx, e);
+                }
                 if (args.size() == 4 && std::strcmp(what, "above") == 0) {
                         if (!parseId(ctx, args[2], id)) return Shell::ExitUsage;
                         if (std::strcmp(args[3], "on") != 0 && std::strcmp(args[3], "off") != 0) return ctx.usage();
@@ -1065,7 +1092,8 @@ BMDS_SHELL_COMMAND(
         "[start [RRGGBB]|stop|list|new [X Y W H] [TITLE]|close N|raise N|move N X Y|drag N X Y|"
         "term [N]|type N TEXT|dump N|scroll N DY|textbench N|color [ROLE RRGGBB]|check|stats|shuffle N|bench [CELLS]|"
         "pointer DX DY [BUTTONS [WHEEL]]|decorate N [all|none|+NAME|-NAME...]|minimize N|maximize N|restore N|"
-        "resize N W H|pointer on/off|key TEXT|title N [TEXT]|above N on/off|hid press/release/repeat USAGE [MODS]]",
+        "resize N W H|pointer on/off|key TEXT|title N [TEXT]|above N on/off|shade N on/off|hid press/release/repeat "
+        "USAGE [MODS]]",
         "The desktop and its windows on display 0: 'new' opens a test window, 'drag' moves one "
         "as an outline, 'color' lists or sets the palette, 'check' compares every pixel with the stack, "
         "'pointer' moves the pointer as a mouse would (BUTTONS: 1 left, 2 right, 4 middle; WHEEL: notches, "

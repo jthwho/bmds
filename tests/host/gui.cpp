@@ -12,15 +12,20 @@
 #include <doctest.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 #include <bmds/bevel.h>
 #include <bmds/desktopentry.h>
 #include <bmds/font.h>
+#include <bmds/inflate.h>
 #include <bmds/inireader.h>
 #include <bmds/linelayout.h>
 #include <bmds/menulayout.h>
+#include <bmds/pngdecoder.h>
+#include <bmds/program.h>
+#include <bmds/programimage.h>
 #include <bmds/windowstack.h>
 
 using bmds::DesktopEntry;
@@ -408,3 +413,126 @@ TEST_CASE("cascadeRect: down a diagonal, the first free place, again at the top 
         CHECK(taken.size() > 30);
         CHECK(place(400, 300) == Rect{16, 40, 400, 300});
 }
+
+namespace {
+
+        std::vector<uint8_t> readFile(const std::string &path) {
+                std::vector<uint8_t> out;
+                FILE                *f = std::fopen(path.c_str(), "rb");
+                if (f == nullptr) return out;
+                uint8_t buf[4096];
+                for (size_t n; (n = std::fread(buf, 1, sizeof(buf), f)) > 0;) out.insert(out.end(), buf, buf + n);
+                std::fclose(f);
+                return out;
+        }
+
+} // namespace
+
+TEST_CASE("Png: every supported kind decodes to its pixels; the rest is refused") {
+        const std::string dir = BMDS_PNG_DIR;
+        const char       *good[] = {"rgba-stored", "rgba-fixed", "rgba-dynamic",      "rgb-key",
+                                    "grey",        "grey-alpha", "palette-1",         "palette-2",
+                                    "palette-4",   "palette-8",  "icon-folder-16x16", "icon-command_line-32x32"};
+        for (const char *name : good) {
+                INFO(std::string(name));
+                const std::vector<uint8_t> file = readFile(dir + "/" + name + ".png");
+                const std::vector<uint8_t> want = readFile(dir + "/" + name + ".argb");
+                REQUIRE(!file.empty());
+                // An LFS pointer instead of the image: 'git lfs pull'.
+                REQUIRE(file[1] == 'P');
+                REQUIRE(want.size() % 4 == 0);
+                auto [size, serr] = bmds::Png::size(bmds::ByteSpan(file.data(), file.size()));
+                REQUIRE(serr.isOk());
+                CHECK(size_t(size.width) * size.height == want.size() / 4);
+                std::vector<uint32_t> pixels(want.size() / 4);
+                auto [got, err] =
+                        bmds::Png::decode(bmds::ByteSpan(file.data(), file.size()),
+                                          bmds::Span<uint32_t>(pixels.data(), pixels.size()), bmds::MemSpace::Psram);
+                INFO(std::string(err.desc()));
+                REQUIRE(err.isOk());
+                CHECK(got.width == size.width);
+                CHECK(std::memcmp(pixels.data(), want.data(), want.size()) == 0);
+                // Too little room.
+                std::vector<uint32_t> small(pixels.size() - 1);
+                CHECK(bmds::Png::decode(bmds::ByteSpan(file.data(), file.size()),
+                                        bmds::Span<uint32_t>(small.data(), small.size()), bmds::MemSpace::Psram)
+                              .error() == Error::BufferTooSmall);
+        }
+        const std::pair<const char *, Error> bad[] = {{"bad-crc", Error::CorruptData},
+                                                      {"bad-truncated", Error::CorruptData},
+                                                      {"bad-interlaced", Error::NotSupported},
+                                                      {"bad-16bit", Error::NotSupported}};
+        for (const auto &[name, why] : bad) {
+                INFO(std::string(name));
+                const std::vector<uint8_t> file = readFile(dir + "/" + name + ".png");
+                REQUIRE(!file.empty());
+                std::vector<uint32_t> pixels(4096);
+                CHECK(bmds::Png::decode(bmds::ByteSpan(file.data(), file.size()),
+                                        bmds::Span<uint32_t>(pixels.data(), pixels.size()), bmds::MemSpace::Psram)
+                              .error() == why);
+        }
+        const uint8_t text[] = "not a PNG at all, but long enough to have a header's room in it";
+        CHECK(bmds::Png::size(bmds::ByteSpan(text, sizeof(text))).error() == Error::CorruptData);
+        CHECK(bmds::Png::crc32(bmds::ByteSpan(reinterpret_cast<const uint8_t *>("123456789"), 9)) == 0xcbf43926u);
+}
+
+TEST_CASE("Inflate: zlib's checks, and what doesn't fit") {
+        // zlib.compress(b"hello hello hello hello") (a back reference over itself).
+        const uint8_t hello[] = {0x78, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57,
+                                 0xc8, 0x40, 0x27, 0x01, 0x68, 0x03, 0x08, 0xb1};
+        uint8_t       out[64];
+        auto [n, err] = bmds::Inflate::zlib(bmds::ByteSpan(hello, sizeof(hello)), bmds::WritableByteSpan(out, 64));
+        REQUIRE(err.isOk());
+        CHECK(std::string(reinterpret_cast<char *>(out), n) == "hello hello hello hello");
+        CHECK(bmds::Inflate::zlib(bmds::ByteSpan(hello, sizeof(hello)), bmds::WritableByteSpan(out, 10)).error() ==
+              Error::BufferTooSmall);
+        uint8_t broken[sizeof(hello)];
+        std::memcpy(broken, hello, sizeof(hello));
+        broken[sizeof(hello) - 1] ^= 1; // the Adler-32
+        CHECK(bmds::Inflate::zlib(bmds::ByteSpan(broken, sizeof(broken)), bmds::WritableByteSpan(out, 64)).error() ==
+              Error::CorruptData);
+        std::memcpy(broken, hello, sizeof(hello));
+        broken[1] ^= 1; // the header's check
+        CHECK(bmds::Inflate::zlib(bmds::ByteSpan(broken, sizeof(broken)), bmds::WritableByteSpan(out, 64)).error() ==
+              Error::CorruptData);
+        CHECK(bmds::Inflate::zlib(bmds::ByteSpan(hello, 8), bmds::WritableByteSpan(out, 64)).error() ==
+              Error::CorruptData);
+        const uint8_t reserved[] = {0x07}; // a last block of the reserved type
+        CHECK(bmds::Inflate::raw(bmds::ByteSpan(reserved, 1), bmds::WritableByteSpan(out, 64)).error() ==
+              Error::CorruptData);
+        CHECK(bmds::Inflate::adler32(bmds::ByteSpan(reinterpret_cast<const uint8_t *>("Wikipedia"), 9)) == 0x11e60398u);
+}
+
+#ifdef BMDS_SDK_EXAMPLES
+TEST_CASE("Program icons: an SDK program's notes, nearest the size asked for") {
+        const std::vector<uint8_t> elf = readFile(std::string(BMDS_SDK_EXAMPLES) + "/hello.elf");
+        REQUIRE(!elf.empty());
+        bmds::ProgramImage::MemorySource source(bmds::ByteSpan(elf.data(), elf.size()));
+        for (const auto &[want, got] : {std::pair<uint16_t, uint16_t>{16, 16}, {32, 32}, {24, 32}, {48, 32}, {8, 16}}) {
+                bmds::ProgramImage::IconRef ref;
+                REQUIRE(bmds::ProgramImage::findIcon(source, uint32_t(elf.size()), want, ref).isOk());
+                CHECK(ref.width == got);
+                CHECK(ref.height == got);
+                CHECK(ref.format == BMDS_ICON_FORMAT_PNG);
+                REQUIRE(ref.offset + ref.length <= elf.size());
+                // It is the PNG the program was built with, and it decodes.
+                const std::vector<uint8_t> png =
+                        readFile(std::string(BMDS_PNG_DIR) + "/../../../sdk/examples/hello/hello-" +
+                                 std::to_string(got) + ".png");
+                REQUIRE(png.size() == ref.length);
+                CHECK(std::memcmp(png.data(), elf.data() + ref.offset, ref.length) == 0);
+                std::vector<uint32_t> pixels(size_t(got) * got);
+                CHECK(bmds::Png::decode(bmds::ByteSpan(elf.data() + ref.offset, ref.length),
+                                        bmds::Span<uint32_t>(pixels.data(), pixels.size()), bmds::MemSpace::Psram)
+                              .isOk());
+        }
+        // A program without icons has none; neither has a file that isn't ELF.
+        const std::vector<uint8_t>       cat = readFile(std::string(BMDS_SDK_EXAMPLES) + "/cat.elf");
+        bmds::ProgramImage::MemorySource catSource(bmds::ByteSpan(cat.data(), cat.size()));
+        bmds::ProgramImage::IconRef      ref;
+        CHECK(bmds::ProgramImage::findIcon(catSource, uint32_t(cat.size()), 16, ref) == Error::NotFound);
+        const uint8_t                    text[64] = "not a program";
+        bmds::ProgramImage::MemorySource textSource(bmds::ByteSpan(text, sizeof(text)));
+        CHECK(bmds::ProgramImage::findIcon(textSource, sizeof(text), 16, ref) == Error::NotFound);
+}
+#endif

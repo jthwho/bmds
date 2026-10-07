@@ -13,6 +13,7 @@
 #include <bmds/config.h>
 #include <bmds/error.h>
 #include <bmds/font.h>
+#include <bmds/icon.h>
 #include <bmds/rect.h>
 #include <bmds/span.h>
 #include <bmds/stringview.h>
@@ -46,9 +47,10 @@ class MenuLayout {
 
                 /** @brief An item to lay out (the texts are the caller's). */
                 struct Item {
-                                StringView text;
-                                StringView shortcut;  ///< Shown at the right ("Ctrl+Q"); may be empty.
-                                uint8_t    flags = 0; ///< `Flag`s.
+                                StringView  text;
+                                StringView  shortcut;       ///< Shown at the right ("Ctrl+Q"); may be empty.
+                                uint8_t     flags = 0;      ///< `Flag`s.
+                                const Icon *icon = nullptr; ///< In the icon column (16 × 16), unless checked.
                 };
 
                 static constexpr size_t   MaxItems = 32;

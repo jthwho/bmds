@@ -15,10 +15,24 @@
 
 BMDS_NAMESPACE_BEGIN
 
+/**
+ * @brief An icon of a program built into the firmware: a PNG image in rodata
+ *        (`devplan/gui.md` §4j; a program file has its icons in notes instead,
+ *        `bmds_icon_note_t`).
+ */
+struct ProgramIcon {
+                uint16_t       width;
+                uint16_t       height;
+                const uint8_t *png;
+                uint32_t       bytes;
+};
+
 /** @brief A program built into the firmware, by name (`BMDS_PROGRAM`). */
 struct ProgramEntry {
-                const char    *name; ///< Its name in `/bin`; an interface once shipped.
-                BuiltinProgram program;
+                const char        *name; ///< Its name in `/bin`; an interface once shipped.
+                BuiltinProgram     program;
+                const ProgramIcon *icons = nullptr; ///< Its icons, by size (`BMDS_PROGRAM_ICONS`).
+                uint8_t            iconCount = 0;
 };
 
 /**
@@ -69,3 +83,11 @@ BMDS_NAMESPACE_END
         [[gnu::used, gnu::section(".bmds_prog." Name)]] constexpr ::bmds::ProgramEntry bmdsProgram_##Id = {Name,       \
                                                                                                           {Main, StackBytes}};
 
+/**
+ * @def BMDS_PROGRAM_ICONS
+ * @brief `BMDS_PROGRAM` with icons: @p Icons, an array of `ProgramIcon` (PNG
+ *        images in rodata; `bmds_embed_icons()` in CMake makes one).
+ */
+#define BMDS_PROGRAM_ICONS(Name, Main, StackBytes, Icons)                                                              \
+        [[gnu::used, gnu::section(".bmds_prog." #Name)]] constexpr ::bmds::ProgramEntry bmdsProgram_##Name = {         \
+                #Name, {Main, StackBytes}, Icons, static_cast<uint8_t>(sizeof(Icons) / sizeof(Icons[0]))};

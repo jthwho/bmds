@@ -12,9 +12,11 @@ set(BMDS_CORE_SRCS
         src/color.cpp
         src/datetime.cpp
         src/desktopentry.cpp
+        src/pngdecoder.cpp
         src/randompool.cpp
         src/region.cpp
         src/error.cpp
+        src/inflate.cpp
         src/inireader.cpp
         src/string.cpp
         src/timezone.cpp

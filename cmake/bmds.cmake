@@ -20,3 +20,23 @@ function(bmds_target_options target)
                 $<$<COMPILE_LANGUAGE:C>:-std=gnu17>
                 -Wall -Wextra -Werror -Wshadow)
 endfunction()
+
+# A built-in program's icons (devplan/gui.md §4j): the PNGs in ARGN as a header
+# named HEADER (in the target's binary directory, on its include path) defining
+# the ProgramIcon array VAR for BMDS_PROGRAM_ICONS.
+function(bmds_embed_icons target header var)
+        set(script ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tools/embedicons.py)
+        if(COMMAND idf_build_get_property)
+                idf_build_get_property(python PYTHON)
+        else()
+                find_package(Python3 REQUIRED COMPONENTS Interpreter)
+                set(python ${Python3_EXECUTABLE})
+        endif()
+        set(out ${CMAKE_CURRENT_BINARY_DIR}/${header})
+        add_custom_command(OUTPUT ${out}
+                           COMMAND ${python} ${script} ${out} ${var} ${ARGN}
+                           DEPENDS ${script} ${ARGN}
+                           VERBATIM)
+        target_sources(${target} PRIVATE ${out})
+        target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+endfunction()

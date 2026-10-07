@@ -11,3 +11,7 @@ idf_component_register(SRCS src/panelapp.cpp
                        PRIV_REQUIRES bmds_core bmds_fs bmds_gui bmds_input bmds_kernel bmds_ui
                        WHOLE_ARCHIVE)
 bmds_target_options(${COMPONENT_LIB})
+
+# Its icons, built in (devplan/gui.md §4j): the flat-color theme's services.
+set(BMDS_ICONS ${CMAKE_CURRENT_LIST_DIR}/../../thirdparty/flat-color-icons/png)
+bmds_embed_icons(${COMPONENT_LIB} panelicons.h PanelIcons ${BMDS_ICONS}/16x16/services.png ${BMDS_ICONS}/32x32/services.png)

@@ -1,0 +1,25 @@
+# The freedesktop.org icon names (Icon= in launcher entries) the glyphs theme
+# answers: NAME ICON, a link NAME.png -> ICON.png in each size. Names it lacks
+# come from flat-color (Inherits).
+start-here                  venn
+application-x-executable    window
+utilities-terminal          laptop-code
+accessories-text-editor     note-pad
+accessories-calculator      calculator
+system-file-manager         folder
+user-home                   house
+user-trash                  trash
+user-trash-full             trash-1
+preferences-system          cogs
+applications-system         cog
+utilities-system-monitor    chart-line
+help-about                  info-circle
+help-browser                question-circle
+system-search               search
+document-print              printer
+image-viewer                image
+multimedia-player           music-note
+internet-web-browser        globe
+appointment-soon            clock
+alarm                       alarm-clock
+dialog-information          info-circle

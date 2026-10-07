@@ -193,7 +193,9 @@ class Board:
         if status != 0:
             raise BoardError("rz failed: " + b"".join(report).decode(errors="replace").strip())
 
-    def _wait_for_c(self, seconds=10):
+    # A card can take seconds to make a file: a FAT directory's names are searched for each new
+    # one (about 0.2 s at 860 files), and a card's own housekeeping stalls writes now and then.
+    def _wait_for_c(self, seconds=60):
         end = time.monotonic() + seconds
         while time.monotonic() < end:
             data = self.pending + self.serial.read(1)

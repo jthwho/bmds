@@ -113,7 +113,7 @@ namespace Fonts {
 } // namespace Fonts
 
 /** @brief `Fonts::icons16`'s glyphs, in the private use area. Append only. */
-namespace Icon {
+namespace IconGlyph {
         constexpr uint32_t Menu = 0xe000;     ///< ≡
         constexpr uint32_t Minimize = 0xe001; ///< A bar at the bottom.
         constexpr uint32_t Maximize = 0xe002; ///< A window.
@@ -121,6 +121,6 @@ namespace Icon {
         constexpr uint32_t Close = 0xe004;    ///< ×
         constexpr uint32_t Check = 0xe005;    ///< ✓: a checked menu item.
         constexpr uint32_t Submenu = 0xe006;  ///< ▸: a menu item opening a submenu.
-} // namespace Icon
+} // namespace IconGlyph
 
 BMDS_NAMESPACE_END

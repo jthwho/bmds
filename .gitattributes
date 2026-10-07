@@ -1,2 +1,4 @@
 # Program images: never converted or diffed as text.
 *.elf binary
+# PNGs (the icons, devplan/gui.md §4h) are kept in Git LFS.
+*.png filter=lfs diff=lfs merge=lfs -text

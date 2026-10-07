@@ -9,6 +9,8 @@
 #include <new>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <freertos/timers.h>
+#include <atomic>
 #include <bmds/assert.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
@@ -24,22 +26,40 @@ namespace {
 
         // Everything a running thread needs, in internal RAM with its TCB.
         struct Record {
-                        StaticTask_t  tcb;
-                        TaskHandle_t  handle = nullptr;
-                        uint8_t      *stack = nullptr;
-                        Thread::Entry entry = nullptr;
-                        void         *arg = nullptr;
+                        StaticTask_t      tcb;
+                        TaskHandle_t      handle = nullptr;
+                        uint8_t          *stack = nullptr;
+                        Thread::Entry     entry = nullptr;
+                        void             *arg = nullptr;
                         TaskOwner        *owner = nullptr; // its process (the starter's), or null
                         TaskOwner::Member member;
-                        Semaphore     done{1, 0};
+                        Semaphore         done{1, 0};
+                        std::atomic<bool> detached{false}; // freed by the timer task when it ends
         };
+
+        // A detached thread that ended, freed on the timer service's task (a task can't free its
+        // own stack): once it is parked, it is deleted and its memory freed.
+        void reap(void *p, uint32_t) {
+                Record *rec = static_cast<Record *>(p);
+                while (eTaskGetState(rec->handle) != eSuspended) vTaskDelay(1); // parking, on the other core
+                vTaskDelete(rec->handle);
+                Memory::free(rec->stack);
+                rec->~Record();
+                Memory::free(rec);
+                return;
+        }
 
         void trampoline(void *p) {
                 Record *rec = static_cast<Record *>(p);
                 TaskOwner::setCurrent(rec->owner);
                 rec->entry(rec->arg);
                 if (rec->owner != nullptr) rec->owner->detach(rec->member);
-                rec->done.release();
+                if (rec->detached.load(std::memory_order_acquire)) {
+                        // Nobody will join it: the timer service frees it once it is parked below.
+                        while (xTimerPendFunctionCall(reap, rec, 0, pdMS_TO_TICKS(100)) != pdPASS) {}
+                } else {
+                        rec->done.release();
+                }
                 // Park: join() deletes the task once it sees it suspended, so
                 // the task is never deleted while it is still running.
                 vTaskSuspend(nullptr);
@@ -87,6 +107,15 @@ Error Thread::start(const Config &config, Entry entry, void *arg) {
         bmdsDebug("Thread(%p '%s'): started, %u-byte stack in %s", this, config.name,
                   static_cast<unsigned>(config.stackBytes), memSpaceName(config.stackSpace));
         return Error::Ok;
+}
+
+void Thread::detach() {
+        Record *rec = static_cast<Record *>(_impl);
+        if (rec == nullptr) return;
+        BMDS_ASSERT(rec->handle == xTaskGetCurrentTaskHandle()); // only the thread itself
+        rec->detached.store(true, std::memory_order_release);
+        _impl = nullptr;
+        return;
 }
 
 void Thread::join() {

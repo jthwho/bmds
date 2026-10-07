@@ -33,6 +33,13 @@ Make `dist/<name>/` with:
   (the repository; for its `tools/`). Without the SDK there is no `CC`, `AR`,
   `STRIP` or `OBJCOPY`.
 - **`patches/*.patch`** (optional): applied in name order with `patch -p1`.
+- **Icons** (the `icons` and `icons-glyphs` packages): the desktop's themes,
+  `share/icons/flat-color/` (the default) and `share/icons/glyphs/`, from the PNGs rendered in
+  this repository (`thirdparty/flat-color-icons/`, `thirdparty/glyphs/`, `tools/render-icons`;
+  Git LFS: run `git lfs pull` before building), installed by `tools/install-icon-theme` with
+  their aliases. A package's own icons go in a theme's size directories under `share/icons/`.
+  A directory of many files installs slowly: FAT searches a directory's names for each new
+  file (Glyphs' 1,720 took most of 7.5 minutes).
 - **Launcher entries** (optional): Desktop Entry files installed in
   `$DESTDIR/share/applications/` show in the panel's launcher (`devplan/gui.md` G10, G11;
   BusyBox's `vi.desktop`).

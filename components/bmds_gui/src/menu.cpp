@@ -45,7 +45,7 @@ Menu::~Menu() {
         _parent = nullptr;
 }
 
-Error Menu::add(StringView text, int number, uint8_t flags, StringView shortcut, Menu *submenu) {
+Error Menu::add(StringView text, int number, uint8_t flags, StringView shortcut, Menu *submenu, const Icon *icon) {
         if (_count == MaxItems) return Error::Full;
         Item &item = _items[_count++];
         item = Item();
@@ -54,20 +54,21 @@ Error Menu::add(StringView text, int number, uint8_t flags, StringView shortcut,
         item.number = number;
         item.flags = flags;
         item.submenu = submenu;
+        item.icon = icon;
         return Error();
 }
 
-Error Menu::addItem(StringView text, int item, uint8_t flags, StringView shortcut) {
+Error Menu::addItem(StringView text, int item, uint8_t flags, StringView shortcut, const Icon *icon) {
         return add(text, item, static_cast<uint8_t>(flags & (MenuLayout::Disabled | MenuLayout::Checked)), shortcut,
-                   nullptr);
+                   nullptr, icon);
 }
 
 Error Menu::addSeparator() {
-        return add(StringView(), 0, MenuLayout::Separator, StringView(), nullptr);
+        return add(StringView(), 0, MenuLayout::Separator, StringView(), nullptr, nullptr);
 }
 
-Error Menu::addSubmenu(StringView text, Menu &submenu) {
-        return add(text, 0, MenuLayout::Submenu, StringView(), &submenu);
+Error Menu::addSubmenu(StringView text, Menu &submenu, const Icon *icon) {
+        return add(text, 0, MenuLayout::Submenu, StringView(), &submenu, icon);
 }
 
 void Menu::clear() {
@@ -83,8 +84,8 @@ Error Menu::popup(const Rect &anchor, bool submenu) {
         closeSubmenu();
         close();
         for (size_t i = 0; i < _count; ++i)
-                _views[i] =
-                        MenuLayout::Item{StringView(_items[i].text), StringView(_items[i].shortcut), _items[i].flags};
+                _views[i] = MenuLayout::Item{StringView(_items[i].text), StringView(_items[i].shortcut),
+                                             _items[i].flags, _items[i].icon};
         const Error err = _layout.layout(Span<const MenuLayout::Item>(_views, _count), Fonts::unscii16);
         if (err.isError()) return err;
         const Rect area = application().windowManager().workArea();

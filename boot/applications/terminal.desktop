@@ -3,6 +3,6 @@ Type=Application
 Name=Terminal
 Comment=A shell in a window
 Exec=terminal
-Icon=terminal
+Icon=utilities-terminal
 Terminal=false
 Categories=System;TerminalEmulator;

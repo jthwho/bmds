@@ -9,6 +9,7 @@
  * Semaphore and the clock on top of the C++ thread library.
  */
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -209,13 +210,14 @@ namespace {
         struct HostThread {
                         std::thread       thread;
                         TaskOwner::Member member;
+                        std::atomic<bool> detached{false};
         };
 
 } // namespace
 
 Error Thread::start(const Config &, Entry entry, void *arg) {
         if (_impl != nullptr) return Error::InvalidState;
-        auto      *t = new HostThread;
+        auto            *t = new HostThread;
         TaskOwner *const starter = TaskOwner::current();
         TaskOwner       *owner = starter != nullptr ? starter->threadOwner() : nullptr;
         if (owner != nullptr) {
@@ -229,9 +231,19 @@ Error Thread::start(const Config &, Entry entry, void *arg) {
                 TaskOwner::setCurrent(owner);
                 entry(arg);
                 if (owner != nullptr) owner->detach(t->member);
+                if (t->detached.load()) delete t; // nobody joins it
         });
         _impl = t;
         return Error::Ok;
+}
+
+void Thread::detach() {
+        auto *t = static_cast<HostThread *>(_impl);
+        if (t == nullptr) return;
+        t->thread.detach();
+        t->detached.store(true);
+        _impl = nullptr;
+        return;
 }
 
 void Thread::join() {

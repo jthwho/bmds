@@ -33,6 +33,8 @@
 #include <bmds/vfs.h>
 #include <bmds/widget.h>
 
+#include "panelicons.h"
+
 BMDS_NAMESPACE_BEGIN
 
 namespace {
@@ -116,6 +118,32 @@ namespace {
                 public:
                         using Button::Button;
                         GuiSize sizeHint() const override { return GuiSize{32, GuiStyle::ButtonHeight}; }
+
+                        // Window @p id's icon, copied (the window's owner keeps its own); none if it has none.
+                        void takeIcon(WindowManager &wm, uint8_t id) {
+                                uint32_t pixels[Side * Side];
+                                auto [icon, err] = wm.copyIcon(id, Span<uint32_t>(pixels));
+                                const bool   has = err.isOk() && icon.width <= Side && icon.height <= Side;
+                                const size_t n = has ? size_t(icon.width) * icon.height : 0;
+                                if (has == _icon.isValid() &&
+                                    (!has || (icon.width == _icon.width && icon.height == _icon.height &&
+                                              std::memcmp(_pixels, pixels, n * 4) == 0)))
+                                        return; // the same
+                                if (has) {
+                                        std::memcpy(_pixels, pixels, n * 4);
+                                        _icon = Icon{icon.width, icon.height, _pixels};
+                                } else {
+                                        _icon = Icon();
+                                }
+                                setIcon(nullptr); // drawn again
+                                setIcon(has ? &_icon : nullptr);
+                                return;
+                        }
+
+                private:
+                        static constexpr uint16_t Side = GuiStyle::IconSize;
+                        Icon                      _icon;
+                        uint32_t                  _pixels[Side * Side] = {};
         };
 
         // The windows, a button each, in the order they opened.
@@ -183,16 +211,21 @@ namespace {
                         static void launcherPressed(void *arg, Button &button, uint8_t which, uint16_t x, uint16_t y);
                         static void triggered(void *arg, int item);
                         static void dismissed(void *arg, Menu &menu);
+                        static void launcherKey(void *arg);
 
-                        void       say(const char *a, const char *b = "", const char *c = "", const char *d = "");
-                        Error      readConfig(StringView path);
-                        StringView setting(StringView group, StringView key, StringView fallback) const;
-                        void       loadEntries(StringView directories);
-                        void       loadDirectory(StringView directory);
-                        void       buildMenu(size_t submenuAfter);
-                        Error      buildItems(Widget *row);
-                        Error      openWindows();
-                        void       launch(const Entry &entry);
+                        void        say(const char *a, const char *b = "", const char *c = "", const char *d = "");
+                        Error       readConfig(StringView path);
+                        StringView  setting(StringView group, StringView key, StringView fallback) const;
+                        void        loadEntries(StringView directories);
+                        bool        loadDirectory(StringView directory);
+                        void        freeLauncher();
+                        void        reloadLauncher();
+                        void        buildMenu(size_t submenuAfter);
+                        Error       buildItems(Widget *row);
+                        Error       openWindows();
+                        void        launch(const Entry &entry);
+                        const Icon *entryIcon(const Entry &entry);
+                        Error       programPath(StringView command, String &out) const;
 
                         const BuiltinProgram::Context &_context;
                         GuiApplication                 _app;
@@ -201,7 +234,12 @@ namespace {
                         BoxLayout                     *_row = nullptr;
                         WindowList                    *_windows = nullptr;
                         Menu                          *_menu = nullptr;
-                        Button                        *_launcher = nullptr; // pressed in while its menu is open
+                        Button                        *_launcher = nullptr;       // pressed in while its menu is open
+                        Button                        *_launcherButton = nullptr; // the launcher item's
+                        char                           _applications[256] = {};   // [Launcher] Applications
+                        char                           _launcherIcon[64] = {};    // its Icon
+                        size_t                         _submenuAfter = 12;
+                        bool                           _incomplete = false; // a directory of entries wasn't there
                         Menu                          *_submenus[MaxCategories] = {};
                         char                          *_configText = nullptr;
                         Setting                        _settings[MaxSettings];
@@ -250,6 +288,7 @@ namespace {
                                       info.title[0] != '\0' ? info.title : "(untitled)");
                         button->setText(StringView(text));
                         button->setChecked(info.focused);
+                        static_cast<WindowButton *>(button)->takeIcon(_panel.application().windowManager(), info.id);
                 }
                 relayout();
                 return;
@@ -314,17 +353,38 @@ namespace {
 
         // ---- The panel
 
-        PanelApp::~PanelApp() {
-                // The windows (and their widgets) before the application they belong to.
+        // The launcher's menus and entries, gone.
+        void PanelApp::freeLauncher() {
                 for (Menu *&m : _submenus) {
                         if (m == nullptr) continue;
                         m->~Menu();
                         Memory::free(m);
+                        m = nullptr;
                 }
                 if (_menu != nullptr) {
                         _menu->~Menu();
                         Memory::free(_menu);
+                        _menu = nullptr;
                 }
+                Memory::free(_entries);
+                _entries = nullptr;
+                _entryCount = 0;
+                return;
+        }
+
+        // The entries read again (a directory wasn't there: the card mounted since?).
+        void PanelApp::reloadLauncher() {
+                freeLauncher();
+                loadEntries(StringView(_applications));
+                buildMenu(_submenuAfter);
+                if (_launcherButton != nullptr)
+                        _launcherButton->setIcon(_app.icons().find(StringView(_launcherIcon), GuiStyle::IconSize));
+                return;
+        }
+
+        PanelApp::~PanelApp() {
+                // The windows (and their widgets) before the application they belong to.
+                freeLauncher();
                 if (_desktop != nullptr) {
                         _desktop->~DesktopWindow();
                         Memory::free(_desktop);
@@ -333,7 +393,6 @@ namespace {
                         _panel->~GuiWindow();
                         Memory::free(_panel);
                 }
-                Memory::free(_entries);
                 Memory::free(_configText);
         }
 
@@ -394,12 +453,13 @@ namespace {
                 return fallback;
         }
 
-        void PanelApp::loadDirectory(StringView directory) {
+        // Directory @p directory's entries added; false if it isn't there (no card yet: no error).
+        bool PanelApp::loadDirectory(StringView directory) {
                 const Vfs::Context vc{_context.cwd, nullptr};
                 auto [dir, err] = Vfs::openDirectory(directory, vc);
-                if (err.isError()) return; // a directory not there (no card) is no error
+                if (err.isError()) return false;
                 char *text = static_cast<char *>(Memory::alloc(MemSpace::Psram, MaxEntryBytes));
-                if (text == nullptr) return;
+                if (text == nullptr) return true;
                 for (;;) {
                         auto [info, nerr] = dir.next();
                         if (nerr.isError()) break;
@@ -438,16 +498,17 @@ namespace {
                         ++_entryCount; // a hidden one too: it hides the later ones of its name
                 }
                 Memory::free(text);
-                return;
+                return true;
         }
 
         void PanelApp::loadEntries(StringView directories) {
                 _entries = static_cast<Entry *>(Memory::alloc(MemSpace::Psram, sizeof(Entry) * MaxEntries));
                 if (_entries == nullptr) return;
                 for (size_t i = 0; i < MaxEntries; ++i) ::new (&_entries[i]) Entry();
+                _incomplete = false;
                 for (StringView d = IniReader::nextListItem(directories); !d.isEmpty();
                      d = IniReader::nextListItem(directories))
-                        loadDirectory(d);
+                        if (!loadDirectory(d)) _incomplete = true; // read again when the launcher opens
                 // Hidden and not-shown entries out; the rest by name.
                 size_t n = 0;
                 for (size_t i = 0; i < _entryCount; ++i)
@@ -481,7 +542,8 @@ namespace {
                 _menu->setDismissed(dismissed, this);
                 if (_entryCount <= submenuAfter) {
                         for (size_t i = 0; i < _entryCount; ++i)
-                                (void)_menu->addItem(StringView(_entries[i].entry.name), int(i));
+                                (void)_menu->addItem(StringView(_entries[i].entry.name), int(i), 0, StringView(),
+                                                     entryIcon(_entries[i]));
                 } else {
                         for (size_t c = 0; c < MaxCategories; ++c) {
                                 const StringView category =
@@ -501,7 +563,8 @@ namespace {
                                                 _submenus[c] = sub;
                                                 (void)_menu->addSubmenu(category, *sub);
                                         }
-                                        (void)sub->addItem(StringView(_entries[i].entry.name), int(i));
+                                        (void)sub->addItem(StringView(_entries[i].entry.name), int(i), 0, StringView(),
+                                                           entryIcon(_entries[i]));
                                 }
                         }
                 }
@@ -510,6 +573,7 @@ namespace {
         }
 
         void PanelApp::showLauncher(const Rect &anchor) {
+                if (_incomplete && (_menu == nullptr || !_menu->isShown())) reloadLauncher();
                 if (_menu != nullptr) (void)_menu->popup(anchor);
                 return;
         }
@@ -524,6 +588,31 @@ namespace {
                 if (self->_menu != nullptr && self->_menu->isShown()) {
                         self->_launcher = &button;
                         button.setChecked(true);
+                }
+                return;
+        }
+
+        // The Windows key: the launcher's menu at its button (or the screen's top-left corner), its
+        // first item highlighted for the keys.
+        void PanelApp::launcherKey(void *arg) {
+                auto *self = static_cast<PanelApp *>(arg);
+                if (self->_menu != nullptr && self->_menu->isShown()) {
+                        self->_menu->dismiss(); // the key again closes it
+                        return;
+                }
+                Rect anchor{self->_screen.x, self->_screen.y, 0, 0};
+                if (self->_launcherButton != nullptr && self->_panel != nullptr) {
+                        const Rect b = self->_launcherButton->geometry();
+                        const Rect s = self->_panel->screenRect();
+                        anchor = Rect{uint16_t(s.x + b.x), uint16_t(s.y + b.y), b.width, b.height};
+                }
+                self->showLauncher(anchor);
+                if (self->_menu != nullptr && self->_menu->isShown()) {
+                        self->_menu->highlightFirst();
+                        if (self->_launcherButton != nullptr) {
+                                self->_launcher = self->_launcherButton;
+                                self->_launcher->setChecked(true);
+                        }
                 }
                 return;
         }
@@ -558,16 +647,9 @@ namespace {
                         args[1] = "-e";
                 }
                 const size_t count = n + front;
-                StringView   searchPath;
-                for (const StringView &v : _context.environment)
-                        if (v.startsWith(StringView("PATH="))) searchPath = v.mid(5);
-                String             found;
-                const Vfs::Context vc{_context.cwd, nullptr};
-                StringView         path = args[0];
-                if (!path.contains('/')) {
-                        err = Vfs::findProgram(path, searchPath, vc, found);
-                        path = found.view();
-                }
+                String       found;
+                err = programPath(args[0], found);
+                const StringView path = found.view();
                 if (err.isOk()) {
                         ProgramLauncher::Request request;
                         request.path = path;
@@ -585,6 +667,28 @@ namespace {
                         say("panel: ", entry.entry.name, ": ",
                             err == Error::NotExist ? "not found\n" : "can't start it\n");
                 return;
+        }
+
+        // Where @p command (a name on $PATH, or a path) is.
+        Error PanelApp::programPath(StringView command, String &out) const {
+                out.clear();
+                if (command.contains('/')) return out.append(command);
+                StringView searchPath;
+                for (const StringView &v : _context.environment)
+                        if (v.startsWith(StringView("PATH="))) searchPath = v.mid(5);
+                const Vfs::Context vc{_context.cwd, nullptr};
+                return Vfs::findProgram(command, searchPath, vc, out);
+        }
+
+        // Entry @p entry's icon: its Icon=, else its program's own, else a generic one.
+        const Icon *PanelApp::entryIcon(const Entry &entry) {
+                char       buffer[DesktopEntry::MaxExec + 1];
+                StringView args[DesktopEntry::MaxArgs];
+                String     path;
+                auto [n, err] = DesktopEntry::splitExec(StringView(entry.entry.exec), buffer, sizeof(buffer),
+                                                        Span<StringView>(args));
+                if (err.isOk() && n > 0) (void)programPath(args[0], path);
+                return _app.icons().forProgram(StringView(entry.entry.icon), path.view(), GuiStyle::IconSize);
         }
 
         void PanelApp::windowsChanged(void *arg) {
@@ -609,7 +713,11 @@ namespace {
                         if (type == "launcher") {
                                 auto *b = Widget::create<Button>(row, setting(name, "Label", "Apps"));
                                 if (b == nullptr) return Error::NoMem;
-                                b->setIcon(setting(name, "Icon", ""));
+                                const StringView icon = setting(name, "Icon", "start-here");
+                                std::snprintf(_launcherIcon, sizeof(_launcherIcon), "%.*s", int(icon.size()),
+                                              icon.data());
+                                b->setIcon(_app.icons().find(StringView(_launcherIcon), GuiStyle::IconSize));
+                                _launcherButton = b;
                                 b->setPressed(launcherPressed, this);
                         } else if (type == "windows") {
                                 _windows = Widget::create<WindowList>(row, *this);
@@ -678,11 +786,17 @@ namespace {
                 }
                 _screen = wm.screen();
                 _bottom = setting("Panel", "Edge", "top") == "bottom";
-                loadEntries(setting("Launcher", "Applications", DefaultApplications));
+                // The icon theme (a directory under /sd0/p0/share/icons; flat-color unless set).
+                const StringView theme = setting("Panel", "IconTheme", "");
+                if (!theme.isEmpty()) _app.icons().setTheme(theme);
+                const StringView apps = setting("Launcher", "Applications", DefaultApplications);
+                std::snprintf(_applications, sizeof(_applications), "%.*s", int(apps.size()), apps.data());
                 const StringView after = setting("Launcher", "Submenus", "12");
                 char             digits[8] = {};
                 std::snprintf(digits, sizeof(digits), "%.*s", int(after.size()), after.data());
-                buildMenu(static_cast<size_t>(std::atoi(digits)));
+                _submenuAfter = static_cast<size_t>(std::atoi(digits));
+                loadEntries(StringView(_applications));
+                buildMenu(_submenuAfter);
 
                 {
                         Mutex::Locker lock(_app.lock(), WaitForever);
@@ -735,6 +849,13 @@ namespace {
                         err = _panel->show();
                 }
                 if (err.isOk()) err = _app.setWindowsChanged(windowsChanged, this);
+                // The Windows keys (left and right, tapped alone) open the launcher.
+                if (err.isOk()) {
+                        constexpr uint8_t LeftGui = 0xe3, RightGui = 0xe7;
+                        for (const uint8_t key : {LeftGui, RightGui})
+                                if (_app.grabKey(key, 0, launcherKey, this).isError())
+                                        say("panel: the Windows key is taken: no launcher on it\n");
+                }
                 if (err.isOk()) windowsChanged(this);
                 // The configuration is in the widgets now.
                 _settingCount = 0;
@@ -755,6 +876,6 @@ namespace {
 
 } // namespace
 
-BMDS_PROGRAM(panel, panelMain, 16 * 1024)
+BMDS_PROGRAM_ICONS(panel, panelMain, 16 * 1024, PanelIcons)
 
 BMDS_NAMESPACE_END

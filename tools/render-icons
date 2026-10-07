@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Renders an icon set's SVGs into the PNG sizes BMDS uses (devplan/gui.md §4h):
+# ICONS/svg/NAME.svg -> ICONS/png/16x16/NAME.png and ICONS/png/32x32/NAME.png.
+#
+#   tools/render-icons [ICONS]     (default: thirdparty/flat-color-icons)
+#
+# Run by hand after the SVGs change; the PNGs are committed (through Git LFS:
+# .gitattributes), so building needs no SVG renderer. Needs rsvg-convert
+# (librsvg). PNGs no longer matching an SVG are removed.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+icons="${1:-$root/thirdparty/flat-color-icons}"
+sizes=(16 32)
+
+command -v rsvg-convert > /dev/null || { echo "render-icons: needs rsvg-convert (librsvg)" >&2; exit 1; }
+[ -d "$icons/svg" ] || { echo "render-icons: no $icons/svg" >&2; exit 1; }
+
+count=0
+for size in "${sizes[@]}"; do
+        out="$icons/png/${size}x${size}"
+        mkdir -p "$out"
+        for svg in "$icons"/svg/*.svg; do
+                name="$(basename "$svg" .svg)"
+                rsvg-convert -w "$size" -h "$size" "$svg" -o "$out/$name.png"
+                count=$((count + 1))
+        done
+        for png in "$out"/*.png; do
+                [ -f "$icons/svg/$(basename "$png" .png).svg" ] || rm -f "$png"
+        done
+done
+echo "render-icons: $count PNGs in $icons/png ($(du -sh "$icons/png" | cut -f1))"

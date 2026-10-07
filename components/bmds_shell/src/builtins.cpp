@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <esp_heap_caps.h>
 #include <bmds/console.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
@@ -83,9 +84,124 @@ namespace {
                 return;
         }
 
+        // ---- mem mark / mem new: the heap blocks in use now that weren't at the mark (a leak's
+        // hunt). The walk holds the heap's lock: its callbacks only fill arrays made before.
+
+        struct HeapBlock {
+                        const void *ptr;
+                        uint32_t    size;
+                        bool        psram;
+        };
+
+        constexpr size_t MaxMarked = 8192; // blocks in use at the mark
+        constexpr size_t MaxNew = 64;      // new blocks listed
+
+        constinit HeapBlock *marked = nullptr; // sorted by address
+        constinit size_t     markedCount = 0;
+
+        struct Walk {
+                        HeapBlock  *out;
+                        size_t      capacity;
+                        size_t      count;
+                        size_t      overflow;
+                        const void *skip; // the arrays' own blocks
+                        const void *skip2;
+                        bool        psram;
+                        bool        onlyNew; // only blocks not marked
+        };
+
+        bool isMarked(const void *ptr, uint32_t size) {
+                size_t lo = 0, hi = markedCount;
+                while (lo < hi) {
+                        const size_t mid = (lo + hi) / 2;
+                        if (marked[mid].ptr < ptr) {
+                                lo = mid + 1;
+                        } else {
+                                hi = mid;
+                        }
+                }
+                return lo < markedCount && marked[lo].ptr == ptr && marked[lo].size == size;
+        }
+
+        bool walkBlock(walker_heap_into_t, walker_block_info_t block, void *arg) {
+                auto *w = static_cast<Walk *>(arg);
+                if (!block.used || block.ptr == w->skip || block.ptr == w->skip2) return true;
+                if (w->onlyNew && isMarked(block.ptr, uint32_t(block.size))) return true;
+                if (w->count == w->capacity) {
+                        ++w->overflow;
+                        return true;
+                }
+                w->out[w->count++] = HeapBlock{block.ptr, uint32_t(block.size), w->psram};
+                return true;
+        }
+
+        void walkHeaps(Walk &w) {
+                w.psram = true;
+                heap_caps_walk(MALLOC_CAP_SPIRAM, walkBlock, &w);
+                w.psram = false;
+                heap_caps_walk(MALLOC_CAP_INTERNAL, walkBlock, &w);
+                return;
+        }
+
+        int runMemMark(CommandContext &ctx) {
+                Memory::free(marked);
+                marked = nullptr;
+                markedCount = 0;
+                auto *blocks = static_cast<HeapBlock *>(Memory::alloc(MemSpace::Psram, MaxMarked * sizeof(HeapBlock)));
+                if (blocks == nullptr) {
+                        ctx.eprint("mem: out of memory\n");
+                        return Shell::ExitFailure;
+                }
+                Walk w{blocks, MaxMarked, 0, 0, blocks, nullptr, false, false};
+                walkHeaps(w);
+                // In address order, for the lookups (the heaps are walked in order, but two of them).
+                for (size_t i = 1; i < w.count; ++i) {
+                        const HeapBlock b = blocks[i];
+                        size_t          k = i;
+                        for (; k > 0 && blocks[k - 1].ptr > b.ptr; --k) blocks[k] = blocks[k - 1];
+                        blocks[k] = b;
+                }
+                marked = blocks;
+                markedCount = w.count;
+                ctx.printf("mem: %u blocks in use marked%s\n", static_cast<unsigned>(w.count),
+                           w.overflow != 0 ? " (more not: the rest will show as new)" : "");
+                return Shell::ExitSuccess;
+        }
+
+        int runMemNew(CommandContext &ctx) {
+                if (marked == nullptr) {
+                        ctx.eprint("mem: no mark ('mem mark' first)\n");
+                        return Shell::ExitFailure;
+                }
+                HeapBlock fresh[MaxNew];
+                Walk      w{fresh, MaxNew, 0, 0, marked, nullptr, false, true};
+                walkHeaps(w);
+                uint32_t total = 0;
+                for (size_t i = 0; i < w.count; ++i) {
+                        const HeapBlock &b = fresh[i];
+                        total += b.size;
+                        // Its first bytes: a name, a vtable, a pattern tell what it is.
+                        const auto  *p = static_cast<const uint8_t *>(b.ptr);
+                        char         hex[16 * 3 + 1] = {};
+                        char         text[17] = {};
+                        const size_t n = b.size < 16 ? b.size : 16;
+                        for (size_t k = 0; k < n; ++k) {
+                                std::snprintf(hex + 3 * k, 4, "%02x ", p[k]);
+                                text[k] = p[k] >= 0x20 && p[k] < 0x7f ? char(p[k]) : '.';
+                        }
+                        ctx.printf("%p %8u %-8s %-48s %s\n", b.ptr, static_cast<unsigned>(b.size),
+                                   b.psram ? "psram" : "internal", hex, text);
+                }
+                ctx.printf("mem: %u new blocks, %u bytes%s\n", static_cast<unsigned>(w.count + w.overflow),
+                           static_cast<unsigned>(total), w.overflow != 0 ? " (the rest not listed)" : "");
+                return Shell::ExitSuccess;
+        }
+
         int runMem(CommandContext &ctx) {
                 const Args args = ctx.args();
-                bool       human = false;
+                if (args.size() == 2 && StringView(args[1]) == "mark") return runMemMark(ctx);
+                if (args.size() == 2 && StringView(args[1]) == "new") return runMemNew(ctx);
+                bool human = false;
                 for (size_t i = 1; i < args.size(); ++i) {
                         if (StringView(args[i]) != "-h") return ctx.usage();
                         human = true;
@@ -319,8 +435,9 @@ namespace {
 BMDS_SHELL_COMMAND(help, Shell::runHelp, "[command]", "List commands, or show one command's usage")
 BMDS_SHELL_COMMAND(log, runLog, "[level info|warn|err | on <module>...|all | off <module>...|all | show]",
                    "Show or set the log level and debug modules; show the log history")
-BMDS_SHELL_COMMAND(mem, runMem, "[-h]",
-                   "Show memory usage per memory space, and what caches hold (bytes; -h: 16.55M, 432.43k)")
+BMDS_SHELL_COMMAND(mem, runMem, "[-h | mark | new]",
+                   "Show memory usage per memory space, and what caches hold (bytes; -h: 16.55M, 432.43k); "
+                   "'mark' records the heap blocks in use, 'new' lists those in use now that weren't then")
 BMDS_SHELL_COMMAND(reboot, runReboot, "", "Restart the system")
 BMDS_SHELL_COMMAND(sleep, runSleep, "<seconds>", "Wait for a number of seconds (fractions allowed, e.g. 0.5)")
 BMDS_SHELL_COMMAND(tasks, runTasks, "", "List tasks: state, priority, core, free stack (bytes)")

@@ -1,0 +1,25 @@
+# The freedesktop.org icon names (Icon= in launcher entries) the flat-color theme
+# answers: NAME ICON, a link NAME.png -> ICON.png in each size.
+start-here                  services
+application-x-executable    template
+utilities-terminal          command_line
+accessories-text-editor     document
+accessories-calculator      calculator
+system-file-manager         folder
+folder-open                 opened_folder
+user-home                   home
+user-trash                  empty_trash
+user-trash-full             full_trash
+preferences-system          settings
+applications-system         settings
+utilities-system-monitor    line_chart
+help-about                  about
+help-browser                info
+system-search               search
+document-print              print
+image-viewer                picture
+multimedia-player           music
+internet-web-browser        globe
+appointment-soon            clock
+alarm                       alarm_clock
+dialog-information          info

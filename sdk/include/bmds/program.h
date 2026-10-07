@@ -31,6 +31,12 @@
  *   (RELAX, ALIGN), need nothing. Any other kind, and a PC-relative upper
  *   part (PCREL_HI20) against an absolute or undefined symbol that the
  *   linker didn't turn into a `lui`, makes the file unloadable.
+ * - Optionally, icons (appended 2026-10-06): notes with the name "BMDS",
+ *   type `BMDS_NOTE_ICON` and a `bmds_icon_note_t` followed by the image as
+ *   their descriptor, one note a size, in a section `.note.bmds.icon` that
+ *   isn't allocated (not loaded: the kernel reads it from the file when
+ *   something shows the program, a launcher or a window's title bar).
+ *   `bmds_add_program(... ICONS a.png b.png)` adds them.
  * - The entry point is `_start` (see bmds/sys.h for the startup state).
  * - Code uses the medany model (PC-relative addressing); libraries built
  *   for medlow (absolute `lui` addressing, like the toolchain's prebuilt libraries)
@@ -57,6 +63,12 @@ extern "C" {
 /** @brief The note type of a program's description. */
 #define BMDS_NOTE_PROGRAM 1u
 
+/** @brief The note type of an icon (in `.note.bmds.icon`, not loaded). */
+#define BMDS_NOTE_ICON 2u
+
+/** @brief An icon's image is a PNG file (8-bit, not interlaced; RGBA recommended). */
+#define BMDS_ICON_FORMAT_PNG 1u
+
 /** @brief Stack the kernel gives a program whose note asks for 0. */
 #define BMDS_DEFAULT_STACK_SIZE (32u * 1024u)
 
@@ -73,6 +85,18 @@ typedef struct bmds_program_note {
                 uint32_t stack_size;  /**< Bytes of stack it needs; 0 for `BMDS_DEFAULT_STACK_SIZE`. */
                 uint32_t flags;       /**< None defined yet: must be 0 (unknown bits are refused). */
 } bmds_program_note_t;
+
+/**
+ * @brief An icon (a `BMDS_NOTE_ICON` note's descriptor): this header, then
+ *        `length` bytes of the image. 16 x 16 and 32 x 32 are the sizes shown.
+ */
+typedef struct bmds_icon_note {
+                uint32_t size;   /**< sizeof(bmds_icon_note_t) as built: where the image starts. */
+                uint16_t width;  /**< Pixels. */
+                uint16_t height; /**< Pixels. */
+                uint32_t format; /**< `BMDS_ICON_FORMAT_PNG`; another is skipped. */
+                uint32_t length; /**< Bytes of the image after the header. */
+} bmds_icon_note_t;
 
 #ifdef __cplusplus
 }

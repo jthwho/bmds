@@ -15,10 +15,11 @@ if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_GUI_PURE_SRCS}
                                     src/guiapplication.cpp
                                     src/guiwindow.cpp
+                                    src/icontheme.cpp
                                     src/menu.cpp
                                     src/widget.cpp
                                INCLUDE_DIRS include
-                               REQUIRES bmds_core bmds_input bmds_kernel bmds_ui)
+                               REQUIRES bmds_core bmds_fs bmds_input bmds_kernel bmds_loader bmds_ui)
         bmds_target_options(${COMPONENT_LIB})
 else()
         add_library(bmds_gui STATIC ${BMDS_GUI_PURE_SRCS})

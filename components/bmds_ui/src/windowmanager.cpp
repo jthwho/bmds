@@ -124,6 +124,11 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
         _menuFor = 0;
         _menuHighlight = -1;
         _focusId = 0;
+        for (KeyGrab &g : _grabs) g = KeyGrab();
+        _tapUsage = 0;
+        _tapClean = false;
+        _snap = Snap::None;
+        _unsnapId = 0;
         // The keyboards' and mice's sink while it runs.
         Input::Sink sink;
         sink.key = keyEntry;
@@ -308,10 +313,30 @@ void WindowManager::applyPointer() {
                 if (moved) {
                         _pointerX = nx;
                         _pointerY = ny;
+                        if (_grabId != 0 && _unsnapId == _grabId) {
+                                // A snapped window dragged away: its size back, under the pointer.
+                                Window    &w = _windows[_grabId - 1];
+                                const int  bx = int(nx) - _grabX, by = int(ny) - _grabY;
+                                const Rect back{static_cast<uint16_t>(bx < 0 ? 0 : bx),
+                                                static_cast<uint16_t>(by < 0 ? 0 : by), w.restore.width,
+                                                w.restore.height};
+                                w.snapped = false;
+                                _unsnapId = 0;
+                                _listChanged = true;
+                                (void)resizeLocked(_grabId, placed(back), w.decorations);
+                        }
                         if (_grabId != 0) {
-                                const int wx = int(nx) - _grabX, wy = int(ny) - _grabY;
-                                (void)dragLocked(_grabId, static_cast<uint16_t>(wx < 0 ? 0 : wx),
-                                                 static_cast<uint16_t>(wy < 0 ? 0 : wy));
+                                const Snap snap = snapAt(_grabId, nx, ny);
+                                if (snap != Snap::None) {
+                                        // The outline where the window would snap to.
+                                        _snap = snap;
+                                        (void)outlineLocked(_grabId, snapRect(snap));
+                                } else {
+                                        _snap = Snap::None;
+                                        const int wx = int(nx) - _grabX, wy = int(ny) - _grabY;
+                                        (void)dragLocked(_grabId, static_cast<uint16_t>(wx < 0 ? 0 : wx),
+                                                         static_cast<uint16_t>(wy < 0 ? 0 : wy));
+                                }
                         }
                         if (_sizeId != 0) sizeTo(nx, ny);
                         if (_pressId != 0) pressedMoved(nx, ny);
@@ -358,10 +383,18 @@ void WindowManager::applyPointer() {
                         hoverAt(nx, ny);
                 }
                 if (event.wheel != 0) {
-                        // To the window under the pointer, focused or not.
+                        // To the window under the pointer, focused or not; over its title bar, it rolls
+                        // the window up (away from the user) or down.
                         const uint8_t id = windowAt(nx, ny);
                         const Window *w = id != 0 ? &_windows[id - 1] : nullptr;
-                        if (w != nullptr && w->wheel != nullptr) w->wheel(w->arg, event.wheel);
+                        auto [z, zerr] = _stack.layerOf(id);
+                        const bool onTitle = w != nullptr && zerr.isOk() &&
+                                             frame(id, _stack.rectAt(z)).partAt(nx, ny) == WindowFrame::Part::TitleBar;
+                        if (onTitle) {
+                                (void)shadeLocked(id, event.wheel > 0);
+                        } else if (w != nullptr && w->wheel != nullptr) {
+                                w->wheel(w->arg, event.wheel);
+                        }
                 }
                 const Pointer shape = shapeAt(nx, ny);
                 const bool    changed = moved || shape != _shape;
@@ -421,7 +454,8 @@ void WindowManager::press(uint16_t x, uint16_t y, uint8_t button) {
         const uint8_t edges = WindowFrame::edgesOf(part);
         if (edges != 0) {
                 _clickId = 0;
-                if (_windows[id - 1].maximized) return; // sized with the screen
+                if (_windows[id - 1].maximized || _windows[id - 1].shaded)
+                        return; // sized with the screen, or rolled up
                 _sizeId = id;
                 _sizeEdges = edges;
                 _sizeStart = f.outer;
@@ -450,17 +484,33 @@ void WindowManager::press(uint16_t x, uint16_t y, uint8_t button) {
         }
         _clickId = id;
         _clickUs = now;
-        if (_windows[id - 1].maximized) return; // stays where it is
+        Window &w = _windows[id - 1];
+        if (w.maximized) return; // stays where it is
         _grabId = id;
         _grabX = static_cast<uint16_t>(x - f.outer.x);
         _grabY = static_cast<uint16_t>(y - f.outer.y);
+        _snap = Snap::None;
+        if (w.snapped) {
+                // Its own size back when it moves: the same place across its title bar under the pointer.
+                _unsnapId = id;
+                _grabX =
+                        static_cast<uint16_t>(uint32_t(_grabX) * w.restore.width / (f.outer.width ? f.outer.width : 1));
+        }
         return;
 }
 
 void WindowManager::release(uint16_t x, uint16_t y) {
         if (_grabId != 0) {
-                if (_dragId == _grabId) (void)dropLocked(); // moved: put there
+                if (_dragId == _grabId && _snap != Snap::None) {
+                        const uint8_t id = _grabId;
+                        hideOutline();
+                        (void)snapLocked(id, _snap); // maximized, or half the work area
+                } else if (_dragId == _grabId) {
+                        (void)dropLocked(); // moved: put there
+                }
                 _grabId = 0;
+                _unsnapId = 0;
+                _snap = Snap::None;
         }
         if (_sizeId != 0) {
                 if (_dragId == _sizeId) (void)dropLocked(); // resized: put there, told its size
@@ -803,15 +853,21 @@ void WindowManager::drawLayer(size_t z, Span<const Rect> pieces) {
                                 uint32_t icon;
                 };
                 const Button buttons[] = {
-                        {Part::Menu, Role::Button, Role::ButtonMark, bmds::Icon::Menu},
-                        {Part::Minimize, Role::Button, Role::ButtonMark, bmds::Icon::Minimize},
+                        {Part::Menu, Role::Button, Role::ButtonMark, bmds::IconGlyph::Menu},
+                        {Part::Minimize, Role::Button, Role::ButtonMark, bmds::IconGlyph::Minimize},
                         {Part::Maximize, Role::Button, Role::ButtonMark,
-                         w.maximized ? bmds::Icon::Restore : bmds::Icon::Maximize},
-                        {Part::Close, Role::CloseBox, Role::CloseMark, bmds::Icon::Close},
+                         w.maximized ? bmds::IconGlyph::Restore : bmds::IconGlyph::Maximize},
+                        {Part::Close, Role::CloseBox, Role::CloseMark, bmds::IconGlyph::Close},
                 };
                 for (const Button &b : buttons) {
                         const Rect r = f.button(b.part);
                         if (r.isEmpty()) continue;
+                        if (b.part == Part::Menu && w.icon != nullptr && w.icon->isValid() &&
+                            w.icon->width <= r.width && w.icon->height <= r.height) {
+                                // The window's icon in its place, on the title bar (it opens the menu as well).
+                                (void)chrome.image(r.x, r.y, *w.icon, color);
+                                continue;
+                        }
                         const bool pressed = _pressId == id && _pressPart == b.part && _pressShown;
                         TextCell   icon;
                         icon.codepoint = b.icon;
@@ -1032,6 +1088,7 @@ Error WindowManager::closeLocked(uint8_t id) {
         if (_clickId == id) _clickId = 0;
         if (_mouseId == id) _mouseId = 0;
         if (_hoverId == id) _hoverId = 0;
+        if (_unsnapId == id) _unsnapId = 0;
         if (WindowStack::isApplication(level)) _listChanged = true;
         if (_menuFor == id && _menuId != 0) (void)closeLocked(_menuId); // its menu with it
         if (_switcher != nullptr && id != _switchId && WindowStack::isApplication(level))
@@ -1066,7 +1123,7 @@ Error WindowManager::resize(uint8_t id, uint16_t width, uint16_t height) {
         auto [at, err] = _stack.rectOf(id);
         if (err.isError()) return err;
         const Window &w = _windows[id - 1];
-        if (w.maximized) return Error::InvalidState;
+        if (w.maximized || w.shaded) return Error::InvalidState;
         const Rect to = placed(Rect{at.x, at.y, width, height});
         if (to.width < WindowFrame::minWidth(w.decorations) || to.height < WindowFrame::minHeight(w.decorations))
                 return Error::Invalid;
@@ -1139,8 +1196,10 @@ Error WindowManager::maximizeLocked(uint8_t id) {
         if (_dragId == id) (void)dropLocked();
         if (_grabId == id) _grabId = 0;
         if (_sizeId == id) _sizeId = 0;
-        auto [was, rerr] = _stack.rectOf(id); // where the drop put it
-        w.restore = rerr.isOk() ? was : at;
+        if (w.shaded) (void)shadeLocked(id, false);
+        auto [was, rerr] = _stack.rectOf(id);               // where the drop put it
+        if (!w.snapped) w.restore = rerr.isOk() ? was : at; // a snapped one's is from before it snapped
+        w.snapped = false;
         w.maximized = true;
         _listChanged = true;
         return resizeLocked(id, placed(_workArea), w.decorations);
@@ -1156,8 +1215,10 @@ Error WindowManager::restoreLocked(uint8_t id) {
         if (_stack.isHidden(id)) return raiseLocked(id);
         if (_stack.layerOf(id).isError()) return Error::NotFound;
         Window &w = _windows[id - 1];
-        if (!w.maximized) return Error::Ok;
+        if (w.shaded) (void)shadeLocked(id, false);
+        if (!w.maximized && !w.snapped) return Error::Ok;
         w.maximized = false;
+        w.snapped = false;
         _listChanged = true;
         return resizeLocked(id, placed(w.restore), w.decorations);
 }
@@ -1177,6 +1238,8 @@ void WindowManager::disconnect(uint8_t client) {
         Mutex::Locker lock(_lock, WaitForever);
         if (client == 0 || client > MaxClients || !_clients[client - 1].used) return;
         _clients[client - 1] = Client();
+        for (KeyGrab &g : _grabs)
+                if (g.client == client) g = KeyGrab();
         // Its windows, shown or hidden, closed.
         for (uint8_t id = 1; id <= WindowStack::MaxWindows; ++id)
                 if (_windows[id - 1].client == client && _stack.rectOf(id).isOk()) (void)closeLocked(id);
@@ -1300,16 +1363,18 @@ Error WindowManager::showWindowMenuLocked(uint8_t id, const Rect &anchor) {
         };
         const bool app = WindowStack::isApplication(_stack.levelOf(id));
         const bool above = _stack.levelOf(id) == Level::Above;
-        _menuItems[0] = {"Restore", "", off(hidden || w.maximized)};
+        _menuItems[0] = {"Restore", "", off(hidden || w.maximized || w.snapped)};
         _menuItems[1] = {"Minimize", "", off(!hidden && (w.decorations & WindowFrame::MinimizeButton) != 0)};
         _menuItems[2] = {"Maximize", "", off(!w.maximized && (w.decorations & WindowFrame::MaximizeButton) != 0)};
-        _menuItems[3] = {"", "", MenuLayout::Separator};
-        _menuItems[4] = {"Always on Top", "", static_cast<uint8_t>(off(app) | (above ? MenuLayout::Checked : 0))};
-        _menuItems[5] = {"", "", MenuLayout::Separator};
-        _menuItems[6] = {"Close", "Alt+F4", off((w.decorations & WindowFrame::CloseButton) != 0)};
+        _menuItems[3] = {w.shaded ? "Roll Down" : "Roll Up", "",
+                         off(app && !hidden && (w.decorations & WindowFrame::TitleBar) != 0)};
+        _menuItems[4] = {"", "", MenuLayout::Separator};
+        _menuItems[5] = {"Always on Top", "", static_cast<uint8_t>(off(app) | (above ? MenuLayout::Checked : 0))};
+        _menuItems[6] = {"", "", MenuLayout::Separator};
+        _menuItems[7] = {"Close", "Alt+F4", off((w.decorations & WindowFrame::CloseButton) != 0)};
         constexpr MenuChoice choices[MenuItems] = {MenuChoice::Restore, MenuChoice::Minimize, MenuChoice::Maximize,
-                                                   MenuChoice::None,    MenuChoice::Above,    MenuChoice::None,
-                                                   MenuChoice::Close};
+                                                   MenuChoice::Shade,   MenuChoice::None,     MenuChoice::Above,
+                                                   MenuChoice::None,    MenuChoice::Close};
         for (size_t i = 0; i < MenuItems; ++i) _menuChoices[i] = choices[i];
         Error err = _menuLayout.layout(Span<const MenuLayout::Item>(_menuItems, MenuItems), Fonts::unscii16);
         if (err.isError()) return err;
@@ -1374,6 +1439,7 @@ void WindowManager::menuChoose(int item) {
                         }
                         break;
                 }
+                case MenuChoice::Shade: (void)shadeLocked(id, !_windows[id - 1].shaded); break;
                 case MenuChoice::Close: (void)closeLocked(id); break;
                 case MenuChoice::None: break;
         }
@@ -1416,6 +1482,100 @@ void WindowManager::menuClosed(void *arg) {
         return;
 }
 
+// ---- Snapping and rolling up (devplan/gui.md §4k)
+
+namespace {
+
+        constexpr uint16_t SnapEdge = 2; // pixels from the work area's side that snap
+
+} // namespace
+
+// Where a window grabbed by its title bar snaps with the pointer at (@p x, @p y): the work
+// area's top edge (or above it, on a panel) maximizes, a side gives that half. Only a
+// window that can be maximized, or (sides) resized.
+WindowManager::Snap WindowManager::snapAt(uint8_t id, uint16_t x, uint16_t y) const {
+        const Window &w = _windows[id - 1];
+        if (!WindowStack::isApplication(_stack.levelOf(id))) return Snap::None;
+        const Rect a = _workArea;
+        if (y <= a.y && (w.decorations & WindowFrame::MaximizeButton) != 0) return Snap::Maximize;
+        if ((w.decorations & WindowFrame::Resizable) == 0 || y < a.y) return Snap::None;
+        if (x < a.x + SnapEdge) return Snap::Left;
+        if (x + SnapEdge >= a.right()) return Snap::Right;
+        return Snap::None;
+}
+
+Rect WindowManager::snapRect(Snap snap) const {
+        const Rect     a = _workArea;
+        const uint16_t half = static_cast<uint16_t>((a.width / 2) & ~(Align - 1u));
+        switch (snap) {
+                case Snap::Left: return Rect{a.x, a.y, half, a.height};
+                case Snap::Right: return Rect{uint16_t(a.x + half), a.y, uint16_t(a.width - half), a.height};
+                default: return placed(a);
+        }
+}
+
+// The outline of a move or resize under way, gone.
+void WindowManager::hideOutline() {
+        if (_outlineShown) {
+                Rect sides[4];
+                WindowFrame::outline(_outline, sides);
+                for (const Rect &s : sides) _stack.invalidateScreen(s);
+        }
+        _dragId = 0;
+        _outlineShown = false;
+        return;
+}
+
+// Window @p id snapped (@p snap): maximized, or half the work area (its size and place kept to
+// go back to).
+Error WindowManager::snapLocked(uint8_t id, Snap snap) {
+        if (snap == Snap::Maximize) return maximizeLocked(id);
+        auto [at, err] = _stack.rectOf(id);
+        if (err.isError()) return err;
+        Window &w = _windows[id - 1];
+        if (w.shaded) (void)shadeLocked(id, false);
+        if (!w.snapped && !w.maximized) w.restore = at;
+        w.maximized = false;
+        w.snapped = true;
+        _listChanged = true;
+        err = raiseLocked(id);
+        if (err.isOk()) err = resizeLocked(id, snapRect(snap), w.decorations);
+        return err;
+}
+
+Error WindowManager::shade(uint8_t id, bool shaded) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        return shadeLocked(id, shaded);
+}
+
+// Window @p id rolled up to its frame's top (title bar) and bottom, or down again; its
+// application isn't told (its client area keeps its size, hidden).
+Error WindowManager::shadeLocked(uint8_t id, bool shaded) {
+        auto [at, err] = _stack.rectOf(id);
+        if (err.isError()) return err;
+        Window &w = _windows[id - 1];
+        if (!WindowStack::isApplication(_stack.levelOf(id)) || _stack.isHidden(id) ||
+            (w.decorations & WindowFrame::TitleBar) == 0)
+                return Error::InvalidState;
+        if (w.shaded == shaded) return Error::Ok;
+        if (_dragId == id) hideOutline();
+        if (_sizeId == id) _sizeId = 0;
+        Rect to = at;
+        if (shaded) {
+                const Rect client = WindowFrame(at, w.decorations).client();
+                w.shadeHeight = at.height;
+                to.height = static_cast<uint16_t>(at.height - client.height);
+        } else {
+                to.height = w.shadeHeight;
+                to = placed(to);
+        }
+        w.shaded = shaded;
+        _listChanged = true;
+        if (_mouseId == id) _mouseId = 0;
+        return resizeLocked(id, to, w.decorations, false);
+}
+
 Error WindowManager::setAbove(uint8_t id, bool above) {
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface == nullptr) return Error::InvalidState;
@@ -1443,12 +1603,15 @@ namespace {
 
 // Alt+Tab's list: the windows in it, their texts as shown, which one is chosen.
 struct WindowManager::Switcher {
-                MenuLayout       layout;
-                MenuLayout::Item items[WindowStack::MaxWindows];
-                char             texts[WindowStack::MaxWindows][MaxTitle + 3];
-                uint8_t          ids[WindowStack::MaxWindows];
-                size_t           count = 0;
-                int              at = 0;
+                static constexpr uint16_t IconSide = MenuLayout::IconSize;
+                MenuLayout                layout;
+                MenuLayout::Item          items[WindowStack::MaxWindows];
+                Icon     icons[WindowStack::MaxWindows]; // copies: an owner may change its own meanwhile
+                uint32_t pixels[WindowStack::MaxWindows][IconSide * IconSide];
+                char     texts[WindowStack::MaxWindows][MaxTitle + 3];
+                uint8_t  ids[WindowStack::MaxWindows];
+                size_t   count = 0;
+                int      at = 0;
 };
 
 // @p event, if it is one of the window manager's keys: done here, and not delivered.
@@ -1467,7 +1630,9 @@ bool WindowManager::shortcut(const KeyEvent &event) {
                 }
                 return true;
         }
-        if (!press || !alt || event.hasCtrl() || (event.modifiers & KeyEvent::Gui) != 0) return false;
+        // A key pressed while a claimed modifier is down: that modifier's press is no tap.
+        if (press && (event.usage < 0xe0 || event.usage > 0xe7)) _tapClean = false;
+        if (!press || !alt || event.hasCtrl() || (event.modifiers & KeyEvent::Gui) != 0) return grabbed(event);
         if (event.usage == HidKey::Tab) {
                 switchOpen(event.hasShift() ? -1 : 1);
                 return true;
@@ -1485,6 +1650,49 @@ bool WindowManager::shortcut(const KeyEvent &event) {
                         (void)showWindowMenuLocked(focus, Rect{bar.x, bar.y, 0, bar.height});
                 }
                 return true;
+        }
+        return grabbed(event);
+}
+
+Error WindowManager::grabKey(uint8_t client, uint8_t usage, uint8_t modifiers, Grab fn, void *arg) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        if (client == 0 || client > MaxClients || !_clients[client - 1].used || fn == nullptr) return Error::NotFound;
+        const auto folded = static_cast<uint8_t>((modifiers | modifiers >> 4) & 0x0f);
+        KeyGrab   *free = nullptr;
+        for (KeyGrab &g : _grabs) {
+                if (g.client != 0 && g.usage == usage && g.modifiers == folded) return Error::Exists;
+                if (g.client == 0 && free == nullptr) free = &g;
+        }
+        if (free == nullptr) return Error::Full;
+        *free = KeyGrab{fn, arg, client, usage, folded};
+        return Error::Ok;
+}
+
+// @p event, if a program claimed it (grabKey()): it is told, and the key isn't delivered.
+bool WindowManager::grabbed(const KeyEvent &event) {
+        const bool    press = event.action != KeyEvent::Action::Release;
+        const bool    modifier = event.usage >= 0xe0 && event.usage <= 0xe7;
+        const uint8_t folded = static_cast<uint8_t>((event.modifiers | event.modifiers >> 4) & 0x0f);
+        for (KeyGrab &g : _grabs) {
+                if (g.client == 0 || g.usage != event.usage) continue;
+                if (modifier && g.modifiers == 0) {
+                        // A tap: its press noted (and kept from windows), told at its release if clean.
+                        if (event.action == KeyEvent::Action::Press) {
+                                _tapUsage = event.usage;
+                                _tapClean = true;
+                        } else if (!press && _tapUsage == event.usage) {
+                                const bool tap = _tapClean;
+                                _tapUsage = 0;
+                                _tapClean = false;
+                                if (tap) g.fn(g.arg, event.usage);
+                        }
+                        return true;
+                }
+                if (press && g.modifiers == folded) {
+                        if (event.action == KeyEvent::Action::Press) g.fn(g.arg, event.usage);
+                        return true;
+                }
         }
         return false;
 }
@@ -1507,6 +1715,13 @@ void WindowManager::switchOpen(int step) {
                 char       *text = sw->texts[sw->count];
                 std::snprintf(text, sizeof(sw->texts[0]), _stack.isHidden(id) ? "[%s]" : "%s", title);
                 sw->items[sw->count] = MenuLayout::Item{StringView(text), StringView(), 0};
+                const Icon *icon = _windows[id - 1].icon;
+                if (icon != nullptr && icon->isValid() && icon->width <= Switcher::IconSide &&
+                    icon->height <= Switcher::IconSide) {
+                        std::memcpy(sw->pixels[sw->count], icon->pixels, size_t(icon->width) * icon->height * 4);
+                        sw->icons[sw->count] = Icon{icon->width, icon->height, sw->pixels[sw->count]};
+                        sw->items[sw->count].icon = &sw->icons[sw->count];
+                }
                 sw->ids[sw->count++] = id;
         }
         if (sw->count == 0 ||
@@ -1640,10 +1855,29 @@ Error WindowManager::setIcon(uint8_t id, const Icon *icon) {
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface == nullptr) return Error::InvalidState;
         if (_stack.rectOf(id).isError()) return Error::NotFound;
-        _windows[id - 1].icon = icon;
+        Window &w = _windows[id - 1];
+        w.icon = icon;
         if (WindowStack::isApplication(_stack.levelOf(id))) _listChanged = true;
+        auto [at, err] = _stack.rectOf(id);
+        if (err.isOk() && !_stack.isHidden(id)) {
+                const Rect button = frame(id, at).button(WindowFrame::Part::Menu);
+                if (!button.isEmpty()) (void)_stack.invalidate(id, button);
+        }
         changed(focusId());
         return Error::Ok;
+}
+
+Result<WindowManager::Icon> WindowManager::copyIcon(uint8_t id, Span<uint32_t> out) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return makeError<Icon>(Error::InvalidState);
+        if (id == 0 || id > WindowStack::MaxWindows || _stack.rectOf(id).isError())
+                return makeError<Icon>(Error::NotFound);
+        const Icon *icon = _windows[id - 1].icon;
+        if (icon == nullptr || !icon->isValid()) return makeError<Icon>(Error::NotSupported);
+        const size_t n = size_t(icon->width) * icon->height;
+        if (n > out.size()) return makeError<Icon>(Error::BufferTooSmall);
+        std::memcpy(out.data(), icon->pixels, n * sizeof(uint32_t));
+        return makeResult(Icon{icon->width, icon->height, out.data()});
 }
 
 Error WindowManager::setDecorations(uint8_t id, uint8_t decorations) {
@@ -1659,7 +1893,7 @@ Error WindowManager::setDecorations(uint8_t id, uint8_t decorations) {
 
 // Window @p id at @p rect with @p decorations: all of it redrawn, and told
 // its client area's size if that changed.
-Error WindowManager::resizeLocked(uint8_t id, const Rect &rect, uint8_t decorations) {
+Error WindowManager::resizeLocked(uint8_t id, const Rect &rect, uint8_t decorations, bool tell) {
         auto [at, err] = _stack.rectOf(id);
         if (err.isError()) return err;
         Window       &w = _windows[id - 1];
@@ -1670,7 +1904,7 @@ Error WindowManager::resizeLocked(uint8_t id, const Rect &rect, uint8_t decorati
         w.decorations = decorations;
         (void)_stack.invalidate(id, rect); // the frame changed, or the size: all of it
         const Rect after = WindowFrame(rect, decorations).client();
-        if ((after.width != before.width || after.height != before.height) && w.resized != nullptr)
+        if (tell && (after.width != before.width || after.height != before.height) && w.resized != nullptr)
                 w.resized(w.arg, after.width, after.height);
         if (w.reserve != 0) workAreaChanged();
         changed(oldTop);
@@ -1798,6 +2032,7 @@ size_t WindowManager::list(Span<Info> out) {
                 std::memcpy(info.kind, w.kind, sizeof(info.kind));
                 info.level = _stack.levelOf(info.id);
                 info.hasIcon = w.icon != nullptr;
+                info.shaded = w.shaded;
         }
         return n;
 }

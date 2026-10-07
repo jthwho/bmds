@@ -9,7 +9,9 @@
 #include <doctest.h>
 
 #include <atomic>
+#include <chrono>
 #include <mutex>
+#include <thread>
 #include <vector>
 #include <bmds/taskowner.h>
 #include <bmds/thread.h>
@@ -162,5 +164,66 @@ TEST_CASE("WorkerPool") {
                 CHECK(err4 == Error::NoMem);
                 pool.wait(extra);
         }
+        CHECK(HostMemory::liveAllocations() == base);
+}
+
+TEST_CASE("WorkerPool: an idle worker ends by itself after its timeout") {
+        const size_t base = HostMemory::liveAllocations();
+        {
+                WorkerPool::Config config;
+                config.maxWorkers = 3;
+                config.maxIdle = 2;
+                config.idleTimeoutMs = 30;
+                WorkerPool       pool(config);
+                std::atomic<int> n{0};
+                auto [w, err] = pool.start(bump, &n);
+                REQUIRE(err.isOk());
+                pool.wait(w);
+                CHECK(pool.idleCount() == 1);
+                // Gone after its timeout, its memory with it (the record freed by the worker; the
+                // thread by itself, detached).
+                for (int i = 0; i < 200 && pool.idleCount() != 0; ++i)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                CHECK(pool.idleCount() == 0);
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                CHECK(HostMemory::liveAllocations() == base);
+                // The pool goes on: a new worker.
+                auto [again, aerr] = pool.start(bump, &n);
+                REQUIRE(aerr.isOk());
+                pool.wait(again);
+                CHECK(n.load() == 2);
+        }
+        CHECK(HostMemory::liveAllocations() == base);
+}
+
+TEST_CASE("WorkerPool: jobs started as idle workers time out") {
+        const size_t base = HostMemory::liveAllocations();
+        {
+                WorkerPool::Config config;
+                config.maxWorkers = 4;
+                config.maxIdle = 3;
+                config.idleTimeoutMs = 2;
+                WorkerPool       pool(config);
+                std::atomic<int> n{0};
+                int              want = 0;
+                // Starts landing around the workers' timeouts, again and again: each job runs
+                // exactly once, whether its worker was about to leave or not.
+                for (int round = 0; round < 300; ++round) {
+                        WorkerPool::Worker *w[3];
+                        const int           k = 1 + round % 3;
+                        for (int i = 0; i < k; ++i) {
+                                auto [started, err] = pool.start(bump, &n);
+                                REQUIRE(err.isOk());
+                                w[i] = started;
+                        }
+                        for (int i = 0; i < k; ++i) pool.wait(w[i]);
+                        want += k;
+                        std::this_thread::sleep_for(std::chrono::microseconds(500 * (round % 7)));
+                }
+                CHECK(n.load() == want);
+        }
+        // Workers that timed out free themselves just after; give them a moment.
+        for (int i = 0; i < 100 && HostMemory::liveAllocations() != base; ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
         CHECK(HostMemory::liveAllocations() == base);
 }

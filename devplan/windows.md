@@ -606,8 +606,10 @@ ones once it exists.
      windows (minimized ones restored from it), and a clock; `/bin/panel`, on a GUI toolkit
      (`bmds_gui`), its layout and its launcher's entries from configuration files. The window
      manager gained window levels (desktop, normal, panel, popup), mouse events for client areas,
-     popups, a work area, and `watch()` for the window list. Then (`gui.md` §4e, §4f): bevelled
-     title-bar buttons in the toolkit's 3D look, and new windows that ask are cascaded.
+     popups, a work area, and `watch()` for the window list. Then (`gui.md` §4e-§4k): bevelled
+     title-bar buttons in the toolkit's 3D look, new windows that ask are cascaded, Alt+Tab,
+     Alt+F4, Alt+Space, Alt+drag, Always on Top, window icons on the title bar, global keys
+     (the Windows key), snapping, and rolling up.
 
 9. **Built-in applications as ordinary applications** (the decision in §0; designed 2026-10-05
    with the user; with `programs.md` §17, `/bin`, and `pty.md`, pseudo-terminals):

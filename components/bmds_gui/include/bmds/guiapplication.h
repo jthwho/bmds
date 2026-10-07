@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <bmds/config.h>
 #include <bmds/error.h>
+#include <bmds/icontheme.h>
 #include <bmds/inputevent.h>
 #include <bmds/mutex.h>
 #include <bmds/result.h>
@@ -113,6 +114,20 @@ class GuiApplication {
                  */
                 Error setWindowsChanged(Callback fn, void *arg);
 
+                /** @brief Key claims at once. */
+                static constexpr size_t MaxGrabs = 8;
+
+                /**
+                 * @brief Claims a key for the whole desktop (`WindowManager::grabKey()`:
+                 *        a modifier with no modifiers is a tap, as the Windows key):
+                 *        @p fn(@p arg) is called on the loop's thread when it is typed.
+                 * @return `Ok`, `Exists` (claimed), or `Full`.
+                 */
+                Error grabKey(uint8_t usage, uint8_t modifiers, Callback fn, void *arg);
+
+                /** @brief Returns the application's icons (found and kept on the loop's thread). */
+                IconTheme &icons() { return _icons; }
+
                 /** @brief Returns the lock handlers run under (and drawing takes). */
                 Mutex &lock() { return _lock; }
 
@@ -167,7 +182,14 @@ class GuiApplication {
                                 uint8_t    generation = 0;
                 };
 
+                struct KeyGrab {
+                                GuiApplication *app = nullptr;
+                                Callback        fn = nullptr;
+                                void           *arg = nullptr;
+                };
+
                 static void gone(void *arg);
+                static void keyGrabbed(void *arg, uint8_t usage);
                 static void watched(void *arg);
                 void        dispatch(const Event &event);
                 void        runTimers();
@@ -190,6 +212,8 @@ class GuiApplication {
                 std::atomic<bool> _quit{false};
                 int               _code = 0;
                 std::atomic<bool> _gone{false};
+                IconTheme         _icons;
+                KeyGrab           _grabs[MaxGrabs];
 };
 
 BMDS_NAMESPACE_END

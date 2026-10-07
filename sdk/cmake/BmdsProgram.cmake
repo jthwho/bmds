@@ -1,4 +1,4 @@
-# BmdsProgram.cmake: bmds_add_program(name SOURCES ... [STACK_SIZE bytes])
+# BmdsProgram.cmake: bmds_add_program(name SOURCES ... [STACK_SIZE bytes] [ICONS png...])
 #
 # Copyright Jason Howard. All rights reserved.
 # SPDX-License-Identifier: MIT
@@ -8,6 +8,10 @@
 # the same program with all its symbols and debug information (for
 # addr2line and GDB; <name>.elf keeps only what the loader needs). Use it
 # with bmds-toolchain.cmake as the toolchain file.
+#
+# ICONS: PNG images (16x16 and 32x32 are the sizes shown) built into the
+# program as BMDS_NOTE_ICON notes (bmds/program.h), so that launchers and
+# title bars show it with no icon file. The project needs the ASM language.
 
 get_filename_component(BMDS_SDK_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 
@@ -37,9 +41,57 @@ if(NOT TARGET bmds_crt)
                                         WORLD_EXECUTE @ONLY)
 endif()
 
+# The icon notes of program @p name for the PNG files in @p pngs, as an
+# assembler file in @p out: each note's descriptor a bmds_icon_note_t and the
+# image (.incbin), in a section that isn't loaded.
+function(bmds_icon_notes out name)
+        set(asm "/* ${name}'s icons (bmds/program.h: BMDS_NOTE_ICON), made by bmds_add_program(). */\n")
+        string(APPEND asm "        .section .note.bmds.icon,\"\",@note\n")
+        set(label 10)
+        foreach(png IN LISTS ARGN)
+                get_filename_component(png "${png}" ABSOLUTE)
+                file(READ "${png}" header LIMIT 24 HEX)
+                string(SUBSTRING "${header}" 0 16 signature)
+                if(NOT signature STREQUAL "89504e470d0a1a0a")
+                        message(FATAL_ERROR "bmds_add_program(${name}): ${png} isn't a PNG (an LFS pointer? git lfs pull)")
+                endif()
+                string(SUBSTRING "${header}" 32 8 w)
+                string(SUBSTRING "${header}" 40 8 h)
+                math(EXPR w "0x${w}")
+                math(EXPR h "0x${h}")
+                math(EXPR a "${label} + 1")
+                math(EXPR b "${label} + 2")
+                math(EXPR c "${label} + 3")
+                string(APPEND asm "        .balign 4\n"
+                                  "        .long 5, ${c}f - ${label}f, 2 /* namesz, descsz, BMDS_NOTE_ICON */\n"
+                                  "        .asciz \"BMDS\"\n"
+                                  "        .balign 4\n"
+                                  "${label}:      .long 16 /* sizeof(bmds_icon_note_t) */\n"
+                                  "        .short ${w}, ${h}\n"
+                                  "        .long 1, ${b}f - ${a}f /* BMDS_ICON_FORMAT_PNG, its length */\n"
+                                  "${a}:      .incbin \"${png}\"\n"
+                                  "${b}:\n"
+                                  "${c}:\n")
+                math(EXPR label "${label} + 10")
+        endforeach()
+        string(APPEND asm "        .balign 4\n")
+        file(GENERATE OUTPUT "${out}" CONTENT "${asm}")
+endfunction()
+
 function(bmds_add_program name)
-        cmake_parse_arguments(ARG "" "STACK_SIZE" "SOURCES" ${ARGN})
-        add_executable(${name} ${ARG_SOURCES})
+        cmake_parse_arguments(ARG "" "STACK_SIZE" "SOURCES;ICONS" ${ARGN})
+        set(icons)
+        if(ARG_ICONS)
+                set(icons ${CMAKE_CURRENT_BINARY_DIR}/${name}-icons.S)
+                set(pngs)
+                foreach(png IN LISTS ARG_ICONS)
+                        get_filename_component(png "${png}" ABSOLUTE)
+                        list(APPEND pngs "${png}")
+                endforeach()
+                bmds_icon_notes(${icons} ${name} ${pngs})
+                set_source_files_properties(${icons} PROPERTIES OBJECT_DEPENDS "${pngs}")
+        endif()
+        add_executable(${name} ${ARG_SOURCES} ${icons})
         target_link_libraries(${name} PRIVATE bmds_headers -Wl,--start-group bmds_crt bmds_libc ${BMDS_LIBGCC}
                                       -Wl,--end-group)
         target_link_options(${name} PRIVATE

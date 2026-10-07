@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Installs an icon theme rendered in this repository (tools/render-icons) into a
+# distribution tree (devplan/gui.md §4h): SRC/png/NxN/*.png into DEST/NxN/, a
+# link NAME.png -> ICON.png per line of ALIASES ("NAME ICON"; # comments), and
+# index.theme. Run by the icon packages' build.sh.
+#
+#   install-icon-theme SRC DEST ALIASES "Theme Name" "Comment" [INHERITS]
+set -euo pipefail
+
+src="$1" dest="$2" aliases="$3" name="$4" comment="$5" inherits="${6:-}"
+sizes=()
+for dir in "$src"/png/*x*; do
+        size="$(basename "$dir")"
+        sizes+=("$size")
+        mkdir -p "$dest/$size"
+        cp "$dir"/*.png "$dest/$size/"
+        # A PNG still an LFS pointer (git lfs pull not run) would install text.
+        set -- "$dest/$size"/*.png
+        if [ "$(head -c 4 "$1" | tail -c 3)" != PNG ]; then
+                echo "install-icon-theme: $dir holds LFS pointers: run 'git lfs pull'" >&2
+                exit 1
+        fi
+        while read -r alias icon; do
+                case "$alias" in ''|'#'*) continue ;; esac
+                [ -f "$dest/$size/$icon.png" ] || { echo "install-icon-theme: no $icon for $alias" >&2; exit 1; }
+                ln -sf "$icon.png" "$dest/$size/$alias.png"
+        done < "$aliases"
+done
+{
+        echo "[Icon Theme]"
+        echo "Name=$name"
+        echo "Comment=$comment"
+        [ -n "$inherits" ] && echo "Inherits=$inherits"
+        (IFS=,; echo "Directories=${sizes[*]}")
+        for size in "${sizes[@]}"; do
+                echo
+                echo "[$size]"
+                echo "Size=${size%x*}"
+                echo "Type=Fixed"
+        done
+} > "$dest/index.theme"

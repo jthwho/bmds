@@ -1,0 +1,9 @@
+# The icons (devplan/gui.md §4h): icons8's Flat Color Icons, rendered at 16 and 32
+# pixels in this repository (tools/render-icons), installed as the flat-color theme.
+name = "icons"
+version = "1.0.2"
+description = "Flat Color Icons (icons8) at 16x16 and 32x32: the desktop's icon theme"
+license = "MIT"
+source_tree = "thirdparty/flat-color-icons"
+license_files = ["LICENSE.md"]
+sdk = false
