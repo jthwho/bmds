@@ -27,6 +27,7 @@
 #include <bmds/pngdecoder.h>
 #include <bmds/program.h>
 #include <bmds/programimage.h>
+#include <bmds/switcherlayout.h>
 #include <bmds/windowstack.h>
 
 using bmds::DesktopEntry;
@@ -294,6 +295,43 @@ TEST_CASE("IconGrid: wanted cells kept, the rest in free cells down then across"
         CHECK(IconGrid::cellAt(-5, 9999, 80, 76, 4, 3) == Cell{0, 2});
         CHECK(IconGrid::cellAt(9999, -1, 80, 76, 4, 3) == Cell{3, 0});
         CHECK(!Cell{}.isValid());
+}
+
+TEST_CASE("SwitcherLayout: a grid of icons over a title, on 4-pixel columns") {
+        using bmds::SwitcherLayout;
+        SwitcherLayout l;
+        // One window: the box at its least width, one cell centred.
+        l.layout(1, 1280);
+        CHECK(l.width() == SwitcherLayout::MinWidth);
+        CHECK(l.columns() == 1);
+        CHECK(l.height() == SwitcherLayout::Margin + SwitcherLayout::Cell + SwitcherLayout::Gap +
+                                    SwitcherLayout::TitleHeight + SwitcherLayout::Margin);
+        CHECK(l.cellRect(0).x % 4 == 0);
+        CHECK(l.cellRect(0).x + l.cellRect(0).width / 2 >= 120); // about the middle
+        CHECK(l.iconRect(0).width == 32);
+        CHECK(l.iconRect(0).x % 4 == 0);
+        CHECK(l.cellRect(1).isEmpty());
+        // Ten: eight a row, then two; the title under the second row.
+        l.layout(10, 1280);
+        CHECK(l.columns() == 8);
+        CHECK(l.width() == 8 * SwitcherLayout::Cell + 2 * SwitcherLayout::Margin);
+        CHECK(l.cellRect(8).y == l.cellRect(0).y + SwitcherLayout::Cell);
+        CHECK(l.cellRect(9).x == l.cellRect(1).x);
+        CHECK(l.titleRect().y == l.cellRect(8).bottom() + SwitcherLayout::Gap);
+        CHECK(l.titleRect().right() + SwitcherLayout::Margin == l.width());
+        bool aligned = true;
+        for (size_t i = 0; i < 10; ++i) aligned = aligned && l.iconRect(i).x % 4 == 0;
+        CHECK(aligned);
+        // The cell under a point.
+        const bmds::Rect c = l.cellRect(9);
+        CHECK(l.cellAt(c.x, c.y) == 9);
+        CHECK(l.cellAt(c.right() - 1, c.bottom() - 1) == 9);
+        CHECK(l.cellAt(c.right(), c.y) == -1); // no tenth-plus-one cell
+        CHECK(l.cellAt(0, 0) == -1);           // the margin
+        // A narrow screen: fewer columns, never wider than it.
+        l.layout(10, 200);
+        CHECK(l.width() <= 200);
+        CHECK(l.columns() == (200 - 2 * SwitcherLayout::Margin) / SwitcherLayout::Cell);
 }
 
 TEST_CASE("LineLayout: hints, stretch, most, and too little room") {

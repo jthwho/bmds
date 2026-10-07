@@ -42,3 +42,8 @@ CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS=3
 # --- SD card ----------------------------------------------------------------
 # Memory cards only: SDIO (IO cards) support is code BMDS has no use for.
 CONFIG_SD_ENABLE_SDIO_SUPPORT=n
+
+# A busy program is legitimate: the task watchdog doesn't expect the idle tasks to run
+# (devplan/processes.md §3.11). The interrupt watchdog is unchanged.
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n

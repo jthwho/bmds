@@ -26,6 +26,7 @@
 #include <bmds/stream.h>
 #include <bmds/stringview.h>
 #include <bmds/span.h>
+#include <bmds/switcherlayout.h>
 #include <bmds/task.h>
 #include <bmds/waitlist.h>
 #include <bmds/windowpalette.h>
@@ -200,6 +201,22 @@ class WindowManager {
                  *        window manager (`devplan/gui.md` §4l).
                  */
                 using ResourceChanged = void (*)(void *arg, StringView name, StringView value);
+
+                /**
+                 * @brief Told that item @p index of the desktop's menu was chosen
+                 *        (`setDesktopMenu()`; on the window manager's task, its lock
+                 *        released).
+                 */
+                using DesktopChosen = void (*)(void *arg, size_t index);
+
+                /** @brief The desktop menu's items at most. */
+                static constexpr size_t MaxDesktopItems = 10;
+
+                /** @brief The longest desktop menu label kept, in bytes. */
+                static constexpr size_t MaxDesktopLabel = 31;
+
+                /** @brief The index `DesktopChosen` is told for Ctrl+Shift+Windows (`devplan/gui.md` §4p). */
+                static constexpr size_t DesktopKey = MaxDesktopItems;
 
                 /** @brief The longest resource name, in bytes. */
                 static constexpr size_t MaxResourceName = 31;
@@ -376,6 +393,24 @@ class WindowManager {
                  */
                 Error showWindowMenu(uint8_t id, uint16_t x, uint16_t y);
 
+                /**
+                 * @brief Sets the menu a right press opens where no window is
+                 *        (`devplan/gui.md` §4o): @p labels (copied, `MaxDesktopItems`
+                 *        at most, cut at `MaxDesktopLabel` bytes; none: no menu),
+                 *        @p fn told which was chosen. A desktop-level window (a panel's)
+                 *        covering the desktop takes the press instead. Kept until
+                 *        `stop()`.
+                 * @return `Ok`, `InvalidState` (not running), or `Invalid` (too many).
+                 */
+                Error setDesktopMenu(Span<const StringView> labels, DesktopChosen fn, void *arg);
+
+                /**
+                 * @brief Returns true if windows can be minimized: a program watches
+                 *        the window list (`watch()`), so it can bring them back
+                 *        (`devplan/gui.md` §4p).
+                 */
+                bool canMinimize();
+
                 /** @brief Returns the screen less the strips panels reserve. */
                 Rect workArea();
 
@@ -477,6 +512,14 @@ class WindowManager {
                  * @return `Ok`, `NotFound`, or `InvalidState` (not running).
                  */
                 Error setIcon(uint8_t id, const Icon *icon);
+
+                /**
+                 * @brief Sets window @p id's large icon (null: none; 32 × 32 at
+                 *        most), kept by the caller as `setIcon()`'s: Alt+Tab's list
+                 *        shows it (the small one doubled without it).
+                 * @return `Ok`, `NotFound`, `InvalidState`, or `Invalid` (too big).
+                 */
+                Error setLargeIcon(uint8_t id, const Icon *icon);
 
                 /**
                  * @brief Copies window @p id's icon's pixels into @p out (a window
@@ -618,7 +661,8 @@ class WindowManager {
                                 uint16_t    heightStep = 1;
                                 Pointer     pointer = Pointer::Arrow;
                                 bool        hideWhileTyping = false;
-                                const Icon *icon = nullptr; // the owner's
+                                const Icon *icon = nullptr;      // the owner's
+                                const Icon *largeIcon = nullptr; // the owner's
                                 Wheel       wheel = nullptr;
                                 uint8_t     client = 0;
                                 char        kind[MaxKind + 1] = {};
@@ -673,9 +717,10 @@ class WindowManager {
                         Shade,
                         Above,
                         Close,
-                        None
+                        None,
+                        Desktop // the desktop menu's item _menuCommand[i]
                 };
-                static constexpr size_t MenuItems = 8;
+                static constexpr size_t MenuItems = MaxDesktopItems; // the window menu has 8
                 struct Switcher; // Alt+Tab's list, while it shows
 
                 static constexpr size_t MaxPieces = 256;
@@ -696,7 +741,6 @@ class WindowManager {
                 void            switchOpen(int step);
                 void            switchTo(int item);
                 void            switchEnd(bool go);
-                void            invalidateRow(uint8_t id, const MenuLayout &layout, int row);
                 static void     switchRedraw(void *arg, Painter &painter);
                 static void     switchMouse(void *arg, const MouseEvent &event);
                 static void     switchClosed(void *arg);
@@ -729,6 +773,9 @@ class WindowManager {
                 Rect            cursorArea() const; // where the pointer is drawn: on the screen, 4-pixel columns
                 uint8_t         windowAt(uint16_t x, uint16_t y) const; // 0: the desktop
                 Error           closeLocked(uint8_t id);
+                Error           showDesktopMenuLocked(uint16_t x, uint16_t y);
+                bool            windowKey(const KeyEvent &event); // Win+arrows, Alt+F10, Ctrl+Shift+Win
+                void            watchersChanged();                // minimizing allowed or not since
                 Error           raiseLocked(uint8_t id);
                 Error           minimizeLocked(uint8_t id);
                 Error           maximizeLocked(uint8_t id);
@@ -808,7 +855,14 @@ class WindowManager {
                 bool                  _listChanged = false; // for the watchers, at the round's end
                 Rect                  _workArea;
                 uint8_t               _menuId = 0;  // the window menu's popup; 0: closed
-                uint8_t               _menuFor = 0; // the window it is for
+                uint8_t               _menuFor = 0; // the window it is for (0: the desktop's)
+                size_t                _menuCount = 0;
+                char                  _desktopLabels[MaxDesktopItems][MaxDesktopLabel + 1] = {};
+                size_t                _desktopCount = 0;
+                DesktopChosen         _desktopChosen = nullptr;
+                void                 *_desktopArg = nullptr;
+                int                   _desktopPicked = -1;  // chosen: told after the round, unlocked
+                bool                  _canMinimize = false; // a client watches the window list
                 int                   _menuHighlight = -1;
                 MenuLayout            _menuLayout;
                 MenuLayout::Item      _menuItems[MenuItems];

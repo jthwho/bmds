@@ -408,6 +408,27 @@ locking; (c) `ProgramThread` records, the handshake per thread, `thread_start`/`
 `thread_kill`/`thread_clear`/`futex`, exec and exit with threads, `ps -T`; (d) the SDK and musl;
 (e) `progtest threads` on the board.
 
+### 3.11 Busy programs and the watchdog (2026-10-06)
+
+**Found:** a program that never blocks (`seq 1 300000 > /dev/null`, 5 s) set off ESP-IDF's task
+watchdog ("Task watchdog got triggered", CPU 0's registers printed): shells and programs run at
+`CONFIG_BMDS_SHELL_PRIORITY` (2) on either core, and the watchdog expects each core's idle task
+(priority 0) to run within 5 s. It only warned (no panic is configured), but compiling on the
+board will do this all day.
+
+**Decision: the task watchdog no longer checks the idle tasks** (`ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0`
+and `_CPU1` off). A busy program is legitimate on a desktop system, as on Unix. Considered:
+- *User code at the idle priority (0), time-sliced with the idle task:* IDF fixes
+  `configIDLE_SHOULD_YIELD` at 0, so its idle task would take whole time slices (waiting for the
+  next tick) beside a busy program: a share of the CPU lost for nothing.
+- *A monitor suspending a busy task now and then:* a hack around the scheduler.
+
+**What a busy program still delays** (as before; the warning was the only change): the idle
+task's work, freeing the stacks of tasks that ended by deleting themselves, and the timer task's
+(priority 1), which reaps detached threads (`Thread::detach()`), until it blocks or ends; on the
+core it runs on only, unless two keep both busy. The task watchdog stays on (nothing subscribes
+to it yet); the interrupt watchdog (interrupts held off, a stuck ISR: 300 ms) is unchanged.
+
 ## 4. ABI impact
 
 ABI 1 has not shipped, but these are recorded as `ABI:` lines because they change behavior:

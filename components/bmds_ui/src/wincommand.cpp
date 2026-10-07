@@ -33,6 +33,8 @@
 #include <bmds/windowmanager.h>
 #include <bmds/windowpalette.h>
 
+#include "desktopmenu.h"
+
 BMDS_NAMESPACE_BEGIN
 
 namespace {
@@ -255,6 +257,9 @@ namespace {
                         ctx.eprintf("win: display in use by the %s\n", d->owner());
                         return Shell::ExitFailure;
                 }
+                // The desktop's own menu (devplan/gui.md §4o): a terminal without any program's help.
+                if (err.isOk() && installDesktopMenu(*wm, ctx).isError())
+                        ctx.eprintf("win: no desktop menu (out of memory)\n");
                 return report(ctx, err);
         }
 
@@ -395,8 +400,8 @@ namespace {
 
         // What window @p w's frame shows at (@p x, @p y): its border, title
         // bar, title, and buttons (none pressed).
-        uint32_t frameAt(const WindowPalette &palette, const WindowManager::Info &w, const Icon &icon, uint32_t x,
-                         uint32_t y) {
+        uint32_t frameAt(const WindowPalette &palette, const WindowManager::Info &w, const Icon &icon, bool canMinimize,
+                         uint32_t x, uint32_t y) {
                 using Role = WindowPalette::Role;
                 using Part = WindowFrame::Part;
                 const WindowFrame f(w.rect, w.decorations);
@@ -430,7 +435,9 @@ namespace {
                         const Glyph    g = Fonts::icons16.glyph(b.icon);
                         const uint32_t col = x - r.x;
                         const bool     on = (g.rows[(y - r.y) * 2 + col / 8] & (0x80u >> (col % 8))) != 0;
-                        return palette.color(on ? b.mark : b.face);
+                        // The minimize button's mark disabled with nowhere to minimize to.
+                        const Role mark = b.part == Part::Minimize && !canMinimize ? Role::DisabledText : b.mark;
+                        return palette.color(on ? mark : b.face);
                 }
                 const Rect t = f.title();
                 if (inside(t, x, y)) return textAt(StringView(w.title), t.x, t.y, t.width, x, y, text, frame);
@@ -474,6 +481,7 @@ namespace {
                                              Fonts::unscii16.height()};
                 }
                 const WindowPalette palette = wm.palette();
+                const bool          canMinimize = wm.canMinimize();
                 // Each window's icon (the title bar shows a 16 x 16 one).
                 constexpr size_t IconPixels = 16 * 16;
                 auto            *iconPixels = static_cast<uint32_t *>(
@@ -520,7 +528,7 @@ namespace {
                                             testWindows[info[i].id - 1].id != info[i].id) {
                                                 known = false; // a client area offering no reference (a menu)
                                         } else if (!inside(c, x, y)) {
-                                                want = frameAt(palette, info[i], icons[i], x, y);
+                                                want = frameAt(palette, info[i], icons[i], canMinimize, x, y);
                                         } else if (images[i] != nullptr) {
                                                 const uint8_t *q =
                                                         images[i] + (size_t(y - c.y) * c.width + (x - c.x)) * 3;

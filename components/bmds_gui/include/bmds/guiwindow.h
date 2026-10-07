@@ -84,9 +84,12 @@ class GuiWindow : public Widget {
 
                 /**
                  * @brief Sets its icon (null: none), kept by the caller: the title
-                 *        bar's, the panel's, Alt+Tab's (16 × 16).
+                 *        bar's, the panel's (16 × 16).
                  */
                 void setIcon(const Icon *icon);
+
+                /** @brief Sets its large icon (null: none; 32 × 32), kept by the caller: Alt+Tab's. */
+                void setLargeIcon(const Icon *icon);
 
                 /** @brief Sets the widget keys go to (null: none). */
                 void setFocusWidget(Widget *widget) { _focus = widget; }
@@ -167,6 +170,7 @@ class GuiWindow : public Widget {
                 Rect                 _screen;
                 Widget              *_central = nullptr;
                 const Icon          *_icon = nullptr;
+                const Icon          *_largeIcon = nullptr;
                 Widget              *_focus = nullptr;
                 Widget              *_grab = nullptr;  // pressed: has the mouse until the release
                 Widget              *_hover = nullptr; // under the pointer

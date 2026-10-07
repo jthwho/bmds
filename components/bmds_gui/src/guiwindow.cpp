@@ -80,6 +80,7 @@ Error GuiWindow::show(const Rect &rect) {
         if (err.isError()) return err;
         _id.store(id, std::memory_order_release);
         if (_icon != nullptr) (void)wm.setIcon(id, _icon);
+        if (_largeIcon != nullptr) (void)wm.setLargeIcon(id, _largeIcon);
         auto [client, cerr] = wm.clientRect(id);
         _screen = cerr.isOk() ? client : Rect();
         _dirty.clear();
@@ -100,6 +101,13 @@ void GuiWindow::setIcon(const Icon *icon) {
         _icon = icon;
         const uint8_t id = this->id();
         if (id != 0) (void)_app.windowManager().setIcon(id, icon);
+        return;
+}
+
+void GuiWindow::setLargeIcon(const Icon *icon) {
+        _largeIcon = icon;
+        const uint8_t id = this->id();
+        if (id != 0) (void)_app.windowManager().setLargeIcon(id, icon);
         return;
 }
 

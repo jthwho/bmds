@@ -213,6 +213,8 @@ namespace {
                                       _context.program.data());
                         const Icon *icon = _icons.program(StringView(path), 16);
                         if (icon != nullptr) (void)_wm->setIcon(id, icon);
+                        const Icon *large = _icons.program(StringView(path), 32); // Alt+Tab's
+                        if (large != nullptr) (void)_wm->setLargeIcon(id, large);
                         // Placed smaller than asked (the screen's edge): the size it got.
                         auto [placed, cerr] = _wm->clientRect(id);
                         if (cerr.isOk()) resized(this, placed.width, placed.height);

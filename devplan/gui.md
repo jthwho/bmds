@@ -194,6 +194,7 @@ up (§4k). As built and measured: §9.
       boot/config/panel.conf               the panel's layout
       boot/config/terminal.conf            the terminal's colors (§4l)
       boot/desktop/terminal.desktop        the desktop's icons (§4m)
+      boot/config/wm.conf                  the window manager's desktop menu (§4o)
       boot/applications/terminal.desktop   Terminal: terminal
 
   Packages bring their own in `share/applications/` (BusyBox: `vi.desktop`, a text editor in a
@@ -435,6 +436,67 @@ The last of `windows.md` §8 step 9: the window manager draws no terminal, so th
   keeps the places that fit; an icon without one, or whose place is off the grid, is placed as
   before. Not a default on `/boot`: absent until an icon is moved.
 
+### 4n. Alt+Tab with 32-pixel icons (roadmap, 2026-10-06)
+
+- **The look** (the classic one): a raised box in the screen's middle with the windows' icons
+  in a grid, 32 × 32 each in a 48-pixel cell (8 a row at most), the chosen one's cell in the
+  highlight color, and under them, in a sunken field, the chosen window's title (`[title]` for a
+  minimized one, cut to fit). At least 256 pixels wide, so a short list still shows a title.
+  Tab and Shift+Tab move, Alt's release chooses, Escape cancels, the mouse points and clicks, as
+  before.
+- **Icons:** a window has a large icon besides its small one: `WindowManager::setLargeIcon(id,
+  icon)` (32 × 32 at most, kept by the owner as the small one is), `GuiWindow::setLargeIcon()`.
+  Without one, the small icon is drawn doubled; without either, the cell is empty. The terminal
+  sets both from its built-in icons.
+- **No copies:** the list keeps the windows' numbers and looks their icons up as it draws, with
+  the window manager's lock held, which `setIcon()` and `setLargeIcon()` take too (the owner
+  keeps an icon until it sets another). The list was 16 KB of copied pixels; now one 4 KB buffer
+  for a doubled icon.
+- **`SwitcherLayout`** (bmds_ui, pure, host-tested): the grid's columns and rows, each cell's and
+  icon's rectangle, the title's field, the cell under a point; 4-pixel columns throughout.
+
+### 4o. The window manager's desktop menu (the user's request, 2026-10-06)
+
+**Goal:** a window system without the panel (or any program) still gives a terminal: a right
+click on the bare desktop opens a menu of the window manager's own; a program that wants its
+own desktop menu (the panel) provides it.
+
+- **Overriding it:** a right press where **no window** is opens it. A program that covers the
+  desktop with a desktop-level window (the panel's, which draws the icons) takes the press and
+  shows its own menu; with the panel stopped, or its desktop window off (`[Desktop] Menu=false`
+  and no `Icons`), the window manager's shows. Nothing more to claim or release.
+- **The window manager knows no program:** `setDesktopMenu(labels, fn, arg)` gives it the items'
+  labels (10 at most, 31 bytes each, copied) and a function told which was chosen, on its task
+  with its lock released. It reuses the window menu's popup (`MenuLayout`, the keys, the mouse).
+- **`win start`** gives it the items of `/boot/config/wm.conf`'s `[Menu]` group, a line an item
+  (`Label=command`, in order; a new default with `Terminal=terminal`; that one item if the file
+  isn't there), and runs the chosen command as the panel runs a launcher entry: split as a
+  Desktop Entry's `Exec`, found on `PATH`, started in a session of its own. What a launch needs
+  outlives the command: `win start` keeps a copy of its exported environment and its directory,
+  and a file table on `/dev/null` (the started program's standard files; its window is where it
+  speaks). A failure is logged.
+
+### 4p. Window keys, the terminal key, minimizing only with a window list (the user's, 2026-10-06)
+
+- **The standard keys** (Windows'; the window manager's, so with or without a panel), on the
+  focused application window:
+  - Win+Up maximizes; Win+Down restores a maximized or snapped window, else minimizes.
+  - Win+Left and Win+Right snap it to that half of the work area (as dragging to a side does);
+    pressed again on a window snapped there, they restore it.
+  - Alt+F10 maximizes or restores.
+  - A key with the Windows key held makes its release no tap (the panel's launcher stays shut).
+- **Ctrl+Shift+Windows runs a terminal:** the three held together (in any order, either side) run
+  `wm.conf`'s `[Keys] Terminal` command (`terminal` by default): a terminal from the keyboard when
+  no program gives one, hard to press by chance. The window manager tells `win start`'s function
+  (`setDesktopMenu()`'s) the index `DesktopKey`. It wins over a program's claim of the Windows key
+  (no launcher opens with it).
+- **Minimizing needs somewhere to go:** a window can be minimized only while a program watches the
+  window list (`watch()`: the panel's buttons bring windows back). Without one, the minimize button
+  is drawn disabled (its mark in `disabled-text`) and does nothing, the window menu's item is
+  disabled, Win+Down only restores, and `minimize()` reports `InvalidState`. When the last watcher
+  goes (the panel ends), the minimized windows are shown again, so none is lost. `canMinimize()`
+  says which (`win check` draws the button as the screen should show it).
+
 ## 5. Budget (estimates)
 
 - **Firmware:** the toolkit 10 to 15 KB, the panel 5 KB, the window manager's additions 4 KB, the
@@ -656,3 +718,23 @@ palette's role names), `/boot/.defaults`' format (a file name a line).
     screenshot in the middle of a drag showed no trail; `win check` 0 wrong after the drop.
   - A cut second line ends in an ellipsis: "Text Editor Test" is "Text" and "Editor T…".
   - Size: the image 795,696 bytes.
+- **Alt+Tab with 32-pixel icons** (§4n, 2026-10-06): `SwitcherLayout` host-tested (one window
+  at the least width, ten in two rows of eight, every icon on a 4-pixel column, the cell under a
+  point, a narrow screen). On the board: two terminals and a test window; Alt+Tab drew the box
+  with the terminals' own 32-pixel icons, the chosen cell lit and its title in the field, and the
+  test window (no icon) as a small drawn window; Tab moved, Alt's release raised the choice, a
+  click on a cell chose it; `win check` 0 wrong with the box open. The list keeps no copies.
+- **The window manager's desktop menu** (§4o, 2026-10-06): with the panel stopped, a right press
+  on the bare desktop opened "Terminal" at the pointer, and choosing it started `/bin/terminal`
+  (pid 3, a session of its own, its window cascaded); with the panel started again, the same
+  press opened the panel's menu. The first try crashed: `Thread::detach()` is the thread's own
+  call (an assert), so the launch thread now detaches itself, under a lock that keeps one launch
+  at a time. Size: the image 801,296 bytes (797,936 before both).
+- **Window keys, Ctrl+Shift+Windows, minimizing** (§4p, 2026-10-06), driven by `win hid` on the
+  board: Win+Up maximized a window (to the work area under the panel), Win+Down restored it,
+  Win+Left snapped it to the left half and again restored it, Alt+F10 maximized it; no launcher
+  opened from those Windows presses. With the panel, Win+Down minimized it; the panel killed,
+  it showed again, its minimize button drawn disabled, `win minimize` refused (`InvalidState`),
+  `win check` 0 wrong over the whole screen. Ctrl+Shift+Windows (Ctrl, Shift, then Windows; and
+  Windows, Ctrl, then Shift with the panel running) started a terminal, and the panel's launcher
+  didn't open; a plain Windows tap still opened it. Size: the image 802,672 bytes.

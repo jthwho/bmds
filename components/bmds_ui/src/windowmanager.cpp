@@ -127,6 +127,12 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
         _workArea = _stack.screen();
         _menuId = 0;
         _menuFor = 0;
+        _menuCount = 0;
+        _desktopCount = 0; // the starter sets the menu (setDesktopMenu())
+        _desktopChosen = nullptr;
+        _desktopArg = nullptr;
+        _desktopPicked = -1;
+        _canMinimize = false;
         _menuHighlight = -1;
         _focusId = 0;
         for (KeyGrab &g : _grabs) g = KeyGrab();
@@ -193,8 +199,11 @@ void WindowManager::entry(void *arg) {
 void WindowManager::run() {
         for (;;) {
                 (void)_wake.acquire(WaitForever);
-                Surface *surface = nullptr;
-                uint32_t frame = 0;
+                Surface      *surface = nullptr;
+                uint32_t      frame = 0;
+                int           picked = -1;
+                DesktopChosen chosen = nullptr;
+                void         *chosenArg = nullptr;
                 {
                         Mutex::Locker lock(_lock, WaitForever);
                         surface = _surface;
@@ -211,8 +220,14 @@ void WindowManager::run() {
                                         for (const Client &c : _clients)
                                                 if (c.used && c.watch != nullptr) c.watch(c.watchArg);
                                 }
+                                picked = _desktopPicked;
+                                _desktopPicked = -1;
+                                chosen = _desktopChosen;
+                                chosenArg = _desktopArg;
                         }
                 }
+                // A desktop menu's choice, told without the lock (it may start a program).
+                if (picked >= 0 && chosen != nullptr) chosen(chosenArg, size_t(picked));
                 _idle.notify();
                 // A round a frame at most: what comes meanwhile is drawn together.
                 if (surface != nullptr) (void)surface->waitFrame(frame, DrawTimeoutMs);
@@ -431,7 +446,11 @@ WindowFrame WindowManager::frame(uint8_t id, const Rect &outer) const {
 void WindowManager::press(uint16_t x, uint16_t y, uint8_t button) {
         using Part = WindowFrame::Part;
         const uint8_t id = windowAt(x, y);
-        if (id == 0) return;
+        if (id == 0) {
+                // The bare desktop: the window manager's own menu (no program's desktop window here).
+                if (button == PointerEvent::Right) (void)showDesktopMenuLocked(x, y);
+                return;
+        }
         auto [z, err] = _stack.layerOf(id);
         if (err.isError()) return;
         const WindowFrame f = frame(id, _stack.rectAt(z));
@@ -475,6 +494,7 @@ void WindowManager::press(uint16_t x, uint16_t y, uint8_t button) {
                 _sizeY = y;
                 return;
         }
+        if (part == Part::Minimize && !_canMinimize) return; // nowhere to go: disabled
         if (part == Part::Minimize || part == Part::Maximize || part == Part::Close) {
                 _pressId = id;
                 _pressPart = part;
@@ -927,7 +947,8 @@ void WindowManager::drawLayer(size_t z, Span<const Rect> pieces) {
                         const bool pressed = _pressId == id && _pressPart == b.part && _pressShown;
                         TextCell   icon;
                         icon.codepoint = b.icon;
-                        icon.fg = _palette.color(b.mark);
+                        icon.fg =
+                                _palette.color(b.part == Part::Minimize && !_canMinimize ? Role::DisabledText : b.mark);
                         icon.bg = _palette.color(b.face);
                         (void)chrome.cells(r.x, r.y, Span<const TextCell>(&icon, 1), Fonts::icons16, r.width);
                         drawBevel(chrome, r, pressed ? Bevel::Style::Sunken : Bevel::Style::Raised);
@@ -1221,6 +1242,7 @@ Error WindowManager::minimize(uint8_t id) {
 
 Error WindowManager::minimizeLocked(uint8_t id) {
         if (_stack.rectOf(id).isError()) return Error::NotFound;
+        if (!_canMinimize) return Error::InvalidState;                                   // nothing would bring it back
         if (!WindowStack::isApplication(_stack.levelOf(id))) return Error::InvalidState; // panels and menus stay
         if (_stack.isHidden(id)) return Error::Ok;
         const uint8_t oldTop = focusId();
@@ -1308,6 +1330,7 @@ void WindowManager::disconnect(uint8_t client) {
         // Its windows, shown or hidden, closed.
         for (uint8_t id = 1; id <= WindowStack::MaxWindows; ++id)
                 if (_windows[id - 1].client == client && _stack.rectOf(id).isOk()) (void)closeLocked(id);
+        watchersChanged(); // the panel gone: nothing to minimize to
         return;
 }
 
@@ -1317,7 +1340,36 @@ Error WindowManager::watch(uint8_t client, Watch fn, void *arg) {
         if (client == 0 || client > MaxClients || !_clients[client - 1].used) return Error::NotFound;
         _clients[client - 1].watch = fn;
         _clients[client - 1].watchArg = arg;
+        watchersChanged();
         return Error::Ok;
+}
+
+bool WindowManager::canMinimize() {
+        Mutex::Locker lock(_lock, WaitForever);
+        return _canMinimize;
+}
+
+// Whether a program watches the window list (the panel: windows can be minimized) changed: the
+// minimize buttons redrawn; without one, the minimized windows shown again.
+void WindowManager::watchersChanged() {
+        bool now = false;
+        for (const Client &c : _clients) now = now || (c.used && c.watch != nullptr);
+        if (now == _canMinimize) return;
+        _canMinimize = now;
+        for (size_t z = 0; z < _stack.count(); ++z) {
+                const uint8_t id = _stack.idAt(z);
+                const Rect    r = frame(id, _stack.rectAt(z)).button(WindowFrame::Part::Minimize);
+                if (!r.isEmpty()) (void)_stack.invalidate(id, r);
+        }
+        if (!now) {
+                uint8_t      hidden[WindowStack::MaxWindows];
+                const size_t n = _stack.hiddenCount();
+                for (size_t i = 0; i < n; ++i) hidden[i] = _stack.hiddenIdAt(i);
+                for (size_t i = 0; i < n; ++i)
+                        if (WindowStack::isApplication(_stack.levelOf(hidden[i]))) (void)raiseLocked(hidden[i]);
+        }
+        changed(focusId());
+        return;
 }
 
 Error WindowManager::setResource(StringView name, StringView value) {
@@ -1490,19 +1542,22 @@ Error WindowManager::showWindowMenuLocked(uint8_t id, const Rect &anchor) {
         const bool app = WindowStack::isApplication(_stack.levelOf(id));
         const bool above = _stack.levelOf(id) == Level::Above;
         _menuItems[0] = {"Restore", "", off(hidden || w.maximized || w.snapped)};
-        _menuItems[1] = {"Minimize", "", off(!hidden && (w.decorations & WindowFrame::MinimizeButton) != 0)};
-        _menuItems[2] = {"Maximize", "", off(!w.maximized && (w.decorations & WindowFrame::MaximizeButton) != 0)};
+        _menuItems[1] = {"Minimize", "Win+Down",
+                         off(_canMinimize && !hidden && (w.decorations & WindowFrame::MinimizeButton) != 0)};
+        _menuItems[2] = {"Maximize", "Win+Up", off(!w.maximized && (w.decorations & WindowFrame::MaximizeButton) != 0)};
         _menuItems[3] = {w.shaded ? "Roll Down" : "Roll Up", "",
                          off(app && !hidden && (w.decorations & WindowFrame::TitleBar) != 0)};
         _menuItems[4] = {"", "", MenuLayout::Separator};
         _menuItems[5] = {"Always on Top", "", static_cast<uint8_t>(off(app) | (above ? MenuLayout::Checked : 0))};
         _menuItems[6] = {"", "", MenuLayout::Separator};
         _menuItems[7] = {"Close", "Alt+F4", off((w.decorations & WindowFrame::CloseButton) != 0)};
-        constexpr MenuChoice choices[MenuItems] = {MenuChoice::Restore, MenuChoice::Minimize, MenuChoice::Maximize,
-                                                   MenuChoice::Shade,   MenuChoice::None,     MenuChoice::Above,
-                                                   MenuChoice::None,    MenuChoice::Close};
-        for (size_t i = 0; i < MenuItems; ++i) _menuChoices[i] = choices[i];
-        Error err = _menuLayout.layout(Span<const MenuLayout::Item>(_menuItems, MenuItems), Fonts::unscii16);
+        constexpr MenuChoice choices[] = {MenuChoice::Restore, MenuChoice::Minimize, MenuChoice::Maximize,
+                                          MenuChoice::Shade,   MenuChoice::None,     MenuChoice::Above,
+                                          MenuChoice::None,    MenuChoice::Close};
+        constexpr size_t     Count = sizeof(choices) / sizeof(choices[0]);
+        for (size_t i = 0; i < Count; ++i) _menuChoices[i] = choices[i];
+        _menuCount = Count;
+        Error err = _menuLayout.layout(Span<const MenuLayout::Item>(_menuItems, Count), Fonts::unscii16);
         if (err.isError()) return err;
         WindowConfig config;
         config.rect = MenuLayout::place(_menuLayout.width(), _menuLayout.height(), anchor, _stack.screen(), false);
@@ -1526,7 +1581,7 @@ Error WindowManager::showWindowMenuLocked(uint8_t id, const Rect &anchor) {
 
 void WindowManager::menuRedraw(void *arg, Painter &painter) {
         auto *self = static_cast<WindowManager *>(arg);
-        drawMenu(painter, self->_menuLayout, Span<const MenuLayout::Item>(self->_menuItems, MenuItems),
+        drawMenu(painter, self->_menuLayout, Span<const MenuLayout::Item>(self->_menuItems, self->_menuCount),
                  self->_menuHighlight);
         return;
 }
@@ -1546,12 +1601,16 @@ void WindowManager::menuHighlight(int item) {
         return;
 }
 
-// Item @p item chosen: the menu closed, then done to its window.
+// Item @p item chosen: the menu closed, then done to its window (or, the desktop's, told).
 void WindowManager::menuChoose(int item) {
-        const uint8_t id = _menuFor;
+        const uint8_t    id = _menuFor;
+        const MenuChoice choice = item >= 0 && size_t(item) < _menuCount ? _menuChoices[item] : MenuChoice::None;
         if (_menuId != 0) (void)closeLocked(_menuId);
+        if (choice == MenuChoice::Desktop) {
+                _desktopPicked = item; // told after this round, the lock released
+                return;
+        }
         if (id == 0 || _stack.rectOf(id).isError()) return;
-        const MenuChoice choice = item >= 0 && size_t(item) < MenuItems ? _menuChoices[item] : MenuChoice::None;
         switch (choice) {
                 case MenuChoice::Restore: (void)restoreLocked(id); break;
                 case MenuChoice::Minimize: (void)minimizeLocked(id); break;
@@ -1567,9 +1626,59 @@ void WindowManager::menuChoose(int item) {
                 }
                 case MenuChoice::Shade: (void)shadeLocked(id, !_windows[id - 1].shaded); break;
                 case MenuChoice::Close: (void)closeLocked(id); break;
+                case MenuChoice::Desktop:
                 case MenuChoice::None: break;
         }
         return;
+}
+
+// The desktop's menu (setDesktopMenu()) at (@p x, @p y).
+Error WindowManager::showDesktopMenuLocked(uint16_t x, uint16_t y) {
+        if (_desktopCount == 0) return Error::NotFound;
+        if (_menuId != 0) (void)closeLocked(_menuId);
+        for (size_t i = 0; i < _desktopCount; ++i) {
+                _menuItems[i] = MenuLayout::Item{StringView(_desktopLabels[i]), StringView(), 0};
+                _menuChoices[i] = MenuChoice::Desktop;
+        }
+        _menuCount = _desktopCount;
+        Error err = _menuLayout.layout(Span<const MenuLayout::Item>(_menuItems, _menuCount), Fonts::unscii16);
+        if (err.isError()) return err;
+        WindowConfig config;
+        config.rect =
+                MenuLayout::place(_menuLayout.width(), _menuLayout.height(), Rect{x, y, 0, 0}, _stack.screen(), false);
+        config.title = "Desktop menu";
+        config.redraw = menuRedraw;
+        config.mouse = menuMouse;
+        config.key = menuKey;
+        config.closed = menuClosed;
+        config.arg = this;
+        config.decorations = WindowFrame::None;
+        config.level = Level::Popup;
+        config.focusable = false;
+        config.kind = "menu";
+        auto [menu, oerr] = openLocked(config);
+        if (oerr.isError()) return oerr;
+        _menuId = menu;
+        _menuFor = 0;
+        _menuHighlight = -1;
+        return Error::Ok;
+}
+
+Error WindowManager::setDesktopMenu(Span<const StringView> labels, DesktopChosen fn, void *arg) {
+        if (labels.size() > MaxDesktopItems) return Error::Invalid;
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        for (size_t i = 0; i < labels.size(); ++i) {
+                // Cut on a character's boundary.
+                size_t n = labels[i].size() < MaxDesktopLabel ? labels[i].size() : MaxDesktopLabel;
+                while (n > 0 && n < labels[i].size() && (uint8_t(labels[i][n]) & 0xc0) == 0x80) --n;
+                std::memcpy(_desktopLabels[i], labels[i].data(), n);
+                _desktopLabels[i][n] = '\0';
+        }
+        _desktopCount = fn != nullptr ? labels.size() : 0;
+        _desktopChosen = fn;
+        _desktopArg = arg;
+        return Error::Ok;
 }
 
 void WindowManager::menuMouse(void *arg, const MouseEvent &event) {
@@ -1721,23 +1830,22 @@ Error WindowManager::setAbove(uint8_t id, bool above) {
 namespace {
 
         constexpr uint8_t  UsageF4 = HidKey::F1 + 3;
+        constexpr uint8_t  UsageF10 = HidKey::F1 + 9;
         constexpr uint8_t  UsageLeftAlt = 0xe2;
         constexpr uint8_t  UsageRightAlt = 0xe6;
         constexpr uint16_t SwitcherWidth = 320; // a box in the screen's middle, not a menu
 
 } // namespace
 
-// Alt+Tab's list: the windows in it, their texts as shown, which one is chosen.
+// Alt+Tab's list: the windows in it (their icons looked up as it is drawn, with the lock held:
+// their owners set them under it), their titles as shown, which one is chosen.
 struct WindowManager::Switcher {
-                static constexpr uint16_t IconSide = MenuLayout::IconSize;
-                MenuLayout                layout;
-                MenuLayout::Item          items[WindowStack::MaxWindows];
-                Icon     icons[WindowStack::MaxWindows]; // copies: an owner may change its own meanwhile
-                uint32_t pixels[WindowStack::MaxWindows][IconSide * IconSide];
-                char     texts[WindowStack::MaxWindows][MaxTitle + 3];
-                uint8_t  ids[WindowStack::MaxWindows];
-                size_t   count = 0;
-                int      at = 0;
+                SwitcherLayout layout;
+                char           texts[WindowStack::MaxWindows][MaxTitle + 3];
+                uint8_t        ids[WindowStack::MaxWindows];
+                uint32_t       doubled[SwitcherLayout::IconSide * SwitcherLayout::IconSide]; // a small icon, x2
+                size_t         count = 0;
+                int            at = 0;
 };
 
 // @p event, if it is one of the window manager's keys: done here, and not delivered.
@@ -1758,6 +1866,7 @@ bool WindowManager::shortcut(const KeyEvent &event) {
         }
         // A key pressed while a claimed modifier is down: that modifier's press is no tap.
         if (press && (event.usage < 0xe0 || event.usage > 0xe7)) _tapClean = false;
+        if (windowKey(event)) return true;
         if (!press || !alt || event.hasCtrl() || (event.modifiers & KeyEvent::Gui) != 0) return grabbed(event);
         if (event.usage == HidKey::Tab) {
                 switchOpen(event.hasShift() ? -1 : 1);
@@ -1793,6 +1902,54 @@ Error WindowManager::grabKey(uint8_t client, uint8_t usage, uint8_t modifiers, G
         if (free == nullptr) return Error::Full;
         *free = KeyGrab{fn, arg, client, usage, folded};
         return Error::Ok;
+}
+
+// The window keys (devplan/gui.md §4p): Win+Up/Down/Left/Right, Alt+F10 on the focused
+// application window; Ctrl+Shift+Windows (held together, in any order) for win start's command.
+bool WindowManager::windowKey(const KeyEvent &event) {
+        if (event.action == KeyEvent::Action::Release) return false;
+        const bool modifier = event.usage >= 0xe0 && event.usage <= 0xe7;
+        // A modifier's own bit (left Ctrl 0xe0 is bit 0 ... right Gui 0xe7 bit 7), in case the
+        // event's modifiers don't count it yet.
+        const auto mods = static_cast<uint8_t>(event.modifiers | (modifier ? 1u << (event.usage - 0xe0) : 0u));
+        const bool ctrl = (mods & KeyEvent::Ctrl) != 0, shift = (mods & KeyEvent::Shift) != 0;
+        const bool alt = (mods & KeyEvent::Alt) != 0, gui = (mods & KeyEvent::Gui) != 0;
+        if (modifier) {
+                if (!ctrl || !shift || !gui || alt || event.action != KeyEvent::Action::Press) return false;
+                _tapClean = false;                // no launcher with it
+                _desktopPicked = int(DesktopKey); // told after the round, unlocked
+                return true;
+        }
+        const uint8_t focus = focusId();
+        const bool    winKey = gui && !ctrl && !shift && !alt;
+        const bool    arrow = event.usage == HidKey::Up || event.usage == HidKey::Down || event.usage == HidKey::Left ||
+                           event.usage == HidKey::Right;
+        if (!(winKey && arrow) && !(alt && !gui && !ctrl && !shift && event.usage == UsageF10)) return false;
+        if (focus == 0 || !WindowStack::isApplication(_stack.levelOf(focus))) return true;
+        Window       &w = _windows[focus - 1];
+        const uint8_t d = w.decorations;
+        if (event.usage == UsageF10) {
+                if ((d & WindowFrame::MaximizeButton) != 0)
+                        (void)(w.maximized ? restoreLocked(focus) : maximizeLocked(focus));
+        } else if (event.usage == HidKey::Up) {
+                if ((d & WindowFrame::MaximizeButton) != 0 && !w.maximized) (void)maximizeLocked(focus);
+        } else if (event.usage == HidKey::Down) {
+                if (w.maximized || w.snapped) {
+                        (void)restoreLocked(focus);
+                } else if ((d & WindowFrame::MinimizeButton) != 0) {
+                        (void)minimizeLocked(focus); // refused with nowhere to go
+                }
+        } else if ((d & WindowFrame::Resizable) != 0) {
+                // Left or Right: snapped to that half; again (already there), back.
+                const Snap snap = event.usage == HidKey::Left ? Snap::Left : Snap::Right;
+                auto [at, err] = _stack.rectOf(focus);
+                if (err.isOk() && w.snapped && at == snapRect(snap)) {
+                        (void)restoreLocked(focus);
+                } else {
+                        (void)snapLocked(focus, snap);
+                }
+        }
+        return true;
 }
 
 // @p event, if a program claimed it (grabKey()): it is told, and the key isn't delivered.
@@ -1838,27 +1995,17 @@ void WindowManager::switchOpen(int step) {
                 const uint8_t id = k == 0 ? focus : i < shown ? _stack.idAt(i) : _stack.hiddenIdAt(i - shown);
                 if (id == 0 || (k > 0 && id == focus) || !WindowStack::isApplication(_stack.levelOf(id))) continue;
                 const char *title = _windows[id - 1].title[0] != '\0' ? _windows[id - 1].title : "(untitled)";
-                char       *text = sw->texts[sw->count];
-                std::snprintf(text, sizeof(sw->texts[0]), _stack.isHidden(id) ? "[%s]" : "%s", title);
-                sw->items[sw->count] = MenuLayout::Item{StringView(text), StringView(), 0};
-                const Icon *icon = _windows[id - 1].icon;
-                if (icon != nullptr && icon->isValid() && icon->width <= Switcher::IconSide &&
-                    icon->height <= Switcher::IconSide) {
-                        std::memcpy(sw->pixels[sw->count], icon->pixels, size_t(icon->width) * icon->height * 4);
-                        sw->icons[sw->count] = Icon{icon->width, icon->height, sw->pixels[sw->count]};
-                        sw->items[sw->count].icon = &sw->icons[sw->count];
-                }
+                std::snprintf(sw->texts[sw->count], sizeof(sw->texts[0]), _stack.isHidden(id) ? "[%s]" : "%s", title);
                 sw->ids[sw->count++] = id;
         }
-        if (sw->count == 0 ||
-            sw->layout.layout(Span<const MenuLayout::Item>(sw->items, sw->count), Fonts::unscii16, SwitcherWidth)
-                    .isError()) {
+        if (sw->count == 0) {
                 Memory::free(sw);
                 return;
         }
+        sw->layout.layout(sw->count, _stack.screen().width);
         sw->at = sw->count == 1 ? 0 : (step > 0 ? 1 : int(sw->count) - 1);
         const Rect     screen = _stack.screen();
-        const uint16_t w = sw->layout.width() < screen.width ? sw->layout.width() : screen.width;
+        const uint16_t w = sw->layout.width();
         const uint16_t h = sw->layout.height() < screen.height ? sw->layout.height() : screen.height;
         WindowConfig   config;
         config.rect = Rect{static_cast<uint16_t>(((screen.width - w) / 2) & ~(Align - 1u)),
@@ -1883,26 +2030,23 @@ void WindowManager::switchOpen(int step) {
         return;
 }
 
-// Row @p row of popup @p id, laid out by @p layout, redrawn.
-void WindowManager::invalidateRow(uint8_t id, const MenuLayout &layout, int row) {
-        if (row < 0) return;
-        auto [at, err] = _stack.rectOf(id);
-        if (err.isError()) return;
-        const Rect r = layout.itemRect(size_t(row));
-        (void)_stack.invalidate(id, Rect{uint16_t(at.x + r.x), uint16_t(at.y + r.y), r.width, r.height});
-        return;
-}
-
-// The list's choice moved to @p item (around the ends): only the two rows redrawn.
+// The list's choice moved to @p item (around the ends): the two cells and the title redrawn.
 void WindowManager::switchTo(int item) {
         Switcher *sw = _switcher;
         if (sw == nullptr) return;
         const int n = int(sw->count);
         item = ((item % n) + n) % n;
         if (item == sw->at) return;
-        invalidateRow(_switchId, sw->layout, sw->at);
-        invalidateRow(_switchId, sw->layout, item);
+        const int old = sw->at;
         sw->at = item;
+        // The two cells and the title.
+        auto [at, err] = _stack.rectOf(_switchId);
+        if (err.isOk()) {
+                for (const Rect &r :
+                     {sw->layout.cellRect(size_t(sw->at)), sw->layout.cellRect(size_t(old)), sw->layout.titleRect()})
+                        (void)_stack.invalidate(_switchId,
+                                                Rect{uint16_t(at.x + r.x), uint16_t(at.y + r.y), r.width, r.height});
+        }
         changed(focusId());
         return;
 }
@@ -1916,18 +2060,72 @@ void WindowManager::switchEnd(bool go) {
         return;
 }
 
+// The box: a raised face, the icons (the chosen one's cell lit), the chosen window's title in a
+// sunken field.
 void WindowManager::switchRedraw(void *arg, Painter &painter) {
         auto *self = static_cast<WindowManager *>(arg);
         if (self->_switcher == nullptr) return;
-        const Switcher &sw = *self->_switcher;
-        drawMenu(painter, sw.layout, Span<const MenuLayout::Item>(sw.items, sw.count), sw.at);
+        Switcher             &sw = *self->_switcher;
+        const SwitcherLayout &l = sw.layout;
+        const WindowPalette  &palette = painter.palette();
+        const uint32_t        face = palette.color(Role::Face);
+        const Rect            box{0, 0, l.width(), l.height()};
+        drawBevel(painter, box, Bevel::Style::Window);
+        (void)painter.fill(Bevel::inside(box, Bevel::Style::Window), face);
+        for (size_t i = 0; i < sw.count; ++i) {
+                const Rect cell = l.cellRect(i);
+                if (!painter.isVisible(cell)) continue;
+                const uint32_t bg = int(i) == sw.at ? palette.color(Role::Highlight) : face;
+                (void)painter.fill(cell, bg);
+                const Window &w = self->_windows[sw.ids[i] - 1];
+                const Rect    r = l.iconRect(i);
+                const Icon   *big = w.largeIcon;
+                const Icon   *small = w.icon;
+                if (big != nullptr && big->isValid()) {
+                        (void)painter.image(static_cast<uint16_t>(r.x + ((r.width - big->width) / 2 & ~3u)),
+                                            static_cast<uint16_t>(r.y + (r.height - big->height) / 2), *big, bg);
+                } else if (small != nullptr && small->isValid() && small->width * 2 <= r.width &&
+                           small->height * 2 <= r.height) {
+                        // Doubled, each pixel two by two.
+                        const uint16_t dw = small->width * 2, dh = small->height * 2;
+                        for (uint16_t y = 0; y < dh; ++y)
+                                for (uint16_t x = 0; x < dw; ++x)
+                                        sw.doubled[size_t(y) * dw + x] =
+                                                small->pixels[size_t(y / 2) * small->width + x / 2];
+                        (void)painter.image(static_cast<uint16_t>(r.x + ((r.width - dw) / 2 & ~3u)),
+                                            static_cast<uint16_t>(r.y + (r.height - dh) / 2), Icon{dw, dh, sw.doubled},
+                                            bg);
+                } else {
+                        // None: a window drawn small (a frame, a title bar, its client area).
+                        const Rect outer{static_cast<uint16_t>(r.x + 2), static_cast<uint16_t>(r.y + 4), 28, 24};
+                        const Rect bar{static_cast<uint16_t>(outer.x + 1), static_cast<uint16_t>(outer.y + 1), 26, 5};
+                        const Rect body{static_cast<uint16_t>(outer.x + 1), static_cast<uint16_t>(outer.y + 6), 26, 17};
+                        (void)painter.fill(outer, palette.color(Role::FaceDark));
+                        (void)painter.fill(bar, palette.color(Role::ActiveFrame));
+                        (void)painter.fill(body, palette.color(Role::Client));
+                }
+        }
+        const Rect title = l.titleRect();
+        if (painter.isVisible(title)) {
+                drawBevel(painter, title, Bevel::Style::Field);
+                const Rect     in = Bevel::inside(title, Bevel::Style::Field);
+                const uint32_t fg = palette.color(Role::FaceText);
+                (void)painter.fill(in, face);
+                const StringView text(sw.texts[sw.at]);
+                const uint16_t   room = static_cast<uint16_t>(in.width > 8 ? in.width - 8 : 0);
+                const StringView shown = text.left(Fonts::unscii16.fitting(text, room));
+                const uint32_t   tw = Fonts::unscii16.textWidth(shown);
+                const uint16_t   tx = static_cast<uint16_t>((in.x + (in.width - tw) / 2) & ~3u);
+                const uint16_t   ty = static_cast<uint16_t>(in.y + (in.height - Fonts::unscii16.height()) / 2);
+                (void)painter.text(tx, ty, shown, Fonts::unscii16, fg, face, room);
+        }
         return;
 }
 
 void WindowManager::switchMouse(void *arg, const MouseEvent &event) {
         auto *self = static_cast<WindowManager *>(arg);
         if (self->_switcher == nullptr) return;
-        const int item = self->_switcher->layout.itemAt(event.x, event.y);
+        const int item = self->_switcher->layout.cellAt(event.x, event.y);
         if (item < 0) return;
         if (event.type == MouseEvent::Type::Motion || event.type == MouseEvent::Type::Press) self->switchTo(item);
         if (event.type == MouseEvent::Type::Release) {
@@ -1990,6 +2188,16 @@ Error WindowManager::setIcon(uint8_t id, const Icon *icon) {
                 if (!button.isEmpty()) (void)_stack.invalidate(id, button);
         }
         changed(focusId());
+        return Error::Ok;
+}
+
+Error WindowManager::setLargeIcon(uint8_t id, const Icon *icon) {
+        if (icon != nullptr && (icon->width > SwitcherLayout::IconSide || icon->height > SwitcherLayout::IconSide))
+                return Error::Invalid;
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        if (_stack.rectOf(id).isError()) return Error::NotFound;
+        _windows[id - 1].largeIcon = icon;
         return Error::Ok;
 }
 
