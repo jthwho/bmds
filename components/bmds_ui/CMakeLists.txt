@@ -14,6 +14,7 @@ set(BMDS_UI_PURE_SRCS
         src/glyphrenderer.cpp
         src/iconfont.cpp
         src/menulayout.cpp
+        src/mnemonic.cpp
         src/switcherlayout.cpp
         src/terminalselection.cpp
         src/terminalview.cpp

@@ -37,6 +37,7 @@ storage device?)").
 | F6 | `rm` | **Unchanged:** it deletes. Only the desktop and `trash` use the trash, as on Linux | — |
 | F7 | Paste on the desktop | **The desktop menu: Applications (the launcher's menu, as a submenu), a separator, Paste.** Paste is disabled unless the clipboard can be read as `text/uri-list`. Each `file://` path in the list is copied into the desktop's first directory, under a copy's name if its own is taken (F1). The desktop is then reloaded. A file that isn't a Desktop Entry is copied but not shown (the desktop shows only those, §2) | Paste in the launcher's menu (it would show on the panel's Apps button too) |
 | F8 | Delete on the desktop | **The icon's menu: Open, Copy, Delete;** Delete moves the icon's file to its trash (F2), and the desktop reloads. No confirmation: it can be restored (`trash -r`). Emptying the trash and restoring from the desktop come with a Trash icon, later | deleting outright (no way back) |
+| F10 | New on the desktop (the user's, 2026-10-07) | **The desktop menu: Applications, New ▸ (Folder, Text Document, Empty File), Paste.** The new folder or file goes in the desktop's first directory as "New Folder", "New Text Document.txt" or "New File", or the first free "NAME (2).EXT", "(3)"... (Windows' form for new items). It is put in the cell where the menu was opened if that cell is free, selected, and its name edited at once (a file's extension left out of the selection) | templates from a directory (freedesktop.org's `Templates`), later |
 | F9 | The terminal's menu | **A right click on a terminal opens Copy (disabled without a selection), Paste (disabled when the clipboard has no text) and Select All**, with their keys shown. The terminal isn't on the toolkit, so the window manager draws it: `WindowManager::showMenu()` (§4c) | the toolkit in the terminal (a second event loop) |
 
 ## 4. Design
@@ -189,4 +190,13 @@ The commit carries an `ABI:` line. `showMenu` is internal, as the window manager
   - The deletion dates read 2026-01-01: the board's clock wasn't set.
 - **Size:** the image grew 12,192 bytes to 843,248, with the trash, copy names, `copyFile`,
   `trash`, `showMenu` and both menus.
-
+- **New (F10, 2026-10-07):**
+  - New ▸ Folder, Text Document and Empty File, each with its type's icon.
+  - A submenu's choice is told to its root menu's function. So the desktop menu's own items
+    now have negative numbers (Paste -2, the New items -3 to -5), and 0 and up are the launcher
+    entries chosen from its Applications submenu. Before this, choosing the first application
+    there was taken as Paste.
+  - **On the board:** a right click on an empty cell, then N and T, made
+    `New Text Document.txt` in that cell (`desktop.conf` 4,3), with the editor over its name
+    and "New Text Document" selected. Typing "notes" and Enter gave `notes.txt`. N and F at
+    another cell made `New Folder` there.

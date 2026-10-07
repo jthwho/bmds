@@ -344,6 +344,24 @@ namespace Vfs {
          */
         Result<FileInfo> lstat(StringView path, const Context &context);
 
+        /** @brief `identify()`: by the name only (nothing read; the path needn't exist). */
+        constexpr uint32_t IdentifyName = 0x1;
+
+        /** @brief `identify()`: by the contents only, whatever the name says. */
+        constexpr uint32_t IdentifyContent = 0x2;
+
+        /**
+         * @brief Returns what @p path is, as a MIME type (`devplan/filetypes.md`
+         *        T2, `FileFormat`): by its name, else (or with `IdentifyContent`)
+         *        its first 512 bytes. A directory is `inode/directory`, a device
+         *        `inode/chardevice`, an empty file `application/x-zerosize`; by
+         *        the name only, a name not known is `application/octet-stream`.
+         *        Symbolic links are followed.
+         * @return A view of a string in rodata; `NotExist`, `IoError`, ...
+         * @blocking A `stat()` and a 512-byte read, unless the name says.
+         */
+        Result<StringView> identify(StringView path, uint32_t flags, const Context &context);
+
         /**
          * @brief Returns the target of the symbolic link @p path (as written:
          *        absolute, or relative to the link's directory).

@@ -78,6 +78,9 @@ _Static_assert(BMDS_SYS_THREAD_EXIT == 54, "ABI: slot THREAD_EXIT");
 _Static_assert(BMDS_SYS_FUTEX == 55, "ABI: slot FUTEX");
 _Static_assert(BMDS_SYS_THREAD_KILL == 56, "ABI: slot THREAD_KILL");
 _Static_assert(BMDS_SYS_THREAD_CLEAR == 57, "ABI: slot THREAD_CLEAR");
+_Static_assert(BMDS_SYS_FILE_TYPE == 58, "ABI: slot FILE_TYPE");
+_Static_assert(BMDS_FILE_TYPE_NAME == 0x1 && BMDS_FILE_TYPE_CONTENT == 0x2 && BMDS_FILE_TYPE_MAX == 127,
+               "ABI: file_type flags");
 _Static_assert(BMDS_TYPE_LINK == 4, "ABI: file type LINK");
 _Static_assert(BMDS_ABI_VERSION == 1, "ABI: version (raise it with every addition once shipped)");
 _Static_assert(BMDS_STDIN == 0 && BMDS_STDOUT == 1 && BMDS_STDERR == 2, "ABI: standard fds");

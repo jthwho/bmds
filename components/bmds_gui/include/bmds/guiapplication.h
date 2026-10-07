@@ -158,7 +158,8 @@ class GuiApplication {
                                         Closed,
                                         Gone,
                                         Watch,
-                                        Post
+                                        Post,
+                                        Activated, ///< `width` 1: it has the keys now; 0: it lost them.
                                 };
                                 Type                      type = Type::Post;
                                 uint8_t                   slot = 0; ///< The window's (its generation in `generation`).

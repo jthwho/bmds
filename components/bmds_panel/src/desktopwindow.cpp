@@ -11,7 +11,9 @@
 #include <cstring>
 #include <bmds/font.h>
 #include <bmds/glyphrenderer.h>
+#include <bmds/lineeditmodel.h>
 #include <bmds/memory.h>
+#include <bmds/mnemonic.h>
 #include <bmds/system.h>
 
 #include "desktopwindow.h"
@@ -35,38 +37,34 @@ namespace {
                 return;
         }
 
-        // @p name's lines: the first broken at its last space that fits (or cut, one long word),
-        // the second what is left; if that doesn't fit either, cut and ended with an ellipsis.
+        // @p name's lines, broken as `TextWrap` breaks them (as the editor that renames it does:
+        // devplan/gui.md §4r); past two, the second cut and ended with an ellipsis.
         void breakName(StringView all, char (&text)[2][DesktopWindow::LineBytes], uint8_t &lines) {
                 constexpr char Ellipsis[] = "\xe2\x80\xa6"; // U+2026
                 const Font    &font = Fonts::unscii16;
-                const size_t   fit = font.fitting(all, LineWidth);
-                lines = all.isEmpty() ? 0 : 1;
-                if (fit >= all.size()) {
-                        copyLine(text[0], all.data(), all.size());
-                        return;
-                }
-                size_t cut = fit;
-                if (all[fit] != ' ') {
-                        size_t space = fit;
-                        while (space > 0 && all[space] != ' ') --space;
-                        if (space > 0) cut = space;
-                }
-                copyLine(text[0], all.data(), cut);
-                size_t next = cut;
-                while (next < all.size() && all[next] == ' ') ++next;
-                if (next >= all.size()) return;
-                lines = 2;
-                const StringView rest = all.mid(next);
-                if (font.textWidth(rest) <= LineWidth) {
-                        copyLine(text[1], rest.data(), rest.size());
-                        return;
-                }
-                const size_t kept = font.fitting(rest, LineWidth - font.textWidth(StringView(Ellipsis)));
+                StringView     views[3];
+                const size_t   n = TextWrap::wrap(all, static_cast<uint16_t>(LineWidth / font.width()),
+                                                  Span<StringView>(views, 3));
+                lines = static_cast<uint8_t>(n < 2 ? n : 2);
+                for (uint8_t l = 0; l < lines; ++l) copyLine(text[l], views[l].data(), views[l].size());
+                if (n < 3) return;
+                // What is left from the second line on, cut to leave room for the ellipsis.
+                const StringView rest = all.mid(static_cast<size_t>(views[1].data() - all.data())).trimmed();
+                const size_t     kept = font.fitting(rest, LineWidth - font.textWidth(StringView(Ellipsis)));
                 copyLine(text[1], rest.data(), kept);
                 const size_t at = std::strlen(text[1]); // at most 8 characters: room for the ellipsis
                 std::memcpy(text[1] + at, Ellipsis, sizeof(Ellipsis));
                 return;
+        }
+
+        // @p r's edges, a pixel wide (a selection drawn while the desktop hasn't the keys).
+        size_t outline(const Rect &r, Rect (&out)[4]) {
+                if (r.width < 2 || r.height < 2) return 0;
+                out[0] = Rect{r.x, r.y, r.width, 1};
+                out[1] = Rect{r.x, uint16_t(r.bottom() - 1), r.width, 1};
+                out[2] = Rect{r.x, uint16_t(r.y + 1), 1, uint16_t(r.height - 2)};
+                out[3] = Rect{uint16_t(r.right() - 1), uint16_t(r.y + 1), 1, uint16_t(r.height - 2)};
+                return 4;
         }
 
         // @p rgb into a reference picture's B, G, R pixel at @p p.
@@ -95,8 +93,28 @@ Rect DesktopWindow::nameRect(size_t item) const {
         if (item >= _count) return Rect();
         const Rect  s = screenRect();
         const Item &it = _items[item];
-        return Rect{uint16_t(s.x + it.cell.x), uint16_t(s.y + it.cell.y + TextTop - 3), CellWidth,
-                    GuiStyle::ButtonHeight};
+        return Rect{uint16_t(s.x + it.cell.x), uint16_t(s.y + it.cell.y + TextTop), CellWidth, LineHeight};
+}
+
+bool DesktopWindow::placeItem(size_t item, uint16_t screenX, uint16_t screenY) {
+        if (item >= _count) return false;
+        const Rect s = screenRect();
+        const int  x = int(screenX) - s.x - _left, y = int(screenY) - s.y - _top;
+        if (x < 0 || y < 0 || x >= _columns * CellWidth || y >= _rows * CellHeight) return false;
+        const IconGrid::Cell at = IconGrid::cellAt(x, y, CellWidth, CellHeight, _columns, _rows);
+        for (size_t i = 0; i < _count; ++i)
+                if (i != item && _items[i].at == at) return false;
+        _items[item].at = at;
+        moveTo(_items[item], cellRect(at));
+        return true;
+}
+
+void DesktopWindow::setEditing(int item) {
+        if (item == _editing) return;
+        if (_editing >= 0 && size_t(_editing) < _count) invalidate(_items[_editing].cell);
+        _editing = item;
+        if (_editing >= 0 && size_t(_editing) < _count) invalidate(_items[_editing].cell);
+        return;
 }
 
 // A rename asked for in @p ms unless something else happens first.
@@ -135,6 +153,7 @@ void DesktopWindow::freeItems() {
         _items = nullptr;
         _count = 0;
         _selected = -1;
+        _editing = -1;
         return;
 }
 
@@ -337,6 +356,133 @@ void DesktopWindow::mouseLeft() {
         return;
 }
 
+// ---- Keys (devplan/gui.md §4r)
+
+// The item nearest the selection in direction (@p dx, @p dy), by grid cells: the nearest along
+// it, then across it; the selection itself if none is that way.
+int DesktopWindow::nearest(int dx, int dy) const {
+        if (_selected < 0) return byGrid(false);
+        const IconGrid::Cell from = _items[_selected].at;
+        int                  best = _selected;
+        int                  bestScore = 0;
+        for (size_t i = 0; i < _count; ++i) {
+                const int x = int(_items[i].at.column) - int(from.column);
+                const int y = int(_items[i].at.row) - int(from.row);
+                const int along = x * dx + y * dy;
+                const int across = dx != 0 ? y : x;
+                if (along <= 0) continue;
+                const int score = along * along + 4 * across * across;
+                if (best == _selected || score < bestScore) {
+                        best = int(i);
+                        bestScore = score;
+                }
+        }
+        return best;
+}
+
+int DesktopWindow::byGrid(bool last) const {
+        int best = -1;
+        for (size_t i = 0; i < _count; ++i) {
+                const uint32_t at = uint32_t(_items[i].at.column) << 16 | _items[i].at.row;
+                if (best < 0) {
+                        best = int(i);
+                        continue;
+                }
+                const uint32_t b = uint32_t(_items[best].at.column) << 16 | _items[best].at.row;
+                if (last ? at > b : at < b) best = int(i);
+        }
+        return best;
+}
+
+// The next item, in grid order after the selection and around, whose name starts with @p key.
+int DesktopWindow::startingWith(uint32_t key) const {
+        int    order[MaxItems];
+        size_t n = 0;
+        for (size_t i = 0; i < _count; ++i) order[n++] = int(i);
+        // Down then across, as they are laid out.
+        for (size_t i = 1; i < n; ++i)
+                for (size_t j = i; j > 0; --j) {
+                        const IconGrid::Cell a = _items[order[j - 1]].at, b = _items[order[j]].at;
+                        if (a.column < b.column || (a.column == b.column && a.row <= b.row)) break;
+                        const int t = order[j - 1];
+                        order[j - 1] = order[j];
+                        order[j] = t;
+                }
+        size_t start = 0;
+        for (size_t k = 0; k < n; ++k)
+                if (order[k] == _selected) start = k + 1;
+        for (size_t k = 0; k < n; ++k) {
+                const int  i = order[(start + k) % n];
+                const char first = _items[i].text[0][0];
+                if (first != '\0' && Mnemonic::fold(uint8_t(first)) == key) return i;
+        }
+        return -1;
+}
+
+Rect DesktopWindow::menuPoint() const {
+        const Rect s = screenRect();
+        if (_selected < 0) return Rect{uint16_t(s.x + _left), uint16_t(s.y + _top), 0, 0};
+        const Rect r = hitRect(_items[_selected]);
+        return Rect{uint16_t(s.x + r.x + r.width / 2), uint16_t(s.y + r.y + r.height / 2), 0, 0};
+}
+
+bool DesktopWindow::keyPressed(const KeyEvent &event) {
+        constexpr uint8_t F2 = HidKey::F1 + 1, F10 = HidKey::F1 + 9;
+        const bool        plain = !event.hasCtrl() && !event.hasAlt();
+        if (_count > 0 && plain) {
+                int to = -2;
+                switch (event.usage) {
+                        case HidKey::Left: to = nearest(-1, 0); break;
+                        case HidKey::Right: to = nearest(1, 0); break;
+                        case HidKey::Up: to = nearest(0, -1); break;
+                        case HidKey::Down: to = nearest(0, 1); break;
+                        case HidKey::Home: to = byGrid(false); break;
+                        case HidKey::End: to = byGrid(true); break;
+                        default: break;
+                }
+                if (to != -2) {
+                        stopRename();
+                        select(to);
+                        return true;
+                }
+        }
+        if (plain && (event.usage == HidKey::Enter || event.usage == HidKey::KeypadEnter)) {
+                if (_selected >= 0 && _opened != nullptr) _opened(_openedArg, size_t(_selected));
+                return true;
+        }
+        if (plain && event.usage == F2) {
+                if (_selected >= 0 && _renameAsked != nullptr) _renameAsked(_renameArg, size_t(_selected));
+                return true;
+        }
+        if (plain && event.usage == HidKey::Escape) {
+                select(-1);
+                return true;
+        }
+        if (event.usage == HidKey::Application || (event.usage == F10 && event.hasShift() && plain)) {
+                const Rect at = menuPoint();
+                if (_selected >= 0 && _itemMenuAsked != nullptr) {
+                        _itemMenuAsked(_itemMenuArg, size_t(_selected), at.x, at.y);
+                } else if (_menuAsked != nullptr) {
+                        _menuAsked(_menuArg, at.x, at.y);
+                }
+                return true;
+        }
+        if (_keyTyped != nullptr && _keyTyped(_keyArg, event, _selected)) return true;
+        // A letter: the next icon named with it.
+        if (plain && event.codepoint > 0x20 && event.codepoint != 0x7f && event.usage != HidKey::Tab) {
+                const int to = startingWith(Mnemonic::fold(event.codepoint));
+                if (to >= 0) select(to);
+                return true;
+        }
+        return false;
+}
+
+// Gaining or losing the keys: the selection drawn filled while active, outlined while not.
+void DesktopWindow::activeChanged() {
+        if (_selected >= 0) invalidate(_items[_selected].cell);
+        return;
+}
+
 void DesktopWindow::paint(Painter &painter) {
         const WindowPalette &palette = painter.palette();
         const uint32_t       desktop = palette.color(Role::Desktop);
@@ -349,12 +495,18 @@ void DesktopWindow::paint(Painter &painter) {
                         const Rect r = iconRect(item);
                         (void)painter.image(r.x, r.y, Icon{item.iconWidth, item.iconHeight, item.pixels}, desktop);
                 }
-                const bool     selected = int(i) == _selected;
+                const bool     outlined = int(i) == _selected && !isActive();
+                const bool     selected = int(i) == _selected && !outlined;
                 const uint32_t fg = palette.color(selected ? Role::HighlightText : Role::DesktopText);
                 const uint32_t bg = selected ? palette.color(Role::Highlight) : desktop;
-                for (uint8_t l = 0; l < item.lines; ++l) {
+                for (uint8_t l = 0; l < item.lines && int(i) != _editing; ++l) {
                         const Rect r = lineRect(item, l);
                         if (selected) (void)painter.fill(r, bg);
+                        if (outlined) {
+                                Rect   edges[4];
+                                size_t n = outline(r, edges);
+                                (void)painter.fill(Span<const Rect>(edges, n), palette.color(Role::Highlight));
+                        }
                         (void)painter.text(uint16_t(item.cell.x + item.textX[l]), r.y, StringView(item.text[l]),
                                            Fonts::unscii16, fg, bg, LineWidth);
                 }
@@ -378,12 +530,20 @@ void DesktopWindow::drawReference(uint8_t *pixels, size_t stride, uint16_t width
                                         put(pixels + size_t(r.y + y) * stride + size_t(r.x + x) * 3,
                                             blendOver(item.pixels[size_t(y) * r.width + x], desktop));
                 }
-                const bool     selected = int(i) == _selected;
+                const bool     outlined = int(i) == _selected && !isActive();
+                const bool     selected = int(i) == _selected && !outlined;
                 const uint32_t fg = palette.color(selected ? Role::HighlightText : Role::DesktopText);
                 const uint32_t bg = selected ? palette.color(Role::Highlight) : desktop;
-                for (uint8_t l = 0; l < item.lines; ++l) {
+                for (uint8_t l = 0; l < item.lines && int(i) != _editing; ++l) {
                         const Rect r = lineRect(item, l);
                         if (selected) fillReference(pixels, stride, width, height, r, bg);
+                        if (outlined) {
+                                Rect         edges[4];
+                                const size_t n = outline(r, edges);
+                                for (size_t e = 0; e < n; ++e)
+                                        fillReference(pixels, stride, width, height, edges[e],
+                                                      palette.color(Role::Highlight));
+                        }
                         size_t used = 0;
                         (void)renderer.drawText(StringView(item.text[l]), Fonts::unscii16, fg, bg,
                                                 pixels + size_t(r.y) * stride + size_t(item.cell.x + item.textX[l]) * 3,

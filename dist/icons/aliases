@@ -23,3 +23,12 @@ internet-web-browser        globe
 appointment-soon            clock
 alarm                       alarm_clock
 dialog-information          info
+dialog-warning              high_priority
+dialog-error                cancel
+dialog-question             questions
+text-x-generic              document
+image-x-generic             image_file
+audio-x-generic             audio_file
+video-x-generic             video_file
+package-x-generic           package
+unknown                     file

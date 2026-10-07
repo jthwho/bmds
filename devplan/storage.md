@@ -419,6 +419,19 @@ answer (settings must not need it); a cache in the kernel that writes in the bac
     a checksum, and copy it into place after. On mount, finish a copy that was cut off. That
     is twice the flash writes per block. FAT's sectors (the FAT itself, directories) have the
     most to lose.
+- **Seen again 2026-10-07: three directories' first clusters erased.**
+  - **What was found:** `/boot/config`, `/boot/desktop` and `/boot/applications` each listed 32
+    nameless entries before their real ones.
+  - **The image:** saved with `esptool read_flash 0x410000 0x400000` as
+    `build/boot-damaged-2026-10-07.img`, kept for this work.
+  - **What it shows:** each directory's first cluster (clusters 7, 11 and 17; FAT12, 1 KB
+    clusters) is all 0xFF, with `.`, `..` and the first entries in it. Entries in the clusters
+    chained after it survive, which is why `ls` showed garbage, then the rest.
+  - **Context:** every file there is dated 16:00 (the clock unset), as if `/boot` had been
+    made again and its defaults installed at that boot. `/boot/.trash`, made later, is
+    intact.
+  - **Not known yet:** whether this was three cut-off writes or one fault in how a new
+    directory's cluster reaches the flash.
 - **The flash still stops the caches while it erases or writes** (code and PSRAM out of reach,
   the other core paused; IDF yields every 20 ms of an erase). In the background, that is a short
   pause per block where nothing waits for the whole write. Flash auto-suspend (IDF, P4-capable)

@@ -206,6 +206,11 @@ int32_t bmds_k_lstat(const char *path, bmds_stat_t *info) {
         return call->lstat(path, info);
 }
 
+int32_t bmds_k_file_type(const char *path, uint32_t flags, char *out, uint32_t size) {
+        KernelCall call;
+        return call->fileType(path, flags, out, size);
+}
+
 int32_t bmds_k_proc_vfork(void) {
         KernelCall call;
         return call.thread().vfork();

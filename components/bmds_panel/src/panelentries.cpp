@@ -23,7 +23,7 @@ namespace {
 } // namespace
 
 bool readEntryDirectory(StringView directory, const Vfs::Context &context, PanelEntry *entries, size_t &count,
-                        size_t max, PanelEntryReport report, void *arg) {
+                        size_t max, PanelEntryReport report, void *arg, bool allFiles) {
         auto [dir, err] = Vfs::openDirectory(directory, context);
         if (err.isError()) return false;
         char *text = static_cast<char *>(Memory::alloc(MemSpace::Psram, MaxEntryBytes));
@@ -32,9 +32,10 @@ bool readEntryDirectory(StringView directory, const Vfs::Context &context, Panel
                 auto [info, nerr] = dir.next();
                 if (nerr.isError()) break;
                 const StringView name = info.name.view();
-                if (info.type != FileType::File || !name.endsWith(StringView(".desktop")) ||
-                    name.size() >= sizeof(PanelEntry::file))
-                        continue;
+                const bool       launcher = info.type == FileType::File && name.endsWith(StringView(".desktop"));
+                const bool       other = allFiles && !launcher && !name.startsWith('.') &&
+                                   (info.type == FileType::File || info.type == FileType::Directory);
+                if ((!launcher && !other) || name.size() >= sizeof(PanelEntry::file)) continue;
                 // The first directory's file of a name wins (Hidden=true there hides it).
                 bool seen = false;
                 for (size_t i = 0; i < count; ++i) seen = seen || StringView(entries[i].file) == name;
@@ -42,6 +43,21 @@ bool readEntryDirectory(StringView directory, const Vfs::Context &context, Panel
                 String path;
                 if (path.append(directory).isError() || path.append('/').isError() || path.append(name).isError())
                         continue;
+                if (other) {
+                        // Another file: its name and type (devplan/filetypes.md T10).
+                        auto [type, terr] = Vfs::identify(path.view(), 0, context);
+                        if (terr.isError() || path.size() >= sizeof(PanelEntry::path)) continue;
+                        PanelEntry &e = entries[count++];
+                        e = PanelEntry();
+                        std::memcpy(e.file, name.data(), name.size());
+                        const size_t nameBytes = name.size() < DesktopEntry::MaxName ? name.size() : 0;
+                        std::memcpy(e.entry.name, name.data(), nameBytes); // sorted by it
+                        std::memcpy(e.path, path.data(), path.size());
+                        const size_t typeBytes = type.size() < sizeof(e.type) ? type.size() : 0;
+                        std::memcpy(e.type, type.data(), typeBytes);
+                        if (typeBytes == 0) std::memcpy(e.type, "application/octet-stream", 25);
+                        continue;
+                }
                 auto [file, oerr] = Vfs::open(path.view(), Vfs::Read, context);
                 size_t got = 0;
                 while (oerr.isOk() && got < MaxEntryBytes) {

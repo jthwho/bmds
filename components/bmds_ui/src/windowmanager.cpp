@@ -18,6 +18,7 @@
 #include <bmds/font.h>
 #include <bmds/input.h>
 #include <bmds/memory.h>
+#include <bmds/mnemonic.h>
 #include <bmds/staticobject.h>
 #include <bmds/surface.h>
 #include <bmds/system.h>
@@ -283,8 +284,16 @@ void WindowManager::deliverKeys() {
                         _keyHead = static_cast<uint8_t>((_keyHead + 1) % KeyQueue);
                         --_keyCount;
                 }
-                // The window manager's own keys first (not one sent to a chosen window: a test's).
+                // The modifiers down after this event (a press and Alt+drag use them). A modifier's
+                // own release carries the modifiers as they were (the decoder's), its bit still set:
+                // taken off here, or Alt would stay down until the next key.
                 _modifiers = event.modifiers;
+                if (event.usage >= 0xe0 && event.usage <= 0xe7) {
+                        const auto bit = static_cast<uint8_t>(1u << (event.usage - 0xe0));
+                        _modifiers = static_cast<uint8_t>(event.action == KeyEvent::Action::Release ? _modifiers & ~bit
+                                                                                                    : _modifiers | bit);
+                }
+                // The window manager's own keys first (not one sent to a chosen window: a test's).
                 if (target == 0 && shortcut(event)) continue;
                 // To its window if it names one (still open), else an open popup, else the focus.
                 if (target != 0 && _stack.rectOf(target).isError()) continue;
@@ -467,7 +476,7 @@ void WindowManager::press(uint16_t x, uint16_t y, uint8_t button) {
         if (err.isError()) return;
         const WindowFrame f = frame(id, _stack.rectAt(z));
         const Part        part = f.partAt(x, y);
-        (void)raiseLocked(id);
+        (void)raiseLocked(id, _windows[id - 1].focusOnPress);
         if (button == PointerEvent::Left && (_modifiers & KeyEvent::Alt) != 0 &&
             WindowStack::isApplication(_stack.levelOf(id)) && !_windows[id - 1].maximized) {
                 // Alt and a press anywhere in it: moved, as by its title bar.
@@ -1065,6 +1074,8 @@ void WindowManager::changed(uint8_t oldFocus) {
                 for (const uint8_t id : {oldFocus, top}) {
                         auto [z, err] = _stack.layerOf(id);
                         if (err.isError()) continue;
+                        const Window &w = _windows[id - 1];
+                        if (w.activated != nullptr) w.activated(w.arg, id == top);
                         const WindowFrame f = frame(id, _stack.rectAt(z));
                         Rect              edges[4];
                         const size_t      n = f.edges(edges);
@@ -1150,8 +1161,13 @@ Result<uint8_t> WindowManager::openLocked(const WindowConfig &config) {
         }
         w.mouse = config.mouse;
         w.reserve = config.level == Level::Panel ? config.reserve : 0;
-        w.focusable = config.focusable && WindowStack::isApplication(config.level);
-        if (w.focusable) _focusId = id;
+        // A desktop's or a panel's window takes the keys only when pressed or raised (§4r).
+        const bool keysLevel = config.level == Level::Desktop || config.level == Level::Panel;
+        w.focusable = config.focusable && (WindowStack::isApplication(config.level) || keysLevel);
+        w.focusOnPress = config.focusOnPress;
+        w.activated = config.activated;
+        if (w.focusable && !keysLevel) _focusId = id;
+        if (keysLevel && _focusId == id) _focusId = 0; // a closed window's number, reused: not focused
         if (WindowStack::isApplication(config.level)) _listChanged = true;
         if (w.reserve != 0) workAreaChanged();
         if (config.level == Level::Popup && _mouseId != 0 && _mouseId != id) {
@@ -1234,12 +1250,12 @@ Error WindowManager::raise(uint8_t id) {
         return raiseLocked(id);
 }
 
-Error WindowManager::raiseLocked(uint8_t id) {
+Error WindowManager::raiseLocked(uint8_t id, bool focus) {
         const uint8_t oldTop = focusId();
         const bool    shown = _stack.isHidden(id);
         const Error   err = shown ? _stack.show(id) : _stack.raise(id);
         if (err.isError()) return err;
-        if (_windows[id - 1].focusable) _focusId = id;
+        if (focus && _windows[id - 1].focusable) _focusId = id;
         if (shown && WindowStack::isApplication(_stack.levelOf(id))) _listChanged = true;
         if (shown && _windows[id - 1].reserve != 0) workAreaChanged();
         changed(oldTop);
@@ -1449,11 +1465,16 @@ Error WindowManager::watchResources(uint8_t client, ResourceChanged fn, void *ar
 // take it), or, when that one went, the top focusable window.
 uint8_t WindowManager::focusId() const {
         if (_focusId != 0 && _windows[_focusId - 1].focusable && _stack.layerOf(_focusId).isOk()) return _focusId;
+        // The top application window; without one, a desktop window that takes keys (§4r).
+        uint8_t desktop = 0;
         for (size_t z = 0; z < _stack.count(); ++z) {
                 const uint8_t id = _stack.idAt(z);
-                if (_windows[id - 1].focusable) return id;
+                if (!_windows[id - 1].focusable) continue;
+                const Level level = _stack.levelOf(id);
+                if (WindowStack::isApplication(level)) return id;
+                if (level == Level::Desktop && desktop == 0) desktop = id;
         }
-        return 0;
+        return desktop;
 }
 
 uint8_t WindowManager::topPopup() const {
@@ -1554,16 +1575,16 @@ Error WindowManager::showWindowMenuLocked(uint8_t id, const Rect &anchor) {
         };
         const bool app = WindowStack::isApplication(_stack.levelOf(id));
         const bool above = _stack.levelOf(id) == Level::Above;
-        _menuItems[0] = {"Restore", "", off(hidden || w.maximized || w.snapped)};
-        _menuItems[1] = {"Minimize", "Win+Down",
-                         off(_canMinimize && !hidden && (w.decorations & WindowFrame::MinimizeButton) != 0)};
-        _menuItems[2] = {"Maximize", "Win+Up", off(!w.maximized && (w.decorations & WindowFrame::MaximizeButton) != 0)};
-        _menuItems[3] = {w.shaded ? "Roll Down" : "Roll Up", "",
-                         off(app && !hidden && (w.decorations & WindowFrame::TitleBar) != 0)};
-        _menuItems[4] = {"", "", MenuLayout::Separator};
-        _menuItems[5] = {"Always on Top", "", static_cast<uint8_t>(off(app) | (above ? MenuLayout::Checked : 0))};
-        _menuItems[6] = {"", "", MenuLayout::Separator};
-        _menuItems[7] = {"Close", "Alt+F4", off((w.decorations & WindowFrame::CloseButton) != 0)};
+        setMenuItem(0, "&Restore", "", off(hidden || w.maximized || w.snapped));
+        setMenuItem(1, "Mi&nimize", "Win+Down",
+                    off(_canMinimize && !hidden && (w.decorations & WindowFrame::MinimizeButton) != 0));
+        setMenuItem(2, "Ma&ximize", "Win+Up", off(!w.maximized && (w.decorations & WindowFrame::MaximizeButton) != 0));
+        setMenuItem(3, w.shaded ? "Roll &Down" : "Roll &Up", "",
+                    off(app && !hidden && (w.decorations & WindowFrame::TitleBar) != 0));
+        setMenuItem(4, "", "", MenuLayout::Separator);
+        setMenuItem(5, "Always on &Top", "", static_cast<uint8_t>(off(app) | (above ? MenuLayout::Checked : 0)));
+        setMenuItem(6, "", "", MenuLayout::Separator);
+        setMenuItem(7, "&Close", "Alt+F4", off((w.decorations & WindowFrame::CloseButton) != 0));
         constexpr MenuChoice choices[] = {MenuChoice::Restore, MenuChoice::Minimize, MenuChoice::Maximize,
                                           MenuChoice::Shade,   MenuChoice::None,     MenuChoice::Above,
                                           MenuChoice::None,    MenuChoice::Close};
@@ -1657,7 +1678,7 @@ Error WindowManager::showDesktopMenuLocked(uint16_t x, uint16_t y) {
         if (_desktopCount == 0) return Error::NotFound;
         if (_menuId != 0) (void)closeLocked(_menuId);
         for (size_t i = 0; i < _desktopCount; ++i) {
-                _menuItems[i] = MenuLayout::Item{StringView(_desktopLabels[i]), StringView(), 0};
+                setMenuItem(i, StringView(_desktopLabels[i]), StringView(), 0);
                 _menuChoices[i] = MenuChoice::Desktop;
         }
         _menuCount = _desktopCount;
@@ -1698,18 +1719,14 @@ Error WindowManager::showMenu(uint8_t id, Span<const MenuItem> items, uint16_t x
         auto [at, err] = _stack.rectOf(id);
         if (err.isError()) return Error::NotFound;
         if (_menuId != 0) (void)closeLocked(_menuId);
-        // Cut on a character's boundary.
-        auto copy = [](StringView text, char *out, size_t max) {
-                size_t n = text.size() < max ? text.size() : max;
-                while (n > 0 && n < text.size() && (uint8_t(text[n]) & 0xc0) == 0x80) --n;
-                std::memcpy(out, text.data(), n);
-                out[n] = '\0';
-                return StringView(out, n);
-        };
         for (size_t i = 0; i < items.size(); ++i) {
-                _menuItems[i] = MenuLayout::Item{copy(items[i].label, _programLabels[i], MaxMenuLabel),
-                                                 copy(items[i].shortcut, _programShortcuts[i], MaxMenuShortcut),
-                                                 items[i].flags};
+                // The shortcut cut on a character's boundary.
+                const StringView text = items[i].shortcut;
+                size_t           n = text.size() < MaxMenuShortcut ? text.size() : MaxMenuShortcut;
+                while (n > 0 && n < text.size() && (uint8_t(text[n]) & 0xc0) == 0x80) --n;
+                std::memcpy(_programShortcuts[i], text.data(), n);
+                _programShortcuts[i][n] = '\0';
+                setMenuItem(i, items[i].label, StringView(_programShortcuts[i], n), items[i].flags);
                 _menuChoices[i] = MenuChoice::Program;
         }
         _menuCount = items.size();
@@ -1751,6 +1768,32 @@ void WindowManager::menuMouse(void *arg, const MouseEvent &event) {
         return;
 }
 
+// Item @p i of the menu to open: @p label's marks taken out (into _menuLabels), its key kept.
+void WindowManager::setMenuItem(size_t i, StringView label, StringView shortcut, uint8_t flags) {
+        const Mnemonic::Stripped m = Mnemonic::strip(label, Span<char>(_menuLabels[i], MaxMenuLabel + 1));
+        _menuItems[i] = MenuLayout::Item{StringView(_menuLabels[i], m.length), shortcut, flags, nullptr, m.at};
+        _menuKeys[i] = m.key;
+        return;
+}
+
+// A key typed in the menu: the one item it marks chosen; with several, the next of them lit.
+void WindowManager::menuMnemonic(uint32_t key) {
+        int    first = -1, after = -1;
+        size_t count = 0;
+        for (size_t i = 0; i < _menuCount; ++i) {
+                if (_menuKeys[i] != key || !_menuLayout.isSelectable(i)) continue;
+                ++count;
+                if (first < 0) first = int(i);
+                if (after < 0 && int(i) > _menuHighlight) after = int(i);
+        }
+        if (count == 1) {
+                menuChoose(first);
+        } else if (count > 1) {
+                menuHighlight(after >= 0 ? after : first);
+        }
+        return;
+}
+
 void WindowManager::menuKey(void *arg, const KeyEvent &event) {
         auto *self = static_cast<WindowManager *>(arg);
         if (event.action == KeyEvent::Action::Release) return;
@@ -1760,6 +1803,8 @@ void WindowManager::menuKey(void *arg, const KeyEvent &event) {
                 if (self->_menuHighlight >= 0) self->menuChoose(self->_menuHighlight);
         } else if (event.usage == HidKey::Escape) {
                 if (self->_menuId != 0) (void)self->closeLocked(self->_menuId);
+        } else if (const uint32_t key = Mnemonic::keyOf(event); key != 0) {
+                self->menuMnemonic(key);
         }
         return;
 }
@@ -1932,7 +1977,7 @@ bool WindowManager::shortcut(const KeyEvent &event) {
                 if ((_windows[focus - 1].decorations & WindowFrame::CloseButton) != 0) (void)closeLocked(focus);
                 return true;
         }
-        if (event.usage == HidKey::Space && focus != 0) {
+        if (event.usage == HidKey::Space && focus != 0 && WindowStack::isApplication(_stack.levelOf(focus))) {
                 auto [at, err] = _stack.rectOf(focus);
                 if (err.isOk()) {
                         const WindowFrame f = frame(focus, at);

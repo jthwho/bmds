@@ -15,11 +15,18 @@
 
 BMDS_NAMESPACE_BEGIN
 
-/** @brief A Desktop Entry file read: the launcher's or the desktop's (`devplan/gui.md` §4c, §4m). */
+/**
+ * @brief A Desktop Entry file read: the launcher's or the desktop's (`devplan/gui.md` §4c, §4m);
+ *        or, on the desktop, any other file (`devplan/filetypes.md` T10): its type, its name.
+ */
 struct PanelEntry {
-                DesktopEntry entry;
-                char         file[48] = {}; ///< Its file's name: the first of a name wins.
+                DesktopEntry entry;          ///< Another file's: its name only.
+                char         file[48] = {};  ///< Its file's name: the first of a name wins.
                 char         path[128] = {}; ///< Its file's path (copied as the icon: devplan/clipboard.md §4f).
+                char         type[48] = {};  ///< Another file's type (`Vfs::identify()`); empty: a Desktop Entry.
+
+                /** @brief Returns true if it is a Desktop Entry (a launcher), not another file. */
+                bool isLauncher() const { return type[0] == '\0'; }
 };
 
 /** @brief Told of a file that isn't a Desktop Entry (@p path). */
@@ -28,11 +35,12 @@ using PanelEntryReport = void (*)(void *arg, const char *path);
 /**
  * @brief Adds directory @p directory's `NAME.desktop` files to @p entries (@p count of
  *        @p max used), but those of a name already there; hidden ones too (they hide
- *        later ones of their name).
+ *        later ones of their name). With @p allFiles (the desktop's), every other file and
+ *        directory too, but those named with a leading `.`, each with its type.
  * @return False if the directory isn't there (no card yet: no error).
  */
 bool readEntryDirectory(StringView directory, const Vfs::Context &context, PanelEntry *entries, size_t &count,
-                        size_t max, PanelEntryReport report, void *arg);
+                        size_t max, PanelEntryReport report, void *arg, bool allFiles = false);
 
 /** @brief Leaves out @p entries' hidden and not-shown ones, and sorts the rest by name. */
 void keepShownEntries(PanelEntry *entries, size_t &count);

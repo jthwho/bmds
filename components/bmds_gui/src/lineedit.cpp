@@ -23,7 +23,6 @@ namespace {
 
         using Role = WindowPalette::Role;
 
-        constexpr uint16_t Pad = 4; // the text from the bevel
         constexpr uint16_t DefaultWidth = 160;
         constexpr uint8_t  A = HidKey::A;
 
@@ -59,15 +58,88 @@ void LineEdit::selectAll() {
         return;
 }
 
+void LineEdit::setSelection(size_t start, size_t end) {
+        _model.setCursor(start, false);
+        _model.setCursor(end, true);
+        changed();
+        return;
+}
+
+void LineEdit::setFramed(bool framed) {
+        _framed = framed;
+        changed();
+        return;
+}
+
+void LineEdit::setColors(Role background, Role text) {
+        _background = background;
+        _foreground = text;
+        update();
+        return;
+}
+
+void LineEdit::setCentered(bool centered) {
+        _centered = centered;
+        changed();
+        return;
+}
+
+void LineEdit::setWrapping(bool wrapping) {
+        _wrapping = wrapping;
+        _first = 0;
+        changed();
+        return;
+}
+
 GuiSize LineEdit::sizeHint() const {
         return GuiSize{DefaultWidth, GuiStyle::ButtonHeight};
 }
 
 Rect LineEdit::textArea() const {
-        const Rect     in = Bevel::inside(geometry(), Bevel::Style::Field);
+        const Rect     in = _framed ? Bevel::inside(geometry(), Bevel::Style::Field) : geometry();
         const uint16_t x = static_cast<uint16_t>((in.x + Pad + 3) & ~3u); // text on a 4-pixel column
         const uint16_t w = in.right() > x + Pad ? static_cast<uint16_t>(in.right() - x - Pad) : 0;
         return Rect{x, in.y, w, in.height};
+}
+
+// The lines shown: wrapped as `TextWrap` breaks them, else the one from the first byte shown.
+size_t LineEdit::lines(Line *out) const {
+        const Font      &font = Fonts::unscii16;
+        const StringView text = _model.text();
+        const Rect       area = textArea();
+        const auto       place = [&](size_t start, size_t end) {
+                const uint32_t w = font.textWidth(text.mid(start, end - start));
+                const uint16_t x = _centered && w < area.width
+                                                 ? static_cast<uint16_t>(area.x + (((area.width - w) / 2) & ~3u))
+                                                 : area.x;
+                return Line{start, end, x};
+        };
+        if (!_wrapping || area.width < font.width()) {
+                out[0] = _first == 0 ? place(0, text.size()) : Line{_first, text.size(), area.x};
+                return 1;
+        }
+        StringView   views[MaxLines];
+        const size_t n = TextWrap::wrap(text, static_cast<uint16_t>(area.width / font.width()),
+                                        Span<StringView>(views, MaxLines));
+        for (size_t i = 0; i < n; ++i) {
+                const size_t start = static_cast<size_t>(views[i].data() - text.data());
+                out[i] = place(start, start + views[i].size());
+        }
+        if (n == 0) out[0] = place(0, 0); // nothing but spaces, or nothing
+        return n > 0 ? n : 1;
+}
+
+size_t LineEdit::lineCount() const {
+        Line ls[MaxLines];
+        return lines(ls);
+}
+
+// The line @p offset is on: the last starting at or before it (a space dropped at a break is
+// the line before's).
+size_t LineEdit::lineOf(const Line *ls, size_t count, size_t offset) const {
+        size_t i = 0;
+        while (i + 1 < count && ls[i + 1].start <= offset) ++i;
+        return i;
 }
 
 void LineEdit::reveal() {
@@ -75,6 +147,10 @@ void LineEdit::reveal() {
         const StringView text = _model.text();
         const size_t     cursor = _model.cursor();
         const uint16_t   width = textArea().width;
+        if (_wrapping) {
+                _first = 0; // it grows instead
+                return;
+        }
         if (width == 0) return; // no size yet: when it gets one (resized())
         if (cursor < _first) _first = cursor;
         // On, a character at a time, until the cursor (and a pixel for it) fits.
@@ -88,22 +164,29 @@ void LineEdit::reveal() {
 
 void LineEdit::resized() {
         _first = 0;
-        reveal();
+        changed();
         return;
 }
 
 void LineEdit::changed() {
         reveal();
         update();
+        if (_wrapping) {
+                const size_t n = lineCount();
+                if (n != _lineCount) {
+                        _lineCount = n;
+                        if (_linesChanged != nullptr) _linesChanged(_linesChangedArg, *this, n);
+                }
+        }
         return;
 }
 
-size_t LineEdit::offsetAt(int x) const {
+size_t LineEdit::offsetAt(const Line &line, int x) const {
         const Font      &font = Fonts::unscii16;
         const StringView text = _model.text();
-        int              left = textArea().x;
-        size_t           at = _first;
-        while (at < text.size()) {
+        int              left = line.x;
+        size_t           at = line.start;
+        while (at < line.end) {
                 size_t next = at;
                 (void)Utf8::decode(text, next);
                 const int cw = int(font.textWidth(text.mid(at, next - at)));
@@ -111,7 +194,39 @@ size_t LineEdit::offsetAt(int x) const {
                 left += cw;
                 at = next;
         }
-        return text.size();
+        return line.end;
+}
+
+size_t LineEdit::offsetAt(int x, int y) const {
+        Line         ls[MaxLines];
+        const size_t n = lines(ls);
+        const int    top = textArea().y;
+        size_t       i = 0;
+        if (_wrapping && y > top) i = static_cast<size_t>((y - top) / GuiStyle::TextHeight);
+        return offsetAt(ls[i < n ? i : n - 1], x);
+}
+
+// Up or down a line, to the character nearest the cursor's column; past the first or the last
+// line, to the text's start or end.
+void LineEdit::moveLine(int by, bool select) {
+        const Font  &font = Fonts::unscii16;
+        Line         ls[MaxLines];
+        const size_t n = lines(ls);
+        const size_t cursor = _model.cursor();
+        const size_t at = lineOf(ls, n, cursor);
+        const int    to = int(at) + by;
+        if (to < 0) {
+                _model.home(select);
+                return;
+        }
+        if (to >= int(n)) {
+                _model.end(select);
+                return;
+        }
+        const Line &line = ls[at];
+        const int   x = int(line.x + font.textWidth(_model.text().mid(line.start, cursor - line.start)));
+        _model.setCursor(offsetAt(ls[to], x), select);
+        return;
 }
 
 bool LineEdit::keyPressed(const KeyEvent &event) {
@@ -122,6 +237,11 @@ bool LineEdit::keyPressed(const KeyEvent &event) {
                 case HidKey::Right: _model.right(shift); break;
                 case HidKey::Home: _model.home(shift); break;
                 case HidKey::End: _model.end(shift); break;
+                case HidKey::Up:
+                case HidKey::Down:
+                        if (!_wrapping) return false;
+                        moveLine(event.usage == HidKey::Up ? -1 : 1, shift);
+                        break;
                 case HidKey::Backspace: (void)_model.backspace(); break;
                 case HidKey::Delete: (void)_model.erase(); break;
                 case HidKey::Enter:
@@ -175,7 +295,7 @@ void LineEdit::mousePressed(const WindowManager::MouseEvent &event) {
                 _dragging = false;
         } else {
                 _pressUs = now;
-                _model.setCursor(offsetAt(event.x), (event.modifiers & KeyEvent::Shift) != 0);
+                _model.setCursor(offsetAt(event.x, event.y), (event.modifiers & KeyEvent::Shift) != 0);
                 _dragging = true;
         }
         changed();
@@ -184,7 +304,7 @@ void LineEdit::mousePressed(const WindowManager::MouseEvent &event) {
 
 void LineEdit::mouseMoved(const WindowManager::MouseEvent &event) {
         if (!_dragging || (event.buttons & PointerEvent::Left) == 0) return;
-        _model.setCursor(offsetAt(event.x), true);
+        _model.setCursor(offsetAt(event.x, event.y), true);
         changed();
         return;
 }
@@ -194,44 +314,74 @@ void LineEdit::mouseReleased(const WindowManager::MouseEvent &event) {
         return;
 }
 
+// Bytes [@p from, @p to) of @p line at @p x (moved on past them), in @p fg on @p bg, cut at the
+// text area's right.
+void LineEdit::paintRun(Painter &painter, const Line &line, uint16_t y, size_t from, size_t to, uint32_t &x,
+                        uint32_t fg, uint32_t bg) const {
+        (void)line;
+        const Rect area = textArea();
+        if (to <= from || x >= area.right()) return;
+        const Font      &font = Fonts::unscii16;
+        const StringView piece = _model.text().mid(from, to - from);
+        const uint32_t   w = font.textWidth(piece);
+        const uint16_t   room = static_cast<uint16_t>(area.right() - x);
+        (void)painter.fill(Rect{uint16_t(x), y, uint16_t(w < room ? w : room), GuiStyle::TextHeight}, bg);
+        (void)painter.text(uint16_t(x), y, piece, font, fg, bg, room);
+        x += w;
+        return;
+}
+
 void LineEdit::paint(Painter &painter) {
         const WindowPalette &palette = painter.palette();
         const Rect           outer = geometry();
-        const Rect           in = Bevel::inside(outer, Bevel::Style::Field);
-        const uint32_t       bg = palette.color(Role::FaceHighlight); // a field's white
-        const uint32_t       fg = palette.color(isEnabled() ? Role::FaceText : Role::DisabledText);
+        const Rect           in = _framed ? Bevel::inside(outer, Bevel::Style::Field) : outer;
+        const uint32_t       bg = palette.color(_background);
+        const uint32_t       fg = palette.color(isEnabled() ? _foreground : Role::DisabledText);
         const uint32_t       selBg = palette.color(Role::Highlight);
         const uint32_t       selFg = palette.color(Role::HighlightText);
-        drawBevel(painter, outer, Bevel::Style::Field);
+        if (_framed) drawBevel(painter, outer, Bevel::Style::Field);
         (void)painter.fill(in, bg);
         const Font      &font = Fonts::unscii16;
         const Rect       area = textArea();
         const StringView text = _model.text();
-        const uint16_t   y = static_cast<uint16_t>(
-                in.y + (in.height > GuiStyle::TextHeight ? (in.height - GuiStyle::TextHeight) / 2 : 0));
-        // Three runs: before the selection, it, after it (each from the first byte shown).
-        const size_t from = _model.selectionStart() > _first ? _model.selectionStart() : _first;
-        const size_t to = _model.selectionEnd() > _first ? _model.selectionEnd() : _first;
-        uint32_t     x = area.x;
-        const struct {
-                        size_t   start, end;
-                        uint32_t fg, bg;
-        } runs[] = {{_first, from, fg, bg}, {from, to, selFg, selBg}, {to, text.size(), fg, bg}};
-        for (const auto &run : runs) {
-                if (run.end <= run.start || x >= area.right()) continue;
-                const StringView piece = text.mid(run.start, run.end - run.start);
-                const uint32_t   w = font.textWidth(piece);
-                const uint16_t   room = static_cast<uint16_t>(area.right() - x);
-                if (run.bg != bg)
-                        (void)painter.fill(Rect{uint16_t(x), y, uint16_t(w < room ? w : room), GuiStyle::TextHeight},
-                                           run.bg);
-                (void)painter.text(uint16_t(x), y, piece, font, run.fg, run.bg, room);
-                x += w;
+        Line             ls[MaxLines];
+        const size_t     n = lines(ls);
+        const size_t     selStart = _model.selectionStart(), selEnd = _model.selectionEnd();
+        const auto       top = [&](size_t i) {
+                if (_wrapping) return static_cast<uint16_t>(area.y + i * GuiStyle::TextHeight);
+                return static_cast<uint16_t>(
+                        in.y + (in.height > GuiStyle::TextHeight ? (in.height - GuiStyle::TextHeight) / 2 : 0));
+        };
+        for (size_t i = 0; i < n; ++i) {
+                const Line    &line = ls[i];
+                const uint16_t y = top(i);
+                if (y >= in.bottom()) break;
+                // Three runs: before the selection, it, after it (each inside the line).
+                const auto clamp = [&](size_t v) {
+                        return v < line.start ? line.start : (v > line.end ? line.end : v);
+                };
+                const size_t from = clamp(selStart), to = clamp(selEnd);
+                uint32_t     x = line.x;
+                paintRun(painter, line, y, line.start, from, x, fg, bg);
+                const uint32_t selX = x;
+                paintRun(painter, line, y, from, to, x, selFg, selBg);
+                if (!_framed && to > from) {
+                        // Unframed, a line selected to an end is lit a little past it, as a selected label is.
+                        if (from == line.start && selX >= area.x)
+                                (void)painter.fill(Rect{uint16_t(selX - Pad), y, Pad, GuiStyle::TextHeight}, selBg);
+                        if (to == line.end && x + Pad <= in.right())
+                                (void)painter.fill(Rect{uint16_t(x), y, Pad, GuiStyle::TextHeight}, selBg);
+                }
+                paintRun(painter, line, y, to, line.end, x, fg, bg);
         }
         // The cursor: a line before the character it is at.
-        if (_model.cursor() >= _first) {
-                const uint32_t cx = area.x + font.textWidth(text.mid(_first, _model.cursor() - _first));
-                if (cx < area.right() + 1u)
+        const size_t cursor = _model.cursor();
+        const size_t at = lineOf(ls, n, cursor);
+        const Line  &line = ls[at];
+        if (cursor >= line.start) {
+                const uint32_t cx = line.x + font.textWidth(text.mid(line.start, cursor - line.start));
+                const uint16_t y = top(at);
+                if (cx < area.right() + 1u && y < in.bottom())
                         (void)painter.fill(Rect{uint16_t(cx > 0 ? cx - 1 : 0), y, 1, GuiStyle::TextHeight}, fg);
         }
         return;

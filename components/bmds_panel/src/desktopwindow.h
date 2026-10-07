@@ -68,6 +68,12 @@ class DesktopWindow final : public GuiWindow {
                 /** @brief A press held this long, still, renames. */
                 static constexpr uint32_t LongPressMs = 800;
 
+                /**
+                 * @brief Offered a key the desktop doesn't use itself (Delete, Ctrl+C...),
+                 *        with the selected item (-1: none). @return True if used.
+                 */
+                using KeyTyped = bool (*)(void *arg, const KeyEvent &event, int selected);
+
                 DesktopWindow(GuiApplication &app, const Config &config) : GuiWindow(app, config) {}
                 ~DesktopWindow() override;
 
@@ -101,8 +107,34 @@ class DesktopWindow final : public GuiWindow {
                         return;
                 }
 
-                /** @brief Returns where item @p item's name is edited: its cell's width, a field's height (screen coordinates). */
+                void setKeyTyped(KeyTyped fn, void *arg) {
+                        _keyTyped = fn;
+                        _keyArg = arg;
+                        return;
+                }
+
+                /** @brief Returns the selected item, or -1. */
+                int selected() const { return _selected; }
+
+                /**
+                 * @brief Puts item @p item in the cell at (@p screenX, @p screenY) if that
+                 *        cell is on the grid and free (a new file where the menu was opened).
+                 * @return True if it moved.
+                 */
+                bool placeItem(size_t item, uint16_t screenX, uint16_t screenY);
+
+                /** @brief Selects item @p item (-1: none). */
+                void setSelected(int item) { select(item >= 0 && size_t(item) < _count ? item : -1); }
+
+                /**
+                 * @brief Returns where item @p item's name is edited: its cell's left and
+                 *        width, its name's first line's top, a line's height (screen
+                 *        coordinates; `PopupEdit::Look::IconName` grows it down).
+                 */
                 Rect nameRect(size_t item) const;
+
+                /** @brief Hides item @p item's name while an editor is over it (-1: none). */
+                void setEditing(int item);
 
                 /**
                  * @brief Shows @p names as items (`MaxItems` at most) in the cells
@@ -133,8 +165,10 @@ class DesktopWindow final : public GuiWindow {
                 void mouseMoved(const WindowManager::MouseEvent &event) override;
                 void mouseReleased(const WindowManager::MouseEvent &event) override;
                 void mouseLeft() override;
+                bool keyPressed(const KeyEvent &event) override;
 
         protected:
+                void activeChanged() override;
                 void drawReference(uint8_t *pixels, size_t stride, uint16_t width, uint16_t height,
                                    const WindowPalette &palette) override;
 
@@ -159,6 +193,10 @@ class DesktopWindow final : public GuiWindow {
                 Rect iconRect(const Item &item) const;
                 Rect lineRect(const Item &item, int line) const; // its background, selected
                 Rect        hitRect(const Item &item) const;
+                int         nearest(int dx, int dy) const; // the item nearest the selection that way
+                int         byGrid(bool last) const;       // the first (or last) item down then across
+                int         startingWith(uint32_t key) const;
+                Rect        menuPoint() const;                  // where the keyboard opens a menu (screen coordinates)
                 void        startRename(int item, uint32_t ms); // the timer
                 void        stopRename();
                 static void renameDue(void *arg);
@@ -193,6 +231,9 @@ class DesktopWindow final : public GuiWindow {
                 int           _renameTimer = -1; // a long press, or a slow second click, under way
                 int           _renameItem = -1;
                 bool          _onSelectedName = false; // the press is on the selected item's name
+                int           _editing = -1;           // its name hidden: an editor is over it
+                KeyTyped      _keyTyped = nullptr;
+                void         *_keyArg = nullptr;
 };
 
 BMDS_NAMESPACE_END

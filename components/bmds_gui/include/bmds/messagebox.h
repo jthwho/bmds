@@ -23,8 +23,10 @@ BMDS_NAMESPACE_BEGIN
  *        (`devplan/gui.md` §4q).
  *
  * `show()` opens one, centred in the work area and above other windows; the
- * answer is told on the loop's thread, then it goes by itself. Enter is its
- * first button, Esc and the close box its cancelling one (Cancel, else No,
+ * answer is told on the loop's thread, then it goes by itself. Its buttons
+ * have mnemonics (&OK, &Cancel, &Yes, &No); the first is the default and has
+ * the focus, Tab, Left and Right move it, Space or Enter clicks the focused
+ * one; Esc and the close box choose its cancelling one (Cancel, else No,
  * else OK). It doesn't stop the application's other windows: the caller
  * waits for the answer.
  *

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Run in a Terminal
+Comment=Runs a program in a terminal window, so its output is seen
+Exec=%f
+Terminal=true
+NoDisplay=true

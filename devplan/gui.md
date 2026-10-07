@@ -585,6 +585,169 @@ from the file name, renaming in the icon's label, and a message box in the GUI A
     - A long press opened the editor; "a/b" brought the forbidden characters' message.
   - **Size:** the image grew 8,208 bytes to 851,456.
 
+### 4r. Editing like the label, mnemonics, Tab (the user's, 2026-10-07)
+
+The user asked for three things:
+
+- "The inline rename edit box shouldn't have a border and should replace the label text when
+  visible... look as much like the label as possible (except with the feedback to the user
+  they're editing it)."
+- "Proper hotkey support... have the Ok button be "&Ok" in the software and have it respond to
+  the keypress."
+- "Tab/Shift-Tab support in the desktop/panel."
+
+**The editor looks like the label:**
+
+- **`LineEdit` gains a look:**
+  - `setFramed(false)`: no bevel.
+  - `setColors(background, text)`: palette roles; a field's white and text by default.
+  - `setCentered(true)`: each line centred.
+  - `setWrapping(true)`: lines broken as `TextWrap` breaks them, on the width's columns; Up and
+    Down move between lines. Wrapped text doesn't scroll; the edit asks to grow instead
+    (`setLinesChanged()`).
+  - `setMaxLength(bytes)`: typing stops at the limit, as Windows' rename does. The panel's
+    message for too long a name stays for a paste.
+- **`PopupEdit::open()` takes a `Look`:**
+  - `Field`: as before.
+  - `IconName`: the desktop's colors, centred, wrapped, no frame. The window is as tall as the
+    lines, and grows and shrinks as they change (8 lines at most).
+- **The desktop:**
+  - Labels break with `TextWrap` too (9 columns), so a name wraps the same in both.
+  - `DesktopWindow::setEditing(item)` hides that item's label while the editor is over it.
+  - The editor sits exactly where the label's lines are: the cell's left, its width, the
+    first line's top.
+- **The feedback:** the cursor, and the selection in a selected label's colors. The rest is the
+  label's look.
+- **The selection when editing starts:** the whole name. For a file with an extension
+  (`filetypes.md`), only the part before it, as file managers do.
+
+**Mnemonics:**
+
+- **`Mnemonic` (bmds_ui, pure, host-tested):**
+  - `&` marks the next character: "&Ok" shows "Ok" with the O underlined, and its key is `o`.
+  - `&&` is a literal `&`; a `&` at the end is dropped.
+  - `strip(text, out)` gives the shown text, the underlined character's byte offset and the
+    key, lowercased (ASCII letters and digits; other characters by codepoint).
+  - `matches(key, event)` takes the event's character, or with Alt the letter or digit of its
+    usage (the keymap may give no character with Alt).
+- **Drawn:** a line under the marked character, on the font's last row, in the text's color.
+  Always drawn: no hiding until Alt is pressed.
+- **Who has them:**
+  - `Button` and `Label` (`setText("&Name")`). A label's mnemonic focuses its buddy
+    (`setBuddy()`), as Qt's.
+  - `Menu` items.
+  - `MenuLayout::Item` gets the underline offset, so the window manager's menus underline too,
+    and its `showMenu()` items take `&`.
+  - `MessageBox`'s buttons: &OK, &Cancel, &Yes, &No.
+- **The keys:**
+  - In a window: Alt+key, or the key alone when the focus widget doesn't use it (a button has
+    the focus; a line edit takes the letters).
+  - One widget with the key: it is activated (a button clicked, a label's buddy focused).
+  - Several: the focus goes to the next of them, without activating, as Windows does.
+  - In a menu (the toolkit's and the window manager's): the key alone chooses the item, or opens
+    its submenu; several with the key highlight the next.
+- **The window manager's Alt keys** (Alt+Tab, Alt+F4, Alt+Space, Alt+F10) come first, as now.
+  A program's mnemonics can't use Tab, F4, Space or F10.
+- **Text that isn't a label:** the panel doubles `&` in window titles and launcher entries' names,
+  so "Tom & Jerry" shows as written. The window manager's desktop menu labels (`wm.conf`) take
+  `&` as a mark.
+
+**Focus and Tab:**
+
+- **Widgets:**
+  - `setFocusable(bool)`: `Button` and `LineEdit` are focusable by default.
+  - Tab and Shift+Tab move the window's focus through its visible, enabled, focusable widgets in
+    tree order, around the ends, unless the window has `setTabOut()`: then it is told instead
+    at either end.
+  - A press on a focusable widget gives it the focus.
+  - `GuiWindow::setFocusWidget()` redraws the old and the new focus.
+- **Active windows:**
+  - `WindowConfig::activated` (new) tells a window when it gains or loses the keys.
+  - `GuiWindow::isActive()`; the focus widget is redrawn on a change.
+  - A focused `Button` draws a ring in the highlight's color in place of its bevel's inner line
+    while its window is active. A rectangle in the text's color drawn over the face crossed the
+    text and made it hard to read (the user's, 2026-10-07); the ring is outside the text's rows
+    and another color.
+  - Space and Enter click a focused button.
+- **The default button:**
+  - `Button::setDefault()`: a dark outline.
+  - Enter in a window whose focus widget doesn't use it clicks the default button.
+  - `MessageBox`'s first button is the default and has the focus; Left and Right move between
+    its buttons too.
+- **Keys for the desktop and the panel (window manager):**
+  - `focusable` now counts for desktop- and panel-level windows. They never join Alt+Tab or the
+    window list.
+  - `WindowConfig::focusOnPress` (default true) says whether a press focuses one. The desktop's
+    does. The panel's doesn't: a press on a window's button would take the focus from the window
+    that the button minimizes.
+  - `raise(id)` still focuses any focusable window.
+  - When no application window is left, the focus falls to a focusable desktop window, so keys
+    reach the desktop after the last window closes.
+  - Alt+Space opens the window menu only for an application window, not for the desktop.
+- **The desktop's keys:**
+  - The arrows move the selection on the grid, to the nearest icon that way. Home and End go to
+    the first and last.
+  - A letter selects the next icon whose name starts with it.
+  - Enter opens; F2 renames; Delete moves to the trash.
+  - The Menu key or Shift+F10 opens the icon's menu, or the desktop's without a selection.
+  - Ctrl+C copies; Ctrl+V pastes.
+  - Tab goes to the panel's first item, Shift+Tab to its last.
+  - The selected icon's name is filled with the highlight while the desktop is active, and only
+    outlined in it while not.
+- **The panel's keys:**
+  - Tab and Shift+Tab move through the launcher and the window buttons; past either end, they go
+    to the desktop. Left and Right do the same as Tab and Shift+Tab.
+  - Space or Enter presses: the launcher opens its menu with the first item highlighted; a
+    window's button raises the window.
+  - The Menu key or Shift+F10 on a window's button opens the window's menu.
+  - Esc goes back to the desktop.
+- **As built** (2026-10-07):
+  - **Pure** (host-tested in `tests/host/gui.cpp`): `Mnemonic` (marks, `&&`, a trailing `&`,
+    the first mark, multi-byte characters, cutting on a character; keys with and without Alt,
+    Ctrl and releases giving none) and `LineEditModel::setMaxBytes()`.
+  - **The editor:**
+    - `LineEdit` lays its lines out as `TextWrap` does and keeps the cursor on the line it
+      belongs to (a space dropped at a break counts as the line before's).
+    - Unframed, a line selected to an end is lit 4 pixels past it, as a selected label's
+      highlight is, so a name all selected looks the same in the editor and the label.
+    - The desktop's labels use `TextWrap` (9 columns) too, so the editor's lines break where
+      the label's did.
+    - `PopupEdit` counts the lines at its width before it opens, so it opens at its full
+      height, and resizes its window with `WindowManager::resize()` as they change.
+  - **Mnemonics:**
+    - `MenuLayout::Item::underline` carries the offset, so `drawMenu()` underlines for both the
+      toolkit's menus and the window manager's.
+    - The window menu: &Restore, Mi&nimize, Ma&ximize, Roll &Up/&Down, Always on &Top, &Close.
+      The terminal's: &Copy, &Paste, Select &All. The desktop's: &Applications, &Paste. An
+      icon's: &Open, &Copy, Re&name, &Delete.
+  - **Focus:** `GuiWindow` handles keys in one place (`key()`) in the order given above. The
+    window manager tells `activated` from `changed()`, where it already redraws the frames of
+    the windows losing and gaining the focus.
+  - **On the board:**
+    - Down selected the first icon and F2 opened the editor in the label's place, the name
+      selected with the label's padding.
+    - A three-line name gave a three-line editor; typing "x" shrank it to one line.
+    - Renaming to a taken name brought the message box: &OK underlined, outlined as the
+      default, with the focus rectangle. The O key alone answered it, and editing went on.
+    - Tab from the desktop focused the panel's launcher (the desktop's selection then only
+      outlined); Enter opened the launcher with Terminal highlighted, Enter started it.
+    - Tab moved to the Terminal's button and Space raised the window.
+    - Alt+Space opened the window menu with its marks underlined; X maximized and R
+      restored.
+    - Closing the terminal left the keys with the desktop (`win list`: "Desktop (focus)").
+    - `win check` found 0 wrong pixels, the selection's outline included.
+  - **Size:** this section and `filetypes.md` together grew the image 15,680 bytes to 867,136.
+  - **Alt stuck after a mnemonic (the user's report, 2026-10-07):** the title-bar buttons
+    stopped working until something was typed. The keyboard decoder reports a modifier's own
+    release with the modifiers as they were, and the window manager kept those as the ones
+    down. So after Alt+O, every press was an Alt+drag (§4g) until the next key. The window
+    manager now takes a modifier key's own bit off at its release, and puts it on at its
+    press. On the board: an Alt tap, then a click on a terminal's close button, closed it
+    (before the fix, nothing happened). An Alt+drag with Alt held still moved the window.
+  - **A window number reused:** a panel started again got the old panel's number, still the
+    window manager's focus, and so had the keys without being given them. Opening a desktop or
+    panel window under the focus's number now clears it.
+
 ## 5. Budget (estimates)
 
 - **Firmware:** the toolkit 10 to 15 KB, the panel 5 KB, the window manager's additions 4 KB, the

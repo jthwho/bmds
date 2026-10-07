@@ -35,6 +35,15 @@ class LineEditModel {
                 /** @brief Returns the text. */
                 StringView text() const { return StringView(_text, _length); }
 
+                /** @brief Returns the most bytes inserting goes up to. */
+                size_t maxBytes() const { return _max; }
+
+                /** @brief Stops inserting at @p bytes (at most `MaxBytes`); the text already there stays. */
+                void setMaxBytes(size_t bytes) {
+                        _max = bytes < MaxBytes ? bytes : MaxBytes;
+                        return;
+                }
+
                 /** @brief Returns the cursor (a byte offset). */
                 size_t cursor() const { return _cursor; }
 
@@ -61,7 +70,7 @@ class LineEditModel {
 
                 /**
                  * @brief Puts @p text where the cursor is, in place of the selection (what
-                 *        doesn't fit in `MaxBytes` dropped, a whole character at a time;
+                 *        doesn't fit in `maxBytes()` dropped, a whole character at a time;
                  *        control characters left out).
                  * @return True if the text changed.
                  */
@@ -97,6 +106,7 @@ class LineEditModel {
                 size_t _length = 0;
                 size_t _cursor = 0;
                 size_t _anchor = 0;
+                size_t _max = MaxBytes;
 };
 
 /**

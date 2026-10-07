@@ -6,6 +6,7 @@
  * See LICENSE file in the project root folder for license information.
  */
 
+#include <cstring>
 #include <bmds/desktopentry.h>
 #include <bmds/inireader.h>
 
@@ -93,10 +94,12 @@ Result<DesktopEntry> DesktopEntry::parse(StringView text, Warn warn, void *warnA
         return makeResult(e);
 }
 
-Result<size_t> DesktopEntry::splitExec(StringView exec, char *buffer, size_t bufferBytes, Span<StringView> args) {
+Result<size_t> DesktopEntry::splitExec(StringView exec, char *buffer, size_t bufferBytes, Span<StringView> args,
+                                       StringView file) {
         size_t count = 0;
         size_t used = 0;
         size_t i = 0;
+        bool   placed = file.isEmpty(); // the file put in by a field code (or none to put)
         for (;;) {
                 while (i < exec.size() && (exec[i] == ' ' || exec[i] == '\t')) ++i;
                 if (i == exec.size()) break;
@@ -116,6 +119,15 @@ Result<size_t> DesktopEntry::splitExec(StringView exec, char *buffer, size_t buf
                                 ch = exec[i++];
                         } else if (!quoted && ch == '%' && i < exec.size()) {
                                 const char code = exec[i++];
+                                if (code != '%' && !file.isEmpty() && StringView("fFuU").contains(code)) {
+                                        if (used + file.size() + 1 > bufferBytes)
+                                                return makeError<size_t>(Error::BufferTooSmall);
+                                        for (const char c : file) buffer[used++] = c;
+                                        placed = true;
+                                        fieldOnly = false;
+                                        any = true;
+                                        continue;
+                                }
                                 if (code != '%') {
                                         any = true;
                                         continue; // a field code: nothing to pass yet
@@ -136,6 +148,14 @@ Result<size_t> DesktopEntry::splitExec(StringView exec, char *buffer, size_t buf
                 buffer[used++] = '\0';
         }
         if (count == 0) return makeError<size_t>(Error::Invalid);
+        if (!placed) {
+                // No field code for it: the file last.
+                if (count == args.size() || used + file.size() + 1 > bufferBytes)
+                        return makeError<size_t>(Error::BufferTooSmall);
+                std::memcpy(buffer + used, file.data(), file.size());
+                args[count++] = StringView(buffer + used, file.size());
+                buffer[used + file.size()] = '\0';
+        }
         return makeResult(count);
 }
 

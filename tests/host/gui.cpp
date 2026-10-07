@@ -25,6 +25,7 @@
 #include <bmds/lineeditmodel.h>
 #include <bmds/linelayout.h>
 #include <bmds/menulayout.h>
+#include <bmds/mnemonic.h>
 #include <bmds/pngdecoder.h>
 #include <bmds/program.h>
 #include <bmds/programimage.h>
@@ -668,6 +669,14 @@ TEST_CASE("LineEditModel: editing whole characters, a selection, the limit") {
         CHECK(m.insert("\xc3\xa9\xc3\xa9\xc3\xa9")); // two fit (4 bytes), the third doesn't
         CHECK(m.text().size() == bmds::LineEditModel::MaxBytes - 1);
         CHECK_FALSE(m.insert("\xc3\xa9"));
+        // A lower limit stops typing there; the text already longer stays.
+        m.setMaxBytes(4);
+        CHECK(m.text().size() == bmds::LineEditModel::MaxBytes - 1);
+        m.setText("ab");
+        CHECK(m.insert("cdef"));
+        CHECK(m.text() == "abcd");
+        CHECK_FALSE(m.insert("g"));
+        m.setMaxBytes(bmds::LineEditModel::MaxBytes);
         // A cursor put inside a character snaps back to its start.
         m.setText("\xc3\xa9z");
         m.setCursor(1, false);
@@ -684,4 +693,59 @@ TEST_CASE("TextWrap: words in lines") {
               std::vector<std::string>{"\xe3\x81\x82\xe3\x81\x82", "\xe3\x81\x82"});
         CHECK(wrapped("one two three", 3, 2) == std::vector<std::string>{"one", "two"});
         CHECK(wrapped("", 10).empty());
+}
+
+TEST_CASE("Mnemonic: marks taken out, the key found, typed keys matched") {
+        using bmds::Mnemonic::None;
+        char       out[16];
+        const auto strip = [&](const char *text) {
+                return bmds::Mnemonic::strip(text, Span<char>(out, sizeof(out)));
+        };
+        auto m = strip("&OK");
+        CHECK(std::string(out) == "OK");
+        CHECK(m.length == 2);
+        CHECK(m.at == 0);
+        CHECK(m.key == 'o');
+        m = strip("Re&name");
+        CHECK(std::string(out) == "Rename");
+        CHECK(m.at == 2);
+        CHECK(m.key == 'n');
+        // && is a &; a & at the end dropped; the first mark is the one.
+        m = strip("Tom && &Jerry&");
+        CHECK(std::string(out) == "Tom & Jerry");
+        CHECK(m.at == 6);
+        CHECK(m.key == 'j');
+        m = strip("&a&b");
+        CHECK(std::string(out) == "ab");
+        CHECK(m.at == 0);
+        m = strip("plain");
+        CHECK(m.at == None);
+        CHECK(m.key == 0);
+        // A marked character of several bytes; the text cut on a character to fit.
+        m = strip("&\xc3\xa9t\xc3\xa9");
+        CHECK(std::string(out) == "\xc3\xa9t\xc3\xa9");
+        CHECK(m.key == 0xe9);
+        char small[4];
+        m = bmds::Mnemonic::strip("ab\xc3\xa9", Span<char>(small, sizeof(small)));
+        CHECK(std::string(small) == "ab");
+        CHECK(m.length == 2);
+        // Keys: the character, folded; with Alt and no character, the key's letter or digit.
+        bmds::KeyEvent e;
+        e.usage = bmds::HidKey::A + ('o' - 'a');
+        e.codepoint = 'O';
+        CHECK(bmds::Mnemonic::keyOf(e) == 'o');
+        e.codepoint = 0;
+        CHECK(bmds::Mnemonic::keyOf(e) == 0);
+        e.modifiers = bmds::KeyEvent::LeftAlt;
+        CHECK(bmds::Mnemonic::keyOf(e) == 'o');
+        e.usage = bmds::HidKey::Digit0;
+        CHECK(bmds::Mnemonic::keyOf(e) == '0');
+        e.usage = bmds::HidKey::Digit1 + 2;
+        CHECK(bmds::Mnemonic::keyOf(e) == '3');
+        e.modifiers = bmds::KeyEvent::LeftCtrl;
+        e.codepoint = 'c';
+        CHECK(bmds::Mnemonic::keyOf(e) == 0);
+        e.modifiers = 0;
+        e.action = bmds::KeyEvent::Action::Release;
+        CHECK(bmds::Mnemonic::keyOf(e) == 0);
 }

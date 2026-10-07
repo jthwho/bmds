@@ -18,6 +18,7 @@
 #include <bmds/icon.h>
 #include <bmds/inputevent.h>
 #include <bmds/memory.h>
+#include <bmds/mnemonic.h>
 #include <bmds/painter.h>
 #include <bmds/rect.h>
 #include <bmds/stringview.h>
@@ -153,6 +154,27 @@ class Widget {
                         return false;
                 }
 
+                /** @brief Returns true if Tab stops on it, and a press gives it the focus. */
+                bool isFocusable() const { return _focusable; }
+
+                /** @brief Makes Tab stop on it, or not (`devplan/gui.md` §4r; buttons and line edits do). */
+                void setFocusable(bool focusable) { _focusable = focusable; }
+
+                /** @brief Returns true if it is its window's focus widget. */
+                bool hasFocus() const;
+
+                /** @brief Makes it its window's focus widget. */
+                void setFocus();
+
+                /** @brief Returns its mnemonic's key (`Mnemonic::keyOf()`'s form), or 0: none. */
+                virtual uint32_t mnemonic() const { return 0; }
+
+                /**
+                 * @brief Its mnemonic was typed and no other widget of its window has it:
+                 *        it acts (a button clicks). It takes the focus by default.
+                 */
+                virtual void mnemonicActivated() { setFocus(); }
+
         protected:
                 /** @brief Its size changed (lay children out here). */
                 virtual void resized() {}
@@ -175,10 +197,12 @@ class Widget {
                 bool       _visible = true;
                 bool       _enabled = true;
                 bool       _owned = false;
+                bool       _focusable = false;
 };
 
 /**
- * @brief Text in one line, in the face's colors.
+ * @brief Text in one line, in the face's colors. With a buddy, a `&` in it
+ *        marks a key that gives the buddy the focus (`Mnemonic`), as Qt's.
  *
  * @par Thread Safety
  * As `Widget`.
@@ -208,11 +232,19 @@ class Label : public Widget {
                 /** @brief Draws a bevel around it (a status field: `Bevel::Style::Status`); none by default. */
                 void setFrame(Bevel::Style style);
 
-                GuiSize sizeHint() const override;
-                void    paint(Painter &painter) override;
+                /** @brief Sets the widget its mnemonic focuses (null: none, and `&` is shown as it is). */
+                void setBuddy(Widget *buddy);
+
+                GuiSize  sizeHint() const override;
+                void     paint(Painter &painter) override;
+                uint32_t mnemonic() const override;
+                void     mnemonicActivated() override;
 
         private:
+                Mnemonic::Stripped shown(char (&out)[MaxText + 1]) const; // the text as drawn
+
                 char         _text[MaxText + 1] = {};
+                Widget      *_buddy = nullptr;
                 Align        _align = Align::Left;
                 Bevel::Style _frame = Bevel::Style::Raised;
                 bool         _framed = false;
@@ -227,6 +259,13 @@ class Label : public Widget {
  * as the classic taskbars showed the active window). A flat
  * one (a toolbar's) shows a thin edge only under the pointer.
  *
+ * A `&` in its text marks its key (`Mnemonic`, `devplan/gui.md` §4r): "&OK"
+ * shows "OK", the O underlined, and Alt+O clicks it; `&&` is a `&`. It takes
+ * the focus (Tab stops on it), shows it with a rectangle while its window is
+ * active, and Space or Enter clicks it then; the Menu key and Shift+F10 are a
+ * right press. Its window's default button (`GuiWindow::setDefaultButton()`)
+ * has a dark outline.
+ *
  * @par Thread Safety
  * As `Widget`.
  */
@@ -235,18 +274,27 @@ class Button : public Widget {
                 /** @brief Told of a click (on the loop's thread). */
                 using Clicked = void (*)(void *arg, Button &button);
 
-                /** @brief Told of a press (any button) where it is (screen coordinates). */
+                /**
+                 * @brief Told of a press (any button, or 0: Space or Enter, without a
+                 *        `Clicked`) where it is (screen coordinates).
+                 */
                 using Pressed = void (*)(void *arg, Button &button, uint8_t which, uint16_t screenX, uint16_t screenY);
 
                 static constexpr size_t MaxText = 63;
 
                 Button(Widget *parent, StringView text = StringView());
 
-                /** @brief Sets the text (cut at `MaxText` bytes on a character) and redraws it. */
+                /** @brief Sets the text (`&` marking its key; cut at `MaxText` bytes on a character) and redraws it. */
                 void setText(StringView text);
 
-                /** @brief Returns the text. */
+                /** @brief Returns the text shown (its `&` marks taken out). */
                 StringView text() const { return StringView(_text); }
+
+                /**
+                 * @brief Clicks it as the left button would (told to `Clicked`; without
+                 *        one, a `Pressed` with button 0).
+                 */
+                void click();
 
                 /**
                  * @brief Shows @p icon before the text (null: none), kept by the
@@ -297,12 +345,18 @@ class Button : public Widget {
                 void    mousePressed(const WindowManager::MouseEvent &event) override;
                 void    mouseReleased(const WindowManager::MouseEvent &event) override;
                 void    mouseMoved(const WindowManager::MouseEvent &event) override;
-                void    mouseLeft() override;
+                void     mouseLeft() override;
+                bool     keyPressed(const KeyEvent &event) override;
+                uint32_t mnemonic() const override { return _key; }
+                void     mnemonicActivated() override;
 
         private:
                 bool inside(int x, int y) const;
+                void press(uint8_t which); // told to `Pressed` at its bottom-left corner
 
                 char        _text[MaxText + 1] = {};
+                size_t      _underline = Mnemonic::None;
+                uint32_t    _key = 0;
                 const Icon *_icon = nullptr;
                 Clicked     _clicked = nullptr;
                 void       *_clickedArg = nullptr;

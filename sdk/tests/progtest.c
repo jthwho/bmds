@@ -1073,13 +1073,34 @@ int main(int argc, char **argv) {
                         "usage: progtest status|exit|leak|env|tty|float|files|time|sleep|term|lines|raw|mem|random|cwd|"
                         "spin|calls|posix|abort|spawn|scripts|signals|catch|ignore|fd|ppid|exec|orphan|tree|poll|"
                         "threads|"
-                        "threadspin "
+                        "threadspin|filetype "
                         "[arg]\n");
                 return 2;
         }
         const char *what = argv[1];
         const char *arg = argc > 2 ? argv[2] : "0";
         if (strcmp(what, "status") == 0) return atoi(arg);
+        if (strcmp(what, "filetype") == 0) {
+                // filetype PATH [name|content]: the file's type, by the slot (bmds_file_type).
+                if (!bmds_sys_has(BMDS_SYS_FILE_TYPE)) {
+                        printf("file_type: not in this kernel\n");
+                        return 1;
+                }
+                const char   *how = argc > 3 ? argv[3] : "";
+                uint32_t      flags = strcmp(how, "name") == 0      ? BMDS_FILE_TYPE_NAME
+                                      : strcmp(how, "content") == 0 ? BMDS_FILE_TYPE_CONTENT
+                                                                    : 0;
+                char          type[BMDS_FILE_TYPE_MAX + 1];
+                char          small[4];
+                const int32_t n = bmds_file_type(arg, flags, type, sizeof(type));
+                if (n < 0) {
+                        printf("%s: error %d\n", arg, (int)-n);
+                        return 1;
+                }
+                printf("%s: %s (%d), small buffer %d\n", arg, type, (int)n,
+                       (int)bmds_file_type(arg, flags, small, sizeof(small)));
+                return 0;
+        }
         if (strcmp(what, "exit") == 0) deep(20, atoi(arg));
         if (strcmp(what, "leak") == 0) {
                 const int kb = atoi(arg);

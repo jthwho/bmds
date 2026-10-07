@@ -24,16 +24,19 @@
 #include <bmds/clock.h>
 #include <bmds/desktopentry.h>
 #include <bmds/fdtable.h>
+#include <bmds/fileformat.h>
 #include <bmds/filenames.h>
 #include <bmds/font.h>
 #include <bmds/guiapplication.h>
 #include <bmds/guiclipboard.h>
 #include <bmds/guiwindow.h>
 #include <bmds/inireader.h>
+#include <bmds/lineedit.h>
 #include <bmds/memory.h>
 #include <bmds/menu.h>
 #include <bmds/menulayout.h>
 #include <bmds/messagebox.h>
+#include <bmds/mimeapps.h>
 #include <bmds/popupedit.h>
 #include <bmds/programlauncher.h>
 #include <bmds/string.h>
@@ -56,6 +59,7 @@ namespace {
         constexpr const char *DefaultApplications = "/boot/applications;/sd0/p0/share/applications";
         constexpr const char *DefaultDesktop = "/boot/desktop";
         constexpr const char *PlacesPath = "/boot/config/desktop.conf"; // where the icons were put
+        constexpr const char *DefaultMimeApps = "/boot/config/mimeapps.list"; // what opens files
         constexpr StringView  DesktopSuffix(".desktop");                // an icon's file, its name before it
         constexpr size_t      MaxPlacesBytes = 4096;
         constexpr uint32_t    SaveDelayMs = 500; // after a drop: drawn first, then written
@@ -85,6 +89,27 @@ namespace {
 
         using Entry = PanelEntry;
 
+        // The desktop menu's own choices (the launcher's entries, its Applications submenu, are 0
+        // and up: a submenu's choice is told to its root's function).
+        enum DesktopChoice : int {
+                ChoosePaste = -2,
+                ChooseNewFolder = -3,
+                ChooseNewText = -4,
+                ChooseNewFile = -5,
+        };
+
+        // @p text with each & doubled, for a menu that takes & as its key's mark (gui.md §4r).
+        StringView literal(StringView text, char (&out)[2 * DesktopEntry::MaxName + 1]) {
+                size_t n = 0;
+                for (const char c : text) {
+                        if (n + 2 >= sizeof(out)) break;
+                        if (c == '&') out[n++] = '&';
+                        out[n++] = c;
+                }
+                out[n] = '\0';
+                return StringView(out, n);
+        }
+
         // A key=value of the configuration (views into its text).
         struct Setting {
                         StringView group;
@@ -93,6 +118,31 @@ namespace {
         };
 
         class PanelApp;
+
+        // The panel's window: Tab moves through its buttons (gui.md §4r); Left and Right do too,
+        // and Esc goes back to the desktop.
+        class PanelWindow final : public GuiWindow {
+                public:
+                        using Escaped = void (*)(void *arg);
+
+                        PanelWindow(GuiApplication &app, const Config &config, Escaped fn, void *arg)
+                            : GuiWindow(app, config), _escaped(fn), _escapedArg(arg) {}
+
+                        bool keyPressed(const KeyEvent &event) override {
+                                if (event.hasCtrl() || event.hasAlt()) return false;
+                                if (event.usage == HidKey::Left || event.usage == HidKey::Right)
+                                        return focusNext(event.usage == HidKey::Right);
+                                if (event.usage == HidKey::Escape && _escaped != nullptr) {
+                                        _escaped(_escapedArg);
+                                        return true;
+                                }
+                                return false;
+                        }
+
+                private:
+                        Escaped _escaped;
+                        void   *_escapedArg;
+        };
 
         // A window's button: they share the room equally.
         class WindowButton final : public Button {
@@ -203,9 +253,15 @@ namespace {
                         static void  renameAsked(void *arg, size_t item);
                         static void  renamed(void *arg, bool accepted, StringView text);
                         static void  renameRetry(void *arg, MessageBox::Answer answer);
+                        static bool  desktopKey(void *arg, const KeyEvent &event, int selected);
+                        static void  desktopTabOut(void *arg, GuiWindow &window, bool forward);
+                        static void  panelTabOut(void *arg, GuiWindow &window, bool forward);
+                        static void  panelEscaped(void *arg);
+                        void         focusDesktop();
                         void         startRename(size_t item, StringView text);
                         static void  pasted(void *arg, Error err, StringView type, StringView data);
                         void         pasteFile(StringView from, StringView directory);
+                        void         createNew(int choice);
                         static void  iconChosen(void *arg, int choice);
                         static Error renderIcon(void *arg, StringView type, String &out);
                         static void savePlaces(void *arg);
@@ -223,15 +279,21 @@ namespace {
                         void        buildMenu(size_t submenuAfter);
                         Error       buildItems(Widget *row);
                         Error       openWindows();
-                        void        launch(const Entry &entry);
+                        void        launch(const Entry &entry, StringView file = StringView());
+                        void        open(const Entry &entry);
+                        void        openFile(const Entry &entry);
+                        bool        openWith(StringView id, StringView file);
+                        const Icon *fileIcon(StringView type);
+                        StringView  shownName(const Entry &entry) const;
                         const Icon *entryIcon(const Entry &entry, uint16_t side);
                         Error       programPath(StringView command, String &out) const;
 
                         const BuiltinProgram::Context &_context;
                         GuiApplication                 _app;
-                        GuiWindow                     *_panel = nullptr;
+                        PanelWindow                   *_panel = nullptr;
                         DesktopWindow                 *_desktop = nullptr;
                         char                           _desktopDirs[256] = {}; // [Desktop] Icons
+                        char                           _mimeApps[128] = {};    // [Desktop] MimeApps
                         Entry                         *_desktopEntries = nullptr;
                         size_t                         _desktopCount = 0;
                         bool                           _desktopIncomplete = false;
@@ -242,7 +304,10 @@ namespace {
                         WindowList                    *_windows = nullptr;
                         Menu                          *_menu = nullptr;
                         Menu                          *_iconMenu = nullptr;    // an icon's: Open, Copy, Delete
-                        Menu                          *_desktopMenu = nullptr; // the desktop's: Applications, Paste
+                        Menu    *_desktopMenu = nullptr; // the desktop's: Applications, New, Paste
+                        Menu    *_newMenu = nullptr;     // its New submenu
+                        uint16_t _menuX = 0;             // where it was opened
+                        uint16_t _menuY = 0;
                         PopupEdit                     *_nameEdit = nullptr;    // an icon's name being edited
                         size_t                         _renaming = 0;          // the icon it is
                         char                           _renameTried[sizeof(PanelEntry::file)] = {}; // to edit again
@@ -290,10 +355,17 @@ namespace {
                                 button->setClicked(clicked, &_panel);
                                 button->setPressed(pressed, &_panel);
                         }
-                        char text[WindowManager::MaxTitle + 3];
-                        std::snprintf(text, sizeof(text), info.minimized ? "[%s]" : "%s",
-                                      info.title[0] != '\0' ? info.title : "(untitled)");
-                        button->setText(StringView(text));
+                        // The title's & doubled: a button takes & as its key's mark (gui.md §4r).
+                        char        text[2 * WindowManager::MaxTitle + 3];
+                        size_t      n = 0;
+                        const char *title = info.title[0] != '\0' ? info.title : "(untitled)";
+                        if (info.minimized) text[n++] = '[';
+                        for (const char *c = title; *c != '\0' && n + 3 < sizeof(text); ++c) {
+                                if (*c == '&') text[n++] = '&';
+                                text[n++] = *c;
+                        }
+                        if (info.minimized) text[n++] = ']';
+                        button->setText(StringView(text, n));
                         button->setChecked(info.focused);
                         static_cast<WindowButton *>(button)->takeIcon(_panel.application().windowManager(), info.id);
                 }
@@ -405,6 +477,10 @@ namespace {
                         _desktopMenu->~Menu();
                         Memory::free(_desktopMenu);
                 }
+                if (_newMenu != nullptr) {
+                        _newMenu->~Menu();
+                        Memory::free(_newMenu);
+                }
                 if (_nameEdit != nullptr) {
                         _nameEdit->~PopupEdit();
                         Memory::free(_nameEdit);
@@ -415,7 +491,7 @@ namespace {
                 }
                 Memory::free(_desktopEntries);
                 if (_panel != nullptr) {
-                        _panel->~GuiWindow();
+                        _panel->~PanelWindow();
                         Memory::free(_panel);
                 }
                 Memory::free(_configText);
@@ -514,9 +590,11 @@ namespace {
                 _menu->setTriggered(triggered, this);
                 _menu->setDismissed(dismissed, this);
                 if (_entryCount <= submenuAfter) {
-                        for (size_t i = 0; i < _entryCount; ++i)
-                                (void)_menu->addItem(StringView(_entries[i].entry.name), int(i), 0, StringView(),
-                                                     entryIcon(_entries[i], GuiStyle::IconSize));
+                        for (size_t i = 0; i < _entryCount; ++i) {
+                                char name[2 * DesktopEntry::MaxName + 1];
+                                (void)_menu->addItem(literal(StringView(_entries[i].entry.name), name), int(i), 0,
+                                                     StringView(), entryIcon(_entries[i], GuiStyle::IconSize));
+                        }
                 } else {
                         for (size_t c = 0; c < MaxCategories; ++c) {
                                 const StringView category =
@@ -536,8 +614,9 @@ namespace {
                                                 _submenus[c] = sub;
                                                 (void)_menu->addSubmenu(category, *sub);
                                         }
-                                        (void)sub->addItem(StringView(_entries[i].entry.name), int(i), 0, StringView(),
-                                                           entryIcon(_entries[i], GuiStyle::IconSize));
+                                        char name[2 * DesktopEntry::MaxName + 1];
+                                        (void)sub->addItem(literal(StringView(_entries[i].entry.name), name), int(i), 0,
+                                                           StringView(), entryIcon(_entries[i], GuiStyle::IconSize));
                                 }
                         }
                 }
@@ -551,9 +630,10 @@ namespace {
                 return;
         }
 
+        // The left button, or Space or Enter (0: the first item highlighted for the keys).
         void PanelApp::launcherPressed(void *arg, Button &button, uint8_t which, uint16_t, uint16_t) {
                 auto *self = static_cast<PanelApp *>(arg);
-                if (which != PointerEvent::Left) return;
+                if (which != PointerEvent::Left && which != 0) return;
                 const Rect b = button.geometry();
                 const Rect s = self->_panel->screenRect();
                 self->showLauncher(Rect{uint16_t(s.x + b.x), uint16_t(s.y + b.y), b.width, b.height});
@@ -561,6 +641,7 @@ namespace {
                 if (self->_menu != nullptr && self->_menu->isShown()) {
                         self->_launcher = &button;
                         button.setChecked(true);
+                        if (which == 0) self->_menu->highlightFirst();
                 }
                 return;
         }
@@ -603,14 +684,15 @@ namespace {
                 return;
         }
 
-        // Entry @p entry's command started (in a terminal if it asks), not waited for.
-        void PanelApp::launch(const Entry &entry) {
+        // Entry @p entry's command started (in a terminal if it asks), not waited for; given
+        // @p file, its field codes are it (devplan/filetypes.md T7).
+        void PanelApp::launch(const Entry &entry, StringView file) {
                 if (_context.launcher == nullptr) return;
-                char         buffer[DesktopEntry::MaxExec + 1];
+                char         buffer[DesktopEntry::MaxExec + Vfs::MaxPath + 1];
                 StringView   args[DesktopEntry::MaxArgs + 2];
                 const size_t front = entry.entry.terminal ? 2 : 0;
                 auto [n, err] = DesktopEntry::splitExec(StringView(entry.entry.exec), buffer, sizeof(buffer),
-                                                        Span<StringView>(args + front, DesktopEntry::MaxArgs));
+                                                        Span<StringView>(args + front, DesktopEntry::MaxArgs), file);
                 if (err.isError()) {
                         say("panel: ", entry.entry.name, ": its Exec line can't be used\n");
                         return;
@@ -653,6 +735,102 @@ namespace {
                 return Vfs::findProgram(command, searchPath, vc, out);
         }
 
+        // A desktop item opened: a launcher started, another file opened by its type.
+        void PanelApp::open(const Entry &entry) {
+                if (entry.isLauncher()) {
+                        launch(entry);
+                } else {
+                        openFile(entry);
+                }
+                return;
+        }
+
+        // A file opened by the application mimeapps.list names for its type (devplan/filetypes.md
+        // T6): the type's, its media's, text/plain's for text, then application/octet-stream's.
+        void PanelApp::openFile(const Entry &entry) {
+                constexpr size_t   MaxBytes = 4096;
+                const StringView   type(entry.type);
+                const Vfs::Context vc{_context.cwd, nullptr};
+                char              *text = static_cast<char *>(Memory::alloc(MemSpace::Psram, MaxBytes));
+                if (text == nullptr) return;
+                size_t got = 0;
+                auto [file, err] = Vfs::open(StringView(_mimeApps), Vfs::Read, vc);
+                while (err.isOk() && got < MaxBytes) {
+                        auto [n, rerr] = file->read(
+                                WritableByteSpan(reinterpret_cast<uint8_t *>(text) + got, MaxBytes - got), WaitForever);
+                        if (rerr.isError() || n == 0) break;
+                        got += n;
+                }
+                bool       opened = false;
+                StringView types[] = {type, FileFormat::isText(type) ? FileFormat::PlainText : StringView(),
+                                      FileFormat::Binary};
+                for (size_t t = 0; t < 3 && !opened; ++t) {
+                        if (types[t].isEmpty() || (t > 0 && types[t] == type)) continue;
+                        StringView   ids[8];
+                        const size_t n = MimeApps::lookup(StringView(text, got), types[t], Span<StringView>(ids));
+                        for (size_t i = 0; i < n && !opened; ++i) opened = openWith(ids[i], StringView(entry.path));
+                }
+                Memory::free(text);
+                if (!opened) {
+                        char message[160];
+                        std::snprintf(message, sizeof(message), "There's no application set to open %s files.",
+                                      entry.type);
+                        if (MessageBox::show(_app, MessageBox::Kind::Information, "Open", StringView(message),
+                                             MessageBox::Buttons::Ok, nullptr, nullptr)
+                                    .isError())
+                                say("panel: ", message, "\n");
+                }
+                return;
+        }
+
+        // Application @p id (a Desktop Entry file in the launcher's directories, the first found)
+        // started on @p file. False if it isn't there.
+        bool PanelApp::openWith(StringView id, StringView file) {
+                const Vfs::Context vc{_context.cwd, nullptr};
+                StringView         dirs(_applications);
+                for (StringView d = IniReader::nextListItem(dirs); !d.isEmpty(); d = IniReader::nextListItem(dirs)) {
+                        String path;
+                        if (path.append(d).isError() || path.append('/').isError() || path.append(id).isError())
+                                continue;
+                        auto [handle, err] = Vfs::open(path.view(), Vfs::Read, vc);
+                        if (err.isError()) continue;
+                        char   text[1024];
+                        size_t got = 0;
+                        while (got < sizeof(text)) {
+                                auto [n, rerr] = handle->read(
+                                        WritableByteSpan(reinterpret_cast<uint8_t *>(text) + got, sizeof(text) - got),
+                                        WaitForever);
+                                if (rerr.isError() || n == 0) break;
+                                got += n;
+                        }
+                        auto [entry, perr] = DesktopEntry::parse(StringView(text, got));
+                        if (perr.isError() || entry.hidden) continue;
+                        Entry e;
+                        e.entry = entry;
+                        launch(e, file);
+                        return true;
+                }
+                return false;
+        }
+
+        // A file's icon (devplan/filetypes.md T10): its type's, the generic one, else `unknown`.
+        const Icon *PanelApp::fileIcon(StringView type) {
+                char        name[FileFormat::MaxType + 1];
+                const Icon *icon =
+                        _app.icons().find(FileFormat::iconName(type, Span<char>(name)), DesktopWindow::IconSide);
+                if (icon == nullptr) icon = _app.icons().find(FileFormat::genericIcon(type), DesktopWindow::IconSide);
+                if (icon == nullptr) icon = _app.icons().find("unknown", DesktopWindow::IconSide);
+                return icon;
+        }
+
+        // An item's name on the desktop: a launcher's file without .desktop, another file's whole.
+        StringView PanelApp::shownName(const Entry &entry) const {
+                const StringView file(entry.file);
+                return entry.isLauncher() && file.endsWith(DesktopSuffix)
+                               ? file.left(file.size() - DesktopSuffix.size())
+                               : file;
+        }
+
         // Entry @p entry's icon: its Icon=, else its program's own, else a generic one.
         const Icon *PanelApp::entryIcon(const Entry &entry, uint16_t side) {
                 char       buffer[DesktopEntry::MaxExec + 1];
@@ -666,8 +844,8 @@ namespace {
 
         // ---- The desktop's icons
 
-        // A right press on the desktop: Applications (the launcher's menu), then Paste, enabled when
-        // the clipboard holds files (devplan/files.md F7).
+        // A right press on the desktop: Applications (the launcher's menu), New (a folder or a file,
+        // devplan/files.md F10), then Paste, enabled when the clipboard holds files (F7).
         void PanelApp::desktopMenu(void *arg, uint16_t x, uint16_t y) {
                 auto *self = static_cast<PanelApp *>(arg);
                 if (self->_incomplete && (self->_menu == nullptr || !self->_menu->isShown())) self->reloadLauncher();
@@ -677,24 +855,47 @@ namespace {
                         self->_desktopMenu = ::new (mem) Menu(self->_app);
                         self->_desktopMenu->setTriggered(desktopChosen, self);
                 }
+                if (self->_newMenu == nullptr) {
+                        void *mem = Memory::alloc(MemSpace::Psram, sizeof(Menu));
+                        if (mem == nullptr) return;
+                        self->_newMenu = ::new (mem) Menu(self->_app);
+                        (void)self->_newMenu->addItem("&Folder", ChooseNewFolder, 0, StringView(),
+                                                      self->_app.icons().find("folder", GuiStyle::IconSize));
+                        (void)self->_newMenu->addItem("&Text Document", ChooseNewText, 0, StringView(),
+                                                      self->_app.icons().find("text-x-generic", GuiStyle::IconSize));
+                        (void)self->_newMenu->addItem("&Empty File", ChooseNewFile, 0, StringView(),
+                                                      self->_app.icons().find("unknown", GuiStyle::IconSize));
+                }
+                self->_menuX = x;
+                self->_menuY = y;
                 Menu         &menu = *self->_desktopMenu;
                 GuiClipboard *clipboard = self->_app.clipboard();
                 const bool    files =
                         clipboard != nullptr && clipboard->canPaste(Clipboard::Selection::Clipboard, "text/uri-list");
                 menu.clear();
                 if (self->_menu != nullptr) {
-                        (void)menu.addSubmenu("Applications", *self->_menu);
+                        (void)menu.addSubmenu("&Applications", *self->_menu);
                         (void)menu.addSeparator();
                 }
-                (void)menu.addItem("Paste", 0, files ? 0 : MenuLayout::Disabled);
+                (void)menu.addSubmenu("&New", *self->_newMenu);
+                (void)menu.addSeparator();
+                (void)menu.addItem("&Paste", ChoosePaste, files ? 0 : MenuLayout::Disabled);
                 (void)menu.popup(Rect{x, y, 0, 0});
                 return;
         }
 
         void PanelApp::desktopChosen(void *arg, int choice) {
-                auto         *self = static_cast<PanelApp *>(arg);
+                auto *self = static_cast<PanelApp *>(arg);
+                if (choice >= 0) {
+                        triggered(self, choice); // a launcher entry, from the Applications submenu
+                        return;
+                }
+                if (choice == ChooseNewFolder || choice == ChooseNewText || choice == ChooseNewFile) {
+                        self->createNew(choice);
+                        return;
+                }
                 GuiClipboard *clipboard = self->_app.clipboard();
-                if (choice != 0 || clipboard == nullptr) return;
+                if (choice != ChoosePaste || clipboard == nullptr) return;
                 if (clipboard->paste(Clipboard::Selection::Clipboard, "text/uri-list", pasted, self).isError())
                         self->say("panel: can't paste\n");
                 return;
@@ -762,9 +963,75 @@ namespace {
                 return;
         }
 
+        // New > Folder, Text Document or Empty File: made in the desktop's first directory under the
+        // first free name ("New Folder", then "New Folder (2)"...), put where the menu was opened
+        // if that cell is free, then named in place.
+        void PanelApp::createNew(int choice) {
+                StringView       dirs(_desktopDirs);
+                const StringView directory = IniReader::nextListItem(dirs);
+                if (directory.isEmpty()) return;
+                const StringView   base = choice == ChooseNewFolder ? "New Folder"
+                                          : choice == ChooseNewText ? "New Text Document.txt"
+                                                                    : "New File";
+                const size_t       dot = base.lastIndexOf('.');
+                const StringView   stem = dot != StringView::NPos ? base.left(dot) : base;
+                const StringView   extension = dot != StringView::NPos ? base.mid(dot) : StringView();
+                const Vfs::Context vc{_context.cwd, nullptr};
+                (void)Vfs::mkdir(directory, vc); // there already, most likely
+                String path;
+                char   name[sizeof(PanelEntry::file)];
+                Error  err = Error::Exists;
+                for (unsigned n = 1; n < 100 && err == Error::Exists; ++n) {
+                        if (n == 1) {
+                                std::snprintf(name, sizeof(name), "%.*s", int(base.size()), base.data());
+                        } else {
+                                std::snprintf(name, sizeof(name), "%.*s (%u)%.*s", int(stem.size()), stem.data(), n,
+                                              int(extension.size()), extension.data());
+                        }
+                        path.clear();
+                        err = path.append(directory);
+                        if (err.isOk()) err = path.append('/');
+                        if (err.isOk()) err = path.append(StringView(name));
+                        if (err.isError()) break;
+                        if (choice == ChooseNewFolder) {
+                                if (Vfs::lstat(path.view(), vc).isOk()) {
+                                        err = Error::Exists;
+                                } else {
+                                        err = Vfs::mkdir(path.view(), vc);
+                                }
+                        } else {
+                                err = Vfs::open(path.view(), Vfs::Write | Vfs::Create | Vfs::Exclusive, vc).error();
+                        }
+                }
+                if (err.isError()) {
+                        char message[160];
+                        std::snprintf(message, sizeof(message), "Can't make it: %s.", err.desc());
+                        if (MessageBox::show(_app, MessageBox::Kind::Error, "New", StringView(message),
+                                             MessageBox::Buttons::Ok, nullptr, nullptr)
+                                    .isError())
+                                say("panel: ", message, "\n");
+                        return;
+                }
+                (void)loadDesktop();
+                for (size_t i = 0; i < _desktopCount; ++i) {
+                        if (std::strcmp(_desktopEntries[i].file, name) != 0) continue;
+                        if (_desktop->placeItem(i, _menuX, _menuY)) {
+                                if (_saveTimer >= 0) {
+                                        _app.stopTimer(_saveTimer);
+                                        _saveTimer = -1;
+                                }
+                                savePlaces(this);
+                        }
+                        _desktop->setSelected(int(i));
+                        startRename(i, shownName(_desktopEntries[i]));
+                        break;
+                }
+                return;
+        }
+
         void PanelApp::desktopOpened(void *arg, size_t item) {
                 auto *self = static_cast<PanelApp *>(arg);
-                if (item < self->_desktopCount) self->launch(self->_desktopEntries[item]);
+                if (item < self->_desktopCount) self->open(self->_desktopEntries[item]);
                 return;
         }
 
@@ -772,6 +1039,11 @@ namespace {
         // icons found; false if a directory or an icon wasn't (the card, mounted later).
         bool PanelApp::loadDesktop() {
                 if (_desktop == nullptr) return true;
+                // The selection kept by its file's name.
+                char      selectedFile[sizeof(PanelEntry::file)] = {};
+                const int was = _desktop->selected();
+                if (was >= 0 && size_t(was) < _desktopCount)
+                        std::memcpy(selectedFile, _desktopEntries[was].file, sizeof(selectedFile));
                 Memory::free(_desktopEntries);
                 _desktopCount = 0;
                 _desktopIncomplete = false;
@@ -783,15 +1055,12 @@ namespace {
                 StringView         dirs(_desktopDirs);
                 for (StringView d = IniReader::nextListItem(dirs); !d.isEmpty(); d = IniReader::nextListItem(dirs))
                         if (!readEntryDirectory(d, vc, _desktopEntries, _desktopCount, DesktopWindow::MaxItems,
-                                                badEntry, this))
+                                                badEntry, this, true))
                                 _desktopIncomplete = true;
                 keepShownEntries(_desktopEntries, _desktopCount);
                 StringView names[DesktopWindow::MaxItems];
                 // An icon is named by its file (devplan/gui.md §4q): copies and renames stay in step.
-                for (size_t i = 0; i < _desktopCount; ++i) {
-                        const StringView file(_desktopEntries[i].file);
-                        names[i] = file.endsWith(DesktopSuffix) ? file.left(file.size() - DesktopSuffix.size()) : file;
-                }
+                for (size_t i = 0; i < _desktopCount; ++i) names[i] = shownName(_desktopEntries[i]);
                 const Rect     work = _app.windowManager().workArea();
                 const Rect     s = _desktop->screenRect();
                 const Rect     area{uint16_t(work.x - s.x), uint16_t(work.y - s.y), work.width, work.height};
@@ -801,6 +1070,8 @@ namespace {
                                        Span<const IconGrid::Cell>(wanted, _desktopCount), area)
                             .isError())
                         say("panel: no memory for the desktop's icons\n");
+                for (size_t i = 0; i < _desktopCount && selectedFile[0] != '\0'; ++i)
+                        if (std::strcmp(_desktopEntries[i].file, selectedFile) == 0) _desktop->setSelected(int(i));
                 return findDesktopIcons();
         }
 
@@ -848,11 +1119,11 @@ namespace {
                         if (mem == nullptr) return;
                         self->_iconMenu = ::new (mem) Menu(self->_app);
                         self->_iconMenu->setTriggered(iconChosen, self);
-                        (void)self->_iconMenu->addItem("Open", 0);
-                        (void)self->_iconMenu->addItem("Copy", 1);
-                        (void)self->_iconMenu->addItem("Rename", 3);
+                        (void)self->_iconMenu->addItem("&Open", 0);
+                        (void)self->_iconMenu->addItem("&Copy", 1);
+                        (void)self->_iconMenu->addItem("Re&name", 3);
                         (void)self->_iconMenu->addSeparator();
-                        (void)self->_iconMenu->addItem("Delete", 2);
+                        (void)self->_iconMenu->addItem("&Delete", 2);
                 }
                 self->_iconItem = item;
                 (void)self->_iconMenu->popup(Rect{x, y, 0, 0});
@@ -866,7 +1137,7 @@ namespace {
                 if (self->_iconItem >= self->_desktopCount) return;
                 const PanelEntry &e = self->_desktopEntries[self->_iconItem];
                 if (choice == 0) {
-                        self->launch(e);
+                        self->open(e);
                         return;
                 }
                 if (choice == 3) {
@@ -912,14 +1183,12 @@ namespace {
         void PanelApp::renameAsked(void *arg, size_t item) {
                 auto *self = static_cast<PanelApp *>(arg);
                 if (item >= self->_desktopCount) return;
-                const StringView file(self->_desktopEntries[item].file);
-                self->startRename(item,
-                                  file.endsWith(DesktopSuffix) ? file.left(file.size() - DesktopSuffix.size()) : file);
+                self->startRename(item, self->shownName(self->_desktopEntries[item]));
                 return;
         }
 
-        // The editor over icon @p item's name, @p text in it: as wide as the cell, wider for a long
-        // name (three cells at most), centred on it.
+        // The editor over icon @p item's name, @p text in it: drawn as the name is, in its place,
+        // the name hidden under it (devplan/gui.md §4r).
         void PanelApp::startRename(size_t item, StringView text) {
                 if (_desktop == nullptr) return;
                 if (_nameEdit == nullptr) {
@@ -928,16 +1197,18 @@ namespace {
                         _nameEdit = ::new (mem) PopupEdit(_app);
                 }
                 _renaming = item;
-                Rect           r = _desktop->nameRect(item);
-                const uint32_t want = Fonts::unscii16.textWidth(text) + 24;
-                const uint16_t most = uint16_t(3 * DesktopWindow::CellWidth);
-                if (want > r.width) {
-                        const uint16_t w = uint16_t(want < most ? want : most);
-                        const int      x = int(r.x) - (w - r.width) / 2;
-                        r.x = uint16_t(x < 0 ? 0 : x);
-                        r.width = w;
+                if (_nameEdit->open(_desktop->nameRect(item), text, PopupEdit::Look::IconName, renamed, this)
+                            .isError()) {
+                        say("panel: can't edit the name\n");
+                        return;
                 }
-                if (_nameEdit->open(r, text, renamed, this).isError()) say("panel: can't edit the name\n");
+                // A file's extension stays: only the name before it selected (devplan/filetypes.md T10).
+                const Entry &e = _desktopEntries[item];
+                LineEdit    *edit = _nameEdit->edit();
+                edit->setMaxLength(sizeof(PanelEntry::file) - 1 - (e.isLauncher() ? DesktopSuffix.size() : 0));
+                const size_t dot = text.lastIndexOf('.');
+                if (!e.isLauncher() && dot != StringView::NPos && dot > 0) edit->setSelection(0, dot);
+                _desktop->setEditing(int(item));
                 return;
         }
 
@@ -945,11 +1216,11 @@ namespace {
         // renamed, its place on the grid kept.
         void PanelApp::renamed(void *arg, bool accepted, StringView text) {
                 auto *self = static_cast<PanelApp *>(arg);
+                if (self->_desktop != nullptr) self->_desktop->setEditing(-1);
                 if (!accepted || self->_renaming >= self->_desktopCount) return;
                 PanelEntry      &e = self->_desktopEntries[self->_renaming];
-                const StringView file(e.file);
-                const StringView old =
-                        file.endsWith(DesktopSuffix) ? file.left(file.size() - DesktopSuffix.size()) : file;
+                const StringView old = self->shownName(e);
+                const StringView suffix = e.isLauncher() ? DesktopSuffix : StringView(); // a launcher's .desktop kept
                 const StringView name = text.trimmed();
                 if (name.isEmpty() || name == old) return; // nothing to do
                 const char *problem = nullptr;
@@ -958,9 +1229,9 @@ namespace {
                 for (const char ch : name) dots = dots && (ch == '.' || ch == ' ');
                 if (dots) {
                         problem = "A name needs more than dots and spaces.";
-                } else if (name.size() + DesktopSuffix.size() >= sizeof(e.file)) {
+                } else if (name.size() + suffix.size() >= sizeof(e.file)) {
                         std::snprintf(message, sizeof(message), "That name is too long: %zu bytes at most.",
-                                      sizeof(e.file) - 1 - DesktopSuffix.size());
+                                      sizeof(e.file) - 1 - suffix.size());
                         problem = message;
                 } else {
                         for (const char ch : name)
@@ -973,7 +1244,7 @@ namespace {
                         const StringView path(e.path);
                         err = to.append(path.left(path.lastIndexOf('/') + 1));
                         if (err.isOk()) err = to.append(name);
-                        if (err.isOk()) err = to.append(DesktopSuffix);
+                        if (err.isOk()) err = to.append(suffix);
                         const Vfs::Context vc{self->_context.cwd, nullptr};
                         // Taken by another file (a name differing only in case is this one: FAT).
                         if (err.isOk() && !name.equalsIgnoreCase(old) && Vfs::lstat(to.view(), vc).isOk()) {
@@ -1023,6 +1294,59 @@ namespace {
                 auto *self = static_cast<PanelApp *>(arg);
                 if (self->_renaming < self->_desktopCount)
                         self->startRename(self->_renaming, StringView(self->_renameTried));
+                return;
+        }
+
+        // A key the desktop leaves (gui.md §4r): Delete trashes the selected icon, Ctrl+C copies it,
+        // Ctrl+V pastes.
+        bool PanelApp::desktopKey(void *arg, const KeyEvent &event, int selected) {
+                auto             *self = static_cast<PanelApp *>(arg);
+                constexpr uint8_t C = HidKey::A + ('c' - 'a'), V = HidKey::A + ('v' - 'a');
+                const bool        ctrl = event.hasCtrl() && !event.hasAlt();
+                if (event.usage == HidKey::Delete && !event.hasCtrl() && !event.hasAlt()) {
+                        if (selected < 0) return true;
+                        self->_iconItem = size_t(selected);
+                        iconChosen(self, 2);
+                        return true;
+                }
+                if (ctrl && event.usage == C) {
+                        if (selected < 0) return true;
+                        self->_iconItem = size_t(selected);
+                        iconChosen(self, 1);
+                        return true;
+                }
+                if (ctrl && event.usage == V) {
+                        desktopChosen(self, ChoosePaste);
+                        return true;
+                }
+                return false;
+        }
+
+        // The desktop's keys, its selection (or its first icon) shown.
+        void PanelApp::focusDesktop() {
+                if (_desktop == nullptr) return;
+                if (_desktop->selected() < 0 && _desktop->itemCount() > 0) _desktop->setSelected(0);
+                _desktop->activate();
+                return;
+        }
+
+        // Tab past the desktop: the panel's first button, Shift+Tab its last.
+        void PanelApp::desktopTabOut(void *arg, GuiWindow &, bool forward) {
+                auto *self = static_cast<PanelApp *>(arg);
+                if (self->_panel == nullptr) return;
+                (void)self->_panel->focusFirst(!forward);
+                self->_panel->activate();
+                return;
+        }
+
+        // Tab past the panel's ends: the desktop.
+        void PanelApp::panelTabOut(void *arg, GuiWindow &, bool) {
+                static_cast<PanelApp *>(arg)->focusDesktop();
+                return;
+        }
+
+        void PanelApp::panelEscaped(void *arg) {
+                static_cast<PanelApp *>(arg)->focusDesktop();
                 return;
         }
 
@@ -1082,7 +1406,9 @@ namespace {
                 bool all = !_desktopIncomplete;
                 for (size_t i = 0; i < _desktop->itemCount(); ++i) {
                         if (_desktop->hasItemIcon(i)) continue;
-                        const Icon *icon = entryIcon(_desktopEntries[i], DesktopWindow::IconSide);
+                        const Entry &e = _desktopEntries[i];
+                        const Icon  *icon =
+                                e.isLauncher() ? entryIcon(e, DesktopWindow::IconSide) : fileIcon(StringView(e.type));
                         if (icon != nullptr) {
                                 _desktop->setItemIcon(i, icon); // a copy: the theme's cache may drop it
                         } else {
@@ -1226,13 +1552,14 @@ namespace {
                 (void)IniReader::toBool(setting("Desktop", "Menu", "true"), menu);
                 const StringView icons = setting("Desktop", "Icons", DefaultDesktop);
                 std::snprintf(_desktopDirs, sizeof(_desktopDirs), "%.*s", int(icons.size()), icons.data());
+                const StringView mimeApps = setting("Desktop", "MimeApps", DefaultMimeApps);
+                std::snprintf(_mimeApps, sizeof(_mimeApps), "%.*s", int(mimeApps.size()), mimeApps.data());
                 if (menu || !icons.isEmpty()) {
                         GuiWindow::Config dc;
                         dc.rect = _screen;
                         dc.title = "Desktop";
                         dc.decorations = WindowFrame::None;
-                        dc.level = WindowManager::Level::Desktop;
-                        dc.focusable = false;
+                        dc.level = WindowManager::Level::Desktop; // the keys when pressed (§4r)
                         dc.kind = "desktop";
                         dc.reference = true; // win check compares it
                         void *mem = Memory::alloc(MemSpace::Psram, sizeof(DesktopWindow));
@@ -1244,6 +1571,8 @@ namespace {
                                 _desktop->setClosed(windowClosed, this);
                                 _desktop->setItemMenuAsked(iconMenu, this);
                                 _desktop->setRenameAsked(renameAsked, this);
+                                _desktop->setKeyTyped(desktopKey, this);
+                                _desktop->setTabOut(desktopTabOut, this);
                                 if (_desktop->show().isError()) say("panel: no desktop window\n");
                         }
                 }
@@ -1253,12 +1582,13 @@ namespace {
                 pc.decorations = WindowFrame::None;
                 pc.level = WindowManager::Level::Panel;
                 pc.reserve = Height;
-                pc.focusable = false;
+                pc.focusOnPress = false; // the keys only by Tab: a press on a window's button keeps its focus
                 pc.kind = "panel";
-                void *mem = Memory::alloc(MemSpace::Psram, sizeof(GuiWindow));
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(PanelWindow));
                 if (mem == nullptr) return Error::NoMem;
-                _panel = ::new (mem) GuiWindow(_app, pc);
+                _panel = ::new (mem) PanelWindow(_app, pc, panelEscaped, this);
                 _panel->setClosed(windowClosed, this);
+                _panel->setTabOut(panelTabOut, this);
                 _row = Widget::create<BoxLayout>(_panel, BoxLayout::Direction::Horizontal);
                 Error err = _row == nullptr ? Error(Error::NoMem) : buildItems(_row);
                 if (err.isOk()) {

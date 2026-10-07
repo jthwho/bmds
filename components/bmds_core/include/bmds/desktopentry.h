@@ -66,12 +66,15 @@ struct DesktopEntry {
                  * @brief Splits `Exec` into arguments by the specification's quoting
                  *        (double quotes; inside them `\"`, `` \` ``, `\$`, `\\`),
                  *        dropping field codes (`%f`, `%U`, ...; `%%` is a `%`).
-                 *        The arguments are NUL-ended copies in @p buffer.
+                 *        With @p file (`devplan/filetypes.md` T7), `%f`, `%F`, `%u`
+                 *        and `%U` are it instead (a local path for `%u`), and an
+                 *        `Exec` without one gets it as its last argument. The
+                 *        arguments are NUL-ended copies in @p buffer.
                  * @return Their count; `Invalid` (an unclosed quote, or none),
                  *         or `BufferTooSmall` (@p buffer or @p args).
                  */
                 static Result<size_t> splitExec(StringView exec, char *buffer, size_t bufferBytes,
-                                                Span<StringView> args);
+                                                Span<StringView> args, StringView file = StringView());
 
                 /** @brief Returns true if the `;` list @p categories holds @p category. */
                 static bool hasCategory(StringView categories, StringView category);

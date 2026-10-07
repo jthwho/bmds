@@ -195,6 +195,9 @@ class Process {
                 int32_t ftruncate(int32_t fd, int64_t size);
                 int32_t symlink(const char *target, const char *path);
                 int32_t readlink(const char *path, char *buf, uint32_t size);
+
+                /** @brief `file_type()`: what @p path is (`Vfs::identify()`), its type into @p out. */
+                int32_t fileType(const char *path, uint32_t flags, char *out, uint32_t size);
                 int32_t lstat(const char *path, bmds_stat_t *info);
                 int32_t pipe(int32_t *fds, uint32_t flags);
                 int32_t fdFlags(int32_t fd, int32_t flags);

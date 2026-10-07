@@ -14,6 +14,7 @@
 #include <bmds/error.h>
 #include <bmds/font.h>
 #include <bmds/icon.h>
+#include <bmds/mnemonic.h>
 #include <bmds/rect.h>
 #include <bmds/span.h>
 #include <bmds/stringview.h>
@@ -51,6 +52,7 @@ class MenuLayout {
                                 StringView  shortcut;       ///< Shown at the right ("Ctrl+Q"); may be empty.
                                 uint8_t     flags = 0;      ///< `Flag`s.
                                 const Icon *icon = nullptr; ///< In the icon column (16 × 16), unless checked.
+                                size_t      underline = Mnemonic::None; ///< The text's byte underlined (its key).
                 };
 
                 static constexpr size_t   MaxItems = 32;

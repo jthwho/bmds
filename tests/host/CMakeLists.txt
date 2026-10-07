@@ -39,6 +39,7 @@ add_executable(bmds_host_tests
         error.cpp
         fdtable.cpp
         files.cpp
+        filetypes.cpp
         input.cpp
         interactive.cpp
         interrupt.cpp

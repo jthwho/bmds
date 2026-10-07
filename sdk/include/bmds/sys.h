@@ -128,6 +128,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_FUTEX 55u            /**< `int32_t futex(word, op, value, timeout_ns, word2, count2)`. */
 #define BMDS_SYS_THREAD_KILL 56u      /**< `int32_t thread_kill(int32_t tid, int32_t sig, uint32_t flags)`. */
 #define BMDS_SYS_THREAD_CLEAR 57u     /**< `int32_t thread_clear(volatile int32_t *word)`: its id. */
+#define BMDS_SYS_FILE_TYPE 58u        /**< `int32_t file_type(path, flags, out, size)`: see `bmds_file_type`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -160,6 +161,13 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_O_APPEND 0x10u  /**< Every write goes to the end. */
 #define BMDS_O_EXCL 0x20u    /**< With `BMDS_O_CREATE`: fail with `BMDS_EEXIST` if it exists. */
 #define BMDS_O_CLOEXEC 0x40u /**< The new fd is closed by `bmds_proc_exec` (also for `bmds_pipe`). */
+
+/** @brief `file_type` flags (appended 2026-10-07). */
+#define BMDS_FILE_TYPE_NAME 0x1u    /**< By the name only: nothing read (the file needn't exist). */
+#define BMDS_FILE_TYPE_CONTENT 0x2u /**< By the contents only, whatever the name says. */
+
+/** @brief The longest type `file_type` gives, in bytes, without its terminating NUL. */
+#define BMDS_FILE_TYPE_MAX 127u
 
 /** @brief `fd_flags`: a descriptor's own flags. */
 #define BMDS_FD_CLOEXEC 0x1u /**< Closed by `bmds_proc_exec`. */
@@ -409,6 +417,7 @@ typedef int32_t (*bmds_sys_futex_fn)(volatile int32_t *word, uint32_t op, int32_
                                      volatile int32_t *word2, int32_t count2);
 typedef int32_t (*bmds_sys_thread_kill_fn)(int32_t tid, int32_t sig, uint32_t flags);
 typedef int32_t (*bmds_sys_thread_clear_fn)(volatile int32_t *word);
+typedef int32_t (*bmds_sys_file_type_fn)(const char *path, uint32_t flags, char *out, uint32_t size);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -945,6 +954,25 @@ static inline int32_t bmds_thread_kill(int32_t tid, int32_t sig, uint32_t flags)
  */
 static inline int32_t bmds_thread_clear(volatile int32_t *word) {
         return ((bmds_sys_thread_clear_fn)bmds_sys->slot[BMDS_SYS_THREAD_CLEAR])(word);
+}
+
+/**
+ * @brief Tells what the file @p path is, as a MIME type (freedesktop.org's
+ *        names: "text/plain", "image/png", "application/x-executable"): by
+ *        its name's extension, and when that says nothing, by its first 512
+ *        bytes (magic numbers, else text or "application/octet-stream"). A
+ *        directory is "inode/directory", a device "inode/chardevice", an empty
+ *        file "application/x-zerosize". Symbolic links are followed. With
+ *        `BMDS_FILE_TYPE_NAME` nothing is read, and a name not known is
+ *        "application/octet-stream"; with `BMDS_FILE_TYPE_CONTENT` the name is
+ *        not used. The same file always gets the same answer.
+ *        (Slot 58, appended 2026-10-07: check `bmds_sys_has()`.)
+ * @param out Gets the type, NUL-ended; `BMDS_FILE_TYPE_MAX` + 1 bytes always fit.
+ * @return The type's length, or `-BMDS_ERANGE` (@p size too small),
+ *         `-BMDS_ENOENT`, `-BMDS_EINVAL` (an unknown flag), `-BMDS_EIO`...
+ */
+static inline int32_t bmds_file_type(const char *path, uint32_t flags, char *out, uint32_t size) {
+        return ((bmds_sys_file_type_fn)bmds_sys->slot[BMDS_SYS_FILE_TYPE])(path, flags, out, size);
 }
 
 #ifdef __cplusplus

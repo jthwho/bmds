@@ -14,6 +14,7 @@
 #include <bmds/error.h>
 #include <bmds/guiwindow.h>
 #include <bmds/menulayout.h>
+#include <bmds/mnemonic.h>
 #include <bmds/stringview.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -115,6 +116,8 @@ class Menu : public GuiWindow {
                                 uint8_t     flags = 0;
                                 Menu       *submenu = nullptr;
                                 const Icon *icon = nullptr; ///< Kept by the caller.
+                                size_t      underline = Mnemonic::None; ///< Its key's character (`&` taken out).
+                                uint32_t    key = 0;
                 };
 
                 Error add(StringView text, int number, uint8_t flags, StringView shortcut, Menu *submenu,
@@ -125,6 +128,7 @@ class Menu : public GuiWindow {
                 void  closeSubmenu();
                 Menu &root();
                 void  closeTree();
+                void  chooseMnemonic(uint32_t key);
 
                 Item             _items[MaxItems];
                 MenuLayout::Item _views[MaxItems]; // the items as laid out (set while open)

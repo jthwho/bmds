@@ -44,10 +44,10 @@ namespace {
 
         const char *label(MessageBox::Answer a) {
                 switch (a) {
-                        case MessageBox::Answer::Ok: return "OK";
-                        case MessageBox::Answer::Cancel: return "Cancel";
-                        case MessageBox::Answer::Yes: return "Yes";
-                        case MessageBox::Answer::No: return "No";
+                        case MessageBox::Answer::Ok: return "&OK";
+                        case MessageBox::Answer::Cancel: return "&Cancel";
+                        case MessageBox::Answer::Yes: return "&Yes";
+                        case MessageBox::Answer::No: return "&No";
                 }
                 return "";
         }
@@ -92,7 +92,9 @@ Error MessageBox::show(GuiApplication &app, Kind kind, StringView title, StringV
         uint16_t buttonsWidth = 0;
         uint16_t widths[MaxButtons];
         for (size_t i = 0; i < buttonCount; ++i) {
-                const uint32_t w = font.textWidth(StringView(label(answers[i]))) + 2 * GuiStyle::ButtonPad;
+                char           shown[16];
+                const size_t   len = Mnemonic::strip(StringView(label(answers[i])), Span<char>(shown)).length;
+                const uint32_t w = font.textWidth(StringView(shown, len)) + 2 * GuiStyle::ButtonPad;
                 widths[i] = static_cast<uint16_t>(w > ButtonMin ? w : ButtonMin);
                 buttonsWidth = static_cast<uint16_t>(buttonsWidth + widths[i] + (i > 0 ? ButtonSpacing : 0));
         }
@@ -149,6 +151,11 @@ Error MessageBox::show(GuiApplication &app, Kind kind, StringView title, StringV
                 box->_answers[box->_buttonCount++] = answers[i];
                 x = static_cast<uint16_t>(x + widths[i] + ButtonSpacing);
         }
+        // The first button the default, with the focus (§4r).
+        if (box->_buttonCount > 0) {
+                box->setDefaultButton(box->_buttonWidgets[0]);
+                box->setFocusWidget(box->_buttonWidgets[0]);
+        }
         // The title, then shown.
         Error err = box->GuiWindow::show(); // its own, not the static one
         if (err.isOk() && !title.isEmpty()) (void)app.windowManager().setTitle(box->id(), title);
@@ -202,9 +209,10 @@ void MessageBox::closedByManager() {
         return;
 }
 
+// Enter is the default button's, Tab the window's; Left and Right move between the buttons too.
 bool MessageBox::keyPressed(const KeyEvent &event) {
-        if (event.usage == HidKey::Enter || event.usage == HidKey::KeypadEnter) {
-                if (_buttonCount > 0) answer(_answers[0]);
+        if (event.usage == HidKey::Left || event.usage == HidKey::Right) {
+                (void)focusNext(event.usage == HidKey::Right);
                 return true;
         }
         if (event.usage == HidKey::Escape) {

@@ -42,6 +42,7 @@ GuiWindow::~GuiWindow() {
         close();
         _app.removeWindow(*this);
         _grab = _hover = _focus = _central = nullptr;
+        _default = nullptr;
 }
 
 Error GuiWindow::show() {
@@ -69,6 +70,8 @@ Error GuiWindow::show(const Rect &rect) {
         c.pointer = _config.pointer;
         c.client = _app.client();
         c.reference = _config.reference ? referenceEntry : nullptr;
+        c.activated = activatedEntry;
+        c.focusOnPress = _config.focusOnPress;
         WindowManager &wm = _app.windowManager();
         // Its events from now on; anything queued for an earlier opening dropped.
         _app.removeWindow(*this);
@@ -93,8 +96,106 @@ void GuiWindow::close() {
         if (id != 0) (void)_app.windowManager().close(id);
         _screen = Rect();
         _grab = _hover = nullptr;
+        _active = false;
         _dirty.clear();
         return;
+}
+
+void GuiWindow::setFocusWidget(Widget *widget) {
+        if (widget == _focus) return;
+        if (_focus != nullptr) _focus->update();
+        _focus = widget;
+        if (_focus != nullptr) _focus->update();
+        return;
+}
+
+void GuiWindow::setDefaultButton(Button *button) {
+        if (button == _default) return;
+        if (_default != nullptr) _default->update();
+        _default = button;
+        if (_default != nullptr) _default->update();
+        return;
+}
+
+void GuiWindow::activate() {
+        const uint8_t id = this->id();
+        if (id != 0) (void)_app.windowManager().raise(id);
+        return;
+}
+
+namespace {
+
+        // @p fn(widget, its place in tree order) for @p root and every visible, enabled widget under it.
+        template <typename Fn> void walk(Widget *root, Fn &fn, size_t &at) {
+                if (!root->isVisible() || !root->isEnabled()) return;
+                fn(root, at++);
+                for (Widget *c = root->firstChild(); c != nullptr; c = c->next()) walk(c, fn, at);
+                return;
+        }
+
+        constexpr size_t MaxFocusable = 64;
+
+} // namespace
+
+bool GuiWindow::focusNext(bool forward) {
+        Widget *list[MaxFocusable];
+        size_t  n = 0, at = 0;
+        int     current = -1;
+        auto    collect = [&](Widget *w, size_t) {
+                if (w == this || !w->isFocusable() || n == MaxFocusable) return;
+                if (w == _focus) current = int(n);
+                list[n++] = w;
+        };
+        walk(this, collect, at);
+        const int next = forward ? current + 1 : (current < 0 ? int(n) - 1 : current - 1);
+        if (n == 0 || next < 0 || next >= int(n)) {
+                if (_tabOut != nullptr) {
+                        _tabOut(_tabOutArg, *this, forward);
+                        return true;
+                }
+                if (n == 0) return false;
+                setFocusWidget(list[forward ? 0 : n - 1]); // around
+                return true;
+        }
+        setFocusWidget(list[next]);
+        return true;
+}
+
+bool GuiWindow::focusFirst(bool last) {
+        Widget *found = nullptr;
+        size_t  at = 0;
+        auto    pick = [&](Widget *w, size_t) {
+                if (w != this && w->isFocusable() && (last || found == nullptr)) found = w;
+        };
+        walk(this, pick, at);
+        if (found == nullptr) return false;
+        setFocusWidget(found);
+        return true;
+}
+
+// Widgets with mnemonic @p key: one acts; several take the focus in turn, from the focus on.
+bool GuiWindow::activateMnemonic(uint32_t key) {
+        Widget *first = nullptr, *after = nullptr;
+        size_t  count = 0, at = 0, focusAt = 0;
+        bool    focusSeen = false;
+        auto    match = [&](Widget *w, size_t place) {
+                if (w == _focus) {
+                        focusAt = place;
+                        focusSeen = true;
+                }
+                if (w->mnemonic() != key) return;
+                ++count;
+                if (first == nullptr) first = w;
+                if (after == nullptr && focusSeen && place > focusAt) after = w;
+        };
+        walk(this, match, at);
+        if (count == 0) return false;
+        if (count == 1) {
+                first->mnemonicActivated();
+        } else {
+                setFocusWidget(after != nullptr ? after : first);
+        }
+        return true;
 }
 
 void GuiWindow::setIcon(const Icon *icon) {
@@ -135,6 +236,14 @@ uint8_t GuiWindow::takeDirty(Region &out) {
 
 void GuiWindow::forget(Widget *widget) {
         // Its children are being destroyed too: anything inside it.
+        if (_default != nullptr) {
+                for (Widget *p = _default; p != nullptr; p = p->parent()) {
+                        if (p == widget) {
+                                _default = nullptr;
+                                break;
+                        }
+                }
+        }
         for (Widget **w : {&_grab, &_hover, &_focus, &_central}) {
                 for (Widget *p = *w; p != nullptr; p = p->parent()) {
                         if (p == widget) {
@@ -194,6 +303,14 @@ void GuiWindow::keyEntry(void *arg, const KeyEvent &event) {
         return;
 }
 
+void GuiWindow::activatedEntry(void *arg, bool active) {
+        GuiApplication::Event e;
+        e.type = Type::Activated;
+        e.width = active ? 1 : 0;
+        static_cast<GuiWindow *>(arg)->queue(e);
+        return;
+}
+
 void GuiWindow::resizedEntry(void *arg, uint16_t width, uint16_t height) {
         GuiApplication::Event e;
         e.type = Type::Resized;
@@ -228,11 +345,13 @@ void GuiWindow::referenceEntry(void *arg, uint8_t *pixels, size_t stride, uint16
 void GuiWindow::handle(const GuiApplication::Event &event) {
         switch (event.type) {
                 case Type::Mouse: mouse(event.mouse); break;
-                case Type::Key: {
-                        if (event.key.action == KeyEvent::Action::Release) break;
-                        bool used = _focus != nullptr && _focus->isEnabled() && _focus->keyPressed(event.key);
-                        if (!used && _focus != this) used = keyPressed(event.key);
-                        if (!used) (void)keyUnused(event.key);
+                case Type::Key: key(event.key); break;
+                case Type::Activated: {
+                        const bool active = event.width != 0 && isShown();
+                        if (active == _active) break;
+                        _active = active;
+                        if (_focus != nullptr) _focus->update();
+                        activeChanged();
                         break;
                 }
                 case Type::Resized: {
@@ -249,12 +368,32 @@ void GuiWindow::handle(const GuiApplication::Event &event) {
                         if (_id.exchange(0, std::memory_order_acq_rel) != 0) {
                                 _screen = Rect();
                                 _grab = _hover = nullptr;
+                                _active = false;
                                 _dirty.clear();
                                 closedByManager();
                         }
                         break;
                 default: break;
         }
+        return;
+}
+
+// A key, in the order the class's description gives.
+void GuiWindow::key(const KeyEvent &event) {
+        if (event.action == KeyEvent::Action::Release) return;
+        const uint32_t key = Mnemonic::keyOf(event);
+        if (key != 0 && event.hasAlt() && activateMnemonic(key)) return;
+        bool used = _focus != nullptr && _focus->isEnabled() && _focus->keyPressed(event);
+        if (!used && _focus != this) used = keyPressed(event);
+        if (!used && event.usage == HidKey::Tab && !event.hasCtrl() && !event.hasAlt())
+                used = focusNext(!event.hasShift());
+        if (!used && (event.usage == HidKey::Enter || event.usage == HidKey::KeypadEnter) && _default != nullptr &&
+            _default->isVisible() && _default->isEnabled()) {
+                _default->click();
+                used = true;
+        }
+        if (!used && key != 0 && !event.hasAlt()) used = activateMnemonic(key);
+        if (!used) (void)keyUnused(event);
         return;
 }
 
@@ -274,6 +413,7 @@ void GuiWindow::mouse(const WindowManager::MouseEvent &event) {
                 case MType::Press: {
                         Widget *w = widgetAt(event.x, event.y);
                         if (_grab == nullptr) _grab = w;
+                        if (w != this && w->isFocusable() && w->isEnabled()) setFocusWidget(w);
                         if (_hover != w && _hover != nullptr) _hover->mouseLeft();
                         _hover = w;
                         if (w->isEnabled()) w->mousePressed(event);

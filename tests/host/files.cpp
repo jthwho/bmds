@@ -551,3 +551,37 @@ TEST_CASE("Files: the trash") {
         CHECK(f.out("trash", Shell::ExitUsage).rfind("usage: trash", 0) == 0);
         CHECK(f.out("trash -x", Shell::ExitUsage).rfind("usage: trash", 0) == 0);
 }
+
+TEST_CASE("Vfs::identify: by name, by contents, the flags") {
+        Fixture            f;
+        const Vfs::Context vc{"/", nullptr};
+        const auto         type = [&](const char *path, uint32_t flags = 0) {
+                auto [t, err] = Vfs::identify(path, flags, vc);
+                return err.isOk() ? std::string(t.data(), t.size()) : std::string("error: ") + err.desc();
+        };
+        put("/disk0/p0/notes.txt", std::string("\x7f"
+                                               "ELF",
+                                               4)); // the name wins, unread
+        put("/disk0/p0/prog", std::string("\x7f"
+                                          "ELF\x01\x01\x01\0",
+                                          8));
+        put("/disk0/p0/script", "#!/bin/sh\necho hi\n");
+        put("/disk0/p0/empty", "");
+        std::string big(600, 'a');
+        big[511] = '\xc3'; // a character cut by the 512 bytes read: still text
+        big[512] = '\xa9';
+        put("/disk0/p0/long", big);
+        CHECK(f.out("mkdir /disk0/p0/dir.png") == "");
+        CHECK(type("/disk0/p0/notes.txt") == "text/plain");
+        CHECK(type("/disk0/p0/notes.txt", Vfs::IdentifyContent) == "application/x-executable");
+        CHECK(type("/disk0/p0/prog") == "application/x-executable");
+        CHECK(type("/disk0/p0/script") == "application/x-shellscript");
+        CHECK(type("/disk0/p0/empty") == "application/x-zerosize");
+        CHECK(type("/disk0/p0/long") == "text/plain");
+        CHECK(type("/disk0/p0/dir.png", Vfs::IdentifyContent) == "inode/directory");
+        CHECK(type("/dev/null") == "inode/chardevice");
+        // By the name only: nothing read, so a file not there still has one.
+        CHECK(type("/disk0/p0/nothing.c", Vfs::IdentifyName) == "text/x-csrc");
+        CHECK(type("/disk0/p0/prog", Vfs::IdentifyName) == "application/octet-stream");
+        CHECK(type("/disk0/p0/nothing") == "error: Does not exist");
+}

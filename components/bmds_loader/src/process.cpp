@@ -12,6 +12,7 @@
 #include <bmds/console.h>
 #include <bmds/deadline.h>
 #include <bmds/errno.h>
+#include <bmds/fileformat.h>
 #include <bmds/interrupt.h>
 #include <bmds/lineeditor.h>
 #include <bmds/memory.h>
@@ -768,6 +769,24 @@ int32_t Process::readlink(const char *path, char *buf, uint32_t size) {
                 buf[len] = '\0';
         }
         return static_cast<int32_t>(t.size());
+}
+
+int32_t Process::fileType(const char *path, uint32_t flags, char *out, uint32_t size) {
+        static_assert(BMDS_FILE_TYPE_NAME == Vfs::IdentifyName && BMDS_FILE_TYPE_CONTENT == Vfs::IdentifyContent);
+        static_assert(BMDS_FILE_TYPE_MAX == FileFormat::MaxType);
+        StringView p;
+        if (int32_t r = this->path(path, p); r < 0) return r;
+        if (out == nullptr) return -BMDS_EFAULT;
+        if ((flags & ~(BMDS_FILE_TYPE_NAME | BMDS_FILE_TYPE_CONTENT)) != 0 ||
+            flags == (BMDS_FILE_TYPE_NAME | BMDS_FILE_TYPE_CONTENT))
+                return -BMDS_EINVAL;
+        Mutex::Locker locker(_pathLock, WaitForever);
+        auto [type, err] = Vfs::identify(p, flags, vfs());
+        if (err.isError()) return fsErrno(err);
+        if (type.size() + 1 > size) return -BMDS_ERANGE;
+        std::memcpy(out, type.data(), type.size());
+        out[type.size()] = '\0';
+        return static_cast<int32_t>(type.size());
 }
 
 int32_t Process::stat(const char *path, bmds_stat_t *info) {

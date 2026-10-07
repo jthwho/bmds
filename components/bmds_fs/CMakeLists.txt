@@ -14,6 +14,7 @@ set(BMDS_FS_SRCS
         src/fatfile.cpp
         src/fatfsport.cpp
         src/fatvolume.cpp
+        src/identify.cpp
         src/partitions.cpp
         src/ramblockdevice.cpp
         src/sectorcache.cpp

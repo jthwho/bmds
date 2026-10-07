@@ -124,6 +124,13 @@ class WindowManager {
                 using Key = void (*)(void *arg, const KeyEvent &event);
 
                 /**
+                 * @brief Told that the window gained (@p active) or lost the keys (on
+                 *        the changing task, the window manager locked: it must not call
+                 *        it).
+                 */
+                using Activated = void (*)(void *arg, bool active);
+
+                /**
                  * @brief Told the client area's new size, @p width × @p height
                  *        (on the changing task, the window manager locked: it
                  *        must not call it). Its whole area is redrawn after.
@@ -218,7 +225,8 @@ class WindowManager {
 
                 /** @brief An item of a program's menu (`showMenu()`). */
                 struct MenuItem {
-                                StringView label;     ///< Its text (cut at `MaxMenuLabel` bytes).
+                                StringView
+                                        label; ///< Its text (cut at `MaxMenuLabel` bytes); `&` marks its key (`Mnemonic`).
                                 StringView shortcut;  ///< Its key, shown at the right (cut at `MaxMenuShortcut`).
                                 uint8_t    flags = 0; ///< `MenuLayout::Flag`s: `Disabled`, `Separator`, `Checked`.
                 };
@@ -303,9 +311,13 @@ class WindowManager {
                                 Mouse       mouse = nullptr;     ///< May be null: the mouse not reported.
                                 Level       level = Level::Normal;
                                 uint16_t    reserve = 0; ///< A panel's: the strip it reserves (at the top or bottom).
-                                bool        focusable = true; ///< False: never focused (panels, the desktop's).
+                                bool        focusable = true; ///< False: never focused. A desktop's or a panel's
+                                                              ///< takes the keys when pressed or raised, never in
+                                                              ///< Alt+Tab (`devplan/gui.md` §4r).
                                 bool        cascade = false;  ///< A normal window placed by the window manager
                                                               ///< (`cascadeRect()`): `rect`'s size kept, its place not.
+                                bool      focusOnPress = true; ///< False: a press doesn't focus it (`raise()` does).
+                                Activated activated = nullptr; ///< May be null.
                 };
 
                 /** @brief A window, as `list()` reports it. */
@@ -708,6 +720,8 @@ class WindowManager {
                                 Mouse       mouse = nullptr;
                                 uint16_t    reserve = 0;
                                 bool        focusable = true;
+                                bool        focusOnPress = true;
+                                Activated   activated = nullptr;
                 };
 
                 struct Client {
@@ -797,6 +811,8 @@ class WindowManager {
                 static void     menuRedraw(void *arg, Painter &painter);
                 static void     menuMouse(void *arg, const MouseEvent &event);
                 static void     menuKey(void *arg, const KeyEvent &event);
+                void            setMenuItem(size_t i, StringView label, StringView shortcut, uint8_t flags);
+                void            menuMnemonic(uint32_t key);
                 static void     menuClosed(void *arg);
                 void            applyPointer();
                 void            press(uint16_t x, uint16_t y, uint8_t button);
@@ -815,7 +831,7 @@ class WindowManager {
                 Error           showDesktopMenuLocked(uint16_t x, uint16_t y);
                 bool            windowKey(const KeyEvent &event); // Win+arrows, Alt+F10, Ctrl+Shift+Win
                 void            watchersChanged();                // minimizing allowed or not since
-                Error           raiseLocked(uint8_t id);
+                Error           raiseLocked(uint8_t id, bool focus = true);
                 Error           minimizeLocked(uint8_t id);
                 Error           maximizeLocked(uint8_t id);
                 Error           restoreLocked(uint8_t id);
@@ -901,7 +917,8 @@ class WindowManager {
                 DesktopChosen         _desktopChosen = nullptr;
                 void                 *_desktopArg = nullptr;
                 int                   _desktopPicked = -1;  // chosen: told after the round, unlocked
-                char                  _programLabels[MaxMenuItems][MaxMenuLabel + 1] = {};
+                char                  _menuLabels[MenuItems][MaxMenuLabel + 1] = {}; // marks taken out
+                uint32_t              _menuKeys[MenuItems] = {};                     // their mnemonics
                 char                  _programShortcuts[MaxMenuItems][MaxMenuShortcut + 1] = {};
                 MenuChosen            _programChosen = nullptr; // the open program menu's
                 void                 *_programArg = nullptr;

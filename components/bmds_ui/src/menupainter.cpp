@@ -12,7 +12,9 @@
 #include <bmds/bevel.h>
 #include <bmds/font.h>
 #include <bmds/menulayout.h>
+#include <bmds/mnemonic.h>
 #include <bmds/painter.h>
+#include <bmds/utf8.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -57,6 +59,8 @@ void drawMenu(Painter &painter, const MenuLayout &layout, Span<const MenuLayout:
                 const uint16_t ty = static_cast<uint16_t>(row.y + (row.height - Fonts::unscii16.height()) / 2);
                 const uint16_t room = static_cast<uint16_t>(w - MenuLayout::TextX - MenuLayout::RightPad);
                 (void)painter.text(MenuLayout::TextX, ty, items[i].text, Fonts::unscii16, fg, bg, room);
+                Mnemonic::draw(painter, MenuLayout::TextX, ty, items[i].text, items[i].underline, fg,
+                               uint32_t(MenuLayout::TextX) + room);
                 if (!items[i].shortcut.isEmpty())
                         (void)painter.text(layout.shortcutX(i), ty, items[i].shortcut, Fonts::unscii16, fg, bg,
                                            static_cast<uint16_t>(w - layout.shortcutX(i) - MenuLayout::RightPad));
@@ -80,6 +84,21 @@ void drawMenu(Painter &painter, const MenuLayout &layout, Span<const MenuLayout:
                                             Span<const TextCell>(&mark, 1), Fonts::icons16, MenuLayout::IconSize);
                 }
         }
+        return;
+}
+
+void Mnemonic::draw(Painter &painter, uint16_t x, uint16_t y, StringView text, size_t at, uint32_t color,
+                    uint32_t right) {
+        if (at == None || at >= text.size()) return;
+        const Font &font = Fonts::unscii16;
+        size_t      next = at;
+        (void)Utf8::decode(text, next);
+        const uint32_t from = x + font.textWidth(text.left(at));
+        uint32_t       to = from + font.textWidth(text.mid(at, next - at));
+        if (to > right) to = right;
+        if (to > from)
+                (void)painter.fill(Rect{uint16_t(from), uint16_t(y + font.height() - 1), uint16_t(to - from), 1},
+                                   color);
         return;
 }
 

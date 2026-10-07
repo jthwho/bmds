@@ -943,10 +943,10 @@ namespace {
                                    table->find(Span<const StringView>(offered, d.count), ClipboardType::Text).isOk();
                 }
                 const WindowManager::MenuItem items[] = {
-                        {"Copy", "Ctrl+Shift+C", uint8_t(selected ? 0 : MenuLayout::Disabled)},
-                        {"Paste", "Ctrl+Shift+V", uint8_t(pastable ? 0 : MenuLayout::Disabled)},
+                        {"&Copy", "Ctrl+Shift+C", uint8_t(selected ? 0 : MenuLayout::Disabled)},
+                        {"&Paste", "Ctrl+Shift+V", uint8_t(pastable ? 0 : MenuLayout::Disabled)},
                         {"", "", MenuLayout::Separator},
-                        {"Select All", "", 0},
+                        {"Select &All", "", 0},
                 };
                 const uint32_t at = _menuAt.load(std::memory_order_relaxed);
                 (void)_wm->showMenu(window, Span<const WindowManager::MenuItem>(items), uint16_t(at >> 16),

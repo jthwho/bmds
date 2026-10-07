@@ -31,23 +31,51 @@ namespace {
 
 PopupEdit::PopupEdit(GuiApplication &app) : GuiWindow(app, editConfig()) {}
 
-Error PopupEdit::open(const Rect &screen, StringView text, Done fn, void *arg) {
+Error PopupEdit::open(const Rect &screen, StringView text, Look look, Done fn, void *arg) {
+        using Role = WindowPalette::Role;
         if (_edit == nullptr) {
                 _edit = Widget::create<LineEdit>(this);
                 if (_edit == nullptr) return Error::NoMem;
                 _edit->setAccepted(accepted, this);
                 _edit->setCancelled(cancelled, this);
+                _edit->setLinesChanged(linesChanged, this);
                 setCentral(_edit);
                 setFocusWidget(_edit);
         }
         _done = fn;
         _doneArg = arg;
+        _look = look;
+        const bool name = look == Look::IconName;
+        _edit->setFramed(!name);
+        _edit->setColors(name ? Role::Desktop : Role::FaceHighlight, name ? Role::DesktopText : Role::FaceText);
+        _edit->setCentered(name);
+        _edit->setWrapping(name);
+        _edit->setMaxLength(LineEditModel::MaxBytes);
+        // Its lines counted at its width before it opens, so it opens as tall as they are.
+        const uint16_t width = static_cast<uint16_t>((screen.width + 3) & ~3u);
+        _edit->setGeometry(Rect{0, 0, width, GuiStyle::TextHeight});
         _edit->setText(text);
         _edit->selectAll();
-        const Error err = show(
-                Rect{uint16_t(screen.x & ~3u), screen.y, uint16_t((screen.width + 3) & ~3u), GuiStyle::ButtonHeight});
+        const Error err =
+                show(Rect{uint16_t(screen.x & ~3u), screen.y, width, heightFor(name ? _edit->lineCount() : 1)});
         _open = err.isOk();
         return err;
+}
+
+uint16_t PopupEdit::heightFor(size_t lines) const {
+        if (_look == Look::Field) return GuiStyle::ButtonHeight;
+        if (lines > MaxLines) lines = MaxLines;
+        return static_cast<uint16_t>((lines > 0 ? lines : 1) * GuiStyle::TextHeight);
+}
+
+// The text wrapped onto more or fewer lines: as tall as they are, its top where it was.
+void PopupEdit::linesChanged(void *arg, LineEdit &, size_t lines) {
+        auto *self = static_cast<PopupEdit *>(arg);
+        if (!self->_open || self->_look != Look::IconName) return;
+        const uint16_t height = self->heightFor(lines);
+        if (height != self->geometry().height)
+                (void)self->application().windowManager().resize(self->id(), self->geometry().width, height);
+        return;
 }
 
 void PopupEdit::accepted(void *arg, LineEdit &) {

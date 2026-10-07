@@ -135,6 +135,17 @@ void Widget::setEnabled(bool enabled) {
         return;
 }
 
+bool Widget::hasFocus() const {
+        const GuiWindow *w = window();
+        return w != nullptr && w->focusWidget() == this;
+}
+
+void Widget::setFocus() {
+        GuiWindow *w = window();
+        if (w != nullptr) w->setFocusWidget(this);
+        return;
+}
+
 void Widget::update() {
         GuiWindow *w = window();
         if (w != nullptr && !_rect.isEmpty()) w->invalidate(_rect);
@@ -179,9 +190,37 @@ void Label::setFrame(Bevel::Style style) {
         return;
 }
 
+void Label::setBuddy(Widget *buddy) {
+        _buddy = buddy;
+        update();
+        return;
+}
+
+// The text as drawn: with a buddy, its marks taken out.
+Mnemonic::Stripped Label::shown(char (&out)[MaxText + 1]) const {
+        if (_buddy != nullptr) return Mnemonic::strip(StringView(_text), Span<char>(out, sizeof(out)));
+        const size_t n = std::strlen(_text);
+        std::memcpy(out, _text, n + 1);
+        Mnemonic::Stripped s;
+        s.length = n;
+        return s;
+}
+
+uint32_t Label::mnemonic() const {
+        char shownText[MaxText + 1];
+        return _buddy != nullptr ? shown(shownText).key : 0;
+}
+
+void Label::mnemonicActivated() {
+        if (_buddy != nullptr) _buddy->setFocus();
+        return;
+}
+
 GuiSize Label::sizeHint() const {
         const uint32_t frame = _framed ? 2u * Bevel::width(_frame) : 0u;
-        return GuiSize{columnUp(Fonts::unscii16.textWidth(StringView(_text)) + 2 * GuiStyle::ButtonPad + frame),
+        char           text[MaxText + 1];
+        const size_t   n = shown(text).length;
+        return GuiSize{columnUp(Fonts::unscii16.textWidth(StringView(text, n)) + 2 * GuiStyle::ButtonPad + frame),
                        GuiStyle::ButtonHeight};
 }
 
@@ -190,7 +229,10 @@ void Label::paint(Painter &painter) {
         const Rect     r = _framed ? Bevel::inside(outer, _frame) : outer;
         const uint32_t bg = painter.palette().color(Role::Face);
         const uint32_t fg = painter.palette().color(isEnabled() ? Role::FaceText : Role::DisabledText);
-        const uint32_t width = Fonts::unscii16.textWidth(StringView(_text));
+        char                     shownText[MaxText + 1];
+        const Mnemonic::Stripped m = shown(shownText);
+        const StringView         text(shownText, m.length);
+        const uint32_t           width = Fonts::unscii16.textWidth(text);
         uint32_t       x = r.x + GuiStyle::ButtonPad;
         if (_align == Align::Center && width < r.width) x = r.x + (r.width - width) / 2;
         if (_align == Align::Right && width + GuiStyle::ButtonPad < r.width)
@@ -199,25 +241,72 @@ void Label::paint(Painter &painter) {
         if (x < r.x) x = columnUp(r.x);
         if (_framed) drawBevel(painter, outer, _frame);
         (void)painter.fill(r, bg);
-        if (_text[0] != '\0' && x < r.right())
-                (void)painter.text(static_cast<uint16_t>(x), textTop(r, false), StringView(_text), Fonts::unscii16, fg,
-                                   bg, static_cast<uint16_t>(r.right() - x));
+        if (!text.isEmpty() && x < r.right()) {
+                (void)painter.text(static_cast<uint16_t>(x), textTop(r, false), text, Fonts::unscii16, fg, bg,
+                                   static_cast<uint16_t>(r.right() - x));
+                Mnemonic::draw(painter, static_cast<uint16_t>(x), textTop(r, false), text, m.at, fg, r.right());
+        }
         return;
 }
 
 // ---- Button
 
 Button::Button(Widget *parent, StringView text) : Widget(parent) {
-        copyText(_text, sizeof(_text), text);
+        setFocusable(true);
+        const Mnemonic::Stripped m = Mnemonic::strip(text, Span<char>(_text, sizeof(_text)));
+        _underline = m.at;
+        _key = m.key;
 }
 
 void Button::setText(StringView text) {
-        char next[MaxText + 1];
-        copyText(next, sizeof(next), text);
-        if (std::strcmp(next, _text) == 0) return;
+        char                     next[MaxText + 1];
+        const Mnemonic::Stripped m = Mnemonic::strip(text, Span<char>(next, sizeof(next)));
+        if (std::strcmp(next, _text) == 0 && m.at == _underline) return;
         std::memcpy(_text, next, sizeof(_text));
+        _underline = m.at;
+        _key = m.key;
         update();
         return;
+}
+
+void Button::click() {
+        if (!isEnabled()) return;
+        if (_clicked != nullptr) {
+                _clicked(_clickedArg, *this);
+        } else {
+                press(0);
+        }
+        return;
+}
+
+void Button::press(uint8_t which) {
+        if (_pressed == nullptr) return;
+        GuiWindow *w = window();
+        const Rect s = w != nullptr ? w->screenRect() : Rect();
+        const Rect r = geometry();
+        _pressed(_pressedArg, *this, which, static_cast<uint16_t>(s.x + r.x), static_cast<uint16_t>(s.y + r.bottom()));
+        return;
+}
+
+void Button::mnemonicActivated() {
+        setFocus();
+        click();
+        return;
+}
+
+bool Button::keyPressed(const KeyEvent &event) {
+        constexpr uint8_t F10 = HidKey::F1 + 9;
+        if (!isEnabled() || event.hasCtrl() || event.hasAlt()) return false;
+        if (event.usage == HidKey::Space || event.usage == HidKey::Enter || event.usage == HidKey::KeypadEnter) {
+                click();
+                return true;
+        }
+        if (event.usage == HidKey::Application || (event.usage == F10 && event.hasShift())) {
+                if (_pressed == nullptr) return false;
+                press(PointerEvent::Right);
+                return true;
+        }
+        return false;
 }
 
 void Button::setIcon(const Icon *icon) {
@@ -261,7 +350,11 @@ void Button::setCentered(bool centered) {
 
 void Button::paint(Painter &painter) {
         const WindowPalette &p = painter.palette();
-        const Rect          &r = geometry();
+        GuiWindow           *window = this->window();
+        const bool           isDefault = window != nullptr && window->defaultButton() == this;
+        const Rect           r = isDefault ? Rect{uint16_t(geometry().x + 1), uint16_t(geometry().y + 1),
+                                        uint16_t(geometry().width - 2), uint16_t(geometry().height - 2)}
+                                           : geometry();
         const bool           pressed = _down && _over;
         const bool           in = pressed || _checked; // drawn pressed in
         // The edge: raised, or sunk while pressed or checked; a flat button's only under the pointer.
@@ -274,8 +367,29 @@ void Button::paint(Painter &painter) {
         const Rect     face = edged ? Bevel::inside(r, style) : r;
         const uint32_t bg = _checked && !pressed ? p.color(Role::FaceLight) : p.color(Role::Face);
         const uint32_t fg = isEnabled() ? p.color(Role::FaceText) : p.color(Role::DisabledText);
+        if (isDefault) {
+                // The default button's dark outline, around its bevel.
+                const Rect &g = geometry();
+                const Rect  outline[] = {{g.x, g.y, g.width, 1},
+                                         {g.x, uint16_t(g.bottom() - 1), g.width, 1},
+                                         {g.x, uint16_t(g.y + 1), 1, uint16_t(g.height - 2)},
+                                         {uint16_t(g.right() - 1), uint16_t(g.y + 1), 1, uint16_t(g.height - 2)}};
+                (void)painter.fill(Span<const Rect>(outline), p.color(Role::FaceDark));
+        }
         if (edged) drawBevel(painter, r, style);
         (void)painter.fill(face, bg);
+        if (hasFocus() && window != nullptr && window->isActive() && r.width > 4 && r.height > 4) {
+                // The focus: a ring in the highlight's color where the bevel's inner line is (its
+                // outer edge without one), outside the text's rows, so it never crosses the text.
+                const uint16_t inset = edged && Bevel::width(style) >= 2 ? 1 : 0;
+                const Rect     f{uint16_t(r.x + inset), uint16_t(r.y + inset), uint16_t(r.width - 2 * inset),
+                             uint16_t(r.height - 2 * inset)};
+                const Rect     ring[] = {{f.x, f.y, f.width, 1},
+                                         {f.x, uint16_t(f.bottom() - 1), f.width, 1},
+                                         {f.x, uint16_t(f.y + 1), 1, uint16_t(f.height - 2)},
+                                         {uint16_t(f.right() - 1), uint16_t(f.y + 1), 1, uint16_t(f.height - 2)}};
+                (void)painter.fill(Span<const Rect>(ring), p.color(Role::Highlight));
+        }
         uint16_t x = columnUp(r.x + GuiStyle::ButtonPad);
         if (_icon != nullptr && _icon->isValid() && _icon->width <= GuiStyle::IconSize &&
             _icon->height <= GuiStyle::IconSize && x + _icon->width <= r.right()) {
@@ -293,6 +407,7 @@ void Button::paint(Painter &painter) {
                 const uint32_t room = r.right() - x - GuiStyle::ButtonPad / 2;
                 (void)painter.text(x, textTop(r, in), StringView(_text), Fonts::unscii16, fg, bg,
                                    static_cast<uint16_t>(room));
+                Mnemonic::draw(painter, x, textTop(r, in), StringView(_text), _underline, fg, x + room);
         }
         return;
 }

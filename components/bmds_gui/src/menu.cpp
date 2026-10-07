@@ -49,7 +49,9 @@ Error Menu::add(StringView text, int number, uint8_t flags, StringView shortcut,
         if (_count == MaxItems) return Error::Full;
         Item &item = _items[_count++];
         item = Item();
-        copyText(item.text, sizeof(item.text), text);
+        const Mnemonic::Stripped m = Mnemonic::strip(text, Span<char>(item.text, sizeof(item.text)));
+        item.underline = m.at;
+        item.key = m.key;
         copyText(item.shortcut, sizeof(item.shortcut), shortcut);
         item.number = number;
         item.flags = flags;
@@ -85,7 +87,7 @@ Error Menu::popup(const Rect &anchor, bool submenu) {
         close();
         for (size_t i = 0; i < _count; ++i)
                 _views[i] = MenuLayout::Item{StringView(_items[i].text), StringView(_items[i].shortcut),
-                                             _items[i].flags, _items[i].icon};
+                                             _items[i].flags, _items[i].icon, _items[i].underline};
         const Error err = _layout.layout(Span<const MenuLayout::Item>(_views, _count), Fonts::unscii16);
         if (err.isError()) return err;
         const Rect area = application().windowManager().workArea();
@@ -233,8 +235,37 @@ bool Menu::keyPressed(const KeyEvent &event) {
                                 dismiss();
                         }
                         return true;
-                default: return false;
+                default: {
+                        const uint32_t key = Mnemonic::keyOf(event);
+                        if (key == 0) return false;
+                        chooseMnemonic(key);
+                        return true;
+                }
         }
+}
+
+// A key typed in it: the one item it marks chosen (a submenu opened); with several, the next
+// of them highlighted.
+void Menu::chooseMnemonic(uint32_t key) {
+        int    first = -1, after = -1;
+        size_t count = 0;
+        for (size_t i = 0; i < _count; ++i) {
+                if (_items[i].key != key || !_layout.isSelectable(i)) continue;
+                ++count;
+                if (first < 0) first = int(i);
+                if (after < 0 && int(i) > _highlight) after = int(i);
+        }
+        if (count == 1) {
+                highlight(first);
+                if (_items[first].submenu != nullptr) {
+                        openSubmenu(first, true);
+                } else {
+                        choose(first);
+                }
+        } else if (count > 1) {
+                highlight(after >= 0 ? after : first);
+        }
+        return;
 }
 
 BMDS_NAMESPACE_END

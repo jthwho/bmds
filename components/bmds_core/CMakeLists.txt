@@ -20,6 +20,8 @@ set(BMDS_CORE_SRCS
         src/region.cpp
         src/error.cpp
         src/filenames.cpp
+        src/fileformat.cpp
+        src/mimeapps.cpp
         src/inflate.cpp
         src/inireader.cpp
         src/string.cpp

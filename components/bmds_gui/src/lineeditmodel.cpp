@@ -72,7 +72,7 @@ bool LineEditModel::insert(StringView text) {
                         i += n;
                         continue;
                 }
-                if (_length + n > MaxBytes) break;
+                if (_length + n > _max) break;
                 std::memmove(_text + _cursor + n, _text + _cursor, _length - _cursor);
                 std::memcpy(_text + _cursor, text.data() + i, n);
                 _length += n;

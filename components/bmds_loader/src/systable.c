@@ -73,8 +73,9 @@ int32_t bmds_k_futex(volatile int32_t *word, uint32_t op, int32_t value, int64_t
                      int32_t count2);
 int32_t bmds_k_thread_kill(int32_t tid, int32_t sig, uint32_t flags);
 int32_t bmds_k_thread_clear(volatile int32_t *word);
+int32_t bmds_k_file_type(const char *path, uint32_t flags, char *out, uint32_t size);
 
-#define SLOTS 58
+#define SLOTS 59
 
 /* bmds_sys_t with its slots spelled out (same layout; checked below). */
 static const struct {
@@ -147,10 +148,11 @@ static const struct {
                 [BMDS_SYS_FUTEX] = (bmds_sys_fn_t)bmds_k_futex,
                 [BMDS_SYS_THREAD_KILL] = (bmds_sys_fn_t)bmds_k_thread_kill,
                 [BMDS_SYS_THREAD_CLEAR] = (bmds_sys_fn_t)bmds_k_thread_clear,
+                [BMDS_SYS_FILE_TYPE] = (bmds_sys_fn_t)bmds_k_file_type,
         },
 };
 
-_Static_assert(SLOTS == BMDS_SYS_THREAD_CLEAR + 1, "every slot is in the table");
+_Static_assert(SLOTS == BMDS_SYS_FILE_TYPE + 1, "every slot is in the table");
 _Static_assert(sizeof(table) == 16 + SLOTS * sizeof(bmds_sys_fn_t), "table layout");
 
 const bmds_sys_t *bmds_k_sys_table(void) {
