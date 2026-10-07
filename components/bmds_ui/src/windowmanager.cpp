@@ -63,8 +63,10 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
         _tools.strip = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, stripBytes, StripAlign));
         _pieces = static_cast<ComposePiece *>(Memory::alloc(MemSpace::Internal, MaxPieces * sizeof(ComposePiece)));
         _scratch = static_cast<Rect *>(Memory::alloc(MemSpace::Internal, 3 * MaxPieces * sizeof(Rect)));
-        Error err = _tools.strip == nullptr || _pieces == nullptr || _scratch == nullptr ? Error(Error::NoMem)
-                                                                                         : display.claim("desktop");
+        _under = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, UnderBytes));
+        Error err = _tools.strip == nullptr || _pieces == nullptr || _scratch == nullptr || _under == nullptr
+                            ? Error(Error::NoMem)
+                            : display.claim("desktop");
         if (err.isOk() && !_task.isRunning()) {
                 Task::Config tc;
                 tc.name = "wm";
@@ -78,9 +80,11 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
                 Memory::free(_tools.strip);
                 Memory::free(_pieces);
                 Memory::free(_scratch);
+                Memory::free(_under);
                 _tools = Painter::Tools();
                 _pieces = nullptr;
                 _scratch = nullptr;
+                _under = nullptr;
                 return err;
         }
         _tools.halfWidth = half;
@@ -107,6 +111,7 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
         _buttons = 0;
         _cursorShown = false;
         _cursorMoved = false;
+        _underRect = Rect();
         _grabId = 0;
         _pressId = 0;
         _pressShown = false;
@@ -166,9 +171,12 @@ void WindowManager::stop() {
         Memory::free(_tools.strip);
         Memory::free(_pieces);
         Memory::free(_scratch);
+        Memory::free(_under);
         _tools = Painter::Tools();
         _pieces = nullptr;
         _scratch = nullptr;
+        _under = nullptr;
+        _underRect = Rect();
         _stack.reset(0, 0);
         _dragId = 0;
         _asked.store(0, std::memory_order_release);
@@ -262,7 +270,7 @@ void WindowManager::deliverKeys() {
                                     event.usage != HidKey::CapsLock && event.usage != HidKey::NumLock &&
                                     event.usage != HidKey::ScrollLock;
                 if (typing && w.hideWhileTyping && !_typingHidden) {
-                        if (isCursorDrawn()) _stack.invalidateScreen(cursorArea());
+                        if (isCursorDrawn()) _cursorMoved = true; // what it covered put back
                         _typingHidden = true;
                 }
                 if (w.key != nullptr) w.key(w.arg, event);
@@ -311,7 +319,6 @@ void WindowManager::applyPointer() {
                 const int  x = _pointerX + event.dx, y = _pointerY + event.dy;
                 const auto nx = static_cast<uint16_t>(x < 0 ? 0 : x >= screen.width ? screen.width - 1 : x);
                 const auto ny = static_cast<uint16_t>(y < 0 ? 0 : y >= screen.height ? screen.height - 1 : y);
-                const Rect was = cursorArea();
                 const bool wasDrawn = isCursorDrawn();
                 const bool moved = nx != _pointerX || ny != _pointerY;
                 if (moved || event.buttons != _buttons || event.wheel != 0) _typingHidden = false; // the mouse is back
@@ -406,8 +413,8 @@ void WindowManager::applyPointer() {
                 _shape = shape;
                 _cursorShown = true;
                 const bool drawn = isCursorDrawn();
-                if (wasDrawn && (changed || !drawn)) _stack.invalidateScreen(was); // what it covered, redrawn
-                if (drawn && (changed || !wasDrawn)) _cursorMoved = true;
+                // What it covered is put back from what was saved (restoreUnder()): no window redraws.
+                if ((wasDrawn && (changed || !drawn)) || (drawn && (changed || !wasDrawn))) _cursorMoved = true;
         }
 }
 
@@ -625,9 +632,8 @@ void WindowManager::setPointerVisible(bool visible) {
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface == nullptr || _pointerHidden == !visible) return;
         const bool wasDrawn = isCursorDrawn();
-        if (wasDrawn) _stack.invalidateScreen(cursorArea());
         _pointerHidden = !visible;
-        if (!wasDrawn && isCursorDrawn()) _cursorMoved = true;
+        if (wasDrawn || isCursorDrawn()) _cursorMoved = true;
         changed(focusId());
         return;
 }
@@ -696,7 +702,24 @@ namespace {
                         uint16_t       rows;
                         uint32_t       edge;
                         uint32_t       fill;
+                        uint8_t       *under; // what the area holds, saved there first
         };
+
+        // What the pointer covers: its area's bytes, a row after another.
+        struct UnderJob {
+                        uint8_t *under;
+                        uint16_t width;
+                        uint16_t rows;
+        };
+
+        // UnderBytes holds the pointer's largest area (a picture widened to 4-pixel columns).
+        static_assert(Surface::BytesPerPixel == 3);
+        static_assert([] {
+                for (const Picture &p : Pictures)
+                        if ((p.width + 2u * 4u) * p.height * Surface::BytesPerPixel > WindowManager::UnderBytes)
+                                return false;
+                return true;
+        }());
 
 } // namespace
 
@@ -719,6 +742,9 @@ Rect WindowManager::cursorArea() const {
 void WindowManager::drawCursorPixels(void *arg, uint8_t *pixels, size_t stride) {
         const auto    *job = static_cast<const CursorJob *>(arg);
         const Picture &p = *job->picture;
+        const size_t   bytes = size_t(job->width) * Surface::BytesPerPixel;
+        for (uint16_t r = 0; r < job->rows; ++r)
+                std::memcpy(job->under + r * bytes, pixels + size_t(r) * stride, bytes);
         for (uint16_t r = 0; r < job->rows; ++r) {
                 const int sr = int(r) - job->row; // the picture's row
                 if (sr < 0 || sr >= p.height) continue;
@@ -737,7 +763,26 @@ void WindowManager::drawCursorPixels(void *arg, uint8_t *pixels, size_t stride) 
         return;
 }
 
-// The pointer over everything drawn this round (drawing it again where it was is harmless).
+// What @p arg (the saved pixels) holds, back into @p pixels (the area they came from).
+void WindowManager::restorePixels(void *arg, uint8_t *pixels, size_t stride) {
+        const auto  *job = static_cast<const UnderJob *>(arg);
+        const size_t row = size_t(job->width) * Surface::BytesPerPixel;
+        for (uint16_t r = 0; r < job->rows; ++r) std::memcpy(pixels + size_t(r) * stride, job->under + r * row, row);
+        return;
+}
+
+// What the pointer covered put back, before anything is drawn this round: so a move asks no window
+// to redraw, and nothing drawn copies the pointer's picture (a scroll).
+void WindowManager::restoreUnder() {
+        if (_underRect.isEmpty()) return;
+        UnderJob job{_under, _underRect.width, _underRect.height};
+        ++_stats.calls;
+        if (_surface->patch(_underRect, restorePixels, &job, DrawTimeoutMs).isError()) ++_stats.errors;
+        _underRect = Rect();
+        return;
+}
+
+// The pointer over everything drawn this round, what it covers saved first (restoreUnder()).
 void WindowManager::drawCursor() {
         _cursorMoved = false;
         if (!isCursorDrawn()) return;
@@ -751,8 +796,13 @@ void WindowManager::drawCursor() {
         job.rows = area.height;
         job.edge = _palette.color(Role::CursorEdge);
         job.fill = _palette.color(Role::CursorFill);
+        job.under = _under;
         ++_stats.calls;
-        if (_surface->patch(area, drawCursorPixels, &job, DrawTimeoutMs).isError()) ++_stats.errors;
+        if (_surface->patch(area, drawCursorPixels, &job, DrawTimeoutMs).isError()) {
+                ++_stats.errors;
+                return;
+        }
+        _underRect = area;
         return;
 }
 
@@ -769,6 +819,7 @@ void WindowManager::round(uint32_t requests) {
                 return;
         }
         const uint64_t start = System::uptimeUs();
+        restoreUnder();
         if (!damage.isEmpty()) {
                 auto [n, err] = _stack.plan(damage, Span<ComposePiece>(_pieces, MaxPieces));
                 if (err.isOk()) {
@@ -897,7 +948,8 @@ void WindowManager::drawLayer(size_t z, Span<const Rect> pieces) {
                 if (!r.isEmpty()) damage[nd++] = r;
         }
         Span<const Rect> clip(damage, nd);
-        if ((_updates & bit) != 0) {
+        const bool       update = (_updates & bit) != 0;
+        if (update) {
                 // Planned in the third part of the scratch space, then kept there.
                 Rect        *visible = _scratch + 2 * MaxPieces;
                 auto        *plan = reinterpret_cast<ComposePiece *>(visible);
@@ -920,6 +972,14 @@ void WindowManager::drawLayer(size_t z, Span<const Rect> pieces) {
         if (w.redraw != nullptr) {
                 ++_stats.redraws;
                 w.redraw(w.arg, painter);
+                if (painter.isDeferred()) {
+                        // Its owner was busy: the same asked again next round (a frame later).
+                        ++_stats.deferred;
+                        if (update) _asked.fetch_or(bit, std::memory_order_acq_rel);
+                        for (size_t i = 0; i < nd; ++i) (void)_stack.invalidate(id, damage[i]);
+                        _requests.fetch_add(1, std::memory_order_acq_rel);
+                        _wake.release();
+                }
         } else {
                 (void)painter.fill(Rect{0, 0, client.width, client.height}, _palette.color(Role::Client));
         }

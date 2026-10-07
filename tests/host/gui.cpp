@@ -19,6 +19,7 @@
 #include <bmds/bevel.h>
 #include <bmds/desktopentry.h>
 #include <bmds/font.h>
+#include <bmds/icongrid.h>
 #include <bmds/inflate.h>
 #include <bmds/inireader.h>
 #include <bmds/linelayout.h>
@@ -263,6 +264,36 @@ TEST_CASE("MenuLayout: placing a menu on the screen") {
               Rect{616, uint16_t(200 - MenuLayout::InsetY), 120, 100});
         const Rect right{1150, 200, 116, 20};
         CHECK(MenuLayout::place(120, 100, right, screen, true).x == 1028);
+}
+
+TEST_CASE("IconGrid: wanted cells kept, the rest in free cells down then across") {
+        using bmds::IconGrid;
+        using Cell = IconGrid::Cell;
+        Cell out[6];
+        // None wanted: down the first column, then the next.
+        const Cell none[5] = {};
+        IconGrid::place(bmds::Span<const Cell>(none, 5), 3, 2, bmds::Span<Cell>(out, 6));
+        CHECK(out[0] == Cell{0, 0});
+        CHECK(out[1] == Cell{0, 1});
+        CHECK(out[2] == Cell{1, 0});
+        CHECK(out[4] == Cell{2, 0});
+        // Wanted cells kept; a taken one, or one off the grid, placed as the rest.
+        const Cell some[5] = {Cell{}, Cell{0, 0}, Cell{2, 1}, Cell{0, 0}, Cell{5, 0}};
+        IconGrid::place(bmds::Span<const Cell>(some, 5), 3, 2, bmds::Span<Cell>(out, 6));
+        CHECK(out[1] == Cell{0, 0});
+        CHECK(out[2] == Cell{2, 1});
+        CHECK(out[0] == Cell{0, 1}); // the first free one
+        CHECK(out[3] == Cell{1, 0});
+        CHECK(out[4] == Cell{1, 1});
+        // More items than cells: further columns, off the grid.
+        IconGrid::place(bmds::Span<const Cell>(none, 5), 1, 2, bmds::Span<Cell>(out, 6));
+        CHECK(out[4] == Cell{2, 0});
+        // The cell under a point, the nearest outside the grid.
+        CHECK(IconGrid::cellAt(0, 0, 80, 76, 4, 3) == Cell{0, 0});
+        CHECK(IconGrid::cellAt(159, 76, 80, 76, 4, 3) == Cell{1, 1});
+        CHECK(IconGrid::cellAt(-5, 9999, 80, 76, 4, 3) == Cell{0, 2});
+        CHECK(IconGrid::cellAt(9999, -1, 80, 76, 4, 3) == Cell{3, 0});
+        CHECK(!Cell{}.isValid());
 }
 
 TEST_CASE("LineLayout: hints, stretch, most, and too little room") {

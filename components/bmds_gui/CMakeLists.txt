@@ -2,11 +2,12 @@
 # over the window manager's public API only, so that it can move into the SDK
 # once GUI programs have an ABI.
 #
-# The pure parts (line layout; the menu's geometry is bmds_ui's, shared with
-# the window manager's window menu) are also built as a plain CMake
-# library for the host tests (tests/host).
+# The pure parts (line layout, the icon grid; the menu's geometry is bmds_ui's,
+# shared with the window manager's window menu) are also built as a plain
+# CMake library for the host tests (tests/host).
 
 set(BMDS_GUI_PURE_SRCS
+        src/icongrid.cpp
         src/linelayout.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)

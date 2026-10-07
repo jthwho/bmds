@@ -938,6 +938,8 @@ namespace {
                 ctx.printf("Drawing:  %llu us a round on average, %lu at most, %lu the last\n",
                            static_cast<unsigned long long>(s.rounds > 0 ? s.roundUs / s.rounds : 0),
                            static_cast<unsigned long>(s.roundUsMax), static_cast<unsigned long>(s.lastRoundUs));
+                ctx.printf("Deferred: %lu redraws (their windows' owners busy)\n",
+                           static_cast<unsigned long>(s.deferred));
                 return Shell::ExitSuccess;
         }
 

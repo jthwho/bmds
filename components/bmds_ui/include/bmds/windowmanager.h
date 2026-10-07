@@ -294,6 +294,7 @@ class WindowManager {
                                 uint64_t roundUs = 0;   ///< Drawing (presents not included).
                                 uint32_t roundUsMax = 0;
                                 uint32_t lastRoundUs = 0;
+                                uint32_t deferred = 0; ///< Redraws put off (`Painter::defer()`).
                 };
 
                 /** @brief Window managers: one per display. */
@@ -683,6 +684,13 @@ class WindowManager {
                 static void     keyEntry(void *arg, const KeyEvent &event);
                 static void     pointerEntry(void *arg, const PointerEvent &event);
                 static void     drawCursorPixels(void *arg, uint8_t *pixels, size_t stride);
+                static void     restorePixels(void *arg, uint8_t *pixels, size_t stride);
+
+        public:
+                /** @brief Bytes saved from under the pointer at most: its largest picture's area. */
+                static constexpr size_t UnderBytes = (19 + 2 * 4) * 19 * 3; // B, G, R
+
+        private:
                 void            deliverKeys();
                 bool            shortcut(const KeyEvent &event); // a key the window manager keeps
                 void            switchOpen(int step);
@@ -717,6 +725,7 @@ class WindowManager {
                 void            act(uint8_t id, WindowFrame::Part part);
                 WindowFrame     frame(uint8_t id, const Rect &outer) const;
                 void            drawCursor();
+                void            restoreUnder();     // what the pointer covered, put back
                 Rect            cursorArea() const; // where the pointer is drawn: on the screen, 4-pixel columns
                 uint8_t         windowAt(uint16_t x, uint16_t y) const; // 0: the desktop
                 Error           closeLocked(uint8_t id);
@@ -753,6 +762,8 @@ class WindowManager {
                 Window                _windows[WindowStack::MaxWindows]; // by number - 1
                 WindowPalette         _palette;
                 Resource             *_resources = nullptr; // setResource()'s, the newest first
+                uint8_t              *_under = nullptr;     // what the pointer covers (UnderBytes, Psram)
+                Rect                  _underRect;           // where; empty: nothing saved
                 uint8_t               _dragId = 0;
                 Rect                  _outline;
                 bool                  _outlineShown = false;

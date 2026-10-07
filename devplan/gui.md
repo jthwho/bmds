@@ -193,6 +193,7 @@ up (§4k). As built and measured: §9.
       boot/autoexec.sh                     (moved from bootdisk.cpp)
       boot/config/panel.conf               the panel's layout
       boot/config/terminal.conf            the terminal's colors (§4l)
+      boot/desktop/terminal.desktop        the desktop's icons (§4m)
       boot/applications/terminal.desktop   Terminal: terminal
 
   Packages bring their own in `share/applications/` (BusyBox: `vi.desktop`, a text editor in a
@@ -400,6 +401,40 @@ The last of `windows.md` §8 step 9: the window manager draws no terminal, so th
   the resource. Its list shows the palette's roles, then the three, `-` where not set (the
   terminal's own setting applies).
 
+### 4m. Desktop icons (roadmap, 2026-10-06)
+
+- **What they are:** the Desktop Entry files (G10) of `[Desktop] Icons` in `panel.conf`
+  (directories, `;`-separated; `/boot/desktop` unless set, empty: none), the first file of a name
+  winning as the launcher's do, hidden ones left out, by name. The default `/boot/desktop` has
+  the terminal's entry. At most 32.
+- **Drawn by the panel's desktop window** (it stays a view: the panel gives it each item's name
+  and icon and is told when one is opened): a 32 × 32 icon (the entry's `Icon=`, else its
+  program's own, else `application-x-executable`; copied, so the theme's cache may drop it), and
+  its name under it in up to two lines of 72 pixels (broken at a space; a second line that
+  doesn't fit is cut and ends in an ellipsis, `…`). Cells of
+  80 × 76 pixels from the work area's top-left corner, down then across, as the classic desktops
+  do. The name is in `desktop-text` (a palette role, appended: white) on the desktop's color.
+- **The mouse:** a left press on an icon or its name selects it (its name in `highlight` and
+  `highlight-text`), anywhere else clears the selection; a second press on it within the double
+  click time (`WindowManager::DoubleClickMs`) opens it as the launcher would. A right press
+  anywhere still opens the launcher's menu.
+- **The card later:** an icon not found (the theme is on the card, mounted after the panel
+  started) is looked for again every 2 seconds, for a minute at most.
+- **`win check`:** the desktop's reference picture draws the icons and names too.
+- **Not yet:** keys, and files other than Desktop Entry files.
+- **Moving them** (2026-10-06): an icon pressed and dragged more than 4 pixels follows the
+  pointer (drawn above the others); dropped, it takes the grid cell under its middle (kept on
+  the grid: no free placement, as "align to grid" desktops), and an icon already there takes the
+  dropped one's old cell. A drag ends no double click. **`IconGrid`** (bmds_gui, pure,
+  host-tested): items placed in cells, those with a cell wanted (inside the grid, not taken by
+  an earlier one) there, the rest in the first free cells down then across; the cell under a
+  point.
+- **Kept:** `/boot/config/desktop.conf`, written by the panel after each move (one small file,
+  rewritten whole: about 0.35 s on `/boot`, after the drop is drawn), `[Icons]` with a line a
+  file name: `terminal.desktop=COLUMN,ROW`. Read when the icons are, so a screen of another size
+  keeps the places that fit; an icon without one, or whose place is off the grid, is placed as
+  before. Not a default on `/boot`: absent until an icon is moved.
+
 ## 5. Budget (estimates)
 
 - **Firmware:** the toolkit 10 to 15 KB, the panel 5 KB, the window manager's additions 4 KB, the
@@ -584,3 +619,40 @@ palette's role names), `/boot/.defaults`' format (a file name a line).
     `win check` 0 wrong; a terminal opened after the file was restored drew its black with the
     yellow text. Three open-and-close cycles: internal RAM the same to the byte.
   - Size: the image 788,624 bytes.
+- **Desktop icons** (§4m, 2026-10-06):
+  - The panel's desktop window moved to its own file (`desktopwindow.cpp`, a view), and reading
+    Desktop Entry directories to `panelentries.cpp`, shared by the launcher and the desktop.
+  - On the board, after a reset: `/boot/desktop/terminal.desktop` installed, the Terminal icon
+    (32 × 32, the theme's) and its name at the work area's corner, `win check` 0 wrong; a click
+    selected it (its name in the highlight colors), `win check` 0 wrong again; a double click
+    opened a terminal. Killing and starting the panel twice: free internal and PSRAM the same to
+    the byte after each.
+  - Size: the image 792,736 bytes (788,624 before).
+- **Moving desktop icons** (§4m, 2026-10-06):
+  - Host-tested: `IconGrid` (wanted cells kept, taken or off-grid ones placed as the rest, down
+    then across; more items than cells; the cell under a point, the nearest outside the grid).
+  - On the board, with a second entry (`Text Editor Test`) added for the test: the Terminal
+    dragged from (0, 0) to (2, 1) by `win pointer`; `win check` 0 wrong after the drop, and
+    `desktop.conf` written (`terminal.desktop=2,1`, `zz-test.desktop=0,1`). The second dropped
+    on the Terminal's cell took it and the Terminal took the second's (`0,1` and `2,1`). The
+    panel stopped and started again: both drawn where they were dropped, `win check` 0 wrong.
+    A `win check` in the middle of a drag reported 236 pixels: the panel hadn't drawn the
+    latest motion yet when it compared (its reference is the panel's state, ahead of the
+    screen); after the drop it was 0. The test entry and `desktop.conf` were removed after.
+  - Size: the image 795,200 bytes (792,736 before).
+- **Dragging made smooth** (the user's report, 2026-10-06: dragging the terminal's icon lagged,
+  the pointer leaving a trail; and the test entry's second line, "Editor Te", looked wrong):
+  - The cause: the toolkit gave its windows' damage to the window manager with the
+    application's lock held, so it waited for the window manager's lock through a round, whose
+    redraw of its window then found the application busy (`tryLock`) and asked `update()`: the
+    whole window again at the next round, for the desktop the whole screen (20 to 45 ms), and the
+    pointer's old place was left drawn until then.
+  - The fixes: `GuiApplication` takes each window's damage under its lock and gives it to the
+    window manager after (`GuiWindow::takeDirty()`); a redraw that finds its application busy
+    calls `Painter::defer()`, and the window manager asks for the same damage again at the next
+    round, no more. `win stats` counts them ("Deferred:").
+  - Measured, 60 steps of a scripted drag (`win pointer` in a shell loop): before, 309 rounds of
+    19.5 ms on average; after, 103 rounds of 0.4 ms (43 redraws put off, each a frame). A
+    screenshot in the middle of a drag showed no trail; `win check` 0 wrong after the drop.
+  - A cut second line ends in an ellipsis: "Text Editor Test" is "Text" and "Editor T…".
+  - Size: the image 795,696 bytes.

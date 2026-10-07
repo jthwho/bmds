@@ -384,6 +384,49 @@ and a read of everything (the measure of whether FAT on wear levelling is enough
 - **Size:** `/boot` uses 3 KB of 3,984 KB with the scripts and a note. The worker's 3 KB stack and
   the cache's 4 KB (PSRAM) are the RAM it costs, with FatFs's volume.
 
+### 13a. Writing `/boot` in the background (the user's request, 2026-10-06)
+
+**Why:** a close on `/boot` waited for the flash. FatFs syncs the device at each close, and a
+small file touches the FAT, its directory and its data, each usually in another 4 KB block: the
+one-block cache flushed (erase and write, about 0.1 s each, twice in safe mode) as each next
+block was needed and at the sync. The panel saving where an icon was dropped held its lock for
+that long (0.35 s), so the desktop wasn't drawn and the pointer left a trail. The card isn't the
+answer (settings must not need it); a cache in the kernel that writes in the background is.
+
+**Design (`FlashBlockDevice`):**
+- **Eight cached blocks** (32 KB of PSRAM), the least recently used reused. A write goes into the
+  cache (a block not there is read in first, unless written whole); reads take cached blocks
+  from it, others from the flash (reads don't fill it: FatFs's metadata has its own cache, §3).
+- **`sync()` doesn't wait:** it asks for the dirty blocks to be written 100 ms from then (a
+  close's syncs and the next file's coalesce); a dirty block not synced is written after a second
+  of no writes, as before. The worker (`flash0`) writes them, a block at a time, taking the
+  device's lock for each, so readers and writers come between. A block needed while all eight
+  are dirty is made room for by writing the oldest at once, as before.
+- **Every write and sync goes through the worker** (it keeps the deadline), reads only when the
+  caller's stack is in PSRAM (as before: a flash operation needs an internal stack).
+- **Durability:** what was written is on the flash within about 0.1 s of its close (1 s without
+  one). A restart (`reboot`, `esp_restart()`) writes everything first (an IDF shutdown handler);
+  a power cut or a crash in that window loses it, as the last write on a card without its sync
+  would; FAT's metadata was never power-safe here (§13).
+- **The flash still stops the caches while it erases or writes** (code and PSRAM out of reach,
+  the other core paused; IDF yields every 20 ms of an erase). In the background, that is a short
+  pause per block where nothing waits for the whole write. Flash auto-suspend (IDF, P4-capable)
+  would remove it, but it is qualified per flash chip and marked "read docs first": not now.
+
+**As built** (2026-10-06):
+- Measured on the board: a tiny file 0.02 s (0.30 s before), an append 0.02 s (0.15 s),
+  `seq 1 2000` into a file 0.05 s (0.80 s), removing a file 0.02 s (0.45 s). A file written just
+  before `reboot` was there after it (the shutdown handler).
+- **The pause remains, moved to the background:** `seq 1 300000 > /dev/null` took 5.16 s alone
+  and with a loop writing ten small files to the RAM disk, 7.28 s with the same loop writing to
+  `/boot`: about 0.21 s of the whole system stopped for each small file (its blocks erased and
+  written twice, wear levelling's safe mode, the caches off). Nothing waits for it any more, but
+  the screen can't be drawn while it lasts.
+- **Auto-suspend isn't available for this flash:** the board's chip is a Winbond W25Q128
+  (`ef 4018`); IDF's Winbond driver enables suspend for the W25Q64 (`ef 4017`) only. Enabling
+  it would need our own chip driver (`SPI_FLASH_OVERRIDE_CHIP_DRIVER_LIST`) on an unqualified
+  part: not done.
+
 ## 14. Editing partitions: `fdisk` (planned, 2026-10-06)
 
 **Why.** `mkfs` writes a new table with one partition (§5), but nothing changes a table: adding a second partition, resizing, or changing a type takes a PC. It is rarely needed, so it isn't built into the firmware: it is a program on the card.

@@ -193,7 +193,7 @@ class GuiApplication {
                 static void watched(void *arg);
                 void        dispatch(const Event &event);
                 void        runTimers();
-                void        flush(); // the windows' changes, to the window manager
+                void        flush(); // the windows' changes, to the window manager (unlocked)
                 uint32_t    waitMs() const;
 
                 WindowManager    *_wm = nullptr;

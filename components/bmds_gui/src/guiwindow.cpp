@@ -119,13 +119,10 @@ void GuiWindow::invalidate(const Rect &rect) {
         return;
 }
 
-void GuiWindow::flush() {
-        const uint8_t id = this->id();
-        if (id == 0 || _dirty.isEmpty()) return;
-        WindowManager &wm = _app.windowManager();
-        for (const Rect &r : _dirty.rects()) (void)wm.invalidate(id, r);
+uint8_t GuiWindow::takeDirty(Region &out) {
+        out = _dirty;
         _dirty.clear();
-        return;
+        return id();
 }
 
 void GuiWindow::forget(Widget *widget) {
@@ -159,8 +156,7 @@ void GuiWindow::redraw(void *arg, Painter &painter) {
         auto  *self = static_cast<GuiWindow *>(arg);
         Mutex &lock = self->_app.lock();
         if (lock.tryLock().isError()) {
-                const uint8_t id = self->id();
-                if (id != 0) (void)self->_app.windowManager().update(id);
+                painter.defer(); // its damage again next round, not the whole window
                 return;
         }
         self->paintTree(*self, painter);

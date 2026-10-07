@@ -860,3 +860,14 @@ ones once it exists.
     `win dump` and `win check` (0 wrong of 921,600) worked on a pty terminal. `time seq 1 3000`
     into a shown 100 × 30 terminal: 0.45 s (0.51 s before). Five open-and-exit cycles: internal
     RAM free the same (451,295), PSRAM 8 bytes less.
+- **The pointer saves what it covers** (2026-10-06, the user's report: the pointer trailed a little
+  when moved over the desktop): a move used to damage the area it left, which the window under it
+  redrew; over the desktop that is the panel, which the same move had just woken with a motion
+  event, so its redraw often found it busy and waited a round (`Painter::defer()`), leaving the
+  pointer drawn where it was. Now `drawCursor()` saves the area's pixels as it draws the pointer
+  (in the same `patch()`), and each round that draws starts by putting them back
+  (`restoreUnder()`), before any window draws: a move asks no window for anything, and nothing a
+  window draws or scrolls (`Painter::scroll()` copies) can carry the pointer's picture. 1.5 KB of
+  PSRAM (`UnderBytes`). Measured: 60 moves over the desktop, 60 rounds of 0.47 ms on average, no
+  redraws and none put off; `win check` 0 wrong, with a terminal scrolling 400 lines under the
+  pointer, with typing hiding it, over a window's edge (another shape) and after a resize.

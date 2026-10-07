@@ -140,6 +140,19 @@ class Painter {
                 /** @brief Returns the 2D-DMA calls made (each a job or more). */
                 uint32_t calls() const { return _calls; }
 
+                /**
+                 * @brief Says the window didn't draw (its owner is busy): what it
+                 *        was asked to draw is asked again at the next round, no more.
+                 * @nonblocking
+                 */
+                void defer() {
+                        _deferred = true;
+                        return;
+                }
+
+                /** @brief Returns true if `defer()` was called. */
+                bool isDeferred() const { return _deferred; }
+
         private:
                 static constexpr size_t BatchRects = 32;
 
@@ -163,6 +176,7 @@ class Painter {
                 Rect             _batch[BatchRects];
                 size_t           _batched = 0;
                 uint32_t         _calls = 0;
+                bool             _deferred = false;
                 Error            _error;
 };
 

@@ -39,6 +39,7 @@ namespace {
                 "highlight",
                 "highlight-text",
                 "disabled-text",
+                "desktop-text",
         };
         // clang-format on
 

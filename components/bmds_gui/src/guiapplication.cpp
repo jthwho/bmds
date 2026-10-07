@@ -206,9 +206,20 @@ void GuiApplication::dispatch(const Event &event) {
         return;
 }
 
+// Each window's changes taken under the application's lock and given to the window manager after
+// it: called with the lock held, the window manager's lock would be waited for during a round, whose
+// redraws would find the application busy and put off theirs.
 void GuiApplication::flush() {
-        for (const Slot &s : _slots)
-                if (s.window != nullptr) s.window->flush();
+        for (size_t i = 0; i < MaxWindows; ++i) {
+                Region  dirty;
+                uint8_t id = 0;
+                {
+                        Mutex::Locker lock(_lock, WaitForever);
+                        if (_slots[i].window != nullptr) id = _slots[i].window->takeDirty(dirty);
+                }
+                if (id == 0) continue;
+                for (const Rect &r : dirty.rects()) (void)_wm->invalidate(id, r);
+        }
         return;
 }
 
@@ -243,8 +254,8 @@ int GuiApplication::exec() {
                                 if (_quit.load(std::memory_order_acquire)) break;
                         }
                         runTimers();
-                        flush();
                 }
+                flush();
         }
         return _code;
 }

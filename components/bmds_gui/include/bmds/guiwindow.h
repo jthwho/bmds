@@ -101,8 +101,13 @@ class GuiWindow : public Widget {
                 /** @brief Asks for @p rect (window coordinates) to be redrawn. */
                 void invalidate(const Rect &rect);
 
-                /** @brief Sends the gathered redraws to the window manager (the application's, after events). */
-                void flush();
+                /**
+                 * @brief Moves the gathered redraws into @p out (the application's,
+                 *        after events, to give them to the window manager once its
+                 *        lock is released).
+                 * @return The window's number, or 0 (not shown).
+                 */
+                uint8_t takeDirty(Region &out);
 
                 /** @brief Forgets the widget being destroyed (`Widget::destroy()`). */
                 void forget(Widget *widget);

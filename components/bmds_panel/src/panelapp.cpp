@@ -7,7 +7,8 @@
  *
  * The panel, /bin/panel (devplan/gui.md §4c): a strip along the top of the
  * screen with a launcher, the windows and a clock, and the desktop behind
- * every window, whose right click opens the launcher's menu. An ordinary
+ * every window, with icons (§4m), whose right click opens the launcher's
+ * menu. An ordinary
  * program on the GUI toolkit: its items and their settings come from a
  * configuration file, its launcher's entries from Desktop Entry files.
  *
@@ -33,6 +34,8 @@
 #include <bmds/vfs.h>
 #include <bmds/widget.h>
 
+#include "desktopwindow.h"
+#include "panelentries.h"
 #include "panelicons.h"
 
 BMDS_NAMESPACE_BEGIN
@@ -44,9 +47,14 @@ namespace {
 
         constexpr const char *ConfigPath = "/boot/config/panel.conf";
         constexpr const char *DefaultApplications = "/boot/applications;/sd0/p0/share/applications";
+        constexpr const char *DefaultDesktop = "/boot/desktop";
+        constexpr const char *PlacesPath = "/boot/config/desktop.conf"; // where the icons were put
+        constexpr size_t      MaxPlacesBytes = 4096;
+        constexpr uint32_t    SaveDelayMs = 500; // after a drop: drawn first, then written
         constexpr size_t      MaxConfigBytes = 8192;
-        constexpr size_t      MaxEntryBytes = 4096;
         constexpr size_t      MaxEntries = 48;
+        constexpr uint32_t    IconRetryMs = 2000; // a desktop icon not found (the card later)
+        constexpr unsigned    IconRetries = 30;
         constexpr size_t      MaxSettings = 64;
         constexpr size_t      MaxItems = 8;
         constexpr size_t      MaxCategories = 7;
@@ -67,10 +75,7 @@ namespace {
                 "System", "Utility", "Development", "Graphics", "AudioVideo", "Game",
         };
 
-        struct Entry {
-                        DesktopEntry entry;
-                        char         file[48] = {}; // its file's name: the first of a name wins
-        };
+        using Entry = PanelEntry;
 
         // A key=value of the configuration (views into its text).
         struct Setting {
@@ -80,38 +85,6 @@ namespace {
         };
 
         class PanelApp;
-
-        // The desktop: the desktop's color, and the launcher's menu on a right click.
-        class DesktopWindow final : public GuiWindow {
-                public:
-                        DesktopWindow(GuiApplication &app, const Config &config, PanelApp &panel)
-                            : GuiWindow(app, config), _panel(panel) {}
-
-                        void paint(Painter &painter) override {
-                                (void)painter.fill(geometry(), painter.palette().color(Role::Desktop));
-                                return;
-                        }
-
-                        void mousePressed(const WindowManager::MouseEvent &event) override;
-
-                protected:
-                        void drawReference(uint8_t *pixels, size_t stride, uint16_t width, uint16_t height,
-                                           const WindowPalette &palette) override {
-                                const uint32_t c = palette.color(Role::Desktop);
-                                for (uint16_t y = 0; y < height; ++y) {
-                                        uint8_t *p = pixels + size_t(y) * stride;
-                                        for (uint16_t x = 0; x < width; ++x, p += 3) {
-                                                p[0] = static_cast<uint8_t>(c);
-                                                p[1] = static_cast<uint8_t>(c >> 8);
-                                                p[2] = static_cast<uint8_t>(c >> 16);
-                                        }
-                                }
-                                return;
-                        }
-
-                private:
-                        PanelApp &_panel;
-        };
 
         // A window's button: they share the room equally.
         class WindowButton final : public Button {
@@ -212,25 +185,40 @@ namespace {
                         static void triggered(void *arg, int item);
                         static void dismissed(void *arg, Menu &menu);
                         static void launcherKey(void *arg);
+                        static void desktopMenu(void *arg, uint16_t x, uint16_t y);
+                        static void desktopOpened(void *arg, size_t item);
+                        static void desktopIconsTick(void *arg);
+                        static void desktopMoved(void *arg);
+                        static void savePlaces(void *arg);
+                        static void badEntry(void *arg, const char *path);
 
                         void        say(const char *a, const char *b = "", const char *c = "", const char *d = "");
                         Error       readConfig(StringView path);
                         StringView  setting(StringView group, StringView key, StringView fallback) const;
                         void        loadEntries(StringView directories);
-                        bool        loadDirectory(StringView directory);
+                        bool        loadDesktop();
+                        void        readPlaces(Span<IconGrid::Cell> wanted);
+                        bool        findDesktopIcons();
                         void        freeLauncher();
                         void        reloadLauncher();
                         void        buildMenu(size_t submenuAfter);
                         Error       buildItems(Widget *row);
                         Error       openWindows();
                         void        launch(const Entry &entry);
-                        const Icon *entryIcon(const Entry &entry);
+                        const Icon *entryIcon(const Entry &entry, uint16_t side);
                         Error       programPath(StringView command, String &out) const;
 
                         const BuiltinProgram::Context &_context;
                         GuiApplication                 _app;
                         GuiWindow                     *_panel = nullptr;
                         DesktopWindow                 *_desktop = nullptr;
+                        char                           _desktopDirs[256] = {}; // [Desktop] Icons
+                        Entry                         *_desktopEntries = nullptr;
+                        size_t                         _desktopCount = 0;
+                        bool                           _desktopIncomplete = false;
+                        int                            _iconTimer = -1;
+                        int                            _saveTimer = -1; // places to write
+                        unsigned                       _iconTries = 0;
                         BoxLayout                     *_row = nullptr;
                         WindowList                    *_windows = nullptr;
                         Menu                          *_menu = nullptr;
@@ -251,13 +239,6 @@ namespace {
         };
 
         // ---- Desktop, window list, clock
-
-        void DesktopWindow::mousePressed(const WindowManager::MouseEvent &event) {
-                if (event.button != PointerEvent::Right) return;
-                const Rect s = screenRect();
-                _panel.showLauncher(Rect{uint16_t(s.x + event.x), uint16_t(s.y + event.y), 0, 0});
-                return;
-        }
 
         void WindowList::refresh(Span<const Info> windows) {
                 // Buttons of windows gone, destroyed; the others brought up to date.
@@ -385,10 +366,16 @@ namespace {
         PanelApp::~PanelApp() {
                 // The windows (and their widgets) before the application they belong to.
                 freeLauncher();
+                if (_iconTimer >= 0) _app.stopTimer(_iconTimer);
+                if (_saveTimer >= 0) {
+                        _app.stopTimer(_saveTimer);
+                        savePlaces(this); // a move not written yet
+                }
                 if (_desktop != nullptr) {
                         _desktop->~DesktopWindow();
                         Memory::free(_desktop);
                 }
+                Memory::free(_desktopEntries);
                 if (_panel != nullptr) {
                         _panel->~GuiWindow();
                         Memory::free(_panel);
@@ -453,52 +440,9 @@ namespace {
                 return fallback;
         }
 
-        // Directory @p directory's entries added; false if it isn't there (no card yet: no error).
-        bool PanelApp::loadDirectory(StringView directory) {
-                const Vfs::Context vc{_context.cwd, nullptr};
-                auto [dir, err] = Vfs::openDirectory(directory, vc);
-                if (err.isError()) return false;
-                char *text = static_cast<char *>(Memory::alloc(MemSpace::Psram, MaxEntryBytes));
-                if (text == nullptr) return true;
-                for (;;) {
-                        auto [info, nerr] = dir.next();
-                        if (nerr.isError()) break;
-                        const StringView name = info.name.view();
-                        if (info.type != FileType::File || !name.endsWith(StringView(".desktop")) ||
-                            name.size() >= sizeof(Entry::file))
-                                continue;
-                        // The first directory's file of a name wins (Hidden=true there hides it).
-                        bool seen = false;
-                        for (size_t i = 0; i < _entryCount; ++i) seen = seen || StringView(_entries[i].file) == name;
-                        if (seen || _entryCount == MaxEntries) continue;
-                        String path;
-                        if (path.append(directory).isError() || path.append('/').isError() ||
-                            path.append(name).isError())
-                                continue;
-                        auto [file, oerr] = Vfs::open(path.view(), Vfs::Read, vc);
-                        size_t got = 0;
-                        while (oerr.isOk() && got < MaxEntryBytes) {
-                                auto [n, rerr] = file->read(
-                                        WritableByteSpan(reinterpret_cast<uint8_t *>(text) + got, MaxEntryBytes - got),
-                                        WaitForever);
-                                if (rerr.isError() || n == 0) break;
-                                got += n;
-                        }
-                        if (oerr.isError()) continue;
-                        auto [entry, perr] = DesktopEntry::parse(StringView(text, got));
-                        Entry &e = _entries[_entryCount];
-                        std::memcpy(e.file, name.data(), name.size());
-                        e.file[name.size()] = '\0';
-                        if (perr.isError()) {
-                                if (perr != Error::NotSupported)
-                                        say("panel: ", path.cStr(), ": not a launcher entry\n");
-                                continue;
-                        }
-                        e.entry = entry;
-                        ++_entryCount; // a hidden one too: it hides the later ones of its name
-                }
-                Memory::free(text);
-                return true;
+        void PanelApp::badEntry(void *arg, const char *path) {
+                static_cast<PanelApp *>(arg)->say("panel: ", path, ": not a launcher entry\n");
+                return;
         }
 
         void PanelApp::loadEntries(StringView directories) {
@@ -506,21 +450,12 @@ namespace {
                 if (_entries == nullptr) return;
                 for (size_t i = 0; i < MaxEntries; ++i) ::new (&_entries[i]) Entry();
                 _incomplete = false;
+                const Vfs::Context vc{_context.cwd, nullptr};
                 for (StringView d = IniReader::nextListItem(directories); !d.isEmpty();
                      d = IniReader::nextListItem(directories))
-                        if (!loadDirectory(d)) _incomplete = true; // read again when the launcher opens
-                // Hidden and not-shown entries out; the rest by name.
-                size_t n = 0;
-                for (size_t i = 0; i < _entryCount; ++i)
-                        if (!_entries[i].entry.hidden && !_entries[i].entry.noDisplay) _entries[n++] = _entries[i];
-                _entryCount = n;
-                for (size_t i = 1; i < _entryCount; ++i) {
-                        const Entry e = _entries[i];
-                        size_t      k = i;
-                        for (; k > 0 && std::strcmp(_entries[k - 1].entry.name, e.entry.name) > 0; --k)
-                                _entries[k] = _entries[k - 1];
-                        _entries[k] = e;
-                }
+                        if (!readEntryDirectory(d, vc, _entries, _entryCount, MaxEntries, badEntry, this))
+                                _incomplete = true; // read again when the launcher opens
+                keepShownEntries(_entries, _entryCount);
                 // Kept in as little as they need.
                 auto *kept = static_cast<Entry *>(
                         Memory::alloc(MemSpace::Psram, sizeof(Entry) * (_entryCount > 0 ? _entryCount : 1)));
@@ -543,7 +478,7 @@ namespace {
                 if (_entryCount <= submenuAfter) {
                         for (size_t i = 0; i < _entryCount; ++i)
                                 (void)_menu->addItem(StringView(_entries[i].entry.name), int(i), 0, StringView(),
-                                                     entryIcon(_entries[i]));
+                                                     entryIcon(_entries[i], GuiStyle::IconSize));
                 } else {
                         for (size_t c = 0; c < MaxCategories; ++c) {
                                 const StringView category =
@@ -564,7 +499,7 @@ namespace {
                                                 (void)_menu->addSubmenu(category, *sub);
                                         }
                                         (void)sub->addItem(StringView(_entries[i].entry.name), int(i), 0, StringView(),
-                                                           entryIcon(_entries[i]));
+                                                           entryIcon(_entries[i], GuiStyle::IconSize));
                                 }
                         }
                 }
@@ -681,14 +616,162 @@ namespace {
         }
 
         // Entry @p entry's icon: its Icon=, else its program's own, else a generic one.
-        const Icon *PanelApp::entryIcon(const Entry &entry) {
+        const Icon *PanelApp::entryIcon(const Entry &entry, uint16_t side) {
                 char       buffer[DesktopEntry::MaxExec + 1];
                 StringView args[DesktopEntry::MaxArgs];
                 String     path;
                 auto [n, err] = DesktopEntry::splitExec(StringView(entry.entry.exec), buffer, sizeof(buffer),
                                                         Span<StringView>(args));
                 if (err.isOk() && n > 0) (void)programPath(args[0], path);
-                return _app.icons().forProgram(StringView(entry.entry.icon), path.view(), GuiStyle::IconSize);
+                return _app.icons().forProgram(StringView(entry.entry.icon), path.view(), side);
+        }
+
+        // ---- The desktop's icons
+
+        void PanelApp::desktopMenu(void *arg, uint16_t x, uint16_t y) {
+                static_cast<PanelApp *>(arg)->showLauncher(Rect{x, y, 0, 0});
+                return;
+        }
+
+        void PanelApp::desktopOpened(void *arg, size_t item) {
+                auto *self = static_cast<PanelApp *>(arg);
+                if (item < self->_desktopCount) self->launch(self->_desktopEntries[item]);
+                return;
+        }
+
+        // The entries of [Desktop] Icons as the desktop's items, in the work area, with the
+        // icons found; false if a directory or an icon wasn't (the card, mounted later).
+        bool PanelApp::loadDesktop() {
+                if (_desktop == nullptr) return true;
+                Memory::free(_desktopEntries);
+                _desktopCount = 0;
+                _desktopIncomplete = false;
+                _desktopEntries =
+                        static_cast<Entry *>(Memory::alloc(MemSpace::Psram, sizeof(Entry) * DesktopWindow::MaxItems));
+                if (_desktopEntries == nullptr) return true;
+                for (size_t i = 0; i < DesktopWindow::MaxItems; ++i) ::new (&_desktopEntries[i]) Entry();
+                const Vfs::Context vc{_context.cwd, nullptr};
+                StringView         dirs(_desktopDirs);
+                for (StringView d = IniReader::nextListItem(dirs); !d.isEmpty(); d = IniReader::nextListItem(dirs))
+                        if (!readEntryDirectory(d, vc, _desktopEntries, _desktopCount, DesktopWindow::MaxItems,
+                                                badEntry, this))
+                                _desktopIncomplete = true;
+                keepShownEntries(_desktopEntries, _desktopCount);
+                StringView names[DesktopWindow::MaxItems];
+                for (size_t i = 0; i < _desktopCount; ++i) names[i] = StringView(_desktopEntries[i].entry.name);
+                const Rect     work = _app.windowManager().workArea();
+                const Rect     s = _desktop->screenRect();
+                const Rect     area{uint16_t(work.x - s.x), uint16_t(work.y - s.y), work.width, work.height};
+                IconGrid::Cell wanted[DesktopWindow::MaxItems];
+                readPlaces(Span<IconGrid::Cell>(wanted, _desktopCount));
+                if (_desktop->setItems(Span<const StringView>(names, _desktopCount),
+                                       Span<const IconGrid::Cell>(wanted, _desktopCount), area)
+                            .isError())
+                        say("panel: no memory for the desktop's icons\n");
+                return findDesktopIcons();
+        }
+
+        // Where the desktop's entries were put (desktop.conf's [Icons], FILE=COLUMN,ROW), in @p wanted.
+        void PanelApp::readPlaces(Span<IconGrid::Cell> wanted) {
+                for (IconGrid::Cell &c : wanted) c = IconGrid::Cell();
+                char *text = static_cast<char *>(Memory::alloc(MemSpace::Psram, MaxPlacesBytes));
+                if (text == nullptr) return;
+                size_t             got = 0;
+                const Vfs::Context vc{_context.cwd, nullptr};
+                auto [file, err] = Vfs::open(StringView(PlacesPath), Vfs::Read, vc);
+                while (err.isOk() && got < MaxPlacesBytes) {
+                        auto [n, rerr] = file->read(
+                                WritableByteSpan(reinterpret_cast<uint8_t *>(text) + got, MaxPlacesBytes - got),
+                                WaitForever);
+                        if (rerr.isError() || n == 0) break;
+                        got += n;
+                }
+                IniReader reader(StringView(text, got));
+                for (IniReader::Item item = reader.next(); item.kind != IniReader::Kind::End; item = reader.next()) {
+                        if (item.kind != IniReader::Kind::Entry || !item.name.equalsIgnoreCase("Icons")) continue;
+                        const size_t comma = item.value.indexOf(',');
+                        if (comma == StringView::NPos) continue;
+                        char column[8] = {}, row[8] = {};
+                        std::snprintf(column, sizeof(column), "%.*s", int(comma), item.value.data());
+                        std::snprintf(row, sizeof(row), "%.*s", int(item.value.size() - comma - 1),
+                                      item.value.data() + comma + 1);
+                        const int c = std::atoi(column), r = std::atoi(row);
+                        if (c < 0 || r < 0 || c >= IconGrid::None || r >= IconGrid::None) continue;
+                        for (size_t i = 0; i < wanted.size(); ++i)
+                                if (StringView(_desktopEntries[i].file) == item.key)
+                                        wanted[i] = IconGrid::Cell{uint16_t(c), uint16_t(r)};
+                }
+                Memory::free(text);
+                return;
+        }
+
+        // An icon moved: the places written soon (once the drop is drawn).
+        void PanelApp::desktopMoved(void *arg) {
+                auto *self = static_cast<PanelApp *>(arg);
+                if (self->_saveTimer >= 0) return;
+                auto [timer, err] = self->_app.startTimer(SaveDelayMs, false, savePlaces, self);
+                if (err.isOk()) self->_saveTimer = timer;
+                return;
+        }
+
+        // Every icon's place, into desktop.conf.
+        void PanelApp::savePlaces(void *arg) {
+                auto *self = static_cast<PanelApp *>(arg);
+                self->_saveTimer = -1;
+                if (self->_desktop == nullptr) return;
+                String text;
+                Error  err = text.append(StringView("# Where the desktop's icons were put: written by the panel.\n"
+                                                     "[Icons]\n"));
+                for (size_t i = 0; i < self->_desktop->itemCount() && err.isOk(); ++i) {
+                        const IconGrid::Cell c = self->_desktop->itemCell(i);
+                        char                 line[80];
+                        std::snprintf(line, sizeof(line), "%s=%u,%u\n", self->_desktopEntries[i].file,
+                                      unsigned(c.column), unsigned(c.row));
+                        err = text.append(StringView(line));
+                }
+                const Vfs::Context vc{self->_context.cwd, nullptr};
+                if (err.isOk()) {
+                        auto [file, oerr] =
+                                Vfs::open(StringView(PlacesPath), Vfs::Write | Vfs::Create | Vfs::Truncate, vc);
+                        err = oerr;
+                        if (err.isOk()) {
+                                auto [n, werr] = file->write(
+                                        ByteSpan(reinterpret_cast<const uint8_t *>(text.cStr()), text.size()),
+                                        WaitForever);
+                                err = werr.isError() ? werr : (n != text.size() ? Error(Error::IoError) : Error());
+                        }
+                }
+                if (err.isError()) {
+                        char line[96];
+                        std::snprintf(line, sizeof(line), "panel: %s: can't write it: %s\n", PlacesPath, err.desc());
+                        self->say(line);
+                }
+                return;
+        }
+
+        // The icons the desktop's items lack, looked for; true when none is missing.
+        bool PanelApp::findDesktopIcons() {
+                bool all = !_desktopIncomplete;
+                for (size_t i = 0; i < _desktop->itemCount(); ++i) {
+                        if (_desktop->hasItemIcon(i)) continue;
+                        const Icon *icon = entryIcon(_desktopEntries[i], DesktopWindow::IconSide);
+                        if (icon != nullptr) {
+                                _desktop->setItemIcon(i, icon); // a copy: the theme's cache may drop it
+                        } else {
+                                all = false;
+                        }
+                }
+                return all;
+        }
+
+        void PanelApp::desktopIconsTick(void *arg) {
+                auto      *self = static_cast<PanelApp *>(arg);
+                const bool done = self->_desktopIncomplete ? self->loadDesktop() : self->findDesktopIcons();
+                if (done || ++self->_iconTries >= IconRetries) {
+                        self->_app.stopTimer(self->_iconTimer);
+                        self->_iconTimer = -1;
+                }
+                return;
         }
 
         void PanelApp::windowsChanged(void *arg) {
@@ -811,9 +894,11 @@ namespace {
 
         // The desktop and the panel opened, the window list filled. The application's lock held.
         Error PanelApp::openWindows() {
-                bool desktop = true;
-                (void)IniReader::toBool(setting("Desktop", "Menu", "true"), desktop);
-                if (desktop) {
+                bool menu = true;
+                (void)IniReader::toBool(setting("Desktop", "Menu", "true"), menu);
+                const StringView icons = setting("Desktop", "Icons", DefaultDesktop);
+                std::snprintf(_desktopDirs, sizeof(_desktopDirs), "%.*s", int(icons.size()), icons.data());
+                if (menu || !icons.isEmpty()) {
                         GuiWindow::Config dc;
                         dc.rect = _screen;
                         dc.title = "Desktop";
@@ -824,7 +909,10 @@ namespace {
                         dc.reference = true; // win check compares it
                         void *mem = Memory::alloc(MemSpace::Psram, sizeof(DesktopWindow));
                         if (mem != nullptr) {
-                                _desktop = ::new (mem) DesktopWindow(_app, dc, *this);
+                                _desktop = ::new (mem) DesktopWindow(_app, dc);
+                                if (menu) _desktop->setMenuAsked(desktopMenu, this);
+                                _desktop->setOpened(desktopOpened, this);
+                                _desktop->setMoved(desktopMoved, this);
                                 if (_desktop->show().isError()) say("panel: no desktop window\n");
                         }
                 }
@@ -857,6 +945,12 @@ namespace {
                                         say("panel: the Windows key is taken: no launcher on it\n");
                 }
                 if (err.isOk()) windowsChanged(this);
+                // The desktop's icons, in the work area the panel left; those not found yet looked for
+                // again for a while.
+                if (err.isOk() && !loadDesktop()) {
+                        auto [timer, terr] = _app.startTimer(IconRetryMs, true, desktopIconsTick, this);
+                        if (terr.isOk()) _iconTimer = timer;
+                }
                 // The configuration is in the widgets now.
                 _settingCount = 0;
                 Memory::free(_configText);
