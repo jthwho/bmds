@@ -609,7 +609,8 @@ The user asked for three things:
     message for too long a name stays for a paste.
 - **`PopupEdit::open()` takes a `Look`:**
   - `Field`: as before.
-  - `IconName`: the desktop's colors, centred, wrapped, no frame. The window is as tall as the
+  - `IconName`: a field's white and text (the user's, after trying the desktop's colors),
+    centred, wrapped, no frame. The window is as tall as the
     lines, and grows and shrinks as they change (8 lines at most).
 - **The desktop:**
   - Labels break with `TextWrap` too (9 columns), so a name wraps the same in both.
@@ -744,6 +745,19 @@ The user asked for three things:
     manager now takes a modifier key's own bit off at its release, and puts it on at its
     press. On the board: an Alt tap, then a click on a terminal's close button, closed it
     (before the fix, nothing happened). An Alt+drag with Alt held still moved the window.
+  - **The editor on white (the user's, 2026-10-07):** drawn in the desktop's colors, the
+    editor couldn't be told from the label. It is now on a field's white with a field's text
+    (still no frame, centred and wrapped as the label).
+  - **A long name's editor showing the old label (the user's report, 2026-10-07):** to count
+    its lines, `PopupEdit::open()` makes the editor a line tall before the window opens. Opening
+    puts it back to the window's size only when the window's size changes. Opened again at the
+    same size (the same name after a message, say), the editor stayed a line tall, and the rest
+    of the window, never drawn, showed what was under it: the elided label. `open()` now fits
+    the editor to the window after showing it. A desktop reload while editing (the icons'
+    retries in the panel's first minute) keeps the name hidden too. On the board, a long hold
+    on "long name goes here this is long.txt" opened the white editor with the whole name on
+    four lines, "long name goes here this is long" selected, covering the icon below. After
+    Esc, a second long hold and F2 each opened it whole again.
   - **A window number reused:** a panel started again got the old panel's number, still the
     window manager's focus, and so had the keys without being given them. Opening a desktop or
     panel window under the focus's number now clears it.

@@ -1072,6 +1072,10 @@ namespace {
                         say("panel: no memory for the desktop's icons\n");
                 for (size_t i = 0; i < _desktopCount && selectedFile[0] != '\0'; ++i)
                         if (std::strcmp(_desktopEntries[i].file, selectedFile) == 0) _desktop->setSelected(int(i));
+                // A name being edited stays hidden under its editor (the icons looked for again
+                // reload the desktop while it is open).
+                if (_nameEdit != nullptr && _nameEdit->isShown() && _renaming < _desktopCount)
+                        _desktop->setEditing(int(_renaming));
                 return findDesktopIcons();
         }
 

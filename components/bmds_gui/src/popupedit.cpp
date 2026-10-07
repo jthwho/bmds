@@ -47,7 +47,7 @@ Error PopupEdit::open(const Rect &screen, StringView text, Look look, Done fn, v
         _look = look;
         const bool name = look == Look::IconName;
         _edit->setFramed(!name);
-        _edit->setColors(name ? Role::Desktop : Role::FaceHighlight, name ? Role::DesktopText : Role::FaceText);
+        _edit->setColors(Role::FaceHighlight, Role::FaceText); // a field's white: plainly being edited
         _edit->setCentered(name);
         _edit->setWrapping(name);
         _edit->setMaxLength(LineEditModel::MaxBytes);
@@ -58,6 +58,10 @@ Error PopupEdit::open(const Rect &screen, StringView text, Look look, Done fn, v
         _edit->selectAll();
         const Error err =
                 show(Rect{uint16_t(screen.x & ~3u), screen.y, width, heightFor(name ? _edit->lineCount() : 1)});
+        // The editor fills the window again: opening it at the size it had last time doesn't
+        // resize it (the measuring above left the editor a line tall, the rest of the window
+        // undrawn, what was under it showing).
+        setCentral(_edit);
         _open = err.isOk();
         return err;
 }

@@ -26,9 +26,9 @@ BMDS_NAMESPACE_BEGIN
  * else, accepts; Esc cancels. Either way it closes, then tells its `Done`
  * (which may open it again: to go on editing after a message, say).
  *
- * It looks like a field, or like a desktop icon's name (§4r): no frame, the
- * desktop's colors, centred and wrapped, as tall as its lines (it grows and
- * shrinks as they change), so the editor looks as the name it replaces.
+ * It looks like a field, or like a desktop icon's name (§4r): no frame,
+ * centred and wrapped as the name is, as tall as its lines (it grows and
+ * shrinks as they change), on a field's white so it is plainly being edited.
  *
  * @par Thread Safety
  * The loop's thread, as the widgets.
@@ -41,7 +41,7 @@ class PopupEdit final : public GuiWindow {
                 /** @brief How it looks. */
                 enum class Look : uint8_t {
                         Field,    ///< A field's bevel and colors, a line.
-                        IconName, ///< A desktop icon's name: no frame, wrapped and centred.
+                        IconName, ///< A desktop icon's name: no frame, wrapped and centred, on white.
                 };
 
                 /** @brief The most lines it grows to (`Look::IconName`). */
