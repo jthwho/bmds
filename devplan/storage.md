@@ -263,6 +263,9 @@ Step 2b measured: the image grew by 10.9 KB (331.7 → 342.7 KB); the linker sti
 
 ## 13. `/boot`: a persistent partition on the flash (design, 2026-10-05; built)
 
+*Its format changed on 2026-10-07: littlefs through an ordered write cache instead of FAT on
+wear levelling (§13d). The rest of this section is the FAT design as it was built.*
+
 **Goal** (the user's): files and settings that persist without a card, on a partition of the
 board's flash that is **always** mounted at `/boot`. `autoexec.sh` moves there: the system starts
 the same with or without a card, and a script that wants the card checks for it itself.
@@ -427,11 +430,29 @@ answer (settings must not need it); a cache in the kernel that writes in the bac
   - **What it shows:** each directory's first cluster (clusters 7, 11 and 17; FAT12, 1 KB
     clusters) is all 0xFF, with `.`, `..` and the first entries in it. Entries in the clusters
     chained after it survive, which is why `ls` showed garbage, then the rest.
-  - **Context:** every file there is dated 16:00 (the clock unset), as if `/boot` had been
-    made again and its defaults installed at that boot. `/boot/.trash`, made later, is
-    intact.
-  - **Not known yet:** whether this was three cut-off writes or one fault in how a new
-    directory's cluster reaches the flash.
+  - **Context:** every file there is dated 16:00 (the clock unset). `/boot/.trash`, made
+    later, is intact.
+  - **Found (2026-10-07): cut-off block writes, not a fault in how a directory is made.** The
+    image was decoded through wear levelling's map (its state: dummy page 34, no moves yet; the
+    FAT partition at sector 63 of the logical device, so logical page N is sector 8N):
+    - **The directories were older than the damage.** `profile` and `autoexec.sh` hold clusters
+      2 and 3, from the first format, so `/boot` wasn't made again. Clusters 18, 19, 20 and 22
+      are allocated in the FAT but in no directory: an old `desktop/terminal.desktop`,
+      `wm.conf`, `clipboard.conf` and `desktop.conf`, whose entries were in the erased
+      clusters. The files listed now were installed again afterwards, into the clusters
+      chained after the 32 0xFF entries.
+    - **No `.` entry for clusters 7, 11 or 17 is anywhere in the partition,** so the
+      directories' data wasn't written to the wrong place.
+    - **Each damaged page holds a file written at boot.** Page 15 (clusters 6 to 9) holds
+      cluster 6, an old 64-byte random seed now lost. Page 16 (10 to 13) holds `.defaults`
+      (13). Page 17 (14 to 17) holds `random-seed` (15) and an older seed (14). `random-seed`
+      is rewritten about 5 s into every boot, which also erases and rewrites the FAT's page and
+      the root directory's page. A reset at that moment, as in the first case, loses whichever
+      page was between its erase and its write. The other sectors in those pages were written
+      again later, as files reused the space; the directory clusters never were.
+    - **Wear levelling's own recovery isn't involved:** its transaction page (logical page
+      1010) is erased, so nothing was pending.
+  - **The fix:** §13b.
 - **The flash still stops the caches while it erases or writes** (code and PSRAM out of reach,
   the other core paused; IDF yields every 20 ms of an erase). In the background, that is a short
   pause per block where nothing waits for the whole write. Flash auto-suspend (IDF, P4-capable)
@@ -450,6 +471,337 @@ answer (settings must not need it); a cache in the kernel that writes in the bac
   (`ef 4018`); IDF's Winbond driver enables suspend for the W25Q64 (`ef 4017`) only. Enabling
   it would need our own chip driver (`SPI_FLASH_OVERRIDE_CHIP_DRIVER_LIST`) on an unqualified
   part: not done.
+
+### 13b. Block writes that survive a reset (design, 2026-10-07; the fallback to §13c)
+
+**Why:** §13a's two cases. A 4 KB block is erased, then written. A reset between the two
+loses everything in it, including files that weren't being written. Wear levelling's safe mode
+protects only partial-sector erases, which the cache never makes. `/boot` is written at every
+boot (`random-seed`, and `.defaults` when there's a new default), so routine resets during
+development hit it.
+
+**Rejected alternatives:**
+- **LittleFS for `/boot`:** designed to survive power loss. But it means a new on-disk format,
+  a migration of the user's files, an outside component, and code size still to measure. Kept
+  as the long-term option if FAT's other weaknesses start to matter.
+- **A journal at the end of the device:** the FAT partition fills the logical device to its
+  last sector, so it would need a smaller filesystem and a migration.
+
+**Design (in `FlashBlockDevice`, under `/boot`'s existing format):**
+- **Where the journal lives: the gap between the MBR and the partition.** FatFs puts the
+  first MBR partition at sector 63 (`N_SEC_TRACK`), so logical pages 1 to 6 (sectors 8 to 55)
+  belong to no partition. They are all 0xFF in the image: nothing has ever written there.
+  GRUB's core image lives in the same gap on PCs. Wear levelling maps these pages like any
+  other, so their wear is spread across the partition.
+  - The device refuses writes there (`ReadOnly`), so a raw writer (§14's `fdisk`, a future
+    `dd`) can't overwrite the journal.
+  - If the table on the device doesn't leave pages 1 to 6 free, the journal is off. A line
+    in the log says so, and the device writes as before.
+- **Which writes use it:** only a block whose new contents need an erase. If the new data
+  only clears bits of what is on the flash (`new & old == new`, as when a file is written into
+  free, erased clusters), the block is programmed without an erase. A cut then leaves only
+  the sectors being written unfinished, as on any disk.
+- **How a journaled block is written:**
+  1. Erase a journal data page, round-robin over pages 1 to 4, and write the new 4 KB there.
+  2. Append a 32-byte record to the active record page (5 or 6) by programming only, with no
+     erase. It holds a magic number, a sequence number, the target block, the data page, a
+     CRC-32 of the data and a CRC of the record.
+  3. Erase the target block and write it.
+- **Record pages:** each holds 128 records. When the active one is full, the other is erased
+  and becomes active. The newest record is always in one of the two, so a cut during that
+  erase loses nothing.
+- **On mount, before FatFs reads anything:**
+  - Find the newest valid record (highest sequence number, both CRCs good).
+  - If its data page still matches the data CRC and the target block differs from it, copy
+    the data page into the block again.
+  - Only the newest record can be unfinished, because blocks are written one at a time in
+    order. Redoing it is harmless: rewriting the same contents changes nothing.
+- **What it doesn't fix:** FAT's metadata still isn't updated atomically *across* blocks. A
+  cut between the FAT's block and a directory's block can leave lost clusters, as clusters 6,
+  14 and 18 to 22 are now. That wastes space but loses nothing else. A check that frees lost
+  clusters at mount (`fsck`-like) can come later.
+- **Cost:**
+  - A journaled block costs one more 4 KB erase and write, plus a 32-byte program. §13a
+    measured about 0.21 s of whole-system pause per small file, mostly FAT and directory
+    blocks; those are journaled, so expect up to about double. Programmed-only blocks cost
+    less than today.
+  - The pause stays in the background (§13a's worker), so nobody waits for it.
+  - RAM: none new. The cache's slot is the source; mount recovery uses one cache slot.
+  - Wear: the journal pages are erased once per journaled block, and wear levelling spreads
+    that over the partition.
+- **Also:** `random-seed` is rewritten in place (opened without truncating), so a boot no
+  longer reallocates its cluster or rewrites the FAT. Its directory entry's modification time
+  still changes, so the root directory's block is still journaled.
+- **Testing:**
+  - On the host: the journal's logic over a simulated NOR flash that can be "cut" at any
+    erase or program step. The test checks that after recovery every block is either old or
+    new, never erased.
+  - On the board: a loop that writes files, with `reboot` and a hardware reset at random
+    moments, followed by a check of the tree.
+
+### 13c. littlefs for `/boot`: measured (2026-10-07)
+
+**Why:** §13b fixes erased blocks, but FAT's metadata still isn't atomic across blocks, and every
+small file still costs several erases. littlefs (copy-on-write, power-loss safe by design, its
+own wear levelling) might fix both. These measurements decide it; `/boot` isn't changed yet.
+
+**Vendored:** littlefs v2.11.3 in `thirdparty/littlefs` (BSD-3-Clause), built with `LFS_NO_MALLOC`
+(every buffer supplied) and its messages off. Its own code shadows variables, so `-Wshadow` is
+off for its two files only.
+
+**Power cuts, on the host** (`tests/host/littlefs.cpp`):
+- **The simulator:** a NOR flash of 64 blocks. An erase sets 0xFF, a program can only clear bits,
+  and either can be cut. A cut program leaves its first bytes written and one byte half done; a
+  cut erase leaves garbage.
+- **The workload:** files rewritten in place, replaced by renaming a new file over them, and
+  removed. Sizes are inline (in the directory), one block, and chains of blocks. The test cuts
+  at every flash operation in turn (about 600 points). After each cut it mounts, checks every
+  file, carries on, remounts and checks again.
+- **The result:** every file holds its last closed contents or the ones being written. littlefs
+  never programmed a byte that wasn't erased. A one-off run 5 times longer, with two other seeds
+  (about 1,400 cut points each), also passed.
+- **littlefs's rules (from the test):**
+  - A new file's entry is committed when it is opened with `O_CREAT`, and its data at close. A
+    cut in between leaves it empty, as POSIX's `creat()` would.
+  - A file that is rewritten keeps its old contents until it is closed. Renaming a new file over
+    an old one is atomic.
+
+**On the board** (`lfsbench`, a prototype command):
+- **The setup:**
+  - littlefs uses a scratch region of the flash past the last partition (0x810000, 4 MB, 1024
+    blocks of 4 KB), so `/boot` wasn't involved.
+  - The configuration: read and program sizes 16, caches 512 bytes, lookahead 128 bytes,
+    `block_cycles` 500.
+  - FAT was measured on `/boot` itself, in `/boot/.lfsbench`, which is removed afterwards.
+- **How the pause is measured:** a loop running from flash on the other core counts while the
+  files are written. The counts lost against an idle half second are the time the whole system
+  was stopped.
+- **Reads must be mapped:** with `esp_flash_read`, every read turned the caches off. littlefs
+  reads in small pieces, so 60 file operations made 12,263 reads and 639 ms of pause. Reading the
+  region through the cache (`spi_flash_mmap`, kept coherent by IDF's flush after erases and
+  programs) cut the pause from 783 ms to 238 ms.
+
+| 20 files, one operation every 300 ms | Pause per operation | Time to close (average, longest) |
+|---|---|---|
+| littlefs, 200-byte files | 4.5 ms | 7.2–10.8 ms, 131 ms |
+| FAT on `/boot`, 200-byte files | 179 ms | 2.4–2.5 ms, 15 ms |
+| littlefs, 4,000-byte files | 39 ms | 58–65 ms, 159 ms |
+| FAT on `/boot`, 4,000-byte files | 208 ms | 8–11 ms, 79 ms |
+
+- **How to read the table:**
+  - FAT's close returns before anything reaches the flash (§13a's worker writes it afterwards),
+    so FAT looks fast to close, then stops the system for longer.
+  - littlefs's close returns when the file is on the flash.
+  - The longest littlefs closes include block erases (about 45 ms each) when a directory is
+    compacted or a block is allocated.
+- **Other numbers:**
+  - 150 small files in one directory, back to back: 3.6 ms of pause per operation. Creating
+    them took 18.6 ms each on average, rewriting 7 ms, removing 1.6 ms.
+  - Formatting took 91 ms (two erases). Mounting took 0 to 1 ms.
+- **Code:** littlefs's `.text` is 20.0 KB and its rodata 0.7 KB (the input sections, so an upper
+  bound). `lfsbench` adds 3.1 KB.
+
+**What this means for `/boot` (to decide):**
+- **Writing small files stops the system about 40 times less** (4.5 ms against 179 ms per
+  operation), and about 5 times less for 4 KB files.
+- **Every close is durable on the flash.** FAT's background writes leave it durable only about
+  0.1 s later, and not atomic.
+- **The cost:** a close waits for its own flash operations, a few milliseconds. It waits about
+  130 ms when a block must be erased: on a PSRAM stack, the caller waits for the flash worker as
+  it does today.
+- **The integration (to design if chosen):**
+  - A `LittleFsVolume` beside `FatVolume` in the VFS.
+  - Reads by `memcpy` from the mapped partition, which works on any stack. Only programs and
+    erases go to the internal-stack worker, which replaces §13a's write-back cache.
+  - Modification times and the hidden and read-only flags as littlefs attributes. Symbolic
+    links emulated as on FAT.
+  - The partition table entry changed, and `/boot`'s files moved over at the first boot.
+
+### 13d. `/boot` on littlefs (design, 2026-10-07; the user chose littlefs and asked for a write cache)
+
+**1. Filesystems behind an interface.** The VFS calls FatFs directly today (`vfs.cpp`,
+`fatfile.cpp`, `zoneinfo.cpp`). A `Volume` interface (private to `bmds_fs`) goes between them:
+- **What it has:**
+  - `typeName()`, `info()`
+  - `stat()`, `open()` (a `FileHandle`, with the link and no-path reports `Fat::openFile()` has
+    now)
+  - `mkdir()`, `rmdir()`, `remove()`, `rename()`, `setModified()`
+  - directory cursors: `openDirectory()`, `next()`, `close()`
+  - plain reads for link files and the zone database: `openReader()`, `readAt()`,
+    `closeReader()`
+  - `writeLinkFile()`
+- **Paths are relative to the volume** (`""` for its root, else `/dir/file`). Every call runs
+  under the storage lock, as now.
+- **What stays in the VFS:**
+  - Everything above the filesystems: the mount table, `/dev`, `/bin`, `/share/zoneinfo`,
+    following links, identities, the change hook.
+  - Link files keep one format on both filesystems: a System file holding Cygwin's cookie (§4).
+- **"No path":** an operation that fails because a directory along the path is missing, or is a
+  file, reports it (FatFs's `FR_NO_PATH`; littlefs's `NOTDIR`, or `NOENT` when the parent isn't a
+  directory). The VFS then looks for a link along the way, as now.
+- **Which filesystem mounts:**
+  - A device that is a flash (`BlockDevice::flash()` returns its `FlashDevice`) mounts littlefs,
+    and `Vfs::format()` makes littlefs on it.
+  - Every other device mounts FAT, as now.
+  - `FatVolume` becomes the FAT implementation, and the shared parts of `fatlayer.h` (the lock,
+    the registry, the change hook) move to `fslayer.h`.
+
+**2. `FlashDevice`** (`bmds_fs`, portable): a NOR flash as littlefs sees it.
+- **Its calls:** `blockBytes()`, `blockCount()`, `read(address, buffer)`,
+  `program(address, data)`, `erase(block)`, and `flush(timeoutMs)`, which waits until
+  everything written is on the flash.
+- **Rules:** `read()`, `program()` and `erase()` may be called from any task on any stack, and
+  their effects are seen by later reads at once.
+- **On the host:** `RamFlashDevice`, a simulated NOR (§13c's semantics), for the VFS tests.
+
+**3. `LittleFsVolume`** (`bmds_fs`, portable, littlefs v2.11.3):
+- **littlefs's configuration (§13c's):**
+  - read and program sizes 16, caches 512 bytes (PSRAM), `block_cycles` 500
+  - lookahead of one bit per block
+  - `LFS_NO_MALLOC`: every buffer comes from the volume. A file's 512-byte buffer is allocated
+    with the file (PSRAM).
+- **Modification time and attributes** are littlefs attributes: `'t'` (int64 nanoseconds,
+  UTC) and `'a'` (the FAT attribute byte).
+  - A file written gets its new time in the same commit as its data: the attribute is given to
+    `lfs_file_opencfg()` and set just before the close.
+  - A new directory gets one at `mkdir()`.
+  - An entry without `'t'` shows time 0 (unknown), as now.
+- **Busy, as on FAT** (FatFs's `FF_FS_LOCK`): littlefs lets a file be open twice, each handle
+  with its own view, and the last close wins. The volume keeps a table of open files instead:
+  - a file open for writing can't be opened again;
+  - a file open at all can't be opened for writing, removed or renamed;
+  - each of those is `Busy`.
+- **Names:** littlefs's are case-sensitive and FAT's aren't. `FileInfo::id` folds case
+  (§4), so on littlefs `A` and `a` share an id. Noted, not fixed: `/boot`'s names come from
+  this project.
+- **The rest, against POSIX and the VFS's contract:**
+  - `rename()` onto an existing name is `Exists`, as on FAT (littlefs would replace it).
+  - Seeking past the end and writing fills zeros (littlefs does it natively).
+  - `truncate()` grows with zeros.
+  - `statfs` gives type `littlefs`, the block as its allocation unit, and free space from
+    `lfs_fs_size()`.
+
+**4. The write cache: `FlashPartition`** (`bmds_storage`), the `FlashDevice` for an IDF
+partition. This answers "can littlefs have FAT's write cache?" Yes, safely, because it keeps
+order.
+- **An ordered queue, not a block cache:**
+  - `program()` and `erase()` append the operation to a FIFO in PSRAM (64 KB) and return.
+  - A worker task (`flash0`, internal stack) does the operations in order, one at a time.
+  - Nothing is reordered or merged. The flash therefore always shows a state littlefs itself
+    passed through, and a cut only loses the queue's tail. §13c's test proves littlefs survives
+    that: it is a cut at an earlier operation.
+  - FAT's cache could reorder blocks; this one can't, so littlefs's guarantees hold.
+- **Reads see the queue:**
+  - `read()` copies from the memory-mapped partition, then applies the queued operations that
+    overlap, oldest first (an erase as 0xFF, a program as its bytes), under the device's lock.
+  - The worker removes an operation only after doing it. A read in between applies it twice,
+    which gives the same bytes.
+  - While the flash is busy the caches are off and the other core is paused, so a half-done
+    operation is never read.
+- **No stack restriction any more:** only the worker touches the flash, and reads are a
+  `memcpy`. littlefs runs on the caller's task, PSRAM stack or not, and §13a's forwarding of
+  every request to the worker goes away.
+- **A full queue:** the writer waits for room (a semaphore the worker releases), as FAT's cache
+  waits when all eight blocks are dirty.
+- **Durability:**
+  - A close doesn't wait: the file is on the flash a few milliseconds later, or about 0.1 s
+    when a block is erased. That is the same window as FAT's cache today, but now always
+    consistent.
+  - `fsync` (`Stream::flush()`) waits for the queue (`flush()`), so a program that asks for
+    durability gets it. FAT's didn't.
+  - A restart writes the queue out first (the shutdown handler, as now).
+- **Bad blocks:** an operation that fails in the worker is logged and the queue moves on.
+  littlefs's own relocation of bad blocks can't act on it, because the error comes after the
+  call returned. NOR flash rarely fails a program, and the IDF reports it the same way today
+  (§13a).
+- **What it costs:**
+  - 64 KB of PSRAM for the queue.
+  - The worker's 3 KB internal stack, which already exists.
+  - The mapping: 4 MB of the flash MMU's address space, held while `/boot` is mounted.
+- **Gone:** wear levelling (littlefs levels wear itself), the 8-block write-back cache, and
+  the partition's 512-byte sector view.
+
+**5. Moving `/boot` (`BootDisk::init()`):** *(the move was built, used once on the user's board,
+then removed at the user's word, since nothing on that `/boot` mattered: a partition without
+littlefs is now simply formatted; see the as-built notes)*
+- **The partition table:** `boot` becomes `data, littlefs` at the same offset and size.
+  `BootDisk` finds it by label, so a board still carrying the old table works too.
+- **The new layout:** a littlefs superblock (`"littlefs"` at offset 8 of block 0 or 1) is
+  mounted as is.
+- **Moving the old layout's files:** anything else that wear levelling can mount as FAT is
+  copied over:
+  1. Mount the FAT, through a read-only wear-levelling device, at `/boot`.
+  2. Read the whole tree into PSRAM: files with their times and attributes, links as link
+     files, at most 2 MB. Unreadable entries (§13a's 0xFF ones) are skipped and logged.
+  3. Unmount it, format littlefs, mount it at `/boot`, and write the tree back.
+- **Otherwise:** format a new `/boot`, as on a new board.
+- **Risk:** a cut during the move (a second or two, once) leaves a `/boot` without the files
+  not yet written back. The defaults are reinstalled at the next boot; the user's own files
+  would be lost.
+- **After:** `.defaults` is copied like any file, so nothing is reinstalled. The random seed
+  works as before.
+
+**6. Tests:**
+- **On the host:** the VFS tests that cover files, directories, holes and truncation,
+  identity, the change hook, links, times and a full disk run on littlefs too, on a
+  `RamFlashDevice` mounted beside the FAT RAM disk. New tests: Busy, `fsync`, and the ordered
+  queue's read overlay (as a portable class, `FlashQueue`, used by `FlashPartition` and tested
+  on the host).
+- **On the board:**
+  - `/boot` moved with its files.
+  - The desktop, configs and `.trash` work.
+  - `lfsbench fat` replaced by measuring `/boot` itself through the VFS.
+  - A reset during a write loop leaves `/boot` mountable and every file whole.
+
+**As built** (2026-10-07):
+- **The interface:** `Volume` (`fslayer.h`) with `FatVolume` and `LittleFsVolume` behind it.
+  `vfs.cpp` and `zoneinfo.cpp` no longer call FatFs. All 341 tests from before passed unchanged
+  once FAT was behind it.
+- **Host tests** (`tests/host/lfsvfs.cpp`, 348 tests in all, quiet):
+  - Files, directories, holes, truncation, Busy, links, times, identity, stale files after an
+    unmount, and a full flash, on littlefs in the VFS.
+  - `FlashQueue` around its ring 20,000 times against a model.
+  - A write queue cut off every 7th step of 300 file rewrites and renames: 43 cuts, more than
+    half of them dropping queued writes. Each cut image mounts, and every file is a whole
+    version or empty (made, not yet written).
+- **Moving the user's `/boot`** (backed up first as `build/boot-before-littlefs-2026-10-07.img`):
+  - 19 of 19 files and links moved: the configs, the desktop's items, `.trash` and the `sd`
+    link, with their times. The 96 garbage entries of §13a's damaged directories were skipped,
+    so those directories are clean now.
+  - It took 0.7 s, once. The main task had 916 bytes of stack left on that boot, and 1,528 on a
+    normal one, whose whole init took 44 ms.
+- **`fsbench /boot`** (20 files, 300 ms apart; FAT's from §13c in brackets):
+
+| | Pause per operation | Close, average | Close, longest |
+|---|---|---|---|
+| 200-byte files | 4.5 ms (179 ms) | 5.2–9.3 ms | 68 ms |
+| 4,000-byte files | 43.6 ms (208 ms) | 3.4–7.1 ms | 7.4 ms |
+
+  - **The delay matters:** with the worker starting at once, closes averaged 11–14 ms (59–63 ms
+    for 4,000-byte files), because an erase stops both cores and so held up the close that was
+    still running. Waiting `DelayMs` (100 ms) after the last write, as FAT's cache did, lets
+    the close finish first. The pause is the same either way.
+  - **Bursts:** 20 small files back to back cost 4.6 ms of pause per operation. 100 in one
+    directory cost 5.5 ms; creating them averaged 35 ms, the longest 0.82 s (littlefs
+    compacting a big directory).
+  - **`metadata_max` 1024 was tried and rejected:** compacting every 1 KB took 35 ms of pause
+    per operation.
+- **Resets:** 32 hardware resets at random moments of a write loop (`seq` output into four
+  files). `/boot` mounted after every one without being formatted, and every file was a whole
+  `seq` output.
+- **The desktop** reads its icons and their places from the moved `/boot`. A rename by F2
+  renamed the file and rewrote `desktop.conf`.
+- **Sizes:**
+  - `df` shows 4,096 KB, since wear levelling's sectors are gone.
+  - The firmware is 904,240 bytes; the last FAT-only build was 868,704. That includes littlefs,
+    the move and `fsbench`.
+  - `fsbench` replaced the prototype `lfsbench`, which is gone. The scratch region
+    past the last partition still holds the bench's old data, which nothing uses.
+- **The move removed** (the same day, the user's call): a partition without littlefs is formatted
+  and given the defaults, as on a new board. Wear levelling and its `sdkconfig.defaults` lines
+  went with it; the firmware is 892,160 bytes. The board's partition was erased with
+  `esptool erase-region 0x410000 0x400000`; the next boot formatted it (one line, "isn't
+  littlefs: formatting it") and installed the ten defaults and a new random seed.
 
 ## 14. Editing partitions: `fdisk` (planned, 2026-10-06)
 

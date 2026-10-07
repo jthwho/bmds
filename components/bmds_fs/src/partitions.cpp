@@ -12,7 +12,7 @@
 #include <bmds/memory.h>
 #include <bmds/partitions.h>
 
-#include "fatlayer.h"
+#include "fslayer.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -181,7 +181,7 @@ Result<size_t> Partitions::attach(BlockDevice &device) {
         PartitionInfo        parts[MaxPerDevice];
         const Result<size_t> found = read(device, Span<PartitionInfo>(parts));
         if (found.error().isError()) return found;
-        Mutex::Locker lock(Fat::lock(), WaitForever);
+        Mutex::Locker lock(Fs::lock(), WaitForever);
         size_t        added = 0;
         for (size_t i = 0; i < found.value(); ++i) {
                 PartitionDevice *slot = nullptr;
@@ -195,7 +195,7 @@ Result<size_t> Partitions::attach(BlockDevice &device) {
                 char partName[BlockDevices::MaxName + 12]; // "p" and up to 10 digits
                 std::snprintf(partName, sizeof(partName), "%sp%u", name, static_cast<unsigned>(i));
                 slot->set(device, parts[i].firstSector, parts[i].sectorCount);
-                if (Fat::addDeviceLocked(*slot, partName, &device).isError()) {
+                if (Fs::addDeviceLocked(*slot, partName, &device).isError()) {
                         slot->invalidate();
                         slot->free();
                         break;
@@ -208,11 +208,11 @@ Result<size_t> Partitions::attach(BlockDevice &device) {
 void Partitions::detach(BlockDevice &device) {
         // Nothing may stay mounted on a partition device about to be reused.
         (void)Vfs::unmountDevice(device);
-        Mutex::Locker lock(Fat::lock(), WaitForever);
+        Mutex::Locker lock(Fs::lock(), WaitForever);
         for (PartitionDevice &p : pool) {
                 if (p.isFree() || p.parent() != &device) continue;
                 p.invalidate();
-                Fat::removeDeviceLocked(p);
+                Fs::removeDeviceLocked(p);
                 p.free();
         }
         return;

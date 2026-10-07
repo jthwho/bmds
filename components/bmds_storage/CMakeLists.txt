@@ -11,6 +11,8 @@
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
 idf_component_register(SRCS src/bootdisk.cpp
+                            src/flashpartition.cpp
+                            src/fsbench.cpp
                             src/ramdisk.cpp
                             src/sdcard.cpp
                             src/sdcommand.cpp
@@ -18,7 +20,7 @@ idf_component_register(SRCS src/bootdisk.cpp
                        INCLUDE_DIRS include
                        REQUIRES bmds_core bmds_kernel bmds_fs
                        PRIV_REQUIRES bmds_board bmds_shell esp_driver_gpio esp_driver_sdmmc esp_hw_support esp_system
-                                     esp_mm esp_partition sdmmc wear_levelling
+                                     esp_mm esp_partition sdmmc
                        WHOLE_ARCHIVE)
 bmds_target_options(${COMPONENT_LIB})
 

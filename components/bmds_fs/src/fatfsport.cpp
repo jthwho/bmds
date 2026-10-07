@@ -7,14 +7,13 @@
  *
  * What FatFs asks of its system: disk I/O (onto a FatVolume's BlockDevice),
  * memory (Psram), the time (the kernel Clock); and the FAT layer's shared
- * pieces (the lock, the drive table, result and time conversions).
+ * pieces (the metadata cache, result and time conversions).
  */
 
 #include <cstring>
 #include <new>
 #include <bmds/clock.h>
 #include <bmds/memory.h>
-#include <bmds/staticobject.h>
 
 #include "fatlayer.h"
 #include "sectorcache.h"
@@ -25,8 +24,7 @@ BMDS_NAMESPACE_BEGIN
 
 namespace {
 
-        constinit StaticObject<Mutex> storageLock;
-        constinit SectorCache         sectorCache;
+        constinit SectorCache sectorCache;
 
         static_assert(FF_MIN_SS == SectorCache::SectorBytes && FF_MAX_SS == SectorCache::SectorBytes);
 
@@ -49,16 +47,11 @@ namespace {
 
 } // namespace
 
-Mutex &Fat::lock() {
-        return *storageLock;
-}
-
 SectorCache &Fat::cache() {
         return sectorCache;
 }
 
 Error Fat::init() {
-        if (!storageLock.isCreated()) storageLock.create();
         return sectorCache.init();
 }
 

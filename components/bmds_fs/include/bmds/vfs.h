@@ -72,10 +72,10 @@ enum class FsFormat : uint8_t {
 
 /** @brief What `Vfs::statfs()` reports about a mounted filesystem. */
 struct FsInfo {
-                const char *type = "";        ///< "FAT12", "FAT16", "FAT32" or "exFAT".
+                const char *type = "";        ///< "FAT12", "FAT16", "FAT32", "exFAT" or "littlefs".
                 uint64_t    totalBytes = 0;   ///< Capacity of the data area.
                 uint64_t    freeBytes = 0;    ///< Free space.
-                uint32_t    clusterBytes = 0; ///< Allocation unit.
+                uint32_t    clusterBytes = 0; ///< Allocation unit (littlefs: the erase block).
 };
 
 /**
@@ -135,6 +135,7 @@ class Directory {
  *                one TZif file per zone name (devplan/time.md §9)
  * /dev/sd0       a block device (BlockDevices); /dev/sd0p0 a partition
  * /sd0/p0        a mounted FAT or exFAT filesystem (the storage service's default path)
+ * /boot          littlefs on the board's flash (devplan/storage.md §13d)
  * ```
  *
  * The mount table is run-time state: `mount()` puts a filesystem at any
@@ -152,8 +153,8 @@ class Directory {
  *
  * @par Thread Safety
  * Thread-safe. Every call resolves its path and does its work under one
- * storage lock, so a mount can't change under it; FatFs calls are thereby
- * serialized. `init()` runs first (boot, or a test).
+ * storage lock, so a mount can't change under it; filesystem calls are
+ * thereby serialized. `init()` runs first (boot, or a test).
  */
 namespace Vfs {
 
@@ -186,7 +187,7 @@ namespace Vfs {
         struct MountInfo {
                         char        path[MaxMountPath + 1] = {}; ///< Where it is mounted.
                         char        device[12] = {};             ///< The device's name ("sd0p0").
-                        const char *type = "";                   ///< "fat12", "fat16", "fat32" or "exfat".
+                        const char *type = "";                   ///< "fat12", "fat16", "fat32", "exfat" or "littlefs".
         };
 
         /** @brief Sets up the VFS (the storage lock). Boot stage; idempotent. */
@@ -209,7 +210,8 @@ namespace Vfs {
         void setChangeHook(ChangeHook hook);
 
         /**
-         * @brief Mounts the FAT or exFAT filesystem on @p device at @p path.
+         * @brief Mounts the filesystem on @p device at @p path: littlefs on a
+         *        flash (`BlockDevice::flash()`), FAT or exFAT on anything else.
          * @param path Absolute (normalized here); not `/`, not in `/dev`, `/bin`
          *        or `/share/zoneinfo`, not inside or above another mount; at
          *        most `MaxMountPath` bytes.
@@ -270,8 +272,9 @@ namespace Vfs {
         BlockDevice *findDevice(StringView path, const Context &context);
 
         /**
-         * @brief Creates a new, empty filesystem on @p device: on a whole
-         *        device, a partition table with one partition (GPT from
+         * @brief Creates a new, empty filesystem on @p device: on a flash
+         *        (`BlockDevice::flash()`), littlefs (@p format ignored); on a
+         *        whole device, a partition table with one partition (GPT from
          *        128 GB, else MBR); on a partition, the filesystem alone.
          * @return `Ok`, `Busy` (mounted), `NoMedia`, `Invalid` (too small), `NoMem`, `IoError`, ...
          */

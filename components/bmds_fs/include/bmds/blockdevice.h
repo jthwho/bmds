@@ -35,6 +35,8 @@ BMDS_NAMESPACE_BEGIN
  * Implementations are thread-safe: requests from different tasks are
  * serialized by the device.
  */
+class FlashDevice;
+
 class BlockDevice {
         public:
                 /** @brief Returns the sector size in bytes (512 for SD cards). */
@@ -95,6 +97,13 @@ class BlockDevice {
                  * @blocking
                  */
                 virtual Error trim(uint64_t first, uint64_t count);
+
+                /**
+                 * @brief Returns the device as a NOR flash, if it is one (littlefs is
+                 *        then mounted on it instead of FAT: devplan/storage.md §13d);
+                 *        else null.
+                 */
+                virtual FlashDevice *flash() { return nullptr; }
 
         protected:
                 constexpr BlockDevice() = default;

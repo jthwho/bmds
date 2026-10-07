@@ -29,7 +29,7 @@ namespace {
                         FIL &fil() { return _fil; }
 
                         Result<size_t> read(WritableByteSpan buf, unsigned int) override {
-                                Mutex::Locker lock(Fat::lock(), WaitForever);
+                                Mutex::Locker lock(Fs::lock(), WaitForever);
                                 if (_hole != 0 && !buf.isEmpty()) return makeError<size_t>(Error::EndOfFile);
                                 UINT          got = 0;
                                 const FRESULT result = f_read(&_fil, buf.data(), static_cast<UINT>(buf.size()), &got);
@@ -39,7 +39,7 @@ namespace {
                         }
 
                         Result<size_t> write(ByteSpan data, unsigned int) override {
-                                Mutex::Locker lock(Fat::lock(), WaitForever);
+                                Mutex::Locker lock(Fs::lock(), WaitForever);
                                 Error         err;
                                 if (_append) {
                                         _hole = 0;
@@ -59,7 +59,7 @@ namespace {
                         }
 
                         Error flush(unsigned int) override {
-                                Mutex::Locker lock(Fat::lock(), WaitForever);
+                                Mutex::Locker lock(Fs::lock(), WaitForever);
                                 return Fat::toError(f_sync(&_fil), _volume);
                         }
 
@@ -67,7 +67,7 @@ namespace {
                         // fills with zeros (FatFs would grow the file at once, with
                         // whatever its new clusters held).
                         Result<uint64_t> seek(int64_t offset, SeekFrom from) override {
-                                Mutex::Locker lock(Fat::lock(), WaitForever);
+                                Mutex::Locker lock(Fs::lock(), WaitForever);
                                 int64_t       base = 0;
                                 if (from == SeekFrom::Current) base = static_cast<int64_t>(position());
                                 if (from == SeekFrom::End) base = static_cast<int64_t>(f_size(&_fil));
@@ -78,7 +78,7 @@ namespace {
                         }
 
                         Error truncate(uint64_t size) override {
-                                Mutex::Locker lock(Fat::lock(), WaitForever);
+                                Mutex::Locker lock(Fs::lock(), WaitForever);
                                 if ((_fil.flag & FA_WRITE) == 0) return Error::BadDescriptor;
                                 const FSIZE_t here = position();
                                 Error         err;
@@ -95,11 +95,11 @@ namespace {
 
                         void handleClosed(uint8_t) override {
                                 {
-                                        Mutex::Locker lock(Fat::lock(), WaitForever);
+                                        Mutex::Locker lock(Fs::lock(), WaitForever);
                                         // A stale file (its card went) just fails here.
                                         const bool written = (_fil.flag & FA_WRITE) != 0;
                                         (void)f_close(&_fil);
-                                        if (written) Fat::changedLocked(_device, _id);
+                                        if (written) Fs::changedLocked(_device, _id);
                                 }
                                 this->~FatFile();
                                 Memory::free(this);
@@ -173,10 +173,11 @@ Result<FileHandle::Ptr> Fat::openFile(FatVolume &volume, const char *path, uint8
         // (the lock is held: a second open, or a handle closed now, can't be).
         FIL &fil = file->fil();
         if (result == FR_OK && link != nullptr && (fil.obj.attr & AM_SYS) != 0 && f_size(&fil) > 10 &&
-            f_size(&fil) <= MaxLinkFile) {
-                auto *buf = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, MaxLinkFile));
+            f_size(&fil) <= Fs::MaxLinkFile) {
+                auto *buf = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, Fs::MaxLinkFile));
                 UINT  got = 0;
-                if (buf != nullptr && f_read(&fil, buf, MaxLinkFile, &got) == FR_OK && parseLink(buf, got, *link).isOk()) {
+                if (buf != nullptr && f_read(&fil, buf, Fs::MaxLinkFile, &got) == FR_OK &&
+                    Fs::parseLink(buf, got, *link).isOk()) {
                         Memory::free(buf);
                         (void)f_close(&fil);
                         file->~FatFile();

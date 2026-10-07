@@ -46,7 +46,9 @@ add_executable(bmds_host_tests
         language.cpp
         launch.cpp
         lineeditor.cpp
+        lfsvfs.cpp
         list.cpp
+        littlefs.cpp
         loader.cpp
         memorystream.cpp
         memspace.cpp
@@ -74,6 +76,10 @@ add_executable(bmds_host_tests
         ymodem.cpp
         zoneinfo.cpp)
 target_include_directories(bmds_host_tests PRIVATE ${BMDS_ROOT}/thirdparty/doctest)
+# littlefs's header for littlefs.cpp (devplan/storage.md §13c); its code is bmds_fs's, so the
+# same definitions.
+target_include_directories(bmds_host_tests PRIVATE ${BMDS_ROOT}/thirdparty/littlefs)
+target_compile_definitions(bmds_host_tests PRIVATE LFS_NO_MALLOC LFS_NO_DEBUG LFS_NO_WARN LFS_NO_ERROR)
 target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
         BMDS_CORPUS_DIR="${CMAKE_CURRENT_LIST_DIR}/corpus"
         BMDS_PNG_DIR="${CMAKE_CURRENT_LIST_DIR}/png"

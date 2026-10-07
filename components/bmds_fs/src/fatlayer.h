@@ -5,30 +5,31 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * Private to bmds_fs: the storage lock, the FAT volumes, and what the VFS,
- * the registry and the FatFs port share. Functions named `...Locked` and
- * everything on FatVolume expect the storage lock to be held.
+ * Private to bmds_fs: the FAT volumes (FatFs behind the Volume interface)
+ * and what they and the FatFs port share. Everything on FatVolume expects
+ * the storage lock (fslayer.h) to be held.
  */
 
 #pragma once
 
 #include <cstdint>
-#include <bmds/blockdevices.h>
 #include <bmds/config.h>
 #include <bmds/datetime.h>
 #include <bmds/error.h>
 #include <bmds/filehandle.h>
-#include <bmds/mutex.h>
 #include <bmds/result.h>
 #include <bmds/string.h>
 #include <bmds/stringview.h>
 #include <bmds/vfs.h>
 
 #include "ff.h"
+#include "fslayer.h"
 
 static_assert(FF_VOLUMES == bmds::Vfs::MaxMounts, "one FatFs volume per mount");
 
 BMDS_NAMESPACE_BEGIN
+
+class SectorCache;
 
 /**
  * @brief One of the `FF_VOLUMES` FatFs volumes: a FAT filesystem while
@@ -40,9 +41,7 @@ BMDS_NAMESPACE_BEGIN
  * longer matches) even after the volume is mounted on another device.
  * Everything here expects the storage lock.
  */
-class SectorCache;
-
-class FatVolume {
+class FatVolume final : public Volume {
         public:
                 constexpr FatVolume() = default;
                 FatVolume(const FatVolume &) = delete;
@@ -54,9 +53,6 @@ class FatVolume {
                 /** @brief Returns the volume with FatFs drive number @p drive. */
                 static FatVolume &at(uint8_t drive);
 
-                /** @brief Returns the volume to the pool (unmounted). */
-                void release();
-
                 /** @brief Mounts the filesystem on @p device. */
                 Error mount(BlockDevice &device);
 
@@ -66,20 +62,11 @@ class FatVolume {
                 /** @brief Returns true while mounted. */
                 bool isMounted() const { return _mounted; }
 
-                /** @brief Returns the device while mounted (or formatting); else null. */
-                BlockDevice *device() const { return _device; }
-
                 /** @brief Returns true if @p buffer is FatFs's window (its metadata sector) for this volume. */
                 bool isWindow(const void *buffer) const { return _fs != nullptr && buffer == _fs->win; }
 
                 /** @brief Returns the FatFs drive number. */
                 uint8_t drive() const;
-
-                /** @brief Returns the filesystem type, size and free space. */
-                Result<FsInfo> info();
-
-                /** @brief Returns "fat12", "fat16", "fat32" or "exfat" while mounted; else "". */
-                const char *typeName() const;
 
                 /** @brief Writes "N:" (the volume's FatFs root) into @p path. */
                 void root(char (&path)[3]) const;
@@ -87,7 +74,29 @@ class FatVolume {
                 /** @brief Formats @p device (a partition table first if @p partitionTable). */
                 static Error format(BlockDevice &device, FsFormat format, bool partitionTable);
 
+                // Volume
+                void                    release() override;
+                BlockDevice            *device() const override { return _device; }
+                const char             *typeName() const override;
+                Result<FsInfo>          info() override;
+                Error                   stat(StringView path, FileInfo &info, bool &noPath) override;
+                Result<FileHandle::Ptr> open(StringView path, uint8_t flags, uint32_t device, uint64_t id, bool &noPath,
+                                             String *link) override;
+                Result<Reader *>        openReader(StringView path) override;
+                void                    closeReader(Reader *reader) override;
+                Error                   mkdir(StringView path, bool &noPath) override;
+                Error                   rmdir(StringView path) override;
+                Error                   remove(StringView path) override;
+                Error                   rename(StringView from, StringView to, bool &noPath) override;
+                Error                   setModified(StringView path, Timestamp time) override;
+                Error                   writeLink(StringView path, ByteSpan contents, bool &noPath) override;
+                Result<Cursor *>        openDirectory(StringView path, bool &noPath) override;
+                void                    closeDirectory(Cursor *cursor) override;
+
         private:
+                // The FatFs path of @p path on this volume: "N:/dir/file".
+                Error fatPath(StringView path, String &out) const;
+
                 FATFS       *_fs = nullptr;
                 BlockDevice *_device = nullptr;
                 bool         _inUse = false;
@@ -96,19 +105,10 @@ class FatVolume {
 
 namespace Fat {
 
-        /**
-         * @brief The storage lock: the registry, the mount table, and every
-         *        FatFs call (all volumes).
-         *
-         * FatFs's own locking is off (`FF_FS_REENTRANT 0`): it doesn't cover
-         * f_mount()/f_mkfs(), and a card can be unmounted at any moment.
-         */
-        Mutex &lock();
-
         /** @brief Returns the metadata cache under FatFs (sectorcache.h). Lock held. */
         SectorCache &cache();
 
-        /** @brief Creates the lock and the cache (from `Vfs::init()`); idempotent. */
+        /** @brief Creates the cache (from `Fs::init()`); idempotent. */
         Error init();
 
         /** @brief Translates a FatFs result. `FR_INVALID_OBJECT` (stale after unmount) is `NoMedia`. */
@@ -142,53 +142,6 @@ namespace Fat {
          */
         Result<FileHandle::Ptr> openFile(FatVolume &volume, const char *path, uint8_t flags, uint32_t device,
                                          uint64_t id, FRESULT *raw = nullptr, String *link = nullptr);
-
-        /**
-         * @brief Calls the change hook, if any (`Vfs::setChangeHook()`), and
-         *        tells the zone database (zoneinfo.h). Lock held.
-         */
-        void changedLocked(uint32_t device, uint64_t id);
-
-        /** @brief Returns the identity (`FileInfo::id`) of normalized path @p normalized. */
-        uint64_t pathId(StringView normalized);
-
-        /**
-         * @brief Opens the regular file at normalized @p path for reading,
-         *        on @p file (links aren't followed). Lock held.
-         * @param modified [out] If not null: the file's modification time.
-         * @return `Ok` (@p volume set; close @p file), `NotExist`, `IsDir`, `NoMedia`, ...
-         */
-        Error openPlainLocked(StringView path, FIL &file, FatVolume *&volume, Timestamp *modified = nullptr);
-
-        /** @brief The largest file that can be an emulated symbolic link. */
-        constexpr size_t MaxLinkFile = 10 + 2 + 2 * 1024 + 2;
-
-        /**
-         * @brief The target of an emulated symbolic link from the file's first
-         *        @p size bytes (devplan/storage.md §4).
-         * @return `Ok`, or `Invalid` if it isn't one.
-         */
-        Error parseLink(const uint8_t *data, size_t size, String &target);
-
-        // The block device registry, lock held.
-
-        /** @brief Returns the entry for @p device, or null. */
-        const BlockDevices::Entry *findEntryLocked(const BlockDevice &device);
-
-        /** @brief Returns the entry named @p name, or null. */
-        const BlockDevices::Entry *findEntryLocked(StringView name);
-
-        /** @brief Registers @p device (see `BlockDevices::add()`). */
-        Error addDeviceLocked(BlockDevice &device, StringView name, BlockDevice *parent);
-
-        /** @brief Unregisters @p device. */
-        void removeDeviceLocked(BlockDevice &device);
-
-        /** @brief Returns the number of registered devices. */
-        size_t deviceCountLocked();
-
-        /** @brief Returns registered device @p index (less than `deviceCountLocked()`). */
-        const BlockDevices::Entry &deviceAtLocked(size_t index);
 
 } // namespace Fat
 

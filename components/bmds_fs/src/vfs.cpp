@@ -12,11 +12,14 @@
 #include <utility>
 #include <bmds/builtinprograms.h>
 #include <bmds/clock.h>
+#include <bmds/flashdevice.h>
 #include <bmds/memory.h>
 #include <bmds/memorystream.h>
 #include <bmds/partitions.h>
 
 #include "fatlayer.h"
+#include "fslayer.h"
+#include "lfsvolume.h"
 #include "zoneinfo.h"
 
 BMDS_NAMESPACE_BEGIN
@@ -28,7 +31,7 @@ namespace {
 
         struct Mount {
                         char         path[MaxMountPath + 1] = {};
-                        FatVolume   *volume = nullptr;
+                        Volume      *volume = nullptr;
                         BlockDevice *device = nullptr;
                         bool         pinned = false; // never unmounted (/boot)
         };
@@ -84,7 +87,7 @@ namespace {
                 DevStream, // a fixed node's stream: /dev/null, /dev/zero, ...
                 DevConsole,
                 DevBlock,
-                Fat,
+                Mounted,    // in a mounted filesystem
                 BinDir,     // /bin: the programs built in (devplan/programs.md §17)
                 BinProgram, // /bin/NAME
                 ZoneDir,    // /share/zoneinfo and its directories (devplan/time.md §9)
@@ -107,11 +110,11 @@ namespace {
                         uint32_t            zoneOffset = 0;    // ZoneFile: its data in the database
                         uint32_t            zoneLength = 0;
                         Timestamp           zoneModified; // ZoneDir, ZoneFile: the database's
-                        FatVolume          *volume = nullptr;
-                        BlockDevice *device = nullptr;
-                        StringView   name; // The last component ("" for /).
-                        StringView   rest; // Fat: within the volume, "" for its root, else "/dir/file".
-                        uint32_t     mount = 0; // Fat: the mount slot + 1 (FileInfo::device).
+                        Volume                *volume = nullptr;
+                        BlockDevice           *device = nullptr;
+                        StringView             name; // The last component ("" for /).
+                        StringView             rest; // Mounted: within the volume, "" for its root, else "/dir/file".
+                        uint32_t               mount = 0; // Mounted: the mount slot + 1 (FileInfo::device).
         };
 
         // FileInfo::id: FNV-1a over the normalized path, ASCII letters folded
@@ -170,7 +173,7 @@ namespace {
                                 node.kind = Kind::DevFile;
                                 node.file = file;
                         } else {
-                                const BlockDevices::Entry *e = Fat::findEntryLocked(node.name);
+                                const BlockDevices::Entry *e = Fs::findEntryLocked(node.name);
                                 if (e == nullptr) return makeError<Node>(Error::NotExist);
                                 node.kind = Kind::DevBlock;
                                 node.device = e->device;
@@ -202,7 +205,7 @@ namespace {
                 for (size_t i = 0; i < mountCount; ++i) {
                         const StringView mp(mounts[i].path);
                         if (isAtOrBelow(path, mp)) {
-                                node.kind = Kind::Fat;
+                                node.kind = Kind::Mounted;
                                 node.mount = static_cast<uint32_t>(i + 1);
                                 node.volume = mounts[i].volume;
                                 node.device = mounts[i].device;
@@ -232,18 +235,7 @@ namespace {
                 if (path.isEmpty()) return false;
                 const size_t       slash = path.lastIndexOf('/');
                 const Result<Node> parent = resolveLocked(slash == 0 ? StringView("/") : path.left(slash));
-                return parent.error().isOk() && parent.value().kind != Kind::Fat;
-        }
-
-        // The FatFs path of a node inside a volume: "N:/dir/file".
-        Error fatPath(const Node &node, String &out) {
-                char root[3];
-                node.volume->root(root);
-                out.clear();
-                Error err = out.reserve(sizeof(root) + node.rest.size() + 1);
-                if (err.isOk()) err = out.append(StringView(root));
-                if (err.isOk()) err = out.append(node.rest.isEmpty() ? StringView("/") : node.rest);
-                return err;
+                return parent.error().isOk() && parent.value().kind != Kind::Mounted;
         }
 
         FileInfo directoryInfo(StringView name) {
@@ -253,9 +245,9 @@ namespace {
                 return info;
         }
 
-        Result<FileInfo> statLocked(const Node &node, FRESULT *raw = nullptr) {
+        Result<FileInfo> statLocked(const Node &node, bool *noPath = nullptr) {
                 FileInfo info;
-                if (raw != nullptr) *raw = FR_OK;
+                if (noPath != nullptr) *noPath = false;
                 switch (node.kind) {
                         case Kind::Virtual:
                         case Kind::BinDir:
@@ -290,16 +282,9 @@ namespace {
                         default: break;
                 }
                 if (node.rest.isEmpty()) return makeResult(directoryInfo(node.name));
-                String fat;
-                Error  err = fatPath(node, fat);
-                if (err.isError()) return makeError<FileInfo>(err);
-                auto *entry = static_cast<FILINFO *>(Memory::alloc(MemSpace::Psram, sizeof(FILINFO)));
-                if (entry == nullptr) return makeError<FileInfo>(Error::NoMem);
-                const FRESULT result = f_stat(fat.cStr(), entry);
-                if (raw != nullptr) *raw = result;
-                err = Fat::toError(result, *node.volume);
-                if (err.isOk()) err = Fat::toFileInfo(*entry, info);
-                Memory::free(entry);
+                bool        blocked = false;
+                const Error err = node.volume->stat(node.rest, info, blocked);
+                if (noPath != nullptr) *noPath = blocked;
                 if (err.isError()) return makeError<FileInfo>(err);
                 return makeResult(std::move(info));
         }
@@ -310,18 +295,17 @@ namespace {
         // FF FE and the target in UTF-16LE with a 16-bit NUL (or, read only,
         // the target in UTF-8). Looked for only where they can be: in a file
         // with the System attribute that a lookup found, or along a path that
-        // FatFs says has a file where a directory should be (FR_NO_PATH).
+        // the filesystem reports as "no path" (a file where a directory should be).
 
         constexpr int    MaxLinks = 8;     // in a row, then TooManyLinks
         constexpr size_t MaxTarget = 1024; // bytes of UTF-8 (BMDS_PATH_MAX)
         constexpr char   Cookie[] = "!<symlink>";
         constexpr size_t CookieBytes = sizeof(Cookie) - 1;
-        using Fat::MaxLinkFile;
+        using Fs::MaxLinkFile;
         static_assert(MaxLinkFile == CookieBytes + 2 + 2 * MaxTarget + 2, "the link file's limit");
 
         bool linkCandidate(uint8_t attributes, FileType type, uint64_t size) {
-                return (attributes & FileInfo::System) != 0 && type == FileType::File && size > CookieBytes &&
-                       size <= MaxLinkFile;
+                return Fs::isLinkCandidate(attributes, type, size);
         }
 
         // UTF-16LE (with surrogate pairs) to UTF-8.
@@ -393,50 +377,38 @@ namespace {
                 return n;
         }
 
-        // The target of the link file at FatFs path @p fat; Invalid if it isn't one. Lock held.
-        Error readLinkFile(const char *fat, String &target) {
+        // The target of the link file at @p path on @p volume; Invalid if it isn't one. Lock held.
+        Error readLinkLocked(Volume &volume, StringView path, String &target) {
                 target.clear();
-                auto *file = static_cast<FIL *>(Memory::alloc(MemSpace::Psram, sizeof(FIL) + MaxLinkFile));
-                if (file == nullptr) return Error::NoMem;
-                std::memset(file, 0, sizeof(FIL));
-                uint8_t *buf = reinterpret_cast<uint8_t *>(file + 1);
-                UINT     got = 0;
-                FRESULT  result = f_open(file, fat, FA_READ);
-                if (result == FR_OK) {
-                        result = f_read(file, buf, MaxLinkFile, &got);
-                        (void)f_close(file);
+                auto [reader, err] = volume.openReader(path);
+                if (err.isError()) return err;
+                auto *buf = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, MaxLinkFile));
+                if (buf == nullptr) {
+                        volume.closeReader(reader);
+                        return Error::NoMem;
                 }
-                Error err = Fat::toError(result);
-                if (err.isOk()) err = Fat::parseLink(buf, got, target);
-                Memory::free(file);
+                auto [got, rerr] = reader->readAt(0, WritableByteSpan(buf, MaxLinkFile));
+                volume.closeReader(reader);
+                err = rerr.isOk() ? Fs::parseLink(buf, got, target) : rerr;
+                Memory::free(buf);
                 return err;
         }
 
-        // Writes a new link file at FatFs path @p fat; the raw result. Lock held.
-        FRESULT writeLinkFile(const char *fat, StringView target) {
-                auto *file = static_cast<FIL *>(Memory::alloc(MemSpace::Psram, sizeof(FIL) + MaxLinkFile));
-                if (file == nullptr) return FR_NOT_ENOUGH_CORE;
-                std::memset(file, 0, sizeof(FIL));
-                uint8_t *buf = reinterpret_cast<uint8_t *>(file + 1);
+        // Writes a new link file at @p path on @p volume. Lock held.
+        Error writeLinkLocked(Volume &volume, StringView path, StringView target, bool &noPath) {
+                noPath = false;
+                auto *buf = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, MaxLinkFile));
+                if (buf == nullptr) return Error::NoMem;
                 std::memcpy(buf, Cookie, CookieBytes);
                 buf[CookieBytes] = 0xFF;
                 buf[CookieBytes + 1] = 0xFE;
                 const size_t n = toUtf16(target, buf + CookieBytes + 2, 2 * MaxTarget);
                 buf[CookieBytes + 2 + n] = 0;
                 buf[CookieBytes + 3 + n] = 0;
-                const UINT size = static_cast<UINT>(CookieBytes + 2 + n + 2);
-                FRESULT    result = n == 0 ? FR_INVALID_NAME : f_open(file, fat, FA_WRITE | FA_CREATE_NEW);
-                if (result == FR_OK) {
-                        UINT put = 0;
-                        result = f_write(file, buf, size, &put);
-                        if (result == FR_OK && put < size) result = FR_DENIED;
-                        const FRESULT closed = f_close(file);
-                        if (result == FR_OK) result = closed;
-                        if (result == FR_OK) result = f_chmod(fat, AM_SYS, AM_SYS);
-                        if (result != FR_OK) (void)f_unlink(fat);
-                }
-                Memory::free(file);
-                return result;
+                const Error err = n == 0 ? Error(Error::Invalid)
+                                         : volume.writeLink(path, ByteSpan(buf, CookieBytes + 2 + n + 2), noPath);
+                Memory::free(buf);
+                return err;
         }
 
         // The link @p link (a normalized path) points at, with @p rest after it.
@@ -462,29 +434,24 @@ namespace {
         // leads. True if there was one. Lock held.
         bool followPathLocked(String &storage, bool last) {
                 const Result<Node> found = resolveLocked(storage.view());
-                if (found.error().isError() || found.value().kind != Kind::Fat) return false;
+                if (found.error().isError() || found.value().kind != Kind::Mounted) return false;
                 const Node      &node = found.value();
                 const StringView rest = node.rest;
                 const size_t     mountLength = storage.size() - rest.size();
-                char             root[3];
-                node.volume->root(root);
-                auto *entry = static_cast<FILINFO *>(Memory::alloc(MemSpace::Psram, sizeof(FILINFO)));
-                if (entry == nullptr) return false;
-                bool   followed = false;
-                String fat;
+                bool             followed = false;
+                FileInfo         entry;
                 for (size_t pos = 1; pos <= rest.size();) {
                         size_t     end = rest.indexOf('/', pos);
                         const bool isLast = end == StringView::NPos;
                         if (isLast) end = rest.size();
                         if (isLast && !last) break;
-                        fat.clear();
-                        if (fat.append(StringView(root)).isError() || fat.append(rest.left(end)).isError()) break;
-                        if (f_stat(fat.cStr(), entry) != FR_OK) break;
-                        if ((entry->fattrib & AM_DIR) == 0) {
+                        bool noPath = false;
+                        if (node.volume->stat(rest.left(end), entry, noPath).isError()) break;
+                        if (!entry.isDirectory()) {
                                 String target;
-                                if (linkCandidate(entry->fattrib, FileType::File, entry->fsize) &&
-                                    readLinkFile(fat.cStr(), target).isOk()) {
-                                        String next;
+                                if (linkCandidate(entry.attributes, entry.type, entry.size) &&
+                                    readLinkLocked(*node.volume, rest.left(end), target).isOk()) {
+                                        String           next;
                                         const StringView link = storage.view().left(mountLength + end);
                                         if (linkDestination(link, target, rest.mid(end), next).isOk()) {
                                                 storage = std::move(next);
@@ -495,7 +462,6 @@ namespace {
                         }
                         pos = end + 1;
                 }
-                Memory::free(entry);
                 return followed;
         }
 
@@ -508,14 +474,14 @@ namespace {
                         const Result<Node> found = resolveLocked(storage.view());
                         if (found.error().isError()) return makeError<FileInfo>(found.error());
                         node = found.value();
-                        FRESULT          raw = FR_OK;
-                        Result<FileInfo> info = statLocked(node, &raw);
+                        bool             noPath = false;
+                        Result<FileInfo> info = statLocked(node, &noPath);
                         if (info.error().isOk()) {
                                 FileInfo &fi = info.value();
-                                if (node.kind != Kind::Fat || !linkCandidate(fi.attributes, fi.type, fi.size)) return info;
-                                String fat;
+                                if (node.kind != Kind::Mounted || !linkCandidate(fi.attributes, fi.type, fi.size))
+                                        return info;
                                 String target;
-                                if (fatPath(node, fat).isError() || readLinkFile(fat.cStr(), target).isError()) return info;
+                                if (readLinkLocked(*node.volume, node.rest, target).isError()) return info;
                                 if (!followLast) {
                                         fi.type = FileType::Link;
                                         fi.size = target.size();
@@ -527,7 +493,7 @@ namespace {
                                 storage = std::move(next);
                                 continue;
                         }
-                        if (raw == FR_NO_PATH && followPathLocked(storage, false)) continue;
+                        if (noPath && followPathLocked(storage, false)) continue;
                         return info;
                 }
         }
@@ -572,7 +538,7 @@ namespace {
                 for (size_t j = index + 1; j < mountCount; ++j) mounts[j - 1] = mounts[j];
                 mounts[--mountCount] = Mount();
                 // Every file: the slots after this one moved.
-                Fat::changedLocked(0, 0);
+                Fs::changedLocked(0, 0);
                 mountChanges.notify();
                 return;
         }
@@ -580,14 +546,14 @@ namespace {
         // True if mount @p index is on @p device or on a partition of it. Lock held.
         bool isMountOn(size_t index, const BlockDevice &device) {
                 const BlockDevice         *mounted = mounts[index].device;
-                const BlockDevices::Entry *e = Fat::findEntryLocked(*mounted);
+                const BlockDevices::Entry *e = Fs::findEntryLocked(*mounted);
                 return mounted == &device || (e != nullptr && e->parent == &device);
         }
 
         // True if mount @p index shares sectors with @p device: the same
         // device, a partition of it, or the whole device it is part of. Lock held.
         bool overlaps(size_t index, const BlockDevice &device) {
-                const BlockDevices::Entry *e = Fat::findEntryLocked(device);
+                const BlockDevices::Entry *e = Fs::findEntryLocked(device);
                 return isMountOn(index, device) || (e != nullptr && e->parent == mounts[index].device);
         }
 
@@ -602,10 +568,9 @@ struct Directory::State {
                 uint8_t    index = 0; // Virtual directories: the next entry.
                 uint32_t   device = 0;
                 uint64_t   idPrefix = IdSeed; // The directory's path hashed (children: + "/name").
-                FatVolume *volume = nullptr;
-                char       path[MaxMountPath + 1] = {}; // Virtual directories.
-                DIR        dir = {};
-                FILINFO    entry = {};
+                Volume         *volume = nullptr;
+                Volume::Cursor *cursor = nullptr;            // Mounted
+                char            path[MaxMountPath + 1] = {}; // Virtual directories.
                 String     zones{MemSpace::Psram}; // ZoneDir: its children (Zones::listLocked())
                 size_t     zoneAt = 0;             // ZoneDir: the next record
                 Timestamp  zoneModified;
@@ -636,10 +601,10 @@ Directory &Directory::operator=(Directory &&other) {
 
 void Directory::close() {
         if (_state == nullptr) return;
-        if (static_cast<Kind>(_state->kind) == Kind::Fat) {
-                Mutex::Locker lock(Fat::lock(), WaitForever);
-                // A stale directory (unmounted) just fails here.
-                (void)f_closedir(&_state->dir);
+        if (static_cast<Kind>(_state->kind) == Kind::Mounted) {
+                Mutex::Locker lock(Fs::lock(), WaitForever);
+                // A stale directory (unmounted) is only freed.
+                _state->volume->closeDirectory(_state->cursor);
         }
         _state->~State();
         Memory::free(_state);
@@ -651,7 +616,7 @@ Result<FileInfo> Directory::next() {
         if (_state == nullptr) return makeError<FileInfo>(Error::InvalidState);
         State        &s = *_state;
         FileInfo      info;
-        Mutex::Locker lock(Fat::lock(), WaitForever);
+        Mutex::Locker lock(Fs::lock(), WaitForever);
         switch (static_cast<Kind>(s.kind)) {
                 case Kind::Virtual: {
                         const StringView child = virtualChild(StringView(s.path), s.index);
@@ -702,8 +667,8 @@ Result<FileInfo> Directory::next() {
                                 ++s.index;
                                 info.type = FileType::File;
                                 return makeResult(std::move(info));
-                        } else if (s.index - Fixed - added < Fat::deviceCountLocked()) {
-                                const BlockDevices::Entry &e = Fat::deviceAtLocked(s.index - Fixed - added);
+                        } else if (s.index - Fixed - added < Fs::deviceCountLocked()) {
+                                const BlockDevices::Entry &e = Fs::deviceAtLocked(s.index - Fixed - added);
                                 (void)info.name.assign(e.name);
                                 info.size = e.device->sectorCount() * e.device->sectorSize();
                                 info.id = objectId(e.device);
@@ -716,10 +681,7 @@ Result<FileInfo> Directory::next() {
                 }
                 default: break;
         }
-        const FRESULT result = f_readdir(&s.dir, &s.entry);
-        if (result != FR_OK) return makeError<FileInfo>(Fat::toError(result, *s.volume));
-        if (s.entry.fname[0] == '\0') return makeError<FileInfo>(Error::EndOfFile);
-        const Error err = Fat::toFileInfo(s.entry, info);
+        const Error err = s.cursor->next(info);
         if (err.isError()) return makeError<FileInfo>(err);
         // A link by its attributes alone: reading every link to be sure made
         // listing a directory of BusyBox's applets take seconds (each read is
@@ -736,43 +698,46 @@ Result<FileInfo> Directory::next() {
 
 // --- Vfs: paths and mounts --------------------------------------------------
 
-void Fat::changedLocked(uint32_t device, uint64_t id) {
+void Fs::changedLocked(uint32_t device, uint64_t id) {
         Zones::changedLocked(device, id);
         if (changeHook != nullptr) changeHook(device, id);
         return;
 }
 
-uint64_t Fat::pathId(StringView normalized) {
+uint64_t Fs::pathId(StringView normalized) {
         return bmds::pathId(normalized);
 }
 
-Error Fat::openPlainLocked(StringView path, FIL &file, FatVolume *&volume, Timestamp *modified) {
+Error Fs::openReaderLocked(StringView path, Volume *&volume, Volume::Reader *&reader, Timestamp *modified) {
         const Result<Node> found = resolveLocked(path);
         if (found.error().isError()) return found.error();
         const Node &node = found.value();
-        if (node.kind != Kind::Fat) return Error::NotExist;
+        if (node.kind != Kind::Mounted) return Error::NotExist;
         if (node.rest.isEmpty()) return Error::IsDir;
-        String      fat;
-        const Error err = fatPath(node, fat);
+        const Result<FileInfo> info = statLocked(node);
+        if (info.error().isError()) return info.error();
+        if (info.value().isDirectory()) return Error::IsDir;
+        if (modified != nullptr) *modified = info.value().modified;
+        auto [opened, err] = node.volume->openReader(node.rest);
         if (err.isError()) return err;
-        if (modified != nullptr) {
-                const Result<FileInfo> info = statLocked(node);
-                if (info.error().isError()) return info.error();
-                if (info.value().isDirectory()) return Error::IsDir;
-                *modified = info.value().modified;
-        }
         volume = node.volume;
-        return toError(f_open(&file, fat.cStr(), FA_READ), *node.volume);
+        reader = opened;
+        return Error::Ok;
+}
+
+bool Fs::isLinkCandidate(uint8_t attributes, FileType type, uint64_t size) {
+        return (attributes & FileInfo::System) != 0 && type == FileType::File && size > CookieBytes &&
+               size <= MaxLinkFile;
 }
 
 void Vfs::setChangeHook(ChangeHook hook) {
-        Mutex::Locker lock(Fat::lock(), WaitForever);
+        Mutex::Locker lock(Fs::lock(), WaitForever);
         changeHook = hook;
         return;
 }
 
 Error Vfs::init() {
-        const Error err = Fat::init();
+        const Error err = Fs::init();
         if (err.isOk()) Zones::installResolver(); // zone names in the kernel's zone (devplan/time.md §9)
         return err;
 }
@@ -811,6 +776,31 @@ namespace {
 
         Error mountAt(StringView path, BlockDevice &device);
 
+        // The filesystem on @p device mounted on a volume from its pool: littlefs on a
+        // flash, FAT on anything else (devplan/storage.md §13d). Lock held.
+        Error mountVolumeLocked(BlockDevice &device, Volume *&out) {
+                if (FlashDevice *flash = device.flash(); flash != nullptr) {
+                        LittleFsVolume *volume = LittleFsVolume::acquire();
+                        if (volume == nullptr) return Error::Full;
+                        const Error err = volume->mount(device, *flash);
+                        if (err.isError()) {
+                                volume->release();
+                                return err;
+                        }
+                        out = volume;
+                        return Error::Ok;
+                }
+                FatVolume *volume = FatVolume::acquire();
+                if (volume == nullptr) return Error::Full;
+                const Error err = volume->mount(device);
+                if (err.isError()) {
+                        volume->release();
+                        return err;
+                }
+                out = volume;
+                return Error::Ok;
+        }
+
 } // namespace
 
 Error Vfs::mount(StringView path, BlockDevice &device) {
@@ -830,7 +820,7 @@ namespace {
                 if (p == "/" || isAtOrBelow(p, "/dev") || isAtOrBelow(p, BinPath) || isAtOrBelow(p, ZoneInfoPath) ||
                     p.size() > MaxMountPath)
                         return Error::Invalid;
-                Mutex::Locker lock(Fat::lock(), WaitForever);
+                Mutex::Locker lock(Fs::lock(), WaitForever);
                 for (size_t i = 0; i < mountCount; ++i) {
                         const StringView mp(mounts[i].path);
                         if (p == mp) return Error::Exists;
@@ -840,13 +830,9 @@ namespace {
                         if (overlaps(i, device)) return Error::Busy;
                 }
                 if (mountCount == MaxMounts) return Error::Full;
-                FatVolume *volume = FatVolume::acquire();
-                if (volume == nullptr) return Error::Full;
-                const Error err = volume->mount(device);
-                if (err.isError()) {
-                        volume->release();
-                        return err;
-                }
+                Volume     *volume = nullptr;
+                const Error err = mountVolumeLocked(device, volume);
+                if (err.isError()) return err;
                 Mount &m = mounts[mountCount++];
                 std::memcpy(m.path, p.data(), p.size());
                 m.path[p.size()] = '\0';
@@ -860,7 +846,7 @@ namespace {
 } // namespace
 
 Error Vfs::pin(StringView path) {
-        Mutex::Locker lock(Fat::lock(), WaitForever);
+        Mutex::Locker lock(Fs::lock(), WaitForever);
         for (size_t i = 0; i < mountCount; ++i) {
                 if (path == StringView(mounts[i].path)) {
                         mounts[i].pinned = true;
@@ -871,7 +857,7 @@ Error Vfs::pin(StringView path) {
 }
 
 bool Vfs::isMounted(StringView path) {
-        Mutex::Locker lock(Fat::lock(), WaitForever);
+        Mutex::Locker lock(Fs::lock(), WaitForever);
         for (size_t i = 0; i < mountCount; ++i)
                 if (path == StringView(mounts[i].path)) return true;
         return false;
@@ -884,7 +870,7 @@ WaitList &Vfs::mountWaiters() {
 Error Vfs::unmount(StringView path) {
         const Result<String> normalized = normalize(path, "/");
         if (normalized.error().isError()) return normalized.error();
-        Mutex::Locker lock(Fat::lock(), WaitForever);
+        Mutex::Locker lock(Fs::lock(), WaitForever);
         for (size_t i = 0; i < mountCount; ++i) {
                 if (normalized.value().view() == StringView(mounts[i].path)) {
                         if (mounts[i].pinned) return Error::Busy;
@@ -896,7 +882,7 @@ Error Vfs::unmount(StringView path) {
 }
 
 size_t Vfs::unmountDevice(BlockDevice &device) {
-        Mutex::Locker lock(Fat::lock(), WaitForever);
+        Mutex::Locker lock(Fs::lock(), WaitForever);
         size_t        removed = 0;
         for (size_t i = 0; i < mountCount;) {
                 if (isMountOn(i, device)) {
@@ -910,13 +896,13 @@ size_t Vfs::unmountDevice(BlockDevice &device) {
 }
 
 size_t Vfs::listMounts(Span<MountInfo> out) {
-        Mutex::Locker lock(Fat::lock(), WaitForever);
+        Mutex::Locker lock(Fs::lock(), WaitForever);
         const size_t  n = mountCount < out.size() ? mountCount : out.size();
         for (size_t i = 0; i < n; ++i) {
                 MountInfo &info = out[i];
                 info = MountInfo();
                 std::memcpy(info.path, mounts[i].path, sizeof(info.path));
-                const BlockDevices::Entry *e = Fat::findEntryLocked(*mounts[i].device);
+                const BlockDevices::Entry *e = Fs::findEntryLocked(*mounts[i].device);
                 if (e != nullptr) std::memcpy(info.device, e->name, sizeof(info.device));
                 info.type = mounts[i].volume->typeName();
         }
@@ -924,7 +910,7 @@ size_t Vfs::listMounts(Span<MountInfo> out) {
 }
 
 BlockDevice *Vfs::findDevice(StringView path, const Context &context) {
-        Mutex::Locker      lock(Fat::lock(), WaitForever);
+        Mutex::Locker      lock(Fs::lock(), WaitForever);
         String             storage;
         const Result<Node> found = lookupLocked(path, context, storage);
         if (found.error().isError() || found.value().kind != Kind::DevBlock) return nullptr;
@@ -935,15 +921,17 @@ Error Vfs::format(BlockDevice &device, FsFormat format) {
         bool hadPartitions = false;
         bool whole = true;
         {
-                Mutex::Locker lock(Fat::lock(), WaitForever);
+                Mutex::Locker lock(Fs::lock(), WaitForever);
                 for (size_t i = 0; i < mountCount; ++i) {
                         if (overlaps(i, device)) return Error::Busy;
                 }
-                const BlockDevices::Entry *e = Fat::findEntryLocked(device);
+                const BlockDevices::Entry *e = Fs::findEntryLocked(device);
                 whole = e == nullptr || e->parent == nullptr;
-                for (size_t i = 0; i < Fat::deviceCountLocked(); ++i)
-                        hadPartitions = hadPartitions || Fat::deviceAtLocked(i).parent == &device;
-                const Error err = FatVolume::format(device, format, whole);
+                for (size_t i = 0; i < Fs::deviceCountLocked(); ++i)
+                        hadPartitions = hadPartitions || Fs::deviceAtLocked(i).parent == &device;
+                FlashDevice *flash = device.flash();
+                const Error  err =
+                        flash != nullptr ? LittleFsVolume::format(*flash) : FatVolume::format(device, format, whole);
                 if (err.isError()) return err;
         }
         // A new partition table: register the new partitions instead of the old.
@@ -961,9 +949,9 @@ Error Vfs::addDeviceFile(const DeviceFile &file) {
         if (file.name == nullptr || file.open == nullptr) return Error::Invalid;
         const StringView name(file.name);
         if (name.isEmpty() || name.contains('/')) return Error::Invalid;
-        Mutex::Locker lock(Fat::lock(), WaitForever);
+        Mutex::Locker lock(Fs::lock(), WaitForever);
         const size_t  n = deviceFileCount.load(std::memory_order_relaxed);
-        if (findDevNode(name) != nullptr || findDeviceFile(name) != nullptr || Fat::findEntryLocked(name) != nullptr)
+        if (findDevNode(name) != nullptr || findDeviceFile(name) != nullptr || Fs::findEntryLocked(name) != nullptr)
                 return Error::Exists;
         if (n >= MaxDeviceFiles) return Error::Full;
         deviceFiles[n] = file;
@@ -989,7 +977,7 @@ Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context 
                         }
                 }
         }
-        Mutex::Locker lock(Fat::lock(), WaitForever);
+        Mutex::Locker lock(Fs::lock(), WaitForever);
         String        storage;
         {
                 Result<String> normalized = normalize(path, context.cwd);
@@ -1034,15 +1022,14 @@ Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context 
                         default: break;
                 }
                 if (node.rest.isEmpty()) return makeError<FileHandle::Ptr>(Error::IsDir);
-                String fat;
-                Error  err = fatPath(node, fat);
-                if (err.isError()) return makeError<FileHandle::Ptr>(err);
+                Error err;
                 // Truncating would cut a link file itself: look first.
                 String target;
                 if ((flags & Truncate) != 0) {
                         const Result<FileInfo> info = statLocked(node);
-                        if (info.error().isOk() && linkCandidate(info.value().attributes, info.value().type, info.value().size) &&
-                            readLinkFile(fat.cStr(), target).isOk()) {
+                        if (info.error().isOk() &&
+                            linkCandidate(info.value().attributes, info.value().type, info.value().size) &&
+                            readLinkLocked(*node.volume, node.rest, target).isOk()) {
                                 String next;
                                 err = linkDestination(storage.view(), target, StringView(), next);
                                 if (err.isError()) return makeError<FileHandle::Ptr>(err);
@@ -1050,9 +1037,9 @@ Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context 
                                 continue;
                         }
                 }
-                FRESULT                 raw = FR_OK;
-                Result<FileHandle::Ptr> handle = Fat::openFile(*node.volume, fat.cStr(), flags, node.mount,
-                                                               pathId(storage.view()), &raw, &target);
+                bool                    noPath = false;
+                Result<FileHandle::Ptr> handle =
+                        node.volume->open(node.rest, flags, node.mount, pathId(storage.view()), noPath, &target);
                 if (handle.error().isError()) {
                         // A link as the last component (openFile read it), or along the way.
                         if (!target.isEmpty()) {
@@ -1062,7 +1049,7 @@ Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context 
                                 storage = std::move(next);
                                 continue;
                         }
-                        if (raw == FR_NO_PATH && followPathLocked(storage, false)) continue;
+                        if (noPath && followPathLocked(storage, false)) continue;
                         return handle;
                 }
                 handle.value()->setIdentity(pathId(storage.view()), node.mount);
@@ -1089,7 +1076,7 @@ namespace {
         }
 
         Result<FileInfo> statAt(StringView path, const Vfs::Context &context, bool followLast) {
-                Mutex::Locker  lock(Fat::lock(), WaitForever);
+                Mutex::Locker  lock(Fs::lock(), WaitForever);
                 Result<String> normalized = Vfs::normalize(path, context.cwd);
                 if (normalized.error().isError()) return makeError<FileInfo>(normalized.error());
                 String           storage = std::move(normalized).value();
@@ -1164,7 +1151,7 @@ Result<FileInfo> Vfs::lstat(StringView path, const Context &context) {
 }
 
 Result<String> Vfs::readLink(StringView path, const Context &context) {
-        Mutex::Locker  lock(Fat::lock(), WaitForever);
+        Mutex::Locker  lock(Fs::lock(), WaitForever);
         Result<String> normalized = normalize(path, context.cwd);
         if (normalized.error().isError()) return normalized;
         String                 storage = std::move(normalized).value();
@@ -1172,17 +1159,15 @@ Result<String> Vfs::readLink(StringView path, const Context &context) {
         const Result<FileInfo> info = statFollowLocked(storage, false, node);
         if (info.error().isError()) return makeError<String>(info.error());
         if (info.value().type != FileType::Link) return makeError<String>(Error::Invalid);
-        String fat;
-        String target;
-        Error  err = fatPath(node, fat);
-        if (err.isOk()) err = readLinkFile(fat.cStr(), target);
+        String      target;
+        const Error err = readLinkLocked(*node.volume, node.rest, target);
         if (err.isError()) return makeError<String>(err);
         return makeResult(std::move(target));
 }
 
 Error Vfs::symlink(StringView target, StringView path, const Context &context) {
         if (target.isEmpty() || target.size() > MaxTarget) return Error::Invalid;
-        Mutex::Locker  lock(Fat::lock(), WaitForever);
+        Mutex::Locker  lock(Fs::lock(), WaitForever);
         Result<String> normalized = normalize(path, context.cwd);
         if (normalized.error().isError()) return normalized.error();
         String storage = std::move(normalized).value();
@@ -1191,23 +1176,20 @@ Error Vfs::symlink(StringView target, StringView path, const Context &context) {
                 if (hops > MaxLinks) return Error::TooManyLinks;
                 const Result<Node> found = resolveLocked(storage.view());
                 if (found.error() == Error::NotExist && outsideFilesystemsLocked(storage)) return Error::PermissionDenied;
-                if (found.error().isOk() && (found.value().kind != Kind::Fat || found.value().rest.isEmpty()))
+                if (found.error().isOk() && (found.value().kind != Kind::Mounted || found.value().rest.isEmpty()))
                         return Error::Exists;
                 if (found.error().isError() && found.error() != Error::NotExist) return found.error();
-                // resolveLocked() finds a Fat node whether or not the file exists.
+                // resolveLocked() finds a Mounted node whether or not the file exists.
                 const Node &node = found.value();
-                String      fat;
-                Error       err = fatPath(node, fat);
-                if (err.isError()) return err;
-                const FRESULT raw = writeLinkFile(fat.cStr(), target);
-                if (raw == FR_NO_PATH && followPathLocked(storage, false)) continue;
-                if (raw == FR_INVALID_NAME) return Error::Invalid;
-                return Fat::toError(raw, *node.volume);
+                bool        noPath = false;
+                const Error err = writeLinkLocked(*node.volume, node.rest, target, noPath);
+                if (noPath && followPathLocked(storage, false)) continue;
+                return err;
         }
 }
 
 const ProgramEntry *Vfs::builtinProgram(StringView path, const Context &context) {
-        Mutex::Locker  lock(Fat::lock(), WaitForever);
+        Mutex::Locker  lock(Fs::lock(), WaitForever);
         Result<String> normalized = normalize(path, context.cwd);
         if (normalized.error().isError()) return nullptr;
         String                 storage = std::move(normalized).value();
@@ -1218,7 +1200,7 @@ const ProgramEntry *Vfs::builtinProgram(StringView path, const Context &context)
 }
 
 Result<String> Vfs::realPath(StringView path, const Context &context) {
-        Mutex::Locker  lock(Fat::lock(), WaitForever);
+        Mutex::Locker  lock(Fs::lock(), WaitForever);
         Result<String> normalized = normalize(path, context.cwd);
         if (normalized.error().isError()) return normalized;
         String                 storage = std::move(normalized).value();
@@ -1229,7 +1211,7 @@ Result<String> Vfs::realPath(StringView path, const Context &context) {
 }
 
 Result<Directory> Vfs::openDirectory(StringView path, const Context &context) {
-        Mutex::Locker  lock(Fat::lock(), WaitForever);
+        Mutex::Locker  lock(Fs::lock(), WaitForever);
         Result<String> normalized = normalize(path, context.cwd);
         if (normalized.error().isError()) return makeError<Directory>(normalized.error());
         String storage = std::move(normalized).value();
@@ -1241,11 +1223,6 @@ Result<Directory> Vfs::openDirectory(StringView path, const Context &context) {
                 if (node.kind == Kind::DevStream || node.kind == Kind::DevConsole || node.kind == Kind::DevBlock ||
                     node.kind == Kind::DevFile || node.kind == Kind::BinProgram || node.kind == Kind::ZoneFile)
                         return makeError<Directory>(Error::NotDir);
-                String fat;
-                if (node.kind == Kind::Fat) {
-                        const Error err = fatPath(node, fat);
-                        if (err.isError()) return makeError<Directory>(err);
-                }
                 void *mem = Memory::alloc(MemSpace::Psram, sizeof(Directory::State));
                 if (mem == nullptr) return makeError<Directory>(Error::NoMem);
                 auto *state = ::new (mem) Directory::State();
@@ -1271,14 +1248,15 @@ Result<Directory> Vfs::openDirectory(StringView path, const Context &context) {
                                 return makeError<Directory>(err);
                         }
                 }
-                if (node.kind == Kind::Fat) {
-                        const FRESULT result = f_opendir(&state->dir, fat.cStr());
-                        if (result != FR_OK) {
-                                Error err = Fat::toError(result, *node.volume);
+                if (node.kind == Kind::Mounted) {
+                        bool noPath = false;
+                        auto [cursor, err] = node.volume->openDirectory(node.rest, noPath);
+                        state->cursor = cursor;
+                        if (err.isError()) {
                                 state->~State();
                                 Memory::free(mem);
-                                // A link along the way, or as the directory itself (FatFs: "no path").
-                                if (result == FR_NO_PATH && followPathLocked(storage, true)) continue;
+                                // A link along the way, or as the directory itself.
+                                if (noPath && followPathLocked(storage, true)) continue;
                                 if (err == Error::NotExist) {
                                         const Result<FileInfo> info = statLocked(node);
                                         if (info.error().isOk() && !info.value().isDirectory()) err = Error::NotDir;
@@ -1293,14 +1271,14 @@ Result<Directory> Vfs::openDirectory(StringView path, const Context &context) {
 namespace {
 
         // Looks up normalized @p storage naming something inside a mounted
-        // filesystem (not a mount point, not virtual), with its FatFs path;
-        // other nodes give @p otherError. Lock held.
-        Error fatTargetLocked(const String &storage, Error otherError, Node &node, String &fat) {
+        // filesystem (not a mount point, not virtual); other nodes give
+        // @p otherError. Lock held.
+        Error targetLocked(const String &storage, Error otherError, Node &node) {
                 const Result<Node> found = resolveLocked(storage.view());
                 if (found.error().isError()) return found.error();
                 node = found.value();
-                if (node.kind != Kind::Fat || node.rest.isEmpty()) return otherError;
-                return fatPath(node, fat);
+                if (node.kind != Kind::Mounted || node.rest.isEmpty()) return otherError;
+                return Error::Ok;
         }
 
         Error normalizeInto(StringView path, const Vfs::Context &context, String &storage) {
@@ -1316,76 +1294,72 @@ namespace {
 // renamed, not followed), following links in the directories along the way.
 
 Error Vfs::mkdir(StringView path, const Context &context) {
-        Mutex::Locker lock(Fat::lock(), WaitForever);
+        Mutex::Locker lock(Fs::lock(), WaitForever);
         String        storage;
         Error         err = normalizeInto(path, context, storage);
         if (err.isOk() && isReadOnlyTree(storage.view())) return Error::ReadOnly; // the built-ins, the zones
         for (int hops = 0; err.isOk(); ++hops) {
                 if (hops > MaxLinks) return Error::TooManyLinks;
-                String fat;
-                Node   node;
-                err = fatTargetLocked(storage, Error::Exists, node, fat);
+                Node node;
+                err = targetLocked(storage, Error::Exists, node);
                 if (err == Error::NotExist && outsideFilesystemsLocked(storage)) err = Error::PermissionDenied;
                 if (err.isError()) return err;
-                const FRESULT result = f_mkdir(fat.cStr());
-                if (result == FR_NO_PATH && followPathLocked(storage, false)) continue;
-                return Fat::toError(result, *node.volume);
+                bool        noPath = false;
+                const Error made = node.volume->mkdir(node.rest, noPath);
+                if (noPath && followPathLocked(storage, false)) continue;
+                return made;
         }
         return err;
 }
 
 Error Vfs::rmdir(StringView path, const Context &context) {
-        Mutex::Locker lock(Fat::lock(), WaitForever);
+        Mutex::Locker lock(Fs::lock(), WaitForever);
         String        storage;
         Error         err = normalizeInto(path, context, storage);
         if (err.isOk() && isReadOnlyTree(storage.view())) return Error::ReadOnly; // the built-ins, the zones
         for (int hops = 0; err.isOk(); ++hops) {
                 if (hops > MaxLinks) return Error::TooManyLinks;
-                String fat;
-                Node   node;
-                err = fatTargetLocked(storage, Error::Busy, node, fat);
-                if (err == Error::Busy && node.kind != Kind::Fat) err = Error::PermissionDenied; // virtual, or /dev
+                Node node;
+                err = targetLocked(storage, Error::Busy, node);
+                if (err == Error::Busy && node.kind != Kind::Mounted) err = Error::PermissionDenied; // virtual, or /dev
                 if (err.isError()) return err;
-                FRESULT                raw = FR_OK;
-                const Result<FileInfo> info = statLocked(node, &raw);
-                if (raw == FR_NO_PATH && followPathLocked(storage, false)) continue;
+                bool                   noPath = false;
+                const Result<FileInfo> info = statLocked(node, &noPath);
+                if (noPath && followPathLocked(storage, false)) continue;
                 if (info.error().isError()) return info.error();
                 if (!info.value().isDirectory()) return Error::NotDir;
-                err = Fat::toError(f_unlink(fat.cStr()), *node.volume);
-                // FatFs denies removing a directory that isn't empty.
-                return err == Error::PermissionDenied ? Error(Error::NotEmpty) : err;
+                return node.volume->rmdir(node.rest);
         }
         return err;
 }
 
 Error Vfs::remove(StringView path, const Context &context) {
-        Mutex::Locker lock(Fat::lock(), WaitForever);
+        Mutex::Locker lock(Fs::lock(), WaitForever);
         String        storage;
         Error         err = normalizeInto(path, context, storage);
         if (err.isOk() && isReadOnlyTree(storage.view())) return Error::ReadOnly; // the built-ins, the zones
         for (int hops = 0; err.isOk(); ++hops) {
                 if (hops > MaxLinks) return Error::TooManyLinks;
-                String     fat;
-                Node       node;
-                err = fatTargetLocked(storage, Error::IsDir, node, fat);
+                Node node;
+                err = targetLocked(storage, Error::IsDir, node);
                 const bool deviceNode = node.kind == Kind::DevStream || node.kind == Kind::DevConsole ||
                                         node.kind == Kind::DevBlock || node.kind == Kind::DevFile;
                 if (err == Error::IsDir && deviceNode) err = Error::PermissionDenied;
                 if (err.isError()) return err;
-                FRESULT                raw = FR_OK;
-                const Result<FileInfo> info = statLocked(node, &raw);
-                if (raw == FR_NO_PATH && followPathLocked(storage, false)) continue;
+                bool                   noPath = false;
+                const Result<FileInfo> info = statLocked(node, &noPath);
+                if (noPath && followPathLocked(storage, false)) continue;
                 if (info.error().isError()) return info.error();
                 if (info.value().isDirectory()) return Error::IsDir;
-                err = Fat::toError(f_unlink(fat.cStr()), *node.volume);
-                if (err.isOk()) Fat::changedLocked(node.mount, pathId(storage.view()));
+                err = node.volume->remove(node.rest);
+                if (err.isOk()) Fs::changedLocked(node.mount, pathId(storage.view()));
                 return err;
         }
         return err;
 }
 
 Error Vfs::rename(StringView from, StringView to, const Context &context) {
-        Mutex::Locker lock(Fat::lock(), WaitForever);
+        Mutex::Locker lock(Fs::lock(), WaitForever);
         String        fromStorage;
         String        toStorage;
         Error         err = normalizeInto(from, context, fromStorage);
@@ -1394,29 +1368,27 @@ Error Vfs::rename(StringView from, StringView to, const Context &context) {
                 return Error::ReadOnly; // the built-ins
         for (int hops = 0; err.isOk(); ++hops) {
                 if (hops > MaxLinks) return Error::TooManyLinks;
-                String fromFat;
-                String toFat;
-                Node   fromNode;
-                Node   toNode;
-                err = fatTargetLocked(fromStorage, Error::PermissionDenied, fromNode, fromFat);
+                Node fromNode;
+                Node toNode;
+                err = targetLocked(fromStorage, Error::PermissionDenied, fromNode);
                 if (err.isOk()) {
-                        err = fatTargetLocked(toStorage, Error::PermissionDenied, toNode, toFat);
+                        err = targetLocked(toStorage, Error::PermissionDenied, toNode);
                         // Outside every filesystem: not something a rename can do.
                         if (err == Error::NotExist || err == Error::PermissionDenied) err = Error::NotSupported;
                 }
                 if (err.isError()) return err;
                 if (fromNode.volume != toNode.volume) return Error::NotSupported;
-                const FRESULT result = f_rename(fromFat.cStr(), toFat.cStr());
-                if (result == FR_NO_PATH && (followPathLocked(fromStorage, false) || followPathLocked(toStorage, false)))
-                        continue;
-                if (result == FR_OK) Fat::changedLocked(fromNode.mount, pathId(fromStorage.view()));
-                return Fat::toError(result, *fromNode.volume);
+                bool        noPath = false;
+                const Error renamed = fromNode.volume->rename(fromNode.rest, toNode.rest, noPath);
+                if (noPath && (followPathLocked(fromStorage, false) || followPathLocked(toStorage, false))) continue;
+                if (renamed.isOk()) Fs::changedLocked(fromNode.mount, pathId(fromStorage.view()));
+                return renamed;
         }
         return err;
 }
 
 Error Vfs::setModified(StringView path, Timestamp time, const Context &context) {
-        Mutex::Locker lock(Fat::lock(), WaitForever);
+        Mutex::Locker lock(Fs::lock(), WaitForever);
         String        storage;
         Error         err = normalizeInto(path, context, storage);
         if (err.isOk() && isReadOnlyTree(storage.view())) return Error::ReadOnly; // the built-ins, the zones
@@ -1425,23 +1397,15 @@ Error Vfs::setModified(StringView path, Timestamp time, const Context &context) 
         Node                   found;
         const Result<FileInfo> info = statFollowLocked(storage, true, found);
         if (info.error().isError() && info.error() != Error::NotExist) return info.error();
-        String fat;
-        Node   node;
-        err = fatTargetLocked(storage, Error::PermissionDenied, node, fat);
+        Node node;
+        err = targetLocked(storage, Error::PermissionDenied, node);
         if (err.isError()) return err;
-        auto *entry = static_cast<FILINFO *>(Memory::alloc(MemSpace::Psram, sizeof(FILINFO)));
-        if (entry == nullptr) return Error::NoMem;
-        std::memset(entry, 0, sizeof(FILINFO));
-        const DWORD packed = Fat::toFatTime(time);
-        entry->fdate = static_cast<WORD>(packed >> 16);
-        entry->ftime = static_cast<WORD>(packed & 0xffff);
-        err = Fat::toError(f_utime(fat.cStr(), entry), *node.volume);
-        Memory::free(entry);
-        if (err.isOk()) Fat::changedLocked(node.mount, pathId(storage.view()));
+        err = node.volume->setModified(node.rest, time);
+        if (err.isOk()) Fs::changedLocked(node.mount, pathId(storage.view()));
         return err;
 }
 
-Error Fat::parseLink(const uint8_t *data, size_t size, String &target) {
+Error Fs::parseLink(const uint8_t *data, size_t size, String &target) {
         target.clear();
         if (size <= CookieBytes || std::memcmp(data, Cookie, CookieBytes) != 0) return Error::Invalid;
         Error err;
@@ -1458,11 +1422,11 @@ Error Fat::parseLink(const uint8_t *data, size_t size, String &target) {
 }
 
 Result<FsInfo> Vfs::statfs(StringView path, const Context &context) {
-        Mutex::Locker      lock(Fat::lock(), WaitForever);
+        Mutex::Locker      lock(Fs::lock(), WaitForever);
         String             storage;
         const Result<Node> found = lookupLocked(path, context, storage);
         if (found.error().isError()) return makeError<FsInfo>(found.error());
-        if (found.value().kind != Kind::Fat) return makeError<FsInfo>(Error::NotSupported);
+        if (found.value().kind != Kind::Mounted) return makeError<FsInfo>(Error::NotSupported);
         return found.value().volume->info();
 }
 

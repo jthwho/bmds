@@ -17,11 +17,12 @@ BMDS_NAMESPACE_BEGIN
  * @brief `/boot`: files and settings that persist on the board's flash
  *        (`devplan/storage.md` §13).
  *
- * The flash partition named `boot`, through ESP-IDF's wear levelling, is
- * the block device `flash0`, formatted FAT and mounted at `/boot` for good
- * (it can't be unmounted). On the first boot, a partition without a
- * filesystem is formatted and given the default `/boot/profile` (read by
- * every interactive shell) and `/boot/autoexec.sh` (run once at startup).
+ * The flash partition named `boot` is the block device `flash0`, holding
+ * littlefs (`devplan/storage.md` §13d) through an ordered write cache, and
+ * mounted at `/boot` for good (it can't be unmounted). On the first boot, a
+ * partition without littlefs is formatted and given the defaults
+ * (`/boot/profile`, read by every interactive shell, and `/boot/autoexec.sh`,
+ * run once at startup).
  *
  * @par Thread Safety
  * `init()` once at boot.
@@ -40,8 +41,7 @@ namespace BootDisk {
         /**
          * @brief Writes a new `/boot/random-seed` from the random pool
          *        (devplan/random.md): by the storage service a few seconds
-         *        after boot (the write takes about 0.35 s, so not in the boot
-         *        stage), and at shutdown. Does nothing without `/boot`.
+         *        after boot, and at shutdown. Does nothing without `/boot`.
          */
         void refreshRandomSeed();
 

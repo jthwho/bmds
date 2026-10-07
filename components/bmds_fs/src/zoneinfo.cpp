@@ -17,7 +17,7 @@
 #include <bmds/stream.h>
 #include <bmds/vfs.h>
 
-#include "fatlayer.h"
+#include "fslayer.h"
 #include "zoneinfo.h"
 
 BMDS_NAMESPACE_BEGIN
@@ -47,25 +47,16 @@ namespace {
                         Database &operator=(const Database &) = delete;
 
                         ~Database() {
-                                if (_file != nullptr) {
-                                        (void)f_close(_file);
-                                        Memory::free(_file);
-                                }
+                                if (_reader != nullptr) _volume->closeReader(_reader);
                         }
 
                         // Opens it and reads its header.
                         Error open(Timestamp *modified = nullptr) {
                                 if (databasePath[0] == '\0') return Error::NotExist;
-                                void *mem = Memory::alloc(MemSpace::Psram, sizeof(FIL));
-                                if (mem == nullptr) return Error::NoMem;
-                                auto *file = ::new (mem) FIL();
-                                Error err = Fat::openPlainLocked(StringView(databasePath), *file, _volume, modified);
-                                if (err.isError()) {
-                                        Memory::free(mem);
-                                        return err;
-                                }
-                                _file = file;
-                                Result<ZoneBundle> bundle = ZoneBundle::open(*this, f_size(_file));
+                                const Error err =
+                                        Fs::openReaderLocked(StringView(databasePath), _volume, _reader, modified);
+                                if (err.isError()) return err;
+                                Result<ZoneBundle> bundle = ZoneBundle::open(*this, _reader->size());
                                 if (bundle.error().isError()) return bundle.error();
                                 _bundle = bundle.value();
                                 return Error();
@@ -74,18 +65,15 @@ namespace {
                         const ZoneBundle &bundle() const { return _bundle; }
 
                         Error readAt(uint32_t offset, WritableByteSpan buf) override {
-                                FRESULT result = f_lseek(_file, offset);
-                                UINT    got = 0;
-                                if (result == FR_OK)
-                                        result = f_read(_file, buf.data(), static_cast<UINT>(buf.size()), &got);
-                                if (result != FR_OK) return Fat::toError(result, *_volume);
+                                auto [got, err] = _reader->readAt(offset, buf);
+                                if (err.isError()) return err;
                                 return got == buf.size() ? Error() : Error(Error::CorruptData);
                         }
 
                 private:
-                        FIL       *_file = nullptr;
-                        FatVolume *_volume = nullptr;
-                        ZoneBundle _bundle;
+                        Volume::Reader *_reader = nullptr;
+                        Volume         *_volume = nullptr;
+                        ZoneBundle      _bundle;
         };
 
         // One zone's bytes: read-only and seekable, so fstat() tells its
@@ -98,7 +86,7 @@ namespace {
                         uint8_t *bytes() { return reinterpret_cast<uint8_t *>(this + 1); }
 
                         Result<size_t> read(WritableByteSpan buf, unsigned int) override {
-                                Mutex::Locker lock(Fat::lock(), WaitForever); // a handle's tasks share the position
+                                Mutex::Locker lock(Fs::lock(), WaitForever); // a handle's tasks share the position
                                 if (buf.isEmpty()) return makeResult(size_t(0));
                                 if (_position >= _size) return makeError<size_t>(Error::EndOfFile);
                                 const uint64_t left = _size - _position;
@@ -115,7 +103,7 @@ namespace {
                         using Stream::write;
 
                         Result<uint64_t> seek(int64_t offset, SeekFrom from) override {
-                                Mutex::Locker lock(Fat::lock(), WaitForever);
+                                Mutex::Locker lock(Fs::lock(), WaitForever);
                                 int64_t       base = 0;
                                 if (from == SeekFrom::Current) base = static_cast<int64_t>(_position);
                                 if (from == SeekFrom::End) base = _size;
@@ -259,10 +247,10 @@ Error Vfs::setZoneDatabase(StringView path) {
                 if (normalized.size() > MaxZoneDatabasePath) return Error::Invalid;
         }
         {
-                Mutex::Locker lock(Fat::lock(), WaitForever);
+                Mutex::Locker lock(Fs::lock(), WaitForever);
                 std::memcpy(databasePath, normalized.data(), normalized.size());
                 databasePath[normalized.size()] = '\0';
-                databaseId = normalized.isEmpty() ? 0 : Fat::pathId(normalized.view());
+                databaseId = normalized.isEmpty() ? 0 : Fs::pathId(normalized.view());
                 forgetAnswerLocked();
         }
         Clock::retryZoneName();
@@ -270,7 +258,7 @@ Error Vfs::setZoneDatabase(StringView path) {
 }
 
 Result<String> Vfs::zoneDatabase() {
-        Mutex::Locker lock(Fat::lock(), WaitForever);
+        Mutex::Locker lock(Fs::lock(), WaitForever);
         String        path;
         const Error   err = path.append(StringView(databasePath));
         if (err.isError()) return makeError<String>(err);
@@ -278,7 +266,7 @@ Result<String> Vfs::zoneDatabase() {
 }
 
 Result<Vfs::ZoneDatabaseInfo> Vfs::zoneDatabaseInfo() {
-        Mutex::Locker lock(Fat::lock(), WaitForever);
+        Mutex::Locker lock(Fs::lock(), WaitForever);
         Database      db;
         const Error   err = db.open();
         if (err.isError()) return makeError<ZoneDatabaseInfo>(err);
@@ -290,7 +278,7 @@ Result<Vfs::ZoneDatabaseInfo> Vfs::zoneDatabaseInfo() {
 }
 
 Result<TimeZone> Vfs::zoneRules(StringView name) {
-        Mutex::Locker lock(Fat::lock(), WaitForever);
+        Mutex::Locker lock(Fs::lock(), WaitForever);
         if (answer.valid && name == StringView(answer.name)) {
                 if (!answer.found) return makeError<TimeZone>(Error::NotExist);
                 return makeResult(answer.rules);
