@@ -76,4 +76,41 @@ class NullStream final : public Stream {
                 constexpr NullStream() = default;
 };
 
+/**
+ * @brief `/dev/zero`: reads fill the buffer with zeros, writes vanish.
+ *
+ * @par Thread Safety
+ * Thread-safe (stateless).
+ */
+class ZeroStream final : public Stream {
+        public:
+                Result<size_t> read(WritableByteSpan buf, unsigned int timeoutMs) override;
+                Result<size_t> write(ByteSpan data, unsigned int) override { return makeResult(data.size()); }
+
+                using Stream::write;
+
+                constexpr ZeroStream() = default;
+};
+
+/**
+ * @brief `/dev/urandom` and `/dev/random`: reads fill the buffer from the
+ *        kernel's random pool (`Random`); writes vanish.
+ *
+ * The generator is seeded by the chip's noise sources, so reads never wait
+ * (as Linux's `/dev/random` no longer does once seeded). A read gives at
+ * most 64 KB.
+ *
+ * @par Thread Safety
+ * Thread-safe (stateless).
+ */
+class RandomStream final : public Stream {
+        public:
+                Result<size_t> read(WritableByteSpan buf, unsigned int timeoutMs) override;
+                Result<size_t> write(ByteSpan data, unsigned int) override { return makeResult(data.size()); }
+
+                using Stream::write;
+
+                constexpr RandomStream() = default;
+};
+
 BMDS_NAMESPACE_END

@@ -7,7 +7,9 @@
  */
 
 #include <sys/time.h>
+#include <bootloader_random.h>
 #include <esp_attr.h>
+#include <esp_random.h>
 #include <esp_rtc_time.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
@@ -113,6 +115,20 @@ void Detail::setLibcTime(int64_t wallNs) {
         const timeval tv = {.tv_sec = static_cast<time_t>(wallNs / 1'000'000'000),
                             .tv_usec = static_cast<suseconds_t>(wallNs % 1'000'000'000 / 1000)};
         (void)settimeofday(&tv, nullptr);
+        return;
+}
+
+void Detail::fillRandom(void *data, size_t size) {
+        esp_fill_random(data, size);
+        return;
+}
+
+void Detail::fillBootEntropy(void *data, size_t size) {
+        // The bootloader turned it off before starting us (bootloader_utility.c):
+        // without it the generator has only its secondary source (devplan/random.md).
+        bootloader_random_enable();
+        esp_fill_random(data, size);
+        bootloader_random_disable();
         return;
 }
 

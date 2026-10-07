@@ -41,12 +41,14 @@ menu "BMDS kernel"
             when it ends.
 
     config BMDS_TIMEZONE
-        string "Kernel time zone (POSIX TZ string)"
+        string "Kernel time zone (POSIX TZ string or zone name)"
         default "UTC0"
         help
             The time zone the kernel shows time in and stamps FAT files
             with (FAT stores local time). A POSIX TZ string, e.g.
-            "CET-1CEST,M3.5.0,M10.5.0/3" or "EST5EDT,M3.2.0,M11.1.0".
+            "CET-1CEST,M3.5.0,M10.5.0/3" or "EST5EDT,M3.2.0,M11.1.0", or
+            a name in the time zone database on the card, e.g.
+            "Europe/Berlin" (UTC until the card's database is found).
             The clock itself keeps UTC; 'clock zone' changes this at run
             time and the shell's TZ variable overrides it for display.
 

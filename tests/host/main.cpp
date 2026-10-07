@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <bmds/assert.h>
+#include <bmds/random.h>
 #include <bmds/vfs.h>
 
 // Host definition of the platform assert hook (the kernel provides the target one).
@@ -24,5 +25,8 @@ namespace {
 
         // The VFS is set up at boot on the target; here, before any test.
         [[maybe_unused]] const bool vfsReady = bmds::Vfs::init().isOk();
+
+        // So is the random pool.
+        [[maybe_unused]] const bool randomReady = bmds::Random::init().isOk();
 
 } // namespace

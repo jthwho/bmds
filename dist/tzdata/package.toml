@@ -1,0 +1,9 @@
+# The time zone database as one file, share/zoneinfo.bin (devplan/time.md §9),
+# from the IANA sources kept in thirdparty/tzdata (tools/update-tzdata updates them).
+name = "tzdata"
+version_file = "thirdparty/tzdata/version"
+description = "Time zone database: /share/zoneinfo for TZ=Europe/Berlin and clock zone"
+license = "LicenseRef-Public-Domain"
+source_tree = "thirdparty/tzdata"
+license_files = ["LICENSE"]
+sdk = false

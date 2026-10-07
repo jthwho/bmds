@@ -13,6 +13,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <new>
+#include <random>
 #include <thread>
 #include <bmds/deadline.h>
 #include <bmds/detail/platform.h>
@@ -123,6 +124,18 @@ void Detail::saveClockRecord(const ClockRecord &) {
 }
 
 void Detail::setLibcTime(int64_t) {
+        return;
+}
+
+void Detail::fillBootEntropy(void *data, size_t size) {
+        fillRandom(data, size);
+        return;
+}
+
+void Detail::fillRandom(void *data, size_t size) {
+        std::random_device device;
+        auto              *p = static_cast<unsigned char *>(data);
+        for (size_t i = 0; i < size; ++i) p[i] = static_cast<unsigned char>(device());
         return;
 }
 

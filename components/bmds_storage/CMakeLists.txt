@@ -14,7 +14,7 @@ idf_component_register(SRCS src/bootdisk.cpp
                             src/storage.cpp
                        INCLUDE_DIRS include
                        REQUIRES bmds_core bmds_kernel bmds_fs
-                       PRIV_REQUIRES bmds_board bmds_shell esp_driver_gpio esp_driver_sdmmc esp_hw_support
+                       PRIV_REQUIRES bmds_board bmds_shell esp_driver_gpio esp_driver_sdmmc esp_hw_support esp_system
                                      esp_mm esp_partition sdmmc wear_levelling
                        WHOLE_ARCHIVE)
 bmds_target_options(${COMPONENT_LIB})

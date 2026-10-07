@@ -5,16 +5,20 @@
 
 set(BMDS_CORE_SRCS
         src/arena.cpp
+        src/blake2s.cpp
         src/bytering.cpp
+        src/chacha20.cpp
         src/clockmodel.cpp
         src/color.cpp
         src/datetime.cpp
+        src/randompool.cpp
         src/region.cpp
         src/error.cpp
         src/string.cpp
         src/timezone.cpp
         src/utf8.cpp
-        src/vtparser.cpp)
+        src/vtparser.cpp
+        src/zonebundle.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 

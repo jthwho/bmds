@@ -15,6 +15,7 @@
 #include <sdkconfig.h>
 #include <esp_memory_utils.h>
 #include <esp_partition.h>
+#include <esp_system.h>
 #include <wear_levelling.h>
 #include <bmds/blockdevice.h>
 #include <bmds/blockdevices.h>
@@ -22,6 +23,8 @@
 #include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/mutex.h>
+#include <bmds/random.h>
+#include <bmds/randompool.h>
 #include <bmds/semaphore.h>
 #include <bmds/staticobject.h>
 #include <bmds/task.h>
@@ -237,7 +240,60 @@ namespace {
                 return werr;
         }
 
+        // The random seed kept across boots (devplan/random.md).
+        constexpr const char SeedPath[] = "/boot/random-seed";
+        constexpr size_t     SeedBytes = 64;
+
+        // A new seed from the pool over the old one.
+        Error writeSeed() {
+                uint8_t seed[SeedBytes];
+                Random::fill(seed, sizeof(seed));
+                Vfs::Context context;
+                auto [file, err] = Vfs::open(SeedPath, Vfs::Write | Vfs::Create | Vfs::Truncate, context);
+                if (err.isOk()) {
+                        auto [n, werr] = file->write(ByteSpan(seed, sizeof(seed)), WaitForever);
+                        err = werr.isOk() && n != sizeof(seed) ? Error(Error::IoError) : werr;
+                }
+                RandomPool::wipe(seed, sizeof(seed));
+                return err; // the file closes (and /boot syncs) with its handle
+        }
+
+        constinit bool seedable = false; // /boot is mounted (set at boot)
+
+        // Mixes the last boot's seed in. A new one is written a few seconds
+        // later (refreshRandomSeed()), so a crash soon after boot can reuse
+        // it; the boot's own noise (Random::init()) is mixed in regardless.
+        void seedRandom() {
+                uint8_t      seed[SeedBytes];
+                size_t       got = 0;
+                Vfs::Context context;
+                auto [file, err] = Vfs::open(SeedPath, Vfs::Read, context);
+                while (err.isOk() && got < sizeof(seed)) {
+                        auto [n, rerr] = file->read(WritableByteSpan(seed + got, sizeof(seed) - got), WaitForever);
+                        if (rerr.isError()) break;
+                        got += n;
+                }
+                file.reset();
+                if (got != 0) Random::mix(seed, got);
+                RandomPool::wipe(seed, sizeof(seed));
+                seedable = true;
+                bmdsInfo("Random: %s %s", got != 0 ? "seeded from" : "no seed yet in", SeedPath);
+                return;
+        }
+
+        void saveSeedAtShutdown() {
+                BootDisk::refreshRandomSeed();
+                return;
+        }
+
 } // namespace
+
+void BootDisk::refreshRandomSeed() {
+        if (!seedable) return;
+        const Error err = writeSeed();
+        if (err.isError()) bmdsWarn("BootDisk: %s: %s", SeedPath, err.desc());
+        return;
+}
 
 Error BootDisk::init() {
         Error err = Vfs::init();
@@ -274,6 +330,10 @@ Error BootDisk::init() {
         bmdsInfo("BootDisk: /dev/%s mounted on %s, %u KB%s", name, Path,
                  static_cast<unsigned>(device.sectorCount() * device.sectorSize() / 1024),
                  formatted ? " (formatted)" : "");
+        seedRandom();
+        const esp_err_t herr = esp_register_shutdown_handler(saveSeedAtShutdown);
+        if (herr != ESP_OK)
+                bmdsWarn("BootDisk: no shutdown handler for %s: %s", SeedPath, Error::fromEspErr(herr).desc());
         return Error::Ok;
 }
 

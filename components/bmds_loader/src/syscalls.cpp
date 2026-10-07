@@ -11,13 +11,13 @@
  */
 
 #include <cstdint>
-#include <esp_random.h>
 #include <bmds/errno.h>
 #include <bmds/sys.h>
 #include <bmds/deadline.h>
 #include <bmds/futex.h>
 #include <bmds/interrupt.h>
 #include <bmds/processtable.h>
+#include <bmds/random.h>
 #include "running.h"
 
 using bmds::Deadline;
@@ -177,7 +177,7 @@ int32_t bmds_k_mem_info(uint32_t flags, bmds_mem_info_t *info) {
 int32_t bmds_k_random(void *buf, uint32_t size) {
         KernelCall call;
         if (buf == nullptr && size != 0) return -BMDS_EFAULT;
-        esp_fill_random(buf, size);
+        bmds::Random::fill(buf, size); // the kernel's pool (devplan/random.md)
         return 0;
 }
 

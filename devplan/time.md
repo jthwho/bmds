@@ -78,10 +78,11 @@ Until a source sets it, `isSet()` is false and `now()` counts from 2026-01-01 00
 | `date +FORMAT` | `strftime` subset: `%a %A %b %B %c %C %d %D %e %F %h %H %I %j %k %l %m %M %n %N %p %r %R %s %S %t %T %u %w %y %Y %z %Z %%`; anything else is copied. |
 | `date -u` | UTC. |
 | `date -s DATE` | Sets the clock (source `Manual`) and prints it: `'YYYY-MM-DD HH:MM[:SS]'` (or `T` between), `YYYY-MM-DD` (midnight), `HH:MM[:SS]` (today), read in the display zone (`-u`: UTC); `@SECONDS[.frac]`. An invalid date: `date: invalid date '...'`, status 1. |
-| `clock` | Five lines: `Time:` (with nanoseconds, kernel zone), `Source:` (name and when it was set, or `none (not set; counting from 2026-01-01)`), `Slew:` (`±S.NNNNNNNNN s remaining`), `Frequency:` (`±N ppb`), `Zone:` (the `TZ` string, abbreviation and UTC offset). |
-| `clock zone TZ` / `clock adjust ±SECONDS` | Set the kernel time zone; slew by hand (mostly for testing the slew). |
+| `clock` | Five lines: `Time:` (with nanoseconds, kernel zone), `Source:` (name and when it was set, or `none (not set; counting from 2026-01-01)`), `Slew:` (`±S.NNNNNNNNN s remaining`), `Frequency:` (`±N ppb`), `Zone:` (the `TZ` string, abbreviation and UTC offset; a zone set by name shows the name first, or that it is pending, §9). |
+| `clock zone TZ` / `clock adjust ±SECONDS` | Set the kernel time zone (POSIX rules, or a name in the database, §9: `clock: unknown time zone 'X'` if it hasn't that name); slew by hand (mostly for testing the slew). |
+| `clock tzdata [PATH]` | The time zone database (§9): `/sd0/p0/share/zoneinfo.bin: tzdata 2026e, 597 zones`, or why it can't be read; with `PATH`, use that file. |
 
-`TZ` (a shell variable; exported or not) overrides the kernel zone for display, as on Unix; one that doesn't parse means UTC, as with glibc.
+`TZ` (a shell variable; exported or not) overrides the kernel zone for display, as on Unix; one that doesn't parse means UTC, as with glibc. A name (`TZ=Europe/Berlin`) is looked up in the database (§9); not found means UTC, as with musl.
 
 ## 5. Resource budget (estimates)
 
@@ -102,40 +103,50 @@ Host (done): calendar round trips 1600-2400 and leap years; `formatTime`; `TimeZ
 - Should the RTC timer be calibrated against the 40 MHz crystal (it runs from the 32 kHz crystal, typically ±20 ppm) before the reset record is trusted for long gaps? Measure.
 - A serial time source: the host pushes its time when a terminal connects (an escape-sequence handshake, or `rz`-time). Cheap and useful until there's a network.
 
-## 9. A time zone database (planned, 2026-10-06)
+## 9. A time zone database (done, 2026-10-06)
 
 **Why.** Today a zone is a POSIX `TZ` string (`CET-1CEST,M3.5.0,M10.5.0/3`). A user knows "Europe/Berlin", not the rules. And a rule string is only today's rules: a date from before they changed (an old file's time, a program's `localtime` of 1990) comes out wrong. This revises §1's "no tz database" for display and for programs. The kernel itself still keeps UTC and needs only today's rules.
 
-**Facts** (measured on the build host's tzdata 2026c, as its Linux ships it):
-- 447 zone files (TZif) and 304 aliases (links), 474,824 bytes in all, the largest 3,872.
-- Every file ends with its zone's current rules as a POSIX `TZ` string (Europe/Berlin: `CET-1CEST,M3.5.0,M10.5.0/3`). The longest is 44 characters (Pacific/Chatham), within `TimeZone::MaxSpec` (47).
+**Facts** (IANA tzdata 2026e, built with `zic -b slim`, measured 2026-10-06):
+- 597 names: 344 distinct TZif files, the rest aliases (links). 205,747 bytes of distinct data, the largest 2,464. (The build host's own 2026c, built "fat", was 474,824.)
+- Every file ends with its zone's current rules as a POSIX `TZ` string (Europe/Berlin: `CET-1CEST,M3.5.0,M10.5.0/3`). The longest is 44 characters (Pacific/Chatham), within `TimeZone::MaxSpec` (47). Some use what `TimeZone` must handle: negative DST (Europe/Dublin `IST-1GMT0,M10.5.0,M3.5.0/1`), a negative transition time (America/Nuuk `.../-1`), a 30-minute DST (Australia/Lord_Howe).
 - The longest name is 32 characters (America/Argentina/ComodRivadavia).
-- musl reads TZif files itself. A `TZ` that isn't a POSIX string is a name looked up in `/usr/share/zoneinfo/`, `/share/zoneinfo/` and `/etc/zoneinfo/`, or an absolute path; programs can map files (linux.c).
+- musl reads TZif files itself. A `TZ` not in POSIX form (a name followed by an offset, or `UTC`/`GMT`) is a name, looked up in `/usr/share/zoneinfo/`, `/share/zoneinfo/` and `/etc/zoneinfo/` (`:` first forces a name; names with `.` are refused); programs map the file (`open`, `fstat`, `mmap`: linux.c reads it into memory).
 
-**One file on the card, not 447.** On FAT32 with 32 KB clusters each small file takes a whole cluster (447 files: 14 MB), on exFAT with 128 KB clusters 57 MB. The database is therefore one bundle, `zoneinfo.bin`, consisting of:
-- a header (a magic number, the tzdata version);
-- a sorted index of names, each with an offset and a length (an alias is one more entry pointing at its zone's data);
-- the TZif files.
+**The data in git** (the user's ask, 2026-10-06): `thirdparty/tzdata/` holds the pinned release's source files, unmodified: the zone files `zic` reads (`africa`, `antarctica`, `asia`, `australasia`, `europe`, `northamerica`, `southamerica`, `etcetera`, `backward`), `zone1970.tab`, `zone.tab`, `iso3166.tab` (for a zone picker later), `version`, `LICENSE` (public domain) and `README`; 0.85 MB of text, so an update is a reviewable diff. `backzone` (pre-1970 history merged into links) and `factory` stay out, as in a default IANA build.
 
-`tools/bmds-dist` builds the bundle from a pinned IANA release with `zic -b slim` and installs it on the card with BusyBox. The default place is `/sd0/p0/share/zoneinfo.bin`, a setting (Kconfig default, changeable at run time) since no path is a singleton. It lives on the card, not in `/boot` (agreed with the user, 2026-10-06): `/boot` keeps its 4 MB for settings.
+**Updating:** `tools/update-tzdata [VERSION]` (the newest release by default) downloads `tzdataVERSION.tar.gz` and its signature from data.iana.org, checks the signature with `gpgv` against the tzdata maintainer's key kept in `tools/tzdata-key.asc` (Paul Eggert, `7E37 92A9 D8AC F7D6 33BC 1588 ED97 E90E 62AA 7E34`), replaces the files above, builds the bundle once as a check, and prints the old and new version and the release's NEWS entry. It never commits: the diff is reviewed like any other.
 
-**Programs see ordinary files.** The VFS shows the bundle, read-only, as a virtual directory at **`/share/zoneinfo`**, one of musl's own search paths, the way `/bin` shows the programs built in. Opening `/share/zoneinfo/Europe/Berlin` gives a memory stream of that zone's bytes. With no musl patch, `TZ=Europe/Berlin` then works in every program with the full history, and so do BusyBox's `date` and `ls /share/zoneinfo`. Without the bundle the directory is empty and a name means UTC, as musl does with an unknown name.
+**One file on the card, not 597.** On FAT32 with 32 KB clusters each small file takes a whole cluster (344 files: 11 MB), on exFAT with 128 KB clusters 43 MB; and listing 597 FAT files is slow. The database is therefore one bundle, `zoneinfo.bin` (an on-disk format, frozen once shipped; little-endian):
+- **Header**, 32 bytes: magic `BMTZ`, format version (u16, 1), header size (u16, 32), the tzdata version (8 bytes, NUL-padded: `2026e`), the entry count (u32), the index offset (u32), the entry size (u32, 48: room for longer names later without a new format), the file size (u32: a truncated copy is refused).
+- **Index**, sorted by name (bytes, as `strcmp`): each entry the name (NUL-padded, entry size − 8 bytes: up to 39 characters today), then the data's offset and length (u32 each). An alias is one more entry pointing at its zone's data; identical files are stored once.
+- **Data:** the TZif files, each starting `TZif`.
+- About 234 KB in all (597 × 48 + 205,747). A lookup is a binary search: about 10 reads of 48 bytes, then the zone's last 64 bytes (its rules) or all of it.
 
-**The kernel's zone** accepts a name wherever it takes a `TZ` string (`clock zone Europe/Berlin`, `CONFIG_BMDS_TIMEZONE`, the shell's `TZ` for `date` and `ls -l`). It looks the name up in the bundle and uses the file's last line, the current rules, as its `TimeZone`. It keeps the name, so that:
-- `clock` shows both (`Zone: Europe/Berlin (CET-1CEST,M3.5.0,M10.5.0/3)`), and a name not found yet as pending (`Zone: Europe/Berlin (pending: no zone database; UTC until it is found)`), so a missing card doesn't pass for UTC on purpose;
+`tools/tzbundle` (Python, standard library) builds it with the host's `zic -b slim`. The distribution builds it as the package **`tzdata`** (`dist/tzdata/`), whose source is the in-tree `thirdparty/tzdata` (a new `source_tree` key in `package.toml`, with no download), so `bmds-dist build tzdata` and `bmds-dist install` put it on the card at `share/zoneinfo.bin`. The default place is `/sd0/p0/share/zoneinfo.bin`, Kconfig `BMDS_ZONEINFO_PATH` (bmds_storage), changeable at run time with `clock tzdata PATH` since no path is a singleton. It lives on the card, not in `/boot` (agreed with the user, 2026-10-06): `/boot` keeps its 4 MB for settings.
+
+**Programs see ordinary files.** The VFS shows the bundle, read-only, as a virtual directory at **`/share/zoneinfo`**, one of musl's own search paths, the way `/bin` shows the programs built in (`/share` lists `zoneinfo`; nothing can be mounted at or below `/share/zoneinfo`). Subdirectories (`America/Argentina`) come from the names. Opening `/share/zoneinfo/Europe/Berlin` reads that zone's bytes into a read-only, seekable stream of its own (Psram, freed when closed), so `fstat` gives its size and musl's `mmap` works. With no musl patch, `TZ=Europe/Berlin` then works in every program with the full history, and so do BusyBox's `date` and `ls /share/zoneinfo`. Without the bundle the directory is empty and a name means UTC, as musl does with an unknown name. Identity: a zone file's id is its path's, device 0.
+
+**The kernel's zone** accepts a name wherever it takes a `TZ` string (`clock zone Europe/Berlin`, `CONFIG_BMDS_TIMEZONE`, the shell's `TZ` for `date` and `ls -l`), told apart as musl does. `Clock` (bmds_kernel) can't read files, so the VFS installs a resolver (`Clock::setZoneResolver()`); a name is looked up there and the file's last line, the current rules, becomes its `TimeZone`. The kernel keeps the name, so that:
+- `clock` shows both (`Zone:      Europe/Berlin (CET-1CEST,M3.5.0,M10.5.0/3; CEST, UTC+0200)`), and a name not found yet as pending (`Zone:      Europe/Berlin (pending: no zone database; UTC until it is found)`), so a missing card doesn't pass for UTC on purpose;
 - the loader passes the name, not the rules, as a program's `TZ` (so musl uses the history).
 
+A name the database doesn't have is refused (`clock: unknown time zone 'Europe/Berln'`) and the zone stays as it was; with no database to ask, the name is kept pending.
+
 **When the lookup happens** (the user's ask: at boot, or when `TZ` changes):
-- **On a change:** the shell's `TZ` is looked up when it changes; one name and its rules are kept, so `ls -l` doesn't look up per line.
-- **At boot:** the card may mount after `/boot/autoexec.sh` or `/boot/profile` sets the zone. A name that can't be found yet stays pending (UTC meanwhile) and is looked up again when a filesystem is mounted (the VFS's mount waiters).
+- **On a change:** the shell's `TZ` is looked up when it changes; one name and its rules are kept (in bmds_fs, shared, under the storage lock), so `ls -l` doesn't look up per line. A mount, an unmount or a change to the bundle drops it (the VFS's change notifications).
+- **At boot:** the card may mount after `/boot/autoexec.sh` or `/boot/profile` sets the zone. A name that can't be found yet stays pending (UTC meanwhile) and is looked up again after each mount.
 - **Without a card** (agreed with the user, 2026-10-06): a name means UTC. A zone that must be right without the card is set as a POSIX `TZ` string in `/boot/profile` (or `/boot/autoexec.sh`), as today; nothing is copied into `/boot` behind the user's back.
+- **A new bundle** copied over the old one is seen by the shell and programs at once; the kernel's own rules change at the next `clock zone` or boot (they are only today's rules, and a tzdata update rarely changes them).
 
-**Budget (estimate):** firmware a few KB (the bundle reader, the virtual directory); no RAM at rest (the index is searched by reads); a zone opened costs its bytes (at most 3,872 today) while open; on the card, the bundle (about 0.5 MB).
+**Shell:** `clock tzdata` shows the database (`/sd0/p0/share/zoneinfo.bin: tzdata 2026e, 597 zones`, or why there is none); `clock tzdata PATH` uses another.
 
-**ABI impact:** append-only. `/share/zoneinfo` is a new path, and `TZ` gains names where it took POSIX strings (both still work). No new slot.
+**Budget (estimate):** firmware a few KB (the bundle reader, the virtual directory, the kernel's name); no RAM at rest (the index is searched by reads; the one cached lookup is about 160 bytes of `.bss`); a zone opened costs its bytes (at most 2,464 today) while open; on the card, the bundle (about 234 KB).
+
+**As built (measured 2026-10-06):** the firmware grew 8,938 bytes (718,208 to 727,146) for this and `/dev/zero`, `/dev/urandom` (storage.md §4) together, before the random pool (random.md); `.bss` 144 bytes. The bundle is 234,435 bytes; sent to the card with `tools/bmds-run -n -d /sd0/p0/share` in 3.2 s. On the board: `ls /share/zoneinfo` lists 60 entries; `clock tzdata` says `tzdata 2026e, 597 zones`; `TZ=Europe/Moscow busybox date -d @646916400` gives `15:00:00 MSD 1990` from the file's history where the rules alone (`MSK-3`) give `14:00:00 MSK`; `clock zone America/Winnipeg` with the card unmounted shows it pending and `/share/zoneinfo` empty, and `mount` resolves it (`EST5`, 2026e's new rule); a program started under `clock zone Europe/Berlin` gets `TZ=Europe/Berlin`. Lookups, listings, reads and remounts leave memory where it was. Not yet tried on the board: a name in `CONFIG_BMDS_TIMEZONE` or `/boot/autoexec.sh` at boot (the host tests cover the pending-then-mounted path).
+
+**ABI impact:** append-only. `/share/zoneinfo` is a new path; `TZ` gains names where it took POSIX strings (both still work); the bundle's format; `clock tzdata`. No new slot.
 
 **Testing:**
-- **Host:** the bundle's reader (index, aliases, a damaged or truncated bundle refused); the footer into a `TimeZone`; the virtual directory's listing and reads; pending names resolved by a mount.
+- **Host:** the bundle's reader on the real 2026e bundle (built by the host test build when `zic` is found) and on made-up ones (aliases, a damaged or truncated bundle refused); every zone's footer parses as a `TimeZone`; the virtual directory's listing and reads; names in the kernel zone, pending until the bundle's filesystem mounts; the shell's `TZ` names.
 - **Board:** `TZ=Europe/Berlin date` against the POSIX string; `progtest` `localtime` of a 1990 date in a zone whose rules changed since (history from the file); `clock zone` with a name at boot from `/boot/autoexec.sh` before the card mounts (UTC and `clock` showing it pending, then the zone once it mounts); a POSIX string in `/boot/profile` with no card; the card removed (the directory empties, the kernel keeps the rules it has).
-
-**Open:** updating tzdata (a new bundle copied over the old one: the VFS's change hook drops the kernel's cached lookup).

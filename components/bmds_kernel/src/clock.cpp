@@ -6,6 +6,8 @@
  * See LICENSE file in the project root folder for license information.
  */
 
+#include <atomic>
+#include <cstring>
 #include <bmds/clock.h>
 #include <bmds/detail/platform.h>
 #include <bmds/seqlocked.h>
@@ -14,8 +16,38 @@ BMDS_NAMESPACE_BEGIN
 
 namespace {
 
-        constinit SeqLocked<ClockModel> model;
-        constinit SeqLocked<TimeZone>   zone;
+        // The zone's rules, and its name when set by name: one value, so
+        // they always agree.
+        struct KernelZone {
+                        TimeZone        rules;
+                        Clock::ZoneName name;
+        };
+
+        constinit SeqLocked<ClockModel>            model;
+        constinit SeqLocked<KernelZone>            zone;
+        constinit std::atomic<Clock::ZoneResolver> resolver{nullptr};
+
+        // A name as the database has them: no path, no ".".
+        bool validName(StringView name) {
+                return !name.isEmpty() && name.size() <= Clock::MaxZoneName && name[0] != '/' &&
+                       name.indexOf('.') == StringView::NPos;
+        }
+
+        // Looks @p name up; what the zone becomes. NotExist: refused.
+        Error resolve(StringView name, KernelZone &out) {
+                out = KernelZone();
+                std::memcpy(out.name.name, name.data(), name.size());
+                const Clock::ZoneResolver r = resolver.load(std::memory_order_acquire);
+                const Error               err = r != nullptr ? r(name, out.rules) : Error(Error::NotReady);
+                if (err == Error::NotExist) {
+                        out.name.pending = Clock::ZonePending::Unknown;
+                        out.rules = TimeZone();
+                } else if (err.isError()) {
+                        out.name.pending = Clock::ZonePending::NoDatabase;
+                        out.rules = TimeZone();
+                }
+                return err;
+        }
 
 } // namespace
 
@@ -67,19 +99,51 @@ Error Clock::setFrequency(int32_t ppb) {
         return err;
 }
 
-Error Clock::setTimeZone(StringView posixTz) {
-        const Result<TimeZone> parsed = TimeZone::parse(posixTz);
-        if (parsed.error().isError()) return parsed.error();
-        zone.store(parsed.value());
+Error Clock::setTimeZone(StringView tz) {
+        KernelZone next;
+        if (!TimeZone::isName(tz)) {
+                const Result<TimeZone> parsed = TimeZone::parse(tz);
+                if (parsed.error().isError()) return parsed.error();
+                next.rules = parsed.value();
+                zone.store(next);
+                return Error();
+        }
+        const StringView name = tz.startsWith(':') ? tz.mid(1) : tz;
+        if (!validName(name)) return Error::Invalid;
+        const Error err = resolve(name, next);
+        if (err == Error::NotExist) return err;
+        zone.store(next);
         return Error();
 }
 
 TimeZone Clock::timeZone() {
-        return zone.load();
+        return zone.load().rules;
+}
+
+Clock::ZoneName Clock::zoneName() {
+        return zone.load().name;
+}
+
+void Clock::setZoneResolver(ZoneResolver r) {
+        resolver.store(r, std::memory_order_release);
+        retryZoneName();
+        return;
+}
+
+void Clock::retryZoneName() {
+        const ZoneName pending = zone.load().name;
+        if (pending.pending == ZonePending::None) return;
+        KernelZone next;
+        (void)resolve(pending.view(), next);
+        // Only if it wasn't set again meanwhile.
+        zone.update([&](KernelZone &z) {
+                if (z.name.pending != ZonePending::None && z.name.view() == pending.view()) z = next;
+        });
+        return;
 }
 
 LocalTime Clock::localTime(Timestamp time) {
-        return zone.load().localTime(time);
+        return zone.load().rules.localTime(time);
 }
 
 BMDS_NAMESPACE_END

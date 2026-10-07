@@ -15,6 +15,7 @@ set(BMDS_KERNEL_PORTABLE_SRCS
         src/interrupt.cpp
         src/memorystream.cpp
         src/pipe.cpp
+        src/random.cpp
         src/taskowner.cpp
         src/waitlist.cpp
         src/workerpool.cpp)
@@ -37,7 +38,7 @@ if(COMMAND idf_component_register)
                                     src/thread.cpp
                                INCLUDE_DIRS include
                                REQUIRES bmds_core bmds_board freertos
-                               PRIV_REQUIRES esp_app_format esp_hw_support esp_psram esp_system esp_timer heap log
+                               PRIV_REQUIRES bootloader_support esp_app_format esp_hw_support esp_psram esp_system esp_timer heap log
                                LDFRAGMENTS linker.lf)
         bmds_target_options(${COMPONENT_LIB})
 else()

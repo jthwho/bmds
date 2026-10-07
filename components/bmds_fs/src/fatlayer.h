@@ -143,8 +143,22 @@ namespace Fat {
         Result<FileHandle::Ptr> openFile(FatVolume &volume, const char *path, uint8_t flags, uint32_t device,
                                          uint64_t id, FRESULT *raw = nullptr, String *link = nullptr);
 
-        /** @brief Calls the change hook, if any (`Vfs::setChangeHook()`). Lock held. */
+        /**
+         * @brief Calls the change hook, if any (`Vfs::setChangeHook()`), and
+         *        tells the zone database (zoneinfo.h). Lock held.
+         */
         void changedLocked(uint32_t device, uint64_t id);
+
+        /** @brief Returns the identity (`FileInfo::id`) of normalized path @p normalized. */
+        uint64_t pathId(StringView normalized);
+
+        /**
+         * @brief Opens the regular file at normalized @p path for reading,
+         *        on @p file (links aren't followed). Lock held.
+         * @param modified [out] If not null: the file's modification time.
+         * @return `Ok` (@p volume set; close @p file), `NotExist`, `IsDir`, `NoMedia`, ...
+         */
+        Error openPlainLocked(StringView path, FIL &file, FatVolume *&volume, Timestamp *modified = nullptr);
 
         /** @brief The largest file that can be an emulated symbolic link. */
         constexpr size_t MaxLinkFile = 10 + 2 + 2 * 1024 + 2;

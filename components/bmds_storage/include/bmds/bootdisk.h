@@ -37,6 +37,14 @@ namespace BootDisk {
          */
         Error init();
 
+        /**
+         * @brief Writes a new `/boot/random-seed` from the random pool
+         *        (devplan/random.md): by the storage service a few seconds
+         *        after boot (the write takes about 0.35 s, so not in the boot
+         *        stage), and at shutdown. Does nothing without `/boot`.
+         */
+        void refreshRandomSeed();
+
 } // namespace BootDisk
 
 BMDS_NAMESPACE_END

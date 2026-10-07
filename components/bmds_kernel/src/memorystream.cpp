@@ -9,12 +9,15 @@
 #include <cstring>
 #include <utility>
 #include <bmds/memorystream.h>
+#include <bmds/random.h>
 
 BMDS_NAMESPACE_BEGIN
 
 namespace {
 
         constinit NullStream nullStream;
+
+        constexpr size_t MaxRandomRead = 65536;
 
 } // namespace
 
@@ -59,6 +62,23 @@ void MemoryStream::clear() {
 
 NullStream &NullStream::instance() {
         return nullStream;
+}
+
+Result<size_t> ZeroStream::read(WritableByteSpan buf, unsigned int timeoutMs) {
+        (void)timeoutMs;
+        if (buf.isEmpty()) return makeError<size_t>(Error::Invalid);
+        std::memset(buf.data(), 0, buf.size());
+        return makeResult(buf.size());
+}
+
+Result<size_t> RandomStream::read(WritableByteSpan buf, unsigned int timeoutMs) {
+        (void)timeoutMs;
+        if (buf.isEmpty()) return makeError<size_t>(Error::Invalid);
+        // The kernel's pool (devplan/random.md). At most 64 KB a read, so no
+        // read holds the CPU long.
+        const size_t n = buf.size() < MaxRandomRead ? buf.size() : MaxRandomRead;
+        Random::fill(buf.data(), n);
+        return makeResult(n);
 }
 
 BMDS_NAMESPACE_END

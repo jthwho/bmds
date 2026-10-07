@@ -19,14 +19,19 @@ Make `dist/<name>/` with:
   `license_files` (paths in the source to install under `share/licenses/<name>`),
   optionally `stack` (bytes the program's stack must have; default the
   kernel's) and `source_dir` (the tarball's top directory, if it isn't
-  `<name>-<version>`).
+  `<name>-<version>`). A package of data kept in this repository has
+  `source_tree` (its directory, from the repository's root) instead of
+  `source` and `sha256`, may have `version_file` (a file there holding the
+  version) instead of `version`, and `sdk = false` if it needs no compiler.
 - **`build.sh`:** bash, run with `-e` in an empty build directory. It builds
   and installs into `$DESTDIR` (`bin/` for programs, links as real symbolic
   links). It gets `SRC` (the unpacked, patched source), `BUILD` (its working
   directory), `DESTDIR`, `PKGDIR` (this directory), `CC` (the SDK's `bmds-cc`,
   static musl), `AR`, `STRIP`, `OBJCOPY`, `HOSTCC`, `BMDS_MAKE` (use it for the main
   build: it paces parallel jobs; it isn't called `MAKE`, which would replace
-  make's own in recursive builds), `JOBS`, `BMDS_STACK`, `VERSION`.
+  make's own in recursive builds), `JOBS`, `BMDS_STACK`, `VERSION`, `ROOT`
+  (the repository; for its `tools/`). Without the SDK there is no `CC`, `AR`,
+  `STRIP` or `OBJCOPY`.
 - **`patches/*.patch`** (optional): applied in name order with `patch -p1`.
 - Anything else the build reads (a configuration file, say).
 

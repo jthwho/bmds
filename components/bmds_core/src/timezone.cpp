@@ -119,6 +119,24 @@ bool TimeZone::parseRule(StringView &text, Rule &rule) {
         return true;
 }
 
+bool TimeZone::isName(StringView tz) {
+        if (tz.isEmpty()) return false;
+        if (tz[0] == ':') return true;
+        size_t end = 0;
+        if (tz[0] == '<') {
+                end = tz.indexOf('>');
+                if (end == StringView::NPos) return true;
+                ++end;
+        } else {
+                while (end < tz.size() && ((tz[end] >= 'A' && tz[end] <= 'Z') || (tz[end] >= 'a' && tz[end] <= 'z')))
+                        ++end;
+        }
+        if (end == 0) return true;
+        if (end == tz.size()) return !(tz == "UTC" || tz == "GMT");
+        const char next = tz[end];
+        return !(next == '+' || next == '-' || (next >= '0' && next <= '9'));
+}
+
 Result<TimeZone> TimeZone::parse(StringView spec) {
         TimeZone zone;
         if (spec.size() > MaxSpec) return makeError<TimeZone>(Error::Invalid);

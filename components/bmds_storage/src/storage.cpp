@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <bmds/blockdevices.h>
+#include <bmds/bootdisk.h>
 #include <bmds/log.h>
 #include <bmds/sdcard.h>
 #include <bmds/semaphore.h>
@@ -24,6 +25,9 @@ namespace {
 
         // The card-detect switch must be quiet this long before it counts.
         constexpr unsigned int DebounceMs = 50;
+
+        // When the random seed is written after boot.
+        constexpr unsigned int SeedDelayMs = 5000;
 
         struct Service {
                         Service() : firstCheck(1, 0) {}
@@ -85,6 +89,7 @@ namespace {
         void serviceMain(void *) {
                 SdCard &card = SdCard::instance();
                 bool    first = true;
+                bool    seedPending = true;
                 for (;;) {
                         // Debounce: act once the switch has been quiet for a while.
                         while (card.waitForDetectChange(DebounceMs).isOk()) {}
@@ -99,6 +104,13 @@ namespace {
                                 first = false;
                                 service->firstCheck.release();
                         }
+                        if (seedPending) {
+                                // A new random seed in /boot once boot's own use of /boot is over
+                                // (devplan/random.md); a card change first is handled first.
+                                if (card.waitForDetectChange(SeedDelayMs) != Error::Timeout) continue;
+                                seedPending = false;
+                                BootDisk::refreshRandomSeed();
+                        }
                         (void)card.waitForDetectChange(WaitForever);
                 }
         }
@@ -107,6 +119,8 @@ namespace {
 
 Error Storage::init() {
         Error err = Vfs::init();
+        // The time zone database on the card (devplan/time.md §9); it may come later.
+        if (err.isOk()) err = Vfs::setZoneDatabase(CONFIG_BMDS_ZONEINFO_PATH);
         if (err.isOk()) err = SdCard::init();
         if (err.isError()) return err;
         Service &s = service.create();

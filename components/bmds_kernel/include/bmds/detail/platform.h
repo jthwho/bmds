@@ -80,6 +80,19 @@ namespace Detail {
         /** @brief Steps the C library's time (`time()`, `gettimeofday()`) to @p wallNs. */
         void setLibcTime(int64_t wallNs);
 
+        /**
+         * @brief Fills @p size bytes at @p data with random bytes (the
+         *        hardware generator on the target). Task context.
+         */
+        void fillRandom(void *data, size_t size);
+
+        /**
+         * @brief Fills @p size bytes with true random bytes at boot: the
+         *        target turns the hardware's main noise source (the SAR ADC)
+         *        on for the moment. Boot only, before the ADC has another use.
+         */
+        void fillBootEntropy(void *data, size_t size);
+
 } // namespace Detail
 
 BMDS_NAMESPACE_END

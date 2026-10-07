@@ -46,6 +46,9 @@ def packages():
             with open(path, "rb") as f:
                 recipe = tomllib.load(f)
             recipe["dir"] = os.path.join(DIST, name)
+            if "version_file" in recipe:
+                with open(os.path.join(ROOT, recipe["version_file"])) as v:
+                    recipe["version"] = v.read().strip()
             if recipe.get("name") != name:
                 die("%s: name must be %s" % (path, name))
             found[name] = recipe
@@ -139,10 +142,18 @@ def tree_files(root):
     return sorted(found)
 
 
+def uses_sdk(recipe):
+    """False for a package of data, built with the host's tools only."""
+    return recipe.get("sdk", True)
+
+
 def build_package(recipe, cc):
     name = recipe["name"]
     print("=== %s %s" % (name, recipe["version"]), flush=True)
-    src = unpack(recipe, fetch(recipe))
+    if "source_tree" in recipe:
+        src = os.path.join(ROOT, recipe["source_tree"])  # in this repository; read only
+    else:
+        src = unpack(recipe, fetch(recipe))
     build = os.path.join(OUT, "build", name)
     shutil.rmtree(build, ignore_errors=True)
     os.makedirs(build)
@@ -151,11 +162,12 @@ def build_package(recipe, cc):
     os.makedirs(stage)
     env = dict(os.environ)
     env.update({
-        "SRC": src, "BUILD": build, "DESTDIR": stage, "PKGDIR": recipe["dir"], "CC": cc,
-        "AR": find_tool("ar"), "STRIP": find_tool("strip"), "OBJCOPY": find_tool("objcopy"),
+        "SRC": src, "BUILD": build, "DESTDIR": stage, "PKGDIR": recipe["dir"], "ROOT": ROOT,
         "HOSTCC": os.environ.get("HOSTCC", "gcc"), "BMDS_MAKE": make_tool(), "JOBS": str(os.cpu_count() or 2),
         "BMDS_STACK": str(recipe.get("stack", 0)), "VERSION": recipe["version"],
     })
+    if uses_sdk(recipe):
+        env.update({"CC": cc, "AR": find_tool("ar"), "STRIP": find_tool("strip"), "OBJCOPY": find_tool("objcopy")})
     run(["bash", "-e", os.path.join(recipe["dir"], "build.sh")], cwd=build, env=env)
     # Programs as the loader needs them: symbols it doesn't use gone, relocations kept.
     bindir = os.path.join(stage, "bin")
@@ -214,7 +226,7 @@ def command_build(opts):
     for name in wanted:
         if name not in known:
             die("no package %s (see bmds-dist list)" % name)
-    cc = build_sdk()
+    cc = build_sdk() if any(uses_sdk(known[name]) for name in wanted) else None
     for name in wanted:
         build_package(known[name], cc)
     links = write_links_script()

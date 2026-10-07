@@ -42,7 +42,11 @@ const char *CommandContext::errorText(Error err) {
 TimeZone CommandContext::displayZone() const {
         const String *tz = _executor != nullptr ? _executor->state().vars.value("TZ") : nullptr;
         if (tz == nullptr) return Clock::timeZone();
-        const Result<TimeZone> zone = TimeZone::parse(tz->view());
+        // A name is looked up in the zone database (the last answer is kept
+        // there, so `ls -l` doesn't read it per line); not found is UTC, as in musl.
+        const StringView       text = tz->view();
+        const Result<TimeZone> zone = TimeZone::isName(text) ? Vfs::zoneRules(text.startsWith(':') ? text.mid(1) : text)
+                                                             : TimeZone::parse(text);
         return zone.error().isOk() ? zone.value() : TimeZone();
 }
 

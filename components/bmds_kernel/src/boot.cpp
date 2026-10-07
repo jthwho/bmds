@@ -15,6 +15,7 @@
 #include <bmds/assert.h>
 #include <bmds/boot.h>
 #include <bmds/clock.h>
+#include <bmds/random.h>
 #include <bmds/error.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
@@ -58,6 +59,7 @@ namespace {
         // The boot stages, in order. Lives in rodata.
         constexpr Stage Stages[] = {
                 {"memory", initMemory},
+                {"random", Random::init}, // before anything reads it
                 {"clock", Clock::init},
         };
         constexpr size_t StageCount = sizeof(Stages) / sizeof(Stages[0]);

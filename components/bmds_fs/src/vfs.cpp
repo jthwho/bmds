@@ -10,11 +10,13 @@
 #include <new>
 #include <utility>
 #include <bmds/builtinprograms.h>
+#include <bmds/clock.h>
 #include <bmds/memory.h>
 #include <bmds/memorystream.h>
 #include <bmds/partitions.h>
 
 #include "fatlayer.h"
+#include "zoneinfo.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -35,31 +37,60 @@ namespace {
         constinit size_t mountCount = 0;
         constinit WaitListOf<4> mountChanges; // released after each mount and unmount
 
-        constinit NullStream devNull;
+        constinit NullStream   devNull;
+        constinit ZeroStream   devZero;
+        constinit RandomStream devRandom;
+        constinit RandomStream devUrandom; // the same generator; its own node identity
 
         constinit Vfs::ChangeHook changeHook = nullptr; // under the storage lock
 
         // The fixed device nodes in /dev, listed before the block devices.
-        constexpr const char *DevNames[] = {"console", "null"};
+        // All but the console are streams without state, shared by every caller.
+        struct DevNode {
+                        const char *name;
+                        Stream     *stream; // null: the caller's console
+        };
+        constexpr DevNode DevNodes[] = {
+                {"console", nullptr},     {"null", &devNull}, {"random", &devRandom},
+                {"urandom", &devUrandom}, {"zero", &devZero},
+        };
+
+        // The fixed node named @p name, or null.
+        const DevNode *findDevNode(StringView name) {
+                for (const DevNode &n : DevNodes) {
+                        if (name == n.name) return &n;
+                }
+                return nullptr;
+        }
 
         // What a normalized path names.
         enum class Kind : uint8_t {
                 Virtual,
                 DevDir,
-                DevNull,
+                DevStream, // a fixed node's stream: /dev/null, /dev/zero, ...
                 DevConsole,
                 DevBlock,
                 Fat,
                 BinDir,     // /bin: the programs built in (devplan/programs.md §17)
                 BinProgram, // /bin/NAME
+                ZoneDir,    // /share/zoneinfo and its directories (devplan/time.md §9)
+                ZoneFile,   // /share/zoneinfo/NAME
         };
 
         // Where the programs built into the firmware are listed (read-only).
         constexpr StringView BinPath("/bin");
 
+        // Where the time zone database's directory is (read-only).
+        using Vfs::ZoneInfoPath;
+        constexpr StringView SharePath("/share");
+
         struct Node {
                         Kind                kind = Kind::Virtual;
                         const ProgramEntry *program = nullptr; // BinProgram
+                        Stream             *stream = nullptr;  // DevStream
+                        uint32_t            zoneOffset = 0;    // ZoneFile: its data in the database
+                        uint32_t            zoneLength = 0;
+                        Timestamp           zoneModified; // ZoneDir, ZoneFile: the database's
                         FatVolume          *volume = nullptr;
                         BlockDevice *device = nullptr;
                         StringView   name; // The last component ("" for /).
@@ -100,6 +131,12 @@ namespace {
                 return path.size() > dir.size() && isAtOrBelow(path, dir);
         }
 
+        // True if normalized @p path is in a tree nothing can be written to:
+        // the programs built in, the time zone database.
+        bool isReadOnlyTree(StringView path) {
+                return isAtOrBelow(path, BinPath) || isAtOrBelow(path, ZoneInfoPath);
+        }
+
         // Resolves a normalized path. Lock held.
         Result<Node> resolveLocked(StringView path) {
                 Node node;
@@ -110,10 +147,9 @@ namespace {
                                 node.kind = Kind::DevDir;
                         } else if (path.lastIndexOf('/') != 4) {
                                 return makeError<Node>(Error::NotExist);
-                        } else if (node.name == "null") {
-                                node.kind = Kind::DevNull;
-                        } else if (node.name == "console") {
-                                node.kind = Kind::DevConsole;
+                        } else if (const DevNode *dev = findDevNode(node.name)) {
+                                node.kind = dev->stream != nullptr ? Kind::DevStream : Kind::DevConsole;
+                                node.stream = dev->stream;
                         } else {
                                 const BlockDevices::Entry *e = Fat::findEntryLocked(node.name);
                                 if (e == nullptr) return makeError<Node>(Error::NotExist);
@@ -133,6 +169,17 @@ namespace {
                         node.kind = Kind::BinProgram;
                         return makeResult(node);
                 }
+                if (isAtOrBelow(path, ZoneInfoPath)) {
+                        Zones::Found found;
+                        const Error  err = Zones::findLocked(
+                                path == ZoneInfoPath ? StringView() : path.mid(ZoneInfoPath.size() + 1), found);
+                        if (err.isError()) return makeError<Node>(err);
+                        node.kind = found.directory ? Kind::ZoneDir : Kind::ZoneFile;
+                        node.zoneOffset = found.entry.offset;
+                        node.zoneLength = found.entry.length;
+                        node.zoneModified = found.modified;
+                        return makeResult(node);
+                }
                 for (size_t i = 0; i < mountCount; ++i) {
                         const StringView mp(mounts[i].path);
                         if (isAtOrBelow(path, mp)) {
@@ -144,7 +191,8 @@ namespace {
                                 return makeResult(node);
                         }
                 }
-                // A directory leading to a mount is virtual.
+                // A directory leading to a mount, or to the time zone database, is virtual.
+                if (path == SharePath) return makeResult(node);
                 for (size_t i = 0; i < mountCount; ++i) {
                         if (isBelow(StringView(mounts[i].path), path)) return makeResult(node);
                 }
@@ -197,7 +245,17 @@ namespace {
                                 (void)info.name.assign(node.name);
                                 info.type = FileType::File; // empty: run, not read
                                 return makeResult(std::move(info));
-                        case Kind::DevNull:
+                        case Kind::ZoneDir:
+                                info = directoryInfo(node.name);
+                                info.modified = node.zoneModified;
+                                return makeResult(std::move(info));
+                        case Kind::ZoneFile:
+                                (void)info.name.assign(node.name);
+                                info.type = FileType::File;
+                                info.size = node.zoneLength;
+                                info.modified = node.zoneModified;
+                                return makeResult(std::move(info));
+                        case Kind::DevStream:
                         case Kind::DevConsole:
                         case Kind::DevBlock:
                                 (void)info.name.assign(node.name);
@@ -457,20 +515,23 @@ namespace {
         }
 
         // The child names of virtual directory @p dir, in order without
-        // repeats: "dev" in /, then the next component of each mount below.
-        // Returns child @p index, or an empty view past the end. Lock held.
+        // repeats: "bin", "dev" and "share" in /, "zoneinfo" in /share, then
+        // the next component of each mount below. Returns child @p index, or
+        // an empty view past the end. Lock held.
         StringView virtualChild(StringView dir, size_t index) {
-                size_t emitted = 0;
-                if (dir == "/") {
-                        if (index == 0) return StringView("bin");
-                        if (index == 1) return StringView("dev");
-                        emitted = 2;
-                }
+                static constexpr StringView InRoot[] = {"bin", "dev", "share"};
+                static constexpr StringView InShare[] = {"zoneinfo"};
+                Span<const StringView>      fixed;
+                if (dir == "/") fixed = InRoot;
+                if (dir == SharePath) fixed = InShare;
+                if (index < fixed.size()) return fixed[index];
+                size_t emitted = fixed.size();
                 for (size_t i = 0; i < mountCount; ++i) {
                         const StringView mp(mounts[i].path);
                         if (!isBelow(mp, dir)) continue;
                         const StringView child = childOf(mp, dir);
                         bool             repeat = false;
+                        for (const StringView f : fixed) repeat = repeat || f == child;
                         for (size_t j = 0; j < i && !repeat; ++j) {
                                 const StringView other(mounts[j].path);
                                 repeat = isBelow(other, dir) && childOf(other, dir) == child;
@@ -521,6 +582,9 @@ struct Directory::State {
                 char       path[MaxMountPath + 1] = {}; // Virtual directories.
                 DIR        dir = {};
                 FILINFO    entry = {};
+                String     zones{MemSpace::Psram}; // ZoneDir: its children (Zones::listLocked())
+                size_t     zoneAt = 0;             // ZoneDir: the next record
+                Timestamp  zoneModified;
 };
 
 class VfsAccess {
@@ -582,12 +646,29 @@ Result<FileInfo> Directory::next() {
                         ++s.index;
                         return makeResult(std::move(info));
                 }
+                case Kind::ZoneDir: {
+                        if (s.zoneAt >= s.zones.size()) return makeError<FileInfo>(Error::EndOfFile);
+                        const char      *record = s.zones.data() + s.zoneAt;
+                        const uint8_t   *size = reinterpret_cast<const uint8_t *>(record + 1);
+                        const StringView name(record + Zones::RecordHeader);
+                        s.zoneAt += Zones::RecordHeader + name.size() + 1;
+                        info = record[0] == 'd' ? directoryInfo(name) : FileInfo();
+                        if (record[0] != 'd') {
+                                (void)info.name.assign(name);
+                                info.type = FileType::File;
+                                info.size = static_cast<uint32_t>(size[0] | size[1] << 8 | size[2] << 16) |
+                                            static_cast<uint32_t>(size[3]) << 24;
+                        }
+                        info.modified = s.zoneModified;
+                        info.id = idAppend(idAppend(s.idPrefix, "/"), name);
+                        return makeResult(std::move(info));
+                }
                 case Kind::DevDir: {
-                        constexpr size_t Fixed = sizeof(DevNames) / sizeof(DevNames[0]);
+                        constexpr size_t Fixed = sizeof(DevNodes) / sizeof(DevNodes[0]);
                         if (s.index < Fixed) {
-                                (void)info.name.assign(DevNames[s.index]);
+                                (void)info.name.assign(DevNodes[s.index].name);
                                 // The console's id is its stream's, unknown here.
-                                if (info.name == "null") info.id = objectId(static_cast<Stream *>(&devNull));
+                                if (DevNodes[s.index].stream != nullptr) info.id = objectId(DevNodes[s.index].stream);
                         } else if (s.index - Fixed < Fat::deviceCountLocked()) {
                                 const BlockDevices::Entry &e = Fat::deviceAtLocked(s.index - Fixed);
                                 (void)info.name.assign(e.name);
@@ -623,8 +704,32 @@ Result<FileInfo> Directory::next() {
 // --- Vfs: paths and mounts --------------------------------------------------
 
 void Fat::changedLocked(uint32_t device, uint64_t id) {
+        Zones::changedLocked(device, id);
         if (changeHook != nullptr) changeHook(device, id);
         return;
+}
+
+uint64_t Fat::pathId(StringView normalized) {
+        return bmds::pathId(normalized);
+}
+
+Error Fat::openPlainLocked(StringView path, FIL &file, FatVolume *&volume, Timestamp *modified) {
+        const Result<Node> found = resolveLocked(path);
+        if (found.error().isError()) return found.error();
+        const Node &node = found.value();
+        if (node.kind != Kind::Fat) return Error::NotExist;
+        if (node.rest.isEmpty()) return Error::IsDir;
+        String      fat;
+        const Error err = fatPath(node, fat);
+        if (err.isError()) return err;
+        if (modified != nullptr) {
+                const Result<FileInfo> info = statLocked(node);
+                if (info.error().isError()) return info.error();
+                if (info.value().isDirectory()) return Error::IsDir;
+                *modified = info.value().modified;
+        }
+        volume = node.volume;
+        return toError(f_open(&file, fat.cStr(), FA_READ), *node.volume);
 }
 
 void Vfs::setChangeHook(ChangeHook hook) {
@@ -634,7 +739,9 @@ void Vfs::setChangeHook(ChangeHook hook) {
 }
 
 Error Vfs::init() {
-        return Fat::init();
+        const Error err = Fat::init();
+        if (err.isOk()) Zones::installResolver(); // zone names in the kernel's zone (devplan/time.md §9)
+        return err;
 }
 
 Result<String> Vfs::normalize(StringView path, StringView cwd) {
@@ -667,37 +774,57 @@ Result<String> Vfs::normalize(StringView path, StringView cwd) {
         return makeResult(std::move(out));
 }
 
+namespace {
+
+        Error mountAt(StringView path, BlockDevice &device);
+
+} // namespace
+
 Error Vfs::mount(StringView path, BlockDevice &device) {
-        const Result<String> normalized = normalize(path, "/");
-        if (normalized.error().isError()) return normalized.error();
-        const StringView p = normalized.value().view();
-        if (p == "/" || isAtOrBelow(p, "/dev") || isAtOrBelow(p, BinPath) || p.size() > MaxMountPath)
-                return Error::Invalid;
-        Mutex::Locker lock(Fat::lock(), WaitForever);
-        for (size_t i = 0; i < mountCount; ++i) {
-                const StringView mp(mounts[i].path);
-                if (p == mp) return Error::Exists;
-                // Not inside a mounted filesystem, nor over the path to one.
-                if (isBelow(p, mp) || isBelow(mp, p)) return Error::Invalid;
-                // One filesystem in two volumes would corrupt it.
-                if (overlaps(i, device)) return Error::Busy;
-        }
-        if (mountCount == MaxMounts) return Error::Full;
-        FatVolume *volume = FatVolume::acquire();
-        if (volume == nullptr) return Error::Full;
-        const Error err = volume->mount(device);
-        if (err.isError()) {
-                volume->release();
-                return err;
-        }
-        Mount &m = mounts[mountCount++];
-        std::memcpy(m.path, p.data(), p.size());
-        m.path[p.size()] = '\0';
-        m.volume = volume;
-        m.device = &device;
-        mountChanges.notify();
-        return Error();
+        const Error err = mountAt(path, device);
+        // A pending zone name: its database may be on this filesystem.
+        if (err.isOk()) Clock::retryZoneName();
+        return err;
 }
+
+namespace {
+
+        Error mountAt(StringView path, BlockDevice &device) {
+                using namespace Vfs;
+                const Result<String> normalized = normalize(path, "/");
+                if (normalized.error().isError()) return normalized.error();
+                const StringView p = normalized.value().view();
+                if (p == "/" || isAtOrBelow(p, "/dev") || isAtOrBelow(p, BinPath) || isAtOrBelow(p, ZoneInfoPath) ||
+                    p.size() > MaxMountPath)
+                        return Error::Invalid;
+                Mutex::Locker lock(Fat::lock(), WaitForever);
+                for (size_t i = 0; i < mountCount; ++i) {
+                        const StringView mp(mounts[i].path);
+                        if (p == mp) return Error::Exists;
+                        // Not inside a mounted filesystem, nor over the path to one.
+                        if (isBelow(p, mp) || isBelow(mp, p)) return Error::Invalid;
+                        // One filesystem in two volumes would corrupt it.
+                        if (overlaps(i, device)) return Error::Busy;
+                }
+                if (mountCount == MaxMounts) return Error::Full;
+                FatVolume *volume = FatVolume::acquire();
+                if (volume == nullptr) return Error::Full;
+                const Error err = volume->mount(device);
+                if (err.isError()) {
+                        volume->release();
+                        return err;
+                }
+                Mount &m = mounts[mountCount++];
+                std::memcpy(m.path, p.data(), p.size());
+                m.path[p.size()] = '\0';
+                m.volume = volume;
+                m.device = &device;
+                Zones::mountsChangedLocked();
+                mountChanges.notify();
+                return Error();
+        }
+
+} // namespace
 
 Error Vfs::pin(StringView path) {
         Mutex::Locker lock(Fat::lock(), WaitForever);
@@ -812,14 +939,22 @@ Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context 
                 if (hops > MaxLinks) return makeError<FileHandle::Ptr>(Error::TooManyLinks);
                 const Result<Node> found = resolveLocked(storage.view());
                 if (found.error() == Error::NotExist && (flags & Create) != 0 && outsideFilesystemsLocked(storage))
-                        return makeError<FileHandle::Ptr>(
-                                isAtOrBelow(storage.view(), BinPath) ? Error::ReadOnly : Error::PermissionDenied);
+                        return makeError<FileHandle::Ptr>(isReadOnlyTree(storage.view()) ? Error::ReadOnly
+                                                                                         : Error::PermissionDenied);
                 if (found.error().isError()) return makeError<FileHandle::Ptr>(found.error());
                 const Node &node = found.value();
                 switch (node.kind) {
                         case Kind::Virtual:
                         case Kind::BinDir:
+                        case Kind::ZoneDir:
                         case Kind::DevDir: return makeError<FileHandle::Ptr>(Error::IsDir);
+                        case Kind::ZoneFile: {
+                                if ((flags & (Write | Truncate | Append)) != 0)
+                                        return makeError<FileHandle::Ptr>(Error::ReadOnly);
+                                Result<FileHandle::Ptr> handle = Zones::openLocked(node.zoneOffset, node.zoneLength);
+                                if (handle.error().isOk()) handle.value()->setIdentity(pathId(storage.view()), 0);
+                                return handle;
+                        }
                         case Kind::BinProgram: {
                                 // Read-only, and empty: a built-in is run, not read.
                                 if ((flags & (Write | Truncate | Append)) != 0)
@@ -828,7 +963,7 @@ Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context 
                                 if (handle.error().isOk()) handle.value()->setIdentity(pathId(storage.view()), 0);
                                 return handle;
                         }
-                        case Kind::DevNull: return FileHandle::open(devNull, mode);
+                        case Kind::DevStream: return FileHandle::open(*node.stream, mode);
                         case Kind::DevConsole:
                                 if (context.terminal == nullptr) return makeError<FileHandle::Ptr>(Error::NotExist);
                                 return FileHandle::open(*context.terminal, mode);
@@ -878,7 +1013,7 @@ namespace {
         void setIdentity(FileInfo &fi, const Node &node, StringView storage, const Vfs::Context &context) {
                 switch (node.kind) {
                         // A device node is its stream (or device), as its handles say.
-                        case Kind::DevNull: fi.id = objectId(static_cast<Stream *>(&devNull)); break;
+                        case Kind::DevStream: fi.id = objectId(node.stream); break;
                         case Kind::DevConsole: fi.id = objectId(context.terminal); break;
                         case Kind::DevBlock: fi.id = objectId(node.device); break;
                         default:
@@ -933,7 +1068,7 @@ Error Vfs::symlink(StringView target, StringView path, const Context &context) {
         Result<String> normalized = normalize(path, context.cwd);
         if (normalized.error().isError()) return normalized.error();
         String storage = std::move(normalized).value();
-        if (isAtOrBelow(storage.view(), BinPath)) return Error::ReadOnly; // the built-ins
+        if (isReadOnlyTree(storage.view())) return Error::ReadOnly; // the built-ins, the zones
         for (int hops = 0;; ++hops) {
                 if (hops > MaxLinks) return Error::TooManyLinks;
                 const Result<Node> found = resolveLocked(storage.view());
@@ -985,8 +1120,8 @@ Result<Directory> Vfs::openDirectory(StringView path, const Context &context) {
                 const Result<Node> found = resolveLocked(storage.view());
                 if (found.error().isError()) return makeError<Directory>(found.error());
                 const Node &node = found.value();
-                if (node.kind == Kind::DevNull || node.kind == Kind::DevConsole || node.kind == Kind::DevBlock ||
-                    node.kind == Kind::BinProgram)
+                if (node.kind == Kind::DevStream || node.kind == Kind::DevConsole || node.kind == Kind::DevBlock ||
+                    node.kind == Kind::BinProgram || node.kind == Kind::ZoneFile)
                         return makeError<Directory>(Error::NotDir);
                 String fat;
                 if (node.kind == Kind::Fat) {
@@ -1004,6 +1139,19 @@ Result<Directory> Vfs::openDirectory(StringView path, const Context &context) {
                         const size_t n = storage.size() < MaxMountPath ? storage.size() : MaxMountPath;
                         std::memcpy(state->path, storage.data(), n);
                         state->path[n] = '\0';
+                }
+                if (node.kind == Kind::ZoneDir) {
+                        // The names, read now: the database needn't stay open.
+                        state->zoneModified = node.zoneModified;
+                        const StringView name = storage.view() == ZoneInfoPath
+                                                        ? StringView()
+                                                        : storage.view().mid(ZoneInfoPath.size() + 1);
+                        const Error      err = Zones::listLocked(name, state->zones);
+                        if (err.isError()) {
+                                state->~State();
+                                Memory::free(mem);
+                                return makeError<Directory>(err);
+                        }
                 }
                 if (node.kind == Kind::Fat) {
                         const FRESULT result = f_opendir(&state->dir, fat.cStr());
@@ -1053,7 +1201,7 @@ Error Vfs::mkdir(StringView path, const Context &context) {
         Mutex::Locker lock(Fat::lock(), WaitForever);
         String        storage;
         Error         err = normalizeInto(path, context, storage);
-        if (err.isOk() && isAtOrBelow(storage.view(), BinPath)) return Error::ReadOnly; // the built-ins
+        if (err.isOk() && isReadOnlyTree(storage.view())) return Error::ReadOnly; // the built-ins, the zones
         for (int hops = 0; err.isOk(); ++hops) {
                 if (hops > MaxLinks) return Error::TooManyLinks;
                 String fat;
@@ -1072,7 +1220,7 @@ Error Vfs::rmdir(StringView path, const Context &context) {
         Mutex::Locker lock(Fat::lock(), WaitForever);
         String        storage;
         Error         err = normalizeInto(path, context, storage);
-        if (err.isOk() && isAtOrBelow(storage.view(), BinPath)) return Error::ReadOnly; // the built-ins
+        if (err.isOk() && isReadOnlyTree(storage.view())) return Error::ReadOnly; // the built-ins, the zones
         for (int hops = 0; err.isOk(); ++hops) {
                 if (hops > MaxLinks) return Error::TooManyLinks;
                 String fat;
@@ -1096,14 +1244,14 @@ Error Vfs::remove(StringView path, const Context &context) {
         Mutex::Locker lock(Fat::lock(), WaitForever);
         String        storage;
         Error         err = normalizeInto(path, context, storage);
-        if (err.isOk() && isAtOrBelow(storage.view(), BinPath)) return Error::ReadOnly; // the built-ins
+        if (err.isOk() && isReadOnlyTree(storage.view())) return Error::ReadOnly; // the built-ins, the zones
         for (int hops = 0; err.isOk(); ++hops) {
                 if (hops > MaxLinks) return Error::TooManyLinks;
                 String     fat;
                 Node       node;
                 err = fatTargetLocked(storage, Error::IsDir, node, fat);
                 const bool deviceNode =
-                        node.kind == Kind::DevNull || node.kind == Kind::DevConsole || node.kind == Kind::DevBlock;
+                        node.kind == Kind::DevStream || node.kind == Kind::DevConsole || node.kind == Kind::DevBlock;
                 if (err == Error::IsDir && deviceNode) err = Error::PermissionDenied;
                 if (err.isError()) return err;
                 FRESULT                raw = FR_OK;
@@ -1124,7 +1272,7 @@ Error Vfs::rename(StringView from, StringView to, const Context &context) {
         String        toStorage;
         Error         err = normalizeInto(from, context, fromStorage);
         if (err.isOk()) err = normalizeInto(to, context, toStorage);
-        if (err.isOk() && (isAtOrBelow(fromStorage.view(), BinPath) || isAtOrBelow(toStorage.view(), BinPath)))
+        if (err.isOk() && (isReadOnlyTree(fromStorage.view()) || isReadOnlyTree(toStorage.view())))
                 return Error::ReadOnly; // the built-ins
         for (int hops = 0; err.isOk(); ++hops) {
                 if (hops > MaxLinks) return Error::TooManyLinks;
@@ -1153,7 +1301,7 @@ Error Vfs::setModified(StringView path, Timestamp time, const Context &context) 
         Mutex::Locker lock(Fat::lock(), WaitForever);
         String        storage;
         Error         err = normalizeInto(path, context, storage);
-        if (err.isOk() && isAtOrBelow(storage.view(), BinPath)) return Error::ReadOnly; // the built-ins
+        if (err.isOk() && isReadOnlyTree(storage.view())) return Error::ReadOnly; // the built-ins, the zones
         if (err.isError()) return err;
         // The file a link leads to, as `touch` does.
         Node                   found;

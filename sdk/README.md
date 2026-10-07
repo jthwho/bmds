@@ -108,6 +108,13 @@ on BMDS's table; programs never see that layer. What differs from Linux:
   `stat` by name shows its size as of its last flush (`fstat` is current).
   `unlink` of an open file is `EBUSY`; `rename` across filesystems `EXDEV`.
 - **Directories:** `readdir` lists `.` and `..` first, as Linux; up to 8 open.
+- **Devices:** `/dev/null`, `/dev/zero`, `/dev/urandom` and `/dev/random`
+  (the kernel's random pool, as `getrandom`: seeded from the chip's noise
+  source at boot; never waits) and `/dev/console` (the program's terminal).
+- **Time zones:** `TZ` is a POSIX rule string or a zone name
+  (`TZ=Europe/Berlin`); names are read by musl from `/share/zoneinfo`, the
+  card's time zone database shown read-only (empty without it: UTC). A
+  program started without `TZ` gets the kernel's zone, by name when it has one.
 - **Terminal size:** `TIOCGWINSZ` gives the console's size, which a serial
   terminal reports when the shell asks at each prompt (`term size` asks now).
   When the console's size changes while a program runs, its job gets

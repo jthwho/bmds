@@ -260,9 +260,10 @@ TEST_CASE("Vfs: devices, partitions and mounts") {
         CHECK(Vfs::findDevice("/dev/null", Root) == nullptr);
         CHECK(mountList() == std::vector<std::string>{"ram0p0 /ram0/p0 fat32"});
 
-        CHECK(list("/") == std::vector<std::string>{"bin/", "dev/", "ram0/"});
+        CHECK(list("/") == std::vector<std::string>{"bin/", "dev/", "ram0/", "share/"});
         CHECK(list("/ram0") == std::vector<std::string>{"p0/"});
-        CHECK(list("/dev") == std::vector<std::string>{"console", "null", "ram0", "ram0p0"});
+        CHECK(list("/dev") ==
+              std::vector<std::string>{"console", "null", "ram0", "ram0p0", "random", "urandom", "zero"});
         CHECK(Vfs::stat("/ram0", Root).value().isDirectory());
         CHECK(Vfs::stat("/dev/ram0", Root).value().type == FileType::Device);
         CHECK(Vfs::stat("/dev/ram0", Root).value().size == 64u * 1024 * 1024);
@@ -278,11 +279,11 @@ TEST_CASE("Vfs: devices, partitions and mounts") {
         SUBCASE("mounting by hand, and what is refused") {
                 CHECK(Vfs::unmount("/ram0/p0").isOk());
                 CHECK(Vfs::unmount("/ram0/p0") == Error::NotExist);
-                CHECK(list("/") == std::vector<std::string>{"bin/", "dev/"});
+                CHECK(list("/") == std::vector<std::string>{"bin/", "dev/", "share/"});
                 CHECK(Vfs::stat("/ram0", Root).error() == Error::NotExist);
                 CHECK(Vfs::mount("/data/main", *p0).isOk());
                 CHECK(Vfs::stat("/data/../data/main/../main/.", Root).value().isDirectory());
-                CHECK(list("/") == std::vector<std::string>{"bin/", "data/", "dev/"});
+                CHECK(list("/") == std::vector<std::string>{"bin/", "data/", "dev/", "share/"});
                 CHECK(Vfs::mount("/data/main", *p0) == Error::Exists);
                 CHECK(Vfs::mount("/other", *p0) == Error::Busy);
                 CHECK(Vfs::mount("/other", ram) == Error::Busy); // the whole device under a mounted partition
@@ -344,7 +345,7 @@ TEST_CASE("Vfs: devices, partitions and mounts") {
                 Vfs::eject(ram);
                 CHECK(mountList().empty());
                 CHECK(Vfs::stat("/ram0/p0/kept.txt", Root).error() == Error::NotExist);
-                CHECK(list("/dev") == std::vector<std::string>{"console", "null", "ram0"});
+                CHECK(list("/dev") == std::vector<std::string>{"console", "null", "ram0", "random", "urandom", "zero"});
                 CHECK(bmds::BlockDevices::find("ram0p0") == nullptr);
                 // Back in.
                 disk().device.setPresent(true);
@@ -813,7 +814,7 @@ TEST_CASE("Vfs: symbolic links") {
         }
 }
 
-TEST_CASE("Vfs: /dev/null and /dev/console") {
+TEST_CASE("Vfs: /dev/null, /dev/zero, /dev/urandom and /dev/console") {
         fresh();
         CHECK(Vfs::stat("/", Root).value().isDirectory());
         CHECK(Vfs::stat("/dev/null", Root).value().type == FileType::Device);
@@ -828,6 +829,27 @@ TEST_CASE("Vfs: /dev/null and /dev/console") {
                 uint8_t buf[4];
                 CHECK(null->read(WritableByteSpan(buf), WaitForever).error() == Error::EndOfFile);
         }
+        {
+                FileHandle::Ptr zero = open("/dev/zero", Vfs::Read | Vfs::Write);
+                CHECK(zero->write(bmds::StringView("gone"), WaitForever).error().isOk());
+                uint8_t buf[300];
+                std::memset(buf, 0x5a, sizeof(buf));
+                CHECK(zero->read(WritableByteSpan(buf), WaitForever).value() == sizeof(buf));
+                CHECK(std::count(buf, buf + sizeof(buf), 0) == static_cast<long>(sizeof(buf)));
+                CHECK(Vfs::stat("/dev/zero", Root).value().id == zero->id());
+        }
+        for (const char *path : {"/dev/urandom", "/dev/random"}) {
+                FileHandle::Ptr random = open(path, Vfs::Read | Vfs::Write);
+                CHECK(random->write(bmds::StringView("seed"), WaitForever).error().isOk());
+                uint8_t a[64] = {};
+                uint8_t b[64] = {};
+                CHECK(random->read(WritableByteSpan(a), WaitForever).value() == sizeof(a));
+                CHECK(random->read(WritableByteSpan(b), WaitForever).value() == sizeof(b));
+                CHECK(std::memcmp(a, b, sizeof(a)) != 0); // 2^-512 to fail
+                CHECK(Vfs::stat(path, Root).value().type == FileType::Device);
+        }
+        CHECK(Vfs::stat("/dev/random", Root).value().id != Vfs::stat("/dev/urandom", Root).value().id);
+        CHECK(Vfs::remove("/dev/zero", Root) == Error::PermissionDenied);
         CHECK(Vfs::open("/dev/console", Vfs::Write, Root).error() == Error::NotExist);
         bmds::MemoryStream terminal(bmds::MemSpace::Psram);
         {

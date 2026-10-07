@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+# @file      update-tzdata
+# @copyright Jason Howard. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+# See LICENSE file in the project root folder for license information.
+#
+# Updates thirdparty/tzdata, the time zone database's sources kept in git
+# (devplan/time.md §9), to an IANA release:
+#
+#   update-tzdata [VERSION]     the newest release by default, e.g. 2026e
+#
+# Downloads tzdataVERSION.tar.gz and its signature from data.iana.org, checks
+# the signature with gpgv against tools/tzdata-key.asc (the tzdata maintainer's
+# key), replaces the files kept, builds the bundle once as a check, and prints
+# the release's NEWS entry. Never commits: review the diff, then commit it.
+#
+# Python's standard library, gpg (gpgv) and zic.
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.request
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+DEST = os.path.join(ROOT, "thirdparty", "tzdata")
+KEY = os.path.join(ROOT, "tools", "tzdata-key.asc")
+RELEASES = "https://data.iana.org/time-zones/releases/"
+LATEST = "https://data.iana.org/time-zones/tzdata-latest.tar.gz"
+
+# The files kept: what zic reads (tools/tzbundle), the tables a zone picker
+# needs, and the release's identity and license.
+KEPT = ["africa", "antarctica", "asia", "australasia", "europe", "northamerica", "southamerica", "etcetera",
+        "backward", "zone1970.tab", "zone.tab", "iso3166.tab", "version", "LICENSE", "README"]
+
+
+def die(message):
+    print("update-tzdata: " + message, file=sys.stderr)
+    sys.exit(1)
+
+
+def download(url, path):
+    print("fetching " + url, flush=True)
+    try:
+        with urllib.request.urlopen(url) as response, open(path, "wb") as f:
+            shutil.copyfileobj(response, f)
+    except OSError as e:
+        die("%s: %s" % (url, e))
+
+
+def verify(work, tarball, signature):
+    """Checks the signature against the kept key only (not the user's keyring)."""
+    gpg = shutil.which("gpg")
+    gpgv = shutil.which("gpgv")
+    if not gpg or not gpgv:
+        die("gpg and gpgv are needed to check the release's signature")
+    home = os.path.join(work, "gnupg")
+    os.mkdir(home, 0o700)
+    keyring = os.path.join(work, "tzdata-key.gpg")
+    result = subprocess.run([gpg, "--homedir", home, "--batch", "--quiet", "--dearmor", "-o", keyring, KEY])
+    if result.returncode != 0:
+        die("%s: not a usable key" % KEY)
+    result = subprocess.run([gpgv, "--homedir", home, "--keyring", keyring, signature, tarball],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        sys.stderr.write(result.stderr)
+        die("%s: bad signature" % os.path.basename(tarball))
+    print("signature good (%s)" % os.path.basename(KEY), flush=True)
+
+
+def news_entry(news, version):
+    """The release's section of NEWS: from "Release VERSION" to the next release."""
+    match = re.search(r"^Release %s\b.*?(?=^Release )" % re.escape(version), news, re.S | re.M)
+    return match.group(0).rstrip() if match else ""
+
+
+def current_version():
+    try:
+        with open(os.path.join(DEST, "version")) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def main():
+    if len(sys.argv) > 2 or (len(sys.argv) == 2 and not re.fullmatch(r"\d{4}[a-z]", sys.argv[1])):
+        print("usage: update-tzdata [VERSION]   (e.g. 2026e; the newest by default)", file=sys.stderr)
+        return 2
+    wanted = sys.argv[1] if len(sys.argv) == 2 else None
+    before = current_version()
+    with tempfile.TemporaryDirectory(prefix="update-tzdata.") as work:
+        tarball = os.path.join(work, "tzdata.tar.gz")
+        url = RELEASES + "tzdata%s.tar.gz" % wanted if wanted else LATEST
+        download(url, tarball)
+        download(url + ".asc", tarball + ".asc")
+        verify(work, tarball, tarball + ".asc")
+        src = os.path.join(work, "src")
+        os.mkdir(src)
+        with tarfile.open(tarball) as t:
+            t.extractall(src, filter="data")
+        with open(os.path.join(src, "version")) as f:
+            version = f.read().strip()
+        if wanted and version != wanted:
+            die("the release says it is %s, not %s" % (version, wanted))
+        for name in KEPT:
+            if not os.path.isfile(os.path.join(src, name)):
+                die("tzdata %s has no %s: the release's layout changed; update KEPT" % (version, name))
+        # The check before anything is replaced: the sources must build.
+        bundle = os.path.join(work, "zoneinfo.bin")
+        result = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "tzbundle"), src, bundle])
+        if result.returncode != 0:
+            die("tzdata %s doesn't build; nothing changed" % version)
+        with open(os.path.join(src, "NEWS"), errors="replace") as f:
+            news = news_entry(f.read(), version)
+        if os.path.isdir(DEST):
+            for name in os.listdir(DEST):
+                os.remove(os.path.join(DEST, name))
+        os.makedirs(DEST, exist_ok=True)
+        for name in KEPT:
+            shutil.copy(os.path.join(src, name), DEST)
+    if before == version:
+        print("thirdparty/tzdata: tzdata %s (unchanged)" % version)
+    else:
+        print("thirdparty/tzdata: tzdata %s -> %s" % (before or "none", version))
+        if news:
+            print("\n" + news + "\n")
+    print("Review with git diff thirdparty/tzdata, then rebuild the card's copy: tools/bmds-dist build tzdata")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

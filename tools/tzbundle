@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+# @file      tzbundle
+# @copyright Jason Howard. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+# See LICENSE file in the project root folder for license information.
+#
+# Builds zoneinfo.bin, the time zone database as one file (devplan/time.md §9),
+# from the IANA tzdata sources (thirdparty/tzdata) with the host's zic:
+#
+#   tzbundle [SOURCE_DIR] OUTPUT
+#
+# The format (little-endian; an on-disk format, frozen once shipped):
+#   header, 32 bytes: "BMTZ", u16 format (1), u16 header size (32),
+#                     8 bytes tzdata version (NUL-padded), u32 entry count,
+#                     u32 index offset, u32 entry size (48), u32 file size
+#   index, sorted by name (bytes): name (NUL-padded, entry size - 8 bytes),
+#                     u32 data offset, u32 data length
+#   data: the TZif files; identical files (aliases) stored once
+#
+# Python's standard library only.
+
+import os
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+DEFAULT_SOURCE = os.path.join(ROOT, "thirdparty", "tzdata")
+
+# What zic reads in a default IANA build (no backzone, no factory).
+ZONE_FILES = ["africa", "antarctica", "asia", "australasia", "europe", "northamerica", "southamerica",
+              "etcetera", "backward"]
+
+MAGIC = b"BMTZ"
+FORMAT = 1
+HEADER_SIZE = 32
+ENTRY_SIZE = 48
+NAME_SIZE = ENTRY_SIZE - 8
+
+
+def die(message):
+    print("tzbundle: " + message, file=sys.stderr)
+    sys.exit(1)
+
+
+def compile_zones(source, out):
+    zic = os.environ.get("ZIC") or shutil.which("zic") or (os.path.isfile("/usr/sbin/zic") and "/usr/sbin/zic")
+    if not zic:
+        die("zic not found (Debian and Ubuntu: libc-bin; set ZIC to use another)")
+    inputs = [os.path.join(source, name) for name in ZONE_FILES]
+    for path in inputs:
+        if not os.path.isfile(path):
+            die("%s: missing" % path)
+    result = subprocess.run([zic, "-b", "slim", "-d", out] + inputs)
+    if result.returncode != 0:
+        die("zic failed (%d)" % result.returncode)
+
+
+def read_zones(out):
+    """Every name below out (files and links), with its bytes."""
+    zones = {}
+    for dirpath, dirnames, filenames in os.walk(out):
+        for name in filenames + [d for d in dirnames if os.path.islink(os.path.join(dirpath, d))]:
+            path = os.path.join(dirpath, name)
+            if os.path.isdir(path):
+                continue
+            rel = os.path.relpath(path, out).replace(os.sep, "/")
+            with open(path, "rb") as f:
+                data = f.read()
+            if not data.startswith(b"TZif"):
+                die("%s: not a TZif file" % rel)
+            encoded = rel.encode("ascii")
+            if len(encoded) >= NAME_SIZE:
+                die("%s: name longer than %d characters" % (rel, NAME_SIZE - 1))
+            zones[encoded] = data
+    return zones
+
+
+def build(version, zones):
+    names = sorted(zones)
+    index_size = len(names) * ENTRY_SIZE
+    offsets = {}
+    data = bytearray()
+    base = HEADER_SIZE + index_size
+    index = bytearray()
+    for name in names:
+        blob = zones[name]
+        if blob not in offsets:
+            offsets[blob] = base + len(data)
+            data += blob
+        index += name.ljust(NAME_SIZE, b"\0") + struct.pack("<II", offsets[blob], len(blob))
+    size = base + len(data)
+    header = struct.pack("<4sHH8sIIII", MAGIC, FORMAT, HEADER_SIZE, version.encode("ascii").ljust(8, b"\0"),
+                         len(names), HEADER_SIZE, ENTRY_SIZE, size)
+    assert len(header) == HEADER_SIZE
+    return header + index + data, len(offsets)
+
+
+def main():
+    args = sys.argv[1:]
+    if len(args) == 1:
+        source, output = DEFAULT_SOURCE, args[0]
+    elif len(args) == 2:
+        source, output = args
+    else:
+        print("usage: tzbundle [SOURCE_DIR] OUTPUT", file=sys.stderr)
+        return 2
+    with open(os.path.join(source, "version")) as f:
+        version = f.read().strip()
+    if not version or len(version) > 8:
+        die("%s/version: %r" % (source, version))
+    with tempfile.TemporaryDirectory(prefix="tzbundle.") as out:
+        compile_zones(source, out)
+        zones = read_zones(out)
+    bundle, distinct = build(version, zones)
+    os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
+    with open(output + ".part", "wb") as f:
+        f.write(bundle)
+    os.replace(output + ".part", output)
+    print("%s: tzdata %s, %d names, %d distinct zones, %d bytes" % (output, version, len(zones), distinct, len(bundle)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

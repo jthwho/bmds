@@ -12,6 +12,7 @@
 #include <bmds/shell.h>
 #include <bmds/string.h>
 #include <bmds/timecommands.h>
+#include <bmds/vfs.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -177,15 +178,24 @@ int TimeCommands::date(CommandContext &ctx) {
         return printTime(ctx, format != nullptr ? format : DefaultFormat, zone.localTime(Clock::now()));
 }
 
+namespace {
+
+        int tzdata(CommandContext &ctx);
+
+} // namespace
+
 int TimeCommands::clock(CommandContext &ctx) {
         const Args args = ctx.args();
         if (args.size() == 3 && StringView(args[1]) == "zone") {
-                if (Clock::setTimeZone(args[2]).isError()) {
-                        ctx.eprintf("clock: invalid time zone '%s'\n", args[2]);
+                const Error err = Clock::setTimeZone(args[2]);
+                if (err.isError()) {
+                        ctx.eprintf("clock: %s time zone '%s'\n", err == Error::NotExist ? "unknown" : "invalid",
+                                    args[2]);
                         return Shell::ExitFailure;
                 }
                 return Shell::ExitSuccess;
         }
+        if ((args.size() == 2 || args.size() == 3) && StringView(args[1]) == "tzdata") return tzdata(ctx);
         if (args.size() == 3 && StringView(args[1]) == "adjust") {
                 int64_t ns = 0;
                 if (!parseSecondsNs(args[2], ns)) return ctx.usage();
@@ -210,14 +220,60 @@ int TimeCommands::clock(CommandContext &ctx) {
                    static_cast<unsigned long long>(magnitude / Timestamp::NsPerSecond),
                    static_cast<unsigned long long>(magnitude % Timestamp::NsPerSecond));
         ctx.printf("Frequency: %+ld ppb\n", static_cast<long>(status.frequencyPpb));
-        const StringView spec = zone.spec();
-        ctx.printf("Zone:      %.*s (%s)\n", static_cast<int>(spec.isEmpty() ? 4 : spec.size()),
-                   spec.isEmpty() ? "UTC0" : spec.data(), formatted("%Z, UTC%z", now).cStr());
+        const StringView      spec = zone.spec().isEmpty() ? StringView("UTC0") : zone.spec();
+        const Clock::ZoneName name = Clock::zoneName();
+        if (name.pending == Clock::ZonePending::NoDatabase) {
+                ctx.printf("Zone:      %s (pending: no zone database; UTC until it is found)\n", name.name);
+        } else if (name.pending == Clock::ZonePending::Unknown) {
+                ctx.printf("Zone:      %s (pending: not in the zone database; UTC meanwhile)\n", name.name);
+        } else if (!name.view().isEmpty()) {
+                ctx.printf("Zone:      %s (%.*s; %s)\n", name.name, static_cast<int>(spec.size()), spec.data(),
+                           formatted("%Z, UTC%z", now).cStr());
+        } else {
+                ctx.printf("Zone:      %.*s (%s)\n", static_cast<int>(spec.size()), spec.data(),
+                           formatted("%Z, UTC%z", now).cStr());
+        }
         return Shell::ExitSuccess;
 }
 
-BMDS_SHELL_COMMAND(clock, TimeCommands::clock, "[zone TZ | adjust [+|-]SECONDS]",
-                   "Show the system clock (source, slew, frequency, zone); set the zone; slew the time")
+namespace {
+
+        // `clock tzdata [PATH]`: the time zone database, its path and what it holds.
+        int tzdata(CommandContext &ctx) {
+                const Args args = ctx.args();
+                if (args.size() == 3) {
+                        Result<String> path = Vfs::normalize(args[2], ctx.cwd());
+                        const Error    err =
+                                path.error().isOk() ? Vfs::setZoneDatabase(path.value().view()) : path.error();
+                        if (err.isError()) {
+                                ctx.eprintf("clock: %s: %s\n", args[2], CommandContext::errorText(err));
+                                return Shell::ExitFailure;
+                        }
+                }
+                const Result<String> path = Vfs::zoneDatabase();
+                if (path.error().isError() || path.value().isEmpty()) {
+                        ctx.print("clock: no time zone database is set\n");
+                        return Shell::ExitSuccess;
+                }
+                const Result<Vfs::ZoneDatabaseInfo> info = Vfs::zoneDatabaseInfo();
+                if (info.error().isError()) {
+                        const Error err = info.error();
+                        ctx.printf("%s: %s\n", path.value().cStr(),
+                                   err == Error::CorruptData    ? "not a time zone database, or damaged"
+                                   : err == Error::NotSupported ? "a later database format"
+                                                                : CommandContext::errorText(err));
+                        return Shell::ExitSuccess;
+                }
+                ctx.printf("%s: tzdata %s, %lu zones\n", path.value().cStr(), info.value().version,
+                           static_cast<unsigned long>(info.value().count));
+                return Shell::ExitSuccess;
+        }
+
+} // namespace
+
+BMDS_SHELL_COMMAND(clock, TimeCommands::clock, "[zone TZ | tzdata [PATH] | adjust [+|-]SECONDS]",
+                   "Show the system clock (source, slew, frequency, zone); set the zone (rules or a name, "
+                   "e.g. Europe/Berlin); show or set the zone database; slew the time")
 BMDS_SHELL_COMMAND(date, TimeCommands::date, "[-u] [+FORMAT] | [-u] -s DATE",
                    "Show the time (in $TZ, or the kernel zone); set it: -s 'YYYY-MM-DD HH:MM[:SS]', -s @SECONDS")
 

@@ -27,8 +27,9 @@ namespace {
 } // namespace
 
 Error Clock::init() {
+        // A name is pending until the VFS's resolver and the card's database are there.
         if (setTimeZone(CONFIG_BMDS_TIMEZONE).isError())
-                bmdsWarn("Clock: CONFIG_BMDS_TIMEZONE \"%s\" is not a valid TZ string; using UTC",
+                bmdsWarn("Clock: CONFIG_BMDS_TIMEZONE \"%s\" is not a TZ string or zone name; using UTC",
                          CONFIG_BMDS_TIMEZONE);
 
         Detail::ClockRecord record;

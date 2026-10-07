@@ -18,6 +18,7 @@
 #include <bmds/span.h>
 #include <bmds/string.h>
 #include <bmds/stringview.h>
+#include <bmds/timezone.h>
 #include <bmds/waitlist.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -128,7 +129,10 @@ class Directory {
  * /bin/NAME      a program built into the firmware (BuiltinPrograms): an
  *                empty file, run by the loader; /bin is read-only (ReadOnly)
  * /dev/null      discards writes, reads end at once
+ * /dev/zero      reads zeros; /dev/urandom, /dev/random read random bytes
  * /dev/console   the caller's terminal (Context::terminal)
+ * /share/zoneinfo  the time zone database (setZoneDatabase()), read-only:
+ *                one TZif file per zone name (devplan/time.md §9)
  * /dev/sd0       a block device (BlockDevices); /dev/sd0p0 a partition
  * /sd0/p0        a mounted FAT or exFAT filesystem (the storage service's default path)
  * ```
@@ -206,8 +210,9 @@ namespace Vfs {
 
         /**
          * @brief Mounts the FAT or exFAT filesystem on @p device at @p path.
-         * @param path Absolute (normalized here); not `/`, not in `/dev`, not
-         *        inside or above another mount; at most `MaxMountPath` bytes.
+         * @param path Absolute (normalized here); not `/`, not in `/dev`, `/bin`
+         *        or `/share/zoneinfo`, not inside or above another mount; at
+         *        most `MaxMountPath` bytes.
          * @return `Ok`, `Invalid` (the path), `Exists` (something is there),
          *         `Busy` (@p device, a partition of it or the device it is part of
          *         is mounted already), `Full`, `NoMedia`,
@@ -351,6 +356,54 @@ namespace Vfs {
          * @return The path, `Invalid` (empty), `OutOfRange` (longer than `MaxPath`), `NoMem`.
          */
         Result<String> normalize(StringView path, StringView cwd);
+
+        // --- The time zone database (devplan/time.md §9) ---------------------
+
+        /** @brief Where the database is shown: one file per zone name below it. */
+        inline constexpr StringView ZoneInfoPath("/share/zoneinfo");
+
+        /** @brief Longest database path (`setZoneDatabase()`). */
+        inline constexpr size_t MaxZoneDatabasePath = 127;
+
+        /**
+         * @brief Uses the bundle at @p path (`zoneinfo.bin`, built by
+         *        `tools/tzbundle`) as the time zone database, and retries a
+         *        pending kernel zone name with it.
+         * @param path Absolute, at most `MaxZoneDatabasePath` bytes; "" for none.
+         *        It needn't exist yet (the card may come later).
+         * @return `Ok` or `Invalid`.
+         */
+        Error setZoneDatabase(StringView path);
+
+        /** @brief Returns the database's path ("" for none). */
+        Result<String> zoneDatabase();
+
+        /** @brief What the database holds. */
+        struct ZoneDatabaseInfo {
+                        char     version[9] = {}; ///< The tzdata release, "2026e".
+                        uint32_t count = 0;       ///< Zone names, aliases included.
+        };
+
+        /**
+         * @brief Opens the database and reads its header.
+         * @return The facts, `NotExist` (no file there, or no path), `NoMedia`,
+         *         `CorruptData` (not a database, or cut short), `NotSupported`
+         *         (a later format), ...
+         */
+        Result<ZoneDatabaseInfo> zoneDatabaseInfo();
+
+        /**
+         * @brief Returns the current rules of zone @p name (`Europe/Berlin`)
+         *        from the database: its TZif file's footer.
+         *
+         * The last answer is kept (under the storage lock) until a mount, an
+         * unmount, a change to the database or another name, so a caller can
+         * ask per line. Blocking (reads the card); not from the storage lock.
+         *
+         * @return The rules, `NotExist` (the database has no such zone), or
+         *         `NotReady` (no database to ask: no card, no file, damaged).
+         */
+        Result<TimeZone> zoneRules(StringView name);
 
 } // namespace Vfs
 

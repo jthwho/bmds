@@ -37,6 +37,15 @@ menu "BMDS storage"
             Larger is faster for such requests; aligned PSRAM buffers don't
             use it.
 
+    config BMDS_ZONEINFO_PATH
+        string "Time zone database"
+        default "/sd0/p0/share/zoneinfo.bin"
+        help
+            The time zone database (one file, built by tools/bmds-dist as
+            the tzdata package), shown to programs as /share/zoneinfo and
+            used for zone names in 'clock zone', CONFIG_BMDS_TIMEZONE and
+            TZ. 'clock tzdata PATH' changes it at run time.
+
     config BMDS_RAMDISK_MB
         int "RAM disk size (MB, PSRAM, 0 for none)"
         default 16

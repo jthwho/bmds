@@ -83,7 +83,9 @@ Plans: [`storage.md`](storage.md), [`time.md`](time.md). Complete; verified on h
   - [ ] (c) SDK layout changes, each measured.
 - [ ] Example programs: `hello`, `cat`, a benchmark.
 - [ ] Partition editing (`storage.md` §14): BusyBox `fdisk` (MBR) on the card, not built in; raw block device nodes as streams, writes kept out of mounted partitions, the table re-read on close; extended partitions read.
-- [ ] A time zone database (`time.md` §9): zone names (`TZ=Europe/Berlin`, `clock zone Europe/Berlin`) from one bundle on the card, shown to programs as `/share/zoneinfo` (musl's own path: history included); looked up at boot, when a filesystem mounts and when `TZ` changes.
+- [x] A time zone database (`time.md` §9): zone names (`TZ=Europe/Berlin`, `clock zone Europe/Berlin`) from one bundle on the card, shown to programs as `/share/zoneinfo` (musl's own path: history included); looked up at boot, when a filesystem mounts and when `TZ` changes. The IANA sources in `thirdparty/tzdata` (2026e), `tools/update-tzdata`, the `tzdata` package; `clock tzdata`.
+- [x] `/dev/zero`, `/dev/urandom` and `/dev/random` (`storage.md` §4).
+- [x] The kernel's random pool (`random.md`): seeded at boot from the SAR ADC noise source (which the bootloader turns off), `/boot/random-seed` and the hardware generator per read; BLAKE2s and ChaCha20; `/dev/urandom` and `getrandom` read it.
 
 ## Phase 4 — Display
 

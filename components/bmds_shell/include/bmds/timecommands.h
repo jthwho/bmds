@@ -23,7 +23,10 @@ namespace TimeCommands {
         /** @brief `date [-u] [+FORMAT] | date [-u] -s DATE`: show or set the time. */
         int date(CommandContext &ctx);
 
-        /** @brief `clock [zone TZ | adjust SECONDS]`: the system clock's state. */
+        /**
+         * @brief `clock [zone TZ | tzdata [PATH] | adjust SECONDS]`: the system
+         *        clock's state; the kernel zone (rules or a name); the zone database.
+         */
         int clock(CommandContext &ctx);
 
 } // namespace TimeCommands

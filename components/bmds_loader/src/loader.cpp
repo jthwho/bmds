@@ -1812,10 +1812,14 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
                 hasTz = hasTz || e.startsWith("TZ=");
                 if (err.isOk()) err = environment.append(e);
         }
-        const TimeZone zone = Clock::timeZone();
-        if (err.isOk() && !hasTz && !zone.spec().isEmpty()) {
+        // The kernel zone: by its name when it has one, so musl reads the
+        // database's file and dates before today's rules come out right.
+        const Clock::ZoneName name = Clock::zoneName();
+        const TimeZone        zone = Clock::timeZone();
+        const StringView      value = !name.view().isEmpty() ? name.view() : zone.spec();
+        if (err.isOk() && !hasTz && !value.isEmpty()) {
                 err = tz.append("TZ=");
-                if (err.isOk()) err = tz.append(zone.spec());
+                if (err.isOk()) err = tz.append(value);
                 if (err.isOk()) err = environment.append(tz.view());
         }
         if (err.isOk())

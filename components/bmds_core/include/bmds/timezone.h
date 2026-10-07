@@ -56,6 +56,17 @@ class TimeZone {
                  */
                 static Result<TimeZone> parse(StringView spec);
 
+                /**
+                 * @brief Returns true if @p tz names a zone in the tz database
+                 *        (`Europe/Berlin`, `Japan`, `:Europe/Berlin`) rather than
+                 *        giving POSIX rules, as musl tells them apart.
+                 *
+                 * POSIX form is a name (letters, or `<...>`) followed by `+`, `-`
+                 * or a digit, or the bare names `UTC` and `GMT`; the empty string
+                 * is UTC. Anything else is a name; a leading `:` always is.
+                 */
+                static bool isName(StringView tz);
+
                 /** @brief Returns the `TZ` string it was parsed from (empty for UTC by default). */
                 StringView spec() const { return StringView(_spec); }
 

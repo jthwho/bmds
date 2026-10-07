@@ -292,7 +292,7 @@ TEST_CASE("SeqLocked: readers always see a consistent value") {
 namespace {
 
         constexpr bmds::Command TimeCommandTable[] = {
-                {"clock", "[zone TZ | adjust [+|-]SECONDS]", "clock", bmds::TimeCommands::clock},
+                {"clock", "[zone TZ | tzdata [PATH] | adjust [+|-]SECONDS]", "clock", bmds::TimeCommands::clock},
                 {"date", "[-u] [+FORMAT] | [-u] -s DATE", "date", bmds::TimeCommands::date},
         };
 
@@ -351,9 +351,10 @@ TEST_CASE("date and clock") {
                       "date: invalid date '2026-02-30 10:00'\n");
                 CHECK(f.out("date -s '25:00'", bmds::Shell::ExitFailure) == "date: invalid date '25:00'\n");
                 CHECK(f.out("date -x", bmds::Shell::ExitUsage) == "usage: date [-u] [+FORMAT] | [-u] -s DATE\n");
-                CHECK(f.out("clock zone Nowhere", bmds::Shell::ExitFailure) == "clock: invalid time zone 'Nowhere'\n");
+                CHECK(f.out("clock zone 'CET-1CEST,M13'", bmds::Shell::ExitFailure) ==
+                      "clock: invalid time zone 'CET-1CEST,M13'\n");
                 CHECK(f.out("clock adjust x", bmds::Shell::ExitUsage) ==
-                      "usage: clock [zone TZ | adjust [+|-]SECONDS]\n");
+                      "usage: clock [zone TZ | tzdata [PATH] | adjust [+|-]SECONDS]\n");
         }
 
         SUBCASE("clock status") {

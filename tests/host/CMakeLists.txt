@@ -65,11 +65,27 @@ add_executable(bmds_host_tests
         time.cpp
         vfs.cpp
         workerpool.cpp
-        ymodem.cpp)
+        ymodem.cpp
+        zoneinfo.cpp)
 target_include_directories(bmds_host_tests PRIVATE ${BMDS_ROOT}/thirdparty/doctest)
 target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
         BMDS_CORPUS_DIR="${CMAKE_CURRENT_LIST_DIR}/corpus"
         BMDS_COMPAT_DIR="${CMAKE_CURRENT_LIST_DIR}/../compat")
+# The time zone database built from thirdparty/tzdata (devplan/time.md §9), as
+# the distribution builds it, when the host has zic: its every zone is tested.
+find_program(BMDS_ZIC zic PATHS /usr/sbin /sbin)
+find_package(Python3 COMPONENTS Interpreter)
+if(BMDS_ZIC AND Python3_Interpreter_FOUND)
+        file(GLOB BMDS_TZDATA ${BMDS_ROOT}/thirdparty/tzdata/*)
+        add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/zoneinfo.bin
+                COMMAND ${CMAKE_COMMAND} -E env ZIC=${BMDS_ZIC} ${Python3_EXECUTABLE} ${BMDS_ROOT}/tools/tzbundle
+                        ${BMDS_ROOT}/thirdparty/tzdata ${CMAKE_BINARY_DIR}/zoneinfo.bin
+                DEPENDS ${BMDS_TZDATA} ${BMDS_ROOT}/tools/tzbundle
+                VERBATIM)
+        add_custom_target(bmds_test_zoneinfo DEPENDS ${CMAKE_BINARY_DIR}/zoneinfo.bin)
+        add_dependencies(bmds_host_tests bmds_test_zoneinfo)
+        target_compile_definitions(bmds_host_tests PRIVATE BMDS_TEST_ZONEINFO="${CMAKE_BINARY_DIR}/zoneinfo.bin")
+endif()
 target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_input bmds_ui)
 bmds_target_options(bmds_host_tests)
 
