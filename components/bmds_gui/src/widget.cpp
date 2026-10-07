@@ -253,6 +253,12 @@ bool Button::inside(int x, int y) const {
         return x >= r.x && y >= r.y && uint32_t(x) < r.right() && uint32_t(y) < r.bottom();
 }
 
+void Button::setCentered(bool centered) {
+        _centered = centered;
+        update();
+        return;
+}
+
 void Button::paint(Painter &painter) {
         const WindowPalette &p = painter.palette();
         const Rect          &r = geometry();
@@ -279,6 +285,9 @@ void Button::paint(Painter &painter) {
                 (void)painter.image(ix, iy, *_icon, bg);
                 x = columnUp(ix + _icon->width + GuiStyle::IconGap);
         }
+        const uint32_t textWidth = Fonts::unscii16.textWidth(StringView(_text));
+        if (_centered && _icon == nullptr && textWidth + 2 * GuiStyle::ButtonPad < r.width)
+                x = column(r.x + (r.width - textWidth) / 2);
         if (_text[0] != '\0' && x + GuiStyle::ButtonPad / 2 < r.right()) {
                 // Cut to the room, with the pad at the right kept; a pixel lower pressed in.
                 const uint32_t room = r.right() - x - GuiStyle::ButtonPad / 2;

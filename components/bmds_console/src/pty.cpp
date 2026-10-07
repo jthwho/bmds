@@ -113,6 +113,18 @@ Result<size_t> Pty::write(ByteSpan data, unsigned int) {
         return makeResult(_console.push(data));
 }
 
+Result<size_t> Pty::input(ByteSpan data, unsigned int timeoutMs) {
+        const Deadline deadline(timeoutMs);
+        size_t         taken = 0;
+        for (;;) {
+                if (_ended.load(std::memory_order_acquire)) return Result<size_t>(taken, Error::BrokenPipe);
+                if (_hungUp.load(std::memory_order_acquire)) return Result<size_t>(taken, Error::EndOfFile);
+                taken += _console.push(ByteSpan(data.data() + taken, data.size() - taken));
+                if (taken == data.size()) return makeResult(taken);
+                if (_inputSpace.acquire(deadline).isError()) return Result<size_t>(taken, Error::Timeout);
+        }
+}
+
 uint8_t Pty::readiness() {
         if (_ended.load(std::memory_order_acquire)) return Readable | HungUp;
         return static_cast<uint8_t>(Writable | (!_output->isEmpty() ? Readable : 0));
@@ -123,6 +135,7 @@ void Pty::hangUp() {
         if (!_hungUp.exchange(true, std::memory_order_acq_rel)) _console.sendSignal(Console::SignalHangUp);
         _inputReady.release();  // a reader of the program's end: end of input
         _outputSpace.release(); // a writer waiting for room: its output is dropped
+        _inputSpace.release();  // a paste waiting for room: it ends
         _console.inputArrived();
         return;
 }
@@ -130,6 +143,7 @@ void Pty::hangUp() {
 void Pty::programEnded() {
         _ended.store(true, std::memory_order_release);
         _outputReady.release();
+        _inputSpace.release();
         _outputWaiters.notify();
         return;
 }
@@ -208,7 +222,10 @@ Result<size_t> PtyConsole::tryReadInput(WritableByteSpan buf) {
         if (_flush.exchange(false, std::memory_order_acquire))
                 _pty._input->discardTo(_flushTo.load(std::memory_order_relaxed));
         const size_t n = _pty._input->pop(buf);
-        if (n > 0) return makeResult(n);
+        if (n > 0) {
+                _pty._inputSpace.release(); // room for a paste waiting
+                return makeResult(n);
+        }
         if (_pty._hungUp.load(std::memory_order_acquire)) return makeError<size_t>(Error::EndOfFile);
         return makeError<size_t>(Error::WouldBlock);
 }

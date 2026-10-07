@@ -19,6 +19,7 @@ BMDS_NAMESPACE_BEGIN
 struct PanelEntry {
                 DesktopEntry entry;
                 char         file[48] = {}; ///< Its file's name: the first of a name wins.
+                char         path[128] = {}; ///< Its file's path (copied as the icon: devplan/clipboard.md §4f).
 };
 
 /** @brief Told of a file that isn't a Desktop Entry (@p path). */

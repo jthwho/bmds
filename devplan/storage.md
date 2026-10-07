@@ -408,6 +408,17 @@ answer (settings must not need it); a cache in the kernel that writes in the bac
   one). A restart (`reboot`, `esp_restart()`) writes everything first (an IDF shutdown handler);
   a power cut or a crash in that window loses it, as the last write on a card without its sync
   would; FAT's metadata was never power-safe here (§13).
+- **Seen 2026-10-07: a reset in the middle of a block's write loses the whole 4 KB sector,**
+  other files in it included. A block is erased, then written (`writeOut()`), and wear
+  levelling's safe mode keeps only its own state. A hardware reset about a second after a
+  flash came while the boot stage was installing a new default (`.defaults` rewritten). After
+  it, `.defaults` and `applications/terminal.desktop`, which shared its sector and wasn't being
+  written, were both all 0xFF. Deleting both and rebooting reinstalled them. `/boot` is
+  written at every boot (`random-seed`, 5 s in), so a reset then risks the same.
+  - The fix to decide: write each block to a spare sector first, with a sequence number and
+    a checksum, and copy it into place after. On mount, finish a copy that was cut off. That
+    is twice the flash writes per block. FAT's sectors (the FAT itself, directories) have the
+    most to lose.
 - **The flash still stops the caches while it erases or writes** (code and PSRAM out of reach,
   the other core paused; IDF yields every 20 ms of an erase). In the background, that is a short
   pause per block where nothing waits for the whole write. Flash auto-suspend (IDF, P4-capable)

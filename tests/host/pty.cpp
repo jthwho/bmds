@@ -185,6 +185,41 @@ TEST_CASE("Pty: a full output waits for the emulator; nothing is dropped") {
         CHECK(got == big);
 }
 
+TEST_CASE("Pty: a paste waits for the program to read what doesn't fit") {
+        Opened o;
+        Pty   &pty = *o.pty;
+        auto   mode = pty.console().mode();
+        mode.signals = false; // the bytes as they are
+        pty.console().setMode(mode);
+        std::string big;
+        for (size_t i = 0; i < Pty::InputBytes * 3 + 7; ++i) big.push_back(char('a' + i % 26));
+        // Nobody reading: what fits, then a timeout.
+        auto partial = pty.input(bytes(big), 20);
+        CHECK(partial.error() == Error::Timeout);
+        CHECK(partial.value() < big.size());
+        CHECK(typed(pty).size() == partial.value());
+        // The program reading on another task: all of it.
+        std::string got;
+        std::thread program([&] {
+                uint8_t    buf[100];
+                const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+                while (got.size() < big.size() && std::chrono::steady_clock::now() < until) {
+                        auto r = pty.console().tryRead(WritableByteSpan(buf, sizeof(buf)));
+                        if (r.isOk()) {
+                                got.append(reinterpret_cast<char *>(buf), r.value());
+                        } else {
+                                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                        }
+                }
+        });
+        CHECK(pty.input(bytes(big), 2000).value() == big.size());
+        program.join();
+        CHECK(got == big);
+        // Hung up: the paste ends.
+        pty.hangUp();
+        CHECK(pty.input(bytes(big), 2000).error() == Error::EndOfFile);
+}
+
 TEST_CASE("Pty: the size the emulator sets, seen by the program") {
         Opened                 o;
         Pty                   &pty = *o.pty;

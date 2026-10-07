@@ -20,17 +20,24 @@
 #include <cstring>
 #include <new>
 #include <bmds/builtinprograms.h>
+#include <bmds/clipboard.h>
 #include <bmds/clock.h>
 #include <bmds/desktopentry.h>
 #include <bmds/fdtable.h>
+#include <bmds/filenames.h>
 #include <bmds/font.h>
 #include <bmds/guiapplication.h>
+#include <bmds/guiclipboard.h>
 #include <bmds/guiwindow.h>
 #include <bmds/inireader.h>
 #include <bmds/memory.h>
 #include <bmds/menu.h>
+#include <bmds/menulayout.h>
+#include <bmds/messagebox.h>
+#include <bmds/popupedit.h>
 #include <bmds/programlauncher.h>
 #include <bmds/string.h>
+#include <bmds/trash.h>
 #include <bmds/vfs.h>
 #include <bmds/widget.h>
 
@@ -49,6 +56,7 @@ namespace {
         constexpr const char *DefaultApplications = "/boot/applications;/sd0/p0/share/applications";
         constexpr const char *DefaultDesktop = "/boot/desktop";
         constexpr const char *PlacesPath = "/boot/config/desktop.conf"; // where the icons were put
+        constexpr StringView  DesktopSuffix(".desktop");                // an icon's file, its name before it
         constexpr size_t      MaxPlacesBytes = 4096;
         constexpr uint32_t    SaveDelayMs = 500; // after a drop: drawn first, then written
         constexpr size_t      MaxConfigBytes = 8192;
@@ -189,6 +197,17 @@ namespace {
                         static void desktopOpened(void *arg, size_t item);
                         static void desktopIconsTick(void *arg);
                         static void desktopMoved(void *arg);
+                        static void  windowClosed(void *arg, GuiWindow &window);
+                        static void  iconMenu(void *arg, size_t item, uint16_t x, uint16_t y);
+                        static void  desktopChosen(void *arg, int choice);
+                        static void  renameAsked(void *arg, size_t item);
+                        static void  renamed(void *arg, bool accepted, StringView text);
+                        static void  renameRetry(void *arg, MessageBox::Answer answer);
+                        void         startRename(size_t item, StringView text);
+                        static void  pasted(void *arg, Error err, StringView type, StringView data);
+                        void         pasteFile(StringView from, StringView directory);
+                        static void  iconChosen(void *arg, int choice);
+                        static Error renderIcon(void *arg, StringView type, String &out);
                         static void savePlaces(void *arg);
                         static void badEntry(void *arg, const char *path);
 
@@ -222,6 +241,13 @@ namespace {
                         BoxLayout                     *_row = nullptr;
                         WindowList                    *_windows = nullptr;
                         Menu                          *_menu = nullptr;
+                        Menu                          *_iconMenu = nullptr;    // an icon's: Open, Copy, Delete
+                        Menu                          *_desktopMenu = nullptr; // the desktop's: Applications, Paste
+                        PopupEdit                     *_nameEdit = nullptr;    // an icon's name being edited
+                        size_t                         _renaming = 0;          // the icon it is
+                        char                           _renameTried[sizeof(PanelEntry::file)] = {}; // to edit again
+                        size_t                         _iconItem = 0;                              // the icon it is for
+                        char                           _copiedPath[sizeof(PanelEntry::path)] = {}; // the icon copied
                         Button                        *_launcher = nullptr;       // pressed in while its menu is open
                         Button                        *_launcherButton = nullptr; // the launcher item's
                         char                           _applications[256] = {};   // [Launcher] Applications
@@ -370,6 +396,18 @@ namespace {
                 if (_saveTimer >= 0) {
                         _app.stopTimer(_saveTimer);
                         savePlaces(this); // a move not written yet
+                }
+                if (_iconMenu != nullptr) {
+                        _iconMenu->~Menu();
+                        Memory::free(_iconMenu);
+                }
+                if (_desktopMenu != nullptr) {
+                        _desktopMenu->~Menu();
+                        Memory::free(_desktopMenu);
+                }
+                if (_nameEdit != nullptr) {
+                        _nameEdit->~PopupEdit();
+                        Memory::free(_nameEdit);
                 }
                 if (_desktop != nullptr) {
                         _desktop->~DesktopWindow();
@@ -628,8 +666,99 @@ namespace {
 
         // ---- The desktop's icons
 
+        // A right press on the desktop: Applications (the launcher's menu), then Paste, enabled when
+        // the clipboard holds files (devplan/files.md F7).
         void PanelApp::desktopMenu(void *arg, uint16_t x, uint16_t y) {
-                static_cast<PanelApp *>(arg)->showLauncher(Rect{x, y, 0, 0});
+                auto *self = static_cast<PanelApp *>(arg);
+                if (self->_incomplete && (self->_menu == nullptr || !self->_menu->isShown())) self->reloadLauncher();
+                if (self->_desktopMenu == nullptr) {
+                        void *mem = Memory::alloc(MemSpace::Psram, sizeof(Menu));
+                        if (mem == nullptr) return;
+                        self->_desktopMenu = ::new (mem) Menu(self->_app);
+                        self->_desktopMenu->setTriggered(desktopChosen, self);
+                }
+                Menu         &menu = *self->_desktopMenu;
+                GuiClipboard *clipboard = self->_app.clipboard();
+                const bool    files =
+                        clipboard != nullptr && clipboard->canPaste(Clipboard::Selection::Clipboard, "text/uri-list");
+                menu.clear();
+                if (self->_menu != nullptr) {
+                        (void)menu.addSubmenu("Applications", *self->_menu);
+                        (void)menu.addSeparator();
+                }
+                (void)menu.addItem("Paste", 0, files ? 0 : MenuLayout::Disabled);
+                (void)menu.popup(Rect{x, y, 0, 0});
+                return;
+        }
+
+        void PanelApp::desktopChosen(void *arg, int choice) {
+                auto         *self = static_cast<PanelApp *>(arg);
+                GuiClipboard *clipboard = self->_app.clipboard();
+                if (choice != 0 || clipboard == nullptr) return;
+                if (clipboard->paste(Clipboard::Selection::Clipboard, "text/uri-list", pasted, self).isError())
+                        self->say("panel: can't paste\n");
+                return;
+        }
+
+        // The pasted URI list: each file:// one copied into the desktop's first directory (a copy's
+        // name if its own is taken: devplan/files.md F1), then the desktop shown again.
+        void PanelApp::pasted(void *arg, Error err, StringView type, StringView data) {
+                (void)type;
+                auto *self = static_cast<PanelApp *>(arg);
+                if (err.isError()) {
+                        self->say("panel: paste: ", err.desc(), "\n");
+                        return;
+                }
+                StringView       dirs(self->_desktopDirs);
+                const StringView directory = IniReader::nextListItem(dirs);
+                if (directory.isEmpty()) return;
+                const Vfs::Context vc{self->_context.cwd, nullptr};
+                (void)Vfs::mkdir(directory, vc); // there already, most likely
+                while (!data.isEmpty()) {
+                        const size_t end = data.indexOf('\n');
+                        StringView   line = (end == StringView::NPos ? data : data.left(end)).trimmed();
+                        data = end == StringView::NPos ? StringView() : data.mid(end + 1);
+                        if (line.isEmpty() || line.startsWith('#') || !line.startsWith("file://")) continue;
+                        line = line.mid(7); // file://HOST/PATH: the path
+                        const size_t slash = line.indexOf('/');
+                        line = slash == StringView::NPos ? StringView() : line.mid(slash);
+                        char path[Vfs::MaxPath + 1];
+                        auto [n, derr] = Uri::decode(line, Span<char>(path, sizeof(path)));
+                        if (derr.isOk() && n > 0) self->pasteFile(StringView(path, n), directory);
+                }
+                if (!self->loadDesktop()) self->say("panel: the desktop's icons aren't all found yet\n");
+                return;
+        }
+
+        // @p from copied into @p directory: under its own name, or the first copy's name free.
+        void PanelApp::pasteFile(StringView from, StringView directory) {
+                const Vfs::Context vc{_context.cwd, nullptr};
+                const StringView   name = from.mid(from.lastIndexOf('/') + 1);
+                String             to;
+                Error              err = Error::Exists;
+                for (unsigned n = 0; n <= CopyName::MaxCopies && err == Error::Exists; ++n) {
+                        char       copy[96];
+                        StringView chosen = name;
+                        if (n > 0) {
+                                auto [made, merr] = CopyName::make(name, n, Span<char>(copy, sizeof(copy)));
+                                if (merr.isError()) {
+                                        err = merr;
+                                        break;
+                                }
+                                chosen = made;
+                        }
+                        to.clear();
+                        err = to.append(directory);
+                        if (err.isOk()) err = to.append('/');
+                        if (err.isOk()) err = to.append(chosen);
+                        if (err.isOk()) err = Vfs::copyFile(from, to.view(), vc);
+                }
+                if (err.isError()) {
+                        char line[160];
+                        std::snprintf(line, sizeof(line), "panel: paste: %.*s: %s\n", int(from.size()), from.data(),
+                                      err.desc());
+                        say(line);
+                }
                 return;
         }
 
@@ -658,7 +787,11 @@ namespace {
                                 _desktopIncomplete = true;
                 keepShownEntries(_desktopEntries, _desktopCount);
                 StringView names[DesktopWindow::MaxItems];
-                for (size_t i = 0; i < _desktopCount; ++i) names[i] = StringView(_desktopEntries[i].entry.name);
+                // An icon is named by its file (devplan/gui.md §4q): copies and renames stay in step.
+                for (size_t i = 0; i < _desktopCount; ++i) {
+                        const StringView file(_desktopEntries[i].file);
+                        names[i] = file.endsWith(DesktopSuffix) ? file.left(file.size() - DesktopSuffix.size()) : file;
+                }
                 const Rect     work = _app.windowManager().workArea();
                 const Rect     s = _desktop->screenRect();
                 const Rect     area{uint16_t(work.x - s.x), uint16_t(work.y - s.y), work.width, work.height};
@@ -706,6 +839,201 @@ namespace {
         }
 
         // An icon moved: the places written soon (once the drop is drawn).
+        // A right press on a desktop icon: its menu (made the first time).
+        void PanelApp::iconMenu(void *arg, size_t item, uint16_t x, uint16_t y) {
+                auto *self = static_cast<PanelApp *>(arg);
+                if (item >= self->_desktopCount) return;
+                if (self->_iconMenu == nullptr) {
+                        void *mem = Memory::alloc(MemSpace::Psram, sizeof(Menu));
+                        if (mem == nullptr) return;
+                        self->_iconMenu = ::new (mem) Menu(self->_app);
+                        self->_iconMenu->setTriggered(iconChosen, self);
+                        (void)self->_iconMenu->addItem("Open", 0);
+                        (void)self->_iconMenu->addItem("Copy", 1);
+                        (void)self->_iconMenu->addItem("Rename", 3);
+                        (void)self->_iconMenu->addSeparator();
+                        (void)self->_iconMenu->addItem("Delete", 2);
+                }
+                self->_iconItem = item;
+                (void)self->_iconMenu->popup(Rect{x, y, 0, 0});
+                return;
+        }
+
+        // Open starts it; Copy puts its file on the clipboard (devplan/clipboard.md §4f): a URI list
+        // and its path, rendered when asked for.
+        void PanelApp::iconChosen(void *arg, int choice) {
+                auto *self = static_cast<PanelApp *>(arg);
+                if (self->_iconItem >= self->_desktopCount) return;
+                const PanelEntry &e = self->_desktopEntries[self->_iconItem];
+                if (choice == 0) {
+                        self->launch(e);
+                        return;
+                }
+                if (choice == 3) {
+                        renameAsked(self, self->_iconItem);
+                        return;
+                }
+                if (choice == 2) {
+                        // To its filesystem's trash (devplan/files.md F8): `trash -r` brings it back.
+                        const Vfs::Context vc{self->_context.cwd, nullptr};
+                        const Error        err = e.path[0] != '\0' ? Trash::move(StringView(e.path), vc, nullptr)
+                                                                   : Error(Error::NotExist);
+                        if (err.isError()) self->say("panel: can't move it to the trash: ", err.desc(), "\n");
+                        (void)self->loadDesktop();
+                        return;
+                }
+                GuiClipboard *clipboard = self->_app.clipboard();
+                if (choice != 1 || clipboard == nullptr || e.path[0] == '\0') return;
+                std::memcpy(self->_copiedPath, e.path, sizeof(self->_copiedPath));
+                clipboard->setName("panel");
+                const StringView types[] = {"text/uri-list", ClipboardType::Text};
+                if (clipboard->copy(Clipboard::Selection::Clipboard, Span<const StringView>(types), renderIcon, self)
+                            .isError())
+                        self->say("panel: can't copy the icon\n");
+                return;
+        }
+
+        Error PanelApp::renderIcon(void *arg, StringView type, String &out) {
+                auto            *self = static_cast<PanelApp *>(arg);
+                const StringView path(self->_copiedPath);
+                if (!ClipboardType::equal(type, "text/uri-list")) return out.assign(path); // the text: the path
+                // file:// and the path, %XX for what a URI can't hold as it is (RFC 3986's unreserved and /).
+                Error err = out.assign("file://");
+                for (const char ch : path) {
+                        const bool plain = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                                           (ch >= '0' && ch <= '9') || StringView("-._~/").contains(ch);
+                        if (err.isOk()) err = plain ? out.append(ch) : out.appendf("%%%02X", unsigned(uint8_t(ch)));
+                }
+                if (err.isOk()) err = out.append("\r\n");
+                return err;
+        }
+
+        // An icon to rename (its menu, a slow second click, a long press): its name edited in place.
+        void PanelApp::renameAsked(void *arg, size_t item) {
+                auto *self = static_cast<PanelApp *>(arg);
+                if (item >= self->_desktopCount) return;
+                const StringView file(self->_desktopEntries[item].file);
+                self->startRename(item,
+                                  file.endsWith(DesktopSuffix) ? file.left(file.size() - DesktopSuffix.size()) : file);
+                return;
+        }
+
+        // The editor over icon @p item's name, @p text in it: as wide as the cell, wider for a long
+        // name (three cells at most), centred on it.
+        void PanelApp::startRename(size_t item, StringView text) {
+                if (_desktop == nullptr) return;
+                if (_nameEdit == nullptr) {
+                        void *mem = Memory::alloc(MemSpace::Psram, sizeof(PopupEdit));
+                        if (mem == nullptr) return;
+                        _nameEdit = ::new (mem) PopupEdit(_app);
+                }
+                _renaming = item;
+                Rect           r = _desktop->nameRect(item);
+                const uint32_t want = Fonts::unscii16.textWidth(text) + 24;
+                const uint16_t most = uint16_t(3 * DesktopWindow::CellWidth);
+                if (want > r.width) {
+                        const uint16_t w = uint16_t(want < most ? want : most);
+                        const int      x = int(r.x) - (w - r.width) / 2;
+                        r.x = uint16_t(x < 0 ? 0 : x);
+                        r.width = w;
+                }
+                if (_nameEdit->open(r, text, renamed, this).isError()) say("panel: can't edit the name\n");
+                return;
+        }
+
+        // The name edited: checked (a message, then editing again, if it can't be), then the file
+        // renamed, its place on the grid kept.
+        void PanelApp::renamed(void *arg, bool accepted, StringView text) {
+                auto *self = static_cast<PanelApp *>(arg);
+                if (!accepted || self->_renaming >= self->_desktopCount) return;
+                PanelEntry      &e = self->_desktopEntries[self->_renaming];
+                const StringView file(e.file);
+                const StringView old =
+                        file.endsWith(DesktopSuffix) ? file.left(file.size() - DesktopSuffix.size()) : file;
+                const StringView name = text.trimmed();
+                if (name.isEmpty() || name == old) return; // nothing to do
+                const char *problem = nullptr;
+                char        message[160];
+                bool        dots = true;
+                for (const char ch : name) dots = dots && (ch == '.' || ch == ' ');
+                if (dots) {
+                        problem = "A name needs more than dots and spaces.";
+                } else if (name.size() + DesktopSuffix.size() >= sizeof(e.file)) {
+                        std::snprintf(message, sizeof(message), "That name is too long: %zu bytes at most.",
+                                      sizeof(e.file) - 1 - DesktopSuffix.size());
+                        problem = message;
+                } else {
+                        for (const char ch : name)
+                                if (StringView("/\\:*?\"<>|").contains(ch))
+                                        problem = "A name can't hold any of these: / \\ : * ? \" < > |";
+                }
+                String to;
+                Error  err = Error::Ok;
+                if (problem == nullptr) {
+                        const StringView path(e.path);
+                        err = to.append(path.left(path.lastIndexOf('/') + 1));
+                        if (err.isOk()) err = to.append(name);
+                        if (err.isOk()) err = to.append(DesktopSuffix);
+                        const Vfs::Context vc{self->_context.cwd, nullptr};
+                        // Taken by another file (a name differing only in case is this one: FAT).
+                        if (err.isOk() && !name.equalsIgnoreCase(old) && Vfs::lstat(to.view(), vc).isOk()) {
+                                std::snprintf(message, sizeof(message), "There is already an icon named \"%.*s\" here.",
+                                              int(name.size()), name.data());
+                                problem = message;
+                        } else if (err.isOk()) {
+                                err = Vfs::rename(path, to.view(), vc);
+                        }
+                        if (err.isError()) {
+                                std::snprintf(message, sizeof(message), "Can't rename it: %s.", err.desc());
+                                problem = message;
+                        }
+                }
+                if (problem != nullptr) {
+                        // Told, then back to editing what was typed.
+                        const size_t n = name.size() < sizeof(self->_renameTried) - 1 ? name.size()
+                                                                                      : sizeof(self->_renameTried) - 1;
+                        std::memcpy(self->_renameTried, name.data(), n);
+                        self->_renameTried[n] = '\0';
+                        if (MessageBox::show(self->_app, MessageBox::Kind::Error, "Rename", StringView(problem),
+                                             MessageBox::Buttons::Ok, renameRetry, self)
+                                    .isError())
+                                self->say("panel: ", problem, "\n");
+                        return;
+                }
+                // The entry renamed in place, its place written under its new name, then shown again.
+                const StringView newPath = to.view();
+                const StringView newFile = newPath.mid(newPath.lastIndexOf('/') + 1);
+                std::memcpy(e.file, newFile.data(), newFile.size());
+                e.file[newFile.size()] = '\0';
+                if (newPath.size() < sizeof(e.path)) {
+                        std::memcpy(e.path, newPath.data(), newPath.size());
+                        e.path[newPath.size()] = '\0';
+                }
+                if (self->_saveTimer >= 0) {
+                        self->_app.stopTimer(self->_saveTimer);
+                        self->_saveTimer = -1;
+                }
+                savePlaces(self);
+                (void)self->loadDesktop();
+                return;
+        }
+
+        void PanelApp::renameRetry(void *arg, MessageBox::Answer answer) {
+                (void)answer;
+                auto *self = static_cast<PanelApp *>(arg);
+                if (self->_renaming < self->_desktopCount)
+                        self->startRename(self->_renaming, StringView(self->_renameTried));
+                return;
+        }
+
+        // The window manager closed the panel or the desktop (`win close`): the panel ends, the other
+        // window closing with it, rather than run on half there.
+        void PanelApp::windowClosed(void *arg, GuiWindow &window) {
+                (void)window;
+                static_cast<PanelApp *>(arg)->_app.quit(0);
+                return;
+        }
+
         void PanelApp::desktopMoved(void *arg) {
                 auto *self = static_cast<PanelApp *>(arg);
                 if (self->_saveTimer >= 0) return;
@@ -913,6 +1241,9 @@ namespace {
                                 if (menu) _desktop->setMenuAsked(desktopMenu, this);
                                 _desktop->setOpened(desktopOpened, this);
                                 _desktop->setMoved(desktopMoved, this);
+                                _desktop->setClosed(windowClosed, this);
+                                _desktop->setItemMenuAsked(iconMenu, this);
+                                _desktop->setRenameAsked(renameAsked, this);
                                 if (_desktop->show().isError()) say("panel: no desktop window\n");
                         }
                 }
@@ -927,6 +1258,7 @@ namespace {
                 void *mem = Memory::alloc(MemSpace::Psram, sizeof(GuiWindow));
                 if (mem == nullptr) return Error::NoMem;
                 _panel = ::new (mem) GuiWindow(_app, pc);
+                _panel->setClosed(windowClosed, this);
                 _row = Widget::create<BoxLayout>(_panel, BoxLayout::Direction::Horizontal);
                 Error err = _row == nullptr ? Error(Error::NoMem) : buildItems(_row);
                 if (err.isOk()) {

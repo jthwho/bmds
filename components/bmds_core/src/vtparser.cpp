@@ -32,6 +32,7 @@ void VtParser::clear() {
 }
 
 void VtParser::reset() {
+        if (_state == State::OscStream) endStream(false);
         clear();
         _utf8.reset();
         _oscLength = 0;
@@ -62,6 +63,14 @@ void VtParser::param(uint8_t b) {
         return;
 }
 
+// A streamed OSC string's last piece, then its end.
+void VtParser::endStream(bool complete) {
+        if (complete && _oscLength > 0) _handler.oscData(StringView(_osc, _oscLength));
+        _oscLength = 0;
+        _handler.oscEnd(complete);
+        return;
+}
+
 void VtParser::dispatchCsi(uint8_t final) {
         _handler.csiDispatch(_params, StringView(_intermediates, _intermediateCount), final);
         _state = State::Ground;
@@ -72,6 +81,7 @@ void VtParser::feed(uint8_t b) {
         // Anywhere: CAN and SUB abort; ESC starts over (and ends an OSC string).
         if (b == Can || b == Sub) {
                 if (_state != State::Ground) {
+                        if (_state == State::OscStream) endStream(false);
                         _handler.execute(b);
                         _state = State::Ground;
                         return;
@@ -79,6 +89,7 @@ void VtParser::feed(uint8_t b) {
         }
         if (b == Esc && _state != State::Ground) {
                 if (_state == State::OscString) _handler.oscDispatch(StringView(_osc, _oscLength));
+                if (_state == State::OscStream) endStream(true); // ESC: its end (ST)
                 clear();
                 _state = State::Escape;
                 return;
@@ -123,6 +134,7 @@ void VtParser::feed(uint8_t b) {
                                 _state = State::CsiEntry;
                         } else if (b == ']') {
                                 _oscLength = 0;
+                                _oscAsked = false;
                                 _state = State::OscString;
                         } else if (b == 'P' || b == 'X' || b == '^' || b == '_') {
                                 _state = State::IgnoredString;
@@ -189,8 +201,36 @@ void VtParser::feed(uint8_t b) {
                         if (b == Bel) {
                                 _handler.oscDispatch(StringView(_osc, _oscLength));
                                 _state = State::Ground;
+                        } else if (b == ';' && !_oscAsked) {
+                                // The number: the handler may take the rest in pieces.
+                                _oscAsked = true;
+                                uint32_t number = 0;
+                                bool     digits = _oscLength > 0 && _oscLength <= 9;
+                                for (size_t i = 0; i < _oscLength && digits; ++i) {
+                                        digits = _osc[i] >= '0' && _osc[i] <= '9';
+                                        number = number * 10 + uint32_t(_osc[i] - '0');
+                                }
+                                if (digits && _handler.oscStream(number)) {
+                                        _oscLength = 0;
+                                        _state = State::OscStream;
+                                } else if (_oscLength < MaxOsc) {
+                                        _osc[_oscLength++] = ';';
+                                }
                         } else if (b >= 0x20 && _oscLength < MaxOsc) {
                                 _osc[_oscLength++] = static_cast<char>(b);
+                        }
+                        return;
+
+                case State::OscStream:
+                        if (b == Bel) {
+                                endStream(true);
+                                _state = State::Ground;
+                        } else if (b >= 0x20) {
+                                _osc[_oscLength++] = static_cast<char>(b);
+                                if (_oscLength == MaxOsc) {
+                                        _handler.oscData(StringView(_osc, _oscLength));
+                                        _oscLength = 0;
+                                }
                         }
                         return;
 

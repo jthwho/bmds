@@ -128,6 +128,15 @@ class Pty final : public Stream {
 
                 using Stream::write;
 
+                /**
+                 * @brief Gives the program all of @p data as input (a paste), waiting
+                 *        up to @p timeoutMs for it to read what doesn't fit.
+                 * @return The bytes taken: all, or fewer with `Timeout`, `BrokenPipe`
+                 *         (the program's end is done) or `EndOfFile` (hung up).
+                 * @blocking
+                 */
+                Result<size_t> input(ByteSpan data, unsigned int timeoutMs);
+
                 /** @brief Readable while output waits (or the program's end is done). */
                 uint8_t readiness() override;
 
@@ -165,6 +174,7 @@ class Pty final : public Stream {
                 Semaphore         _outputReady{1, 0}; // output arrived (or the program's end finished)
                 Semaphore         _outputSpace{1, 0}; // output was read (or the emulator hung up)
                 Semaphore         _inputReady{1, 0};  // input arrived (or the emulator hung up)
+                Semaphore         _inputSpace{1, 0};  // input was read (or either end finished)
                 WaitListOf<4>     _outputWaiters;     // the emulator's pollers
                 std::atomic<bool> _hungUp{false};
                 std::atomic<bool> _ended{false};

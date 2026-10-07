@@ -132,6 +132,9 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
         _desktopChosen = nullptr;
         _desktopArg = nullptr;
         _desktopPicked = -1;
+        _programChosen = nullptr;
+        _programArg = nullptr;
+        _programPicked = -1;
         _canMinimize = false;
         _menuHighlight = -1;
         _focusId = 0;
@@ -204,6 +207,9 @@ void WindowManager::run() {
                 int           picked = -1;
                 DesktopChosen chosen = nullptr;
                 void         *chosenArg = nullptr;
+                int           programPicked = -1;
+                MenuChosen    programFn = nullptr;
+                void         *programArg = nullptr;
                 {
                         Mutex::Locker lock(_lock, WaitForever);
                         surface = _surface;
@@ -224,10 +230,16 @@ void WindowManager::run() {
                                 _desktopPicked = -1;
                                 chosen = _desktopChosen;
                                 chosenArg = _desktopArg;
+                                programPicked = _programPicked;
+                                _programPicked = -1;
+                                programFn = _pickedFn;
+                                programArg = _pickedArg;
                         }
                 }
-                // A desktop menu's choice, told without the lock (it may start a program).
+                // A desktop menu's choice, told without the lock (it may start a program), and a
+                // program's menu's.
                 if (picked >= 0 && chosen != nullptr) chosen(chosenArg, size_t(picked));
+                if (programPicked >= 0 && programFn != nullptr) programFn(programArg, size_t(programPicked));
                 _idle.notify();
                 // A round a frame at most: what comes meanwhile is drawn together.
                 if (surface != nullptr) (void)surface->waitFrame(frame, DrawTimeoutMs);
@@ -1466,6 +1478,7 @@ void WindowManager::mouseTo(uint8_t id, MouseEvent::Type type, uint16_t x, uint1
         event.y = static_cast<int16_t>(int(y) - client.y);
         event.button = button;
         event.buttons = _buttons;
+        event.modifiers = _modifiers;
         w.mouse(w.arg, event);
         return;
 }
@@ -1610,6 +1623,12 @@ void WindowManager::menuChoose(int item) {
                 _desktopPicked = item; // told after this round, the lock released
                 return;
         }
+        if (choice == MenuChoice::Program) {
+                _programPicked = item; // told after this round, the lock released
+                _pickedFn = _programChosen;
+                _pickedArg = _programArg;
+                return;
+        }
         if (id == 0 || _stack.rectOf(id).isError()) return;
         switch (choice) {
                 case MenuChoice::Restore: (void)restoreLocked(id); break;
@@ -1627,6 +1646,7 @@ void WindowManager::menuChoose(int item) {
                 case MenuChoice::Shade: (void)shadeLocked(id, !_windows[id - 1].shaded); break;
                 case MenuChoice::Close: (void)closeLocked(id); break;
                 case MenuChoice::Desktop:
+                case MenuChoice::Program:
                 case MenuChoice::None: break;
         }
         return;
@@ -1641,12 +1661,17 @@ Error WindowManager::showDesktopMenuLocked(uint16_t x, uint16_t y) {
                 _menuChoices[i] = MenuChoice::Desktop;
         }
         _menuCount = _desktopCount;
+        return openMenuLocked("Desktop menu", Rect{x, y, 0, 0}, 0);
+}
+
+// The menu of _menuItems (_menuCount of them) opened at @p anchor, for window @p menuFor (0: the
+// desktop).
+Error WindowManager::openMenuLocked(const char *title, const Rect &anchor, uint8_t menuFor) {
         Error err = _menuLayout.layout(Span<const MenuLayout::Item>(_menuItems, _menuCount), Fonts::unscii16);
         if (err.isError()) return err;
         WindowConfig config;
-        config.rect =
-                MenuLayout::place(_menuLayout.width(), _menuLayout.height(), Rect{x, y, 0, 0}, _stack.screen(), false);
-        config.title = "Desktop menu";
+        config.rect = MenuLayout::place(_menuLayout.width(), _menuLayout.height(), anchor, _stack.screen(), false);
+        config.title = title;
         config.redraw = menuRedraw;
         config.mouse = menuMouse;
         config.key = menuKey;
@@ -1659,9 +1684,39 @@ Error WindowManager::showDesktopMenuLocked(uint16_t x, uint16_t y) {
         auto [menu, oerr] = openLocked(config);
         if (oerr.isError()) return oerr;
         _menuId = menu;
-        _menuFor = 0;
+        _menuFor = menuFor;
         _menuHighlight = -1;
         return Error::Ok;
+}
+
+Error WindowManager::showMenu(uint8_t id, Span<const MenuItem> items, uint16_t x, uint16_t y, MenuChosen fn,
+                              void *arg) {
+        static_assert(MaxMenuItems <= MenuItems);
+        if (items.isEmpty() || items.size() > MaxMenuItems) return Error::Invalid;
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        auto [at, err] = _stack.rectOf(id);
+        if (err.isError()) return Error::NotFound;
+        if (_menuId != 0) (void)closeLocked(_menuId);
+        // Cut on a character's boundary.
+        auto copy = [](StringView text, char *out, size_t max) {
+                size_t n = text.size() < max ? text.size() : max;
+                while (n > 0 && n < text.size() && (uint8_t(text[n]) & 0xc0) == 0x80) --n;
+                std::memcpy(out, text.data(), n);
+                out[n] = '\0';
+                return StringView(out, n);
+        };
+        for (size_t i = 0; i < items.size(); ++i) {
+                _menuItems[i] = MenuLayout::Item{copy(items[i].label, _programLabels[i], MaxMenuLabel),
+                                                 copy(items[i].shortcut, _programShortcuts[i], MaxMenuShortcut),
+                                                 items[i].flags};
+                _menuChoices[i] = MenuChoice::Program;
+        }
+        _menuCount = items.size();
+        _programChosen = fn;
+        _programArg = arg;
+        const Rect client = frame(id, at).client();
+        return openMenuLocked("Menu", Rect{uint16_t(client.x + x), uint16_t(client.y + y), 0, 0}, id);
 }
 
 Error WindowManager::setDesktopMenu(Span<const StringView> labels, DesktopChosen fn, void *arg) {

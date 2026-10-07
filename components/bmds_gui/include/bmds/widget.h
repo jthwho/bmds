@@ -263,6 +263,9 @@ class Button : public Widget {
                 /** @brief Sets how it stands (raised by default). */
                 void setLook(Look look);
 
+                /** @brief Centres its text (a dialog's button; without an icon), else from its left. */
+                void setCentered(bool centered);
+
                 /** @brief Draws it checked (pressed in) or not. */
                 void setChecked(bool checked);
 
@@ -308,6 +311,7 @@ class Button : public Widget {
                 uintptr_t   _data = 0;
                 Look        _look = Look::Raised;
                 bool        _checked = false;
+                bool        _centered = false;
                 bool        _down = false; // the left button pressed over it
                 bool        _over = false; // the pointer on it
 };

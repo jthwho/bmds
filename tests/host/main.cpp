@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <bmds/assert.h>
+#include <bmds/clipboard.h>
 #include <bmds/random.h>
 #include <bmds/vfs.h>
 
@@ -28,5 +29,9 @@ namespace {
 
         // So is the random pool.
         [[maybe_unused]] const bool randomReady = bmds::Random::init().isOk();
+
+        // And the seat's clipboard with its files in /dev (listed by the VFS's tests).
+        [[maybe_unused]] const bool clipboardReady =
+                bmds::Clipboard::create(0).isOk() && bmds::Clipboard::addFiles(0).isOk();
 
 } // namespace

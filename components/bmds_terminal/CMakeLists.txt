@@ -9,7 +9,7 @@
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
 idf_component_register(SRCS src/terminalapp.cpp
-                       PRIV_REQUIRES bmds_console bmds_core bmds_fs bmds_gui bmds_input bmds_kernel bmds_ui
+                       PRIV_REQUIRES bmds_clipboard bmds_console bmds_core bmds_fs bmds_gui bmds_input bmds_kernel bmds_ui
                        WHOLE_ARCHIVE)
 bmds_target_options(${COMPONENT_LIB})
 

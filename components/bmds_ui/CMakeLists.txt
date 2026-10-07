@@ -15,6 +15,7 @@ set(BMDS_UI_PURE_SRCS
         src/iconfont.cpp
         src/menulayout.cpp
         src/switcherlayout.cpp
+        src/terminalselection.cpp
         src/terminalview.cpp
         src/windowpalette.cpp
         src/windowstack.cpp)

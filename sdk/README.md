@@ -110,7 +110,11 @@ on BMDS's table; programs never see that layer. What differs from Linux:
 - **Directories:** `readdir` lists `.` and `..` first, as Linux; up to 8 open.
 - **Devices:** `/dev/null`, `/dev/zero`, `/dev/urandom` and `/dev/random`
   (the kernel's random pool, as `getrandom`: seeded from the chip's noise
-  source at boot; never waits) and `/dev/console` (the program's terminal).
+  source at boot; never waits), `/dev/console` (the program's terminal), and
+  `/dev/clip0` and `/dev/clip0p`: the clipboard's and the primary selection's
+  text as a regular file. Read, it is the text when opened (empty if there is
+  none); written, the text becomes what the file holds when it is closed
+  (`>` empties it first, `>>` appends). See `devplan/clipboard.md`.
 - **Time zones:** `TZ` is a POSIX rule string or a zone name
   (`TZ=Europe/Berlin`); names are read by musl from `/share/zoneinfo`, the
   card's time zone database shown read-only (empty without it: UTC). A

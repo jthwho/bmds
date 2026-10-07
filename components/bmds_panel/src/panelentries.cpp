@@ -60,6 +60,9 @@ bool readEntryDirectory(StringView directory, const Vfs::Context &context, Panel
                 PanelEntry &e = entries[count++]; // a hidden one too: it hides the later ones of its name
                 std::memcpy(e.file, name.data(), name.size());
                 e.file[name.size()] = '\0';
+                const size_t n = path.size() < sizeof(e.path) ? path.size() : 0; // too long: none
+                std::memcpy(e.path, path.data(), n);
+                e.path[n] = '\0';
                 e.entry = entry;
         }
         Memory::free(text);

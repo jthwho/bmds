@@ -435,6 +435,16 @@ The last of `windows.md` §8 step 9: the window manager draws no terminal, so th
   file name: `terminal.desktop=COLUMN,ROW`. Read when the icons are, so a screen of another size
   keeps the places that fit; an icon without one, or whose place is off the grid, is placed as
   before. Not a default on `/boot`: absent until an icon is moved.
+- **An icon's menu** (2026-10-07): a right click on an icon selects it and opens Open, Copy and
+  Delete. Copy puts its `.desktop` file on the clipboard as a URI list and its path
+  (`clipboard.md` §4f). Delete moves it to its filesystem's trash (`files.md` F8).
+- **The desktop's menu** (2026-10-07, `files.md` F7): Applications (the launcher's menu, as a
+  submenu), a separator, Paste. Paste copies the clipboard's files into the desktop's first
+  directory, under a copy's name if theirs is taken. Before this, the right click opened the
+  launcher's menu itself.
+- **`WindowManager::showMenu()`** (2026-10-07, `files.md` §4c): a menu of a program's own items,
+  drawn and run as the window manager's, for programs not on the toolkit (the terminal's right
+  click).
 
 ### 4n. Alt+Tab with 32-pixel icons (roadmap, 2026-10-06)
 
@@ -496,6 +506,84 @@ own desktop menu (the panel) provides it.
   disabled, Win+Down only restores, and `minimize()` reports `InvalidState`. When the last watcher
   goes (the panel ends), the minimized windows are shown again, so none is lost. `canMinimize()`
   says which (`win check` draws the button as the screen should show it).
+
+### 4q. Names from file names, renaming in place, message boxes, a line editor (the user's, 2026-10-07)
+
+The user noticed two desktop icons named alike with different file names, and asked for names
+from the file name, renaming in the icon's label, and a message box in the GUI API.
+
+- **A desktop icon is named by its file:** `terminal (copy).desktop` is "terminal (copy)".
+  Copies, renames and the file stay in step. `Name=` still names the launcher's entries, which
+  come from the applications' own files.
+- **`LineEdit`** (bmds_gui), a line of text to edit:
+  - Up to 255 bytes.
+  - Keys:
+    - characters insert; Backspace and Delete;
+    - Left, Right, Home and End move, with Shift selecting;
+    - Ctrl+A selects all; Ctrl+C, Ctrl+X and Ctrl+V use the clipboard (`GuiClipboard`, text);
+    - Enter accepts; Esc cancels.
+  - Mouse: a press puts the cursor, a drag selects, a double click selects all.
+  - It scrolls to keep the cursor in view, drawn in a field's bevel.
+  - Its model (`LineEditModel`: text, cursor, selection, the editing operations on whole UTF-8
+    characters) is pure and host-tested.
+- **`MessageBox`** (bmds_gui):
+  - `MessageBox::show(app, kind, title, text, buttons, fn, arg)`.
+  - Kinds: information, warning, error, question. Buttons: OK; OK and Cancel; Yes and No; Yes,
+    No and Cancel.
+  - A window with a title bar, centred in the work area and above other windows while shown.
+  - A 32-pixel icon: the theme's `dialog-information`, `dialog-warning`, `dialog-error` or
+    `dialog-question` if it has one, else a drawn badge.
+  - The text wrapped to 50 columns at most, 12 lines (`TextWrap`, pure, host-tested). The
+    buttons at the bottom right, the first one the default.
+  - Enter is the default, Esc or the close box Cancel (or No, or OK when it's alone).
+  - The answer is told on the loop's thread, then the box goes. It doesn't stop the program's
+    other windows (the toolkit has no modality): the caller waits for the answer.
+- **Renaming a desktop icon:**
+  - It starts from Rename in the icon's menu; a click on a selected icon's name, released
+    without moving, once the double-click time has passed (a double click still opens it); or
+    a press held still on an icon for 0.8 s.
+  - An editor (a `LineEdit` in a popup window) covers its name, the name all selected. It is
+    as wide as the cell, wider for a long name, up to three cells.
+  - Enter, or a press elsewhere, renames it; Esc keeps the old name.
+  - The name is checked first:
+    - unchanged: nothing;
+    - empty, holding `/ \ : * ? " < > |`, only dots and spaces, or longer than 39 bytes: a
+      message box, then editing goes on;
+    - another icon's: "There is already an icon named NAME here.", then editing goes on.
+  - Then the file is renamed (its `.desktop` kept), and it keeps its place on the grid.
+- **As built** (2026-10-07):
+  - **Pure** (host-tested in `tests/host/gui.cpp`): `LineEditModel` (whole characters, the
+    selection, the 255-byte limit, controls left out) and `TextWrap` (spaces, LF, long words,
+    wide characters, the line limit).
+  - **`LineEdit`:**
+    - It scrolls a character at a time. It has nothing to scroll until it has a size
+      (`resized()`): text set before its window opened showed empty.
+    - A paste still coming when it's destroyed is dropped (`GuiClipboard::cancel()`).
+  - **`PopupEdit`** (bmds_gui): the in-place editor, a `LineEdit` in a popup window. A press
+    elsewhere accepts, as Enter does.
+  - **`MessageBox`:**
+    - Its icon is copied from the theme: the theme's cache may drop its own.
+    - Flat Color has only `dialog-information`, so the others are drawn badges.
+    - Its buttons centre their text (`Button::setCentered()`).
+  - **The panel:**
+    - Names from file names.
+    - Rename in the icon menu.
+    - `DesktopWindow` asks for a rename (`RenameAsked`) after a long press (`LongPressMs`,
+      800 ms) or a slow second click on the name (released, then 450 ms without a press).
+    - On a problem, the editor is closed before the message box opens: a press on the box
+      would otherwise count as a press elsewhere, which accepts. When the box is answered,
+      editing goes on.
+    - The renamed entry's file and path are updated, then the places are written, so it keeps
+      its cell under the new name.
+  - **On the board:**
+    - The icon read "terminal" (its file).
+    - Rename, then typing "My Shell" and Enter, gave `My Shell.desktop` and
+      `My Shell.desktop=0,0` in `desktop.conf`, with the label changed.
+    - Copy and Paste made `My Shell (copy).desktop`. A slow second click on its name opened
+      the editor. "My Shell" brought "There is already an icon named "My Shell" here.", and
+      OK put "My Shell" back in the editor; Esc left the files as they were.
+    - A long press opened the editor; "a/b" brought the forbidden characters' message.
+  - **Size:** the image grew 8,208 bytes to 851,456.
 
 ## 5. Budget (estimates)
 

@@ -5,10 +5,13 @@
 
 set(BMDS_CORE_SRCS
         src/arena.cpp
+        src/base64.cpp
         src/blake2s.cpp
         src/bytering.cpp
         src/chacha20.cpp
         src/clockmodel.cpp
+        src/clipboardconversions.cpp
+        src/clipboardtype.cpp
         src/color.cpp
         src/datetime.cpp
         src/desktopentry.cpp
@@ -16,6 +19,7 @@ set(BMDS_CORE_SRCS
         src/randompool.cpp
         src/region.cpp
         src/error.cpp
+        src/filenames.cpp
         src/inflate.cpp
         src/inireader.cpp
         src/string.cpp

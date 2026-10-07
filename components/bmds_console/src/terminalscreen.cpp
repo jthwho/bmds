@@ -243,14 +243,24 @@ void TerminalScreen::print(uint32_t codepoint) {
         return;
 }
 
+// Row @p row goes on in the next one: its last cell says so (before the line feed that may scroll
+// it into the history).
+void TerminalScreen::markWrapped(uint16_t row) {
+        line(row)[_columns - 1].wrapped = 1;
+        endOf(_screen, row) = _columns;
+        return;
+}
+
 void TerminalScreen::put(uint32_t codepoint, int width) {
         if (width > _columns) return;
         if (_cursor.pendingWrap) {
+                markWrapped(_cursor.row);
                 _cursor.column = 0;
                 lineFeed();
         }
         if (_cursor.column + width > _columns) { // a wide character at the last column
                 if (_cursor.autowrap) {
+                        markWrapped(_cursor.row);
                         _cursor.column = 0;
                         lineFeed();
                 } else {
@@ -751,6 +761,71 @@ void TerminalScreen::softReset() {
 }
 
 // OSC 0 (the icon's name and the title) and OSC 2 (the title) set the title; the rest are ignored.
+// OSC 52 (devplan/clipboard.md C11): `52 ; TARGETS ; BASE64` or `? `, streamed by the parser.
+bool TerminalScreen::oscStream(uint32_t number) {
+        if (number != 52 || _clipboardSink == nullptr) return false;
+        _clip = Clip::Targets;
+        _clipTargetLength = 0;
+        _clipDecoder.reset();
+        return true;
+}
+
+void TerminalScreen::oscData(StringView piece) {
+        size_t i = 0;
+        while (i < piece.size() && _clip != Clip::Data) {
+                const char c = piece[i++];
+                switch (_clip) {
+                        case Clip::Targets:
+                                if (c == ';') {
+                                        _clip = Clip::First;
+                                } else if (_clipTargetLength < MaxClipboardTargets) {
+                                        _clipTargets[_clipTargetLength++] = c;
+                                }
+                                break;
+                        case Clip::First:
+                                if (c == '?') {
+                                        _clip = Clip::Query;
+                                        break;
+                                }
+                                _clip = Clip::Data;
+                                _clipboardSink(_clipboardContext, ClipboardEvent::Begin,
+                                               StringView(_clipTargets, _clipTargetLength), ByteSpan());
+                                --i; // the first of the data
+                                break;
+                        default: return; // a query's rest, or ignored
+                }
+        }
+        if (_clip != Clip::Data || i == piece.size()) return;
+        uint8_t      decoded[Base64Decoder::maxOutput(VtParser::MaxOsc)];
+        const size_t n = _clipDecoder.put(piece.mid(i), decoded);
+        if (n > 0)
+                _clipboardSink(_clipboardContext, ClipboardEvent::Data, StringView(_clipTargets, _clipTargetLength),
+                               ByteSpan(decoded, n));
+        return;
+}
+
+void TerminalScreen::oscEnd(bool complete) {
+        const StringView targets(_clipTargets, _clipTargetLength);
+        if (_clip == Clip::First && complete) { // `52;c;`: emptied
+                _clipboardSink(_clipboardContext, ClipboardEvent::Begin, targets, ByteSpan());
+                _clip = Clip::Data;
+        }
+        if (_clip == Clip::Query && complete)
+                _clipboardSink(_clipboardContext, ClipboardEvent::Query, targets, ByteSpan());
+        if (_clip == Clip::Data) {
+                uint8_t tail[Base64Decoder::MaxFinish];
+                auto [n, err] = _clipDecoder.finish(tail);
+                if (complete && err.isOk()) {
+                        if (n > 0) _clipboardSink(_clipboardContext, ClipboardEvent::Data, targets, ByteSpan(tail, n));
+                        _clipboardSink(_clipboardContext, ClipboardEvent::End, targets, ByteSpan());
+                } else {
+                        _clipboardSink(_clipboardContext, ClipboardEvent::Cancel, targets, ByteSpan());
+                }
+        }
+        _clip = Clip::Ignore;
+        return;
+}
+
 void TerminalScreen::oscDispatch(StringView data) {
         if (data.size() < 2 || data[1] != ';' || (data[0] != '0' && data[0] != '2')) return;
         setTitle(data.mid(2));

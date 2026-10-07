@@ -17,11 +17,13 @@
 #include <bmds/blockdevices.h>
 #include <bmds/clock.h>
 #include <bmds/filecommands.h>
+#include <bmds/filenames.h>
 #include <bmds/fscommands.h>
 #include <bmds/langbuiltins.h>
 #include <bmds/ramblockdevice.h>
 #include <bmds/shell.h>
 #include <bmds/textcommands.h>
+#include <bmds/trash.h>
 #include <bmds/vfs.h>
 #include "fakeconsole.h"
 
@@ -57,6 +59,7 @@ namespace {
                 {"source", "file [arg]...", "", bmds::LangBuiltins::source},
                 {"test", "expr", "", bmds::LangBuiltins::test},
                 {"touch", "file...", "", bmds::FileCommands::touch},
+                {"trash", "path... | -l | -r name... | -e [mount]", "", bmds::FileCommands::trash},
                 {"wc", "[-lwc] [file]...", "", bmds::TextCommands::wc},
         };
 
@@ -167,7 +170,8 @@ TEST_CASE("Files: ls") {
         CHECK(f.out("ls -a1 /disk0/p0") == ".hidden\nA.txt\nb.txt\ndocs/\n");
         CHECK(f.out("cd /disk0/p0; ls b.txt docs") == "b.txt\n\ndocs:\n");
         CHECK(f.out("ls /") == "bin/  dev/  disk0/  disk1/  share/\n");
-        CHECK(f.out("ls /dev") == "console  disk0p0  disk1p0  random   zero\ndisk0    disk1    null     urandom\n");
+        CHECK(f.out("ls /dev") ==
+              "clip0    disk0    disk1p0  urandom\nclip0p   disk0p0  null     zero\nconsole  disk1    random\n");
         const std::string longList = f.out("ls -l /disk0/p0/b.txt /disk0/p0/A.txt");
         CHECK(longList.find("-rw-  2  ") == 0);
         CHECK(longList.find("/disk0/p0/A.txt\n") != std::string::npos);
@@ -403,4 +407,147 @@ TEST_CASE("Files: symbolic links") {
         CHECK(f.out("cp -r bin copy; [ -L copy/awk ] && cat copy/awk") == "BB\n");
         CHECK(f.out("rm -r copy/d; ls data; rm bin/d; ls bin") == "notes\nawk  busybox\n");
         CHECK(f.out("rm -r copy; ls") == "bin/  data/\n");
+}
+
+namespace {
+
+        std::string copyName(const char *name, unsigned n) {
+                char buf[64];
+                auto [v, err] = bmds::CopyName::make(name, n, bmds::Span<char>(buf, sizeof(buf)));
+                return err.isOk() ? std::string(v.data(), v.size()) : std::string("error: ") + err.desc();
+        }
+
+        std::string read(const char *path) {
+                auto [h, err] = Vfs::open(path, Vfs::Read, Vfs::Context{"/", nullptr});
+                if (err.isError()) return "<" + std::string(err.desc()) + ">";
+                std::string out;
+                char        buf[64];
+                for (;;) {
+                        auto [n, rerr] = h->read(bmds::WritableByteSpan(reinterpret_cast<uint8_t *>(buf), sizeof(buf)),
+                                                 bmds::WaitForever);
+                        if (rerr.isError()) return out;
+                        out.append(buf, n);
+                }
+        }
+
+} // namespace
+
+TEST_CASE("Files: copies' names, paths in URIs, trash info files") {
+        CHECK(copyName("terminal.desktop", 1) == "terminal (copy).desktop");
+        CHECK(copyName("terminal.desktop", 2) == "terminal (copy 2).desktop");
+        CHECK(copyName("archive.tar.gz", 1) == "archive.tar (copy).gz");
+        CHECK(copyName(".profile", 1) == ".profile (copy)");
+        CHECK(copyName("README", 12) == "README (copy 12)");
+        CHECK(copyName("a", 0).rfind("error", 0) == 0);
+        CHECK(copyName("a", 1000).rfind("error", 0) == 0);
+        CHECK(copyName("a/b", 1).rfind("error", 0) == 0);
+        CHECK(copyName("", 1).rfind("error", 0) == 0);
+        char small[8];
+        CHECK(bmds::CopyName::make("long name.txt", 1, bmds::Span<char>(small, sizeof(small))).error() ==
+              Error::BufferTooSmall);
+
+        char buf[128];
+        auto [n, err] = bmds::Uri::encodePath("/boot/a b/ü%.txt", bmds::Span<char>(buf, sizeof(buf)));
+        REQUIRE(err.isOk());
+        CHECK(std::string(buf, n) == "/boot/a%20b/%C3%BC%25.txt");
+        auto [m, derr] = bmds::Uri::decode("/boot/a%20b/%C3%BC%25.txt%4", bmds::Span<char>(buf, sizeof(buf)));
+        REQUIRE(derr.isOk());
+        CHECK(std::string(buf, m) == "/boot/a b/ü%.txt%4");
+
+        bmds::DateTime when;
+        when.year = 2026;
+        when.month = 10;
+        when.day = 7;
+        when.hour = 9;
+        when.minute = 5;
+        when.second = 3;
+        char text[256];
+        auto [info, ferr] =
+                bmds::TrashInfo::format("/boot/desktop/my file", when, bmds::Span<char>(text, sizeof(text)));
+        REQUIRE(ferr.isOk());
+        CHECK(std::string(info.data(), info.size()) ==
+              "[Trash Info]\nPath=/boot/desktop/my%20file\nDeletionDate=2026-10-07T09:05:03\n");
+        char path[64];
+        char date[bmds::TrashInfo::DateBytes + 1];
+        CHECK(bmds::TrashInfo::parse(info, bmds::Span<char>(path, sizeof(path)), date) == Error::Ok);
+        CHECK(std::string(path) == "/boot/desktop/my file");
+        CHECK(std::string(date) == "2026-10-07T09:05:03");
+        CHECK(bmds::TrashInfo::parse("[Trash Info]\nPath=relative\n", bmds::Span<char>(path, sizeof(path)), date) ==
+              Error::CorruptData);
+        CHECK(bmds::TrashInfo::parse("[Other]\nPath=/x\n", bmds::Span<char>(path, sizeof(path)), date) ==
+              Error::CorruptData);
+        CHECK(bmds::TrashInfo::parse("[Trash Info]\nPath=/x\n", bmds::Span<char>(path, sizeof(path)), date) ==
+              Error::Ok);
+        CHECK(std::string(date).empty());
+}
+
+TEST_CASE("Files: copyFile") {
+        Fixture            f;
+        const Vfs::Context root;
+        put("/disk0/p0/src.txt", "contents");
+        CHECK(Vfs::copyFile("/disk0/p0/src.txt", "/disk1/p0/dst.txt", root) == Error::Ok);
+        CHECK(read("/disk1/p0/dst.txt") == "contents");
+        CHECK(Vfs::stat("/disk1/p0/dst.txt", root).value().modified.ns ==
+              Vfs::stat("/disk0/p0/src.txt", root).value().modified.ns);
+        CHECK(Vfs::copyFile("/disk0/p0/src.txt", "/disk1/p0/dst.txt", root) == Error::Exists);
+        CHECK(Vfs::copyFile("/disk0/p0/src.txt", "/disk0/p0/src.txt", root) == Error::Exists); // onto itself
+        CHECK(read("/disk0/p0/src.txt") == "contents");
+        CHECK(Vfs::copyFile("/disk0/p0/none", "/disk1/p0/x", root) == Error::NotExist);
+        CHECK(Vfs::copyFile("/disk0/p0", "/disk1/p0/x", root) == Error::IsDir);
+}
+
+TEST_CASE("Files: the trash") {
+        Fixture            f;
+        const Vfs::Context root;
+        put("/disk0/p0/a.txt", "first");
+        bmds::String name;
+        REQUIRE(bmds::Trash::move("/disk0/p0/a.txt", root, &name) == Error::Ok);
+        CHECK(name.view() == "a.txt");
+        CHECK(read("/disk0/p0/a.txt") == "<" + std::string(Error(Error::NotExist).desc()) + ">");
+        CHECK(read("/disk0/p0/.trash/files/a.txt") == "first");
+        CHECK(read("/disk0/p0/.trash/info/a.txt.trashinfo").rfind("[Trash Info]\nPath=/disk0/p0/a.txt\n", 0) == 0);
+        // The same name again: " (2)".
+        put("/disk0/p0/a.txt", "second");
+        REQUIRE(bmds::Trash::move("/disk0/p0/a.txt", root, &name) == Error::Ok);
+        CHECK(name.view() == "a.txt (2)");
+        // A directory, on the other disk (its own trash), named relative to the cwd.
+        REQUIRE(Vfs::mkdir("/disk1/p0/dir", root) == Error::Ok);
+        put("/disk1/p0/dir/inner", "x");
+        REQUIRE(bmds::Trash::move("dir", Vfs::Context{"/disk1/p0", nullptr}, &name) == Error::Ok);
+        CHECK(read("/disk1/p0/.trash/files/dir/inner") == "x");
+        // Not trashable.
+        CHECK(bmds::Trash::move("/disk0/p0", root, nullptr) == Error::Invalid);
+        CHECK(bmds::Trash::move("/disk0/p0/.trash", root, nullptr) == Error::Invalid);
+        CHECK(bmds::Trash::move("/disk0/p0/.trash/files/a.txt", root, nullptr) == Error::Invalid);
+        CHECK(bmds::Trash::move("/disk0/p0/none", root, nullptr) == Error::NotExist);
+        CHECK(bmds::Trash::move("/bin/ls", root, nullptr) == Error::NotSupported);
+
+        // trash -l, then -r: the first back; the second refused (its place is taken), then by path.
+        const std::string listed = f.out("trash -l");
+        CHECK(listed.find("a.txt                     /disk0/p0/a.txt\n") != std::string::npos);
+        CHECK(listed.find("a.txt (2)                 /disk0/p0/a.txt\n") != std::string::npos);
+        CHECK(listed.find("dir                       /disk1/p0/dir/\n") != std::string::npos);
+        CHECK(f.out("trash -r a.txt") == "");
+        CHECK(read("/disk0/p0/a.txt") == "first");
+        CHECK(f.out("trash -r 'a.txt (2)'", Shell::ExitFailure) == "trash: a.txt (2): its place is taken\n");
+        CHECK(f.out("trash -r nothing", Shell::ExitFailure) == "trash: nothing: No such file or directory\n");
+        // An info file without its file (a cut-off delete) isn't listed.
+        put("/disk0/p0/.trash/info/ghost.trashinfo", "[Trash Info]\nPath=/disk0/p0/ghost\n");
+        CHECK(f.out("trash -l").find("ghost") == std::string::npos);
+
+        // trash PATH, then -e for one mount, then all.
+        put("/disk0/p0/b.txt", "b");
+        CHECK(f.out("cd /disk0/p0; trash b.txt; cd /") == "");
+        CHECK(f.out("trash /disk0/p0/nope", Shell::ExitFailure) ==
+              "trash: /disk0/p0/nope: No such file or directory\n");
+        CHECK(f.out("trash /bin/ls", Shell::ExitFailure) == "trash: /bin/ls: not on a filesystem with a trash\n");
+        CHECK(f.out("trash -e /disk1/p0/") == "");
+        CHECK(f.out("trash -l").find("/disk1") == std::string::npos);
+        CHECK(f.out("trash -l").find("b.txt") != std::string::npos);
+        CHECK(f.out("trash -e") == "");
+        CHECK(f.out("trash -l") == "");
+        CHECK(read("/disk0/p0/a.txt") == "first"); // restored ones stay
+        CHECK(f.out("trash -e /nowhere", Shell::ExitFailure) == "trash: /nowhere: No such file or directory\n");
+        CHECK(f.out("trash", Shell::ExitUsage).rfind("usage: trash", 0) == 0);
+        CHECK(f.out("trash -x", Shell::ExitUsage).rfind("usage: trash", 0) == 0);
 }

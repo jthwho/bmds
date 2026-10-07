@@ -23,6 +23,7 @@
 
 BMDS_NAMESPACE_BEGIN
 
+class GuiClipboard;
 class GuiWindow;
 
 /**
@@ -125,6 +126,13 @@ class GuiApplication {
                  */
                 Error grabKey(uint8_t usage, uint8_t modifiers, Callback fn, void *arg);
 
+                /**
+                 * @brief Returns the application's clipboard (`devplan/clipboard.md`
+                 *        C13), made the first time; null without the memory. Its copies
+                 *        on request are kept when `exec()` returns.
+                 */
+                GuiClipboard *clipboard();
+
                 /** @brief Returns the application's icons (found and kept on the loop's thread). */
                 IconTheme &icons() { return _icons; }
 
@@ -214,6 +222,7 @@ class GuiApplication {
                 std::atomic<bool> _gone{false};
                 IconTheme         _icons;
                 KeyGrab           _grabs[MaxGrabs];
+                GuiClipboard     *_clipboard = nullptr; // PSRAM, the first time asked for
 };
 
 BMDS_NAMESPACE_END

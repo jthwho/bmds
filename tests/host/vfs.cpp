@@ -262,8 +262,8 @@ TEST_CASE("Vfs: devices, partitions and mounts") {
 
         CHECK(list("/") == std::vector<std::string>{"bin/", "dev/", "ram0/", "share/"});
         CHECK(list("/ram0") == std::vector<std::string>{"p0/"});
-        CHECK(list("/dev") ==
-              std::vector<std::string>{"console", "null", "ram0", "ram0p0", "random", "urandom", "zero"});
+        CHECK(list("/dev") == std::vector<std::string>{"clip0", "clip0p", "console", "null", "ram0", "ram0p0", "random",
+                                                       "urandom", "zero"});
         CHECK(Vfs::stat("/ram0", Root).value().isDirectory());
         CHECK(Vfs::stat("/dev/ram0", Root).value().type == FileType::Device);
         CHECK(Vfs::stat("/dev/ram0", Root).value().size == 64u * 1024 * 1024);
@@ -345,7 +345,8 @@ TEST_CASE("Vfs: devices, partitions and mounts") {
                 Vfs::eject(ram);
                 CHECK(mountList().empty());
                 CHECK(Vfs::stat("/ram0/p0/kept.txt", Root).error() == Error::NotExist);
-                CHECK(list("/dev") == std::vector<std::string>{"console", "null", "ram0", "random", "urandom", "zero"});
+                CHECK(list("/dev") == std::vector<std::string>{"clip0", "clip0p", "console", "null", "ram0", "random",
+                                                               "urandom", "zero"});
                 CHECK(bmds::BlockDevices::find("ram0p0") == nullptr);
                 // Back in.
                 disk().device.setPresent(true);

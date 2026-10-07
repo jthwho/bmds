@@ -10,6 +10,7 @@
  * are "command: path: reason", with POSIX's wording.
  */
 
+#include <cstdio>
 #include <cstring>
 #include <utility>
 #include <bmds/clock.h>
@@ -20,6 +21,7 @@
 #include <bmds/list.h>
 #include <bmds/memory.h>
 #include <bmds/shell.h>
+#include <bmds/trash.h>
 #include <bmds/utf8.h>
 #include <bmds/vfs.h>
 
@@ -584,6 +586,104 @@ int FileCommands::rm(CommandContext &ctx) {
         return status;
 }
 
+namespace {
+
+        // `trash -l`'s lines: the date, the name in the trash, where it was.
+        void listed(void *arg, const Trash::Entry &e) {
+                auto            *ctx = static_cast<CommandContext *>(arg);
+                const StringView date = e.date.size() == TrashInfo::DateBytes ? e.date : StringView("-");
+                char             when[24];
+                std::snprintf(when, sizeof(when), "%.*s", int(date.size()), date.data());
+                if (date.size() == TrashInfo::DateBytes) when[10] = ' '; // 2026-10-07 01:23:45
+                ctx->printf("%-19s  %-24.*s  %.*s%s\n", when, int(e.name.size()), e.name.data(), int(e.path.size()),
+                            e.path.data(), e.isDirectory ? "/" : "");
+                return;
+        }
+
+        // `trash -r`'s argument: NAME, found in whichever trash has it (one only), or the trashed
+        // file's path (MOUNT/.trash/files/NAME), when several do.
+        struct Found {
+                        StringView name;
+                        String     mount;
+                        size_t     count = 0;
+        };
+
+        void find(void *arg, const Trash::Entry &e) {
+                auto *f = static_cast<Found *>(arg);
+                if (e.name != f->name) return;
+                if (f->count++ == 0) (void)f->mount.assign(e.mount);
+                return;
+        }
+
+} // namespace
+
+int FileCommands::trash(CommandContext &ctx) {
+        const Args args = ctx.args();
+        if (args.size() < 2) return ctx.usage();
+        const StringView option(args[1]);
+        if (option == "-l") {
+                if (args.size() != 2) return ctx.usage();
+                const Error err = Trash::list(listed, &ctx);
+                return err.isOk() ? Shell::ExitSuccess : fail(ctx, "trash", err);
+        }
+        if (option == "-e") {
+                if (args.size() > 3) return ctx.usage();
+                StringView mount = args.size() == 3 ? StringView(args[2]) : StringView();
+                while (mount.size() > 1 && mount.endsWith('/')) mount = mount.left(mount.size() - 1);
+                const Error err = Trash::empty(mount, nullptr);
+                return err.isOk() ? Shell::ExitSuccess : fail(ctx, args.size() == 3 ? args[2] : "trash", err);
+        }
+        if (option == "-r") {
+                if (args.size() < 3) return ctx.usage();
+                int status = Shell::ExitSuccess;
+                for (size_t i = 2; i < args.size(); ++i) {
+                        const StringView     arg(args[i]);
+                        constexpr StringView Files("/.trash/files/");
+                        String               mount;
+                        StringView           name = arg;
+                        const size_t         at = arg.indexOf(Files);
+                        Error                err;
+                        if (at != StringView::NPos) {
+                                name = arg.mid(at + Files.size());
+                                err = mount.assign(arg.left(at));
+                        } else {
+                                Found f;
+                                f.name = arg;
+                                err = Trash::list(find, &f);
+                                if (err.isOk() && f.count == 0) err = Error::NotExist;
+                                if (err.isOk() && f.count > 1) {
+                                        ctx.eprintf("trash: %s: in %zu trashes: name it as MOUNT/.trash/files/%s\n",
+                                                    args[i], f.count, args[i]);
+                                        status = Shell::ExitFailure;
+                                        continue;
+                                }
+                                mount = std::move(f.mount);
+                        }
+                        if (err.isOk()) err = Trash::restore(mount.view(), name, ctx.vfs());
+                        if (err == Error::Exists) {
+                                ctx.eprintf("trash: %s: its place is taken\n", args[i]);
+                                status = Shell::ExitFailure;
+                        } else if (err.isError()) {
+                                status = fail(ctx, args[i], err);
+                        }
+                }
+                return status;
+        }
+        if (option.size() > 1 && option.startsWith('-') && option != "--") return ctx.usage();
+        int status = Shell::ExitSuccess;
+        for (size_t i = option == "--" ? 2 : 1; i < args.size(); ++i) {
+                const Error err = Trash::move(args[i], ctx.vfs(), nullptr);
+                if (err == Error::NotSupported)
+                        ctx.eprintf("trash: %s: not on a filesystem with a trash\n", args[i]);
+                else if (err == Error::Invalid)
+                        ctx.eprintf("trash: %s: can't be trashed (a mount, or the trash)\n", args[i]);
+                if (err.isError())
+                        status = err == Error::NotSupported || err == Error::Invalid ? Shell::ExitFailure
+                                                                                     : fail(ctx, args[i], err);
+        }
+        return status;
+}
+
 int FileCommands::touch(CommandContext &ctx) {
         const Args args = ctx.args();
         if (args.size() < 2) return ctx.usage();
@@ -776,6 +876,8 @@ BMDS_SHELL_COMMAND(mkdir, FileCommands::mkdir, "[-p] dir...", "Make directories 
 BMDS_SHELL_COMMAND(mv, FileCommands::mv, "source... target", "Move or rename files and directories")
 BMDS_SHELL_COMMAND(pwd, FileCommands::pwd, "", "Print the current directory")
 BMDS_SHELL_COMMAND(rm, FileCommands::rm, "[-rf] path...", "Remove files (-r: directories too, -f: ignore missing)")
+BMDS_SHELL_COMMAND(trash, FileCommands::trash, "path... | -l | -r name... | -e [mount]",
+                   "Move files to their filesystem's trash; list (-l), restore (-r) or empty (-e) it")
 BMDS_SHELL_COMMAND(rmdir, FileCommands::rmdir, "dir...", "Remove empty directories")
 BMDS_SHELL_COMMAND(touch, FileCommands::touch, "file...", "Create files, or set their time to now")
 

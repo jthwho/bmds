@@ -6,6 +6,7 @@
  * See LICENSE file in the project root folder for license information.
  */
 
+#include <atomic>
 #include <cstring>
 #include <new>
 #include <utility>
@@ -44,6 +45,19 @@ namespace {
 
         constinit Vfs::ChangeHook changeHook = nullptr; // under the storage lock
 
+        // The files other components added to /dev: written under the storage lock before the
+        // count that publishes them, so open() reads them without it.
+        constinit Vfs::DeviceFile     deviceFiles[Vfs::MaxDeviceFiles];
+        constinit std::atomic<size_t> deviceFileCount{0};
+
+        // The added file named @p name, or null.
+        const Vfs::DeviceFile *findDeviceFile(StringView name) {
+                const size_t n = deviceFileCount.load(std::memory_order_acquire);
+                for (size_t i = 0; i < n; ++i)
+                        if (name == deviceFiles[i].name) return &deviceFiles[i];
+                return nullptr;
+        }
+
         // The fixed device nodes in /dev, listed before the block devices.
         // All but the console are streams without state, shared by every caller.
         struct DevNode {
@@ -75,6 +89,7 @@ namespace {
                 BinProgram, // /bin/NAME
                 ZoneDir,    // /share/zoneinfo and its directories (devplan/time.md §9)
                 ZoneFile,   // /share/zoneinfo/NAME
+                DevFile,    // a file another component added (Vfs::addDeviceFile)
         };
 
         // Where the programs built into the firmware are listed (read-only).
@@ -88,6 +103,7 @@ namespace {
                         Kind                kind = Kind::Virtual;
                         const ProgramEntry *program = nullptr; // BinProgram
                         Stream             *stream = nullptr;  // DevStream
+                        const Vfs::DeviceFile *file = nullptr;    // DevFile
                         uint32_t            zoneOffset = 0;    // ZoneFile: its data in the database
                         uint32_t            zoneLength = 0;
                         Timestamp           zoneModified; // ZoneDir, ZoneFile: the database's
@@ -150,6 +166,9 @@ namespace {
                         } else if (const DevNode *dev = findDevNode(node.name)) {
                                 node.kind = dev->stream != nullptr ? Kind::DevStream : Kind::DevConsole;
                                 node.stream = dev->stream;
+                        } else if (const Vfs::DeviceFile *file = findDeviceFile(node.name)) {
+                                node.kind = Kind::DevFile;
+                                node.file = file;
                         } else {
                                 const BlockDevices::Entry *e = Fat::findEntryLocked(node.name);
                                 if (e == nullptr) return makeError<Node>(Error::NotExist);
@@ -254,6 +273,11 @@ namespace {
                                 info.type = FileType::File;
                                 info.size = node.zoneLength;
                                 info.modified = node.zoneModified;
+                                return makeResult(std::move(info));
+                        case Kind::DevFile:
+                                (void)info.name.assign(node.name);
+                                info.type = FileType::File;
+                                if (node.file->size != nullptr) info.size = node.file->size(node.file->arg);
                                 return makeResult(std::move(info));
                         case Kind::DevStream:
                         case Kind::DevConsole:
@@ -665,12 +689,21 @@ Result<FileInfo> Directory::next() {
                 }
                 case Kind::DevDir: {
                         constexpr size_t Fixed = sizeof(DevNodes) / sizeof(DevNodes[0]);
+                        const size_t     added = deviceFileCount.load(std::memory_order_acquire);
                         if (s.index < Fixed) {
                                 (void)info.name.assign(DevNodes[s.index].name);
                                 // The console's id is its stream's, unknown here.
                                 if (DevNodes[s.index].stream != nullptr) info.id = objectId(DevNodes[s.index].stream);
-                        } else if (s.index - Fixed < Fat::deviceCountLocked()) {
-                                const BlockDevices::Entry &e = Fat::deviceAtLocked(s.index - Fixed);
+                        } else if (s.index - Fixed < added) {
+                                const Vfs::DeviceFile &f = deviceFiles[s.index - Fixed];
+                                (void)info.name.assign(f.name);
+                                if (f.size != nullptr) info.size = f.size(f.arg);
+                                info.id = objectId(&f);
+                                ++s.index;
+                                info.type = FileType::File;
+                                return makeResult(std::move(info));
+                        } else if (s.index - Fixed - added < Fat::deviceCountLocked()) {
+                                const BlockDevices::Entry &e = Fat::deviceAtLocked(s.index - Fixed - added);
                                 (void)info.name.assign(e.name);
                                 info.size = e.device->sectorCount() * e.device->sectorSize();
                                 info.id = objectId(e.device);
@@ -924,9 +957,38 @@ Error Vfs::format(BlockDevice &device, FsFormat format) {
 
 // --- Vfs: files and directories ---------------------------------------------
 
+Error Vfs::addDeviceFile(const DeviceFile &file) {
+        if (file.name == nullptr || file.open == nullptr) return Error::Invalid;
+        const StringView name(file.name);
+        if (name.isEmpty() || name.contains('/')) return Error::Invalid;
+        Mutex::Locker lock(Fat::lock(), WaitForever);
+        const size_t  n = deviceFileCount.load(std::memory_order_relaxed);
+        if (findDevNode(name) != nullptr || findDeviceFile(name) != nullptr || Fat::findEntryLocked(name) != nullptr)
+                return Error::Exists;
+        if (n >= MaxDeviceFiles) return Error::Full;
+        deviceFiles[n] = file;
+        deviceFileCount.store(n + 1, std::memory_order_release);
+        return Error::Ok;
+}
+
 Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context &context) {
         if ((flags & (Read | Write)) == 0 || ((flags & (Truncate | Append)) != 0 && (flags & Write) == 0))
                 return makeError<FileHandle::Ptr>(Error::Invalid);
+        // A file another component added: opened without the lock (a clipboard's may wait for
+        // the program that copied). /dev has no links, so the name is enough.
+        if (deviceFileCount.load(std::memory_order_acquire) != 0) {
+                Result<String> normalized = normalize(path, context.cwd);
+                if (normalized.error().isOk() && normalized.value().view().startsWith("/dev/")) {
+                        const Vfs::DeviceFile *file = findDeviceFile(normalized.value().view().mid(5));
+                        if (file != nullptr) {
+                                if ((flags & (Create | Exclusive)) == (Create | Exclusive))
+                                        return makeError<FileHandle::Ptr>(Error::Exists);
+                                Result<FileHandle::Ptr> handle = file->open(file->arg, flags);
+                                if (handle.error().isOk()) handle.value()->setIdentity(objectId(file), 0);
+                                return handle;
+                        }
+                }
+        }
         Mutex::Locker lock(Fat::lock(), WaitForever);
         String        storage;
         {
@@ -964,6 +1026,7 @@ Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context 
                                 return handle;
                         }
                         case Kind::DevStream: return FileHandle::open(*node.stream, mode);
+                        case Kind::DevFile: return node.file->open(node.file->arg, flags); // added since the look
                         case Kind::DevConsole:
                                 if (context.terminal == nullptr) return makeError<FileHandle::Ptr>(Error::NotExist);
                                 return FileHandle::open(*context.terminal, mode);
@@ -1016,6 +1079,7 @@ namespace {
                         case Kind::DevStream: fi.id = objectId(node.stream); break;
                         case Kind::DevConsole: fi.id = objectId(context.terminal); break;
                         case Kind::DevBlock: fi.id = objectId(node.device); break;
+                        case Kind::DevFile: fi.id = objectId(node.file); break;
                         default:
                                 fi.id = pathId(storage);
                                 fi.device = node.mount;
@@ -1036,6 +1100,34 @@ namespace {
         }
 
 } // namespace
+
+Error Vfs::copyFile(StringView from, StringView to, const Context &context) {
+        auto [info, serr] = stat(from, context);
+        if (serr.isError()) return serr;
+        if (info.isDirectory()) return Error::IsDir;
+        // Taken: Exists, before anything is opened (onto itself, the write's open would be Busy).
+        if (lstat(to, context).isOk()) return Error::Exists;
+        auto [in, ierr] = open(from, Read, context);
+        if (ierr.isError()) return ierr;
+        Error err;
+        {
+                auto [out, oerr] = open(to, Write | Create | Exclusive, context);
+                if (oerr.isError()) return oerr;
+                uint8_t buf[512];
+                for (;;) {
+                        auto [n, rerr] = in->read(WritableByteSpan(buf, sizeof(buf)), WaitForever);
+                        if (rerr == Error::EndOfFile) break;
+                        err = rerr.isError() ? rerr : out->write(ByteSpan(buf, n), WaitForever).error();
+                        if (err.isError()) break;
+                }
+        }
+        if (err.isError()) {
+                (void)remove(to, context); // not half a copy
+                return err;
+        }
+        if (info.modified.ns != 0) (void)setModified(to, info.modified, context);
+        return Error::Ok;
+}
 
 Error Vfs::findProgram(StringView name, StringView searchPath, const Context &context, String &out) {
         static const char *const suffixes[] = {"", ".elf", ".sh"};
@@ -1147,7 +1239,7 @@ Result<Directory> Vfs::openDirectory(StringView path, const Context &context) {
                 if (found.error().isError()) return makeError<Directory>(found.error());
                 const Node &node = found.value();
                 if (node.kind == Kind::DevStream || node.kind == Kind::DevConsole || node.kind == Kind::DevBlock ||
-                    node.kind == Kind::BinProgram || node.kind == Kind::ZoneFile)
+                    node.kind == Kind::DevFile || node.kind == Kind::BinProgram || node.kind == Kind::ZoneFile)
                         return makeError<Directory>(Error::NotDir);
                 String fat;
                 if (node.kind == Kind::Fat) {
@@ -1276,8 +1368,8 @@ Error Vfs::remove(StringView path, const Context &context) {
                 String     fat;
                 Node       node;
                 err = fatTargetLocked(storage, Error::IsDir, node, fat);
-                const bool deviceNode =
-                        node.kind == Kind::DevStream || node.kind == Kind::DevConsole || node.kind == Kind::DevBlock;
+                const bool deviceNode = node.kind == Kind::DevStream || node.kind == Kind::DevConsole ||
+                                        node.kind == Kind::DevBlock || node.kind == Kind::DevFile;
                 if (err == Error::IsDir && deviceNode) err = Error::PermissionDenied;
                 if (err.isError()) return err;
                 FRESULT                raw = FR_OK;

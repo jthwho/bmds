@@ -12,6 +12,7 @@
 #include <sdkconfig.h>
 #include <bmds/boot.h>
 #include <bmds/bootdisk.h>
+#include <bmds/clipboard.h>
 #include <bmds/filehandle.h>
 #include <bmds/i2cbus.h>
 #include <bmds/input.h>
@@ -52,7 +53,8 @@ namespace {
                 {"console", bmds::UsbSerialConsole::init},
                 {"i2c", bmds::I2cBus::init},
                 {"vfs", bmds::Vfs::init},
-                {"boot", bmds::BootDisk::init}, // /boot: the profile and autoexec.sh
+                {"boot", bmds::BootDisk::init},       // /boot: the profile and autoexec.sh
+                {"clipboard", bmds::Clipboard::init}, // its configuration on /boot; /dev/clip0
                 {"storage", bmds::Storage::init},
                 {"ramdisk", bmds::RamDisk::init},
                 {"programs", bmds::Loader::init}, // the process table

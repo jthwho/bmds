@@ -53,6 +53,29 @@ class VtHandler {
                 /** @brief An operating system command, `ESC ] data BEL` (truncated to `VtParser::MaxOsc`). */
                 virtual void oscDispatch(StringView data) = 0;
 
+                /**
+                 * @brief Asked at the first `;` of OSC @p number (its digits before
+                 *        it): true streams the rest (`oscData()`, `oscEnd()`) instead
+                 *        of keeping it for `oscDispatch()`. For long strings (OSC 52:
+                 *        devplan/clipboard.md C11).
+                 */
+                virtual bool oscStream(uint32_t number) {
+                        (void)number;
+                        return false;
+                }
+
+                /** @brief A piece of a streamed OSC string (after its number's `;`), in order. */
+                virtual void oscData(StringView piece) {
+                        (void)piece;
+                        return;
+                }
+
+                /** @brief A streamed OSC string ended: by BEL or ST (@p complete), or cut off (CAN, SUB, a reset). */
+                virtual void oscEnd(bool complete) {
+                        (void)complete;
+                        return;
+                }
+
         protected:
                 ~VtHandler() = default;
 };
@@ -62,7 +85,9 @@ class VtHandler {
  *
  * The ECMA-48 / DEC state machine (Paul Williams' model): ground, escape,
  * CSI entry/param/intermediate/ignore, OSC string, and DCS/SOS/PM/APC
- * strings (consumed and ignored). Text is decoded as UTF-8. CAN and SUB
+ * strings (consumed and ignored). An OSC string is kept (up to `MaxOsc`) for
+ * `oscDispatch()`, or streamed in pieces of up to `MaxOsc` bytes when the
+ * handler asks (`VtHandler::oscStream()`). Text is decoded as UTF-8. CAN and SUB
  * abort a sequence; ESC starts a new one anywhere. Malformed input never
  * stalls it, and its state is fixed-size (no allocation).
  *
@@ -104,6 +129,7 @@ class VtParser {
                         CsiIntermediate,
                         CsiIgnore,
                         OscString,
+                        OscStream,     // an OSC string the handler takes in pieces
                         IgnoredString, // DCS, SOS, PM, APC: until ST
                 };
 
@@ -111,6 +137,7 @@ class VtParser {
                 void collect(uint8_t b);
                 void param(uint8_t b);
                 void dispatchCsi(uint8_t final);
+                void endStream(bool complete);
 
                 VtHandler  &_handler;
                 Utf8Decoder _utf8;
@@ -120,6 +147,7 @@ class VtParser {
                 uint8_t     _intermediateCount = 0;
                 char        _osc[MaxOsc] = {};
                 uint8_t     _oscLength = 0;
+                bool        _oscAsked = false; // the handler asked at the first ';'
                 State       _state = State::Ground;
 };
 

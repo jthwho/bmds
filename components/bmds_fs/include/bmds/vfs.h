@@ -278,6 +278,33 @@ namespace Vfs {
         Error format(BlockDevice &device, FsFormat format);
 
         /**
+         * @brief A file in `/dev` that another component provides (`/dev/clip0`:
+         *        devplan/clipboard.md C9). It is a regular file to its users.
+         */
+        struct DeviceFile {
+                        const char *name = nullptr; ///< Its name in `/dev`.
+                        /**
+                         * @brief Opens it with @p flags (`OpenFlag` bits; `Create`
+                         *        and `Exclusive` already handled). Called without the
+                         *        VFS's lock: it may wait.
+                         */
+                        Result<FileHandle::Ptr> (*open)(void *arg, uint8_t flags) = nullptr;
+                        /** @brief Returns its size now, for `stat()`; must not wait (null: 0). */
+                        uint64_t (*size)(void *arg) = nullptr;
+                        void *arg = nullptr; ///< Given to both.
+        };
+
+        /** @brief The most files `addDeviceFile()` takes. */
+        inline constexpr size_t MaxDeviceFiles = 4;
+
+        /**
+         * @brief Adds @p file to `/dev` (its name and calls kept: static), for
+         *        good. Listed after the fixed nodes, before the block devices.
+         * @return `Ok`, `Exists` (a node of that name), `Full`, or `Invalid`.
+         */
+        Error addDeviceFile(const DeviceFile &file);
+
+        /**
          * @brief Opens a file or device.
          * @param flags `OpenFlag` bits; at least one of `Read`, `Write`.
          * @return A handle (its mode `Read`/`Write` as asked), or `NotExist`,
@@ -286,6 +313,15 @@ namespace Vfs {
          *         `TooManyOpen`, `NoMedia`, `ReadOnly`, `Invalid`, ...
          */
         Result<FileHandle::Ptr> open(StringView path, uint8_t flags, const Context &context);
+
+        /**
+         * @brief Copies file @p from to the new file @p to (created: an existing
+         *        one isn't replaced), its modification time kept
+         *        (`devplan/files.md` §4b).
+         * @return `Ok`, `Exists`, `IsDir` (@p from is a directory), or the error
+         *         reading or writing (a partial copy removed).
+         */
+        Error copyFile(StringView from, StringView to, const Context &context);
 
         /**
          * @brief Finds program @p name in the `:`-separated directories of

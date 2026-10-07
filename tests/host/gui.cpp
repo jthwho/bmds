@@ -22,6 +22,7 @@
 #include <bmds/icongrid.h>
 #include <bmds/inflate.h>
 #include <bmds/inireader.h>
+#include <bmds/lineeditmodel.h>
 #include <bmds/linelayout.h>
 #include <bmds/menulayout.h>
 #include <bmds/pngdecoder.h>
@@ -605,3 +606,82 @@ TEST_CASE("Program icons: an SDK program's notes, nearest the size asked for") {
         CHECK(bmds::ProgramImage::findIcon(textSource, sizeof(text), 16, ref) == Error::NotFound);
 }
 #endif
+
+namespace {
+
+        std::string str(const bmds::LineEditModel &m) {
+                // The text with the cursor as | and the anchor as ^ (when apart).
+                std::string       out;
+                const std::string t(m.text().data(), m.text().size());
+                for (size_t i = 0; i <= t.size(); ++i) {
+                        if (i == m.anchor() && m.hasSelection()) out += '^';
+                        if (i == m.cursor()) out += '|';
+                        if (i < t.size()) out += t[i];
+                }
+                return out;
+        }
+
+        std::vector<std::string> wrapped(const char *text, uint16_t columns, size_t max = 16) {
+                StringView               lines[16];
+                const size_t             n = bmds::TextWrap::wrap(text, columns, Span<StringView>(lines, max));
+                std::vector<std::string> out;
+                for (size_t i = 0; i < n; ++i) out.push_back(str(lines[i]));
+                return out;
+        }
+
+} // namespace
+
+TEST_CASE("LineEditModel: editing whole characters, a selection, the limit") {
+        bmds::LineEditModel m;
+        m.setText("caf\xc3\xa9");
+        CHECK(str(m) == "caf\xc3\xa9|");
+        m.left(false);
+        CHECK(m.cursor() == 3); // before the é, not inside it
+        CHECK(m.insert("\xe2\x82\xac"));
+        CHECK(str(m) == "caf\xe2\x82\xac|\xc3\xa9");
+        CHECK(m.backspace());
+        CHECK(m.erase());
+        CHECK(str(m) == "caf|");
+        CHECK_FALSE(m.erase());
+        m.home(false);
+        CHECK_FALSE(m.backspace());
+        // Shift+arrows select; an arrow without shift goes to the selection's side.
+        m.right(true);
+        m.right(true);
+        CHECK(str(m) == "^ca|f");
+        CHECK(str(bmds::LineEditModel(m)) == "^ca|f");
+        CHECK(std::string(m.selected().data(), m.selected().size()) == "ca");
+        m.left(false);
+        CHECK(str(m) == "|caf");
+        m.selectAll();
+        CHECK(m.insert("new"));
+        CHECK(str(m) == "new|");
+        m.end(false);
+        m.setCursor(1, true);
+        CHECK(m.backspace());
+        CHECK(str(m) == "n|");
+        // Controls left out; the limit kept on a character.
+        CHECK(m.insert("a\tb\nc"));
+        CHECK(str(m) == "nabc|");
+        std::string big(bmds::LineEditModel::MaxBytes - 5, 'x');
+        m.setText(StringView(big.data(), big.size()));
+        CHECK(m.insert("\xc3\xa9\xc3\xa9\xc3\xa9")); // two fit (4 bytes), the third doesn't
+        CHECK(m.text().size() == bmds::LineEditModel::MaxBytes - 1);
+        CHECK_FALSE(m.insert("\xc3\xa9"));
+        // A cursor put inside a character snaps back to its start.
+        m.setText("\xc3\xa9z");
+        m.setCursor(1, false);
+        CHECK(m.cursor() == 0);
+}
+
+TEST_CASE("TextWrap: words in lines") {
+        CHECK(wrapped("There is already an icon named Terminal here.", 20) ==
+              std::vector<std::string>{"There is already an", "icon named Terminal", "here."});
+        CHECK(wrapped("a\nb  c", 10) == std::vector<std::string>{"a", "b  c"});
+        CHECK(wrapped("abcdefghij", 4) == std::vector<std::string>{"abcd", "efgh", "ij"});
+        CHECK(wrapped("  lead", 10) == std::vector<std::string>{"lead"});
+        CHECK(wrapped("\xe3\x81\x82\xe3\x81\x82\xe3\x81\x82", 4) ==
+              std::vector<std::string>{"\xe3\x81\x82\xe3\x81\x82", "\xe3\x81\x82"});
+        CHECK(wrapped("one two three", 3, 2) == std::vector<std::string>{"one", "two"});
+        CHECK(wrapped("", 10).empty());
+}

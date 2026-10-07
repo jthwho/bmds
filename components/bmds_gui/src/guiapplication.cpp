@@ -8,15 +8,22 @@
  * A GUI program's event loop (devplan/gui.md §4b, G2).
  */
 
-#include <bmds/guiapplication.h>
+#include <new>
 #include <bmds/deadline.h>
+#include <bmds/guiapplication.h>
+#include <bmds/guiclipboard.h>
 #include <bmds/guiwindow.h>
 #include <bmds/interrupt.h>
+#include <bmds/memory.h>
 #include <bmds/system.h>
 
 BMDS_NAMESPACE_BEGIN
 
 GuiApplication::~GuiApplication() {
+        if (_clipboard != nullptr) {
+                _clipboard->~GuiClipboard();
+                Memory::free(_clipboard);
+        }
         if (_wm != nullptr && !_gone.load(std::memory_order_acquire)) _wm->disconnect(_client);
 }
 
@@ -257,7 +264,19 @@ int GuiApplication::exec() {
                 }
                 flush();
         }
+        // Copies on request outlive the application: rendered now, while its objects exist.
+        if (_clipboard != nullptr) {
+                Mutex::Locker lock(_lock, WaitForever);
+                _clipboard->keep();
+        }
         return _code;
+}
+
+GuiClipboard *GuiApplication::clipboard() {
+        if (_clipboard != nullptr) return _clipboard;
+        void *mem = Memory::alloc(MemSpace::Psram, sizeof(GuiClipboard));
+        if (mem != nullptr) _clipboard = ::new (mem) GuiClipboard(*this);
+        return _clipboard;
 }
 
 BMDS_NAMESPACE_END

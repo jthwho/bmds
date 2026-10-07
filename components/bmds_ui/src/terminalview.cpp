@@ -82,8 +82,24 @@ namespace TerminalView {
                 return screen.isCursorVisible() && shown < screen.rows() ? int(shown) : -1;
         }
 
+        const TerminalCell *line(const TerminalScreen &screen, int64_t line, uint16_t &length) {
+                const int64_t added = screen.historyAdded();
+                const int64_t first = added - int64_t(screen.historyCount()); // the oldest line kept
+                length = 0;
+                if (line < first) return nullptr;
+                if (line < added) return screen.historyRow(size_t(line - first), length);
+                if (line - added >= screen.rows()) return nullptr;
+                length = screen.columns();
+                return screen.row(static_cast<uint16_t>(line - added));
+        }
+
+        int64_t lineOfViewRow(const TerminalScreen &screen, size_t offset, uint16_t row) {
+                const size_t history = screen.historyCount();
+                return int64_t(screen.historyAdded()) - int64_t(offset < history ? offset : history) + row;
+        }
+
         size_t cells(const TerminalCell *cells, uint16_t length, uint16_t columns, const TerminalColors &colors,
-                     int cursor, TextCell *out, size_t max) {
+                     int cursor, TextCell *out, size_t max, uint16_t selectFrom, uint16_t selectTo) {
                 const uint32_t     text = colors.text;
                 const uint32_t     back = colors.background;
                 const TerminalCell blank;
@@ -97,7 +113,8 @@ namespace TerminalView {
                         const uint8_t a = static_cast<uint8_t>(cell.attributes);
                         uint32_t      fg = colors.rgb(cell.foreground, text);
                         uint32_t      bg = colors.rgb(cell.background, back);
-                        if ((a & TextStyle::Reverse) != 0) {
+                        // Selected: reversed (a reversed cell shows plain).
+                        if (((a & TextStyle::Reverse) != 0) != (c >= selectFrom && c < selectTo)) {
                                 const uint32_t t = fg;
                                 fg = bg;
                                 bg = t;

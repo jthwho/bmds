@@ -17,6 +17,7 @@ set(BMDS_FS_SRCS
         src/partitions.cpp
         src/ramblockdevice.cpp
         src/sectorcache.cpp
+        src/trash.cpp
         src/vfs.cpp
         src/zoneinfo.cpp
         ${BMDS_FATFS_DIR}/ff.c

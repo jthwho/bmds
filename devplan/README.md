@@ -16,6 +16,8 @@ Design notes and implementation plans for BMDS subsystems. Write a plan here **b
 - [`input.md`](input.md) — Phase 5: USB host (TinyUSB, split transactions through the board's hub), HID boot keyboards and mice, the pointer.
 - [`random.md`](random.md) — the kernel's random pool: boot noise, `/boot/random-seed`, ChaCha20 for `/dev/urandom` and `getrandom`.
 - [`pty.md`](pty.md) — pseudo-terminals: a terminal emulator as an ordinary program (with `/bin`, `programs.md` §17).
+- [`files.md`](files.md) — copies' names, the trash (freedesktop.org's layout on every filesystem), `trash`, the desktop's Paste and Delete, the terminal's menu.
+- [`clipboard.md`](clipboard.md) — copy and paste: typed offers, conversion, `clip`, `/dev/clip0`, the terminal's selection, OSC 52, vi; drag and drop (later).
 
 ## Plan Document Template
 

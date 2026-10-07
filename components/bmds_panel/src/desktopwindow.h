@@ -55,6 +55,19 @@ class DesktopWindow final : public GuiWindow {
                 /** @brief Told of a right press at (@p screenX, @p screenY). */
                 using MenuAsked = void (*)(void *arg, uint16_t screenX, uint16_t screenY);
 
+                /** @brief Told of a right press on item @p item (selected now), at (@p screenX, @p screenY). */
+                using ItemMenuAsked = void (*)(void *arg, size_t item, uint16_t screenX, uint16_t screenY);
+
+                /**
+                 * @brief Told to rename item @p item (`devplan/gui.md` §4q): a click on a
+                 *        selected item's name once the double-click time has passed, or a
+                 *        press held still `LongPressMs`.
+                 */
+                using RenameAsked = void (*)(void *arg, size_t item);
+
+                /** @brief A press held this long, still, renames. */
+                static constexpr uint32_t LongPressMs = 800;
+
                 DesktopWindow(GuiApplication &app, const Config &config) : GuiWindow(app, config) {}
                 ~DesktopWindow() override;
 
@@ -75,6 +88,21 @@ class DesktopWindow final : public GuiWindow {
                         _menuArg = arg;
                         return;
                 }
+
+                void setItemMenuAsked(ItemMenuAsked fn, void *arg) {
+                        _itemMenuAsked = fn;
+                        _itemMenuArg = arg;
+                        return;
+                }
+
+                void setRenameAsked(RenameAsked fn, void *arg) {
+                        _renameAsked = fn;
+                        _renameArg = arg;
+                        return;
+                }
+
+                /** @brief Returns where item @p item's name is edited: its cell's width, a field's height (screen coordinates). */
+                Rect nameRect(size_t item) const;
 
                 /**
                  * @brief Shows @p names as items (`MaxItems` at most) in the cells
@@ -130,7 +158,10 @@ class DesktopWindow final : public GuiWindow {
                 void select(int item);
                 Rect iconRect(const Item &item) const;
                 Rect lineRect(const Item &item, int line) const; // its background, selected
-                Rect hitRect(const Item &item) const;
+                Rect        hitRect(const Item &item) const;
+                void        startRename(int item, uint32_t ms); // the timer
+                void        stopRename();
+                static void renameDue(void *arg);
                 // The item drawn @p k-th: in order, the one dragged last (above the others).
                 size_t drawnAt(size_t k) const {
                         if (!_dragging) return k;
@@ -155,6 +186,13 @@ class DesktopWindow final : public GuiWindow {
                 void     *_openedArg = nullptr;
                 MenuAsked _menuAsked = nullptr;
                 void     *_menuArg = nullptr;
+                ItemMenuAsked _itemMenuAsked = nullptr;
+                void         *_itemMenuArg = nullptr;
+                RenameAsked   _renameAsked = nullptr;
+                void         *_renameArg = nullptr;
+                int           _renameTimer = -1; // a long press, or a slow second click, under way
+                int           _renameItem = -1;
+                bool          _onSelectedName = false; // the press is on the selected item's name
 };
 
 BMDS_NAMESPACE_END

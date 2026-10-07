@@ -1,0 +1,96 @@
+vi: "+ and "* are the clipboard and the primary selection
+
+The registers + and * (as Vim's) yank into /dev/clip0 and /dev/clip0p and put what they
+hold now; where those files don't exist (Linux) they are ordinary registers (BMDS: clipboard).
+
+--- a/editors/vi.c	2026-10-07 01:05:26.497623706 -0700
++++ b/editors/vi.c	2026-10-07 01:05:26.537090802 -0700
+@@ -397,8 +397,12 @@
+ #if ENABLE_FEATURE_VI_YANKMARK
+ 	smalluint YDreg;//,Ureg;// default delete register and orig line for "U"
+ #define Ureg 27
+-	char *reg[28];          // named register a-z, "D", and "U" 0-25,26,27
+-	char regtype[28];       // buffer type: WHOLE, MULTI or PARTIAL
++	// BMDS: "+ and "* are the clipboard and the primary selection, kept in
++	// /dev/clip0 and /dev/clip0p (ordinary registers where those don't exist)
++#define CLIPreg 28
++#define PRIMreg 29
++	char *reg[30];          // named register a-z, "D", "U", "+" and "*" 0-25,26,27,28,29
++	char regtype[30];       // buffer type: WHOLE, MULTI or PARTIAL
+ 	char *mark[28];         // user marks points somewhere in text[]-  a-z and previous context ''
+ #endif
+ #if ENABLE_FEATURE_VI_USE_SIGNALS
+@@ -1428,9 +1432,40 @@
+ 	reg[dest] = xstrndup(p, cnt + 1);
+ 	regtype[dest] = buftype;
+ 	free(oldreg);
++	if (dest == CLIPreg || dest == PRIMreg) {
++		// BMDS: the clipboard's file, if there is one
++		int fd = open(dest == CLIPreg ? "/dev/clip0" : "/dev/clip0p", O_WRONLY | O_TRUNC);
++		if (fd >= 0) {
++			full_write(fd, reg[dest], strlen(reg[dest]));
++			close(fd);
++		}
++	}
+ 	return p;
+ }
+ 
++// BMDS: "+ and "* hold what the clipboard's file holds now (text ending in a
++// newline is whole lines, as Vim puts it)
++static void clip_reg(int r)
++{
++	char *p;
++	size_t n;
++
++	if (r != CLIPreg && r != PRIMreg)
++		return;
++	p = xmalloc_open_read_close(r == CLIPreg ? "/dev/clip0" : "/dev/clip0p", NULL);
++	if (p == NULL)
++		return;		// no such file: the register as it is
++	n = strlen(p);
++	free(reg[r]);
++	reg[r] = NULL;
++	if (n != 0) {
++		reg[r] = p;
++		regtype[r] = p[n - 1] == '\n' ? WHOLE : PARTIAL;
++	} else {
++		free(p);
++	}
++}
++
+ static char what_reg(void)
+ {
+ 	char c;
+@@ -1442,6 +1477,10 @@
+ 		c = 'D';
+ 	if (YDreg == 27)
+ 		c = 'U';
++	if (YDreg == CLIPreg)
++		c = '+';
++	if (YDreg == PRIMreg)
++		c = '*';
+ 	return c;
+ }
+ 
+@@ -3869,7 +3908,12 @@
+ 		break;
+ #if ENABLE_FEATURE_VI_YANKMARK
+ 	case '"':			// "- name a register to use for Delete/Yank
+-		c1 = (get_one_char() | 0x20) - 'a'; // | 0x20 is tolower()
++		c1 = get_one_char();
++		if (c1 == '+' || c1 == '*') { // BMDS: the clipboard, the primary selection
++			YDreg = c1 == '+' ? CLIPreg : PRIMreg;
++			break;
++		}
++		c1 = (c1 | 0x20) - 'a'; // | 0x20 is tolower()
+ 		if ((unsigned)c1 <= 25) { // a-z?
+ 			YDreg = c1;
+ 		} else {
+@@ -3915,6 +3959,7 @@
+ 		break;
+ 	case 'P':			// P- Put register before
+ 	case 'p':			// p- put register after
++		clip_reg(YDreg);
+ 		p = reg[YDreg];
+ 		if (p == NULL) {
+ 			status_line_bold("Nothing in register %c", what_reg());

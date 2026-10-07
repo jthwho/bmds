@@ -87,7 +87,46 @@ namespace {
 } // namespace
 
 DesktopWindow::~DesktopWindow() {
+        stopRename();
         freeItems();
+}
+
+Rect DesktopWindow::nameRect(size_t item) const {
+        if (item >= _count) return Rect();
+        const Rect  s = screenRect();
+        const Item &it = _items[item];
+        return Rect{uint16_t(s.x + it.cell.x), uint16_t(s.y + it.cell.y + TextTop - 3), CellWidth,
+                    GuiStyle::ButtonHeight};
+}
+
+// A rename asked for in @p ms unless something else happens first.
+void DesktopWindow::startRename(int item, uint32_t ms) {
+        stopRename();
+        if (_renameAsked == nullptr || item < 0) return;
+        auto [timer, err] = application().startTimer(ms, false, renameDue, this);
+        if (err.isError()) return;
+        _renameTimer = timer;
+        _renameItem = item;
+        return;
+}
+
+void DesktopWindow::stopRename() {
+        if (_renameTimer >= 0) application().stopTimer(_renameTimer);
+        _renameTimer = -1;
+        _renameItem = -1;
+        return;
+}
+
+void DesktopWindow::renameDue(void *arg) {
+        auto     *self = static_cast<DesktopWindow *>(arg);
+        const int item = self->_renameItem;
+        self->_renameTimer = -1;
+        self->_renameItem = -1;
+        if (self->_dragging) return;
+        self->_pressed = -1; // a long press: its release does nothing now
+        if (item >= 0 && size_t(item) < self->_count && self->_renameAsked != nullptr)
+                self->_renameAsked(self->_renameArg, size_t(item));
+        return;
 }
 
 void DesktopWindow::freeItems() {
@@ -198,10 +237,16 @@ void DesktopWindow::select(int item) {
 }
 
 void DesktopWindow::mousePressed(const WindowManager::MouseEvent &event) {
+        stopRename(); // a second press: a double click, not a slow one
         if (event.button == PointerEvent::Right) {
-                if (_menuAsked == nullptr) return;
                 const Rect s = screenRect();
-                _menuAsked(_menuArg, uint16_t(s.x + event.x), uint16_t(s.y + event.y));
+                const int  item = itemAt(event.x, event.y);
+                if (item >= 0 && _itemMenuAsked != nullptr) {
+                        select(item);
+                        _itemMenuAsked(_itemMenuArg, size_t(item), uint16_t(s.x + event.x), uint16_t(s.y + event.y));
+                        return;
+                }
+                if (_menuAsked != nullptr) _menuAsked(_menuArg, uint16_t(s.x + event.x), uint16_t(s.y + event.y));
                 return;
         }
         if (event.button != PointerEvent::Left) return;
@@ -212,6 +257,13 @@ void DesktopWindow::mousePressed(const WindowManager::MouseEvent &event) {
                 if (_opened != nullptr) _opened(_openedArg, size_t(item));
                 return;
         }
+        // On the selected item's name: its release, unless a double click follows, renames.
+        _onSelectedName = false;
+        if (item >= 0 && item == _selected) {
+                const Item &it = _items[item];
+                const int   top = it.cell.y + TextTop;
+                _onSelectedName = event.y >= top && event.y < top + it.lines * LineHeight;
+        }
         select(item);
         _pressUs = now;
         _pressed = item;
@@ -219,6 +271,7 @@ void DesktopWindow::mousePressed(const WindowManager::MouseEvent &event) {
         if (item >= 0) {
                 _pressX = event.x - _items[item].cell.x;
                 _pressY = event.y - _items[item].cell.y;
+                startRename(item, LongPressMs); // held still that long: a rename
         }
         return;
 }
@@ -232,6 +285,7 @@ void DesktopWindow::mouseMoved(const WindowManager::MouseEvent &event) {
         if (!_dragging) {
                 const int dx = x - item.cell.x, dy = y - item.cell.y;
                 if (dx * dx + dy * dy <= DragDistance * DragDistance) return;
+                stopRename();
                 _dragging = true;
                 _pressUs = 0; // no double click after a drag
         }
@@ -249,7 +303,13 @@ void DesktopWindow::mouseReleased(const WindowManager::MouseEvent &event) {
         const bool dragged = _dragging;
         _pressed = -1;
         _dragging = false;
-        if (!dragged) return;
+        if (!dragged) {
+                stopRename(); // released before the long press
+                // A slow second click on its name: renamed once a double click can't come.
+                if (_onSelectedName) startRename(pressed, WindowManager::DoubleClickMs + 50);
+                _onSelectedName = false;
+                return;
+        }
         Item                &item = _items[pressed];
         const IconGrid::Cell to =
                 IconGrid::cellAt(item.cell.x + CellWidth / 2 - _left, item.cell.y + CellHeight / 2 - _top, CellWidth,
@@ -270,6 +330,7 @@ void DesktopWindow::mouseReleased(const WindowManager::MouseEvent &event) {
 
 // The press taken away (a popup opened): a drag under way goes back to its cell.
 void DesktopWindow::mouseLeft() {
+        stopRename();
         if (_pressed >= 0 && _dragging) moveTo(_items[_pressed], cellRect(_items[_pressed].at));
         _pressed = -1;
         _dragging = false;

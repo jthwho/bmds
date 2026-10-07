@@ -27,6 +27,7 @@ namespace FileCommands {
         int cp(CommandContext &ctx);      ///< `cp [-r] source... target`: copy.
         int mv(CommandContext &ctx);      ///< `mv source... target`: move or rename.
         int rm(CommandContext &ctx);      ///< `rm [-rf] path...`: remove.
+        int trash(CommandContext &ctx);   ///< `trash path... | -l | -r name... | -e [mount]` (devplan/files.md F5).
         int mkdir(CommandContext &ctx);   ///< `mkdir [-p] dir...`: make directories.
         int rmdir(CommandContext &ctx);   ///< `rmdir dir...`: remove empty directories.
         int touch(CommandContext &ctx);   ///< `touch file...`: create, or set the time to now.

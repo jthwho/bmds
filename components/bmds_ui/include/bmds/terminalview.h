@@ -85,12 +85,13 @@ namespace TerminalView {
          * @brief Writes a row @p columns wide into @p out as `row()` does,
          *        from @p length of @p cells (a screen row, or a history line
          *        of any length): blanks past them, and a wide character cut
-         *        at the last column blanked.
+         *        at the last column blanked. Columns [@p selectFrom,
+         *        @p selectTo) are selected: drawn with their colors swapped.
          * @return The cells written.
          * @hotpath
          */
         size_t cells(const TerminalCell *cells, uint16_t length, uint16_t columns, const TerminalColors &colors,
-                     int cursor, TextCell *out, size_t max);
+                     int cursor, TextCell *out, size_t max, uint16_t selectFrom = 0, uint16_t selectTo = 0);
 
         /**
          * @brief Returns what shown row @p row is, scrolled back @p offset
@@ -101,6 +102,16 @@ namespace TerminalView {
 
         /** @brief Returns the shown row the cursor is on, scrolled back @p offset lines, or -1 (none). */
         int viewCursorRow(const TerminalScreen &screen, size_t offset);
+
+        /**
+         * @brief Returns line @p line (numbered from the history's start:
+         *        `TerminalSelection`), @p length cells of it, or null (gone, or
+         *        not yet there).
+         */
+        const TerminalCell *line(const TerminalScreen &screen, int64_t line, uint16_t &length);
+
+        /** @brief Returns the number (as `line()`'s) of shown row @p row, scrolled back @p offset lines. */
+        int64_t lineOfViewRow(const TerminalScreen &screen, size_t offset, uint16_t row);
 
 } // namespace TerminalView
 

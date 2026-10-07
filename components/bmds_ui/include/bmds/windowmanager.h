@@ -176,6 +176,7 @@ class WindowManager {
                                 int16_t y = 0;       ///< Outside it while a press is held: negative or past it.
                                 uint8_t button = 0;  ///< `PointerEvent::Button`: the one pressed or released.
                                 uint8_t buttons = 0; ///< `PointerEvent::Button` bits down after it.
+                                uint8_t modifiers = 0; ///< `KeyEvent::Modifier` bits down with it.
                 };
 
                 /**
@@ -214,6 +215,28 @@ class WindowManager {
 
                 /** @brief The longest desktop menu label kept, in bytes. */
                 static constexpr size_t MaxDesktopLabel = 31;
+
+                /** @brief An item of a program's menu (`showMenu()`). */
+                struct MenuItem {
+                                StringView label;     ///< Its text (cut at `MaxMenuLabel` bytes).
+                                StringView shortcut;  ///< Its key, shown at the right (cut at `MaxMenuShortcut`).
+                                uint8_t    flags = 0; ///< `MenuLayout::Flag`s: `Disabled`, `Separator`, `Checked`.
+                };
+
+                /**
+                 * @brief Told that item @p index of a program's menu (`showMenu()`) was
+                 *        chosen (on the window manager's task, its lock released).
+                 */
+                using MenuChosen = void (*)(void *arg, size_t index);
+
+                /** @brief A program's menu's items at most. */
+                static constexpr size_t MaxMenuItems = 10;
+
+                /** @brief The longest program's menu label kept, in bytes. */
+                static constexpr size_t MaxMenuLabel = 31;
+
+                /** @brief The longest program's menu shortcut kept, in bytes. */
+                static constexpr size_t MaxMenuShortcut = 15;
 
                 /** @brief The index `DesktopChosen` is told for Ctrl+Shift+Windows (`devplan/gui.md` §4p). */
                 static constexpr size_t DesktopKey = MaxDesktopItems;
@@ -403,6 +426,20 @@ class WindowManager {
                  * @return `Ok`, `InvalidState` (not running), or `Invalid` (too many).
                  */
                 Error setDesktopMenu(Span<const StringView> labels, DesktopChosen fn, void *arg);
+
+                /**
+                 * @brief Opens a menu of @p items (copied, `MaxMenuItems` at most) for
+                 *        window @p id, its top-left corner at (@p x, @p y) of the
+                 *        window's client area, kept on the screen: drawn and run as the
+                 *        window manager's own menus (`devplan/files.md` §4c), for a
+                 *        program not on the toolkit. @p fn is told the item chosen;
+                 *        nothing when it is dismissed. One menu at a time: it closes
+                 *        another, and closes with its window.
+                 * @return `Ok`, `NotFound` (no such window), `Invalid` (no items, too
+                 *         many), or `InvalidState` (not running).
+                 */
+                Error showMenu(uint8_t id, Span<const MenuItem> items, uint16_t x, uint16_t y, MenuChosen fn,
+                               void *arg);
 
                 /**
                  * @brief Returns true if windows can be minimized: a program watches
@@ -718,7 +755,8 @@ class WindowManager {
                         Above,
                         Close,
                         None,
-                        Desktop // the desktop menu's item _menuCommand[i]
+                        Desktop, // the desktop menu's item _menuCommand[i]
+                        Program  // a program's menu's (showMenu())
                 };
                 static constexpr size_t MenuItems = MaxDesktopItems; // the window menu has 8
                 struct Switcher; // Alt+Tab's list, while it shows
@@ -753,6 +791,7 @@ class WindowManager {
                 Rect            workAreaLocked() const;
                 Result<uint8_t> openLocked(const WindowConfig &config);
                 Error           showWindowMenuLocked(uint8_t id, const Rect &anchor);
+                Error           openMenuLocked(const char *title, const Rect &anchor, uint8_t menuFor);
                 void            menuChoose(int item);
                 void            menuHighlight(int item);
                 static void     menuRedraw(void *arg, Painter &painter);
@@ -862,6 +901,13 @@ class WindowManager {
                 DesktopChosen         _desktopChosen = nullptr;
                 void                 *_desktopArg = nullptr;
                 int                   _desktopPicked = -1;  // chosen: told after the round, unlocked
+                char                  _programLabels[MaxMenuItems][MaxMenuLabel + 1] = {};
+                char                  _programShortcuts[MaxMenuItems][MaxMenuShortcut + 1] = {};
+                MenuChosen            _programChosen = nullptr; // the open program menu's
+                void                 *_programArg = nullptr;
+                int                   _programPicked = -1; // chosen: told after the round, unlocked
+                MenuChosen            _pickedFn = nullptr; // whom to tell it
+                void                 *_pickedArg = nullptr;
                 bool                  _canMinimize = false; // a client watches the window list
                 int                   _menuHighlight = -1;
                 MenuLayout            _menuLayout;

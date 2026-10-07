@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <bmds/base64.h>
 #include <bmds/color.h>
 #include <bmds/config.h>
 #include <bmds/error.h>
@@ -25,13 +26,16 @@ BMDS_NAMESPACE_BEGIN
  * A two-column character is a `wide` cell followed by a `tail` cell (whose
  * codepoint is 0). Attributes are `TextStyle::Attribute` bits, kept as the
  * program set them: the renderer applies reverse, dim and invisible.
+ * A row whose text went on in the next row (autowrap) has `wrapped` set on
+ * its last cell, so a selection joins them (`devplan/clipboard.md` §4d);
+ * writing or erasing that cell clears it.
  */
 struct TerminalCell {
                 uint32_t codepoint : 21 = ' ';
                 uint32_t attributes : 8 = 0;
                 uint32_t wide : 1 = 0; ///< The left half of a two-column character.
                 uint32_t tail : 1 = 0; ///< The right half of a two-column character.
-                uint32_t reserved : 1 = 0;
+                uint32_t wrapped : 1 = 0; ///< A row's last cell: the line goes on in the next row (autowrap).
                 Color    foreground;
                 Color    background;
 
@@ -71,6 +75,23 @@ class TerminalScreen final : private VtHandler {
         public:
                 /** @brief Receives replies to the program (status reports), for the input. */
                 using ReplySink = void (*)(void *context, StringView reply);
+
+                /** @brief What a program's OSC 52 does (`devplan/clipboard.md` C11). */
+                enum class ClipboardEvent : uint8_t {
+                        Begin,  ///< It sets @p targets' contents: `Data` follows, then `End` or `Cancel`.
+                        Data,   ///< The next decoded bytes.
+                        End,    ///< All of it (none: they are emptied).
+                        Cancel, ///< Cut off, or not base64: what came is dropped.
+                        Query,  ///< It asks for @p targets' contents (`?`).
+                };
+
+                /**
+                 * @brief Takes OSC 52 (`ESC ] 52 ; TARGETS ; BASE64 ST`), decoded as it
+                 *        arrives: @p targets (`c` the clipboard, `p` the primary
+                 *        selection, ...; may be empty) with `Begin` and `Query`,
+                 *        @p data with `Data`. Called within `write()`.
+                 */
+                using ClipboardSink = void (*)(void *context, ClipboardEvent event, StringView targets, ByteSpan data);
 
                 /** @brief The history's cells for each line it may hold (an average line's room). */
                 static constexpr size_t HistoryCellsPerLine = 64;
@@ -121,6 +142,16 @@ class TerminalScreen final : private VtHandler {
 
                 /** @brief Returns the height in cells. */
                 uint16_t rows() const { return _rows; }
+
+                /** @brief Sets where OSC 52 goes (none: it is ignored). */
+                void setClipboardSink(ClipboardSink sink, void *context) {
+                        _clipboardSink = sink;
+                        _clipboardContext = context;
+                        return;
+                }
+
+                /** @brief The most bytes of an OSC 52's targets kept. */
+                static constexpr size_t MaxClipboardTargets = 8;
 
                 /** @brief Sets where replies go (none: they are dropped). */
                 void setReplySink(ReplySink sink, void *context) {
@@ -212,6 +243,9 @@ class TerminalScreen final : private VtHandler {
                 void csiDispatch(const VtParams &params, StringView intermediates, uint8_t final) override;
                 void escDispatch(StringView intermediates, uint8_t final) override;
                 void oscDispatch(StringView data) override;
+                bool oscStream(uint32_t number) override;
+                void oscData(StringView piece) override;
+                void oscEnd(bool complete) override;
                 void setTitle(StringView title);
 
                 TerminalCell       *rowOf(uint8_t screen, uint16_t row);
@@ -219,6 +253,7 @@ class TerminalScreen final : private VtHandler {
                 TerminalCell       *line(uint16_t row) { return rowOf(_screen, row); }
                 TerminalCell        blank() const;
                 void                put(uint32_t codepoint, int width);
+                void                markWrapped(uint16_t row);
                 void                splitWide(uint16_t row, uint16_t column);
                 void                markDirty(uint16_t row) { _dirty[row / 32] |= 1u << (row % 32); }
                 void                markAllDirty();
@@ -283,6 +318,20 @@ class TerminalScreen final : private VtHandler {
                 uint32_t      _titleGeneration = 0;
                 ReplySink     _replySink = nullptr;
                 void         *_replyContext = nullptr;
+                // OSC 52 as it streams: its targets, then its data or a query.
+                enum class Clip : uint8_t {
+                        Targets,
+                        First,
+                        Data,
+                        Query,
+                        Ignore
+                };
+                ClipboardSink _clipboardSink = nullptr;
+                void         *_clipboardContext = nullptr;
+                Base64Decoder _clipDecoder;
+                Clip          _clip = Clip::Ignore;
+                char          _clipTargets[MaxClipboardTargets] = {};
+                uint8_t       _clipTargetLength = 0;
 };
 
 BMDS_NAMESPACE_END
