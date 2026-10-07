@@ -28,7 +28,12 @@ BMDS_NAMESPACE_BEGIN
  */
 class WindowPalette {
         public:
-                /** @brief What a color is for. Append only: the names are an interface. */
+                /**
+                 * @brief What a color is for. Append only: the names are an interface
+                 *        (`terminal-text`, `terminal-background` and `terminal-cursor`
+                 *        were roles until the terminal's colors became its own:
+                 *        `devplan/gui.md` §4l).
+                 */
                 enum class Role : uint8_t {
                         Desktop,            ///< Where no window is.
                         ActiveFrame,        ///< The focused window's frame and title bar.
@@ -39,9 +44,6 @@ class WindowPalette {
                         CloseMark,          ///< The glyph on the close button.
                         Client,             ///< A client area that draws nothing itself.
                         Outline,            ///< A window's outline while it is moved.
-                        TerminalText,       ///< A terminal's default foreground.
-                        TerminalBackground, ///< A terminal's default background.
-                        TerminalCursor,     ///< A terminal's cursor (its text in the cell's background).
                         CursorEdge,         ///< The mouse pointer's outline.
                         CursorFill,         ///< The mouse pointer's inside.
                         Button,             ///< A title-bar button but close (menu, minimize, maximize).
@@ -58,7 +60,7 @@ class WindowPalette {
                 };
 
                 /** @brief The number of roles. */
-                static constexpr size_t RoleCount = 25;
+                static constexpr size_t RoleCount = 22;
 
                 /** @brief The standard colors: a dark grey desktop, blue for the focused window. */
                 constexpr WindowPalette() = default;
@@ -91,9 +93,6 @@ class WindowPalette {
                         0xffffff, // CloseMark
                         0xf0f0f0, // Client
                         0xffffff, // Outline
-                        0xc0c0c0, // TerminalText
-                        0x000000, // TerminalBackground
-                        0xc0c0c0, // TerminalCursor
                         0x000000, // CursorEdge
                         0xffffff, // CursorFill
                         0xc0c0c0, // Button

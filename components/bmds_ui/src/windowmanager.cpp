@@ -154,6 +154,11 @@ void WindowManager::stop() {
                 if (c.used && c.gone != nullptr) c.gone(c.arg);
                 c = Client();
         }
+        while (_resources != nullptr) {
+                Resource *r = _resources;
+                _resources = r->next;
+                Memory::free(r);
+        }
         (void)_surface->wait(DrawTimeoutMs); // the strip's last copy
         _surface = nullptr;
         _display->release();
@@ -1252,6 +1257,67 @@ Error WindowManager::watch(uint8_t client, Watch fn, void *arg) {
         if (client == 0 || client > MaxClients || !_clients[client - 1].used) return Error::NotFound;
         _clients[client - 1].watch = fn;
         _clients[client - 1].watchArg = arg;
+        return Error::Ok;
+}
+
+Error WindowManager::setResource(StringView name, StringView value) {
+        if (name.isEmpty() || name.size() > MaxResourceName || value.size() > MaxResourceValue)
+                return Error::Invalid;
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        Resource *made = nullptr;
+        if (!value.isEmpty()) {
+                made = static_cast<Resource *>(
+                        Memory::alloc(MemSpace::Psram, sizeof(Resource) + name.size() + value.size() + 2));
+                if (made == nullptr) return Error::NoMem;
+                made->nameLength = static_cast<uint8_t>(name.size());
+                made->valueLength = static_cast<uint8_t>(value.size());
+                char *text = reinterpret_cast<char *>(made + 1);
+                std::memcpy(text, name.data(), name.size());
+                text[name.size()] = '\0';
+                std::memcpy(text + name.size() + 1, value.data(), value.size());
+                text[name.size() + 1 + value.size()] = '\0';
+        }
+        for (Resource **at = &_resources; *at != nullptr; at = &(*at)->next) {
+                if (StringView((*at)->name(), (*at)->nameLength) != name) continue;
+                Resource *old = *at;
+                *at = old->next;
+                Memory::free(old);
+                break;
+        }
+        if (made != nullptr) {
+                made->next = _resources;
+                _resources = made;
+        }
+        for (const Client &c : _clients)
+                if (c.used && c.resourceChanged != nullptr) c.resourceChanged(c.resourceArg, name, value);
+        // What it changes is the applications' to know: everything redrawn, as for the palette.
+        _stack.invalidateScreen(_stack.screen());
+        changed(focusId());
+        return Error::Ok;
+}
+
+Error WindowManager::resource(StringView name, Span<char> out) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        for (const Resource *r = _resources; r != nullptr; r = r->next) {
+                if (StringView(r->name(), r->nameLength) != name) continue;
+                if (out.size() > 0) {
+                        const size_t n = r->valueLength < out.size() ? r->valueLength : out.size() - 1;
+                        std::memcpy(out.data(), r->value(), n);
+                        out[n] = '\0';
+                }
+                return Error::Ok;
+        }
+        return Error::NotFound;
+}
+
+Error WindowManager::watchResources(uint8_t client, ResourceChanged fn, void *arg) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        if (client == 0 || client > MaxClients || !_clients[client - 1].used) return Error::NotFound;
+        _clients[client - 1].resourceChanged = fn;
+        _clients[client - 1].resourceArg = arg;
         return Error::Ok;
 }
 

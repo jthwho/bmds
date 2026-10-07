@@ -192,6 +192,7 @@ up (§4k). As built and measured: §9.
       boot/profile                         (moved from bootdisk.cpp)
       boot/autoexec.sh                     (moved from bootdisk.cpp)
       boot/config/panel.conf               the panel's layout
+      boot/config/terminal.conf            the terminal's colors (§4l)
       boot/applications/terminal.desktop   Terminal: terminal
 
   Packages bring their own in `share/applications/` (BusyBox: `vi.desktop`, a text editor in a
@@ -376,6 +377,29 @@ no icon file installed and no `Icon=` written.
   handles; maximizing, restoring or snapping rolls it down first. `win shade N on|off`, and `win
   list` marks `(shaded)`.
 
+### 4l. The terminal's own colors; resources (roadmap, 2026-10-06)
+
+The last of `windows.md` §8 step 9: the window manager draws no terminal, so the palette's
+`terminal-text`, `terminal-background` and `terminal-cursor` roles leave it.
+
+- **Resources** (as X's resource database): the window manager keeps strings by name for its
+  applications, knowing none of them. `setResource(name, value)` (a name of 31 bytes at most, a
+  value of 63; an empty value removes it), `resource(name, out)`, and `watchResources(client, fn,
+  arg)`: the connection is told each change (its name and value) on the task that set it, the
+  window manager locked (as a redraw is: it must not call the window manager); then every window
+  is redrawn, as for a palette change. They last until `stop()`. One PSRAM allocation each,
+  nothing until the first; a connection's watcher costs 8 bytes of `.bss`.
+- **`TerminalColors`** (bmds_ui, with `TerminalView`, which takes it instead of the palette): the
+  default text, background and cursor colors and the 16 ANSI colors (xterm's unless set); the 256
+  palette's others and RGB as before.
+- **The terminal** reads them when it starts: the defaults, then `/boot/config/terminal.conf`'s
+  `[Colors]` group (`Text`, `Background`, `Cursor`, `Color0` to `Color15`; `RRGGBB` or
+  `#RRGGBB`), then the resources `terminal-text`, `terminal-background` and `terminal-cursor`. It
+  watches those, so a change shows in every open terminal. The file is a new default on `/boot`.
+- **`win color`** (frozen) still takes the three names: `win color terminal-text RRGGBB` sets
+  the resource. Its list shows the palette's roles, then the three, `-` where not set (the
+  terminal's own setting applies).
+
 ## 5. Budget (estimates)
 
 - **Firmware:** the toolkit 10 to 15 KB, the panel 5 KB, the window manager's additions 4 KB, the
@@ -549,3 +573,14 @@ palette's role names), `/boot/.defaults`' format (a file name a line).
   - Size: the image 781,960 bytes (765,482 before: +16,478: the decoder, the icons built into the
     terminal and the panel, the theme lookup, the key grabs, snapping and rolling up); `.bss`
     +224.
+- **The terminal's own colors** (§4l, 2026-10-06):
+  - Host-tested: `TerminalColors` (each name in any case, `Color0` to `Color15` and nothing
+    past them, `RRGGBB` and `#RRGGBB`, a bad value leaving the color as it was), and the view's
+    cells in a set's colors (an ANSI color set, the 256 palette's others fixed).
+  - On the board: the default `terminal.conf` installed on `/boot`; `win color` lists 22 roles,
+    then the three terminal names (`-` unset). A file with `Background=102030`, `Color1=ff8800`
+    and two bad lines: the terminal reported lines 4 and 5 and drew the file's colors (red
+    printed orange); `win color terminal-text ffff00` turned the open terminal's text yellow,
+    `win check` 0 wrong; a terminal opened after the file was restored drew its black with the
+    yellow text. Three open-and-close cycles: internal RAM the same to the byte.
+  - Size: the image 788,624 bytes.

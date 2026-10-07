@@ -675,7 +675,8 @@ TEST_CASE("WindowPalette: every role named, found by its name, colors kept to 24
         CHECK(WindowPalette::find("active").error() == bmds::Error::NotFound);
         CHECK(WindowPalette::find("desktop").value() == WindowPalette::Role::Desktop);
         CHECK(WindowPalette::find("outline").value() == WindowPalette::Role::Outline);
-        CHECK(WindowPalette::find("terminal-cursor").value() == WindowPalette::Role::TerminalCursor);
+        CHECK(WindowPalette::find("terminal-cursor").error() == bmds::Error::NotFound); // the terminal's own
+        CHECK(WindowPalette::find("face").value() == WindowPalette::Role::Face);
         CHECK(WindowPalette::find("cursor-fill").value() == WindowPalette::Role::CursorFill);
         WindowPalette p;
         CHECK(p.color(WindowPalette::Role::Desktop) == 0x404040);
@@ -766,15 +767,14 @@ TEST_CASE("GlyphRenderer: runs of cells and text match glyph by glyph, cut at th
 TEST_CASE("TerminalView: cells with defaults, attributes, wide characters and the cursor") {
         using bmds::TerminalScreen;
         using bmds::TextCell;
-        using Role = WindowPalette::Role;
         TerminalScreen screen(bmds::MemSpace::Psram);
         REQUIRE(screen.resize(10, 2).isOk());
         // Plain, bold red, reverse, dim, invisible + underline, a wide character, RGB on blue.
         screen.write("a\x1b[1;31mb\x1b[0;7mc\x1b[0;2md\x1b[0;8;4me\x1b[0m\xef\xbc\xa1\x1b[38;2;1;2;3;44mf");
-        WindowPalette p;
-        p.setColor(Role::TerminalText, 0xc0c0c0);
-        p.setColor(Role::TerminalBackground, 0x000010);
-        p.setColor(Role::TerminalCursor, 0x00ff00);
+        bmds::TerminalColors p;
+        p.text = 0xc0c0c0;
+        p.background = 0x000010;
+        p.cursor = 0x00ff00;
         TextCell     out[10];
         const size_t n = bmds::TerminalView::row(screen, 0, p, 1, out, 10);
         CHECK(n == 9); // 10 columns, the wide one's tail left out
@@ -793,16 +793,54 @@ TEST_CASE("TerminalView: cells with defaults, attributes, wide characters and th
         CHECK(out[5].codepoint == 0xff21);
         CHECK(out[6].codepoint == 'f');
         CHECK(out[6].fg == 0x010203);
-        CHECK(out[6].bg == bmds::TerminalView::rgb(bmds::Color::indexed(4), 0));
+        CHECK(out[6].bg == 0x0000ee); // xterm's blue
         CHECK(out[7].codepoint == ' ');
         // Without a cursor, the bold red keeps its colors.
         bmds::TerminalView::row(screen, 0, p, -1, out, 10);
-        CHECK(out[1].fg == bmds::TerminalView::rgb(bmds::Color::indexed(1), 0));
+        CHECK(out[1].fg == 0xcd0000);
         CHECK(out[1].bg == 0x000010);
+        // The ANSI colors set; the 256-color palette's others fixed.
+        p.ansi[1] = 0xff5555;
+        bmds::TerminalView::row(screen, 0, p, -1, out, 10);
+        CHECK(out[1].fg == 0xff5555);
+        CHECK(p.rgb(bmds::Color::indexed(196), 0) == 0xff0000);
+        CHECK(p.rgb(bmds::Color(), 0x123456) == 0x123456);
         // The cursor on a wide character's tail is on the character.
         bmds::TerminalView::row(screen, 0, p, 6, out, 10);
         CHECK(out[5].bg == 0x00ff00);
         CHECK(out[6].bg != 0x00ff00);
+}
+
+TEST_CASE("TerminalColors: colors by name, as the terminal's file and resources set them") {
+        using bmds::TerminalColors;
+        TerminalColors c;
+        CHECK(c == TerminalColors());
+        CHECK(c.text == 0xc0c0c0);
+        CHECK(c.ansi[4] == 0x0000ee);
+        CHECK(TerminalColors::parse("1a2B3c").value() == 0x1a2b3c);
+        CHECK(TerminalColors::parse(" #ffffff ").value() == 0xffffff);
+        CHECK(TerminalColors::parse("fff").error() == bmds::Error::Invalid);
+        CHECK(TerminalColors::parse("12345g").error() == bmds::Error::Invalid);
+        CHECK(TerminalColors::parse("").error() == bmds::Error::Invalid);
+        CHECK(c.set("Text", "102030").isOk());
+        CHECK(c.text == 0x102030);
+        CHECK(c.set("background", "#010203").isOk());
+        CHECK(c.background == 0x010203);
+        CHECK(c.set("CURSOR", "00ff00").isOk());
+        CHECK(c.cursor == 0x00ff00);
+        CHECK(c.set("Color0", "111111").isOk());
+        CHECK(c.ansi[0] == 0x111111);
+        CHECK(c.set("color15", "eeeeee").isOk());
+        CHECK(c.ansi[15] == 0xeeeeee);
+        CHECK(c.find("Color16") == nullptr);
+        CHECK(c.find("Color01") == nullptr);
+        CHECK(c.find("Color") == nullptr);
+        CHECK(c.find("Color1a") == nullptr);
+        CHECK(c.find("Colour1") == nullptr);
+        CHECK(c.find("Color9") == &c.ansi[9]);
+        CHECK(c.set("Foreground", "000000") == bmds::Error::NotFound);
+        CHECK(c.set("Text", "nope") == bmds::Error::Invalid);
+        CHECK(c.text == 0x102030); // kept
 }
 
 TEST_CASE("TerminalView: a view scrolled back shows history lines, then the screen's rows") {
@@ -837,8 +875,8 @@ TEST_CASE("TerminalView: a view scrolled back shows history lines, then the scre
         uint16_t                  length = 0;
         const bmds::TerminalCell *line = viewRow(screen, 2, 0, length);
         CHECK(length == 1);
-        bmds::TextCell out[8];
-        WindowPalette  p;
+        bmds::TextCell       out[8];
+        bmds::TerminalColors p;
         CHECK(bmds::TerminalView::cells(line, length, 3, p, -1, out, 8) == 3);
         CHECK(out[0].codepoint == 'a');
         CHECK(out[2].codepoint == ' ');

@@ -12,17 +12,56 @@
 #include <cstdint>
 #include <bmds/config.h>
 #include <bmds/glyphrenderer.h>
+#include <bmds/error.h>
+#include <bmds/result.h>
+#include <bmds/stringview.h>
 #include <bmds/terminalscreen.h>
-#include <bmds/windowpalette.h>
 
 BMDS_NAMESPACE_BEGIN
+
+/**
+ * @brief A terminal's colors, 0xRRGGBB (`devplan/gui.md` §4l): its default
+ *        text, background and cursor, and the 16 ANSI colors (xterm's unless
+ *        set). The 256-color palette's others and RGB colors are fixed
+ *        (`Color::toRgb()`).
+ *
+ * @par Thread Safety
+ * A plain value.
+ */
+struct TerminalColors {
+                uint32_t text = 0xc0c0c0;
+                uint32_t background = 0x000000;
+                uint32_t cursor = 0xc0c0c0; ///< The cursor's cell; its text in the cell's background.
+                uint32_t ansi[16] = {0x000000, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5,
+                                     0x7f7f7f, 0xff0000, 0x00ff00, 0xffff00, 0x5c5cff, 0xff00ff, 0x00ffff, 0xffffff};
+
+                /** @brief Returns @p color as 0xRRGGBB, @p fallback for the default color. @hotpath */
+                uint32_t rgb(Color color, uint32_t fallback) const;
+
+                /**
+                 * @brief Returns the color named @p key (`Text`, `Background`, `Cursor`,
+                 *        `Color0` to `Color15`; any case), or null.
+                 */
+                uint32_t *find(StringView key);
+
+                /**
+                 * @brief Sets the color named @p key (as `find()`) to @p value (`parse()`).
+                 * @return `Ok`, `NotFound` (no such color), or `Invalid`.
+                 */
+                Error set(StringView key, StringView value);
+
+                /** @brief Reads `RRGGBB` or `#RRGGBB` (hex digits, spaces around ignored). */
+                static Result<uint32_t> parse(StringView value);
+
+                constexpr bool operator==(const TerminalColors &other) const = default;
+};
 
 /**
  * @brief How a `TerminalScreen` row is drawn: its cells as the painter's
  *        `TextCell`s (`devplan/windows.md` §4e).
  *
- * Default colors come from the palette (`TerminalText`,
- * `TerminalBackground`), others through `Color::toRgb()`. Reverse swaps the
+ * Colors come from a `TerminalColors` (the default ones and the 16 ANSI
+ * colors) or `Color::toRgb()`. Reverse swaps the
  * colors, dim halves the foreground, invisible draws it in the background;
  * bold and underline become the cell's style. A wide character is one cell
  * (its glyph is two wide): its tail is left out. The cursor's cell is drawn
@@ -33,16 +72,13 @@ BMDS_NAMESPACE_BEGIN
  */
 namespace TerminalView {
 
-        /** @brief Returns @p color as 0xRRGGBB, @p fallback for the default color. */
-        uint32_t rgb(Color color, uint32_t fallback);
-
         /**
          * @brief Writes row @p row of @p screen into @p out (up to @p max
          *        cells), the cursor at column @p cursor (or none: -1).
          * @return The cells written.
          * @hotpath
          */
-        size_t row(const TerminalScreen &screen, uint16_t row, const WindowPalette &palette, int cursor, TextCell *out,
+        size_t row(const TerminalScreen &screen, uint16_t row, const TerminalColors &colors, int cursor, TextCell *out,
                    size_t max);
 
         /**
@@ -53,7 +89,7 @@ namespace TerminalView {
          * @return The cells written.
          * @hotpath
          */
-        size_t cells(const TerminalCell *cells, uint16_t length, uint16_t columns, const WindowPalette &palette,
+        size_t cells(const TerminalCell *cells, uint16_t length, uint16_t columns, const TerminalColors &colors,
                      int cursor, TextCell *out, size_t max);
 
         /**

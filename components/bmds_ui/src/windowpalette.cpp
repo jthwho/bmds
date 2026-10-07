@@ -15,6 +15,7 @@ BMDS_NAMESPACE_BEGIN
 namespace {
 
         // By role; the names are an interface (`win color`): append only.
+        // clang-format off
         constexpr const char *Names[WindowPalette::RoleCount] = {
                 "desktop",
                 "active-frame",
@@ -25,9 +26,6 @@ namespace {
                 "close-mark",
                 "client",
                 "outline",
-                "terminal-text",
-                "terminal-background",
-                "terminal-cursor",
                 "cursor-edge",
                 "cursor-fill",
                 "button",
@@ -42,6 +40,7 @@ namespace {
                 "highlight-text",
                 "disabled-text",
         };
+        // clang-format on
 
 } // namespace
 

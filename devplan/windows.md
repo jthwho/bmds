@@ -852,7 +852,8 @@ ones once it exists.
     the shell ends. The old `Terminal` in `bmds_ui`, `Terminal::setLauncher()` and
     `Terminal::byWindow()` are gone. `win term`, `type`, `dump`, `check` and `list` use the
     generic calls above; `win term` starts the program with `ProgramLauncher::start()`.
-  - Not yet: the terminal's colors are still the palette's `terminal-*` roles.
+  - The terminal's colors became its own later the same day (`gui.md` §4l): `/boot/config/
+    terminal.conf`, and the window manager's resources for `win color terminal-*`.
   - On the board: `terminal` without the window manager printed "terminal: the window system
     isn't running ('win start')"; run from the serial shell it held the shell until Ctrl-C closed
     it; `exit` in a window closed it; `win stop` ended every terminal process. `win type`,

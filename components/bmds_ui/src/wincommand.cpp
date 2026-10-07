@@ -605,6 +605,9 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        // The roles that became resources: the terminal's colors are its own (devplan/gui.md §4l).
+        constexpr const char *ResourceColors[] = {"terminal-text", "terminal-background", "terminal-cursor"};
+
         // win color [ROLE RRGGBB]
         int runColor(CommandContext &ctx, WindowManager &wm, Args args) {
                 WindowPalette palette = wm.palette();
@@ -614,14 +617,27 @@ namespace {
                                 ctx.printf("%-15s %06lx\n", WindowPalette::name(role),
                                            static_cast<unsigned long>(palette.color(role)));
                         }
+                        for (const char *name : ResourceColors) {
+                                char value[WindowManager::MaxResourceValue + 1];
+                                if (wm.resource(StringView(name), Span<char>(value, sizeof(value))).isError())
+                                        std::strcpy(value, "-");
+                                ctx.printf("%-15s %s\n", name, value);
+                        }
                         return Shell::ExitSuccess;
+                }
+                uint32_t color = 0;
+                for (const char *name : ResourceColors) {
+                        if (std::strcmp(args[2], name) != 0) continue;
+                        if (!parseColor(args[3], color)) return ctx.usage();
+                        char value[8];
+                        std::snprintf(value, sizeof(value), "%06lx", static_cast<unsigned long>(color));
+                        return report(ctx, wm.setResource(StringView(name), StringView(value)));
                 }
                 auto [role, err] = WindowPalette::find(args[2]);
                 if (err.isError()) {
                         ctx.eprintf("win: %s: not a color role ('win color' lists them)\n", args[2]);
                         return Shell::ExitUsage;
                 }
-                uint32_t color = 0;
                 if (!parseColor(args[3], color)) return ctx.usage();
                 palette.setColor(role, color);
                 return report(ctx, wm.setPalette(palette));
@@ -1095,7 +1111,8 @@ BMDS_SHELL_COMMAND(
         "resize N W H|pointer on/off|key TEXT|title N [TEXT]|above N on/off|shade N on/off|hid press/release/repeat "
         "USAGE [MODS]]",
         "The desktop and its windows on display 0: 'new' opens a test window, 'drag' moves one "
-        "as an outline, 'color' lists or sets the palette, 'check' compares every pixel with the stack, "
+        "as an outline, 'color' lists or sets the palette (terminal-* set the terminal's), "
+        "'check' compares every pixel with the stack, "
         "'pointer' moves the pointer as a mouse would (BUTTONS: 1 left, 2 right, 4 middle; WHEEL: notches, "
         "positive away), "
         "'key' types TEXT as a keyboard would (escapes as 'type'), "

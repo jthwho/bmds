@@ -20,6 +20,10 @@
  * runs on the pty instead of the shell, found through PATH, and the window
  * closes when it ends; if it can't start, the window stays open to say why
  * (devplan/gui.md G15).
+ *
+ * Its colors (devplan/gui.md §4l): /boot/config/terminal.conf's [Colors],
+ * then the window manager's resources terminal-text, terminal-background and
+ * terminal-cursor (`win color`), which it follows while it runs.
  */
 
 #include <atomic>
@@ -33,6 +37,7 @@
 #include <bmds/font.h>
 #include <bmds/glyphrenderer.h>
 #include <bmds/icontheme.h>
+#include <bmds/inireader.h>
 #include <bmds/memory.h>
 #include <bmds/mutex.h>
 #include <bmds/painter.h>
@@ -61,6 +66,9 @@ namespace {
         constexpr uint16_t Columns = 100;  // a new window's
         constexpr uint16_t Rows = 30;
         constexpr size_t   ShellThreadStackBytes = 8192; // starts the shell and waits for it
+        constexpr size_t      MaxConfigBytes = 4096;
+        constexpr const char *ConfigPath = "/boot/config/terminal.conf";
+        constexpr StringView  ResourcePrefix("terminal-"); // terminal-text: [Colors] Text
 
         class TerminalApp {
                 public:
@@ -83,6 +91,7 @@ namespace {
                         static void gone(void *arg);
                         static void shellMain(void *arg);
                         static void reply(void *context, StringView text);
+                        static void resourceChanged(void *arg, StringView name, StringView value);
 
                         void   say(const char *text); // to stderr
                         void   draw(Painter &painter);
@@ -90,6 +99,7 @@ namespace {
                         void   scrollBy(int lines);
                         void   composeTitle(char (&out)[96]);
                         void   update();
+                        void   readConfig();
 
                         const BuiltinProgram::Context &_context;
                         Span<const StringView>         _command; // -e's: the command and its arguments
@@ -109,6 +119,8 @@ namespace {
                         uint32_t                       _cursorRows[(TerminalScreen::MaxSide + 31) / 32] = {};
                         Thread                         _shell; // runs the shell, until it ends
                         IconTheme                      _icons; // its own icon, for its window
+                        TerminalColors                 _configured; // the defaults and the file's
+                        TerminalColors                 _colors;     // and the resources': the window manager's lock
         };
 
         void TerminalApp::say(const char *text) {
@@ -149,6 +161,15 @@ namespace {
                         return 1;
                 }
                 _wm = wm;
+                readConfig();
+                _colors = _configured;
+                (void)_wm->watchResources(_client, resourceChanged, this);
+                for (const char *key : {"text", "background", "cursor"}) {
+                        char name[24], value[WindowManager::MaxResourceValue + 1];
+                        std::snprintf(name, sizeof(name), "terminal-%s", key);
+                        if (_wm->resource(StringView(name), Span<char>(value, sizeof(value))).isOk())
+                                (void)_colors.set(StringView(key), StringView(value));
+                }
                 _cells = static_cast<TextCell *>(Memory::alloc(MemSpace::Internal, sizeof(TextCell) * MaxColumns));
                 auto [pty, perr] = Pty::open(MemSpace::Psram);
                 Error err = _cells == nullptr ? Error(Error::NoMem) : perr;
@@ -250,6 +271,49 @@ namespace {
                 if (!_gone.load(std::memory_order_acquire)) _wm->disconnect(_client);
                 _pty->release();
                 return 0;
+        }
+
+        // The colors' file: what it sets over the defaults; a line it can't use reported.
+        void TerminalApp::readConfig() {
+                char *text = static_cast<char *>(Memory::alloc(MemSpace::Psram, MaxConfigBytes));
+                if (text == nullptr) return;
+                size_t             got = 0;
+                const Vfs::Context vc{_context.cwd, nullptr};
+                auto [file, err] = Vfs::open(StringView(ConfigPath), Vfs::Read, vc);
+                while (err.isOk() && got < MaxConfigBytes) {
+                        auto [n, rerr] = file->read(
+                                WritableByteSpan(reinterpret_cast<uint8_t *>(text) + got, MaxConfigBytes - got),
+                                WaitForever);
+                        if (rerr.isError() || n == 0) break;
+                        got += n;
+                }
+                IniReader reader(StringView(text, got));
+                for (IniReader::Item item = reader.next(); item.kind != IniReader::Kind::End; item = reader.next()) {
+                        if (item.kind == IniReader::Kind::Group) continue;
+                        if (item.kind == IniReader::Kind::Entry && !item.name.equalsIgnoreCase("Colors")) continue;
+                        if (item.kind == IniReader::Kind::Entry && _configured.set(item.key, item.value).isOk())
+                                continue;
+                        char line[96];
+                        std::snprintf(line, sizeof(line), "terminal: %s: line %lu: %s\n", ConfigPath,
+                                      static_cast<unsigned long>(item.line),
+                                      item.kind != IniReader::Kind::Entry ? "not a [group] or a key=value line"
+                                                                          : "not a color (RRGGBB) or a color's name");
+                        say(line);
+                }
+                Memory::free(text);
+                return;
+        }
+
+        // A resource set (`win color terminal-text RRGGBB`): one of its colors, or the file's again
+        // when removed. The window manager redraws the window next.
+        void TerminalApp::resourceChanged(void *arg, StringView name, StringView value) {
+                auto *self = static_cast<TerminalApp *>(arg);
+                if (!name.startsWith(ResourcePrefix)) return;
+                const StringView key = name.mid(ResourcePrefix.size());
+                uint32_t        *to = self->_colors.find(key);
+                if (to == nullptr) return;
+                if (value.isEmpty() || self->_colors.set(key, value).isError()) *to = *self->_configured.find(key);
+                return;
         }
 
         void TerminalApp::redraw(void *arg, Painter &painter) {
@@ -443,7 +507,7 @@ namespace {
         // goes on while rows are drawn: a row written meanwhile is dirty again, for the next round.
         void TerminalApp::draw(Painter &painter) {
                 const Font          &font = Fonts::unscii16;
-                const WindowPalette &palette = painter.palette();
+                const TerminalColors &colors = _colors;
                 uint16_t             columns = 0, rows = 0;
                 size_t               offset = 0;
                 bool                 all = _all;
@@ -485,7 +549,7 @@ namespace {
                                 if (!need) continue;
                                 uint16_t            length = 0;
                                 const TerminalCell *line = TerminalView::viewRow(_screen, offset, r, length);
-                                n = TerminalView::cells(line, length, columns, palette,
+                                n = TerminalView::cells(line, length, columns, colors,
                                                         cursorHere ? _screen.cursorColumn() : -1, _cells, MaxColumns);
                                 _screen.clearRowDamage(r);
                         }
@@ -498,7 +562,7 @@ namespace {
                                             font, cellsArea.width);
                 }
                 // The margins right of and below the cells, where damaged.
-                const uint32_t back = palette.color(WindowPalette::Role::TerminalBackground);
+                const uint32_t back = colors.background;
                 for (size_t i = 0; i < painter.damageCount(); ++i) {
                         const Rect d = painter.damageAt(i);
                         if (d.right() > cellsArea.width) {
@@ -542,9 +606,9 @@ namespace {
 
         // `win check`: the client area as it should be, drawn from the screen by the scalar kernel.
         void TerminalApp::reference(void *arg, uint8_t *pixels, size_t stride, uint16_t width, uint16_t height,
-                                    const WindowPalette &palette) {
+                                    const WindowPalette &) {
                 auto          *self = static_cast<TerminalApp *>(arg);
-                const uint32_t back = palette.color(WindowPalette::Role::TerminalBackground);
+                const uint32_t back = self->_colors.background;
                 for (uint16_t y = 0; y < height; ++y)
                         for (uint16_t x = 0; x < width; ++x) {
                                 uint8_t *p = pixels + size_t(y) * stride + size_t(x) * 3;
@@ -561,8 +625,8 @@ namespace {
                                 TerminalView::viewCursorRow(screen, offset) == r ? screen.cursorColumn() : -1;
                         uint16_t            length = 0;
                         const TerminalCell *line = TerminalView::viewRow(screen, offset, r, length);
-                        const size_t        cells = TerminalView::cells(line, length, screen.columns(), palette, cursor,
-                                                                        self->_cells, MaxColumns);
+                        const size_t cells = TerminalView::cells(line, length, screen.columns(), self->_colors, cursor,
+                                                                 self->_cells, MaxColumns);
                         size_t              used = 0;
                         (void)renderer.drawCells(Span<const TextCell>(self->_cells, cells), Fonts::unscii16,
                                                  pixels + size_t(r) * CellHeight * stride, stride,
