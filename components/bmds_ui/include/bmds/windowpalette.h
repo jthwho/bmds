@@ -46,10 +46,19 @@ class WindowPalette {
                         CursorFill,         ///< The mouse pointer's inside.
                         Button,             ///< A title-bar button but close (menu, minimize, maximize).
                         ButtonMark,         ///< The glyph on such a button.
+                        Face,               ///< Menus, the panel, buttons (`devplan/gui.md` G18).
+                        FaceText,           ///< Text on them.
+                        FaceHighlight,      ///< The lit edge of a raised face (`Bevel`).
+                        FaceLight,          ///< The lit edge's inner line; a checked button's face.
+                        FaceShadow,         ///< The shaded edge's inner line; separators.
+                        FaceDark,           ///< The shaded edge's outer line.
+                        Highlight,          ///< The menu item under the pointer.
+                        HighlightText,      ///< Text on it.
+                        DisabledText,       ///< An item that can't be chosen.
                 };
 
                 /** @brief The number of roles. */
-                static constexpr size_t RoleCount = 16;
+                static constexpr size_t RoleCount = 25;
 
                 /** @brief The standard colors: a dark grey desktop, blue for the focused window. */
                 constexpr WindowPalette() = default;
@@ -87,8 +96,17 @@ class WindowPalette {
                         0xc0c0c0, // TerminalCursor
                         0x000000, // CursorEdge
                         0xffffff, // CursorFill
-                        0xd0d0d0, // Button
+                        0xc0c0c0, // Button
                         0x000000, // ButtonMark
+                        0xc0c0c0, // Face
+                        0x000000, // FaceText
+                        0xffffff, // FaceHighlight
+                        0xdfdfdf, // FaceLight
+                        0x808080, // FaceShadow
+                        0x000000, // FaceDark
+                        0x000080, // Highlight
+                        0xffffff, // HighlightText
+                        0x808080, // DisabledText
                 };
 };
 

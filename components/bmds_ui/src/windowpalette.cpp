@@ -32,6 +32,15 @@ namespace {
                 "cursor-fill",
                 "button",
                 "button-mark",
+                "face",
+                "face-text",
+                "face-highlight",
+                "face-light",
+                "face-shadow",
+                "face-dark",
+                "highlight",
+                "highlight-text",
+                "disabled-text",
         };
 
 } // namespace

@@ -65,32 +65,9 @@ int Executor::runBuiltin(const Command &cmd, List<String> &args) {
 }
 
 Error Executor::findInPath(StringView name, String &out) {
-        static const char *const suffixes[] = {"", ".elf", ".sh"};
-        const String            *path = _state.vars.value("PATH");
-        if (path == nullptr || name.isEmpty()) return Error::NotExist;
-        const Vfs::Context context = vfs();
-        const StringView   dirs = path->view();
-        size_t             at = 0;
-        for (;;) {
-                size_t colon = dirs.indexOf(':', at);
-                if (colon == StringView::NPos) colon = dirs.size();
-                // An empty entry is the current directory, as in POSIX.
-                const StringView dir = colon > at ? dirs.mid(at, colon - at) : StringView(".");
-                for (const char *suffix : suffixes) {
-                        out.clear();
-                        Error err = out.append(dir);
-                        if (err.isOk() && !dir.endsWith('/')) err = out.append('/');
-                        if (err.isOk()) err = out.append(name);
-                        if (err.isOk()) err = out.append(suffix);
-                        if (err.isError()) return err;
-                        const Result<FileInfo> info = Vfs::stat(out, context);
-                        if (info.isOk() && info.value().type == FileType::File) return Error::Ok;
-                }
-                if (colon == dirs.size()) break;
-                at = colon + 1;
-        }
-        out.clear();
-        return Error::NotExist;
+        const String *path = _state.vars.value("PATH");
+        if (path == nullptr) return Error::NotExist;
+        return Vfs::findProgram(name, path->view(), vfs(), out);
 }
 
 Executor::FileKind Executor::classify(StringView path, StringView head) {

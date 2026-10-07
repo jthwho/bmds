@@ -10,6 +10,7 @@
  */
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <utility>
 #include <sdkconfig.h>
@@ -27,8 +28,11 @@
 #include <bmds/randompool.h>
 #include <bmds/semaphore.h>
 #include <bmds/staticobject.h>
+#include <bmds/string.h>
 #include <bmds/task.h>
 #include <bmds/vfs.h>
+
+#include "bootdefaults.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -220,24 +224,90 @@ namespace {
 
         constinit StaticObject<FlashBlockDevice> flash;
 
-        // The defaults written on the first boot (devplan/storage.md §13).
-        constexpr const char Profile[] = "# /boot/profile: read by every interactive shell as it starts.\n"
-                                         "export HOME=/boot\n"
-                                         "export PATH=/bin:/sd0/p0/bin\n";
+        // The defaults installed (devplan/gui.md G14): each file of the repository's boot/ not
+        // already on /boot and not listed in Manifest is written, and listed; so a new release's
+        // defaults reach a /boot made before it, and a default deleted stays deleted.
+        constexpr const char Manifest[] = "/boot/.defaults";
+        constexpr size_t     MaxManifest = 4096;
+        constexpr size_t     MaxPath = 128;
 
-        constexpr const char Autoexec[] = "# /boot/autoexec.sh: run by the first shell at startup.\n"
-                                          "# Run the SD card's autoexec.sh too, if there is a card.\n"
-                                          "if waitmount /sd0/p0 3000; then\n"
-                                          "        [ -f /sd0/p0/autoexec.sh ] && . /sd0/p0/autoexec.sh\n"
-                                          "fi\n";
-
-        Error writeFile(const char *path, StringView text) {
+        Error writeFile(const char *path, ByteSpan bytes) {
                 Vfs::Context context;
                 auto [file, err] = Vfs::open(path, Vfs::Write | Vfs::Create | Vfs::Exclusive, context);
                 if (err.isError()) return err;
-                auto [n, werr] = file->write(text, WaitForever);
-                if (werr.isOk() && n != text.size()) werr = Error::IoError;
+                auto [n, werr] = file->write(bytes, WaitForever);
+                if (werr.isOk() && n != bytes.size()) werr = Error::IoError;
                 return werr;
+        }
+
+        // Every directory above @p path made (those there already are fine).
+        void makeParents(const char *path) {
+                char         dir[MaxPath];
+                Vfs::Context context;
+                for (const char *slash = std::strchr(path + 1, '/'); slash != nullptr;
+                     slash = std::strchr(slash + 1, '/')) {
+                        const size_t n = static_cast<size_t>(slash - path);
+                        if (n >= sizeof(dir)) return;
+                        std::memcpy(dir, path, n);
+                        dir[n] = '\0';
+                        (void)Vfs::mkdir(StringView(dir), context);
+                }
+                return;
+        }
+
+        bool listed(StringView manifest, StringView path) {
+                while (!manifest.isEmpty()) {
+                        const size_t     end = manifest.indexOf('\n');
+                        const StringView line = end == StringView::NPos ? manifest : manifest.left(end);
+                        if (line.trimmed() == path) return true;
+                        manifest = end == StringView::NPos ? StringView() : manifest.mid(end + 1);
+                }
+                return false;
+        }
+
+        void installDefaults() {
+                char *manifest = static_cast<char *>(Memory::alloc(MemSpace::Psram, MaxManifest));
+                if (manifest == nullptr) return;
+                size_t       got = 0;
+                Vfs::Context context;
+                {
+                        auto [file, err] = Vfs::open(Manifest, Vfs::Read, context);
+                        while (err.isOk() && got < MaxManifest) {
+                                auto [n, rerr] =
+                                        file->read(WritableByteSpan(reinterpret_cast<uint8_t *>(manifest) + got,
+                                                                    MaxManifest - got),
+                                                   WaitForever);
+                                if (rerr.isError() || n == 0) break;
+                                got += n;
+                        }
+                }
+                const StringView had(manifest, got);
+                String           added;
+                for (size_t i = 0; i < BootDefaults::count; ++i) {
+                        const BootDefaults::File &f = BootDefaults::files[i];
+                        if (listed(had, StringView(f.path))) continue;
+                        char path[MaxPath];
+                        std::snprintf(path, sizeof(path), "/boot/%s", f.path);
+                        makeParents(path);
+                        // Not there yet: written (a file the user made is kept, and listed).
+                        const Error err = writeFile(path, ByteSpan(f.data, f.size));
+                        if (err.isOk()) {
+                                bmdsInfo("BootDisk: installed %s", path);
+                        } else if (err != Error::Exists) {
+                                bmdsWarn("BootDisk: %s: %s", path, err.desc());
+                                continue;
+                        }
+                        if (added.append(StringView(f.path)).isError() || added.append('\n').isError()) break;
+                }
+                Memory::free(manifest);
+                if (added.isEmpty()) return;
+                auto [file, err] = Vfs::open(Manifest, Vfs::Write | Vfs::Create | Vfs::Append, context);
+                if (err.isOk()) {
+                        auto [n, werr] = file->write(added.view(), WaitForever);
+                        err = werr.isOk() && n != added.size() ? Error(Error::IoError) : werr;
+                }
+                if (err.isError()) bmdsWarn("BootDisk: %s: %s", Manifest, err.desc());
+                return;
         }
 
         // The random seed kept across boots (devplan/random.md).
@@ -320,13 +390,7 @@ Error BootDisk::init() {
                 bmdsErr("BootDisk: /dev/%s on %s: %s", name, Path, err.desc());
                 return err;
         }
-        if (formatted) {
-                for (const auto &[path, text] : {std::pair{"/boot/profile", StringView(Profile)},
-                                                 std::pair{"/boot/autoexec.sh", StringView(Autoexec)}}) {
-                        const Error werr = writeFile(path, text);
-                        if (werr.isError()) bmdsWarn("BootDisk: %s: %s", path, werr.desc());
-                }
-        }
+        installDefaults();
         bmdsInfo("BootDisk: /dev/%s mounted on %s, %u KB%s", name, Path,
                  static_cast<unsigned>(device.sectorCount() * device.sectorSize() / 1024),
                  formatted ? " (formatted)" : "");

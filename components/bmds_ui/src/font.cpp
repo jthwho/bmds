@@ -7,6 +7,7 @@
  */
 
 #include <bmds/font.h>
+#include <bmds/utf8.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -45,6 +46,25 @@ Glyph Font::lookup(uint32_t codepoint) const {
         if (find(codepoint, g)) return g;
         find(_replacement, g);
         return g;
+}
+
+uint32_t Font::textWidth(StringView utf8) const {
+        uint32_t width = 0;
+        for (size_t i = 0; i < utf8.size();) width += glyph(Utf8::decode(utf8, i)).width;
+        return width;
+}
+
+size_t Font::fitting(StringView utf8, uint32_t maxWidth) const {
+        uint32_t width = 0;
+        size_t   i = 0;
+        while (i < utf8.size()) {
+                size_t         next = i;
+                const uint32_t w = glyph(Utf8::decode(utf8, next)).width;
+                if (width + w > maxWidth) break;
+                width += w;
+                i = next;
+        }
+        return i;
 }
 
 size_t Font::glyphCount() const {

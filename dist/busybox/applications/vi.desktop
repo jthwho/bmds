@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Text Editor
+Comment=Edit text files with vi
+Exec=vi
+Icon=accessories-text-editor
+Terminal=true
+Categories=Utility;TextEditor;

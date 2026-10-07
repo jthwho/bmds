@@ -1,0 +1,3 @@
+# /boot/profile: read by every interactive shell as it starts.
+export HOME=/boot
+export PATH=/bin:/sd0/p0/bin

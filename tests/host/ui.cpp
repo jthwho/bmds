@@ -338,11 +338,68 @@ TEST_CASE("WindowStack: numbers, order, refusals") {
         CHECK(stack.open(Rect{0, 0, 4, 4}).error() == bmds::Error::Full);
 }
 
+TEST_CASE("WindowStack: levels keep panels and popups above, a desktop window below") {
+        using Level = WindowStack::Level;
+        WindowStack   stack(Width, Height);
+        const uint8_t desk = stack.open(Rect{0, 0, Width, Height}, Level::Desktop).value();
+        const uint8_t panel = stack.open(Rect{0, 0, Width, 8}, Level::Panel).value();
+        const uint8_t a = stack.open(Rect{0, 0, 16, 16}).value();
+        const uint8_t b = stack.open(Rect{8, 8, 16, 16}).value();
+        auto          order = [&] {
+                std::vector<int> ids;
+                for (size_t z = 0; z < stack.count(); ++z) ids.push_back(stack.idAt(z));
+                return ids;
+        };
+        CHECK(order() == std::vector<int>{panel, b, a, desk});
+        CHECK(stack.raise(desk).isOk());
+        CHECK(stack.raise(a).isOk());
+        CHECK(order() == std::vector<int>{panel, a, b, desk});
+        const uint8_t menu = stack.open(Rect{4, 4, 8, 8}, Level::Popup).value();
+        CHECK(order() == std::vector<int>{menu, panel, a, b, desk});
+        CHECK(stack.levelOf(menu) == Level::Popup);
+        CHECK(stack.hide(a).isOk());
+        CHECK(stack.raise(b).isOk());
+        CHECK(stack.show(a).isOk());
+        CHECK(order() == std::vector<int>{menu, panel, a, b, desk});
+        // A raise under a higher level damages only what it uncovers: not what the panel covers.
+        stack.clearDamage();
+        CHECK(stack.close(menu).isOk());
+        stack.clearDamage();
+        CHECK(stack.raise(b).isOk());
+        const std::vector<int> d = covered(stack.damage());
+        for (int y = 0; y < 8; ++y)
+                for (int x = 0; x < Width; ++x) CHECK(d[y * Width + x] == 0);
+        CHECK(d[10 * Width + 10] == 1); // a covered b there
+        CHECK(stack.levelOf(99) == Level::Normal);
+        // Always on top: above every normal window, under the panel; back down, on top of the normal ones.
+        CHECK(stack.setLevel(a, Level::Above).isOk());
+        CHECK(stack.raise(b).isOk());
+        CHECK(order() == std::vector<int>{panel, a, b, desk});
+        CHECK(WindowStack::isApplication(stack.levelOf(a)));
+        CHECK(!WindowStack::isApplication(Level::Panel));
+        CHECK(stack.setLevel(a, Level::Normal).isOk());
+        CHECK(order() == std::vector<int>{panel, a, b, desk});
+        CHECK(stack.raise(b).isOk());
+        CHECK(order() == std::vector<int>{panel, b, a, desk});
+        // Hidden: keeps its new level, shown on top of it.
+        CHECK(stack.hide(a).isOk());
+        CHECK(stack.setLevel(a, Level::Above).isOk());
+        CHECK(stack.show(a).isOk());
+        CHECK(order() == std::vector<int>{panel, a, b, desk});
+        CHECK(stack.setLevel(99, Level::Above) == bmds::Error::NotFound);
+}
+
 TEST_CASE("WindowStack: each change damages what changed, a raise and an invalidation no more") {
         Random rnd{77};
         for (int t = 0; t < 300; ++t) {
                 WindowStack stack(Width, Height);
-                for (int i = 0, n = 1 + int(rnd.next(6)); i < n; ++i) REQUIRE(stack.open(windowRect(rnd)).isOk());
+                // Every other run on random levels.
+                const bool levels = t % 2 == 1;
+                auto       level = [&] {
+                        return levels ? static_cast<WindowStack::Level>(rnd.next(4)) : WindowStack::Level::Normal;
+                };
+                for (int i = 0, n = 1 + int(rnd.next(6)); i < n; ++i)
+                        REQUIRE(stack.open(windowRect(rnd), level()).isOk());
                 for (int step = 0; step < 6; ++step) {
                         if (stack.count() == 0) REQUIRE(stack.show(stack.hiddenIdAt(0)).isOk());
                         stack.clearDamage();
@@ -359,10 +416,11 @@ TEST_CASE("WindowStack: each change damages what changed, a raise and an invalid
                                 const uint8_t hidden = stack.hiddenIdAt(rnd.next(uint32_t(stack.hiddenCount())));
                                 bound = stack.rectOf(hidden).value();
                                 REQUIRE(stack.show(hidden).isOk());
-                                REQUIRE(stack.idAt(0) == hidden);
+                                const size_t z = stack.layerOf(hidden).value();
+                                REQUIRE((z == 0 || stack.levelOf(stack.idAt(z - 1)) > stack.levelOf(hidden)));
                         } else if (op == 0) {
                                 const Rect r = windowRect(rnd);
-                                const auto opened = stack.open(r);
+                                const auto opened = stack.open(r, level());
                                 if (opened.isError()) continue;
                                 bound = r;
                         } else if (op == 1 && stack.count() > 1) {
@@ -377,6 +435,9 @@ TEST_CASE("WindowStack: each change damages what changed, a raise and an invalid
                                 asked = rnd.rect(false);
                                 REQUIRE(stack.invalidate(id, asked).isOk());
                         }
+                        // The levels in order, the highest on top.
+                        for (size_t z = 1; z < stack.count(); ++z)
+                                REQUIRE(stack.levelOf(stack.idAt(z - 1)) >= stack.levelOf(stack.idAt(z)));
                         const std::vector<int> after = owners(stack);
                         const std::vector<int> damaged = covered(stack.damage());
                         const bool             exact = stack.damage().rects().size() < Region::MaxRects / 2;
@@ -823,8 +884,8 @@ TEST_CASE("Font: unscii-16") {
 
 TEST_CASE("Font: the icons, 16 by 16 in the private use area") {
         const Font &icons = bmds::Fonts::icons16;
-        CHECK(icons.glyphCount() == 6); // five icons and a blank
-        for (uint32_t cp = bmds::Icon::Menu; cp <= bmds::Icon::Close; ++cp) {
+        CHECK(icons.glyphCount() == 8); // seven icons and a blank
+        for (uint32_t cp = bmds::Icon::Menu; cp <= bmds::Icon::Submenu; ++cp) {
                 REQUIRE(icons.hasGlyph(cp));
                 const Glyph g = icons.glyph(cp);
                 CHECK(g.width == 16);

@@ -21,6 +21,7 @@
 #include <esp_cpu.h>
 #include <bmds/command.h>
 #include <bmds/display.h>
+#include <bmds/bevel.h>
 #include <bmds/font.h>
 #include <bmds/glyphrenderer.h>
 #include <bmds/keyboarddecoder.h>
@@ -203,6 +204,12 @@ namespace {
                 return;
         }
 
+        // A test window closed: its number no longer a test window's.
+        void closedTest(void *arg) {
+                static_cast<TestWindow *>(arg)->id = 0;
+                return;
+        }
+
         // Display 0's window manager if it runs, or null with a message.
         WindowManager *running(CommandContext &ctx) {
                 auto [wm, err] = WindowManager::manager(0);
@@ -258,12 +265,13 @@ namespace {
                 for (size_t i = 0; i < n; ++i) {
                         const WindowManager::Info &w = info[i];
 
-                        ctx.printf("%-4u %-5u %-5u %-5u %-5u %s%s%s%s%s%s\n", w.id, w.rect.x, w.rect.y, w.rect.width,
+                        ctx.printf("%-4u %-5u %-5u %-5u %-5u %s%s%s%s%s%s%s\n", w.id, w.rect.x, w.rect.y, w.rect.width,
                                    w.rect.height, w.title, w.focused ? " (focus)" : "", w.kind[0] != '\0' ? " (" : "",
                                    w.kind, w.kind[0] != '\0' ? ")" : "",
                                    w.minimized   ? " (minimized)"
                                    : w.maximized ? " (maximized)"
-                                                 : "");
+                                                 : "",
+                                   w.level == WindowStack::Level::Above ? " (above)" : "");
                 }
                 return Shell::ExitSuccess;
         }
@@ -293,6 +301,7 @@ namespace {
                 config.rect.width = static_cast<uint16_t>((config.rect.width + 3) & ~3u); // as it will be placed
                 config.redraw = redrawTest;
                 config.resized = resizedTest;
+                config.closed = closedTest;
                 // Numbers are the lowest free (WindowStack): the new window's is
                 // known beforehand, as only this command opens windows for now.
                 uint8_t guess = 1;
@@ -406,6 +415,10 @@ namespace {
                 for (const Button &b : buttons) {
                         const Rect r = f.button(b.part);
                         if (!inside(r, x, y)) continue;
+                        Bevel::Edge  edges[Bevel::MaxEdges];
+                        const size_t n = Bevel::edges(r, Bevel::Style::Raised, edges);
+                        for (size_t i = 0; i < n; ++i)
+                                if (inside(edges[i].rect, x, y)) return palette.color(edges[i].role);
                         const Glyph    g = Fonts::icons16.glyph(b.icon);
                         const uint32_t col = x - r.x;
                         const bool     on = (g.rows[(y - r.y) * 2 + col / 8] & (0x80u >> (col % 8))) != 0;
@@ -472,7 +485,7 @@ namespace {
                 }
                 const uint32_t desktop = palette.color(WindowPalette::Role::Desktop);
                 const Rect     pointer = wm.pointerArea(); // over everything: not modelled
-                uint32_t       wrong = 0, checked = 0;
+                uint32_t       wrong = 0, checked = 0, unknown = 0;
                 int            fx = -1, fy = -1;
                 uint32_t       fgot = 0, fwant = 0;
                 for (uint32_t y = 0; y < s.height(); ++y) {
@@ -480,10 +493,14 @@ namespace {
                         for (uint32_t x = 0; x < s.width(); ++x) {
                                 if (inside(pointer, x, y)) continue;
                                 uint32_t want = desktop;
+                                bool     known = true;
                                 for (size_t i = 0; i < n; ++i) {
                                         if (info[i].minimized || !inside(info[i].rect, x, y)) continue;
                                         const Rect &c = clients[i];
-                                        if (!inside(c, x, y)) {
+                                        if (inside(c, x, y) && images[i] == nullptr &&
+                                            testWindows[info[i].id - 1].id != info[i].id) {
+                                                known = false; // a client area offering no reference (a menu)
+                                        } else if (!inside(c, x, y)) {
                                                 want = frameAt(palette, info[i], x, y);
                                         } else if (images[i] != nullptr) {
                                                 const uint8_t *q =
@@ -499,6 +516,10 @@ namespace {
                                         }
                                         break;
                                 }
+                                if (!known) {
+                                        ++unknown;
+                                        continue;
+                                }
                                 ++checked;
                                 const uint8_t *p = line + 3 * x;
                                 const uint32_t got = uint32_t(p[2]) << 16 | uint32_t(p[1]) << 8 | p[0];
@@ -513,6 +534,9 @@ namespace {
                 }
                 ctx.printf("check:    %lu of %lu pixels wrong", static_cast<unsigned long>(wrong),
                            static_cast<unsigned long>(checked));
+                if (unknown > 0)
+                        ctx.printf(" (%lu not checked: windows without a reference)",
+                                   static_cast<unsigned long>(unknown));
                 if (wrong > 0)
                         ctx.printf(" (the first at %d,%d: %06lx, not %06lx)", fx, fy, static_cast<unsigned long>(fgot),
                                    static_cast<unsigned long>(fwant));
@@ -987,6 +1011,33 @@ namespace {
                         return parseId(ctx, args[2], id) ? report(ctx, wm->minimize(id)) : Shell::ExitUsage;
                 if (args.size() == 3 && std::strcmp(what, "maximize") == 0)
                         return parseId(ctx, args[2], id) ? report(ctx, wm->maximize(id)) : Shell::ExitUsage;
+                if (args.size() == 4 && std::strcmp(what, "above") == 0) {
+                        if (!parseId(ctx, args[2], id)) return Shell::ExitUsage;
+                        if (std::strcmp(args[3], "on") != 0 && std::strcmp(args[3], "off") != 0) return ctx.usage();
+                        return report(ctx, wm->setAbove(id, args[3][1] == 'n'));
+                }
+                if ((args.size() == 4 || args.size() == 5) && std::strcmp(what, "hid") == 0) {
+                        // A raw key event, as a keyboard sends it: press, repeat or release of a HID usage
+                        // with modifier bits (a test aid for keys `win key` can't type: Alt+Tab, arrows).
+                        long usage = 0, modifiers = 0;
+                        if (!parseNumber(args[3], 0xff, usage) ||
+                            (args.size() == 5 && !parseNumber(args[4], 0xff, modifiers)))
+                                return ctx.usage();
+                        KeyEvent e;
+                        e.usage = static_cast<uint8_t>(usage);
+                        e.modifiers = static_cast<uint8_t>(modifiers);
+                        if (std::strcmp(args[2], "press") == 0) {
+                                e.action = KeyEvent::Action::Press;
+                        } else if (std::strcmp(args[2], "release") == 0) {
+                                e.action = KeyEvent::Action::Release;
+                        } else if (std::strcmp(args[2], "repeat") == 0) {
+                                e.action = KeyEvent::Action::Repeat;
+                        } else {
+                                return ctx.usage();
+                        }
+                        wm->key(e);
+                        return report(ctx, wm->sync(SyncTimeoutMs));
+                }
                 if (args.size() == 3 && std::strcmp(what, "restore") == 0)
                         return parseId(ctx, args[2], id) ? report(ctx, wm->restore(id)) : Shell::ExitUsage;
                 if (args.size() == 5 && std::strcmp(what, "resize") == 0) {
@@ -1014,7 +1065,7 @@ BMDS_SHELL_COMMAND(
         "[start [RRGGBB]|stop|list|new [X Y W H] [TITLE]|close N|raise N|move N X Y|drag N X Y|"
         "term [N]|type N TEXT|dump N|scroll N DY|textbench N|color [ROLE RRGGBB]|check|stats|shuffle N|bench [CELLS]|"
         "pointer DX DY [BUTTONS [WHEEL]]|decorate N [all|none|+NAME|-NAME...]|minimize N|maximize N|restore N|"
-        "resize N W H|pointer on/off|key TEXT|title N [TEXT]]",
+        "resize N W H|pointer on/off|key TEXT|title N [TEXT]|above N on/off|hid press/release/repeat USAGE [MODS]]",
         "The desktop and its windows on display 0: 'new' opens a test window, 'drag' moves one "
         "as an outline, 'color' lists or sets the palette, 'check' compares every pixel with the stack, "
         "'pointer' moves the pointer as a mouse would (BUTTONS: 1 left, 2 right, 4 middle; WHEEL: notches, "

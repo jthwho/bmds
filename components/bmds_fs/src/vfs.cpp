@@ -1037,6 +1037,32 @@ namespace {
 
 } // namespace
 
+Error Vfs::findProgram(StringView name, StringView searchPath, const Context &context, String &out) {
+        static const char *const suffixes[] = {"", ".elf", ".sh"};
+        if (name.isEmpty()) return Error::NotExist;
+        size_t at = 0;
+        for (;;) {
+                size_t colon = searchPath.indexOf(':', at);
+                if (colon == StringView::NPos) colon = searchPath.size();
+                // An empty entry is the current directory, as in POSIX.
+                const StringView dir = colon > at ? searchPath.mid(at, colon - at) : StringView(".");
+                for (const char *suffix : suffixes) {
+                        out.clear();
+                        Error err = out.append(dir);
+                        if (err.isOk() && !dir.endsWith('/')) err = out.append('/');
+                        if (err.isOk()) err = out.append(name);
+                        if (err.isOk()) err = out.append(suffix);
+                        if (err.isError()) return err;
+                        const Result<FileInfo> info = stat(out, context);
+                        if (info.isOk() && info.value().type == FileType::File) return Error::Ok;
+                }
+                if (colon == searchPath.size()) break;
+                at = colon + 1;
+        }
+        out.clear();
+        return Error::NotExist;
+}
+
 Result<FileInfo> Vfs::stat(StringView path, const Context &context) {
         return statAt(path, context, true);
 }

@@ -77,12 +77,12 @@ struct WindowFrame {
                         ResizeBottomRight,
                 };
 
-                static constexpr uint16_t BorderWidth = 4;  ///< The border's thickness.
-                static constexpr uint16_t TitleHeight = 20; ///< A 16-pixel font row and 2 pixels above and below.
-                static constexpr uint16_t ButtonSize = 16;  ///< A button's side.
-                static constexpr uint16_t ButtonGap = 4;    ///< Between buttons, and from the title bar's ends.
-                static constexpr uint16_t OutlineWidth = 4; ///< A move's outline.
-                static constexpr uint16_t MinClient = 8;    ///< The smallest client side.
+                static constexpr uint16_t BorderWidth = 4;   ///< The border's thickness.
+                static constexpr uint16_t TitleHeight = 20;  ///< A 16-pixel font row and 2 pixels above and below.
+                static constexpr uint16_t ButtonSize = 16;   ///< A button's side.
+                static constexpr uint16_t ButtonGap = 4;     ///< Between buttons, and from the title bar's ends.
+                static constexpr uint16_t OutlineWidth = 4;  ///< A move's outline.
+                static constexpr uint16_t MinClient = 8;     ///< The smallest client side.
                 static constexpr uint16_t HandleCorner = 16; ///< How far a corner's handle reaches along the ring.
 
                 Rect    outer;
@@ -323,6 +323,11 @@ struct WindowFrame {
  * number and rectangle but are in no layer: `hide()` damages what one
  * showed, `show()` puts it back on top.
  *
+ * Each window is on a level (`devplan/gui.md` G4): a window opened, raised
+ * or shown goes to the top of its level, under every window of a higher one
+ * (the panel stays above the windows, popups above everything, a desktop
+ * window under them all).
+ *
  * @par Thread Safety
  * A plain value.
  */
@@ -330,6 +335,15 @@ class WindowStack {
         public:
                 /** @brief Most windows. */
                 static constexpr size_t MaxWindows = 16;
+
+                /** @brief The levels windows are stacked in, lowest first. Append only. */
+                enum class Level : uint8_t {
+                        Desktop, ///< Under every other window (the desktop's own).
+                        Normal,  ///< Applications' windows.
+                        Above,   ///< Applications' windows kept above the others ("always on top").
+                        Panel,   ///< Above them: panels and docks.
+                        Popup,   ///< Above everything: menus.
+                };
 
                 /** @brief The pixel multiple of window x and widths. */
                 static constexpr uint16_t Align = 4;
@@ -364,6 +378,21 @@ class WindowStack {
                 /** @brief Returns window @p id's rectangle, shown or hidden, or `NotFound`. */
                 Result<Rect> rectOf(uint8_t id) const;
 
+                /** @brief Returns window @p id's level (`Normal` if there is none). */
+                Level levelOf(uint8_t id) const;
+
+                /** @brief Returns true for the levels of applications' windows (`Normal`, `Above`). */
+                static constexpr bool isApplication(Level level) {
+                        return level == Level::Normal || level == Level::Above;
+                }
+
+                /**
+                 * @brief Moves window @p id (shown or hidden) to @p level, on top of
+                 *        it; what changes on the screen is damaged.
+                 * @return `Ok` or `NotFound`.
+                 */
+                Error setLevel(uint8_t id, Level level);
+
                 /** @brief Returns true if window @p id is hidden. */
                 bool isHidden(uint8_t id) const;
 
@@ -371,10 +400,10 @@ class WindowStack {
                 bool isPlaceable(const Rect &rect) const;
 
                 /**
-                 * @brief Opens a window at @p rect, on top.
+                 * @brief Opens a window at @p rect, on top of @p level.
                  * @return Its number, `Invalid` (not placeable) or `Full`.
                  */
-                Result<uint8_t> open(const Rect &rect);
+                Result<uint8_t> open(const Rect &rect, Level level = Level::Normal);
 
                 /** @brief Closes window @p id, shown or hidden. @return `Ok` or `NotFound`. */
                 Error close(uint8_t id);
@@ -386,13 +415,13 @@ class WindowStack {
                  */
                 Error move(uint8_t id, const Rect &rect);
 
-                /** @brief Puts shown window @p id on top. @return `Ok` or `NotFound`. */
+                /** @brief Puts shown window @p id on top of its level. @return `Ok` or `NotFound`. */
                 Error raise(uint8_t id);
 
                 /** @brief Hides shown window @p id. @return `Ok` or `NotFound`. */
                 Error hide(uint8_t id);
 
-                /** @brief Shows hidden window @p id on top. @return `Ok` or `NotFound`. */
+                /** @brief Shows hidden window @p id on top of its level. @return `Ok` or `NotFound`. */
                 Error show(uint8_t id);
 
                 /**
@@ -422,17 +451,34 @@ class WindowStack {
                 Result<size_t> plan(const Region &damage, Span<ComposePiece> out) const;
 
         private:
-                void addShown(size_t z, const Rect &rect); // what of rect layer z shows, to the damage
-                void layers(Rect (&out)[MaxWindows + 1]) const;
-                int  find(uint8_t id) const;       // the entry, shown or hidden, or -1
-                void take(size_t from, size_t to); // moves an entry, shifting those between
+                void   addShown(size_t z, const Rect &rect); // what of rect layer z shows, to the damage
+                void   layers(Rect (&out)[MaxWindows + 1]) const;
+                int    find(uint8_t id) const;                // the entry, shown or hidden, or -1
+                size_t topOf(Level level, size_t skip) const; // where the top of a level is, entry skip not counted
+                void   take(size_t from, size_t to);          // moves an entry, shifting those between
 
                 Rect    _screen;
                 Rect    _rects[MaxWindows]; // the shown top first, then the hidden
                 uint8_t _ids[MaxWindows] = {};
+                Level   _levels[MaxWindows] = {}; // as _ids
                 uint8_t _count = 0;
                 uint8_t _hidden = 0;
                 Region  _damage;
 };
+
+/**
+ * @brief Where a new window of @p width × @p height goes when it asks to be
+ *        placed (`devplan/gui.md` §4f): down a diagonal from the top-left of
+ *        @p area, a title bar's height (`CascadeStep`) a step, at the first
+ *        place no window in @p taken has its top-left corner. A diagonal that
+ *        reaches @p area's bottom starts again at the top, two steps to the
+ *        right. When every place is taken, or the window is too big for
+ *        the steps, the first place (kept inside @p area where it fits).
+ *        x on a 4-pixel column.
+ */
+Rect cascadeRect(uint16_t width, uint16_t height, const Rect &area, Span<const Rect> taken);
+
+/** @brief The step down and right between cascaded windows: a title bar and its border. */
+constexpr uint16_t CascadeStep = 24;
 
 BMDS_NAMESPACE_END

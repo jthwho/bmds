@@ -8,10 +8,12 @@
 # is found through the linker section.
 
 set(BMDS_UI_PURE_SRCS
+        src/bevel.cpp
         src/compose.cpp
         src/font.cpp
         src/glyphrenderer.cpp
         src/iconfont.cpp
+        src/menulayout.cpp
         src/terminalview.cpp
         src/windowpalette.cpp
         src/windowstack.cpp)
@@ -24,6 +26,8 @@ set(BMDS_UI_FONT_SRC ${CMAKE_CURRENT_BINARY_DIR}/font_unscii16.cpp)
 
 if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_UI_PURE_SRCS}
+                                    src/bevelpainter.cpp
+                                    src/menupainter.cpp
                                     src/painter.cpp
                                     src/png.cpp
                                     src/screenshotcommand.cpp

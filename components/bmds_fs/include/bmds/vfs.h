@@ -288,6 +288,15 @@ namespace Vfs {
         Result<FileHandle::Ptr> open(StringView path, uint8_t flags, const Context &context);
 
         /**
+         * @brief Finds program @p name in the `:`-separated directories of
+         *        @p searchPath (`$PATH`; an empty entry is the current
+         *        directory), as the shell does: the first file named
+         *        `NAME`, `NAME.elf` or `NAME.sh`, a directory at a time.
+         * @return `Ok` with its path in @p out, `NotExist`, or `NoMem`.
+         */
+        Error findProgram(StringView name, StringView searchPath, const Context &context, String &out);
+
+        /**
          * @brief Returns what @p path names, following symbolic links.
          * @return The file, or `NotExist`, `TooManyLinks` (more than 8 in a row), ...
          */

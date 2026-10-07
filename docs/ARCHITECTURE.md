@@ -50,6 +50,9 @@ That decision and its rationale is recorded per driver in its devplan document.
 | `bmds_console` | Terminal abstraction, serial console, HDMI text console, ANSI/VT parsing. | Partly |
 | `bmds_shell` | Command shell, built-in commands. | Partly |
 | `bmds_loader` | Executable loader, syscall table, program lifecycle. | Yes |
+| `bmds_ui` | The desktop: surfaces' drawing (`Painter`), the window manager, fonts, menus' geometry and drawing. | Partly |
+| `bmds_gui` | The GUI toolkit: an event loop, widgets, menus, over the window manager's public API (`devplan/gui.md`). | Partly |
+| `bmds_terminal`, `bmds_panel` | Built-in GUI programs: `/bin/terminal`, `/bin/panel`. | Yes |
 | `sdk/` | Userspace C headers, the C library (musl) and its system call layer, linker script, example programs. | No (cross-compiled) |
 
 ### Repository Layout (Planned)

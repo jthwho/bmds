@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <bmds/config.h>
 #include <bmds/span.h>
+#include <bmds/stringview.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -76,6 +77,15 @@ class Font {
                         return lookup(codepoint);
                 }
 
+                /** @brief Returns @p utf8's width in pixels as drawn (wide glyphs twice a cell). */
+                uint32_t textWidth(StringView utf8) const;
+
+                /**
+                 * @brief Returns how many bytes of @p utf8 fit in @p maxWidth pixels,
+                 *        whole characters only.
+                 */
+                size_t fitting(StringView utf8, uint32_t maxWidth) const;
+
                 /** @brief Returns the glyph count. */
                 size_t glyphCount() const;
 
@@ -109,6 +119,8 @@ namespace Icon {
         constexpr uint32_t Maximize = 0xe002; ///< A window.
         constexpr uint32_t Restore = 0xe003;  ///< A window in front of another.
         constexpr uint32_t Close = 0xe004;    ///< ×
+        constexpr uint32_t Check = 0xe005;    ///< ✓: a checked menu item.
+        constexpr uint32_t Submenu = 0xe006;  ///< ▸: a menu item opening a submenu.
 } // namespace Icon
 
 BMDS_NAMESPACE_END

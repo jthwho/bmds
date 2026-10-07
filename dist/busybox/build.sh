@@ -14,3 +14,6 @@ while read -r path; do
         applet="${path##*/}"
         [ "$applet" = busybox ] || ln -sf busybox "$DESTDIR/bin/$applet"
 done < "$BUILD/busybox.links"
+# Launcher entries for the panel (devplan/gui.md G11).
+mkdir -p "$DESTDIR/share/applications"
+cp "$PKGDIR"/applications/*.desktop "$DESTDIR/share/applications/"

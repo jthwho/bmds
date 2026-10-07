@@ -599,11 +599,15 @@ ones once it exists.
      hide while it is typed into and to come back on the next move (the terminal does).
    - **Mouse wheel** (done, §4i): delivered to the window under the pointer; the terminal
      scrolls back through its history with it (needs a scrollback in `TerminalScreen`).
-   - **Context menus:** a right click on the desktop opens one that starts programs (a terminal
-     first), the title bar's left button opens the window's.
-   - **A panel along the top:** a program launcher button and a list of the windows (minimized
-     ones restored from it). The real launcher lives there; the desktop menu stays the quick
-     way.
+   - **Context menus** (done, `gui.md`): a right click on the desktop opens one that starts
+     programs (the launcher's entries), the title bar's left button (or a right click on its
+     title bar or its panel button) opens the window's.
+   - **A panel along the top** (done, `gui.md`): a program launcher button and a list of the
+     windows (minimized ones restored from it), and a clock; `/bin/panel`, on a GUI toolkit
+     (`bmds_gui`), its layout and its launcher's entries from configuration files. The window
+     manager gained window levels (desktop, normal, panel, popup), mouse events for client areas,
+     popups, a work area, and `watch()` for the window list. Then (`gui.md` §4e, §4f): bevelled
+     title-bar buttons in the toolkit's 3D look, and new windows that ask are cascaded.
 
 9. **Built-in applications as ordinary applications** (the decision in §0; designed 2026-10-05
    with the user; with `programs.md` §17, `/bin`, and `pty.md`, pseudo-terminals):

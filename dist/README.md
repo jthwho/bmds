@@ -33,6 +33,9 @@ Make `dist/<name>/` with:
   (the repository; for its `tools/`). Without the SDK there is no `CC`, `AR`,
   `STRIP` or `OBJCOPY`.
 - **`patches/*.patch`** (optional): applied in name order with `patch -p1`.
+- **Launcher entries** (optional): Desktop Entry files installed in
+  `$DESTDIR/share/applications/` show in the panel's launcher (`devplan/gui.md` G10, G11;
+  BusyBox's `vi.desktop`).
 - Anything else the build reads (a configuration file, say).
 
 `bmds-dist` strips the programs in `bin/` (as the loader needs: relocations

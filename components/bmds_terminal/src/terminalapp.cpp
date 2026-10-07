@@ -13,7 +13,13 @@
  * pty, the program launcher, a thread, and the font and glyph drawing of the
  * GUI.
  *
- *   terminal [X Y]   a window with its top-left corner at X, Y (100 x 30 cells)
+ *   terminal [X Y] [-e COMMAND [ARG...]]
+ *
+ * A window of 100 x 30 cells with its top-left corner at X, Y, or where the
+ * window manager cascades new windows (devplan/gui.md §4f). With -e, COMMAND
+ * runs on the pty instead of the shell, found through PATH, and the window
+ * closes when it ends; if it can't start, the window stays open to say why
+ * (devplan/gui.md G15).
  */
 
 #include <atomic>
@@ -37,6 +43,7 @@
 #include <bmds/terminalview.h>
 #include <bmds/thread.h>
 #include <bmds/utf8.h>
+#include <bmds/vfs.h>
 #include <bmds/windowmanager.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -82,6 +89,7 @@ namespace {
                         void   update();
 
                         const BuiltinProgram::Context &_context;
+                        Span<const StringView>         _command; // -e's: the command and its arguments
                         WindowManager                 *_wm = nullptr;
                         uint8_t                        _client = 0;
                         std::atomic<uint8_t>           _window{0};
@@ -111,11 +119,18 @@ namespace {
                 // A window where asked: terminal [X Y].
                 Rect rect{32, 32, WindowFrame::outerWidth(Columns * CellWidth, WindowFrame::Standard),
                           WindowFrame::outerHeight(Rows * CellHeight, WindowFrame::Standard)};
-                if (_context.args.size() == 3) {
+                size_t positional = _context.args.size();
+                for (size_t i = 1; i < _context.args.size(); ++i) {
+                        if (_context.args[i] != "-e") continue;
+                        positional = i;
+                        _command = Span<const StringView>(_context.args.data() + i + 1, _context.args.size() - i - 1);
+                        break;
+                }
+                if (positional == 3) {
                         rect.x = static_cast<uint16_t>(std::atoi(String::fromView(_context.args[1]).value().cStr()));
                         rect.y = static_cast<uint16_t>(std::atoi(String::fromView(_context.args[2]).value().cStr()));
-                } else if (_context.args.size() != 1) {
-                        say("usage: terminal [X Y]\n");
+                } else if (positional != 1 || (positional < _context.args.size() && _command.isEmpty())) {
+                        say("usage: terminal [X Y] [-e COMMAND [ARG...]]\n");
                         return 2;
                 }
                 auto [wm, merr] = WindowManager::manager(0);
@@ -157,6 +172,7 @@ namespace {
                         config.wheel = wheeled;
                         config.client = _client;
                         config.kind = "terminal";
+                        config.cascade = positional == 1; // no X Y: placed by the window manager
                         config.dump = dump;
                         config.reference = reference;
                         config.arg = this;
@@ -260,6 +276,20 @@ namespace {
                         ProgramLauncher::Request    request;
                         request.path = "/bin/sh";
                         request.args = Span<const StringView>(Args, 2);
+                        String found;
+                        if (!self->_command.isEmpty()) {
+                                // A name without a slash: found on $PATH, as the shell would.
+                                request.path = self->_command[0];
+                                request.args = self->_command;
+                                StringView path;
+                                for (const StringView &v : self->_context.environment)
+                                        if (v.startsWith(StringView("PATH="))) path = v.mid(5);
+                                if (!request.path.contains('/')) {
+                                        const Vfs::Context vc{self->_context.cwd, nullptr};
+                                        err = Vfs::findProgram(request.path, path, vc, found);
+                                        request.path = found.view();
+                                }
+                        }
                         request.environment = self->_context.environment;
                         request.fds = &fds;
                         request.cwd = self->_context.cwd;
@@ -267,14 +297,25 @@ namespace {
                         request.session = true;
                         // No interrupt: the terminal waits for its shell even while it ends (the
                         // hangup ends the shell), so the pty outlives it.
-                        auto [status, rerr] = self->_context.launcher->run(request);
-                        (void)status;
-                        err = rerr;
+                        if (err.isOk()) {
+                                auto [status, rerr] = self->_context.launcher->run(request);
+                                (void)status;
+                                err = rerr;
+                        }
                 }
                 if (err.isError()) {
-                        const char *why = err.desc();
-                        (void)self->_pty->console().write(StringView("terminal: can't start the shell: "), 100);
-                        (void)self->_pty->console().write(StringView(why), 100);
+                        PtyConsole &out = self->_pty->console();
+                        if (self->_command.isEmpty()) {
+                                (void)out.write(StringView("terminal: can't start the shell: "), 100);
+                        } else {
+                                (void)out.write(StringView("terminal: "), 100);
+                                (void)out.write(self->_command[0], 100);
+                                (void)out.write(StringView(": "), 100);
+                        }
+                        (void)out.write(StringView(err.desc()), 100);
+                        (void)out.write(StringView("\r\n"), 100);
+                        // Shown until the window is closed (the hangup ends the reads).
+                        if (!self->_command.isEmpty()) return;
                 }
                 self->_pty->programEnded();
                 return;

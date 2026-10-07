@@ -325,6 +325,13 @@ directories; LittleFS isn't in IDF (a managed component).
 - **The firmware's image** doesn't touch the partition: reflashing the app keeps `/boot`. A later
   `idf.py` target can build a FAT image from a directory of defaults (`fatfsgen.py`) for a fresh
   board.
+- **Defaults from the repository** (2026-10-06, `gui.md` G14): the files of `boot/` (the two
+  scripts, `config/panel.conf`, `applications/terminal.desktop`) are embedded in the firmware
+  (`tools/embedfiles.py`) and installed at each boot: a default not on `/boot` and not listed in
+  `/boot/.defaults` is written and listed (one is already there: listed, kept). So a new
+  release's defaults reach a `/boot` made before it, and a default the user deletes stays
+  deleted (its line removed from `.defaults` brings it back). Writing happens once per new
+  default (1.0 s for two files and the list); otherwise the list is read (4.3 ms for the stage).
 
 **ABI impact:** the path `/boot`, `/boot/autoexec.sh` and `/boot/profile` and their roles,
 `waitmount`, the defaults of `HOME` and `PATH`. Recorded
