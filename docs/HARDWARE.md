@@ -45,7 +45,7 @@ U1 is a bare QFN104 ESP32-P4 chip soldered to the board, not a module.
 | **USB debug** | USB-C carries **USB-Serial/JTAG only** (full-speed PHY, GPIO24/25) | Programming, console, JTAG. There is no separate USB-UART chip. Also the main power input (5.1k CC pull-downs, no PD). |
 | **Ethernet** | **IC+ IP101GRR** PHY (U2), RMII, PHY address 1 | The PHY supplies the 50 MHz REF_CLK into GPIO50. PHY reset is GPIO51, and nothing else drives that pin. |
 | **PoE** | Passive, through the optional POEv3 add-on module | The module plugs into a 4-pin header and feeds the TPS2116 power mux. No GPIO. |
-| **Audio** | **Everest ES8311** mono codec (U8), 3.5 mm jack | I²C address 0x18 on the main bus. No speaker amplifier. Mic input on the jack. Codec supply enable on GPIO6, powered by default. No jack detect. |
+| **Audio** | **Everest ES8311** mono codec (U8), 3.5 mm jack | I²C address 0x18 on the main bus. No speaker amplifier. Mic input on the jack. Codec supply enable on GPIO6, powered by default. No jack detect. **Left and right are one mono signal in opposite polarity** (see the notes). |
 | **Storage** | microSD, native 4-bit SDMMC slot 0 (IOMUX pins) | The IO domain is powered by **on-chip LDO channel 4** (3.3 V). Card VDD is switched by GPIO45 (active low, on by default). Card detect is on GPIO3, but its pull-up is powered by LDO VO4, **so it only reads correctly while LDO 4 is on**. No write protect. |
 | **Expansion** | UEXT (10-pin) | Carries UART0, a second I²C bus, and SPI. See the pin map. |
 | **GPIO header** | 20-pin EXT1 | **Not fitted** (footprint only). |
@@ -110,7 +110,7 @@ Every ESP32-P4 GPIO with a board function. Netlist names are given where they he
 
 | Device | 7-bit address | Notes |
 |---|---|---|
-| ES8311 codec | 0x18 | Level-shifted to the 3.3VA domain |
+| ES8311 codec | 0x18 | Level-shifted to the 3.3VA domain. **Confirmed** (Rev C board, 2026-10-08): chip ID 0x8311 in 0xFD/0xFE, version 0x01 in 0xFF. Cut off the bus while its supply is off. |
 | LT8912B bridge | 0x48, 0x49, 0x4A | Level-shifted to 1.8 V. **Confirmed** (Rev C board, 2026-10-04): all three answer, and 0x4B too (not used by any driver); chip id 0x12B2 in main registers 0x00/0x01. The schematic doesn't state the addresses. |
 | HDMI sink DDC | 0x50 (EDID), plus other DDC devices | Level-shifted to 5 V. **Whatever the monitor puts on DDC appears on the system bus.** |
 | DSI and CSI connectors | Panel or camera dependent | e.g. OV5647 camera at 0x36 **(unconfirmed)** |
@@ -130,6 +130,9 @@ Every ESP32-P4 GPIO with a board function. Netlist names are given where they he
 - **HDMI hot-plug and bridge interrupt are not on a GPIO.** Detecting a display means polling LT8912B registers. The cost should be measured, and the polling kept rare.
 - **The HDMI DDC shares the main I²C bus**, so a misbehaving monitor can disturb the codec and bridge buses.
 - **HDMI and a DSI panel are mutually exclusive.**
+- **The headphone jack's left and right are the codec's two differential outputs.** OUTP goes to left (HP-L) and OUTN to right (HP-R), each through 22 µF to a ground-referenced jack, so the two channels carry the same mono signal in opposite polarity. Headphones sound "phasey", a stereo speaker pair loses bass, and anything that sums left and right to mono cancels to near silence; use one channel, or reverse one speaker. Software can't fix it: the ES8311 has one DAC (`devplan/audio.md` §2).
+- **The codec has its own LDO** (VR2, AP1231-3.3, from 5 V), its CE on GPIO6 (`CODEC_PWR_DIS#`, pulled up with 4.7k). It makes +3.3VA, which feeds PVDD and DVDD (through ferrite L5) and AVDD (through 10 Ω): **DVDD is 3.3 V**, so the guide's 3.3 V clock limits apply. Two BSS138s (FET3, FET4) disconnect the codec from the I²C bus while its supply is off. CE pin 20 is pulled to ground (R64 10k), hence 0x18. MCLK and the I²S lines have 33 Ω series resistors, and 27 pF to ground on three of the I²S lines near the codec.
+- **The microphone contact (jack pin 1) is biased from ADCVREF** through 200 Ω, 1 µF and 2.2k (R79, C104, R82) into MIC1P. MIC1N is AC-coupled to the same bias through 2.2k and goes nowhere else: the input is pseudo-differential.
 - **Olimex's `lan_test` Kconfig defaults are wrong** (MDC 41, MDIO 40, no reset). Its committed sdkconfig values (31, 52, 51) are right.
 
 ## Development Connection

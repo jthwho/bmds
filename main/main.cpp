@@ -10,6 +10,7 @@
  */
 
 #include <sdkconfig.h>
+#include <bmds/audiodevice.h>
 #include <bmds/boot.h>
 #include <bmds/bootdisk.h>
 #include <bmds/clipboard.h>
@@ -53,6 +54,7 @@ namespace {
         constexpr bmds::Boot::Stage SystemStages[] = {
                 {"console", bmds::UsbSerialConsole::init},
                 {"i2c", bmds::I2cBus::init},
+                {"audio", bmds::AudioDevice::init}, // dsp0: made, not started
                 {"vfs", bmds::Vfs::init},
                 {"boot", bmds::BootDisk::init},       // /boot: the profile and autoexec.sh
                 {"sysconf", bmds::SysConf::init},     // the system configuration, saved on /boot; /home

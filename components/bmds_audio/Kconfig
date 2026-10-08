@@ -1,0 +1,20 @@
+menu "BMDS audio"
+
+    config BMDS_AUDIO_PRIORITY
+        int "Audio device task priority"
+        default 20
+        range 1 24
+        help
+            The task that fills each audio device's DMA buffers (devplan/audio.md §5). It must
+            meet a deadline of two periods, so it runs above everything but the display's
+            restart task.
+
+    # The I2S interrupt must run while the flash is written (/boot): with the cache off
+    # it still clears finished buffers, so a gap plays silence, not stale audio
+    # (devplan/audio.md §16).
+    config BMDS_AUDIO_IRAM_SAFE
+        bool
+        default y
+        select I2S_ISR_IRAM_SAFE
+
+endmenu

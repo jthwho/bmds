@@ -20,6 +20,7 @@ add_subdirectory(${BMDS_ROOT}/components/bmds_fs ${CMAKE_BINARY_DIR}/bmds_fs)
 add_subdirectory(${BMDS_ROOT}/components/bmds_files ${CMAKE_BINARY_DIR}/bmds_files)
 add_subdirectory(${BMDS_ROOT}/components/bmds_loader ${CMAKE_BINARY_DIR}/bmds_loader)
 add_subdirectory(${BMDS_ROOT}/components/bmds_drivers ${CMAKE_BINARY_DIR}/bmds_drivers)
+add_subdirectory(${BMDS_ROOT}/components/bmds_audio ${CMAKE_BINARY_DIR}/bmds_audio)
 add_subdirectory(${BMDS_ROOT}/components/bmds_input ${CMAKE_BINARY_DIR}/bmds_input)
 add_subdirectory(${BMDS_ROOT}/components/bmds_ui ${CMAKE_BINARY_DIR}/bmds_ui)
 add_subdirectory(${BMDS_ROOT}/components/bmds_gui ${CMAKE_BINARY_DIR}/bmds_gui)
@@ -30,6 +31,7 @@ add_executable(bmds_host_tests
         main.cpp
         hostmemory.cpp
         arena.cpp
+        audio.cpp
         blockdevice.cpp
         bytering.cpp
         clipboard.cpp
@@ -103,7 +105,7 @@ if(BMDS_ZIC AND Python3_Interpreter_FOUND)
         add_dependencies(bmds_host_tests bmds_test_zoneinfo)
         target_compile_definitions(bmds_host_tests PRIVATE BMDS_TEST_ZONEINFO="${CMAKE_BINARY_DIR}/zoneinfo.bin")
 endif()
-target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_input bmds_ui bmds_gui bmds_clipboard
+target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_audio bmds_input bmds_ui bmds_gui bmds_clipboard
         bmds_sysconf bmds_files)
 bmds_target_options(bmds_host_tests)
 

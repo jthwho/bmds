@@ -124,7 +124,16 @@ Plan: [`input.md`](input.md).
 
 ## Phase 7 — Sound and Network
 
-- [ ] Audio output (I²S + codec), simple PCM API for programs.
+- [ ] Audio (`audio.md`, designed 2026-10-08):
+  - [ ] 1. ES8311 and I²S bring-up; `audio` status, registers, test tone.
+  - [ ] 2. Engine: mixer, conversion, resampling, volume, system sounds and bell, tray control.
+  - [ ] 3. ABI: native audio fds, `/dev/dsp*`, OSS ioctls in `linux.c`, `play` (WAV).
+  - [ ] 4. Decoders (MP3, Ogg Vorbis, FLAC) in the firmware via the SDK; Open from the browser.
+  - [ ] 5. Real-time clients and exclusive mode.
+  - [ ] 6. MIDI: ports, routing, virtual ports; USB and serial MIDI.
+  - [ ] 7. Synth: General MIDI player and synth library.
+  - [ ] 8. Capture and `record` (after the loopback cable), then the pedal work.
+  - [ ] 9. AES67 and USB audio (after the network stack).
 - [ ] Ethernet bring-up, IP stack, basic tools (`ping`, file transfer).
 
 ## Phase 8 — Self-Hosting
