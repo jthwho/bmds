@@ -200,3 +200,8 @@ The commit carries an `ABI:` line. `showMenu` is internal, as the window manager
     `New Text Document.txt` in that cell (`desktop.conf` 4,3), with the editor over its name
     and "New Text Document" selected. Typing "notes" and Enter gave `notes.txt`. N and F at
     another cell made `New Folder` there.
+- **The trash through links (2026-10-07, found trying `filebrowser.md` step 2):** `/home` is a
+  link the VFS provides, so `trash /home/Desktop/X` and the desktop's Delete failed ("not on a
+  filesystem with a trash"): the path was matched to a mount without following links. Now its
+  folder is resolved with `Vfs::realPath()` (its own name kept, so a link is trashed itself) and
+  the physical path is what the info file records. Host-tested through a linked folder.

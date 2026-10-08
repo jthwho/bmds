@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
+#include <bmds/error.h>
 #include <bmds/span.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -35,17 +36,15 @@ struct IconGrid {
                 /** @brief No cell (none wanted). */
                 static constexpr uint16_t None = UINT16_MAX;
 
-                /** @brief Items placed at most. */
-                static constexpr size_t MaxItems = 64;
-
                 /**
-                 * @brief Places @p wanted.size() items (`MaxItems` at most) in a grid of
-                 *        @p columns × @p rows cells, in @p out: each in the cell it
-                 *        wants if that is in the grid and no earlier item took it,
-                 *        the rest in the first free cells down, then across. Past
-                 *        the grid's cells, items go in further columns (off it).
+                 * @brief Places @p wanted.size() items in a grid of @p columns × @p rows
+                 *        cells, in @p out: each in the cell it wants if that is in the
+                 *        grid and no earlier item took it, the rest in the first free
+                 *        cells down, then across. Past the grid's cells, items go in
+                 *        further columns (off it). The cells taken are a PSRAM bitmap.
+                 * @return `Ok` or `NoMem`.
                  */
-                static void place(Span<const Cell> wanted, uint16_t columns, uint16_t rows, Span<Cell> out);
+                static Error place(Span<const Cell> wanted, uint16_t columns, uint16_t rows, Span<Cell> out);
 
                 /**
                  * @brief Returns the cell under (@p x, @p y) of a grid of @p columns ×

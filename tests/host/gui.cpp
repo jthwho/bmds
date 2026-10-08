@@ -21,6 +21,9 @@
 #include <bmds/font.h>
 #include <bmds/furniturelayout.h>
 #include <bmds/icongrid.h>
+#include <bmds/itemlayout.h>
+#include <bmds/itemmodel.h>
+#include <bmds/itemselection.h>
 #include <bmds/inflate.h>
 #include <bmds/inireader.h>
 #include <bmds/lineeditmodel.h>
@@ -32,6 +35,7 @@
 #include <bmds/programimage.h>
 #include <bmds/scrollmodel.h>
 #include <bmds/switcherlayout.h>
+#include <bmds/treerows.h>
 #include <bmds/windowstack.h>
 
 using bmds::DesktopEntry;
@@ -277,21 +281,21 @@ TEST_CASE("IconGrid: wanted cells kept, the rest in free cells down then across"
         Cell out[6];
         // None wanted: down the first column, then the next.
         const Cell none[5] = {};
-        IconGrid::place(bmds::Span<const Cell>(none, 5), 3, 2, bmds::Span<Cell>(out, 6));
+        REQUIRE(IconGrid::place(bmds::Span<const Cell>(none, 5), 3, 2, bmds::Span<Cell>(out, 6)).isOk());
         CHECK(out[0] == Cell{0, 0});
         CHECK(out[1] == Cell{0, 1});
         CHECK(out[2] == Cell{1, 0});
         CHECK(out[4] == Cell{2, 0});
         // Wanted cells kept; a taken one, or one off the grid, placed as the rest.
         const Cell some[5] = {Cell{}, Cell{0, 0}, Cell{2, 1}, Cell{0, 0}, Cell{5, 0}};
-        IconGrid::place(bmds::Span<const Cell>(some, 5), 3, 2, bmds::Span<Cell>(out, 6));
+        REQUIRE(IconGrid::place(bmds::Span<const Cell>(some, 5), 3, 2, bmds::Span<Cell>(out, 6)).isOk());
         CHECK(out[1] == Cell{0, 0});
         CHECK(out[2] == Cell{2, 1});
         CHECK(out[0] == Cell{0, 1}); // the first free one
         CHECK(out[3] == Cell{1, 0});
         CHECK(out[4] == Cell{1, 1});
         // More items than cells: further columns, off the grid.
-        IconGrid::place(bmds::Span<const Cell>(none, 5), 1, 2, bmds::Span<Cell>(out, 6));
+        REQUIRE(IconGrid::place(bmds::Span<const Cell>(none, 5), 1, 2, bmds::Span<Cell>(out, 6)).isOk());
         CHECK(out[4] == Cell{2, 0});
         // The cell under a point, the nearest outside the grid.
         CHECK(IconGrid::cellAt(0, 0, 80, 76, 4, 3) == Cell{0, 0});
@@ -863,4 +867,174 @@ TEST_CASE("Furniture: menu bar titles, splitter sides, progress blocks, a dialog
         ButtonRow::place(labels, 400, 50, 22, buttons);
         CHECK(buttons[0] == Rect{200, 50, 76, 22});
         CHECK(buttons[1] == Rect{284, 50, 116, 22});
+}
+
+TEST_CASE("IconGrid: many items, wanted cells kept, the rest down then across and past the grid") {
+        using Cell = bmds::IconGrid::Cell;
+        std::vector<Cell> wanted(1000), out(1000);
+        wanted[999] = Cell{0, 0}; // the last wants the first cell
+        wanted[5] = Cell{0, 0};   // and an earlier one too: the earlier wins
+        REQUIRE(bmds::IconGrid::place(bmds::Span<const Cell>(wanted.data(), 1000), 10, 8,
+                                      bmds::Span<Cell>(out.data(), 1000))
+                        .isOk());
+        CHECK(out[5] == Cell{0, 0});
+        CHECK(out[0] == Cell{0, 1});
+        CHECK(out[999].isValid());
+        // Every item in a cell of its own.
+        std::vector<int> seen;
+        for (const Cell &c : out) seen.push_back(c.column * 8 + c.row);
+        std::sort(seen.begin(), seen.end());
+        CHECK(std::adjacent_find(seen.begin(), seen.end()) == seen.end());
+        CHECK(seen.back() == 999); // 1000 items fill cells 0 to 999 exactly
+}
+
+TEST_CASE("ItemSelection: only, toggles, ranges from the anchor, all and none") {
+        bmds::ItemSelection s;
+        REQUIRE(s.reset(100).isOk());
+        CHECK(s.current() == -1);
+        s.selectOnly(10);
+        CHECK(s.isSelected(10));
+        CHECK(s.selectedCount() == 1);
+        s.selectRange(14, false); // 10 to 14
+        CHECK(s.selectedCount() == 5);
+        CHECK(s.current() == 14);
+        CHECK(s.anchor() == 10);
+        s.selectRange(8, false); // from the same anchor, the other way: 8 to 10
+        CHECK(s.selectedCount() == 3);
+        CHECK(!s.isSelected(14));
+        s.toggle(50); // Ctrl: added, the new anchor
+        CHECK(s.selectedCount() == 4);
+        CHECK(s.anchor() == 50);
+        s.selectRange(52, true); // Ctrl+Shift: added to
+        CHECK(s.selectedCount() == 6);
+        CHECK(s.nextSelected(0) == 8);
+        CHECK(s.nextSelected(11) == 50);
+        CHECK(s.nextSelected(53) == -1);
+        s.toggle(50);
+        CHECK(!s.isSelected(50));
+        s.selectAll();
+        CHECK(s.selectedCount() == 100);
+        CHECK(s.nextSelected(99) == 99);
+        s.clear();
+        CHECK(s.selectedCount() == 0);
+        CHECK(s.current() == 50); // the current row stays
+        s.setCurrent(70, false);
+        CHECK(s.anchor() == 50);
+        s.selectOnly(-1);
+        CHECK(s.current() == -1);
+        REQUIRE(s.reset(0).isOk());
+        CHECK(s.nextSelected(0) == -1);
+}
+
+TEST_CASE("IconLayout and HeaderLayout: flowing cells, arrows, the grid's nearest, columns and edges") {
+        using bmds::IconLayout;
+        CHECK(IconLayout::columnsFor(500) == 6);
+        CHECK(IconLayout::columnsFor(10) == 1);
+        CHECK(IconLayout::flowX(7, 6) == 80);
+        CHECK(IconLayout::flowY(7, 6) == 76);
+        CHECK(IconLayout::flowHeight(13, 6) == 3 * 76);
+        CHECK(IconLayout::flowHeight(2000, 6) == 334 * 76); // past 65535: 32-bit
+        CHECK(IconLayout::flowRowAt(85, 80, 6, 13) == 7);
+        CHECK(IconLayout::flowRowAt(85, 160, 6, 13) == -1); // the third line has one item
+        CHECK(IconLayout::flowRowAt(5, 160, 6, 13) == 12);
+        CHECK(IconLayout::flowRowAt(490, 0, 6, 13) == -1); // past the columns
+        CHECK(IconLayout::flowNeighbour(5, 1, 0, 6, 13) == 6);
+        CHECK(IconLayout::flowNeighbour(0, -1, 0, 6, 13) == 0);
+        CHECK(IconLayout::flowNeighbour(1, 0, 1, 6, 13) == 7);
+        CHECK(IconLayout::flowNeighbour(7, 0, 1, 6, 13) == 12); // the short last line's last item
+        CHECK(IconLayout::flowNeighbour(12, 0, 1, 6, 13) == 12);
+        CHECK(IconLayout::flowNeighbour(12, 0, -1, 6, 13) == 6);
+        using Cell = bmds::IconGrid::Cell;
+        const Cell cells[] = {{0, 0}, {0, 1}, {1, 0}, {3, 2}, {1, 4}};
+        CHECK(IconLayout::gridNeighbour(cells, 0, 0, 1) == 1);
+        CHECK(IconLayout::gridNeighbour(cells, 0, 1, 0) == 2);
+        CHECK(IconLayout::gridNeighbour(cells, 2, 1, 0) == 3);
+        CHECK(IconLayout::gridNeighbour(cells, 3, 1, 0) == 3); // none that way
+        CHECK(IconLayout::gridNeighbour(cells, 1, 0, 1) == 4);
+
+        using bmds::HeaderLayout;
+        const uint16_t widths[] = {200, 80, 120};
+        CHECK(HeaderLayout::total(widths) == 400);
+        CHECK(HeaderLayout::columnAt(widths, 0) == 0);
+        CHECK(HeaderLayout::columnAt(widths, 200) == 1);
+        CHECK(HeaderLayout::columnAt(widths, 399) == 2);
+        CHECK(HeaderLayout::columnAt(widths, 400) == -1);
+        CHECK(HeaderLayout::edgeAt(widths, 198) == 0);
+        CHECK(HeaderLayout::edgeAt(widths, 283) == 1);
+        CHECK(HeaderLayout::edgeAt(widths, 250) == -1);
+        CHECK(HeaderLayout::resized(100, 13) == 112);
+        CHECK(HeaderLayout::resized(100, -200) == HeaderLayout::MinWidth);
+}
+
+TEST_CASE("TreeRows: expanding inserts children, collapsing removes descendants, paths and parents") {
+        bmds::TreeRows t;
+        REQUIRE(t.addRoot("/sd0/p0").isOk());
+        REQUIRE(t.addRoot("/boot").isOk());
+        const bmds::StringView top[] = {"docs", "music", "zz"};
+        REQUIRE(t.setChildren(0, top).isOk());
+        CHECK(t.count() == 5);
+        CHECK(t.name(1) == "docs");
+        CHECK(t.row(1).depth == 1);
+        CHECK((t.row(0).flags & bmds::TreeRows::Expanded) != 0);
+        CHECK(t.name(4) == "/boot");
+        const bmds::StringView sub[] = {"a", "b"};
+        REQUIRE(t.setChildren(2, sub).isOk()); // music
+        CHECK(t.count() == 7);
+        CHECK(t.name(3) == "a");
+        CHECK(t.parent(4) == 2);
+        CHECK(t.parent(2) == 0);
+        CHECK(t.parent(0) == -1);
+        CHECK(t.endOf(0) == 6);
+        bmds::String path;
+        REQUIRE(t.pathOf(4, path).isOk());
+        CHECK(path.view() == "/sd0/p0/music/b");
+        CHECK(t.find("/sd0/p0/music/b") == 4);
+        CHECK(t.find("/sd0/p0/nothing") == -1);
+        CHECK(t.find("/boot") == 6);
+        // An empty folder: no children, no + box.
+        REQUIRE(t.setChildren(1, bmds::Span<const bmds::StringView>()).isOk());
+        CHECK((t.row(1).flags & bmds::TreeRows::HasChildren) == 0);
+        t.collapse(0);
+        CHECK(t.count() == 2);
+        CHECK(t.name(1) == "/boot");
+        CHECK((t.row(0).flags & bmds::TreeRows::Expanded) == 0);
+        // Expanded and collapsed many times: the names compacted, still right.
+        std::vector<std::string>      names(200);
+        std::vector<bmds::StringView> views;
+        for (int i = 0; i < 200; ++i) names[i] = "folder number " + std::to_string(i);
+        for (const std::string &n : names) views.emplace_back(n.data(), n.size());
+        for (int round = 0; round < 20; ++round) {
+                REQUIRE(t.setChildren(1, bmds::Span<const bmds::StringView>(views.data(), views.size())).isOk());
+                t.collapse(1);
+        }
+        REQUIRE(t.setChildren(1, bmds::Span<const bmds::StringView>(views.data(), views.size())).isOk());
+        CHECK(t.name(0) == "/sd0/p0");
+        CHECK(t.name(2) == "folder number 0");
+        CHECK(t.name(201) == "folder number 199");
+}
+
+TEST_CASE("ListItemModel: names, icons by size, columns") {
+        bmds::ListItemModel    m;
+        const uint32_t         px = 0;
+        const bmds::Icon       small{16, 16, &px}, large{32, 32, &px};
+        const bmds::StringView cols[] = {"12 KB", "Text"};
+        REQUIRE(m.add("notes.txt", &small, &large, cols).isOk());
+        REQUIRE(m.add("bare", nullptr, &large).isOk());
+        CHECK(m.count() == 2);
+        CHECK(m.text(0) == "notes.txt");
+        CHECK(m.icon(0, 16) == &small);
+        CHECK(m.icon(0, 32) == &large);
+        CHECK(m.icon(1, 16) == &large); // the other size when there is only one
+        char buf[16];
+        CHECK(m.columnText(0, 1, buf) == "12 KB");
+        CHECK(m.columnText(1, 2, buf).isEmpty());
+        const bmds::StringView       titles[] = {"Name", "Size", "Type"};
+        const uint16_t               widths[] = {180, 80, 100};
+        const bmds::ItemModel::Align aligns[] = {bmds::ItemModel::Align::Left, bmds::ItemModel::Align::Right};
+        m.setColumns(titles, widths, aligns);
+        CHECK(m.columns() == 3);
+        CHECK(m.columnTitle(1) == "Size");
+        CHECK(m.columnWidth(2) == 100);
+        CHECK(m.columnAlign(1) == bmds::ItemModel::Align::Right);
+        CHECK(m.columnAlign(2) == bmds::ItemModel::Align::Left);
 }

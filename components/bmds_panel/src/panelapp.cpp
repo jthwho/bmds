@@ -25,6 +25,7 @@
 #include <bmds/desktopentry.h>
 #include <bmds/fdtable.h>
 #include <bmds/fileformat.h>
+#include <bmds/fileops.h>
 #include <bmds/filenames.h>
 #include <bmds/font.h>
 #include <bmds/guiapplication.h>
@@ -41,7 +42,6 @@
 #include <bmds/programlauncher.h>
 #include <bmds/string.h>
 #include <bmds/sysconf.h>
-#include <bmds/trash.h>
 #include <bmds/vfs.h>
 #include <bmds/widget.h>
 
@@ -329,7 +329,7 @@ namespace {
                         size_t                         _renaming = 0;          // the icon it is
                         char                           _renameTried[sizeof(PanelEntry::file)] = {}; // to edit again
                         size_t                         _iconItem = 0;                              // the icon it is for
-                        char                           _copiedPath[sizeof(PanelEntry::path)] = {}; // the icon copied
+                        String _copied{MemSpace::Psram}; // the icons copied: their paths, a line each
                         Button                        *_launcher = nullptr;       // pressed in while its menu is open
                         Button                        *_launcherButton = nullptr; // the launcher item's
                         char                           _applications[256] = {};   // panel/launcher/applications
@@ -911,29 +911,19 @@ namespace {
                 return;
         }
 
-        // @p from copied into @p directory: under its own name, or the first copy's name free.
+        // A paste keeps both when a name is taken: the copy under a copy's name (files.md F1).
+        struct KeepBoth final : FileOps::Progress {
+                        FileOps::Resolution conflict(StringView, StringView, bool) override {
+                                return FileOps::Resolution::KeepBoth;
+                        }
+        };
+
+        // @p from (a file, or a folder and its tree) copied into @p directory: under its own name, or
+        // the first copy's name free.
         void PanelApp::pasteFile(StringView from, StringView directory) {
                 const Vfs::Context vc{_context.cwd, nullptr};
-                const StringView   name = from.mid(from.lastIndexOf('/') + 1);
-                String             to;
-                Error              err = Error::Exists;
-                for (unsigned n = 0; n <= CopyName::MaxCopies && err == Error::Exists; ++n) {
-                        char       copy[96];
-                        StringView chosen = name;
-                        if (n > 0) {
-                                auto [made, merr] = CopyName::make(name, n, Span<char>(copy, sizeof(copy)));
-                                if (merr.isError()) {
-                                        err = merr;
-                                        break;
-                                }
-                                chosen = made;
-                        }
-                        to.clear();
-                        err = to.append(directory);
-                        if (err.isOk()) err = to.append('/');
-                        if (err.isOk()) err = to.append(chosen);
-                        if (err.isOk()) err = Vfs::copyFile(from, to.view(), vc);
-                }
+                KeepBoth           progress;
+                const Error        err = FileOps::copy(from, directory, vc, progress);
                 if (err.isError()) {
                         char line[160];
                         std::snprintf(line, sizeof(line), "panel: paste: %.*s: %s\n", int(from.size()), from.data(),
@@ -950,39 +940,15 @@ namespace {
                 StringView       dirs(_desktopDirs);
                 const StringView directory = IniReader::nextListItem(dirs);
                 if (directory.isEmpty()) return;
-                const StringView   base = choice == ChooseNewFolder ? "New Folder"
-                                          : choice == ChooseNewText ? "New Text Document.txt"
-                                                                    : "New File";
-                const size_t       dot = base.lastIndexOf('.');
-                const StringView   stem = dot != StringView::NPos ? base.left(dot) : base;
-                const StringView   extension = dot != StringView::NPos ? base.mid(dot) : StringView();
-                const Vfs::Context vc{_context.cwd, nullptr};
+                const FileOps::NewKind kind = choice == ChooseNewFolder ? FileOps::NewKind::Folder
+                                              : choice == ChooseNewText ? FileOps::NewKind::TextDocument
+                                                                        : FileOps::NewKind::EmptyFile;
+                const Vfs::Context     vc{_context.cwd, nullptr};
                 (void)Vfs::mkdir(directory, vc); // there already, most likely
-                String path;
-                char   name[sizeof(PanelEntry::file)];
-                Error  err = Error::Exists;
-                for (unsigned n = 1; n < 100 && err == Error::Exists; ++n) {
-                        if (n == 1) {
-                                std::snprintf(name, sizeof(name), "%.*s", int(base.size()), base.data());
-                        } else {
-                                std::snprintf(name, sizeof(name), "%.*s (%u)%.*s", int(stem.size()), stem.data(), n,
-                                              int(extension.size()), extension.data());
-                        }
-                        path.clear();
-                        err = path.append(directory);
-                        if (err.isOk()) err = path.append('/');
-                        if (err.isOk()) err = path.append(StringView(name));
-                        if (err.isError()) break;
-                        if (choice == ChooseNewFolder) {
-                                if (Vfs::lstat(path.view(), vc).isOk()) {
-                                        err = Error::Exists;
-                                } else {
-                                        err = Vfs::mkdir(path.view(), vc);
-                                }
-                        } else {
-                                err = Vfs::open(path.view(), Vfs::Write | Vfs::Create | Vfs::Exclusive, vc).error();
-                        }
-                }
+                auto [path, err] = FileOps::makeNew(directory, kind, vc);
+                char             name[sizeof(PanelEntry::file)];
+                const StringView made = FileOps::baseName(path.view());
+                std::snprintf(name, sizeof(name), "%.*s", int(made.size()), made.data());
                 if (err.isError()) {
                         char message[160];
                         std::snprintf(message, sizeof(message), "Can't make it: %s.", err.desc());
@@ -1025,30 +991,42 @@ namespace {
                 if (was >= 0 && size_t(was) < _desktopCount)
                         std::memcpy(selectedFile, _desktopEntries[was].file, sizeof(selectedFile));
                 Memory::free(_desktopEntries);
+                _desktopEntries = nullptr;
                 _desktopCount = 0;
                 _desktopIncomplete = false;
-                _desktopEntries =
-                        static_cast<Entry *>(Memory::alloc(MemSpace::Psram, sizeof(Entry) * DesktopWindow::MaxItems));
-                if (_desktopEntries == nullptr) return true;
-                for (size_t i = 0; i < DesktopWindow::MaxItems; ++i) ::new (&_desktopEntries[i]) Entry();
+                // As many entries as the directories hold (no limit: devplan/filebrowser.md §4g).
                 const Vfs::Context vc{_context.cwd, nullptr};
+                size_t             room = 0;
                 StringView         dirs(_desktopDirs);
+                for (StringView d = IniReader::nextListItem(dirs); !d.isEmpty(); d = IniReader::nextListItem(dirs)) {
+                        auto [dir, derr] = Vfs::openDirectory(d, vc);
+                        while (derr.isOk() && dir.next().isOk()) ++room;
+                }
+                if (room == 0) room = 1;
+                _desktopEntries = static_cast<Entry *>(Memory::alloc(MemSpace::Psram, sizeof(Entry) * room));
+                if (_desktopEntries == nullptr) return true;
+                for (size_t i = 0; i < room; ++i) ::new (&_desktopEntries[i]) Entry();
+                dirs = StringView(_desktopDirs);
                 for (StringView d = IniReader::nextListItem(dirs); !d.isEmpty(); d = IniReader::nextListItem(dirs))
-                        if (!readEntryDirectory(d, vc, _desktopEntries, _desktopCount, DesktopWindow::MaxItems,
-                                                badEntry, this, true))
+                        if (!readEntryDirectory(d, vc, _desktopEntries, _desktopCount, room, badEntry, this, true))
                                 _desktopIncomplete = true;
                 keepShownEntries(_desktopEntries, _desktopCount);
-                StringView names[DesktopWindow::MaxItems];
+                List<StringView>     names(MemSpace::Psram);
+                List<IconGrid::Cell> wanted(MemSpace::Psram);
+                if (names.reserve(_desktopCount).isError() || wanted.reserve(_desktopCount).isError()) {
+                        say("panel: no memory for the desktop's icons\n");
+                        return true;
+                }
                 // An icon is named by its file (devplan/gui.md §4q): copies and renames stay in step.
-                for (size_t i = 0; i < _desktopCount; ++i) names[i] = shownName(_desktopEntries[i]);
-                const Rect     work = _app.windowManager().workArea();
-                const Rect     s = _desktop->screenRect();
-                const Rect     area{uint16_t(work.x - s.x), uint16_t(work.y - s.y), work.width, work.height};
-                IconGrid::Cell wanted[DesktopWindow::MaxItems];
-                readPlaces(Span<IconGrid::Cell>(wanted, _desktopCount));
-                if (_desktop->setItems(Span<const StringView>(names, _desktopCount),
-                                       Span<const IconGrid::Cell>(wanted, _desktopCount), area)
-                            .isError())
+                for (size_t i = 0; i < _desktopCount; ++i) {
+                        (void)names.append(shownName(_desktopEntries[i]));
+                        (void)wanted.append(IconGrid::Cell());
+                }
+                const Rect work = _app.windowManager().workArea();
+                const Rect s = _desktop->screenRect();
+                const Rect area{uint16_t(work.x - s.x), uint16_t(work.y - s.y), work.width, work.height};
+                readPlaces(wanted.span());
+                if (_desktop->setItems(names.span(), wanted.span(), area).isError())
                         say("panel: no memory for the desktop's icons\n");
                 for (size_t i = 0; i < _desktopCount && selectedFile[0] != '\0'; ++i)
                         if (std::strcmp(_desktopEntries[i].file, selectedFile) == 0) _desktop->setSelected(int(i));
@@ -1119,27 +1097,40 @@ namespace {
         void PanelApp::iconChosen(void *arg, int choice) {
                 auto *self = static_cast<PanelApp *>(arg);
                 if (self->_iconItem >= self->_desktopCount) return;
-                const PanelEntry &e = self->_desktopEntries[self->_iconItem];
-                if (choice == 0) {
-                        self->open(e);
-                        return;
-                }
                 if (choice == 3) {
                         renameAsked(self, self->_iconItem);
                         return;
                 }
+                // Open, Copy and Delete act on every icon selected (the one asked for is).
+                if (choice == 0) {
+                        for (int i = self->_desktop->nextSelected(0); i >= 0;
+                             i = self->_desktop->nextSelected(size_t(i) + 1))
+                                if (size_t(i) < self->_desktopCount) self->open(self->_desktopEntries[i]);
+                        return;
+                }
                 if (choice == 2) {
-                        // To its filesystem's trash (devplan/files.md F8): `trash -r` brings it back.
+                        // To their filesystems' trash (devplan/files.md F8): `trash -r` brings them back.
                         const Vfs::Context vc{self->_context.cwd, nullptr};
-                        const Error        err = e.path[0] != '\0' ? Trash::move(StringView(e.path), vc, nullptr)
-                                                                   : Error(Error::NotExist);
-                        if (err.isError()) self->say("panel: can't move it to the trash: ", err.desc(), "\n");
+                        for (int i = self->_desktop->nextSelected(0); i >= 0;
+                             i = self->_desktop->nextSelected(size_t(i) + 1)) {
+                                const PanelEntry &e = self->_desktopEntries[i];
+                                const Error       err = e.path[0] != '\0' ? FileOps::trash(StringView(e.path), vc)
+                                                                          : Error(Error::NotExist);
+                                if (err.isError()) self->say("panel: can't move it to the trash: ", err.desc(), "\n");
+                        }
                         (void)self->loadDesktop();
                         return;
                 }
                 GuiClipboard *clipboard = self->_app.clipboard();
-                if (choice != 1 || clipboard == nullptr || e.path[0] == '\0') return;
-                std::memcpy(self->_copiedPath, e.path, sizeof(self->_copiedPath));
+                if (choice != 1 || clipboard == nullptr) return;
+                self->_copied.clear();
+                for (int i = self->_desktop->nextSelected(0); i >= 0; i = self->_desktop->nextSelected(size_t(i) + 1)) {
+                        const PanelEntry &e = self->_desktopEntries[i];
+                        if (e.path[0] == '\0') continue;
+                        if (!self->_copied.isEmpty()) (void)self->_copied.append('\n');
+                        (void)self->_copied.append(StringView(e.path));
+                }
+                if (self->_copied.isEmpty()) return;
                 clipboard->setName("panel");
                 const StringView types[] = {"text/uri-list", ClipboardType::Text};
                 if (clipboard->copy(Clipboard::Selection::Clipboard, Span<const StringView>(types), renderIcon, self)
@@ -1148,18 +1139,28 @@ namespace {
                 return;
         }
 
+        // The icons copied: their paths as text, one a line; as a URI list, file:// and each path, %XX for
+        // what a URI can't hold as it is (RFC 3986's unreserved and /).
         Error PanelApp::renderIcon(void *arg, StringView type, String &out) {
                 auto            *self = static_cast<PanelApp *>(arg);
-                const StringView path(self->_copiedPath);
-                if (!ClipboardType::equal(type, "text/uri-list")) return out.assign(path); // the text: the path
-                // file:// and the path, %XX for what a URI can't hold as it is (RFC 3986's unreserved and /).
-                Error err = out.assign("file://");
-                for (const char ch : path) {
-                        const bool plain = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-                                           (ch >= '0' && ch <= '9') || StringView("-._~/").contains(ch);
-                        if (err.isOk()) err = plain ? out.append(ch) : out.appendf("%%%02X", unsigned(uint8_t(ch)));
+                const StringView paths = self->_copied.view();
+                if (!ClipboardType::equal(type, "text/uri-list")) return out.assign(paths);
+                out.clear();
+                Error      err;
+                StringView rest = paths;
+                while (err.isOk() && !rest.isEmpty()) {
+                        const size_t     end = rest.indexOf('\n');
+                        const StringView path = end == StringView::NPos ? rest : rest.left(end);
+                        rest = end == StringView::NPos ? StringView() : rest.mid(end + 1);
+                        err = out.append("file://");
+                        for (const char ch : path) {
+                                const bool plain = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                                                   (ch >= '0' && ch <= '9') || StringView("-._~/").contains(ch);
+                                if (err.isOk())
+                                        err = plain ? out.append(ch) : out.appendf("%%%02X", unsigned(uint8_t(ch)));
+                        }
+                        if (err.isOk()) err = out.append("\r\n");
                 }
-                if (err.isOk()) err = out.append("\r\n");
                 return err;
         }
 
@@ -1236,7 +1237,7 @@ namespace {
                                               int(name.size()), name.data());
                                 problem = message;
                         } else if (err.isOk()) {
-                                err = Vfs::rename(path, to.view(), vc);
+                                err = FileOps::rename(path, to.view().mid(to.view().lastIndexOf('/') + 1), vc);
                         }
                         if (err.isError()) {
                                 std::snprintf(message, sizeof(message), "Can't rename it: %s.", err.desc());

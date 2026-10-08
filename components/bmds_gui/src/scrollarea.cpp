@@ -22,21 +22,6 @@ namespace {
         constexpr uint32_t RepeatDelayMs = 400;
         constexpr uint32_t RepeatMs = 50;
         constexpr int      WheelLines = 3;
-        constexpr size_t   LocalPieces = 64; // a clipped painter's storage on the stack; past it, PSRAM
-
-        // A small arrow (a triangle 7 pixels across, 4 deep) in @p r's middle, pointing @p way:
-        // 0 up, 1 down, 2 left, 3 right.
-        void drawArrow(Painter &painter, const Rect &r, int way, uint32_t color) {
-                const int cx = r.x + r.width / 2, cy = r.y + r.height / 2;
-                Rect      rows[4];
-                for (int i = 0; i < 4; ++i) {
-                        const int half = way == 0 || way == 2 ? i : 3 - i; // the row's half width
-                        rows[i] = way < 2 ? Rect{uint16_t(cx - half), uint16_t(cy - 2 + i), uint16_t(2 * half + 1), 1}
-                                          : Rect{uint16_t(cx - 2 + i), uint16_t(cy - half), 1, uint16_t(2 * half + 1)};
-                }
-                (void)painter.fill(Span<const Rect>(rows), color);
-                return;
-        }
 
 } // namespace
 
@@ -117,7 +102,9 @@ void ScrollBar::paint(Painter &painter) {
                 (void)painter.fill(Bevel::inside(r, style), face);
                 if (r.width < 10 || r.height < 10) continue; // no room for the arrow
                 const Rect at = in ? Rect{uint16_t(r.x + 1), uint16_t(r.y + 1), r.width, r.height} : r;
-                drawArrow(painter, at, (vertical ? 0 : 2) + end, p.color(live ? Role::FaceText : Role::DisabledText));
+                const GuiStyle::Arrow way = vertical ? (end == 0 ? GuiStyle::Arrow::Up : GuiStyle::Arrow::Down)
+                                                     : (end == 0 ? GuiStyle::Arrow::Left : GuiStyle::Arrow::Right);
+                GuiStyle::drawArrow(painter, at, way, p.color(live ? Role::FaceText : Role::DisabledText));
         }
         return;
 }
@@ -240,6 +227,9 @@ void ScrollArea::setContentSize(uint32_t width, uint32_t height) {
 
 Rect ScrollArea::viewport() const {
         Rect r = geometry();
+        const uint16_t top = _topMargin < r.height ? _topMargin : r.height;
+        r.y = static_cast<uint16_t>(r.y + top);
+        r.height = static_cast<uint16_t>(r.height - top);
         if (_vertical != nullptr && _vertical->isVisible() && r.width >= ScrollBar::Breadth)
                 r.width = static_cast<uint16_t>(r.width - ScrollBar::Breadth);
         if (_horizontal != nullptr && _horizontal->isVisible() && r.height >= ScrollBar::Breadth)
@@ -252,14 +242,22 @@ void ScrollArea::resized() {
         return;
 }
 
+void ScrollArea::setTopMargin(uint16_t height) {
+        if (height == _topMargin) return;
+        _topMargin = height;
+        layoutBars();
+        return;
+}
+
 // The bars shown as the content needs (one's room may need the other), placed, and the offset
 // kept in range.
 void ScrollArea::layoutBars() {
         const Rect     r = geometry();
         const uint16_t b = ScrollBar::Breadth;
-        bool           needV = _contentHeight > r.height;
+        const uint32_t high = r.height > _topMargin ? uint32_t(r.height - _topMargin) : 0; // the content's room
+        bool           needV = _contentHeight > high;
         bool           needH = _contentWidth > uint32_t(r.width) - (needV ? b : 0);
-        if (needH && !needV) needV = _contentHeight > uint32_t(r.height) - b;
+        if (needH && !needV) needV = _contentHeight + b > high;
         if (_vertical == nullptr) needV = false;
         if (_horizontal == nullptr) needH = false;
         if (needV && (r.width < b || r.height < (needH ? b : 0))) needV = false;
@@ -268,7 +266,7 @@ void ScrollArea::layoutBars() {
         if (_horizontal != nullptr) _horizontal->setVisible(needH);
         const Rect v = viewport();
         if (needV) {
-                _vertical->setGeometry(Rect{uint16_t(r.right() - b), r.y, b, v.height});
+                _vertical->setGeometry(Rect{uint16_t(r.right() - b), r.y, b, uint16_t(v.height + (v.y - r.y))});
                 _vertical->setRange(_contentHeight, v.height);
         }
         if (needH) {
@@ -342,19 +340,8 @@ void ScrollArea::paint(Painter &painter) {
                 (void)painter.fill(
                         Rect{uint16_t(v.right()), uint16_t(v.bottom()), ScrollBar::Breadth, ScrollBar::Breadth},
                         painter.palette().color(Role::Face));
-        if (v.isEmpty() || !painter.isVisible(v)) return;
         // The content through a painter of its own, clipped to the viewport.
-        const size_t need = painter.clippedStorage();
-        Rect         local[LocalPieces];
-        List<Rect>   more(MemSpace::Psram);
-        Span<Rect>   storage(local, LocalPieces);
-        if (need > LocalPieces) {
-                if (more.reserve(need).isError()) return; // drawn when there is memory
-                for (size_t i = 0; i < need; ++i) (void)more.append(Rect());
-                storage = more.span();
-        }
-        Painter clipped(painter, v, storage);
-        paintContent(clipped, v);
+        drawClipped(painter, v, [this, &v](Painter &clipped) { paintContent(clipped, v); });
         return;
 }
 

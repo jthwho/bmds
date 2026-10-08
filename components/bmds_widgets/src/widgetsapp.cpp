@@ -5,166 +5,97 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * /bin/widgets: a window with the toolkit's furniture, to try it (devplan/filebrowser.md §4e).
- * A menu bar, a tool bar, a splitter between a list and a large grid (each a scroll area),
- * a status bar, and two dialogs: a question, and a progress bar with Cancel.
+ * /bin/widgets: a window with the toolkit's furniture and item views, to try them
+ * (devplan/filebrowser.md §4e, §4g). A menu bar, a tool bar, a splitter between a folder tree and
+ * the folder's files as icons or details (View), a status bar, and two dialogs: a question, and a
+ * progress bar with Cancel.
  */
 
 #include <cstdio>
 #include <cstring>
 #include <new>
 #include <bmds/builtinprograms.h>
+#include <bmds/detailsview.h>
 #include <bmds/dialog.h>
 #include <bmds/fdtable.h>
-#include <bmds/font.h>
+#include <bmds/foldermodel.h>
 #include <bmds/furniture.h>
 #include <bmds/guiapplication.h>
 #include <bmds/guiwindow.h>
+#include <bmds/iconview.h>
 #include <bmds/memory.h>
 #include <bmds/menu.h>
 #include <bmds/menubar.h>
-#include <bmds/scrollarea.h>
+#include <bmds/treeview.h>
 
 BMDS_NAMESPACE_BEGIN
 
 namespace {
 
-        using Role = WindowPalette::Role;
-
-        constexpr uint16_t RowHeight = 16;
-        constexpr uint32_t Rows = 200;
-        constexpr uint16_t Cell = 64;
-        constexpr uint32_t GridWidth = 32 * Cell;
-        constexpr uint32_t GridHeight = 24 * Cell;
         constexpr uint32_t ProgressMs = 50;
+        constexpr size_t   FillBatch = 64; // entries read a turn (FB12)
 
         enum Choice : int {
                 Question = 1,
                 Copy,
                 Quit,
                 ShowStatus,
+                LargeIcons,
+                Details,
                 About,
         };
 
-        // Window x and y cut to the viewport: what of a content rectangle may be filled.
-        Rect visiblePart(const ScrollArea &area, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const Rect &viewport) {
-                const int left = area.windowX(x), top = area.windowY(y);
-                const int l = left > viewport.x ? left : viewport.x;
-                const int t = top > viewport.y ? top : viewport.y;
-                const int r = left + int(w) < int(viewport.right()) ? left + int(w) : int(viewport.right());
-                const int b = top + int(h) < int(viewport.bottom()) ? top + int(h) : int(viewport.bottom());
-                if (r <= l || b <= t) return Rect();
-                return Rect{uint16_t(l), uint16_t(t), uint16_t(r - l), uint16_t(b - t)};
-        }
+        // An icon of the theme, copied (its cache may drop its own).
+        struct OwnedIcon {
+                        Icon      icon;
+                        uint32_t *pixels = nullptr;
 
-        // A list of rows, one selected: the arrows move it, a press picks it.
-        class RowList final : public ScrollArea {
-                public:
-                        using Selected = void (*)(void *arg, uint32_t row);
-
-                        explicit RowList(Widget *parent) : ScrollArea(parent) {
-                                setContentSize(240, Rows * RowHeight);
-                                setLineSteps(8, RowHeight);
-                                setFocusable(true);
+                        void take(const Icon *from) {
+                                if (from == nullptr || !from->isValid()) return;
+                                const size_t n = size_t(from->width) * from->height;
+                                pixels = static_cast<uint32_t *>(Memory::alloc(MemSpace::Psram, n * sizeof(uint32_t)));
+                                if (pixels == nullptr) return;
+                                std::memcpy(pixels, from->pixels, n * sizeof(uint32_t));
+                                icon = Icon{from->width, from->height, pixels};
                         }
 
-                        void setSelected(Selected fn, void *arg) {
-                                _selected = fn;
-                                _arg = arg;
-                                return;
-                        }
-
-                        void select(uint32_t row) {
-                                if (row >= Rows) row = Rows - 1;
-                                _row = row;
-                                ensureVisible(0, row * RowHeight, 1, RowHeight);
-                                update();
-                                if (_selected != nullptr) _selected(_arg, row);
-                                return;
-                        }
-
-                        void mousePressed(const WindowManager::MouseEvent &event) override {
-                                const Rect v = viewport();
-                                if (event.button != PointerEvent::Left || event.y < v.y || event.y >= v.bottom())
-                                        return;
-                                select((uint32_t(event.y - v.y) + scrollY()) / RowHeight);
-                                return;
-                        }
-
-                        bool keyPressed(const KeyEvent &event) override {
-                                const uint32_t page = viewport().height / RowHeight;
-                                switch (event.usage) {
-                                        case HidKey::Up: select(_row > 0 ? _row - 1 : 0); return true;
-                                        case HidKey::Down: select(_row + 1); return true;
-                                        case HidKey::PageUp: select(_row > page ? _row - page : 0); return true;
-                                        case HidKey::PageDown: select(_row + page); return true;
-                                        case HidKey::Home: select(0); return true;
-                                        case HidKey::End: select(Rows - 1); return true;
-                                        default: return false;
-                                }
-                        }
-
-                protected:
-                        void paintContent(Painter &painter, const Rect &viewport) override {
-                                const WindowPalette &p = painter.palette();
-                                const uint32_t       face = p.color(Role::FaceHighlight);
-                                (void)painter.fill(viewport, face);
-                                const uint32_t first = scrollY() / RowHeight;
-                                const uint32_t last = (scrollY() + viewport.height) / RowHeight;
-                                for (uint32_t row = first; row <= last && row < Rows; ++row) {
-                                        const bool     on = row == _row;
-                                        const uint32_t bg = on ? p.color(Role::Highlight) : face;
-                                        if (on)
-                                                (void)painter.fill(visiblePart(*this, 0, row * RowHeight,
-                                                                               contentWidth(), RowHeight, viewport),
-                                                                   bg);
-                                        char text[32];
-                                        std::snprintf(text, sizeof(text), "Row %lu: an item's name",
-                                                      static_cast<unsigned long>(row + 1));
-                                        const int x = windowX(4);
-                                        (void)painter.text(x, windowY(row * RowHeight), StringView(text),
-                                                           Fonts::unscii16,
-                                                           p.color(on ? Role::HighlightText : Role::FaceText), bg,
-                                                           uint16_t(contentWidth() - 8));
-                                }
-                                return;
-                        }
-
-                private:
-                        Selected _selected = nullptr;
-                        void    *_arg = nullptr;
-                        uint32_t _row = 0;
+                        const Icon *get() const { return pixels != nullptr ? &icon : nullptr; }
+                        ~OwnedIcon() { Memory::free(pixels); }
         };
 
-        // A large checkerboard, each square labelled with where it is.
-        class Grid final : public ScrollArea {
+        // The folder's entries as the views' model: the folder model's, with sizes and types written out.
+        class FilesModel final : public ItemModel {
                 public:
-                        explicit Grid(Widget *parent) : ScrollArea(parent) {
-                                setContentSize(GridWidth, GridHeight);
-                                setLineSteps(Cell / 2, Cell / 2);
-                        }
+                        FolderModel folder;
+                        const Icon *folderSmall = nullptr, *folderLarge = nullptr;
+                        const Icon *fileSmall = nullptr, *fileLarge = nullptr;
 
-                protected:
-                        void paintContent(Painter &painter, const Rect &viewport) override {
-                                const uint32_t x0 = scrollX() / Cell, y0 = scrollY() / Cell;
-                                const uint32_t x1 = (scrollX() + viewport.width) / Cell;
-                                const uint32_t y1 = (scrollY() + viewport.height) / Cell;
-                                for (uint32_t cy = y0; cy <= y1 && cy * Cell < GridHeight; ++cy) {
-                                        for (uint32_t cx = x0; cx <= x1 && cx * Cell < GridWidth; ++cx) {
-                                                const uint32_t bg = ((cx + cy) & 1) != 0 ? 0x5878a8 : 0x88a8d8;
-                                                (void)painter.fill(
-                                                        visiblePart(*this, cx * Cell, cy * Cell, Cell, Cell, viewport),
-                                                        bg);
-                                                char label[24];
-                                                std::snprintf(label, sizeof(label), "%lu,%lu",
-                                                              static_cast<unsigned long>(cx),
-                                                              static_cast<unsigned long>(cy));
-                                                (void)painter.text(windowX(cx * Cell + 4), windowY(cy * Cell + 24),
-                                                                   StringView(label), Fonts::unscii16, 0xffffff, bg,
-                                                                   Cell - 8);
-                                        }
+                        size_t      count() const override { return folder.count(); }
+                        StringView  text(size_t row) const override { return folder.name(row); }
+                        const Icon *icon(size_t row, uint16_t size) const override {
+                                const bool dir = folder.entry(row).isDirectory();
+                                return size > 16 ? (dir ? folderLarge : fileLarge) : (dir ? folderSmall : fileSmall);
+                        }
+                        size_t     columns() const override { return 3; }
+                        StringView columnTitle(size_t column) const override {
+                                return column == 0 ? StringView("Name") : column == 1 ? StringView("Size") : "Type";
+                        }
+                        uint16_t columnWidth(size_t column) const override { return column == 0 ? 200 : 80; }
+                        Align    columnAlign(size_t column) const override {
+                                return column == 1 ? Align::Right : Align::Left;
+                        }
+                        StringView columnText(size_t row, size_t column, Span<char> buffer) const override {
+                                const FolderModel::Entry &e = folder.entry(row);
+                                if (column == 0) return folder.name(row);
+                                if (column == 1) {
+                                        if (e.isDirectory()) return StringView();
+                                        const uint64_t kb = (e.size + 1023) / 1024;
+                                        const int      n = std::snprintf(buffer.data(), buffer.size(), "%llu KB",
+                                                                         static_cast<unsigned long long>(kb));
+                                        return StringView(buffer.data(), n > 0 ? size_t(n) : 0);
                                 }
-                                return;
+                                if (e.isDirectory()) return "Folder";
+                                return FolderModel::extensionOf(folder.name(row));
                         }
         };
 
@@ -173,6 +104,8 @@ namespace {
                         WidgetsWindow(GuiApplication &app, const Config &config)
                             : GuiWindow(app, config), _file(app), _view(app), _help(app),
                               _question(app, "Question", 280, 40), _copying(app, "Copying", 280, 48) {}
+
+                        ~WidgetsWindow() override { stopFill(); }
 
                         Error build();
 
@@ -185,12 +118,21 @@ namespace {
                 private:
                         static void chosen(void *arg, int item);
                         static void tool(void *arg, Button &button);
-                        static void rowSelected(void *arg, uint32_t row);
                         static void answered(void *arg, Dialog &dialog, int result);
                         static void copied(void *arg, Dialog &dialog, int result);
                         static void tick(void *arg);
+                        static void expanding(void *arg, TreeView &view, size_t row);
+                        static void folderChosen(void *arg, ItemView &view);
+                        static void opened(void *arg, ItemView &view, size_t row);
+                        static void selectionChanged(void *arg, ItemView &view);
+                        static void sortAsked(void *arg, DetailsView &view, size_t column);
+                        static void fill(void *arg);
                         void        startCopy();
                         void        status(const char *text);
+                        void        showFolder(StringView path);
+                        void        stopFill();
+                        void        filesChanged(); // the views reset to the model, the status told
+                        void        setDetails(bool details);
 
                         Menu         _file;
                         Menu         _view;
@@ -198,11 +140,18 @@ namespace {
                         Dialog       _question;
                         Dialog       _copying;
                         StatusBar   *_status = nullptr;
-                        Label       *_answer = nullptr;
                         ProgressBar *_progress = nullptr;
+                        TreeView    *_tree = nullptr;
+                        IconView    *_icons = nullptr;
+                        DetailsView *_details = nullptr;
+                        Splitter    *_split = nullptr;
+                        FilesModel   _files;
+                        OwnedIcon    _owned[6];
                         int          _timer = -1;
+                        int          _fillTimer = -1;
                         uint32_t     _done = 0;
                         bool         _statusShown = true;
+                        bool         _showDetails = false;
         };
 
         Error WidgetsWindow::build() {
@@ -211,42 +160,71 @@ namespace {
                 setCentral(column);
                 auto *bar = Widget::create<MenuBar>(column);
                 auto *tools = Widget::create<ToolBar>(column);
-                auto *split = Widget::create<Splitter>(column, Splitter::Orientation::Horizontal);
+                _split = Widget::create<Splitter>(column, Splitter::Orientation::Horizontal);
                 _status = Widget::create<StatusBar>(column);
-                if (bar == nullptr || tools == nullptr || split == nullptr || _status == nullptr) return Error::NoMem;
+                if (bar == nullptr || tools == nullptr || _split == nullptr || _status == nullptr) return Error::NoMem;
 
                 (void)_file.addItem("&Question...", Question);
                 (void)_file.addItem("&Copy...", Copy);
                 (void)_file.addSeparator();
                 (void)_file.addItem("E&xit", Quit, 0, "Alt+F4");
-                (void)_view.addItem("&Status Bar", ShowStatus, MenuLayout::Checked);
-                (void)_help.addItem("&About", About);
                 for (Menu *m : {&_file, &_view, &_help}) m->setTriggered(chosen, this);
+                (void)_help.addItem("&About", About);
                 (void)bar->addMenu("&File", _file);
                 (void)bar->addMenu("&View", _view);
                 (void)bar->addMenu("&Help", _help);
                 setMenuBar(bar);
 
-                (void)tools->addButton(nullptr, "Back", tool, this);
-                (void)tools->addButton(nullptr, "Forward", tool, this);
+                (void)tools->addButton(nullptr, "Icons", tool, this);
+                (void)tools->addButton(nullptr, "Details", tool, this);
                 (void)tools->addSeparator();
                 (void)tools->addButton(nullptr, "Question", tool, this);
                 (void)tools->addButton(nullptr, "Copy", tool, this);
 
-                auto *list = Widget::create<RowList>(split);
-                auto *grid = Widget::create<Grid>(split);
-                if (list == nullptr || grid == nullptr) return Error::NoMem;
-                list->setSelected(rowSelected, this);
-                split->setLeast(120, 120);
-                split->setPosition(260);
-                split->setWidgets(list, grid);
-                split->setStretch(1);
+                // The icons, copied once.
+                IconTheme &theme = application().icons();
+                _owned[0].take(theme.find("folder", 16));
+                _owned[1].take(theme.find("folder", 32));
+                _owned[2].take(theme.find("text-x-generic", 16));
+                _owned[3].take(theme.find("text-x-generic", 32));
+                _owned[4].take(theme.find("drive-harddisk", 16));
+                _owned[5].take(theme.find("folder-open", 16));
+                _files.folderSmall = _owned[0].get();
+                _files.folderLarge = _owned[1].get();
+                _files.fileSmall = _owned[2].get();
+                _files.fileLarge = _owned[3].get();
+
+                _tree = Widget::create<TreeView>(_split);
+                // The files' side: both views, one shown.
+                auto *right = Widget::create<BoxLayout>(_split, BoxLayout::Direction::Vertical);
+                if (_tree == nullptr || right == nullptr) return Error::NoMem;
+                _icons = Widget::create<IconView>(right);
+                _details = Widget::create<DetailsView>(right);
+                if (_icons == nullptr || _details == nullptr) return Error::NoMem;
+                for (ItemView *v : {static_cast<ItemView *>(_icons), static_cast<ItemView *>(_details)}) {
+                        v->setStretch(1);
+                        v->setModel(&_files);
+                        v->setActivated(opened, this);
+                        v->setChanged(selectionChanged, this);
+                }
+                _details->setSortAsked(sortAsked, this);
+                _details->setSortIndicator(0, false);
+                _tree->setIcons(_owned[4].get(), _owned[0].get(), _owned[5].get());
+                _tree->setExpanding(expanding, this);
+                _tree->setChanged(folderChosen, this);
+                Vfs::MountInfo mounts[Vfs::MaxMounts];
+                const size_t   n = Vfs::listMounts(Span<Vfs::MountInfo>(mounts, Vfs::MaxMounts));
+                for (size_t i = 0; i < n; ++i) (void)_tree->addRoot(StringView(mounts[i].path));
+                _split->setLeast(120, 160);
+                _split->setPosition(200);
+                _split->setWidgets(_tree, right);
+                _split->setStretch(1);
 
                 (void)_status->addField(0);
-                (void)_status->addField(120);
+                (void)_status->addField(160);
                 status("Ready");
 
-                _answer = Widget::create<Label>(_question.content(), "Is the toolkit furnished now?");
+                (void)Widget::create<Label>(_question.content(), "Is the toolkit furnished now?");
                 _question.addButton("&Yes", 1);
                 _question.addButton("&No", 0);
                 _question.setFinished(answered, this);
@@ -255,13 +233,28 @@ namespace {
                 _progress = Widget::create<ProgressBar>(_copying.content());
                 _copying.addButton("&Cancel", 0);
                 _copying.setFinished(copied, this);
+                setDetails(false);
                 column->relayout();
-                list->setFocus();
+                _tree->setFocus();
+                if (n > 0) _tree->selectOnly(0); // the first filesystem shown
                 return Error::Ok;
         }
 
         void WidgetsWindow::status(const char *text) {
                 _status->setText(0, StringView(text));
+                return;
+        }
+
+        void WidgetsWindow::setDetails(bool details) {
+                _showDetails = details;
+                _icons->setVisible(!details);
+                _details->setVisible(details);
+                static_cast<BoxLayout *>(_icons->parent())->relayout();
+                _view.clear();
+                (void)_view.addItem("&Large Icons", LargeIcons, details ? 0 : MenuLayout::Checked);
+                (void)_view.addItem("&Details", Details, details ? MenuLayout::Checked : 0);
+                (void)_view.addSeparator();
+                (void)_view.addItem("&Status Bar", ShowStatus, _statusShown ? MenuLayout::Checked : 0);
                 return;
         }
 
@@ -271,15 +264,15 @@ namespace {
                         case Question: (void)self->_question.open(); break;
                         case Copy: self->startCopy(); break;
                         case Quit: self->application().quit(0); break;
+                        case LargeIcons: self->setDetails(false); break;
+                        case Details: self->setDetails(true); break;
                         case ShowStatus:
                                 self->_statusShown = !self->_statusShown;
                                 self->_status->setVisible(self->_statusShown);
                                 static_cast<BoxLayout *>(self->_status->parent())->relayout();
-                                self->_view.clear();
-                                (void)self->_view.addItem("&Status Bar", ShowStatus,
-                                                          self->_statusShown ? MenuLayout::Checked : 0);
+                                self->setDetails(self->_showDetails);
                                 break;
-                        case About: self->status("BMDS widgets: the toolkit's furniture"); break;
+                        case About: self->status("BMDS widgets: the toolkit's furniture and views"); break;
                         default: break;
                 }
                 return;
@@ -293,18 +286,119 @@ namespace {
                 } else if (text == "Copy") {
                         self->startCopy();
                 } else {
-                        char line[40];
-                        std::snprintf(line, sizeof(line), "%.*s pressed", int(text.size()), text.data());
-                        self->status(line);
+                        self->setDetails(text == "Details");
                 }
                 return;
         }
 
-        void WidgetsWindow::rowSelected(void *arg, uint32_t row) {
+        // A folder in the tree expanded: its folders, as the tree's children.
+        void WidgetsWindow::expanding(void *arg, TreeView &view, size_t row) {
+                (void)arg;
+                String path(MemSpace::Psram);
+                if (view.rows().pathOf(row, path).isError()) return;
+                FolderModel sub;
+                if (sub.open(path.view(), Vfs::Context{"/", nullptr}).isError()) {
+                        (void)view.setChildren(row, Span<const StringView>());
+                        return;
+                }
+                while (!sub.isComplete()) (void)sub.fillSome(FillBatch);
+                List<StringView> names(MemSpace::Psram);
+                for (size_t i = 0; i < sub.count(); ++i)
+                        if (sub.entry(i).isDirectory()) (void)names.append(sub.name(i));
+                (void)view.setChildren(row, names.span());
+                return;
+        }
+
+        void WidgetsWindow::folderChosen(void *arg, ItemView &view) {
                 auto *self = static_cast<WidgetsWindow *>(arg);
-                char  text[24];
-                std::snprintf(text, sizeof(text), "Row %lu", static_cast<unsigned long>(row + 1));
-                self->_status->setText(1, StringView(text));
+                auto &tree = static_cast<TreeView &>(view);
+                if (tree.current() < 0) return;
+                String path(MemSpace::Psram);
+                if (tree.rows().pathOf(size_t(tree.current()), path).isOk() &&
+                    path.view() != self->_files.folder.path())
+                        self->showFolder(path.view());
+                return;
+        }
+
+        void WidgetsWindow::showFolder(StringView path) {
+                stopFill();
+                if (_files.folder.open(path, Vfs::Context{"/", nullptr}).isError()) {
+                        status("Can't open that folder");
+                        filesChanged();
+                        return;
+                }
+                filesChanged();
+                // Filled a batch at a time on the loop (FB12): shown as it fills.
+                auto [timer, err] = application().startTimer(1, true, fill, this);
+                _fillTimer = err.isOk() ? timer : -1;
+                return;
+        }
+
+        void WidgetsWindow::stopFill() {
+                if (_fillTimer >= 0) application().stopTimer(_fillTimer);
+                _fillTimer = -1;
+                return;
+        }
+
+        void WidgetsWindow::fill(void *arg) {
+                auto *self = static_cast<WidgetsWindow *>(arg);
+                (void)self->_files.folder.fillSome(FillBatch);
+                if (self->_files.folder.isComplete()) self->stopFill();
+                self->filesChanged();
+                return;
+        }
+
+        void WidgetsWindow::filesChanged() {
+                _icons->modelReset();
+                _details->modelReset();
+                char text[64];
+                std::snprintf(text, sizeof(text), "%zu items, %llu KB%s", _files.folder.count(),
+                              static_cast<unsigned long long>((_files.folder.shownBytes() + 1023) / 1024),
+                              _files.folder.isComplete() ? "" : " (reading)");
+                _status->setText(1, StringView(text));
+                return;
+        }
+
+        void WidgetsWindow::opened(void *arg, ItemView &view, size_t row) {
+                auto *self = static_cast<WidgetsWindow *>(arg);
+                (void)view;
+                if (!self->_files.folder.entry(row).isDirectory()) {
+                        self->status("A file: opened by the folder windows (step 4)");
+                        return;
+                }
+                // Into the folder: the tree follows if it shows it.
+                String path(MemSpace::Psram);
+                (void)path.assign(self->_files.folder.path());
+                if (!path.view().endsWith('/')) (void)path.append('/');
+                (void)path.append(self->_files.folder.name(row));
+                if (self->_tree->current() >= 0) self->_tree->expand(size_t(self->_tree->current()));
+                if (self->_tree->selectPath(path.view()) < 0) self->showFolder(path.view());
+                return;
+        }
+
+        void WidgetsWindow::selectionChanged(void *arg, ItemView &view) {
+                auto        *self = static_cast<WidgetsWindow *>(arg);
+                char         text[64];
+                const size_t n = view.selection().selectedCount();
+                if (n == 1 && view.current() >= 0) {
+                        const StringView name = self->_files.folder.name(size_t(view.current()));
+                        std::snprintf(text, sizeof(text), "%.*s", int(name.size()), name.data());
+                } else {
+                        std::snprintf(text, sizeof(text), "%zu selected", n);
+                }
+                self->status(text);
+                return;
+        }
+
+        void WidgetsWindow::sortAsked(void *arg, DetailsView &view, size_t column) {
+                auto                   *self = static_cast<WidgetsWindow *>(arg);
+                const FolderModel::Sort sorts[] = {FolderModel::Sort::Name, FolderModel::Sort::Size,
+                                                   FolderModel::Sort::Type};
+                const FolderModel::Sort sort = sorts[column < 3 ? column : 0];
+                const bool down = self->_files.folder.sort() == sort && !self->_files.folder.isDescending();
+                self->_files.folder.setSort(sort, down);
+                view.setSortIndicator(int(column), down);
+                self->filesChanged();
                 return;
         }
 
@@ -372,7 +466,10 @@ namespace {
                                 } else {
                                         say("widgets: can't open its window\n");
                                 }
-                                window->~WidgetsWindow();
+                                {
+                                        Mutex::Locker lock(app->lock(), WaitForever);
+                                        window->~WidgetsWindow();
+                                }
                                 Memory::free(wmem);
                         }
                 }

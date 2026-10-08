@@ -47,6 +47,19 @@ namespace {
 
 } // namespace
 
+void GuiStyle::drawArrow(Painter &painter, const Rect &rect, Arrow way, uint32_t color) {
+        const int  cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
+        const bool vertical = way == Arrow::Up || way == Arrow::Down;
+        Rect       rows[4];
+        for (int i = 0; i < 4; ++i) {
+                const int half = way == Arrow::Up || way == Arrow::Left ? i : 3 - i; // the row's half width
+                rows[i] = vertical ? Rect{uint16_t(cx - half), uint16_t(cy - 2 + i), uint16_t(2 * half + 1), 1}
+                                   : Rect{uint16_t(cx - 2 + i), uint16_t(cy - half), 1, uint16_t(2 * half + 1)};
+        }
+        (void)painter.fill(Span<const Rect>(rows), color);
+        return;
+}
+
 // ---- Widget
 
 Widget::Widget(Widget *parent) : _parent(parent) {

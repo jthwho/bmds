@@ -36,6 +36,20 @@ namespace GuiStyle {
         constexpr uint16_t Column = 4;        ///< Text starts on a multiple of this.
         constexpr uint16_t IconSize = 16;     ///< A button's or a menu item's icon.
         constexpr uint16_t IconGap = 4;       ///< Between an icon and its text.
+
+        /** @brief Which way `drawArrow()` points. */
+        enum class Arrow : uint8_t {
+                Up,
+                Down,
+                Left,
+                Right,
+        };
+
+        /**
+         * @brief Draws a small arrow (a triangle 7 pixels across, 4 deep) in
+         *        @p rect's middle, as scroll bars and sorted headers show.
+         */
+        void drawArrow(Painter &painter, const Rect &rect, Arrow way, uint32_t color);
 } // namespace GuiStyle
 
 /** @brief A width and a height. */

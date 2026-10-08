@@ -189,6 +189,83 @@ Pure geometry (`ScrollModel`, `MenuBarLayout`, `SplitterLayout`, `ProgressLayout
 `ButtonRow`) is in host-tested files. The widgets are tried on the board in `/bin/widgets`, a
 built-in program on the public API showing each of them.
 
+### 4f. Step 2 design: `bmds_files` (2026-10-07)
+
+A portable component (built for the host tests too) over `Vfs` and `Trash`, no GUI:
+
+- **`FolderModel`:**
+  - `open(path)` normalizes the path, opens the directory and empties the model; `fillSome(n)`
+    reads up to `n` entries (FB12), and `isComplete()` says when the directory is read.
+  - Entries are one PSRAM `List` (size, time, type, attributes, and the name as an offset into
+    one PSRAM character list: names stored once). The order shown is a third list of indices.
+    Each batch is sorted on its own, then merged into the order from the back (no buffer but
+    the batch's), so a view drawn while the folder fills never shows it unsorted.
+  - Sorting by name, size, type (the extension) or time, up or down, folders first (Windows'),
+    names compared without case and with runs of digits as numbers ("File 2" before "File 10").
+  - Hidden entries (a leading `.`, or FAT's Hidden attribute) are kept and left out of the order
+    unless shown: `setShowHidden()` needs no new read.
+  - `indexOf(name)` (a view keeps its selection across a refresh by name), and the counts and
+    bytes of what shows (the status bar's).
+- **`FileOps`:**
+  - The operations: `copy(from, intoDirectory)`, `move(...)` (a rename on one filesystem,
+    else a copy then a removal), `remove(path)` (a tree), `trash(path)`, `rename(path, name)`
+    (a new name in the same folder, checked), `makeNew(directory, kind)` (F10's names),
+    `copyName(directory, name)` (F1's first free copy name), and `measure(paths)` (items and
+    bytes, for the progress window).
+  - Each takes a `FileOps::Progress`, the caller's object (the worker's job, FB13): told each
+    item and the bytes as they go, asked `isCancelled()` between chunks, and asked what to do
+    when a name is taken (Replace, Keep Both, Skip or Cancel; a folder's Replace merges). A
+    failed item is told and the rest go on. Copies keep the modification time. A file cut off
+    by Cancel or an error is removed. A link inside a tree is copied as a link. Nothing is
+    copied into itself.
+  - Copies use a 32 KB buffer of DMA-capable internal RAM (PSRAM if there is none), one per
+    operation, freed after it.
+- **Later, not now:** the shell's `cp -r`, `mv` and `rm -r` walk trees their own way, with the
+  shell's messages; moving them onto `FileOps` is a separate change.
+
+### 4g. Step 3 design: the item views (2026-10-07)
+
+- **`ItemModel`** (an interface the owner implements): `count()`, `text(row)` (the name),
+  `icon(row, size)` (may be null while icons load), `columns()`, `columnTitle(c)`,
+  `columnText(row, c, buffer)` (sizes and dates formatted by the model) and `columnAlign(c)`.
+  No listeners: the owner changes its model and tells its views (`modelReset()`), which keeps
+  the toolkit free of observer lists. `ListItemModel` is a plain one (names and icons) for the
+  desktop and the demo; the folder model's adapter comes with the folder windows (step 4).
+- **Pure, host-tested:**
+  - `ItemSelection`: a bit per row (PSRAM words), the current row and the anchor; select only,
+    toggle (Ctrl), a range from the anchor (Shift, adding with Ctrl), all, none.
+  - `IconLayout`: flowing cells (rows left to right, as many columns as fit: a folder window),
+    or the desktop's cells from `IconGrid`; the cell of a row, the row at a point, the rows a
+    rectangle touches (a rubber band), the neighbour an arrow goes to (flowing: the next cell;
+    on the grid, the desktop's nearest-that-way rule, moved here).
+  - `HeaderLayout`: columns' widths (on 4-pixel columns, a least each), the column at a point,
+    the edge within 3 pixels (resizing).
+  - `TreeRows`: the tree's visible rows as one flat list (depth, expanded, has-children,
+    loaded); expanding inserts children after a row, collapsing removes its descendants (a
+    contiguous run), a row's parent, a row's path (names joined by `/` from its root).
+- **`ItemView`** (on `ScrollArea`): the model, the selection and the current row; a press
+  selects (Ctrl toggles, Shift extends, a press on a selected row keeps a multiple selection
+  until its release, for dragging later); a press on no row starts a rubber band; a double
+  click or Enter activates; a right press asks for a menu (the row selected first); F2, a slow
+  second click on a selected name or a long press asks for a rename; arrows, Home, End and
+  Page keys move the current row (Shift extends, Ctrl moves without selecting, Ctrl+Space
+  toggles, Ctrl+A selects all); a letter goes to the next row starting with it; other keys are
+  offered to the owner first (Delete, Ctrl+C). Subclasses give the geometry.
+- **`IconView`:** 32-pixel icons with names in up to two lines (the desktop's look), flowing
+  or on the desktop's grid (its items dragged to cells, as now). Colours from roles: a folder
+  window's light face, or the desktop's colours.
+- **`DetailsView`:** a header (raised buttons, the sort shown by a small triangle; a click asks
+  for that sort, its edge is dragged to resize), rows of 18 pixels with a 16-pixel icon and the
+  model's columns; the header scrolls across with the rows, not down.
+- **`TreeView`:** indented rows with + and − boxes and folder icons; expanding asks the owner for
+  the children (`setChildren()`), Left and Right collapse and expand (or go to the parent and
+  the first child), as Windows' tree.
+- **The desktop on `IconView`:** `DesktopWindow` keeps its API for the panel and holds an
+  `IconView` on its grid, with `ListItemModel`; `win check`'s reference picture is the view's.
+  The desktop gains the views' multiple selection, Ctrl, Shift and the rubber band; its Delete
+  and Copy act on every item selected.
+- **`/bin/widgets`** shows a tree, and the list as icons or details (View menu).
+
 ## 5. Steps
 
 1. **The window limit, then the toolkit's furniture:** 255 windows and connections in growing
@@ -217,8 +294,34 @@ built-in program on the public API showing each of them.
      dragged; rows half out of a viewport cut at its edges. Size: 16,688 bytes of code (4,170
      of them `/bin/widgets`), no static RAM.
 2. **`bmds_files`:** `FolderModel` and `FileOps` (the desktop's operations moved here), host-tested.
+   - *As built (2026-10-07):* as §4f. Host tests on two RAM disks (199 checks, then the trash
+     through a link): batches sorted at every step, natural name order, hidden entries,
+     every sort up and down (ties by name, always up); copies with each answer to a taken name,
+     a folder merged, a copy beside itself, nothing into itself; moves by rename and across
+     filesystems; measuring, removing, a cancelled copy leaving nothing; renames (case only
+     too), new items' names, copy names, times kept. The panel's Paste (now folders too: they
+     were refused before), New, Delete and Rename use `FileOps`. Found on the board: the trash
+     didn't follow `/home`'s link (`files.md` §10), so the desktop's Delete failed for every
+     icon in `/home/Desktop`; fixed in `Trash::move()`. Size: 3,584 bytes of code.
 3. **Item views:** `ItemView`, `IconView`, `DetailsView`, `TreeView`. The desktop moved onto
    `IconView`: no change to see but the 64-item limit gone, which proves the unification.
+   - *As built (2026-10-07):* as §4g. The pure parts host-tested (142 checks): selections,
+     flowing and grid layout, arrows on both, the header's columns and edges, the tree's rows
+     (expanding, collapsing, paths, names compacted after many rounds), the plain model, and
+     `IconGrid` placing 1000 items. `IconGrid::place()` lost its 64-item arrays (a PSRAM bitmap
+     of the cells taken), and the panel reads its desktop entries into an array of exactly the
+     size the folders need: the desktop has no limit now. The header is drawn by `DetailsView`
+     itself through a clipped painter (`ScrollArea::drawClipped()`, shared with the content),
+     not a separate `HeaderView`. Items are drawn through a small canvas interface, so the
+     desktop's reference picture for `win check` is the same code as its painting. On the board:
+     the desktop's `win check` 0 pixels wrong; a rubber band selecting two icons, both dragged
+     two cells and back (`desktop.conf` following); `/bin/widgets` as a small browser of the
+     real filesystems (the tree expanded from the VFS, a folder's files as icons or details,
+     sorting by a header's click, Ctrl-clicks, double clicks into folders with the tree
+     following, 361 files filled in batches, End to the last). Size: `bmds_gui` 40,702 to
+     62,334 bytes of code; 24,080 bytes in all with the panel's and the demo's changes; no
+     static RAM. Left for step 4: a sort or refresh keeping the selection by name (the views
+     reset; the folder windows restore it), the rubber band scrolling the view at its edge.
 4. **Folder windows:** `FolderWindow`, navigation, the menus and keys, window manager services,
    `files`, the launcher's entry, `folders.conf`, `files/*` settings.
 5. **Directory watches** in the VFS (FB14): views, the tree and the desktop follow changes.

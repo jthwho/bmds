@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
+#include <bmds/list.h>
 #include <bmds/scrollmodel.h>
 #include <bmds/widget.h>
 
@@ -102,7 +103,9 @@ class ScrollBar : public Widget {
  * @brief A viewport on content larger than it, with scroll bars as needed
  *        (`devplan/filebrowser.md` §4e; as Qt's `QAbstractScrollArea`).
  *
- * The content is drawn by `paintContent()` through a painter clipped to the
+ * A subclass may keep a strip at the top out of the viewport (`setTopMargin()`:
+ * a header), the vertical bar beside it. The content is drawn by
+ * `paintContent()` through a painter clipped to the
  * viewport, its point (cx, cy) at (`viewport().x + cx - scrollX()`,
  * `viewport().y + cy - scrollY()`) in the window: a subclass draws only what
  * shows. The horizontal offset moves in 4-pixel steps (text starts on a
@@ -159,6 +162,33 @@ class ScrollArea : public Widget {
                 /** @brief The offset changed (the viewport is redrawn already). */
                 virtual void scrolled() {}
 
+                /** @brief Keeps @p height pixels at the top out of the viewport (a header's), beside the bar. */
+                void setTopMargin(uint16_t height);
+
+                /**
+                 * @brief Calls @p draw(painter) with a painter clipped to @p limit
+                 *        (window coordinates): its storage on the stack for up to
+                 *        `LocalPieces` pieces, in PSRAM past that (not drawn without it).
+                 */
+                template <typename Draw> static void drawClipped(Painter &painter, const Rect &limit, Draw draw) {
+                        if (limit.isEmpty() || !painter.isVisible(limit)) return;
+                        const size_t need = painter.clippedStorage();
+                        Rect         local[LocalPieces];
+                        List<Rect>   more(MemSpace::Psram);
+                        Span<Rect>   storage(local, LocalPieces);
+                        if (need > LocalPieces) {
+                                if (more.reserve(need).isError()) return;
+                                for (size_t i = 0; i < need; ++i) (void)more.append(Rect());
+                                storage = more.span();
+                        }
+                        Painter clipped(painter, limit, storage);
+                        draw(clipped);
+                        return;
+                }
+
+                /** @brief A clipped painter's pieces kept on the stack. */
+                static constexpr size_t LocalPieces = 64;
+
                 void resized() override;
 
         private:
@@ -174,6 +204,7 @@ class ScrollArea : public Widget {
                 uint32_t   _scrollY = 0;
                 uint16_t   _lineX = 16;
                 uint16_t   _lineY = 16;
+                uint16_t   _topMargin = 0;
 };
 
 BMDS_NAMESPACE_END

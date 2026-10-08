@@ -124,7 +124,22 @@ Error Trash::mountOf(StringView path, String &mount) {
 Error Trash::move(StringView path, const Vfs::Context &context, String *name) {
         auto [normalized, nerr] = Vfs::normalize(path, context.cwd);
         if (nerr.isError()) return nerr;
-        const StringView p = normalized.view();
+        // Its folder's physical path (through links, as /home is), its own name kept: a link is
+        // trashed itself, and the path recorded is where it really was.
+        const StringView logical = normalized.view();
+        const size_t     slash = logical.lastIndexOf('/');
+        String           physical;
+        if (slash != StringView::NPos && slash > 0) {
+                auto [parent, rerr] = Vfs::realPath(logical.left(slash), context);
+                if (rerr.isError()) return rerr;
+                physical = std::move(parent);
+                nerr = physical.append(logical.mid(slash));
+                if (nerr.isError()) return nerr;
+        } else {
+                nerr = physical.assign(logical);
+                if (nerr.isError()) return nerr;
+        }
+        const StringView p = physical.view();
         String           mount;
         Error            err = mountOf(p, mount);
         if (err.isError()) return err;

@@ -9,42 +9,45 @@
  */
 
 #include <bmds/icongrid.h>
+#include <bmds/list.h>
 
 BMDS_NAMESPACE_BEGIN
 
-void IconGrid::place(Span<const Cell> wanted, uint16_t columns, uint16_t rows, Span<Cell> out) {
+Error IconGrid::place(Span<const Cell> wanted, uint16_t columns, uint16_t rows, Span<Cell> out) {
         if (columns == 0) columns = 1;
         if (rows == 0) rows = 1;
-        size_t n = wanted.size() < out.size() ? wanted.size() : out.size();
-        if (n > MaxItems) n = MaxItems;
-        // Taken: an item's cell is checked against the earlier ones' (few items: a walk).
-        auto taken = [&](const Cell &c, size_t before) {
-                for (size_t k = 0; k < before; ++k)
-                        if (out[k] == c) return true;
-                return false;
+        const size_t n = wanted.size() < out.size() ? wanted.size() : out.size();
+        // The cells taken, a bit each: the grid's, then as many columns past it as all the items need.
+        const size_t   cells = (size_t(columns) + (n + rows - 1) / rows) * rows;
+        List<uint32_t> taken(MemSpace::Psram);
+        Error          err = taken.reserve((cells + 31) / 32);
+        if (err.isError()) return err;
+        for (size_t w = 0; w < (cells + 31) / 32; ++w) (void)taken.append(0);
+        auto index = [rows](const Cell &c) {
+                return size_t(c.column) * rows + c.row;
         };
-        bool placed[MaxItems] = {};
+        auto isTaken = [&](size_t i) {
+                return (taken[i / 32] & (1u << (i % 32))) != 0;
+        };
+        auto take = [&](size_t i) {
+                taken[i / 32] |= 1u << (i % 32);
+        };
         for (size_t i = 0; i < n; ++i) {
                 out[i] = Cell();
                 const Cell &w = wanted[i];
-                if (w.isValid() && w.column < columns && w.row < rows && !taken(w, i)) {
-                        out[i] = w;
-                        placed[i] = true;
-                }
+                if (!w.isValid() || w.column >= columns || w.row >= rows || isTaken(index(w))) continue;
+                out[i] = w;
+                take(index(w));
         }
         // The rest, in order, in the first free cells (wanted ones placed later count too).
         size_t at = 0;
         for (size_t i = 0; i < n; ++i) {
-                if (placed[i]) continue;
-                for (;; ++at) {
-                        const Cell c{uint16_t(at / rows), uint16_t(at % rows)};
-                        if (taken(c, n)) continue;
-                        out[i] = c;
-                        ++at;
-                        break;
-                }
+                if (out[i].isValid()) continue;
+                while (isTaken(at)) ++at;
+                out[i] = Cell{uint16_t(at / rows), uint16_t(at % rows)};
+                take(at++);
         }
-        return;
+        return Error::Ok;
 }
 
 IconGrid::Cell IconGrid::cellAt(int x, int y, uint16_t width, uint16_t height, uint16_t columns, uint16_t rows) {
