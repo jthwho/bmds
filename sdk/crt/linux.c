@@ -1395,7 +1395,11 @@ static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 case SYS_truncate64: return do_truncate((const char *)a, (int64_t)((uint64_t)(uint32_t)c << 32 | (uint32_t)b));
                 case SYS_fsync:
                 case SYS_fdatasync:
-                case SYS_sync: return 0; /* writes reach the card when the file closes */
+                case SYS_syncfs:
+                case SYS_sync:
+                        /* A file's data reaches the card as it is written, its directory entry and the
+                           allocation within a second: sync() writes them now (slot 66; before it, 0). */
+                        return bmds_sys_has(BMDS_SYS_SYNC) ? (long)bmds_sync() : 0;
                 case SYS_faccessat:
                 case SYS_faccessat2: return do_access(a, (const char *)b, c);
                 case SYS_utimensat_time64: return do_utimens(a, (const char *)b, (const void *)c);

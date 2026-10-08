@@ -136,6 +136,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_SYSCONF_NEXT 63u     /**< `int32_t sysconf_next(const char *prefix, int32_t after)`: an id. */
 #define BMDS_SYS_SYSCONF_DECLARE 64u  /**< `int32_t sysconf_declare(const bmds_sysconf_param_t *param)`: an id. */
 #define BMDS_SYS_SYSCONF_WATCH 65u    /**< `int32_t sysconf_watch(const char *prefix, uint32_t flags)`: a new fd. */
+#define BMDS_SYS_SYNC 66u             /**< `int32_t sync(void)`: what the filesystems hold, written. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -504,6 +505,7 @@ typedef int32_t (*bmds_sys_sysconf_set_fn)(int32_t id, uint32_t op, const char *
 typedef int32_t (*bmds_sys_sysconf_next_fn)(const char *prefix, int32_t after);
 typedef int32_t (*bmds_sys_sysconf_declare_fn)(const bmds_sysconf_param_t *param);
 typedef int32_t (*bmds_sys_sysconf_watch_fn)(const char *prefix, uint32_t flags);
+typedef int32_t (*bmds_sys_sync_fn)(void);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -1131,6 +1133,16 @@ static inline int32_t bmds_sysconf_declare(const bmds_sysconf_param_t *param) {
  */
 static inline int32_t bmds_sysconf_watch(const char *prefix, uint32_t flags) {
         return ((bmds_sys_sysconf_watch_fn)bmds_sys->slot[BMDS_SYS_SYSCONF_WATCH])(prefix, flags);
+}
+
+/**
+ * @brief Writes what the filesystems hold to their devices: a card's directories and allocation,
+ *        otherwise written within a second, and `/boot`'s queue. Before a card is taken out.
+ *        (Slot 66, appended 2026-10-08: check `bmds_sys_has()`.)
+ * @return 0, or `-BMDS_EIO` (a device failed: what it held is lost), `-BMDS_ENOMEDIUM`...
+ */
+static inline int32_t bmds_sync(void) {
+        return ((bmds_sys_sync_fn)bmds_sys->slot[BMDS_SYS_SYNC])();
 }
 
 #ifdef __cplusplus

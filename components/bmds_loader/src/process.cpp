@@ -924,6 +924,11 @@ int32_t Process::sysconfDeclare(const bmds_sysconf_param_t *param) {
         return err.isError() ? errnoFor(err) : static_cast<int32_t>(id);
 }
 
+int32_t Process::sync() {
+        const Error err = Vfs::sync();
+        return err.isError() ? fsErrno(err) : 0;
+}
+
 int32_t Process::sysconfWatch(const char *prefix, uint32_t flags) {
         StringView p;
         if (int32_t r = keyArg(prefix, p); r < 0) return r == -BMDS_ENOENT ? -BMDS_EINVAL : r;

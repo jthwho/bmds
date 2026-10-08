@@ -129,6 +129,8 @@ void FatVolume::unmount() {
         if (!_mounted) return;
         char path[3];
         root(path);
+        // What is held written first (lost, and logged, if the card is gone).
+        if (_device != nullptr) (void)Fat::flushLocked(drive(), *_device);
         // Clears the volume's type, which every open file and directory on it
         // is checked against: they all fail from now on.
         (void)f_mount(nullptr, path, 0);

@@ -208,6 +208,9 @@ class Process {
                 int32_t sysconfNext(const char *prefix, int32_t after);
                 int32_t sysconfDeclare(const bmds_sysconf_param_t *param);
                 int32_t sysconfWatch(const char *prefix, uint32_t flags);
+
+                /** @brief `sync()`: `Vfs::sync()`, its error as an errno. */
+                int32_t sync();
                 ///@}
                 int32_t lstat(const char *path, bmds_stat_t *info);
                 int32_t pipe(int32_t *fds, uint32_t flags);

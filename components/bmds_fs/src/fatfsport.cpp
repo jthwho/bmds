@@ -10,10 +10,14 @@
  * pieces (the metadata cache, result and time conversions).
  */
 
+#include <atomic>
 #include <cstring>
 #include <new>
 #include <bmds/clock.h>
 #include <bmds/memory.h>
+#include <bmds/semaphore.h>
+#include <bmds/staticobject.h>
+#include <bmds/thread.h>
 
 #include "fatlayer.h"
 #include "sectorcache.h"
@@ -25,6 +29,84 @@ BMDS_NAMESPACE_BEGIN
 namespace {
 
         constinit SectorCache sectorCache;
+
+        // Writing metadata back (devplan/storage.md §3): a held write waits at most this long, for the
+        // flusher thread (a kernel thread, started at boot: one a program's task started would end
+        // with the program).
+        constexpr unsigned int            FlushDelayMs = 1000;
+        constinit StaticObject<Semaphore> flushWake;
+        constinit Thread                  flusher;
+        constinit std::atomic<bool>       flushScheduled{false};
+        constinit bool                    flusherRunning = false; // set at boot
+        constinit Error::Code             lostError = Error::Ok;  // a write-back failed: told by the next sync
+
+        void flusherMain(void *) {
+                for (;;) {
+                        (void)flushWake->acquire(WaitForever);
+                        Thread::sleep(FlushDelayMs);
+                        Mutex::Locker lock(Fs::lock(), WaitForever);
+                        flushScheduled.store(false, std::memory_order_release); // a hold now schedules again
+                        (void)Fat::flushAllLocked();
+                }
+        }
+
+        // A write held: the flusher woken, once until it flushes. Under the lock.
+        void scheduleFlush() {
+                if (flushScheduled.exchange(true, std::memory_order_acq_rel)) return;
+                if (!flusherRunning) {
+                        // No flusher (it couldn't start): written back now rather than never.
+                        flushScheduled.store(false, std::memory_order_release);
+                        (void)Fat::flushAllLocked();
+                        return;
+                }
+                flushWake->release();
+                return;
+        }
+
+        // True if a write of @p count sectors at @p sector lands in a cluster whose free is held: used
+        // on the card by a file removed since. Written first, the free must reach the card before
+        // (devplan/storage.md §3): a cut would leave the old entry pointing at new bytes.
+        bool landsOnFreeHeld(uint8_t drive, const FATFS &fs, LBA_t sector, UINT count) {
+                if (!sectorCache.hasFreesHeld() || fs.fs_type == 0 || sector + count <= fs.database) return false;
+                const LBA_t first = sector < fs.database ? fs.database : sector;
+                const DWORD from = DWORD((first - fs.database) / fs.csize) + 2;
+                const DWORD to = DWORD((sector + count - 1 - fs.database) / fs.csize) + 2;
+                for (DWORD c = from; c <= to && c < fs.n_fatent; ++c) {
+                        bool held = false;
+                        if (fs.fs_type == FS_EXFAT) {
+                                const DWORD bit = c - 2;
+                                held = sectorCache.isFreeHeld(drive, fs.bitbase + bit / (FF_MAX_SS * 8),
+                                                              bit % (FF_MAX_SS * 8));
+                        } else {
+                                const DWORD per = fs.fs_type == FS_FAT16 ? FF_MAX_SS / 2 : FF_MAX_SS / 4;
+                                held = sectorCache.isFreeHeld(drive, fs.fatbase + c / per, c % per);
+                        }
+                        if (held) return true;
+                }
+                return false;
+        }
+
+        // How sector @p sector of volume @p fs is written back; false: at once (FAT12, or not mounted).
+        bool kindOf(const FATFS &fs, LBA_t sector, SectorCache::Kind &kind) {
+                if (fs.fs_type == 0 || fs.fs_type == FS_FAT12) return false;
+                if (sector < fs.fatbase) {
+                        kind = SectorCache::Kind::Other; // boot sectors, FSInfo
+                        return true;
+                }
+                if (sector < fs.fatbase + LBA_t(fs.fsize) * fs.n_fats) {
+                        kind = fs.fs_type == FS_FAT16 ? SectorCache::Kind::Fat16 : SectorCache::Kind::Fat32;
+                        return true;
+                }
+                if (fs.fs_type == FS_EXFAT) {
+                        const LBA_t bitmapSectors = ((LBA_t(fs.n_fatent) - 2 + 7) / 8 + FF_MAX_SS - 1) / FF_MAX_SS;
+                        if (sector >= fs.bitbase && sector < fs.bitbase + bitmapSectors) {
+                                kind = SectorCache::Kind::Bitmap;
+                                return true;
+                        }
+                }
+                kind = SectorCache::Kind::Directory;
+                return true;
+        }
 
         static_assert(FF_MIN_SS == SectorCache::SectorBytes && FF_MAX_SS == SectorCache::SectorBytes);
 
@@ -52,7 +134,41 @@ SectorCache &Fat::cache() {
 }
 
 Error Fat::init() {
-        return sectorCache.init();
+        Error err = sectorCache.init();
+        if (err.isError() || flushWake.isCreated()) return err;
+        flushWake.create(1u, 0u);
+        // For good: never joined (a kernel thread, as the boot stage starts it).
+        Thread::Config config;
+        config.name = "fsflush";
+        config.stackBytes = 4096;
+        config.stackSpace = MemSpace::Psram; // the card is written by its driver's task, not this one
+        config.priority = 3;                 // the storage service's
+        // Without it, a held write is written back at once (scheduleFlush()).
+        flusherRunning = flusher.start(config, flusherMain, nullptr).isOk();
+        return Error();
+}
+
+Error Fat::flushLocked(uint8_t drive, BlockDevice &device) {
+        const Error err = sectorCache.flush(drive, device);
+        if (err.isError() && lostError == Error::Ok) lostError = err.code(); // for the next sync
+        return err;
+}
+
+Error Fat::takeLostLocked() {
+        const Error err = lostError;
+        lostError = Error::Ok;
+        return err;
+}
+
+Error Fat::flushAllLocked() {
+        Error first;
+        for (uint8_t d = 0; d < FF_VOLUMES; ++d) {
+                FatVolume &v = FatVolume::at(d);
+                if (!v.isMounted() || v.device() == nullptr || !sectorCache.hasHeld(d)) continue;
+                const Error err = flushLocked(d, *v.device());
+                if (first.isOk()) first = err;
+        }
+        return first;
 }
 
 Error Fat::toError(FRESULT result) {
@@ -155,6 +271,29 @@ extern "C" DRESULT disk_read(BYTE pdrv, BYTE *buff, LBA_t sector, UINT count) {
 extern "C" DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count) {
         BlockDevice *device = deviceOf(pdrv);
         if (device == nullptr) return RES_PARERR;
+        // Metadata from the window of a mounted volume on a card: held, written back within a second
+        // in an order a cut can't harm (devplan/storage.md §3). Data is written now, so it reaches
+        // the card before what points at it.
+        const FatVolume  &volume = FatVolume::at(pdrv);
+        SectorCache::Kind kind = SectorCache::Kind::Directory;
+        // Data or a directory into a cluster freed but not written freed yet: the free first.
+        if (volume.isMounted() && !device->isMemory() && landsOnFreeHeld(pdrv, *volume.fatfs(), sector, count)) {
+                const Error flushed = Fat::flushLocked(pdrv, *device);
+                if (flushed.isError()) return toDiskResult(flushed);
+        }
+        if (count == 1 && volume.isWindow(buff) && volume.isMounted() && !device->isMemory() &&
+            kindOf(*volume.fatfs(), sector, kind)) {
+                Error err = sectorCache.hold(pdrv, *device, sector, buff, kind);
+                if (err == Error::Full) {
+                        err = Fat::flushLocked(pdrv, *device);
+                        if (err.isOk()) err = sectorCache.hold(pdrv, *device, sector, buff, kind);
+                }
+                if (err.isOk()) {
+                        scheduleFlush();
+                        return RES_OK;
+                }
+                if (err != Error::NoMem) return toDiskResult(err); // no cache: written now, below
+        }
         const Error err = device->write(sector, ByteSpan(buff, static_cast<size_t>(count) * device->sectorSize()));
         // Write-through: the cached copies follow the device, or go when its
         // contents are uncertain. Memory devices have none.

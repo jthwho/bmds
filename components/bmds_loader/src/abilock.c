@@ -86,6 +86,7 @@ _Static_assert(BMDS_SYS_SYSCONF_FIND == 59 && BMDS_SYS_SYSCONF_GET == 60 && BMDS
 _Static_assert(BMDS_SYS_SYSCONF_SET == 62 && BMDS_SYS_SYSCONF_NEXT == 63 && BMDS_SYS_SYSCONF_DECLARE == 64,
                "ABI: slots SYSCONF_SET, _NEXT, _DECLARE");
 _Static_assert(BMDS_SYS_SYSCONF_WATCH == 65, "ABI: slot SYSCONF_WATCH");
+_Static_assert(BMDS_SYS_SYNC == 66, "ABI: slot SYNC");
 _Static_assert(BMDS_SYSCONF_KEY_MAX == 63 && BMDS_SYSCONF_VALUE_MAX == 1024, "ABI: sysconf lengths");
 _Static_assert(BMDS_SYSCONF_TYPE_BOOL == 0 && BMDS_SYSCONF_TYPE_INT == 1 && BMDS_SYSCONF_TYPE_STRING == 2 &&
                        BMDS_SYSCONF_TYPE_COLOR == 3 && BMDS_SYSCONF_TYPE_ENUM == 4 && BMDS_SYSCONF_TYPE_PATH == 5 &&

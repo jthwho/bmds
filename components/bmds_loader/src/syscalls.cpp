@@ -246,6 +246,11 @@ int32_t bmds_k_sysconf_watch(const char *prefix, uint32_t flags) {
         return call->sysconfWatch(prefix, flags);
 }
 
+int32_t bmds_k_sync(void) {
+        KernelCall call;
+        return call->sync();
+}
+
 int32_t bmds_k_proc_vfork(void) {
         KernelCall call;
         return call.thread().vfork();

@@ -2363,8 +2363,13 @@ static FRESULT dir_read (
 					res = load_xdir(dp);	/* Load the entry block */
 					if (res == FR_OK) {
 						dp->obj.attr = fs->dirbuf[XDIR_Attr] & AM_MASK;	/* Get attribute */
+						break;
 					}
-					break;
+					/* BMDS: a broken block (a write cut off between its sectors) is passed over, as
+					   Windows does, rather than ending the directory: from its first entry on. */
+					if (res != FR_INT_ERR) break;
+					res = dir_sdi(dp, dp->blk_ofs);
+					if (res != FR_OK) break;
 				}
 			}
 		} else
@@ -2443,19 +2448,35 @@ static FRESULT dir_find (	/* FR_OK(0):succeeded, !=0:error */
 				nc = dp->dir[XDIR_NumSec];
 				if (nc >= 2 && nc <= 18 && dp->dptr % SS(fs) + 2 * SZDIRE <= SS(fs)
 				 && dp->dir[SZDIRE + XDIR_Type] == ET_STREAM && ld_16(dp->dir + XDIR_NameHash) != hash) {
-					for (di = 0; di <= nc && res == FR_OK; di++) res = dir_next(dp, 0);	/* Past the block */
+					/* Past its secondary entries, as many as it has: one that isn't (a block cut
+					   short, another block made after it) is looked at as itself. */
+					for (di = 0; di < nc; di++) {
+						res = dir_next(dp, 0);
+						if (res != FR_OK) break;
+						res = move_window(fs, dp->sect);
+						if (res != FR_OK) break;
+						if ((dp->dir[XDIR_Type] & 0xC0) != 0xC0) break;
+					}
+					if (res != FR_OK) break;
+					if (di < nc) continue;
+					res = dir_next(dp, 0);	/* Past the block */
 					if (res != FR_OK) break;
 					continue;
 				}
 				dp->blk_ofs = dp->dptr;	/* Get location of the block */
 				res = load_xdir(dp);	/* Load the entry block */
-				if (res != FR_OK) break;
-				dp->obj.attr = fs->dirbuf[XDIR_Attr] & AM_MASK;	/* Get attribute */
+				if (res == FR_INT_ERR) {	/* Broken (a cut write): passed over, as dir_read does */
+					res = dir_sdi(dp, dp->blk_ofs);
+					if (res != FR_OK) break;
+				} else if (res != FR_OK) {
+					break;
+				} else
 #if FF_MAX_LFN < 255
 				if (fs->dirbuf[XDIR_NumName] <= FF_MAX_LFN && ld_16(fs->dirbuf + XDIR_NameHash) == hash) {
 #else
 				if (ld_16(fs->dirbuf + XDIR_NameHash) == hash) {
 #endif
+					dp->obj.attr = fs->dirbuf[XDIR_Attr] & AM_MASK;	/* Get attribute */
 					for (nc = fs->dirbuf[XDIR_NumName], di = SZDIRE * 2, ni = 0; nc; nc--, di += 2, ni++) {	/* Compare the name */
 						if ((di % SZDIRE) == 0) di += 2;
 						if (ff_wtoupper(ld_16(fs->dirbuf + di)) != ff_wtoupper(fs->lfnbuf[ni])) break;

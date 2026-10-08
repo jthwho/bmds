@@ -154,6 +154,88 @@ than the copy.
   (33 KB before). Static RAM: the cache object is 36 bytes (12 before). `bmds_fs` is 89,616 bytes of
   code (+1,494).
 
+**Writing metadata back (design, 2026-10-08; the user chose an ordered write-back with a 1 s
+window over write-through).** A file copied within the card costs about 10 ms: four single-sector
+writes (the directory entry at its making, the allocation bitmap or FAT, the data, the entry again
+at its close), each about 2 ms on this card; removing one costs two. In a burst most of those land on
+the same sectors: a bitmap sector maps 4,096 clusters, a directory sector holds about five exFAT
+entry blocks.
+
+- **What is held:** writes from FatFs's window (directories, the FAT, exFAT's bitmap, FAT32's FSInfo
+  and the boot sectors) to a device that isn't memory, on FAT16, FAT32 and exFAT. File data, which
+  never passes through the window, is written at once, so it always reaches the card before the
+  metadata that points at it. FAT12 volumes (floppy-sized) and `f_mkfs()`, whose buffer isn't the
+  window, stay write-through.
+- **Where:** in the metadata cache, on a list of its own that making room never takes from, at most
+  64 sectors. Reads find the newest copy there. A data write over a held sector (a freed directory
+  cluster used again for data within the window) supersedes it: the device has the newest bytes.
+- **When it is written:**
+  - a second after the first sector was held, by a flusher thread (a kernel thread started at boot,
+    its stack in PSRAM; it sleeps on a semaphore until a write is held: no polling);
+  - when 64 are held;
+  - before an unmount (`umount`, a card going), a format and a remount;
+  - on `Vfs::sync()`: the new shell command `sync`, a new system call (slot 66, `int32_t sync(void)`,
+    which the Linux layer's `sync`, `syncfs`, `fsync` and `fdatasync` use), and `reboot`.
+  - Not at a file's close: FatFs syncs at every close, and that would undo the batching.
+- **In an order that survives a cut**, so a power cut or a pulled card during a flush leaks space at
+  worst. A directory entry never points at clusters marked free. A flush writes in three phases:
+  1. the allocation sectors (FAT and bitmap) with every cluster used either before or now marked
+     used: a bitmap sector OR'd with its original, a FAT entry freed now kept as it was;
+  2. the directory sectors;
+  3. the allocation sectors as they are, freeing what was freed; then FSInfo (a hint) and the boot
+     sectors.
+  The original of each held allocation sector is kept for phase 1, from the cache's clean copy
+  (FatFs always reads a FAT or bitmap sector before changing it), in a pool of 64 sectors.
+- **What a cut still costs:** the changes of the last second, as if they hadn't been made; space
+  allocated in a flush cut before phase 3 stays marked used until a PC's disk check. A rename is two
+  directory writes, as it is now.
+- **A failed flush** (the card gone) drops what was held: the error comes after the operation that
+  made the change returned, so the next `Vfs::sync()` reports it (as POSIX's `fsync` reports a failed
+  write-back).
+
+*As built (2026-10-08):* as above, with these differences and findings.
+
+- **A cluster freed and used again within the window** was the old file's on the card still: a write
+  into it (data, or a new folder's zeroed sectors) before the free reached the card left the old
+  entry pointing at the new bytes, a cross-link, if cut there. The cut test below found it at its
+  first write. Now each held allocation sector keeps a mask of the entries freed since the last flush
+  (sticky, even if allocated again), and a write into such a cluster, held or direct, flushes first:
+  the removal reaches the card, in order, before the cluster is reused. The check is a hash lookup per
+  cluster written, and only while some held sector frees something.
+- **A broken exFAT entry block** (one whose sectors were cut apart: a new file's entry in one sector,
+  its name in the next) made FatFs end the directory there with `FR_INT_ERR`. Write-through can leave
+  one too. A FatFs patch (`bmds-exfat-broken.diff`) passes over it, as Windows does; the file in it is
+  lost and its space leaked. The same test found that the lookup patch above trusted a block's count
+  of secondary entries when skipping it, and so skipped a block made after a broken one (a file listed
+  but not found); the skip now stops at an entry that isn't a secondary.
+- **No logging:** `bmds_fs` is portable and the kernel's log isn't built for the host; a lost
+  write-back is reported by the next `sync` instead.
+- **The flusher is started at boot** (`Fat::init()`), because a thread started from a program's task
+  belongs to the program and would end with it. `Thread::sleep()` is new (FreeRTOS's delay, or the
+  host's).
+- **The system call:** `bmds_sync()`, slot 66; the Linux layer's `sync`, `syncfs`, `fsync` and
+  `fdatasync` use it (they returned 0). `reboot` syncs before restarting.
+- **Host test** (`Vfs: metadata written back survives a cut at any write`): on FAT32 and exFAT, a burst
+  removing ten files, filling and emptying a folder of 30 long names, and making twenty files, synced
+  at four different points. Every write it makes is recorded; then for each prefix of them (a cut
+  after each write) the card is mounted fresh and checked: every listed file opens and reads back
+  right (a new one may be shorter), and a 16 KB file written afterwards overwrites none of them (no
+  cross-link). About 3,000 cuts in 27 s. With the skip fix reverted it fails at cut 234; before the
+  mask, at cut 1.
+- **On the board** (the exFAT card, 361 files of the icon theme):
+
+  | What | Write-through | Written back |
+  |---|---|---|
+  | `cp -r` within the card | 3.7 s | 2.3 s |
+  | `rm -r` | 1.6 s | 0.82 s |
+
+  Less than estimated: `rm -r` is now two lookups a file (0.64 ms each in that folder), and each copied
+  file still writes its data at once. A file written and `reboot` at once is there after. Three hard
+  resets right after a burst of changes left the card mounting and every file whole: the last
+  second's changes gone, one new file empty (made, its size not yet written).
+- **Memory:** 64 KB of `Psram` for the originals and the masks; the flusher's control block and stack
+  (internal RAM free after boot 556 bytes lower; 4 KB of `Psram`).
+
 **Time stamps** come from the kernel's system clock ([`time.md`](time.md)): `get_fattime()` converts `Clock::now()` to local time in the kernel time zone (FAT stores local time; exFAT also records the UTC offset). An unset clock still counts forward from 2026-01-01, so new files never carry 1980.
 
 **Why not IDF VFS + newlib (`fopen`, `open`)?** It brings a second, global fd table, newlib `FILE` buffers in internal RAM, errno and blocking calls with no timeouts or interrupts, beside the `FdTable`/`FileHandle`/`Stream` model the shell and the Phase 3 ABI already use. Programs will get file syscalls from BMDS (Phase 3); a newlib in a program can sit on those.
@@ -335,9 +417,8 @@ Step 2b measured: the image grew by 10.9 KB (331.7 → 342.7 KB); the linker sti
 
 - UHS-I (1.8 V, SDR50/SDR104): worth it for a DOS-like machine? Measure high speed first.
 - ~~Read-ahead above FatFs.~~ Done for metadata (§3, 2026-10-08): runs of 8 sectors on a miss.
-- Write-back for metadata: within the card a copy now costs about 10 ms a file in small writes
-  (the directory entry, the bitmap, the entry again at close), which a write-back cache would
-  batch. It would lose more on a pulled card or a power cut: the user's call.
+- ~~Write-back for metadata.~~ Done (§3, 2026-10-08, the user's choice): held up to a second, written
+  in an order a cut can't turn into a cross-link.
 - ~~**A sector cache for directories and the FAT.**~~ Done in Phase 3 (§3): 64 sectors, write-through. `ls -l` of BusyBox's `bin` 2.36 → 0.30 s, BusyBox's own `ls -l` 4.22 → 0.75 s.
 - Commands ignore write errors, so `echo x > f` on a full or pulled card succeeds silently. GNU tools report `write error: No space left on device` and fail; `CommandContext::print()`/`write()` should remember the first error and the built-ins return 1.
 - The removal of a card is noticed only after the write in flight times out (about 4 s): shorter IDF timeouts, or the card-detect interrupt failing transfers early, would shorten it.

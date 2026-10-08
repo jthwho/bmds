@@ -12,6 +12,7 @@
 #include <freertos/timers.h>
 #include <atomic>
 #include <bmds/assert.h>
+#include <bmds/detail/ticks.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/semaphore.h>
@@ -107,6 +108,11 @@ Error Thread::start(const Config &config, Entry entry, void *arg) {
         bmdsDebug("Thread(%p '%s'): started, %u-byte stack in %s", this, config.name,
                   static_cast<unsigned>(config.stackBytes), memSpaceName(config.stackSpace));
         return Error::Ok;
+}
+
+void Thread::sleep(unsigned int delayMs) {
+        vTaskDelay(Detail::toTicks(delayMs));
+        return;
 }
 
 void Thread::detach() {

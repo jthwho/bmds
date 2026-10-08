@@ -815,6 +815,19 @@ Error Vfs::init() {
         return err;
 }
 
+Error Vfs::sync() {
+        Mutex::Locker lock(Fs::lock(), WaitForever);
+        Error         first = Fat::flushAllLocked();
+        const Error   lost = Fat::takeLostLocked(); // a write-back since the last sync failed
+        if (first.isOk()) first = lost;
+        for (size_t i = 0; i < mountCount; ++i) {
+                if (mounts[i].device == nullptr) continue;
+                const Error err = mounts[i].device->sync();
+                if (first.isOk() && err != Error::NotSupported) first = err;
+        }
+        return first;
+}
+
 Result<String> Vfs::normalize(StringView path, StringView cwd) {
         if (path.isEmpty()) return makeError<String>(Error::Invalid);
         String out;

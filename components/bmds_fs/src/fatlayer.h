@@ -62,6 +62,9 @@ class FatVolume final : public Volume {
                 /** @brief Returns true while mounted. */
                 bool isMounted() const { return _mounted; }
 
+                /** @brief Returns FatFs's volume (its geometry); null before the first use. */
+                const FATFS *fatfs() const { return _fs; }
+
                 /** @brief Returns true if @p buffer is FatFs's window (its metadata sector) for this volume. */
                 bool isWindow(const void *buffer) const { return _fs != nullptr && buffer == _fs->win; }
 
@@ -110,6 +113,23 @@ namespace Fat {
 
         /** @brief Creates the cache (from `Fs::init()`); idempotent. */
         Error init();
+
+        /**
+         * @brief Writes back what the mounted volumes hold (devplan/storage.md §3).
+         *        Lock held.
+         * @return `Ok`, or the first error (what failed is lost; `takeLostLocked()` tells it).
+         */
+        Error flushAllLocked();
+
+        /** @brief Writes back what drive @p drive holds, to @p device. Lock held. */
+        Error flushLocked(uint8_t drive, BlockDevice &device);
+
+        /**
+         * @brief Returns the first write-back that failed since the last call
+         *        (what it held was lost), and forgets it: `Vfs::sync()` tells it,
+         *        as POSIX's `fsync` tells a failed write-back. Lock held.
+         */
+        Error takeLostLocked();
 
         /** @brief Translates a FatFs result. `FR_INVALID_OBJECT` (stale after unmount) is `NoMedia`. */
         Error toError(FRESULT result);

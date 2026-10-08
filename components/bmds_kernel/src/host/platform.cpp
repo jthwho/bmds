@@ -237,6 +237,11 @@ Error Thread::start(const Config &, Entry entry, void *arg) {
         return Error::Ok;
 }
 
+void Thread::sleep(unsigned int delayMs) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+        return;
+}
+
 void Thread::detach() {
         auto *t = static_cast<HostThread *>(_impl);
         if (t == nullptr) return;

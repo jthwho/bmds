@@ -9,6 +9,8 @@
 #include <doctest.h>
 
 #include <algorithm>
+#include <map>
+#include <array>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -24,6 +26,7 @@
 #include <bmds/ramblockdevice.h>
 #include <bmds/shell.h>
 #include <bmds/vfs.h>
+#include <bmds/thread.h>
 #include <bmds/waitlist.h>
 #include <bmds/semaphore.h>
 #include "fakeconsole.h"
@@ -1118,6 +1121,184 @@ TEST_CASE("Vfs: the metadata cache") {
                 CHECK(dev.sectors >= 4 * dev.reads);
                 Vfs::eject(dev);
                 bmds::BlockDevices::remove(dev);
+        }
+}
+
+namespace {
+
+        // A card for the write-back tests: a base image (read-only once made) and the sectors written
+        // over it; every write can be recorded, in order, and replayed onto a fresh overlay.
+        class OverlayDevice final : public bmds::BlockDevice {
+                public:
+                        static constexpr uint64_t Sectors = 131072; // 64 MB: enough clusters for FAT32
+
+                        uint32_t sectorSize() const override { return 512; }
+                        uint64_t sectorCount() const override { return Sectors; }
+                        Error    sync() override { return Error::Ok; }
+
+                        using Image = std::map<uint64_t, std::array<uint8_t, 512>>;
+
+                        Image                                                      base;    // the card before
+                        Image                                                      overlay; // written since
+                        bool                                                       recording = false;
+                        std::vector<std::pair<uint64_t, std::array<uint8_t, 512>>> writes;
+
+                protected:
+                        Error readSectors(uint64_t sector, WritableByteSpan buf) override {
+                                for (size_t k = 0; k < buf.size() / 512; ++k) {
+                                        auto                            at = overlay.find(sector + k);
+                                        const std::array<uint8_t, 512> *from = nullptr;
+                                        if (at != overlay.end()) {
+                                                from = &at->second;
+                                        } else if (auto b = base.find(sector + k); b != base.end()) {
+                                                from = &b->second;
+                                        }
+                                        if (from != nullptr) {
+                                                std::memcpy(buf.data() + k * 512, from->data(), 512);
+                                        } else {
+                                                std::memset(buf.data() + k * 512, 0, 512);
+                                        }
+                                }
+                                return Error::Ok;
+                        }
+
+                        Error writeSectors(uint64_t sector, ByteSpan data) override {
+                                for (size_t k = 0; k < data.size() / 512; ++k) {
+                                        std::array<uint8_t, 512> bytes;
+                                        std::memcpy(bytes.data(), data.data() + k * 512, 512);
+                                        overlay[sector + k] = bytes;
+                                        if (recording) writes.emplace_back(sector + k, bytes);
+                                }
+                                return Error::Ok;
+                        }
+        };
+
+        std::string pattern(int file, size_t size) {
+                std::string out(size, '\0');
+                for (size_t i = 0; i < size; ++i) out[i] = char('a' + (file * 7 + int(i) * 13) % 26);
+                return out;
+        }
+
+} // namespace
+
+TEST_CASE("Vfs: metadata written back survives a cut at any write") {
+        disk();
+        // Where the burst is synced as well (the flusher's timer can split it anywhere): none, after
+        // the removals, after the folder, after the new files' first half. Twenty files of each, so
+        // entry blocks cross sectors and a cut leaves some broken.
+        for (int split = 0; split < 4; ++split) {
+                for (FsFormat format : {FsFormat::Fat32, FsFormat::ExFat}) {
+                        CAPTURE(split);
+                        CAPTURE(static_cast<int>(format));
+                        OverlayDevice dev;
+                        char          name[MaxName + 1];
+                        REQUIRE(bmds::BlockDevices::addNumbered(dev, "cut", name).isOk());
+                        const std::string root = std::string("/") + name + "/p0";
+                        const auto        path = [&](const std::string &rest) {
+                                return root + rest;
+                        };
+                        const auto sizeOf = [](int i) {
+                                return size_t(700 + i * 450);
+                        }; // several clusters
+
+                        // The card before: files a0..a19 of several clusters, written and synced.
+                        REQUIRE(Vfs::format(dev, format).isOk());
+                        REQUIRE(Vfs::automount(dev).value() == 1);
+                        for (int i = 0; i < 20; ++i) put(path("/a" + std::to_string(i)).c_str(), pattern(i, sizeOf(i)));
+                        REQUIRE(Vfs::sync().isOk());
+                        Vfs::eject(dev);
+                        for (auto &[sector, bytes] : dev.overlay) dev.base[sector] = bytes;
+                        dev.overlay.clear();
+                        bmds::Thread::sleep(1100); // a flush the base scheduled: done before the burst
+
+                        // One burst: half of them removed, a folder of many names made and emptied (its
+                        // clusters free again, perhaps used for data), new files b0..b19; each write recorded.
+                        REQUIRE(Vfs::automount(dev).value() == 1);
+                        dev.recording = true;
+                        for (int i = 0; i < 20; i += 2)
+                                REQUIRE(Vfs::remove(path("/a" + std::to_string(i)).c_str(), Root).isOk());
+                        if (split == 1) REQUIRE(Vfs::sync().isOk());
+                        REQUIRE(Vfs::mkdir(path("/d").c_str(), Root).isOk());
+                        for (int i = 0; i < 40; ++i)
+                                put(path("/d/a-long-name-to-fill-the-folder-" + std::to_string(i)).c_str(), "");
+                        for (int i = 0; i < 40; ++i)
+                                REQUIRE(Vfs::remove(
+                                                path("/d/a-long-name-to-fill-the-folder-" + std::to_string(i)).c_str(),
+                                                Root)
+                                                .isOk());
+                        REQUIRE(Vfs::rmdir(path("/d").c_str(), Root).isOk());
+                        if (split == 2) REQUIRE(Vfs::sync().isOk());
+                        for (int i = 0; i < 20; ++i) {
+                                put(path("/b" + std::to_string(i)).c_str(), pattern(100 + i, sizeOf(i)));
+                                if (split == 3 && i == 9) REQUIRE(Vfs::sync().isOk());
+                        }
+                        REQUIRE(Vfs::sync().isOk());
+                        dev.recording = false;
+                        Vfs::eject(dev);
+                        const auto writes = dev.writes;
+                        CHECK(writes.size() > 20);
+
+                        // Cut after each write: whatever is listed reads back right, and a file written
+                        // afterwards overwrites none of it (no entry points at clusters marked free).
+                        bool consistent = true;
+                        for (size_t cut = 0; cut <= writes.size() && consistent; ++cut) {
+                                CAPTURE(cut);
+                                dev.overlay.clear();
+                                for (size_t w = 0; w < cut; ++w) dev.overlay[writes[w].first] = writes[w].second;
+                                REQUIRE(Vfs::automount(dev).value() == 1);
+                                const auto check = [&]() {
+                                        for (const std::string &n : list(root.c_str())) {
+                                                if (n.empty() || n.back() == '/' || n == "c") continue;
+                                                const bool        isA = n[0] == 'a';
+                                                const int         i = std::stoi(n.substr(1));
+                                                const std::string want = pattern(isA ? i : 100 + i, sizeOf(i));
+                                                auto [h, oe] = Vfs::open(path("/" + n).c_str(), Vfs::Read, Root);
+                                                if (oe.isError()) {
+                                                        MESSAGE("cut ", cut, ": ", n,
+                                                                " listed but can't be opened: ", oe.name());
+                                                        return false;
+                                                }
+                                                h.reset();
+                                                // A file whose size wasn't written yet is shorter, never wrong.
+                                                const std::string got = get(path("/" + n).c_str());
+                                                if (got.size() > want.size() || want.compare(0, got.size(), got) != 0 ||
+                                                    (isA && got.size() != want.size())) {
+                                                        MESSAGE("cut ", cut, ": ", n, " read ", got.size(),
+                                                                " bytes of ", want.size());
+                                                        return false;
+                                                }
+                                        }
+                                        return true;
+                                };
+                                consistent = check();
+                                auto [c, ce] =
+                                        Vfs::open(path("/c").c_str(), Vfs::Write | Vfs::Create | Vfs::Truncate, Root);
+                                if (ce.isError()) MESSAGE("cut ", cut, ": a new file can't be made: ", ce.name());
+                                consistent = consistent && ce.isOk();
+                                const std::string big = pattern(999, 16384);
+                                if (ce.isOk())
+                                        consistent = consistent &&
+                                                     c->write(ByteSpan(reinterpret_cast<const uint8_t *>(big.data()),
+                                                                       big.size()),
+                                                              WaitForever)
+                                                             .error()
+                                                             .isOk();
+                                c.reset();
+                                if (auto [h2, e2] = Vfs::open(path("/c").c_str(), Vfs::Read, Root); e2.isError()) {
+                                        std::string names;
+                                        for (const std::string &n : list(root.c_str())) names += n + " ";
+                                        MESSAGE("cut ", cut, ": c written, then opening it: ", std::string(e2.name()),
+                                                "; listed: ", names);
+                                        consistent = false;
+                                        Vfs::eject(dev);
+                                        break;
+                                }
+                                consistent = consistent && check() && get(path("/c").c_str()) == big;
+                                Vfs::eject(dev);
+                        }
+                        CHECK(consistent);
+                        bmds::BlockDevices::remove(dev);
+                }
         }
 }
 

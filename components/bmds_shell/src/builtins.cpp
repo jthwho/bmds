@@ -18,6 +18,7 @@
 #include <bmds/memory.h>
 #include <bmds/shell.h>
 #include <bmds/system.h>
+#include <bmds/vfs.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -389,6 +390,7 @@ namespace {
                 const Args args = ctx.args();
                 if (args.size() != 1) return ctx.usage();
                 ctx.print("Rebooting...\n");
+                (void)Vfs::sync(); // the card's directories and allocation held for writing back
                 (void)ctx.shell().console().flush(RebootFlushMs);
                 System::restart();
         }

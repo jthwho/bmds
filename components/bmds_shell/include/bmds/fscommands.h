@@ -26,6 +26,9 @@ namespace FsCommands {
         /** @brief `umount PATH`: unmount. */
         int umount(CommandContext &ctx);
 
+        /** @brief `sync`: what the filesystems hold written to their devices (`Vfs::sync()`). */
+        int sync(CommandContext &ctx);
+
         /** @brief `df [-h]`: size and free space of the mounts. */
         int df(CommandContext &ctx);
 

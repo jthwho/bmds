@@ -37,6 +37,13 @@ BMDS_NAMESPACE_BEGIN
  * bigger than the cache, scanned again and again, then churns probation and
  * leaves the rest alone.
  *
+ * Metadata writes may be held instead (`hold()`), at most `MaxHeld`, and
+ * written back by `flush()` in an order a cut can't turn into a directory
+ * entry pointing at free clusters (devplan/storage.md §3): allocation
+ * sectors with every cluster used before or now marked used, then the
+ * directories, then the allocation sectors as they are, then the rest.
+ * Reads find the held copy; a direct write over one supersedes it.
+ *
  * Writes that bypass FatFs (a raw write to a mounted volume's device) are
  * not seen, as FatFs's own window doesn't see them.
  *
@@ -53,6 +60,18 @@ class SectorCache {
 
                 /** @brief The sectors a miss reads in one request (4 KB). */
                 static constexpr size_t ReadAhead = 8;
+
+                /** @brief The most sectors held for writing back (32 KB, and as much for originals). */
+                static constexpr size_t MaxHeld = 64;
+
+                /** @brief What a held sector is: how it is written back. */
+                enum class Kind : uint8_t {
+                        Directory, ///< Written in the middle phase.
+                        Fat16,     ///< FAT entries of 16 bits (allocation).
+                        Fat32,     ///< FAT entries of 32 bits, 28 used (allocation; exFAT's too).
+                        Bitmap,    ///< exFAT's allocation bitmap.
+                        Other,     ///< FSInfo, boot sectors: written last.
+                };
 
                 constexpr SectorCache() = default;
                 SectorCache(const SectorCache &) = delete;
@@ -86,6 +105,36 @@ class SectorCache {
                  */
                 void written(uint8_t drive, uint64_t sector, size_t count, const uint8_t *data);
 
+                /**
+                 * @brief Holds @p data as sector @p sector of @p drive (@p device), of
+                 *        @p kind, to write back later (`flush()`).
+                 * @return `Ok`, `Full` (`MaxHeld` held: flush, then hold again),
+                 *         `NoMem` (no cache), or the device's error reading an
+                 *         allocation sector's original.
+                 */
+                Error hold(uint8_t drive, BlockDevice &device, uint64_t sector, const uint8_t *data, Kind kind);
+
+                /** @brief Returns true if @p drive has sectors held. */
+                bool hasHeld(uint8_t drive) const;
+
+                /** @brief Returns true if a held allocation sector frees something (`isFreeHeld()` may say yes). */
+                bool hasFreesHeld() const { return _freesHeld > 0; }
+
+                /**
+                 * @brief Returns true if entry @p entry of allocation sector @p sector
+                 *        (a bit of a bitmap sector, an entry of a FAT sector) was used on
+                 *        the card and freed since (used again or not): its cluster mustn't
+                 *        be written until the free is (`devplan/storage.md` §3).
+                 */
+                bool isFreeHeld(uint8_t drive, uint64_t sector, size_t entry) const;
+
+                /**
+                 * @brief Writes @p drive's held sectors to @p device in the safe order,
+                 *        coalescing neighbours, and keeps them as clean copies.
+                 * @return `Ok`, or the first write's error (what was held is dropped).
+                 */
+                Error flush(uint8_t drive, BlockDevice &device);
+
                 /** @brief Drops the cached sectors of @p drive in [@p sector, @p sector + @p count). */
                 void discard(uint8_t drive, uint64_t sector, uint64_t count);
 
@@ -103,6 +152,7 @@ class SectorCache {
                         Free,
                         Probation,
                         Protected,
+                        Held, // never taken to make room
                         Lists
                 };
 
@@ -112,8 +162,10 @@ class SectorCache {
                                 uint16_t next;     // in its list
                                 uint16_t hashNext; // in its bucket
                                 uint8_t  drive;
-                                uint8_t  list : 2;  // a List
+                                uint8_t  list : 3;  // a List
                                 uint8_t  ahead : 1; // read ahead, not asked for yet: its first hit isn't a reuse
+                                uint8_t  kind : 3;  // a Kind, while held
+                                uint8_t  frees : 1; // held, and it frees entries used on the card
                 };
 
                 static_assert(sizeof(Slot) == 16, "the tags' size (4.5 KB with the buckets)");
@@ -133,11 +185,24 @@ class SectorCache {
                 uint16_t      take();              // a slot to fill: free, else probation's oldest, else protected's
                 void          keep(uint8_t drive, uint64_t sector, const uint8_t *data, bool ahead); // on probation
                 uint8_t      *dataOf(uint16_t i) { return _data + size_t(i) * SectorBytes; }
+                int            heldIndex(uint16_t i) const; // in _held, or -1
+                static bool    entryUsed(Kind kind, const uint8_t *sector, size_t entry);
+                bool           noteFrees(size_t at); // _held[at]'s entries freed since its original, kept: any?
+                void           unhold(size_t at);    // _held[at] clean again, on probation
+                Error          writeRun(uint8_t drive, BlockDevice &device, const uint16_t *order, size_t count,
+                                        int phase);             // one phase's sectors, in runs
+                const uint8_t *phaseData(size_t at, int phase); // what _held[at] is written as in @p phase
 
                 Slot     *_slots = nullptr;   // Sectors of them
                 uint16_t *_buckets = nullptr; // Sectors of them, chains through Slot::hashNext
                 uint8_t  *_data = nullptr;    // Sectors × SectorBytes
-                uint8_t  *_ahead = nullptr;   // a run read on a miss (PsramDma: read without a bounce)
+                uint8_t  *_ahead = nullptr;   // a run read on a miss, or written back (PsramDma: no bounce)
+                uint8_t  *_originals = nullptr; // MaxHeld × SectorBytes: an allocation sector before its change
+                uint8_t  *_freed = nullptr;     // MaxHeld × SectorBytes: a bit per entry freed since (sticky)
+                uint8_t  *_merged = nullptr;    // a sector as phase 1 writes it
+                uint16_t *_held = nullptr;      // MaxHeld: the slots held
+                size_t    _heldCount = 0;
+                size_t    _freesHeld = 0; // held slots with frees
                 Ring      _rings[Lists] = {};
 };
 

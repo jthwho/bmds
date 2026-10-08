@@ -195,6 +195,16 @@ namespace Vfs {
         Error init();
 
         /**
+         * @brief Writes what the filesystems hold to their devices: the FAT
+         *        metadata written back within a second (devplan/storage.md §3),
+         *        and each device's own queue (`/boot`'s).
+         * @return `Ok`, or the first error: now, or of a write-back since the
+         *         last sync (what failed is lost).
+         * @blocking
+         */
+        Error sync();
+
+        /**
          * @brief Told that a file's contents or name may have changed: its
          *        `FileInfo::device` and `id`, or `(0, 0)` for every file.
          *

@@ -81,8 +81,9 @@ int32_t bmds_k_sysconf_set(int32_t id, uint32_t op, const char *value);
 int32_t bmds_k_sysconf_next(const char *prefix, int32_t after);
 int32_t bmds_k_sysconf_declare(const bmds_sysconf_param_t *param);
 int32_t bmds_k_sysconf_watch(const char *prefix, uint32_t flags);
+int32_t bmds_k_sync(void);
 
-#define SLOTS 66
+#define SLOTS 67
 
 /* bmds_sys_t with its slots spelled out (same layout; checked below). */
 static const struct {
@@ -163,10 +164,11 @@ static const struct {
                 [BMDS_SYS_SYSCONF_NEXT] = (bmds_sys_fn_t)bmds_k_sysconf_next,
                 [BMDS_SYS_SYSCONF_DECLARE] = (bmds_sys_fn_t)bmds_k_sysconf_declare,
                 [BMDS_SYS_SYSCONF_WATCH] = (bmds_sys_fn_t)bmds_k_sysconf_watch,
+                [BMDS_SYS_SYNC] = (bmds_sys_fn_t)bmds_k_sync,
         },
 };
 
-_Static_assert(SLOTS == BMDS_SYS_SYSCONF_WATCH + 1, "every slot is in the table");
+_Static_assert(SLOTS == BMDS_SYS_SYNC + 1, "every slot is in the table");
 _Static_assert(sizeof(table) == 16 + SLOTS * sizeof(bmds_sys_fn_t), "table layout");
 
 const bmds_sys_t *bmds_k_sys_table(void) {

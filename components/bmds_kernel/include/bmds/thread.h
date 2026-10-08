@@ -82,6 +82,12 @@ class Thread {
                  */
                 void detach();
 
+                /**
+                 * @brief Blocks the calling thread (or task) for @p delayMs.
+                 * @blocking
+                 */
+                static void sleep(unsigned int delayMs);
+
                 /** @brief Returns true between `start()` and `join()`. */
                 bool isStarted() const { return _impl != nullptr; }
 

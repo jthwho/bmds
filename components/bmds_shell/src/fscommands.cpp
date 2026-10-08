@@ -99,6 +99,16 @@ int FsCommands::umount(CommandContext &ctx) {
         return Shell::ExitSuccess;
 }
 
+int FsCommands::sync(CommandContext &ctx) {
+        if (ctx.args().size() != 1) return ctx.usage();
+        const Error err = Vfs::sync();
+        if (err.isError()) {
+                ctx.eprintf("sync: %s\n", CommandContext::errorText(err));
+                return Shell::ExitFailure;
+        }
+        return Shell::ExitSuccess;
+}
+
 int FsCommands::df(CommandContext &ctx) {
         const Args args = ctx.args();
         bool       readable = false;
@@ -261,6 +271,9 @@ BMDS_SHELL_COMMAND(mkfs, FsCommands::mkfs, "[-t auto|fat32|exfat] -y DEVICE",
                    "Format a device (a whole card: new partition table) or partition, then mount it")
 BMDS_SHELL_COMMAND(mount, FsCommands::mount, "[DEVICE PATH]",
                    "List the mounts; mount a device's filesystem (e.g. mount /dev/sd0p0 /data)")
+BMDS_SHELL_COMMAND(sync, FsCommands::sync, "",
+                   "Write what the filesystems hold to their devices (the card's directories and allocation "
+                   "are otherwise written within a second)")
 BMDS_SHELL_COMMAND(umount, FsCommands::umount, "PATH", "Unmount the filesystem at PATH")
 BMDS_SHELL_COMMAND(waitmount, FsCommands::waitmount, "PATH MS",
                    "Wait up to MS milliseconds for a filesystem at PATH while one may come (e.g. waitmount "
