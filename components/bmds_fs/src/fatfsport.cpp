@@ -142,13 +142,14 @@ extern "C" DRESULT disk_read(BYTE pdrv, BYTE *buff, LBA_t sector, UINT count) {
         if (device == nullptr) return RES_PARERR;
         // What FatFs reads into its window is metadata (FF_FS_TINY is off:
         // file data goes through each file's own buffer or straight to the
-        // caller's).
-        const bool metadata = FatVolume::at(pdrv).isWindow(buff);
-        if (metadata && sectorCache.read(pdrv, sector, buff)) return RES_OK;
-        const Error err =
-                device->read(sector, WritableByteSpan(buff, static_cast<size_t>(count) * device->sectorSize()));
-        if (metadata && err.isOk()) sectorCache.store(pdrv, sector, buff);
-        return toDiskResult(err);
+        // caller's). It is cached, read ahead on a miss, unless the device is
+        // memory itself (devplan/storage.md §3).
+        if (count == 1 && FatVolume::at(pdrv).isWindow(buff) && !device->isMemory()) {
+                if (sectorCache.read(pdrv, sector, buff)) return RES_OK;
+                return toDiskResult(sectorCache.fill(pdrv, *device, sector, buff));
+        }
+        return toDiskResult(
+                device->read(sector, WritableByteSpan(buff, static_cast<size_t>(count) * device->sectorSize())));
 }
 
 extern "C" DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count) {
@@ -156,7 +157,8 @@ extern "C" DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT co
         if (device == nullptr) return RES_PARERR;
         const Error err = device->write(sector, ByteSpan(buff, static_cast<size_t>(count) * device->sectorSize()));
         // Write-through: the cached copies follow the device, or go when its
-        // contents are uncertain.
+        // contents are uncertain. Memory devices have none.
+        if (device->isMemory()) return toDiskResult(err);
         if (err.isOk())
                 sectorCache.written(pdrv, sector, count, buff);
         else

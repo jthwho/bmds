@@ -2431,17 +2431,42 @@ static FRESULT dir_find (	/* FR_OK(0):succeeded, !=0:error */
 		UINT di, ni;
 		WORD hash = xname_sum(fs->lfnbuf);		/* Hash value of the name to find */
 
-		while ((res = DIR_READ_FILE(dp)) == FR_OK) {	/* Read an item */
+		/* BMDS: an entry block whose name hash (in its stream extension entry, the next one) differs
+		   is passed over in the window, without loading and checking it: a lookup no longer loads
+		   every block before it. A block that isn't plainly whole in this sector is loaded as before. */
+		for (;;) {
+			res = move_window(fs, dp->sect);
+			if (res != FR_OK) break;
+			et = dp->dir[XDIR_Type];
+			if (et == 0) { res = FR_NO_FILE; break; }	/* Reached end of the directory */
+			if (et == ET_FILEDIR) {
+				nc = dp->dir[XDIR_NumSec];
+				if (nc >= 2 && nc <= 18 && dp->dptr % SS(fs) + 2 * SZDIRE <= SS(fs)
+				 && dp->dir[SZDIRE + XDIR_Type] == ET_STREAM && ld_16(dp->dir + XDIR_NameHash) != hash) {
+					for (di = 0; di <= nc && res == FR_OK; di++) res = dir_next(dp, 0);	/* Past the block */
+					if (res != FR_OK) break;
+					continue;
+				}
+				dp->blk_ofs = dp->dptr;	/* Get location of the block */
+				res = load_xdir(dp);	/* Load the entry block */
+				if (res != FR_OK) break;
+				dp->obj.attr = fs->dirbuf[XDIR_Attr] & AM_MASK;	/* Get attribute */
 #if FF_MAX_LFN < 255
-			if (fs->dirbuf[XDIR_NumName] > FF_MAX_LFN) continue;		/* Skip comparison if inaccessible object name */
+				if (fs->dirbuf[XDIR_NumName] <= FF_MAX_LFN && ld_16(fs->dirbuf + XDIR_NameHash) == hash) {
+#else
+				if (ld_16(fs->dirbuf + XDIR_NameHash) == hash) {
 #endif
-			if (ld_16(fs->dirbuf + XDIR_NameHash) != hash) continue;	/* Skip comparison if hash mismatched */
-			for (nc = fs->dirbuf[XDIR_NumName], di = SZDIRE * 2, ni = 0; nc; nc--, di += 2, ni++) {	/* Compare the name */
-				if ((di % SZDIRE) == 0) di += 2;
-				if (ff_wtoupper(ld_16(fs->dirbuf + di)) != ff_wtoupper(fs->lfnbuf[ni])) break;
+					for (nc = fs->dirbuf[XDIR_NumName], di = SZDIRE * 2, ni = 0; nc; nc--, di += 2, ni++) {	/* Compare the name */
+						if ((di % SZDIRE) == 0) di += 2;
+						if (ff_wtoupper(ld_16(fs->dirbuf + di)) != ff_wtoupper(fs->lfnbuf[ni])) break;
+					}
+					if (nc == 0 && !fs->lfnbuf[ni]) break;	/* Name matched? */
+				}
 			}
-			if (nc == 0 && !fs->lfnbuf[ni]) break;	/* Name matched? */
+			res = dir_next(dp, 0);	/* Next entry */
+			if (res != FR_OK) break;
 		}
+		if (res != FR_OK) dp->sect = 0;	/* Terminate the read operation on error or EOT */
 		return res;
 	}
 #endif

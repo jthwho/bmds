@@ -218,8 +218,8 @@ A portable component (built for the host tests too) over `Vfs` and `Trash`, no G
     failed item is told and the rest go on. Copies keep the modification time. A file cut off
     by Cancel or an error is removed. A link inside a tree is copied as a link. Nothing is
     copied into itself.
-  - Copies use a 32 KB buffer of DMA-capable internal RAM (PSRAM if there is none), one per
-    operation, freed after it.
+  - Copies use a buffer of DMA-capable internal RAM (PSRAM if there is none), one per file while
+    its bytes move, its size in whole sectors up to 32 KB (one per operation until 2026-10-08).
 - **Later, not now:** the shell's `cp -r`, `mv` and `rm -r` walk trees their own way, with the
   shell's messages; moving them onto `FileOps` is a separate change.
 
@@ -520,8 +520,8 @@ A portable component (built for the host tests too) over `Vfs` and `Trash`, no G
   - **Questions:** a name taken (`conflict()`) is put in the status as a question, and the
     thread waits for `answer(resolution, forAll)`. Cancelling also answers. With "for all",
     the job's later conflicts take the same answer without asking.
-  - **Memory:** jobs and their paths in PSRAM; the copy buffer is `FileOps`' (32 KB, internal
-    DMA RAM, only during a copy).
+  - **Memory:** jobs and their paths in PSRAM; the copy buffer is `FileOps`' (internal DMA RAM,
+    while a file's bytes move).
 - **`CopiedFiles`** (bmds_files, `bmds/copiedfiles.h`): the files on the clipboard, pure and
   host-tested.
   - It keeps the paths and whether they were cut. It renders them as `text/uri-list`,
@@ -787,7 +787,7 @@ A portable component (built for the host tests too) over `Vfs` and `Trash`, no G
      - **The progress window** opens over the screen's middle, where a question already is. Once
        open, it raises the question above itself.
      - **The copy buffer** (32 KB of internal DMA RAM) stays held while a question waits for an
-       answer.
+       answer (per file since, below).
      - **Host tests:**
        - `CopiedFiles`: each type rendered, a cut looked up by path and by folder and name, GNOME's
          list and URI lists read back.
@@ -814,6 +814,23 @@ A portable component (built for the host tests too) over `Vfs` and `Trash`, no G
          The worker's 32 KB stack is PSRAM; 3 to 5 KB of it were used.
      - **Size:** `bmds_panel` 48,890 bytes (+5,998), `bmds_gui` 66,672 (+1,370), `bmds_files`
        20,958 (+8,314) in flash. No new static RAM.
+   - *Then, efficiency (2026-10-08, the user: "getting as much efficiency out of the system"):*
+     - **Faster lookups on FAT and exFAT** (`storage.md` §3): the metadata cache reads ahead, holds
+       256 sectors found by hash, and resists scans; FatFs's exFAT lookup checks a name's hash before
+       loading its entries. The browser's copy of `share` takes 21 s instead of 119 s.
+     - **The copy buffer** is taken per file while its bytes move, sized to the file (whole sectors,
+       up to 32 KB): none while a question waits, and a small file takes a sector's worth. On the
+       board, internal RAM during a copy of BusyBox (1 MB) was 32 KB lower, and all of it back after.
+     - **The tree reads only the listing** to expand a folder: its folders (and links that lead to
+       folders, looked up) sorted as the views sort names, instead of a `FolderModel` of every file
+       with its type. It stays synchronous, since following the folder shown expands the path at
+       once; a listing of 361 entries on the card takes about 12 ms.
+     - **The rubber band scrolls** the view while the pointer is past its edge, faster the further
+       past (a 50 ms timer only then, as a scroll bar's arrow held). On the board: a band from the
+       end of 361 icons dragged above the view selected 80 as it scrolled; `win stats` 0 errors.
+     - **The missed desktop double click** (step 4) didn't happen again: a window closed by its close
+       box, then a double click on a desktop folder, opened it.
+     - **Size:** `bmds_panel` 50,082 bytes (+1,192), `bmds_gui` 67,118 (+446), `bmds_files` 20,966.
 7. **Drag and drop** (FB15): the window manager, the toolkit, the views, the terminal's drop.
 8. **Properties and a Trash window** (the trash of every filesystem in one view, Restore,
    Empty), and a Trash icon on the desktop.

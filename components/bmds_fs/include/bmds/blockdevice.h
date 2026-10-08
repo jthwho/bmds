@@ -61,6 +61,13 @@ class BlockDevice {
                 virtual uint32_t eraseBlockSectors() const { return 1; }
 
                 /**
+                 * @brief Returns true if the sectors are in memory, so a read costs a
+                 *        copy: a cache in front of it would only take room
+                 *        (`devplan/storage.md` §3). False by default.
+                 */
+                virtual bool isMemory() const { return false; }
+
+                /**
                  * @brief Reads whole sectors.
                  * @param sector First sector.
                  * @param buf    Destination; its size is a multiple of `sectorSize()`.

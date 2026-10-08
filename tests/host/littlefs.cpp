@@ -120,11 +120,14 @@ namespace {
                                 config.lookahead_buffer = lookahead;
                         }
 
+                        // littlefs keeps the file's config until it closes: kept here, not on the stack.
                         int open(lfs_file_t &file, const char *path, int flags) {
-                                lfs_file_config fc{};
-                                fc.buffer = fileBuffer;
-                                return lfs_file_opencfg(&lfs, &file, path, flags, &fc);
+                                fileConfig = lfs_file_config{};
+                                fileConfig.buffer = fileBuffer;
+                                return lfs_file_opencfg(&lfs, &file, path, flags, &fileConfig);
                         }
+
+                        lfs_file_config fileConfig{};
         };
 
         // The files: each version's contents follow from (file, version): a header, then bytes

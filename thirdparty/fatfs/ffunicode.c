@@ -15560,6 +15560,7 @@ DWORD ff_wtoupper (	/* Returns up-converted code point */
 	};
 
 
+	if (uni < 0x80) return (uni >= 'a' && uni <= 'z') ? uni - 0x20 : uni;	/* BMDS: ASCII without the table walk (names compare a character at a time) */
 	if (uni < 0x10000) {	/* Is it in BMP? */
 		uc = (WORD)uni;
 		p = uc < 0x1000 ? cvt1 : cvt2;

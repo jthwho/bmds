@@ -548,21 +548,37 @@ void FolderWindow::syncTree() {
         return;
 }
 
-// A folder in the tree expanded: its folders, as the tree's children.
+// A folder in the tree expanded: its folders (and links to folders), as the tree's children, sorted
+// as the views sort names. Only the listing is read, the files passed over: a folder of thousands of
+// files costs its listing, not a model of every file (a link is looked up, to know where it leads).
 void FolderWindow::treeExpanding(void *arg, TreeView &view, size_t row) {
         auto  *self = static_cast<FolderWindow *>(arg);
         String path(MemSpace::Psram);
         if (view.rows().pathOf(row, path).isError()) return;
-        FolderModel sub;
-        sub.setShowHidden(self->_host.showHidden());
-        if (sub.open(path.view(), Vfs::Context{"/", nullptr}).isError()) {
-                (void)view.setChildren(row, Span<const StringView>());
-                return;
+        const Vfs::Context vc{"/", nullptr};
+        const bool         hidden = self->_host.showHidden();
+        List<String>       folders(MemSpace::Psram);
+        auto [dir, err] = Vfs::openDirectory(path.view(), vc);
+        String child(MemSpace::Psram);
+        while (err.isOk()) {
+                auto [info, nerr] = dir.next();
+                if (nerr.isError()) break;
+                if (!hidden && (info.name.view().startsWith('.') || (info.attributes & FileInfo::Hidden) != 0))
+                        continue;
+                bool folder = info.isDirectory();
+                if (info.type == FileType::Link && child.assign(path.view()).isOk() &&
+                    (path.view().endsWith('/') || child.append('/').isOk()) && child.append(info.name.view()).isOk()) {
+                        auto [target, serr] = Vfs::stat(child.view(), vc);
+                        folder = serr.isOk() && target.isDirectory();
+                }
+                if (folder) err = folders.append(std::move(info.name));
         }
-        while (!sub.isComplete()) (void)sub.fillSome(FillBatch);
         List<StringView> names(MemSpace::Psram);
-        for (size_t i = 0; i < sub.count(); ++i)
-                if (sub.entry(i).isDirectory()) (void)names.append(sub.name(i));
+        if (names.reserve(folders.size()).isOk()) {
+                for (const String &f : folders) (void)names.append(f.view()); // reserved
+                std::sort(names.begin(), names.end(),
+                          [](StringView a, StringView b) { return FolderModel::compareNames(a, b) < 0; });
+        }
         (void)view.setChildren(row, names.span());
         return;
 }

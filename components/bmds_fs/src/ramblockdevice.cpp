@@ -69,14 +69,13 @@ size_t RamBlockDevice::usedBytes() const {
         return _usedChunks * _chunkSectors * _sectorSize;
 }
 
+// Unlocked: every request asks (BlockDevice::checkRequest()), and readSectors() checks again.
 uint64_t RamBlockDevice::sectorCount() const {
-        Mutex::Locker lock(_lock, WaitForever);
-        return _present ? _sectors : 0;
+        return _present.load(std::memory_order_acquire) ? _sectors.load(std::memory_order_acquire) : 0;
 }
 
 bool RamBlockDevice::isPresent() const {
-        Mutex::Locker lock(_lock, WaitForever);
-        return _present;
+        return _present.load(std::memory_order_acquire);
 }
 
 Error RamBlockDevice::sync() {
@@ -86,8 +85,9 @@ Error RamBlockDevice::sync() {
 
 Error RamBlockDevice::trim(uint64_t first, uint64_t count) {
         Mutex::Locker lock(_lock, WaitForever);
+        const uint64_t total = _sectors.load(std::memory_order_relaxed); // set under the lock
         if (!_present) return Error::NoMedia;
-        if (first >= _sectors || count > _sectors - first) return Error::OutOfRange;
+        if (first >= total || count > total - first) return Error::OutOfRange;
         // Trimmed sectors become zeros; a chunk left all zeros is freed (a
         // file's first and last chunks are usually shared with its neighbors).
         const uint64_t end = first + count;
@@ -96,9 +96,9 @@ Error RamBlockDevice::trim(uint64_t first, uint64_t count) {
                 if (chunk == nullptr) continue;
                 const uint64_t start = c * _chunkSectors;
                 const uint64_t from = std::max(first, start);
-                const uint64_t to = std::min({end, start + _chunkSectors, _sectors});
+                const uint64_t to = std::min({end, start + _chunkSectors, total});
                 const size_t   chunkBytes = size_t(_chunkSectors) * _sectorSize;
-                const bool     whole = from == start && to == std::min(start + _chunkSectors, _sectors);
+                const bool     whole = from == start && to == std::min(start + _chunkSectors, total);
                 if (!whole) {
                         std::memset(chunk + size_t(from - start) * _sectorSize, 0, size_t(to - from) * _sectorSize);
                         if (!allZero(chunk, chunkBytes)) continue;
@@ -112,10 +112,11 @@ Error RamBlockDevice::trim(uint64_t first, uint64_t count) {
 
 Error RamBlockDevice::readSectors(uint64_t sector, WritableByteSpan buf) {
         Mutex::Locker lock(_lock, WaitForever);
+        const uint64_t total = _sectors.load(std::memory_order_relaxed); // set under the lock
         // Removed (or resized) since checkRequest().
         if (!_present) return Error::NoMedia;
         const uint64_t n = buf.size() / _sectorSize;
-        if (sector > _sectors || n > _sectors - sector) return Error::OutOfRange;
+        if (sector > total || n > total - sector) return Error::OutOfRange;
         uint8_t *out = buf.data();
         while (out < buf.data() + buf.size()) {
                 const size_t   c = static_cast<size_t>(sector / _chunkSectors);
@@ -135,9 +136,10 @@ Error RamBlockDevice::readSectors(uint64_t sector, WritableByteSpan buf) {
 
 Error RamBlockDevice::writeSectors(uint64_t sector, ByteSpan data) {
         Mutex::Locker lock(_lock, WaitForever);
+        const uint64_t total = _sectors.load(std::memory_order_relaxed); // set under the lock
         if (!_present) return Error::NoMedia;
         const uint64_t n = data.size() / _sectorSize;
-        if (sector > _sectors || n > _sectors - sector) return Error::OutOfRange;
+        if (sector > total || n > total - sector) return Error::OutOfRange;
         const uint8_t *in = data.data();
         const size_t   chunkBytes = size_t(_chunkSectors) * _sectorSize;
         while (in < data.data() + data.size()) {

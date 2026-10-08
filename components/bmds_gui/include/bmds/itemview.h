@@ -259,6 +259,8 @@ class ItemView : public ScrollArea {
                 void        menuAt(int row, int x, int y); // window coordinates
                 void        band(int x, int y);            // the rubber band to window point (x, y)
                 void        showBand(bool shown);          // the window manager's band at _band, or none
+                void        stopBandScroll();
+                static void bandDue(void *arg); // the pointer past the viewport's edge: scrolled
                 int         startingWith(uint32_t key) const;
                 void        startRename(int row, uint32_t ms);
                 void        stopRename();
@@ -290,6 +292,9 @@ class ItemView : public ScrollArea {
                 uint32_t      _bandX = 0;        // its first corner (content coordinates)
                 uint32_t      _bandY = 0;
                 ContentRect   _band;
+                int            _bandPointerX = 0; // where the pointer is (window coordinates)
+                int            _bandPointerY = 0;
+                int            _bandTimer = -1; // scrolling while the pointer is past the edge
                 int           _renameTimer = -1;
                 int           _renameRow = -1;
                 int           _editing = -1;

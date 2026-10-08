@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <bmds/blockdevice.h>
 #include <bmds/config.h>
@@ -68,6 +69,7 @@ class RamBlockDevice final : public BlockDevice {
 
                 uint32_t sectorSize() const override { return _sectorSize; }
                 uint64_t sectorCount() const override;
+                bool     isMemory() const override { return true; }
                 bool     isPresent() const override;
                 Error    sync() override;
                 Error    trim(uint64_t first, uint64_t count) override;
@@ -83,11 +85,11 @@ class RamBlockDevice final : public BlockDevice {
                 uint8_t      **_chunks = nullptr; // one per chunk; null: all zeros
                 size_t         _chunkCount = 0;
                 size_t         _usedChunks = 0;
-                uint64_t       _sectors = 0;
+                std::atomic<uint64_t> _sectors{0}; // read unlocked: every request checks it
                 const uint32_t _sectorSize;
                 const uint32_t _chunkSectors; // sectors per chunk
                 MemSpace       _space = MemSpace::Psram;
-                bool           _present = true;
+                std::atomic<bool>     _present{true};
 };
 
 BMDS_NAMESPACE_END

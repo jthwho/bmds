@@ -845,8 +845,9 @@ void TerminalScreen::setTitle(StringView title) {
                 const size_t length = b >= 0xf0 ? 4 : b >= 0xe0 ? 3 : b >= 0xc0 ? 2 : 1;
                 if (n - (lead - 1) < length) n = lead - 1;
         }
-        if (n == _titleLength && std::memcmp(_title, title.data(), n) == 0) return;
-        std::memcpy(_title, title.data(), n);
+        // An empty title may have no data at all (memcmp and memcpy want a pointer even for none).
+        if (n == _titleLength && (n == 0 || std::memcmp(_title, title.data(), n) == 0)) return;
+        if (n > 0) std::memcpy(_title, title.data(), n);
         _title[n] = '\0';
         _titleLength = static_cast<uint8_t>(n);
         ++_titleGeneration;

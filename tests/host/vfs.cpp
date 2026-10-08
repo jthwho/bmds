@@ -1021,11 +1021,13 @@ namespace {
                         uint64_t sectorCount() const override { return _disk.sectorCount(); }
                         Error    sync() override { return _disk.sync(); }
 
-                        size_t reads = 0;
+                        size_t reads = 0;   // requests
+                        size_t sectors = 0; // sectors they read
 
                 protected:
                         Error readSectors(uint64_t sector, WritableByteSpan buf) override {
                                 ++reads;
+                                sectors += buf.size() / 512;
                                 return _disk.read(sector, buf);
                         }
                         Error writeSectors(uint64_t sector, ByteSpan data) override {
@@ -1059,7 +1061,43 @@ TEST_CASE("Vfs: the metadata cache") {
                 for (const std::string &p : paths) REQUIRE(Vfs::stat(p.c_str(), Root).isOk());
                 CHECK(dev.reads == 0);
 
-                // Bigger than the cache: evictions, and writes kept in step.
+                // A directory bigger than the cache (2,000 names of three entries each, about 190 KB) on
+                // another disk, read through once, leaves the one in use cached.
+                {
+                        CountingDevice other;
+                        char           otherName[MaxName + 1];
+                        REQUIRE(bmds::BlockDevices::addNumbered(other, "cnt", otherName).isOk());
+                        REQUIRE(Vfs::format(other, format).isOk());
+                        REQUIRE(Vfs::automount(other).value() == 1);
+                        const std::string huge = std::string("/") + otherName + "/p0/huge";
+                        REQUIRE(Vfs::mkdir(huge.c_str(), Root).isOk());
+                        for (int i = 0; i < 2000; ++i)
+                                put((huge + "/a-long-file-name-" + std::to_string(i)).c_str(), "");
+                        Vfs::eject(other); // its sectors out of the cache
+                        REQUIRE(Vfs::automount(other).value() == 1);
+                        for (const std::string &p : paths) REQUIRE(Vfs::stat(p.c_str(), Root).isOk());
+                        CHECK(list(huge.c_str()).size() == 2000);
+                        dev.reads = 0;
+                        bool found = true; // every name, whatever its hash shares
+                        for (int i = 0; i < 2000; ++i)
+                                found = found &&
+                                        Vfs::stat((huge + "/a-long-file-name-" + std::to_string(i)).c_str(), Root)
+                                                .isOk();
+                        CHECK(found);
+                        CHECK(Vfs::stat((huge + "/a-long-file-name-2000").c_str(), Root).error() == Error::NotExist);
+                        CHECK(Vfs::stat((huge + "/A-LONG-FILE-NAME-1999").c_str(), Root).isOk()); // case folded
+                        for (int i = 0; i < 2000; ++i)
+                                (void)Vfs::stat((huge + "/a-long-file-name-" + std::to_string(i)).c_str(), Root);
+                        for (const std::string &p : paths) REQUIRE(Vfs::stat(p.c_str(), Root).isOk());
+                        CHECK(list(huge.c_str()).size() == 2000);
+                        dev.reads = 0;
+                        for (const std::string &p : paths) REQUIRE(Vfs::stat(p.c_str(), Root).isOk());
+                        CHECK(dev.reads == 0);
+                        Vfs::eject(other);
+                        bmds::BlockDevices::remove(other);
+                }
+
+                // Evictions, and writes kept in step.
                 REQUIRE(Vfs::mkdir((root + "/big").c_str(), Root).isOk());
                 for (int i = 0; i < 600; ++i)
                         put((root + "/big/a-long-file-name-" + std::to_string(i)).c_str(), std::to_string(i));
@@ -1070,12 +1108,14 @@ TEST_CASE("Vfs: the metadata cache") {
                 CHECK(list((root + "/big").c_str()).size() == 300);
                 CHECK(get((root + "/big/a-long-file-name-599").c_str()) == "599");
 
-                // Remounted: read from the device again, and still right.
+                // Remounted: read from the device again, and still right; read ahead in runs.
                 Vfs::eject(dev);
                 REQUIRE(Vfs::automount(dev).value() == 1);
                 dev.reads = 0;
+                dev.sectors = 0;
                 CHECK(list((root + "/big").c_str()).size() == 300);
                 CHECK(dev.reads > 0);
+                CHECK(dev.sectors >= 4 * dev.reads);
                 Vfs::eject(dev);
                 bmds::BlockDevices::remove(dev);
         }

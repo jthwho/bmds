@@ -75,6 +75,85 @@ Configuration (`components/bmds_fs/src/fatfs/ffconf.h`, every option with its re
 
 **The metadata cache** (Phase 3; `src/sectorcache.h`): FatFs keeps one sector of directory and FAT (its window), so a lookup in a large directory read the directory from the card again every time: BusyBox's `bin` (119 entries, 23 sectors on exFAT) cost about 20 ms a lookup, and `ls -l` of it 2.4 s. The port now keeps a copy of every sector FatFs reads into a volume's window (directories, the FAT, exFAT's bitmap, the boot sector; file data never goes there with `FF_FS_TINY 0`): 64 sectors shared by the volumes, least recently used out, 33 KB of `Psram` allocated by `Vfs::init()`. Write-through: every write still goes to the device and updates the copies it covers (whatever buffer it comes from: `dir_clear()` and file data can land on sectors that held directories), a failed write or a trim drops them, and a mount, an unmount or a format drops the drive's. Writes that bypass FatFs (a raw write to a mounted partition's `/dev` node) aren't seen, as FatFs's window doesn't see them either. Read-ahead and write-back stay out (§12): FatFs moves file data in whole-sector runs straight to the caller.
 
+**Faster lookups (design, 2026-10-08; the user asked for "as much efficiency" as can be had).**
+Measured on the exFAT card:
+
+| What | Time |
+|---|---|
+| A one-sector read (`sd bench`, 256 of them) | 390 µs each |
+| A sector in 64 KB reads | 32 µs |
+| `du -s` of the icon theme's `32x32` (361 entries, about 85 sectors of directory) | 3.81 s, 10.5 ms a lookup |
+| `ls -l` of it | 3.36 s |
+| BusyBox `cp -r` of `16x16` (361 files) to `ram0` | 16.5 s |
+| The file browser's copy of `share` (2,508 items) to `ram0` | 119 s |
+
+The cache holds 64 sectors, and a lookup scans the folder from its start. A folder bigger than the
+cache evicts its own first sectors before the next lookup reaches them: least recently used is the
+worst policy for a repeated scan. So each lookup reads about half the folder from the card, one
+sector a command. The RAM disk's metadata shares the cache too, though reading it costs no more
+than the copy.
+
+- **Read-ahead for metadata.** A window miss reads the sector and up to 7 after it (4 KB, not past
+  the device's end) in one command, into a buffer aligned for DMA so it isn't bounced. Every sector
+  of the run is kept. Directories and the FAT lie in runs, so a scan needs an eighth of the
+  commands, at about 0.6 ms a run instead of 3.1 ms for eight single reads. Coherence is as now:
+  every write goes through `disk_write()`, which updates the copies it covers.
+- **A bigger cache that finds a sector in O(1).** 256 sectors (128 KB of `Psram`, 0.4% of it),
+  found through a hash of drive and sector. That holds a folder of about a thousand files on exFAT,
+  where an entry set takes three or four 32-byte entries.
+- **Scan resistance.** A segmented LRU: a sector read enters a probation list; a hit moves it to a
+  protected list of at most three quarters of the slots, whose oldest drops back to probation.
+  Room is taken from probation first. A folder bigger than the cache then churns probation and
+  leaves the FAT and the folders in use alone.
+- **Memory devices aren't cached.** `BlockDevice::isMemory()` (false by default; true for
+  `RamBlockDevice`, forwarded by partitions). Reading a RAM disk costs a copy, the same as the
+  cache, so caching it only took room from the card.
+- **Measured after each change**, with the same commands.
+
+*As built (2026-10-08):* as above, then two more findings.
+
+- **FatFs's lookups were most of what was left.** A host profile under callgrind of 300 long names
+  on a FAT RAM disk, then on the board:
+  - **exFAT:** `dir_find()` loaded and checked the sum of every entry block before the one sought,
+    then compared the name hash. A BMDS patch (`thirdparty/fatfs/patches/bmds-exfat-find.diff`)
+    reads the hash in the window first and passes over a block that doesn't match. A block not
+    plainly whole in one sector is loaded as before.
+  - **FAT:** long names are compared a character at a time, each folded by `ff_wtoupper()`'s table
+    walk. A second patch (`bmds-ascii-upper.diff`) answers ASCII at once.
+  - **The RAM disk:** every sector read asked `isPresent()` and `sectorCount()` at the partition
+    and at the disk, each under the disk's mutex: about 40% of the profile. They are atomics now;
+    the read itself still takes the mutex.
+- **`time CMD > FILE` redirects `time`'s output, not the command's.** `time ls DIR > /dev/null`
+  timed 361 names written to the console (0.58 s); `ls` itself takes about 17 ms. The table below
+  uses commands whose output is one line.
+- **Results** on the exFAT card, the same firmware but the cache:
+
+  | What | Before | Read-ahead, 64 sectors | 256 sectors | And the patches |
+  |---|---|---|---|---|
+  | `du -s` of `32x32` (361 entries) | 3.72 s | 1.49 s | 0.58 s | **0.23 s** |
+  | `cp -r` of `16x16` (361 files) to `ram0` | 15.8 s | 9.5 s | 3.4 s | **1.4 to 1.9 s** |
+  | `cp -r` of it within `ram0` (FAT16) | 2.84 s | | | **1.53 s** |
+  | `du -s` of it on `ram0` | 0.48 s | | | **0.27 s** |
+  | `rm -r` of it on `ram0` | 1.78 s | | | **0.97 s** |
+  | The file browser's copy of `share` (2,508 items) to `ram0` | 119 s | | | **21 s** |
+
+  Copies and removals within the card barely changed: `cp -r` 5.4 to 3.7 s, `rm -r` 1.6 s, for 361
+  files. What is left there is small writes, about 10 ms a file, which a write-back cache of
+  metadata would batch; that trades what a pulled card or a power cut loses, so it is the user's to
+  decide (§12).
+- **Host tests:**
+  - a folder of 2,000 names bigger than the cache, on another disk, read through once, leaves a
+    folder in use cached (no reads);
+  - every one of those names is found (16-bit hashes collide among 2,000), a missing one isn't,
+    and case is folded;
+  - a remount's listing reads ahead (at least four sectors a request).
+  - The whole suite also passed under ASan and UBSan. That found two old faults, fixed: the
+    littlefs test kept a file's config on a returned stack frame, and `TerminalScreen::setTitle()`
+    passed a null pointer to `memcmp()` for an empty title.
+- **Memory:** 128 KB of sectors, 4.5 KB of tags and 4 KB for the run read ahead, all `Psram`
+  (33 KB before). Static RAM: the cache object is 36 bytes (12 before). `bmds_fs` is 89,616 bytes of
+  code (+1,494).
+
 **Time stamps** come from the kernel's system clock ([`time.md`](time.md)): `get_fattime()` converts `Clock::now()` to local time in the kernel time zone (FAT stores local time; exFAT also records the UTC offset). An unset clock still counts forward from 2026-01-01, so new files never carry 1980.
 
 **Why not IDF VFS + newlib (`fopen`, `open`)?** It brings a second, global fd table, newlib `FILE` buffers in internal RAM, errno and blocking calls with no timeouts or interrupts, beside the `FdTable`/`FileHandle`/`Stream` model the shell and the Phase 3 ABI already use. Programs will get file syscalls from BMDS (Phase 3); a newlib in a program can sit on those.
@@ -207,7 +286,7 @@ Behavior follows bash; the run corpus checks it against bash (each script starts
 | `SdCard` + storage task + `sd` (**measured**) | 4.3 KB | 311 B `.bss`; 6 KB `Psram` stack (~400 B used idle); 4 KB `Psram` bounce buffer; `sdmmc_card_t` in `Psram` |
 | FatFs (LFN, exFAT, mkfs) | ~30 KB | `FATFS` ~600 B + LFN buffer 512 B `Psram`; ~600 B `Psram` per open file |
 | VFS, `File`, `Directory` | ~6 KB | — |
-| Metadata cache (**measured**) | 1.2 KB | 12 B `.bss`; 64 sectors + tags, 33 KB `Psram` from boot |
+| Metadata cache (**measured**; 2026-10-08: 256 sectors, read-ahead, hashed) | 2.0 KB | 36 B `.bss`; 256 sectors, tags and a read-ahead run, 137 KB `Psram` from boot |
 | Shell file commands, globbing, redirection | ~12 KB | — |
 | YMODEM, `rz`/`sz` (**measured**) | 6 KB | 1 KB frame on the stack and a 32 KB `PsramDma` buffer while transferring; RX ring 1 → 4 KB `Psram` |
 | **Total** | **~110 KB** (the IDF SD stack is three times the estimate) | **~3 KB internal** |
@@ -255,7 +334,10 @@ Step 2b measured: the image grew by 10.9 KB (331.7 → 342.7 KB); the linker sti
 ## 12. Open questions
 
 - UHS-I (1.8 V, SDR50/SDR104): worth it for a DOS-like machine? Measure high speed first.
-- Read-ahead or write-back caching above FatFs: measure first; FatFs already transfers whole-sector runs directly.
+- ~~Read-ahead above FatFs.~~ Done for metadata (§3, 2026-10-08): runs of 8 sectors on a miss.
+- Write-back for metadata: within the card a copy now costs about 10 ms a file in small writes
+  (the directory entry, the bitmap, the entry again at close), which a write-back cache would
+  batch. It would lose more on a pulled card or a power cut: the user's call.
 - ~~**A sector cache for directories and the FAT.**~~ Done in Phase 3 (§3): 64 sectors, write-through. `ls -l` of BusyBox's `bin` 2.36 → 0.30 s, BusyBox's own `ls -l` 4.22 → 0.75 s.
 - Commands ignore write errors, so `echo x > f` on a full or pulled card succeeds silently. GNU tools report `write error: No space left on device` and fail; `CommandContext::print()`/`write()` should remember the first error and the built-ins return 1.
 - The removal of a card is noticed only after the write in flight times out (about 4 s): shorter IDF timeouts, or the card-detect interrupt failing transfers early, would shorten it.

@@ -22,6 +22,9 @@ namespace {
         constexpr uint8_t F2 = HidKey::F1 + 1;
         constexpr uint8_t F10 = HidKey::F1 + 9;
 
+        constexpr uint32_t BandScrollMs = 50; // a rubber band past the edge scrolls this often
+        constexpr int      BandScrollMin = 4; // and at least this far
+
 } // namespace
 
 ItemView::ItemView(Widget *parent) : ScrollArea(parent) {
@@ -30,6 +33,7 @@ ItemView::ItemView(Widget *parent) : ScrollArea(parent) {
 
 ItemView::~ItemView() {
         stopRename();
+        stopBandScroll();
 }
 
 void ItemView::setModel(ItemModel *model) {
@@ -57,6 +61,7 @@ void ItemView::resetTo(Span<const size_t> rows, int current) {
 
 void ItemView::resetSelecting(int row, bool tell) {
         stopRename();
+        stopBandScroll();
         _pressed = -1;
         _pressRow = -1;
         _dragging = false;
@@ -289,6 +294,7 @@ void ItemView::mouseReleased(const WindowManager::MouseEvent &event) {
         if (event.button != PointerEvent::Left) return;
         if (_banding) {
                 _banding = false;
+                stopBandScroll();
                 showBand(false); // the band gone
                 changed();
                 return;
@@ -315,6 +321,7 @@ void ItemView::mouseReleased(const WindowManager::MouseEvent &event) {
 
 void ItemView::mouseLeft() {
         stopRename();
+        stopBandScroll();
         if (_dragging) dragCancelled();
         if (_banding) {
                 showBand(false);
@@ -342,6 +349,50 @@ void ItemView::band(int x, int y) {
         for (size_t r = 0; r < count(); ++r)
                 if (rowRect(r).intersects(_band)) _selection.set(r, true);
         changed();
+        // Past the viewport's edge, the view scrolls while the pointer stays there (as Windows'):
+        // a timer only then, as a scroll bar's arrow held.
+        _bandPointerX = x;
+        _bandPointerY = y;
+        const bool past = x < v.x || x >= int(v.right()) || y < v.y || y >= int(v.bottom());
+        GuiWindow *w = window();
+        if (!past) {
+                stopBandScroll();
+        } else if (_bandTimer < 0 && w != nullptr) {
+                auto [timer, err] = w->application().startTimer(BandScrollMs, true, bandDue, this);
+                if (err.isOk()) _bandTimer = timer;
+        }
+        return;
+}
+
+void ItemView::stopBandScroll() {
+        GuiWindow *w = _bandTimer >= 0 ? window() : nullptr;
+        if (w != nullptr) w->application().stopTimer(_bandTimer);
+        _bandTimer = -1;
+        return;
+}
+
+// A tick with the pointer past the edge: scrolled toward it, further the further past it is (at
+// least a few pixels), the band following.
+void ItemView::bandDue(void *arg) {
+        auto *self = static_cast<ItemView *>(arg);
+        if (!self->_banding) {
+                self->stopBandScroll();
+                return;
+        }
+        const Rect v = self->viewport();
+        const int  x = self->_bandPointerX, y = self->_bandPointerY;
+        const auto past = [](int p, int low, int high) {
+                return p < low ? p - low : p >= high ? p - high + 1 : 0;
+        };
+        const auto step = [](int d) {
+                const int at = d == 0 ? 0
+                                      : (d < 0 ? (d > -BandScrollMin ? -BandScrollMin : d)
+                                               : (d < BandScrollMin ? BandScrollMin : d));
+                return at < 0 ? -((-at + 3) & ~3) : (at + 3) & ~3; // whole columns across (as text needs)
+        };
+        self->scrollTo(int64_t(self->scrollX()) + step(past(x, v.x, int(v.right()))),
+                       int64_t(self->scrollY()) + step(past(y, v.y, int(v.bottom()))));
+        self->band(x, y);
         return;
 }
 

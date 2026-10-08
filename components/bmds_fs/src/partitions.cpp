@@ -81,6 +81,7 @@ namespace {
                         uint32_t eraseBlockSectors() const override {
                                 return isPresent() ? _parent->eraseBlockSectors() : 1;
                         }
+                        bool  isMemory() const override { return _parent != nullptr && _parent->isMemory(); }
                         Error sync() override { return isPresent() ? _parent->sync() : Error(Error::NoMedia); }
                         Error trim(uint64_t first, uint64_t count) override {
                                 if (!isPresent()) return Error::NoMedia;

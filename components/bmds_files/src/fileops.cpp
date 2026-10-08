@@ -23,30 +23,31 @@ namespace FileOps {
 
                 constexpr size_t BufferBytes = 32 * 1024; // whole sectors go straight to the card
 
-                // A copy's buffer: DMA-capable internal RAM, or PSRAM when there is none.
+                // A file's copy buffer, held while its bytes move (not while a question waits): DMA-capable
+                // internal RAM, or PSRAM when there is none; the file's size in whole sectors, at most
+                // BufferBytes.
                 struct Buffer {
-                                Buffer() {
-                                        data = static_cast<uint8_t *>(
-                                                Memory::alloc(MemSpace::InternalDma, BufferBytes));
+                                explicit Buffer(uint64_t fileBytes) {
+                                        const uint64_t want = (fileBytes + 511) & ~uint64_t(511);
+                                        bytes = want == 0 ? 512 : want < BufferBytes ? size_t(want) : BufferBytes;
+                                        data = static_cast<uint8_t *>(Memory::alloc(MemSpace::InternalDma, bytes));
                                         if (data == nullptr)
-                                                data = static_cast<uint8_t *>(
-                                                        Memory::alloc(MemSpace::Psram, BufferBytes));
+                                                data = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, bytes));
                                 }
                                 ~Buffer() { Memory::free(data); }
                                 Buffer(const Buffer &) = delete;
                                 Buffer &operator=(const Buffer &) = delete;
 
                                 uint8_t *data = nullptr;
+                                size_t   bytes = 0;
                 };
 
                 // What one operation carries through its tree.
                 struct Walk {
-                                Walk(const Vfs::Context &c, Progress &p, uint8_t *b = nullptr)
-                                    : context(c), progress(p), buffer(b) {}
+                                Walk(const Vfs::Context &c, Progress &p) : context(c), progress(p) {}
 
                                 const Vfs::Context &context;
                                 Progress           &progress;
-                                uint8_t            *buffer = nullptr;
                                 Error               first; // the first item's error
                                 bool                stopped = false;
 
@@ -113,6 +114,8 @@ namespace FileOps {
 
                 // A file's bytes, told as they go; the copy removed if cut off.
                 Error copyData(Walk &w, StringView from, StringView to, const FileInfo &info) {
+                        Buffer buffer(info.size);
+                        if (buffer.data == nullptr) return Error::NoMem;
                         Error err;
                         {
                                 auto [in, ierr] = Vfs::open(from, Vfs::Read, w.context);
@@ -124,13 +127,14 @@ namespace FileOps {
                                                 err = Error::Interrupted;
                                                 break;
                                         }
-                                        auto [n, rerr] = in->read(WritableByteSpan(w.buffer, BufferBytes), WaitForever);
+                                        auto [n, rerr] =
+                                                in->read(WritableByteSpan(buffer.data, buffer.bytes), WaitForever);
                                         if (rerr == Error::EndOfFile) break;
                                         if (rerr.isError()) {
                                                 err = rerr;
                                                 break;
                                         }
-                                        err = out->write(ByteSpan(w.buffer, n), WaitForever).error();
+                                        err = out->write(ByteSpan(buffer.data, n), WaitForever).error();
                                         if (err.isError()) break;
                                         w.progress.advanced(n);
                                 }
@@ -298,9 +302,7 @@ namespace FileOps {
                 String      source, target;
                 const Error err = prepare(from, into, context, source, target);
                 if (err.isError()) return err;
-                Buffer buffer;
-                if (buffer.data == nullptr) return Error::NoMem;
-                Walk w{context, progress, buffer.data};
+                Walk w{context, progress};
                 auto [info, ierr] = Vfs::lstat(source.view(), context);
                 if (ierr.isError()) return ierr;
                 (void)copyInto(w, source.view(), info, target.view(), baseName(source.view()), false, made, 0);
@@ -361,9 +363,6 @@ namespace FileOps {
                 }
                 if (err != Error::NotSupported) return err;
                 // Across filesystems: copied, then the source removed only if all of it arrived.
-                Buffer buffer;
-                if (buffer.data == nullptr) return Error::NoMem;
-                w.buffer = buffer.data;
                 if (made != nullptr) (void)made->assign(to.view());
                 if (!copyTo(w, source.view(), info, to.view(), false, 0) || w.result().isError()) return w.result();
                 err = removeTree(w, source.view(), info, 0);
