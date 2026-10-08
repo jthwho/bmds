@@ -72,6 +72,15 @@ class ItemSelection {
                  */
                 void selectRange(size_t row, bool add);
 
+                /** @brief Tells whether row @p row is between the anchor @p anchor and @p to. */
+                using InRange = bool (*)(const void *arg, size_t row, size_t anchor, size_t to);
+
+                /**
+                 * @brief `selectRange()` by @p inRange's rule instead of the rows' order (a grid's
+                 *        rectangle of cells).
+                 */
+                void selectRange(size_t row, bool add, InRange inRange, const void *arg);
+
                 /** @brief Selects every row. */
                 void selectAll();
 

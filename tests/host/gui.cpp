@@ -1038,3 +1038,36 @@ TEST_CASE("ListItemModel: names, icons by size, columns") {
         CHECK(m.columnAlign(1) == bmds::ItemModel::Align::Right);
         CHECK(m.columnAlign(2) == bmds::ItemModel::Align::Left);
 }
+
+TEST_CASE("ItemSelection: a Shift range by a grid's rectangle, not the rows' order") {
+        using bmds::IconLayout;
+        using Cell = bmds::IconGrid::Cell;
+        // A full grid of 4 columns by 3 rows, the rows (by name) in no order of place.
+        const Cell          cells[] = {{0, 0}, {3, 2}, {0, 1}, {2, 0}, {1, 1}, {0, 2},
+                                       {3, 0}, {1, 0}, {2, 2}, {1, 2}, {2, 1}, {3, 1}};
+        bmds::ItemSelection s;
+        REQUIRE(s.reset(12).isOk());
+        const auto byGrid = [](const void *arg, size_t row, size_t anchor, size_t to) {
+                const Cell *c = static_cast<const Cell *>(arg);
+                return IconLayout::inGridRange(c[row], c[anchor], c[to]);
+        };
+        s.selectOnly(0);                        // the top-left cell
+        s.selectRange(2, false, byGrid, cells); // the one under it
+        CHECK(s.selectedCount() == 2);
+        CHECK(s.isSelected(0));
+        CHECK(s.isSelected(2));
+        CHECK(!s.isSelected(5));                 // the bottom-left: not in it
+        s.selectRange(10, false, byGrid, cells); // to (2,1): columns 0-2, rows 0-1
+        CHECK(s.selectedCount() == 6);
+        for (const size_t r : {size_t(0), size_t(2), size_t(3), size_t(4), size_t(7), size_t(10)})
+                CHECK(s.isSelected(r));
+        s.selectRange(1, false, byGrid, cells); // to the far corner: all
+        CHECK(s.selectedCount() == 12);
+        CHECK(s.anchor() == 0);
+        s.selectRange(0, false, byGrid, cells); // back to the anchor: it alone
+        CHECK(s.selectedCount() == 1);
+        // The rows' order (a flowing view's) is the other rule: rows 0 to 2.
+        s.selectRange(2, false);
+        CHECK(s.selectedCount() == 3);
+        CHECK(s.isSelected(1));
+}

@@ -174,6 +174,17 @@ size_t ItemView::pageNeighbour(size_t row, int pages) const {
         return to;
 }
 
+// A Shift range to @p row, by the view's rule (`inRange()`), added to the selection with @p add.
+void ItemView::selectRangeTo(size_t row, bool add) {
+        _selection.selectRange(
+                row, add,
+                [](const void *arg, size_t r, size_t anchor, size_t to) {
+                        return static_cast<const ItemView *>(arg)->inRange(r, anchor, to);
+                },
+                this);
+        return;
+}
+
 void ItemView::activate(size_t row) {
         if (_activated != nullptr) _activated(_activatedArg, *this, row);
         return;
@@ -225,7 +236,7 @@ void ItemView::mousePressed(const WindowManager::MouseEvent &event) {
         }
         const bool wasOnly = _selection.selectedCount() == 1 && _selection.isSelected(size_t(row));
         if (shift) {
-                _selection.selectRange(size_t(row), ctrl);
+                selectRangeTo(size_t(row), ctrl);
         } else if (ctrl) {
                 _selection.toggle(size_t(row));
         } else if (_selection.isSelected(size_t(row))) {
@@ -376,7 +387,7 @@ void ItemView::renameDue(void *arg) {
 void ItemView::moveTo(size_t row, bool shift, bool ctrl) {
         stopRename();
         if (shift && !_single) {
-                _selection.selectRange(row, ctrl);
+                selectRangeTo(row, ctrl);
         } else if (ctrl && !_single) {
                 _selection.setCurrent(int(row));
         } else {

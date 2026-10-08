@@ -369,6 +369,13 @@ A portable component (built for the host tests too) over `Vfs` and `Trash`, no G
        in one call (`invalidate(id, rects)`), so a round never takes half of it. On the board: a
        screenshot after each of six steps, the rings whole and no trail pixel; a sweep over the
        icons and back, their labels repainted without a ring left on them; `win check` clean.
+     - Shift on the desktop selected the rows between in the model's order (the names'), not
+       the places': from the top-left icon to the one under it took the terminal at the bottom
+       too. A view now gives its range rule (`ItemView::inRange()`): the rows' order for flowing
+       icons and details, where it is the order shown; on the grid, the rectangle of cells
+       between the anchor and the row (`IconLayout::inGridRange()`), for clicks and Shift+arrows
+       alike. Host-tested on a full 4 × 3 grid in no order of names; on the board with 23 icons:
+       the two cells, then a 2 × 3 rectangle, then Shift+Right to 3 × 3.
 4. **Folder windows:** `FolderWindow`, navigation, the menus and keys, window manager services,
    `files`, the launcher's entry, `folders.conf`, `files/*` settings.
 5. **Directory watches** in the VFS (FB14): views, the tree and the desktop follow changes.

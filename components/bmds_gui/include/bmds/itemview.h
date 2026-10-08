@@ -167,6 +167,14 @@ class ItemView : public ScrollArea {
                 /** @brief Returns the first (or @p last) row as Home and End go. */
                 virtual size_t endRow(bool last) const { return last && count() > 0 ? count() - 1 : 0; }
 
+                /**
+                 * @brief Returns true if row @p row is in a Shift range from @p anchor to @p to:
+                 *        between them in the rows' order by default (a grid: its rectangle).
+                 */
+                virtual bool inRange(size_t row, size_t anchor, size_t to) const {
+                        return anchor <= to ? row >= anchor && row <= to : row >= to && row <= anchor;
+                }
+
                 /** @brief Returns the rows in the order a typed letter looks through them; row @p k. */
                 virtual size_t typingOrder(size_t k) const { return k; }
 
@@ -234,6 +242,7 @@ class ItemView : public ScrollArea {
         private:
                 void        changed(); // the selection or current row: told, redrawn
                 void        moveTo(size_t row, bool shift, bool ctrl);
+                void        selectRangeTo(size_t row, bool add);
                 void        menuAt(int row, int x, int y); // window coordinates
                 void        band(int x, int y);            // the rubber band to window point (x, y)
                 void        showBand(bool shown);          // the window manager's band at _band, or none

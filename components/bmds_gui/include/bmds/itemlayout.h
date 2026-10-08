@@ -81,6 +81,14 @@ struct IconLayout {
                  *        @p dy): the nearest along it, then across it; @p from if none.
                  */
                 static int gridNeighbour(Span<const IconGrid::Cell> cells, int from, int dx, int dy);
+
+                /** @brief Returns true if @p cell is in the rectangle of cells from @p a to @p b (a grid's Shift range). */
+                static constexpr bool inGridRange(IconGrid::Cell cell, IconGrid::Cell a, IconGrid::Cell b) {
+                        const uint16_t c0 = a.column < b.column ? a.column : b.column;
+                        const uint16_t c1 = a.column < b.column ? b.column : a.column;
+                        const uint16_t r0 = a.row < b.row ? a.row : b.row, r1 = a.row < b.row ? b.row : a.row;
+                        return cell.column >= c0 && cell.column <= c1 && cell.row >= r0 && cell.row <= r1;
+                }
 };
 
 /**

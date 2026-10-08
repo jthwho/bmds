@@ -228,6 +228,13 @@ size_t IconView::endRow(bool last) const {
         return last ? _order.back() : _order.front();
 }
 
+// On the grid, a Shift range is the rectangle of cells between the two (the rows' order there is
+// the names', not the places').
+bool IconView::inRange(size_t row, size_t anchor, size_t to) const {
+        if (_arrangement == Arrangement::Flow) return ItemView::inRange(row, anchor, to);
+        return IconLayout::inGridRange(cellOf(row), cellOf(anchor), cellOf(to));
+}
+
 size_t IconView::typingOrder(size_t k) const {
         return _arrangement == Arrangement::Grid && k < _order.size() ? _order[k] : k;
 }

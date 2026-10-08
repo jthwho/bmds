@@ -85,6 +85,17 @@ void ItemSelection::selectRange(size_t row, bool add) {
         return;
 }
 
+void ItemSelection::selectRange(size_t row, bool add, InRange inRange, const void *arg) {
+        if (row >= _count) return;
+        const size_t from = _anchor >= 0 ? size_t(_anchor) : row;
+        if (!add) clear();
+        for (size_t r = 0; r < _count; ++r)
+                if (inRange(arg, r, from, row)) set(r, true);
+        setCurrent(int(row), false); // the anchor stays for the next Shift
+        if (_anchor < 0) _anchor = int(row);
+        return;
+}
+
 void ItemSelection::selectAll() {
         for (size_t r = 0; r < _count; ++r) set(r, true);
         return;

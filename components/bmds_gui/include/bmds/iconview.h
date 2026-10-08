@@ -96,6 +96,7 @@ class IconView : public ItemView {
                 size_t      neighbour(size_t row, int dx, int dy) const override;
                 size_t      endRow(bool last) const override;
                 size_t      typingOrder(size_t k) const override;
+                bool        inRange(size_t row, size_t anchor, size_t to) const override;
                 void        relayout() override;
                 bool        dragged(int dx, int dy, bool done) override;
                 void        dragCancelled() override;
