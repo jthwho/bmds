@@ -333,3 +333,14 @@ one not, `/home` following a card pulled and put back, the palette changing live
     clock/zone` at once.
   - `umount /sd0/p0`: `home` became `/boot/home` ("isn't there"). `mount`: it was
     `/sd0/p0/home` again ("is back").
+- **The default `autoexec.sh`** (2026-10-07, the user's and this review's):
+  - **Home:** with a card, the card's (`mkdir -p /sd0/p0/home`). Without one, `/boot/home`, set
+    explicitly so a home saved elsewhere doesn't linger. Neither is saved.
+  - **The desktop:** the card's `autoexec.sh` starts it if the card has one. Otherwise a built-in
+    desktop (display, window manager, panel) starts, so a card without the script no longer
+    leaves the screen dark.
+  - **`/home/autoexec.sh`,** if there is one, runs last: the user's own startup, card or not.
+  - **Checked on the board** with a card: the defaults installer put the new script in (the old
+    one and its `.defaults` line removed first). `home` was the card's, the card's script started
+    the panel, and a test `/home/autoexec.sh` ran.
+  - **Not tried:** booting without a card, and so the panel without the card's icon theme.
