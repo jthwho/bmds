@@ -89,6 +89,14 @@ class GuiClipboard {
                  */
                 Error copy(Selection selection, Span<const StringView> types, Provider fn, void *arg);
 
+                /**
+                 * @brief Empties @p selection if it holds this application's copy
+                 *        (a cut pasted: `devplan/filebrowser.md` §4j).
+                 * @return `Ok`, `InvalidState` (none of this application's, or
+                 *         another program's now), `NotExist` (no clipboard).
+                 */
+                Error clear(Selection selection);
+
                 /** @brief Returns true if @p selection holds this application's copy. */
                 bool owns(Selection selection) const;
 

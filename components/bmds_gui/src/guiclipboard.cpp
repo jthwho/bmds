@@ -101,6 +101,16 @@ Error GuiClipboard::copy(Selection selection, Span<const StringView> types, Prov
         return Error::Ok;
 }
 
+Error GuiClipboard::clear(Selection selection) {
+        Clipboard *c = clipboard();
+        if (c == nullptr) return Error::NotExist;
+        Own &own = _own[index(selection)];
+        if (own.serial == 0) return Error::InvalidState;
+        const Error err = c->clear(selection, own.serial);
+        if (err.isOk()) own = Own(); // its loss, told after, is no news
+        return err;
+}
+
 bool GuiClipboard::owns(Selection selection) const {
         const Clipboard *c = clipboard();
         const uint32_t   serial = _own[index(selection)].serial;

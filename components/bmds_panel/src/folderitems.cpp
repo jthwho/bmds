@@ -62,12 +62,21 @@ bool FolderItems::identifySome(size_t count) {
         return true;
 }
 
+// Drawn on the window manager's task: an icon not loaded yet is asked for, and loaded on the loop.
 const Icon *FolderItems::icon(size_t row, uint16_t size) const {
         const FolderModel::Entry &e = _folder.entry(row);
         const uint16_t            side = size > 16 ? 32 : 16;
-        if (e.isDirectory()) return _icons.named("folder", side);
-        if (e.builtin) return _icons.named("application-x-executable", side);
-        return _icons.forType(e.format.isEmpty() ? FileFormat::Binary : e.format, side);
+        const Icon               *icon = nullptr;
+        if (e.isDirectory()) {
+                icon = _icons.loadedNamed("folder", side);
+        } else if (e.builtin) {
+                icon = _icons.loadedNamed("application-x-executable", side);
+        } else {
+                icon = _icons.loadedForType(e.format.isEmpty() ? FileFormat::Binary : e.format, side);
+        }
+        // Cut: dimmed until pasted or the clipboard changes (devplan/filebrowser.md §4j).
+        if (icon != nullptr && _copied.isCut(_folder.path(), _folder.name(row))) return _icons.dimmed(icon);
+        return icon;
 }
 
 StringView FolderItems::columnTitle(size_t column) const {

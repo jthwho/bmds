@@ -8,7 +8,6 @@
  * A window asking something (devplan/filebrowser.md §4e).
  */
 
-#include <cstring>
 #include <bmds/dialog.h>
 #include <bmds/font.h>
 #include <bmds/furniturelayout.h>
@@ -42,8 +41,7 @@ Dialog::Dialog(GuiApplication &app, StringView title, uint16_t width, uint16_t h
     : GuiWindow(app, configFor()), _width(static_cast<uint16_t>((width + 3u) & ~3u)), _height(height) {
         size_t n = title.size() < WindowManager::MaxTitle ? title.size() : WindowManager::MaxTitle;
         while (n > 0 && n < title.size() && (uint8_t(title[n]) & 0xc0) == 0x80) --n;
-        std::memcpy(_title, title.data(), n);
-        _title[n] = '\0';
+        setTitle(title.left(n)); // the window's: setTitle() changes it, open or not
         _content = Widget::create<BoxLayout>(this, BoxLayout::Direction::Vertical);
         if (_content != nullptr) _content->setSpacing(Spacing);
 }
@@ -84,8 +82,7 @@ Error Dialog::open() {
         const Rect     at{uint16_t((area.x + (area.width > width ? (area.width - width) / 2 : 0)) & ~3u),
                       uint16_t(area.y + (area.height > height ? (area.height - height) / 2 : 0)), width, height};
         _finishedOnce = false;
-        Error err = show(at);
-        if (err.isOk() && _title[0] != '\0') (void)application().windowManager().setTitle(id(), StringView(_title));
+        const Error err = show(at);
         if (err.isOk()) activate();
         return err;
 }

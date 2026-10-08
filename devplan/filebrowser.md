@@ -480,6 +480,88 @@ A portable component (built for the host tests too) over `Vfs` and `Trash`, no G
     - On `Mounts`, it reloads, and `FileIcons` forgets the icons it didn't find. The 2-second
       retry timer for a card mounted later goes.
 
+### 4j. Step 6 design: the worker, Cut, Shift+Delete (2026-10-08)
+
+**Facts (checked):**
+
+- **Paste runs on the loop.** `FolderActions::pasted()` calls `FileOps::copy()` for each URI,
+  with a `Progress` that always keeps both. A large copy stops the desktop, the taskbar and
+  every window until it ends.
+- **`FileOps` already has the hooks** a worker needs: `isCancelled()` between chunks, `began()`
+  and `advanced()`, `failed()`, `conflict()`. A file cut off is removed, and `measure()`
+  counts items and bytes.
+- **A thread's stack may be in PSRAM** while it writes to `/boot`: flash is written by
+  `flash0`'s task, on its own internal stack. The shell's `cp -r` runs on a PSRAM stack.
+- **`FileInfo::device`** names a path's filesystem, so whether a move is a rename can be known
+  before trying it.
+- **The toolkit has `Dialog`** (four buttons at most), `ProgressBar`, and `MessageBox` (Yes and
+  No, text wrapped). It has no check box. `GuiClipboard` can't empty a selection it owns, and
+  its `setLost()` (another program's copy replaced ours) is unused.
+- **Icons are 0xAARRGGBB**, blended over the background as they are drawn. An icon with its
+  alpha halved is a dimmed one, on any background.
+
+**Design:**
+
+- **`FileWorker`** (bmds_files, `bmds/fileworker.h`): one thread running jobs, the caller's
+  object.
+  - **A job:** a kind (`Copy`, `Move`, `Remove`), its paths and a target folder.
+    - `add()` queues one and returns its number. Jobs run one at a time, in order.
+    - `cancel(job)` drops a queued one, or stops the running one at its next chunk.
+  - **The thread** starts with the first job and ends when the queue is empty. Its 32 KB stack
+    is PSRAM and is held only while there is work. The loop joins it after it ends, when it
+    takes the news, so the join never waits. It runs at priority 1, below the loop.
+  - **Counting first:** a job measures its items and bytes before it starts (`measure()`). A
+    move counts only the items on another filesystem; the rest are renames.
+  - **News for the loop:** a `Notify` called on the thread, which only wakes the loop. The loop
+    reads a `Status` (the job, its kind, counting or not, items and bytes done and in all, the
+    item, the jobs waiting) and takes each finished job's result (`takeDone()`: the error, the
+    failures and the first one's path). Progress and the item are told at most every 250 ms; a
+    job begun or done, its counting done, and a question at once.
+  - **Questions:** a name taken (`conflict()`) is put in the status as a question, and the
+    thread waits for `answer(resolution, forAll)`. Cancelling also answers. With "for all",
+    the job's later conflicts take the same answer without asking.
+  - **Memory:** jobs and their paths in PSRAM; the copy buffer is `FileOps`' (32 KB, internal
+    DMA RAM, only during a copy).
+- **`CopiedFiles`** (bmds_files, `bmds/copiedfiles.h`): the files on the clipboard, pure and
+  host-tested.
+  - It keeps the paths and whether they were cut. It renders them as `text/uri-list`,
+    `x-special/gnome-copied-files` (`copy` or `cut`, then a URI a line: GNOME's format) and
+    plain text.
+  - `parse(type, data)` reads either list back: the operation, and each `file://` path
+    decoded.
+  - `isCut(path)` is a binary search over the cut paths, sorted once. A view asks it for each
+    row it draws.
+- **The panel:**
+  - **`FileJobs`** owns the worker and its windows:
+    - **Progress:** a `Dialog` titled Copying, Moving or Deleting, opened once a job has run
+      for a second. It shows the item's name, "From FOLDER to FOLDER", a `ProgressBar` (bytes,
+      or items when there are none), "N of M items, X of Y", the jobs waiting, and Cancel. It
+      closes when the queue is empty.
+    - **A name taken:** a `Dialog` saying what is there and asking Replace (Merge for a
+      folder), Keep Both, Skip or Cancel. A **`CheckBox`** (new in the toolkit: a box, its
+      tick, text with a mnemonic, Space toggles) offers "Do the same for the others".
+    - **Failures:** a message box once the job is done, naming the first failure and how many
+      there were.
+  - **Paste** reads `x-special/gnome-copied-files` when it is offered, else `text/uri-list`
+    (a copy).
+    - A **copy** is a worker job. A name taken asks now: it was a copy's name before.
+    - A **cut** is a move. When every item is on the target's filesystem and no name is
+      taken, the renames are done at once on the loop, so they never wait behind a long
+      copy. Otherwise the move is a worker job.
+    - A cut pasted empties the clipboard, if it is still ours, and the marks go.
+  - **Cut** (Ctrl+X, Edit ▸ Cut, an item's menu, a desktop icon's menu) puts the paths on the
+    clipboard as a cut. The cut items are drawn dimmed until the clipboard changes:
+    - in windows, `FolderItems::icon()` gives `FileIcons::dimmed()`, a copy of the icon with
+      its alpha halved, made once per icon;
+    - on the desktop, `DesktopWindow::setItemIcon()` dims its own copy.
+  - **Shift+Delete** (in a window and on the desktop) asks first, in a message box naming up to
+    three items and how many more: "Delete "a.txt" for good? It won't go to the trash." Yes
+    queues a `Remove` job.
+  - **Changes** reach the views through the step 5 watches. The worker tells no window.
+- **Quitting the panel** cancels the running job (the file cut off is removed) and drops the
+  queue.
+- **Left for step 8:** emptying the trash, which will be a `Remove` job.
+
 ## 5. Steps
 
 1. **The window limit, then the toolkit's furniture:** 255 windows and connections in growing
@@ -681,6 +763,57 @@ A portable component (built for the host tests too) over `Vfs` and `Trash`, no G
        folders below one renamed or removed aren't told; their windows find out at their next
        read.
 6. **The worker** (FB13): progress, Cancel, conflicts; Cut (FB11); Shift+Delete (FB10).
+   - *As built (2026-10-08):* as §4j, with these differences and findings:
+     - **Views drew on a small stack and read files there.** A view's `paint()` runs on the
+       window manager's task (8 KB of internal stack). `FolderItems::icon()` loaded a type's icon
+       from the theme on a cache miss, decoding a PNG there. On the board, the first try
+       overflowed that stack in `inflate()` as a window opened on `/sd0/p0`. A path buffer this
+       step had put in `icon()` was the last kilobyte, but the reading was step 4's. Now:
+       - drawing asks `FileIcons::loadedForType()` and `loadedNamed()`, which never read a file:
+         an icon not loaded is asked for, the loop loads it, and the windows draw again;
+       - a cut row is looked up by folder and name (`CopiedFiles::isCut(folder, name)`), with no
+         path put together.
+     - **Lookups by path in a large folder are slow on the card.** About 10 ms each in a
+       361-entry exFAT folder, since each one scans the folder (`du` of it takes 3.8 s).
+       `FileOps` looked up every child after reading its folder, so counting `share` took about
+       90 s. It now uses the type, size and time the listing gives (`entriesIn()`): the same
+       count takes about 3 s. A copy still opens each file by path. On the board it copied 2,508
+       items in 119 s, about 47 ms an item, the same rate as BusyBox's `cp -r`. Faster lookups in
+       the FAT and exFAT drivers are a separate change.
+     - **Toolkit fixes:**
+       - `Dialog` keeps its title as its window's, so `setTitle()` changes it, open or not.
+       - `TextWrap::wrap()` drew an empty line as the line feed itself (a box in the message box).
+       - `GuiClipboard::clear()` empties a selection the application owns.
+     - **The progress window** opens over the screen's middle, where a question already is. Once
+       open, it raises the question above itself.
+     - **The copy buffer** (32 KB of internal DMA RAM) stays held while a question waits for an
+       answer.
+     - **Host tests:**
+       - `CopiedFiles`: each type rendered, a cut looked up by path and by folder and name, GNOME's
+         list and URI lists read back.
+       - `FileWorker` on two RAM disks: a tree copied; the same again asking for the folder
+         (merged) and a file (Keep Both for all, six names after); a job queued behind a
+         question dropped by its number and the asking one cancelled; a move across filesystems,
+         one within and a missing path (one failure, the rest done); a move asking Replace for
+         all; a removal.
+       - `TextWrap` keeping an empty line empty.
+     - **On the board:**
+       - A copy of `share` (4.1 MB, 2,508 items) from the card to `ram0`. The progress window
+         came up after a second, counting first, then the item, the folders, the bar and the
+         counts. Escape cancelled it: the window closed and the worker thread ended. Done
+         again, it arrived whole (`du` the same both sides).
+       - A paste onto a folder of the same name asked Merge. The next question, with "Do the same
+         for the others" ticked (Alt+O), took Keep Both for the four subfolders.
+       - Cut: the folder dimmed. Pasted on the same disk, it moved at once and the clipboard
+         emptied. Cut from `ram0` and pasted on the card, it was moved by the worker.
+       - Shift+Delete asked, naming the folder, then deleted it without the trash.
+       - A desktop icon cut by Ctrl+X dimmed. A copy from the shell (`clip copy`) undimmed it.
+       - Two pastes in a row: "1 more waiting", both done.
+       - Checks: `win stats` 0 errors, `win check` 0 pixels wrong.
+       - Memory: internal RAM free was the same after the jobs as before them (449,883 bytes).
+         The worker's 32 KB stack is PSRAM; 3 to 5 KB of it were used.
+     - **Size:** `bmds_panel` 48,890 bytes (+5,998), `bmds_gui` 66,672 (+1,370), `bmds_files`
+       20,958 (+8,314) in flash. No new static RAM.
 7. **Drag and drop** (FB15): the window manager, the toolkit, the views, the terminal's drop.
 8. **Properties and a Trash window** (the trash of every filesystem in one view, Restore,
    Empty), and a Trash icon on the desktop.

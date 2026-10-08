@@ -11,7 +11,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <bmds/builtinprograms.h>
+#include <bmds/clipboard.h>
 #include <bmds/config.h>
+#include <bmds/copiedfiles.h>
 #include <bmds/desktopentry.h>
 #include <bmds/error.h>
 #include <bmds/fileops.h>
@@ -20,6 +22,7 @@
 #include <bmds/span.h>
 #include <bmds/string.h>
 #include <bmds/stringview.h>
+#include "filejobs.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -35,17 +38,21 @@ class FolderHost {
                 /** @brief Folder @p folder's entries changed (an action here): its views read it again. */
                 virtual void folderChanged(StringView folder) = 0;
 
+                /** @brief The files cut changed (cut, pasted, or the clipboard taken): their icons redrawn. */
+                virtual void cutChanged() = 0;
+
         protected:
                 ~FolderHost() = default;
 };
 
 /**
  * @brief What a folder window and the desktop both do to files
- *        (`devplan/filebrowser.md` §4h, FB8), written once: open them (by their
- *        type's application, a launcher by its command, a folder in a window),
- *        copy their paths to the clipboard, paste a URI list into a folder,
- *        move them to the trash, make new ones and rename them. A failure is
- *        told in a message box.
+ *        (`devplan/filebrowser.md` §4h, §4j, FB8), written once: open them (by
+ *        their type's application, a launcher by its command, a folder in a
+ *        window), copy or cut them to the clipboard, paste files into a folder,
+ *        move them to the trash or delete them for good, make new ones and
+ *        rename them. Copies, moves across filesystems and deletes run on the
+ *        worker (`FileJobs`). A failure is told in a message box.
  *
  * Paths are absolute; a list of them is one a line.
  *
@@ -84,10 +91,19 @@ class FolderActions {
                 /** @brief Opens file @p path of type @p type by the application `mimeapps.list` names. */
                 void openFile(StringView path, StringView type);
 
-                /** @brief Puts @p paths on the clipboard (`text/uri-list`, and as text). */
+                /** @brief Puts @p paths on the clipboard, copied (`CopiedFiles`' types). */
                 void copy(StringView paths);
 
-                /** @brief Pastes the clipboard's files into @p directory (a copy's name if one is taken). */
+                /** @brief Puts @p paths on the clipboard, cut: dimmed until pasted or the clipboard changes. */
+                void cut(StringView paths);
+
+                /** @brief Returns the files this panel put on the clipboard (`isCut()` for a path). */
+                const CopiedFiles &copied() const { return _copied; }
+
+                /**
+                 * @brief Pastes the clipboard's files into @p directory: copied, or moved
+                 *        if cut (a taken name asks).
+                 */
                 void paste(StringView directory);
 
                 /** @brief Returns true if the clipboard has files to paste. */
@@ -95,6 +111,9 @@ class FolderActions {
 
                 /** @brief Moves @p paths to their filesystems' trash. */
                 void trash(StringView paths);
+
+                /** @brief Deletes @p paths for good, once a message box naming them is answered Yes. */
+                void removeForGood(StringView paths);
 
                 /**
                  * @brief Makes a new item of @p kind in @p directory, under the first free
@@ -115,6 +134,9 @@ class FolderActions {
         private:
                 static void  pasted(void *arg, Error err, StringView type, StringView data);
                 static Error render(void *arg, StringView type, String &out);
+                static void  lost(void *arg, Clipboard::Selection selection);
+                void         offer(StringView paths, bool cut);
+                bool         moveNow(StringView paths, StringView directory);
                 bool         openWith(StringView id, StringView file);
 
                 GuiApplication                &_app;
@@ -122,8 +144,9 @@ class FolderActions {
                 FolderHost                    &_host;
                 char                           _applications[256] = {};
                 char                           _mimeApps[128] = {};
-                String                         _copied{MemSpace::Psram};  // the paths copied, a line each
+                CopiedFiles                    _copied;                   // what this panel copied or cut
                 String                         _pasteTo{MemSpace::Psram}; // the folder a paste goes to
+                FileJobs                       _jobs{_app};
 };
 
 BMDS_NAMESPACE_END

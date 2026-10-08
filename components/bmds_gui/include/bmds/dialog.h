@@ -97,7 +97,6 @@ class Dialog : public GuiWindow {
                 bool       _finishedOnce = false;
                 Finished   _finished = nullptr;
                 void      *_finishedArg = nullptr;
-                char       _title[WindowManager::MaxTitle + 1] = {};
 };
 
 BMDS_NAMESPACE_END

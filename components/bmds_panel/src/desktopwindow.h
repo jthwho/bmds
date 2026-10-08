@@ -146,11 +146,17 @@ class DesktopWindow final : public GuiWindow {
                 /** @brief Returns the items shown. */
                 size_t itemCount() const { return _model.count(); }
 
-                /** @brief Sets item @p item's icon to a copy of @p icon (null: none). */
-                void setItemIcon(size_t item, const Icon *icon);
+                /**
+                 * @brief Sets item @p item's icon to a copy of @p icon (null: none),
+                 *        @p dimmed (a cut file's: its alpha halved, `devplan/filebrowser.md` §4j).
+                 */
+                void setItemIcon(size_t item, const Icon *icon, bool dimmed);
 
                 /** @brief Returns true if item @p item has an icon. */
                 bool hasItemIcon(size_t item) const { return item < _icons.size() && _icons[item].pixels != nullptr; }
+
+                /** @brief Returns true if item @p item's icon is dimmed. */
+                bool isItemDimmed(size_t item) const { return item < _icons.size() && _icons[item].dimmed; }
 
                 void paint(Painter &painter) override;
 
@@ -164,6 +170,7 @@ class DesktopWindow final : public GuiWindow {
                 struct OwnedIcon {
                                 Icon      icon;
                                 uint32_t *pixels = nullptr;
+                                bool      dimmed = false;
                 };
 
                 void        freeIcons();

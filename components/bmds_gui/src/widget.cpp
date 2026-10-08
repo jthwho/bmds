@@ -467,6 +467,124 @@ void Button::mouseLeft() {
         return;
 }
 
+// ---- CheckBox
+
+namespace {
+
+        constexpr uint16_t CheckGap = 6; // the box to the text
+
+        // The tick, a row each of its 7 × 7 (Windows 95's): the first pixel and the run.
+        constexpr uint8_t Tick[7][2] = {{6, 1}, {5, 2}, {0, 1}, {0, 2}, {0, 5}, {1, 3}, {2, 1}};
+        constexpr uint8_t TickMore[7][2] = {{0, 0}, {0, 0}, {4, 3}, {3, 3}, {0, 0}, {0, 0}, {0, 0}};
+
+} // namespace
+
+CheckBox::CheckBox(Widget *parent, StringView text) : Widget(parent) {
+        setFocusable(true);
+        setText(text);
+}
+
+void CheckBox::setText(StringView text) {
+        char                     next[MaxText + 1];
+        const Mnemonic::Stripped m = Mnemonic::strip(text, Span<char>(next, sizeof(next)));
+        std::memcpy(_text, next, sizeof(_text));
+        _underline = m.at;
+        _key = m.key;
+        update();
+        return;
+}
+
+void CheckBox::setChecked(bool checked) {
+        if (checked == _checked) return;
+        _checked = checked;
+        update();
+        return;
+}
+
+void CheckBox::toggle() {
+        if (!isEnabled()) return;
+        setChecked(!_checked);
+        if (_toggled != nullptr) _toggled(_toggledArg, *this);
+        return;
+}
+
+GuiSize CheckBox::sizeHint() const {
+        return GuiSize{columnUp(BoxSide + CheckGap + Fonts::unscii16.textWidth(StringView(_text)) + GuiStyle::Column),
+                       GuiStyle::ButtonHeight};
+}
+
+void CheckBox::paint(Painter &painter) {
+        const WindowPalette &p = painter.palette();
+        const Rect          &r = geometry();
+        const uint32_t       face = p.color(Role::Face);
+        (void)painter.fill(r, face);
+        // The box: a field's bevel around white (the face when disabled), the tick in the text's colour.
+        const Rect box{r.x, uint16_t(r.y + (r.height > BoxSide ? (r.height - BoxSide) / 2 : 0)), BoxSide, BoxSide};
+        drawBevel(painter, box, Bevel::Style::Field);
+        const Rect     in = Bevel::inside(box, Bevel::Style::Field);
+        const uint32_t fg = p.color(isEnabled() ? Role::FaceText : Role::DisabledText);
+        (void)painter.fill(in, isEnabled() ? p.color(Role::FaceHighlight) : face);
+        if (_checked) {
+                Rect   runs[14];
+                size_t n = 0;
+                for (uint16_t row = 0; row < 7; ++row) {
+                        const uint16_t y = uint16_t(in.y + 1 + row);
+                        runs[n++] = Rect{uint16_t(in.x + 1 + Tick[row][0]), y, Tick[row][1], 1};
+                        if (TickMore[row][1] != 0)
+                                runs[n++] = Rect{uint16_t(in.x + 1 + TickMore[row][0]), y, TickMore[row][1], 1};
+                }
+                (void)painter.fill(Span<const Rect>(runs, n), fg);
+        }
+        const uint16_t x = columnUp(r.x + BoxSide + CheckGap);
+        if (_text[0] == '\0' || x >= r.right()) return;
+        const uint16_t   top = textTop(r, false);
+        const StringView text(_text);
+        const uint32_t   width = Fonts::unscii16.textWidth(text);
+        const uint16_t   room = uint16_t(r.right() - x);
+        (void)painter.text(x, top, text, Fonts::unscii16, fg, face, room);
+        Mnemonic::draw(painter, x, top, text, _underline, fg, r.right());
+        GuiWindow *window = this->window();
+        if (hasFocus() && window != nullptr && window->isActive() && top > r.y && x >= r.x + 2) {
+                // The focus: a ring around the text, outside its rows.
+                const uint16_t w = uint16_t((width < room ? width : room) + 4);
+                const Rect     f{uint16_t(x - 2), uint16_t(top - 1), w, uint16_t(GuiStyle::TextHeight + 2)};
+                const Rect     ring[] = {{f.x, f.y, f.width, 1},
+                                         {f.x, uint16_t(f.bottom() - 1), f.width, 1},
+                                         {f.x, uint16_t(f.y + 1), 1, uint16_t(f.height - 2)},
+                                         {uint16_t(f.right() - 1), uint16_t(f.y + 1), 1, uint16_t(f.height - 2)}};
+                (void)painter.fill(Span<const Rect>(ring), p.color(Role::Highlight));
+        }
+        return;
+}
+
+void CheckBox::mousePressed(const WindowManager::MouseEvent &event) {
+        if (event.button != PointerEvent::Left || !isEnabled()) return;
+        _down = true;
+        setFocus();
+        return;
+}
+
+void CheckBox::mouseReleased(const WindowManager::MouseEvent &event) {
+        if (event.button != PointerEvent::Left || !_down) return;
+        _down = false;
+        const Rect &r = geometry();
+        if (event.x >= r.x && event.y >= r.y && uint32_t(event.x) < r.right() && uint32_t(event.y) < r.bottom())
+                toggle();
+        return;
+}
+
+bool CheckBox::keyPressed(const KeyEvent &event) {
+        if (!isEnabled() || event.hasCtrl() || event.hasAlt() || event.usage != HidKey::Space) return false;
+        toggle();
+        return true;
+}
+
+void CheckBox::mnemonicActivated() {
+        setFocus();
+        toggle();
+        return;
+}
+
 // ---- BoxLayout
 
 BoxLayout::BoxLayout(Widget *parent, Direction direction) : Widget(parent), _direction(direction) {}

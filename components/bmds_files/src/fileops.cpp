@@ -90,15 +90,17 @@ namespace FileOps {
                                (outer.endsWith('/') || inner[outer.size()] == '/');
                 }
 
-                // The names in @p directory (read first: the directory isn't changed while open).
-                Error namesIn(StringView directory, const Vfs::Context &context, List<String> &out) {
+                // The entries of @p directory (read first: the directory isn't changed while open). Their
+                // type, size and time are used as read: a lookup by path in a large folder costs a scan
+                // of it (milliseconds on a card), once for each entry.
+                Error entriesIn(StringView directory, const Vfs::Context &context, List<FileInfo> &out) {
                         auto [dir, err] = Vfs::openDirectory(directory, context);
                         if (err.isError()) return err;
                         for (;;) {
                                 auto [info, nerr] = dir.next();
                                 if (nerr == Error::EndOfFile) return Error::Ok;
                                 if (nerr.isError()) return nerr;
-                                Error added = out.append(std::move(info.name));
+                                Error added = out.append(std::move(info));
                                 if (added.isError()) return added;
                         }
                 }
@@ -142,16 +144,17 @@ namespace FileOps {
                         return Error::Ok;
                 }
 
-                Error removeTree(Walk &w, StringView path, int depth);
+                Error removeTree(Walk &w, StringView path, const FileInfo &info, int depth);
+                Error removePath(Walk &w, StringView path, int depth);
 
-                // @p from copied to @p to, which is free (or, with @p merge, a folder to copy into).
-                // @return false if it failed or was cut off.
-                bool copyTo(Walk &w, StringView from, StringView to, bool merge, int depth);
+                // @p from (@p info) copied to @p to, which is free (or, with @p merge, a folder to copy
+                // into). @return false if it failed or was cut off.
+                bool copyTo(Walk &w, StringView from, const FileInfo &info, StringView to, bool merge, int depth);
 
-                // @p from put into folder @p into under @p name, asking if the name is taken
+                // @p from (@p info) put into folder @p into under @p name, asking if the name is taken
                 // (not asked in a folder just made: @p fresh). @param made [out] where it went.
-                bool copyInto(Walk &w, StringView from, StringView into, StringView name, bool fresh, String *made,
-                              int depth) {
+                bool copyInto(Walk &w, StringView from, const FileInfo &info, StringView into, StringView name,
+                              bool fresh, String *made, int depth) {
                         if (w.cancelled()) return false;
                         String to;
                         if (join(into, name, to).isError()) return w.fail(from, Error::NoMem);
@@ -171,22 +174,19 @@ namespace FileOps {
                                                 return w.fail(from, cerr.isError() ? cerr : Error(Error::NoMem));
                                 } else {
                                         // Replace: a folder onto a folder is merged; anything else goes first.
-                                        auto [info, ierr] = Vfs::lstat(from, w.context);
-                                        if (ierr.isError()) return w.fail(from, ierr);
                                         merge = isDir && info.isDirectory();
                                         if (!merge) {
-                                                const Error gone = removeTree(w, to.view(), depth);
+                                                const Error gone = removePath(w, to.view(), depth);
                                                 if (gone.isError()) return w.fail(to.view(), gone);
                                         }
                                 }
                         }
                         if (made != nullptr) (void)made->assign(to.view());
-                        return copyTo(w, from, to.view(), merge, depth);
+                        return copyTo(w, from, info, to.view(), merge, depth);
                 }
 
-                bool copyTo(Walk &w, StringView from, StringView to, bool merge, int depth) {
-                        auto [info, err] = Vfs::lstat(from, w.context);
-                        if (err.isError()) return w.fail(from, err);
+                bool copyTo(Walk &w, StringView from, const FileInfo &info, StringView to, bool merge, int depth) {
+                        Error err;
                         w.progress.began(from, info.isDirectory() ? 0 : info.size);
                         if (info.type == FileType::Link) {
                                 auto [target, lerr] = Vfs::readLink(from, w.context);
@@ -202,57 +202,59 @@ namespace FileOps {
                                 err = Vfs::mkdir(to, w.context);
                                 if (err.isError()) return w.fail(to, err);
                         }
-                        List<String> names(MemSpace::Psram);
-                        err = namesIn(from, w.context, names);
+                        List<FileInfo> entries(MemSpace::Psram);
+                        err = entriesIn(from, w.context, entries);
                         if (err.isError()) return w.fail(from, err);
                         bool ok = true;
-                        for (const String &n : names) {
+                        for (const FileInfo &e : entries) {
                                 if (w.cancelled()) return false;
                                 String child;
-                                if (join(from, n.view(), child).isError()) return w.fail(from, Error::NoMem);
-                                ok = copyInto(w, child.view(), to, n.view(), !merge, nullptr, depth + 1) && ok;
+                                if (join(from, e.name.view(), child).isError()) return w.fail(from, Error::NoMem);
+                                ok = copyInto(w, child.view(), e, to, e.name.view(), !merge, nullptr, depth + 1) && ok;
                         }
                         if (info.modified.ns != 0) (void)Vfs::setModified(to, info.modified, w.context);
                         return ok;
                 }
 
-                Error removeTree(Walk &w, StringView path, int depth) {
-                        auto [info, err] = Vfs::lstat(path, w.context);
-                        if (err.isError()) return err;
+                Error removeTree(Walk &w, StringView path, const FileInfo &info, int depth) {
                         if (!info.isDirectory()) return Vfs::remove(path, w.context);
                         if (depth >= MaxDepth) return Error::OutOfRange;
-                        List<String> names(MemSpace::Psram);
-                        err = namesIn(path, w.context, names);
+                        List<FileInfo> entries(MemSpace::Psram);
+                        Error          err = entriesIn(path, w.context, entries);
                         if (err.isError()) return err;
-                        for (const String &n : names) {
+                        for (const FileInfo &e : entries) {
                                 if (w.cancelled()) return Error::Interrupted;
                                 String child;
-                                if (join(path, n.view(), child).isError()) return Error::NoMem;
+                                if (join(path, e.name.view(), child).isError()) return Error::NoMem;
                                 w.progress.began(child.view(), 0);
-                                err = removeTree(w, child.view(), depth + 1);
+                                err = removeTree(w, child.view(), e, depth + 1);
                                 if (err.isError()) return err;
                         }
                         return Vfs::rmdir(path, w.context);
                 }
 
-                bool measureTree(Walk &w, StringView path, Totals &totals, int depth) {
-                        if (w.cancelled()) return false;
+                // @p path, which is there, and the tree under it, looked up by path first.
+                Error removePath(Walk &w, StringView path, int depth) {
                         auto [info, err] = Vfs::lstat(path, w.context);
-                        if (err.isError()) return w.fail(path, err);
+                        return err.isError() ? err : removeTree(w, path, info, depth);
+                }
+
+                bool measureTree(Walk &w, StringView path, const FileInfo &info, Totals &totals, int depth) {
+                        if (w.cancelled()) return false;
                         ++totals.items;
                         if (!info.isDirectory()) {
                                 if (info.type == FileType::File) totals.bytes += info.size;
                                 return true;
                         }
                         if (depth >= MaxDepth) return w.fail(path, Error::OutOfRange);
-                        List<String> names(MemSpace::Psram);
-                        err = namesIn(path, w.context, names);
+                        List<FileInfo> entries(MemSpace::Psram);
+                        const Error    err = entriesIn(path, w.context, entries);
                         if (err.isError()) return w.fail(path, err);
                         bool ok = true;
-                        for (const String &n : names) {
+                        for (const FileInfo &e : entries) {
                                 String child;
-                                if (join(path, n.view(), child).isError()) return w.fail(path, Error::NoMem);
-                                ok = measureTree(w, child.view(), totals, depth + 1) && ok;
+                                if (join(path, e.name.view(), child).isError()) return w.fail(path, Error::NoMem);
+                                ok = measureTree(w, child.view(), e, totals, depth + 1) && ok;
                         }
                         return ok;
                 }
@@ -283,8 +285,11 @@ namespace FileOps {
         Result<Totals> measure(Span<const StringView> paths, const Vfs::Context &context, Progress &progress) {
                 Walk   w{context, progress};
                 Totals totals;
-                for (const StringView p : paths)
-                        if (!measureTree(w, p, totals, 0) && w.stopped) break;
+                for (const StringView p : paths) {
+                        auto [info, err] = Vfs::lstat(p, context);
+                        const bool ok = err.isOk() ? measureTree(w, p, info, totals, 0) : w.fail(p, err);
+                        if (!ok && w.stopped) break;
+                }
                 return Result<Totals>(totals, w.result());
         }
 
@@ -296,7 +301,9 @@ namespace FileOps {
                 Buffer buffer;
                 if (buffer.data == nullptr) return Error::NoMem;
                 Walk w{context, progress, buffer.data};
-                (void)copyInto(w, source.view(), target.view(), baseName(source.view()), false, made, 0);
+                auto [info, ierr] = Vfs::lstat(source.view(), context);
+                if (ierr.isError()) return ierr;
+                (void)copyInto(w, source.view(), info, target.view(), baseName(source.view()), false, made, 0);
                 return w.result();
         }
 
@@ -310,26 +317,26 @@ namespace FileOps {
                 if (join(target.view(), name, to).isError()) return Error::NoMem;
                 if (to.view() == source.view()) return Error::Ok; // there already
                 Walk w{context, progress};
+                auto [info, ierr] = Vfs::lstat(source.view(), context);
+                if (ierr.isError()) return ierr;
                 bool isDir = false;
                 if (exists(to.view(), context, isDir)) {
                         const Resolution r = progress.conflict(source.view(), to.view(), isDir);
                         if (r == Resolution::Cancel) return Error::Interrupted;
                         if (r == Resolution::Skip) return Error::Ok;
-                        auto [info, ierr] = Vfs::lstat(source.view(), context);
-                        if (ierr.isError()) return ierr;
                         if (r == Resolution::KeepBoth) {
                                 auto [free, cerr] = copyName(target.view(), name, context);
                                 if (cerr.isError()) return cerr;
                                 if (join(target.view(), free.view(), to).isError()) return Error::NoMem;
                         } else if (isDir && info.isDirectory()) {
                                 // Folders merged: each item moved in (asking again), then the emptied source.
-                                List<String> names(MemSpace::Psram);
-                                err = namesIn(source.view(), context, names);
+                                List<FileInfo> entries(MemSpace::Psram);
+                                err = entriesIn(source.view(), context, entries);
                                 if (err.isError()) return err;
-                                for (const String &n : names) {
+                                for (const FileInfo &e : entries) {
                                         if (w.cancelled()) return Error::Interrupted;
                                         String child;
-                                        if (join(source.view(), n.view(), child).isError()) return Error::NoMem;
+                                        if (join(source.view(), e.name.view(), child).isError()) return Error::NoMem;
                                         err = move(child.view(), to.view(), context, progress, nullptr);
                                         if (err == Error::Interrupted) return err;
                                         if (err.isError()) (void)w.fail(child.view(), err);
@@ -342,13 +349,13 @@ namespace FileOps {
                                 if (made != nullptr) (void)made->assign(to.view());
                                 return w.result();
                         } else {
-                                err = removeTree(w, to.view(), 0);
+                                err = removePath(w, to.view(), 0);
                                 if (err.isError()) return err;
                         }
                 }
-                progress.began(source.view(), 0);
                 err = Vfs::rename(source.view(), to.view(), context);
                 if (err.isOk()) {
+                        progress.began(source.view(), 0);
                         if (made != nullptr) (void)made->assign(to.view());
                         return Error::Ok;
                 }
@@ -358,8 +365,8 @@ namespace FileOps {
                 if (buffer.data == nullptr) return Error::NoMem;
                 w.buffer = buffer.data;
                 if (made != nullptr) (void)made->assign(to.view());
-                if (!copyTo(w, source.view(), to.view(), false, 0) || w.result().isError()) return w.result();
-                err = removeTree(w, source.view(), 0);
+                if (!copyTo(w, source.view(), info, to.view(), false, 0) || w.result().isError()) return w.result();
+                err = removeTree(w, source.view(), info, 0);
                 if (err.isError()) (void)w.fail(source.view(), err);
                 return w.result();
         }
@@ -367,7 +374,7 @@ namespace FileOps {
         Error remove(StringView path, const Vfs::Context &context, Progress &progress) {
                 Walk w{context, progress};
                 progress.began(path, 0);
-                const Error err = removeTree(w, path, 0);
+                const Error err = removePath(w, path, 0);
                 if (err == Error::Interrupted || w.stopped) return Error::Interrupted;
                 return err;
         }

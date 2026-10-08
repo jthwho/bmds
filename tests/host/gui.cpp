@@ -693,6 +693,7 @@ TEST_CASE("TextWrap: words in lines") {
         CHECK(wrapped("There is already an icon named Terminal here.", 20) ==
               std::vector<std::string>{"There is already an", "icon named Terminal", "here."});
         CHECK(wrapped("a\nb  c", 10) == std::vector<std::string>{"a", "b  c"});
+        CHECK(wrapped("a\n\nb", 10) == std::vector<std::string>{"a", "", "b"}); // an empty line kept empty
         CHECK(wrapped("abcdefghij", 4) == std::vector<std::string>{"abcd", "efgh", "ij"});
         CHECK(wrapped("  lead", 10) == std::vector<std::string>{"lead"});
         CHECK(wrapped("\xe3\x81\x82\xe3\x81\x82\xe3\x81\x82", 4) ==

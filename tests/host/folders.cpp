@@ -5,16 +5,22 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * bmds_files (devplan/filebrowser.md §4f, §4h): the folder model and the file operations, on RAM
- * disks; a window's history and folders.conf.
+ * bmds_files (devplan/filebrowser.md §4f, §4h, §4j): the folder model, the file operations and
+ * their worker, on RAM disks; the clipboard's files; a window's history and folders.conf.
  */
 
 #include <doctest.h>
 
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <bmds/blockdevices.h>
+#include <bmds/clipboardtype.h>
+#include <bmds/copiedfiles.h>
 #include <bmds/fileops.h>
+#include <bmds/fileworker.h>
 #include <bmds/foldermodel.h>
 #include <bmds/foldersettings.h>
 #include <bmds/folderwatches.h>
@@ -572,4 +578,209 @@ TEST_CASE("FolderSettings: read, looked up, set newest, the oldest going, writte
         CHECK_FALSE(many.find("/d10", v));
         CHECK(many.find("/d11", v));
         CHECK(many.find("/d265", v));
+}
+
+TEST_CASE("CopiedFiles: rendered as URI lists, GNOME's and text; read back; cut ones looked up") {
+        bmds::CopiedFiles files;
+        CHECK(files.isEmpty());
+        REQUIRE(files.set("/a/b c%.txt\n/x", false).isOk());
+        bmds::String out;
+        REQUIRE(files.render(bmds::CopiedFiles::UriList, out).isOk());
+        CHECK(out.view() == "file:///a/b%20c%25.txt\r\nfile:///x\r\n");
+        REQUIRE(files.render(bmds::CopiedFiles::GnomeFiles, out).isOk());
+        CHECK(out.view() == "copy\nfile:///a/b%20c%25.txt\nfile:///x");
+        REQUIRE(files.render(bmds::ClipboardType::Text, out).isOk());
+        CHECK(out.view() == "/a/b c%.txt\n/x");
+        CHECK(!files.isCut());
+        CHECK(!files.isCut("/x"));
+
+        // Cut: each path found, nothing else (a prefix, a folder of one).
+        REQUIRE(files.set("/m/zeta\n/m/alpha\n/m/mid\n", true).isOk());
+        REQUIRE(files.render(bmds::CopiedFiles::GnomeFiles, out).isOk());
+        CHECK(out.view() == "cut\nfile:///m/zeta\nfile:///m/alpha\nfile:///m/mid");
+        CHECK(files.isCut("/m/alpha"));
+        CHECK(files.isCut("/m/mid"));
+        CHECK(files.isCut("/m/zeta"));
+        CHECK(!files.isCut("/m/alph"));
+        CHECK(!files.isCut("/m"));
+        CHECK(!files.isCut("/m/zeta/x"));
+        // By folder and name, as a view asks.
+        CHECK(files.isCut("/m", "alpha"));
+        CHECK(files.isCut("/m/", "mid"));
+        CHECK(files.isCut("/m", "zeta"));
+        CHECK(!files.isCut("/m", "alph"));
+        CHECK(!files.isCut("/m", "alphab"));
+        CHECK(!files.isCut("/", "m"));
+        CHECK(!files.isCut("/m/zeta", "x"));
+        CHECK(!files.isCut("/n", "mid"));
+        files.clear();
+        CHECK(!files.isCut("/m/mid"));
+
+        // Read back: GNOME's (a host, a trailing line), a URI list (comments, other schemes).
+        bool         cut = false;
+        bmds::String paths;
+        REQUIRE(bmds::CopiedFiles::parse(bmds::CopiedFiles::GnomeFiles, "cut\nfile:///a/b%20c\nfile://host/x\n", cut,
+                                         paths)
+                        .isOk());
+        CHECK(cut);
+        CHECK(paths.view() == "/a/b c\n/x");
+        REQUIRE(bmds::CopiedFiles::parse(bmds::CopiedFiles::GnomeFiles, "copy\nfile:///y", cut, paths).isOk());
+        CHECK(!cut);
+        CHECK(paths.view() == "/y");
+        REQUIRE(bmds::CopiedFiles::parse(bmds::CopiedFiles::UriList,
+                                         "# a comment\r\nhttp://example.com/\r\nfile:///one\r\nfile:///two%2F\r\n", cut,
+                                         paths)
+                        .isOk());
+        CHECK(!cut);
+        CHECK(paths.view() == "/one\n/two/");
+        CHECK(bmds::CopiedFiles::parse(bmds::CopiedFiles::UriList, "# nothing\r\n", cut, paths) == Error::Empty);
+}
+
+namespace {
+
+        // A worker's news, waited for on the test's thread.
+        struct WorkerLog {
+                        std::mutex              lock;
+                        std::condition_variable changed;
+                        int                     notifies = 0;
+
+                        static void notified(void *arg) {
+                                auto *self = static_cast<WorkerLog *>(arg);
+                                {
+                                        std::lock_guard<std::mutex> l(self->lock);
+                                        ++self->notifies;
+                                }
+                                self->changed.notify_all();
+                                return;
+                        }
+
+                        // Waits (5 s at most) until @p ready says so, asked after each notify.
+                        template <typename F> bool waitFor(F ready) {
+                                std::unique_lock<std::mutex> l(lock);
+                                for (;;) {
+                                        l.unlock();
+                                        if (ready()) return true;
+                                        l.lock();
+                                        const int seen = notifies;
+                                        if (!changed.wait_for(l, std::chrono::seconds(5),
+                                                              [&] { return notifies != seen; }))
+                                                return false;
+                                }
+                        }
+        };
+
+        bmds::FileWorker::Done waitDone(WorkerLog &log, bmds::FileWorker &worker) {
+                bmds::FileWorker::Done d;
+                REQUIRE(log.waitFor([&] { return worker.takeDone(d); }));
+                return d;
+        }
+
+        bmds::FileWorker::Status waitAsking(WorkerLog &log, bmds::FileWorker &worker) {
+                bmds::FileWorker::Status s;
+                REQUIRE(log.waitFor([&] {
+                        worker.status(s);
+                        return s.asking;
+                }));
+                return s;
+        }
+
+        size_t entries(const std::string &path) {
+                size_t n = 0;
+                auto [dir, err] = Vfs::openDirectory(view(path), Root);
+                while (err.isOk() && dir.next().isOk()) ++n;
+                return n;
+        }
+
+} // namespace
+
+TEST_CASE_FIXTURE(Fixture, "FileWorker: jobs in order, questions answered for all, cancels, failures") {
+        using Kind = bmds::FileWorker::Kind;
+        using Resolution = FileOps::Resolution;
+        mkdir(at("/tree"));
+        put(at("/tree/a.txt"), "a");
+        put(at("/tree/b.txt"), "bb");
+        put(at("/tree/c.txt"), "ccc");
+        WorkerLog        log;
+        bmds::FileWorker worker(WorkerLog::notified, &log);
+        CHECK(!worker.isBusy());
+        CHECK(worker.add(Kind::Copy, " \n", view(b)).error() == Error::Invalid);
+
+        // A tree copied across.
+        auto [first, ferr] = worker.add(Kind::Copy, view(at("/tree")), view(b));
+        REQUIRE(ferr.isOk());
+        bmds::FileWorker::Done d = waitDone(log, worker);
+        CHECK(d.job == first);
+        CHECK(d.kind == Kind::Copy);
+        CHECK(d.err.isOk());
+        CHECK(d.failures == 0);
+        CHECK(read(onB("/tree/c.txt")) == "ccc");
+
+        // Again: the folder asks (merged), its first file asks, kept both for all the others.
+        auto [again, aerr] = worker.add(Kind::Copy, view(at("/tree")), view(b));
+        REQUIRE(aerr.isOk());
+        bmds::FileWorker::Status s = waitAsking(log, worker);
+        CHECK(s.job == again);
+        CHECK(s.askIsDirectory);
+        CHECK(s.askTarget.view() == view(onB("/tree")));
+        CHECK(s.askSource.view() == view(at("/tree")));
+        CHECK(s.totalItems == 4);
+        CHECK(s.totalBytes == 6);
+        worker.answer(Resolution::Replace, false);
+        s = waitAsking(log, worker);
+        CHECK(!s.askIsDirectory);
+        worker.answer(Resolution::KeepBoth, true);
+        d = waitDone(log, worker);
+        CHECK(d.job == again);
+        CHECK(d.err.isOk());
+        CHECK(entries(onB("/tree")) == 6);
+        CHECK(read(onB("/tree/b (copy).txt")) == "bb");
+
+        // Queued behind a question: dropped by its number; the one asking cancelled.
+        auto [asks, qerr] = worker.add(Kind::Copy, view(at("/tree/a.txt")), view(onB("/tree")));
+        REQUIRE(qerr.isOk());
+        s = waitAsking(log, worker);
+        auto [queued, uerr] = worker.add(Kind::Remove, view(onB("/tree")), StringView());
+        REQUIRE(uerr.isOk());
+        worker.status(s);
+        CHECK(s.waiting == 1);
+        worker.cancel(queued);
+        worker.status(s);
+        CHECK(s.waiting == 0);
+        worker.cancel(asks);
+        d = waitDone(log, worker);
+        CHECK(d.job == asks);
+        CHECK(d.err == Error::Interrupted);
+        CHECK(exists(onB("/tree"))); // the removal never ran
+
+        // A move across filesystems, one within, and a path not there: the others done.
+        mkdir(at("/to"));
+        put(at("/one.txt"), "1");
+        const std::string moves = at("/tree") + "\n" + at("/one.txt") + "\n" + at("/missing");
+        auto [moved, merr] = worker.add(Kind::Move, view(moves), view(at("/to")));
+        REQUIRE(merr.isOk());
+        d = waitDone(log, worker);
+        CHECK(d.job == moved);
+        CHECK(d.err == Error::NotExist);
+        CHECK(d.failures == 1);
+        CHECK(d.failed.view() == view(at("/missing")));
+        CHECK(read(at("/to/one.txt")) == "1");
+        CHECK(read(at("/to/tree/a.txt")) == "a");
+        CHECK(!exists(at("/tree")));
+        auto [across, xerr] = worker.add(Kind::Move, view(at("/to/tree")), view(b));
+        REQUIRE(xerr.isOk());
+        s = waitAsking(log, worker); // b's tree is there
+        worker.answer(Resolution::Replace, true);
+        d = waitDone(log, worker);
+        CHECK(d.err.isOk());
+        CHECK(!exists(at("/to/tree")));
+
+        // Removed, then nothing left running.
+        auto [removed, rerr] = worker.add(Kind::Remove, view(onB("/tree")), StringView());
+        REQUIRE(rerr.isOk());
+        d = waitDone(log, worker);
+        CHECK(d.job == removed);
+        CHECK(d.err.isOk());
+        CHECK(!exists(onB("/tree")));
+        CHECK(log.waitFor([&] { return !worker.isBusy(); }));
+        worker.reap();
 }

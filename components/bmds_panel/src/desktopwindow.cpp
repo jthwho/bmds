@@ -9,7 +9,6 @@
  * devplan/filebrowser.md §4g).
  */
 
-#include <cstring>
 #include <bmds/memory.h>
 
 #include "desktopwindow.h"
@@ -75,7 +74,7 @@ Error DesktopWindow::setItems(Span<const StringView> names, Span<const IconGrid:
         return err.isError() ? err : placed;
 }
 
-void DesktopWindow::setItemIcon(size_t item, const Icon *icon) {
+void DesktopWindow::setItemIcon(size_t item, const Icon *icon, bool dimmed) {
         if (item >= _icons.size()) return;
         OwnedIcon &o = _icons[item];
         Memory::free(o.pixels);
@@ -84,8 +83,10 @@ void DesktopWindow::setItemIcon(size_t item, const Icon *icon) {
                 const size_t n = size_t(icon->width) * icon->height;
                 o.pixels = static_cast<uint32_t *>(Memory::alloc(MemSpace::Psram, n * sizeof(uint32_t)));
                 if (o.pixels != nullptr) {
-                        std::memcpy(o.pixels, icon->pixels, n * sizeof(uint32_t));
+                        for (size_t i = 0; i < n; ++i)
+                                o.pixels[i] = dimmed ? halfAlpha(icon->pixels[i]) : icon->pixels[i];
                         o.icon = Icon{icon->width, icon->height, o.pixels};
+                        o.dimmed = dimmed;
                 }
         }
         _model.setIcons(item, nullptr, o.pixels != nullptr ? &o.icon : nullptr);

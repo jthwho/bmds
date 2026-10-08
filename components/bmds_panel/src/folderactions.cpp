@@ -14,7 +14,6 @@
 #include <bmds/clipboard.h>
 #include <bmds/fdtable.h>
 #include <bmds/fileformat.h>
-#include <bmds/filenames.h>
 #include <bmds/guiclipboard.h>
 #include <bmds/inireader.h>
 #include <bmds/memory.h>
@@ -30,14 +29,6 @@ BMDS_NAMESPACE_BEGIN
 namespace {
 
         constexpr StringView DesktopSuffix(".desktop");
-        constexpr StringView UriList("text/uri-list");
-
-        // A paste keeps both when a name is taken: the copy under a copy's name (files.md F1).
-        struct KeepBoth final : FileOps::Progress {
-                        FileOps::Resolution conflict(StringView, StringView, bool) override {
-                                return FileOps::Resolution::KeepBoth;
-                        }
-        };
 
         // @p path's file, read whole up to @p max bytes into @p out (PSRAM). @return The bytes.
         size_t readFile(StringView path, const Vfs::Context &vc, char *out, size_t max) {
@@ -206,97 +197,145 @@ bool FolderActions::openWith(StringView id, StringView file) {
         return false;
 }
 
-// ---- The clipboard (devplan/clipboard.md §4f)
+// ---- The clipboard (devplan/clipboard.md §4f, devplan/filebrowser.md §4j)
 
 void FolderActions::copy(StringView paths) {
-        GuiClipboard *clipboard = _app.clipboard();
-        if (clipboard == nullptr || paths.isEmpty()) return;
-        if (_copied.assign(paths).isError()) return;
-        clipboard->setName("panel");
-        const StringView types[] = {UriList, ClipboardType::Text};
-        if (clipboard->copy(Clipboard::Selection::Clipboard, Span<const StringView>(types), render, this).isError())
-                say("panel: can't copy\n");
+        offer(paths, false);
         return;
 }
 
-// The paths copied as text, one a line; as a URI list, file:// and each path, %XX for what a URI
-// can't hold as it is (RFC 3986's unreserved and /).
-Error FolderActions::render(void *arg, StringView type, String &out) {
-        auto            *self = static_cast<FolderActions *>(arg);
-        const StringView paths = self->_copied.view();
-        if (!ClipboardType::equal(type, UriList)) return out.assign(paths);
-        out.clear();
-        Error      err;
-        StringView rest = paths;
-        while (err.isOk() && !rest.isEmpty()) {
-                const size_t     end = rest.indexOf('\n');
-                const StringView path = end == StringView::NPos ? rest : rest.left(end);
-                rest = end == StringView::NPos ? StringView() : rest.mid(end + 1);
-                err = out.append("file://");
-                for (const char ch : path) {
-                        const bool plain = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-                                           (ch >= '0' && ch <= '9') || StringView("-._~/").contains(ch);
-                        if (err.isOk()) err = plain ? out.append(ch) : out.appendf("%%%02X", unsigned(uint8_t(ch)));
-                }
-                if (err.isOk()) err = out.append("\r\n");
+void FolderActions::cut(StringView paths) {
+        offer(paths, true);
+        return;
+}
+
+// @p paths offered as a URI list, GNOME's list (copied or cut) and text, rendered when asked for.
+void FolderActions::offer(StringView paths, bool cut) {
+        GuiClipboard *clipboard = _app.clipboard();
+        if (clipboard == nullptr || paths.isEmpty()) return;
+        const bool wasCut = _copied.isCut();
+        if (_copied.set(paths, cut).isError()) return;
+        clipboard->setName("panel");
+        clipboard->setLost(lost, this);
+        const StringView types[] = {CopiedFiles::UriList, CopiedFiles::GnomeFiles, ClipboardType::Text};
+        if (clipboard->copy(Clipboard::Selection::Clipboard, Span<const StringView>(types), render, this).isError()) {
+                say("panel: can't copy\n");
+                _copied.clear();
         }
-        return err;
+        if (wasCut || _copied.isCut()) _host.cutChanged();
+        return;
+}
+
+Error FolderActions::render(void *arg, StringView type, String &out) {
+        return static_cast<FolderActions *>(arg)->_copied.render(type, out);
+}
+
+// Another program's copy replaced this panel's: nothing is cut now.
+void FolderActions::lost(void *arg, Clipboard::Selection selection) {
+        auto *self = static_cast<FolderActions *>(arg);
+        if (selection != Clipboard::Selection::Clipboard) return;
+        const bool wasCut = self->_copied.isCut();
+        self->_copied.clear();
+        if (wasCut) self->_host.cutChanged();
+        return;
 }
 
 bool FolderActions::canPaste() {
         GuiClipboard *clipboard = _app.clipboard();
-        return clipboard != nullptr && clipboard->canPaste(Clipboard::Selection::Clipboard, UriList);
+        return clipboard != nullptr && (clipboard->canPaste(Clipboard::Selection::Clipboard, CopiedFiles::GnomeFiles) ||
+                                        clipboard->canPaste(Clipboard::Selection::Clipboard, CopiedFiles::UriList));
 }
 
+// GNOME's list when offered (it says whether the files were cut), else a URI list (copied).
 void FolderActions::paste(StringView directory) {
         GuiClipboard *clipboard = _app.clipboard();
         if (clipboard == nullptr || _pasteTo.assign(directory).isError()) return;
-        if (clipboard->paste(Clipboard::Selection::Clipboard, UriList, pasted, this).isError())
+        const StringView type = clipboard->canPaste(Clipboard::Selection::Clipboard, CopiedFiles::GnomeFiles)
+                                        ? CopiedFiles::GnomeFiles
+                                        : CopiedFiles::UriList;
+        if (clipboard->paste(Clipboard::Selection::Clipboard, type, pasted, this).isError())
                 say("panel: can't paste\n");
         return;
 }
 
-// The pasted URI list: each file:// one copied into the folder (a copy's name if its own is taken:
-// devplan/files.md F1), then the folder's views told.
+// The pasted list: copied into the folder on the worker, or, cut, moved (renamed at once when that
+// is all it takes). A cut pasted empties the clipboard: its files are no longer where it says.
 void FolderActions::pasted(void *arg, Error err, StringView type, StringView data) {
-        (void)type;
         auto *self = static_cast<FolderActions *>(arg);
         if (err.isError()) {
                 self->say("panel: paste: ", err.desc(), "\n");
                 return;
         }
-        const StringView   directory = self->_pasteTo.view();
-        const Vfs::Context vc{self->_context.cwd, nullptr};
-        Error              first;
-        char               failed[Vfs::MaxPath + 1] = {};
-        while (!data.isEmpty()) {
-                const size_t end = data.indexOf('\n');
-                StringView   line = (end == StringView::NPos ? data : data.left(end)).trimmed();
-                data = end == StringView::NPos ? StringView() : data.mid(end + 1);
-                if (line.isEmpty() || line.startsWith('#') || !line.startsWith("file://")) continue;
-                line = line.mid(7); // file://HOST/PATH: the path
-                const size_t slash = line.indexOf('/');
-                line = slash == StringView::NPos ? StringView() : line.mid(slash);
-                char path[Vfs::MaxPath + 1];
-                auto [n, derr] = Uri::decode(line, Span<char>(path, sizeof(path)));
-                if (derr.isError() || n == 0) continue;
-                KeepBoth    progress;
-                const Error cerr = FileOps::copy(StringView(path, n), directory, vc, progress);
-                if (cerr.isError() && first.isOk()) {
-                        first = cerr;
-                        std::snprintf(failed, sizeof(failed), "%.*s", int(n), path);
-                }
+        bool   cut = false;
+        String paths(MemSpace::Psram);
+        if (CopiedFiles::parse(type, data, cut, paths).isError()) return;
+        const StringView directory = self->_pasteTo.view();
+        if (!cut) {
+                self->_jobs.copy(paths.view(), directory);
+                return;
         }
-        self->_host.folderChanged(directory);
-        if (first.isError()) {
-                char message[200];
-                std::snprintf(message, sizeof(message), "Can't paste %.120s: %s.", failed, first.desc());
-                self->tell("Paste", StringView(message));
+        if (!self->moveNow(paths.view(), directory)) self->_jobs.move(paths.view(), directory);
+        GuiClipboard *clipboard = self->_app.clipboard();
+        if (clipboard != nullptr) (void)clipboard->clear(Clipboard::Selection::Clipboard); // if still this panel's
+        if (self->_copied.isCut()) {
+                self->_copied.clear();
+                self->_host.cutChanged();
         }
         return;
 }
 
+// @p paths moved into @p directory now, on the loop, if each is a rename to a free name (the same
+// filesystem). @return False, with nothing moved, if any isn't: the worker moves them, asking.
+bool FolderActions::moveNow(StringView paths, StringView directory) {
+        const Vfs::Context vc{_context.cwd, nullptr};
+        auto [into, ierr] = Vfs::stat(directory, vc);
+        if (ierr.isError() || !into.isDirectory()) return false;
+        String     to(MemSpace::Psram);
+        StringView rest = paths;
+        while (!rest.isEmpty()) {
+                const size_t     end = rest.indexOf('\n');
+                const StringView path = end == StringView::NPos ? rest : rest.left(end);
+                rest = end == StringView::NPos ? StringView() : rest.mid(end + 1);
+                if (path.isEmpty()) continue;
+                auto [info, lerr] = Vfs::lstat(path, vc);
+                if (lerr.isError() || info.device != into.device) return false;
+                if (to.assign(directory).isError()) return false;
+                if (!directory.endsWith('/') && to.append('/').isError()) return false;
+                if (to.append(FileOps::baseName(path)).isError()) return false;
+                if (to.view() != path && Vfs::lstat(to.view(), vc).isOk()) return false; // taken: asked
+        }
+        FileOps::Progress quiet; // nothing taken, nothing to ask
+        Error             first;
+        char              failed[Vfs::MaxPath + 1] = {};
+        rest = paths;
+        while (!rest.isEmpty()) {
+                const size_t     end = rest.indexOf('\n');
+                const StringView path = end == StringView::NPos ? rest : rest.left(end);
+                rest = end == StringView::NPos ? StringView() : rest.mid(end + 1);
+                if (path.isEmpty()) continue;
+                const Error err = FileOps::move(path, directory, vc, quiet);
+                if (err.isError() && first.isOk()) {
+                        first = err;
+                        std::snprintf(failed, sizeof(failed), "%.*s", int(path.size()), path.data());
+                }
+                const StringView folder = path.left(path.lastIndexOf('/') > 0 ? path.lastIndexOf('/') : 1);
+                _host.folderChanged(folder);
+        }
+        _host.folderChanged(directory);
+        if (first.isError()) {
+                char message[200];
+                std::snprintf(message, sizeof(message), "Can't move %.120s: %s.", failed, first.desc());
+                tell("Move", StringView(message));
+        }
+        return true;
+}
+
 // ---- Files
+
+void FolderActions::removeForGood(StringView paths) {
+        _jobs.removeAsking(paths);
+        return;
+}
 
 void FolderActions::trash(StringView paths) {
         // To their filesystems' trash (devplan/files.md F8): `trash -r` brings them back.

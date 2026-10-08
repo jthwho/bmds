@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
+#include <bmds/copiedfiles.h>
 #include <bmds/foldermodel.h>
 #include <bmds/itemmodel.h>
 
@@ -21,7 +22,7 @@ BMDS_NAMESPACE_BEGIN
 /**
  * @brief A folder window's items (`devplan/filebrowser.md` §4h): a
  *        `FolderModel` as the views' `ItemModel`, with each type's icon and the
- *        columns Name, Size, Type and Modified.
+ *        columns Name, Size, Type and Modified; a cut item's icon dimmed (§4j).
  *
  * @par Thread Safety
  * The panel's loop.
@@ -37,7 +38,8 @@ class FolderItems final : public ItemModel {
                         Columns,
                 };
 
-                explicit FolderItems(FileIcons &icons) : _icons(icons) {}
+                /** @brief Items with @p icons, those among @p copied's cut ones dimmed. */
+                FolderItems(FileIcons &icons, const CopiedFiles &copied) : _icons(icons), _copied(copied) {}
 
                 /** @brief Returns the folder. */
                 FolderModel &folder() { return _folder; }
@@ -68,8 +70,9 @@ class FolderItems final : public ItemModel {
                 uint16_t    columnWidth(size_t column) const override;
 
         private:
-                FolderModel _folder;
-                FileIcons  &_icons;
+                FolderModel        _folder;
+                FileIcons         &_icons;
+                const CopiedFiles &_copied;
 };
 
 BMDS_NAMESPACE_END

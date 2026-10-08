@@ -404,6 +404,66 @@ class Button : public Widget {
 };
 
 /**
+ * @brief A check box: a sunken white box, ticked or not, and text after it
+ *        (`devplan/filebrowser.md` §4j).
+ *
+ * A `&` in its text marks its key, as a button's. A click, Space or its key
+ * (Alt and the letter) toggles it, told to `Toggled`. It takes the focus,
+ * shown by a ring around its text while its window is active.
+ *
+ * @par Thread Safety
+ * As `Widget`.
+ */
+class CheckBox : public Widget {
+        public:
+                /** @brief Told it was toggled by the user (on the loop's thread). */
+                using Toggled = void (*)(void *arg, CheckBox &box);
+
+                static constexpr size_t   MaxText = 63;
+                static constexpr uint16_t BoxSide = 13; ///< The box, its bevel included.
+
+                CheckBox(Widget *parent, StringView text = StringView());
+
+                /** @brief Sets the text (`&` marking its key; cut at `MaxText` bytes on a character). */
+                void setText(StringView text);
+
+                /** @brief Returns the text shown (its `&` marks taken out). */
+                StringView text() const { return StringView(_text); }
+
+                /** @brief Ticks it or not (not told to `Toggled`). */
+                void setChecked(bool checked);
+
+                /** @brief Returns true if ticked. */
+                bool isChecked() const { return _checked; }
+
+                /** @brief Has @p fn told when the user toggles it. */
+                void setToggled(Toggled fn, void *arg) {
+                        _toggled = fn;
+                        _toggledArg = arg;
+                        return;
+                }
+
+                GuiSize  sizeHint() const override;
+                void     paint(Painter &painter) override;
+                void     mousePressed(const WindowManager::MouseEvent &event) override;
+                void     mouseReleased(const WindowManager::MouseEvent &event) override;
+                bool     keyPressed(const KeyEvent &event) override;
+                uint32_t mnemonic() const override { return _key; }
+                void     mnemonicActivated() override;
+
+        private:
+                void toggle();
+
+                char     _text[MaxText + 1] = {};
+                size_t   _underline = Mnemonic::None;
+                uint32_t _key = 0;
+                Toggled  _toggled = nullptr;
+                void    *_toggledArg = nullptr;
+                bool     _checked = false;
+                bool     _down = false; // the left button pressed on it
+};
+
+/**
  * @brief Lays its children out in a row or a column (`LineLayout`): each its
  *        hint, stretching ones sharing the rest; the gaps in the face's color.
  *

@@ -41,4 +41,9 @@ constexpr uint32_t blendOver(uint32_t argb, uint32_t rgb) {
         return out;
 }
 
+/** @brief Returns @p argb with its alpha halved: a pixel of an icon drawn dimmed (a cut file's). */
+constexpr uint32_t halfAlpha(uint32_t argb) {
+        return ((argb >> 25) << 24) | (argb & 0xffffff);
+}
+
 BMDS_NAMESPACE_END

@@ -111,6 +111,8 @@ class FolderWindow final : public GuiWindow {
                         ChooseHome,
                         ChooseDesktop,
                         ChooseAbout,
+                        ChooseCut,
+                        ChooseDeleteForGood,
                 };
 
                 FolderWindow(GuiApplication &app, const Config &config, FolderWindowHost &host);
@@ -141,6 +143,9 @@ class FolderWindow final : public GuiWindow {
                  *        done), its row in the tree for entries.
                  */
                 void watchedChanged(StringView folder, uint8_t changes);
+
+                /** @brief Its items' icons drawn again: the files cut changed, or icons were loaded. */
+                void redrawIcons();
 
                 /** @brief `files/show-hidden` or the theme changed: read again, icons found again. */
                 void settingsChanged();
@@ -226,8 +231,8 @@ class FolderWindow final : public GuiWindow {
                 NavigationHistory    _history;
                 MenuBar             *_bar = nullptr;
                 ToolBar             *_tools = nullptr;
-                Button              *_toolButtons[8] = {}; // those with icons, with _toolIcons' names
-                const char          *_toolIcons[8] = {};
+                Button              *_toolButtons[10] = {}; // those with icons, with _toolIcons' names
+                const char          *_toolIcons[10] = {};
                 Button              *_back = nullptr;
                 Button              *_forward = nullptr;
                 Button              *_up = nullptr;

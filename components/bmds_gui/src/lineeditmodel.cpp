@@ -161,7 +161,7 @@ size_t TextWrap::wrap(StringView text, uint16_t columns, Span<StringView> lines)
                 }
                 size_t cut = end;
                 if (!broke && end < text.size() && text[end] != ' ' && lastSpace > start) cut = lastSpace;
-                if (cut == start) cut = end > start ? end : start + 1; // a lone wide character too wide
+                if (cut == start && !broke) cut = end > start ? end : start + 1; // a lone wide character too wide
                 size_t trimmed = cut;
                 while (trimmed > start && text[trimmed - 1] == ' ') --trimmed;
                 lines[count++] = text.mid(start, trimmed - start);

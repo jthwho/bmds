@@ -34,7 +34,7 @@ namespace {
         constexpr uint8_t F4 = HidKey::F1 + 3, F5 = HidKey::F1 + 4;
         constexpr uint8_t KeyC = HidKey::A + ('c' - 'a'), KeyD = HidKey::A + ('d' - 'a');
         constexpr uint8_t KeyL = HidKey::A + ('l' - 'a'), KeyV = HidKey::A + ('v' - 'a');
-        constexpr uint8_t KeyW = HidKey::A + ('w' - 'a');
+        constexpr uint8_t KeyW = HidKey::A + ('w' - 'a'), KeyX = HidKey::A + ('x' - 'a');
 
         bool lessBytes(StringView a, StringView b) {
                 const size_t n = a.size() < b.size() ? a.size() : b.size();
@@ -42,27 +42,12 @@ namespace {
                 return c < 0 || (c == 0 && a.size() < b.size());
         }
 
-        // @p bytes as a person reads them: bytes, KB, MB or GB, whole.
-        void formatBytes(uint64_t bytes, char *out, size_t size) {
-                const auto v = static_cast<unsigned long long>(bytes);
-                if (bytes < 1024) {
-                        std::snprintf(out, size, "%llu bytes", v);
-                } else if (bytes < 10ull * 1024 * 1024) {
-                        std::snprintf(out, size, "%llu KB", (v + 1023) / 1024);
-                } else if (bytes < 10ull * 1024 * 1024 * 1024) {
-                        std::snprintf(out, size, "%llu MB", (v + (1 << 20) - 1) >> 20);
-                } else {
-                        std::snprintf(out, size, "%llu GB", (v + (1ull << 30) - 1) >> 30);
-                }
-                return;
-        }
-
 } // namespace
 
 // ---- The window
 
 FolderWindow::FolderWindow(GuiApplication &app, const Config &config, FolderWindowHost &host)
-    : GuiWindow(app, config), _host(host), _items(host.fileIcons()) {}
+    : GuiWindow(app, config), _host(host), _items(host.fileIcons(), host.folderActions().copied()) {}
 
 FolderWindow::~FolderWindow() {
         stopReading();
@@ -100,6 +85,7 @@ Error FolderWindow::build() {
                 {"go-next", "Forward", ChooseForward},
                 {"go-up", "Up", ChooseUp},
                 {nullptr, nullptr, ChooseOpen},
+                {"edit-cut", "Cut", ChooseCut},
                 {"edit-copy", "Copy", ChooseCopy},
                 {"edit-paste", "Paste", ChoosePaste},
                 {"edit-delete", "Delete", ChooseDelete},
@@ -312,6 +298,11 @@ void FolderWindow::refresh() {
 }
 
 // ---- Changes from elsewhere (devplan/filebrowser.md §4i)
+
+void FolderWindow::redrawIcons() {
+        view().update();
+        return;
+}
 
 void FolderWindow::watchedChanged(StringView folder, uint8_t changes) {
         if (folder == path()) {
@@ -670,14 +661,19 @@ void FolderWindow::viewRename(void *arg, ItemView &view, size_t row) {
         return;
 }
 
-// Keys a view offers first: Delete, Ctrl+C and V, Backspace.
+// Keys a view offers first: Delete (Shift: for good), Ctrl+X, C and V, Backspace.
 bool FolderWindow::viewKey(void *arg, ItemView &view, const KeyEvent &event) {
         (void)view;
         auto      *self = static_cast<FolderWindow *>(arg);
         const bool plain = !event.hasCtrl() && !event.hasAlt() && !event.hasShift();
         const bool ctrl = event.hasCtrl() && !event.hasAlt() && !event.hasShift();
+        const bool shift = event.hasShift() && !event.hasCtrl() && !event.hasAlt();
         if (plain && event.usage == HidKey::Delete) {
                 self->choose(ChooseDelete);
+        } else if (shift && event.usage == HidKey::Delete) {
+                self->choose(ChooseDeleteForGood);
+        } else if (ctrl && event.usage == KeyX) {
+                self->choose(ChooseCut);
         } else if (ctrl && event.usage == KeyC) {
                 self->choose(ChooseCopy);
         } else if (ctrl && event.usage == KeyV) {
@@ -814,9 +810,19 @@ void FolderWindow::choose(int choice) {
                                 startRename(size_t(v.current()), _items.folder().name(size_t(v.current())));
                         break;
                 case ChooseClose: closeWindow(); break;
+                case ChooseDeleteForGood:
+                        selectedPaths(paths);
+                        if (!paths.isEmpty()) actions.removeForGood(paths.view());
+                        break;
+                case ChooseCut:
                 case ChooseCopy:
                         selectedPaths(paths);
-                        if (!paths.isEmpty()) actions.copy(paths.view());
+                        if (paths.isEmpty()) break;
+                        if (choice == ChooseCut) {
+                                actions.cut(paths.view());
+                        } else {
+                                actions.copy(paths.view());
+                        }
                         break;
                 case ChoosePaste: actions.paste(path()); break;
                 case ChooseSelectAll:
@@ -1059,6 +1065,7 @@ void FolderMenus::fill(Menu &menu, FolderWindow &w) {
                 (void)menu.addSeparator();
                 (void)menu.addItem("&Close", W::ChooseClose, 0, "Ctrl+W");
         } else if (&menu == &_edit) {
+                (void)menu.addItem("Cu&t", W::ChooseCut, needOne, "Ctrl+X");
                 (void)menu.addItem("&Copy", W::ChooseCopy, needOne, "Ctrl+C");
                 (void)menu.addItem("&Paste", W::ChoosePaste, paste, "Ctrl+V");
                 (void)menu.addSeparator();
@@ -1085,6 +1092,7 @@ void FolderMenus::fill(Menu &menu, FolderWindow &w) {
                 (void)menu.addItem("&Open", W::ChooseOpen);
                 (void)menu.addItem("Open in New &Window", W::ChooseOpenNew, w.folderSelected() ? 0 : Off);
                 (void)menu.addSeparator();
+                (void)menu.addItem("Cu&t", W::ChooseCut);
                 (void)menu.addItem("&Copy", W::ChooseCopy);
                 (void)menu.addSeparator();
                 (void)menu.addItem("&Delete", W::ChooseDelete);

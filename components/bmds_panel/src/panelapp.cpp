@@ -263,12 +263,15 @@ namespace {
         class PanelApp final : public FolderWindowHost {
                 public:
                         explicit PanelApp(const BuiltinProgram::Context &context)
-                            : _context(context), _fileIcons(_app.icons()), _actions(_app, context, *this) {}
+                            : _context(context), _fileIcons(_app.icons()), _actions(_app, context, *this) {
+                                _fileIcons.setAsked(iconsAsked, this);
+                        }
                         ~PanelApp();
 
                         // The folder windows' host (devplan/filebrowser.md §4h).
                         void                 openFolder(StringView path, StringView select) override;
                         void                 folderChanged(StringView folder) override;
+                        void                 cutChanged() override;
                         FolderActions       &folderActions() override { return _actions; }
                         FileIcons           &fileIcons() override { return _fileIcons; }
                         FolderWatches       &folderWatches() override { return _watches; }
@@ -312,6 +315,8 @@ namespace {
                         static void  filesMessage(void *arg, ByteSpan message);
                         static void  filesSettingsChanged(void *arg, SysConf::Id id);
                         static void  reapFolders(void *arg);
+                        static void  iconsAsked(void *arg);
+                        static void  iconsDue(void *arg);
                         static void  watchNotify(void *arg);
                         static void  watchesDue(void *arg);
                         static void  watchesTick(void *arg);
@@ -330,6 +335,7 @@ namespace {
                         bool        loadDesktop();
                         void        readPlaces(Span<IconGrid::Cell> wanted);
                         bool        findDesktopIcons();
+                        const Icon *desktopIcon(const Entry &entry);
                         void        freeLauncher();
                         void        reloadLauncher();
                         void        buildMenu(size_t submenuAfter);
@@ -352,7 +358,7 @@ namespace {
                         BoxLayout                     *_row = nullptr;
                         WindowList                    *_windows = nullptr;
                         Menu                          *_menu = nullptr;
-                        Menu                          *_iconMenu = nullptr;    // an icon's: Open, Copy, Delete
+                        Menu                          *_iconMenu = nullptr;    // an icon's: Open, Cut, Copy, Delete
                         Menu    *_desktopMenu = nullptr; // the desktop's: Applications, New, Paste
                         Menu    *_newMenu = nullptr;     // its New submenu
                         uint16_t _menuX = 0;             // where it was opened
@@ -379,6 +385,7 @@ namespace {
                         FolderActions                  _actions;
                         FolderWatches                  _watches{watchNotify, this}; // the views' and desktop's
                         std::atomic<bool>              _watchPosted{false};         // watchesDue() on its way
+                        std::atomic<bool>              _iconsPosted{false};         // iconsDue() on its way
                         int                            _watchTimer = -1;            // the changes to take
                         bool                           _mountsTold = false;         // by this take
                         FolderSettings                 _folderSettings;
@@ -951,6 +958,7 @@ namespace {
                         self->_iconMenu = ::new (mem) Menu(self->_app);
                         self->_iconMenu->setTriggered(iconChosen, self);
                         (void)self->_iconMenu->addItem("&Open", 0);
+                        (void)self->_iconMenu->addItem("Cu&t", 4);
                         (void)self->_iconMenu->addItem("&Copy", 1);
                         (void)self->_iconMenu->addItem("Re&name", 3);
                         (void)self->_iconMenu->addSeparator();
@@ -961,8 +969,9 @@ namespace {
                 return;
         }
 
-        // Open starts it; Copy puts its file on the clipboard (devplan/clipboard.md §4f): a URI list
-        // and its path, rendered when asked for.
+        // Open starts it; Cut and Copy put its file on the clipboard (devplan/clipboard.md §4f,
+        // filebrowser.md §4j), rendered when asked for; Delete trashes it, 5 (Shift+Delete) deletes it
+        // for good once asked.
         void PanelApp::iconChosen(void *arg, int choice) {
                 auto *self = static_cast<PanelApp *>(arg);
                 if (self->_iconItem >= self->_desktopCount) return;
@@ -970,14 +979,14 @@ namespace {
                         renameAsked(self, self->_iconItem);
                         return;
                 }
-                // Open, Copy and Delete act on every icon selected (the one asked for is).
+                // Open, Cut, Copy and Delete act on every icon selected (the one asked for is).
                 if (choice == 0) {
                         for (int i = self->_desktop->nextSelected(0); i >= 0;
                              i = self->_desktop->nextSelected(size_t(i) + 1))
                                 if (size_t(i) < self->_desktopCount) self->open(self->_desktopEntries[i]);
                         return;
                 }
-                // Copy and Delete: the selected icons' paths, a line each.
+                // The others: the selected icons' paths, a line each.
                 String paths(MemSpace::Psram);
                 for (int i = self->_desktop->nextSelected(0); i >= 0; i = self->_desktop->nextSelected(size_t(i) + 1)) {
                         const PanelEntry &e = self->_desktopEntries[i];
@@ -991,6 +1000,10 @@ namespace {
                         self->_actions.trash(paths.view());
                 } else if (choice == 1) {
                         self->_actions.copy(paths.view());
+                } else if (choice == 4) {
+                        self->_actions.cut(paths.view());
+                } else if (choice == 5) {
+                        self->_actions.removeForGood(paths.view());
                 }
                 return;
         }
@@ -1084,22 +1097,21 @@ namespace {
                 return;
         }
 
-        // A key the desktop leaves (gui.md §4r): Delete trashes the selected icon, Ctrl+C copies it,
-        // Ctrl+V pastes.
+        // A key the desktop leaves (gui.md §4r): Delete trashes the selected icons (Shift+Delete
+        // deletes them for good, asking), Ctrl+X cuts them, Ctrl+C copies them, Ctrl+V pastes.
         bool PanelApp::desktopKey(void *arg, const KeyEvent &event, int selected) {
                 auto             *self = static_cast<PanelApp *>(arg);
-                constexpr uint8_t C = HidKey::A + ('c' - 'a'), V = HidKey::A + ('v' - 'a');
+                constexpr uint8_t C = HidKey::A + ('c' - 'a'), V = HidKey::A + ('v' - 'a'), X = HidKey::A + ('x' - 'a');
                 const bool        ctrl = event.hasCtrl() && !event.hasAlt();
-                if (event.usage == HidKey::Delete && !event.hasCtrl() && !event.hasAlt()) {
+                int               choice = -1;
+                if (event.usage == HidKey::Delete && !event.hasCtrl() && !event.hasAlt())
+                        choice = event.hasShift() ? 5 : 2;
+                if (ctrl && event.usage == C) choice = 1;
+                if (ctrl && event.usage == X) choice = 4;
+                if (choice >= 0) {
                         if (selected < 0) return true;
                         self->_iconItem = size_t(selected);
-                        iconChosen(self, 2);
-                        return true;
-                }
-                if (ctrl && event.usage == C) {
-                        if (selected < 0) return true;
-                        self->_iconItem = size_t(selected);
-                        iconChosen(self, 1);
+                        iconChosen(self, choice);
                         return true;
                 }
                 if (ctrl && event.usage == V) {
@@ -1195,15 +1207,35 @@ namespace {
                 for (size_t i = 0; i < _desktop->itemCount(); ++i) {
                         if (_desktop->hasItemIcon(i)) continue;
                         const Entry &e = _desktopEntries[i];
-                        const Icon  *icon =
-                                e.isLauncher() ? entryIcon(e, DesktopWindow::IconSide) : fileIcon(StringView(e.type));
+                        const Icon  *icon = desktopIcon(e);
                         if (icon != nullptr) {
-                                _desktop->setItemIcon(i, icon); // a copy: the theme's cache may drop it
+                                // A copy (the theme's cache may drop it), dimmed if cut.
+                                _desktop->setItemIcon(i, icon, _actions.copied().isCut(StringView(e.path)));
                         } else {
                                 all = false;
                         }
                 }
                 return all;
+        }
+
+        const Icon *PanelApp::desktopIcon(const Entry &entry) {
+                return entry.isLauncher() ? entryIcon(entry, DesktopWindow::IconSide)
+                                          : fileIcon(StringView(entry.type));
+        }
+
+        // The files cut changed: the windows redraw their icons; the desktop's are copied again,
+        // dimmed or not (devplan/filebrowser.md §4j).
+        void PanelApp::cutChanged() {
+                for (FolderWindow *w : _folderWindows) w->redrawIcons();
+                if (_desktop == nullptr) return;
+                for (size_t i = 0; i < _desktop->itemCount() && i < _desktopCount; ++i) {
+                        const Entry &e = _desktopEntries[i];
+                        const bool   dim = _actions.copied().isCut(StringView(e.path));
+                        if (!_desktop->hasItemIcon(i) || dim == _desktop->isItemDimmed(i)) continue;
+                        const Icon *icon = desktopIcon(e);
+                        if (icon != nullptr) _desktop->setItemIcon(i, icon, dim);
+                }
+                return;
         }
 
         void PanelApp::windowsChanged(void *arg) {
@@ -1554,6 +1586,23 @@ namespace {
                 StringView       dirs(_desktopDirs);
                 const StringView desktop = IniReader::nextListItem(dirs);
                 if (!_quietDesktop && folder == desktop) (void)loadDesktop();
+                return;
+        }
+
+        // Icons asked for while drawing (the window manager's task): loaded on the loop, then drawn.
+        void PanelApp::iconsAsked(void *arg) {
+                auto *self = static_cast<PanelApp *>(arg);
+                if (self->_iconsPosted.exchange(true, std::memory_order_acq_rel)) return;
+                if (self->_app.post(iconsDue, self).isError())
+                        self->_iconsPosted.store(false, std::memory_order_release);
+                return;
+        }
+
+        void PanelApp::iconsDue(void *arg) {
+                auto *self = static_cast<PanelApp *>(arg);
+                self->_iconsPosted.store(false, std::memory_order_release);
+                if (!self->_fileIcons.loadAsked()) return;
+                for (FolderWindow *w : self->_folderWindows) w->redrawIcons();
                 return;
         }
 
