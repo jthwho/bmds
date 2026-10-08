@@ -81,6 +81,13 @@ class GuiWindow : public Widget {
                 /** @brief Closes it (it may be shown again). */
                 void close();
 
+                /**
+                 * @brief Moves it (outer) to (@p x, @p y), and `screenRect()` with it: a
+                 *        panel moved to another edge reserves that edge instead.
+                 * @return `Ok`, `InvalidState` (not open, maximized), or the window manager's error.
+                 */
+                Error move(uint16_t x, uint16_t y);
+
                 /** @brief Returns true while open. */
                 bool isShown() const { return _id.load(std::memory_order_acquire) != 0; }
 

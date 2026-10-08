@@ -25,11 +25,11 @@ if(COMMAND idf_component_register)
                                     src/popupedit.cpp
                                     src/widget.cpp
                                INCLUDE_DIRS include
-                               REQUIRES bmds_clipboard bmds_core bmds_fs bmds_input bmds_kernel bmds_loader bmds_ui)
+                               REQUIRES bmds_clipboard bmds_core bmds_fs bmds_input bmds_kernel bmds_loader bmds_sysconf bmds_ui)
         bmds_target_options(${COMPONENT_LIB})
 else()
         add_library(bmds_gui STATIC ${BMDS_GUI_PURE_SRCS})
         target_include_directories(bmds_gui PUBLIC include)
-        target_link_libraries(bmds_gui PUBLIC bmds_core bmds_ui)
+        target_link_libraries(bmds_gui PUBLIC bmds_core bmds_sysconf bmds_ui)
         bmds_target_options(bmds_gui)
 endif()

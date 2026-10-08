@@ -1,4 +1,4 @@
-# System configuration: the registry, `sysconf`, and `/home` (design, 2026-10-07; steps 1-3 built, step 4 designed)
+# System configuration: the registry, `sysconf`, and `/home` (design, 2026-10-07; steps 1-4 built)
 
 ## 1. Goal
 
@@ -256,6 +256,7 @@ one not, `/home` following a card pulled and put back, the palette changing live
   - The clock: `clock/zone` and `clock/tzdata` are applied at boot and on change.
   - **Not the panel yet:** it reads its parameters when it starts, so a change takes effect
     when it starts again. `GuiApplication::watchConfig()` (§5) waits for it, its first user.
+    (Done in step 4c, §12.4c.)
 - **The commands kept their syntax** (until §13 removed these forms):
   - `win start RRGGBB` and `win color ROLE RRGGBB` set `wm/palette/...`.
   - `win color terminal-text RRGGBB` sets `terminal/colors/text`.
@@ -509,6 +510,41 @@ the canonical text forms (§2), at most `BMDS_SYSCONF_VALUE_MAX` (1024) bytes; k
   - `-w wm/palette/desktop` in the background printed the starting value, then the shell's
     `set` and `setdef`, and nothing for `wm/palette/face`.
 - **Size:** the firmware is 913,000 bytes, 3,576 more.
+
+### 12.4c As built: step 3, `watchConfig()` and the panel live (2026-10-07)
+
+- **`GuiApplication::watchConfig(prefix, fn, arg)`:** up to `MaxConfigWatches` (4), each a
+  `SysConf::Watcher` in PSRAM made when asked for.
+  - Its notification sets a flag and wakes the loop, taking no queue slot, so nothing is lost
+    when the queue is full.
+  - The loop, after the queued events, calls `fn(arg, id)` for each id the watcher kept, or
+    `fn(arg, SysConf::NoId)` after an overflow, on its thread with the lock held.
+  - The watches end in the destructor, first, since `stop()` waits for a notification running
+    elsewhere. `bmds_gui` now requires `bmds_sysconf`.
+- **`GuiWindow::move(x, y)`:** moves the window through the window manager and updates
+  `screenRect()` with it. Before, only a press updated it, so a launcher opened by the Windows
+  key after a move would have used the old place. A panel moved to the other edge reserves that
+  edge, since the window manager works the strips out from where panels are.
+- **The panel** watches `panel`. The changes that come together post one `applySettings()`,
+  which applies everything again (they are rare, so not by key):
+  - Open menus close.
+  - `panel/edge` moves the bar.
+  - A new `panel/icon-theme` replaces the theme and drops the New submenu, which holds its
+    icons.
+  - The launcher's entries are read again (`panel/launcher/applications`, `submenus`).
+  - The row's items are destroyed and built again from `panel/items` and their keys, and the
+    window list is filled.
+  - `panel/desktop/menu` turns the desktop's menu on or off.
+  - After a move or a theme change, the desktop's icons are laid out in the new work area with
+    the new theme's icons.
+- **On the board:**
+  - With a terminal open, `panel/edge bottom`, `panel/items 'launcher;spacer;windows;clock'`, a
+    launcher label and a clock format with seconds took effect at once. The bar moved to the
+    bottom with its new row, and the desktop's icon moved into the new work area.
+  - `panel/icon-theme glyphs` changed the launcher's, the menu's and the desktop's icons. The
+    Windows key opened the launcher just above the bar at the bottom.
+  - Every `setdef` put it back at the top as it was.
+- **Size:** the firmware is 914,528 bytes, 1,528 more.
 
 ### 12.5 Decided (the user's, 2026-10-07)
 

@@ -284,6 +284,9 @@ namespace {
 
                         void        say(const char *a, const char *b = "", const char *c = "", const char *d = "");
                         StringView  setting(const Config::Param &param);
+                        static void settingsChanged(void *arg, SysConf::Id id);
+                        static void settingsDue(void *arg);
+                        void        applySettings();
                         void        loadEntries(StringView directories);
                         bool        loadDesktop();
                         void        readPlaces(Span<IconGrid::Cell> wanted);
@@ -335,6 +338,8 @@ namespace {
                         bool                           _incomplete = false; // a directory of entries wasn't there
                         Menu                          *_submenus[MaxCategories] = {};
                         String                         _setting; // setting()'s last value
+                        char                           _theme[64] = {};          // panel/icon-theme, as applied
+                        bool                           _settingsPending = false; // applySettings() posted
                         Entry                         *_entries = nullptr;
                         size_t                         _entryCount = 0;
                         Rect                           _screen;
@@ -1497,7 +1502,8 @@ namespace {
                 _bottom = setting(bmdsConf_panelEdge) == "bottom";
                 // The icon theme (a directory under /sd0/p0/share/icons).
                 const StringView theme = setting(bmdsConf_panelIconTheme);
-                if (!theme.isEmpty()) _app.icons().setTheme(theme);
+                std::snprintf(_theme, sizeof(_theme), "%.*s", int(theme.size()), theme.data());
+                if (_theme[0] != '\0') _app.icons().setTheme(StringView(_theme));
                 const StringView apps = setting(bmdsConf_panelLauncherApplications);
                 std::snprintf(_applications, sizeof(_applications), "%.*s", int(apps.size()), apps.data());
                 _submenuAfter = static_cast<size_t>(intSetting(bmdsConf_panelLauncherSubmenus));
@@ -1512,6 +1518,9 @@ namespace {
                         say("panel: ", err.desc(), "\n");
                         return 1;
                 }
+                // Its settings followed while it runs (devplan/sysconf.md §12.3).
+                if (_app.watchConfig("panel", settingsChanged, this).isError())
+                        say("panel: its settings take effect when it starts again\n");
                 return _app.exec();
         }
 
@@ -1587,6 +1596,71 @@ namespace {
                         if (terr.isOk()) _iconTimer = timer;
                 }
                 return err;
+        }
+
+        // A panel/... parameter changed (the loop's thread): the settings applied once for the changes
+        // that came together, after them.
+        void PanelApp::settingsChanged(void *arg, SysConf::Id) {
+                auto *self = static_cast<PanelApp *>(arg);
+                if (self->_settingsPending) return;
+                self->_settingsPending = self->_app.post(settingsDue, self).isOk();
+                if (!self->_settingsPending) self->applySettings(); // the queue is full: now
+                return;
+        }
+
+        void PanelApp::settingsDue(void *arg) {
+                static_cast<PanelApp *>(arg)->applySettings();
+                return;
+        }
+
+        // Every setting applied again: the edge, the icon theme, the launcher's entries, the row of
+        // items and the desktop's menu. Rare, so all of it rather than by key.
+        void PanelApp::applySettings() {
+                _settingsPending = false;
+                // Menus open on the old settings close: their items are made again.
+                for (Menu *m : {_menu, _desktopMenu, _iconMenu, _newMenu})
+                        if (m != nullptr && m->isShown()) m->dismiss();
+                _launcher = nullptr;
+                const bool bottom = setting(bmdsConf_panelEdge) == "bottom";
+                const bool moved = bottom != _bottom;
+                if (moved) {
+                        _bottom = bottom;
+                        (void)_panel->move(0, static_cast<uint16_t>(bottom ? _screen.height - Height : 0));
+                }
+                // A new theme drops the old one's icons: whatever holds them is made again.
+                const StringView theme = setting(bmdsConf_panelIconTheme);
+                const bool       themed = theme != StringView(_theme);
+                if (themed) {
+                        std::snprintf(_theme, sizeof(_theme), "%.*s", int(theme.size()), theme.data());
+                        _app.icons().setTheme(StringView(_theme));
+                        if (_newMenu != nullptr) {
+                                _newMenu->~Menu();
+                                Memory::free(_newMenu);
+                                _newMenu = nullptr;
+                        }
+                }
+                const StringView apps = setting(bmdsConf_panelLauncherApplications);
+                std::snprintf(_applications, sizeof(_applications), "%.*s", int(apps.size()), apps.data());
+                _submenuAfter = static_cast<size_t>(intSetting(bmdsConf_panelLauncherSubmenus));
+                reloadLauncher();
+                // The row: its items made again from panel/items and theirs.
+                while (Widget *w = _row->firstChild()) w->destroy();
+                _launcherButton = nullptr;
+                _windows = nullptr;
+                if (buildItems(_row).isError()) say("panel: out of memory for its items\n");
+                _row->relayout();
+                windowsChanged(this);
+                if (_desktop != nullptr) {
+                        const Result<bool> asked = SysConf::getBool(bmdsConf_panelDesktopMenu.key);
+                        _desktop->setMenuAsked(!asked.isOk() || asked.value() ? desktopMenu : nullptr, this);
+                        // In the new work area, with the new theme's icons.
+                        if ((moved || themed) && !loadDesktop() && _iconTimer < 0) {
+                                _iconTries = 0;
+                                auto [timer, terr] = _app.startTimer(IconRetryMs, true, desktopIconsTick, this);
+                                if (terr.isOk()) _iconTimer = timer;
+                        }
+                }
+                return;
         }
 
         int panelMain(const BuiltinProgram::Context &context) {

@@ -19,6 +19,8 @@
 #include <bmds/result.h>
 #include <bmds/semaphore.h>
 #include <bmds/spinlock.h>
+#include <bmds/stringview.h>
+#include <bmds/sysconf.h>
 #include <bmds/windowmanager.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -115,6 +117,25 @@ class GuiApplication {
                  */
                 Error setWindowsChanged(Callback fn, void *arg);
 
+                /**
+                 * @brief Told on the loop's thread that system configuration
+                 *        parameter @p id changed, or `SysConf::NoId`: more changed than
+                 *        were kept, so anything under the prefix may have.
+                 */
+                using ConfigChanged = void (*)(void *arg, SysConf::Id id);
+
+                /** @brief Configuration watches at once. */
+                static constexpr size_t MaxConfigWatches = 4;
+
+                /**
+                 * @brief Has @p fn told (on the loop's thread, the lock held) of each
+                 *        change to the system configuration under @p prefix ("" all;
+                 *        `devplan/sysconf.md` §12.3). Changes that come together are told
+                 *        together, after the events before them.
+                 * @return `Ok`, `Invalid` (the prefix, a null @p fn), `Full`, `NoMem`.
+                 */
+                Error watchConfig(StringView prefix, ConfigChanged fn, void *arg);
+
                 /** @brief Key claims at once. */
                 static constexpr size_t MaxGrabs = 8;
 
@@ -197,7 +218,17 @@ class GuiApplication {
                                 void           *arg = nullptr;
                 };
 
+                // A watchConfig()'s: PSRAM, made when asked for.
+                struct ConfigWatch {
+                                GuiApplication  *app = nullptr;
+                                ConfigChanged    fn = nullptr;
+                                void            *arg = nullptr;
+                                SysConf::Watcher watcher;
+                };
+
                 static void gone(void *arg);
+                static void configNotified(void *arg);
+                void        runConfig();
                 static void keyGrabbed(void *arg, uint8_t usage);
                 static void watched(void *arg);
                 void        dispatch(const Event &event);
@@ -224,6 +255,8 @@ class GuiApplication {
                 IconTheme         _icons;
                 KeyGrab           _grabs[MaxGrabs];
                 GuiClipboard     *_clipboard = nullptr; // PSRAM, the first time asked for
+                ConfigWatch      *_configWatches[MaxConfigWatches] = {};
+                std::atomic<bool> _configChanged{false}; // a watch has news: runConfig() at the loop
 };
 
 BMDS_NAMESPACE_END

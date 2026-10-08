@@ -101,6 +101,17 @@ void GuiWindow::close() {
         return;
 }
 
+Error GuiWindow::move(uint16_t x, uint16_t y) {
+        const uint8_t id = this->id();
+        if (id == 0) return Error::InvalidState;
+        WindowManager &wm = _app.windowManager();
+        const Error    err = wm.move(id, x, y);
+        if (err.isError()) return err;
+        auto [client, cerr] = wm.clientRect(id);
+        if (cerr.isOk()) _screen = client;
+        return Error::Ok;
+}
+
 void GuiWindow::setFocusWidget(Widget *widget) {
         if (widget == _focus) return;
         if (_focus != nullptr) _focus->update();

@@ -20,6 +20,13 @@
 BMDS_NAMESPACE_BEGIN
 
 GuiApplication::~GuiApplication() {
+        // The watches first: a notification may be running on another task until stop() returns.
+        for (ConfigWatch *&w : _configWatches) {
+                if (w == nullptr) continue;
+                w->~ConfigWatch();
+                Memory::free(w);
+                w = nullptr;
+        }
         if (_clipboard != nullptr) {
                 _clipboard->~GuiClipboard();
                 Memory::free(_clipboard);
@@ -50,6 +57,48 @@ void GuiApplication::watched(void *arg) {
         Event event;
         event.type = Event::Type::Watch;
         static_cast<GuiApplication *>(arg)->queue(event);
+        return;
+}
+
+Error GuiApplication::watchConfig(StringView prefix, ConfigChanged fn, void *arg) {
+        if (fn == nullptr) return Error::Invalid;
+        for (ConfigWatch *&slot : _configWatches) {
+                if (slot != nullptr) continue;
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(ConfigWatch));
+                if (mem == nullptr) return Error::NoMem;
+                auto *w = ::new (mem) ConfigWatch();
+                w->app = this;
+                w->fn = fn;
+                w->arg = arg;
+                const Error err = w->watcher.start(prefix, configNotified, w);
+                if (err.isError()) {
+                        w->~ConfigWatch();
+                        Memory::free(w);
+                        return err;
+                }
+                slot = w;
+                return Error::Ok;
+        }
+        return Error::Full;
+}
+
+// On the task that changed a value: the loop woken (no queue slot, so nothing is lost when it
+// is full).
+void GuiApplication::configNotified(void *arg) {
+        GuiApplication *app = static_cast<ConfigWatch *>(arg)->app;
+        app->_configChanged.store(true, std::memory_order_release);
+        app->_wake.release();
+        return;
+}
+
+// Each watch's changes, to its function (the loop's thread, the lock held).
+void GuiApplication::runConfig() {
+        for (ConfigWatch *w : _configWatches) {
+                if (w == nullptr) continue;
+                SysConf::Id id;
+                while (w->watcher.next(id)) w->fn(w->arg, id);
+                if (w->watcher.overflowed()) w->fn(w->arg, SysConf::NoId);
+        }
         return;
 }
 
@@ -260,6 +309,7 @@ int GuiApplication::exec() {
                                 dispatch(event);
                                 if (_quit.load(std::memory_order_acquire)) break;
                         }
+                        if (_configChanged.exchange(false, std::memory_order_acq_rel)) runConfig();
                         runTimers();
                 }
                 flush();
