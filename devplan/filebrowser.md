@@ -333,6 +333,42 @@ A portable component (built for the host tests too) over `Vfs` and `Trash`, no G
        the focus is a grey fill (the face), not an outline; the focus mark is drawn after the text,
        in the rows above and below it, in the shadow's grey (all four sides show). An icon view's
        outlines are drawn after the names too.
+   - *Then (2026-10-07):*
+     - `/bin`'s programs showed "0 KB": they are empty nodes by design (run, not read; their code
+       is the firmware's). `FolderModel` marks an empty file that `Vfs::builtinProgram()` knows
+       (`builtin`), and views show "Built-in program" and no size. `stat` is unchanged (its
+       attributes reach the SDK).
+     - The outline of a move or resize vanished on white: it is now a light band between two
+       dark lines (seen on any colour; inverting would read the screen back and still vanish on
+       a middle grey).
+     - Dragging desktop icons redrew the whole screen at each motion, and the labels flickered
+       (the screen is drawn on as it shows). A drag now redraws the dragged rows where they were
+       and where they are, and a selection's change only the rows whose look changed (the view
+       remembers the selection as drawn); the drag's offset is kept on 4-pixel columns (text
+       must start on one: misaligned, it was refused, 5 errors in `win stats`). On the board: a
+       round of a drag 1.6 ms and 5 DMA calls, no errors.
+     - The rubber band flickered: each motion redrew its old and new rectangles whole. Now only
+       its edges are redrawn (the rows under it are, as their selection changes). That damage is a
+       pixel wide, off the 4-pixel columns, and a text's copy clipped by it was refused (labels
+       left without their text, `win check` 867 pixels wrong): `WindowManager::invalidate()` now
+       widens a client's damage to 4-pixel columns, as the painters' damage must be, whatever a
+       client asks. On the board: a band swept over two icons, no errors, `win check` clean.
+     - It still flickered, or vanished while it changed size: a race between a window's state and
+       its damage (the application changes the band under its lock and gives the damage after;
+       a round between drew the new band into the old damage). Putting a window's redraw off
+       while it had damage not yet given stopped that, but lagged badly: under a stream of
+       motions there nearly always is some. As the user suggested, the band is now the window
+       manager's, as a move's outline is: `WindowManager::setBand(id, rect)` shows it over the
+       window's client area each round where the window shows (a dark ring and a light one, seen
+       on any colour). It first had what it covered redrawn by damage, as the outline does; that
+       left trails, because the window under it is the one busy with the motions and draws late.
+       Now it is saved and put back as the pointer is: at a round's start what it covered is put
+       back (after the pointer's), the windows draw their damage, then what it will cover is saved
+       and it is drawn, in pieces `Surface::patch()` takes (a row's bytes of its top and bottom;
+       150 rows of its sides). Moving it asks no window to draw. A window's damage is still given
+       in one call (`invalidate(id, rects)`), so a round never takes half of it. On the board: a
+       screenshot after each of six steps, the rings whole and no trail pixel; a sweep over the
+       icons and back, their labels repainted without a ring left on them; `win check` clean.
 4. **Folder windows:** `FolderWindow`, navigation, the menus and keys, window manager services,
    `files`, the launcher's entry, `folders.conf`, `files/*` settings.
 5. **Directory watches** in the VFS (FB14): views, the tree and the desktop follow changes.

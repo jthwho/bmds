@@ -58,6 +58,8 @@ class FolderModel {
                                 FileType  type = FileType::File; ///< A link's: what it leads to (a broken one: `Link`).
                                 uint8_t   attributes = 0;        ///< `FileInfo::Attribute` bits.
                                 bool      link = false;          ///< A symbolic link (`/home`).
+                                bool      builtin =
+                                        false; ///< A program built into the firmware (`/bin`: no size of its own).
 
                                 /** @brief Returns true for folders. */
                                 bool isDirectory() const { return type == FileType::Directory; }

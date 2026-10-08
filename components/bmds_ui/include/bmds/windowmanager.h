@@ -561,6 +561,12 @@ class WindowManager {
                 Error invalidate(uint8_t id, const Rect &rect);
 
                 /**
+                 * @brief Asks window @p id to redraw @p rects of its client area, all in
+                 *        one round (none drawn without the others).
+                 */
+                Error invalidate(uint8_t id, Span<const Rect> rects);
+
+                /**
                  * @brief Asks window @p id's redraw to be called at the next round
                  *        even without damage, its painter clipped to all of its
                  *        client area that shows (a terminal's new rows, a scroll).
@@ -638,6 +644,17 @@ class WindowManager {
 
                 /** @brief Ends a drag: the window raised and moved where its outline is. */
                 Error drop();
+
+                /**
+                 * @brief Shows a rubber band over window @p id's client area at @p rect
+                 *        (client coordinates; empty: none), drawn by the window manager
+                 *        over what the window draws, where it shows: a light line inside
+                 *        a dark one (seen on any colour, as a move's outline). Moving it
+                 *        has what it covered redrawn by whoever shows there. One band at
+                 *        a time: another window's goes.
+                 * @return `Ok`, `NotFound`, or `InvalidState`.
+                 */
+                Error setBand(uint8_t id, const Rect &rect);
 
                 /**
                  * @brief Returns the windows, top first, then the minimized ones
@@ -816,6 +833,10 @@ class WindowManager {
                 void            drawUpdates(); // windows asking for an update and not drawn yet this round
                 void            drawBottomUp(const Rect &rect);
                 void            drawOutline();
+                void            drawBand();
+                void            restoreBand(); // what the band covered put back
+                static void     bandPixels(void *arg, uint8_t *pixels, size_t stride);
+                static void     unbandPixels(void *arg, uint8_t *pixels, size_t stride);
                 void            changed(uint8_t oldFocus); // wakes the task; repaints titles if the focus moved
                 Rect            placed(const Rect &rect) const;
                 void            count(const Painter &painter);
@@ -831,6 +852,15 @@ class WindowManager {
                 uint8_t               _dragId = 0;
                 Rect                  _outline;
                 bool                  _outlineShown = false;
+                uint8_t               _bandId = 0;        // the window a rubber band is over; 0: none
+                Rect                  _band;              // where (screen coordinates)
+                bool                  _bandMoved = false; // to draw this round
+                struct BandPiece {
+                                Rect     rect;       // a piece of its rings, widened to 4-pixel columns
+                                uint32_t offset = 0; // what it covered, in _bandUnder
+                };
+                List<BandPiece>       _bandPieces{MemSpace::Psram}; // drawn, to put back
+                List<uint8_t>         _bandUnder{MemSpace::Psram};  // what they covered
                 Painter::Tools        _tools;
                 GlyphRenderer         _renderer{GlyphRenderer::best()};
                 uint32_t              _updates[UpdateWords] = {}; // windows asking for an update, a bit by number

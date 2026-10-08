@@ -192,12 +192,7 @@ class ItemView : public ScrollArea {
                 /** @brief Row @p row was activated (a double click, Enter): told to `Activated`. */
                 virtual void activate(size_t row);
 
-                /** @brief Returns the rubber band's colour (the text's, to show on the background). */
-                virtual uint32_t bandColor(const WindowPalette &palette) const {
-                        return palette.color(WindowPalette::Role::FaceText);
-                }
-
-                /** @brief Draws the rows (the base draws the rubber band over them). */
+                /** @brief Draws the rows. */
                 virtual void paintRows(Painter &painter, const Rect &viewport) = 0;
 
                 /**
@@ -241,6 +236,7 @@ class ItemView : public ScrollArea {
                 void        moveTo(size_t row, bool shift, bool ctrl);
                 void        menuAt(int row, int x, int y); // window coordinates
                 void        band(int x, int y);            // the rubber band to window point (x, y)
+                void        showBand(bool shown);          // the window manager's band at _band, or none
                 int         startingWith(uint32_t key) const;
                 void        startRename(int row, uint32_t ms);
                 void        stopRename();
@@ -275,6 +271,8 @@ class ItemView : public ScrollArea {
                 int           _renameRow = -1;
                 int           _editing = -1;
                 bool          _single = false;
+                List<uint32_t> _drawn{MemSpace::Psram}; // the selection as last drawn (its words)
+                int            _drawnCurrent = -1;      // the current row as last drawn
 };
 
 BMDS_NAMESPACE_END

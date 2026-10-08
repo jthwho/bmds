@@ -10,6 +10,7 @@
  */
 
 #include <cstdio>
+#include <algorithm>
 #include <cstring>
 #include <new>
 #include <bmds/bevel.h>
@@ -850,13 +851,15 @@ void WindowManager::round(uint32_t requests) {
                 _updates[i] |= _asked[i].exchange(0, std::memory_order_acq_rel);
         const Region damage = _stack.damage();
         _stack.clearDamage();
-        const bool drawing = !damage.isEmpty() || hasUpdates() || (_dragId != 0 && !_outlineShown) || _cursorMoved;
+        const bool drawing =
+                !damage.isEmpty() || hasUpdates() || (_dragId != 0 && !_outlineShown) || _cursorMoved || _bandMoved;
         if (!drawing) {
                 _drawn.store(requests, std::memory_order_release);
                 return;
         }
         const uint64_t start = System::uptimeUs();
         restoreUnder();
+        restoreBand(); // under the pointer's: put back in the order they went on
         if (!damage.isEmpty()) {
                 auto [n, err] = _stack.plan(damage, Span<ComposePiece>(_pieces, MaxPieces));
                 if (err.isOk()) {
@@ -878,6 +881,8 @@ void WindowManager::round(uint32_t requests) {
         }
         drawUpdates();
         if (_dragId != 0) drawOutline();
+        if (_bandId != 0) drawBand(); // over what was just drawn under it
+        _bandMoved = false;
         drawCursor();
         const auto us = static_cast<uint32_t>(System::uptimeUs() - start);
         ++_stats.rounds;
@@ -1052,6 +1057,8 @@ void WindowManager::drawBottomUp(const Rect &rect) {
         return;
 }
 
+// The outline: a light band between two dark lines, seen on any background (inverting what is
+// under it would read the screen back, and shows nothing on a middle grey).
 void WindowManager::drawOutline() {
         Rect sides[4];
         WindowFrame::outline(_outline, sides);
@@ -1059,8 +1066,184 @@ void WindowManager::drawOutline() {
         Painter    painter(*_surface, Span<const Rect>(&screen, 1), Span<const Rect>(&screen, 1), 0, 0, _tools,
                            DrawTimeoutMs);
         (void)painter.fill(sides, _palette.color(Role::Outline));
+        const uint16_t t = WindowFrame::OutlineWidth;
+        const Rect    &o = _outline;
+        if (o.width > 2 * t && o.height > 2 * t) {
+                // A pixel wide at the outer edge and at the inner one.
+                const Rect inner{uint16_t(o.x + t - 1), uint16_t(o.y + t - 1), uint16_t(o.width - 2 * (t - 1)),
+                                 uint16_t(o.height - 2 * (t - 1))};
+                Rect       lines[8];
+                size_t     n = 0;
+                for (const Rect &r : {o, inner}) {
+                        lines[n++] = Rect{r.x, r.y, r.width, 1};
+                        lines[n++] = Rect{r.x, uint16_t(r.bottom() - 1), r.width, 1};
+                        lines[n++] = Rect{r.x, uint16_t(r.y + 1), 1, uint16_t(r.height - 2)};
+                        lines[n++] = Rect{uint16_t(r.right() - 1), uint16_t(r.y + 1), 1, uint16_t(r.height - 2)};
+                }
+                (void)painter.fill(Span<const Rect>(lines, n), _palette.color(Role::FaceDark));
+        }
         count(painter);
         _outlineShown = true;
+        return;
+}
+
+Error WindowManager::setBand(uint8_t id, const Rect &rect) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        auto [at, err] = _stack.rectOf(id);
+        if (err.isError()) return err;
+        const Rect client = frame(id, at).client();
+        const Rect local = rect.intersected(Rect{0, 0, client.width, client.height});
+        const Rect screen = local.isEmpty() ? Rect()
+                                            : Rect{uint16_t(client.x + local.x), uint16_t(client.y + local.y),
+                                                   local.width, local.height};
+        if (screen.isEmpty() && _bandId == 0) return Error::Ok;
+        if (_bandId == id && screen == _band) return Error::Ok;
+        // Moved or hidden at the next round: what it covered put back then, no window asked.
+        _bandId = screen.isEmpty() ? 0 : id;
+        _band = screen;
+        _bandMoved = true;
+        changed(focusId());
+        return Error::Ok;
+}
+
+namespace {
+
+        // A band's piece, saved and drawn in one read and write of the surface.
+        struct BandJob {
+                        Rect             piece; // widened to 4-pixel columns
+                        Rect             band;
+                        Span<const Rect> clip; // where its window shows
+                        uint8_t         *under;
+                        uint32_t         dark;
+                        uint32_t         light;
+        };
+
+        struct UnbandJob {
+                        const uint8_t *under;
+                        uint16_t       width;
+                        uint16_t       rows;
+        };
+
+        constexpr uint16_t BandRing = 2;         // its thickness: a dark pixel outside, a light one inside
+        constexpr uint16_t BandPieceWidth = 600; // a piece of its top or bottom (a patch holds a row's bytes)
+        constexpr uint16_t BandPieceRows = 150;  // a piece of its sides (a group or two of 4 wide)
+
+} // namespace
+
+void WindowManager::bandPixels(void *arg, uint8_t *pixels, size_t stride) {
+        const auto  *job = static_cast<const BandJob *>(arg);
+        const Rect  &p = job->piece;
+        const Rect  &b = job->band;
+        const size_t rowBytes = size_t(p.width) * Surface::BytesPerPixel;
+        for (uint16_t r = 0; r < p.height; ++r) std::memcpy(job->under + r * rowBytes, pixels + r * stride, rowBytes);
+        for (uint16_t r = 0; r < p.height; ++r) {
+                const uint32_t y = p.y + r;
+                for (uint16_t c = 0; c < p.width; ++c) {
+                        const uint32_t x = p.x + c;
+                        if (x < b.x || y < b.y || x >= b.right() || y >= b.bottom()) continue;
+                        // Its distance in from the band's edge: 0 the dark ring, 1 the light one.
+                        const uint32_t in =
+                                std::min(std::min(x - b.x, b.right() - 1 - x), std::min(y - b.y, b.bottom() - 1 - y));
+                        if (in >= BandRing) continue;
+                        bool shown = false;
+                        for (const Rect &k : job->clip)
+                                shown = shown || (x >= k.x && y >= k.y && x < k.right() && y < k.bottom());
+                        if (!shown) continue;
+                        const uint32_t rgb = in == 0 ? job->dark : job->light;
+                        uint8_t       *px = pixels + r * stride + c * Surface::BytesPerPixel;
+                        px[0] = static_cast<uint8_t>(rgb);
+                        px[1] = static_cast<uint8_t>(rgb >> 8);
+                        px[2] = static_cast<uint8_t>(rgb >> 16);
+                }
+        }
+        return;
+}
+
+void WindowManager::unbandPixels(void *arg, uint8_t *pixels, size_t stride) {
+        const auto  *job = static_cast<const UnbandJob *>(arg);
+        const size_t rowBytes = size_t(job->width) * Surface::BytesPerPixel;
+        for (uint16_t r = 0; r < job->rows; ++r) std::memcpy(pixels + r * stride, job->under + r * rowBytes, rowBytes);
+        return;
+}
+
+// What the band covered put back (before anything is drawn this round, after the pointer's).
+void WindowManager::restoreBand() {
+        for (size_t i = _bandPieces.size(); i-- > 0;) {
+                const BandPiece &piece = _bandPieces[i];
+                UnbandJob        job{_bandUnder.data() + piece.offset, piece.rect.width, piece.rect.height};
+                ++_stats.calls;
+                if (_surface->patch(piece.rect, unbandPixels, &job, DrawTimeoutMs).isError()) ++_stats.errors;
+        }
+        _bandPieces.clear();
+        return;
+}
+
+// The band over what was drawn this round, where its window shows: its rings in pieces (its top and
+// bottom, then its sides), what each covers saved first.
+void WindowManager::drawBand() {
+        auto [z, zerr] = _stack.layerOf(_bandId);
+        if (zerr.isError() || _band.width < 2 * BandRing || _band.height < 2 * BandRing) return;
+        Region area;
+        area.add(_band);
+        ComposePiece pieces[32];
+        Rect         clip[32];
+        size_t       nc = 0;
+        auto [n, perr] = _stack.plan(area, Span<ComposePiece>(pieces, 32));
+        if (perr.isError()) return; // too broken up: not drawn this round
+        for (size_t i = 0; i < n; ++i)
+                if (pieces[i].layer == z) clip[nc++] = pieces[i].rect;
+        if (nc == 0) return;
+        // The rings' strips, widened to 4-pixel columns, in pieces a patch takes.
+        const Rect &b = _band;
+        const Rect  strips[] = {{b.x, b.y, b.width, BandRing},
+                                {b.x, uint16_t(b.bottom() - BandRing), b.width, BandRing},
+                                {b.x, uint16_t(b.y + BandRing), BandRing, uint16_t(b.height - 2 * BandRing)},
+                                {uint16_t(b.right() - BandRing), uint16_t(b.y + BandRing), BandRing,
+                                 uint16_t(b.height - 2 * BandRing)}};
+        size_t      bytes = 0;
+        _bandPieces.clear();
+        for (const Rect &s : strips) {
+                if (s.isEmpty()) continue;
+                const uint32_t left = s.x & ~(Align - 1u), right = (s.right() + Align - 1u) & ~(Align - 1u);
+                const bool     across = s.height == BandRing && s.width > BandRing;
+                for (uint32_t x = left; x < right; x += across ? BandPieceWidth : right - left) {
+                        for (uint32_t y = s.y; y < s.bottom(); y += across ? s.height : BandPieceRows) {
+                                const uint32_t w =
+                                        across ? std::min<uint32_t>(BandPieceWidth, right - x) : right - left;
+                                const uint32_t h =
+                                        across ? s.height : std::min<uint32_t>(BandPieceRows, s.bottom() - y);
+                                const Rect piece{uint16_t(x), uint16_t(y), uint16_t(w), uint16_t(h)};
+                                if (_bandPieces.append(BandPiece{piece, uint32_t(bytes)}).isError()) {
+                                        _bandPieces.clear();
+                                        return;
+                                }
+                                bytes += size_t(w) * h * Surface::BytesPerPixel;
+                        }
+                }
+        }
+        if (_bandUnder.size() < bytes) {
+                if (_bandUnder.reserve(bytes).isError()) {
+                        _bandPieces.clear();
+                        return;
+                }
+                while (_bandUnder.size() < bytes) (void)_bandUnder.append(0);
+        }
+        for (size_t i = 0; i < _bandPieces.size(); ++i) {
+                const BandPiece &piece = _bandPieces[i];
+                BandJob          job{piece.rect,
+                            b,
+                            Span<const Rect>(clip, nc),
+                            _bandUnder.data() + piece.offset,
+                            _palette.color(Role::FaceDark),
+                            _palette.color(Role::Outline)};
+                ++_stats.calls;
+                if (_surface->patch(piece.rect, bandPixels, &job, DrawTimeoutMs).isError()) {
+                        ++_stats.errors;
+                        _bandPieces.truncate(i); // those drawn are put back
+                        return;
+                }
+        }
         return;
 }
 
@@ -1209,6 +1392,11 @@ Error WindowManager::closeLocked(uint8_t id) {
         if (err.isError()) return err;
         const Window w = _windows[id - 1];
         _windows[id - 1] = Window();
+        if (_bandId == id) {
+                // Its area is redrawn as the window goes: nothing of the band to put back.
+                _bandId = 0;
+                _bandPieces.clear();
+        }
         if (w.closed != nullptr) w.closed(w.arg);
         if (_grabId == id) _grabId = 0;
         if (_sizeId == id) _sizeId = 0;
@@ -2318,6 +2506,10 @@ Error WindowManager::resizeLocked(uint8_t id, const Rect &rect, uint8_t decorati
 }
 
 Error WindowManager::invalidate(uint8_t id, const Rect &rect) {
+        return invalidate(id, Span<const Rect>(&rect, 1));
+}
+
+Error WindowManager::invalidate(uint8_t id, Span<const Rect> rects) {
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface == nullptr) return Error::InvalidState;
         auto [at, err] = _stack.rectOf(id);
@@ -2325,10 +2517,21 @@ Error WindowManager::invalidate(uint8_t id, const Rect &rect) {
         if (_stack.isHidden(id)) return Error::Ok; // drawn when shown
         const Rect client = frame(id, at).client();
         const Rect local{0, 0, client.width, client.height};
-        const Rect r = rect.intersected(local);
-        if (r.isEmpty()) return Error::Ok;
-        (void)_stack.invalidate(id, Rect{uint16_t(client.x + r.x), uint16_t(client.y + r.y), r.width, r.height});
-        changed(focusId());
+        bool       any = false;
+        for (const Rect &rect : rects) {
+                const Rect r = rect.intersected(local);
+                if (r.isEmpty()) continue;
+                // Out to 4-pixel columns (as the painters' damage must be: a text's copy is clipped
+                // by it), kept in the client area.
+                const uint32_t left = (uint32_t(client.x) + r.x) & ~(Align - 1u);
+                uint32_t       right = (uint32_t(client.x) + r.right() + Align - 1u) & ~(Align - 1u);
+                const uint32_t from = left > client.x ? left : client.x;
+                if (right > client.right()) right = client.right();
+                (void)_stack.invalidate(
+                        id, Rect{uint16_t(from), uint16_t(client.y + r.y), uint16_t(right - from), r.height});
+                any = true;
+        }
+        if (any) changed(focusId());
         return Error::Ok;
 }
 

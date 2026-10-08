@@ -54,6 +54,12 @@ void ItemView::resetSelecting(int row, bool tell) {
         if (row >= 0) _selection.selectOnly(row);
         relayout();
         update();
+        // Drawn whole: remembered as such.
+        _drawn.clear();
+        const size_t words = (count() + 31) / 32;
+        if (_drawn.reserve(words).isOk())
+                for (size_t i = 0; i < words; ++i) (void)_drawn.append(_selection.word(i));
+        _drawnCurrent = current();
         if (tell && _changed != nullptr) _changed(_changedArg, *this);
         return;
 }
@@ -88,9 +94,29 @@ void ItemView::updateRow(size_t row) {
 }
 
 void ItemView::changed() {
-        // The rows' looks changed somewhere: the viewport again (a click redraws what shows).
-        GuiWindow *w = window();
-        if (w != nullptr) w->invalidate(viewport());
+        // Only the rows whose look changed (a full redraw flickers: the screen is drawn on as it shows).
+        GuiWindow   *w = window();
+        const size_t words = (count() + 31) / 32;
+        if (w != nullptr) {
+                if (_drawn.size() != words) {
+                        w->invalidate(viewport());
+                } else {
+                        for (size_t i = 0; i < words; ++i) {
+                                const uint32_t diff = _drawn[i] ^ _selection.word(i);
+                                for (uint32_t b = 0; diff != 0 && b < 32; ++b)
+                                        if ((diff & (1u << b)) != 0) updateRow(i * 32 + b);
+                        }
+                        if (_drawnCurrent != current()) {
+                                if (_drawnCurrent >= 0) updateRow(size_t(_drawnCurrent));
+                                if (current() >= 0) updateRow(size_t(current()));
+                        }
+                }
+        }
+        // Remembered as drawn now (all of the viewport if it can't be).
+        _drawn.clear();
+        if (_drawn.reserve(words).isOk())
+                for (size_t i = 0; i < words; ++i) (void)_drawn.append(_selection.word(i));
+        _drawnCurrent = current();
         if (_changed != nullptr) _changed(_changedArg, *this);
         return;
 }
@@ -238,7 +264,8 @@ void ItemView::mouseReleased(const WindowManager::MouseEvent &event) {
         if (event.button != PointerEvent::Left) return;
         if (_banding) {
                 _banding = false;
-                changed(); // the band gone
+                showBand(false); // the band gone
+                changed();
                 return;
         }
         if (_pressed < 0) return;
@@ -264,7 +291,10 @@ void ItemView::mouseReleased(const WindowManager::MouseEvent &event) {
 void ItemView::mouseLeft() {
         stopRename();
         if (_dragging) dragCancelled();
-        if (_banding) changed();
+        if (_banding) {
+                showBand(false);
+                changed();
+        }
         _banding = false;
         _pressed = -1;
         _dragging = false;
@@ -280,11 +310,22 @@ void ItemView::band(int x, int y) {
         _band = ContentRect{_bandX < ex ? _bandX : ex, _bandY < ey ? _bandY : ey,
                             (_bandX < ex ? ex - _bandX : _bandX - ex) + 1,
                             (_bandY < ey ? ey - _bandY : _bandY - ey) + 1};
-        // Exactly the rows it touches; with Ctrl, those added to what was selected.
+        // Where it was and where it is redrawn (its edges move), then exactly the rows it touches;
+        // with Ctrl, those added to what was selected.
+        showBand(true);
         if (!_bandAdds) _selection.clear();
         for (size_t r = 0; r < count(); ++r)
                 if (rowRect(r).intersects(_band)) _selection.set(r, true);
         changed();
+        return;
+}
+
+// The band shown by the window manager over the view (as a move's outline: drawn over what the
+// view draws, no redraw of the view's own to move it), or hidden.
+void ItemView::showBand(bool shown) {
+        GuiWindow *w = window();
+        if (w == nullptr || !w->isShown()) return;
+        (void)w->application().windowManager().setBand(w->id(), shown ? toWindow(_band) : Rect());
         return;
 }
 
@@ -457,15 +498,7 @@ void ItemView::focusRect(Painter &painter, const Rect &clip, int x, int y, int w
 }
 
 void ItemView::paintContent(Painter &painter, const Rect &viewport) {
-        paintRows(painter, viewport);
-        if (!_banding) return;
-        const Rect r = toWindow(_band);
-        if (r.width < 2 || r.height < 2) return;
-        const Rect edges[] = {{r.x, r.y, r.width, 1},
-                              {r.x, uint16_t(r.bottom() - 1), r.width, 1},
-                              {r.x, uint16_t(r.y + 1), 1, uint16_t(r.height - 2)},
-                              {uint16_t(r.right() - 1), uint16_t(r.y + 1), 1, uint16_t(r.height - 2)}};
-        (void)painter.fill(Span<const Rect>(edges), bandColor(painter.palette()));
+        paintRows(painter, viewport); // the band is the window manager's (showBand())
         return;
 }
 

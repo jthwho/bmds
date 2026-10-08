@@ -323,21 +323,28 @@ bool IconView::dragged(int dx, int dy, bool done) {
         if (_arrangement != Arrangement::Grid) return false;
         GuiWindow *w = window();
         if (!done) {
+                // Each dragged row where it was drawn and where it goes (not the whole view: it flickers).
+                for (int r = selection().nextSelected(0); r >= 0; r = selection().nextSelected(size_t(r) + 1)) {
+                        if (_draggingCells) invalidateRow(size_t(r), _dragX, _dragY);
+                        invalidateRow(size_t(r), int(unsigned(dx) & ~3u), dy);
+                }
                 _draggingCells = true;
                 _dragX = dx;
                 _dragY = dy;
-                if (w != nullptr) w->invalidate(viewport());
+                _dragX = int(unsigned(_dragX) & ~3u); // text starts on a 4-pixel column
                 return true;
+        }
+        // Where the dragged rows were drawn, gone (they land below, or go back).
+        for (int r = selection().nextSelected(0); r >= 0; r = selection().nextSelected(size_t(r) + 1)) {
+                invalidateRow(size_t(r), _dragX, _dragY);
+                invalidateRow(size_t(r), 0, 0);
         }
         _draggingCells = false;
         // Each selected row to the cell under its middle, moved as far; a row there unselected goes
         // to the cell its mover left. Refused (all back) if two would share a cell.
         const size_t         n = _cells.size();
         List<IconGrid::Cell> to(MemSpace::Psram);
-        if (to.reserve(n).isError()) {
-                if (w != nullptr) w->invalidate(viewport());
-                return true;
-        }
+        if (to.reserve(n).isError()) return true;
         bool any = false;
         for (size_t r = 0; r < n; ++r) {
                 IconGrid::Cell c = _cells[r];
@@ -372,21 +379,44 @@ bool IconView::dragged(int dx, int dy, bool done) {
                 for (size_t a = 0; a < n && !clash; ++a)
                         for (size_t b = a + 1; b < n && !clash; ++b) clash = to[a] == to[b];
                 if (!clash) {
-                        for (size_t r = 0; r < n; ++r) _cells[r] = to[r];
+                        // Every row that moves, at its old cell and its new one.
+                        for (size_t r = 0; r < n; ++r) {
+                                if (to[r] == _cells[r]) continue;
+                                invalidateRow(r, 0, 0);
+                                _cells[r] = to[r];
+                                invalidateRow(r, 0, 0);
+                        }
                         relayout();
                 } else {
                         any = false;
                 }
         }
-        if (w != nullptr) w->invalidate(viewport());
+        (void)w;
         if (any && _moved != nullptr) _moved(_movedArg, *this);
         return true;
 }
 
 void IconView::dragCancelled() {
+        for (int r = selection().nextSelected(0); r >= 0; r = selection().nextSelected(size_t(r) + 1)) {
+                invalidateRow(size_t(r), _dragX, _dragY);
+                invalidateRow(size_t(r), 0, 0);
+        }
         _draggingCells = false;
+        return;
+}
+
+// Row @p row's cell, moved by (@p dx, @p dy), redrawn (what of it is in the viewport).
+void IconView::invalidateRow(size_t row, int dx, int dy) {
         GuiWindow *w = window();
-        if (w != nullptr) w->invalidate(viewport());
+        if (w == nullptr) return;
+        const Rect        v = viewport();
+        const ContentRect c = rowRect(row);
+        const int         x = int(v.x) + int(c.x) - int(scrollX()) + dx;
+        const int         y = int(v.y) + int(c.y) - int(scrollY()) + dy;
+        const int         l = x > v.x ? x : v.x, t = y > v.y ? y : v.y;
+        const int         r = x + W < int(v.right()) ? x + W : int(v.right());
+        const int         b = y + H < int(v.bottom()) ? y + H : int(v.bottom());
+        if (r > l && b > t) w->invalidate(Rect{uint16_t(l), uint16_t(t), uint16_t(r - l), uint16_t(b - t)});
         return;
 }
 

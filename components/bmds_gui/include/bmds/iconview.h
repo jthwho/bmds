@@ -100,7 +100,6 @@ class IconView : public ItemView {
                 bool        dragged(int dx, int dy, bool done) override;
                 void        dragCancelled() override;
                 void        paintRows(Painter &painter, const Rect &viewport) override;
-                uint32_t    bandColor(const WindowPalette &palette) const override { return palette.color(_text); }
 
         public:
                 /** @brief A name broken into its lines. */
@@ -119,6 +118,7 @@ class IconView : public ItemView {
                 void        drawRow(Canvas &canvas, size_t row, int offsetX, int offsetY) const;
                 void        drawAll(Canvas &canvas, const Rect &viewport) const;
                 bool        isDragged(size_t row) const;
+                void        invalidateRow(size_t row, int dx, int dy);
 
                 Arrangement          _arrangement = Arrangement::Flow;
                 WindowPalette::Role  _background = WindowPalette::Role::FaceHighlight;

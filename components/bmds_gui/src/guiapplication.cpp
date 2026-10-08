@@ -277,7 +277,7 @@ void GuiApplication::flush() {
                         if (_slots[i].window != nullptr) id = _slots[i].window->takeDirty(dirty);
                 }
                 if (id == 0) continue;
-                for (const Rect &r : dirty.rects()) (void)_wm->invalidate(id, r);
+                (void)_wm->invalidate(id, dirty.rects()); // in one round
         }
         return;
 }

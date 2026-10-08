@@ -80,7 +80,9 @@ namespace {
                         StringView columnTitle(size_t column) const override {
                                 return column == 0 ? StringView("Name") : column == 1 ? StringView("Size") : "Type";
                         }
-                        uint16_t columnWidth(size_t column) const override { return column == 0 ? 200 : 80; }
+                        uint16_t columnWidth(size_t column) const override {
+                                return column == 0 ? 200 : column == 1 ? 80 : 136;
+                        }
                         Align    columnAlign(size_t column) const override {
                                 return column == 1 ? Align::Right : Align::Left;
                         }
@@ -88,13 +90,14 @@ namespace {
                                 const FolderModel::Entry &e = folder.entry(row);
                                 if (column == 0) return folder.name(row);
                                 if (column == 1) {
-                                        if (e.isDirectory()) return StringView();
+                                        if (e.isDirectory() || e.builtin) return StringView();
                                         const uint64_t kb = (e.size + 1023) / 1024;
                                         const int      n = std::snprintf(buffer.data(), buffer.size(), "%llu KB",
                                                                          static_cast<unsigned long long>(kb));
                                         return StringView(buffer.data(), n > 0 ? size_t(n) : 0);
                                 }
                                 if (e.isDirectory()) return "Folder";
+                                if (e.builtin) return "Built-in program";
                                 return FolderModel::extensionOf(folder.name(row));
                         }
         };

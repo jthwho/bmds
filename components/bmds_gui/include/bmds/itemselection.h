@@ -39,6 +39,9 @@ class ItemSelection {
                         return row < _count && (_bits[row / 32] & (1u << (row % 32))) != 0;
                 }
 
+                /** @brief Returns the selection's bits for rows 32 @p i to 32 @p i + 31 (a view's redraw). */
+                uint32_t word(size_t i) const { return i < _bits.size() ? _bits[i] : 0; }
+
                 /** @brief Returns the rows selected. */
                 size_t selectedCount() const { return _selected; }
 

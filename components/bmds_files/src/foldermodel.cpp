@@ -59,6 +59,13 @@ Result<size_t> FolderModel::fillSome(size_t count) {
                 e.nameLength = static_cast<uint16_t>(name.size());
                 e.type = info.type;
                 e.attributes = info.attributes;
+                if (info.type == FileType::File && info.size == 0) {
+                        // An empty file may be a built-in program (/bin's): its code is the firmware's.
+                        String path(MemSpace::Psram);
+                        if (path.assign(_path.view()).isOk() &&
+                            (_path.view().endsWith('/') || path.append('/').isOk()) && path.append(name).isOk())
+                                e.builtin = Vfs::builtinProgram(path.view(), _context) != nullptr;
+                }
                 if (info.type == FileType::Link) {
                         // What it leads to (a broken link stays a link).
                         e.link = true;
