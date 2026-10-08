@@ -76,6 +76,13 @@ class ItemView : public ScrollArea {
                 /** @brief Rows count again from the model: the selection cleared, laid out, redrawn. */
                 void modelReset();
 
+                /**
+                 * @brief `modelReset()`, then @p rows selected and @p current current (-1:
+                 *        none), told once: a sort or a refresh keeping the selection (the
+                 *        owner finds the rows again by name). Rows past the count are passed over.
+                 */
+                void resetTo(Span<const size_t> rows, int current);
+
                 /** @brief Returns the rows. */
                 size_t count() const { return _selection.count(); }
 
@@ -102,6 +109,12 @@ class ItemView : public ScrollArea {
 
                 /** @brief Hides @p row's name while an editor is over it (-1: none). */
                 void setEditing(int row);
+
+                /**
+                 * @brief Returns the `KeyEvent::Modifier` bits held with the activation being
+                 *        told (Shift and a double click, Shift+Enter), else 0.
+                 */
+                uint8_t activationModifiers() const { return _activation; }
 
                 /** @brief Returns the row whose name an editor is over, or -1. */
                 int editing() const { return _editing; }
@@ -265,6 +278,7 @@ class ItemView : public ScrollArea {
                 void         *_changedArg = nullptr;
                 uint64_t      _pressUs = 0;   // the last left press
                 int           _pressRow = -1; // its row (a double click is on the same one)
+                uint8_t        _activation = 0; // the modifiers of the activation being told
                 int           _pressed = -1;  // the row a left press is on, until its release
                 int           _pressX = 0;    // where (window coordinates)
                 int           _pressY = 0;

@@ -9,6 +9,7 @@
  */
 
 #include <algorithm>
+#include <bmds/fileformat.h>
 #include <bmds/foldermodel.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -79,6 +80,15 @@ Result<size_t> FolderModel::fillSome(size_t count) {
                                         e.modified = to.modified;
                                 }
                         }
+                }
+                // Its format by its name (FB12): contents only later, for the files shown.
+                if (e.type == FileType::Directory) {
+                        e.format = FileFormat::Directory;
+                } else if (e.builtin) {
+                        e.format = "application/x-executable";
+                } else if (e.type == FileType::File) {
+                        e.format = FileFormat::byName(name);
+                        if (e.format.isEmpty() && e.size == 0) e.format = FileFormat::Empty;
                 }
                 Error stored = _names.reserve(_names.size() + name.size());
                 if (stored.isOk()) stored = _entries.append(e);

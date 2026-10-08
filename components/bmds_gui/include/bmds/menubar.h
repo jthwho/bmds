@@ -32,8 +32,10 @@ class MenuTitle;
  * highlighted, as does F10 for the first (`GuiWindow::setMenuBar()`). The
  * open title is drawn sunken.
  *
- * The bar sets its menus' `Dismissed` and `Moved` callbacks; `Triggered` is
- * the caller's.
+ * The bar sets its menus' `Dismissed` and `Moved` callbacks as it opens
+ * them, so bars may share menus (one window's open at a time); `Triggered`
+ * is the caller's. `setAboutToShow()`'s function fills a menu for its bar
+ * just before it opens.
  *
  * @par Thread Safety
  * As `Widget`.
@@ -44,7 +46,17 @@ class MenuBar : public Widget {
                 static constexpr size_t   MaxText = 23;
                 static constexpr uint16_t Height = 20; ///< A font row and 2 pixels above and below.
 
+                /** @brief Told that @p menu (title @p index's) is about to open from @p bar. */
+                using AboutToShow = void (*)(void *arg, MenuBar &bar, size_t index, Menu &menu);
+
                 explicit MenuBar(Widget *parent);
+
+                /** @brief Has @p fn told before each menu opens (null: none). */
+                void setAboutToShow(AboutToShow fn, void *arg) {
+                        _aboutToShow = fn;
+                        _aboutToShowArg = arg;
+                        return;
+                }
 
                 /**
                  * @brief Adds a title (`&` marking its key) opening @p menu (kept by
@@ -88,6 +100,8 @@ class MenuBar : public Widget {
                 size_t     _count = 0;
                 int        _open = -1;
                 bool       _opening = false; // a menu is being swapped for another: its dismissal not ours
+                AboutToShow _aboutToShow = nullptr;
+                void       *_aboutToShowArg = nullptr;
 };
 
 BMDS_NAMESPACE_END

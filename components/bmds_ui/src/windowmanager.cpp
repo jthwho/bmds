@@ -169,6 +169,7 @@ void WindowManager::stop() {
         for (Client &c : _clients)
                 if (c.used && c.gone != nullptr) c.gone(c.arg);
         _clients.clear();
+        dropServices(0);
         _windows.clear();
         (void)_surface->wait(DrawTimeoutMs); // the strip's last copy
         _surface = nullptr;
@@ -1559,6 +1560,7 @@ void WindowManager::disconnect(uint8_t client) {
         _clients[client - 1] = Client();
         for (KeyGrab &g : _grabs)
                 if (g.client == client) g = KeyGrab();
+        dropServices(client);
         // Its windows, shown or hidden, closed.
         for (size_t id = 1; id <= _windows.size(); ++id)
                 if (_windows[id - 1].client == client && _stack.rectOf(uint8_t(id)).isOk())
@@ -2150,6 +2152,61 @@ Error WindowManager::grabKey(uint8_t client, uint8_t usage, uint8_t modifiers, G
         if (free == nullptr) return Error::Full;
         *free = KeyGrab{fn, arg, client, usage, folded};
         return Error::Ok;
+}
+
+// ---- Services (devplan/filebrowser.md §4h, FB6)
+
+WindowManager::Service *WindowManager::findService(StringView name) {
+        for (Service *s : _services)
+                if (StringView(s->name) == name) return s;
+        return nullptr;
+}
+
+// Connection @p client's services (0: every one), forgotten with their messages.
+void WindowManager::dropServices(uint8_t client) {
+        for (size_t i = _services.size(); i-- > 0;) {
+                Service *s = _services[i];
+                if (client != 0 && s->client != client) continue;
+                s->~Service();
+                Memory::free(s);
+                _services.removeAt(i);
+        }
+        return;
+}
+
+Error WindowManager::registerService(uint8_t client, StringView name, ServiceNotify fn, void *arg) {
+        if (name.isEmpty() || name.size() > MaxServiceName || fn == nullptr) return Error::Invalid;
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        if (client == 0 || client > _clients.size() || !_clients[client - 1].used) return Error::NotFound;
+        if (findService(name) != nullptr) return Error::Exists;
+        if (_services.reserve(_services.size() + 1).isError()) return Error::NoMem;
+        void *mem = Memory::alloc(MemSpace::Psram, sizeof(Service));
+        if (mem == nullptr) return Error::NoMem;
+        auto *s = ::new (mem) Service();
+        std::memcpy(s->name, name.data(), name.size());
+        s->client = client;
+        s->fn = fn;
+        s->arg = arg;
+        (void)_services.append(s);
+        return Error::Ok;
+}
+
+Error WindowManager::sendToService(StringView name, ByteSpan message) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        Service *s = findService(name);
+        if (s == nullptr) return Error::NotFound;
+        const Error err = s->queue.push(message);
+        if (err.isOk()) s->fn(s->arg);
+        return err;
+}
+
+Result<size_t> WindowManager::takeServiceMessage(uint8_t client, StringView name, WritableByteSpan out) {
+        Mutex::Locker lock(_lock, WaitForever);
+        Service      *s = findService(name);
+        if (s == nullptr || s->client != client) return makeError<size_t>(Error::NotFound);
+        return s->queue.take(out);
 }
 
 // The window keys (devplan/gui.md §4p): Win+Up/Down/Left/Right, Alt+F10 on the focused

@@ -266,6 +266,124 @@ A portable component (built for the host tests too) over `Vfs` and `Trash`, no G
   and Copy act on every item selected.
 - **`/bin/widgets`** shows a tree, and the list as icons or details (View menu).
 
+### 4h. Step 4 design: folder windows (2026-10-08)
+
+- **Window manager services (FB6):**
+  - `WindowManager::registerService(client, name, fn, arg)` names a connection's service (31
+    bytes at most; `Exists` if another has it; released with the connection).
+  - `sendToService(name, bytes)`, from any task, queues a message of up to `MaxServiceMessage`
+    (1 KB) for it and calls `fn(arg)` under the window manager's lock. `fn` only wakes its loop,
+    as a key grab's does. `NotFound` if no one has the name; `Full` past `MaxServicePending`
+    (4 KB) not yet taken.
+  - `takeServiceMessage(client, name, buffer)` hands the oldest one over (0 bytes: none).
+  - The queue is a pure `ServiceQueue` (length-prefixed messages in one PSRAM list),
+    host-tested.
+  - `GuiApplication::registerService(name, fn, arg)` calls `fn(arg, message)` on the loop, the
+    lock held, for each message.
+- **`files [PATH...]` (FB5),** a shell command in `bmds_panel` (`/bin/files` too):
+  - each PATH is made absolute against the current directory and checked with `stat`;
+  - the paths go to the `files` service in one message, NUL-separated;
+  - status 0 if the panel took them;
+  - status 1 with `files: PATH: not found` for a missing path (the others are still sent);
+  - status 1 with `files: the desktop isn't running (start 'panel')` when there's no service;
+  - status 2 for usage.
+- **Pure, in `bmds_files`, host-tested:**
+  - **`NavigationHistory`:** the folders visited and where in them the window is.
+    - `visit(path)` drops the forward ones, and a path equal to the current one isn't added
+      again.
+    - `back()`/`forward()` return the path to go to.
+    - At most 32 kept; the oldest goes.
+    - `parentOf(path)` gives the parent, `/` being its own.
+  - **`FolderSettings`:** `folders.conf` (FB16), an INI file of a section per folder:
+
+    ```
+    [/sd0/p0/photos]
+    View=details
+    Sort=size
+    Descending=true
+    Tree=200
+    ```
+
+    - `parse(text)` reads it and `find(path)` looks a folder up.
+    - `set(path, values)` moves it to the end, and the first ones go past `MaxFolders` (256):
+      the least recently changed.
+    - `write(out)` writes it back. Unknown keys and sections that aren't absolute paths are
+      dropped when written.
+- **Toolkit:**
+  - `ItemView::resetTo(rows, current)`: as `modelReset()`, then those rows selected and
+    `current` current, told once. A sort, a batch read or a refresh keeps the selection by name:
+    the window takes the selected names before and finds them after.
+  - `GuiWindow::setTitle()`: a folder window's title follows its folder.
+- **The panel:**
+  - **`FileIcons`:** one per panel. It copies each type's icon at 16 and 32 once (the theme's
+    cache may drop its own), keyed by the type: its icon name, then its generic one, then
+    `unknown`. Folders get `folder`, links to folders get it too, built-ins get
+    `application-x-executable`.
+  - **`FolderItems`:** a folder window's `ItemModel` over a `FolderModel`, with each row's type.
+    - Types come from the name (`FileFormat::byName`).
+    - A file whose name says nothing is identified by its contents (`Vfs::identify`, 512
+      bytes), 4 a turn after the folder is read.
+    - Columns: Name, Size (KB, none for folders and built-ins), Type (`Folder`, `Built-in
+      program`, else the extension in capitals and ` File` — the Type sort's order), Modified
+      (`YYYY-MM-DD HH:MM`, local).
+  - **`FolderActions`:** what a folder window and the desktop both do, moved out of `PanelApp`:
+    - open a file by its type (`mimeapps.list`), or run a launcher (`.desktop`);
+    - copy paths to the clipboard (`text/uri-list` and text);
+    - paste a URI list into a folder (`FileOps::copy`, Keep Both);
+    - move paths to the trash;
+    - make a new item;
+    - check and apply a rename (the messages the desktop shows now).
+
+    It tells `PanelApp` to open a folder window (`openFolder(path, select)`), so a folder on
+    the desktop opens in a window.
+  - **`FolderWindow`:** 640 × 440, cascaded by 24 pixels from the last one opened.
+    - **Menu bar:**
+      - File: Open, Open in New Window, New ▸, Delete, Rename, Close.
+      - Edit: Copy, Paste, Select All, Invert Selection.
+      - View: Large Icons, Details, Arrange Icons ▸ (Name, Type, Size, Modified), Folders,
+        Status Bar, Refresh.
+      - Go: Back, Forward, Up One Level, Home, Desktop.
+      - Help: About.
+    - **Toolbar:** Back, Forward, Up | Copy, Paste, Delete | Large Icons, Details.
+    - **The address bar:** a `LineEdit`. Enter goes to a folder, or opens a file's folder
+      with the file selected. A path that isn't there gets a message.
+    - **The splitter:** the tree (one root `/`, following the folder shown: its path expanded
+      and selected), then the view.
+    - **The status bar:**
+      - the items (and the hidden ones not shown);
+      - what's selected and its size;
+      - the free space of the folder's filesystem.
+    - **Keys:**
+      - Backspace and Alt+Up go up; Alt+Left and Alt+Right go back and forward.
+      - F5 refreshes; Ctrl+L, Alt+D and F4 go to the address bar.
+      - Delete trashes; Ctrl+C copies and Ctrl+V pastes.
+      - Enter opens, Shift+Enter or Shift+double-click opens a folder in a new window.
+      - Ctrl+W closes.
+      - The views' own keys still work.
+    - **Menus:**
+      - An item's: Open, Open in New Window (folders), Copy, Delete, Rename.
+      - The background's: View ▸, Arrange Icons ▸, Paste, New ▸.
+    - **Rename** is in place (`PopupEdit` over the name).
+    - **Changes:** after an operation the window reads its folder again; other windows on the
+      same folder do too. The VFS watches (step 5) replace this.
+  - **Remembered:**
+    - A folder's view and sort are written to `folders.conf` when changed in a window (a
+      second after, at most once a second). A window opened or navigated to a folder takes
+      them, else `files/default-view` and Name.
+    - The tree's width is taken when a window opens (it isn't moved under the pointer on
+      navigation).
+  - **Settings:** `files/show-hidden` (bool, false) and `files/default-view` (enum
+    `icons|details`, `icons`) are watched: every window applies them.
+  - **The service:** the panel registers `files`. Each path in a message opens a window: a
+    folder on itself, a file on its folder with it selected.
+- **Launcher:** `boot/applications/files.desktop`, Name=Files, `Exec=files /home`,
+  Icon=`system-file-manager` (the theme's `folder` if missing: `forProgram` falls back).
+- **Left for later steps:**
+  - Cut (6), Shift+Delete (6), Properties (8), drag and drop (7).
+  - The tree reads a folder whole when it is expanded (its subfolders' names only). A folder
+    of thousands of entries pauses it; the step 5 watches will read it in batches as the
+    views do.
+
 ## 5. Steps
 
 1. **The window limit, then the toolkit's furniture:** 255 windows and connections in growing
@@ -378,6 +496,48 @@ A portable component (built for the host tests too) over `Vfs` and `Trash`, no G
        the two cells, then a 2 × 3 rectangle, then Shift+Right to 3 × 3.
 4. **Folder windows:** `FolderWindow`, navigation, the menus and keys, window manager services,
    `files`, the launcher's entry, `folders.conf`, `files/*` settings.
+   - *As built (2026-10-08):* as §4h, with these differences:
+     - **Shared menus:** the folder windows share one set of menus (10 `Menu`s, about 5 KB each,
+       made with the first window). `MenuBar` sets a menu's callbacks as it opens it, so bars
+       can share menus, and `setAboutToShow()` fills a menu for the window whose bar opens it.
+     - **Hiding the tree:** a `Splitter` side hidden leaves all the room to the other, with no
+       handle (View ▸ Folders).
+     - **Shift on an activation:** `ItemView::activationModifiers()` tells it, for Shift+double-click
+       and Shift+Enter. A Shift double click on a row activates now, rather than extending the
+       range a second time.
+     - **`FolderModel`:** entries carry a `format` (a MIME type by name when read; `setFormat()`
+       after contents), plus `hiddenCount()`.
+     - **Toolbar icons:** these are theme names. The flat-color theme's aliases gained
+       `go-previous`, `go-next`, `go-up`, `edit-delete`, `view-list-icons` and
+       `view-list-details`. A card's theme shows them once reinstalled; until then the buttons
+       are text only.
+     - **Host tests** (473 checks in the five cases): the service queue (order, refusals, full
+       and room again), the history (back, forward, a visit dropping what was ahead, the oldest
+       going, parents), `folders.conf` (read, bad keys and groups dropped, the newest written
+       last, 256 kept, read back the same), formats by name.
+     - **On the board:**
+       - `files /sd0/p0` and `files` opened windows; `files /nonexistent` failed with status 1.
+       - Moving around: arrows and Enter into `/home`, the tree following; Backspace back up
+         with `home` selected; Alt+Left back with Forward enabled.
+       - The address: Ctrl+L, then typing `/bin` (59 built-ins, the program icon) and
+         `/sd0/p0`.
+       - Views: Details from the toolbar, the selection kept, `/` remembered as details in
+         `folders.conf` while `/bin` kept icons.
+       - Files: File ▸ New ▸ Folder named in place (`fbtest`, re-sorted, still selected); Delete
+         to the trash (restored and removed after).
+       - Windows: Shift+Enter opened a folder in a new window; Ctrl+W closed windows.
+       - The desktop: double-clicking a folder opened a window; Apps ▸ Files opened `/home`; an
+         icon's Copy pasted into `/home` by Ctrl+V in a window, which showed it.
+       - Settings: `files/show-hidden` applied live.
+       - Checks: no drawing errors in `win stats`, and `win check` 0 pixels wrong.
+       - Memory: three windows took 24,476 bytes of PSRAM, all given back when they closed (16
+         bytes left: a list's room); internal RAM didn't change.
+     - **Not checked on the board:** a letter jumping to a name. `win hid` sends no character,
+       so only Alt+letters reach mnemonics; a keyboard's keys carry one.
+     - **Seen once, not chased:** the first double click on a desktop folder after closing every
+       window didn't open it; the second one did.
+     - **Size:** `bmds_panel` 41,184 bytes, `bmds_gui` 64,416, `bmds_files` 11,578 and `bmds_ui`
+       118,226 in flash (`idf.py size-components`). No new static RAM.
 5. **Directory watches** in the VFS (FB14): views, the tree and the desktop follow changes.
 6. **The worker** (FB13): progress, Cancel, conflicts; Cut (FB11); Shift+Delete (FB10).
 7. **Drag and drop** (FB15): the window manager, the toolkit, the views, the terminal's drop.

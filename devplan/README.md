@@ -19,6 +19,8 @@ Design notes and implementation plans for BMDS subsystems. Write a plan here **b
 - [`filetypes.md`](filetypes.md) — what a file is (`file_type()`, by name then contents), opening files by `mimeapps.list`, every file on the desktop.
 - [`files.md`](files.md) — copies' names, the trash (freedesktop.org's layout on every filesystem), `trash`, the desktop's Paste and Delete, the terminal's menu.
 - [`clipboard.md`](clipboard.md) — copy and paste: typed offers, conversion, `clip`, `/dev/clip0`, the terminal's selection, OSC 52, vi; drag and drop (later).
+- [`sysconf.md`](sysconf.md) — the system configuration: typed parameters, `sysconf`, watchers, the SDK's calls.
+- [`filebrowser.md`](filebrowser.md) — the file browser: the toolkit's furniture and item views, `bmds_files`, folder windows in the panel, `files`.
 
 ## Plan Document Template
 

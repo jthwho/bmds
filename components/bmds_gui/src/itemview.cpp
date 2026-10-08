@@ -43,6 +43,18 @@ void ItemView::modelReset() {
         return;
 }
 
+void ItemView::resetTo(Span<const size_t> rows, int current) {
+        resetSelecting(-1, false);
+        for (const size_t row : rows)
+                if (row < count() && !(_single && _selection.selectedCount() > 0)) _selection.set(row, true);
+        if (current >= 0 && size_t(current) < count()) _selection.setCurrent(current);
+        // Drawn whole already: remembered as now.
+        for (size_t i = 0; i < _drawn.size(); ++i) _drawn[i] = _selection.word(i);
+        _drawnCurrent = this->current();
+        if (_changed != nullptr) _changed(_changedArg, *this);
+        return;
+}
+
 void ItemView::resetSelecting(int row, bool tell) {
         stopRename();
         _pressed = -1;
@@ -207,11 +219,13 @@ void ItemView::mousePressed(const WindowManager::MouseEvent &event) {
         const bool     ctrl = (event.modifiers & KeyEvent::Ctrl) != 0 && !_single;
         const bool     shift = (event.modifiers & KeyEvent::Shift) != 0 && !_single;
         const uint64_t now = System::uptimeUs();
-        if (row >= 0 && row == _pressRow && !ctrl && !shift &&
-            now - _pressUs <= uint64_t(WindowManager::DoubleClickMs) * 1000) {
+        if (row >= 0 && row == _pressRow && !ctrl && now - _pressUs <= uint64_t(WindowManager::DoubleClickMs) * 1000) {
+                // Shift too: the owner may open it otherwise (a folder in a new window).
                 _pressUs = 0; // a third press starts again
                 _pressRow = -1;
+                _activation = event.modifiers;
                 activate(size_t(row));
+                _activation = 0;
                 return;
         }
         _pressUs = now;
@@ -446,7 +460,9 @@ bool ItemView::keyPressed(const KeyEvent &event) {
                 return true;
         }
         if (plain && (event.usage == HidKey::Enter || event.usage == HidKey::KeypadEnter)) {
+                _activation = event.modifiers; // Shift+Enter: as Shift and a double click
                 if (current() >= 0) activate(size_t(current()));
+                _activation = 0;
                 return true;
         }
         if (plain && event.usage == F2) {

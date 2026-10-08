@@ -60,6 +60,11 @@ class FolderModel {
                                 bool      link = false;          ///< A symbolic link (`/home`).
                                 bool      builtin =
                                         false; ///< A program built into the firmware (`/bin`: no size of its own).
+                                /**
+                                 * @brief Its format, a MIME type (`FileFormat`'s, in rodata): by its name
+                                 *        when read; empty if the name says nothing (`setFormat()`).
+                                 */
+                                StringView format;
 
                                 /** @brief Returns true for folders. */
                                 bool isDirectory() const { return type == FileType::Directory; }
@@ -95,6 +100,9 @@ class FolderModel {
                 /** @brief Returns the entries shown. */
                 size_t count() const { return _order.size(); }
 
+                /** @brief Returns the entries read but not shown (hidden ones). */
+                size_t hiddenCount() const { return _entries.size() - _order.size(); }
+
                 /** @brief Returns entry @p index (unchecked). */
                 const Entry &entry(size_t index) const { return _entries[_order[index]]; }
 
@@ -103,6 +111,12 @@ class FolderModel {
 
                 /** @brief Returns the index of the entry named @p name (as the filesystem has it), or -1. */
                 int indexOf(StringView name) const;
+
+                /** @brief Sets entry @p index's format (a view that outlives the model: rodata). */
+                void setFormat(size_t index, StringView format) {
+                        if (index < _order.size()) _entries[_order[index]].format = format;
+                        return;
+                }
 
                 /** @brief Sorts by @p sort, @p descending or not. */
                 void setSort(Sort sort, bool descending);

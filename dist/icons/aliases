@@ -32,3 +32,9 @@ audio-x-generic             audio_file
 video-x-generic             video_file
 package-x-generic           package
 unknown                     file
+go-previous                 left
+go-next                     right
+go-up                       up
+edit-delete                 empty_trash
+view-list-icons             grid
+view-list-details           view_details

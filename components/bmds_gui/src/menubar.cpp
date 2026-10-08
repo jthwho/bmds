@@ -149,6 +149,10 @@ bool MenuBar::open(size_t index, bool keyboard) {
                 _opening = false;
                 _titles[_open]->update();
         }
+        // Its callbacks this bar's (another bar may share it), its items filled.
+        _menus[index]->setDismissed(dismissed, this);
+        _menus[index]->setMoved(moved, this);
+        if (_aboutToShow != nullptr) _aboutToShow(_aboutToShowArg, *this, index, *_menus[index]);
         const Rect  t = _titles[index]->geometry();
         const Rect  s = w->screenRect();
         const Error err = _menus[index]->popup(Rect{uint16_t(s.x + t.x), uint16_t(s.y + t.y), t.width, t.height});

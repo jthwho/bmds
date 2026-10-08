@@ -5,7 +5,8 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * bmds_files (devplan/filebrowser.md §4f): the folder model and the file operations, on RAM disks.
+ * bmds_files (devplan/filebrowser.md §4f, §4h): the folder model and the file operations, on RAM
+ * disks; a window's history and folders.conf.
  */
 
 #include <doctest.h>
@@ -15,6 +16,8 @@
 #include <bmds/blockdevices.h>
 #include <bmds/fileops.h>
 #include <bmds/foldermodel.h>
+#include <bmds/foldersettings.h>
+#include <bmds/navigationhistory.h>
 #include <bmds/ramblockdevice.h>
 #include <bmds/vfs.h>
 
@@ -175,9 +178,18 @@ TEST_CASE_FIXTURE(Fixture, "FolderModel: filled in batches, in order at every st
         CHECK(m.indexOf("File 2") == 6);
         CHECK(m.indexOf("nothing") == -1);
 
+        // Formats by name when read (FB12); none for a name that says nothing, until set.
+        CHECK(m.entry(size_t(m.indexOf("alpha"))).format == "inode/directory");
+        CHECK(m.entry(size_t(m.indexOf("b.txt"))).format == "text/plain");
+        CHECK(m.entry(size_t(m.indexOf("File 2"))).format.isEmpty());
+        m.setFormat(size_t(m.indexOf("File 2")), "application/octet-stream");
+        CHECK(m.entry(size_t(m.indexOf("File 2"))).format == "application/octet-stream");
+        CHECK(m.hiddenCount() == 1);
+
         m.setShowHidden(true);
         CHECK(shown(m).size() == 9);
         CHECK(m.name(2) == ".hidden");
+        CHECK(m.hiddenCount() == 0);
         m.setShowHidden(false);
 
         m.setSort(FolderModel::Sort::Size, true); // the largest first, folders still first, ties by name up
@@ -357,4 +369,112 @@ TEST_CASE_FIXTURE(Fixture, "FileOps: renames, new items, copy names, and the tim
         CHECK(li == 0); // a folder: first
         CHECK(FileOps::baseName("/a/b/") == "b");
         CHECK(FileOps::baseName("name") == "name");
+}
+
+TEST_CASE("NavigationHistory: back, forward, a visit dropping what was ahead, the oldest going") {
+        bmds::NavigationHistory h;
+        CHECK(h.current().isEmpty());
+        CHECK_FALSE(h.canGoBack());
+        CHECK(h.back().isEmpty());
+        REQUIRE(h.visit("/a").isOk());
+        REQUIRE(h.visit("/a").isOk()); // the current one: not again
+        CHECK(h.count() == 1);
+        REQUIRE(h.visit("/a/b").isOk());
+        REQUIRE(h.visit("/a/b/c").isOk());
+        CHECK(h.current() == "/a/b/c");
+        CHECK(h.back() == "/a/b");
+        CHECK(h.back() == "/a");
+        CHECK_FALSE(h.canGoBack());
+        CHECK(h.back().isEmpty());
+        CHECK(h.current() == "/a");
+        CHECK(h.forward() == "/a/b");
+        CHECK(h.canGoForward());
+        REQUIRE(h.visit("/x").isOk()); // /a/b/c dropped
+        CHECK_FALSE(h.canGoForward());
+        CHECK(h.count() == 3);
+        CHECK(h.back() == "/a/b");
+        CHECK(h.forward() == "/x");
+        CHECK(h.forward().isEmpty());
+        // The oldest goes past MaxKept.
+        h.clear();
+        for (size_t i = 0; i < bmds::NavigationHistory::MaxKept + 5; ++i) {
+                const std::string p = "/f" + std::to_string(i);
+                REQUIRE(h.visit(StringView(p.c_str())).isOk());
+        }
+        CHECK(h.count() == bmds::NavigationHistory::MaxKept);
+        CHECK(h.current() == "/f36");
+        StringView first;
+        while (h.canGoBack()) first = h.back();
+        CHECK(first == "/f5");
+        // Parents.
+        CHECK(bmds::NavigationHistory::parentOf("/a/b") == "/a");
+        CHECK(bmds::NavigationHistory::parentOf("/a/b/") == "/a");
+        CHECK(bmds::NavigationHistory::parentOf("/a") == "/");
+        CHECK(bmds::NavigationHistory::parentOf("/") == "/");
+}
+
+TEST_CASE("FolderSettings: read, looked up, set newest, the oldest going, written back") {
+        using bmds::FolderSettings;
+        FolderSettings s;
+        REQUIRE(s.parse("# a comment\n"
+                        "[/sd0/p0/photos]\nView=Details\nSort=size\nDescending=true\nTree=200\n"
+                        "[relative]\nView=details\n"                           // not a path: dropped
+                        "[/home]\nView=nonsense\nSort=type\nTree=0\nOther=1\n" // a bad view, tree: defaults
+                        "[/boot]\n")
+                        .isOk());
+        CHECK(s.count() == 3);
+        FolderSettings::Values v;
+        REQUIRE(s.find("/sd0/p0/photos", v));
+        CHECK(v.view == FolderSettings::View::Details);
+        CHECK(v.sort == FolderModel::Sort::Size);
+        CHECK(v.descending);
+        CHECK(v.tree == 200);
+        REQUIRE(s.find("/home", v));
+        CHECK(v.view == FolderSettings::View::Icons);
+        CHECK(v.sort == FolderModel::Sort::Type);
+        CHECK_FALSE(v.descending);
+        CHECK(v.tree == 0);
+        CHECK(s.find("/boot", v));
+        CHECK_FALSE(s.find("relative", v));
+        CHECK_FALSE(s.find("/nowhere", v));
+        CHECK(s.set("relative", v) == Error::Invalid);
+
+        // Set: the newest, last when written.
+        FolderSettings::Values w;
+        w.view = FolderSettings::View::Details;
+        w.sort = FolderModel::Sort::Modified;
+        REQUIRE(s.set("/sd0/p0/photos", w).isOk());
+        CHECK(s.count() == 3);
+        bmds::String text;
+        REQUIRE(s.write(text).isOk());
+        const std::string out(text.cStr());
+        CHECK(out.find("[/home]") < out.find("[/boot]"));
+        CHECK(out.find("[/boot]") < out.find("[/sd0/p0/photos]"));
+        CHECK(out.find("[/sd0/p0/photos]\nView=details\nSort=modified\nDescending=false\n") != std::string::npos);
+        CHECK(out.find("Tree=") == std::string::npos); // none set now
+        CHECK(out.find("Other") == std::string::npos);
+
+        // Read back: the same.
+        FolderSettings again;
+        REQUIRE(again.parse(text.view()).isOk());
+        CHECK(again.count() == 3);
+        REQUIRE(again.find("/sd0/p0/photos", v));
+        CHECK(v.sort == FolderModel::Sort::Modified);
+        bmds::String text2;
+        REQUIRE(again.write(text2).isOk());
+        CHECK(text2.view() == text.view());
+
+        // Past MaxFolders the oldest go; one set again later stays.
+        FolderSettings many;
+        for (size_t i = 0; i < FolderSettings::MaxFolders + 10; ++i) {
+                const std::string p = "/d" + std::to_string(i);
+                REQUIRE(many.set(StringView(p.c_str()), v).isOk());
+                if (i == 200) REQUIRE(many.set("/d0", v).isOk()); // newer than /d1 to /d200
+        }
+        CHECK(many.count() == FolderSettings::MaxFolders);
+        CHECK(many.find("/d0", v));
+        CHECK_FALSE(many.find("/d1", v));
+        CHECK_FALSE(many.find("/d10", v));
+        CHECK(many.find("/d11", v));
+        CHECK(many.find("/d265", v));
 }

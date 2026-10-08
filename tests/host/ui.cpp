@@ -19,6 +19,7 @@
 #include <bmds/rect.h>
 #include <bmds/compose.h>
 #include <bmds/region.h>
+#include <bmds/servicequeue.h>
 #include <bmds/terminalscreen.h>
 #include <bmds/terminalview.h>
 #include <bmds/windowpalette.h>
@@ -978,4 +979,42 @@ TEST_CASE("Font: the icons, 16 by 16 in the private use area") {
                         CHECK(bit(r, c) == bit(r, 15 - c));
                         CHECK(bit(r, c) == bit(15 - r, c));
                 }
+}
+
+TEST_CASE("ServiceQueue: messages in order, refused when empty, too long or too many, kept when too big") {
+        bmds::ServiceQueue q;
+        uint8_t            out[bmds::ServiceQueue::MaxMessage];
+        auto               take = [&]() {
+                return q.take(bmds::WritableByteSpan(out, sizeof(out)));
+        };
+        CHECK(q.isEmpty());
+        CHECK(take().value() == 0);
+        const uint8_t a[] = {'a', 0, 'b'};
+        const uint8_t b[] = {'z'};
+        CHECK(q.push(bmds::ByteSpan()) == bmds::Error::Invalid);
+        std::vector<uint8_t> big(bmds::ServiceQueue::MaxMessage + 1, 'x');
+        CHECK(q.push(bmds::ByteSpan(big.data(), big.size())) == bmds::Error::Invalid);
+        REQUIRE(q.push(bmds::ByteSpan(a, sizeof(a))).isOk());
+        REQUIRE(q.push(bmds::ByteSpan(b, sizeof(b))).isOk());
+        CHECK(q.pendingBytes() == 2 + 3 + 2 + 1);
+        // Too small a buffer: kept.
+        uint8_t small[2];
+        CHECK(q.take(bmds::WritableByteSpan(small, sizeof(small))).error() == bmds::Error::BufferTooSmall);
+        auto first = take();
+        REQUIRE(first.value() == 3);
+        CHECK(std::memcmp(out, a, 3) == 0);
+        auto second = take();
+        REQUIRE(second.value() == 1);
+        CHECK(out[0] == 'z');
+        CHECK(q.isEmpty());
+        // Full past MaxPending: four of the longest fit less their lengths.
+        big.resize(bmds::ServiceQueue::MaxMessage);
+        size_t pushed = 0;
+        while (q.push(bmds::ByteSpan(big.data(), big.size())).isOk()) ++pushed;
+        CHECK(pushed == bmds::ServiceQueue::MaxPending / (bmds::ServiceQueue::MaxMessage + 2));
+        CHECK(q.push(bmds::ByteSpan(big.data(), big.size())) == bmds::Error::Full);
+        CHECK(take().value() == bmds::ServiceQueue::MaxMessage);
+        CHECK(q.push(bmds::ByteSpan(big.data(), big.size())).isOk()); // room again
+        q.clear();
+        CHECK(q.isEmpty());
 }

@@ -225,6 +225,15 @@ void GuiWindow::setLargeIcon(const Icon *icon) {
         return;
 }
 
+void GuiWindow::setTitle(StringView title) {
+        const size_t n = title.size() < WindowManager::MaxTitle ? title.size() : WindowManager::MaxTitle;
+        std::memcpy(_title, title.data(), n);
+        _title[n] = '\0';
+        const uint8_t id = this->id();
+        if (id != 0) (void)_app.windowManager().setTitle(id, StringView(_title, n));
+        return;
+}
+
 void GuiWindow::setCentral(Widget *widget) {
         _central = widget;
         if (widget != nullptr) widget->setGeometry(Rect{0, 0, geometry().width, geometry().height});

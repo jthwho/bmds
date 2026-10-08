@@ -12,7 +12,8 @@
  * program on the GUI toolkit: its items and their settings come from the
  * system configuration's panel/... (devplan/sysconf.md §8), read when it
  * starts; its launcher's entries from Desktop Entry files; the desktop is
- * /home/Desktop.
+ * /home/Desktop. Its folder windows (devplan/filebrowser.md §4h) open on the
+ * desktop's folders, from its `files` service, and from the `files` command.
  */
 
 #include <cstdio>
@@ -27,6 +28,7 @@
 #include <bmds/fileformat.h>
 #include <bmds/fileops.h>
 #include <bmds/filenames.h>
+#include <bmds/foldersettings.h>
 #include <bmds/font.h>
 #include <bmds/guiapplication.h>
 #include <bmds/guiclipboard.h>
@@ -46,6 +48,9 @@
 #include <bmds/widget.h>
 
 #include "desktopwindow.h"
+#include "fileicons.h"
+#include "folderactions.h"
+#include "folderwindow.h"
 #include "panelentries.h"
 #include "panelicons.h"
 
@@ -61,6 +66,7 @@ namespace {
         constexpr const char *PlacesPath = "/home/.config/desktop.conf";      // where the icons were put
         constexpr const char *UserMimeApps = "/home/.config/mimeapps.list";   // what opens files: the user's,
         constexpr const char *DefaultMimeApps = "/boot/config/mimeapps.list"; // else the system's
+        constexpr const char *FoldersPath = "/home/.config/folders.conf";     // how each folder was shown
 
         // The panel's settings: the system configuration's (devplan/sysconf.md §8).
         BMDS_SYSCONF(panelEdge, "panel/edge", Config::Type::Enum, "top", "The screen edge the panel is on", 0, 0,
@@ -89,9 +95,20 @@ namespace {
                      "A spacer's width in pixels (0: what is left)", 0, 2000, nullptr, nullptr)
         BMDS_SYSCONF(panelDesktopMenu, "panel/desktop/menu", Config::Type::Bool, "true",
                      "A right click on the desktop opens the launcher's menu", 0, 0, nullptr, nullptr)
+        // The folder windows' (devplan/filebrowser.md §4h, FB16).
+        BMDS_SYSCONF(filesShowHidden, "files/show-hidden", Config::Type::Bool, "false",
+                     "Folder windows show hidden files (a leading '.', or the hidden attribute)", 0, 0, nullptr,
+                     nullptr)
+        BMDS_SYSCONF(filesDefaultView, "files/default-view", Config::Type::Enum, "icons",
+                     "The view of a folder not shown before", 0, 0, "icons|details", nullptr)
 
         constexpr StringView  DesktopSuffix(".desktop");                // an icon's file, its name before it
         constexpr size_t      MaxPlacesBytes = 4096;
+        constexpr size_t      MaxFoldersBytes = 64 * 1024; // folders.conf read at most
+        constexpr uint32_t    FoldersSaveMs = 1000;        // a change written after
+        constexpr uint16_t    FolderWidth = 640;           // a folder window's
+        constexpr uint16_t    FolderHeight = 440;
+        constexpr uint16_t    FolderStep = 24;   // each window this much below and right of the last
         constexpr uint32_t    SaveDelayMs = 500; // after a drop: drawn first, then written
         constexpr size_t      MaxEntries = 48;
         constexpr uint32_t    IconRetryMs = 2000; // a desktop icon not found (the card later)
@@ -242,10 +259,23 @@ namespace {
                         int             _timer = -1;
         };
 
-        class PanelApp {
+        class PanelApp final : public FolderWindowHost {
                 public:
-                        explicit PanelApp(const BuiltinProgram::Context &context) : _context(context) {}
+                        explicit PanelApp(const BuiltinProgram::Context &context)
+                            : _context(context), _fileIcons(_app.icons()), _actions(_app, context, *this) {}
                         ~PanelApp();
+
+                        // The folder windows' host (devplan/filebrowser.md §4h).
+                        void                 openFolder(StringView path, StringView select) override;
+                        void                 folderChanged(StringView folder) override;
+                        FolderActions       &folderActions() override { return _actions; }
+                        FileIcons           &fileIcons() override { return _fileIcons; }
+                        FolderMenus         &folderMenus() override { return *_folderMenus; }
+                        FolderSettings      &folderSettings() override { return _folderSettings; }
+                        void                 folderSettingsChanged() override;
+                        void                 folderClosed(FolderWindow &window) override;
+                        bool                 showHidden() const override { return _showHidden; }
+                        FolderSettings::View defaultView() const override { return _defaultView; }
 
                         int run();
 
@@ -274,13 +304,17 @@ namespace {
                         static void  panelEscaped(void *arg);
                         void         focusDesktop();
                         void         startRename(size_t item, StringView text);
-                        static void  pasted(void *arg, Error err, StringView type, StringView data);
-                        void         pasteFile(StringView from, StringView directory);
                         void         createNew(int choice);
                         static void  iconChosen(void *arg, int choice);
-                        static Error renderIcon(void *arg, StringView type, String &out);
                         static void savePlaces(void *arg);
                         static void badEntry(void *arg, const char *path);
+                        static void  filesMessage(void *arg, ByteSpan message);
+                        static void  filesSettingsChanged(void *arg, SysConf::Id id);
+                        static void  reapFolders(void *arg);
+                        static void  saveFolders(void *arg);
+                        void         readFilesSettings();
+                        void         loadFolders();
+                        void         closeFolders();
 
                         void        say(const char *a, const char *b = "", const char *c = "", const char *d = "");
                         StringView  setting(const Config::Param &param);
@@ -296,21 +330,16 @@ namespace {
                         void        buildMenu(size_t submenuAfter);
                         Error       buildItems(Widget *row);
                         Error       openWindows();
-                        void        launch(const Entry &entry, StringView file = StringView());
                         void        open(const Entry &entry);
-                        void        openFile(const Entry &entry);
-                        bool        openWith(StringView id, StringView file);
                         const Icon *fileIcon(StringView type);
                         StringView  shownName(const Entry &entry) const;
                         const Icon *entryIcon(const Entry &entry, uint16_t side);
-                        Error       programPath(StringView command, String &out) const;
 
                         const BuiltinProgram::Context &_context;
                         GuiApplication                 _app;
                         PanelWindow                   *_panel = nullptr;
                         DesktopWindow                 *_desktop = nullptr;
                         char                           _desktopDirs[256] = {}; // the desktop (/home/Desktop)
-                        char                           _mimeApps[128] = {};    // the mimeapps.list used
                         Entry                         *_desktopEntries = nullptr;
                         size_t                         _desktopCount = 0;
                         bool                           _desktopIncomplete = false;
@@ -328,8 +357,7 @@ namespace {
                         PopupEdit                     *_nameEdit = nullptr;    // an icon's name being edited
                         size_t                         _renaming = 0;          // the icon it is
                         char                           _renameTried[sizeof(PanelEntry::file)] = {}; // to edit again
-                        size_t                         _iconItem = 0;                              // the icon it is for
-                        String _copied{MemSpace::Psram}; // the icons copied: their paths, a line each
+                        size_t                         _iconItem = 0;             // the icon it is for
                         Button                        *_launcher = nullptr;       // pressed in while its menu is open
                         Button                        *_launcherButton = nullptr; // the launcher item's
                         char                           _applications[256] = {};   // panel/launcher/applications
@@ -344,6 +372,17 @@ namespace {
                         size_t                         _entryCount = 0;
                         Rect                           _screen;
                         bool                           _bottom = false;
+                        FileIcons                      _fileIcons;
+                        FolderActions                  _actions;
+                        FolderSettings                 _folderSettings;
+                        FolderMenus                   *_folderMenus = nullptr; // PSRAM, the first window's
+                        List<FolderWindow *>           _folderWindows{MemSpace::Psram};
+                        int                            _foldersTimer = -1; // folders.conf to write
+                        bool                           _reapPosted = false;
+                        bool                           _quietDesktop = false; // a rename's: reloaded after
+                        bool                           _showHidden = false;
+                        FolderSettings::View           _defaultView = FolderSettings::View::Icons;
+                        unsigned                       _cascade = 0;
         };
 
         // ---- Desktop, window list, clock
@@ -480,6 +519,7 @@ namespace {
 
         PanelApp::~PanelApp() {
                 // The windows (and their widgets) before the application they belong to.
+                closeFolders();
                 freeLauncher();
                 if (_iconTimer >= 0) _app.stopTimer(_iconTimer);
                 if (_saveTimer >= 0) {
@@ -660,137 +700,20 @@ namespace {
 
         void PanelApp::triggered(void *arg, int item) {
                 auto *self = static_cast<PanelApp *>(arg);
-                if (item >= 0 && size_t(item) < self->_entryCount) self->launch(self->_entries[item]);
+                if (item >= 0 && size_t(item) < self->_entryCount) self->_actions.launch(self->_entries[item].entry);
                 return;
         }
 
-        // Entry @p entry's command started (in a terminal if it asks), not waited for; given
-        // @p file, its field codes are it (devplan/filetypes.md T7).
-        void PanelApp::launch(const Entry &entry, StringView file) {
-                if (_context.launcher == nullptr) return;
-                char         buffer[DesktopEntry::MaxExec + Vfs::MaxPath + 1];
-                StringView   args[DesktopEntry::MaxArgs + 2];
-                const size_t front = entry.entry.terminal ? 2 : 0;
-                auto [n, err] = DesktopEntry::splitExec(StringView(entry.entry.exec), buffer, sizeof(buffer),
-                                                        Span<StringView>(args + front, DesktopEntry::MaxArgs), file);
-                if (err.isError()) {
-                        say("panel: ", entry.entry.name, ": its Exec line can't be used\n");
-                        return;
-                }
-                if (entry.entry.terminal) {
-                        args[0] = "terminal";
-                        args[1] = "-e";
-                }
-                const size_t count = n + front;
-                String       found;
-                err = programPath(args[0], found);
-                const StringView path = found.view();
-                if (err.isOk()) {
-                        ProgramLauncher::Request request;
-                        request.path = path;
-                        request.args = Span<const StringView>(args, count);
-                        request.environment = _context.environment;
-                        request.fds = _context.fds;
-                        request.cwd = _context.cwd;
-                        request.console = _context.console;
-                        request.session = true; // not the panel's terminal's: its signals aren't the program's
-                        auto [pid, serr] = _context.launcher->start(request);
-                        err = serr;
-                        if (err.isOk() && _context.process != nullptr) _context.process->disownChild(pid);
-                }
-                if (err.isError())
-                        say("panel: ", entry.entry.name, ": ",
-                            err == Error::NotExist ? "not found\n" : "can't start it\n");
-                return;
-        }
-
-        // Where @p command (a name on $PATH, or a path) is.
-        Error PanelApp::programPath(StringView command, String &out) const {
-                out.clear();
-                if (command.contains('/')) return out.append(command);
-                StringView searchPath;
-                for (const StringView &v : _context.environment)
-                        if (v.startsWith(StringView("PATH="))) searchPath = v.mid(5);
-                const Vfs::Context vc{_context.cwd, nullptr};
-                return Vfs::findProgram(command, searchPath, vc, out);
-        }
-
-        // A desktop item opened: a launcher started, another file opened by its type.
+        // A desktop item opened: a launcher started, a folder in a window, another file by its type.
         void PanelApp::open(const Entry &entry) {
                 if (entry.isLauncher()) {
-                        launch(entry);
+                        _actions.launch(entry.entry);
+                } else if (StringView(entry.type) == FileFormat::Directory) {
+                        openFolder(StringView(entry.path), StringView());
                 } else {
-                        openFile(entry);
+                        _actions.openFile(StringView(entry.path), StringView(entry.type));
                 }
                 return;
-        }
-
-        // A file opened by the application mimeapps.list names for its type (devplan/filetypes.md
-        // T6): the type's, its media's, text/plain's for text, then application/octet-stream's.
-        void PanelApp::openFile(const Entry &entry) {
-                constexpr size_t   MaxBytes = 4096;
-                const StringView   type(entry.type);
-                const Vfs::Context vc{_context.cwd, nullptr};
-                char              *text = static_cast<char *>(Memory::alloc(MemSpace::Psram, MaxBytes));
-                if (text == nullptr) return;
-                size_t got = 0;
-                auto [file, err] = Vfs::open(StringView(_mimeApps), Vfs::Read, vc);
-                while (err.isOk() && got < MaxBytes) {
-                        auto [n, rerr] = file->read(
-                                WritableByteSpan(reinterpret_cast<uint8_t *>(text) + got, MaxBytes - got), WaitForever);
-                        if (rerr.isError() || n == 0) break;
-                        got += n;
-                }
-                bool       opened = false;
-                StringView types[] = {type, FileFormat::isText(type) ? FileFormat::PlainText : StringView(),
-                                      FileFormat::Binary};
-                for (size_t t = 0; t < 3 && !opened; ++t) {
-                        if (types[t].isEmpty() || (t > 0 && types[t] == type)) continue;
-                        StringView   ids[8];
-                        const size_t n = MimeApps::lookup(StringView(text, got), types[t], Span<StringView>(ids));
-                        for (size_t i = 0; i < n && !opened; ++i) opened = openWith(ids[i], StringView(entry.path));
-                }
-                Memory::free(text);
-                if (!opened) {
-                        char message[160];
-                        std::snprintf(message, sizeof(message), "There's no application set to open %s files.",
-                                      entry.type);
-                        if (MessageBox::show(_app, MessageBox::Kind::Information, "Open", StringView(message),
-                                             MessageBox::Buttons::Ok, nullptr, nullptr)
-                                    .isError())
-                                say("panel: ", message, "\n");
-                }
-                return;
-        }
-
-        // Application @p id (a Desktop Entry file in the launcher's directories, the first found)
-        // started on @p file. False if it isn't there.
-        bool PanelApp::openWith(StringView id, StringView file) {
-                const Vfs::Context vc{_context.cwd, nullptr};
-                StringView         dirs(_applications);
-                for (StringView d = IniReader::nextListItem(dirs); !d.isEmpty(); d = IniReader::nextListItem(dirs)) {
-                        String path;
-                        if (path.append(d).isError() || path.append('/').isError() || path.append(id).isError())
-                                continue;
-                        auto [handle, err] = Vfs::open(path.view(), Vfs::Read, vc);
-                        if (err.isError()) continue;
-                        char   text[1024];
-                        size_t got = 0;
-                        while (got < sizeof(text)) {
-                                auto [n, rerr] = handle->read(
-                                        WritableByteSpan(reinterpret_cast<uint8_t *>(text) + got, sizeof(text) - got),
-                                        WaitForever);
-                                if (rerr.isError() || n == 0) break;
-                                got += n;
-                        }
-                        auto [entry, perr] = DesktopEntry::parse(StringView(text, got));
-                        if (perr.isError() || entry.hidden) continue;
-                        Entry e;
-                        e.entry = entry;
-                        launch(e, file);
-                        return true;
-                }
-                return false;
         }
 
         // A file's icon (devplan/filetypes.md T10): its type's, the generic one, else `unknown`.
@@ -818,7 +741,7 @@ namespace {
                 String     path;
                 auto [n, err] = DesktopEntry::splitExec(StringView(entry.entry.exec), buffer, sizeof(buffer),
                                                         Span<StringView>(args));
-                if (err.isOk() && n > 0) (void)programPath(args[0], path);
+                if (err.isOk() && n > 0) (void)_actions.programPath(args[0], path);
                 return _app.icons().forProgram(StringView(entry.entry.icon), path.view(), side);
         }
 
@@ -849,9 +772,7 @@ namespace {
                 self->_menuX = x;
                 self->_menuY = y;
                 Menu         &menu = *self->_desktopMenu;
-                GuiClipboard *clipboard = self->_app.clipboard();
-                const bool    files =
-                        clipboard != nullptr && clipboard->canPaste(Clipboard::Selection::Clipboard, "text/uri-list");
+                const bool    files = self->_actions.canPaste();
                 menu.clear();
                 if (self->_menu != nullptr) {
                         (void)menu.addSubmenu("&Applications", *self->_menu);
@@ -874,62 +795,13 @@ namespace {
                         self->createNew(choice);
                         return;
                 }
-                GuiClipboard *clipboard = self->_app.clipboard();
-                if (choice != ChoosePaste || clipboard == nullptr) return;
-                if (clipboard->paste(Clipboard::Selection::Clipboard, "text/uri-list", pasted, self).isError())
-                        self->say("panel: can't paste\n");
-                return;
-        }
-
-        // The pasted URI list: each file:// one copied into the desktop's first directory (a copy's
-        // name if its own is taken: devplan/files.md F1), then the desktop shown again.
-        void PanelApp::pasted(void *arg, Error err, StringView type, StringView data) {
-                (void)type;
-                auto *self = static_cast<PanelApp *>(arg);
-                if (err.isError()) {
-                        self->say("panel: paste: ", err.desc(), "\n");
-                        return;
-                }
+                if (choice != ChoosePaste) return;
+                // Into the desktop's folder (made if it isn't there): the desktop told when done.
                 StringView       dirs(self->_desktopDirs);
                 const StringView directory = IniReader::nextListItem(dirs);
                 if (directory.isEmpty()) return;
-                const Vfs::Context vc{self->_context.cwd, nullptr};
-                (void)Vfs::mkdir(directory, vc); // there already, most likely
-                while (!data.isEmpty()) {
-                        const size_t end = data.indexOf('\n');
-                        StringView   line = (end == StringView::NPos ? data : data.left(end)).trimmed();
-                        data = end == StringView::NPos ? StringView() : data.mid(end + 1);
-                        if (line.isEmpty() || line.startsWith('#') || !line.startsWith("file://")) continue;
-                        line = line.mid(7); // file://HOST/PATH: the path
-                        const size_t slash = line.indexOf('/');
-                        line = slash == StringView::NPos ? StringView() : line.mid(slash);
-                        char path[Vfs::MaxPath + 1];
-                        auto [n, derr] = Uri::decode(line, Span<char>(path, sizeof(path)));
-                        if (derr.isOk() && n > 0) self->pasteFile(StringView(path, n), directory);
-                }
-                if (!self->loadDesktop()) self->say("panel: the desktop's icons aren't all found yet\n");
-                return;
-        }
-
-        // A paste keeps both when a name is taken: the copy under a copy's name (files.md F1).
-        struct KeepBoth final : FileOps::Progress {
-                        FileOps::Resolution conflict(StringView, StringView, bool) override {
-                                return FileOps::Resolution::KeepBoth;
-                        }
-        };
-
-        // @p from (a file, or a folder and its tree) copied into @p directory: under its own name, or
-        // the first copy's name free.
-        void PanelApp::pasteFile(StringView from, StringView directory) {
-                const Vfs::Context vc{_context.cwd, nullptr};
-                KeepBoth           progress;
-                const Error        err = FileOps::copy(from, directory, vc, progress);
-                if (err.isError()) {
-                        char line[160];
-                        std::snprintf(line, sizeof(line), "panel: paste: %.*s: %s\n", int(from.size()), from.data(),
-                                      err.desc());
-                        say(line);
-                }
+                (void)Vfs::mkdir(directory, Vfs::Context{self->_context.cwd, nullptr});
+                self->_actions.paste(directory);
                 return;
         }
 
@@ -943,22 +815,12 @@ namespace {
                 const FileOps::NewKind kind = choice == ChooseNewFolder ? FileOps::NewKind::Folder
                                               : choice == ChooseNewText ? FileOps::NewKind::TextDocument
                                                                         : FileOps::NewKind::EmptyFile;
-                const Vfs::Context     vc{_context.cwd, nullptr};
-                (void)Vfs::mkdir(directory, vc); // there already, most likely
-                auto [path, err] = FileOps::makeNew(directory, kind, vc);
+                // Made, and the desktop read again (told by the actions).
+                auto [path, err] = _actions.makeNew(directory, kind);
+                if (err.isError()) return;
                 char             name[sizeof(PanelEntry::file)];
                 const StringView made = FileOps::baseName(path.view());
                 std::snprintf(name, sizeof(name), "%.*s", int(made.size()), made.data());
-                if (err.isError()) {
-                        char message[160];
-                        std::snprintf(message, sizeof(message), "Can't make it: %s.", err.desc());
-                        if (MessageBox::show(_app, MessageBox::Kind::Error, "New", StringView(message),
-                                             MessageBox::Buttons::Ok, nullptr, nullptr)
-                                    .isError())
-                                say("panel: ", message, "\n");
-                        return;
-                }
-                (void)loadDesktop();
                 for (size_t i = 0; i < _desktopCount; ++i) {
                         if (std::strcmp(_desktopEntries[i].file, name) != 0) continue;
                         if (_desktop->placeItem(i, _menuX, _menuY)) {
@@ -1108,60 +970,22 @@ namespace {
                                 if (size_t(i) < self->_desktopCount) self->open(self->_desktopEntries[i]);
                         return;
                 }
-                if (choice == 2) {
-                        // To their filesystems' trash (devplan/files.md F8): `trash -r` brings them back.
-                        const Vfs::Context vc{self->_context.cwd, nullptr};
-                        for (int i = self->_desktop->nextSelected(0); i >= 0;
-                             i = self->_desktop->nextSelected(size_t(i) + 1)) {
-                                const PanelEntry &e = self->_desktopEntries[i];
-                                const Error       err = e.path[0] != '\0' ? FileOps::trash(StringView(e.path), vc)
-                                                                          : Error(Error::NotExist);
-                                if (err.isError()) self->say("panel: can't move it to the trash: ", err.desc(), "\n");
-                        }
-                        (void)self->loadDesktop();
-                        return;
-                }
-                GuiClipboard *clipboard = self->_app.clipboard();
-                if (choice != 1 || clipboard == nullptr) return;
-                self->_copied.clear();
+                // Copy and Delete: the selected icons' paths, a line each.
+                String paths(MemSpace::Psram);
                 for (int i = self->_desktop->nextSelected(0); i >= 0; i = self->_desktop->nextSelected(size_t(i) + 1)) {
                         const PanelEntry &e = self->_desktopEntries[i];
                         if (e.path[0] == '\0') continue;
-                        if (!self->_copied.isEmpty()) (void)self->_copied.append('\n');
-                        (void)self->_copied.append(StringView(e.path));
+                        if (!paths.isEmpty()) (void)paths.append('\n');
+                        (void)paths.append(StringView(e.path));
                 }
-                if (self->_copied.isEmpty()) return;
-                clipboard->setName("panel");
-                const StringView types[] = {"text/uri-list", ClipboardType::Text};
-                if (clipboard->copy(Clipboard::Selection::Clipboard, Span<const StringView>(types), renderIcon, self)
-                            .isError())
-                        self->say("panel: can't copy the icon\n");
+                if (paths.isEmpty()) return;
+                if (choice == 2) {
+                        // To their filesystems' trash (devplan/files.md F8): `trash -r` brings them back.
+                        self->_actions.trash(paths.view());
+                } else if (choice == 1) {
+                        self->_actions.copy(paths.view());
+                }
                 return;
-        }
-
-        // The icons copied: their paths as text, one a line; as a URI list, file:// and each path, %XX for
-        // what a URI can't hold as it is (RFC 3986's unreserved and /).
-        Error PanelApp::renderIcon(void *arg, StringView type, String &out) {
-                auto            *self = static_cast<PanelApp *>(arg);
-                const StringView paths = self->_copied.view();
-                if (!ClipboardType::equal(type, "text/uri-list")) return out.assign(paths);
-                out.clear();
-                Error      err;
-                StringView rest = paths;
-                while (err.isOk() && !rest.isEmpty()) {
-                        const size_t     end = rest.indexOf('\n');
-                        const StringView path = end == StringView::NPos ? rest : rest.left(end);
-                        rest = end == StringView::NPos ? StringView() : rest.mid(end + 1);
-                        err = out.append("file://");
-                        for (const char ch : path) {
-                                const bool plain = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-                                                   (ch >= '0' && ch <= '9') || StringView("-._~/").contains(ch);
-                                if (err.isOk())
-                                        err = plain ? out.append(ch) : out.appendf("%%%02X", unsigned(uint8_t(ch)));
-                        }
-                        if (err.isOk()) err = out.append("\r\n");
-                }
-                return err;
         }
 
         // An icon to rename (its menu, a slow second click, a long press): its name edited in place.
@@ -1204,46 +1028,17 @@ namespace {
                 if (self->_desktop != nullptr) self->_desktop->setEditing(-1);
                 if (!accepted || self->_renaming >= self->_desktopCount) return;
                 PanelEntry      &e = self->_desktopEntries[self->_renaming];
-                const StringView old = self->shownName(e);
                 const StringView suffix = e.isLauncher() ? DesktopSuffix : StringView(); // a launcher's .desktop kept
                 const StringView name = text.trimmed();
-                if (name.isEmpty() || name == old) return; // nothing to do
-                const char *problem = nullptr;
-                char        message[160];
-                bool        dots = true;
-                for (const char ch : name) dots = dots && (ch == '.' || ch == ' ');
-                if (dots) {
-                        problem = "A name needs more than dots and spaces.";
-                } else if (name.size() + suffix.size() >= sizeof(e.file)) {
-                        std::snprintf(message, sizeof(message), "That name is too long: %zu bytes at most.",
-                                      sizeof(e.file) - 1 - suffix.size());
-                        problem = message;
-                } else {
-                        for (const char ch : name)
-                                if (StringView("/\\:*?\"<>|").contains(ch))
-                                        problem = "A name can't hold any of these: / \\ : * ? \" < > |";
-                }
-                String to;
-                Error  err = Error::Ok;
-                if (problem == nullptr) {
-                        const StringView path(e.path);
-                        err = to.append(path.left(path.lastIndexOf('/') + 1));
-                        if (err.isOk()) err = to.append(name);
-                        if (err.isOk()) err = to.append(suffix);
-                        const Vfs::Context vc{self->_context.cwd, nullptr};
-                        // Taken by another file (a name differing only in case is this one: FAT).
-                        if (err.isOk() && !name.equalsIgnoreCase(old) && Vfs::lstat(to.view(), vc).isOk()) {
-                                std::snprintf(message, sizeof(message), "There is already an icon named \"%.*s\" here.",
-                                              int(name.size()), name.data());
-                                problem = message;
-                        } else if (err.isOk()) {
-                                err = FileOps::rename(path, to.view().mid(to.view().lastIndexOf('/') + 1), vc);
-                        }
-                        if (err.isError()) {
-                                std::snprintf(message, sizeof(message), "Can't rename it: %s.", err.desc());
-                                problem = message;
-                        }
-                }
+                String           to(MemSpace::Psram);
+                char             message[200];
+                // The desktop read again below, once its place is written under the new name.
+                self->_quietDesktop = true;
+                const bool done = self->_actions.rename(StringView(e.path), name, suffix, sizeof(e.file) - 1, to,
+                                                        Span<char>(message, sizeof(message)));
+                self->_quietDesktop = false;
+                const char *problem = !done && message[0] != '\0' ? message : nullptr;
+                if (!done && problem == nullptr) return; // the same name
                 if (problem != nullptr) {
                         // Told, then back to editing what was typed.
                         const size_t n = name.size() < sizeof(self->_renameTried) - 1 ? name.size()
@@ -1513,6 +1308,9 @@ namespace {
                 _submenuAfter = static_cast<size_t>(intSetting(bmdsConf_panelLauncherSubmenus));
                 loadEntries(StringView(_applications));
                 buildMenu(_submenuAfter);
+                _actions.setApplications(StringView(_applications));
+                readFilesSettings();
+                loadFolders();
 
                 {
                         Mutex::Locker lock(_app.lock(), WaitForever);
@@ -1525,6 +1323,11 @@ namespace {
                 // Its settings followed while it runs (devplan/sysconf.md §12.3).
                 if (_app.watchConfig("panel", settingsChanged, this).isError())
                         say("panel: its settings take effect when it starts again\n");
+                if (_app.watchConfig("files", filesSettingsChanged, this).isError())
+                        say("panel: files/... take effect when it starts again\n");
+                // `files` opens folder windows here (devplan/filebrowser.md FB6).
+                if (_app.registerService("files", filesMessage, this).isError())
+                        say("panel: the files service is taken: 'files' won't open windows here\n");
                 return _app.exec();
         }
 
@@ -1539,7 +1342,7 @@ namespace {
                 const StringView   mimeApps = Vfs::stat(StringView(UserMimeApps), vc).isOk()
                                                       ? StringView(UserMimeApps)
                                                       : StringView(DefaultMimeApps);
-                std::snprintf(_mimeApps, sizeof(_mimeApps), "%.*s", int(mimeApps.size()), mimeApps.data());
+                _actions.setMimeApps(mimeApps);
                 if (menu || !icons.isEmpty()) {
                         GuiWindow::Config dc;
                         dc.rect = _screen;
@@ -1636,7 +1439,10 @@ namespace {
                 const bool       themed = theme != StringView(_theme);
                 if (themed) {
                         std::snprintf(_theme, sizeof(_theme), "%.*s", int(theme.size()), theme.data());
+                        // The type icons' copies go first, then the theme's: the windows take new ones.
+                        _fileIcons.clear();
                         _app.icons().setTheme(StringView(_theme));
+                        for (FolderWindow *w : _folderWindows) w->settingsChanged();
                         if (_newMenu != nullptr) {
                                 _newMenu->~Menu();
                                 Memory::free(_newMenu);
@@ -1645,6 +1451,7 @@ namespace {
                 }
                 const StringView apps = setting(bmdsConf_panelLauncherApplications);
                 std::snprintf(_applications, sizeof(_applications), "%.*s", int(apps.size()), apps.data());
+                _actions.setApplications(StringView(_applications));
                 _submenuAfter = static_cast<size_t>(intSetting(bmdsConf_panelLauncherSubmenus));
                 reloadLauncher();
                 // The row: its items made again from panel/items and theirs.
@@ -1663,6 +1470,174 @@ namespace {
                                 auto [timer, terr] = _app.startTimer(IconRetryMs, true, desktopIconsTick, this);
                                 if (terr.isOk()) _iconTimer = timer;
                         }
+                }
+                return;
+        }
+
+        // ---- Folder windows (devplan/filebrowser.md §4h)
+
+        // A window on @p path (@p select selected once read), cascaded from the last one opened.
+        void PanelApp::openFolder(StringView path, StringView select) {
+                if (_folderMenus == nullptr) {
+                        void *mem = Memory::alloc(MemSpace::Psram, sizeof(FolderMenus));
+                        if (mem == nullptr) return;
+                        _folderMenus = ::new (mem) FolderMenus(_app);
+                }
+                if (_folderWindows.reserve(_folderWindows.size() + 1).isError()) return;
+                const Rect        work = _app.windowManager().workArea();
+                const unsigned    step = _cascade++ % 8;
+                GuiWindow::Config config;
+                config.rect = Rect{uint16_t(work.x + 48 + step * FolderStep), uint16_t(work.y + 24 + step * FolderStep),
+                                   FolderWidth < work.width ? FolderWidth : work.width,
+                                   FolderHeight < work.height ? FolderHeight : work.height};
+                config.title = "Files";
+                config.kind = "files";
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(FolderWindow));
+                if (mem == nullptr) return;
+                auto *w = ::new (mem) FolderWindow(_app, config, *this);
+                (void)_folderWindows.append(w); // reserved
+                Error err = w->build();
+                if (err.isOk()) err = w->go(path, select);
+                if (err.isOk()) err = w->show();
+                if (err.isError()) {
+                        if (err == Error::NoMem || err == Error::Full)
+                                _actions.tell("Files", "No room for another window.");
+                        folderClosed(*w);
+                        return;
+                }
+                w->activate();
+                return;
+        }
+
+        void PanelApp::folderClosed(FolderWindow &window) {
+                if (window.isShown()) window.close();
+                if (!_reapPosted) _reapPosted = _app.post(reapFolders, this).isOk();
+                return;
+        }
+
+        // The windows closed, destroyed (after the event that closed them).
+        void PanelApp::reapFolders(void *arg) {
+                auto *self = static_cast<PanelApp *>(arg);
+                self->_reapPosted = false;
+                for (size_t i = self->_folderWindows.size(); i-- > 0;) {
+                        FolderWindow *w = self->_folderWindows[i];
+                        if (w->isShown()) continue;
+                        self->_folderWindows.removeAt(i);
+                        w->~FolderWindow();
+                        Memory::free(w);
+                }
+                return;
+        }
+
+        void PanelApp::closeFolders() {
+                for (FolderWindow *w : _folderWindows) {
+                        w->~FolderWindow();
+                        Memory::free(w);
+                }
+                _folderWindows.clear();
+                if (_folderMenus != nullptr) {
+                        _folderMenus->~FolderMenus();
+                        Memory::free(_folderMenus);
+                        _folderMenus = nullptr;
+                }
+                if (_foldersTimer >= 0) {
+                        _app.stopTimer(_foldersTimer);
+                        saveFolders(this); // a change not written yet
+                }
+                return;
+        }
+
+        // An action changed @p folder: the windows on it read it again, the trees showing it too, and
+        // the desktop if it is the desktop's (the VFS's watches will tell of the rest: step 5).
+        void PanelApp::folderChanged(StringView folder) {
+                for (FolderWindow *w : _folderWindows) {
+                        if (w->path() == folder) w->refresh();
+                        w->treeChanged(folder);
+                }
+                StringView       dirs(_desktopDirs);
+                const StringView desktop = IniReader::nextListItem(dirs);
+                if (!_quietDesktop && folder == desktop) (void)loadDesktop();
+                return;
+        }
+
+        // A message to the files service: absolute paths, NUL after each; a window for each (a
+        // file's folder with the file selected).
+        void PanelApp::filesMessage(void *arg, ByteSpan message) {
+                auto      *self = static_cast<PanelApp *>(arg);
+                StringView rest(reinterpret_cast<const char *>(message.data()), message.size());
+                while (!rest.isEmpty()) {
+                        const size_t     end = rest.indexOf('\0');
+                        const StringView path = end == StringView::NPos ? rest : rest.left(end);
+                        rest = end == StringView::NPos ? StringView() : rest.mid(end + 1);
+                        if (path.startsWith('/')) self->openFolder(path, StringView());
+                }
+                return;
+        }
+
+        void PanelApp::readFilesSettings() {
+                const Result<bool> hidden = SysConf::getBool(bmdsConf_filesShowHidden.key);
+                _showHidden = hidden.isOk() && hidden.value();
+                FolderSettings::View view = FolderSettings::View::Icons;
+                (void)FolderSettings::parseView(setting(bmdsConf_filesDefaultView), view);
+                _defaultView = view;
+                return;
+        }
+
+        void PanelApp::filesSettingsChanged(void *arg, SysConf::Id) {
+                auto *self = static_cast<PanelApp *>(arg);
+                self->readFilesSettings();
+                for (FolderWindow *w : self->_folderWindows) w->settingsChanged();
+                return;
+        }
+
+        // folders.conf, read once: how each folder was shown.
+        void PanelApp::loadFolders() {
+                char *text = static_cast<char *>(Memory::alloc(MemSpace::Psram, MaxFoldersBytes));
+                if (text == nullptr) return;
+                size_t             got = 0;
+                const Vfs::Context vc{_context.cwd, nullptr};
+                auto [file, err] = Vfs::open(StringView(FoldersPath), Vfs::Read, vc);
+                while (err.isOk() && got < MaxFoldersBytes) {
+                        auto [n, rerr] = file->read(
+                                WritableByteSpan(reinterpret_cast<uint8_t *>(text) + got, MaxFoldersBytes - got),
+                                WaitForever);
+                        if (rerr.isError() || n == 0) break;
+                        got += n;
+                }
+                if (_folderSettings.parse(StringView(text, got)).isError()) say("panel: no memory for folders.conf\n");
+                Memory::free(text);
+                return;
+        }
+
+        void PanelApp::folderSettingsChanged() {
+                if (_foldersTimer >= 0) return; // written soon already
+                auto [timer, err] = _app.startTimer(FoldersSaveMs, false, saveFolders, this);
+                if (err.isOk()) _foldersTimer = timer;
+                return;
+        }
+
+        void PanelApp::saveFolders(void *arg) {
+                auto *self = static_cast<PanelApp *>(arg);
+                self->_foldersTimer = -1;
+                String text(MemSpace::Psram);
+                Error  err = self->_folderSettings.write(text);
+                if (err.isOk()) {
+                        const Vfs::Context vc{self->_context.cwd, nullptr};
+                        (void)Vfs::mkdir(StringView(ConfigDir), vc);
+                        auto [file, oerr] =
+                                Vfs::open(StringView(FoldersPath), Vfs::Write | Vfs::Create | Vfs::Truncate, vc);
+                        err = oerr;
+                        if (err.isOk()) {
+                                auto [n, werr] = file->write(
+                                        ByteSpan(reinterpret_cast<const uint8_t *>(text.cStr()), text.size()),
+                                        WaitForever);
+                                err = werr.isError() ? werr : (n != text.size() ? Error(Error::IoError) : Error());
+                        }
+                }
+                if (err.isError()) {
+                        char line[96];
+                        std::snprintf(line, sizeof(line), "panel: %s: can't write it: %s\n", FoldersPath, err.desc());
+                        self->say(line);
                 }
                 return;
         }

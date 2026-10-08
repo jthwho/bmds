@@ -8,6 +8,7 @@
  * A GUI program's event loop (devplan/gui.md §4b, G2).
  */
 
+#include <cstring>
 #include <new>
 #include <bmds/deadline.h>
 #include <bmds/guiapplication.h>
@@ -32,6 +33,11 @@ GuiApplication::~GuiApplication() {
                 Memory::free(_clipboard);
         }
         if (_wm != nullptr && !_gone.load(std::memory_order_acquire)) _wm->disconnect(_client);
+        // After the connection: no notification can come for them now.
+        for (Service *&s : _services) {
+                Memory::free(s);
+                s = nullptr;
+        }
 }
 
 Error GuiApplication::connect(size_t display) {
@@ -119,6 +125,47 @@ void GuiApplication::keyGrabbed(void *arg, uint8_t) {
         const KeyGrab &g = *static_cast<const KeyGrab *>(arg);
         (void)g.app->post(g.fn, g.arg);
         return;
+}
+
+Error GuiApplication::registerService(StringView name, ServiceMessage fn, void *arg) {
+        if (fn == nullptr || name.size() > WindowManager::MaxServiceName) return Error::Invalid;
+        for (Service *&slot : _services) {
+                if (slot != nullptr) continue;
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(Service));
+                if (mem == nullptr) return Error::NoMem;
+                auto *s = ::new (mem) Service();
+                s->app = this;
+                s->fn = fn;
+                s->arg = arg;
+                std::memcpy(s->name, name.data(), name.size());
+                const Error err = _wm->registerService(_client, name, serviceNotified, s);
+                if (err.isError()) {
+                        Memory::free(s);
+                        return err;
+                }
+                slot = s;
+                return Error::Ok;
+        }
+        return Error::Full;
+}
+
+// A message waits (the sender's task, the window manager locked): taken on the loop. A post
+// lost to a full queue loses nothing: the next message's post takes it too.
+void GuiApplication::serviceNotified(void *arg) {
+        auto *s = static_cast<Service *>(arg);
+        (void)s->app->post(serviceDue, s);
+        return;
+}
+
+// Every message waiting, told in order (the loop's thread, the lock held).
+void GuiApplication::serviceDue(void *arg) {
+        auto *s = static_cast<Service *>(arg);
+        for (;;) {
+                auto [n, err] = s->app->_wm->takeServiceMessage(s->app->_client, StringView(s->name),
+                                                                WritableByteSpan(s->buffer, sizeof(s->buffer)));
+                if (err.isError() || n == 0) return;
+                s->fn(s->arg, ByteSpan(s->buffer, n));
+        }
 }
 
 Error GuiApplication::setWindowsChanged(Callback fn, void *arg) {

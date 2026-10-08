@@ -98,6 +98,12 @@ class GuiWindow : public Widget {
                 /** @brief Returns its client area on the screen (empty: not open). */
                 Rect screenRect() const { return _screen; }
 
+                /** @brief Sets its title (cut at `WindowManager::MaxTitle` bytes), shown or not. */
+                void setTitle(StringView title);
+
+                /** @brief Returns its title. */
+                StringView title() const { return StringView(_title); }
+
                 /** @brief Sets the widget that fills it (one of its children). */
                 void setCentral(Widget *widget);
 

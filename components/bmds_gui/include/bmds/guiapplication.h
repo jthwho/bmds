@@ -148,6 +148,21 @@ class GuiApplication {
                  */
                 Error grabKey(uint8_t usage, uint8_t modifiers, Callback fn, void *arg);
 
+                /** @brief Told a message sent to the application's service (on the loop's thread, the lock held). */
+                using ServiceMessage = void (*)(void *arg, ByteSpan message);
+
+                /** @brief Services at once. */
+                static constexpr size_t MaxServices = 2;
+
+                /**
+                 * @brief Names a service of the application (`WindowManager::registerService()`,
+                 *        `devplan/filebrowser.md` §4h): each message sent to @p name is
+                 *        told to @p fn, in order.
+                 * @return `Ok`, `Full`, or the window manager's error (`Exists`: another
+                 *         program has the name).
+                 */
+                Error registerService(StringView name, ServiceMessage fn, void *arg);
+
                 /**
                  * @brief Returns the application's clipboard (`devplan/clipboard.md`
                  *        C13), made the first time; null without the memory. Its copies
@@ -219,6 +234,15 @@ class GuiApplication {
                                 void           *arg = nullptr;
                 };
 
+                // A registerService()'s: PSRAM, made when asked for, with room for a message.
+                struct Service {
+                                GuiApplication *app = nullptr;
+                                ServiceMessage  fn = nullptr;
+                                void           *arg = nullptr;
+                                char            name[WindowManager::MaxServiceName + 1] = {};
+                                uint8_t         buffer[WindowManager::MaxServiceMessage];
+                };
+
                 // A watchConfig()'s: PSRAM, made when asked for.
                 struct ConfigWatch {
                                 GuiApplication  *app = nullptr;
@@ -231,6 +255,8 @@ class GuiApplication {
                 static void configNotified(void *arg);
                 void        runConfig();
                 static void keyGrabbed(void *arg, uint8_t usage);
+                static void               serviceNotified(void *arg);
+                static void               serviceDue(void *arg);
                 static void watched(void *arg);
                 void        dispatch(const Event &event);
                 void        runTimers();
@@ -258,6 +284,7 @@ class GuiApplication {
                 KeyGrab           _grabs[MaxGrabs];
                 GuiClipboard     *_clipboard = nullptr; // PSRAM, the first time asked for
                 ConfigWatch      *_configWatches[MaxConfigWatches] = {};
+                Service          *_services[MaxServices] = {};
                 std::atomic<bool> _configChanged{false}; // a watch has news: runConfig() at the loop
 };
 

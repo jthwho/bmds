@@ -91,7 +91,11 @@ class Splitter : public Widget {
 
                 Splitter(Widget *parent, Orientation orientation);
 
-                /** @brief Sets the two sides (its children; null: none). */
+                /**
+                 * @brief Sets the two sides (its children; null: none), placed again: call
+                 *        again after hiding or showing one (a side hidden leaves all the room
+                 *        to the other, without a handle).
+                 */
                 void setWidgets(Widget *first, Widget *second);
 
                 /** @brief Sets the first side's size (kept within the least sizes). */
@@ -116,6 +120,7 @@ class Splitter : public Widget {
                 Rect     handle() const;
                 uint16_t length() const;
                 void     place();
+                Widget  *alone() const;
 
                 Widget     *_first = nullptr;
                 Widget     *_second = nullptr;

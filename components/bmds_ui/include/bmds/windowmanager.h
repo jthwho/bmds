@@ -23,6 +23,7 @@
 #include <bmds/rect.h>
 #include <bmds/result.h>
 #include <bmds/semaphore.h>
+#include <bmds/servicequeue.h>
 #include <bmds/spinlock.h>
 #include <bmds/stream.h>
 #include <bmds/stringview.h>
@@ -499,6 +500,44 @@ class WindowManager {
                 Error grabKey(uint8_t client, uint8_t usage, uint8_t modifiers, Grab fn, void *arg);
 
                 /**
+                 * @brief Told that a message for a service is waiting (`registerService()`),
+                 *        on the sender's task with the window manager locked: it only wakes
+                 *        a loop, which takes it with `takeServiceMessage()`.
+                 */
+                using ServiceNotify = void (*)(void *arg);
+
+                /** @brief A service's longest name. */
+                static constexpr size_t MaxServiceName = 31;
+
+                /** @brief A service message's most bytes. */
+                static constexpr size_t MaxServiceMessage = ServiceQueue::MaxMessage;
+
+                /**
+                 * @brief Names a service of connection @p client (`devplan/filebrowser.md`
+                 *        §4h, FB6): messages sent to @p name wait for it, @p fn told of
+                 *        each. Released with the connection.
+                 * @return `Ok`, `Invalid` (the name: empty, too long; a null @p fn),
+                 *         `NotFound` (no such connection), `Exists` (named already) or `NoMem`.
+                 */
+                Error registerService(uint8_t client, StringView name, ServiceNotify fn, void *arg);
+
+                /**
+                 * @brief Sends @p message to service @p name (any task).
+                 * @return `Ok`, `NotFound` (no such service), `Invalid` (empty, or over
+                 *         `MaxServiceMessage`), `Full` (too much not taken yet), `NoMem` or
+                 *         `InvalidState` (no window system).
+                 */
+                Error sendToService(StringView name, ByteSpan message);
+
+                /**
+                 * @brief Moves the oldest message for connection @p client's service
+                 *        @p name into @p out.
+                 * @return Its bytes (0: none), `NotFound` (not its service) or
+                 *         `BufferTooSmall` (kept).
+                 */
+                Result<size_t> takeServiceMessage(uint8_t client, StringView name, WritableByteSpan out);
+
+                /**
                  * @brief Puts window @p id on top, filling the work area until restored.
                  * @return `Ok`, `NotFound`, or `InvalidState` (not a normal window: a panel's).
                  */
@@ -721,6 +760,15 @@ class WindowManager {
                                 void *watchArg = nullptr;
                 };
 
+                // A registerService()'s (PSRAM, one allocation each).
+                struct Service {
+                                char          name[MaxServiceName + 1] = {};
+                                uint8_t       client = 0;
+                                ServiceNotify fn = nullptr;
+                                void         *arg = nullptr;
+                                ServiceQueue  queue;
+                };
+
                 struct KeyGrab {
                                 Grab    fn = nullptr;
                                 void   *arg = nullptr;
@@ -823,6 +871,8 @@ class WindowManager {
                 Rect            snapRect(Snap snap) const;
                 void            hideOutline();
                 bool            grabbed(const KeyEvent &event); // a key a program claimed
+                Service        *findService(StringView name);
+                void            dropServices(uint8_t client); // 0: all
                 Error           dragLocked(uint8_t id, uint16_t x, uint16_t y);
                 Error           outlineLocked(uint8_t id, const Rect &rect);
                 Error           dropLocked();
@@ -927,6 +977,7 @@ class WindowManager {
                 uint8_t               _modifiers = 0;      // the keyboard's, as of the last key
                 uint8_t               _focusId = 0;        // the focusable window raised last (focusId())
                 KeyGrab               _grabs[MaxGrabs];
+                List<Service *>       _services{MemSpace::Psram}; // registerService()'s
                 uint8_t               _tapUsage = 0;      // a claimed modifier down (a tap if nothing else comes)
                 bool                  _tapClean = false;  // nothing else pressed while it was down
                 Snap                  _snap = Snap::None; // the drag's outline is a snap's

@@ -145,6 +145,7 @@ uint16_t Splitter::length() const {
 
 Rect Splitter::handle() const {
         const Rect &r = geometry();
+        if (alone() != nullptr) return Rect();
         return _orientation == Orientation::Horizontal
                        ? Rect{uint16_t(r.x + _position), r.y, SplitterLayout::Handle, r.height}
                        : Rect{r.x, uint16_t(r.y + _position), r.width, SplitterLayout::Handle};
@@ -156,8 +157,20 @@ void Splitter::resized() {
 }
 
 // The sides where the position puts them: the one asked for, as the room allows.
+// The side shown alone when the other is hidden (all the room, no handle), or null.
+Widget *Splitter::alone() const {
+        if (_first != nullptr && !_first->isVisible()) return _second;
+        if (_second != nullptr && !_second->isVisible()) return _first;
+        return nullptr;
+}
+
 void Splitter::place() {
-        const Rect    &r = geometry();
+        const Rect &r = geometry();
+        if (Widget *only = alone(); only != nullptr) {
+                only->setGeometry(r);
+                update();
+                return;
+        }
         const bool     across = _orientation == Orientation::Horizontal;
         const uint16_t len = length();
         _position = SplitterLayout::firstSize(_wanted, len, _leastFirst, _leastSecond, across ? 4 : 1);

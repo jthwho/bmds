@@ -1,0 +1,386 @@
+/**
+ * @file      folderactions.cpp
+ * @copyright Jason Howard. All rights reserved.
+ *
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file in the project root folder for license information.
+ *
+ * What a folder window and the desktop both do to files (devplan/filebrowser.md §4h, FB8):
+ * moved here from the panel's desktop, written once.
+ */
+
+#include <cstdio>
+#include <cstring>
+#include <bmds/clipboard.h>
+#include <bmds/fdtable.h>
+#include <bmds/fileformat.h>
+#include <bmds/filenames.h>
+#include <bmds/guiclipboard.h>
+#include <bmds/inireader.h>
+#include <bmds/memory.h>
+#include <bmds/messagebox.h>
+#include <bmds/mimeapps.h>
+#include <bmds/programlauncher.h>
+#include <bmds/vfs.h>
+
+#include "folderactions.h"
+
+BMDS_NAMESPACE_BEGIN
+
+namespace {
+
+        constexpr StringView DesktopSuffix(".desktop");
+        constexpr StringView UriList("text/uri-list");
+
+        // A paste keeps both when a name is taken: the copy under a copy's name (files.md F1).
+        struct KeepBoth final : FileOps::Progress {
+                        FileOps::Resolution conflict(StringView, StringView, bool) override {
+                                return FileOps::Resolution::KeepBoth;
+                        }
+        };
+
+        // @p path's file, read whole up to @p max bytes into @p out (PSRAM). @return The bytes.
+        size_t readFile(StringView path, const Vfs::Context &vc, char *out, size_t max) {
+                size_t got = 0;
+                auto [file, err] = Vfs::open(path, Vfs::Read, vc);
+                while (err.isOk() && got < max) {
+                        auto [n, rerr] = file->read(WritableByteSpan(reinterpret_cast<uint8_t *>(out) + got, max - got),
+                                                    WaitForever);
+                        if (rerr.isError() || n == 0) break;
+                        got += n;
+                }
+                return got;
+        }
+
+} // namespace
+
+void FolderActions::setApplications(StringView directories) {
+        std::snprintf(_applications, sizeof(_applications), "%.*s", int(directories.size()), directories.data());
+        return;
+}
+
+void FolderActions::setMimeApps(StringView path) {
+        std::snprintf(_mimeApps, sizeof(_mimeApps), "%.*s", int(path.size()), path.data());
+        return;
+}
+
+void FolderActions::say(const char *a, const char *b, const char *c, const char *d) {
+        FileHandle *err = _context.fds != nullptr ? _context.fds->handle(FdTable::Stderr) : nullptr;
+        if (err == nullptr) return;
+        for (const char *text : {a, b, c, d})
+                (void)err->write(ByteSpan(reinterpret_cast<const uint8_t *>(text), std::strlen(text)), WaitForever);
+        return;
+}
+
+void FolderActions::tell(StringView title, StringView message, bool error) {
+        if (MessageBox::show(_app, error ? MessageBox::Kind::Error : MessageBox::Kind::Information, title, message,
+                             MessageBox::Buttons::Ok, nullptr, nullptr)
+                    .isOk())
+                return;
+        char line[200];
+        std::snprintf(line, sizeof(line), "panel: %.*s\n", int(message.size()), message.data());
+        say(line);
+        return;
+}
+
+Error FolderActions::programPath(StringView command, String &out) const {
+        out.clear();
+        if (command.contains('/')) return out.append(command);
+        StringView searchPath;
+        for (const StringView &v : _context.environment)
+                if (v.startsWith(StringView("PATH="))) searchPath = v.mid(5);
+        const Vfs::Context vc{_context.cwd, nullptr};
+        return Vfs::findProgram(command, searchPath, vc, out);
+}
+
+// The entry's command started (in a terminal if it asks), not waited for; given @p file, its
+// field codes are it (devplan/filetypes.md T7).
+void FolderActions::launch(const DesktopEntry &entry, StringView file) {
+        if (_context.launcher == nullptr) return;
+        char         buffer[DesktopEntry::MaxExec + Vfs::MaxPath + 1];
+        StringView   args[DesktopEntry::MaxArgs + 2];
+        const size_t front = entry.terminal ? 2 : 0;
+        auto [n, err] = DesktopEntry::splitExec(StringView(entry.exec), buffer, sizeof(buffer),
+                                                Span<StringView>(args + front, DesktopEntry::MaxArgs), file);
+        if (err.isError()) {
+                say("panel: ", entry.name, ": its Exec line can't be used\n");
+                return;
+        }
+        if (entry.terminal) {
+                args[0] = "terminal";
+                args[1] = "-e";
+        }
+        const size_t count = n + front;
+        String       found;
+        err = programPath(args[0], found);
+        if (err.isOk()) {
+                ProgramLauncher::Request request;
+                request.path = found.view();
+                request.args = Span<const StringView>(args, count);
+                request.environment = _context.environment;
+                request.fds = _context.fds;
+                request.cwd = _context.cwd;
+                request.console = _context.console;
+                request.session = true; // not the panel's terminal's: its signals aren't the program's
+                auto [pid, serr] = _context.launcher->start(request);
+                err = serr;
+                if (err.isOk() && _context.process != nullptr) _context.process->disownChild(pid);
+        }
+        if (err.isError())
+                say("panel: ", entry.name, ": ", err == Error::NotExist ? "not found\n" : "can't start it\n");
+        return;
+}
+
+void FolderActions::open(StringView path) {
+        const Vfs::Context vc{_context.cwd, nullptr};
+        auto [info, err] = Vfs::stat(path, vc);
+        if (err.isError()) {
+                char message[160];
+                std::snprintf(message, sizeof(message), "%.*s isn't there.", int(path.size()), path.data());
+                tell("Open", StringView(message));
+                return;
+        }
+        if (info.type == FileType::Directory) {
+                _host.openFolder(path, StringView());
+                return;
+        }
+        if (path.endsWith(DesktopSuffix)) {
+                // A launcher: its command (another Desktop Entry, a link, opens as text).
+                char        *text = static_cast<char *>(Memory::alloc(MemSpace::Psram, 4096));
+                const size_t got = text != nullptr ? readFile(path, vc, text, 4096) : 0;
+                auto [entry, perr] = DesktopEntry::parse(StringView(text != nullptr ? text : "", got));
+                Memory::free(text);
+                if (perr.isOk() && entry.exec[0] != '\0') {
+                        launch(entry);
+                        return;
+                }
+        }
+        auto [type, ierr] = Vfs::identify(path, Vfs::IdentifyName | Vfs::IdentifyContent, vc);
+        openFile(path, ierr.isOk() ? type : FileFormat::Binary);
+        return;
+}
+
+// By the application mimeapps.list names for its type (devplan/filetypes.md T6): the type's, its
+// media's, text/plain's for text, then application/octet-stream's.
+void FolderActions::openFile(StringView path, StringView type) {
+        constexpr size_t   MaxBytes = 4096;
+        const Vfs::Context vc{_context.cwd, nullptr};
+        char              *text = static_cast<char *>(Memory::alloc(MemSpace::Psram, MaxBytes));
+        if (text == nullptr) return;
+        const size_t got = readFile(StringView(_mimeApps), vc, text, MaxBytes);
+        bool         opened = false;
+        StringView   types[] = {type, FileFormat::isText(type) ? FileFormat::PlainText : StringView(),
+                                FileFormat::Binary};
+        for (size_t t = 0; t < 3 && !opened; ++t) {
+                if (types[t].isEmpty() || (t > 0 && types[t] == type)) continue;
+                StringView   ids[8];
+                const size_t n = MimeApps::lookup(StringView(text, got), types[t], Span<StringView>(ids));
+                for (size_t i = 0; i < n && !opened; ++i) opened = openWith(ids[i], path);
+        }
+        Memory::free(text);
+        if (!opened) {
+                char message[200];
+                std::snprintf(message, sizeof(message), "There's no application set to open %.*s files.",
+                              int(type.size()), type.data());
+                tell("Open", StringView(message), false);
+        }
+        return;
+}
+
+// Application @p id (a Desktop Entry file in the launcher's directories, the first found) started
+// on @p file. False if it isn't there.
+bool FolderActions::openWith(StringView id, StringView file) {
+        const Vfs::Context vc{_context.cwd, nullptr};
+        StringView         dirs(_applications);
+        for (StringView d = IniReader::nextListItem(dirs); !d.isEmpty(); d = IniReader::nextListItem(dirs)) {
+                String path;
+                if (path.append(d).isError() || path.append('/').isError() || path.append(id).isError()) continue;
+                char         text[1024];
+                const size_t got = readFile(path.view(), vc, text, sizeof(text));
+                if (got == 0) continue;
+                auto [entry, perr] = DesktopEntry::parse(StringView(text, got));
+                if (perr.isError() || entry.hidden) continue;
+                launch(entry, file);
+                return true;
+        }
+        return false;
+}
+
+// ---- The clipboard (devplan/clipboard.md §4f)
+
+void FolderActions::copy(StringView paths) {
+        GuiClipboard *clipboard = _app.clipboard();
+        if (clipboard == nullptr || paths.isEmpty()) return;
+        if (_copied.assign(paths).isError()) return;
+        clipboard->setName("panel");
+        const StringView types[] = {UriList, ClipboardType::Text};
+        if (clipboard->copy(Clipboard::Selection::Clipboard, Span<const StringView>(types), render, this).isError())
+                say("panel: can't copy\n");
+        return;
+}
+
+// The paths copied as text, one a line; as a URI list, file:// and each path, %XX for what a URI
+// can't hold as it is (RFC 3986's unreserved and /).
+Error FolderActions::render(void *arg, StringView type, String &out) {
+        auto            *self = static_cast<FolderActions *>(arg);
+        const StringView paths = self->_copied.view();
+        if (!ClipboardType::equal(type, UriList)) return out.assign(paths);
+        out.clear();
+        Error      err;
+        StringView rest = paths;
+        while (err.isOk() && !rest.isEmpty()) {
+                const size_t     end = rest.indexOf('\n');
+                const StringView path = end == StringView::NPos ? rest : rest.left(end);
+                rest = end == StringView::NPos ? StringView() : rest.mid(end + 1);
+                err = out.append("file://");
+                for (const char ch : path) {
+                        const bool plain = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                                           (ch >= '0' && ch <= '9') || StringView("-._~/").contains(ch);
+                        if (err.isOk()) err = plain ? out.append(ch) : out.appendf("%%%02X", unsigned(uint8_t(ch)));
+                }
+                if (err.isOk()) err = out.append("\r\n");
+        }
+        return err;
+}
+
+bool FolderActions::canPaste() {
+        GuiClipboard *clipboard = _app.clipboard();
+        return clipboard != nullptr && clipboard->canPaste(Clipboard::Selection::Clipboard, UriList);
+}
+
+void FolderActions::paste(StringView directory) {
+        GuiClipboard *clipboard = _app.clipboard();
+        if (clipboard == nullptr || _pasteTo.assign(directory).isError()) return;
+        if (clipboard->paste(Clipboard::Selection::Clipboard, UriList, pasted, this).isError())
+                say("panel: can't paste\n");
+        return;
+}
+
+// The pasted URI list: each file:// one copied into the folder (a copy's name if its own is taken:
+// devplan/files.md F1), then the folder's views told.
+void FolderActions::pasted(void *arg, Error err, StringView type, StringView data) {
+        (void)type;
+        auto *self = static_cast<FolderActions *>(arg);
+        if (err.isError()) {
+                self->say("panel: paste: ", err.desc(), "\n");
+                return;
+        }
+        const StringView   directory = self->_pasteTo.view();
+        const Vfs::Context vc{self->_context.cwd, nullptr};
+        Error              first;
+        char               failed[Vfs::MaxPath + 1] = {};
+        while (!data.isEmpty()) {
+                const size_t end = data.indexOf('\n');
+                StringView   line = (end == StringView::NPos ? data : data.left(end)).trimmed();
+                data = end == StringView::NPos ? StringView() : data.mid(end + 1);
+                if (line.isEmpty() || line.startsWith('#') || !line.startsWith("file://")) continue;
+                line = line.mid(7); // file://HOST/PATH: the path
+                const size_t slash = line.indexOf('/');
+                line = slash == StringView::NPos ? StringView() : line.mid(slash);
+                char path[Vfs::MaxPath + 1];
+                auto [n, derr] = Uri::decode(line, Span<char>(path, sizeof(path)));
+                if (derr.isError() || n == 0) continue;
+                KeepBoth    progress;
+                const Error cerr = FileOps::copy(StringView(path, n), directory, vc, progress);
+                if (cerr.isError() && first.isOk()) {
+                        first = cerr;
+                        std::snprintf(failed, sizeof(failed), "%.*s", int(n), path);
+                }
+        }
+        self->_host.folderChanged(directory);
+        if (first.isError()) {
+                char message[200];
+                std::snprintf(message, sizeof(message), "Can't paste %.120s: %s.", failed, first.desc());
+                self->tell("Paste", StringView(message));
+        }
+        return;
+}
+
+// ---- Files
+
+void FolderActions::trash(StringView paths) {
+        // To their filesystems' trash (devplan/files.md F8): `trash -r` brings them back.
+        const Vfs::Context vc{_context.cwd, nullptr};
+        Error              first;
+        char               failed[Vfs::MaxPath + 1] = {};
+        StringView         rest = paths, changed;
+        while (!rest.isEmpty()) {
+                const size_t     end = rest.indexOf('\n');
+                const StringView path = end == StringView::NPos ? rest : rest.left(end);
+                rest = end == StringView::NPos ? StringView() : rest.mid(end + 1);
+                if (path.isEmpty()) continue;
+                const Error err = FileOps::trash(path, vc);
+                if (err.isError() && first.isOk()) {
+                        first = err;
+                        std::snprintf(failed, sizeof(failed), "%.*s", int(path.size()), path.data());
+                }
+                // The folders told once each: a list's items are mostly in one.
+                const StringView folder = path.left(path.lastIndexOf('/') > 0 ? path.lastIndexOf('/') : 1);
+                if (folder != changed) _host.folderChanged(folder);
+                changed = folder;
+        }
+        if (first.isError()) {
+                char message[200];
+                std::snprintf(message, sizeof(message), "Can't move %.120s to the trash: %s.", failed, first.desc());
+                tell("Delete", StringView(message));
+        }
+        return;
+}
+
+Result<String> FolderActions::makeNew(StringView directory, FileOps::NewKind kind) {
+        const Vfs::Context vc{_context.cwd, nullptr};
+        (void)Vfs::mkdir(directory, vc); // there already, most likely
+        auto made = FileOps::makeNew(directory, kind, vc);
+        if (made.error().isError()) {
+                char message[160];
+                std::snprintf(message, sizeof(message), "Can't make it: %s.", made.error().desc());
+                tell("New", StringView(message));
+                return made;
+        }
+        _host.folderChanged(directory);
+        return made;
+}
+
+bool FolderActions::rename(StringView path, StringView name, StringView suffix, size_t maxName, String &to,
+                           Span<char> problem) {
+        problem[0] = '\0';
+        const StringView file = path.mid(path.lastIndexOf('/') + 1);
+        const StringView old = file.endsWith(suffix) ? file.left(file.size() - suffix.size()) : file;
+        name = name.trimmed();
+        if (name.isEmpty() || name == old) return false; // nothing to do
+        bool dots = true;
+        for (const char ch : name) dots = dots && (ch == '.' || ch == ' ');
+        if (dots) {
+                std::snprintf(problem.data(), problem.size(), "A name needs more than dots and spaces.");
+                return false;
+        }
+        if (name.size() + suffix.size() > maxName) {
+                std::snprintf(problem.data(), problem.size(), "That name is too long: %zu bytes at most.",
+                              maxName - suffix.size());
+                return false;
+        }
+        for (const char ch : name) {
+                if (!StringView("/\\:*?\"<>|").contains(ch)) continue;
+                std::snprintf(problem.data(), problem.size(), "A name can't hold any of these: / \\ : * ? \" < > |");
+                return false;
+        }
+        Error err = to.assign(path.left(path.lastIndexOf('/') + 1));
+        if (err.isOk()) err = to.append(name);
+        if (err.isOk()) err = to.append(suffix);
+        const Vfs::Context vc{_context.cwd, nullptr};
+        // Taken by another file (a name differing only in case is this one: FAT).
+        if (err.isOk() && !name.equalsIgnoreCase(old) && Vfs::lstat(to.view(), vc).isOk()) {
+                std::snprintf(problem.data(), problem.size(), "There is already a file named \"%.*s\" here.",
+                              int(name.size()), name.data());
+                return false;
+        }
+        if (err.isOk()) err = FileOps::rename(path, to.view().mid(to.view().lastIndexOf('/') + 1), vc);
+        if (err.isError()) {
+                std::snprintf(problem.data(), problem.size(), "Can't rename it: %s.", err.desc());
+                return false;
+        }
+        _host.folderChanged(path.left(path.lastIndexOf('/') > 0 ? path.lastIndexOf('/') : 1));
+        return true;
+}
+
+BMDS_NAMESPACE_END
