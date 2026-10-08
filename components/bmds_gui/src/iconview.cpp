@@ -415,14 +415,16 @@ void IconView::drawRow(Canvas &canvas, size_t row, int offsetX, int offsetY) con
                 const int tw = int(Fonts::unscii16.textWidth(StringView(l.text[i])));
                 const int lx = x + l.x[i] - Pad, ly = y + TextTop + i * LineHeight, lw = tw + 2 * Pad;
                 if (filled) canvas.fill(lx, ly, lw, LineHeight, bg);
+                canvas.text(x + l.x[i], ly, StringView(l.text[i]), fg, bg, LineWidth);
                 if (outlined) {
-                        const uint32_t edge = p.color(Role::Highlight);
+                        // After the text (its rows would cover the top and bottom): an inactive selection
+                        // in the highlight, the focus alone in the names' colour.
+                        const uint32_t edge = p.color(selected ? Role::Highlight : _text);
                         canvas.fill(lx, ly, lw, 1, edge);
                         canvas.fill(lx, ly + LineHeight - 1, lw, 1, edge);
                         canvas.fill(lx, ly + 1, 1, LineHeight - 2, edge);
                         canvas.fill(lx + lw - 1, ly + 1, 1, LineHeight - 2, edge);
                 }
-                canvas.text(x + l.x[i], ly, StringView(l.text[i]), fg, bg, LineWidth);
         }
         return;
 }

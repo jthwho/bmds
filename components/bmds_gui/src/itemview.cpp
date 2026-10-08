@@ -185,8 +185,9 @@ void ItemView::mousePressed(const WindowManager::MouseEvent &event) {
         _onlyOnRelease = false;
         _onSelectedName = false;
         if (row < 0) {
-                // No row: a rubber band (adding to the selection with Ctrl).
-                if (!ctrl) _selection.clear();
+                // No row: a rubber band (adding to the selection with Ctrl); without Ctrl, nothing is
+                // current either (no focus mark left behind).
+                if (!ctrl) _selection.selectOnly(-1);
                 _pressed = -1;
                 _banding = !_single;
                 _bandAdds = ctrl;
@@ -421,6 +422,38 @@ bool ItemView::keyPressed(const KeyEvent &event) {
                 return true;
         }
         return false;
+}
+
+namespace {
+
+        Rect cutTo(int x, int y, int w, int h, const Rect &clip) {
+                const int l = x > clip.x ? x : clip.x, t = y > clip.y ? y : clip.y;
+                const int r = x + w < int(clip.right()) ? x + w : int(clip.right());
+                const int b = y + h < int(clip.bottom()) ? y + h : int(clip.bottom());
+                if (r <= l || b <= t) return Rect();
+                return Rect{uint16_t(l), uint16_t(t), uint16_t(r - l), uint16_t(b - t)};
+        }
+
+} // namespace
+
+uint32_t ItemView::drawLabel(Painter &painter, const Rect &clip, int x, int y, int width, bool selected, bool focus,
+                             bool current, uint32_t background) {
+        (void)current;
+        if (!selected) return background;
+        const uint32_t bg = painter.palette().color(focus ? Role::Highlight : Role::Face);
+        const Rect     r = cutTo(x, y + 1, width, GuiStyle::TextHeight, clip);
+        if (!r.isEmpty()) (void)painter.fill(r, bg);
+        return bg;
+}
+
+void ItemView::focusRect(Painter &painter, const Rect &clip, int x, int y, int width) {
+        // The rows above and below the text's (an 18-pixel row), and its sides.
+        const int  h = GuiStyle::TextHeight + 2;
+        const Rect edges[] = {cutTo(x, y, width, 1, clip), cutTo(x, y + h - 1, width, 1, clip),
+                              cutTo(x, y + 1, 1, h - 2, clip), cutTo(x + width - 1, y + 1, 1, h - 2, clip)};
+        for (const Rect &e : edges)
+                if (!e.isEmpty()) (void)painter.fill(e, painter.palette().color(Role::FaceShadow));
+        return;
 }
 
 void ItemView::paintContent(Painter &painter, const Rect &viewport) {

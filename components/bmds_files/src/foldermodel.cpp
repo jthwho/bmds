@@ -36,6 +36,7 @@ Error FolderModel::open(StringView path, const Vfs::Context &context) {
         auto [dir, derr] = Vfs::openDirectory(_path.view(), context);
         if (derr.isError()) return derr;
         _directory = std::move(dir);
+        _context = Vfs::Context{"/", nullptr}; // the path is absolute now
         return Error::Ok;
 }
 
@@ -58,6 +59,20 @@ Result<size_t> FolderModel::fillSome(size_t count) {
                 e.nameLength = static_cast<uint16_t>(name.size());
                 e.type = info.type;
                 e.attributes = info.attributes;
+                if (info.type == FileType::Link) {
+                        // What it leads to (a broken link stays a link).
+                        e.link = true;
+                        String target(MemSpace::Psram);
+                        if (target.assign(_path.view()).isOk() &&
+                            (_path.view().endsWith('/') || target.append('/').isOk()) && target.append(name).isOk()) {
+                                auto [to, terr] = Vfs::stat(target.view(), _context);
+                                if (terr.isOk()) {
+                                        e.type = to.type;
+                                        e.size = to.size;
+                                        e.modified = to.modified;
+                                }
+                        }
+                }
                 Error stored = _names.reserve(_names.size() + name.size());
                 if (stored.isOk()) stored = _entries.append(e);
                 if (stored.isError()) {

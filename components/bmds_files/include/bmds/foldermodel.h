@@ -31,6 +31,9 @@ BMDS_NAMESPACE_BEGIN
  * without case, runs of digits as numbers). Hidden entries (a leading `.` or
  * FAT's Hidden attribute) are kept but shown only with `setShowHidden()`.
  *
+ * A symbolic link is shown as what it leads to (a link to a folder is a
+ * folder), marked as a link.
+ *
  * Index `i` (0 to `count()`) is the `i`-th entry shown.
  *
  * @par Thread Safety
@@ -52,8 +55,9 @@ class FolderModel {
                                 Timestamp modified;
                                 uint32_t  nameAt = 0; ///< Its name's offset in the model's names.
                                 uint16_t  nameLength = 0;
-                                FileType  type = FileType::File;
-                                uint8_t   attributes = 0; ///< `FileInfo::Attribute` bits.
+                                FileType  type = FileType::File; ///< A link's: what it leads to (a broken one: `Link`).
+                                uint8_t   attributes = 0;        ///< `FileInfo::Attribute` bits.
+                                bool      link = false;          ///< A symbolic link (`/home`).
 
                                 /** @brief Returns true for folders. */
                                 bool isDirectory() const { return type == FileType::Directory; }
@@ -133,6 +137,7 @@ class FolderModel {
                 void       reorder();                            // the order again from all entries
 
                 Directory      _directory;
+                Vfs::Context   _context; // open()'s (links are followed with it)
                 String         _path{MemSpace::Psram};
                 List<Entry>    _entries{MemSpace::Psram};
                 List<char>     _names{MemSpace::Psram};

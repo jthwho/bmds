@@ -212,9 +212,8 @@ namespace {
                 _tree->setIcons(_owned[4].get(), _owned[0].get(), _owned[5].get());
                 _tree->setExpanding(expanding, this);
                 _tree->setChanged(folderChosen, this);
-                Vfs::MountInfo mounts[Vfs::MaxMounts];
-                const size_t   n = Vfs::listMounts(Span<Vfs::MountInfo>(mounts, Vfs::MaxMounts));
-                for (size_t i = 0; i < n; ++i) (void)_tree->addRoot(StringView(mounts[i].path));
+                // One root, /: the filesystems and the rest under it.
+                (void)_tree->addRoot("/");
                 _split->setLeast(120, 160);
                 _split->setPosition(200);
                 _split->setWidgets(_tree, right);
@@ -236,7 +235,8 @@ namespace {
                 setDetails(false);
                 column->relayout();
                 _tree->setFocus();
-                if (n > 0) _tree->selectOnly(0); // the first filesystem shown
+                _tree->expand(0);
+                _tree->selectOnly(0); // / shown
                 return Error::Ok;
         }
 

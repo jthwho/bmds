@@ -346,6 +346,15 @@ TEST_CASE_FIXTURE(Fixture, "FileOps: renames, new items, copy names, and the tim
         CHECK(!exists(at("/real/doomed.txt")));
         CHECK(read(at("/.trash/files/doomed.txt")) == "d");
         CHECK(exists(onB("/linked")));
+        // The folder model shows a link as what it leads to.
+        FolderModel lm;
+        REQUIRE(lm.open(view(b), Root).isOk());
+        while (!lm.isComplete()) (void)lm.fillSome(10);
+        const int li = lm.indexOf("linked");
+        REQUIRE(li >= 0);
+        CHECK(lm.entry(size_t(li)).isDirectory());
+        CHECK(lm.entry(size_t(li)).link);
+        CHECK(li == 0); // a folder: first
         CHECK(FileOps::baseName("/a/b/") == "b");
         CHECK(FileOps::baseName("name") == "name");
 }

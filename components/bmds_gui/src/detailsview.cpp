@@ -186,30 +186,16 @@ void DetailsView::paintRows(Painter &painter, const Rect &viewport) {
                                                 const int        room =
                                                         width - TextX - CellPad > 0 ? width - TextX - CellPad : 0;
                                                 const int  shown = tw < room ? tw : room;
-                                                const bool filled = selected && focus;
-                                                const bool outlined = (selected && !focus) ||
-                                                                      (!selected && focus && int(row) == current());
-                                                const uint32_t fg =
-                                                        p.color(filled ? Role::HighlightText : Role::FaceText);
-                                                const uint32_t bg = filled ? p.color(Role::Highlight) : background;
                                                 const int      bx = x + TextX - 2, bw = shown + 4;
-                                                if (filled) {
-                                                        const Rect r = cut(bx, y + 1, bw, RowHeight - 2, viewport);
-                                                        if (!r.isEmpty()) (void)painter.fill(r, bg);
-                                                }
-                                                if (outlined) {
-                                                        const uint32_t edge = p.color(Role::Highlight);
-                                                        const Rect     edges[] = {
-                                                                cut(bx, y + 1, bw, 1, viewport),
-                                                                cut(bx, y + RowHeight - 2, bw, 1, viewport),
-                                                                cut(bx, y + 1, 1, RowHeight - 2, viewport),
-                                                                cut(bx + bw - 1, y + 1, 1, RowHeight - 2, viewport)};
-                                                        for (const Rect &e : edges)
-                                                                if (!e.isEmpty()) (void)painter.fill(e, edge);
-                                                }
+                                                const uint32_t bg = drawLabel(painter, viewport, bx, y, bw, selected,
+                                                                              focus, int(row) == current(), background);
+                                                const uint32_t fg = p.color(selected && focus ? Role::HighlightText
+                                                                                              : Role::FaceText);
                                                 if (room > 0)
                                                         (void)painter.text(x + TextX, ty, name, Fonts::unscii16, fg, bg,
                                                                            uint16_t(room));
+                                                if (!selected && focus && int(row) == current())
+                                                        focusRect(painter, viewport, bx, y, bw);
                                         }
                                 } else {
                                         const StringView text = model()->columnText(row, c, Span<char>(buffer));

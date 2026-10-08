@@ -206,6 +206,18 @@ class ItemView : public ScrollArea {
                  */
                 void resetSelecting(int row, bool tell);
 
+                /**
+                 * @brief Draws a row's label background (window coordinates, an 18-pixel row from
+                 *        @p y, the label @p x to @p x + @p width): the highlight while selected
+                 *        and focused, the face while selected only (an inactive selection).
+                 * @return The colour the text goes on.
+                 */
+                static uint32_t drawLabel(Painter &painter, const Rect &clip, int x, int y, int width, bool selected,
+                                          bool focus, bool current, uint32_t background);
+
+                /** @brief Draws the focus rectangle around a label, after its text, outside its rows. */
+                static void focusRect(Painter &painter, const Rect &clip, int x, int y, int width);
+
                 /** @brief Returns true if the view shows its focus: it has the keys and its window is active. */
                 bool showsFocus() const;
 

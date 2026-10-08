@@ -249,25 +249,13 @@ void TreeView::paintRows(Painter &painter, const Rect &viewport) {
                 const int        tx = int(viewport.x) - int(scrollX()) + int(textX(r.depth));
                 const int        tw = int(Fonts::unscii16.textWidth(name));
                 const bool       selected = selection().isSelected(row);
-                const bool       filled = selected && focus;
-                const bool       outlined = selected && !focus;
-                const uint32_t   fg = p.color(filled ? Role::HighlightText : Role::FaceText);
-                const uint32_t   bg = filled ? p.color(Role::Highlight) : background;
-                if (filled) {
-                        const Rect b = cut(tx - 2, y + 1, tw + 4, RowHeight - 2, viewport);
-                        if (!b.isEmpty()) (void)painter.fill(b, bg);
-                }
-                if (outlined) {
-                        const uint32_t edge = p.color(Role::Highlight);
-                        const Rect     edges[] = {cut(tx - 2, y + 1, tw + 4, 1, viewport),
-                                                  cut(tx - 2, y + RowHeight - 2, tw + 4, 1, viewport),
-                                                  cut(tx - 2, y + 1, 1, RowHeight - 2, viewport),
-                                                  cut(tx + tw + 1, y + 1, 1, RowHeight - 2, viewport)};
-                        for (const Rect &e : edges)
-                                if (!e.isEmpty()) (void)painter.fill(e, edge);
-                }
+                const bool       current = int(row) == this->current();
+                const uint32_t   bg =
+                        drawLabel(painter, viewport, tx - 2, y, tw + 4, selected, focus, current, background);
+                const uint32_t fg = p.color(selected && focus ? Role::HighlightText : Role::FaceText);
                 (void)painter.text(tx, y + (RowHeight - GuiStyle::TextHeight) / 2, name, Fonts::unscii16, fg, bg,
                                    uint16_t(tw > 0 ? tw : 1));
+                if (!selected && focus && current) focusRect(painter, viewport, tx - 2, y, tw + 4);
         }
         return;
 }

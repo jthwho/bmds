@@ -322,6 +322,17 @@ A portable component (built for the host tests too) over `Vfs` and `Trash`, no G
      62,334 bytes of code; 24,080 bytes in all with the panel's and the demo's changes; no
      static RAM. Left for step 4: a sort or refresh keeping the selection by name (the views
      reset; the folder windows restore it), the rubber band scrolling the view at its edge.
+   - *After the user tried it (2026-10-07):*
+     - The tree has one root, `/`, with every filesystem, `/home` and the rest under it (the
+       mounts as roots hid the root folder itself). The folder windows' tree is the same.
+     - A link is shown as what it leads to (`FolderModel`: `/home` was a 1 KB file); the entry
+       keeps a `link` flag for an overlay later.
+     - "A residue of the selection's blue beside the text" was the focus mark: a click on empty
+       space left the last row current, and its 1-pixel outline, drawn before the text, kept only
+       its sides. Now a click on empty space leaves no row current; a selection in a view without
+       the focus is a grey fill (the face), not an outline; the focus mark is drawn after the text,
+       in the rows above and below it, in the shadow's grey (all four sides show). An icon view's
+       outlines are drawn after the names too.
 4. **Folder windows:** `FolderWindow`, navigation, the menus and keys, window manager services,
    `files`, the launcher's entry, `folders.conf`, `files/*` settings.
 5. **Directory watches** in the VFS (FB14): views, the tree and the desktop follow changes.
