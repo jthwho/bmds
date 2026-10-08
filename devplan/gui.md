@@ -116,7 +116,8 @@ up (§4k). As built and measured: §9.
 - **`GuiApplication`:** connects (`WindowManager::manager(display)`, `connect()`), owns the event
   queue (64 events in a ring: motion for the same window merged; an overflow redraws every
   window), the lock, timers (up to 16, `startTimer()`: each a deadline; the loop waits until the
-  nearest), posted calls (`post(fn, arg)`: from any thread) and up to 16 windows. `exec()` runs
+  nearest), posted calls (`post(fn, arg)`: from any thread) and up to 255 windows (16 until 2026-10-07). The window furniture (scroll areas, a menu bar, tool and status bars, a splitter, a
+  progress bar, dialogs) is `filebrowser.md` §4e's. `exec()` runs
   until `quit()`, the window manager stops (0), or a signal raises the program's interrupt (it
   waits with `Interrupt::waitCurrent()`; 130). One per program.
 - **`Widget`:** a rectangle in its window (window coordinates), a parent and children (a list

@@ -93,12 +93,12 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
         _tools.renderer = &_renderer;
         _tools.palette = &_palette;
         _tools.busyHalf = -1;
-        _updates = 0;
+        for (uint32_t &word : _updates) word = 0;
         _display = &display;
         _surface = &surface;
         _palette = palette;
         _stack.reset(surface.width(), surface.height()); // all damaged: the desktop drawn
-        for (Window &w : _windows) w = Window();
+        _windows.clear();
         _dragId = 0;
         _outlineShown = false;
         _stats = Stats();
@@ -165,10 +165,10 @@ void WindowManager::stop() {
                 w = Window();
         }
         // The applications told: their windows are gone, and so is the window manager.
-        for (Client &c : _clients) {
+        for (Client &c : _clients)
                 if (c.used && c.gone != nullptr) c.gone(c.arg);
-                c = Client();
-        }
+        _clients.clear();
+        _windows.clear();
         (void)_surface->wait(DrawTimeoutMs); // the strip's last copy
         _surface = nullptr;
         _display->release();
@@ -184,7 +184,7 @@ void WindowManager::stop() {
         _underRect = Rect();
         _stack.reset(0, 0);
         _dragId = 0;
-        _asked.store(0, std::memory_order_release);
+        for (std::atomic<uint32_t> &word : _asked) word.store(0, std::memory_order_release);
         _drawn.store(_requests.load(std::memory_order_acquire), std::memory_order_release); // nothing more will be
         _idle.notify();
         return;
@@ -846,10 +846,11 @@ void WindowManager::drawCursor() {
 // (double-buffered) presented. With the lock held.
 // The changes counted up to @p requests are drawn by it.
 void WindowManager::round(uint32_t requests) {
-        _updates = static_cast<uint16_t>(_updates | _asked.exchange(0, std::memory_order_acq_rel)); // after the count
+        for (size_t i = 0; i < UpdateWords; ++i) // after the count
+                _updates[i] |= _asked[i].exchange(0, std::memory_order_acq_rel);
         const Region damage = _stack.damage();
         _stack.clearDamage();
-        const bool drawing = !damage.isEmpty() || _updates != 0 || (_dragId != 0 && !_outlineShown) || _cursorMoved;
+        const bool drawing = !damage.isEmpty() || hasUpdates() || (_dragId != 0 && !_outlineShown) || _cursorMoved;
         if (!drawing) {
                 _drawn.store(requests, std::memory_order_release);
                 return;
@@ -925,7 +926,8 @@ void WindowManager::drawLayer(size_t z, Span<const Rect> pieces) {
         const bool        active = id == focusId();
         const uint32_t    color = _palette.color(active ? Role::ActiveFrame : Role::InactiveFrame);
         const uint32_t    text = _palette.color(active ? Role::ActiveTitle : Role::InactiveTitle);
-        const auto        bit = static_cast<uint16_t>(1u << (id - 1));
+        const uint32_t    bit = 1u << (id % 32);
+        uint32_t         &word = _updates[id / 32];
         const WindowFrame f = frame(id, outer);
 
         if (!pieces.isEmpty() && f.decorations != WindowFrame::None) {
@@ -985,7 +987,7 @@ void WindowManager::drawLayer(size_t z, Span<const Rect> pieces) {
                 if (!r.isEmpty()) damage[nd++] = r;
         }
         Span<const Rect> clip(damage, nd);
-        const bool       update = (_updates & bit) != 0;
+        const bool       update = (word & bit) != 0;
         if (update) {
                 // Planned in the third part of the scratch space, then kept there.
                 Rect        *visible = _scratch + 2 * MaxPieces;
@@ -1001,7 +1003,7 @@ void WindowManager::drawLayer(size_t z, Span<const Rect> pieces) {
                                 if (piece.layer == z) visible[nv++] = piece.rect;
                         }
                         clip = Span<const Rect>(visible, nv);
-                        _updates = static_cast<uint16_t>(_updates & ~bit);
+                        word &= ~bit;
                 }
         }
         if (clip.isEmpty()) return;
@@ -1012,7 +1014,7 @@ void WindowManager::drawLayer(size_t z, Span<const Rect> pieces) {
                 if (painter.isDeferred()) {
                         // Its owner was busy: the same asked again next round (a frame later).
                         ++_stats.deferred;
-                        if (update) _asked.fetch_or(bit, std::memory_order_acq_rel);
+                        if (update) _asked[id / 32].fetch_or(bit, std::memory_order_acq_rel);
                         for (size_t i = 0; i < nd; ++i) (void)_stack.invalidate(id, damage[i]);
                         _requests.fetch_add(1, std::memory_order_acq_rel);
                         _wake.release();
@@ -1024,10 +1026,18 @@ void WindowManager::drawLayer(size_t z, Span<const Rect> pieces) {
         return;
 }
 
+bool WindowManager::hasUpdates() const {
+        uint32_t any = 0;
+        for (const uint32_t word : _updates) any |= word;
+        return any != 0;
+}
+
 void WindowManager::drawUpdates() {
-        for (size_t z = 0; z < _stack.count() && _updates != 0; ++z)
-                if ((_updates & (1u << (_stack.idAt(z) - 1))) != 0) drawLayer(z, Span<const Rect>());
-        _updates = 0; // windows closed since asking
+        for (size_t z = 0; z < _stack.count() && hasUpdates(); ++z) {
+                const uint8_t id = _stack.idAt(z);
+                if ((_updates[id / 32] & (1u << (id % 32))) != 0) drawLayer(z, Span<const Rect>());
+        }
+        for (uint32_t &word : _updates) word = 0; // windows closed since asking
         return;
 }
 
@@ -1108,13 +1118,16 @@ Result<uint8_t> WindowManager::openLocked(const WindowConfig &config) {
         // Panels, popups and the desktop's go where asked (on the screen).
         Rect r = config.rect;
         if (WindowStack::isApplication(config.level) && config.cascade) {
-                // The next free place down the cascade, among the windows shown.
-                Rect   taken[WindowStack::MaxWindows];
-                size_t n = 0;
-                for (size_t z = 0; z < _stack.count(); ++z)
-                        if (WindowStack::isApplication(_stack.levelOf(_stack.idAt(z)))) taken[n++] = _stack.rectAt(z);
+                // The next free place down the cascade, among the windows shown (without
+                // the memory for their list, the first place).
+                List<Rect> taken;
+                if (taken.reserve(_stack.count()).isOk()) {
+                        for (size_t z = 0; z < _stack.count(); ++z)
+                                if (WindowStack::isApplication(_stack.levelOf(_stack.idAt(z))))
+                                        (void)taken.append(_stack.rectAt(z));
+                }
                 const auto width = static_cast<uint16_t>((r.width + Align - 1u) & ~(Align - 1u));
-                r = cascadeRect(width, r.height, _workArea, Span<const Rect>(taken, n));
+                r = cascadeRect(width, r.height, _workArea, taken.span());
         }
         if (WindowStack::isApplication(config.level)) {
                 r = placed(r);
@@ -1133,6 +1146,12 @@ Result<uint8_t> WindowManager::openLocked(const WindowConfig &config) {
         const uint8_t oldTop = focusId();
         auto [id, err] = _stack.open(r, config.level);
         if (err.isError()) return makeError<uint8_t>(err);
+        while (_windows.size() < id) {
+                if (_windows.append(Window()).isError()) {
+                        (void)_stack.close(id);
+                        return makeError<uint8_t>(Error::NoMem);
+                }
+        }
         Window &w = _windows[id - 1];
         w = Window();
         if (config.title != nullptr) copyTitle(w.title, StringView(config.title));
@@ -1147,7 +1166,7 @@ Result<uint8_t> WindowManager::openLocked(const WindowConfig &config) {
         w.pointer = config.pointer;
         w.hideWhileTyping = config.hidePointerWhileTyping;
         w.wheel = config.wheel;
-        w.client = config.client < MaxClients + 1 ? config.client : 0;
+        w.client = config.client <= _clients.size() ? config.client : 0;
         w.dump = config.dump;
         w.reference = config.reference;
         if (config.kind != nullptr) {
@@ -1336,23 +1355,26 @@ Error WindowManager::restoreLocked(uint8_t id) {
 Result<uint8_t> WindowManager::connect(Gone gone, void *arg) {
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface == nullptr) return makeError<uint8_t>(Error::InvalidState); // no window system
-        for (size_t i = 0; i < MaxClients; ++i) {
+        for (size_t i = 0; i < _clients.size(); ++i) {
                 if (_clients[i].used) continue;
                 _clients[i] = Client{gone, arg, true};
                 return makeResult(static_cast<uint8_t>(i + 1));
         }
-        return makeError<uint8_t>(Error::Full);
+        if (_clients.size() == MaxClients) return makeError<uint8_t>(Error::Full);
+        if (_clients.append(Client{gone, arg, true}).isError()) return makeError<uint8_t>(Error::NoMem);
+        return makeResult(static_cast<uint8_t>(_clients.size()));
 }
 
 void WindowManager::disconnect(uint8_t client) {
         Mutex::Locker lock(_lock, WaitForever);
-        if (client == 0 || client > MaxClients || !_clients[client - 1].used) return;
+        if (client == 0 || client > _clients.size() || !_clients[client - 1].used) return;
         _clients[client - 1] = Client();
         for (KeyGrab &g : _grabs)
                 if (g.client == client) g = KeyGrab();
         // Its windows, shown or hidden, closed.
-        for (uint8_t id = 1; id <= WindowStack::MaxWindows; ++id)
-                if (_windows[id - 1].client == client && _stack.rectOf(id).isOk()) (void)closeLocked(id);
+        for (size_t id = 1; id <= _windows.size(); ++id)
+                if (_windows[id - 1].client == client && _stack.rectOf(uint8_t(id)).isOk())
+                        (void)closeLocked(uint8_t(id));
         watchersChanged(); // the panel gone: nothing to minimize to
         return;
 }
@@ -1360,7 +1382,7 @@ void WindowManager::disconnect(uint8_t client) {
 Error WindowManager::watch(uint8_t client, Watch fn, void *arg) {
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface == nullptr) return Error::InvalidState;
-        if (client == 0 || client > MaxClients || !_clients[client - 1].used) return Error::NotFound;
+        if (client == 0 || client > _clients.size() || !_clients[client - 1].used) return Error::NotFound;
         _clients[client - 1].watch = fn;
         _clients[client - 1].watchArg = arg;
         watchersChanged();
@@ -1385,11 +1407,13 @@ void WindowManager::watchersChanged() {
                 if (!r.isEmpty()) (void)_stack.invalidate(id, r);
         }
         if (!now) {
-                uint8_t      hidden[WindowStack::MaxWindows];
-                const size_t n = _stack.hiddenCount();
-                for (size_t i = 0; i < n; ++i) hidden[i] = _stack.hiddenIdAt(i);
-                for (size_t i = 0; i < n; ++i)
-                        if (WindowStack::isApplication(_stack.levelOf(hidden[i]))) (void)raiseLocked(hidden[i]);
+                // Each raise takes one from the hidden: the one at i is the next.
+                for (size_t i = 0; i < _stack.hiddenCount();) {
+                        const uint8_t id = _stack.hiddenIdAt(i);
+                        if (!WindowStack::isApplication(_stack.levelOf(id)) || raiseLocked(id).isError() ||
+                            _stack.isHidden(id))
+                                ++i;
+                }
         }
         changed(focusId());
         return;
@@ -1475,9 +1499,10 @@ void WindowManager::workAreaChanged() {
         const Rect area = workAreaLocked();
         if (area == _workArea) return;
         _workArea = area;
-        for (uint8_t id = 1; id <= WindowStack::MaxWindows; ++id) {
+        for (size_t id = 1; id <= _windows.size(); ++id) {
                 const Window &w = _windows[id - 1];
-                if (w.maximized && _stack.rectOf(id).isOk()) (void)resizeLocked(id, placed(area), w.decorations);
+                if (w.maximized && _stack.rectOf(uint8_t(id)).isOk())
+                        (void)resizeLocked(uint8_t(id), placed(area), w.decorations);
         }
         return;
 }
@@ -1500,7 +1525,7 @@ Error WindowManager::showWindowMenu(uint8_t id, uint16_t x, uint16_t y) {
 
 // Window @p id's menu, placed for @p anchor (a point, or the menu button).
 Error WindowManager::showWindowMenuLocked(uint8_t id, const Rect &anchor) {
-        if (id == 0 || id > WindowStack::MaxWindows || _stack.rectOf(id).isError()) return Error::NotFound;
+        if (_stack.rectOf(id).isError()) return Error::NotFound;
         if (_menuId != 0) (void)closeLocked(_menuId);
         const Window &w = _windows[id - 1];
         const bool    hidden = _stack.isHidden(id);
@@ -1926,7 +1951,8 @@ bool WindowManager::shortcut(const KeyEvent &event) {
 Error WindowManager::grabKey(uint8_t client, uint8_t usage, uint8_t modifiers, Grab fn, void *arg) {
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface == nullptr) return Error::InvalidState;
-        if (client == 0 || client > MaxClients || !_clients[client - 1].used || fn == nullptr) return Error::NotFound;
+        if (client == 0 || client > _clients.size() || !_clients[client - 1].used || fn == nullptr)
+                return Error::NotFound;
         const auto folded = static_cast<uint8_t>((modifiers | modifiers >> 4) & 0x0f);
         KeyGrab   *free = nullptr;
         for (KeyGrab &g : _grabs) {
@@ -2180,7 +2206,7 @@ void WindowManager::switchClosed(void *arg) {
 Error WindowManager::dump(uint8_t id, Stream &out) {
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface == nullptr) return Error::InvalidState;
-        if (id == 0 || id > WindowStack::MaxWindows || _stack.rectOf(id).isError()) return Error::NotFound;
+        if (_stack.rectOf(id).isError()) return Error::NotFound;
         const Window &w = _windows[id - 1];
         if (w.dump == nullptr) return Error::NotSupported;
         w.dump(w.arg, out);
@@ -2190,7 +2216,7 @@ Error WindowManager::dump(uint8_t id, Stream &out) {
 Error WindowManager::reference(uint8_t id, uint8_t *pixels, size_t stride, uint16_t width, uint16_t height) {
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface == nullptr) return Error::InvalidState;
-        if (id == 0 || id > WindowStack::MaxWindows || _stack.rectOf(id).isError()) return Error::NotFound;
+        if (_stack.rectOf(id).isError()) return Error::NotFound;
         const Window &w = _windows[id - 1];
         if (w.reference == nullptr) return Error::NotSupported;
         w.reference(w.arg, pixels, stride, width, height, _palette);
@@ -2205,6 +2231,19 @@ Error WindowManager::setTitle(uint8_t id, StringView title) {
         copyTitle(_windows[id - 1].title, title);
         if (!_stack.isHidden(id)) (void)_stack.invalidate(id, frame(id, at).titleBar());
         if (WindowStack::isApplication(_stack.levelOf(id))) _listChanged = true;
+        changed(focusId());
+        return Error::Ok;
+}
+
+Error WindowManager::setPointer(uint8_t id, Pointer shape) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        if (_stack.rectOf(id).isError()) return Error::NotFound;
+        _windows[id - 1].pointer = shape;
+        const Pointer now = shapeAt(_pointerX, _pointerY);
+        if (now == _shape) return Error::Ok;
+        _shape = now;
+        if (isCursorDrawn()) _cursorMoved = true; // drawn again in its new shape
         changed(focusId());
         return Error::Ok;
 }
@@ -2238,8 +2277,7 @@ Error WindowManager::setLargeIcon(uint8_t id, const Icon *icon) {
 Result<WindowManager::Icon> WindowManager::copyIcon(uint8_t id, Span<uint32_t> out) {
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface == nullptr) return makeError<Icon>(Error::InvalidState);
-        if (id == 0 || id > WindowStack::MaxWindows || _stack.rectOf(id).isError())
-                return makeError<Icon>(Error::NotFound);
+        if (_stack.rectOf(id).isError()) return makeError<Icon>(Error::NotFound);
         const Icon *icon = _windows[id - 1].icon;
         if (icon == nullptr || !icon->isValid()) return makeError<Icon>(Error::NotSupported);
         const size_t n = size_t(icon->width) * icon->height;
@@ -2295,9 +2333,9 @@ Error WindowManager::invalidate(uint8_t id, const Rect &rect) {
 }
 
 Error WindowManager::update(uint8_t id) {
-        if (id == 0 || id > WindowStack::MaxWindows) return Error::NotFound;
+        if (id == 0) return Error::NotFound;
         // Without the lock: a writer on another task doesn't wait for a round.
-        _asked.fetch_or(static_cast<uint16_t>(1u << (id - 1)), std::memory_order_acq_rel);
+        _asked[id / 32].fetch_or(1u << (id % 32), std::memory_order_acq_rel);
         _requests.fetch_add(1, std::memory_order_acq_rel);
         _wake.release();
         return Error::Ok;
@@ -2383,12 +2421,13 @@ Error WindowManager::dropLocked() {
         return err;
 }
 
-size_t WindowManager::list(Span<Info> out) {
+Result<List<WindowManager::Info>> WindowManager::windows() {
         Mutex::Locker lock(_lock, WaitForever);
-        size_t        n = 0;
         const size_t  shown = _stack.count();
-        for (size_t i = 0; i < shown + _stack.hiddenCount() && n < out.size(); ++i, ++n) {
-                Info &info = out[n];
+        List<Info>    out(MemSpace::Psram);
+        if (out.reserve(shown + _stack.hiddenCount()).isError()) return makeError<List<Info>>(Error::NoMem);
+        for (size_t i = 0; i < shown + _stack.hiddenCount(); ++i) {
+                Info info;
                 info.id = i < shown ? _stack.idAt(i) : _stack.hiddenIdAt(i - shown);
                 info.rect = _stack.rectOf(info.id).value();
                 const Window &w = _windows[info.id - 1];
@@ -2401,8 +2440,9 @@ size_t WindowManager::list(Span<Info> out) {
                 info.level = _stack.levelOf(info.id);
                 info.hasIcon = w.icon != nullptr;
                 info.shaded = w.shaded;
+                (void)out.append(info); // reserved
         }
-        return n;
+        return makeResult(std::move(out));
 }
 
 Result<Rect> WindowManager::rect(uint8_t id) {

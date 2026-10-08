@@ -68,6 +68,8 @@ namespace {
                         std::atomic<bool>    textBench{false}; // at the next redraw: the client area as text, timed
                         uint32_t             textUs = 0;
                         uint32_t             scrollUs = 0; // the last scroll
+                        std::atomic<bool>    taken{false}; // a window's, or being opened
+                        TestWindow          *next = nullptr;
 
                         // The pattern at (@p x, @p y) of the client area.
                         uint32_t at(uint32_t x, uint32_t y) const {
@@ -82,7 +84,31 @@ namespace {
                 {0x40c0c0, 0x309090}, {0xc040c0, 0x903090}, {0xd08040, 0xa06030}, {0xa0a0a0, 0x707070},
         };
 
-        constinit TestWindow testWindows[WindowStack::MaxWindows]; // by number - 1
+        // The test windows, in PSRAM, newest first: one closed is used again (they are never freed:
+        // a window may be redrawn on the window manager's task while a command finds another).
+        constinit std::atomic<TestWindow *> testWindows{nullptr};
+
+        // Window @p id's test window, or null (not one).
+        TestWindow *testWindow(uint8_t id) {
+                for (TestWindow *t = testWindows.load(std::memory_order_acquire); t != nullptr; t = t->next)
+                        if (t->taken.load(std::memory_order_acquire) && t->id == id) return t;
+                return nullptr;
+        }
+
+        // A test window not in use, taken; or null (no memory).
+        TestWindow *takeTestWindow() {
+                for (TestWindow *t = testWindows.load(std::memory_order_acquire); t != nullptr; t = t->next) {
+                        bool free = false;
+                        if (t->taken.compare_exchange_strong(free, true, std::memory_order_acq_rel)) return t;
+                }
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(TestWindow));
+                if (mem == nullptr) return nullptr;
+                auto *t = ::new (mem) TestWindow();
+                t->taken.store(true, std::memory_order_relaxed);
+                t->next = testWindows.load(std::memory_order_relaxed);
+                while (!testWindows.compare_exchange_weak(t->next, t, std::memory_order_acq_rel)) {}
+                return t;
+        }
 
         // Window @p id's label: plain, bold, underlined and colored cells.
         size_t makeLabel(uint8_t id, TextCell (&out)[MaxLabel]) {
@@ -209,7 +235,9 @@ namespace {
 
         // A test window closed: its number no longer a test window's.
         void closedTest(void *arg) {
-                static_cast<TestWindow *>(arg)->id = 0;
+                auto *t = static_cast<TestWindow *>(arg);
+                t->id = 0;
+                t->taken.store(false, std::memory_order_release);
                 return;
         }
 
@@ -257,8 +285,9 @@ namespace {
         }
 
         int runList(CommandContext &ctx, WindowManager &wm) {
-                WindowManager::Info info[WindowStack::MaxWindows];
-                const size_t        n = wm.list(info);
+                auto [info, lerr] = wm.windows();
+                if (lerr.isError()) return report(ctx, lerr);
+                const size_t n = info.size();
                 ctx.printf("Win  X     Y     W     H     Title\n");
                 for (size_t i = 0; i < n; ++i) {
                         const WindowManager::Info &w = info[i];
@@ -276,8 +305,9 @@ namespace {
 
         // win new [X Y W H] [TITLE...]
         int runNew(CommandContext &ctx, WindowManager &wm, Args args) {
-                WindowManager::Info         info[WindowStack::MaxWindows];
-                const size_t                open = wm.list(info);
+                auto [info, lerr] = wm.windows();
+                if (lerr.isError()) return report(ctx, lerr);
+                const size_t                open = info.size();
                 WindowManager::WindowConfig config;
                 config.rect = Rect{uint16_t(64 + 48 * open), uint16_t(48 + 36 * open), 400, 300};
                 size_t next = 2;
@@ -300,34 +330,37 @@ namespace {
                 config.redraw = redrawTest;
                 config.resized = resizedTest;
                 config.closed = closedTest;
-                // Numbers are the lowest free (WindowStack): the new window's is
-                // known beforehand, as only this command opens windows for now.
-                uint8_t guess = 1;
-                for (bool used = true; used && guess <= WindowStack::MaxWindows;) {
-                        used = false;
-                        for (size_t i = 0; i < open; ++i) used |= info[i].id == guess;
-                        if (used) ++guess;
-                }
-                if (guess > WindowStack::MaxWindows) return report(ctx, Error::Full);
-                TestWindow &t = testWindows[guess - 1];
-                t.id = guess;
-                t.a = Palette[(guess - 1u) % (sizeof(Palette) / sizeof(Palette[0]))][0];
-                t.b = Palette[(guess - 1u) % (sizeof(Palette) / sizeof(Palette[0]))][1];
+                TestWindow *tw = takeTestWindow();
+                if (tw == nullptr) return report(ctx, Error::NoMem);
+                TestWindow &t = *tw;
+                // Its number, colors and title once it has its number: drawn again then.
+                t.id = 0;
+                t.a = t.b = 0;
                 t.offset = 0;
                 t.pending.store(0);
                 const Rect client = WindowFrame(config.rect, config.decorations).client();
                 t.width = client.width; // until the window is placed (below)
                 t.height = client.height;
                 config.arg = &t;
-                if (title[0] == '\0') std::snprintf(title, sizeof(title), "Window %u", guess);
                 config.title = title;
                 auto [id, err] = wm.open(config);
-                if (err.isError()) return report(ctx, err);
+                if (err.isError()) {
+                        t.taken.store(false, std::memory_order_release);
+                        return report(ctx, err);
+                }
+                t.a = Palette[(id - 1u) % (sizeof(Palette) / sizeof(Palette[0]))][0];
+                t.b = Palette[(id - 1u) % (sizeof(Palette) / sizeof(Palette[0]))][1];
+                t.id = id;
                 auto [placed, perr] = wm.clientRect(id);
                 if (perr.isOk()) {
                         t.width = placed.width;
                         t.height = placed.height;
                 }
+                if (title[0] == '\0') {
+                        std::snprintf(title, sizeof(title), "Window %u", id);
+                        (void)wm.setTitle(id, StringView(title));
+                }
+                (void)wm.update(id);
                 ctx.printf("win %u\n", id);
                 return Shell::ExitSuccess;
         }
@@ -344,9 +377,10 @@ namespace {
 
         // win drag N X Y: the outline walked there over DragSteps frames, then dropped.
         int runDrag(CommandContext &ctx, WindowManager &wm, uint8_t id, long x, long y) {
-                WindowManager::Info info[WindowStack::MaxWindows];
-                const size_t        n = wm.list(info);
-                const Rect         *from = nullptr;
+                auto [info, lerr] = wm.windows();
+                if (lerr.isError()) return report(ctx, lerr);
+                const size_t n = info.size();
+                const Rect  *from = nullptr;
                 for (size_t i = 0; i < n; ++i)
                         if (info[i].id == id) from = &info[i].rect;
                 if (from == nullptr) return report(ctx, Error::NotFound);
@@ -444,34 +478,49 @@ namespace {
                 if (err.isError()) return report(ctx, err);
                 auto [d, derr] = Display::display(0);
                 if (derr.isError()) return report(ctx, derr);
-                const Surface      &s = d->surface();
-                WindowManager::Info info[WindowStack::MaxWindows];
-                const size_t        n = wm.list(info);
-                Rect                clients[WindowStack::MaxWindows];
-                for (size_t i = 0; i < n; ++i) clients[i] = WindowFrame(info[i].rect, info[i].decorations).client();
+                const Surface &s = d->surface();
+                auto [info, lerr] = wm.windows();
+                if (lerr.isError()) return report(ctx, lerr);
+                const size_t n = info.size();
+                // Each window's client area, label, icon, reference picture and test window.
+                struct Checked {
+                                Rect              client;
+                                Rect              label;
+                                Icon              icon;
+                                uint8_t          *image = nullptr;
+                                const TestWindow *test = nullptr;
+                };
+                List<Checked> checked(MemSpace::Psram);
+                if (checked.reserve(n).isError()) return report(ctx, Error::NoMem);
+                for (size_t i = 0; i < n; ++i) {
+                        Checked c;
+                        c.client = WindowFrame(info[i].rect, info[i].decorations).client();
+                        c.test = testWindow(info[i].id);
+                        (void)checked.append(c); // reserved
+                }
                 const uint8_t *buffer = s.shown();
                 const size_t   bytes = s.stride() * s.height();
                 for (size_t off = 0; off < bytes; off += 64 * 1024)
                         (void)esp_cache_msync(const_cast<uint8_t *>(buffer) + off,
                                               bytes - off < 64 * 1024 ? bytes - off : 64 * 1024,
                                               ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-                // Each window's label, drawn by the scalar kernel (a reference for the painter's).
+                // Each test window's label, drawn by the scalar kernel (a reference for the painter's).
                 constexpr uint16_t LabelPixels = MaxLabel * 16;
                 const size_t       labelBytes = size_t(LabelPixels) * 3 * Fonts::unscii16.height();
                 auto *labels = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, labelBytes * (n > 0 ? n : 1)));
                 if (labels == nullptr) return report(ctx, Error::NoMem);
-                Rect          labelRects[WindowStack::MaxWindows];
                 GlyphRenderer reference(GlyphRenderer::Kernel::Scalar);
                 for (size_t i = 0; i < n; ++i) {
-                        const TestWindow &t = testWindows[info[i].id - 1];
-                        TextCell          cells[MaxLabel];
-                        const size_t      count = makeLabel(t.id, cells);
-                        size_t            used = 0;
-                        const uint16_t    w = reference.drawCells(Span<const TextCell>(cells, count), Fonts::unscii16,
-                                                                  labels + i * labelBytes, size_t(LabelPixels) * 3,
-                                                                  labelWidth(t), used);
-                        labelRects[i] = Rect{uint16_t(clients[i].x + LabelX), uint16_t(clients[i].y + LabelY), w,
-                                             Fonts::unscii16.height()};
+                        const TestWindow *t = checked[i].test;
+                        if (t == nullptr) continue;
+                        TextCell       cells[MaxLabel];
+                        const size_t   count = makeLabel(t->id, cells);
+                        size_t         used = 0;
+                        const uint16_t w = reference.drawCells(Span<const TextCell>(cells, count), Fonts::unscii16,
+                                                               labels + i * labelBytes, size_t(LabelPixels) * 3,
+                                                               labelWidth(*t), used);
+                        checked[i].label = Rect{uint16_t(checked[i].client.x + LabelX),
+                                                uint16_t(checked[i].client.y + LabelY), w, Fonts::unscii16.height()};
                 }
                 const WindowPalette palette = wm.palette();
                 const bool          canMinimize = wm.canMinimize();
@@ -479,33 +528,35 @@ namespace {
                 constexpr size_t IconPixels = 16 * 16;
                 auto            *iconPixels = static_cast<uint32_t *>(
                         Memory::alloc(MemSpace::Psram, sizeof(uint32_t) * IconPixels * (n > 0 ? n : 1)));
-                Icon icons[WindowStack::MaxWindows];
                 for (size_t i = 0; i < n && iconPixels != nullptr; ++i) {
                         auto [icon, ierr] =
                                 wm.copyIcon(info[i].id, Span<uint32_t>(iconPixels + i * IconPixels, IconPixels));
-                        if (ierr.isOk()) icons[i] = icon;
+                        if (ierr.isOk()) checked[i].icon = icon;
                 }
+                const auto freeAll = [&]() {
+                        for (Checked &c : checked) Memory::free(c.image);
+                        Memory::free(labels);
+                        Memory::free(iconPixels);
+                };
                 // Each window that offers it: its client area as it should be (a terminal's, from its screen).
-                uint8_t *images[WindowStack::MaxWindows] = {};
                 for (size_t i = 0; i < n; ++i) {
-                        if (info[i].minimized || clients[i].isEmpty()) continue; // a rolled-up one shows none
-                        const Rect  &c = clients[i];
+                        if (info[i].minimized || checked[i].client.isEmpty()) continue; // a rolled-up one shows none
+                        const Rect  &c = checked[i].client;
                         const size_t stride = size_t(c.width) * 3;
-                        images[i] = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, stride * c.height));
-                        if (images[i] == nullptr) {
-                                for (uint8_t *image : images) Memory::free(image);
-                                Memory::free(labels);
-                                Memory::free(iconPixels);
+                        uint8_t     *image = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, stride * c.height));
+                        if (image == nullptr) {
+                                freeAll();
                                 return report(ctx, Error::NoMem);
                         }
-                        if (wm.reference(info[i].id, images[i], stride, c.width, c.height).isError()) {
-                                Memory::free(images[i]); // a test window: its pattern, below
-                                images[i] = nullptr;
+                        if (wm.reference(info[i].id, image, stride, c.width, c.height).isError()) {
+                                Memory::free(image); // a test window: its pattern, below
+                                image = nullptr;
                         }
+                        checked[i].image = image;
                 }
                 const uint32_t desktop = palette.color(WindowPalette::Role::Desktop);
                 const Rect     pointer = wm.pointerArea(); // over everything: not modelled
-                uint32_t       wrong = 0, checked = 0, unknown = 0;
+                uint32_t       wrong = 0, compared = 0, unknown = 0;
                 int            fx = -1, fy = -1;
                 uint32_t       fgot = 0, fwant = 0;
                 for (uint32_t y = 0; y < s.height(); ++y) {
@@ -516,23 +567,23 @@ namespace {
                                 bool     known = true;
                                 for (size_t i = 0; i < n; ++i) {
                                         if (info[i].minimized || !inside(info[i].rect, x, y)) continue;
-                                        const Rect &c = clients[i];
-                                        if (inside(c, x, y) && images[i] == nullptr &&
-                                            testWindows[info[i].id - 1].id != info[i].id) {
+                                        const Checked &w = checked[i];
+                                        const Rect    &c = w.client;
+                                        if (inside(c, x, y) && w.image == nullptr && w.test == nullptr) {
                                                 known = false; // a client area offering no reference (a menu)
                                         } else if (!inside(c, x, y)) {
-                                                want = frameAt(palette, info[i], icons[i], canMinimize, x, y);
-                                        } else if (images[i] != nullptr) {
+                                                want = frameAt(palette, info[i], w.icon, canMinimize, x, y);
+                                        } else if (w.image != nullptr) {
                                                 const uint8_t *q =
-                                                        images[i] + (size_t(y - c.y) * c.width + (x - c.x)) * 3;
+                                                        w.image + (size_t(y - c.y) * c.width + (x - c.x)) * 3;
                                                 want = uint32_t(q[2]) << 16 | uint32_t(q[1]) << 8 | q[0];
-                                        } else if (inside(labelRects[i], x, y)) {
+                                        } else if (inside(w.label, x, y)) {
                                                 const uint8_t *q = labels + i * labelBytes +
-                                                                   (y - labelRects[i].y) * size_t(LabelPixels) * 3 +
-                                                                   (x - labelRects[i].x) * 3;
+                                                                   (y - w.label.y) * size_t(LabelPixels) * 3 +
+                                                                   (x - w.label.x) * 3;
                                                 want = uint32_t(q[2]) << 16 | uint32_t(q[1]) << 8 | q[0];
                                         } else {
-                                                want = testWindows[info[i].id - 1].at(x - c.x, y - c.y);
+                                                want = w.test->at(x - c.x, y - c.y);
                                         }
                                         break;
                                 }
@@ -540,7 +591,7 @@ namespace {
                                         ++unknown;
                                         continue;
                                 }
-                                ++checked;
+                                ++compared;
                                 const uint8_t *p = line + 3 * x;
                                 const uint32_t got = uint32_t(p[2]) << 16 | uint32_t(p[1]) << 8 | p[0];
                                 if (got == want) continue;
@@ -553,7 +604,7 @@ namespace {
                         }
                 }
                 ctx.printf("check:    %lu of %lu pixels wrong", static_cast<unsigned long>(wrong),
-                           static_cast<unsigned long>(checked));
+                           static_cast<unsigned long>(compared));
                 if (unknown > 0)
                         ctx.printf(" (%lu not checked: windows without a reference)",
                                    static_cast<unsigned long>(unknown));
@@ -561,9 +612,7 @@ namespace {
                         ctx.printf(" (the first at %d,%d: %06lx, not %06lx)", fx, fy, static_cast<unsigned long>(fgot),
                                    static_cast<unsigned long>(fwant));
                 ctx.printf("\n");
-                for (uint8_t *image : images) Memory::free(image);
-                Memory::free(labels);
-                Memory::free(iconPixels);
+                freeAll();
                 return wrong == 0 ? Shell::ExitSuccess : Shell::ExitFailure;
         }
 
@@ -578,8 +627,9 @@ namespace {
                 uint64_t       longest = 0;
                 long           done = 0;
                 for (; done < count && !ctx.isInterrupted(); ++done) {
-                        WindowManager::Info info[WindowStack::MaxWindows];
-                        const size_t        n = wm.list(info);
+                        auto [info, lerr] = wm.windows();
+                        if (lerr.isError()) return report(ctx, lerr);
+                        const size_t n = info.size();
                         if (n == 0) break;
                         const WindowManager::Info &w = info[next(uint32_t(n))];
                         const uint64_t             t = System::uptimeUs();
@@ -674,8 +724,8 @@ namespace {
                 long number = 0;
                 if (args.size() == 3 && !parseNumber(args[2], 15, number)) return ctx.usage();
                 if (ctx.shell().launcher() == nullptr) return report(ctx, Error::NotSupported);
-                WindowManager::Info before[WindowStack::MaxWindows];
-                const size_t        had = wm.list(before);
+                auto [before, berr] = wm.windows();
+                if (berr.isError()) return report(ctx, berr);
                 char                at[8];
                 std::snprintf(at, sizeof(at), "%ld", 32 + 32 * number);
                 const StringView argv[] = {"terminal", at, at};
@@ -704,11 +754,11 @@ namespace {
                 if (serr.isError()) return report(ctx, serr);
                 // Its window, once it shows (up to 2 s).
                 for (int tries = 0; tries < 200; ++tries) {
-                        WindowManager::Info now[WindowStack::MaxWindows];
-                        const size_t        n = wm.list(now);
+                        auto [now, nerr] = wm.windows();
+                        const size_t n = nerr.isOk() ? now.size() : 0;
                         for (size_t i = 0; i < n; ++i) {
                                 bool old = false;
-                                for (size_t k = 0; k < had; ++k) old = old || before[k].id == now[i].id;
+                                for (const WindowManager::Info &b : before) old = old || b.id == now[i].id;
                                 if (old) continue;
                                 auto [client, cerr] = wm.clientRect(now[i].id);
                                 if (cerr.isError()) continue;
@@ -847,8 +897,9 @@ namespace {
         int runDecorate(CommandContext &ctx, WindowManager &wm, Args args) {
                 uint8_t id = 0;
                 if (!parseId(ctx, args[2], id)) return Shell::ExitUsage;
-                WindowManager::Info        info[WindowStack::MaxWindows];
-                const size_t               n = wm.list(info);
+                auto [info, lerr] = wm.windows();
+                if (lerr.isError()) return report(ctx, lerr);
+                const size_t               n = info.size();
                 const WindowManager::Info *w = nullptr;
                 for (size_t i = 0; i < n; ++i)
                         if (info[i].id == id) w = &info[i];
@@ -938,12 +989,12 @@ namespace {
                         char      *end = nullptr;
                         const long dy = std::strtol(args[3], &end, 0);
                         if (end == args[3] || *end != '\0' || dy < -4096 || dy > 4096) return ctx.usage();
-                        testWindows[id - 1].pending.fetch_add(int32_t(dy));
+                        TestWindow *t = testWindow(id);
+                        if (t == nullptr) return report(ctx, Error::NotFound);
+                        t->pending.fetch_add(int32_t(dy));
                         Error e = wm->update(id);
                         if (e.isOk()) e = wm->sync(SyncTimeoutMs);
-                        if (e.isOk())
-                                ctx.printf("scroll:   %lu us\n",
-                                           static_cast<unsigned long>(testWindows[id - 1].scrollUs));
+                        if (e.isOk()) ctx.printf("scroll:   %lu us\n", static_cast<unsigned long>(t->scrollUs));
                         return report(ctx, e);
                 }
                 if (args.size() == 3 && std::strcmp(what, "pointer") == 0) {
@@ -976,7 +1027,9 @@ namespace {
                 }
                 if (args.size() == 3 && std::strcmp(what, "textbench") == 0) {
                         if (!parseId(ctx, args[2], id)) return Shell::ExitUsage;
-                        TestWindow &t = testWindows[id - 1];
+                        TestWindow *found = testWindow(id);
+                        if (found == nullptr) return report(ctx, Error::NotFound);
+                        TestWindow &t = *found;
                         t.textBench.store(true);
                         Error e = wm->update(id);
                         if (e.isOk()) e = wm->sync(SyncTimeoutMs);

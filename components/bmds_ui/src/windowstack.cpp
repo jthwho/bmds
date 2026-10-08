@@ -23,6 +23,8 @@ void WindowStack::reset(uint16_t width, uint16_t height) {
         _screen = Rect{0, 0, width, height};
         _count = 0;
         _hidden = 0;
+        _rects.clear();
+        _entries.clear();
         _damage.clear();
         _damage.add(_screen);
         return;
@@ -30,13 +32,13 @@ void WindowStack::reset(uint16_t width, uint16_t height) {
 
 Result<size_t> WindowStack::layerOf(uint8_t id) const {
         for (size_t z = 0; z < _count; ++z)
-                if (_ids[z] == id) return makeResult(z);
+                if (_entries[z].id == id) return makeResult(z);
         return makeError<size_t>(Error::NotFound);
 }
 
 int WindowStack::find(uint8_t id) const {
         for (size_t i = 0; i < size_t(_count) + _hidden; ++i)
-                if (_ids[i] == id) return int(i);
+                if (_entries[i].id == id) return int(i);
         return -1;
 }
 
@@ -51,26 +53,22 @@ bool WindowStack::isHidden(uint8_t id) const {
 
 WindowStack::Level WindowStack::levelOf(uint8_t id) const {
         const int i = find(id);
-        return i < 0 ? Level::Normal : _levels[i];
+        return i < 0 ? Level::Normal : _entries[i].level;
 }
 
 void WindowStack::take(size_t from, size_t to) {
-        const Rect    rect = _rects[from];
-        const uint8_t id = _ids[from];
-        const Level   level = _levels[from];
+        const Rect  rect = _rects[from];
+        const Entry entry = _entries[from];
         for (; from < to; ++from) {
                 _rects[from] = _rects[from + 1];
-                _ids[from] = _ids[from + 1];
-                _levels[from] = _levels[from + 1];
+                _entries[from] = _entries[from + 1];
         }
         for (; from > to; --from) {
                 _rects[from] = _rects[from - 1];
-                _ids[from] = _ids[from - 1];
-                _levels[from] = _levels[from - 1];
+                _entries[from] = _entries[from - 1];
         }
         _rects[to] = rect;
-        _ids[to] = id;
-        _levels[to] = level;
+        _entries[to] = entry;
         return;
 }
 
@@ -79,7 +77,7 @@ void WindowStack::take(size_t from, size_t to) {
 size_t WindowStack::topOf(Level level, size_t skip) const {
         size_t z = 0;
         for (size_t i = 0; i < _count; ++i)
-                if (i != skip && _levels[i] > level) ++z;
+                if (i != skip && _entries[i].level > level) ++z;
         return z;
 }
 
@@ -87,10 +85,13 @@ bool WindowStack::isPlaceable(const Rect &rect) const {
         return !rect.isEmpty() && _screen.contains(rect) && rect.x % Align == 0 && rect.width % Align == 0;
 }
 
-void WindowStack::layers(Rect (&out)[MaxWindows + 1]) const {
-        for (size_t z = 0; z < _count; ++z) out[z] = _rects[z];
-        out[_count] = _screen;
-        return;
+// The plan of @p rect over layers 0 to @p z (the desktop's, if @p z is it).
+Result<size_t> WindowStack::planAbove(size_t z, const Rect &rect, Span<ComposePiece> out) const {
+        Region damage;
+        damage.add(rect);
+        const bool desktop = z >= _count;
+        return planCompose(Span<const Rect>(_rects.data(), desktop ? _count : z + 1), desktop ? _screen : Rect(),
+                           damage, out);
 }
 
 void WindowStack::addShown(size_t z, const Rect &rect) {
@@ -100,12 +101,8 @@ void WindowStack::addShown(size_t z, const Rect &rect) {
                 _damage.add(r);
                 return;
         }
-        Rect all[MaxWindows + 1];
-        layers(all);
-        Region damage;
-        damage.add(r);
         ComposePiece pieces[MaxPieces];
-        auto [n, err] = planCompose(Span<const Rect>(all, z + 1), damage, Span<ComposePiece>(pieces, MaxPieces));
+        auto [n, err] = planAbove(z, r, Span<ComposePiece>(pieces, MaxPieces));
         if (err.isError()) {
                 _damage.add(r); // more than needed, never less
                 return;
@@ -119,11 +116,17 @@ Result<uint8_t> WindowStack::open(const Rect &rect, Level level) {
         if (!isPlaceable(rect)) return makeError<uint8_t>(Error::Invalid);
         const size_t total = size_t(_count) + _hidden;
         if (total == MaxWindows) return makeError<uint8_t>(Error::Full);
+        // Room for both first: then neither append fails.
+        if (_rects.capacity() == total || _entries.capacity() == total) {
+                const size_t room = total < 8 ? 16 : 2 * total;
+                const size_t cap = room < MaxWindows ? room : MaxWindows;
+                if (_rects.reserve(cap).isError() || _entries.reserve(cap).isError())
+                        return makeError<uint8_t>(Error::NoMem);
+        }
         uint8_t id = 1;
         while (find(id) >= 0) ++id;
-        _rects[total] = rect;
-        _ids[total] = id;
-        _levels[total] = level;
+        (void)_rects.append(rect);
+        (void)_entries.append(Entry{id, level});
         const size_t z = topOf(level, MaxWindows);
         take(total, z);
         ++_count;
@@ -138,20 +141,22 @@ Error WindowStack::close(uint8_t id) {
         if (i >= int(_count)) {
                 take(size_t(i), last);
                 --_hidden;
-                return Error::Ok;
+        } else {
+                // What it showed, before it goes: then the layers under show it.
+                addShown(size_t(i), _rects[i]);
+                take(size_t(i), last);
+                --_count;
         }
-        // What it showed, before it goes: then the layers under show it.
-        addShown(size_t(i), _rects[i]);
-        take(size_t(i), last);
-        --_count;
+        _rects.truncate(last);
+        _entries.truncate(last);
         return Error::Ok;
 }
 
 Error WindowStack::setLevel(uint8_t id, Level level) {
         const int i = find(id);
         if (i < 0) return Error::NotFound;
-        if (_levels[i] == level) return Error::Ok;
-        _levels[i] = level;
+        if (_entries[i].level == level) return Error::Ok;
+        _entries[i].level = level;
         if (i >= int(_count)) return Error::Ok; // hidden: shown on top of its new level later
         // Up or down past other windows: all of it may change hands (rare: a whole redraw).
         const Rect rect = _rects[i];
@@ -173,7 +178,7 @@ Error WindowStack::hide(uint8_t id) {
 Error WindowStack::show(uint8_t id) {
         const int i = find(id);
         if (i < int(_count)) return Error::NotFound;
-        const size_t z = topOf(_levels[i], MaxWindows);
+        const size_t z = topOf(_entries[i].level, MaxWindows);
         take(size_t(i), z);
         ++_count;
         --_hidden;
@@ -200,17 +205,13 @@ Error WindowStack::move(uint8_t id, const Rect &rect) {
 Error WindowStack::raise(uint8_t id) {
         auto [z, err] = layerOf(id);
         if (err.isError()) return err;
-        const size_t to = topOf(_levels[z], z);
+        const size_t to = topOf(_entries[z].level, z);
         if (to >= z) return Error::Ok;
         // What the windows it goes above covered of it: the plan's pieces
         // theirs (what the windows still above it cover stays covered).
-        const Rect rect = _rects[z];
-        Rect       all[MaxWindows + 1];
-        layers(all);
-        Region damage;
-        damage.add(rect);
+        const Rect   rect = _rects[z];
         ComposePiece pieces[MaxPieces];
-        auto [n, perr] = planCompose(Span<const Rect>(all, z + 1), damage, Span<ComposePiece>(pieces, MaxPieces));
+        auto [n, perr] = planAbove(z, rect, Span<ComposePiece>(pieces, MaxPieces));
         if (perr.isError()) {
                 _damage.add(rect);
         } else {
@@ -240,9 +241,7 @@ void WindowStack::invalidateScreen(const Rect &rect) {
 }
 
 Result<size_t> WindowStack::plan(const Region &damage, Span<ComposePiece> out) const {
-        Rect all[MaxWindows + 1];
-        layers(all);
-        return planCompose(Span<const Rect>(all, size_t(_count) + 1), damage, out);
+        return planCompose(Span<const Rect>(_rects.data(), _count), _screen, damage, out);
 }
 
 Rect cascadeRect(uint16_t width, uint16_t height, const Rect &area, Span<const Rect> taken) {

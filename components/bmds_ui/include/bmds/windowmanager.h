@@ -16,6 +16,7 @@
 #include <bmds/error.h>
 #include <bmds/icon.h>
 #include <bmds/inputevent.h>
+#include <bmds/list.h>
 #include <bmds/menulayout.h>
 #include <bmds/mutex.h>
 #include <bmds/painter.h>
@@ -242,8 +243,8 @@ class WindowManager {
                 /** @brief The index `DesktopChosen` is told for Ctrl+Shift+Windows (`devplan/gui.md` §4p). */
                 static constexpr size_t DesktopKey = MaxDesktopItems;
 
-                /** @brief Connections at once. */
-                static constexpr size_t MaxClients = 16;
+                /** @brief Connections at once: every number a byte holds (0 is none). */
+                static constexpr size_t MaxClients = 255;
 
                 /** @brief The longest kind kept, in bytes. */
                 static constexpr size_t MaxKind = 15;
@@ -369,7 +370,7 @@ class WindowManager {
                  *        its windows (`WindowConfig::client`) close with it, and
                  *        @p gone is called if the window manager stops first.
                  * @return Its connection, `InvalidState` (not running: no window
-                 *         system), or `Full`.
+                 *         system), `Full` or `NoMem`.
                  */
                 Result<uint8_t> connect(Gone gone, void *arg);
 
@@ -526,6 +527,13 @@ class WindowManager {
                 Error setIcon(uint8_t id, const Icon *icon);
 
                 /**
+                 * @brief Sets the pointer's shape over window @p id's client area
+                 *        (`WindowConfig::pointer` at first): a widget's under it.
+                 * @return `Ok`, `NotFound`, or `InvalidState` (not running).
+                 */
+                Error setPointer(uint8_t id, Pointer shape);
+
+                /**
                  * @brief Sets window @p id's large icon (null: none; 32 × 32 at
                  *        most), kept by the caller as `setIcon()`'s: Alt+Tab's list
                  *        shows it (the small one doubled without it).
@@ -632,10 +640,11 @@ class WindowManager {
                 Error drop();
 
                 /**
-                 * @brief Writes up to @p out's size of windows, top first, then the
-                 *        minimized ones (the last minimized first). @return The count.
+                 * @brief Returns the windows, top first, then the minimized ones
+                 *        (the last minimized first), in a PSRAM list of their own.
+                 * @return The list, or `NoMem`.
                  */
-                size_t list(Span<Info> out);
+                Result<List<Info>> windows();
 
                 /** @brief Returns window @p id's outer rectangle (screen coordinates; minimized too). */
                 Result<Rect> rect(uint8_t id);
@@ -727,6 +736,9 @@ class WindowManager {
                 struct Switcher; // Alt+Tab's list, while it shows
 
                 static constexpr size_t MaxPieces = 256;
+                static constexpr size_t UpdateWords = 8; // a bit for each window number
+
+                bool hasUpdates() const;
 
                 static void     entry(void *arg);
                 static void     keyEntry(void *arg, const KeyEvent &event);
@@ -812,7 +824,7 @@ class WindowManager {
                 Display              *_display = nullptr;
                 Surface              *_surface = nullptr;
                 WindowStack           _stack{0, 0};
-                Window                _windows[WindowStack::MaxWindows]; // by number - 1
+                List<Window>          _windows; // by number - 1, grown as numbers are used
                 WindowPalette         _palette;
                 uint8_t              *_under = nullptr;     // what the pointer covers (UnderBytes, Psram)
                 Rect                  _underRect;           // where; empty: nothing saved
@@ -821,13 +833,13 @@ class WindowManager {
                 bool                  _outlineShown = false;
                 Painter::Tools        _tools;
                 GlyphRenderer         _renderer{GlyphRenderer::best()};
-                uint16_t              _updates = 0;       // windows asking for an update, a bit by number - 1
+                uint32_t              _updates[UpdateWords] = {}; // windows asking for an update, a bit by number
                 ComposePiece         *_pieces = nullptr;  // a round's plan
                 Rect                 *_scratch = nullptr; // a layer's pieces, client damage, and visible client
                 SpinLock              _inputLock;         // the two queues
                 KeyEvent              _keys[KeyQueue];
                 uint8_t               _keyTargets[KeyQueue] = {}; // the window a key is for; 0: the focus
-                Client                _clients[MaxClients];
+                List<Client>          _clients;                   // by connection - 1, grown as they are used
                 uint8_t               _keyHead = 0; // the next to deliver
                 uint8_t               _keyCount = 0;
                 PointerEvent          _pointers[PointerQueue];
@@ -890,7 +902,7 @@ class WindowManager {
                 Snap                  _snap = Snap::None; // the drag's outline is a snap's
                 uint8_t               _unsnapId = 0;      // a snapped window grabbed: its size back when it moves
                 std::atomic<uint32_t> _requests{0};       // changes made
-                std::atomic<uint16_t> _asked{0};          // update() calls, taken by the next round
+                std::atomic<uint32_t> _asked[UpdateWords] = {}; // update() calls, taken by the next round
                 std::atomic<uint32_t> _drawn{0};          // changes drawn
                 uint32_t              _presented = 0;     // the last present's number
                 Stats                 _stats;

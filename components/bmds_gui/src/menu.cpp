@@ -219,10 +219,19 @@ bool Menu::keyPressed(const KeyEvent &event) {
                 case HidKey::Down:
                 case HidKey::Up: highlight(_layout.next(_highlight, event.usage == HidKey::Down ? 1 : -1)); return true;
                 case HidKey::Right:
-                        if (_highlight >= 0 && _items[_highlight].submenu != nullptr) openSubmenu(_highlight, true);
+                        if (_highlight >= 0 && _items[_highlight].submenu != nullptr) {
+                                openSubmenu(_highlight, true);
+                        } else if (root()._moved != nullptr) {
+                                Menu &r = root();
+                                r._moved(r._movedArg, r, 1);
+                        }
                         return true;
                 case HidKey::Left:
-                        if (_parent != nullptr) _parent->closeSubmenu();
+                        if (_parent != nullptr) {
+                                _parent->closeSubmenu();
+                        } else if (_moved != nullptr) {
+                                _moved(_movedArg, *this, -1);
+                        }
                         return true;
                 case HidKey::Enter:
                 case HidKey::KeypadEnter:

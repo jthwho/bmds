@@ -13,6 +13,7 @@
 #include <bmds/compose.h>
 #include <bmds/config.h>
 #include <bmds/error.h>
+#include <bmds/list.h>
 #include <bmds/rect.h>
 #include <bmds/region.h>
 #include <bmds/result.h>
@@ -328,13 +329,16 @@ struct WindowFrame {
  * (the panel stays above the windows, popups above everything, a desktop
  * window under them all).
  *
+ * The windows are kept in PSRAM lists that grow as windows open (none are
+ * held while the stack is empty), up to `MaxWindows`: numbers stay a byte.
+ *
  * @par Thread Safety
- * A plain value.
+ * Not internally synchronized: share by handoff, or under the owner's lock.
  */
 class WindowStack {
         public:
-                /** @brief Most windows. */
-                static constexpr size_t MaxWindows = 16;
+                /** @brief Most windows: every number a byte holds (0 is none). */
+                static constexpr size_t MaxWindows = 255;
 
                 /** @brief The levels windows are stacked in, lowest first. Append only. */
                 enum class Level : uint8_t {
@@ -364,10 +368,10 @@ class WindowStack {
                 size_t hiddenCount() const { return _hidden; }
 
                 /** @brief Returns the number of hidden window @p i (0: the last hidden). */
-                uint8_t hiddenIdAt(size_t i) const { return _ids[_count + i]; }
+                uint8_t hiddenIdAt(size_t i) const { return _entries[_count + i].id; }
 
                 /** @brief Returns the number of layer @p z's window (0: the top). */
-                uint8_t idAt(size_t z) const { return _ids[z]; }
+                uint8_t idAt(size_t z) const { return _entries[z].id; }
 
                 /** @brief Returns layer @p z's rectangle (`count()`: the screen). */
                 Rect rectAt(size_t z) const { return z < _count ? _rects[z] : _screen; }
@@ -401,7 +405,8 @@ class WindowStack {
 
                 /**
                  * @brief Opens a window at @p rect, on top of @p level.
-                 * @return Its number, `Invalid` (not placeable) or `Full`.
+                 * @return Its number, `Invalid` (not placeable), `Full`
+                 *         (`MaxWindows` open) or `NoMem`.
                  */
                 Result<uint8_t> open(const Rect &rect, Level level = Level::Normal);
 
@@ -451,19 +456,23 @@ class WindowStack {
                 Result<size_t> plan(const Region &damage, Span<ComposePiece> out) const;
 
         private:
-                void   addShown(size_t z, const Rect &rect); // what of rect layer z shows, to the damage
-                void   layers(Rect (&out)[MaxWindows + 1]) const;
-                int    find(uint8_t id) const;                // the entry, shown or hidden, or -1
-                size_t topOf(Level level, size_t skip) const; // where the top of a level is, entry skip not counted
-                void   take(size_t from, size_t to);          // moves an entry, shifting those between
+                struct Entry {
+                                uint8_t id = 0;
+                                Level   level = Level::Normal;
+                };
 
-                Rect    _screen;
-                Rect    _rects[MaxWindows]; // the shown top first, then the hidden
-                uint8_t _ids[MaxWindows] = {};
-                Level   _levels[MaxWindows] = {}; // as _ids
-                uint8_t _count = 0;
-                uint8_t _hidden = 0;
-                Region  _damage;
+                void   addShown(size_t z, const Rect &rect); // what of rect layer z shows, to the damage
+                Result<size_t> planAbove(size_t z, const Rect &rect, Span<ComposePiece> out) const; // layers 0 to z
+                int            find(uint8_t id) const;                // the entry, shown or hidden, or -1
+                size_t         topOf(Level level, size_t skip) const; // the top of a level, entry skip not counted
+                void           take(size_t from, size_t to);          // moves an entry, shifting those between
+
+                Rect        _screen;
+                List<Rect>  _rects;   // the shown top first, then the hidden
+                List<Entry> _entries; // as _rects
+                uint8_t     _count = 0;
+                uint8_t     _hidden = 0;
+                Region      _damage;
 };
 
 /**

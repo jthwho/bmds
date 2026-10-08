@@ -27,8 +27,9 @@ struct ComposePiece {
 /**
  * @brief Plans a compose: which part of each layer shows in @p damage.
  *
- * @p layers are the opaque layers' screen rectangles, the top one first
- * (the desktop last, covering the screen). Each damaged pixel comes from
+ * @p layers are the opaque layers' screen rectangles, the top one first;
+ * @p bottom is one more under them (layer `layers.size()`, the desktop
+ * covering the screen; empty: none). Each damaged pixel comes from
  * the topmost layer covering it; pixels no layer covers are left out. The
  * pieces are disjoint, so nothing is drawn twice. Horizontal edges are
  * only the inputs', so inputs on even columns give even pieces.
@@ -37,6 +38,6 @@ struct ComposePiece {
  *         holds, or than the plan's working space: the caller paints the
  *         damage's bounds bottom to top instead).
  */
-Result<size_t> planCompose(Span<const Rect> layers, const Region &damage, Span<ComposePiece> out);
+Result<size_t> planCompose(Span<const Rect> layers, const Rect &bottom, const Region &damage, Span<ComposePiece> out);
 
 BMDS_NAMESPACE_END

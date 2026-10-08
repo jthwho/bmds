@@ -147,7 +147,7 @@ accepted. Separate surfaces that the DMA reads as rectangles of their own (§4c)
 
 ## 4a. Step 3 design: the window manager on surface 0 (2026-10-05; built)
 
-- **Pure and host-tested (`bmds_ui`):** `WindowStack` holds up to 16 windows (numbered from 1,
+- **Pure and host-tested (`bmds_ui`):** `WindowStack` holds up to 16 windows (255 since 2026-10-07, `filebrowser.md` FB17; numbered from 1,
   the lowest free number reused), their rectangles in z-order, and one screen `Region` of damage.
   Its changes add exactly what needs redrawing: opening adds the window's rectangle; closing and
   moving add what it covered (and, moving, its new place); raising adds only the parts that were

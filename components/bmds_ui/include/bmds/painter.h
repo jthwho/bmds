@@ -71,8 +71,25 @@ class Painter {
                     : _surface(surface), _clip(clip), _damage(damage), _tools(tools), _timeoutMs(timeoutMs),
                       _originX(originX), _originY(originY) {}
 
+                /**
+                 * @brief A painter for what of @p limit (@p outer's coordinates; its
+                 *        x and width cut inward to 4-pixel columns) @p outer draws:
+                 *        @p outer's clip and damage cut to it, into @p storage
+                 *        (`clippedStorage()` rectangles of @p outer's suffice; past
+                 *        them, pieces are left out and `Full` noted). The origin and
+                 *        tools are @p outer's, and its calls, first error and
+                 *        `defer()` go to @p outer when it is destroyed. Used while
+                 *        @p outer isn't.
+                 */
+                Painter(Painter &outer, const Rect &limit, Span<Rect> storage);
+
+                ~Painter();
+
                 Painter(const Painter &) = delete;
                 Painter &operator=(const Painter &) = delete;
+
+                /** @brief Returns the storage a clipped painter of this one needs at most, in rectangles. */
+                size_t clippedStorage() const { return _clip.size() + _damage.size(); }
 
                 /** @brief Returns the smallest rectangle holding the clip, in the painter's coordinates. */
                 Rect clipBounds() const { return local(bounds(_clip)); }
@@ -97,12 +114,13 @@ class Painter {
 
                 /**
                  * @brief Writes @p utf8 at (@p x, @p y) in @p font, @p fg on @p bg,
-                 *        at most @p maxWidth pixels of it.
+                 *        at most @p maxWidth pixels of it. The position may be left of
+                 *        or above the surface: what of the row is on it is drawn.
                  * @return The first error so far (`Invalid` if x, made the
                  *         surface's, isn't on a 4-pixel column).
                  * @hotpath
                  */
-                Error text(uint16_t x, uint16_t y, StringView utf8, const Font &font, uint32_t fg, uint32_t bg,
+                Error text(int x, int y, StringView utf8, const Font &font, uint32_t fg, uint32_t bg,
                            uint16_t maxWidth);
 
                 /**
@@ -111,15 +129,16 @@ class Painter {
                  * @return As `text()`.
                  * @hotpath
                  */
-                Error cells(uint16_t x, uint16_t y, Span<const TextCell> cells, const Font &font, uint16_t maxWidth);
+                Error cells(int x, int y, Span<const TextCell> cells, const Font &font, uint16_t maxWidth);
 
                 /**
                  * @brief Draws @p icon with its top-left corner at (@p x, @p y) (x on a
                  *        4-pixel column), its alpha blended over @p bg (0xRRGGBB: the
                  *        face it sits on; nothing is read back from the surface).
-                 *        Any height, in bands of the strip's.
+                 *        Any height, in bands of the strip's; as `text()`, it may
+                 *        start off the surface.
                  */
-                Error image(uint16_t x, uint16_t y, const Icon &icon, uint32_t bg);
+                Error image(int x, int y, const Icon &icon, uint32_t bg);
 
                 /**
                  * @brief Moves what shows of @p area by @p dy rows (down if
@@ -163,8 +182,7 @@ class Painter {
                 static Rect bounds(Span<const Rect> rects);
                 Rect        local(const Rect &r) const;
                 void        flush(uint32_t rgb);
-                template <typename Draw>
-                Error run(uint16_t x, uint16_t y, uint16_t maxWidth, uint16_t height, Draw draw);
+                template <typename Draw> Error run(int x, int y, uint16_t maxWidth, uint16_t height, Draw draw);
 
                 Surface         &_surface;
                 Span<const Rect> _clip;
@@ -178,6 +196,7 @@ class Painter {
                 uint32_t         _calls = 0;
                 bool             _deferred = false;
                 Error            _error;
+                Painter         *_outer = nullptr; // a clipped painter's
 };
 
 BMDS_NAMESPACE_END

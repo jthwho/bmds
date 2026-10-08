@@ -1416,9 +1416,9 @@ namespace {
         void PanelApp::windowsChanged(void *arg) {
                 auto *self = static_cast<PanelApp *>(arg);
                 if (self->_windows == nullptr) return;
-                Info         infos[WindowStack::MaxWindows];
-                const size_t n = self->_app.windowManager().list(Span<Info>(infos));
-                self->_windows->refresh(Span<const Info>(infos, n));
+                // Without the memory for the list, as it was (the next change tries again).
+                auto [infos, err] = self->_app.windowManager().windows();
+                if (err.isOk()) self->_windows->refresh(infos.span());
                 return;
         }
 
@@ -1489,10 +1489,13 @@ namespace {
                 }
                 WindowManager &wm = _app.windowManager();
                 {
-                        Info         infos[WindowStack::MaxWindows];
-                        const size_t n = wm.list(Span<Info>(infos));
-                        for (size_t i = 0; i < n; ++i) {
-                                if (StringView(infos[i].kind) == "panel") {
+                        auto [infos, lerr] = wm.windows();
+                        if (lerr.isError()) {
+                                say("panel: ", lerr.desc(), "\n");
+                                return 1;
+                        }
+                        for (const Info &info : infos) {
+                                if (StringView(info.kind) == "panel") {
                                         say("panel: one is running already\n");
                                         return 1;
                                 }

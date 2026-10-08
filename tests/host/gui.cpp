@@ -6,7 +6,7 @@
  * See LICENSE file in the project root folder for license information.
  *
  * The toolkit's pure parts (devplan/gui.md): configuration files, launcher
- * entries, menu geometry, line layout.
+ * entries, menu geometry, line layout, scroll bars and window furniture.
  */
 
 #include <doctest.h>
@@ -19,6 +19,7 @@
 #include <bmds/bevel.h>
 #include <bmds/desktopentry.h>
 #include <bmds/font.h>
+#include <bmds/furniturelayout.h>
 #include <bmds/icongrid.h>
 #include <bmds/inflate.h>
 #include <bmds/inireader.h>
@@ -29,6 +30,7 @@
 #include <bmds/pngdecoder.h>
 #include <bmds/program.h>
 #include <bmds/programimage.h>
+#include <bmds/scrollmodel.h>
 #include <bmds/switcherlayout.h>
 #include <bmds/windowstack.h>
 
@@ -748,4 +750,117 @@ TEST_CASE("Mnemonic: marks taken out, the key found, typed keys matched") {
         e.modifiers = 0;
         e.action = bmds::KeyEvent::Action::Release;
         CHECK(bmds::Mnemonic::keyOf(e) == 0);
+}
+
+TEST_CASE("ScrollModel: the value kept in range, steps, and the bar's parts") {
+        using bmds::ScrollModel;
+        using Part = ScrollModel::Part;
+        ScrollModel m;
+        m.setRange(1000, 200);
+        m.setLineStep(16);
+        CHECK(m.maximum() == 800);
+        CHECK(m.pageStep() == 184);
+        CHECK(!m.setValue(-5)); // already 0
+        CHECK(m.setValue(5000));
+        CHECK(m.value() == 800);
+        CHECK(m.stepLines(-1));
+        CHECK(m.value() == 784);
+        CHECK(m.stepPages(-10));
+        CHECK(m.value() == 0);
+        CHECK(!m.act(Part::BackArrow));
+        CHECK(m.act(Part::ForwardPage));
+        CHECK(m.value() == 184);
+        m.setRange(300, 200); // shrunk: the value follows
+        CHECK(m.value() == 100);
+        m.setRange(100, 200); // all of it shows
+        CHECK(m.value() == 0);
+        CHECK(!m.isScrollable());
+
+        // A 216-pixel bar, 16-pixel arrows: a 184-pixel track, the thumb a fifth of it.
+        m.setRange(1000, 200);
+        ScrollModel::Geometry g = m.geometry(216, 16);
+        CHECK(g.arrow == 16);
+        CHECK(g.trackStart == 16);
+        CHECK(g.trackLength == 184);
+        CHECK(g.thumbLength == 36);
+        CHECK(g.thumbStart == 16);
+        CHECK(ScrollModel::partAt(g, 216, 0) == Part::BackArrow);
+        CHECK(ScrollModel::partAt(g, 216, 20) == Part::Thumb);
+        CHECK(ScrollModel::partAt(g, 216, 60) == Part::ForwardPage);
+        CHECK(ScrollModel::partAt(g, 216, 215) == Part::ForwardArrow);
+        CHECK(ScrollModel::partAt(g, 216, 216) == Part::None);
+        CHECK(m.setValue(800));
+        g = m.geometry(216, 16);
+        CHECK(g.thumbStart + g.thumbLength == 200); // at the track's end
+        CHECK(ScrollModel::partAt(g, 216, 100) == Part::BackPage);
+        // Dragging: each place along the track is a value, the ends the ends.
+        CHECK(m.valueForThumb(g, 0) == 0);
+        CHECK(m.valueForThumb(g, 16 + 74) == 400);
+        CHECK(m.valueForThumb(g, 1000) == 800);
+        for (int at = 16; at <= 16 + 148; ++at) {
+                ScrollModel d = m;
+                d.setValue(d.valueForThumb(g, at));
+                const int back = d.geometry(216, 16).thumbStart;
+                REQUIRE((back >= at - 1 && back <= at + 1)); // the thumb stays under the pointer
+        }
+        // A long range: the thumb at its least.
+        m.setRange(1'000'000, 200);
+        CHECK(m.geometry(216, 16).thumbLength == ScrollModel::MinThumb);
+        // A bar too short for its arrows: half each, no thumb.
+        g = m.geometry(20, 16);
+        CHECK(g.arrow == 10);
+        CHECK(g.thumbLength == 0);
+        CHECK(ScrollModel::partAt(g, 20, 9) == Part::BackArrow);
+        CHECK(ScrollModel::partAt(g, 20, 10) == Part::ForwardArrow);
+        // Nothing to scroll: the track is no part.
+        m.setRange(10, 200);
+        g = m.geometry(216, 16);
+        CHECK(g.thumbLength == 0);
+        CHECK(ScrollModel::partAt(g, 216, 100) == Part::None);
+}
+
+TEST_CASE("Furniture: menu bar titles, splitter sides, progress blocks, a dialog's buttons") {
+        using bmds::ButtonRow;
+        using bmds::MenuBarLayout;
+        using bmds::ProgressLayout;
+        using bmds::SplitterLayout;
+        const uint16_t texts[] = {32, 40, 8};
+        Rect           titles[3];
+        MenuBarLayout::place(texts, 2, 1, 20, titles);
+        CHECK(titles[0] == Rect{4, 1, 48, 20});
+        CHECK(titles[1] == Rect{52, 1, 56, 20});
+        CHECK(titles[2] == Rect{108, 1, 24, 20});
+        CHECK(MenuBarLayout::titleAt(titles, 51, 5) == 0);
+        CHECK(MenuBarLayout::titleAt(titles, 52, 5) == 1);
+        CHECK(MenuBarLayout::titleAt(titles, 200, 5) == -1);
+        CHECK(MenuBarLayout::titleAt(titles, 60, 21) == -1);
+        CHECK(MenuBarLayout::neighbour(0, -1, 3) == 2);
+        CHECK(MenuBarLayout::neighbour(2, 1, 3) == 0);
+        CHECK(MenuBarLayout::neighbour(1, 1, 3) == 2);
+
+        // 404 pixels: 400 for the sides, each at least 100 here, on columns.
+        CHECK(SplitterLayout::firstSize(150, 404, 100, 100, 4) == 148);
+        CHECK(SplitterLayout::firstSize(10, 404, 100, 100, 4) == 100);
+        CHECK(SplitterLayout::firstSize(390, 404, 100, 100, 4) == 300);
+        CHECK(SplitterLayout::firstSize(-50, 404, 0, 0, 1) == 0);
+        CHECK(SplitterLayout::firstSize(150, 150, 100, 100, 4) == 100); // too small: the first side's least
+        CHECK(SplitterLayout::firstSize(150, 60, 100, 100, 4) == 56);   // and no more than there is
+        CHECK(SplitterLayout::firstSize(150, 2, 100, 100, 4) == 0);
+
+        CHECK(ProgressLayout::capacity(124) == 10);
+        CHECK(ProgressLayout::blocks(0, 100, 124) == 0);
+        CHECK(ProgressLayout::blocks(99, 100, 124) == 9);
+        CHECK(ProgressLayout::blocks(100, 100, 124) == 10);
+        CHECK(ProgressLayout::blocks(500, 100, 124) == 10);
+        CHECK(ProgressLayout::blocks(5, 0, 124) == 0);
+        CHECK(ProgressLayout::blocks(uint64_t(1) << 40, uint64_t(1) << 41, 124) == 5); // large sizes
+
+        const uint16_t labels[] = {16, 100}; // "OK" and a long one
+        CHECK(ButtonRow::buttonWidth(16) == ButtonRow::MinWidth);
+        CHECK(ButtonRow::buttonWidth(100) == 116);
+        CHECK(ButtonRow::width(labels) == 76 + 8 + 116);
+        Rect buttons[2];
+        ButtonRow::place(labels, 400, 50, 22, buttons);
+        CHECK(buttons[0] == Rect{200, 50, 76, 22});
+        CHECK(buttons[1] == Rect{284, 50, 116, 22});
 }

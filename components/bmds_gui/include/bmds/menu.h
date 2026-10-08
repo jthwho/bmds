@@ -78,6 +78,19 @@ class Menu : public GuiWindow {
                         return;
                 }
 
+                /** @brief Told of Left (@p step -1) or Right (1) its tree didn't use (a menu bar's next menu). */
+                using Moved = void (*)(void *arg, Menu &menu, int step);
+
+                /**
+                 * @brief Has @p fn told of Left in it (opened as no submenu) and Right
+                 *        on an item without a submenu, in it or its submenus.
+                 */
+                void setMoved(Moved fn, void *arg) {
+                        _moved = fn;
+                        _movedArg = arg;
+                        return;
+                }
+
                 /** @brief Has @p fn told the item chosen. */
                 void setTriggered(Triggered fn, void *arg) {
                         _triggered = fn;
@@ -141,6 +154,8 @@ class Menu : public GuiWindow {
                 void            *_triggeredArg = nullptr;
                 Dismissed        _dismissed = nullptr;
                 void            *_dismissedArg = nullptr;
+                Moved            _moved = nullptr;
+                void            *_movedArg = nullptr;
 };
 
 BMDS_NAMESPACE_END

@@ -148,6 +148,25 @@ class Widget {
                 /** @brief The pointer left it (or a popup took the press it held). */
                 virtual void mouseLeft() {}
 
+                /**
+                 * @brief The wheel turned @p notches (up: positive) with the pointer
+                 *        over it; offered to its parents if it returns false.
+                 * @return True if used.
+                 */
+                virtual bool wheelTurned(int notches) {
+                        (void)notches;
+                        return false;
+                }
+
+                /**
+                 * @brief Returns the pointer's shape over (@p x, @p y) (window
+                 *        coordinates) of it: its parent's by default (the window's
+                 *        own, from its config).
+                 */
+                virtual WindowManager::Pointer pointerAt(int x, int y) const {
+                        return _parent != nullptr ? _parent->pointerAt(x, y) : WindowManager::Pointer::Arrow;
+                }
+
                 /** @brief A key typed while it has the window's focus. @return True if used. */
                 virtual bool keyPressed(const KeyEvent &event) {
                         (void)event;

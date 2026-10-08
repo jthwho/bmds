@@ -216,8 +216,11 @@ TEST_CASE("planCompose: each damaged pixel once, from the topmost layer") {
                 for (int i = 0, n = 1 + int(rnd.next(4)); i < n; ++i) damage.add(rnd.rect(even));
 
                 ComposePiece pieces[256];
-                const auto   planned = bmds::planCompose(bmds::Span<const Rect>(layers.data(), layers.size()), damage,
-                                                         bmds::Span<ComposePiece>(pieces, 256));
+                // The desktop, when there is one, as the bottom layer.
+                const size_t windowCount = size_t(windows);
+                const Rect   bottom = layers.size() > windowCount ? layers.back() : Rect();
+                const auto   planned = bmds::planCompose(bmds::Span<const Rect>(layers.data(), windowCount), bottom,
+                                                         damage, bmds::Span<ComposePiece>(pieces, 256));
                 REQUIRE(planned.isOk());
                 std::vector<int> from(Width * Height, -1);
                 bool             ok = true;
@@ -249,11 +252,12 @@ TEST_CASE("planCompose: each damaged pixel once, from the topmost layer") {
 }
 
 TEST_CASE("planCompose: too many pieces is Full") {
-        const Rect layers[] = {{10, 10, 4, 4}, {0, 0, Width, Height}};
+        const Rect layers[] = {{10, 10, 4, 4}};
         Region     damage;
         damage.add(Rect{0, 0, Width, Height});
         ComposePiece pieces[2];
-        const auto   planned = bmds::planCompose(layers, damage, bmds::Span<ComposePiece>(pieces, 2));
+        const auto   planned =
+                bmds::planCompose(layers, Rect{0, 0, Width, Height}, damage, bmds::Span<ComposePiece>(pieces, 2));
         CHECK(planned.error() == bmds::Error::Full);
 }
 
@@ -454,6 +458,38 @@ TEST_CASE("WindowStack: each change damages what changed, a raise and an invalid
                         }
                         REQUIRE(ok);
                 }
+        }
+}
+
+TEST_CASE("WindowStack: up to 255 windows, numbers reused, changes still damage what changed") {
+        Random rnd{255};
+        for (int t = 0; t < 12; ++t) {
+                WindowStack stack(Width, Height);
+                const int   n = 64 + int(rnd.next(WindowStack::MaxWindows - 64 + 1));
+                for (int i = 0; i < n; ++i) REQUIRE(stack.open(windowRect(rnd)).isOk());
+                for (int step = 0; step < 20; ++step) {
+                        stack.clearDamage();
+                        const std::vector<int> before = owners(stack);
+                        const uint8_t          id = stack.idAt(rnd.next(uint32_t(stack.count())));
+                        const int              op = int(rnd.next(4));
+                        if (op == 0) {
+                                REQUIRE(stack.close(id).isOk());
+                                REQUIRE(stack.open(windowRect(rnd)).value() == id); // the lowest free
+                        } else if (op == 1) {
+                                REQUIRE(stack.move(id, windowRect(rnd)).isOk());
+                        } else if (op == 2) {
+                                REQUIRE(stack.raise(id).isOk());
+                        } else {
+                                REQUIRE(stack.hide(id).isOk());
+                                REQUIRE(stack.show(id).isOk());
+                        }
+                        const std::vector<int> after = owners(stack);
+                        const std::vector<int> damaged = covered(stack.damage());
+                        bool                   ok = true;
+                        for (int i = 0; i < Width * Height; ++i) ok &= before[i] == after[i] || damaged[i] != 0;
+                        REQUIRE(ok);
+                }
+                if (n == int(WindowStack::MaxWindows)) CHECK(stack.open(Rect{0, 0, 4, 4}).error() == bmds::Error::Full);
         }
 }
 

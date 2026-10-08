@@ -11,6 +11,7 @@
 #include <cstring>
 #include <bmds/guiapplication.h>
 #include <bmds/guiwindow.h>
+#include <bmds/menubar.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -68,6 +69,7 @@ Error GuiWindow::show(const Rect &rect) {
         c.focusable = _config.focusable;
         c.kind = _config.kind;
         c.pointer = _config.pointer;
+        _pointer = _config.pointer;
         c.client = _app.client();
         c.reference = _config.reference ? referenceEntry : nullptr;
         c.activated = activatedEntry;
@@ -357,6 +359,7 @@ void GuiWindow::handle(const GuiApplication::Event &event) {
         switch (event.type) {
                 case Type::Mouse: mouse(event.mouse); break;
                 case Type::Key: key(event.key); break;
+                case Type::Wheel: wheel(event.wheel); break;
                 case Type::Activated: {
                         const bool active = event.width != 0 && isShown();
                         if (active == _active) break;
@@ -404,6 +407,9 @@ void GuiWindow::key(const KeyEvent &event) {
                 used = true;
         }
         if (!used && key != 0 && !event.hasAlt()) used = activateMnemonic(key);
+        if (!used && event.usage == HidKey::F1 + 9 && event.modifiers == 0 && _menuBar != nullptr &&
+            _menuBar->isVisible())
+                used = _menuBar->openFirst();
         if (!used) (void)keyUnused(event);
         return;
 }
@@ -438,12 +444,14 @@ void GuiWindow::mouse(const WindowManager::MouseEvent &event) {
                 }
                 case MType::Motion: {
                         if (_grab != nullptr) {
+                                pointerOver(_grab, event.x, event.y);
                                 _grab->mouseMoved(event);
                                 break;
                         }
                         Widget *w = widgetAt(event.x, event.y);
                         if (_hover != w && _hover != nullptr) _hover->mouseLeft();
                         _hover = w;
+                        pointerOver(w, event.x, event.y);
                         if (w->isEnabled()) w->mouseMoved(event);
                         break;
                 }
@@ -455,6 +463,27 @@ void GuiWindow::mouse(const WindowManager::MouseEvent &event) {
                         _grab = nullptr;
                         break;
         }
+        return;
+}
+
+// The wheel: to the widget under the pointer, then its parents, until one uses it.
+void GuiWindow::wheel(int notches) {
+        for (Widget *w = _hover; w != nullptr; w = w->parent())
+                if (w->isVisible() && w->isEnabled() && w->wheelTurned(notches)) return;
+        return;
+}
+
+WindowManager::Pointer GuiWindow::pointerAt(int x, int y) const {
+        (void)x;
+        (void)y;
+        return _config.pointer;
+}
+
+void GuiWindow::pointerOver(Widget *widget, int x, int y) {
+        const WindowManager::Pointer shape = widget->pointerAt(x, y);
+        if (shape == _pointer || !isShown()) return;
+        _pointer = shape;
+        (void)_app.windowManager().setPointer(id(), shape);
         return;
 }
 

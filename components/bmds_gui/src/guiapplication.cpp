@@ -175,13 +175,15 @@ void GuiApplication::quit(int code) {
 }
 
 Result<uint8_t> GuiApplication::addWindow(GuiWindow &window) {
-        for (size_t i = 0; i < MaxWindows; ++i) {
+        for (size_t i = 0; i < _slots.size(); ++i) {
                 if (_slots[i].window != nullptr) continue;
                 _slots[i].window = &window;
                 ++_slots[i].generation;
                 return makeResult(static_cast<uint8_t>(i));
         }
-        return makeError<uint8_t>(Error::Full);
+        if (_slots.size() == MaxWindows) return makeError<uint8_t>(Error::Full);
+        if (_slots.append(Slot{&window, 1}).isError()) return makeError<uint8_t>(Error::NoMem);
+        return makeResult(static_cast<uint8_t>(_slots.size() - 1));
 }
 
 void GuiApplication::removeWindow(GuiWindow &window) {
@@ -239,7 +241,7 @@ uint32_t GuiApplication::waitMs() const {
         for (const Timer &t : _timers)
                 if (t.used && t.dueUs < next) next = t.dueUs;
         if (next == UINT64_MAX) return WaitForever;
-        if (next <= now) return 0; // due
+        if (next <= now) return Due;
         const uint64_t ms = (next - now + 999) / 1000;
         return ms > 60000 ? 60000 : static_cast<uint32_t>(ms);
 }
@@ -255,7 +257,7 @@ void GuiApplication::dispatch(const Event &event) {
                         return;
                 default: break;
         }
-        if (event.slot >= MaxWindows) return;
+        if (event.slot >= _slots.size()) return;
         const Slot &s = _slots[event.slot];
         if (s.window == nullptr || s.generation != event.generation) return; // gone since
         s.window->handle(event);
@@ -266,11 +268,12 @@ void GuiApplication::dispatch(const Event &event) {
 // it: called with the lock held, the window manager's lock would be waited for during a round, whose
 // redraws would find the application busy and put off theirs.
 void GuiApplication::flush() {
-        for (size_t i = 0; i < MaxWindows; ++i) {
+        for (size_t i = 0;; ++i) {
                 Region  dirty;
                 uint8_t id = 0;
                 {
                         Mutex::Locker lock(_lock, WaitForever);
+                        if (i >= _slots.size()) break;
                         if (_slots[i].window != nullptr) id = _slots[i].window->takeDirty(dirty);
                 }
                 if (id == 0) continue;
@@ -282,8 +285,9 @@ void GuiApplication::flush() {
 int GuiApplication::exec() {
         while (!_quit.load(std::memory_order_acquire)) {
                 const uint32_t ms = waitMs();
-                // WaitForever when no timer waits; a signal to the program (its interrupt) ends it.
-                if (ms != 0 && Interrupt::waitCurrent(_wake, Deadline(ms)) == Error::Interrupted) {
+                // WaitForever when no timer waits, none when one is due; a signal to the program (its
+                // interrupt) ends it.
+                if (ms != Due && Interrupt::waitCurrent(_wake, Deadline(ms)) == Error::Interrupted) {
                         _code = InterruptedCode;
                         break;
                 }

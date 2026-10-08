@@ -20,6 +20,7 @@
 
 BMDS_NAMESPACE_BEGIN
 
+class MenuBar;
 
 /**
  * @brief A window on the window manager: the root of its widgets
@@ -145,6 +146,12 @@ class GuiWindow : public Widget {
                 /** @brief Returns the default button, or null. */
                 Button *defaultButton() const { return _default; }
 
+                /** @brief Sets the menu bar F10 opens (null: none), kept by the caller (a child). */
+                void setMenuBar(MenuBar *bar) { _menuBar = bar; }
+
+                /** @brief Returns the menu bar, or null. */
+                MenuBar *menuBar() const { return _menuBar; }
+
                 /** @brief Has @p fn told when the window manager closes it. */
                 void setClosed(Closed fn, void *arg) {
                         _closed = fn;
@@ -169,7 +176,8 @@ class GuiWindow : public Widget {
                 /** @brief An event for it (`GuiApplication`). */
                 void handle(const GuiApplication::Event &event);
 
-                void paint(Painter &painter) override;
+                void                   paint(Painter &painter) override;
+                WindowManager::Pointer pointerAt(int x, int y) const override;
 
         protected:
                 /** @brief The window manager closed it (its close button, a popup's dismissal). */
@@ -216,6 +224,8 @@ class GuiWindow : public Widget {
                 void        queue(GuiApplication::Event event);
                 void        paintTree(Widget &widget, Painter &painter);
                 void        mouse(const WindowManager::MouseEvent &event);
+                void        wheel(int notches);
+                void        pointerOver(Widget *widget, int x, int y); // its shape, if it changed
 
                 GuiApplication      &_app;
                 Config               _config;
@@ -237,6 +247,8 @@ class GuiWindow : public Widget {
                 TabOut               _tabOut = nullptr;
                 void                *_tabOutArg = nullptr;
                 Button              *_default = nullptr;
+                MenuBar               *_menuBar = nullptr;
+                WindowManager::Pointer _pointer = WindowManager::Pointer::Arrow; // the shape set
                 bool                 _active = false;
 };
 

@@ -58,6 +58,42 @@ namespace {
 
 } // namespace
 
+Painter::Painter(Painter &outer, const Rect &limit, Span<Rect> storage)
+    : _surface(outer._surface), _tools(outer._tools), _timeoutMs(outer._timeoutMs), _originX(outer._originX),
+      _originY(outer._originY), _outer(&outer) {
+        // The limit on the surface, its sides on columns (inward).
+        const uint32_t left = (uint32_t(limit.x) + _originX + AlignMask) & ~AlignMask;
+        const uint32_t right = (uint32_t(limit.right()) + _originX) & ~AlignMask;
+        const uint32_t bottom = uint32_t(limit.bottom()) + _originY;
+        Rect           l;
+        if (!limit.isEmpty() && right > left && right <= UINT16_MAX && bottom <= UINT16_MAX)
+                l = Rect{static_cast<uint16_t>(left), static_cast<uint16_t>(limit.y + _originY),
+                         static_cast<uint16_t>(right - left), limit.height};
+        size_t     n = 0;
+        const auto cut = [&](Span<const Rect> from) {
+                const size_t start = n;
+                for (const Rect &piece : from) {
+                        const Rect r = piece.intersected(l);
+                        if (r.isEmpty()) continue;
+                        if (n == storage.size()) {
+                                note(Error::Full);
+                                break;
+                        }
+                        storage[n++] = r;
+                }
+                return Span<const Rect>(storage.data() + start, n - start);
+        };
+        _clip = cut(outer._clip);
+        _damage = cut(outer._damage);
+}
+
+Painter::~Painter() {
+        if (_outer == nullptr) return;
+        _outer->_calls += _calls;
+        if (_error.isError()) _outer->note(_error);
+        if (_deferred) _outer->defer();
+}
+
 Rect Painter::bounds(Span<const Rect> rects) {
         Rect b;
         for (const Rect &r : rects) b = b.united(r);
@@ -109,47 +145,62 @@ Error Painter::fill(Span<const Rect> rects, uint32_t rgb) {
 // Text in chunks of a strip half: @p draw expands the next chunk into a half
 // (while the 2D-DMA copies the other into the surface), then it is copied
 // piece by piece of the clip, as one job.
-template <typename Draw> Error Painter::run(uint16_t x, uint16_t y, uint16_t maxWidth, uint16_t height, Draw draw) {
-        const uint32_t sx = uint32_t(x) + _originX, sy = uint32_t(y) + _originY;
-        if ((sx & AlignMask) != 0 || _tools.strip == nullptr || _tools.renderer == nullptr || height > _tools.height) {
+template <typename Draw> Error Painter::run(int x, int y, uint16_t maxWidth, uint16_t height, Draw draw) {
+        const int32_t sx = int32_t(x) + _originX, sy = int32_t(y) + _originY;
+        if ((uint32_t(sx) & AlignMask) != 0 || _tools.strip == nullptr || _tools.renderer == nullptr ||
+            height > _tools.height) {
                 note(Error::Invalid);
                 return _error;
         }
-        if (sx >= _surface.width() || sy >= _surface.height()) return _error;
-        if (maxWidth > _surface.width() - sx) maxWidth = static_cast<uint16_t>(_surface.width() - sx);
-        const auto rows = static_cast<uint16_t>(height < _surface.height() - sy ? height : _surface.height() - sy);
-        const Rect whole{static_cast<uint16_t>(sx), static_cast<uint16_t>(sy), maxWidth, rows};
-        bool       visible = false;
+        const int32_t surfaceW = _surface.width(), surfaceH = _surface.height();
+        if (sx >= surfaceW || sy >= surfaceH) return _error;
+        // What is on the surface: the columns and rows left of and above it cut off.
+        int32_t width = maxWidth;
+        if (sx + width > surfaceW) width = surfaceW - sx;
+        const int32_t rows = sy + int32_t(height) > surfaceH ? surfaceH - sy : int32_t(height);
+        const int32_t skipY = sy < 0 ? -sy : 0;
+        if (sx + width <= 0 || skipY >= rows) return _error;
+        const int32_t left = sx < 0 ? 0 : sx;
+        const Rect    whole{static_cast<uint16_t>(left), static_cast<uint16_t>(sy + skipY),
+                         static_cast<uint16_t>(sx + width - left), static_cast<uint16_t>(rows - skipY)};
+        bool          visible = false;
         for (const Rect &piece : _clip) visible |= piece.intersects(whole);
         if (!visible) return _error;
 
         const size_t stride = size_t(_tools.halfWidth) * Surface::BytesPerPixel;
-        uint16_t     done = 0;
-        while (done < maxWidth) {
+        int32_t      done = 0;
+        while (done < width) {
                 const int  half = _tools.busyHalf == 0 ? 1 : 0; // not the one being copied
                 uint8_t   *strip = _tools.strip + size_t(half) * stride * _tools.height;
                 const auto room =
-                        static_cast<uint16_t>(maxWidth - done < _tools.halfWidth ? maxWidth - done : _tools.halfWidth);
+                        static_cast<uint16_t>(width - done < _tools.halfWidth ? width - done : _tools.halfWidth);
                 bool           more = false;
                 const uint16_t w = draw(strip, stride, room, more);
                 if (w == 0) break;
-                const Rect chunk{static_cast<uint16_t>(sx + done), static_cast<uint16_t>(sy), w, rows};
-                bool       shown = false;
-                for (const Rect &piece : _clip) shown |= piece.intersects(chunk);
-                if (shown) {
-                        ++_calls;
-                        const Error err = _surface.startBlit(chunk, strip, stride, _clip, _timeoutMs);
-                        note(err);
-                        if (err.isOk()) _tools.busyHalf = static_cast<int8_t>(half);
+                // The chunk's part on the surface (columns cut on the left come in fours, as x).
+                const int32_t at = sx + done;
+                const int32_t cut = at < 0 ? -at : 0;
+                if (cut < w) {
+                        const Rect chunk{static_cast<uint16_t>(at + cut), static_cast<uint16_t>(sy + skipY),
+                                         static_cast<uint16_t>(w - cut), static_cast<uint16_t>(rows - skipY)};
+                        bool       shown = false;
+                        for (const Rect &piece : _clip) shown |= piece.intersects(chunk);
+                        if (shown) {
+                                ++_calls;
+                                const uint8_t *from =
+                                        strip + size_t(skipY) * stride + size_t(cut) * Surface::BytesPerPixel;
+                                const Error err = _surface.startBlit(chunk, from, stride, _clip, _timeoutMs);
+                                note(err);
+                                if (err.isOk()) _tools.busyHalf = static_cast<int8_t>(half);
+                        }
                 }
-                done = static_cast<uint16_t>(done + w);
+                done += w;
                 if (!more) break;
         }
         return _error;
 }
 
-Error Painter::text(uint16_t x, uint16_t y, StringView utf8, const Font &font, uint32_t fg, uint32_t bg,
-                    uint16_t maxWidth) {
+Error Painter::text(int x, int y, StringView utf8, const Font &font, uint32_t fg, uint32_t bg, uint16_t maxWidth) {
         size_t at = 0;
         return run(x, y, maxWidth, font.height(), [&](uint8_t *strip, size_t stride, uint16_t room, bool &more) {
                 size_t         used = 0;
@@ -160,33 +211,32 @@ Error Painter::text(uint16_t x, uint16_t y, StringView utf8, const Font &font, u
         });
 }
 
-Error Painter::image(uint16_t x, uint16_t y, const Icon &icon, uint32_t bg) {
+Error Painter::image(int x, int y, const Icon &icon, uint32_t bg) {
         if (!icon.isValid()) return _error;
         const uint16_t width = static_cast<uint16_t>(icon.width & ~3u); // whole groups of 4
         for (uint16_t top = 0; top < icon.height && width != 0; top = static_cast<uint16_t>(top + _tools.height)) {
                 const uint16_t rows =
                         static_cast<uint16_t>(icon.height - top < _tools.height ? icon.height - top : _tools.height);
-                (void)run(x, static_cast<uint16_t>(y + top), width, rows,
-                          [&](uint8_t *strip, size_t stride, uint16_t room, bool &more) {
-                                  const uint16_t w = room < width ? static_cast<uint16_t>(room & ~3u) : width;
-                                  for (uint16_t r = 0; r < rows; ++r) {
-                                          const uint32_t *src = icon.pixels + size_t(top + r) * icon.width;
-                                          uint8_t        *out = strip + size_t(r) * stride;
-                                          for (uint16_t c = 0; c < w; ++c, out += 3) {
-                                                  const uint32_t rgb = blendOver(src[c], bg);
-                                                  out[0] = static_cast<uint8_t>(rgb);
-                                                  out[1] = static_cast<uint8_t>(rgb >> 8);
-                                                  out[2] = static_cast<uint8_t>(rgb >> 16);
-                                          }
-                                  }
-                                  more = false;
-                                  return w;
-                          });
+                (void)run(x, y + top, width, rows, [&](uint8_t *strip, size_t stride, uint16_t room, bool &more) {
+                        const uint16_t w = room < width ? static_cast<uint16_t>(room & ~3u) : width;
+                        for (uint16_t r = 0; r < rows; ++r) {
+                                const uint32_t *src = icon.pixels + size_t(top + r) * icon.width;
+                                uint8_t        *out = strip + size_t(r) * stride;
+                                for (uint16_t c = 0; c < w; ++c, out += 3) {
+                                        const uint32_t rgb = blendOver(src[c], bg);
+                                        out[0] = static_cast<uint8_t>(rgb);
+                                        out[1] = static_cast<uint8_t>(rgb >> 8);
+                                        out[2] = static_cast<uint8_t>(rgb >> 16);
+                                }
+                        }
+                        more = false;
+                        return w;
+                });
         }
         return _error;
 }
 
-Error Painter::cells(uint16_t x, uint16_t y, Span<const TextCell> cells, const Font &font, uint16_t maxWidth) {
+Error Painter::cells(int x, int y, Span<const TextCell> cells, const Font &font, uint16_t maxWidth) {
         size_t at = 0;
         return run(x, y, maxWidth, font.height(), [&](uint8_t *strip, size_t stride, uint16_t room, bool &more) {
                 size_t         used = 0;

@@ -17,7 +17,7 @@ namespace {
 
 } // namespace
 
-Result<size_t> planCompose(Span<const Rect> layers, const Region &damage, Span<ComposePiece> out) {
+Result<size_t> planCompose(Span<const Rect> layers, const Rect &bottom, const Region &damage, Span<ComposePiece> out) {
         Rect   work[2][PlanWork];
         Rect  *open = work[0];
         Rect  *next = work[1];
@@ -25,8 +25,8 @@ Result<size_t> planCompose(Span<const Rect> layers, const Region &damage, Span<C
         for (const Rect &r : damage.rects()) open[openCount++] = r;
 
         size_t pieces = 0;
-        for (size_t layer = 0; layer < layers.size() && openCount > 0; ++layer) {
-                const Rect &l = layers[layer];
+        for (size_t layer = 0; layer <= layers.size() && openCount > 0; ++layer) {
+                const Rect &l = layer < layers.size() ? layers[layer] : bottom;
                 size_t      nextCount = 0;
                 for (size_t i = 0; i < openCount; ++i) {
                         const Rect piece = open[i].intersected(l);

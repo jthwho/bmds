@@ -15,6 +15,7 @@
 #include <bmds/error.h>
 #include <bmds/icontheme.h>
 #include <bmds/inputevent.h>
+#include <bmds/list.h>
 #include <bmds/mutex.h>
 #include <bmds/result.h>
 #include <bmds/semaphore.h>
@@ -52,8 +53,8 @@ class GuiApplication {
                 /** @brief A call made on the loop's thread. */
                 using Callback = void (*)(void *arg);
 
-                /** @brief Windows at once. */
-                static constexpr size_t MaxWindows = 16;
+                /** @brief Windows at once (their slots grow as they are made; a slot is a byte). */
+                static constexpr size_t MaxWindows = 255;
 
                 /** @brief Timers at once. */
                 static constexpr size_t MaxTimers = 16;
@@ -160,11 +161,11 @@ class GuiApplication {
                 /** @brief Returns the lock handlers run under (and drawing takes). */
                 Mutex &lock() { return _lock; }
 
-                /** @brief Registers @p window (its constructor). @return Its slot, or `Full`. */
+                /** @brief Registers @p window (its constructor). @return Its slot, `Full` or `NoMem`. */
                 Result<uint8_t> addWindow(GuiWindow &window);
 
                 /** @brief Returns slot @p slot's generation (its events carry it). */
-                uint8_t generation(uint8_t slot) const { return slot < MaxWindows ? _slots[slot].generation : 0; }
+                uint8_t generation(uint8_t slot) const { return slot < _slots.size() ? _slots[slot].generation : 0; }
 
                 /** @brief Forgets @p window (its destructor): its queued events dropped. */
                 void removeWindow(GuiWindow &window);
@@ -234,7 +235,8 @@ class GuiApplication {
                 void        dispatch(const Event &event);
                 void        runTimers();
                 void        flush(); // the windows' changes, to the window manager (unlocked)
-                uint32_t    waitMs() const;
+                uint32_t                  waitMs() const;   // until the next timer: WaitForever (none), or Due
+                static constexpr uint32_t Due = UINT32_MAX; // waitMs(): a timer is due, no wait
 
                 WindowManager    *_wm = nullptr;
                 uint8_t           _client = 0;
@@ -246,7 +248,7 @@ class GuiApplication {
                 size_t            _count = 0;
                 bool              _overflowed = false; // a redraw of everything after
                 Timer             _timers[MaxTimers];
-                Slot              _slots[MaxWindows];
+                List<Slot>        _slots; // by slot, grown as windows are made (never shrunk)
                 Callback          _watchFn = nullptr;
                 void             *_watchArg = nullptr;
                 std::atomic<bool> _quit{false};
