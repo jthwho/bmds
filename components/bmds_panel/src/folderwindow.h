@@ -13,6 +13,7 @@
 #include <bmds/config.h>
 #include <bmds/detailsview.h>
 #include <bmds/foldersettings.h>
+#include <bmds/folderwatches.h>
 #include <bmds/furniture.h>
 #include <bmds/guiwindow.h>
 #include <bmds/iconview.h>
@@ -43,6 +44,9 @@ class FolderWindowHost : public FolderHost {
 
                 /** @brief Returns the type icons. */
                 virtual FileIcons &fileIcons() = 0;
+
+                /** @brief Returns the folders watched (`devplan/filebrowser.md` §4i), shared by every view. */
+                virtual FolderWatches &folderWatches() = 0;
 
                 /** @brief Returns the menus every folder window shares. */
                 virtual FolderMenus &folderMenus() = 0;
@@ -131,6 +135,13 @@ class FolderWindow final : public GuiWindow {
                 /** @brief Folder @p folder changed: its row in the tree (if open) read again. */
                 void treeChanged(StringView folder);
 
+                /**
+                 * @brief A watch told of @p changes in folder @p folder (`DirectoryWatch`
+                 *        bits): the folder shown read again (once a name edited is
+                 *        done), its row in the tree for entries.
+                 */
+                void watchedChanged(StringView folder, uint8_t changes);
+
                 /** @brief `files/show-hidden` or the theme changed: read again, icons found again. */
                 void settingsChanged();
 
@@ -181,6 +192,7 @@ class FolderWindow final : public GuiWindow {
                 static void sortAsked(void *arg, DetailsView &view, size_t column);
                 static void treeExpanding(void *arg, TreeView &view, size_t row);
                 static void treeChosen(void *arg, ItemView &view);
+                static void treeRowsChanged(void *arg, TreeView &view);
                 static void addressAccepted(void *arg, LineEdit &edit);
                 static void addressCancelled(void *arg, LineEdit &edit);
                 static void toolClicked(void *arg, Button &button);
@@ -199,6 +211,8 @@ class FolderWindow final : public GuiWindow {
                 void        setSort(FolderModel::Sort sort, bool descending);
                 void        remember(); // the folder's view and sort, into folders.conf
                 void        syncTree();
+                void        watchFolder(); // the folder shown watched, not the one before
+                void        unwatchAll();
                 void        updateStatus();
                 void        updateTools();
                 void        setIcons();
@@ -237,6 +251,9 @@ class FolderWindow final : public GuiWindow {
                 bool                 _treeShown = true;
                 bool                 _statusShown = true;
                 bool                 _syncingTree = false; // the tree follows: its changes aren't the user's
+                bool                 _refreshDue = false;  // a change told while a name was edited
+                String               _watched{MemSpace::Psram};     // the folder watched for the view
+                String               _treeWatched{MemSpace::Psram}; // the tree's expanded folders, NUL after each
 };
 
 /**

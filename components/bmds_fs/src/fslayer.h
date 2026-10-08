@@ -28,6 +28,8 @@
 
 BMDS_NAMESPACE_BEGIN
 
+class DirectoryWatch;
+
 /**
  * @brief A mounted filesystem, as the VFS uses it.
  *
@@ -41,6 +43,13 @@ BMDS_NAMESPACE_BEGIN
  * acquired when mounted and released when unmounted; never deleted through
  * this interface. Everything expects the storage lock.
  */
+/** @brief An open file's identity (`FileInfo`'s), told when it closes after writing. */
+struct FileIdentity {
+                uint64_t id = 0;     ///< `FileInfo::id`: the change hook's.
+                uint64_t folder = 0; ///< Its folder's id: the directory watches' (directorywatch.h).
+                uint32_t device = 0; ///< `FileInfo::device`.
+};
+
 class Volume {
         public:
                 /** @brief A file opened for plain reads (link files, the zone database). */
@@ -91,14 +100,14 @@ class Volume {
                 /**
                  * @brief Opens file @p path as a stream behind a FileHandle.
                  * @param flags  `Vfs::OpenFlag` bits.
-                 * @param device, id The file's identity (`FileInfo`): opened for writing,
-                 *               its last handle's close calls the change hook with them.
+                 * @param identity The file's: opened for writing, its last handle's close
+                 *               tells it (`Fs::writtenLocked()`).
                  * @param link   If not null and the file is an emulated symbolic link
                  *               (a System file holding a link, §4): its target, and
                  *               `Invalid` (the file isn't opened).
                  * @return The handle, or `NotExist`, `IsDir`, `Exists`, `Busy`, ...
                  */
-                virtual Result<FileHandle::Ptr> open(StringView path, uint8_t flags, uint32_t device, uint64_t id,
+                virtual Result<FileHandle::Ptr> open(StringView path, uint8_t flags, const FileIdentity &identity,
                                                      bool &noPath, String *link) = 0;
 
                 /** @brief Opens file @p path for `readAt()`; close it with `closeReader()`. */
@@ -156,6 +165,25 @@ namespace Fs {
          *        tells the zone database (zoneinfo.h). Lock held.
          */
         void changedLocked(uint32_t device, uint64_t id);
+
+        /** @brief A file closed after writing: the change hook and its folder's watches told. */
+        void writtenLocked(const FileIdentity &identity);
+
+        /**
+         * @brief Tells the watches of a change to the entry at normalized
+         *        @p storage: its folder's of @p changes, its own (a folder) of
+         *        `Entries` if @p itself. Lock held.
+         */
+        void tellEntryLocked(StringView storage, uint8_t changes, bool itself);
+
+        /** @brief Lists @p watch (if not yet) on folder @p folder, or on none. Lock held. */
+        void placeWatchLocked(DirectoryWatch &watch, bool hasFolder, uint64_t folder);
+
+        /** @brief Tells every watch of `Mounts`. Lock held. */
+        void tellAllWatchesLocked();
+
+        /** @brief Returns the id of normalized @p storage's folder. */
+        uint64_t folderId(StringView storage);
 
         /** @brief Returns the identity (`FileInfo::id`) of normalized path @p normalized. */
         uint64_t pathId(StringView normalized);

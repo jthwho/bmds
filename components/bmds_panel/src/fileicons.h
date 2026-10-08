@@ -47,6 +47,9 @@ class FileIcons {
                 /** @brief Forgets every icon (none may be in use). */
                 void clear();
 
+                /** @brief Forgets the icons not found (a theme on a card mounted since may have them). */
+                void forgetMissing();
+
         private:
                 static constexpr size_t MaxKey = 63;
 

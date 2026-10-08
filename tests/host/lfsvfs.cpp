@@ -20,6 +20,7 @@
 #include <vector>
 #include <bmds/blockdevices.h>
 #include <bmds/clock.h>
+#include <bmds/directorywatch.h>
 #include <bmds/flashqueue.h>
 #include <bmds/ramflashdevice.h>
 #include <bmds/vfs.h>
@@ -294,6 +295,19 @@ TEST_CASE("littlefs in the VFS: links, times and identity") {
         CHECK(a.id != 0);
         CHECK(open(f.at("/data/notes.txt"), Vfs::Read)->id() == a.id);
         CHECK(Vfs::stat(f.at("/d/notes.txt"), Root).value().id == a.id);
+}
+
+TEST_CASE("littlefs in the VFS: directory watches") {
+        Flash                f("/lfs");
+        bmds::DirectoryWatch watch;
+        CHECK(Vfs::mkdir(f.at("/dir"), Root).isOk());
+        CHECK(watch.watch(f.at("/dir"), Root).isOk());
+        put(f.at("/dir/file"), "x");
+        CHECK(watch.takeChanges() == bmds::DirectoryWatch::Contents);
+        CHECK(get(f.at("/dir/file")) == "x");
+        CHECK(watch.takeChanges() == 0);
+        CHECK(Vfs::rename(f.at("/dir/file"), f.at("/moved"), Root).isOk());
+        CHECK(watch.takeChanges() == bmds::DirectoryWatch::Entries);
 }
 
 TEST_CASE("littlefs in the VFS: files kept across mounts, stale after an unmount") {

@@ -89,7 +89,7 @@ class LittleFsVolume final : public Volume {
                 const char             *typeName() const override { return "littlefs"; }
                 Result<FsInfo>          info() override;
                 Error                   stat(StringView path, FileInfo &info, bool &noPath) override;
-                Result<FileHandle::Ptr> open(StringView path, uint8_t flags, uint32_t device, uint64_t id, bool &noPath,
+                Result<FileHandle::Ptr> open(StringView path, uint8_t flags, const FileIdentity &identity, bool &noPath,
                                              String *link) override;
                 Result<Reader *>        openReader(StringView path) override;
                 void                    closeReader(Reader *reader) override;

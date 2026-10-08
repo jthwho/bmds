@@ -35,6 +35,9 @@ class TreeView : public ItemView {
                 /** @brief Told that row @p row is being expanded: the owner gives its children. */
                 using Expanding = void (*)(void *arg, TreeView &view, size_t row);
 
+                /** @brief Told that the rows changed (expanded, collapsed, given, removed). */
+                using RowsChanged = void (*)(void *arg, TreeView &view);
+
                 static constexpr uint16_t RowHeight = 18;
                 static constexpr uint16_t Indent = 16;
 
@@ -74,6 +77,13 @@ class TreeView : public ItemView {
                         return;
                 }
 
+                /** @brief Sets what is told of any change to the rows (after it). */
+                void setRowsChanged(RowsChanged fn, void *arg) {
+                        _rowsChanged = fn;
+                        _rowsChangedArg = arg;
+                        return;
+                }
+
                 Rect nameRect(size_t row) const override;
                 void mousePressed(const WindowManager::MouseEvent &event) override;
                 bool keyPressed(const KeyEvent &event) override;
@@ -109,8 +119,15 @@ class TreeView : public ItemView {
                 const Icon *_rootIcon = nullptr;
                 const Icon *_folderIcon = nullptr;
                 const Icon *_openIcon = nullptr;
+                void        tellRowsChanged() {
+                        if (_rowsChanged != nullptr) _rowsChanged(_rowsChangedArg, *this);
+                        return;
+                }
+
                 Expanding   _expanding = nullptr;
                 void       *_expandingArg = nullptr;
+                RowsChanged _rowsChanged = nullptr;
+                void       *_rowsChangedArg = nullptr;
 };
 
 BMDS_NAMESPACE_END

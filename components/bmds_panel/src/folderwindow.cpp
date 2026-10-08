@@ -66,6 +66,7 @@ FolderWindow::FolderWindow(GuiApplication &app, const Config &config, FolderWind
 
 FolderWindow::~FolderWindow() {
         stopReading();
+        unwatchAll();
         _host.folderMenus().forget(*this);
         if (_nameEdit != nullptr) {
                 _nameEdit->~PopupEdit();
@@ -157,6 +158,7 @@ Error FolderWindow::build() {
         _details->setVisible(false);
         _tree->setExpanding(treeExpanding, this);
         _tree->setChanged(treeChosen, this);
+        _tree->setRowsChanged(treeRowsChanged, this);
         (void)_tree->addRoot("/");
         _split->setLeast(80, 160);
         _split->setPosition(TreeWidth);
@@ -228,10 +230,16 @@ Error FolderWindow::go(StringView path, StringView select) {
         FolderSettings::Values values;
         if (!_host.folderSettings().find(abs.view(), values)) values.view = _host.defaultView();
         FolderModel &folder = _items.folder();
+        String       was(MemSpace::Psram);
+        (void)was.assign(this->path());
         folder.setShowHidden(_host.showHidden());
         folder.setSort(values.sort, values.descending);
         err = folder.open(abs.view(), vc);
         if (err.isError()) {
+                // The model is empty now: the views told, then the folder shown read again.
+                _icons->resetTo(Span<const size_t>(), -1);
+                _details->resetTo(Span<const size_t>(), -1);
+                if (!was.isEmpty() && folder.open(was.view(), vc).isOk()) startReading();
                 char message[200];
                 std::snprintf(message, sizeof(message), "Can't open \"%.*s\": %s.", int(abs.size()), abs.cStr(),
                               err.desc());
@@ -239,6 +247,8 @@ Error FolderWindow::go(StringView path, StringView select) {
                 return err;
         }
         (void)_history.visit(abs.view());
+        watchFolder();
+        _refreshDue = false;
         _kept.clear();
         _keptCurrent.clear();
         _select.clear();
@@ -280,14 +290,111 @@ void FolderWindow::refresh() {
         FolderModel &folder = _items.folder();
         folder.setShowHidden(_host.showHidden());
         if (folder.open(p.view(), vc).isError()) {
-                // Gone (removed elsewhere): its parent, or the root.
-                (void)go(NavigationHistory::parentOf(p.view()));
+                // Gone (removed elsewhere, its filesystem unmounted): the model is empty now, the
+                // views told; then the nearest folder above it that is there (the root at last).
+                _icons->resetTo(Span<const size_t>(), -1);
+                _details->resetTo(Span<const size_t>(), -1);
+                do {
+                        const StringView up = NavigationHistory::parentOf(p.view()); // a prefix of p
+                        if (up.isEmpty()) break;
+                        p.truncate(up.size());
+                        auto [info, serr] = Vfs::stat(p.view(), vc);
+                        if (serr.isOk() && info.isDirectory()) break;
+                } while (p.view() != "/");
+                (void)go(p.view());
                 return;
         }
         auto [fs, ferr] = Vfs::statfs(p.view(), vc);
         _hasFree = ferr.isOk();
         _freeBytes = ferr.isOk() ? fs.freeBytes : 0;
         startReading();
+        return;
+}
+
+// ---- Changes from elsewhere (devplan/filebrowser.md §4i)
+
+void FolderWindow::watchedChanged(StringView folder, uint8_t changes) {
+        if (folder == path()) {
+                // Not under a name being edited: its row would move.
+                if (_nameEdit != nullptr && _nameEdit->isShown()) {
+                        _refreshDue = true;
+                } else {
+                        refresh();
+                }
+        }
+        if ((changes & (DirectoryWatch::Entries | DirectoryWatch::Mounts)) != 0) treeChanged(folder);
+        return;
+}
+
+void FolderWindow::watchFolder() {
+        if (_watched.view() == path()) return;
+        FolderWatches &watches = _host.folderWatches();
+        if (!_watched.isEmpty()) watches.remove(_watched.view());
+        _watched.clear();
+        if (watches.add(path()).isOk() && _watched.assign(path()).isError()) watches.remove(path());
+        return;
+}
+
+void FolderWindow::unwatchAll() {
+        FolderWatches &watches = _host.folderWatches();
+        if (!_watched.isEmpty()) watches.remove(_watched.view());
+        _watched.clear();
+        for (StringView rest = _treeWatched.view(); !rest.isEmpty();) {
+                const size_t end = rest.indexOf('\0');
+                if (end == StringView::NPos) break;
+                watches.remove(rest.left(end));
+                rest = rest.mid(end + 1);
+        }
+        _treeWatched.clear();
+        return;
+}
+
+namespace {
+
+        // True if @p list (names, NUL after each) has @p item.
+        bool listHas(StringView list, StringView item) {
+                while (!list.isEmpty()) {
+                        const size_t end = list.indexOf('\0');
+                        if (end == StringView::NPos) return false;
+                        if (list.left(end) == item) return true;
+                        list = list.mid(end + 1);
+                }
+                return false;
+        }
+
+} // namespace
+
+// The tree's rows changed: its expanded folders watched, those no longer expanded not.
+void FolderWindow::treeRowsChanged(void *arg, TreeView &view) {
+        auto           *self = static_cast<FolderWindow *>(arg);
+        const TreeRows &rows = view.rows();
+        String          now(MemSpace::Psram);
+        String          p(MemSpace::Psram);
+        for (size_t r = 0; r < rows.count(); ++r) {
+                if ((rows.row(r).flags & TreeRows::Expanded) == 0) continue;
+                if (rows.pathOf(r, p).isError() || now.append(p.view()).isError() || now.append('\0').isError())
+                        return; // no memory: as they were
+        }
+        // Those now watched: the ones before still expanded, and the new ones that could be.
+        FolderWatches &watches = self->_host.folderWatches();
+        String         watched(MemSpace::Psram);
+        if (watched.reserve(now.size()).isError()) return;
+        for (StringView rest = now.view(); !rest.isEmpty();) {
+                const size_t     end = rest.indexOf('\0');
+                const StringView folder = rest.left(end);
+                rest = rest.mid(end + 1);
+                if (listHas(self->_treeWatched.view(), folder) || watches.add(folder).isOk()) {
+                        (void)watched.append(folder); // reserved
+                        (void)watched.append('\0');
+                }
+        }
+        for (StringView rest = self->_treeWatched.view(); !rest.isEmpty();) {
+                const size_t     end = rest.indexOf('\0');
+                const StringView folder = rest.left(end);
+                rest = rest.mid(end + 1);
+                if (!listHas(watched.view(), folder)) watches.remove(folder);
+        }
+        self->_treeWatched = std::move(watched);
         return;
 }
 
@@ -308,7 +415,10 @@ void FolderWindow::startReading() {
                 // No timer: all of it now.
                 while (!_items.folder().isComplete()) (void)_items.folder().fillSome(FillBatch);
                 restoreSelection();
+                return;
         }
+        // The first batch now: the views never draw rows the model emptied by its open has lost.
+        fillTick(this);
         return;
 }
 
@@ -614,6 +724,11 @@ void FolderWindow::startRename(size_t row, StringView text) {
 void FolderWindow::renamed(void *arg, bool accepted, StringView text) {
         auto *self = static_cast<FolderWindow *>(arg);
         self->view().setEditing(-1);
+        if (self->_refreshDue) {
+                // A change told while the name was edited.
+                self->_refreshDue = false;
+                self->refresh();
+        }
         if (!accepted) return;
         String to(MemSpace::Psram);
         char   problem[200];

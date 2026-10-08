@@ -16,6 +16,7 @@
  * desktop's folders, from its `files` service, and from the `files` command.
  */
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -29,6 +30,7 @@
 #include <bmds/fileops.h>
 #include <bmds/filenames.h>
 #include <bmds/foldersettings.h>
+#include <bmds/folderwatches.h>
 #include <bmds/font.h>
 #include <bmds/guiapplication.h>
 #include <bmds/guiclipboard.h>
@@ -111,8 +113,7 @@ namespace {
         constexpr uint16_t    FolderStep = 24;   // each window this much below and right of the last
         constexpr uint32_t    SaveDelayMs = 500; // after a drop: drawn first, then written
         constexpr size_t      MaxEntries = 48;
-        constexpr uint32_t    IconRetryMs = 2000; // a desktop icon not found (the card later)
-        constexpr unsigned    IconRetries = 30;
+        constexpr uint32_t    WatchDelayMs = 200; // changes from elsewhere, taken together after
         constexpr size_t      MaxItems = 8;
         constexpr size_t      MaxCategories = 7;
         // A row of buttons in a raised bar: the bevel, a pixel, the buttons, a pixel, the bevel.
@@ -270,6 +271,7 @@ namespace {
                         void                 folderChanged(StringView folder) override;
                         FolderActions       &folderActions() override { return _actions; }
                         FileIcons           &fileIcons() override { return _fileIcons; }
+                        FolderWatches       &folderWatches() override { return _watches; }
                         FolderMenus         &folderMenus() override { return *_folderMenus; }
                         FolderSettings      &folderSettings() override { return _folderSettings; }
                         void                 folderSettingsChanged() override;
@@ -289,8 +291,7 @@ namespace {
                         static void dismissed(void *arg, Menu &menu);
                         static void launcherKey(void *arg);
                         static void desktopMenu(void *arg, uint16_t x, uint16_t y);
-                        static void desktopOpened(void *arg, size_t item);
-                        static void desktopIconsTick(void *arg);
+                        static void  desktopOpened(void *arg, size_t item);
                         static void desktopMoved(void *arg);
                         static void  windowClosed(void *arg, GuiWindow &window);
                         static void  iconMenu(void *arg, size_t item, uint16_t x, uint16_t y);
@@ -311,6 +312,10 @@ namespace {
                         static void  filesMessage(void *arg, ByteSpan message);
                         static void  filesSettingsChanged(void *arg, SysConf::Id id);
                         static void  reapFolders(void *arg);
+                        static void  watchNotify(void *arg);
+                        static void  watchesDue(void *arg);
+                        static void  watchesTick(void *arg);
+                        static void  watchChanged(void *arg, StringView path, uint8_t changes);
                         static void  saveFolders(void *arg);
                         void         readFilesSettings();
                         void         loadFolders();
@@ -343,9 +348,7 @@ namespace {
                         Entry                         *_desktopEntries = nullptr;
                         size_t                         _desktopCount = 0;
                         bool                           _desktopIncomplete = false;
-                        int                            _iconTimer = -1;
                         int                            _saveTimer = -1; // places to write
-                        unsigned                       _iconTries = 0;
                         BoxLayout                     *_row = nullptr;
                         WindowList                    *_windows = nullptr;
                         Menu                          *_menu = nullptr;
@@ -374,6 +377,10 @@ namespace {
                         bool                           _bottom = false;
                         FileIcons                      _fileIcons;
                         FolderActions                  _actions;
+                        FolderWatches                  _watches{watchNotify, this}; // the views' and desktop's
+                        std::atomic<bool>              _watchPosted{false};         // watchesDue() on its way
+                        int                            _watchTimer = -1;            // the changes to take
+                        bool                           _mountsTold = false;         // by this take
                         FolderSettings                 _folderSettings;
                         FolderMenus                   *_folderMenus = nullptr; // PSRAM, the first window's
                         List<FolderWindow *>           _folderWindows{MemSpace::Psram};
@@ -521,7 +528,7 @@ namespace {
                 // The windows (and their widgets) before the application they belong to.
                 closeFolders();
                 freeLauncher();
-                if (_iconTimer >= 0) _app.stopTimer(_iconTimer);
+                if (_watchTimer >= 0) _app.stopTimer(_watchTimer);
                 if (_saveTimer >= 0) {
                         _app.stopTimer(_saveTimer);
                         savePlaces(this); // a move not written yet
@@ -1199,16 +1206,6 @@ namespace {
                 return all;
         }
 
-        void PanelApp::desktopIconsTick(void *arg) {
-                auto      *self = static_cast<PanelApp *>(arg);
-                const bool done = self->_desktopIncomplete ? self->loadDesktop() : self->findDesktopIcons();
-                if (done || ++self->_iconTries >= IconRetries) {
-                        self->_app.stopTimer(self->_iconTimer);
-                        self->_iconTimer = -1;
-                }
-                return;
-        }
-
         void PanelApp::windowsChanged(void *arg) {
                 auto *self = static_cast<PanelApp *>(arg);
                 if (self->_windows == nullptr) return;
@@ -1396,11 +1393,14 @@ namespace {
                                         say("panel: the Windows key is taken: no launcher on it\n");
                 }
                 if (err.isOk()) windowsChanged(this);
-                // The desktop's icons, in the work area the panel left; those not found yet looked for
-                // again for a while.
-                if (err.isOk() && !loadDesktop()) {
-                        auto [timer, terr] = _app.startTimer(IconRetryMs, true, desktopIconsTick, this);
-                        if (terr.isOk()) _iconTimer = timer;
+                // The desktop's icons, in the work area the panel left. Its directories are watched:
+                // changes from elsewhere read it again, and a card mounted later (devplan/filebrowser.md §4i).
+                if (err.isOk()) {
+                        StringView dirs(_desktopDirs);
+                        for (StringView d = IniReader::nextListItem(dirs); !d.isEmpty();
+                             d = IniReader::nextListItem(dirs))
+                                (void)_watches.add(d);
+                        (void)loadDesktop();
                 }
                 return err;
         }
@@ -1465,11 +1465,7 @@ namespace {
                         const Result<bool> asked = SysConf::getBool(bmdsConf_panelDesktopMenu.key);
                         _desktop->setMenuAsked(!asked.isOk() || asked.value() ? desktopMenu : nullptr, this);
                         // In the new work area, with the new theme's icons.
-                        if ((moved || themed) && !loadDesktop() && _iconTimer < 0) {
-                                _iconTries = 0;
-                                auto [timer, terr] = _app.startTimer(IconRetryMs, true, desktopIconsTick, this);
-                                if (terr.isOk()) _iconTimer = timer;
-                        }
+                        if (moved || themed) (void)loadDesktop();
                 }
                 return;
         }
@@ -1547,9 +1543,10 @@ namespace {
                 return;
         }
 
-        // An action changed @p folder: the windows on it read it again, the trees showing it too, and
-        // the desktop if it is the desktop's (the VFS's watches will tell of the rest: step 5).
+        // An action changed @p folder: the windows on it read it again at once, the trees showing it
+        // too, and the desktop if it is the desktop's. Its watch's news dropped: read already.
         void PanelApp::folderChanged(StringView folder) {
+                _watches.forget(folder);
                 for (FolderWindow *w : _folderWindows) {
                         if (w->path() == folder) w->refresh();
                         w->treeChanged(folder);
@@ -1557,6 +1554,57 @@ namespace {
                 StringView       dirs(_desktopDirs);
                 const StringView desktop = IniReader::nextListItem(dirs);
                 if (!_quietDesktop && folder == desktop) (void)loadDesktop();
+                return;
+        }
+
+        // A watched folder changed (any task, the storage lock held): the loop told, once until it
+        // takes it. A post lost to a full queue: the next change posts again.
+        void PanelApp::watchNotify(void *arg) {
+                auto *self = static_cast<PanelApp *>(arg);
+                if (self->_watchPosted.exchange(true, std::memory_order_acq_rel)) return;
+                if (self->_app.post(watchesDue, self).isError())
+                        self->_watchPosted.store(false, std::memory_order_release);
+                return;
+        }
+
+        // The changes taken a little later, all together: a copy of many files is one read.
+        void PanelApp::watchesDue(void *arg) {
+                auto *self = static_cast<PanelApp *>(arg);
+                self->_watchPosted.store(false, std::memory_order_release);
+                if (self->_watchTimer >= 0) return;
+                auto [timer, err] = self->_app.startTimer(WatchDelayMs, false, watchesTick, self);
+                if (err.isError()) {
+                        watchesTick(self); // no timer: now
+                        return;
+                }
+                self->_watchTimer = timer;
+                return;
+        }
+
+        void PanelApp::watchesTick(void *arg) {
+                auto *self = static_cast<PanelApp *>(arg);
+                self->_watchTimer = -1;
+                self->_mountsTold = false;
+                self->_watches.take(watchChanged, self);
+                if (self->_mountsTold) {
+                        // A card in or out: icons not found may be there now, the desktop's too.
+                        self->_fileIcons.forgetMissing();
+                        (void)self->loadDesktop();
+                }
+                return;
+        }
+
+        void PanelApp::watchChanged(void *arg, StringView path, uint8_t changes) {
+                auto *self = static_cast<PanelApp *>(arg);
+                if ((changes & DirectoryWatch::Mounts) != 0) self->_mountsTold = true;
+                for (FolderWindow *w : self->_folderWindows) w->watchedChanged(path, changes);
+                if ((changes & DirectoryWatch::Mounts) != 0) return; // the desktop once, after them all
+                StringView dirs(self->_desktopDirs);
+                for (StringView d = IniReader::nextListItem(dirs); !d.isEmpty(); d = IniReader::nextListItem(dirs)) {
+                        if (d != path) continue;
+                        (void)self->loadDesktop();
+                        break;
+                }
                 return;
         }
 

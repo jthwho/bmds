@@ -12,6 +12,7 @@ set(BMDS_FS_SRCS
         src/automount.cpp
         src/blockdevice.cpp
         src/blockdevices.cpp
+        src/directorywatch.cpp
         src/fatfile.cpp
         src/fatfsport.cpp
         src/fatvolume.cpp

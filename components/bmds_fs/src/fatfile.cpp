@@ -23,8 +23,8 @@ namespace {
          */
         class FatFile final : public Stream {
                 public:
-                        FatFile(FatVolume &volume, bool append, uint32_t device, uint64_t id)
-                            : _volume(volume), _id(id), _device(device), _append(append) {}
+                        FatFile(FatVolume &volume, bool append, const FileIdentity &identity)
+                            : _volume(volume), _identity(identity), _append(append) {}
 
                         FIL &fil() { return _fil; }
 
@@ -99,7 +99,7 @@ namespace {
                                         // A stale file (its card went) just fails here.
                                         const bool written = (_fil.flag & FA_WRITE) != 0;
                                         (void)f_close(&_fil);
-                                        if (written) Fs::changedLocked(_device, _id);
+                                        if (written) Fs::writtenLocked(_identity);
                                 }
                                 this->~FatFile();
                                 Memory::free(this);
@@ -136,9 +136,8 @@ namespace {
                         FIL            _fil = {};
                         FatVolume     &_volume;
                         FSIZE_t        _hole = 0; // A position past the end, or 0.
-                        const uint64_t _id;       // FileInfo's identity: for the change hook
-                        const uint32_t _device;
-                        const bool     _append;
+                        const FileIdentity _identity; // told at close after writing
+                        const bool         _append;
         };
 
         BYTE fatMode(uint8_t flags) {
@@ -157,11 +156,11 @@ namespace {
 
 } // namespace
 
-Result<FileHandle::Ptr> Fat::openFile(FatVolume &volume, const char *path, uint8_t flags, uint32_t device, uint64_t id,
+Result<FileHandle::Ptr> Fat::openFile(FatVolume &volume, const char *path, uint8_t flags, const FileIdentity &identity,
                                       FRESULT *raw, String *link) {
         void *mem = Memory::alloc(MemSpace::Psram, sizeof(FatFile));
         if (mem == nullptr) return makeError<FileHandle::Ptr>(Error::NoMem);
-        auto   *file = ::new (mem) FatFile(volume, (flags & Vfs::Append) != 0, device, id);
+        auto   *file = ::new (mem) FatFile(volume, (flags & Vfs::Append) != 0, identity);
         FRESULT result = f_open(&file->fil(), path, fatMode(flags));
         // Truncate without Create: FatFs has no mode for it.
         if (result == FR_OK && (flags & Vfs::Truncate) && !(flags & Vfs::Create)) {

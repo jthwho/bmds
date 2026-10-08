@@ -63,26 +63,69 @@ void TreeRows::collapse(size_t row) {
 Error TreeRows::setChildren(size_t row, Span<const StringView> names) {
         if (row >= _rows.size()) return Error::OutOfRange;
         if (_rows[row].depth == UINT8_MAX) return Error::OutOfRange;
-        collapse(row);
-        // Room first for the rows and names: then nothing fails half way.
+        const uint8_t depth = static_cast<uint8_t>(_rows[row].depth + 1);
+        const size_t  end = endOf(row);
+        // The children shown now, and for each name the one it was (-1: new).
+        List<size_t>  old(MemSpace::Psram);
+        List<uint8_t> kept(MemSpace::Psram);
+        List<int>     from(MemSpace::Psram);
+        Error         err = from.reserve(names.size());
+        for (size_t i = row + 1; err.isOk() && i < end; ++i)
+                if (_rows[i].depth == depth) err = old.append(i);
+        if (err.isOk()) err = kept.reserve(old.size());
+        if (err.isError()) return err;
+        for (size_t i = 0; i < old.size(); ++i) (void)kept.append(0); // reserved
+        // Most often in the same order: looked for from after the last one found.
+        size_t cursor = 0;
+        size_t rows = (row + 1) + (_rows.size() - end);
         size_t bytes = 0;
-        for (const StringView n : names) bytes += n.size();
-        Error err = _rows.reserve(_rows.size() + names.size());
+        for (const StringView n : names) {
+                int found = -1;
+                for (size_t k = 0; k < old.size() && found < 0; ++k) {
+                        const size_t at = (cursor + k) % old.size();
+                        if (kept[at] == 0 && name(old[at]) == n) found = int(at);
+                }
+                (void)from.append(found); // reserved
+                if (found >= 0) {
+                        kept[size_t(found)] = 1;
+                        cursor = size_t(found) + 1;
+                        rows += endOf(old[size_t(found)]) - old[size_t(found)];
+                } else {
+                        rows += 1;
+                        bytes += n.size();
+                }
+        }
+        // Room first for the rows and names: then nothing fails half way.
+        List<Row> fresh(MemSpace::Psram);
+        err = fresh.reserve(rows);
         if (err.isOk()) err = _names.reserve(_names.size() + bytes);
         if (err.isError()) return err;
-        const size_t oldCount = _rows.size();
-        for (size_t i = 0; i < names.size(); ++i) (void)_rows.append(Row()); // reserved
-        // Those after it moved up to make room, then the children written in.
-        const size_t at = row + 1, k = names.size();
-        for (size_t i = oldCount; i-- > at;) _rows[i + k] = _rows[i];
-        for (size_t i = 0; i < k; ++i) {
+        // The rows of children gone, and their descendants, no longer name anything.
+        for (size_t k = 0; k < old.size(); ++k) {
+                if (kept[k] != 0) continue;
+                const size_t stop = endOf(old[k]);
+                for (size_t i = old[k]; i < stop; ++i) _live -= _rows[i].nameLength;
+        }
+        for (size_t i = 0; i <= row; ++i) (void)fresh.append(_rows[i]);
+        for (size_t i = 0; i < names.size(); ++i) {
+                if (from[i] >= 0) {
+                        // Still there: with what is shown below it.
+                        const size_t at = old[size_t(from[i])];
+                        const size_t stop = endOf(at);
+                        for (size_t j = at; j < stop; ++j) (void)fresh.append(_rows[j]);
+                        continue;
+                }
                 Row r;
                 (void)store(names[i], r); // reserved
-                r.depth = static_cast<uint8_t>(_rows[row].depth + 1);
-                _rows[at + i] = r;
+                r.depth = depth;
+                (void)fresh.append(r);
         }
+        for (size_t i = end; i < _rows.size(); ++i) (void)fresh.append(_rows[i]);
+        _rows = std::move(fresh);
+        const size_t k = names.size();
         _rows[row].flags = static_cast<uint8_t>(k > 0 ? (_rows[row].flags | Expanded | HasChildren)
                                                       : (_rows[row].flags & ~(Expanded | HasChildren)));
+        compact();
         return Error::Ok;
 }
 

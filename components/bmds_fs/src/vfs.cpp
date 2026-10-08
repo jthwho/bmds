@@ -11,6 +11,7 @@
 #include <new>
 #include <utility>
 #include <bmds/builtinprograms.h>
+#include <bmds/directorywatch.h>
 #include <bmds/clock.h>
 #include <bmds/flashdevice.h>
 #include <bmds/memory.h>
@@ -605,6 +606,7 @@ namespace {
                 mounts[--mountCount] = Mount();
                 // Every file: the slots after this one moved.
                 Fs::changedLocked(0, 0);
+                Fs::tellAllWatchesLocked();
                 logHomeLocked();
                 mountChanges.notify();
                 return;
@@ -910,6 +912,7 @@ namespace {
                 m.volume = volume;
                 m.device = &device;
                 Zones::mountsChangedLocked();
+                Fs::tellAllWatchesLocked();
                 logHomeLocked();
                 mountChanges.notify();
                 return Error();
@@ -961,6 +964,7 @@ Error Vfs::setHome(StringView target, StringView fallback) {
                 logHomeLocked();
                 // Paths below /home now name other files.
                 Fs::changedLocked(0, 0);
+                Fs::tellAllWatchesLocked();
         }
         Memory::free(oldTarget);
         Memory::free(oldFallback);
@@ -1174,8 +1178,8 @@ Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context 
                         }
                 }
                 bool                    noPath = false;
-                Result<FileHandle::Ptr> handle =
-                        node.volume->open(node.rest, flags, node.mount, pathId(storage.view()), noPath, &target);
+                const FileIdentity      identity{pathId(storage.view()), Fs::folderId(storage.view()), node.mount};
+                Result<FileHandle::Ptr> handle = node.volume->open(node.rest, flags, identity, noPath, &target);
                 if (handle.error().isError()) {
                         // A link as the last component (openFile read it), or along the way.
                         if (!target.isEmpty()) {
@@ -1321,6 +1325,7 @@ Error Vfs::symlink(StringView target, StringView path, const Context &context) {
                 bool        noPath = false;
                 const Error err = writeLinkLocked(*node.volume, node.rest, target, noPath);
                 if (noPath && followPathLocked(storage, false)) continue;
+                if (err.isOk()) Fs::tellEntryLocked(storage.view(), DirectoryWatch::Entries, false);
                 return err;
         }
 }
@@ -1441,6 +1446,7 @@ Error Vfs::mkdir(StringView path, const Context &context) {
                 bool        noPath = false;
                 const Error made = node.volume->mkdir(node.rest, noPath);
                 if (noPath && followPathLocked(storage, false)) continue;
+                if (made.isOk()) Fs::tellEntryLocked(storage.view(), DirectoryWatch::Entries, false);
                 return made;
         }
         return err;
@@ -1462,7 +1468,9 @@ Error Vfs::rmdir(StringView path, const Context &context) {
                 if (noPath && followPathLocked(storage, false)) continue;
                 if (info.error().isError()) return info.error();
                 if (!info.value().isDirectory()) return Error::NotDir;
-                return node.volume->rmdir(node.rest);
+                const Error removed = node.volume->rmdir(node.rest);
+                if (removed.isOk()) Fs::tellEntryLocked(storage.view(), DirectoryWatch::Entries, true);
+                return removed;
         }
         return err;
 }
@@ -1487,7 +1495,10 @@ Error Vfs::remove(StringView path, const Context &context) {
                 if (info.error().isError()) return info.error();
                 if (info.value().isDirectory()) return Error::IsDir;
                 err = node.volume->remove(node.rest);
-                if (err.isOk()) Fs::changedLocked(node.mount, pathId(storage.view()));
+                if (err.isOk()) {
+                        Fs::changedLocked(node.mount, pathId(storage.view()));
+                        Fs::tellEntryLocked(storage.view(), DirectoryWatch::Entries, false);
+                }
                 return err;
         }
         return err;
@@ -1516,7 +1527,11 @@ Error Vfs::rename(StringView from, StringView to, const Context &context) {
                 bool        noPath = false;
                 const Error renamed = fromNode.volume->rename(fromNode.rest, toNode.rest, noPath);
                 if (noPath && (followPathLocked(fromStorage, false) || followPathLocked(toStorage, false))) continue;
-                if (renamed.isOk()) Fs::changedLocked(fromNode.mount, pathId(fromStorage.view()));
+                if (renamed.isOk()) {
+                        Fs::changedLocked(fromNode.mount, pathId(fromStorage.view()));
+                        Fs::tellEntryLocked(fromStorage.view(), DirectoryWatch::Entries, true);
+                        Fs::tellEntryLocked(toStorage.view(), DirectoryWatch::Entries, false);
+                }
                 return renamed;
         }
         return err;
@@ -1536,7 +1551,10 @@ Error Vfs::setModified(StringView path, Timestamp time, const Context &context) 
         err = targetLocked(storage, Error::PermissionDenied, node);
         if (err.isError()) return err;
         err = node.volume->setModified(node.rest, time);
-        if (err.isOk()) Fs::changedLocked(node.mount, pathId(storage.view()));
+        if (err.isOk()) {
+                Fs::changedLocked(node.mount, pathId(storage.view()));
+                Fs::tellEntryLocked(storage.view(), DirectoryWatch::Contents, false);
+        }
         return err;
 }
 
@@ -1563,6 +1581,23 @@ Result<FsInfo> Vfs::statfs(StringView path, const Context &context) {
         if (found.error().isError()) return makeError<FsInfo>(found.error());
         if (found.value().kind != Kind::Mounted) return makeError<FsInfo>(Error::NotSupported);
         return found.value().volume->info();
+}
+
+// --- Directory watches (directorywatch.h) ----------------------------------
+
+Error DirectoryWatch::watch(StringView path, const Vfs::Context &context) {
+        Mutex::Locker lock(Fs::lock(), WaitForever);
+        String        storage;
+        Error         err = normalizeLocked(path, context.cwd, storage, true);
+        if (err.isOk()) {
+                // Where it leads, as realPath() finds it: changes are told by real paths.
+                Node                   node;
+                const Result<FileInfo> info = statFollowLocked(storage, true, node);
+                err = info.error();
+                if (err.isOk() && !info.value().isDirectory()) err = Error::NotDir;
+        }
+        Fs::placeWatchLocked(*this, err.isOk(), err.isOk() ? pathId(storage.view()) : 0);
+        return err;
 }
 
 BMDS_NAMESPACE_END

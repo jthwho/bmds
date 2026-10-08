@@ -17,6 +17,7 @@
 #include <bmds/blockdevices.h>
 #include <bmds/builtinprograms.h>
 #include <bmds/clock.h>
+#include <bmds/directorywatch.h>
 #include <bmds/fscommands.h>
 #include <bmds/memorystream.h>
 #include <bmds/partitions.h>
@@ -725,6 +726,117 @@ TEST_CASE("Vfs: the change hook") {
         Vfs::setChangeHook(nullptr);
         changes.clear();
         fresh(FsFormat::Fat32);
+}
+
+namespace {
+
+        // A watch that counts its notifies.
+        struct Watched {
+                        Watched() { watch.setNotify(count, this); }
+
+                        static void count(void *arg) {
+                                ++static_cast<Watched *>(arg)->told;
+                                return;
+                        }
+
+                        // The changes since the last look, and that a notify came for them.
+                        uint8_t take() {
+                                const uint8_t taken = watch.takeChanges();
+                                CHECK((taken == 0) == (told == 0));
+                                told = 0;
+                                return taken;
+                        }
+
+                        bmds::DirectoryWatch watch;
+                        int                  told = 0;
+        };
+
+        using Change = bmds::DirectoryWatch::Change;
+
+} // namespace
+
+TEST_CASE("Vfs: directory watches") {
+        fresh(FsFormat::Fat32);
+        CHECK(Vfs::mkdir("/ram0/p0/dir", Root).isOk());
+        CHECK(Vfs::mkdir("/ram0/p0/other", Root).isOk());
+        CHECK(Vfs::symlink("dir", "/ram0/p0/link", Root).isOk());
+        put("/ram0/p0/dir/old", "old");
+        const size_t base = liveObjects();
+        Watched      dir, other, root, sub;
+        // Through a link and in another case: the folder it is.
+        CHECK(dir.watch.watch("/ram0/p0/LINK", Root).isOk());
+        CHECK(other.watch.watch("/ram0/p0/other", Root).isOk());
+        CHECK(root.watch.watch("/ram0/p0", Root).isOk());
+        CHECK(dir.watch.isWatching());
+        CHECK(liveObjects() == base); // nothing allocated
+        // Reading tells nothing.
+        CHECK(get("/ram0/p0/dir/old") == "old");
+        CHECK(list("/ram0/p0/dir") == std::vector<std::string>{"old"});
+        CHECK(dir.take() == 0);
+        // A file made: told when it closes after writing; the other folders aren't.
+        {
+                FileHandle::Ptr h = open("/ram0/p0/dir/new", Vfs::Write | Vfs::Create);
+                CHECK(dir.take() == 0);
+        }
+        CHECK(dir.take() == Change::Contents);
+        CHECK(other.take() == 0);
+        CHECK(root.take() == 0);
+        // Changes accumulate until taken, with a notify each.
+        put("/ram0/p0/link/new", "written");
+        CHECK(Vfs::setModified("/ram0/p0/dir/old", Timestamp::fromSeconds(1700000000), Root).isOk());
+        CHECK(Vfs::mkdir("/ram0/p0/dir/sub", Root).isOk());
+        CHECK(dir.told == 3);
+        CHECK(dir.take() == (Change::Contents | Change::Entries));
+        // Removed, made, renamed: Entries; a move tells both folders.
+        CHECK(Vfs::remove("/ram0/p0/dir/new", Root).isOk());
+        CHECK(dir.take() == Change::Entries);
+        CHECK(Vfs::symlink("old", "/ram0/p0/dir/ln", Root).isOk());
+        CHECK(dir.take() == Change::Entries);
+        CHECK(Vfs::rename("/ram0/p0/dir/old", "/ram0/p0/other/old", Root).isOk());
+        CHECK(dir.take() == Change::Entries);
+        CHECK(other.take() == Change::Entries);
+        CHECK(root.take() == 0);
+        // A watched folder renamed or removed is told itself, as its folder is.
+        CHECK(sub.watch.watch("/ram0/p0/dir/sub", Root).isOk());
+        CHECK(Vfs::rename("/ram0/p0/dir/sub", "/ram0/p0/dir/sub2", Root).isOk());
+        CHECK(sub.take() == Change::Entries);
+        CHECK(dir.take() == Change::Entries);
+        CHECK(sub.watch.watch("/ram0/p0/dir/sub2", Root).isOk());
+        CHECK(Vfs::rmdir("/ram0/p0/dir/sub2", Root).isOk());
+        CHECK(sub.take() == Change::Entries);
+        CHECK(dir.take() == Change::Entries);
+        // Failures tell nothing.
+        CHECK(Vfs::remove("/ram0/p0/dir/none", Root) == Error::NotExist);
+        CHECK(Vfs::mkdir("/ram0/p0/dir/ln", Root) == Error::Exists);
+        CHECK(dir.take() == 0);
+        // Moved to another folder; stopped: told no more.
+        CHECK(dir.watch.watch("/ram0/p0/other", Root).isOk());
+        CHECK(Vfs::remove("/ram0/p0/dir/ln", Root).isOk());
+        CHECK(dir.take() == 0);
+        put("/ram0/p0/other/x", "x");
+        CHECK(dir.take() == Change::Contents);
+        CHECK(other.take() == Change::Contents);
+        other.watch.stop();
+        CHECK(!other.watch.isWatching());
+        put("/ram0/p0/other/x", "y");
+        CHECK(other.take() == 0);
+        CHECK(dir.take() == Change::Contents); // still watching it
+        // Not a folder, or not there: listed with no folder, told of mounts only.
+        CHECK(sub.watch.watch("/ram0/p0/other/x", Root) == Error::NotDir);
+        CHECK(other.watch.watch("/ram0/p0/later", Root) == Error::NotExist);
+        CHECK(other.watch.isWatching());
+        CHECK(Vfs::mkdir("/ram0/p0/later", Root).isOk());
+        CHECK(other.take() == 0);
+        CHECK(root.take() == Change::Entries);
+        CHECK(Vfs::unmount("/ram0/p0").isOk());
+        for (Watched *w : {&dir, &other, &root, &sub}) CHECK(w->take() == Change::Mounts);
+        fresh(FsFormat::Fat32);
+        for (Watched *w : {&dir, &other, &root, &sub}) CHECK(w->take() == Change::Mounts);
+        CHECK(other.watch.watch("/ram0/p0/later", Root) == Error::NotExist); // a fresh filesystem
+        CHECK(other.watch.watch("/ram0/p0", Root).isOk());
+        put("/ram0/p0/again", "x");
+        CHECK(other.take() == Change::Contents);
+        CHECK(root.take() == Change::Contents);
 }
 
 TEST_CASE("Vfs: symbolic links") {

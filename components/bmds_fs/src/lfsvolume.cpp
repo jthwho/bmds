@@ -119,8 +119,8 @@ namespace {
          */
         class LfsFile final : public Stream {
                 public:
-                        LfsFile(LittleFsVolume &volume, uint64_t key, uint8_t flags, uint32_t device, uint64_t id)
-                            : _volume(volume), _key(key), _id(id), _device(device), _generation(volume.generation()),
+                        LfsFile(LittleFsVolume &volume, uint64_t key, uint8_t flags, const FileIdentity &identity)
+                            : _volume(volume), _key(key), _identity(identity), _generation(volume.generation()),
                               _readable((flags & Vfs::Read) != 0), _writable((flags & Vfs::Write) != 0) {
                                 _config.buffer = _buffer;
                                 if (_writable) {
@@ -205,7 +205,7 @@ namespace {
                                                 if (_writable) _time = nowNs();
                                                 (void)lfs_file_close(&_volume.lfs(), &_file);
                                                 _volume.unclaim(_key, _writable);
-                                                if (_writable) Fs::changedLocked(_device, _id);
+                                                if (_writable) Fs::writtenLocked(_identity);
                                         }
                                 }
                                 this->~LfsFile();
@@ -223,8 +223,7 @@ namespace {
                         uint8_t         _buffer[LittleFsVolume::CacheBytes];
                         LittleFsVolume &_volume;
                         const uint64_t  _key;
-                        const uint64_t  _id; // FileInfo's identity: for the change hook
-                        const uint32_t  _device;
+                        const FileIdentity _identity; // told at close after writing
                         const uint32_t  _generation;
                         const bool      _readable;
                         const bool      _writable;
@@ -484,7 +483,7 @@ Error LittleFsVolume::stat(StringView path, FileInfo &info, bool &noPath) {
         return Error::Ok;
 }
 
-Result<FileHandle::Ptr> LittleFsVolume::open(StringView path, uint8_t flags, uint32_t device, uint64_t id, bool &noPath,
+Result<FileHandle::Ptr> LittleFsVolume::open(StringView path, uint8_t flags, const FileIdentity &identity, bool &noPath,
                                              String *link) {
         noPath = false;
         String p;
@@ -499,7 +498,7 @@ Result<FileHandle::Ptr> LittleFsVolume::open(StringView path, uint8_t flags, uin
                 unclaim(key, writing);
                 return makeError<FileHandle::Ptr>(Error::NoMem);
         }
-        auto     *file = ::new (mem) LfsFile(*this, key, flags, device, id);
+        auto     *file = ::new (mem) LfsFile(*this, key, flags, identity);
         const int r = lfs_file_opencfg(&_lfs, &file->file(), p.cStr(), lfsFlags(flags), &file->config());
         if (r < 0) {
                 file->~LfsFile();

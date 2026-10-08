@@ -384,6 +384,102 @@ A portable component (built for the host tests too) over `Vfs` and `Trash`, no G
     of thousands of entries pauses it; the step 5 watches will read it in batches as the
     views do.
 
+### 4i. Step 5 design: directory watches (2026-10-08)
+
+**Facts (checked in `bmds_fs`):**
+
+- **Every change already knows the entry's path.** `remove()`, `rmdir()`, `mkdir()`,
+  `symlink()`, `rename()` and `setModified()` work on `storage`: the normalized path with
+  `/home` and the links along the way followed. It is the real path of the entry changed.
+- **A file's id is FNV-1a over that path**, with ASCII letters folded (`pathId()`). A
+  directory's id is its children's prefix. So a folder's id is what `stat()` gives it, and its
+  parent's id needs only the path.
+- **A file written reports at close.** `FatFile::handleClosed()` and `LfsFile::handleClosed()`
+  call `Fs::changedLocked(device, id)` when the file was open for writing. They know the
+  file's id, not its folder's. Every file made (`Create`) is open for writing, so its close
+  also covers "made". An empty file made and closed is told too.
+- **Mounts, unmounts and `setHome()`** call `changedLocked(0, 0)`, "every file".
+- **Not reported before this step:** `mkdir()`, `rmdir()` and `symlink()`. Their entries change
+  and no file's contents do, so the change hook (the loader's caches) doesn't need them; they
+  tell only the watches.
+- **`GuiApplication::post()`** can be called from any task under any lock. It is how a
+  change, told under the storage lock, reaches a loop.
+- **`TreeRows::setChildren()` collapses a row before filling it.** A folder re-read in the
+  tree loses everything expanded below it. That is fine on a first expand, but wrong once a
+  change re-reads an expanded folder: the path to the folder shown would close.
+
+**Design:**
+
+- **`DirectoryWatch`** (bmds_fs, `bmds/directorywatch.h`): one folder, the caller's object.
+  - **Its parts:** `setNotify(fn, arg)`, `watch(path, context)`, `stop()`, `takeChanges()`;
+    the destructor stops it.
+  - **Storage:** the watches are an intrusive list under the storage lock. The VFS allocates
+    nothing and has no limit. A change walks the list: a few dozen compares of 64-bit ids.
+  - **`watch()`** resolves the path as `realPath()` does (links and `/home` followed), and
+    keeps the folder's id.
+    - Not a folder: `NotDir`.
+    - Not there: `NotExist`, and the watch stays listed with no folder. It is still told of
+      mounts, after which the folder may be there: its owner calls `watch()` again then.
+    - Called again, it moves the watch to the new folder. Start a watch before reading the
+      folder, so that no change falls between the two.
+  - **Changes, as bits** that accumulate until `takeChanges()` returns and clears them:
+    - `Entries`: an entry made, removed or renamed in the folder, or the folder itself
+      removed or renamed.
+    - `Contents`: a file in it closed after writing, or touched (`setModified()`).
+    - `Mounts`: a mount, an unmount, or `/home` leading elsewhere. Every watch is told,
+      because anything may have changed.
+  - **The notify** is called at each change, under the storage lock, from the task that made
+    it. It must not call the VFS or block, and it only wakes its owner. The owner coalesces:
+    the bits wait for it however many changes come.
+  - **What is told where:**
+
+    | Change | Watches told |
+    |---|---|
+    | `remove()`, `mkdir()`, `symlink()` | the entry's folder |
+    | `rmdir()` | the entry's folder; a watch on the folder removed |
+    | `rename()` | both folders; a watch on the folder renamed |
+    | a file closed after writing, `setModified()` | the file's folder (`Contents`) |
+    | mount, unmount, `setHome()` | all (`Mounts`) |
+
+    A file keeps its folder's id from its open, to tell at close.
+  - **Not told:**
+    - The folders below one renamed or removed: their watches don't know their ancestors.
+      Their windows find out at their next read.
+    - `/dev` gaining a device: nothing watches it yet.
+- **`FolderWatches`** (bmds_files): a process's watched folders, shared. Two windows and a
+  tree row on one folder use one watch.
+  - **Its parts:**
+    - `add(path)` counts a use; `remove(path)` drops one, and the last stops the watch.
+    - `take(fn, arg)` calls `fn(path, changes)` once for each folder changed. On `Mounts` it
+      first resolves every folder again (`/home` may lead elsewhere now).
+    - `forget(path)` drops a folder's news: the owner has already read the folder after its
+      own change.
+    - One notify for all, given at construction.
+  - **Memory:** PSRAM, a record and the path for each folder.
+- **The panel:**
+  - **Coalescing:** the notify posts to the loop once until the loop takes it. The loop
+    starts a 200 ms single-shot timer, then takes every change. A copy of a hundred files
+    into a watched folder is one read, not a hundred. The 200 ms is a choice: a delay the eye
+    barely sees.
+  - **The panel's own changes** (New, Rename, Delete, Paste) still refresh at once, through
+    `folderChanged()`. That call also `forget()`s the folder, so the watch doesn't read it a
+    second time.
+  - **Folder windows:**
+    - Each watches its folder, moving the watch on each `go()`.
+    - A change re-reads the folder (`refresh()`, the selection kept).
+    - While a name is edited in place, the read waits until the edit closes. The rows would
+      move under the editor.
+  - **The tree:**
+    - A window watches each expanded row's folder. `TreeView` tells of any change to its rows
+      (`setRowsChanged()`), and the window compares the expanded paths with its own list.
+    - An `Entries` change re-reads that row's folders; `Contents` alone is ignored.
+    - `TreeRows::setChildren()` keeps the rows below the children that are still there, so a
+      re-read keeps the path open.
+  - **The desktop:**
+    - It watches its directories, and a change reloads it.
+    - On `Mounts`, it reloads, and `FileIcons` forgets the icons it didn't find. The 2-second
+      retry timer for a card mounted later goes.
+
 ## 5. Steps
 
 1. **The window limit, then the toolkit's furniture:** 255 windows and connections in growing
@@ -539,6 +635,51 @@ A portable component (built for the host tests too) over `Vfs` and `Trash`, no G
      - **Size:** `bmds_panel` 41,184 bytes, `bmds_gui` 64,416, `bmds_files` 11,578 and `bmds_ui`
        118,226 in flash (`idf.py size-components`). No new static RAM.
 5. **Directory watches** in the VFS (FB14): views, the tree and the desktop follow changes.
+   - *As built (2026-10-08):* as §4i, with these differences and findings:
+     - **A file made is told as `Contents`,** at its close (every file made is open for
+       writing). `Entries` is for folders and links made, and for anything removed or renamed.
+       An open file carries a `FileIdentity` (its id, its folder's id, its device) from
+       `Vfs::open()` to the volume, so its close tells both the change hook and its folder.
+     - **A window whose folder vanished crashed the panel.** That was a step 4 bug the watches
+       exposed: `refresh()` emptied the model and went to the parent. After an unmount the
+       parent (`/ram0`) is gone too, so `go()` failed and showed a message. Its repaint drew the
+       old rows from the empty model (a load fault in `IconView::drawRow()`). Now:
+       - a failed open tells the views at once;
+       - `refresh()` walks up to the nearest folder that is there;
+       - `go()` reads the folder shown again when it can't open the one asked for;
+       - `startReading()` fills the first batch at once, so the views never see a model
+         emptied by its open.
+     - **`TreeRows::setChildren()`** keeps the rows below the children that are still there
+       (looked for from after the last one found, so a re-read in the same order is linear).
+     - **Host tests:**
+       - the watches on FAT (made, written, touched, removed, linked, moved between folders, a
+         watched folder renamed and removed, failures telling nothing, a watch moved and
+         stopped, `NotDir`, `NotExist` watched for mounts, an unmount and a mount) and on
+         littlefs;
+       - `FolderWatches` (one watch for two uses, changes merged into one call per folder,
+         `forget()`, the last use stopping it, a folder looked for again after a mount, a call
+         removing what it is told of);
+       - the tree keeping open rows across re-reads, reorders and removals.
+     - **On the board:**
+       - Desktop: `mkdir` and a file written from the shell appeared on it.
+       - A window on `/home/Desktop`: a removal, a rename, and a folder made in `/home`
+         followed, the tree gaining it with the path kept open.
+       - A burst: 20 files written into a window's folder by one shell loop arrived together.
+       - Rename in place: a file written while a name was edited waited for the edit; Escape
+         showed it with the selection kept.
+       - Mounts: `umount /ram0/p0` with a window on it went to `/`, and `ram0` left the view
+         and the tree; `mount` brought it back. `umount /sd0/p0` left the desktop showing
+         the fallback home; mounting it again brought the icons back.
+       - Checks: `win stats` 0 errors, `win check` 0 pixels wrong.
+       - Memory: three windows took 22,632 bytes of PSRAM and gave all of it back on closing
+         (the second cycle; the first kept 13,680 bytes of type icons cached for `/boot`'s
+         files).
+     - **Size:** `bmds_panel` 42,892 bytes (+1,708), `bmds_gui` 65,302 (+886), `bmds_files`
+       12,644 (+1,066), `bmds_fs` 88,122 in flash. Static RAM: the watches' list head in
+       `bmds_fs` (one pointer).
+     - **Still left:** the tree reads a folder whole when it is expanded or re-read. The
+       folders below one renamed or removed aren't told; their windows find out at their next
+       read.
 6. **The worker** (FB13): progress, Cancel, conflicts; Cut (FB11); Shift+Delete (FB10).
 7. **Drag and drop** (FB15): the window manager, the toolkit, the views, the terminal's drop.
 8. **Properties and a Trash window** (the trash of every filesystem in one view, Restore,

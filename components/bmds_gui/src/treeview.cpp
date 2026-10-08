@@ -54,7 +54,10 @@ void TreeView::changedRows(int keep) {
 
 Error TreeView::addRoot(StringView path) {
         const Error err = _rows.addRoot(path);
-        if (err.isOk()) changedRows(current());
+        if (err.isOk()) {
+                changedRows(current());
+                tellRowsChanged();
+        }
         return err;
 }
 
@@ -68,6 +71,7 @@ Error TreeView::setChildren(size_t row, Span<const StringView> names) {
         int keep = was >= 0 ? _rows.find(path.view()) : -1;
         if (was >= 0 && keep < 0) keep = int(row); // it went: the row it was under
         changedRows(keep);
+        tellRowsChanged();
         return Error::Ok;
 }
 
@@ -88,15 +92,18 @@ void TreeView::collapse(size_t row) {
                 // It was under the row collapsed: the selection moves up to it.
                 resetSelecting(int(row), true);
                 showRow(row);
+                tellRowsChanged();
                 return;
         }
         changedRows(was > int(row) ? was - int(end - row - 1) : was);
+        tellRowsChanged();
         return;
 }
 
 void TreeView::clear() {
         _rows.clear();
         modelReset();
+        tellRowsChanged();
         return;
 }
 

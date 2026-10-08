@@ -224,14 +224,14 @@ Error FatVolume::stat(StringView path, FileInfo &info, bool &noPath) {
         return err;
 }
 
-Result<FileHandle::Ptr> FatVolume::open(StringView path, uint8_t flags, uint32_t device, uint64_t id, bool &noPath,
+Result<FileHandle::Ptr> FatVolume::open(StringView path, uint8_t flags, const FileIdentity &identity, bool &noPath,
                                         String *link) {
         noPath = false;
         String      fat;
         const Error err = fatPath(path, fat);
         if (err.isError()) return makeError<FileHandle::Ptr>(err);
         FRESULT                 raw = FR_OK;
-        Result<FileHandle::Ptr> handle = Fat::openFile(*this, fat.cStr(), flags, device, id, &raw, link);
+        Result<FileHandle::Ptr> handle = Fat::openFile(*this, fat.cStr(), flags, identity, &raw, link);
         noPath = raw == FR_NO_PATH;
         return handle;
 }

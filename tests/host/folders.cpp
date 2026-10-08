@@ -17,6 +17,7 @@
 #include <bmds/fileops.h>
 #include <bmds/foldermodel.h>
 #include <bmds/foldersettings.h>
+#include <bmds/folderwatches.h>
 #include <bmds/navigationhistory.h>
 #include <bmds/ramblockdevice.h>
 #include <bmds/vfs.h>
@@ -369,6 +370,100 @@ TEST_CASE_FIXTURE(Fixture, "FileOps: renames, new items, copy names, and the tim
         CHECK(li == 0); // a folder: first
         CHECK(FileOps::baseName("/a/b/") == "b");
         CHECK(FileOps::baseName("name") == "name");
+}
+
+namespace {
+
+        // What FolderWatches told: the notifies, then each folder taken with its changes.
+        struct WatchLog {
+                        static void notified(void *arg) {
+                                ++static_cast<WatchLog *>(arg)->notifies;
+                                return;
+                        }
+
+                        static void changed(void *arg, StringView path, uint8_t changes) {
+                                static_cast<WatchLog *>(arg)->told.push_back(std::string(path.data(), path.size()) +
+                                                                             " " + std::to_string(changes));
+                                return;
+                        }
+
+                        std::vector<std::string> take(bmds::FolderWatches &w) {
+                                told.clear();
+                                w.take(changed, this);
+                                notifies = 0;
+                                return told;
+                        }
+
+                        int                      notifies = 0;
+                        std::vector<std::string> told;
+        };
+
+        constexpr int Entries = bmds::DirectoryWatch::Entries;
+        constexpr int Contents = bmds::DirectoryWatch::Contents;
+        constexpr int Mounts = bmds::DirectoryWatch::Mounts;
+
+} // namespace
+
+TEST_CASE_FIXTURE(Fixture, "FolderWatches: one watch a folder, uses counted, changes merged, mounts") {
+        mkdir(at("/one"));
+        mkdir(at("/two"));
+        WatchLog             log;
+        bmds::FolderWatches *w = nullptr;
+        {
+                bmds::FolderWatches watches(WatchLog::notified, &log);
+                w = &watches;
+                CHECK(watches.add(view(at("/one"))).isOk());
+                CHECK(watches.add(view(at("/one"))).isOk());
+                CHECK(watches.add(view(at("/two"))).isOk());
+                CHECK(watches.add(view(at("/later"))).isOk()); // not there: watched for mounts
+                CHECK(watches.count() == 3);
+                CHECK(watches.uses(view(at("/one"))) == 2);
+                CHECK(log.take(watches).empty());
+                // Many changes, one call for each folder.
+                put(at("/one/a"), "a");
+                put(at("/one/b"), "b");
+                mkdir(at("/one/sub"));
+                mkdir(at("/two/sub"));
+                CHECK(log.notifies == 4);
+                CHECK(log.take(watches) ==
+                      std::vector<std::string>{at("/one") + " " + std::to_string(Entries | Contents),
+                                               at("/two") + " " + std::to_string(Entries)});
+                CHECK(log.take(watches).empty());
+                // Forgotten: read by its owner after its own change.
+                mkdir(at("/one/sub2"));
+                watches.forget(view(at("/one")));
+                CHECK(log.take(watches).empty());
+                // A use dropped keeps it; the last stops it.
+                watches.remove(view(at("/one")));
+                CHECK(watches.uses(view(at("/one"))) == 1);
+                put(at("/one/c"), "c");
+                CHECK(log.take(watches) == std::vector<std::string>{at("/one") + " " + std::to_string(Contents)});
+                watches.remove(view(at("/one")));
+                CHECK(watches.count() == 2);
+                put(at("/one/d"), "d");
+                CHECK(log.notifies == 0);
+                CHECK(log.take(watches).empty());
+                // A mount: every folder told, and looked for again (the one not there before is now).
+                Vfs::eject(disks().a);
+                REQUIRE(Vfs::automount(disks().a).value() == 1);
+                mkdir(at("/later"));
+                CHECK(log.take(watches) == std::vector<std::string>{at("/two") + " " + std::to_string(Mounts),
+                                                                    at("/later") + " " + std::to_string(Mounts)});
+                put(at("/later/x"), "x");
+                CHECK(log.take(watches) == std::vector<std::string>{at("/later") + " " + std::to_string(Contents)});
+                // A call may remove what it is told of.
+                put(at("/two/x"), "x");
+                put(at("/later/y"), "y");
+                watches.take(
+                        [](void *arg, StringView path, uint8_t) {
+                                static_cast<bmds::FolderWatches *>(arg)->remove(path);
+                                return;
+                        },
+                        w);
+                CHECK(watches.count() == 0);
+        }
+        put(at("/two/after"), "x"); // the watches gone with it
+        CHECK(log.notifies == 2);
 }
 
 TEST_CASE("NavigationHistory: back, forward, a visit dropping what was ahead, the oldest going") {

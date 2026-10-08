@@ -1013,6 +1013,49 @@ TEST_CASE("TreeRows: expanding inserts children, collapsing removes descendants,
         CHECK(t.name(201) == "folder number 199");
 }
 
+TEST_CASE("TreeRows: a folder read again keeps what is open below the children still there") {
+        bmds::TreeRows t;
+        REQUIRE(t.addRoot("/").isOk());
+        const bmds::StringView top[] = {"bin", "home", "sd0"};
+        REQUIRE(t.setChildren(0, top).isOk());
+        const bmds::StringView home[] = {"Desktop", "docs"};
+        REQUIRE(t.setChildren(2, home).isOk());
+        const bmds::StringView desktop[] = {"x"};
+        REQUIRE(t.setChildren(3, desktop).isOk()); // /home/Desktop
+        const bmds::StringView sd[] = {"p0"};
+        REQUIRE(t.setChildren(6, sd).isOk());
+        auto names = [&t] {
+                std::string out;
+                for (size_t i = 0; i < t.count(); ++i)
+                        out += std::string(t.row(i).depth, '.') + std::string(t.name(i).data(), t.name(i).size()) + " ";
+                return out;
+        };
+        REQUIRE(names() == "/ .bin .home ..Desktop ...x ..docs .sd0 ..p0 ");
+        // A folder made in /, one gone, the open ones kept with what is below them, in the new order.
+        const bmds::StringView again[] = {"boot", "home", "new", "sd0"};
+        REQUIRE(t.setChildren(0, again).isOk());
+        CHECK(names() == "/ .boot .home ..Desktop ...x ..docs .new .sd0 ..p0 ");
+        CHECK((t.row(2).flags & bmds::TreeRows::Expanded) != 0);
+        CHECK((t.row(1).flags & bmds::TreeRows::Expanded) == 0);
+        bmds::String path;
+        REQUIRE(t.pathOf(4, path).isOk());
+        CHECK(path.view() == "/home/Desktop/x");
+        // Another order, and one gone with what was open below it.
+        const bmds::StringView turned[] = {"sd0", "home"};
+        REQUIRE(t.setChildren(0, turned).isOk());
+        CHECK(names() == "/ .sd0 ..p0 .home ..Desktop ...x ..docs ");
+        const bmds::StringView fewer[] = {"docs"};
+        REQUIRE(t.setChildren(3, fewer).isOk());
+        CHECK(names() == "/ .sd0 ..p0 .home ..docs ");
+        // Many rounds: the names compacted, still right.
+        for (int round = 0; round < 300; ++round) {
+                const bmds::StringView some[] = {"Desktop", "docs", round % 2 ? "odd" : "even"};
+                REQUIRE(t.setChildren(3, some).isOk());
+                REQUIRE(t.setChildren(4, desktop).isOk());
+        }
+        CHECK(names() == "/ .sd0 ..p0 .home ..Desktop ...x ..docs ..odd "); // round 299
+}
+
 TEST_CASE("ListItemModel: names, icons by size, columns") {
         bmds::ListItemModel    m;
         const uint32_t         px = 0;

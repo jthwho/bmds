@@ -80,7 +80,7 @@ class FatVolume final : public Volume {
                 const char             *typeName() const override;
                 Result<FsInfo>          info() override;
                 Error                   stat(StringView path, FileInfo &info, bool &noPath) override;
-                Result<FileHandle::Ptr> open(StringView path, uint8_t flags, uint32_t device, uint64_t id, bool &noPath,
+                Result<FileHandle::Ptr> open(StringView path, uint8_t flags, const FileIdentity &identity, bool &noPath,
                                              String *link) override;
                 Result<Reader *>        openReader(StringView path) override;
                 void                    closeReader(Reader *reader) override;
@@ -140,8 +140,8 @@ namespace Fat {
          * @param link  [out] If not null and the file is an emulated symbolic
          *              link: its target, and the file is closed again (`Invalid`).
          */
-        Result<FileHandle::Ptr> openFile(FatVolume &volume, const char *path, uint8_t flags, uint32_t device,
-                                         uint64_t id, FRESULT *raw = nullptr, String *link = nullptr);
+        Result<FileHandle::Ptr> openFile(FatVolume &volume, const char *path, uint8_t flags,
+                                         const FileIdentity &identity, FRESULT *raw = nullptr, String *link = nullptr);
 
 } // namespace Fat
 

@@ -26,6 +26,15 @@ void FileIcons::clear() {
         return;
 }
 
+void FileIcons::forgetMissing() {
+        for (size_t i = _kept.size(); i-- > 0;) {
+                if (_kept[i]->pixels != nullptr) continue;
+                Memory::free(_kept[i]);
+                _kept.removeAt(i);
+        }
+        return;
+}
+
 const Icon *FileIcons::forType(StringView type, uint16_t side) {
         return find(type, side, false);
 }

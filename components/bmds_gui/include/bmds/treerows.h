@@ -53,8 +53,11 @@ class TreeRows {
                 Error addRoot(StringView name, uintptr_t data = 0);
 
                 /**
-                 * @brief Shows @p names as @p row's children (those shown before go),
-                 *        expanding it; none: it has no children.
+                 * @brief Shows @p names as @p row's children, expanding it; none: it
+                 *        has no children.
+                 *
+                 * A child shown before and named again keeps what is shown below it
+                 * (a folder read again keeps its subfolders open); the others go.
                  * @return `Ok`, `OutOfRange`, or `NoMem` (as it was).
                  */
                 Error setChildren(size_t row, Span<const StringView> names);
