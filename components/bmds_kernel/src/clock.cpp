@@ -99,21 +99,34 @@ Error Clock::setFrequency(int32_t ppb) {
         return err;
 }
 
-Error Clock::setTimeZone(StringView tz) {
-        KernelZone next;
-        if (!TimeZone::isName(tz)) {
-                const Result<TimeZone> parsed = TimeZone::parse(tz);
-                if (parsed.error().isError()) return parsed.error();
-                next.rules = parsed.value();
-                zone.store(next);
-                return Error();
+namespace {
+
+        // The zone @p tz names (rules, or a name: resolved, or pending), into @p next.
+        Error prepareZone(StringView tz, KernelZone &next) {
+                if (!TimeZone::isName(tz)) {
+                        const Result<TimeZone> parsed = TimeZone::parse(tz);
+                        if (parsed.error().isError()) return parsed.error();
+                        next.rules = parsed.value();
+                        return Error();
+                }
+                const StringView name = tz.startsWith(':') ? tz.mid(1) : tz;
+                if (!validName(name)) return Error::Invalid;
+                const Error err = resolve(name, next);
+                return err == Error::NotExist ? err : Error();
         }
-        const StringView name = tz.startsWith(':') ? tz.mid(1) : tz;
-        if (!validName(name)) return Error::Invalid;
-        const Error err = resolve(name, next);
-        if (err == Error::NotExist) return err;
-        zone.store(next);
-        return Error();
+
+} // namespace
+
+Error Clock::setTimeZone(StringView tz) {
+        KernelZone  next;
+        const Error err = prepareZone(tz, next);
+        if (err.isOk()) zone.store(next);
+        return err;
+}
+
+Error Clock::checkTimeZone(StringView tz) {
+        KernelZone next;
+        return prepareZone(tz, next);
 }
 
 TimeZone Clock::timeZone() {

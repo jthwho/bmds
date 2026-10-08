@@ -44,7 +44,8 @@ menu "BMDS storage"
             The time zone database (one file, built by tools/bmds-dist as
             the tzdata package), shown to programs as /share/zoneinfo and
             used for zone names in 'clock zone', CONFIG_BMDS_TIMEZONE and
-            TZ. 'clock tzdata PATH' changes it at run time.
+            TZ. The default of the system configuration's clock/tzdata,
+            which 'clock tzdata PATH' and 'sysconf' change at run time.
 
     config BMDS_RAMDISK_MB
         int "RAM disk size (MB, PSRAM, 0 for none)"

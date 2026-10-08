@@ -19,7 +19,7 @@ if(COMMAND idf_component_register)
                                     src/clipboardinit.cpp
                                INCLUDE_DIRS include
                                REQUIRES bmds_core bmds_kernel bmds_shell
-                               PRIV_REQUIRES bmds_fs
+                               PRIV_REQUIRES bmds_fs bmds_sysconf
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})
 else()

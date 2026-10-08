@@ -1,0 +1,17 @@
+# System configuration parameters (devplan/sysconf.md §2): every BMDS_SYSCONF object is placed in
+# the .bmds_conf input section and collected into one contiguous array in flash rodata, bounded by
+# _bmds_conf_start / _bmds_conf_end. SysConf::init() sorts them by key.
+
+[sections:bmds_conf]
+entries:
+    .bmds_conf
+
+[scheme:bmds_conf_default]
+entries:
+    bmds_conf -> flash_rodata
+
+[mapping:bmds_conf]
+archive: *
+entries:
+    * (bmds_conf_default);
+        bmds_conf -> flash_rodata KEEP() SURROUND(bmds_conf)

@@ -118,9 +118,8 @@ namespace {
 } // namespace
 
 Error Storage::init() {
+        // The time zone database's path is the system configuration's clock/tzdata (sysconf.md §8).
         Error err = Vfs::init();
-        // The time zone database on the card (devplan/time.md §9); it may come later.
-        if (err.isOk()) err = Vfs::setZoneDatabase(CONFIG_BMDS_ZONEINFO_PATH);
         if (err.isOk()) err = SdCard::init();
         if (err.isError()) return err;
         Service &s = service.create();

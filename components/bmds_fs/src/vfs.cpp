@@ -93,10 +93,19 @@ namespace {
                 ZoneDir,    // /share/zoneinfo and its directories (devplan/time.md §9)
                 ZoneFile,   // /share/zoneinfo/NAME
                 DevFile,    // a file another component added (Vfs::addDeviceFile)
+                HomeLink,   // /home, the link setHome() made (devplan/sysconf.md §7)
         };
 
         // Where the programs built into the firmware are listed (read-only).
         constexpr StringView BinPath("/bin");
+
+        // The link to the user's home (setHome()): its target, and where it leads while the
+        // target's filesystem isn't mounted; Psram, under the storage lock. Null: no /home.
+        constexpr StringView      HomePath("/home");
+        constinit char           *homeTarget = nullptr;
+        constinit char           *homeFallback = nullptr;
+        constinit uint8_t         homeShown = 0; // what was last reported: 0 nothing, 1 the target, 2 the fallback
+        constinit Vfs::HomeReport homeReport = nullptr;
 
         // Where the time zone database's directory is (read-only).
         using Vfs::ZoneInfoPath;
@@ -161,6 +170,10 @@ namespace {
                 Node node;
                 if (path == "/") return makeResult(node);
                 node.name = path.mid(path.lastIndexOf('/') + 1);
+                if (homeTarget != nullptr && path == HomePath) {
+                        node.kind = Kind::HomeLink;
+                        return makeResult(node);
+                }
                 if (isAtOrBelow(path, "/dev")) {
                         if (path == "/dev") {
                                 node.kind = Kind::DevDir;
@@ -221,11 +234,60 @@ namespace {
                 return makeError<Node>(Error::NotExist);
         }
 
+        // --- /home (devplan/sysconf.md §7) ------------------------------------------------
+
+        bool isMountedLocked(StringView path) {
+                const Result<Node> found = resolveLocked(path);
+                return found.error().isOk() && found.value().kind == Kind::Mounted;
+        }
+
+        // Where /home leads: its target, else (its filesystem not mounted) the fallback. Lock held.
+        StringView homeLocked() {
+                if (homeTarget == nullptr) return StringView();
+                if (isMountedLocked(StringView(homeTarget))) return StringView(homeTarget);
+                if (homeFallback != nullptr && isMountedLocked(StringView(homeFallback)))
+                        return StringView(homeFallback);
+                return StringView(homeTarget);
+        }
+
+        // Reports where /home leads when that changed (setHome(), a mount, an unmount). Lock held.
+        void logHomeLocked() {
+                if (homeTarget == nullptr) {
+                        homeShown = 0;
+                        return;
+                }
+                const StringView leads = homeLocked();
+                const uint8_t    shown = leads == StringView(homeTarget) ? 1 : 2;
+                if (shown == homeShown) return;
+                homeShown = shown;
+                if (homeReport != nullptr) homeReport(leads, shown == 1);
+                return;
+        }
+
+        // Rewrites normalized @p storage at or below /home to where it leads; /home itself
+        // only with @p followHome (else the link is what is meant). Lock held.
+        Error homeRewriteLocked(String &storage, bool followHome) {
+                if (homeTarget == nullptr || !isAtOrBelow(storage.view(), HomePath)) return Error::Ok;
+                if (storage.size() == HomePath.size() && !followHome) return Error::Ok;
+                String out;
+                Error  err = out.append(homeLocked());
+                if (err.isOk()) err = out.append(storage.view().mid(HomePath.size()));
+                if (err.isOk()) storage = std::move(out);
+                return err;
+        }
+
+        // Normalizes @p path (against @p cwd) into @p storage, past /home. Lock held.
+        Error normalizeLocked(StringView path, StringView cwd, String &storage, bool followHome) {
+                Result<String> normalized = Vfs::normalize(path, cwd);
+                if (normalized.error().isError()) return normalized.error();
+                storage = std::move(normalized).value();
+                return homeRewriteLocked(storage, followHome);
+        }
+
         // Normalizes @p path into @p storage and resolves it. Lock held.
         Result<Node> lookupLocked(StringView path, const Vfs::Context &context, String &storage) {
-                Result<String> normalized = Vfs::normalize(path, context.cwd);
-                if (normalized.error().isError()) return makeError<Node>(normalized.error());
-                storage = std::move(normalized).value();
+                const Error err = normalizeLocked(path, context.cwd, storage, true);
+                if (err.isError()) return makeError<Node>(err);
                 return resolveLocked(storage.view());
         }
 
@@ -270,6 +332,11 @@ namespace {
                                 (void)info.name.assign(node.name);
                                 info.type = FileType::File;
                                 if (node.file->size != nullptr) info.size = node.file->size(node.file->arg);
+                                return makeResult(std::move(info));
+                        case Kind::HomeLink:
+                                (void)info.name.assign(node.name);
+                                info.type = FileType::Link;
+                                info.size = homeLocked().size();
                                 return makeResult(std::move(info));
                         case Kind::DevStream:
                         case Kind::DevConsole:
@@ -423,10 +490,7 @@ namespace {
                 if (err.isOk()) err = joined.append(target);
                 if (err.isOk()) err = joined.append(rest);
                 if (err.isError()) return err;
-                Result<String> normalized = Vfs::normalize(joined, "/");
-                if (normalized.error().isError()) return normalized.error();
-                out = std::move(normalized).value();
-                return Error::Ok;
+                return normalizeLocked(joined, "/", out, true);
         }
 
         // Finds the first link among the components of normalized @p storage
@@ -510,9 +574,10 @@ namespace {
         // an empty view past the end. Lock held.
         StringView virtualChild(StringView dir, size_t index) {
                 static constexpr StringView InRoot[] = {"bin", "dev", "share"};
+                static constexpr StringView InRootHome[] = {"bin", "dev", "home", "share"};
                 static constexpr StringView InShare[] = {"zoneinfo"};
                 Span<const StringView>      fixed;
-                if (dir == "/") fixed = InRoot;
+                if (dir == "/") fixed = homeTarget != nullptr ? Span<const StringView>(InRootHome) : InRoot;
                 if (dir == SharePath) fixed = InShare;
                 if (index < fixed.size()) return fixed[index];
                 size_t emitted = fixed.size();
@@ -539,6 +604,7 @@ namespace {
                 mounts[--mountCount] = Mount();
                 // Every file: the slots after this one moved.
                 Fs::changedLocked(0, 0);
+                logHomeLocked();
                 mountChanges.notify();
                 return;
         }
@@ -623,6 +689,10 @@ Result<FileInfo> Directory::next() {
                         if (child.isEmpty()) return makeError<FileInfo>(Error::EndOfFile);
                         ++s.index;
                         info = directoryInfo(child);
+                        if (StringView(s.path) == "/" && child == "home" && homeTarget != nullptr) {
+                                info.type = FileType::Link;
+                                info.size = homeLocked().size();
+                        }
                         info.id = idAppend(idAppend(s.idPrefix, "/"), child);
                         return makeResult(std::move(info));
                 }
@@ -818,7 +888,7 @@ namespace {
                 if (normalized.error().isError()) return normalized.error();
                 const StringView p = normalized.value().view();
                 if (p == "/" || isAtOrBelow(p, "/dev") || isAtOrBelow(p, BinPath) || isAtOrBelow(p, ZoneInfoPath) ||
-                    p.size() > MaxMountPath)
+                    isAtOrBelow(p, HomePath) || p.size() > MaxMountPath)
                         return Error::Invalid;
                 Mutex::Locker lock(Fs::lock(), WaitForever);
                 for (size_t i = 0; i < mountCount; ++i) {
@@ -839,11 +909,62 @@ namespace {
                 m.volume = volume;
                 m.device = &device;
                 Zones::mountsChangedLocked();
+                logHomeLocked();
                 mountChanges.notify();
                 return Error();
         }
 
 } // namespace
+
+void Vfs::setHomeReport(HomeReport report) {
+        Mutex::Locker lock(Fs::lock(), WaitForever);
+        homeReport = report;
+        return;
+}
+
+Error Vfs::setHome(StringView target, StringView fallback) {
+        String t, f;
+        if (!target.isEmpty()) {
+                Result<String> nt = normalize(target, "/");
+                if (nt.error().isError()) return nt.error();
+                t = std::move(nt).value();
+                if (isAtOrBelow(t.view(), HomePath)) return Error::Invalid; // a loop
+        }
+        if (!fallback.isEmpty()) {
+                Result<String> nf = normalize(fallback, "/");
+                if (nf.error().isError()) return nf.error();
+                f = std::move(nf).value();
+                if (isAtOrBelow(f.view(), HomePath)) return Error::Invalid;
+        }
+        // Both as C strings in Psram, made before the lock.
+        auto copy = [](const String &from) -> char * {
+                if (from.isEmpty()) return nullptr;
+                auto *to = static_cast<char *>(Memory::alloc(MemSpace::Psram, from.size() + 1));
+                if (to != nullptr) std::memcpy(to, from.cStr(), from.size() + 1);
+                return to;
+        };
+        char *newTarget = copy(t);
+        char *newFallback = copy(f);
+        if ((!t.isEmpty() && newTarget == nullptr) || (!f.isEmpty() && newFallback == nullptr)) {
+                Memory::free(newTarget);
+                Memory::free(newFallback);
+                return Error::NoMem;
+        }
+        char *oldTarget = nullptr;
+        char *oldFallback = nullptr;
+        {
+                Mutex::Locker lock(Fs::lock(), WaitForever);
+                oldTarget = std::exchange(homeTarget, newTarget);
+                oldFallback = std::exchange(homeFallback, newFallback);
+                homeShown = 0;
+                logHomeLocked();
+                // Paths below /home now name other files.
+                Fs::changedLocked(0, 0);
+        }
+        Memory::free(oldTarget);
+        Memory::free(oldFallback);
+        return Error::Ok;
+}
 
 Error Vfs::pin(StringView path) {
         Mutex::Locker lock(Fs::lock(), WaitForever);
@@ -980,9 +1101,8 @@ Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context 
         Mutex::Locker lock(Fs::lock(), WaitForever);
         String        storage;
         {
-                Result<String> normalized = normalize(path, context.cwd);
-                if (normalized.error().isError()) return makeError<FileHandle::Ptr>(normalized.error());
-                storage = std::move(normalized).value();
+                const Error err = normalizeLocked(path, context.cwd, storage, true);
+                if (err.isError()) return makeError<FileHandle::Ptr>(err);
         }
         const uint8_t mode = ((flags & Read) ? FileHandle::Read : 0) | ((flags & Write) ? FileHandle::Write : 0);
         for (int hops = 0;; ++hops) {
@@ -1076,10 +1196,10 @@ namespace {
         }
 
         Result<FileInfo> statAt(StringView path, const Vfs::Context &context, bool followLast) {
-                Mutex::Locker  lock(Fs::lock(), WaitForever);
-                Result<String> normalized = Vfs::normalize(path, context.cwd);
-                if (normalized.error().isError()) return makeError<FileInfo>(normalized.error());
-                String           storage = std::move(normalized).value();
+                Mutex::Locker lock(Fs::lock(), WaitForever);
+                String        storage;
+                const Error   err = normalizeLocked(path, context.cwd, storage, followLast);
+                if (err.isError()) return makeError<FileInfo>(err);
                 Node             node;
                 Result<FileInfo> info = statFollowLocked(storage, followLast, node);
                 if (info.error().isOk()) setIdentity(info.value(), node, storage.view(), context);
@@ -1151,14 +1271,15 @@ Result<FileInfo> Vfs::lstat(StringView path, const Context &context) {
 }
 
 Result<String> Vfs::readLink(StringView path, const Context &context) {
-        Mutex::Locker  lock(Fs::lock(), WaitForever);
-        Result<String> normalized = normalize(path, context.cwd);
-        if (normalized.error().isError()) return normalized;
-        String                 storage = std::move(normalized).value();
+        Mutex::Locker lock(Fs::lock(), WaitForever);
+        String        storage;
+        const Error   nerr = normalizeLocked(path, context.cwd, storage, false);
+        if (nerr.isError()) return makeError<String>(nerr);
         Node                   node;
         const Result<FileInfo> info = statFollowLocked(storage, false, node);
         if (info.error().isError()) return makeError<String>(info.error());
         if (info.value().type != FileType::Link) return makeError<String>(Error::Invalid);
+        if (node.kind == Kind::HomeLink) return String::fromView(homeLocked());
         String      target;
         const Error err = readLinkLocked(*node.volume, node.rest, target);
         if (err.isError()) return makeError<String>(err);
@@ -1167,10 +1288,10 @@ Result<String> Vfs::readLink(StringView path, const Context &context) {
 
 Error Vfs::symlink(StringView target, StringView path, const Context &context) {
         if (target.isEmpty() || target.size() > MaxTarget) return Error::Invalid;
-        Mutex::Locker  lock(Fs::lock(), WaitForever);
-        Result<String> normalized = normalize(path, context.cwd);
-        if (normalized.error().isError()) return normalized.error();
-        String storage = std::move(normalized).value();
+        Mutex::Locker lock(Fs::lock(), WaitForever);
+        String        storage;
+        const Error   nerr = normalizeLocked(path, context.cwd, storage, false);
+        if (nerr.isError()) return nerr;
         if (isReadOnlyTree(storage.view())) return Error::ReadOnly; // the built-ins, the zones
         for (int hops = 0;; ++hops) {
                 if (hops > MaxLinks) return Error::TooManyLinks;
@@ -1189,10 +1310,9 @@ Error Vfs::symlink(StringView target, StringView path, const Context &context) {
 }
 
 const ProgramEntry *Vfs::builtinProgram(StringView path, const Context &context) {
-        Mutex::Locker  lock(Fs::lock(), WaitForever);
-        Result<String> normalized = normalize(path, context.cwd);
-        if (normalized.error().isError()) return nullptr;
-        String                 storage = std::move(normalized).value();
+        Mutex::Locker lock(Fs::lock(), WaitForever);
+        String        storage;
+        if (normalizeLocked(path, context.cwd, storage, true).isError()) return nullptr;
         Node                   node;
         const Result<FileInfo> info = statFollowLocked(storage, true, node); // links followed
         if (info.error().isError() || node.kind != Kind::BinProgram) return nullptr;
@@ -1200,10 +1320,10 @@ const ProgramEntry *Vfs::builtinProgram(StringView path, const Context &context)
 }
 
 Result<String> Vfs::realPath(StringView path, const Context &context) {
-        Mutex::Locker  lock(Fs::lock(), WaitForever);
-        Result<String> normalized = normalize(path, context.cwd);
-        if (normalized.error().isError()) return normalized;
-        String                 storage = std::move(normalized).value();
+        Mutex::Locker lock(Fs::lock(), WaitForever);
+        String        storage;
+        const Error   nerr = normalizeLocked(path, context.cwd, storage, true);
+        if (nerr.isError()) return makeError<String>(nerr);
         Node                   node;
         const Result<FileInfo> info = statFollowLocked(storage, true, node);
         if (info.error().isError()) return makeError<String>(info.error());
@@ -1211,10 +1331,10 @@ Result<String> Vfs::realPath(StringView path, const Context &context) {
 }
 
 Result<Directory> Vfs::openDirectory(StringView path, const Context &context) {
-        Mutex::Locker  lock(Fs::lock(), WaitForever);
-        Result<String> normalized = normalize(path, context.cwd);
-        if (normalized.error().isError()) return makeError<Directory>(normalized.error());
-        String storage = std::move(normalized).value();
+        Mutex::Locker lock(Fs::lock(), WaitForever);
+        String        storage;
+        const Error   nerr = normalizeLocked(path, context.cwd, storage, true);
+        if (nerr.isError()) return makeError<Directory>(nerr);
         for (int hops = 0;; ++hops) {
                 if (hops > MaxLinks) return makeError<Directory>(Error::TooManyLinks);
                 const Result<Node> found = resolveLocked(storage.view());
@@ -1281,11 +1401,9 @@ namespace {
                 return Error::Ok;
         }
 
-        Error normalizeInto(StringView path, const Vfs::Context &context, String &storage) {
-                Result<String> normalized = Vfs::normalize(path, context.cwd);
-                if (normalized.error().isError()) return normalized.error();
-                storage = std::move(normalized).value();
-                return Error::Ok;
+        // The changes below act on the link /home itself, not where it leads (but setModified()).
+        Error normalizeInto(StringView path, const Vfs::Context &context, String &storage, bool followHome = false) {
+                return normalizeLocked(path, context.cwd, storage, followHome);
         }
 
 } // namespace
@@ -1343,7 +1461,8 @@ Error Vfs::remove(StringView path, const Context &context) {
                 Node node;
                 err = targetLocked(storage, Error::IsDir, node);
                 const bool deviceNode = node.kind == Kind::DevStream || node.kind == Kind::DevConsole ||
-                                        node.kind == Kind::DevBlock || node.kind == Kind::DevFile;
+                                        node.kind == Kind::DevBlock || node.kind == Kind::DevFile ||
+                                        node.kind == Kind::HomeLink;
                 if (err == Error::IsDir && deviceNode) err = Error::PermissionDenied;
                 if (err.isError()) return err;
                 bool                   noPath = false;
@@ -1390,7 +1509,7 @@ Error Vfs::rename(StringView from, StringView to, const Context &context) {
 Error Vfs::setModified(StringView path, Timestamp time, const Context &context) {
         Mutex::Locker lock(Fs::lock(), WaitForever);
         String        storage;
-        Error         err = normalizeInto(path, context, storage);
+        Error         err = normalizeInto(path, context, storage, true);
         if (err.isOk() && isReadOnlyTree(storage.view())) return Error::ReadOnly; // the built-ins, the zones
         if (err.isError()) return err;
         // The file a link leads to, as `touch` does.

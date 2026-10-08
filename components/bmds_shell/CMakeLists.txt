@@ -19,6 +19,7 @@ set(BMDS_SHELL_PURE_SRCS
         src/regex.cpp
         src/shell.cpp
         src/syntaxdump.cpp
+        src/sysconfcommand.cpp
         src/termcommand.cpp
         src/textcommands.cpp
         src/timecommands.cpp
@@ -36,7 +37,7 @@ if(COMMAND idf_component_register)
                                     src/builtins.cpp
                                     src/shellesp.cpp
                                INCLUDE_DIRS include
-                               REQUIRES bmds_core bmds_kernel bmds_console bmds_fs
+                               REQUIRES bmds_core bmds_kernel bmds_console bmds_fs bmds_sysconf
                                PRIV_REQUIRES freertos
                                LDFRAGMENTS linker.lf
                                WHOLE_ARCHIVE)
@@ -44,6 +45,6 @@ if(COMMAND idf_component_register)
 else()
         add_library(bmds_shell STATIC ${BMDS_SHELL_PURE_SRCS})
         target_include_directories(bmds_shell PUBLIC include)
-        target_link_libraries(bmds_shell PUBLIC bmds_core bmds_kernel bmds_console bmds_fs)
+        target_link_libraries(bmds_shell PUBLIC bmds_core bmds_kernel bmds_console bmds_fs bmds_sysconf)
         bmds_target_options(bmds_shell)
 endif()

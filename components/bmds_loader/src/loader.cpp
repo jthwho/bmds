@@ -1812,12 +1812,15 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
                 hasTz = hasTz || e.startsWith("TZ=");
                 if (err.isOk()) err = environment.append(e);
         }
-        // The kernel zone: by its name when it has one, so musl reads the
-        // database's file and dates before today's rules come out right.
+        // A program from a file (musl reads TZ) gets the kernel zone, as it is now, by its name
+        // when it has one, so musl reads the database's file and dates before today's rules come
+        // out right. Built-in programs ask the kernel themselves, so they follow a change of it
+        // (the system configuration's clock/zone, devplan/sysconf.md §8): no snapshot for them,
+        // nor for what they start in turn.
         const Clock::ZoneName name = Clock::zoneName();
         const TimeZone        zone = Clock::timeZone();
         const StringView      value = !name.view().isEmpty() ? name.view() : zone.spec();
-        if (err.isOk() && !hasTz && !value.isEmpty()) {
+        if (err.isOk() && !hasTz && image.builtin == nullptr && !value.isEmpty()) {
                 err = tz.append("TZ=");
                 if (err.isOk()) err = tz.append(value);
                 if (err.isOk()) err = environment.append(tz.view());

@@ -19,6 +19,7 @@
 #include <bmds/loader.h>
 #include <bmds/ramdisk.h>
 #include <bmds/storage.h>
+#include <bmds/sysconf.h>
 #include <bmds/usbhost.h>
 #include <bmds/usbserialconsole.h>
 #include <bmds/vfs.h>
@@ -54,6 +55,7 @@ namespace {
                 {"i2c", bmds::I2cBus::init},
                 {"vfs", bmds::Vfs::init},
                 {"boot", bmds::BootDisk::init},       // /boot: the profile and autoexec.sh
+                {"sysconf", bmds::SysConf::init},     // the system configuration, saved on /boot; /home
                 {"clipboard", bmds::Clipboard::init}, // its configuration on /boot; /dev/clip0
                 {"storage", bmds::Storage::init},
                 {"ramdisk", bmds::RamDisk::init},

@@ -49,7 +49,9 @@ menu "BMDS kernel"
             "CET-1CEST,M3.5.0,M10.5.0/3" or "EST5EDT,M3.2.0,M11.1.0", or
             a name in the time zone database on the card, e.g.
             "Europe/Berlin" (UTC until the card's database is found).
-            The clock itself keeps UTC; 'clock zone' changes this at run
-            time and the shell's TZ variable overrides it for display.
+            The default of the system configuration's clock/zone, which
+            'clock zone' and 'sysconf' change at run time.
+            The clock itself keeps UTC; the shell's TZ variable overrides
+            the zone for display.
 
 endmenu

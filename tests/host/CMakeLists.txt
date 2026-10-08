@@ -23,6 +23,7 @@ add_subdirectory(${BMDS_ROOT}/components/bmds_input ${CMAKE_BINARY_DIR}/bmds_inp
 add_subdirectory(${BMDS_ROOT}/components/bmds_ui ${CMAKE_BINARY_DIR}/bmds_ui)
 add_subdirectory(${BMDS_ROOT}/components/bmds_gui ${CMAKE_BINARY_DIR}/bmds_gui)
 add_subdirectory(${BMDS_ROOT}/components/bmds_clipboard ${CMAKE_BINARY_DIR}/bmds_clipboard)
+add_subdirectory(${BMDS_ROOT}/components/bmds_sysconf ${CMAKE_BINARY_DIR}/bmds_sysconf)
 
 add_executable(bmds_host_tests
         main.cpp
@@ -66,6 +67,7 @@ add_executable(bmds_host_tests
         string.cpp
         stringview.cpp
         syntax.cpp
+        sysconf.cpp
         terminal.cpp
         terminalscreen.cpp
         terminalselection.cpp
@@ -99,7 +101,8 @@ if(BMDS_ZIC AND Python3_Interpreter_FOUND)
         add_dependencies(bmds_host_tests bmds_test_zoneinfo)
         target_compile_definitions(bmds_host_tests PRIVATE BMDS_TEST_ZONEINFO="${CMAKE_BINARY_DIR}/zoneinfo.bin")
 endif()
-target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_input bmds_ui bmds_gui bmds_clipboard)
+target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_input bmds_ui bmds_gui bmds_clipboard
+        bmds_sysconf)
 bmds_target_options(bmds_host_tests)
 
 # bmds-elfcheck: the loader's format check as a host tool (tools/elfcheck).

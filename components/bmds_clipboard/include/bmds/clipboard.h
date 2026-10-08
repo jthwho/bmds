@@ -157,6 +157,12 @@ class Clipboard {
                 size_t limit() const { return _limit; }
 
                 /**
+                 * @brief Sets the bytes it stores at most (the system configuration's
+                 *        `clipboard/limit`, devplan/sysconf.md §8). What it holds is kept.
+                 */
+                void setLimit(size_t bytes);
+
+                /**
                  * @brief Makes a new offer of @p types (normalized; `MaxTypes` at
                  *        most, no type twice) on @p selection, none stored yet,
                  *        replacing the one there.

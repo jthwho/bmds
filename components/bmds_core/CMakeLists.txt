@@ -13,6 +13,7 @@ set(BMDS_CORE_SRCS
         src/clipboardconversions.cpp
         src/clipboardtype.cpp
         src/color.cpp
+        src/configtypes.cpp
         src/datetime.cpp
         src/desktopentry.cpp
         src/pngdecoder.cpp

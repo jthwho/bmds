@@ -1,0 +1,87 @@
+/**
+ * @file      sysconfinit.cpp
+ * @copyright Jason Howard. All rights reserved.
+ *
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file in the project root folder for license information.
+ *
+ * The system configuration's boot stage (target only): the built-in
+ * declarations from their linker section, the store, /home; and the
+ * parameters whose defaults are the build's (devplan/sysconf.md §8).
+ */
+
+#include <sdkconfig.h>
+#include <bmds/clock.h>
+#include <bmds/log.h>
+#include <bmds/staticobject.h>
+#include <bmds/sysconf.h>
+#include <bmds/vfs.h>
+
+#include "sysconfhome.h"
+#include "sysconfstate.h"
+
+extern "C" const bmds::Config::Param _bmds_conf_start[];
+extern "C" const bmds::Config::Param _bmds_conf_end[];
+
+BMDS_NAMESPACE_BEGIN
+
+namespace {
+
+        // clock/zone: the kernel's time zone (rules, or a name in the zone database).
+        Error checkZone(StringView value) {
+                return Clock::checkTimeZone(value);
+        }
+
+        BMDS_SYSCONF(clockZone, "clock/zone", Config::Type::String, CONFIG_BMDS_TIMEZONE,
+                     "The kernel's time zone: POSIX TZ rules or a zone name (Europe/Berlin)", 0, 64, nullptr, checkZone)
+
+        // clock/tzdata: the time zone database (devplan/time.md §9); it needn't exist yet (a card).
+        BMDS_SYSCONF(clockTzdata, "clock/tzdata", Config::Type::Path, CONFIG_BMDS_ZONEINFO_PATH,
+                     "The time zone database (tools/tzbundle's zoneinfo.bin), shown as /share/zoneinfo", 0, 0, nullptr,
+                     nullptr)
+
+        constinit StaticObject<SysConf::Watcher> clockWatcher;
+
+        // The clock's parameters applied: at boot and on each change.
+        void applyClock(void *) {
+                String value;
+                if (SysConf::get("clock/tzdata", value).isOk()) {
+                        const Error err = Vfs::setZoneDatabase(value.view());
+                        if (err.isError()) bmdsWarn("SysConf: clock/tzdata %s: %s", value.cStr(), err.desc());
+                }
+                if (SysConf::get("clock/zone", value).isOk()) {
+                        const Error err = Clock::setTimeZone(value.view());
+                        if (err.isError()) bmdsWarn("SysConf: clock/zone %s: %s", value.cStr(), err.desc());
+                }
+                return;
+        }
+
+} // namespace
+
+Error SysConf::init() {
+        const detail::LoadReport report = detail::start(
+                Span<const Param>(_bmds_conf_start, size_t(_bmds_conf_end - _bmds_conf_start)), StringView(StorePath));
+        if (report.error.isError()) {
+                bmdsErr("SysConf: %s", report.error.desc());
+                return report.error;
+        }
+        if (report.badDeclarations != 0)
+                bmdsErr("SysConf: %u declarations refused (the first: %s)", unsigned(report.badDeclarations),
+                        report.firstBad);
+        if (report.storeError.isError()) bmdsWarn("SysConf: %s: %s", StorePath, report.storeError.desc());
+        if (report.malformed != 0)
+                bmdsWarn("SysConf: %s: %u lines not understood", StorePath, unsigned(report.malformed));
+        if (report.rejected != 0)
+                bmdsWarn("SysConf: %s: %u saved values their type refuses: defaults used", StorePath,
+                         unsigned(report.rejected));
+        bmdsInfo("SysConf: %u parameters; %u saved values kept for keys not declared", unsigned(report.parameters),
+                 unsigned(report.orphans - report.rejected));
+        const Error err = Home::start();
+        if (err.isError()) bmdsWarn("SysConf: /home: %s", err.desc());
+        applyClock(nullptr);
+        clockWatcher.create();
+        (void)clockWatcher->start("clock", applyClock, nullptr);
+        return Error::Ok;
+}
+
+BMDS_NAMESPACE_END

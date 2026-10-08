@@ -300,6 +300,23 @@ void Shell::renderPrompt(StringView ps, String &out) {
                 const String *v = _state.vars.value(name);
                 return v != nullptr ? v->view() : fallback;
         };
+        // $HOME, and the physical path it leads to (found once, if \w or \W asks).
+        String homeReal;
+        bool   homeLooked = false;
+        // How much of @p pwd is the home (it or a directory below it shown as ~), or 0.
+        auto homePrefix = [&](StringView pwd) -> size_t {
+                const StringView home = var("HOME", "");
+                auto             under = [&](StringView h) {
+                        return h.size() > 1 && pwd.startsWith(h) && (pwd.size() == h.size() || pwd[h.size()] == '/');
+                };
+                if (under(home)) return home.size();
+                if (!homeLooked && home.size() > 1) {
+                        homeLooked = true;
+                        Result<String> real = Vfs::realPath(home, _executor.vfs());
+                        if (real.isOk()) homeReal = std::move(real).value();
+                }
+                return under(homeReal.view()) ? homeReal.size() : 0;
+        };
         String raw;
         for (size_t i = 0; i < ps.size(); ++i) {
                 if (ps[i] != '\\' || i + 1 == ps.size()) {
@@ -319,13 +336,13 @@ void Shell::renderPrompt(StringView ps, String &out) {
                         case 'H': (void)raw.append(var("HOSTNAME", "bmds")); break;
                         case 'u': (void)raw.append(var("USER", "user")); break;
                         case 'w': {
-                                // As bash: $HOME and below shown as ~.
+                                // As bash: $HOME and below shown as ~ (also where it leads: cd keeps the
+                                // physical path, and HOME=/home is a link, devplan/sysconf.md §7).
                                 const StringView pwd = var("PWD", "/");
-                                const StringView home = var("HOME", "");
-                                if (home.size() > 1 && pwd.startsWith(home) &&
-                                    (pwd.size() == home.size() || pwd[home.size()] == '/')) {
+                                const size_t     at = homePrefix(pwd);
+                                if (at != 0) {
                                         (void)raw.append('~');
-                                        (void)raw.append(pwd.mid(home.size()));
+                                        (void)raw.append(pwd.mid(at));
                                 } else {
                                         (void)raw.append(pwd);
                                 }
@@ -334,6 +351,10 @@ void Shell::renderPrompt(StringView ps, String &out) {
                         case 'W': {
                                 const StringView pwd = var("PWD", "/");
                                 const size_t     slash = pwd.lastIndexOf('/');
+                                if (homePrefix(pwd) == pwd.size() && pwd.size() > 1) { // as bash: ~ at home
+                                        (void)raw.append('~');
+                                        break;
+                                }
                                 (void)raw.append(pwd.size() > 1 && slash != StringView::NPos ? pwd.mid(slash + 1)
                                                                                              : pwd);
                                 break;

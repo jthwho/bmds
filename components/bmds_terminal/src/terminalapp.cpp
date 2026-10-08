@@ -21,9 +21,9 @@
  * closes when it ends; if it can't start, the window stays open to say why
  * (devplan/gui.md G15).
  *
- * Its colors (devplan/gui.md §4l): /boot/config/terminal.conf's [Colors],
- * then the window manager's resources terminal-text, terminal-background and
- * terminal-cursor (`win color`), which it follows while it runs.
+ * Its colors (devplan/gui.md §4l) and clipboard switches are the system
+ * configuration's `terminal/...` (devplan/sysconf.md §8), which it follows
+ * while it runs (`win color terminal-text` sets one too).
  *
  * Copy and paste (devplan/clipboard.md C10): the left button selects (one
  * click characters, two words, three lines; Ctrl a block; Shift extends), and
@@ -32,7 +32,7 @@
  * button the primary selection. Copies and pastes run on a thread of their own
  * (started at the first), so a long paste never holds up the window manager.
  * Programs set the clipboard with OSC 52, and read it only when
- * terminal.conf's [Clipboard] AllowRead is true (C11).
+ * `terminal/clipboard/allow-read` is true (C11).
  */
 
 #include <atomic>
@@ -49,7 +49,6 @@
 #include <bmds/font.h>
 #include <bmds/glyphrenderer.h>
 #include <bmds/icontheme.h>
-#include <bmds/inireader.h>
 #include <bmds/memory.h>
 #include <bmds/menulayout.h>
 #include <bmds/mutex.h>
@@ -58,6 +57,7 @@
 #include <bmds/pty.h>
 #include <bmds/semaphore.h>
 #include <bmds/string.h>
+#include <bmds/sysconf.h>
 #include <bmds/system.h>
 #include <bmds/terminalkeys.h>
 #include <bmds/terminalscreen.h>
@@ -82,9 +82,46 @@ namespace {
         constexpr uint16_t Columns = 100;  // a new window's
         constexpr uint16_t Rows = 30;
         constexpr size_t   ShellThreadStackBytes = 8192; // starts the shell and waits for it
-        constexpr size_t      MaxConfigBytes = 4096;
-        constexpr const char *ConfigPath = "/boot/config/terminal.conf";
-        constexpr StringView  ResourcePrefix("terminal-"); // terminal-text: [Colors] Text
+        // The system configuration's terminal/colors/NAME: TerminalColors's names (devplan/sysconf.md §8).
+        constexpr const char *ColorNames[] = {"text",    "background", "cursor",  "color0",  "color1",
+                                              "color2",  "color3",     "color4",  "color5",  "color6",
+                                              "color7",  "color8",     "color9",  "color10", "color11",
+                                              "color12", "color13",    "color14", "color15"};
+
+        template <uint32_t Rgb> constexpr const char *colorDefault() {
+                return Config::ColorText<Rgb>;
+        }
+
+#define BMDS_TERMINAL_COLOR(Id, Name, Rgb)                                                                             \
+        BMDS_SYSCONF(terminal##Id, "terminal/colors/" Name, Config::Type::Color, colorDefault<Rgb>(),                  \
+                     "The terminal's " Name " color", 0, 0, nullptr, nullptr)
+
+        BMDS_TERMINAL_COLOR(Text, "text", TerminalColors().text)
+        BMDS_TERMINAL_COLOR(Background, "background", TerminalColors().background)
+        BMDS_TERMINAL_COLOR(Cursor, "cursor", TerminalColors().cursor)
+        BMDS_TERMINAL_COLOR(Color0, "color0", TerminalColors().ansi[0])
+        BMDS_TERMINAL_COLOR(Color1, "color1", TerminalColors().ansi[1])
+        BMDS_TERMINAL_COLOR(Color2, "color2", TerminalColors().ansi[2])
+        BMDS_TERMINAL_COLOR(Color3, "color3", TerminalColors().ansi[3])
+        BMDS_TERMINAL_COLOR(Color4, "color4", TerminalColors().ansi[4])
+        BMDS_TERMINAL_COLOR(Color5, "color5", TerminalColors().ansi[5])
+        BMDS_TERMINAL_COLOR(Color6, "color6", TerminalColors().ansi[6])
+        BMDS_TERMINAL_COLOR(Color7, "color7", TerminalColors().ansi[7])
+        BMDS_TERMINAL_COLOR(Color8, "color8", TerminalColors().ansi[8])
+        BMDS_TERMINAL_COLOR(Color9, "color9", TerminalColors().ansi[9])
+        BMDS_TERMINAL_COLOR(Color10, "color10", TerminalColors().ansi[10])
+        BMDS_TERMINAL_COLOR(Color11, "color11", TerminalColors().ansi[11])
+        BMDS_TERMINAL_COLOR(Color12, "color12", TerminalColors().ansi[12])
+        BMDS_TERMINAL_COLOR(Color13, "color13", TerminalColors().ansi[13])
+        BMDS_TERMINAL_COLOR(Color14, "color14", TerminalColors().ansi[14])
+        BMDS_TERMINAL_COLOR(Color15, "color15", TerminalColors().ansi[15])
+
+#undef BMDS_TERMINAL_COLOR
+
+        BMDS_SYSCONF(terminalAllowWrite, "terminal/clipboard/allow-write", Config::Type::Bool, "true",
+                     "Programs in a terminal may set the clipboard (OSC 52)", 0, 0, nullptr, nullptr)
+        BMDS_SYSCONF(terminalAllowRead, "terminal/clipboard/allow-read", Config::Type::Bool, "false",
+                     "Programs in a terminal may read the clipboard (OSC 52)", 0, 0, nullptr, nullptr)
         constexpr size_t      WorkerStackBytes = 6144;     // copies and pastes
         constexpr uint64_t    MultiClickUs = 400000;       // a second press this soon on the cell: words
         constexpr unsigned    PasteTimeoutMs = 5000;       // for the owner's bytes, and the program to read
@@ -138,7 +175,7 @@ namespace {
                         static void gone(void *arg);
                         static void shellMain(void *arg);
                         static void reply(void *context, StringView text);
-                        static void resourceChanged(void *arg, StringView name, StringView value);
+                        static void settingsChanged(void *arg);
                         // The copies and pastes, on the worker.
                         static void                workerMain(void *arg);
                         static const TerminalCell *selectionLine(void *arg, int64_t line, uint16_t &length);
@@ -152,7 +189,7 @@ namespace {
                         void   scrollBy(int lines);
                         void   composeTitle(char (&out)[96]);
                         void   update();
-                        void   readConfig();
+                        void                     readColors();
                         void                     redrawAll();
                         bool                     clipboardKey(const KeyEvent &event);
                         void                     queue(uint8_t jobs);
@@ -183,8 +220,9 @@ namespace {
                         uint32_t                       _cursorRows[(TerminalScreen::MaxSide + 31) / 32] = {};
                         Thread                         _shell; // runs the shell, until it ends
                         IconTheme                      _icons; // its own icon, for its window
-                        TerminalColors                 _configured; // the defaults and the file's
-                        TerminalColors                 _colors;     // and the resources': the window manager's lock
+                        TerminalColors                 _colors; // the system configuration's: the window manager's lock
+                        std::atomic<bool>              _colorsChanged{false}; // read again at the next drawing
+                        SysConf::Watcher               _settings;             // terminal/...
                         TerminalSelection              _selection;  // the lock
                         bool                     _selecting = false; // the left button held (the window manager's)
                         uint8_t                  _clicks = 0;
@@ -196,8 +234,8 @@ namespace {
                         std::atomic<bool>        _workerStarted{false};
                         std::atomic<bool>        _quit{false};
                         std::atomic<bool>        _pasteCancel{false};     // Ctrl-C typed
-                        bool                     _allowWrite = true;      // [Clipboard] AllowWrite
-                        bool                     _allowRead = false;      // [Clipboard] AllowRead
+                        std::atomic<bool>              _allowWrite{true};       // terminal/clipboard/allow-write
+                        std::atomic<bool>              _allowRead{false};       // terminal/clipboard/allow-read
                         String                   _osc52{MemSpace::Psram}; // being set (the lock)
                         uint8_t                  _osc52Targets = 0;       // Target bits; 0: dropped
                         bool                     _osc52Ready = false;     // set: to copy, unlocked
@@ -242,15 +280,10 @@ namespace {
                         return 1;
                 }
                 _wm = wm;
-                readConfig();
-                _colors = _configured;
-                (void)_wm->watchResources(_client, resourceChanged, this);
-                for (const char *key : {"text", "background", "cursor"}) {
-                        char name[24], value[WindowManager::MaxResourceValue + 1];
-                        std::snprintf(name, sizeof(name), "terminal-%s", key);
-                        if (_wm->resource(StringView(name), Span<char>(value, sizeof(value))).isOk())
-                                (void)_colors.set(StringView(key), StringView(value));
-                }
+                readColors();
+                settingsChanged(this); // the clipboard switches
+                _colorsChanged.store(false, std::memory_order_relaxed);
+                (void)_settings.start("terminal", settingsChanged, this);
                 _cells = static_cast<TextCell *>(Memory::alloc(MemSpace::Internal, sizeof(TextCell) * MaxColumns));
                 auto [pty, perr] = Pty::open(MemSpace::Psram);
                 Error err = _cells == nullptr ? Error(Error::NoMem) : perr;
@@ -372,56 +405,31 @@ namespace {
                 return 0;
         }
 
-        // The colors' file: what it sets over the defaults; a line it can't use reported.
-        void TerminalApp::readConfig() {
-                char *text = static_cast<char *>(Memory::alloc(MemSpace::Psram, MaxConfigBytes));
-                if (text == nullptr) return;
-                size_t             got = 0;
-                const Vfs::Context vc{_context.cwd, nullptr};
-                auto [file, err] = Vfs::open(StringView(ConfigPath), Vfs::Read, vc);
-                while (err.isOk() && got < MaxConfigBytes) {
-                        auto [n, rerr] = file->read(
-                                WritableByteSpan(reinterpret_cast<uint8_t *>(text) + got, MaxConfigBytes - got),
-                                WaitForever);
-                        if (rerr.isError() || n == 0) break;
-                        got += n;
+        // The colors from the system configuration (the window manager's lock, or before the window).
+        void TerminalApp::readColors() {
+                for (const char *name : ColorNames) {
+                        char key[40];
+                        std::snprintf(key, sizeof(key), "terminal/colors/%s", name);
+                        const Result<uint32_t> rgb = SysConf::getColor(key);
+                        uint32_t              *to = _colors.find(StringView(name));
+                        if (rgb.isOk() && to != nullptr) *to = rgb.value();
                 }
-                IniReader reader(StringView(text, got));
-                for (IniReader::Item item = reader.next(); item.kind != IniReader::Kind::End; item = reader.next()) {
-                        if (item.kind == IniReader::Kind::Group) continue;
-                        const bool entry = item.kind == IniReader::Kind::Entry;
-                        const bool colors = entry && item.name.equalsIgnoreCase("Colors");
-                        if (entry && item.name.equalsIgnoreCase("Clipboard")) {
-                                bool *to = item.key.equalsIgnoreCase("AllowWrite")  ? &_allowWrite
-                                           : item.key.equalsIgnoreCase("AllowRead") ? &_allowRead
-                                                                                    : nullptr;
-                                if (to != nullptr && IniReader::toBool(item.value, *to).isOk()) continue;
-                        } else if (entry && !colors) {
-                                continue;
-                        } else if (colors && _configured.set(item.key, item.value).isOk()) {
-                                continue;
-                        }
-                        char line[112];
-                        std::snprintf(line, sizeof(line), "terminal: %s: line %lu: %s\n", ConfigPath,
-                                      static_cast<unsigned long>(item.line),
-                                      !entry   ? "not a [group] or a key=value line"
-                                      : colors ? "not a color (RRGGBB) or a color's name"
-                                               : "not AllowWrite or AllowRead set to true or false");
-                        say(line);
-                }
-                Memory::free(text);
                 return;
         }
 
-        // A resource set (`win color terminal-text RRGGBB`): one of its colors, or the file's again
-        // when removed. The window manager redraws the window next.
-        void TerminalApp::resourceChanged(void *arg, StringView name, StringView value) {
+        // A terminal/... parameter changed (on the task that changed it): the switches now, the
+        // colors at the next drawing (under the window manager's lock), which is asked for.
+        void TerminalApp::settingsChanged(void *arg) {
                 auto *self = static_cast<TerminalApp *>(arg);
-                if (!name.startsWith(ResourcePrefix)) return;
-                const StringView key = name.mid(ResourcePrefix.size());
-                uint32_t        *to = self->_colors.find(key);
-                if (to == nullptr) return;
-                if (value.isEmpty() || self->_colors.set(key, value).isError()) *to = *self->_configured.find(key);
+                const Result<bool> write = SysConf::getBool("terminal/clipboard/allow-write");
+                const Result<bool> read = SysConf::getBool("terminal/clipboard/allow-read");
+                if (write.isOk()) self->_allowWrite.store(write.value(), std::memory_order_relaxed);
+                if (read.isOk()) self->_allowRead.store(read.value(), std::memory_order_relaxed);
+                self->_colorsChanged.store(true, std::memory_order_release);
+                self->_all.store(true, std::memory_order_relaxed);
+                const uint8_t window = self->_window.load(std::memory_order_acquire);
+                if (window != 0 && self->_wm != nullptr)
+                        (void)self->_wm->invalidate(window, Rect{0, 0, 0xffff, 0xffff});
                 return;
         }
 
@@ -619,6 +627,7 @@ namespace {
         // the margin past the cells where damaged. The screen is locked a row at a time, so output
         // goes on while rows are drawn: a row written meanwhile is dirty again, for the next round.
         void TerminalApp::draw(Painter &painter) {
+                if (_colorsChanged.exchange(false, std::memory_order_acquire)) readColors();
                 const Font          &font = Fonts::unscii16;
                 const TerminalColors &colors = _colors;
                 uint16_t             columns = 0, rows = 0;

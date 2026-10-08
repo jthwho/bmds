@@ -119,6 +119,13 @@ namespace Clock {
          */
         Error setTimeZone(StringView tz);
 
+        /**
+         * @brief Checks @p tz as `setTimeZone()` would, without setting it.
+         * @return As `setTimeZone()`.
+         * @blocking A lookup in the zone database, for a name.
+         */
+        Error checkTimeZone(StringView tz);
+
         /** @brief Returns the kernel zone's name, and whether it is pending. */
         ZoneName zoneName();
 

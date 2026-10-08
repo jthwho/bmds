@@ -27,6 +27,7 @@
 #include <bmds/keyboarddecoder.h>
 #include <bmds/memory.h>
 #include <bmds/shell.h>
+#include <bmds/sysconf.h>
 #include <bmds/system.h>
 #include <bmds/task.h>
 #include <bmds/utf8.h>
@@ -34,6 +35,7 @@
 #include <bmds/windowpalette.h>
 
 #include "desktopmenu.h"
+#include "wmconfig.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -240,19 +242,28 @@ namespace {
                 return Shell::ExitFailure;
         }
 
-        // win start [RRGGBB]
+        // Sets system configuration color @p key to @p rgb (devplan/sysconf.md §8).
+        Error setColor(const char *key, uint32_t rgb) {
+                char value[8];
+                std::snprintf(value, sizeof(value), "%06lx", static_cast<unsigned long>(rgb));
+                return SysConf::set(key, value);
+        }
+
+        // win start [RRGGBB]: the palette is the system configuration's wm/palette (a color given
+        // sets wm/palette/desktop first, not saved).
         int runStart(CommandContext &ctx, Args args) {
-                uint32_t color = CONFIG_BMDS_DESKTOP_COLOR;
+                uint32_t color = 0;
                 if (args.size() == 3 && !parseColor(args[2], color)) return ctx.usage();
                 auto [d, derr] = Display::display(0);
                 if (derr.isError() || !d->isRunning()) {
                         ctx.eprintf("win: the display isn't running ('display start')\n");
                         return Shell::ExitFailure;
                 }
-                WindowPalette palette;
-                palette.setColor(WindowPalette::Role::Desktop, color);
+                if (args.size() == 3) (void)setColor("wm/palette/desktop", color);
+                const WindowPalette palette = WmConfig::palette();
                 auto [wm, err] = WindowManager::manager(0);
                 if (err.isOk()) err = wm->start(*d, palette);
+                if (err.isOk()) (void)WmConfig::follow(*wm);
                 if (err == Error::Busy) {
                         ctx.eprintf("win: display in use by the %s\n", d->owner());
                         return Shell::ExitFailure;
@@ -614,7 +625,10 @@ namespace {
         }
 
         // The roles that became resources: the terminal's colors are its own (devplan/gui.md §4l).
+        // `win color`'s names for the terminal's colors, and their system configuration keys.
         constexpr const char *ResourceColors[] = {"terminal-text", "terminal-background", "terminal-cursor"};
+        constexpr const char *ResourceKeys[] = {"terminal/colors/text", "terminal/colors/background",
+                                                "terminal/colors/cursor"};
 
         // win color [ROLE RRGGBB]
         int runColor(CommandContext &ctx, WindowManager &wm, Args args) {
@@ -625,30 +639,28 @@ namespace {
                                 ctx.printf("%-15s %06lx\n", WindowPalette::name(role),
                                            static_cast<unsigned long>(palette.color(role)));
                         }
-                        for (const char *name : ResourceColors) {
-                                char value[WindowManager::MaxResourceValue + 1];
-                                if (wm.resource(StringView(name), Span<char>(value, sizeof(value))).isError())
-                                        std::strcpy(value, "-");
-                                ctx.printf("%-15s %s\n", name, value);
+                        for (size_t i = 0; i < sizeof(ResourceColors) / sizeof(ResourceColors[0]); ++i) {
+                                String value;
+                                if (SysConf::get(ResourceKeys[i], value).isError()) (void)value.assign("-");
+                                ctx.printf("%-15s %s\n", ResourceColors[i], value.cStr());
                         }
                         return Shell::ExitSuccess;
                 }
+                // Each one the system configuration's (not saved: `sysconf save` keeps it).
                 uint32_t color = 0;
-                for (const char *name : ResourceColors) {
-                        if (std::strcmp(args[2], name) != 0) continue;
+                for (size_t i = 0; i < sizeof(ResourceColors) / sizeof(ResourceColors[0]); ++i) {
+                        if (std::strcmp(args[2], ResourceColors[i]) != 0) continue;
                         if (!parseColor(args[3], color)) return ctx.usage();
-                        char value[8];
-                        std::snprintf(value, sizeof(value), "%06lx", static_cast<unsigned long>(color));
-                        return report(ctx, wm.setResource(StringView(name), StringView(value)));
+                        return report(ctx, setColor(ResourceKeys[i], color));
                 }
-                auto [role, err] = WindowPalette::find(args[2]);
-                if (err.isError()) {
+                char key[48];
+                if (!WmConfig::keyOf(StringView(args[2]), key)) {
                         ctx.eprintf("win: %s: not a color role ('win color' lists them)\n", args[2]);
                         return Shell::ExitUsage;
                 }
                 if (!parseColor(args[3], color)) return ctx.usage();
-                palette.setColor(role, color);
-                return report(ctx, wm.setPalette(palette));
+                (void)palette;
+                return report(ctx, setColor(key, color));
         }
 
         // win bench: the glyph kernels on a 1280-pixel row of cells, timed and

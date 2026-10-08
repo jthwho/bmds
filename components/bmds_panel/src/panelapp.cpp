@@ -9,10 +9,12 @@
  * screen with a launcher, the windows and a clock, and the desktop behind
  * every window, with icons (§4m), whose right click opens the launcher's
  * menu. An ordinary
- * program on the GUI toolkit: its items and their settings come from a
- * configuration file, its launcher's entries from Desktop Entry files.
+ * program on the GUI toolkit: its items and their settings come from the
+ * system configuration's panel/... (devplan/sysconf.md §8), read when it
+ * starts; its launcher's entries from Desktop Entry files; the desktop is
+ * /home/Desktop.
  *
- *   panel [-c FILE]   FILE instead of /boot/config/panel.conf
+ *   panel [-c FILE]   the settings from FILE ([Group] Key=value) instead
  */
 
 #include <cstdio>
@@ -40,6 +42,7 @@
 #include <bmds/popupedit.h>
 #include <bmds/programlauncher.h>
 #include <bmds/string.h>
+#include <bmds/sysconf.h>
 #include <bmds/trash.h>
 #include <bmds/vfs.h>
 #include <bmds/widget.h>
@@ -55,11 +58,63 @@ namespace {
         using Role = WindowPalette::Role;
         using Info = WindowManager::Info;
 
-        constexpr const char *ConfigPath = "/boot/config/panel.conf";
         constexpr const char *DefaultApplications = "/boot/applications;/sd0/p0/share/applications";
-        constexpr const char *DefaultDesktop = "/boot/desktop";
-        constexpr const char *PlacesPath = "/boot/config/desktop.conf"; // where the icons were put
-        constexpr const char *DefaultMimeApps = "/boot/config/mimeapps.list"; // what opens files
+        constexpr const char *DefaultDesktop = "/home/Desktop";
+        constexpr const char *ConfigDir = "/home/.config";                    // the user's settings
+        constexpr const char *PlacesPath = "/home/.config/desktop.conf";      // where the icons were put
+        constexpr const char *UserMimeApps = "/home/.config/mimeapps.list";   // what opens files: the user's,
+        constexpr const char *DefaultMimeApps = "/boot/config/mimeapps.list"; // else the system's
+
+        // The panel's settings in the system configuration (devplan/sysconf.md §8), each as
+        // `panel -c FILE`'s [Group] Key names it.
+        BMDS_SYSCONF(panelEdge, "panel/edge", Config::Type::Enum, "top", "The screen edge the panel is on", 0, 0,
+                     "top|bottom", nullptr)
+        BMDS_SYSCONF(panelItems, "panel/items", Config::Type::String, "launcher;windows;clock",
+                     "The panel's items in order: launcher, windows, clock, spacer (; between)", 0, 128, nullptr,
+                     nullptr)
+        BMDS_SYSCONF(panelIconTheme, "panel/icon-theme", Config::Type::String, "flat-color",
+                     "The icon theme (a directory of /sd0/p0/share/icons)", 0, 64, nullptr, nullptr)
+        BMDS_SYSCONF(panelLauncherLabel, "panel/launcher/label", Config::Type::String, "Apps",
+                     "The launcher button's label", 0, 32, nullptr, nullptr)
+        BMDS_SYSCONF(panelLauncherIcon, "panel/launcher/icon", Config::Type::String, "start-here",
+                     "The launcher button's icon (a theme's name)", 0, 64, nullptr, nullptr)
+        BMDS_SYSCONF(panelLauncherApplications, "panel/launcher/applications", Config::Type::Paths,
+                     "/boot/applications;/sd0/p0/share/applications",
+                     "The directories of Desktop Entry files the launcher lists", 0, 0, nullptr, nullptr)
+        BMDS_SYSCONF(panelLauncherSubmenus, "panel/launcher/submenus", Config::Type::Int, "12",
+                     "Entries past which the launcher groups them by category (0: never)", 0, 1000, nullptr, nullptr)
+        BMDS_SYSCONF(panelWindowsMaxWidth, "panel/windows/max-width", Config::Type::Int, "200",
+                     "The widest a window list button gets, in pixels", 16, 2000, nullptr, nullptr)
+        BMDS_SYSCONF(panelClockFormat, "panel/clock/format", Config::Type::String, "%a %d %b %H:%M",
+                     "The clock's format (strftime's %-fields)", 0, 64, nullptr, nullptr)
+        BMDS_SYSCONF(panelClockZone, "panel/clock/zone", Config::Type::String, "",
+                     "The clock's time zone (empty: the kernel's)", 0, 64, nullptr, nullptr)
+        BMDS_SYSCONF(panelSpacerWidth, "panel/spacer/width", Config::Type::Int, "0",
+                     "A spacer's width in pixels (0: what is left)", 0, 2000, nullptr, nullptr)
+        BMDS_SYSCONF(panelDesktopMenu, "panel/desktop/menu", Config::Type::Bool, "true",
+                     "A right click on the desktop opens the launcher's menu", 0, 0, nullptr, nullptr)
+
+        // [Group] Key (as `panel -c FILE` names them) to their system configuration keys.
+        struct SettingKey {
+                        const char *group;
+                        const char *key;
+                        const char *sysconf;
+        };
+        constexpr SettingKey SettingKeys[] = {
+                {"Panel", "Edge", "panel/edge"},
+                {"Panel", "Items", "panel/items"},
+                {"Panel", "IconTheme", "panel/icon-theme"},
+                {"Launcher", "Label", "panel/launcher/label"},
+                {"Launcher", "Icon", "panel/launcher/icon"},
+                {"Launcher", "Applications", "panel/launcher/applications"},
+                {"Launcher", "Submenus", "panel/launcher/submenus"},
+                {"Windows", "MaxWidth", "panel/windows/max-width"},
+                {"Clock", "Format", "panel/clock/format"},
+                {"Clock", "Zone", "panel/clock/zone"},
+                {"Spacer", "Width", "panel/spacer/width"},
+                {"Desktop", "Menu", "panel/desktop/menu"},
+        };
+        constexpr size_t      SettingKeyCount = sizeof(SettingKeys) / sizeof(SettingKeys[0]);
         constexpr StringView  DesktopSuffix(".desktop");                // an icon's file, its name before it
         constexpr size_t      MaxPlacesBytes = 4096;
         constexpr uint32_t    SaveDelayMs = 500; // after a drop: drawn first, then written
@@ -76,8 +131,7 @@ namespace {
         constexpr uint16_t Height = GuiStyle::ButtonHeight + 2 * MarginY;
         constexpr uint16_t Spacing = 4;
 
-        // The configuration used when the file can't be read: the same as the one installed
-        // (boot/config/panel.conf).
+        // The settings used when `panel -c FILE` can't read the file.
         constexpr char DefaultConfig[] = "[Panel]\n"
                                          "Edge=top\n"
                                          "Items=launcher;windows;clock\n";
@@ -323,6 +377,8 @@ namespace {
                         char                          *_configText = nullptr;
                         Setting                        _settings[MaxSettings];
                         size_t                         _settingCount = 0;
+                        bool           _fromFile = false;         // panel -c FILE: else the system configuration's
+                        mutable String _sysconf[SettingKeyCount]; // its values, as asked for
                         Entry                         *_entries = nullptr;
                         size_t                         _entryCount = 0;
                         Rect                           _screen;
@@ -547,10 +603,20 @@ namespace {
                 return Error();
         }
 
+        // [Group] Key: the file's (`panel -c FILE`), else the system configuration's, else @p fallback.
         StringView PanelApp::setting(StringView group, StringView key, StringView fallback) const {
-                for (size_t i = 0; i < _settingCount; ++i)
-                        if (_settings[i].group.equalsIgnoreCase(group) && _settings[i].key == key)
-                                return _settings[i].value;
+                if (_fromFile) {
+                        for (size_t i = 0; i < _settingCount; ++i)
+                                if (_settings[i].group.equalsIgnoreCase(group) && _settings[i].key == key)
+                                        return _settings[i].value;
+                        return fallback;
+                }
+                for (size_t i = 0; i < SettingKeyCount; ++i) {
+                        if (!group.equalsIgnoreCase(StringView(SettingKeys[i].group)) || key != SettingKeys[i].key)
+                                continue;
+                        if (SysConf::get(SettingKeys[i].sysconf, _sysconf[i]).isError()) return fallback;
+                        return _sysconf[i].view();
+                }
                 return fallback;
         }
 
@@ -1387,6 +1453,7 @@ namespace {
                 }
                 const Vfs::Context vc{self->_context.cwd, nullptr};
                 if (err.isOk()) {
+                        (void)Vfs::mkdir(StringView(ConfigDir), vc); // the user's settings' directory, once
                         auto [file, oerr] =
                                 Vfs::open(StringView(PlacesPath), Vfs::Write | Vfs::Create | Vfs::Truncate, vc);
                         err = oerr;
@@ -1496,9 +1563,10 @@ namespace {
         }
 
         int PanelApp::run() {
-                StringView config(ConfigPath);
+                StringView config;
                 if (_context.args.size() == 3 && _context.args[1] == "-c") {
                         config = _context.args[2];
+                        _fromFile = true;
                 } else if (_context.args.size() != 1) {
                         say("usage: panel [-c FILE]\n");
                         return 2;
@@ -1520,10 +1588,12 @@ namespace {
                                 }
                         }
                 }
-                err = readConfig(config);
-                if (err.isError()) {
-                        say("panel: out of memory\n");
-                        return 1;
+                if (_fromFile) {
+                        err = readConfig(config);
+                        if (err.isError()) {
+                                say("panel: out of memory\n");
+                                return 1;
+                        }
                 }
                 _screen = wm.screen();
                 _bottom = setting("Panel", "Edge", "top") == "bottom";
@@ -1554,9 +1624,14 @@ namespace {
         Error PanelApp::openWindows() {
                 bool menu = true;
                 (void)IniReader::toBool(setting("Desktop", "Menu", "true"), menu);
-                const StringView icons = setting("Desktop", "Icons", DefaultDesktop);
+                // The desktop is the user's (/home/Desktop); what opens files the user's, else the system's.
+                const StringView icons = _fromFile ? setting("Desktop", "Icons", DefaultDesktop) : DefaultDesktop;
                 std::snprintf(_desktopDirs, sizeof(_desktopDirs), "%.*s", int(icons.size()), icons.data());
-                const StringView mimeApps = setting("Desktop", "MimeApps", DefaultMimeApps);
+                const Vfs::Context vc{_context.cwd, nullptr};
+                const StringView   mimeApps = _fromFile ? setting("Desktop", "MimeApps", DefaultMimeApps)
+                                              : Vfs::stat(StringView(UserMimeApps), vc).isOk()
+                                                      ? StringView(UserMimeApps)
+                                                      : StringView(DefaultMimeApps);
                 std::snprintf(_mimeApps, sizeof(_mimeApps), "%.*s", int(mimeApps.size()), mimeApps.data());
                 if (menu || !icons.isEmpty()) {
                         GuiWindow::Config dc;

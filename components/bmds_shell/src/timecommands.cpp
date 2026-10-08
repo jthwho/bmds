@@ -11,6 +11,7 @@
 #include <bmds/clock.h>
 #include <bmds/shell.h>
 #include <bmds/string.h>
+#include <bmds/sysconf.h>
 #include <bmds/timecommands.h>
 #include <bmds/vfs.h>
 
@@ -182,12 +183,22 @@ namespace {
 
         int tzdata(CommandContext &ctx);
 
+        // True if the system configuration has @p key: the clock's settings go through it then
+        // (devplan/sysconf.md §8), else (before it is set up) straight to the kernel.
+        bool configured(const char *key) {
+                SysConf::Info info;
+                return SysConf::info(key, info).isOk();
+        }
+
 } // namespace
 
 int TimeCommands::clock(CommandContext &ctx) {
         const Args args = ctx.args();
         if (args.size() == 3 && StringView(args[1]) == "zone") {
-                const Error err = Clock::setTimeZone(args[2]);
+                // The system configuration's clock/zone, which sets the kernel's (devplan/sysconf.md §8);
+                // the kernel's directly before it is set up.
+                const Error err =
+                        configured("clock/zone") ? SysConf::set("clock/zone", args[2]) : Clock::setTimeZone(args[2]);
                 if (err.isError()) {
                         ctx.eprintf("clock: %s time zone '%s'\n", err == Error::NotExist ? "unknown" : "invalid",
                                     args[2]);
@@ -243,8 +254,11 @@ namespace {
                 const Args args = ctx.args();
                 if (args.size() == 3) {
                         Result<String> path = Vfs::normalize(args[2], ctx.cwd());
-                        const Error    err =
-                                path.error().isOk() ? Vfs::setZoneDatabase(path.value().view()) : path.error();
+                        Error          err = path.error();
+                        // clock/tzdata, as clock/zone above.
+                        if (err.isOk())
+                                err = configured("clock/tzdata") ? SysConf::set("clock/tzdata", path.value().view())
+                                                                 : Vfs::setZoneDatabase(path.value().view());
                         if (err.isError()) {
                                 ctx.eprintf("clock: %s: %s\n", args[2], CommandContext::errorText(err));
                                 return Shell::ExitFailure;

@@ -136,6 +136,7 @@ class Directory {
  * /dev/sd0       a block device (BlockDevices); /dev/sd0p0 a partition
  * /sd0/p0        a mounted FAT or exFAT filesystem (the storage service's default path)
  * /boot          littlefs on the board's flash (devplan/storage.md §13d)
+ * /home          a link to the user's home (setHome(); devplan/sysconf.md §7)
  * ```
  *
  * The mount table is run-time state: `mount()` puts a filesystem at any
@@ -227,6 +228,30 @@ namespace Vfs {
          * @return `Ok`, `NotExist` (nothing mounted there), or `Busy` (pinned).
          */
         Error unmount(StringView path);
+
+        /**
+         * @brief Makes `/home` a link to @p target, or to @p fallback while no
+         *        filesystem is mounted where @p target is (a card pulled); an empty
+         *        @p target takes `/home` away (`devplan/sysconf.md` §7).
+         *
+         * `/home` is resolved at each lookup. As the last component of `lstat()`,
+         * `readLink()` and the changes (`remove()`, `rename()`, `mkdir()`, ...)
+         * it is the link itself, which can't be changed; everywhere else, and
+         * below it, it is where it leads. Where it leads is logged when that
+         * changes. The change hook is told `(0, 0)`.
+         * @return `Ok`, `Invalid` (a path at or below `/home`), or `NoMem`.
+         */
+        Error setHome(StringView target, StringView fallback);
+
+        /**
+         * @brief Told where `/home` leads when that changes: @p configured is
+         *        false while it leads to the fallback. Called with the storage
+         *        lock held: it must not call the VFS.
+         */
+        using HomeReport = void (*)(StringView leads, bool configured);
+
+        /** @brief Installs @p report (null: none). */
+        void setHomeReport(HomeReport report);
 
         /**
          * @brief Pins the mount at @p path: `unmount()` refuses it for good

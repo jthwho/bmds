@@ -183,6 +183,12 @@ Result<Clipboard *> Clipboard::clipboard(size_t number) {
         return makeResult(&*clipboards[number]);
 }
 
+void Clipboard::setLimit(size_t bytes) {
+        Mutex::Locker lock(_lock, WaitForever);
+        _limit = bytes;
+        return;
+}
+
 Error Clipboard::configure(StringView text, Report report, void *arg) {
         Mutex::Locker lock(_lock, WaitForever);
         Error         err = _config.assign(text);
