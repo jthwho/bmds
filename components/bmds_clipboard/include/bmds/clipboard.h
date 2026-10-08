@@ -143,9 +143,10 @@ class Clipboard {
                 static Result<Clipboard *> clipboard(size_t number);
 
                 /**
-                 * @brief Takes the configuration @p text (`clipboard.conf`: `[Limits]
-                 *        Bytes`, `[Convert]`), copied; @p report (may be null) is told
-                 *        of lines it doesn't take. Before the clipboard is used.
+                 * @brief Takes the configuration @p text (`clipboard.conf`: `[Convert]`),
+                 *        copied; @p report (may be null) is told of lines it doesn't
+                 *        take (`[Limits]` is sysconf's `clipboard/limit`). Before the
+                 *        clipboard is used.
                  * @return `Ok` or `NoMem`.
                  */
                 Error configure(StringView text, Report report, void *arg);

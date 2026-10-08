@@ -9,7 +9,6 @@
  */
 
 #include <atomic>
-#include <cstdlib>
 #include <cstring>
 #include <new>
 #include <bmds/clipboard.h>
@@ -193,21 +192,11 @@ Error Clipboard::configure(StringView text, Report report, void *arg) {
         Mutex::Locker lock(_lock, WaitForever);
         Error         err = _config.assign(text);
         if (err.isError()) return err;
-        _limit = DefaultLimitBytes;
+        // [Limits] is the system configuration's clipboard/limit now: its lines are reported.
         IniReader ini(_config.view());
-        for (IniReader::Item item = ini.next(); item.kind != IniReader::Kind::End; item = ini.next()) {
-                if (item.kind != IniReader::Kind::Entry || !item.name.equalsIgnoreCase("Limits")) continue;
-                char digits[16] = {};
-                bool ok = item.key == "Bytes" && !item.value.isEmpty() && item.value.size() < sizeof(digits);
-                if (ok) {
-                        std::memcpy(digits, item.value.data(), item.value.size());
-                        char         *end = nullptr;
-                        unsigned long v = std::strtoul(digits, &end, 10);
-                        ok = end != nullptr && *end == '\0' && digits[0] != '-';
-                        if (ok) _limit = v;
-                }
-                if (!ok && report != nullptr) report(arg, item.line, item.text);
-        }
+        for (IniReader::Item item = ini.next(); item.kind != IniReader::Kind::End; item = ini.next())
+                if (item.kind == IniReader::Kind::Entry && item.name.equalsIgnoreCase("Limits") && report != nullptr)
+                        report(arg, item.line, item.text);
         if (_conversions != nullptr) {
                 *_conversions = ClipboardConversions();
                 (void)_conversions->read(_config.view(), report, arg);

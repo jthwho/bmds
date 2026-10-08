@@ -265,7 +265,13 @@ one not, `/home` following a card pulled and put back, the palette changing live
     have no user.
 - **Files:**
   - Gone: `boot/config/terminal.conf`, `boot/config/panel.conf` (`panel -c FILE` still reads a
-    file in that format), and `clipboard.conf`'s `[Limits]`.
+    file in that format), and `clipboard.conf`'s `[Limits]` (the clipboard reports its lines as
+    not taken, rather than reading a limit sysconf then replaces).
+  - **`/boot` cleaned:** the installer never removes a file, so a board that had the old
+    defaults keeps them. The one board's were removed by hand (`panel.conf`, `terminal.conf`,
+    `config/desktop.conf`, `/boot/desktop`) with their `.defaults` lines, and `clipboard.conf`
+    and `mimeapps.list` reinstalled with their new text. A list of retired defaults for the
+    installer to remove (when unchanged) waits for a second board.
   - `boot/desktop` became `boot/home/Desktop`.
   - `desktop.conf` is written to `/home/.config/`.
   - `mimeapps.list` is `/home/.config/`'s if there is one, else `/boot/config/`'s.

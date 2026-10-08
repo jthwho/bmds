@@ -473,9 +473,11 @@ TEST_CASE("Clipboard stores copies and hands them out") {
 TEST_CASE("Clipboard keeps to its limit") {
         Clipboard c;
         Reported  reported;
-        REQUIRE(c.configure("[Limits]\nBytes=10\nBytes=x\n", report, &reported).isOk());
-        CHECK(c.limit() == 10);
-        CHECK(reported.lines == std::vector<uint32_t>{3});
+        // [Limits] is sysconf's clipboard/limit now: reported, not taken.
+        REQUIRE(c.configure("[Limits]\nBytes=10\n", report, &reported).isOk());
+        CHECK(c.limit() == Clipboard::DefaultLimitBytes);
+        CHECK(reported.lines == std::vector<uint32_t>{2});
+        c.setLimit(10);
         const StringView text[] = {"text"};
         CHECK(c.copy(Selection::Clipboard, Span<const StringView>(text), bytes("0123456789"), "", 0).isOk());
         CHECK(c.copy(Selection::Primary, Span<const StringView>(text), bytes("x"), "", 0).error() == Error::NoSpace);

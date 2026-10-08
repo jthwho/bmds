@@ -1,8 +1,9 @@
-# /boot/config/mimeapps.list: which applications open files, by type
+# /boot/config/mimeapps.list: which applications open files, by type, unless
+# /home/.config/mimeapps.list exists
 # (devplan/filetypes.md; freedesktop.org's format, read by the panel).
 #
 # TYPE=ID.desktop;ID2.desktop: the first ID found in the launcher's
-# directories ([Launcher] Applications in panel.conf) opens it. A type is a
+# directories (sysconf's panel/launcher/applications) opens it. A type is a
 # MIME type, as file_type() tells it; MEDIA/* matches a whole media type.
 # A type with no line of its own tries MEDIA/*, then text/plain if it is
 # text-like (scripts, JSON, empty files), then application/octet-stream.
