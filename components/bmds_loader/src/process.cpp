@@ -444,7 +444,10 @@ int32_t Process::pumpConsole(bool wait) {
                                 l.editing = false;
                                 l.ended = true;
                                 return 1;
-                        case LineEditor::Event::Cancel: l.editor.start(StringView()); break;
+                        case LineEditor::Event::Cancel:
+                        case LineEditor::Event::TooLong: // refused bytes: not the line typed
+                                l.editor.start(StringView());
+                                break;
                         case LineEditor::Event::None: break;
                 }
         }

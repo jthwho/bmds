@@ -270,8 +270,24 @@ namespace Vfs {
         /** @brief Returns true if a filesystem is mounted at @p path (absolute). */
         bool isMounted(StringView path);
 
-        /** @brief Released after each mount and unmount: wait on it for a mount (`waitmount`). */
+        /**
+         * @brief Released after each mount and unmount, and when nothing is
+         *        settling any more: wait on it for a mount (`waitmount`).
+         */
         WaitList &mountWaiters();
+
+        /**
+         * @brief Says mounts may be on their way (a medium being probed), until
+         *        the matching `endSettling()`: `waitmount` waits while any are,
+         *        and gives up at once when none are. Calls nest. @nonblocking
+         */
+        void beginSettling();
+
+        /** @brief Ends a `beginSettling()` and wakes `mountWaiters()`. @nonblocking */
+        void endSettling();
+
+        /** @brief True while any `beginSettling()` hasn't ended. @nonblocking */
+        bool isSettling();
 
         /**
          * @brief Unmounts everything on @p device and its partitions (a medium went).

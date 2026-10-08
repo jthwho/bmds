@@ -79,7 +79,7 @@ Until a source sets it, `isSet()` is false and `now()` counts from 2026-01-01 00
 | `date -u` | UTC. |
 | `date -s DATE` | Sets the clock (source `Manual`) and prints it: `'YYYY-MM-DD HH:MM[:SS]'` (or `T` between), `YYYY-MM-DD` (midnight), `HH:MM[:SS]` (today), read in the display zone (`-u`: UTC); `@SECONDS[.frac]`. An invalid date: `date: invalid date '...'`, status 1. |
 | `clock` | Five lines: `Time:` (with nanoseconds, kernel zone), `Source:` (name and when it was set, or `none (not set; counting from 2026-01-01)`), `Slew:` (`±S.NNNNNNNNN s remaining`), `Frequency:` (`±N ppb`), `Zone:` (the `TZ` string, abbreviation and UTC offset; a zone set by name shows the name first, or that it is pending, §9). |
-| `clock zone TZ` / `clock adjust ±SECONDS` | Set the kernel time zone (POSIX rules, or a name in the database, §9: `clock: unknown time zone 'X'` if it hasn't that name); slew by hand (mostly for testing the slew). |
+| `clock adjust ±SECONDS` (`clock zone TZ` until 2026-10-07: now `sysconf set clock/zone`, `sysconf.md` §13) | Set the kernel time zone (POSIX rules, or a name in the database, §9: `clock: unknown time zone 'X'` if it hasn't that name); slew by hand (mostly for testing the slew). |
 | `clock tzdata [PATH]` | The time zone database (§9): `/sd0/p0/share/zoneinfo.bin: tzdata 2026e, 597 zones`, or why it can't be read; with `PATH`, use that file. |
 
 `TZ` (a shell variable; exported or not) overrides the kernel zone for display, as on Unix; one that doesn't parse means UTC, as with glibc. A name (`TZ=Europe/Berlin`) is looked up in the database (§9); not found means UTC, as with musl.

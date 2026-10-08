@@ -156,9 +156,20 @@ The peripheral has 64-byte RX and TX FIFOs and a full-speed CDC-ACM endpoint. ES
 
 ### Line editor
 
-The line editor is a pure state machine: `feed(char)` returns `None`, `Line`, `Cancel` or `Eof`. It is fixed-size, with no allocation:
+The line editor is a pure state machine: `feed(char)` returns `None`, `Line`, `Cancel`, `Eof` or `TooLong`. It is fixed-size, with no allocation:
 
-- `LineMax` is 255 characters plus NUL.
+- `LineMax` is 2047 bytes plus NUL (255 until 2026-10-07): POSIX's least `LINE_MAX`, 2048 with the
+  newline, so a pasted command or a long `sysconf` value (up to 1024 bytes) fits.
+- **A line that grew past it is never run cut short.** Bytes past the limit are refused with a
+  bell, as before, but Enter then reports `TooLong` instead of `Line`. Before, a pasted
+  `printf '...' > /sd0/p0/autoexec.sh` of 300 bytes ran as `printf '...' > /s`.
+  - The shell prints `line too long (2047 bytes at most): not run` and drops any incomplete
+    command, as Ctrl-C does.
+  - `read` at the console fails with `read: line too long`.
+  - A program's line input discards the line, as Ctrl-C does.
+- **Memory:** an editor is about 5 KB (the line, its history copy, 1 KB of history), 3.6 KB more
+  than before. The shell's and a program's line input are in PSRAM. `read` used to keep its
+  editor on the stack; it now allocates it in PSRAM for the call.
 - History is a 1 KB buffer of NUL-separated entries; the oldest entries are evicted.
 - A scratch copy keeps the in-progress line while browsing history.
 
@@ -211,8 +222,7 @@ Echo uses relative cursor movement (`ESC[nD`, `ESC[nC`, `ESC[K`), so the editor 
 | `mem [-h]` | One row per MemSpace: total, free, min free, largest free block (bytes; `-h`: powers of 1024 with two decimals, `16.55M`, `432.43k`). Then a `cached` line for the loader's image cache: the bytes it holds (counted as used above, given back when memory runs short), then `programs N, hits N, misses N, given back N` (lookups since boot, and how often a failed allocation emptied it). |
 | `tasks` | One row per task: name, state, priority, core (`-` = any), stack high-water (bytes free). Needs `CONFIG_FREERTOS_USE_TRACE_FACILITY`. |
 | `log` | Level and the debug modules (on/off). |
-| `log level info\|warn\|err` | Set the level. (Debug output is controlled per module, not by level.) |
-| `log on\|off <module>...\|all` | Enable/disable debug modules. |
+| `log level`, `log on\|off` | Removed (2026-10-07): sysconf's `log/level` and `log/debug` (`sysconf.md` §13). |
 | `log show` | Print the log history. |
 | `reboot` | Flush the console, restart. |
 | `term [color [none\|16\|256\|truecolor] \| size [COLSxROWS]]` | `terminal: <name>`, `color: <depth>`, `size: <cols>x<rows>`; sets the depth, or the size (`size` alone asks the terminal and prints `<cols>x<rows>`). (Phase 1b) |

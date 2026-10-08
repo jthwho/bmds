@@ -24,6 +24,7 @@
 #include <bmds/memory.h>
 #include <bmds/shell.h>
 #include <bmds/staticobject.h>
+#include <bmds/sysconf.h>
 #include <bmds/system.h>
 #include <bmds/task.h>
 #include <bmds/videomodes.h>
@@ -48,6 +49,24 @@ namespace {
                 {"720", {80'000, 1280, 408, 32, 80, 720, 3, 5, 13, true, false, false}},
                 {"1080", {70'000, 1920, 48, 32, 80, 1080, 3, 5, 8, true, false, false}},
         };
+
+        // The mode @p text names: a name of TestModes, or WIDTHxHEIGHT@HZ.
+        Result<VideoTiming> modeOf(StringView text) {
+                for (const TestMode &m : TestModes)
+                        if (text == StringView(m.name)) return makeResult(m.timing);
+                return VideoModes::parse(text);
+        }
+
+        Error checkMode(StringView value) {
+                return modeOf(value).error();
+        }
+
+        // What `display start` shows (devplan/sysconf.md §13).
+        BMDS_SYSCONF(displayMode, "display/mode", Config::Type::String, "720",
+                     "The mode 'display start' sets: 720, 1080, or WIDTHxHEIGHT@HZ", 0, 32, nullptr, checkMode)
+        BMDS_SYSCONF(displayBuffering, "display/buffering", Config::Type::Enum, "double",
+                     "Surface 0's buffers: double (no tearing) or single (half the memory)", 0, 0, "single|double",
+                     nullptr)
 
         // The board's bridge, attached on first use.
         Result<Lt8912b *> attachBridge() {
@@ -281,34 +300,23 @@ namespace {
 
         void stopAnim(); // below
 
-        // display start [720|1080|WxH@HZ] [single|double]
+        // display start: in the mode and buffering of display/mode and display/buffering.
         int runStart(CommandContext &ctx, Args args) {
+                if (args.size() != 2) return ctx.usage();
                 Display *d = display0(ctx);
                 if (d == nullptr || isClaimed(ctx)) return Shell::ExitFailure;
-                VideoTiming        mode = TestModes[0].timing;
-                Surface::Buffering buffering = Surface::Buffering::Single;
-                for (size_t i = 2; i < args.size(); ++i) {
-                        bool named = false;
-                        for (const TestMode &m : TestModes) {
-                                if (std::strcmp(args[i], m.name) != 0) continue;
-                                mode = m.timing;
-                                named = true;
-                        }
-                        if (named) continue;
-                        if (std::strcmp(args[i], "single") == 0) {
-                                buffering = Surface::Buffering::Single;
-                        } else if (std::strcmp(args[i], "double") == 0) {
-                                buffering = Surface::Buffering::Double;
-                        } else {
-                                auto [t, perr] = VideoModes::parse(args[i]);
-                                if (perr.isError()) {
-                                        ctx.eprintf("display: %s: not a mode (720, 1080, or WIDTHxHEIGHT@HZ)\n",
-                                                    args[i]);
-                                        return Shell::ExitUsage;
-                                }
-                                mode = t;
-                        }
+                String text;
+                if (SysConf::get(bmdsConf_displayMode.key, text).isError())
+                        (void)text.assign(bmdsConf_displayMode.defaultValue);
+                auto [mode, merr] = modeOf(text.view());
+                if (merr.isError()) {
+                        ctx.eprintf("display: display/mode %s: not a mode\n", text.cStr());
+                        return Shell::ExitFailure;
                 }
+                const Surface::Buffering buffering =
+                        SysConf::get(bmdsConf_displayBuffering.key, text).isOk() && text.view() == "single"
+                                ? Surface::Buffering::Single
+                                : Surface::Buffering::Double;
                 stopAnim();
                 const Error err = d->start(mode, buffering);
                 if (err.isError()) {
@@ -755,9 +763,10 @@ namespace {
 } // namespace
 
 BMDS_SHELL_COMMAND(display, runDisplay,
-                   "[edid [raw]|scan|start [720|1080|WxH@HZ] [single|double]|off|stats|test|fill X Y W H RRGGBB|"
+                   "[edid [raw]|scan|start|off|stats|test|fill X Y W H RRGGBB|"
                    "present [N]|anim [start [N]|stop]|stress psram|write|internal]",
                    "Show the HDMI bridge and the monitor; 'edid' decodes the monitor's EDID ('raw': its bytes), "
-                   "'scan' lists the bus, 'start' shows surface 0, 'test', 'fill' and 'anim' draw on it")
+                   "'scan' lists the bus, 'start' shows surface 0 (sysconf's display/mode and display/buffering), "
+                   "'test', 'fill' and 'anim' draw on it")
 
 BMDS_NAMESPACE_END

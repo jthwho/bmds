@@ -20,8 +20,8 @@ BMDS_NAMESPACE_BEGIN
  * @brief The window manager's colors, by role (`devplan/windows.md` W12):
  *        what a user changes to restyle the desktop.
  *
- * Each role has a name (`name()`, `find()`) for the `win color` command and,
- * later, a settings file. Colors are 0xRRGGBB.
+ * Each role has a name (`name()`, `find()`): its system configuration key is
+ * `wm/palette/<name>` (`devplan/sysconf.md` §8). Colors are 0xRRGGBB.
  *
  * @par Thread Safety
  * A plain value.

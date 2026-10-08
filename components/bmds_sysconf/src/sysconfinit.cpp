@@ -6,12 +6,13 @@
  * See LICENSE file in the project root folder for license information.
  *
  * The system configuration's boot stage (target only): the built-in
- * declarations from their linker section, the store, /home; and the
- * parameters whose defaults are the build's (devplan/sysconf.md §8).
+ * declarations from their linker section, the store, /home; the parameters
+ * whose defaults are the build's (devplan/sysconf.md §8), and the log's (§13).
  */
 
 #include <sdkconfig.h>
 #include <bmds/clock.h>
+#include <bmds/inireader.h>
 #include <bmds/log.h>
 #include <bmds/staticobject.h>
 #include <bmds/sysconf.h>
@@ -56,6 +57,45 @@ namespace {
                 return;
         }
 
+        // log/level: the least a line must be to be written.
+        BMDS_SYSCONF(logLevel, "log/level", Config::Type::Enum, "info",
+                     "The least a log line must be to be written (info, warn, err)", 0, 0, "info|warn|err", nullptr)
+
+        // log/debug: each item a debug module (`log` lists them), or all.
+        Error checkDebug(StringView value) {
+                for (StringView name = IniReader::nextListItem(value); !name.isEmpty();
+                     name = IniReader::nextListItem(value))
+                        if (name != "all" && Log::findDebugModule(name) == nullptr) return Error::NotExist;
+                return Error::Ok;
+        }
+
+        BMDS_SYSCONF(logDebug, "log/debug", Config::Type::String, "",
+                     "The debug modules that log ('log' lists them; ; between; all: every one)", 0, 256, nullptr,
+                     checkDebug)
+
+        constinit StaticObject<SysConf::Watcher> logWatcher;
+
+        // The log's parameters applied: at boot and on each change.
+        void applyLog(void *) {
+                String value;
+                if (SysConf::get("log/level", value).isOk())
+                        Log::setLevel(value.view() == "err"    ? LogLevel::Err
+                                      : value.view() == "warn" ? LogLevel::Warn
+                                                               : LogLevel::Info);
+                if (SysConf::get("log/debug", value).isError()) return;
+                for (const DebugModule &m : Log::debugModules()) m.setEnabled(false);
+                StringView list = value.view();
+                for (StringView name = IniReader::nextListItem(list); !name.isEmpty();
+                     name = IniReader::nextListItem(list)) {
+                        if (name == "all") {
+                                for (const DebugModule &m : Log::debugModules()) m.setEnabled(true);
+                        } else if (const DebugModule *m = Log::findDebugModule(name)) {
+                                m->setEnabled(true);
+                        }
+                }
+                return;
+        }
+
 } // namespace
 
 Error SysConf::init() {
@@ -81,6 +121,9 @@ Error SysConf::init() {
         applyClock(nullptr);
         clockWatcher.create();
         (void)clockWatcher->start("clock", applyClock, nullptr);
+        applyLog(nullptr);
+        logWatcher.create();
+        (void)logWatcher->start("log", applyLog, nullptr);
         return Error::Ok;
 }
 

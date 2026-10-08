@@ -299,7 +299,7 @@ namespace {
         constexpr const char *Database = "/tz0/p0/share/zoneinfo.bin";
 
         constexpr bmds::Command ClockTable[] = {
-                {"clock", "[zone TZ | tzdata [PATH] | adjust [+|-]SECONDS]", "clock", bmds::TimeCommands::clock},
+                {"clock", "[tzdata | adjust [+|-]SECONDS]", "clock", bmds::TimeCommands::clock},
                 {"date", "[-u] [+FORMAT] | [-u] -s DATE", "date", bmds::TimeCommands::date},
         };
 
@@ -500,7 +500,7 @@ TEST_CASE("Clock: a zone name, pending until its database is found") {
         CHECK(Clock::zoneName().view().isEmpty());
 }
 
-TEST_CASE("Shell: clock zone and TZ take names; clock tzdata") {
+TEST_CASE("Shell: the kernel zone and TZ take names; clock tzdata") {
         ZoneFixture                  f;
         FakeConsole                  con;
         std::unique_ptr<bmds::Shell> shell =
@@ -514,19 +514,18 @@ TEST_CASE("Shell: clock zone and TZ take names; clock tzdata") {
         CHECK(out("TZ=Europe/Berlin; date '+%H:%M %Z'") == "12:00 CEST\n");
         CHECK(out("TZ=:Asia/Tokyo; date '+%H:%M %Z'") == "19:00 JST\n");
         CHECK(out("TZ=Europe/Nowhere; date '+%H:%M %Z'") == "10:00 UTC\n");
-        CHECK(out("clock zone America/New_York") == "");
+        REQUIRE(Clock::setTimeZone("America/New_York").isOk());
         CHECK(specOf(Clock::timeZone()) == "EST5EDT,M3.2.0,M11.1.0");
         std::string status = out("clock");
         CHECK(status.find("\nZone:      America/New_York (EST5EDT,M3.2.0,M11.1.0; EDT, UTC-0400)\n") !=
               std::string::npos);
-        CHECK(out("clock zone Europe/Berln", bmds::Shell::ExitFailure) == "clock: unknown time zone 'Europe/Berln'\n");
-        CHECK(out("clock zone 'CET-1CEST,M13'", bmds::Shell::ExitFailure) ==
-              "clock: invalid time zone 'CET-1CEST,M13'\n");
+        CHECK(Clock::setTimeZone("Europe/Berln") == bmds::Error::NotExist);
+        CHECK(Clock::setTimeZone("CET-1CEST,M13").isError());
         CHECK(out("clock tzdata") == "/tz0/p0/share/zoneinfo.bin: tzdata 2026e, 8 zones\n");
 
         // No database: the name is pending, and clock says so.
         Vfs::eject(zoneDisk().device);
-        CHECK(out("clock zone Europe/Berlin") == "");
+        REQUIRE(Clock::setTimeZone("Europe/Berlin").isOk());
         status = out("clock");
         CHECK(status.find("\nZone:      Europe/Berlin (pending: no zone database; UTC until it is found)\n") !=
               std::string::npos);
@@ -535,8 +534,6 @@ TEST_CASE("Shell: clock zone and TZ take names; clock tzdata") {
         status = out("clock");
         CHECK(status.find("\nZone:      Europe/Berlin (CET-1CEST,M3.5.0,M10.5.0/3; CEST, UTC+0200)\n") !=
               std::string::npos);
-        CHECK(out("clock tzdata /tz0/p0/share/../share/zoneinfo.bin") ==
-              "/tz0/p0/share/zoneinfo.bin: tzdata 2026e, 8 zones\n");
-        CHECK(out(("clock tzdata /" + std::string(130, 'x')).c_str(), bmds::Shell::ExitFailure) ==
-              "clock: /" + std::string(130, 'x') + ": Invalid argument\n");
+        CHECK(out("clock tzdata /tz0/p0/share/zoneinfo.bin", bmds::Shell::ExitUsage) ==
+              "usage: clock [tzdata | adjust [+|-]SECONDS]\n");
 }

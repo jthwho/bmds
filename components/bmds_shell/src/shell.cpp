@@ -539,6 +539,12 @@ void Shell::feed(char c) {
                         (void)execute(_editor.line());
                         if (!_exited && !isEnding()) start(); // no prompt after `exit`, or as it ends
                         break;
+                case LineEditor::Event::TooLong:
+                        // Not run: some of it was refused, and the rest isn't the command.
+                        _executor.report("line too long (%u bytes at most): not run", unsigned(LineEditor::LineMax));
+                        _input.clear();
+                        start();
+                        break;
                 case LineEditor::Event::Cancel:
                         _input.clear(); // abandon an incomplete command too
                         start();

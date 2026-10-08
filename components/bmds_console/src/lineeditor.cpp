@@ -82,6 +82,7 @@ void LineEditor::start(StringView prompt) {
         _screenCursor = 0;
         _historyPos = 0;
         _state = InputState::Normal;
+        _overflowed = false;
         _line[0] = '\0';
         Output out(_console);
         out.put(_prompt);
@@ -157,6 +158,8 @@ LineEditor::Event LineEditor::handleControl(char c, Output &out) {
                 case '\n':
                         out.put('\n');
                         _line[_length] = '\0';
+                        // Some of it was refused: what is left isn't what was typed (or pasted).
+                        if (_overflowed) return Event::TooLong;
                         addHistory(line());
                         _historyPos = 0;
                         return Event::Line;
@@ -175,6 +178,7 @@ LineEditor::Event LineEditor::handleControl(char c, Output &out) {
 
                 case ctrl('C'):
                         out.put("^C\n");
+                        _overflowed = false;
                         _length = 0;
                         _cursor = 0;
                         _line[0] = '\0';
@@ -257,6 +261,7 @@ void LineEditor::insert(char c, Output &out) {
 void LineEditor::insertBytes(const char *bytes, size_t n, Output &out) {
         if (_length + n > LineMax) {
                 out.put('\a');
+                _overflowed = true;
                 return;
         }
         std::memmove(_line + _cursor + n, _line + _cursor, _length - _cursor);

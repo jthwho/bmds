@@ -1,4 +1,4 @@
-# System configuration: the registry, `sysconf`, and `/home` (design, 2026-10-07; steps 1-3 built)
+# System configuration: the registry, `sysconf`, and `/home` (design, 2026-10-07; steps 1-3 built, step 4 designed)
 
 ## 1. Goal
 
@@ -256,7 +256,7 @@ one not, `/home` following a card pulled and put back, the palette changing live
   - The clock: `clock/zone` and `clock/tzdata` are applied at boot and on change.
   - **Not the panel yet:** it reads its parameters when it starts, so a change takes effect
     when it starts again. `GuiApplication::watchConfig()` (§5) waits for it, its first user.
-- **The commands kept their syntax:**
+- **The commands kept their syntax** (until §13 removed these forms):
   - `win start RRGGBB` and `win color ROLE RRGGBB` set `wm/palette/...`.
   - `win color terminal-text RRGGBB` sets `terminal/colors/text`.
   - `clock zone` and `clock tzdata` set the clock's keys.
@@ -350,3 +350,150 @@ one not, `/home` following a card pulled and put back, the palette changing live
     one and its `.defaults` line removed first). `home` was the card's, the card's script started
     the panel, and a test `/home/autoexec.sh` ran.
   - **Not tried:** booting without a card, and so the panel without the card's icon theme.
+
+## 12. Step 4: ids, the SDK's calls and watch descriptors (design, 2026-10-07; not built)
+
+### 12.1 Ids (the user's suggestion)
+
+- **A parameter has an id:** a small number naming it for the rest of the boot. A program finds a
+  key's id once (`find`), then gets, sets and is told of changes by id. Strings are compared only
+  in `find`, `list` and when a watch starts.
+- **Ids aren't in the ABI:** they are handles for this boot, never numbers to write into a
+  program.
+  - The built-ins' order is the linker section's, which changes from one firmware to the next,
+    and run-time keys get theirs as they are declared.
+  - A program that kept an id across a reboot would read another key. Keys stay the interface
+    (§2); ids are how a running program holds one.
+- **The registry has them already:** a watcher's ring holds entry numbers (`uint16_t`), which
+  `next()` turns back into keys. Step 4 makes them public: `SysConf::Id`, `find(key)`, and `get`,
+  `set`, `setDefault`, `revert`, `save` and `info` by id. The forms taking a key stay (the shell,
+  and code that reads a key once).
+- **Finding:** an index of the entries sorted by key, made at boot (2 bytes an entry, internal
+  RAM: 250 bytes for 61 built-ins and 64 run-time keys), and a binary search. A key declared at
+  run time is inserted into it.
+- **Watching without strings:** a watch's prefix is matched once, when it starts, into a bit mask
+  over the entries (`MaxEntries` bits: 16 bytes for 128 entries, in the watcher). A key declared
+  later is matched against the watchers' prefixes once, when it is declared. A change is then one
+  bit test per watcher. The ring holds ids, as now.
+- **The kernel's own users move to ids:** the window manager's palette (23 keys) and the
+  terminal's colors (19) find their ids when they start, then index tables by id instead of
+  comparing keys at each change.
+
+### 12.2 The calls (slots 59-65, appended)
+
+All take and return ids as `int32_t`: an id is >= 0, an error negative (`-BMDS_E...`). Values are
+the canonical text forms (§2), at most `BMDS_SYSCONF_VALUE_MAX` (1024) bytes; keys at most
+`BMDS_SYSCONF_KEY_MAX` (63).
+
+| Slot | Call | What |
+|---|---|---|
+| 59 | `int32_t sysconf_find(const char *key)` | The key's id, or `-ENOENT` |
+| 60 | `int32_t sysconf_get(int32_t id, uint32_t what, char *out, uint32_t size)` | A text of the parameter, NUL-ended, its length returned (`-ERANGE` if @p size is too small): `BMDS_SYSCONF_VALUE`, `_DEFAULT`, `_SAVED` (`-ENOENT` if none), `_KEY`, `_HELP`, `_CHOICES` |
+| 61 | `int32_t sysconf_info(int32_t id, bmds_sysconf_info_t *info)` | Its numbers: `size`, type, min, max, flags (`BMDS_SYSCONF_IS_DEFAULT`, `_IS_SAVED`, `_CHANGED`: differs from the store, `_RUNTIME`: declared by a program) |
+| 62 | `int32_t sysconf_set(int32_t id, uint32_t op, const char *value)` | `BMDS_SYSCONF_SET` (@p value), `_SETDEF`, `_REVERT`, `_SAVE`; `_SAVE` with id -1 saves every changed key. Errors: `-EINVAL` (not of the type), `-ERANGE` (a limit), the check's (`-ENOENT`, `-ENOTDIR` for `home`), `-EIO` |
+| 63 | `int32_t sysconf_next(const char *prefix, int32_t after)` | Listing: the id of the first key under @p prefix after id @p after in key order (-1: from the start), or `-ENOENT` at the end |
+| 64 | `int32_t sysconf_declare(const bmds_sysconf_param_t *param)` | A program's own key (§2): its id. Declaring a key again with the same type and limits gives the same id (a program started twice); otherwise `-EEXIST` |
+| 65 | `int32_t sysconf_watch(const char *prefix, uint32_t flags)` | A new descriptor (`BMDS_O_CLOEXEC` taken) |
+
+- **The watch descriptor:**
+  - `read()` gives whole `uint32_t` records: the id of each key changed, or
+    `BMDS_SYSCONF_OVERFLOW` (0xffffffff): more changed than the ring held, so read again what
+    matters. A size not a multiple of 4 is `-EINVAL`.
+  - It blocks when nothing changed, unless the descriptor is non-blocking (`fd_flags`).
+    `io_poll` reports `BMDS_POLL_IN`. A program's event loop waits on it with everything else.
+  - Closing it ends the watch. `dup` and inheritance share it, as for a pipe.
+  - A repeat of an id not yet read isn't queued twice (as now).
+- **`bmds_sysconf_param_t`:** `size`, key, type, default, help, min, max, choices. The kernel
+  copies the strings (PSRAM), since the program's memory goes when it ends and the key stays until
+  reboot. A program's key can't have a check function: only its type and limits.
+- **The SDK header** `bmds/sysconf.h`: the wrappers, the constants and structs, and inline
+  parsers of the canonical forms (`bmds_sysconf_to_int`, `_to_bool`, `_to_color`).
+- **Who may change what:** every program may set and save every key. BMDS has one user, as the
+  shell's `sysconf` already can.
+- **Frozen once shipped:** the slots, the structs, the constants, the record format and the type
+  numbers (`Config::Type`'s order, now an interface: `bool` 0 to `paths` 6).
+
+### 12.3 The toolkit
+
+- **`GuiApplication::watchConfig(prefix, fn, arg)`:** a `SysConf::Watcher` whose notify posts to
+  the loop (`post()`), and `fn(arg, id)` called on the loop's thread for each id, or with
+  `SysConf::AnyId` after an overflow.
+- **The panel follows its keys live:** `panel/edge` moves it, `panel/items` and the launcher's
+  keys rebuild the row, `panel/icon-theme` reloads the icons, `panel/clock/*` reconfigures the
+  clock, `panel/desktop/menu` turns the desktop's menu on or off.
+
+### 12.4 Order
+
+1. Ids in the kernel API (`find`, by-id forms, the sorted index, watchers' masks); the window
+   manager and terminal by id. Host tests: ids stable through the boot, `find` for built-in and
+   declared keys, masks for keys declared after a watch.
+2. The slots, `bmds/sysconf.h` and the watch descriptor (`ABI:`), with an SDK example program
+   and the SDK's ABI lock test extended.
+3. `watchConfig()` and the panel live.
+
+### 12.5 Decided (the user's, 2026-10-07)
+
+- Ids, as in §12.1: the user's suggestion; this design keeps them per boot, out of the ABI.
+- **One way to do a thing:** commands that set what is now a parameter lose that use, and
+  `sysconf` is the only way (§13).
+
+## 13. One way to set a thing (2026-10-07, the user's request; built)
+
+- **The rule:** a setting that is a parameter is set only with `sysconf` (or, after step 4, the
+  calls). Commands keep showing state, but they no longer set what the registry holds. That is one
+  way for the user to learn and for the documentation to describe.
+- **Gone** (shell interfaces, `ABI:`):
+  - `win start RRGGBB` and `win color [ROLE RRGGBB]`: `wm/palette/<role>` and
+    `terminal/colors/...`. `sysconf list wm/palette` lists the palette.
+  - `clock zone TZ` and `clock tzdata PATH`: `clock/zone` and `clock/tzdata`. `clock` and
+    `clock tzdata` still show the zone and the database.
+  - `panel -c FILE`, and with it the panel's INI layer (its own settings table, the file reader,
+    the built-in default layout). The panel reads its `panel/...` keys directly. An item's kind
+    is its name in `panel/items`.
+  - `log level` and `log on|off MODULE...`: the new `log/level` and `log/debug`. `log` shows
+    them, and `log show` the history.
+  - `display start`'s mode and buffering arguments: the new `display/mode` and
+    `display/buffering`.
+  - The window manager's resources (`setResource()`, `resource()`, `watchResources()`), which had
+    no user since the terminal's colors became parameters.
+- **New parameters (65 now):**
+  - `display/mode` (`string`, default `720`): `720`, `1080` or `WIDTHxHEIGHT@HZ`, checked as
+    `display start` reads it.
+  - `display/buffering` (`enum` `single|double`, default `double`, what the default
+    `autoexec.sh` used).
+  - Both are read by `display start`. A change takes effect at the next `display start`, since a
+    running desktop owns the display.
+  - `log/level` (`enum` `info|warn|err`, default `info`).
+  - `log/debug` (`string`): debug modules, `;` between, or `all`. Each name must be a module
+    `log` lists. Both are applied at once and at boot, so a saved `log/debug` debugs from the
+    `sysconf` stage on.
+- **Not moved,** and why:
+  - `term color|size`: the terminal session's, not the system's.
+  - The serial console's color depth: a build setting (`CONFIG_BMDS_USJ_COLOR_*`) for a console
+    that exists before the registry.
+  - `wm.conf`, `clipboard.conf` `[Convert]`, `mimeapps.list`: lists (§10).
+- **`waitmount` on an empty slot:**
+  - Before, `waitmount /sd0/p0 3000` with no card waited the whole 3 seconds at every boot.
+  - Now the VFS counts mounts on their way: `Vfs::beginSettling()` and `endSettling()`,
+    nested, and `isSettling()`.
+  - The storage service settles from its start until the first card check is done, and from
+    each card-detect edge until that card is mounted or known not to be. `endSettling()` wakes
+    the mount waiters.
+  - `waitmount` gives up as soon as the path isn't mounted and nothing is settling. A card
+    being probed is still waited for (up to MS).
+  - A path that only a later manual `mount` would provide no longer waits; nothing used that.
+- **The card's `autoexec.sh`** had `display start 720 double`, which now fails. Its line became
+  `display start` (the defaults are the same mode). The repository's `boot/autoexec.sh` changed
+  the same way, and the board's was reinstalled.
+- **Checked on the board:**
+  - The removed forms print their usage.
+  - `log/level warn` and `log/debug 'Storage;Boot'` showed in `log`. An unknown module was
+    refused (`NotExist`).
+  - `display/mode 999` was refused; `1920x1080@60` was taken. The desktop came up from the
+    defaults.
+  - The panel, restarted, followed `panel/edge bottom`, `panel/items 'launcher;spacer;clock'`, a
+    clock format and the launcher's label.
+  - With `/sd0/p0` unmounted, `waitmount /sd0/p0 3000` failed in under 0.05 s. Mounted, it
+    succeeded at once.
+- **Not tried:** a boot without a card (the empty-slot case `waitmount` was changed for).
+- **Size:** the firmware is 907,920 bytes, 2.1 KB less than before.

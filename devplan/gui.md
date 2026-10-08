@@ -381,6 +381,9 @@ no icon file installed and no `Icon=` written.
 
 ### 4l. The terminal's own colors; resources (roadmap, 2026-10-06)
 
+(Since `sysconf.md` step 3 the terminal's colors are parameters, and §13 removed the resources
+below, which then had no user.)
+
 The last of `windows.md` §8 step 9: the window manager draws no terminal, so the palette's
 `terminal-text`, `terminal-background` and `terminal-cursor` roles leave it.
 
@@ -398,7 +401,7 @@ The last of `windows.md` §8 step 9: the window manager draws no terminal, so th
   `[Colors]` group (`Text`, `Background`, `Cursor`, `Color0` to `Color15`; `RRGGBB` or
   `#RRGGBB`), then the resources `terminal-text`, `terminal-background` and `terminal-cursor`. It
   watches those, so a change shows in every open terminal. The file is a new default on `/boot`.
-- **`win color`** (frozen) still takes the three names: `win color terminal-text RRGGBB` sets
+- **`win color`** (removed 2026-10-07 for `sysconf`, `sysconf.md` §13) still took the three names: `win color terminal-text RRGGBB` sets
   the resource. Its list shows the palette's roles, then the three, `-` where not set (the
   terminal's own setting applies).
 

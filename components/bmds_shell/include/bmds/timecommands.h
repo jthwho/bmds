@@ -24,8 +24,9 @@ namespace TimeCommands {
         int date(CommandContext &ctx);
 
         /**
-         * @brief `clock [zone TZ | tzdata [PATH] | adjust SECONDS]`: the system
-         *        clock's state; the kernel zone (rules or a name); the zone database.
+         * @brief `clock [tzdata | adjust SECONDS]`: the system clock's state; the
+         *        zone database. The zone and the database are set by sysconf's
+         *        `clock/zone` and `clock/tzdata` (`devplan/sysconf.md` §13).
          */
         int clock(CommandContext &ctx);
 

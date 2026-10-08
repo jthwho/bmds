@@ -236,8 +236,8 @@ int FsCommands::waitmount(CommandContext &ctx) {
         const Result<String> path = Vfs::normalize(args[1], ctx.cwd());
         if (path.error().isError()) return ctx.usage();
         if (ms == 0) return Vfs::isMounted(path.value().view()) ? Shell::ExitSuccess : Shell::ExitFailure;
-        // Woken by each mount (or Ctrl-C); the mount table is looked at after registering, so a
-        // mount in between isn't missed.
+        // Woken by each mount, the end of settling (or Ctrl-C); the mount table is looked at after
+        // registering, so a mount in between isn't missed.
         Interrupt     &interrupt = ctx.shell().interrupt();
         const Deadline deadline(static_cast<unsigned int>(ms));
         for (;;) {
@@ -246,7 +246,8 @@ int FsCommands::waitmount(CommandContext &ctx) {
                 Interrupt::Watch watch(interrupt, woken);
                 if (Vfs::isMounted(path.value().view())) return Shell::ExitSuccess;
                 if (interrupt.isRaised()) return Shell::ExitInterrupted;
-                if (deadline.isExpired()) return Shell::ExitFailure;
+                // Nothing on its way (no card in the slot): no use waiting.
+                if (deadline.isExpired() || !Vfs::isSettling()) return Shell::ExitFailure;
                 if (entry.isAdded()) {
                         (void)woken.acquire(deadline);
                 } else {
@@ -262,6 +263,7 @@ BMDS_SHELL_COMMAND(mount, FsCommands::mount, "[DEVICE PATH]",
                    "List the mounts; mount a device's filesystem (e.g. mount /dev/sd0p0 /data)")
 BMDS_SHELL_COMMAND(umount, FsCommands::umount, "PATH", "Unmount the filesystem at PATH")
 BMDS_SHELL_COMMAND(waitmount, FsCommands::waitmount, "PATH MS",
-                   "Wait up to MS milliseconds for a filesystem at PATH (e.g. waitmount /sd0/p0 3000)")
+                   "Wait up to MS milliseconds for a filesystem at PATH while one may come (e.g. waitmount "
+                   "/sd0/p0 3000); an empty card slot fails at once")
 
 BMDS_NAMESPACE_END

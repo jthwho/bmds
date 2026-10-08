@@ -14,7 +14,7 @@ BMDS_NAMESPACE_BEGIN
 
 namespace {
 
-        // By role; the names are an interface (`win color`): append only.
+        // By role; the names are an interface (`wm/palette/<name>`): append only.
         // clang-format off
         constexpr const char *Names[WindowPalette::RoleCount] = {
                 "desktop",

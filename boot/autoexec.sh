@@ -14,7 +14,7 @@ fi
 if [ -f /sd0/p0/autoexec.sh ]; then
         . /sd0/p0/autoexec.sh
 else
-        display start 720 double
+        display start
         win start
         panel &
 fi

@@ -91,6 +91,8 @@ namespace {
                 bool    first = true;
                 bool    seedPending = true;
                 for (;;) {
+                        // Settling (begun by init() for the first check) until a card is mounted or
+                        // known not to be: waitmount doesn't wait longer for a slot that is empty.
                         // Debounce: act once the switch has been quiet for a while.
                         while (card.waitForDetectChange(DebounceMs).isOk()) {}
                         const bool inserted = card.isInserted();
@@ -100,6 +102,7 @@ namespace {
                         } else if (!inserted && card.isAttached()) {
                                 cardRemoved(card);
                         }
+                        Vfs::endSettling();
                         if (first) {
                                 first = false;
                                 service->firstCheck.release();
@@ -107,11 +110,15 @@ namespace {
                         if (seedPending) {
                                 // A new random seed in /boot once boot's own use of /boot is over
                                 // (devplan/random.md); a card change first is handled first.
-                                if (card.waitForDetectChange(SeedDelayMs) != Error::Timeout) continue;
+                                if (card.waitForDetectChange(SeedDelayMs) != Error::Timeout) {
+                                        Vfs::beginSettling();
+                                        continue;
+                                }
                                 seedPending = false;
                                 BootDisk::refreshRandomSeed();
                         }
                         (void)card.waitForDetectChange(WaitForever);
+                        Vfs::beginSettling();
                 }
         }
 
@@ -125,13 +132,18 @@ Error Storage::init() {
         Service &s = service.create();
         err = BlockDevices::addNumbered(SdCard::instance(), "sd", s.name);
         if (err.isError()) return err;
+        Vfs::beginSettling(); // the first check's: ended by the task
         Task::Config config;
         config.name = "storage";
         config.stackBytes = CONFIG_BMDS_STORAGE_STACK_BYTES;
         config.stackSpace = MemSpace::Psram;
         config.priority = CONFIG_BMDS_STORAGE_PRIORITY;
         err = s.task.start(config, serviceMain, nullptr);
-        if (err.isOk()) running.store(true, std::memory_order_release);
+        if (err.isOk()) {
+                running.store(true, std::memory_order_release);
+        } else {
+                Vfs::endSettling();
+        }
         return err;
 }
 

@@ -10,10 +10,12 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <new>
 #include <bmds/console.h>
 #include <bmds/executor.h>
 #include <bmds/langbuiltins.h>
 #include <bmds/lineeditor.h>
+#include <bmds/memory.h>
 #include <bmds/shell.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -170,10 +172,20 @@ namespace {
                 return Error::Ok;
         }
 
-        // Reads one line from a terminal with a line editor (echo and editing).
-        // Returns false at end of input (Ctrl-D on an empty line).
+        // Reads one line from a terminal with a line editor (echo and editing). @p eof at end of
+        // input (Ctrl-D on an empty line); BufferTooSmall for a line past LineEditor::LineMax.
         Error readTerminal(Console &console, StringView prompt, String &line, bool &eof) {
-                LineEditor editor(console);
+                // The editor in PSRAM: about 5 KB, too much for the shell's stack.
+                void *memory = Memory::alloc(MemSpace::Psram, sizeof(LineEditor));
+                if (memory == nullptr) return Error::NoMem;
+                LineEditor &editor = *::new (memory) LineEditor(console);
+                struct Freed {
+                                LineEditor &e;
+                                ~Freed() {
+                                        e.~LineEditor();
+                                        Memory::free(&e);
+                                }
+                } freed{editor};
                 editor.start(prompt);
                 for (;;) {
                         uint8_t buf[16];
@@ -188,6 +200,7 @@ namespace {
                                         case LineEditor::Event::Line: return line.append(editor.line());
                                         case LineEditor::Event::Eof: eof = true; return Error::Ok;
                                         case LineEditor::Event::Cancel: return Error::Interrupted;
+                                        case LineEditor::Event::TooLong: return Error::BufferTooSmall;
                                         case LineEditor::Event::None: break;
                                 }
                         }
@@ -426,6 +439,10 @@ int LangBuiltins::read(CommandContext &ctx) {
                 }
         }
         if (err == Error::Interrupted || ctx.isInterrupted()) return Shell::ExitInterrupted;
+        if (err == Error::BufferTooSmall) {
+                ctx.eprintf("read: line too long (%u bytes at most)\n", unsigned(LineEditor::LineMax));
+                return Shell::ExitFailure;
+        }
         if (err.isError()) {
                 ctx.eprintf("read: %s\n", err.desc());
                 return Shell::ExitFailure;

@@ -150,6 +150,16 @@ TEST_CASE("LineEditor") {
                 feed(*ed, "y");
                 CHECK(con.take() == "\a");
                 CHECK(ed->line().size() == LineEditor::LineMax);
+                // Enter refuses what is left: it isn't the line typed (or pasted).
+                CHECK(feed(*ed, "\r") == Event::TooLong);
+                ed->start("> ");
+                CHECK(feed(*ed, "ab\r") == Event::Line); // the next one is whole again
+                CHECK(text(*ed) == "ab");
+        }
+
+        SUBCASE("a line of LineMax bytes is whole") {
+                CHECK(feed(*ed, std::string(LineEditor::LineMax, 'x') + "\r") == Event::Line);
+                CHECK(ed->line().size() == LineEditor::LineMax);
         }
 
         SUBCASE("unknown sequences and control bytes are ignored") {

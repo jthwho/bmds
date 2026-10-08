@@ -34,8 +34,10 @@ namespace FsCommands {
 
         /**
          * @brief `waitmount PATH MS`: waits up to MS milliseconds for a
-         *        filesystem at PATH; 0 if one is there, 1 if none came, 130
-         *        on Ctrl-C (`devplan/storage.md` §13).
+         *        filesystem at PATH while mounts are on their way
+         *        (`Vfs::isSettling()`: a card being probed); 0 if one is there,
+         *        1 if none came or none can (an empty slot), 130 on Ctrl-C
+         *        (`devplan/storage.md` §13).
          */
         int waitmount(CommandContext &ctx);
 

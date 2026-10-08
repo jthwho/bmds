@@ -56,7 +56,9 @@ class LineCompleter {
  * The editor is a pure state machine: the owner reads bytes from the
  * console and passes each to `feed()`. The editor echoes to the console
  * with ANSI cursor sequences and reports when a line is complete. It
- * allocates nothing; all state is inline (about 1.6 KB).
+ * allocates nothing; all state is inline (about 5 KB: keep it off stacks).
+ * A line that grew past `LineMax` (bytes refused with a bell) is reported
+ * as `Event::TooLong` at Enter, never as a shortened line.
  *
  * Keys: printable ASCII inserts at the cursor. Supported editing keys:
  * - Enter (CR, LF, or CR LF);
@@ -77,8 +79,12 @@ class LineCompleter {
  */
 class LineEditor {
         public:
-                /** @brief Longest line, in characters. */
-                static constexpr size_t LineMax = 255;
+                /**
+                 * @brief Longest line, in bytes: POSIX's least `LINE_MAX` (2048 with
+                 *        the newline), so a pasted command or a long `sysconf` value
+                 *        fits.
+                 */
+                static constexpr size_t LineMax = 2047;
 
                 /** @brief History storage (NUL-separated entries, oldest evicted first). */
                 static constexpr size_t HistoryBytes = 1024;
@@ -92,6 +98,7 @@ class LineEditor {
                         Line,   ///< A line is complete: see `line()`.
                         Cancel, ///< The line was abandoned (Ctrl-C).
                         Eof,    ///< End of input (Ctrl-D on an empty line).
+                        TooLong, ///< Enter ended a line that went past `LineMax`: discard it.
                 };
 
                 /** @brief Creates an editor that echoes to @p console. */
@@ -202,6 +209,7 @@ class LineEditor {
                 uint8_t        _paramCount = 0;
                 InputState     _state = InputState::Normal;
                 bool           _lastWasCr = false;
+                bool           _overflowed = false; // bytes were refused for LineMax since start()
                 char           _line[LineMax + 1] = {};
                 char           _saved[LineMax + 1] = {}; // the new line, kept while browsing history
                 char           _history[HistoryBytes] = {};

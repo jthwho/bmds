@@ -6,7 +6,7 @@
  * See LICENSE file in the project root folder for license information.
  *
  * The window manager's palette as system configuration parameters
- * (devplan/sysconf.md §8): `wm/palette/<role>`, `win color`'s names.
+ * (devplan/sysconf.md §8): `wm/palette/<role>`, by the roles' names.
  */
 
 #include <cstdio>

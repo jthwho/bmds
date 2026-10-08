@@ -128,3 +128,21 @@ TEST_CASE("read at the console uses a line editor") {
         f.con.input += "\x04"; // Ctrl-D on an empty line: end of input
         CHECK(f.run("read x; echo $?") == "1\n");
 }
+
+TEST_CASE("a line past the editor's limit is refused, not run cut short") {
+        Fixture           f;
+        const std::string longWord(bmds::LineEditor::LineMax, 'a');
+        f.shell->start();
+        (void)f.con.take();
+        // Pasted: the bytes past the limit are refused with a bell, and Enter runs nothing.
+        const std::string shown = f.type(("echo " + longWord + "; echo ran\r").c_str());
+        CHECK(shown.find("\nline too long (2047 bytes at most): not run\n") != std::string::npos);
+        CHECK(shown.find("ran") == std::string::npos);
+        CHECK(f.type("echo next\r") == "echo next\nnext\nbmds> "); // the next line runs
+        // read at the console: the same.
+        f.con.input = "echo " + longWord + "\r";
+        const std::string read = f.run("read x; echo $? \"${#x}\"");
+        const std::string tail = "\a\nread: line too long (2047 bytes at most)\n1 0\n";
+        REQUIRE(read.size() > tail.size());
+        CHECK(read.substr(read.size() - tail.size()) == tail);
+}

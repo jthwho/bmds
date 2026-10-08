@@ -40,6 +40,7 @@ namespace {
         constinit Mount  mounts[MaxMounts];
         constinit size_t mountCount = 0;
         constinit WaitListOf<4> mountChanges; // released after each mount and unmount
+        constinit std::atomic<uint32_t> settling{0};  // mounts on their way (beginSettling())
 
         constinit NullStream   devNull;
         constinit ZeroStream   devZero;
@@ -986,6 +987,21 @@ bool Vfs::isMounted(StringView path) {
 
 WaitList &Vfs::mountWaiters() {
         return mountChanges;
+}
+
+void Vfs::beginSettling() {
+        settling.fetch_add(1, std::memory_order_acq_rel);
+        return;
+}
+
+void Vfs::endSettling() {
+        settling.fetch_sub(1, std::memory_order_acq_rel);
+        mountChanges.notify();
+        return;
+}
+
+bool Vfs::isSettling() {
+        return settling.load(std::memory_order_acquire) != 0;
 }
 
 Error Vfs::unmount(StringView path) {

@@ -292,7 +292,7 @@ TEST_CASE("SeqLocked: readers always see a consistent value") {
 namespace {
 
         constexpr bmds::Command TimeCommandTable[] = {
-                {"clock", "[zone TZ | tzdata [PATH] | adjust [+|-]SECONDS]", "clock", bmds::TimeCommands::clock},
+                {"clock", "[tzdata | adjust [+|-]SECONDS]", "clock", bmds::TimeCommands::clock},
                 {"date", "[-u] [+FORMAT] | [-u] -s DATE", "date", bmds::TimeCommands::date},
         };
 
@@ -335,7 +335,7 @@ TEST_CASE("date and clock") {
 
         SUBCASE("time zones: TZ, the kernel zone, -u") {
                 CHECK(f.out("date -u -s '2026-07-01 10:00'") == "Wed Jul  1 10:00:00 UTC 2026\n");
-                CHECK(f.out("clock zone CET-1CEST,M3.5.0,M10.5.0/3") == "");
+                REQUIRE(bmds::Clock::setTimeZone("CET-1CEST,M3.5.0,M10.5.0/3").isOk());
                 CHECK(f.out("date '+%H:%M %Z'") == "12:00 CEST\n");
                 CHECK(f.out("date -s '2026-07-01 18:30' '+%T %Z'") == "18:30:00 CEST\n");
                 CHECK(f.out("date -u +%T") == "16:30:00\n");
@@ -351,10 +351,10 @@ TEST_CASE("date and clock") {
                       "date: invalid date '2026-02-30 10:00'\n");
                 CHECK(f.out("date -s '25:00'", bmds::Shell::ExitFailure) == "date: invalid date '25:00'\n");
                 CHECK(f.out("date -x", bmds::Shell::ExitUsage) == "usage: date [-u] [+FORMAT] | [-u] -s DATE\n");
-                CHECK(f.out("clock zone 'CET-1CEST,M13'", bmds::Shell::ExitFailure) ==
-                      "clock: invalid time zone 'CET-1CEST,M13'\n");
+                CHECK(f.out("clock zone UTC0", bmds::Shell::ExitUsage) ==
+                      "usage: clock [tzdata | adjust [+|-]SECONDS]\n");
                 CHECK(f.out("clock adjust x", bmds::Shell::ExitUsage) ==
-                      "usage: clock [zone TZ | tzdata [PATH] | adjust [+|-]SECONDS]\n");
+                      "usage: clock [tzdata | adjust [+|-]SECONDS]\n");
         }
 
         SUBCASE("clock status") {

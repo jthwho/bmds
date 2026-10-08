@@ -313,40 +313,6 @@ namespace {
                 return;
         }
 
-        int setLogLevel(CommandContext &ctx, Args args) {
-                if (args.size() != 3) return ctx.usage();
-                const StringView name = args[2];
-                if (name == "info") {
-                        Log::setLevel(LogLevel::Info);
-                } else if (name == "warn") {
-                        Log::setLevel(LogLevel::Warn);
-                } else if (name == "err") {
-                        Log::setLevel(LogLevel::Err);
-                } else {
-                        return ctx.usage();
-                }
-                return Shell::ExitSuccess;
-        }
-
-        int setLogModules(CommandContext &ctx, Args args, bool on) {
-                if (args.size() < 3) return ctx.usage();
-                int result = Shell::ExitSuccess;
-                for (size_t i = 2; i < args.size(); ++i) {
-                        if (StringView(args[i]) == "all") {
-                                for (const DebugModule &m : Log::debugModules()) m.setEnabled(on);
-                                continue;
-                        }
-                        const DebugModule *m = Log::findDebugModule(args[i]);
-                        if (m == nullptr) {
-                                ctx.eprintf("log: no such debug module: %s\n", args[i]);
-                                result = Shell::ExitFailure;
-                                continue;
-                        }
-                        m->setEnabled(on);
-                }
-                return result;
-        }
-
         int showLog(CommandContext &ctx, Args args) {
                 if (args.size() != 2) return ctx.usage();
                 const size_t capacity = Log::historyCapacity();
@@ -380,9 +346,6 @@ namespace {
                         return Shell::ExitSuccess;
                 }
                 const StringView sub = args[1];
-                if (sub == "level") return setLogLevel(ctx, args);
-                if (sub == "on") return setLogModules(ctx, args, true);
-                if (sub == "off") return setLogModules(ctx, args, false);
                 if (sub == "show") return showLog(ctx, args);
                 return ctx.usage();
         }
@@ -433,8 +396,9 @@ namespace {
 } // namespace
 
 BMDS_SHELL_COMMAND(help, Shell::runHelp, "[command]", "List commands, or show one command's usage")
-BMDS_SHELL_COMMAND(log, runLog, "[level info|warn|err | on <module>...|all | off <module>...|all | show]",
-                   "Show or set the log level and debug modules; show the log history")
+BMDS_SHELL_COMMAND(log, runLog, "[show]",
+                   "Show the log level and debug modules (sysconf's log/level and log/debug set them); "
+                   "show the log history")
 BMDS_SHELL_COMMAND(mem, runMem, "[-h | mark | new]",
                    "Show memory usage per memory space, and what caches hold (bytes; -h: 16.55M, 432.43k); "
                    "'mark' records the heap blocks in use, 'new' lists those in use now that weren't then")

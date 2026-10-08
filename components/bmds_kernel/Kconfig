@@ -50,7 +50,7 @@ menu "BMDS kernel"
             a name in the time zone database on the card, e.g.
             "Europe/Berlin" (UTC until the card's database is found).
             The default of the system configuration's clock/zone, which
-            'clock zone' and 'sysconf' change at run time.
+            'sysconf' changes at run time.
             The clock itself keeps UTC; the shell's TZ variable overrides
             the zone for display.
 

@@ -358,6 +358,7 @@ and a read of everything (the measure of whether FAT on wear levelling is enough
   with one partition, which FatFs finds by itself when mounting the whole device) and `Vfs::mount()`
   at `/boot`; `Vfs::pin()` makes `umount` refuse it (`Busy`). `Vfs::isMounted()` and
   `Vfs::mountWaiters()` (a `WaitList` released after each mount and unmount) serve `waitmount`.
+  (Since 2026-10-07 `waitmount` also stops when nothing is on its way: `sysconf.md` §13.)
 - **Two findings on the board:**
   - **A flash operation needs an internal stack.** It turns off the cache PSRAM is reached through,
     and IDF asserts (`esp_task_stack_is_sane_cache_disabled`) when the calling task's stack is in

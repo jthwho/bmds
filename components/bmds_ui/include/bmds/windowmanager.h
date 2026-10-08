@@ -204,13 +204,6 @@ class WindowManager {
                 using Watch = void (*)(void *arg);
 
                 /**
-                 * @brief Told that resource @p name is now @p value (empty: removed),
-                 *        on the task that set it, locked: it must not call the
-                 *        window manager (`devplan/gui.md` §4l).
-                 */
-                using ResourceChanged = void (*)(void *arg, StringView name, StringView value);
-
-                /**
                  * @brief Told that item @p index of the desktop's menu was chosen
                  *        (`setDesktopMenu()`; on the window manager's task, its lock
                  *        released).
@@ -248,12 +241,6 @@ class WindowManager {
 
                 /** @brief The index `DesktopChosen` is told for Ctrl+Shift+Windows (`devplan/gui.md` §4p). */
                 static constexpr size_t DesktopKey = MaxDesktopItems;
-
-                /** @brief The longest resource name, in bytes. */
-                static constexpr size_t MaxResourceName = 31;
-
-                /** @brief The longest resource value, in bytes. */
-                static constexpr size_t MaxResourceValue = 63;
 
                 /** @brief Connections at once. */
                 static constexpr size_t MaxClients = 16;
@@ -395,30 +382,6 @@ class WindowManager {
                  * @return `Ok`, `NotFound` (no such connection), `InvalidState`.
                  */
                 Error watch(uint8_t client, Watch fn, void *arg);
-
-                /**
-                 * @brief Sets resource @p name to @p value (empty: removes it), a
-                 *        string kept for applications, as X's resources
-                 *        (`devplan/gui.md` §4l); the watchers are told, then every
-                 *        window is redrawn. Kept until `stop()`.
-                 * @return `Ok`, `Invalid` (a name empty or too long, a value
-                 *         too long), `InvalidState`, or `NoMem`.
-                 */
-                Error setResource(StringView name, StringView value);
-
-                /**
-                 * @brief Copies resource @p name's value into @p out (NUL-ended,
-                 *        cut to fit).
-                 * @return `Ok`, `NotFound` (not set), or `InvalidState`.
-                 */
-                Error resource(StringView name, Span<char> out);
-
-                /**
-                 * @brief Has @p fn told of each resource set (null: no more), for
-                 *        connection @p client.
-                 * @return `Ok`, `NotFound` (no such connection), `InvalidState`.
-                 */
-                Error watchResources(uint8_t client, ResourceChanged fn, void *arg);
 
                 /**
                  * @brief Opens window @p id's menu (Restore, Minimize, Maximize,
@@ -728,20 +691,8 @@ class WindowManager {
                                 Gone  gone = nullptr;
                                 void *arg = nullptr;
                                 bool  used = false;
-                                Watch           watch = nullptr;
-                                void           *watchArg = nullptr;
-                                ResourceChanged resourceChanged = nullptr;
-                                void           *resourceArg = nullptr;
-                };
-
-                // A resource: this, then its name and value (each NUL-ended).
-                struct Resource {
-                                Resource *next;
-                                uint8_t   nameLength;
-                                uint8_t   valueLength;
-
-                                const char *name() const { return reinterpret_cast<const char *>(this + 1); }
-                                const char *value() const { return name() + nameLength + 1; }
+                                Watch watch = nullptr;
+                                void *watchArg = nullptr;
                 };
 
                 struct KeyGrab {
@@ -863,7 +814,6 @@ class WindowManager {
                 WindowStack           _stack{0, 0};
                 Window                _windows[WindowStack::MaxWindows]; // by number - 1
                 WindowPalette         _palette;
-                Resource             *_resources = nullptr; // setResource()'s, the newest first
                 uint8_t              *_under = nullptr;     // what the pointer covers (UnderBytes, Psram)
                 Rect                  _underRect;           // where; empty: nothing saved
                 uint8_t               _dragId = 0;

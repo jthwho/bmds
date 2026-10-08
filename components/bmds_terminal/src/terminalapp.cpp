@@ -23,7 +23,7 @@
  *
  * Its colors (devplan/gui.md §4l) and clipboard switches are the system
  * configuration's `terminal/...` (devplan/sysconf.md §8), which it follows
- * while it runs (`win color terminal-text` sets one too).
+ * while it runs.
  *
  * Copy and paste (devplan/clipboard.md C10): the left button selects (one
  * click characters, two words, three lines; Ctrl a block; Shift extends), and
