@@ -431,9 +431,89 @@ the canonical text forms (§2), at most `BMDS_SYSCONF_VALUE_MAX` (1024) bytes; k
    and the SDK's ABI lock test extended.
 3. `watchConfig()` and the panel live.
 
+### 12.4a As built: step 1, ids in the kernel API (2026-10-07)
+
+- **`SysConf::Id`:** a strong `enum class` over the entry number, so a plain integer isn't taken
+  by mistake, plus `NoId`.
+  - `find(key)` gives the id and `keyOf(id)` the key.
+  - `get`, `getInt`, `getBool`, `getColor`, `set`, `setDefault`, `revert`, `save` and `info`
+    each take an id as well. The forms taking a key find it and call them.
+  - `declare()` returns the id: the same one when a key is declared again with its type.
+- **The sorted index existed already** (the registry's `order`, 2 bytes an entry). It stays in
+  PSRAM with the entries rather than moving to internal RAM as §12.1 said: `find` runs once per
+  key now, so it isn't hot.
+- **Watchers:** a mask of `MaxEntries` (256) bits, 32 bytes a watcher, not §12.1's 128. The
+  registry holds at most 256 entries: built-ins plus `MaxRuntime`, the run-time room shrinking if
+  the built-ins ever pass 192.
+  - The mask is filled when the watcher starts. `declare()` sets the bit in each started
+    watcher whose prefix the new key is under.
+  - A change tests one bit per watcher. `next()` gives ids, and `detail::keyOf()` is gone.
+- **The window manager** finds its 23 roles' ids once. On a change it reads only the roles whose
+  ids its watcher queued, into its current palette, and the whole palette after an overflow.
+- **The terminal** finds its 19 colors' ids, where each goes in its colors, and the two
+  clipboard switches once. It reads the colors by id at the next drawing.
+- **Tests (host):** `SysConf: ids`. Ids are the same each time and name their key; `NoId` and
+  unknown keys are refused. Set, save, setdef, revert, info and the typed gets work by id. A key
+  declared after two watchers started is told only to the one whose prefix it is under. A key
+  that sorts before every other doesn't change the others' ids.
+- **On the board:** `wm/palette/desktop`, `wm/palette/active-frame` and
+  `terminal/colors/background` changed the desktop, the active frame and an open terminal at
+  once.
+- **Size:** the firmware is 909,424 bytes, 1,232 more.
+
+### 12.4b As built: step 2, the SDK's calls (2026-10-07)
+
+- **Slots 59-65** as in §12.2, in `sdk/include/bmds/sys.h` with the other slots rather than a
+  header of their own. The names in full:
+  - `BMDS_SYS_SYSCONF_FIND`, `_GET`, `_INFO`, `_SET`, `_NEXT`, `_DECLARE`, `_WATCH`, and
+    `bmds_sysconf_find()` and the rest.
+  - `BMDS_SYSCONF_FIELD_*` (`get`), `BMDS_SYSCONF_OP_*` (`set`), `BMDS_SYSCONF_TYPE_*`,
+    `BMDS_SYSCONF_IS_DEFAULT`, `_IS_SAVED`, `_CHANGED`, `_RUNTIME`, `BMDS_SYSCONF_ALL` (-1, for
+    `OP_SAVE`), `BMDS_SYSCONF_OVERFLOW`.
+  - `bmds_sysconf_info_t` (24 bytes) and `bmds_sysconf_param_t` (32).
+  - All in the ABI lock (`abilock.c`), and `process.cpp` asserts that the types' numbers and the
+    lengths are the registry's.
+- **Differences from §12.2:**
+  - No non-blocking watch: `fd_flags` has no such flag, so a read waits, and a program that
+    mustn't wait uses `io_poll` (or musl's `O_NONBLOCK`, which is built on it).
+  - The inline parsers (`bmds_sysconf_to_int` and so on) were left out. A value is text in its
+    canonical form, which `strtol` and `strcmp` read, and fewer inline functions means less to
+    keep.
+  - Declaring a key again gives its id whatever the new default says. Only a different type
+    is `EEXIST`. The registry checks for the key before the default, so a second declaration
+    with another type isn't refused as `EINVAL`.
+- **Kernel side:**
+  - `Process::sysconf*` check the program's arguments: keys within 63 bytes, values within
+    1024, help within 255, and the struct's `size`.
+  - The registry gained `SysConf::next(prefix, after)`, `Info::defaultValue`, `isDefault` and
+    `runtime`, `Watcher::isPending()`, and `openWatch(prefix)`.
+  - `openWatch` returns a `FileHandle` on a `Stream` that owns a `Watcher` (`sysconfwatch.cpp`).
+    Reads wait on a semaphore the notification releases, interrupted by signals as a pipe's
+    are; `readiness()` is the watcher's pending state. The stream frees itself when its handle
+    goes, as a pipe does.
+  - `bmds_loader` now requires `bmds_sysconf`.
+- **The SDK example `conf`:** `conf [PREFIX]` lists, `conf -w [PREFIX]` lists and then prints
+  each change, `conf KEY=VALUE...` sets, and `conf -d` declares `example/greeting`.
+- **Tests (host):** `SysConf: the SDK's calls` drives a `Process`:
+  - every field of `get`, and `ERANGE` for a short buffer;
+  - each `set` op, with `info`'s flags following and a short `info` struct getting what fits;
+  - `next` in key order under a prefix (`wm/palette` without `wm/palette2`);
+  - `declare` again, with another type, a bad key or type, and a default outside its limits;
+  - a watch: `io_poll`, records one at a time, a read woken from another thread, the overflow
+    record after 20 changes, and close.
+- **On the board** (`conf.elf` sent to the RAM disk with `bmds-run -n`):
+  - It listed `display/...`. `panel/edge=left` was refused (`Invalid argument`, status 1), and
+    two keys were set at once.
+  - `-d` twice gave the same key, which `sysconf info` showed as a program's string of at most
+    64 bytes. Setting it and listing `example` showed the new value.
+  - `-w wm/palette/desktop` in the background printed the starting value, then the shell's
+    `set` and `setdef`, and nothing for `wm/palette/face`.
+- **Size:** the firmware is 913,000 bytes, 3,576 more.
+
 ### 12.5 Decided (the user's, 2026-10-07)
 
 - Ids, as in §12.1: the user's suggestion; this design keeps them per boot, out of the ABI.
+- §12.2's calls as designed: the user said to keep going after they were put to them.
 - **One way to do a thing:** commands that set what is now a parameter lose that use, and
   `sysconf` is the only way (§13).
 

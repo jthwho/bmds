@@ -10,7 +10,8 @@
 
 set(BMDS_SYSCONF_SRCS
         src/sysconf.cpp
-        src/sysconfhome.cpp)
+        src/sysconfhome.cpp
+        src/sysconfwatch.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 

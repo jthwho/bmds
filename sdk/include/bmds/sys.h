@@ -129,6 +129,13 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_THREAD_KILL 56u      /**< `int32_t thread_kill(int32_t tid, int32_t sig, uint32_t flags)`. */
 #define BMDS_SYS_THREAD_CLEAR 57u     /**< `int32_t thread_clear(volatile int32_t *word)`: its id. */
 #define BMDS_SYS_FILE_TYPE 58u        /**< `int32_t file_type(path, flags, out, size)`: see `bmds_file_type`. */
+#define BMDS_SYS_SYSCONF_FIND 59u     /**< `int32_t sysconf_find(const char *key)`: an id. */
+#define BMDS_SYS_SYSCONF_GET 60u      /**< `int32_t sysconf_get(id, field, out, size)`: see `bmds_sysconf_get`. */
+#define BMDS_SYS_SYSCONF_INFO 61u     /**< `int32_t sysconf_info(int32_t id, bmds_sysconf_info_t *info)`. */
+#define BMDS_SYS_SYSCONF_SET 62u      /**< `int32_t sysconf_set(int32_t id, uint32_t op, const char *value)`. */
+#define BMDS_SYS_SYSCONF_NEXT 63u     /**< `int32_t sysconf_next(const char *prefix, int32_t after)`: an id. */
+#define BMDS_SYS_SYSCONF_DECLARE 64u  /**< `int32_t sysconf_declare(const bmds_sysconf_param_t *param)`: an id. */
+#define BMDS_SYS_SYSCONF_WATCH 65u    /**< `int32_t sysconf_watch(const char *prefix, uint32_t flags)`: a new fd. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -168,6 +175,53 @@ static inline int bmds_sys_has(uint32_t n) {
 
 /** @brief The longest type `file_type` gives, in bytes, without its terminating NUL. */
 #define BMDS_FILE_TYPE_MAX 127u
+
+/*
+ * The system configuration (appended 2026-10-07, slots 59-65; devplan/sysconf.md §12): typed
+ * parameters with defaults, named by keys (`wm/palette/desktop`), changed for the running system
+ * and saved to /boot only when asked. Values are text in each type's canonical form. A key is
+ * found once (`sysconf_find`); its id names it for the rest of the boot: never keep an id across
+ * boots or write it anywhere.
+ */
+
+/** @brief The longest key, and the longest value, in bytes (without the terminating NUL). */
+#define BMDS_SYSCONF_KEY_MAX 63u
+#define BMDS_SYSCONF_VALUE_MAX 1024u
+
+/** @brief Parameter types (`bmds_sysconf_info_t::type`, `bmds_sysconf_param_t::type`). */
+#define BMDS_SYSCONF_TYPE_BOOL 0u   /**< `true` or `false` (also yes/no, on/off, 1/0 when set). */
+#define BMDS_SYSCONF_TYPE_INT 1u    /**< Decimal, within `min` and `max`. */
+#define BMDS_SYSCONF_TYPE_STRING 2u /**< UTF-8, at most `max` bytes (0: `BMDS_SYSCONF_VALUE_MAX`). */
+#define BMDS_SYSCONF_TYPE_COLOR 3u  /**< `rrggbb` in hex (also `#RRGGBB` when set). */
+#define BMDS_SYSCONF_TYPE_ENUM 4u   /**< One of the choices (words separated by `|`). */
+#define BMDS_SYSCONF_TYPE_PATH 5u   /**< An absolute path, normalized. */
+#define BMDS_SYSCONF_TYPE_PATHS 6u  /**< Absolute paths separated by `;`. */
+
+/** @brief `sysconf_get` fields. */
+#define BMDS_SYSCONF_FIELD_VALUE 0u   /**< The current value. */
+#define BMDS_SYSCONF_FIELD_DEFAULT 1u /**< The default. */
+#define BMDS_SYSCONF_FIELD_SAVED 2u   /**< The saved value (`-BMDS_ENOENT` if none). */
+#define BMDS_SYSCONF_FIELD_KEY 3u     /**< The key. */
+#define BMDS_SYSCONF_FIELD_HELP 4u    /**< One line describing it. */
+#define BMDS_SYSCONF_FIELD_CHOICES 5u /**< An enum's words, separated by `|` ("" for other types). */
+
+/** @brief `sysconf_set` operations. */
+#define BMDS_SYSCONF_OP_SET 0u    /**< The current value becomes `value` (checked; not saved). */
+#define BMDS_SYSCONF_OP_SETDEF 1u /**< The current value becomes the default (not saved). */
+#define BMDS_SYSCONF_OP_REVERT 2u /**< The current value becomes the saved one, else the default. */
+#define BMDS_SYSCONF_OP_SAVE 3u   /**< The current value is saved (the default: taken out of the store). */
+
+/** @brief `sysconf_set`'s id with `BMDS_SYSCONF_OP_SAVE`: every changed parameter. */
+#define BMDS_SYSCONF_ALL (-1)
+
+/** @brief `bmds_sysconf_info_t::flags`. */
+#define BMDS_SYSCONF_IS_DEFAULT 0x1u /**< The current value is the default. */
+#define BMDS_SYSCONF_IS_SAVED 0x2u   /**< A value is saved for it. */
+#define BMDS_SYSCONF_CHANGED 0x4u    /**< The current value isn't what a reboot would give. */
+#define BMDS_SYSCONF_RUNTIME 0x8u    /**< A program declared it (`sysconf_declare`). */
+
+/** @brief A watch descriptor's record after more changed than it kept: read again what matters. */
+#define BMDS_SYSCONF_OVERFLOW 0xffffffffu
 
 /** @brief `fd_flags`: a descriptor's own flags. */
 #define BMDS_FD_CLOEXEC 0x1u /**< Closed by `bmds_proc_exec`. */
@@ -273,6 +327,31 @@ typedef struct bmds_pollfd_t {
 
 /** @brief The most entries one `io_poll` takes. */
 #define BMDS_POLL_MAX 64u
+
+/** @brief What `sysconf_info` tells about a parameter (its texts: `sysconf_get`). */
+typedef struct bmds_sysconf_info_t {
+                uint32_t size;     /**< Set by the caller: `sizeof(bmds_sysconf_info_t)`. */
+                uint32_t type;     /**< `BMDS_SYSCONF_TYPE_...`. */
+                int32_t  min;      /**< An int's smallest value. */
+                int32_t  max;      /**< An int's largest; a string's or path's longest (0: the most). */
+                uint32_t flags;    /**< `BMDS_SYSCONF_IS_DEFAULT`, `_IS_SAVED`, `_CHANGED`, `_RUNTIME`. */
+                uint32_t reserved; /**< 0. */
+} bmds_sysconf_info_t;
+
+/**
+ * @brief A program's own parameter (`sysconf_declare`). The kernel copies
+ *        the strings; the parameter stays until reboot.
+ */
+typedef struct bmds_sysconf_param_t {
+                uint32_t    size;          /**< Set by the caller: `sizeof(bmds_sysconf_param_t)`. */
+                uint32_t    type;          /**< `BMDS_SYSCONF_TYPE_...`. */
+                const char *key;           /**< `owner/name/...`: lowercase letters, digits, `-`. */
+                const char *default_value; /**< Its default (NULL: ""); must pass its type. */
+                const char *help;          /**< One line describing it, or NULL. */
+                const char *choices;       /**< An enum's words separated by `|`; else NULL. */
+                int32_t     min;           /**< An int's smallest value. */
+                int32_t     max;           /**< An int's largest; a string's or path's longest (0: the most). */
+} bmds_sysconf_param_t;
 
 /** @brief `bmds_stat_t::type`. */
 #define BMDS_TYPE_FILE 1u      /**< A regular file. */
@@ -418,6 +497,13 @@ typedef int32_t (*bmds_sys_futex_fn)(volatile int32_t *word, uint32_t op, int32_
 typedef int32_t (*bmds_sys_thread_kill_fn)(int32_t tid, int32_t sig, uint32_t flags);
 typedef int32_t (*bmds_sys_thread_clear_fn)(volatile int32_t *word);
 typedef int32_t (*bmds_sys_file_type_fn)(const char *path, uint32_t flags, char *out, uint32_t size);
+typedef int32_t (*bmds_sys_sysconf_find_fn)(const char *key);
+typedef int32_t (*bmds_sys_sysconf_get_fn)(int32_t id, uint32_t field, char *out, uint32_t size);
+typedef int32_t (*bmds_sys_sysconf_info_fn)(int32_t id, bmds_sysconf_info_t *info);
+typedef int32_t (*bmds_sys_sysconf_set_fn)(int32_t id, uint32_t op, const char *value);
+typedef int32_t (*bmds_sys_sysconf_next_fn)(const char *prefix, int32_t after);
+typedef int32_t (*bmds_sys_sysconf_declare_fn)(const bmds_sysconf_param_t *param);
+typedef int32_t (*bmds_sys_sysconf_watch_fn)(const char *prefix, uint32_t flags);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -973,6 +1059,78 @@ static inline int32_t bmds_thread_clear(volatile int32_t *word) {
  */
 static inline int32_t bmds_file_type(const char *path, uint32_t flags, char *out, uint32_t size) {
         return ((bmds_sys_file_type_fn)bmds_sys->slot[BMDS_SYS_FILE_TYPE])(path, flags, out, size);
+}
+
+/**
+ * @brief Finds a system configuration parameter (slots 59-65, appended 2026-10-07: check
+ *        `bmds_sys_has(BMDS_SYS_SYSCONF_FIND)`).
+ * @return Its id for the rest of the boot (>= 0), or `-BMDS_ENOENT`.
+ */
+static inline int32_t bmds_sysconf_find(const char *key) {
+        return ((bmds_sys_sysconf_find_fn)bmds_sys->slot[BMDS_SYS_SYSCONF_FIND])(key);
+}
+
+/**
+ * @brief Copies a text of parameter @p id into @p out, NUL-ended: its value, default, saved
+ *        value, key, help or choices (`BMDS_SYSCONF_FIELD_...`).
+ *        `BMDS_SYSCONF_VALUE_MAX` + 1 bytes always fit.
+ * @return The text's length, or `-BMDS_ERANGE` (@p size too small), `-BMDS_ENOENT` (no such
+ *         id; no saved value), `-BMDS_EINVAL` (an unknown field).
+ */
+static inline int32_t bmds_sysconf_get(int32_t id, uint32_t field, char *out, uint32_t size) {
+        return ((bmds_sys_sysconf_get_fn)bmds_sys->slot[BMDS_SYS_SYSCONF_GET])(id, field, out, size);
+}
+
+/**
+ * @brief Fills @p info (its `size` set) about parameter @p id.
+ * @return 0, or `-BMDS_ENOENT`, `-BMDS_EINVAL` (`size`).
+ */
+static inline int32_t bmds_sysconf_info(int32_t id, bmds_sysconf_info_t *info) {
+        return ((bmds_sys_sysconf_info_fn)bmds_sys->slot[BMDS_SYS_SYSCONF_INFO])(id, info);
+}
+
+/**
+ * @brief Changes parameter @p id: `BMDS_SYSCONF_OP_SET` (to @p value, checked against its type
+ *        and limits), `_SETDEF`, `_REVERT` (none save), or `_SAVE` (`BMDS_SYSCONF_ALL`: every
+ *        changed one). Watchers are told of a changed value.
+ * @return 0, or `-BMDS_ENOENT` (no such id; a path that must exist), `-BMDS_EINVAL` (not of the
+ *         type; an unknown op), `-BMDS_ERANGE` (outside its limits), `-BMDS_ENOTDIR`, `-BMDS_EIO`
+ *         (saving).
+ */
+static inline int32_t bmds_sysconf_set(int32_t id, uint32_t op, const char *value) {
+        return ((bmds_sys_sysconf_set_fn)bmds_sys->slot[BMDS_SYS_SYSCONF_SET])(id, op, value);
+}
+
+/**
+ * @brief Lists: the first parameter after id @p after (-1: from the start), in key order, whose
+ *        key is @p prefix or under it (`wm/palette` gives `wm/palette/...`; "" all).
+ * @return Its id, or `-BMDS_ENOENT` at the end.
+ */
+static inline int32_t bmds_sysconf_next(const char *prefix, int32_t after) {
+        return ((bmds_sys_sysconf_next_fn)bmds_sys->slot[BMDS_SYS_SYSCONF_NEXT])(prefix, after);
+}
+
+/**
+ * @brief Declares the program's own parameter. A saved value for it applies now; declaring it
+ *        again (a program started twice) with the same type gives the same id.
+ * @return Its id, or `-BMDS_EEXIST` (declared with another type), `-BMDS_EINVAL` (the key, the
+ *         type, the default), `-BMDS_ENOSPC` (64 declared already).
+ */
+static inline int32_t bmds_sysconf_declare(const bmds_sysconf_param_t *param) {
+        return ((bmds_sys_sysconf_declare_fn)bmds_sys->slot[BMDS_SYS_SYSCONF_DECLARE])(param);
+}
+
+/**
+ * @brief Watches the parameters under @p prefix ("" all): a new descriptor whose reads give
+ *        whole `uint32_t` records, the id of each parameter changed (once until read), or
+ *        `BMDS_SYSCONF_OVERFLOW` when more changed than it kept. A read waits while nothing
+ *        changed; `io_poll` reports `BMDS_POLL_IN` when something did. A size that isn't a
+ *        multiple of 4 is `-BMDS_EINVAL`. Closing it ends the watch.
+ * @param flags `BMDS_O_CLOEXEC` or 0.
+ * @return The descriptor, or `-BMDS_EINVAL` (the prefix, a flag), `-BMDS_EMFILE`.
+ */
+static inline int32_t bmds_sysconf_watch(const char *prefix, uint32_t flags) {
+        return ((bmds_sys_sysconf_watch_fn)bmds_sys->slot[BMDS_SYS_SYSCONF_WATCH])(prefix, flags);
 }
 
 #ifdef __cplusplus

@@ -74,8 +74,15 @@ int32_t bmds_k_futex(volatile int32_t *word, uint32_t op, int32_t value, int64_t
 int32_t bmds_k_thread_kill(int32_t tid, int32_t sig, uint32_t flags);
 int32_t bmds_k_thread_clear(volatile int32_t *word);
 int32_t bmds_k_file_type(const char *path, uint32_t flags, char *out, uint32_t size);
+int32_t bmds_k_sysconf_find(const char *key);
+int32_t bmds_k_sysconf_get(int32_t id, uint32_t field, char *out, uint32_t size);
+int32_t bmds_k_sysconf_info(int32_t id, bmds_sysconf_info_t *info);
+int32_t bmds_k_sysconf_set(int32_t id, uint32_t op, const char *value);
+int32_t bmds_k_sysconf_next(const char *prefix, int32_t after);
+int32_t bmds_k_sysconf_declare(const bmds_sysconf_param_t *param);
+int32_t bmds_k_sysconf_watch(const char *prefix, uint32_t flags);
 
-#define SLOTS 59
+#define SLOTS 66
 
 /* bmds_sys_t with its slots spelled out (same layout; checked below). */
 static const struct {
@@ -149,10 +156,17 @@ static const struct {
                 [BMDS_SYS_THREAD_KILL] = (bmds_sys_fn_t)bmds_k_thread_kill,
                 [BMDS_SYS_THREAD_CLEAR] = (bmds_sys_fn_t)bmds_k_thread_clear,
                 [BMDS_SYS_FILE_TYPE] = (bmds_sys_fn_t)bmds_k_file_type,
+                [BMDS_SYS_SYSCONF_FIND] = (bmds_sys_fn_t)bmds_k_sysconf_find,
+                [BMDS_SYS_SYSCONF_GET] = (bmds_sys_fn_t)bmds_k_sysconf_get,
+                [BMDS_SYS_SYSCONF_INFO] = (bmds_sys_fn_t)bmds_k_sysconf_info,
+                [BMDS_SYS_SYSCONF_SET] = (bmds_sys_fn_t)bmds_k_sysconf_set,
+                [BMDS_SYS_SYSCONF_NEXT] = (bmds_sys_fn_t)bmds_k_sysconf_next,
+                [BMDS_SYS_SYSCONF_DECLARE] = (bmds_sys_fn_t)bmds_k_sysconf_declare,
+                [BMDS_SYS_SYSCONF_WATCH] = (bmds_sys_fn_t)bmds_k_sysconf_watch,
         },
 };
 
-_Static_assert(SLOTS == BMDS_SYS_FILE_TYPE + 1, "every slot is in the table");
+_Static_assert(SLOTS == BMDS_SYS_SYSCONF_WATCH + 1, "every slot is in the table");
 _Static_assert(sizeof(table) == 16 + SLOTS * sizeof(bmds_sys_fn_t), "table layout");
 
 const bmds_sys_t *bmds_k_sys_table(void) {

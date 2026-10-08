@@ -16,7 +16,12 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <chrono>
+#include <thread>
 #include <bmds/blockdevices.h>
+#include <bmds/errno.h>
+#include <bmds/process.h>
+#include <bmds/sys.h>
 #include <bmds/configtypes.h>
 #include <bmds/ramflashdevice.h>
 #include <bmds/sysconf.h>
@@ -26,6 +31,7 @@ using bmds::ByteSpan;
 using bmds::Error;
 using bmds::FileHandle;
 using bmds::FileType;
+using bmds::Process;
 using bmds::RamFlashDevice;
 using bmds::String;
 using bmds::StringView;
@@ -240,9 +246,9 @@ TEST_CASE("SysConf: set, setdef, save, revert, and a reboot") {
         CHECK(get("app/volume") == "7");
         CHECK(SysConf::declare(volume).isOk()); // again: fine
         const Config::Param clash{"app/volume", Config::Type::Bool, "false"};
-        CHECK(SysConf::declare(clash) == Error::Exists);
+        CHECK(SysConf::declare(clash).error() == Error::Exists);
         const Config::Param invalid{"App", Config::Type::Bool, "false"};
-        CHECK(SysConf::declare(invalid) == Error::Invalid);
+        CHECK(SysConf::declare(invalid).error() == Error::Invalid);
 }
 
 TEST_CASE("SysConf: list by prefix, watchers") {
@@ -267,17 +273,17 @@ TEST_CASE("SysConf: list by prefix, watchers") {
         CHECK(SysConf::set("wm/palette2", "true").isOk());
         CHECK(SysConf::set("panel/edge", "bottom").isOk());
         CHECK(notified == 1);
-        String key;
-        REQUIRE(palette.next(key));
-        CHECK(std::string(key.cStr()) == "wm/palette/text");
-        CHECK_FALSE(palette.next(key));
+        SysConf::Id id;
+        REQUIRE(palette.next(id));
+        CHECK(SysConf::keyOf(id) == "wm/palette/text");
+        CHECK_FALSE(palette.next(id));
         std::vector<std::string> keys;
-        while (all.next(key)) keys.push_back(key.cStr());
+        while (all.next(id)) keys.emplace_back(SysConf::keyOf(id).data(), SysConf::keyOf(id).size());
         CHECK(keys == std::vector<std::string>{"wm/palette/text", "wm/palette2", "panel/edge"});
-        // More than the ring holds: overflowed, once.
+        // A repeat isn't queued twice, so no overflow.
         for (int k = 0; k < 40; ++k) (void)SysConf::set("panel/size", k % 2 != 0 ? "10" : "12");
-        CHECK(all.next(key)); // the key, once (repeats aren't queued twice)
-        CHECK_FALSE(all.next(key));
+        CHECK(all.next(id)); // the key, once
+        CHECK_FALSE(all.next(id));
         CHECK_FALSE(all.overflowed());
         palette.stop();
         CHECK(SysConf::set("wm/palette/text", "111111").isOk());
@@ -356,4 +362,214 @@ TEST_CASE("Vfs: /home, a link to the home that falls back while it isn't mounted
         CHECK(Vfs::setHome("", "").isOk());
         CHECK(Vfs::lstat("/home", Root).error() == Error::NotExist);
         Vfs::setHomeReport(nullptr);
+}
+
+TEST_CASE("SysConf: ids") {
+        Flash f("/cfg");
+        REQUIRE(SysConf::initForHost(Params, "/cfg/sysconf").isOk());
+
+        // A key's id is the same each time, and names the key.
+        const bmds::Result<SysConf::Id> edge = SysConf::find("panel/edge");
+        REQUIRE(edge.isOk());
+        CHECK(SysConf::find("panel/edge").value() == edge.value());
+        CHECK(SysConf::keyOf(edge.value()) == "panel/edge");
+        CHECK(SysConf::find("panel/nope").error() == Error::NotExist);
+        CHECK(SysConf::keyOf(SysConf::NoId).isEmpty());
+        String value;
+        CHECK(SysConf::get(SysConf::NoId, value) == Error::NotExist);
+        CHECK(SysConf::set(SysConf::NoId, "x") == Error::NotExist);
+
+        // By id as by key: checked, saved, reverted, typed.
+        CHECK(SysConf::set(edge.value(), "left") == Error::Invalid);
+        CHECK(SysConf::set(edge.value(), "bottom").isOk());
+        CHECK(get("panel/edge") == "bottom");
+        CHECK(SysConf::save(edge.value()).isOk());
+        CHECK(SysConf::setDefault(edge.value()).isOk());
+        CHECK(get("panel/edge") == "top");
+        CHECK(SysConf::revert(edge.value()).isOk());
+        REQUIRE(SysConf::get(edge.value(), value).isOk());
+        CHECK(std::string(value.cStr()) == "bottom");
+        SysConf::Info info;
+        REQUIRE(SysConf::info(edge.value(), info).isOk());
+        CHECK(info.hasSaved);
+        const SysConf::Id size = SysConf::find("panel/size").value();
+        CHECK(SysConf::getInt(size).value() == 24);
+        CHECK(SysConf::getInt(edge.value()).error() == Error::Invalid);
+        CHECK(SysConf::getColor(SysConf::find("wm/palette/text").value()).value() == 0xffffffu);
+
+        // A watcher started before a key is declared is told of it if the key is under its prefix;
+        // the declared key gets an id, the same when declared again, and the others keep theirs.
+        SysConf::Watcher app, panel;
+        REQUIRE(app.start("app", nullptr, nullptr).isOk());
+        REQUIRE(panel.start("panel", nullptr, nullptr).isOk());
+        const Config::Param             first{"aaa/first", Config::Type::Int, "1", "", 0, 9, nullptr, nullptr};
+        const Config::Param             volume{"app/volume", Config::Type::Int, "5", "", 0, 10, nullptr, nullptr};
+        const bmds::Result<SysConf::Id> a = SysConf::declare(first); // sorts before every key
+        const bmds::Result<SysConf::Id> v = SysConf::declare(volume);
+        REQUIRE(a.isOk());
+        REQUIRE(v.isOk());
+        CHECK(SysConf::declare(volume).value() == v.value());
+        CHECK(SysConf::find("app/volume").value() == v.value());
+        CHECK(SysConf::find("panel/edge").value() == edge.value());
+        CHECK(SysConf::set(v.value(), "8").isOk());
+        CHECK(SysConf::set(a.value(), "2").isOk());
+        CHECK(SysConf::set(edge.value(), "top").isOk());
+        SysConf::Id id;
+        REQUIRE(app.next(id));
+        CHECK(id == v.value());
+        CHECK_FALSE(app.next(id)); // aaa/first isn't under app
+        REQUIRE(panel.next(id));
+        CHECK(id == edge.value());
+        CHECK_FALSE(panel.next(id)); // nor app/volume under panel
+        app.stop();
+        panel.stop();
+}
+
+TEST_CASE("SysConf: the SDK's calls (sysconf_*)") {
+        Flash f("/cfg");
+        REQUIRE(SysConf::initForHost(Params, "/cfg/sysconf").isOk());
+        bmds::FdTable fds;
+        Process       p(fds);
+        char          text[BMDS_SYSCONF_VALUE_MAX + 1];
+
+        // find, get: each field; errors.
+        const int32_t edge = p.sysconfFind("panel/edge");
+        REQUIRE(edge >= 0);
+        CHECK(p.sysconfFind("panel/nope") == -BMDS_ENOENT);
+        CHECK(p.sysconfFind(std::string(200, 'a').c_str()) == -BMDS_ENOENT);
+        CHECK(p.sysconfFind(nullptr) == -BMDS_EFAULT);
+        CHECK(p.sysconfGet(edge, BMDS_SYSCONF_FIELD_VALUE, text, sizeof(text)) == 3);
+        CHECK(std::string(text) == "top");
+        CHECK(p.sysconfGet(edge, BMDS_SYSCONF_FIELD_KEY, text, sizeof(text)) == 10);
+        CHECK(std::string(text) == "panel/edge");
+        CHECK(p.sysconfGet(edge, BMDS_SYSCONF_FIELD_CHOICES, text, sizeof(text)) > 0);
+        CHECK(std::string(text) == "top|bottom");
+        CHECK(p.sysconfGet(edge, BMDS_SYSCONF_FIELD_HELP, text, sizeof(text)) > 0);
+        CHECK(p.sysconfGet(edge, BMDS_SYSCONF_FIELD_SAVED, text, sizeof(text)) == -BMDS_ENOENT);
+        CHECK(p.sysconfGet(edge, BMDS_SYSCONF_FIELD_VALUE, text, 3) == -BMDS_ERANGE); // "top" and its NUL
+        CHECK(p.sysconfGet(edge, 9, text, sizeof(text)) == -BMDS_EINVAL);
+        CHECK(p.sysconfGet(9999, BMDS_SYSCONF_FIELD_VALUE, text, sizeof(text)) == -BMDS_ENOENT);
+        CHECK(p.sysconfGet(-5, BMDS_SYSCONF_FIELD_VALUE, text, sizeof(text)) == -BMDS_ENOENT);
+
+        // set: each op; info's flags follow.
+        bmds_sysconf_info_t info = {};
+        info.size = sizeof(info);
+        REQUIRE(p.sysconfInfo(edge, &info) == 0);
+        CHECK(info.type == BMDS_SYSCONF_TYPE_ENUM);
+        CHECK(info.flags == BMDS_SYSCONF_IS_DEFAULT);
+        CHECK(p.sysconfSet(edge, BMDS_SYSCONF_OP_SET, "left") == -BMDS_EINVAL);
+        CHECK(p.sysconfSet(edge, 7, "top") == -BMDS_EINVAL);
+        CHECK(p.sysconfSet(edge, BMDS_SYSCONF_OP_SET, nullptr) == -BMDS_EFAULT);
+        CHECK(p.sysconfSet(edge, BMDS_SYSCONF_OP_SET, "bottom") == 0);
+        REQUIRE(p.sysconfInfo(edge, &info) == 0);
+        CHECK(info.flags == BMDS_SYSCONF_CHANGED);
+        CHECK(p.sysconfSet(edge, BMDS_SYSCONF_OP_SAVE, nullptr) == 0);
+        REQUIRE(p.sysconfInfo(edge, &info) == 0);
+        CHECK(info.flags == BMDS_SYSCONF_IS_SAVED);
+        CHECK(p.sysconfSet(edge, BMDS_SYSCONF_OP_SETDEF, nullptr) == 0);
+        CHECK(get("panel/edge") == "top");
+        CHECK(p.sysconfSet(edge, BMDS_SYSCONF_OP_REVERT, nullptr) == 0);
+        CHECK(get("panel/edge") == "bottom");
+        CHECK(p.sysconfGet(edge, BMDS_SYSCONF_FIELD_SAVED, text, sizeof(text)) == 6);
+        const int32_t size = p.sysconfFind("panel/size");
+        CHECK(p.sysconfSet(size, BMDS_SYSCONF_OP_SET, "100") == -BMDS_ERANGE);
+        REQUIRE(p.sysconfInfo(size, &info) == 0);
+        CHECK(info.min == 8);
+        CHECK(info.max == 64);
+        CHECK(p.sysconfSet(size, BMDS_SYSCONF_OP_SET, "30") == 0);
+        CHECK(p.sysconfSet(BMDS_SYSCONF_ALL, BMDS_SYSCONF_OP_SAVE, nullptr) == 0);
+        CHECK(readFile("/cfg/sysconf").find("panel/size=30\n") != std::string::npos);
+        // A shorter struct gets what fits.
+        bmds_sysconf_info_t small = {};
+        small.size = 8;
+        small.min = 77;
+        REQUIRE(p.sysconfInfo(size, &small) == 0);
+        CHECK(small.type == BMDS_SYSCONF_TYPE_INT);
+        CHECK(small.min == 77);
+
+        // next: in key order, under the prefix.
+        std::vector<std::string> keys;
+        for (int32_t id = p.sysconfNext("wm", -1); id >= 0; id = p.sysconfNext("wm", id)) {
+                REQUIRE(p.sysconfGet(id, BMDS_SYSCONF_FIELD_KEY, text, sizeof(text)) > 0);
+                keys.emplace_back(text);
+        }
+        CHECK(keys == std::vector<std::string>{"wm/even", "wm/palette/desktop", "wm/palette/text", "wm/palette2"});
+        CHECK(p.sysconfNext("wm/palette", p.sysconfFind("wm/palette/text")) == -BMDS_ENOENT); // not palette2
+        CHECK(p.sysconfNext("nothing", -1) == -BMDS_ENOENT);
+
+        // declare: a program's own key, again, and refusals.
+        bmds_sysconf_param_t param = {};
+        param.size = sizeof(param);
+        param.type = BMDS_SYSCONF_TYPE_INT;
+        param.key = "game/level";
+        param.default_value = "3";
+        param.help = "The level";
+        param.min = 1;
+        param.max = 9;
+        const int32_t level = p.sysconfDeclare(&param);
+        REQUIRE(level >= 0);
+        CHECK(p.sysconfDeclare(&param) == level);
+        CHECK(p.sysconfFind("game/level") == level);
+        REQUIRE(p.sysconfInfo(level, &info) == 0);
+        CHECK(info.flags == (BMDS_SYSCONF_IS_DEFAULT | BMDS_SYSCONF_RUNTIME));
+        param.type = BMDS_SYSCONF_TYPE_BOOL;
+        CHECK(p.sysconfDeclare(&param) == -BMDS_EEXIST);
+        param.type = 7;
+        CHECK(p.sysconfDeclare(&param) == -BMDS_EINVAL);
+        param.type = BMDS_SYSCONF_TYPE_INT;
+        param.key = "Game";
+        CHECK(p.sysconfDeclare(&param) == -BMDS_EINVAL);
+        param.key = "game/other";
+        param.default_value = "99";
+        CHECK(p.sysconfDeclare(&param) == -BMDS_ERANGE); // the default outside its limits
+        param.size = 8;
+        CHECK(p.sysconfDeclare(&param) == -BMDS_EINVAL);
+
+        // watch: records of ids, io_poll, close.
+        const int32_t fd = p.sysconfWatch("panel", BMDS_O_CLOEXEC);
+        REQUIRE(fd >= 0);
+        CHECK(p.sysconfWatch("Bad Prefix", 0) == -BMDS_EINVAL);
+        CHECK(p.sysconfWatch("", 0x80) == -BMDS_EINVAL);
+        bmds_pollfd_t poll = {};
+        poll.size = sizeof(poll);
+        poll.fd = fd;
+        poll.events = BMDS_POLL_IN;
+        CHECK(p.poll(&poll, 1, 0) == 0);
+        CHECK(p.sysconfSet(edge, BMDS_SYSCONF_OP_SET, "top") == 0);
+        CHECK(p.sysconfSet(size, BMDS_SYSCONF_OP_SET, "40") == 0);
+        CHECK(p.sysconfSet(level, BMDS_SYSCONF_OP_SET, "5") == 0); // not under panel
+        CHECK(p.poll(&poll, 1, 0) == 1);
+        uint32_t records[8] = {};
+        CHECK(p.read(fd, records, 6) == -BMDS_EINVAL);
+        CHECK(p.read(fd, records, 4) == 4); // one at a time
+        CHECK(records[0] == uint32_t(edge));
+        CHECK(p.read(fd, records, sizeof(records)) == 4);
+        CHECK(records[0] == uint32_t(size));
+        CHECK(p.poll(&poll, 1, 0) == 0);
+        // A read waits for the next change, from another task.
+        std::thread setter([&] {
+                std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                CHECK(SysConf::set("panel/edge", "bottom").isOk());
+        });
+        CHECK(p.read(fd, records, sizeof(records)) == 4);
+        CHECK(records[0] == uint32_t(edge));
+        setter.join();
+        // More than it keeps: the overflow record first.
+        for (int i = 0; i < 20; ++i) {
+                char key[32];
+                std::snprintf(key, sizeof(key), "panel/x%d", i);
+                bmds_sysconf_param_t x = {};
+                x.size = sizeof(x);
+                x.type = BMDS_SYSCONF_TYPE_BOOL;
+                x.key = key;
+                x.default_value = "false";
+                const int32_t id = p.sysconfDeclare(&x);
+                REQUIRE(id >= 0);
+                CHECK(p.sysconfSet(id, BMDS_SYSCONF_OP_SET, "true") == 0);
+        }
+        REQUIRE(p.poll(&poll, 1, 0) == 1); // (a read would wait otherwise)
+        CHECK(p.read(fd, records, sizeof(records)) == int32_t(sizeof(records)));
+        CHECK(records[0] == BMDS_SYSCONF_OVERFLOW);
+        CHECK(p.close(fd) == 0);
+        CHECK(SysConf::set("panel/edge", "top").isOk()); // the watch is gone
 }

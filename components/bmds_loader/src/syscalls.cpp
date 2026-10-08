@@ -211,6 +211,41 @@ int32_t bmds_k_file_type(const char *path, uint32_t flags, char *out, uint32_t s
         return call->fileType(path, flags, out, size);
 }
 
+int32_t bmds_k_sysconf_find(const char *key) {
+        KernelCall call;
+        return call->sysconfFind(key);
+}
+
+int32_t bmds_k_sysconf_get(int32_t id, uint32_t field, char *out, uint32_t size) {
+        KernelCall call;
+        return call->sysconfGet(id, field, out, size);
+}
+
+int32_t bmds_k_sysconf_info(int32_t id, bmds_sysconf_info_t *info) {
+        KernelCall call;
+        return call->sysconfInfo(id, info);
+}
+
+int32_t bmds_k_sysconf_set(int32_t id, uint32_t op, const char *value) {
+        KernelCall call;
+        return call->sysconfSet(id, op, value);
+}
+
+int32_t bmds_k_sysconf_next(const char *prefix, int32_t after) {
+        KernelCall call;
+        return call->sysconfNext(prefix, after);
+}
+
+int32_t bmds_k_sysconf_declare(const bmds_sysconf_param_t *param) {
+        KernelCall call;
+        return call->sysconfDeclare(param);
+}
+
+int32_t bmds_k_sysconf_watch(const char *prefix, uint32_t flags) {
+        KernelCall call;
+        return call->sysconfWatch(prefix, flags);
+}
+
 int32_t bmds_k_proc_vfork(void) {
         KernelCall call;
         return call.thread().vfork();

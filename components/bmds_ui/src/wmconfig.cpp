@@ -64,33 +64,56 @@ namespace {
         constinit StaticObject<SysConf::Watcher> watcher;
         constinit WindowManager                 *followed = nullptr;
 
+        // Each role's parameter, found once (devplan/sysconf.md §12.1); before the watcher starts,
+        // so a notification only reads them.
+        constinit SysConf::Id roleIds[WindowPalette::RoleCount] = {};
+        constinit bool        idsFound = false;
+
+        void findIds() {
+                if (idsFound || !SysConf::isReady()) return;
+                for (size_t i = 0; i < WindowPalette::RoleCount; ++i) {
+                        char key[48];
+                        std::snprintf(key, sizeof(key), "wm/palette/%s", WindowPalette::name(static_cast<Role>(i)));
+                        const Result<SysConf::Id> id = SysConf::find(key);
+                        roleIds[i] = id.isOk() ? id.value() : SysConf::NoId;
+                }
+                idsFound = true;
+                return;
+        }
+
+        // A palette color changed (notifications are one at a time): the roles it names, by id,
+        // into the window manager's palette; everything after an overflow.
         void changed(void *) {
-                if (followed != nullptr) (void)followed->setPalette(WmConfig::palette());
+                if (followed == nullptr) return;
+                WindowPalette palette = followed->palette();
+                SysConf::Id   id;
+                while (watcher->next(id)) {
+                        for (size_t i = 0; i < WindowPalette::RoleCount; ++i) {
+                                if (roleIds[i] != id) continue;
+                                const Result<uint32_t> rgb = SysConf::getColor(id);
+                                if (rgb.isOk()) palette.setColor(static_cast<Role>(i), rgb.value());
+                        }
+                }
+                if (watcher->overflowed()) palette = WmConfig::palette();
+                (void)followed->setPalette(palette);
                 return;
         }
 
 } // namespace
 
-bool WmConfig::keyOf(StringView name, char (&key)[48]) {
-        if (WindowPalette::find(name).error().isError()) return false;
-        std::snprintf(key, sizeof(key), "wm/palette/%.*s", int(name.size()), name.data());
-        return true;
-}
-
 WindowPalette WmConfig::palette() {
+        findIds();
         WindowPalette palette;
         palette.setColor(Role::Desktop, CONFIG_BMDS_DESKTOP_COLOR);
         for (size_t i = 0; i < WindowPalette::RoleCount; ++i) {
-                const Role role = static_cast<Role>(i);
-                char       key[48];
-                if (!keyOf(StringView(WindowPalette::name(role)), key)) continue;
-                const Result<uint32_t> rgb = SysConf::getColor(key);
-                if (rgb.isOk()) palette.setColor(role, rgb.value());
+                const Result<uint32_t> rgb = SysConf::getColor(roleIds[i]);
+                if (rgb.isOk()) palette.setColor(static_cast<Role>(i), rgb.value());
         }
         return palette;
 }
 
 Error WmConfig::follow(WindowManager &wm) {
+        findIds();
         if (!watcher.isCreated()) watcher.create();
         watcher->stop();
         followed = &wm;

@@ -87,6 +87,7 @@ namespace {
                                               "color2",  "color3",     "color4",  "color5",  "color6",
                                               "color7",  "color8",     "color9",  "color10", "color11",
                                               "color12", "color13",    "color14", "color15"};
+        constexpr size_t      ColorCount = sizeof(ColorNames) / sizeof(ColorNames[0]);
 
         template <uint32_t Rgb> constexpr const char *colorDefault() {
                 return Config::ColorText<Rgb>;
@@ -189,6 +190,7 @@ namespace {
                         void   scrollBy(int lines);
                         void   composeTitle(char (&out)[96]);
                         void   update();
+                        void                     findSettings();
                         void                     readColors();
                         void                     redrawAll();
                         bool                     clipboardKey(const KeyEvent &event);
@@ -223,6 +225,10 @@ namespace {
                         TerminalColors                 _colors; // the system configuration's: the window manager's lock
                         std::atomic<bool>              _colorsChanged{false}; // read again at the next drawing
                         SysConf::Watcher               _settings;             // terminal/...
+                        SysConf::Id                    _colorIds[ColorCount] = {}; // found once: ColorNames'
+                        uint32_t                      *_colorTo[ColorCount] = {};  // where each goes in _colors
+                        SysConf::Id                    _allowWriteId = SysConf::NoId;
+                        SysConf::Id                    _allowReadId = SysConf::NoId;
                         TerminalSelection              _selection;  // the lock
                         bool                     _selecting = false; // the left button held (the window manager's)
                         uint8_t                  _clicks = 0;
@@ -280,6 +286,7 @@ namespace {
                         return 1;
                 }
                 _wm = wm;
+                findSettings();
                 readColors();
                 settingsChanged(this); // the clipboard switches
                 _colorsChanged.store(false, std::memory_order_relaxed);
@@ -405,14 +412,28 @@ namespace {
                 return 0;
         }
 
+        // The parameters' ids and where each color goes, found once (devplan/sysconf.md §12.1):
+        // a change then compares no strings.
+        void TerminalApp::findSettings() {
+                for (size_t i = 0; i < ColorCount; ++i) {
+                        char key[40];
+                        std::snprintf(key, sizeof(key), "terminal/colors/%s", ColorNames[i]);
+                        const Result<SysConf::Id> id = SysConf::find(key);
+                        _colorIds[i] = id.isOk() ? id.value() : SysConf::NoId;
+                        _colorTo[i] = _colors.find(StringView(ColorNames[i]));
+                }
+                const Result<SysConf::Id> write = SysConf::find("terminal/clipboard/allow-write");
+                const Result<SysConf::Id> read = SysConf::find("terminal/clipboard/allow-read");
+                _allowWriteId = write.isOk() ? write.value() : SysConf::NoId;
+                _allowReadId = read.isOk() ? read.value() : SysConf::NoId;
+                return;
+        }
+
         // The colors from the system configuration (the window manager's lock, or before the window).
         void TerminalApp::readColors() {
-                for (const char *name : ColorNames) {
-                        char key[40];
-                        std::snprintf(key, sizeof(key), "terminal/colors/%s", name);
-                        const Result<uint32_t> rgb = SysConf::getColor(key);
-                        uint32_t              *to = _colors.find(StringView(name));
-                        if (rgb.isOk() && to != nullptr) *to = rgb.value();
+                for (size_t i = 0; i < ColorCount; ++i) {
+                        const Result<uint32_t> rgb = SysConf::getColor(_colorIds[i]);
+                        if (rgb.isOk() && _colorTo[i] != nullptr) *_colorTo[i] = rgb.value();
                 }
                 return;
         }
@@ -421,8 +442,8 @@ namespace {
         // colors at the next drawing (under the window manager's lock), which is asked for.
         void TerminalApp::settingsChanged(void *arg) {
                 auto *self = static_cast<TerminalApp *>(arg);
-                const Result<bool> write = SysConf::getBool("terminal/clipboard/allow-write");
-                const Result<bool> read = SysConf::getBool("terminal/clipboard/allow-read");
+                const Result<bool> write = SysConf::getBool(self->_allowWriteId);
+                const Result<bool> read = SysConf::getBool(self->_allowReadId);
                 if (write.isOk()) self->_allowWrite.store(write.value(), std::memory_order_relaxed);
                 if (read.isOk()) self->_allowRead.store(read.value(), std::memory_order_relaxed);
                 self->_colorsChanged.store(true, std::memory_order_release);

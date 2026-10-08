@@ -198,6 +198,17 @@ class Process {
 
                 /** @brief `file_type()`: what @p path is (`Vfs::identify()`), its type into @p out. */
                 int32_t fileType(const char *path, uint32_t flags, char *out, uint32_t size);
+
+                /** @name The system configuration (`sysconf_*`, `devplan/sysconf.md` §12.2) */
+                ///@{
+                int32_t sysconfFind(const char *key);
+                int32_t sysconfGet(int32_t id, uint32_t field, char *out, uint32_t size);
+                int32_t sysconfInfo(int32_t id, bmds_sysconf_info_t *info);
+                int32_t sysconfSet(int32_t id, uint32_t op, const char *value);
+                int32_t sysconfNext(const char *prefix, int32_t after);
+                int32_t sysconfDeclare(const bmds_sysconf_param_t *param);
+                int32_t sysconfWatch(const char *prefix, uint32_t flags);
+                ///@}
                 int32_t lstat(const char *path, bmds_stat_t *info);
                 int32_t pipe(int32_t *fds, uint32_t flags);
                 int32_t fdFlags(int32_t fd, int32_t flags);

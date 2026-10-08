@@ -13,6 +13,7 @@
 #include <bmds/config.h>
 #include <bmds/configtypes.h>
 #include <bmds/error.h>
+#include <bmds/filehandle.h>
 #include <bmds/result.h>
 #include <bmds/span.h>
 #include <bmds/string.h>
@@ -35,7 +36,12 @@ BMDS_NAMESPACE_BEGIN
  *
  * The built-in parameters are declared with `BMDS_SYSCONF` where they are
  * used; programs declare theirs with `declare()`. A `Watcher` is told the
- * keys that change under a prefix.
+ * parameters that change under a prefix.
+ *
+ * Each parameter has an `Id` for the rest of the boot (`devplan/sysconf.md`
+ * §12.1): `find()` once, then use the id, which compares no strings. Ids
+ * aren't kept across boots or written anywhere: the built-ins' order is the
+ * linker's. The forms taking a key find it each time.
  *
  * @par Thread Safety
  * Thread-safe (one lock). `init()` once, at boot (the boot stage), or a
@@ -50,6 +56,16 @@ namespace SysConf {
 
         /** @brief Parameters programs may declare at run time (`declare()`). */
         inline constexpr size_t MaxRuntime = 64;
+
+        /** @brief Parameters in all, built-in and declared at run time (a watcher's mask has a bit each). */
+        inline constexpr size_t MaxEntries = 256;
+
+        /** @brief A parameter for the rest of the boot (`find()`); never kept across boots. */
+        enum class Id : uint16_t {
+        };
+
+        /** @brief No parameter. */
+        inline constexpr Id NoId = Id(0xffff);
 
         /** @brief The largest store `init()` reads, in bytes. */
         inline constexpr size_t MaxStoreBytes = 64 * 1024;
@@ -76,8 +92,11 @@ namespace SysConf {
                         const Param *param = nullptr;  ///< Its declaration.
                         String       value;            ///< Its current value.
                         String       saved;            ///< Its saved value ("" if none).
+                        String       defaultValue;     ///< Its default, in canonical form.
                         bool         hasSaved = false; ///< True if it is in the store.
                         bool         changed = false;  ///< True if the current value isn't what a reboot would give.
+                        bool         isDefault = false; ///< True if the current value is the default.
+                        bool         runtime = false;   ///< True if a program declared it (`declare()`).
 
                         /** @brief True if the current value isn't what a reboot would give. */
                         bool isChanged() const { return changed; }
@@ -86,8 +105,20 @@ namespace SysConf {
                         const char *stateName() const;
         };
 
+        /**
+         * @brief Returns @p key's id: the same for the rest of the boot.
+         * @return The id, or `NotExist`.
+         */
+        Result<Id> find(StringView key);
+
+        /** @brief Returns @p id's key ("" if none); valid until reboot. */
+        StringView keyOf(Id id);
+
         /** @brief Sets @p out to @p key's current value. @return `Ok`, `NotExist`, `NoMem`. */
         Error get(StringView key, String &out);
+
+        /** @brief Sets @p out to @p id's current value. @return `Ok`, `NotExist`, `NoMem`. */
+        Error get(Id id, String &out);
 
         /** @brief @p key's current value as a number (`Int`); `NotExist`, `Invalid` (another type). */
         Result<int32_t> getInt(StringView key);
@@ -98,6 +129,15 @@ namespace SysConf {
         /** @brief @p key's current value as 0xRRGGBB (`Color`). */
         Result<uint32_t> getColor(StringView key);
 
+        /** @brief @p id's current value as a number (`Int`); `NotExist`, `Invalid` (another type). */
+        Result<int32_t> getInt(Id id);
+
+        /** @brief @p id's current value (`Bool`). */
+        Result<bool> getBool(Id id);
+
+        /** @brief @p id's current value as 0xRRGGBB (`Color`). */
+        Result<uint32_t> getColor(Id id);
+
         /**
          * @brief Sets @p key's current value to @p value (not saved), checked
          *        against its type, limits and check; watchers are told if it changed.
@@ -107,11 +147,20 @@ namespace SysConf {
          */
         Error set(StringView key, StringView value);
 
+        /** @brief As `set(StringView, StringView)`, for @p id. @blocking The check. */
+        Error set(Id id, StringView value);
+
         /** @brief Sets @p key's current value to its default (not saved). */
         Error setDefault(StringView key);
 
+        /** @brief Sets @p id's current value to its default (not saved). */
+        Error setDefault(Id id);
+
         /** @brief Sets @p key's current value to its saved one, else its default. */
         Error revert(StringView key);
+
+        /** @brief Sets @p id's current value to its saved one, else its default. */
+        Error revert(Id id);
 
         /**
          * @brief Saves @p key's current value (the default: taken out of the store)
@@ -121,11 +170,17 @@ namespace SysConf {
          */
         Error save(StringView key);
 
+        /** @brief As `save(StringView)`, for @p id. @blocking A write to `/boot`. */
+        Error save(Id id);
+
         /** @brief Saves every key whose current value differs from the store's. */
         Error saveAll();
 
         /** @brief Fills @p out about @p key. @return `Ok`, `NotExist`, `NoMem`. */
         Error info(StringView key, Info &out);
+
+        /** @brief Fills @p out about @p id. @return `Ok`, `NotExist`, `NoMem`. */
+        Error info(Id id, Info &out);
 
         /** @brief Called by `list()` for each parameter, in key order (the lock isn't held). */
         using ListFn = void (*)(void *arg, const Info &info);
@@ -138,22 +193,34 @@ namespace SysConf {
         Error list(StringView prefix, ListFn fn, void *arg);
 
         /**
-         * @brief Declares a parameter at run time (a program's own). Its strings
-         *        are copied. A saved value for it is applied now.
-         * @return `Ok`, `Exists` (declared already, with another type), `Invalid`
-         *         (the key or the default), `Full` (`MaxRuntime`), `NoMem`.
+         * @brief Returns the first parameter after @p after in key order (`NoId`:
+         *        from the start) whose key is @p prefix or under it ("" for all):
+         *        a listing one call at a time (the SDK's `sysconf_next`).
+         * @return Its id, or `NotExist` at the end (or for an @p after not known).
          */
-        Error declare(const Param &param);
+        Result<Id> next(StringView prefix, Id after);
 
         /**
-         * @brief Told which keys change under a prefix.
+         * @brief Declares a parameter at run time (a program's own). Its strings
+         *        are copied. A saved value for it is applied now, and watchers
+         *        whose prefix it is under watch it from now on.
+         * @return Its id (the same one if it was declared already with this
+         *         type), or `Exists` (declared with another type), `Invalid` (the
+         *         key or the default), `Full` (`MaxRuntime`, `MaxEntries`), `NoMem`.
+         */
+        Result<Id> declare(const Param &param);
+
+        /**
+         * @brief Told which parameters change under a prefix.
          *
-         * Owned by the listener (no allocation in the registry). A change puts
-         * the key in a ring of `RingSize`; more than fit sets `overflowed()`
-         * ("anything may have changed"). Each change then calls the
-         * notification, if any, and notifies `waiters()`, after the value
-         * changed and without the registry's lock (the listener may read the
-         * value at once).
+         * Owned by the listener (no allocation in the registry). The prefix is
+         * matched once, into a bit mask over the parameters: when the watcher
+         * starts, and for a key declared later, when it is declared. A change
+         * is then a bit test, and puts the parameter's id in a ring of
+         * `RingSize`; more than fit sets `overflowed()` ("anything may have
+         * changed"). Each change then calls the notification, if any, and
+         * notifies `waiters()`, after the value changed and without the
+         * registry's lock (the listener may read the value at once).
          *
          * @par Thread Safety
          * `next()` and `overflowed()` from one task; `start()` and `stop()`
@@ -164,7 +231,7 @@ namespace SysConf {
                         /** @brief Called on the task that changed a value. */
                         using Notify = void (*)(void *arg);
 
-                        /** @brief Keys kept between `next()` calls. */
+                        /** @brief Ids kept between `next()` calls. */
                         static constexpr size_t RingSize = 16;
 
                         constexpr Watcher() = default;
@@ -183,19 +250,24 @@ namespace SysConf {
                         void stop();
 
                         /**
-                         * @brief Takes the oldest changed key into @p key.
+                         * @brief Takes the oldest changed parameter's id into @p id.
                          * @return True if there was one.
                          */
-                        bool next(String &key);
+                        bool next(Id &id);
 
                         /** @brief True (once, then cleared) if more changed than the ring held. */
                         bool overflowed();
+
+                        /** @brief True if `next()` or `overflowed()` has something. @nonblocking */
+                        bool isPending();
 
                         /** @brief Released after each change it is told of. */
                         WaitList &waiters() { return _waiters; }
 
                         // The registry's (lock held).
                         bool     matches(StringView key) const;
+                        bool     watches(size_t entry) const { return (_mask[entry / 32] >> (entry % 32)) & 1u; }
+                        void     watch(size_t entry) { _mask[entry / 32] |= 1u << (entry % 32); }
                         void     push(uint16_t entry);
                         Watcher *nextWatcher = nullptr;
                         Notify   notify = nullptr;
@@ -203,6 +275,7 @@ namespace SysConf {
 
                 private:
                         char          _prefix[Config::MaxKey + 1] = {};
+                        uint32_t      _mask[MaxEntries / 32] = {}; // the entries under the prefix
                         uint16_t      _ring[RingSize] = {};
                         uint8_t       _head = 0;
                         uint8_t       _count = 0;
@@ -211,10 +284,19 @@ namespace SysConf {
                         WaitListOf<4> _waiters;
         };
 
-        namespace detail {
-                /** @brief The key of registry entry @p entry ("" if none); for `Watcher::next()`. */
-                Error keyOf(uint16_t entry, String &out);
-        } // namespace detail
+        /**
+         * @brief Opens a watch on @p prefix as a file (the SDK's `sysconf_watch`,
+         *        `devplan/sysconf.md` §12.2): a read gives whole `uint32_t`
+         *        records, the id of each parameter changed or `OverflowRecord`,
+         *        and waits while there are none; it is readable for `io_poll`
+         *        when there are. The watch ends with the last handle.
+         * @return The handle (`FileHandle::Read`), or `Invalid` (the prefix),
+         *         `InvalidState` (not set up), `NoMem`.
+         */
+        Result<FileHandle::Ptr> openWatch(StringView prefix);
+
+        /** @brief A watch file's record after an overflow: read again what matters. */
+        inline constexpr uint32_t OverflowRecord = 0xffffffffu;
 
 } // namespace SysConf
 

@@ -18,6 +18,7 @@
 #include <bmds/memory.h>
 #include <bmds/pipe.h>
 #include <bmds/process.h>
+#include <bmds/sysconf.h>
 #include <bmds/sys.h>
 #include <bmds/waitlist.h>
 
@@ -790,6 +791,150 @@ int32_t Process::fileType(const char *path, uint32_t flags, char *out, uint32_t 
         std::memcpy(out, type.data(), type.size());
         out[type.size()] = '\0';
         return static_cast<int32_t>(type.size());
+}
+
+namespace {
+
+        static_assert(BMDS_SYSCONF_KEY_MAX == Config::MaxKey && BMDS_SYSCONF_VALUE_MAX == Config::MaxValue);
+        static_assert(BMDS_SYSCONF_TYPE_BOOL == uint32_t(Config::Type::Bool) &&
+                      BMDS_SYSCONF_TYPE_INT == uint32_t(Config::Type::Int) &&
+                      BMDS_SYSCONF_TYPE_STRING == uint32_t(Config::Type::String) &&
+                      BMDS_SYSCONF_TYPE_COLOR == uint32_t(Config::Type::Color) &&
+                      BMDS_SYSCONF_TYPE_ENUM == uint32_t(Config::Type::Enum) &&
+                      BMDS_SYSCONF_TYPE_PATH == uint32_t(Config::Type::Path) &&
+                      BMDS_SYSCONF_TYPE_PATHS == uint32_t(Config::Type::Paths));
+        static_assert(BMDS_SYSCONF_OVERFLOW == SysConf::OverflowRecord);
+
+        // A program's key or prefix: NUL-ended within the longest key.
+        int32_t keyArg(const char *key, StringView &out) {
+                if (key == nullptr) return -BMDS_EFAULT;
+                const size_t n = strnlen(key, BMDS_SYSCONF_KEY_MAX + 1);
+                if (n > BMDS_SYSCONF_KEY_MAX) return -BMDS_ENOENT; // no key is that long
+                out = StringView(key, n);
+                return 0;
+        }
+
+        // An id from a program: one the registry has (else ENOENT).
+        bool idArg(int32_t id, SysConf::Id &out) {
+                if (id < 0 || id >= int32_t(SysConf::NoId)) return false;
+                out = SysConf::Id(id);
+                return true;
+        }
+
+        int32_t copyText(StringView text, char *out, uint32_t size) {
+                if (out == nullptr) return -BMDS_EFAULT;
+                if (text.size() + 1 > size) return -BMDS_ERANGE;
+                std::memcpy(out, text.data(), text.size());
+                out[text.size()] = '\0';
+                return static_cast<int32_t>(text.size());
+        }
+
+} // namespace
+
+int32_t Process::sysconfFind(const char *key) {
+        StringView k;
+        if (int32_t r = keyArg(key, k); r < 0) return r;
+        auto [id, err] = SysConf::find(k);
+        return err.isError() ? errnoFor(err) : static_cast<int32_t>(id);
+}
+
+int32_t Process::sysconfGet(int32_t id, uint32_t field, char *out, uint32_t size) {
+        SysConf::Id   which;
+        SysConf::Info info;
+        if (field > BMDS_SYSCONF_FIELD_CHOICES) return -BMDS_EINVAL;
+        if (!idArg(id, which)) return -BMDS_ENOENT;
+        if (const Error err = SysConf::info(which, info); err.isError()) return errnoFor(err);
+        switch (field) {
+                case BMDS_SYSCONF_FIELD_VALUE: return copyText(info.value.view(), out, size);
+                case BMDS_SYSCONF_FIELD_DEFAULT: return copyText(info.defaultValue.view(), out, size);
+                case BMDS_SYSCONF_FIELD_SAVED:
+                        return info.hasSaved ? copyText(info.saved.view(), out, size) : -BMDS_ENOENT;
+                case BMDS_SYSCONF_FIELD_KEY: return copyText(StringView(info.param->key), out, size);
+                case BMDS_SYSCONF_FIELD_HELP:
+                        return copyText(StringView(info.param->help != nullptr ? info.param->help : ""), out, size);
+                default:
+                        return copyText(StringView(info.param->choices != nullptr ? info.param->choices : ""), out,
+                                        size);
+        }
+}
+
+int32_t Process::sysconfInfo(int32_t id, bmds_sysconf_info_t *out) {
+        SysConf::Id   which;
+        SysConf::Info info;
+        if (out == nullptr) return -BMDS_EFAULT;
+        if (!idArg(id, which)) return -BMDS_ENOENT;
+        if (const Error err = SysConf::info(which, info); err.isError()) return errnoFor(err);
+        bmds_sysconf_info_t full = {};
+        full.type = uint32_t(info.param->type);
+        full.min = info.param->min;
+        full.max = info.param->max;
+        full.flags = (info.isDefault ? BMDS_SYSCONF_IS_DEFAULT : 0) | (info.hasSaved ? BMDS_SYSCONF_IS_SAVED : 0) |
+                     (info.isChanged() ? BMDS_SYSCONF_CHANGED : 0) | (info.runtime ? BMDS_SYSCONF_RUNTIME : 0);
+        return copyOut(full, out);
+}
+
+int32_t Process::sysconfSet(int32_t id, uint32_t op, const char *value) {
+        SysConf::Id which;
+        if (op > BMDS_SYSCONF_OP_SAVE) return -BMDS_EINVAL;
+        if (op == BMDS_SYSCONF_OP_SAVE && id == BMDS_SYSCONF_ALL) return errnoFor(SysConf::saveAll());
+        if (!idArg(id, which)) return -BMDS_ENOENT;
+        switch (op) {
+                case BMDS_SYSCONF_OP_SET: {
+                        if (value == nullptr) return -BMDS_EFAULT;
+                        const size_t n = strnlen(value, BMDS_SYSCONF_VALUE_MAX + 1);
+                        if (n > BMDS_SYSCONF_VALUE_MAX) return -BMDS_ERANGE;
+                        return errnoFor(SysConf::set(which, StringView(value, n)));
+                }
+                case BMDS_SYSCONF_OP_SETDEF: return errnoFor(SysConf::setDefault(which));
+                case BMDS_SYSCONF_OP_REVERT: return errnoFor(SysConf::revert(which));
+                default: return errnoFor(SysConf::save(which));
+        }
+}
+
+int32_t Process::sysconfNext(const char *prefix, int32_t after) {
+        StringView p;
+        if (int32_t r = keyArg(prefix, p); r < 0) return r;
+        SysConf::Id from = SysConf::NoId;
+        if (after != -1 && !idArg(after, from)) return -BMDS_ENOENT;
+        auto [id, err] = SysConf::next(p, from);
+        return err.isError() ? errnoFor(err) : static_cast<int32_t>(id);
+}
+
+int32_t Process::sysconfDeclare(const bmds_sysconf_param_t *param) {
+        if (param == nullptr) return -BMDS_EFAULT;
+        if (param->size < sizeof(bmds_sysconf_param_t) || param->type > BMDS_SYSCONF_TYPE_PATHS) return -BMDS_EINVAL;
+        StringView key;
+        if (int32_t r = keyArg(param->key, key); r < 0) return r == -BMDS_ENOENT ? -BMDS_EINVAL : r;
+        // The texts' lengths bounded before the registry copies them.
+        const auto bounded = [](const char *text, size_t most) {
+                return text == nullptr || strnlen(text, most + 1) <= most;
+        };
+        if (!bounded(param->default_value, BMDS_SYSCONF_VALUE_MAX) || !bounded(param->help, 255) ||
+            !bounded(param->choices, BMDS_SYSCONF_VALUE_MAX))
+                return -BMDS_EINVAL;
+        Config::Param p;
+        p.key = param->key;
+        p.type = static_cast<Config::Type>(param->type);
+        p.defaultValue = param->default_value != nullptr ? param->default_value : "";
+        p.help = param->help != nullptr ? param->help : "";
+        p.min = param->min;
+        p.max = param->max;
+        p.choices = param->choices;
+        auto [id, err] = SysConf::declare(p);
+        return err.isError() ? errnoFor(err) : static_cast<int32_t>(id);
+}
+
+int32_t Process::sysconfWatch(const char *prefix, uint32_t flags) {
+        StringView p;
+        if (int32_t r = keyArg(prefix, p); r < 0) return r == -BMDS_ENOENT ? -BMDS_EINVAL : r;
+        if ((flags & ~BMDS_O_CLOEXEC) != 0) return -BMDS_EINVAL;
+        auto [handle, err] = SysConf::openWatch(p);
+        if (err.isError()) return errnoFor(err);
+        Mutex::Locker locker(_lock, WaitForever);
+        auto [fd, ferr] = _fds.add(std::move(handle));
+        if (ferr.isError()) return -BMDS_EMFILE;
+        if (flags & BMDS_O_CLOEXEC) (void)_fds.setCloseOnExec(fd, true);
+        return fd;
 }
 
 int32_t Process::stat(const char *path, bmds_stat_t *info) {

@@ -132,6 +132,9 @@ namespace SysConf {
                         }
                         std::memmove(&state.order[at + 1], &state.order[at], (state.count - at) * sizeof(uint16_t));
                         state.order[at] = static_cast<uint16_t>(state.count);
+                        // Watchers started already whose prefix it is under (a key declared later).
+                        for (Watcher *w = state.watchers; w != nullptr; w = w->nextWatcher)
+                                if (w->matches(StringView(param.key))) w->watch(state.count);
                         ++state.count;
                         return Error::Ok;
                 }
@@ -252,10 +255,9 @@ namespace SysConf {
                 }
 
                 // Sets entry @p index's current value to canonical @p value and tells the
-                // watchers. Neither lock held.
+                // watchers (a bit each: no strings compared). Neither lock held.
                 Error apply(size_t index, StringView value) {
-                        Mutex::Locker    notifying(*notifyLock, WaitForever);
-                        const StringView key(state.entries[index].param->key); // declarations stay
+                        Mutex::Locker notifying(*notifyLock, WaitForever);
                         {
                                 Mutex::Locker lock(*registryLock, WaitForever);
                                 Entry        &e = state.entries[index];
@@ -263,27 +265,34 @@ namespace SysConf {
                                 const Error err = e.current.assign(value);
                                 if (err.isError()) return err;
                                 for (Watcher *w = state.watchers; w != nullptr; w = w->nextWatcher)
-                                        if (w->matches(key)) w->push(static_cast<uint16_t>(index));
+                                        if (w->watches(index)) w->push(static_cast<uint16_t>(index));
                         }
                         // The watchers' list can't change (notifyLock held), and readers may take the lock.
                         for (Watcher *w = state.watchers; w != nullptr; w = w->nextWatcher) {
-                                if (!w->matches(key)) continue;
+                                if (!w->watches(index)) continue;
                                 if (w->notify != nullptr) w->notify(w->notifyArg);
                                 w->waiters().notify();
                         }
                         return Error::Ok;
                 }
 
-                // The entry for @p key and a copy of its declaration's pointer.
-                int find(StringView key) {
+                // The entry for @p key, or -1.
+                int findEntry(StringView key) {
                         if (!isReady()) return -1;
                         Mutex::Locker lock(*registryLock, WaitForever);
                         return findLocked(key);
                 }
 
+                // True if @p id names an entry (entries are only added until the next start).
+                bool isValid(Id id) {
+                        if (!isReady()) return false;
+                        Mutex::Locker lock(*registryLock, WaitForever);
+                        return size_t(id) < state.count;
+                }
+
                 Error setupLocked(size_t builtins) {
                         freeState();
-                        state.capacity = builtins + MaxRuntime;
+                        state.capacity = builtins + MaxRuntime < MaxEntries ? builtins + MaxRuntime : MaxEntries;
                         state.entries =
                                 static_cast<Entry *>(Memory::alloc(MemSpace::Psram, state.capacity * sizeof(Entry)));
                         state.order = static_cast<uint16_t *>(
@@ -351,63 +360,97 @@ namespace SysConf {
                 return report;
         }
 
-        Error get(StringView key, String &out) {
+        Result<Id> find(StringView key) {
+                const int index = findEntry(key);
+                if (index < 0) return makeError<Id>(Error::NotExist);
+                return makeResult(Id(index));
+        }
+
+        StringView keyOf(Id id) {
+                if (!isValid(id)) return StringView();
+                return StringView(state.entries[size_t(id)].param->key); // declarations stay
+        }
+
+        Error get(Id id, String &out) {
                 if (!isReady()) return Error::NotExist;
                 Mutex::Locker lock(*registryLock, WaitForever);
-                const int     index = findLocked(key);
-                if (index < 0) return Error::NotExist;
-                return out.assign(state.entries[index].current.view());
+                if (size_t(id) >= state.count) return Error::NotExist;
+                return out.assign(state.entries[size_t(id)].current.view());
+        }
+
+        Error get(StringView key, String &out) {
+                const Result<Id> id = find(key);
+                return id.isOk() ? get(id.value(), out) : id.error();
         }
 
         namespace {
 
-                Error typed(StringView key, Config::Type type, String &value) {
-                        if (!isReady()) return Error::NotExist;
-                        Mutex::Locker lock(*registryLock, WaitForever);
-                        const int     index = findLocked(key);
-                        if (index < 0) return Error::NotExist;
-                        if (state.entries[index].param->type != type) return Error::Invalid;
-                        return value.assign(state.entries[index].current.view());
+                // The value of @p id, which must be of @p type, parsed by Parse.
+                template <typename T, T (*Parse)(StringView)> Result<T> typed(Id id, Config::Type type) {
+                        String value(MemSpace::Psram);
+                        {
+                                if (!isReady()) return makeError<T>(Error::NotExist);
+                                Mutex::Locker lock(*registryLock, WaitForever);
+                                if (size_t(id) >= state.count) return makeError<T>(Error::NotExist);
+                                const Entry &e = state.entries[size_t(id)];
+                                if (e.param->type != type) return makeError<T>(Error::Invalid);
+                                const Error err = value.assign(e.current.view());
+                                if (err.isError()) return makeError<T>(err);
+                        }
+                        return makeResult(Parse(value.view()));
+                }
+
+                template <typename T, T (*Parse)(StringView)> Result<T> typed(StringView key, Config::Type type) {
+                        const Result<Id> id = find(key);
+                        return id.isOk() ? typed<T, Parse>(id.value(), type) : makeError<T>(id.error());
                 }
 
         } // namespace
 
+        Result<int32_t> getInt(Id id) {
+                return typed<int32_t, Config::toInt>(id, Config::Type::Int);
+        }
+
+        Result<bool> getBool(Id id) {
+                return typed<bool, Config::toBool>(id, Config::Type::Bool);
+        }
+
+        Result<uint32_t> getColor(Id id) {
+                return typed<uint32_t, Config::toColor>(id, Config::Type::Color);
+        }
+
         Result<int32_t> getInt(StringView key) {
-                String      value(MemSpace::Psram);
-                const Error err = typed(key, Config::Type::Int, value);
-                if (err.isError()) return makeError<int32_t>(err);
-                return makeResult(Config::toInt(value.view()));
+                return typed<int32_t, Config::toInt>(key, Config::Type::Int);
         }
 
         Result<bool> getBool(StringView key) {
-                String      value(MemSpace::Psram);
-                const Error err = typed(key, Config::Type::Bool, value);
-                if (err.isError()) return makeError<bool>(err);
-                return makeResult(Config::toBool(value.view()));
+                return typed<bool, Config::toBool>(key, Config::Type::Bool);
         }
 
         Result<uint32_t> getColor(StringView key) {
-                String      value(MemSpace::Psram);
-                const Error err = typed(key, Config::Type::Color, value);
-                if (err.isError()) return makeError<uint32_t>(err);
-                return makeResult(Config::toColor(value.view()));
+                return typed<uint32_t, Config::toColor>(key, Config::Type::Color);
         }
 
-        Error set(StringView key, StringView value) {
-                const int index = find(key);
-                if (index < 0) return Error::NotExist;
+        Error set(Id id, StringView value) {
+                if (!isValid(id)) return Error::NotExist;
+                const size_t index = size_t(id);
                 const Param &param = *state.entries[index].param; // entries are stable
                 String       canon(MemSpace::Psram);
                 Error        err = Config::canonical(param, value, canon);
                 if (err.isOk() && param.check != nullptr) err = param.check(canon.view());
                 if (err.isError()) return err;
-                return apply(size_t(index), canon.view());
+                return apply(index, canon.view());
         }
 
-        Error setDefault(StringView key) {
-                const int index = find(key);
-                if (index < 0) return Error::NotExist;
-                String value(MemSpace::Psram);
+        Error set(StringView key, StringView value) {
+                const Result<Id> id = find(key);
+                return id.isOk() ? set(id.value(), value) : id.error();
+        }
+
+        Error setDefault(Id id) {
+                if (!isValid(id)) return Error::NotExist;
+                const size_t index = size_t(id);
+                String       value(MemSpace::Psram);
                 {
                         Mutex::Locker lock(*registryLock, WaitForever);
                         const Error   err = value.assign(state.entries[index].defaultValue.view());
@@ -416,17 +459,27 @@ namespace SysConf {
                 return apply(size_t(index), value.view());
         }
 
-        Error revert(StringView key) {
-                const int index = find(key);
-                if (index < 0) return Error::NotExist;
-                String value(MemSpace::Psram);
+        Error setDefault(StringView key) {
+                const Result<Id> id = find(key);
+                return id.isOk() ? setDefault(id.value()) : id.error();
+        }
+
+        Error revert(Id id) {
+                if (!isValid(id)) return Error::NotExist;
+                const size_t index = size_t(id);
+                String       value(MemSpace::Psram);
                 {
                         Mutex::Locker lock(*registryLock, WaitForever);
                         const Entry  &e = state.entries[index];
                         const Error   err = value.assign(e.hasSaved ? e.saved.view() : e.defaultValue.view());
                         if (err.isError()) return err;
                 }
-                return apply(size_t(index), value.view());
+                return apply(index, value.view());
+        }
+
+        Error revert(StringView key) {
+                const Result<Id> id = find(key);
+                return id.isOk() ? revert(id.value()) : id.error();
         }
 
         namespace {
@@ -483,10 +536,14 @@ namespace SysConf {
 
         } // namespace
 
+        Error save(Id id) {
+                if (!isValid(id)) return Error::NotExist;
+                return saveSome(int(id));
+        }
+
         Error save(StringView key) {
-                const int index = find(key);
-                if (index < 0) return Error::NotExist;
-                return saveSome(index);
+                const Result<Id> id = find(key);
+                return id.isOk() ? save(id.value()) : id.error();
         }
 
         Error saveAll() {
@@ -501,19 +558,27 @@ namespace SysConf {
                         out.param = e.param;
                         out.hasSaved = e.hasSaved;
                         out.changed = e.current.view() != (e.hasSaved ? e.saved.view() : e.defaultValue.view());
+                        out.isDefault = e.current.view() == e.defaultValue.view();
+                        // Programs' keys come after the built-ins: declared once the built-ins are in.
+                        out.runtime = index >= state.count - state.ownedCount;
                         Error err = out.value.assign(e.current.view());
                         if (err.isOk()) err = out.saved.assign(e.saved.view());
+                        if (err.isOk()) err = out.defaultValue.assign(e.defaultValue.view());
                         return err;
                 }
 
         } // namespace
 
-        Error info(StringView key, Info &out) {
+        Error info(Id id, Info &out) {
                 if (!isReady()) return Error::NotExist;
                 Mutex::Locker lock(*registryLock, WaitForever);
-                const int     index = findLocked(key);
-                if (index < 0) return Error::NotExist;
-                return fillInfo(size_t(index), out);
+                if (size_t(id) >= state.count) return Error::NotExist;
+                return fillInfo(size_t(id), out);
+        }
+
+        Error info(StringView key, Info &out) {
+                const Result<Id> id = find(key);
+                return id.isOk() ? info(id.value(), out) : id.error();
         }
 
         Error list(StringView prefix, ListFn fn, void *arg) {
@@ -537,19 +602,37 @@ namespace SysConf {
                 }
         }
 
-        Error declare(const Param &param) {
-                if (!isReady()) return Error::InvalidState;
+        Result<Id> next(StringView prefix, Id after) {
+                if (!isReady()) return makeError<Id>(Error::NotExist);
+                Mutex::Locker lock(*registryLock, WaitForever);
+                size_t        at = 0;
+                if (after == NoId) {
+                        at = lowerBound(prefix);
+                } else {
+                        if (size_t(after) >= state.count) return makeError<Id>(Error::NotExist);
+                        at = lowerBound(keyAt(size_t(after))) + 1;
+                }
+                // Every key under the prefix sorts among the keys starting with its text.
+                for (; at < state.count && keyAt(state.order[at]).startsWith(prefix); ++at)
+                        if (underPrefix(keyAt(state.order[at]), prefix)) return makeResult(Id(state.order[at]));
+                return makeError<Id>(Error::NotExist);
+        }
+
+        Result<Id> declare(const Param &param) {
+                if (!isReady()) return makeError<Id>(Error::InvalidState);
                 String canon(MemSpace::Psram);
-                if (param.key == nullptr || !Config::isValidKey(StringView(param.key))) return Error::Invalid;
+                if (param.key == nullptr || !Config::isValidKey(StringView(param.key)))
+                        return makeError<Id>(Error::Invalid);
+                Mutex::Locker lock(*registryLock, WaitForever);
+                // Declared already (a program started again): its id, whatever this default says.
+                const int existing = findLocked(StringView(param.key));
+                if (existing >= 0)
+                        return state.entries[existing].param->type == param.type ? makeResult(Id(existing))
+                                                                                 : makeError<Id>(Error::Exists);
                 Error err = Config::canonical(
                         param, StringView(param.defaultValue != nullptr ? param.defaultValue : ""), canon);
-                if (err.isError()) return err;
-                Mutex::Locker lock(*registryLock, WaitForever);
-                const int     existing = findLocked(StringView(param.key));
-                if (existing >= 0)
-                        return state.entries[existing].param->type == param.type ? Error(Error::Ok)
-                                                                                 : Error(Error::Exists);
-                if (state.ownedCount == MaxRuntime) return Error::Full;
+                if (err.isError()) return makeError<Id>(err);
+                if (state.ownedCount == MaxRuntime) return makeError<Id>(Error::Full);
                 Owned &o = *::new (&state.owned[state.ownedCount]) Owned();
                 err = o.key.assign(StringView(param.key));
                 if (err.isOk()) err = o.defaultValue.assign(canon.view());
@@ -557,7 +640,7 @@ namespace SysConf {
                 if (err.isOk() && param.choices != nullptr) err = o.choices.assign(StringView(param.choices));
                 if (err.isError()) {
                         o.~Owned();
-                        return err;
+                        return makeError<Id>(err);
                 }
                 o.param = param;
                 o.param.key = o.key.cStr();
@@ -565,20 +648,21 @@ namespace SysConf {
                 o.param.help = o.help.cStr();
                 o.param.choices = param.choices != nullptr ? o.choices.cStr() : nullptr;
                 o.param.check = nullptr; // a program's code may go away
+                const size_t index = state.count; // addLocked() appends
                 err = addLocked(o.param);
                 if (err.isError()) {
                         o.~Owned();
-                        return err;
+                        return makeError<Id>(err);
                 }
                 ++state.ownedCount;
                 // Its saved value, kept for it.
                 for (size_t i = 0; i < state.orphanCount; ++i) {
                         if (state.orphans[i].key.view() != StringView(param.key)) continue;
-                        if (applySavedLocked(size_t(findLocked(StringView(param.key))), state.orphans[i].value.view()))
+                        if (applySavedLocked(index, state.orphans[i].value.view()))
                                 removeOrphanLocked(StringView(param.key));
                         break;
                 }
-                return Error::Ok;
+                return makeResult(Id(index));
         }
 
         // --- Watcher ----------------------------------------------------------------------
@@ -595,6 +679,10 @@ namespace SysConf {
                 Mutex::Locker lock(*registryLock, WaitForever);
                 std::memcpy(_prefix, prefix.data(), prefix.size());
                 _prefix[prefix.size()] = '\0';
+                // The prefix matched once: changes are then a bit test (devplan/sysconf.md §12.1).
+                std::memset(_mask, 0, sizeof(_mask));
+                for (size_t i = 0; i < state.count; ++i)
+                        if (underPrefix(keyAt(i), prefix)) watch(i);
                 notify = fn;
                 notifyArg = arg;
                 _head = _count = 0;
@@ -636,16 +724,19 @@ namespace SysConf {
                 return;
         }
 
-        bool Watcher::next(String &key) {
-                uint16_t entry = 0;
-                {
-                        Mutex::Locker lock(*registryLock, WaitForever);
-                        if (_count == 0) return false;
-                        entry = _ring[_head];
-                        _head = static_cast<uint8_t>((_head + 1) % RingSize);
-                        --_count;
-                }
-                return detail::keyOf(entry, key).isOk();
+        bool Watcher::next(Id &id) {
+                Mutex::Locker lock(*registryLock, WaitForever);
+                if (_count == 0) return false;
+                id = Id(_ring[_head]);
+                _head = static_cast<uint8_t>((_head + 1) % RingSize);
+                --_count;
+                return true;
+        }
+
+        bool Watcher::isPending() {
+                if (!registryLock.isCreated()) return false;
+                Mutex::Locker lock(*registryLock, WaitForever);
+                return _count != 0 || _overflowed;
         }
 
         bool Watcher::overflowed() {
@@ -653,12 +744,6 @@ namespace SysConf {
                 const bool    was = _overflowed;
                 _overflowed = false;
                 return was;
-        }
-
-        Error detail::keyOf(uint16_t entry, String &out) {
-                Mutex::Locker lock(*registryLock, WaitForever);
-                if (entry >= state.count) return Error::NotExist;
-                return out.assign(StringView(state.entries[entry].param->key));
         }
 
 } // namespace SysConf

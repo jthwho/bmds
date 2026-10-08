@@ -81,6 +81,26 @@ _Static_assert(BMDS_SYS_THREAD_CLEAR == 57, "ABI: slot THREAD_CLEAR");
 _Static_assert(BMDS_SYS_FILE_TYPE == 58, "ABI: slot FILE_TYPE");
 _Static_assert(BMDS_FILE_TYPE_NAME == 0x1 && BMDS_FILE_TYPE_CONTENT == 0x2 && BMDS_FILE_TYPE_MAX == 127,
                "ABI: file_type flags");
+_Static_assert(BMDS_SYS_SYSCONF_FIND == 59 && BMDS_SYS_SYSCONF_GET == 60 && BMDS_SYS_SYSCONF_INFO == 61,
+               "ABI: slots SYSCONF_FIND, _GET, _INFO");
+_Static_assert(BMDS_SYS_SYSCONF_SET == 62 && BMDS_SYS_SYSCONF_NEXT == 63 && BMDS_SYS_SYSCONF_DECLARE == 64,
+               "ABI: slots SYSCONF_SET, _NEXT, _DECLARE");
+_Static_assert(BMDS_SYS_SYSCONF_WATCH == 65, "ABI: slot SYSCONF_WATCH");
+_Static_assert(BMDS_SYSCONF_KEY_MAX == 63 && BMDS_SYSCONF_VALUE_MAX == 1024, "ABI: sysconf lengths");
+_Static_assert(BMDS_SYSCONF_TYPE_BOOL == 0 && BMDS_SYSCONF_TYPE_INT == 1 && BMDS_SYSCONF_TYPE_STRING == 2 &&
+                       BMDS_SYSCONF_TYPE_COLOR == 3 && BMDS_SYSCONF_TYPE_ENUM == 4 && BMDS_SYSCONF_TYPE_PATH == 5 &&
+                       BMDS_SYSCONF_TYPE_PATHS == 6,
+               "ABI: sysconf types");
+_Static_assert(BMDS_SYSCONF_FIELD_VALUE == 0 && BMDS_SYSCONF_FIELD_DEFAULT == 1 && BMDS_SYSCONF_FIELD_SAVED == 2 &&
+                       BMDS_SYSCONF_FIELD_KEY == 3 && BMDS_SYSCONF_FIELD_HELP == 4 && BMDS_SYSCONF_FIELD_CHOICES == 5,
+               "ABI: sysconf fields");
+_Static_assert(BMDS_SYSCONF_OP_SET == 0 && BMDS_SYSCONF_OP_SETDEF == 1 && BMDS_SYSCONF_OP_REVERT == 2 &&
+                       BMDS_SYSCONF_OP_SAVE == 3 && BMDS_SYSCONF_ALL == -1,
+               "ABI: sysconf operations");
+_Static_assert(BMDS_SYSCONF_IS_DEFAULT == 0x1 && BMDS_SYSCONF_IS_SAVED == 0x2 && BMDS_SYSCONF_CHANGED == 0x4 &&
+                       BMDS_SYSCONF_RUNTIME == 0x8,
+               "ABI: sysconf flags");
+_Static_assert(BMDS_SYSCONF_OVERFLOW == 0xffffffffu, "ABI: sysconf watch overflow record");
 _Static_assert(BMDS_TYPE_LINK == 4, "ABI: file type LINK");
 _Static_assert(BMDS_ABI_VERSION == 1, "ABI: version (raise it with every addition once shipped)");
 _Static_assert(BMDS_STDIN == 0 && BMDS_STDOUT == 1 && BMDS_STDERR == 2, "ABI: standard fds");
@@ -163,6 +183,26 @@ _Static_assert(offsetof(bmds_pollfd_t, fd) == 4, "ABI: pollfd.fd");
 _Static_assert(offsetof(bmds_pollfd_t, events) == 8, "ABI: pollfd.events");
 _Static_assert(offsetof(bmds_pollfd_t, revents) == 12, "ABI: pollfd.revents");
 _Static_assert(sizeof(bmds_pollfd_t) == 16, "ABI: bmds_pollfd_t size");
+
+_Static_assert(offsetof(bmds_sysconf_info_t, size) == 0, "ABI: sysconf_info.size");
+_Static_assert(offsetof(bmds_sysconf_info_t, type) == 4, "ABI: sysconf_info.type");
+_Static_assert(offsetof(bmds_sysconf_info_t, min) == 8, "ABI: sysconf_info.min");
+_Static_assert(offsetof(bmds_sysconf_info_t, max) == 12, "ABI: sysconf_info.max");
+_Static_assert(offsetof(bmds_sysconf_info_t, flags) == 16, "ABI: sysconf_info.flags");
+_Static_assert(offsetof(bmds_sysconf_info_t, reserved) == 20, "ABI: sysconf_info.reserved");
+_Static_assert(sizeof(bmds_sysconf_info_t) == 24, "ABI: bmds_sysconf_info_t size");
+
+#if UINTPTR_MAX == 0xffffffffu
+_Static_assert(offsetof(bmds_sysconf_param_t, size) == 0, "ABI: sysconf_param.size");
+_Static_assert(offsetof(bmds_sysconf_param_t, type) == 4, "ABI: sysconf_param.type");
+_Static_assert(offsetof(bmds_sysconf_param_t, key) == 8, "ABI: sysconf_param.key");
+_Static_assert(offsetof(bmds_sysconf_param_t, default_value) == 12, "ABI: sysconf_param.default_value");
+_Static_assert(offsetof(bmds_sysconf_param_t, help) == 16, "ABI: sysconf_param.help");
+_Static_assert(offsetof(bmds_sysconf_param_t, choices) == 20, "ABI: sysconf_param.choices");
+_Static_assert(offsetof(bmds_sysconf_param_t, min) == 24, "ABI: sysconf_param.min");
+_Static_assert(offsetof(bmds_sysconf_param_t, max) == 28, "ABI: sysconf_param.max");
+_Static_assert(sizeof(bmds_sysconf_param_t) == 32, "ABI: bmds_sysconf_param_t size");
+#endif
 
 #if UINTPTR_MAX == 0xffffffffu
 _Static_assert(offsetof(bmds_thread_t, size) == 0, "ABI: thread.size");

@@ -27,9 +27,6 @@ namespace WmConfig {
         /** @brief Has @p wm's palette follow the system configuration's from now on. */
         Error follow(WindowManager &wm);
 
-        /** @brief Writes `wm/palette/<role>` for role @p name into @p key (false: no such role). */
-        bool keyOf(StringView name, char (&key)[48]);
-
 } // namespace WmConfig
 
 BMDS_NAMESPACE_END
