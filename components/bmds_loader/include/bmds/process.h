@@ -223,6 +223,13 @@ class Process {
                 /** @brief Returns a reference to @p fd's handle, or none (for calls on a kind of fd). */
                 FileHandle::Ptr handle(int32_t fd) const { return handleOf(fd); }
 
+                /**
+                 * @brief Gives @p handle the lowest free fd, close-on-exec if @p flags
+                 *        has `BMDS_O_CLOEXEC` (for calls that make a kind of fd).
+                 * @return The fd, or `-BMDS_EMFILE`.
+                 */
+                int32_t addHandle(FileHandle::Ptr handle, uint32_t flags);
+
         private:
                 struct Block;     // an allocation's header, just before what the program gets
                 struct LineInput; // the line editor and its line, once the program reads the console

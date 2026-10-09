@@ -1,0 +1,16 @@
+--- a/stb_vorbis.c
++++ b/stb_vorbis.c
+@@ -4989,8 +4989,11 @@
+       int n;
+       uint32 frame_start = f->current_loc;
+       stb_vorbis_get_frame_float(f, &n, NULL);
+-      assert(sample_number > frame_start);
+-      assert(f->channel_buffer_start + (int) (sample_number-frame_start) <= f->channel_buffer_end);
++      // BMDS: a frame without the sample (a damaged file, or the sample past the
++      // stream's last) is an error, not an assertion.
++      if (sample_number <= frame_start ||
++          f->channel_buffer_start + (int) (sample_number-frame_start) > f->channel_buffer_end)
++         return error(f, VORBIS_seek_failed);
+       f->channel_buffer_start += (sample_number - frame_start);
+    }
+ 

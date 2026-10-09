@@ -133,6 +133,42 @@ namespace {
                 return head.size() >= offset + length && std::memcmp(head.data() + offset, bytes, length) == 0;
         }
 
+        // The bytes of the MPEG audio frame whose header is at @p h, or 0 if it isn't one (or free format).
+        size_t mpegFrameBytes(const uint8_t *h) {
+                static constexpr uint16_t Kbps[2][3][15] = {
+                        {{0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256},
+                         {0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160},
+                         {0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160}},
+                        {{0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448},
+                         {0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384},
+                         {0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320}},
+                };
+                static constexpr uint16_t Rates[3] = {44100, 48000, 32000};
+                const unsigned            version = (h[1] >> 3) & 3, layer = 4 - ((h[1] >> 1) & 3);
+                const unsigned            index = h[2] >> 4, rateIndex = (h[2] >> 2) & 3;
+                if (h[0] != 0xff || (h[1] & 0xe0) != 0xe0 || version == 1 || layer == 4 || index == 0 || index == 15 ||
+                    rateIndex == 3)
+                        return 0;
+                const unsigned rate = Rates[rateIndex] >> (version == 3 ? 0 : version == 2 ? 1 : 2);
+                const unsigned kbps = Kbps[version == 3 ? 1 : 0][layer - 1][index];
+                const unsigned padding = (h[2] >> 1) & 1;
+                if (layer == 1) return (12 * kbps * 1000 / rate + padding) * 4;
+                const unsigned samples = layer == 3 && version != 3 ? 576 : 1152;
+                return samples / 8 * kbps * 1000 / rate + padding;
+        }
+
+        // MPEG audio without an ID3 tag: a frame header, and the next one where the first frame ends
+        // (when the head reaches that far), of the same version, layer and rate.
+        bool looksLikeMpegAudio(Span<const uint8_t> head) {
+                if (head.size() < 4) return false;
+                const size_t bytes = mpegFrameBytes(head.data());
+                if (bytes == 0) return false;
+                if (bytes + 4 > head.size()) return true;
+                const uint8_t *next = head.data() + bytes;
+                return mpegFrameBytes(next) != 0 && (next[1] & 0xfe) == (head[1] & 0xfe) &&
+                       (next[2] & 0x0c) == (head[2] & 0x0c);
+        }
+
         bool startsIgnoringCase(Span<const uint8_t> head, StringView with) {
                 if (head.size() < with.size()) return false;
                 return StringView(reinterpret_cast<const char *>(head.data()), with.size()).equalsIgnoreCase(with);
@@ -197,6 +233,7 @@ namespace FileFormat {
                         if (startsAt(head, 8, "WAVE", 4)) return "audio/x-wav";
                         if (startsAt(head, 8, "AVI ", 4)) return "video/x-msvideo";
                 }
+                if (looksLikeMpegAudio(head)) return "audio/mpeg";
                 // BMP: "BM", then reserved words that are zero.
                 if (startsAt(head, 0, "BM", 2) && startsAt(head, 6, "\0\0\0\0", 4)) return "image/bmp";
                 if (!looksLikeText(head, whole)) return Binary;

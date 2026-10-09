@@ -1,0 +1,157 @@
+--- a/stb_vorbis.c
++++ b/stb_vorbis.c
+@@ -270,6 +270,23 @@
+ // create an ogg vorbis decoder from an ogg vorbis stream in memory (note
+ // this must be the entire stream!). on failure, returns NULL and sets *error
+ 
++#ifdef STB_VORBIS_IO
++// BMDS: a stream read through a callback, for a file that is neither in memory
++// nor a FILE *. read() reads exactly n bytes at byte offset 'at' of the stream
++// into data, returning 1, or 0 if it can't (past the end, an error).
++typedef struct
++{
++   int (*read)(void *user, unsigned int at, unsigned char *data, int n);
++   void *user;
++   unsigned int length; // the stream's length in bytes
++} stb_vorbis_io;
++
++extern stb_vorbis * stb_vorbis_open_io(const stb_vorbis_io *io,
++                                  int *error, const stb_vorbis_alloc *alloc_buffer);
++// create an ogg vorbis decoder reading through io (copied). on failure,
++// returns NULL and sets *error
++#endif
++
+ #ifndef STB_VORBIS_NO_STDIO
+ extern stb_vorbis * stb_vorbis_open_filename(const char *filename,
+                                   int *error, const stb_vorbis_alloc *alloc_buffer);
+@@ -809,6 +826,11 @@
+ 
+    uint32 stream_len;
+ 
++#ifdef STB_VORBIS_IO
++   stb_vorbis_io io;
++   uint32 io_pos;
++#endif
++
+    uint8  push_mode;
+ 
+    // the page to seek to when seeking to start, may be zero
+@@ -1328,7 +1350,9 @@
+ /////////////////////// END LEAF SETUP FUNCTIONS //////////////////////////
+ 
+ 
+-#if defined(STB_VORBIS_NO_STDIO)
++#if defined(STB_VORBIS_IO)
++   #define USE_MEMORY(z)    (!(z)->io.read)
++#elif defined(STB_VORBIS_NO_STDIO)
+    #define USE_MEMORY(z)    TRUE
+ #else
+    #define USE_MEMORY(z)    ((z)->stream)
+@@ -1341,6 +1365,15 @@
+       return *z->stream++;
+    }
+ 
++   #ifdef STB_VORBIS_IO
++   {
++   uint8 c;
++   if (z->io_pos >= z->stream_len || !z->io.read(z->io.user, z->io_pos, &c, 1)) { z->eof = TRUE; return 0; }
++   ++z->io_pos;
++   return c;
++   }
++   #endif
++
+    #ifndef STB_VORBIS_NO_STDIO
+    {
+    int c = fgetc(z->f);
+@@ -1369,6 +1402,17 @@
+       return 1;
+    }
+ 
++   #ifdef STB_VORBIS_IO
++   // As memory: a read that fails leaves the position.
++   if (n < 0 || z->io_pos > z->stream_len || (uint32) n > z->stream_len - z->io_pos ||
++       !z->io.read(z->io.user, z->io_pos, data, n)) {
++      z->eof = 1;
++      return 0;
++   }
++   z->io_pos += n;
++   return 1;
++   #endif
++
+    #ifndef STB_VORBIS_NO_STDIO
+    if (fread(data, n, 1, z->f) == 1)
+       return 1;
+@@ -1386,6 +1430,12 @@
+       if (z->stream >= z->stream_end) z->eof = 1;
+       return;
+    }
++   #ifdef STB_VORBIS_IO
++   // As memory: the position may go past the end, which is the end.
++   z->io_pos += n;
++   if (z->io_pos >= z->stream_len) z->eof = 1;
++   return;
++   #endif
+    #ifndef STB_VORBIS_NO_STDIO
+    {
+       long x = ftell(z->f);
+@@ -1410,6 +1460,15 @@
+          return 1;
+       }
+    }
++   #ifdef STB_VORBIS_IO
++   if (loc >= f->stream_len) {
++      f->io_pos = f->stream_len;
++      f->eof = 1;
++      return 0;
++   }
++   f->io_pos = loc;
++   return 1;
++   #endif
+    #ifndef STB_VORBIS_NO_STDIO
+    if (loc + f->f_start < loc || loc >= 0x80000000) {
+       loc = 0x7fffffff;
+@@ -4548,6 +4607,9 @@
+    if (f->push_mode) return 0;
+    #endif
+    if (USE_MEMORY(f)) return (unsigned int) (f->stream - f->stream_start);
++   #ifdef STB_VORBIS_IO
++   return f->io_pos;
++   #endif
+    #ifndef STB_VORBIS_NO_STDIO
+    return (unsigned int) (ftell(f->f) - f->f_start);
+    #endif
+@@ -5096,6 +5158,34 @@
+ }
+ #endif // STB_VORBIS_NO_STDIO
+ 
++#ifdef STB_VORBIS_IO
++stb_vorbis * stb_vorbis_open_io(const stb_vorbis_io *io, int *error, const stb_vorbis_alloc *alloc)
++{
++   stb_vorbis *f, p;
++   if (!io || !io->read) {
++      if (error) *error = VORBIS_unexpected_eof;
++      return NULL;
++   }
++   vorbis_init(&p, alloc);
++   p.io = *io;
++   p.io_pos = 0;
++   p.stream_len = io->length;
++   p.push_mode = FALSE;
++   if (start_decoder(&p)) {
++      f = vorbis_alloc(&p);
++      if (f) {
++         *f = p;
++         vorbis_pump_first_frame(f);
++         if (error) *error = VORBIS__no_error;
++         return f;
++      }
++   }
++   if (error) *error = p.error;
++   vorbis_deinit(&p);
++   return NULL;
++}
++#endif // STB_VORBIS_IO
++
+ stb_vorbis * stb_vorbis_open_memory(const unsigned char *data, int len, int *error, const stb_vorbis_alloc *alloc)
+ {
+    stb_vorbis *f, p;

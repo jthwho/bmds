@@ -118,6 +118,8 @@ Plan: [`input.md`](input.md).
 - [ ] Special keys and global hotkeys (`hotkeys.md`, planned 2026-10-08): media keys decoded,
   named actions and bindings in the kernel, the window manager's keys moved onto them; user
   bindings later.
+- [ ] System monitor (`sysmon.md`, planned 2026-10-08): CPU per core, task and process from
+  run-time stats; `top`; system calls; a tray CPU meter and a System Monitor window.
 
 ## Phase 6 — Graphics
 
@@ -131,7 +133,8 @@ Plan: [`input.md`](input.md).
   - [x] 1. ES8311 and I²S bring-up; `audio` status, registers, test tone.
   - [x] 2. Engine: mixer, conversion, resampling, volume, system sounds and bell, tray control.
   - [x] 3. ABI: native audio fds, `/dev/dsp*`, OSS ioctls in `linux.c`, `play` (WAV).
-  - [ ] 4. Decoders (MP3, Ogg Vorbis, FLAC) in the firmware via the SDK; Open from the browser.
+  - [x] 4. Decoders (MP3, Ogg Vorbis, FLAC) in the firmware via the SDK; Open from the browser
+    (§19: minimp3, stb_vorbis, dr_flac; a decoder is an fd, slots 71–73; fuzzed).
   - [ ] 5. Real-time clients and exclusive mode.
   - [ ] 6. MIDI: ports, routing, virtual ports; USB and serial MIDI.
   - [ ] 7. Synth: General MIDI player and synth library.

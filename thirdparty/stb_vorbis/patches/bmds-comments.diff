@@ -1,0 +1,46 @@
+--- a/stb_vorbis.c
++++ b/stb_vorbis.c
+@@ -3709,6 +3709,8 @@
+    if (!vorbis_validate(header))                    return error(f, VORBIS_invalid_setup);
+    //file vendor
+    len = get32_packet(f);
++   // BMDS: a length past the file's (or negative) is a damaged header, not an allocation.
++   if (len < 0 || (f->stream_len && (uint32) len > f->stream_len)) return error(f, VORBIS_invalid_setup);
+    f->vendor = (char*)setup_malloc(f, sizeof(char) * (len+1));
+    if (f->vendor == NULL)                           return error(f, VORBIS_outofmem);
+    for(i=0; i < len; ++i) {
+@@ -3718,16 +3720,32 @@
+    //user comments
+    f->comment_list_length = get32_packet(f);
+    f->comment_list = NULL;
++   // BMDS: as many comments as the file could hold (four bytes each), and the list's length
++   // only what has been allocated, so that vorbis_deinit() frees no more than that.
++   if (f->comment_list_length < 0 || (f->stream_len && (uint32) f->comment_list_length > f->stream_len / 4)) {
++      f->comment_list_length = 0;
++      return error(f, VORBIS_invalid_setup);
++   }
+    if (f->comment_list_length > 0)
+    {
+       f->comment_list = (char**) setup_malloc(f, sizeof(char*) * (f->comment_list_length));
+-      if (f->comment_list == NULL)                  return error(f, VORBIS_outofmem);
++      if (f->comment_list == NULL) {
++         f->comment_list_length = 0;
++         return error(f, VORBIS_outofmem);
++      }
+    }
+ 
+    for(i=0; i < f->comment_list_length; ++i) {
+       len = get32_packet(f);
++      if (len < 0 || (f->stream_len && (uint32) len > f->stream_len)) {
++         f->comment_list_length = i;
++         return error(f, VORBIS_invalid_setup);
++      }
+       f->comment_list[i] = (char*)setup_malloc(f, sizeof(char) * (len+1));
+-      if (f->comment_list[i] == NULL)               return error(f, VORBIS_outofmem);
++      if (f->comment_list[i] == NULL) {
++         f->comment_list_length = i;
++         return error(f, VORBIS_outofmem);
++      }
+ 
+       for(j=0; j < len; ++j) {
+          f->comment_list[i][j] = get8_packet(f);

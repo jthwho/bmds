@@ -6,18 +6,18 @@
  * See LICENSE file in the project root folder for license information.
  *
  * The `play` command: sound files on an audio device, through /dev/dsp as a
- * program's would be (devplan/audio.md §18). WAV now; MP3, Ogg and FLAC in
- * step 4.
+ * program's would be (devplan/audio.md §18): WAV, MP3, Ogg Vorbis and FLAC,
+ * through `Decoder` (§19).
  */
 
 #include <cstdio>
 #include <cstring>
 #include <bmds/audiofile.h>
 #include <bmds/command.h>
+#include <bmds/decoder.h>
 #include <bmds/memory.h>
 #include <bmds/shell.h>
 #include <bmds/vfs.h>
-#include <bmds/wavfile.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -28,7 +28,23 @@ namespace {
         constexpr size_t   BufferBytes = 8192;
         constexpr uint32_t RingMs = 500; // a card's pauses, covered
 
-        // Reads exactly what is asked at an offset (WavFile::ReadAt).
+        // @p frames at @p rate as M:SS.T (unknown: -:--.-).
+        struct Time {
+                        char text[24];
+        };
+        Time timeOf(uint64_t frames, uint32_t rate) {
+                Time t;
+                if (frames == Decoder::UnknownFrames || rate == 0) {
+                        std::snprintf(t.text, sizeof(t.text), "-:--.-");
+                        return t;
+                }
+                const uint64_t tenths = frames * 10 / rate;
+                std::snprintf(t.text, sizeof(t.text), "%lu:%02lu.%lu", static_cast<unsigned long>(tenths / 600),
+                              static_cast<unsigned long>(tenths / 10 % 60), static_cast<unsigned long>(tenths % 10));
+                return t;
+        }
+
+        // Reads exactly what is asked at an offset (Decoder::ReadAt).
         Error readAt(void *arg, uint64_t offset, WritableByteSpan buf) {
                 FileHandle &file = *static_cast<FileHandle *>(arg);
                 auto [at, serr] = file.stream().seek(static_cast<int64_t>(offset), Stream::SeekFrom::Start);
@@ -43,7 +59,7 @@ namespace {
                 return Error::Ok;
         }
 
-        // Plays one WAV file on @p dsp: ExitSuccess, ExitFailure (told why), or ExitInterrupted.
+        // Plays one sound file on @p dsp: ExitSuccess, ExitFailure (told why), or ExitInterrupted.
         int playFile(CommandContext &ctx, FileHandle &dsp, AudioFile &audio, const char *path, uint8_t *buf) {
                 auto [file, oerr] = Vfs::open(StringView(path), Vfs::Read, ctx.vfs());
                 if (oerr.isError()) {
@@ -51,47 +67,60 @@ namespace {
                         return Shell::ExitFailure;
                 }
                 auto [size, zerr] = file->stream().seek(0, Stream::SeekFrom::End);
-                auto [info, werr] =
-                        zerr.isOk() ? WavFile::parse(readAt, file.get(), size) : makeError<WavFile::Info>(zerr);
-                if (werr.isError()) {
-                        const char *why = werr == Error::Invalid        ? "not a WAV file"
-                                          : werr == Error::NotSupported ? "a WAV file in a form this doesn't play"
-                                                                        : werr.desc();
+                auto [d, derr] = zerr.isOk() ? Decoder::open({readAt, file.get(), size}) : makeError<Decoder *>(zerr);
+                if (derr.isError()) {
+                        const char *why = derr == Error::Invalid        ? "not a sound file this plays"
+                                          : derr == Error::NotSupported ? "a sound file in a form this doesn't play"
+                                          : derr == Error::CorruptData  ? "a damaged file"
+                                                                        : derr.desc();
                         ctx.eprintf("play: %s: %s\n", path, why);
                         return Shell::ExitFailure;
                 }
-                const size_t   frameBytes = SampleFormats::bytesPerSample(info.format) * info.channels;
-                const uint64_t frames = info.dataBytes / frameBytes;
-                const uint64_t tenths = info.rateHz == 0 ? 0 : frames * 10 / info.rateHz;
-                ctx.printf("%s: %lu Hz, %s, %s, %lu:%02lu.%lu\n", path, static_cast<unsigned long>(info.rateHz),
-                           SampleFormats::name(info.format), info.channels == 1 ? "mono" : "stereo",
-                           static_cast<unsigned long>(tenths / 600), static_cast<unsigned long>(tenths / 10 % 60),
-                           static_cast<unsigned long>(tenths % 10));
+                const Decoder::Info info = d->info(); // a copy: used after the close
+                // The decoder's own format, so nothing is quantized twice. WAV names its samples' format.
+                const char *format =
+                        info.codec == Codec::Wav ? SampleFormats::name(info.format) : Decoder::name(info.codec);
+                ctx.printf("%s: %lu Hz, %s, %s, %s\n", path, static_cast<unsigned long>(info.rateHz), format,
+                           info.channels == 1 ? "mono" : "stereo", timeOf(info.frames, info.rateHz).text);
+                const StringView title = d->tag("TITLE");
+                const StringView artist = d->tag("ARTIST");
+                if (!title.isEmpty() || !artist.isEmpty())
+                        ctx.printf("  %.*s%s%.*s\n", static_cast<int>(artist.size()), artist.data(),
+                                   !title.isEmpty() && !artist.isEmpty() ? " - " : "", static_cast<int>(title.size()),
+                                   title.data());
                 AudioFile::Config c;
                 c.format = info.format;
                 c.channels = info.channels;
                 c.rateHz = info.rateHz;
                 c.ringFrames = info.rateHz * RingMs / 1000;
                 Error err = audio.configure(c); // the file before plays out first
-                if (err == Error::Interrupted) return Shell::ExitInterrupted;
+                if (err == Error::Interrupted) {
+                        Decoder::close(d);
+                        return Shell::ExitInterrupted;
+                }
                 if (err.isError()) {
                         ctx.eprintf("play: %s: %s\n", path,
                                     err == Error::Invalid ? "a rate this doesn't play" : err.desc());
+                        Decoder::close(d);
                         return Shell::ExitFailure;
                 }
-                err = file->stream().seek(static_cast<int64_t>(info.dataOffset), Stream::SeekFrom::Start).error();
-                for (uint64_t left = info.dataBytes; err.isOk() && left > 0;) {
-                        const size_t want = left < BufferBytes ? static_cast<size_t>(left) : BufferBytes;
-                        auto [n, rerr] = file->read(WritableByteSpan(buf, want), WaitForever);
-                        if (rerr == Error::EndOfFile || (rerr.isOk() && n == 0)) break; // shorter than it said
+                for (;;) {
+                        auto [n, rerr] = d->decode(WritableByteSpan(buf, BufferBytes));
+                        if (n > 0) err = dsp.write(ByteSpan(buf, n), WaitForever).error();
+                        if (err.isError()) break;
+                        if (rerr == Error::EndOfFile) break;
                         if (rerr.isError()) {
                                 err = rerr;
                                 break;
                         }
-                        err = dsp.write(ByteSpan(buf, n), WaitForever).error();
-                        left -= n;
                 }
+                const uint64_t at = d->position();
+                Decoder::close(d);
                 if (err == Error::Interrupted) return Shell::ExitInterrupted;
+                if (err == Error::CorruptData) {
+                        ctx.eprintf("play: %s: a damaged file at %s\n", path, timeOf(at, info.rateHz).text);
+                        return Shell::ExitFailure;
+                }
                 if (err.isError()) {
                         ctx.eprintf("play: %s: %s\n", path, err.desc());
                         return Shell::ExitFailure;
@@ -145,6 +174,6 @@ namespace {
 } // namespace
 
 BMDS_SHELL_COMMAND(play, runPlay, "[-d dspN] FILE...",
-                   "Play sound files (WAV) on /dev/dsp, or on device dspN; Ctrl+C stops")
+                   "Play sound files (WAV, MP3, Ogg Vorbis, FLAC) on /dev/dsp, or on device dspN; Ctrl+C stops")
 
 BMDS_NAMESPACE_END

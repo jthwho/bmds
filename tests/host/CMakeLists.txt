@@ -35,6 +35,7 @@ add_executable(bmds_host_tests
         blockdevice.cpp
         bytering.cpp
         clipboard.cpp
+        decoder.cpp
         edid.cpp
         futex.cpp
         gui.cpp
@@ -91,6 +92,7 @@ target_compile_definitions(bmds_host_tests PRIVATE LFS_NO_MALLOC LFS_NO_DEBUG LF
 target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
         BMDS_CORPUS_DIR="${CMAKE_CURRENT_LIST_DIR}/corpus"
         BMDS_PNG_DIR="${CMAKE_CURRENT_LIST_DIR}/png"
+        BMDS_AUDIO_DIR="${CMAKE_CURRENT_LIST_DIR}/audio"
         BMDS_COMPAT_DIR="${CMAKE_CURRENT_LIST_DIR}/../compat")
 # The time zone database built from thirdparty/tzdata (devplan/time.md §9), as
 # the distribution builds it, when the host has zic: its every zone is tested.

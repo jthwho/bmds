@@ -1,0 +1,30 @@
+--- a/dr_flac.h
++++ b/dr_flac.h
+@@ -6042,14 +6042,25 @@
+                             break;  /* Failed to seek to FLAC frame. */
+                         }
+                     } else {
+-                        const double approxCompressionRatio = (drflac_int64)(lastSuccessfulSeekOffset - pFlac->firstFLACFramePosInBytes) / ((drflac_int64)(pcmRangeLo * pFlac->channels * pFlac->bitsPerSample)/8.0);
++                        /* BMDS: the estimate only from a frame past the first (it divides by the frame's
++                           start), and bounded before it becomes an integer: a damaged file made it 0/0
++                           (NaN) or larger than the range. */
++                        const double approxCompressionRatio = pcmRangeLo != 0 ? (drflac_int64)(lastSuccessfulSeekOffset - pFlac->firstFLACFramePosInBytes) / ((drflac_int64)(pcmRangeLo * pFlac->channels * pFlac->bitsPerSample)/8.0) : 0;
++                        double advance;
+ 
+                         byteRangeLo = lastSuccessfulSeekOffset;
+                         if (byteRangeHi < byteRangeLo) {
+                             byteRangeHi = byteRangeLo;
+                         }
+ 
+-                        targetByte = lastSuccessfulSeekOffset + (drflac_uint64)(((drflac_int64)((pcmFrameIndex-pcmRangeLo) * pFlac->channels * pFlac->bitsPerSample)/8.0) * approxCompressionRatio);
++                        advance = ((drflac_int64)((pcmFrameIndex-pcmRangeLo) * pFlac->channels * pFlac->bitsPerSample)/8.0) * approxCompressionRatio;
++                        if (pcmRangeLo == 0 || !(advance >= 0)) {
++                            targetByte = byteRangeLo + ((byteRangeHi - byteRangeLo) / 2);
++                        } else if (advance >= (double)(byteRangeHi - lastSuccessfulSeekOffset)) {
++                            targetByte = byteRangeHi;
++                        } else {
++                            targetByte = lastSuccessfulSeekOffset + (drflac_uint64)advance;
++                        }
+                         if (targetByte > byteRangeHi) {
+                             targetByte = byteRangeHi;
+                         }

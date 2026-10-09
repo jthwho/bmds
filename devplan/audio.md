@@ -324,7 +324,7 @@ The codec says almost nothing, so the driver and the engine check everything the
   - **Detection:** the format is found by `file_type()` and the stream's header.
   - **New formats need no new calls:** FLAC, Opus or anything later appends no system calls.
 - **Candidates:** each is one file, with a licence compatible with MIT. Flash and memory costs
-  are to be measured before choosing.
+  are to be measured before choosing (measured and chosen in §19).
   - WAV (ours);
   - MP3: minimp3 (CC0);
   - Ogg Vorbis: stb_vorbis (public domain or MIT);
@@ -1044,3 +1044,268 @@ only; capture is step 8.
     BSS (32 more: the 8 more slots);
   - `/dev`'s table 128 bytes more;
   - per open: the `AudioFile` and its ring in PSRAM.
+
+## 19. Step 4: decoders (design, 2026-10-08)
+
+MP3, Ogg Vorbis and FLAC in the firmware behind one format-blind interface (§7). A program
+gets them through the SDK, `play` plays them, and the file browser's Open starts `play`.
+
+### Measured (2026-10-08)
+
+- **How:** each candidate compiled for the P4 (`riscv32-esp-elf-gcc` 15.2, the firmware's
+  `-march`) and linked into an SDK program that decodes a whole file from memory on the board.
+  - The input: the first 30 s of a 44.1 kHz stereo WAV, encoded by ffmpeg as MP3 at 192 kb/s
+    (LAME), Ogg Vorbis at `-q 5`, and FLAC at its default level.
+  - Code is what linking added over the same program without a decoder: `-Os`, with the libm
+    functions each one pulls in.
+
+  | Library (licence) | Version | Code | Memory per decoder | Stack | 30 s decoded in (`-O2` / `-Os`) | Core (`-O2`) |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | minimp3 (CC0) | master, fetched 2026-10-08 | 18.4 KB | 6,668 B + 16.2 KB scratch | 17,328 B | 1.585 / 1.919 s | 5.3 % |
+  | stb_vorbis (PD or MIT) | 1.22 | 50.6 KB | 195,552 B (this file) | 2,560 B + temp | 1.958 / 2.260 s | 6.5 % |
+  | dr_flac (PD or MIT-0) | master (0.13.4), fetched 2026-10-08 | 40.9 KB | 41,264 B (peak) | 4,592 B | 1.140 / 1.339 s | 3.8 % |
+
+- **Notes:**
+  - dr_mp3 is minimp3 reworked, at 26.7 KB of object code against minimp3's 18.0 KB; nothing
+    gained.
+  - dr_flac without Ogg-wrapped FLAC is 14 KB smaller (object code); Ogg FLAC is rare.
+  - Vorbis's memory is mostly its codebooks, so it varies with the file; `stb_vorbis_get_info()`
+    tells it after the headers.
+  - stb_vorbis has 1 KB of BSS (a CRC table built at the first open).
+  - **The stack decides one thing:** minimp3 keeps a 16.2 KB scratch area on the stack of
+    `mp3dec_decode_frame()`; a program's default stack is 32 KB. Moving it into PSRAM (static, in
+    a test build) took 1.578 s against 1.584 s, so nothing is lost by keeping it in the decoder's
+    allocation instead.
+- **Flash:** the firmware image is 1.08 MB of a 4 MB partition. The three are 110 KB at `-Os`
+  linked into a program; built at `-O2` in the firmware, they are measured again there.
+
+### The choice
+
+- **minimp3, stb_vorbis and dr_flac,** each vendored in `thirdparty/` with a `README.md` as
+  FatFs's (where from, version, sha256, the BMDS patches in order):
+  - **minimp3:** one patch: the scratch area comes from the decoder's own allocation, not the
+    stack.
+  - **stb_vorbis:** `STB_VORBIS_NO_STDIO`, `STB_VORBIS_NO_PUSHDATA_API`. A patch for reading
+    through a callback in place of `FILE *`, which is all its pull API knows besides memory. Its
+    memory comes from one PSRAM buffer per decoder (its own `stb_vorbis_alloc`), so it calls
+    neither `malloc()` nor `alloca()`: no patch for those (as built: the buffer starts at
+    128 KB and doubles until the file's setup fits, to 4 MB).
+  - **dr_flac:** `DR_FLAC_NO_STDIO`, `DR_FLAC_NO_OGG`, `DR_FLAC_NO_SIMD`; its read, seek and
+    allocation callbacks already fit. CRCs are checked: a damaged frame is passed over, not
+    played as noise.
+  - Patches for what the tests and the fuzzer found are listed in the libraries' `README.md`
+    (as built, below).
+- **Built at `-O2`** (as the PNG decoder is), in PSRAM-backed memory, with `-Wshadow` and the
+  warnings the libraries trip off for their files only, as littlefs's.
+- **Not now:**
+  - Opus (libopus is far larger; measured when wanted);
+  - AAC and M4A (not looked at yet);
+  - Ogg FLAC.
+
+### The kernel: `Decoder`
+
+- **One interface** (`bmds_audio`, portable and host-tested):
+  - `open(source)`: reads the headers and fills `Info`; fails with `Invalid` (not this
+    format) or `NotSupported` (this format, in a form not played);
+  - `info()`: the codec, rate, channels, the length in frames (or unknown), the bitrate, the
+    source's sample size;
+  - `tag(index)`: a key and a value, UTF-8;
+  - `decode(frames)`: interleaved samples in the format asked;
+  - `seek(frame)`: to an exact frame.
+- **A source** is a read-at callback with a size, as `WavFile::parse` takes, so the decoders
+  never see a `Stream` and the host tests feed them memory.
+- **Four implementations:**
+  - `WavDecoder` on `WavFile` (it converts nothing: its format is the file's);
+  - `Mp3Decoder` on minimp3;
+  - `VorbisDecoder` on stb_vorbis;
+  - `FlacDecoder` on dr_flac.
+- **Found by content:** the first bytes, as `file_type()` reads them (`RIFF`/`WAVE`, `OggS`
+  with a Vorbis header, `fLaC`, `ID3`), or two MPEG audio headers in a row. Ogg holding Opus or
+  FLAC is `NotSupported`.
+- **MP3 specifics:**
+  - ID3v2 skipped and read for tags (text frames in all four encodings to UTF-8); ID3v1 at the
+    end;
+  - the length from the Xing or Info frame, or VBRI; failing both, from the size and a constant
+    bitrate, marked estimated;
+  - gapless: LAME's encoder delay and padding from the Info frame trimmed;
+  - an exact seek from an index of frame offsets, built as frames are passed (4 bytes a frame,
+    about 150 bytes a second);
+  - free-format and MPEG 2.5 as minimp3 plays them.
+- **Tags:** ID3 frames as `TITLE`, `ARTIST`, `ALBUM`, `TRACKNUMBER`, `DATE` (the Vorbis
+  comment names); Vorbis and FLAC comments as they are. Pictures are skipped.
+
+### Programs: a decoder is an fd (slots 71–73, appended)
+
+- **`audio_decode(int32_t fd, const bmds_decode_config_t *config)`** returns a new fd that reads
+  as PCM:
+  - **The source:** `fd`, a readable, seekable file (it is duplicated, so the caller may close
+    its own); or, with `fd` −1, `config`'s `data` and `length`, a buffer the caller keeps until
+    the close.
+  - **The format** read: `BMDS_AUDIO_S16LE`, `BMDS_AUDIO_S32LE` or `BMDS_AUDIO_F32LE`, or
+    `BMDS_DECODE_NATIVE` for the decoder's own (float for MP3 and Vorbis, the file's for WAV, 16-
+    or 32-bit for FLAC by its sample size). Channels and rate are the file's: the engine
+    converts.
+  - **Errors:** `-BMDS_EINVAL` (not a format known), `-BMDS_ENOTSUP` (a form not played),
+    `-BMDS_ENOMEM`, `-BMDS_EBADF`.
+- **The new fd:**
+  - `read()` decodes on the caller's thread: whole frames, as many as fit;
+  - `lseek()` in bytes of that PCM (frame-aligned) seeks exactly;
+  - `fstat()`'s size is the PCM's length when it is known;
+  - `close()` frees everything; an exit closes it as any fd.
+  So copying a decoded fd to `/dev/dsp` is the whole of a player.
+- **`audio_decode_info(int32_t fd, bmds_decode_info_t *info)`:** the codec (`BMDS_CODEC_WAV`,
+  `MP3`, `VORBIS`, `FLAC`), its name, the rate, channels, the format read, the length in frames
+  (`UINT64_MAX` unknown) and whether it is estimated, the bitrate, the source's bits, and the
+  number of tags.
+- **`audio_decode_tag(int32_t fd, uint32_t index, char *key, uint32_t key_size, char *value,
+  uint32_t value_size)`:** a tag, UTF-8, cut at a character's end; `-BMDS_ENOENT` past the
+  last.
+- **Who pays (§7):** the decoder's memory is PSRAM from the kernel, freed at the close; its time
+  is the reading thread's. Nothing runs between reads.
+- **A crash in a decoder** is a crash of the firmware, as a program's crash is today; fuzzing is
+  what stands against it (below).
+
+### `play`
+
+- **Every format** through `Decoder` (WAV moves onto it): the same line for each file, the
+  format field naming the codec (`mp3`, `vorbis`, `flac`, or the WAV's sample format as now).
+  New after it, appended: a line of the title and artist when the file has them.
+- **The format read** is the native one, so nothing is quantized twice.
+- **Errors:** "not a sound file this plays" and "a damaged file" (with the frame's time) beside
+  today's messages; exit statuses unchanged.
+
+### The file browser's Open
+
+- `boot/applications/play.desktop` (`Exec=play %f`, `Terminal=true`, `NoDisplay=true`) and
+  `audio/*=play.desktop` in `boot/config/mimeapps.list`: a double click plays the file in a
+  terminal, where Ctrl+C stops it.
+- `file_type()` gains MP3 without ID3 (two MPEG audio headers in a row), appended to its content
+  rules.
+
+### The SDK
+
+- `sys.h`: the three calls, the structs (`size` first), `BMDS_CODEC_*`, `BMDS_DECODE_NATIVE`.
+- **`player` example:** `player FILE`, the decoded fd copied to `/dev/dsp` after
+  `audio_config` from `audio_decode_info`, with the title shown, in about 60 lines.
+- **`progtest decode`:** every call's errors; formats; an exact seek; a buffer source; reads
+  after the source's fd is closed.
+
+### Tests
+
+- **Host, known answers:** short fixture files in `tests/host/audio/` (a second of tones,
+  made once by ffmpeg and checked in, a few KB each): each decoded, its length, its tags, and a
+  seek's first samples equal to a straight read's. Peak error against the tone within what
+  each codec's quality allows.
+- **Host, damage:** truncated files at every header byte, wrong lengths, bad CRCs, an Ogg with
+  Opus; each refused or played without a fault.
+- **Fuzzing:** a libFuzzer target for the decoders (clang, ASan and UBSan; the host has them) on
+  seeds of each format in its forms, run for hours before shipping (as built: about 85 inputs a
+  second on three cores, so millions, not tens of millions); the findings kept as regression
+  files and fixed as patches in `thirdparty/`.
+- **Board:** each format played by `play` while files are copied and windows dragged, 0 late;
+  `audio status` load and the decoding thread's time recorded here; the user by ear (an MP3
+  known well).
+
+### ABI
+
+- Slots 71–73, their structs and constants: `ABI:` lines, lock tests.
+- `play`'s added line and codec names; `play.desktop` and the `audio/*` line in `/boot`'s
+  defaults; `file_type()`'s new rule.
+
+### Decisions (the user, 2026-10-08)
+
+- **The libraries:** minimp3, stb_vorbis and dr_flac, as measured above.
+- **A decoder is an fd:** `audio_decode` gives a new fd that reads as PCM; two more calls give its
+  information and its tags (slots 71–73).
+- **The file browser's Open** plays in a terminal (`play.desktop`); a GUI player can replace it
+  later.
+
+### As built (2026-10-08)
+
+- **Where it lives:**
+  - `Decoder` (`bmds_audio`, portable): `open()` finds the format from the first 64 bytes;
+    shared code for the read cache (4 KB, so stb_vorbis's one-byte reads are cheap), the tags
+    (4 KB, 64 at most, keys folded to capitals), and the conversion to 16-bit, 32-bit or float
+    (256 frames at a time, through `SampleFormats`).
+  - `WavDecoder`, `Mp3Decoder`, `VorbisDecoder` and `FlacDecoder` behind it, each allocated in
+    PSRAM; the libraries' settings in `components/bmds_audio/codecs.cmake`, shared with the
+    fuzzer.
+  - `DecodedFile : Stream`, found through the new `Stream::decodedFile()`, as `audioFile()`. Its
+    source is a reference to the file's handle, or a copy of the caller's buffer (a buffer the
+    kernel kept a pointer to could outlive the program through an inherited fd).
+  - The calls in `bmds_loader/src/audiocalls.cpp`; `Process::addHandle()` gives a new fd.
+- **MP3:**
+  - the first frame searched for in the first 64 KB;
+  - a Xing or Info frame's count, with LAME's delay and padding (as minimp3's own example
+    reads them, 529 samples of the decoder's own delay added);
+  - otherwise the length estimated from the first frame's bitrate (`BMDS_DECODE_ESTIMATED`);
+  - ID3v2.2 to 2.4 (text frames in all four encodings) and ID3v1/1.1 (Latin-1), and APEv2 tags
+    skipped;
+  - exact seeks: back two frames, then far enough for 511 bytes of bit reservoir, those frames'
+    output dropped. The index keeps one offset every 16 frames (4 bytes each; frames between are
+    found header to header), so it costs about 10 bytes a second of audio.
+  - A frame in the other channel mode is mixed down or doubled; one at another rate is dropped.
+- **Vorbis:** seeking to the very end isn't asked of stb_vorbis (no frame holds it); files over
+  2 GB are `NotSupported` (its offsets are 32-bit).
+- **FLAC:**
+  - 16-bit and narrower files decode as `s16le`, wider ones as `s32le` (the top 24 bits);
+  - an ID3v2 tag before `fLaC` is passed over;
+  - the comments read by `flacdecoder.cpp` itself;
+  - an allocation that failed inside dr_flac is told as `NoMem`, not `Invalid`.
+- **What the tests found:**
+  - stb_vorbis's callback reads had to keep memory mode's exact semantics, or seeks failed
+    after a stream had been read to the end;
+  - stb_vorbis asserted when seeking to the stream's end (now an error, patched);
+  - `setFormat()` could keep one of its two buffers after an allocation failed, and use the
+    other unallocated next time;
+  - `play` read the file's info after closing its decoder.
+- **What the fuzzer found** (each patched, its input kept in `tests/host/audio/fuzz/`):
+  - stb_vorbis freed a comment list through a null pointer after a damaged count, and could
+    write before its vendor string's buffer;
+  - dr_flac's seek estimate divided by 0 and made the NaN an integer.
+- **Measured on the board:**
+  - **`progtest decode`** passes. It covers:
+    - each call's errors;
+    - the information and tags of `tone.flac`;
+    - reads in pieces, `fstat`, seeks into a frame's middle and to the end, and read-only;
+    - a buffer copied by the call;
+    - close-on-exec.
+  - **`play`:**
+    - the 30 s MP3, Ogg Vorbis and FLAC clips each took 30.1 to 30.2 s, with 0 late periods
+      over 18,078 periods;
+    - the tag line shows ID3v2.4, ID3v1 (Latin-1 as UTF-8) and Vorbis comments;
+    - Ogg Opus is refused ("a sound file in a form this doesn't play"), and so is a program
+      ("not a sound file this plays");
+    - Ctrl+C on a WAV gives 130.
+  - **`player`** (the SDK example) plays each format.
+  - **minimp3's float output** takes 1.441 s for the 30 s clip (4.8 % of a core), less than
+    16-bit's 1.585 s.
+- **Host:**
+  - `tests/host/decoder.cpp` covers:
+    - each format found, with its length (MP3 gapless to the sample);
+    - the tones' frequencies in their channels;
+    - FLAC equal to the WAV's samples, and 24-bit;
+    - the tags;
+    - exact seeks: every format, nine places, against a straight decode;
+    - conversions;
+    - cut and damaged files;
+    - every allocation failing (`NoMem`, nothing leaked);
+    - the fuzzer's finds;
+    - `DecodedFile` through a handle, in pieces and sought.
+  - The fixtures are 138 KB, made by ffmpeg, and the fuzzer's finds 52 KB.
+  - `file_type()` knows bare MPEG audio.
+- **Fuzzing** (`tests/fuzz`, clang with ASan and UBSan):
+  - about 85 inputs a second on three cores;
+  - the seeds from `make-seeds.sh`: MP3 CBR, VBR, without a tag, MPEG-2 and 2.5, MP2; Vorbis
+    stereo and 8 kHz mono; FLAC 16-, 24- and 8-bit, with small frames; WAV; Ogg Opus.
+  - The run's count is below.
+- **Size:**
+  - `bmds_audio` 164 KB of flash (114 KB more: the decoders, at `-O2`), 3,796 bytes of BSS
+    (1,024 more: stb_vorbis's CRC table);
+  - the firmware image from 1,108,448 to 1,239,920 bytes.
+  - Per decoder (PSRAM):
+    - MP3 about 48 KB (the input buffer 16 KB, the scratch 16 KB, the decoder 6.7 KB, a frame's
+      samples 9 KB) and its index;
+    - Vorbis 128 KB or more (195,552 bytes for the 30 s clip, so 256 KB);
+    - FLAC 41 KB for the 30 s clip;
+    - each with 4 KB of cache, and 4 KB of tags when it has any.

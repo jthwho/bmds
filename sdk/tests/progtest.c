@@ -46,6 +46,8 @@
  *   progtest threadexec SELF  a thread execs SELF status 42
  *   progtest audio        /dev/dsp: the audio calls, OSS's ioctls and their errors (plays silence)
  *   progtest audioexit    queue 500 ms of silence on /dev/dsp and exit without closing it
+ *   progtest decode FLAC  the decoder calls on FLAC (tests/host/audio/tone.flac): info, tags, reads,
+ *                         seeks, a buffer, and their errors
  */
 
 #define _GNU_SOURCE /* gettid() */
@@ -1225,6 +1227,97 @@ static int audio(void) {
         return 0;
 }
 
+/* The decoder calls (slots 71-73) on @p path, tests/host/audio/tone.flac: a second of 44.1 kHz stereo. */
+static int decode(const char *path) {
+        CHECK(bmds_sys_has(BMDS_SYS_AUDIO_DECODE_TAG));
+        const int file = open(path, O_RDONLY);
+        CHECK(file >= 0);
+        bmds_decode_config_t c = {.size = sizeof(c), .format = BMDS_AUDIO_S16LE};
+        /* What is refused. */
+        CHECK(bmds_audio_decode(file, NULL) == -BMDS_EFAULT);
+        bmds_decode_config_t bad = c;
+        bad.size = 0;
+        CHECK(bmds_audio_decode(file, &bad) == -BMDS_EINVAL);
+        bad = c;
+        bad.format = BMDS_AUDIO_U8;
+        CHECK(bmds_audio_decode(file, &bad) == -BMDS_EINVAL);
+        bad = c;
+        bad.flags = 1;
+        CHECK(bmds_audio_decode(file, &bad) == -BMDS_EINVAL);
+        CHECK(bmds_audio_decode(99, &c) == -BMDS_EBADF);
+        const int dsp = open("/dev/dsp", O_WRONLY);
+        CHECK(dsp >= 0 && bmds_audio_decode(dsp, &c) == -BMDS_EBADF);
+        CHECK(close(dsp) == 0);
+        bad = c;
+        bad.length = 5;
+        bad.data = "hello";
+        CHECK(bmds_audio_decode(-1, &bad) == -BMDS_EINVAL);
+        bad.data = NULL;
+        CHECK(bmds_audio_decode(-1, &bad) == -BMDS_EFAULT);
+
+        /* The file: what it is, its tags. */
+        c.flags = BMDS_O_CLOEXEC;
+        const int pcm = bmds_audio_decode(file, &c);
+        CHECK(pcm > file);
+        CHECK(fcntl(pcm, F_GETFD) == FD_CLOEXEC);
+        CHECK(close(file) == 0); /* the decoded fd keeps it */
+        bmds_decode_info_t info = {.size = sizeof(info)};
+        CHECK(bmds_audio_decode_info(pcm, &info) == 0);
+        CHECK(info.codec == BMDS_CODEC_FLAC && strcmp(info.name, "flac") == 0);
+        CHECK(info.format == BMDS_AUDIO_S16LE && info.native_format == BMDS_AUDIO_S16LE && info.frame_bytes == 4);
+        CHECK(info.channels == 2 && info.rate == 44100 && info.frames == 44100 && info.flags == 0);
+        CHECK(info.source_bits == 16 && info.bitrate > 0 && info.tags >= 4);
+        CHECK(bmds_audio_decode_info(1, &info) == -BMDS_ENOTTY);
+        char key[16], value[16], small[3];
+        int  title = 0;
+        for (uint32_t i = 0; i < info.tags; ++i) {
+                const int32_t n = bmds_audio_decode_tag(pcm, i, key, sizeof(key), value, sizeof(value));
+                CHECK(n >= 0);
+                if (strcmp(key, "TITLE") == 0) {
+                        CHECK(n == 4 && strcmp(value, "Tone") == 0);
+                        CHECK(bmds_audio_decode_tag(pcm, i, NULL, 0, small, sizeof(small)) == 4 &&
+                              strcmp(small, "To") == 0);
+                        title = 1;
+                }
+        }
+        CHECK(title);
+        CHECK(bmds_audio_decode_tag(pcm, info.tags, key, sizeof(key), value, sizeof(value)) == -BMDS_ENOENT);
+        CHECK(bmds_audio_decode_tag(1, 0, key, sizeof(key), value, sizeof(value)) == -BMDS_ENOTTY);
+
+        /* Reads, fstat, seeks; read-only. */
+        struct stat st;
+        CHECK(fstat(pcm, &st) == 0 && S_ISREG(st.st_mode) && st.st_size == 176400);
+        static unsigned char whole[176400], part[4096];
+        size_t               got = 0;
+        for (;;) {
+                const ssize_t n = read(pcm, whole + got, sizeof(whole) - got < 5000 ? sizeof(whole) - got : 5000);
+                CHECK(n >= 0);
+                if (n == 0) break;
+                got += (size_t)n;
+        }
+        CHECK(got == sizeof(whole));
+        CHECK(lseek(pcm, 1001, SEEK_SET) == 1001 && read(pcm, part, 3) == 3 && memcmp(part, whole + 1001, 3) == 0);
+        CHECK(read(pcm, part, 4096) == 4096 && memcmp(part, whole + 1004, 4096) == 0);
+        CHECK(lseek(pcm, 0, SEEK_END) == 176400 && read(pcm, part, 1) == 0);
+        CHECK(write(pcm, part, 1) < 0 && errno == EBADF);
+
+        /* A buffer, copied by the call. */
+        unsigned char *copy = malloc(65536);
+        const int      again = open(path, O_RDONLY);
+        const ssize_t  size = read(again, copy, 65536);
+        CHECK(size > 0 && size < 65536 && close(again) == 0);
+        bmds_decode_config_t mem = {
+                .size = sizeof(mem), .format = BMDS_DECODE_NATIVE, .length = (uint32_t)size, .data = copy};
+        const int pcm2 = bmds_audio_decode(-1, &mem);
+        CHECK(pcm2 >= 0);
+        memset(copy, 0, (size_t)size);
+        free(copy);
+        CHECK(read(pcm2, part, 4096) == 4096 && memcmp(part, whole, 4096) == 0);
+        CHECK(close(pcm2) == 0 && close(pcm) == 0);
+        printf("decode: ok\n");
+        return 0;
+}
+
 int main(int argc, char **argv) {
         if (argc < 2) {
                 fprintf(stderr,
@@ -1239,6 +1332,7 @@ int main(int argc, char **argv) {
         const char *arg = argc > 2 ? argv[2] : "0";
         if (strcmp(what, "status") == 0) return atoi(arg);
         if (strcmp(what, "audio") == 0) return audio();
+        if (strcmp(what, "decode") == 0) return decode(arg);
         if (strcmp(what, "audioexit") == 0) {
                 const int           fd = open("/dev/dsp", O_WRONLY);
                 bmds_audio_config_t c = {.size = sizeof(c),

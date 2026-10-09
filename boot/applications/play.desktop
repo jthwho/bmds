@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Play
+Comment=Plays a sound file (WAV, MP3, Ogg Vorbis, FLAC) in a terminal; Ctrl+C stops
+Exec=play %f
+Icon=audio-x-generic
+Terminal=true
+NoDisplay=true

@@ -70,7 +70,8 @@ tests/compat/           Compatibility corpus: programs from each SDK version, ke
 dist/                   The distribution: recipes for third-party programs (BusyBox), built by tools/bmds-dist
 tools/                  Host tools (bmds-elfcheck, bmds-run push-and-run, bmds-compat, bmds-dist, ...)
 cmake/                  Shared CMake helpers (BMDS compile flags)
-thirdparty/             Vendored third-party code (doctest, FatFs, the IANA tzdata sources; musl is in sdk/libc)
+thirdparty/             Vendored third-party code (doctest, FatFs, littlefs, minimp3, stb_vorbis, dr_flac, the IANA tzdata
+                        sources; musl is in sdk/libc)
 docs/                   Project documentation
 devplan/                Design notes and plans per subsystem
 ```

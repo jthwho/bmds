@@ -68,6 +68,17 @@ TEST_CASE("FileFormat: by content") {
         CHECK(content("OggS....") == "audio/ogg");
         CHECK(content("fLaC....") == "audio/flac");
         CHECK(content("ID3\x03") == "audio/mpeg");
+        {
+                // MPEG audio without a tag: MPEG-2 layer III, 32 kb/s, 22,050 Hz, mono: 104-byte frames.
+                std::string mp3(300, '\x55');
+                mp3.replace(0, 4, "\xff\xf3\x40\xc0");
+                mp3.replace(104, 4, "\xff\xf3\x40\xc0");
+                CHECK(content(mp3) == "audio/mpeg");
+                mp3[105] = '\xfb'; // another version where the next frame should be
+                CHECK(content(mp3) == "application/octet-stream");
+                CHECK(content(mp3.substr(0, 60)) == "audio/mpeg"); // the next header past the head
+                CHECK(content(std::string("\xff\xf3\xf0\xc0", 4)) == "application/octet-stream"); // bitrate 15
+        }
         CHECK(content(std::string("RIFF\x24\0\0\0WAVEfmt ", 16)) == "audio/x-wav");
         CHECK(content(std::string("RIFF\x24\0\0\0"
                                   "AVI LIST",

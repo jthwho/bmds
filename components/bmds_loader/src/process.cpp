@@ -942,6 +942,14 @@ int32_t Process::sysconfWatch(const char *prefix, uint32_t flags) {
         return fd;
 }
 
+int32_t Process::addHandle(FileHandle::Ptr handle, uint32_t flags) {
+        Mutex::Locker locker(_lock, WaitForever);
+        auto [fd, err] = _fds.add(std::move(handle));
+        if (err.isError()) return -BMDS_EMFILE;
+        if (flags & BMDS_O_CLOEXEC) (void)_fds.setCloseOnExec(fd, true);
+        return fd;
+}
+
 int32_t Process::stat(const char *path, bmds_stat_t *info) {
         StringView p;
         if (int32_t r = this->path(path, p); r < 0) return r;

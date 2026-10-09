@@ -5,19 +5,23 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * The audio system calls (target only, devplan/audio.md §18): the ABI's
- * structs to and from an fd's AudioFile.
+ * The audio system calls (target only, devplan/audio.md §18, §19): the ABI's
+ * structs to and from an fd's AudioFile or DecodedFile.
  */
 
 #include <cstdint>
 #include <cstring>
 #include <bmds/audiodevice.h>
 #include <bmds/audiofile.h>
+#include <bmds/decodedfile.h>
 #include <bmds/errno.h>
 #include <bmds/sys.h>
 #include "running.h"
 
 using bmds::AudioFile;
+using bmds::Codec;
+using bmds::DecodedFile;
+using bmds::Decoder;
 using bmds::Error;
 using bmds::KernelCall;
 using bmds::Process;
@@ -51,6 +55,12 @@ namespace {
                               bmds::SystemSoundCount == BMDS_SOUND_NOTIFY + 1,
                       "the ABI's sounds are SystemSound's");
         static_assert(BMDS_AUDIO_GAIN_MUTED == AudioFile::MutedCentiDb, "the ABI's silent gain");
+        static_assert(BMDS_CODEC_WAV == static_cast<uint32_t>(Codec::Wav) &&
+                              BMDS_CODEC_MP3 == static_cast<uint32_t>(Codec::Mp3) &&
+                              BMDS_CODEC_VORBIS == static_cast<uint32_t>(Codec::Vorbis) &&
+                              BMDS_CODEC_FLAC == static_cast<uint32_t>(Codec::Flac),
+                      "the ABI's codecs are Codec's");
+        static_assert(BMDS_DECODE_UNKNOWN_FRAMES == Decoder::UnknownFrames, "the ABI's unknown length");
 
         // Copies the caller's struct (its `size` first) into a zeroed full one.
         template <typename T> int32_t copyIn(const T *in, T &full) {
@@ -71,6 +81,24 @@ namespace {
                 std::memcpy(reinterpret_cast<uint8_t *>(out) + sizeof(uint32_t),
                             reinterpret_cast<const uint8_t *>(&full) + sizeof(uint32_t), n - sizeof(uint32_t));
                 return 0;
+        }
+
+        // The decoded file behind @p handle (an fd's), or the errno.
+        int32_t decodedFileOf(const bmds::FileHandle::Ptr &handle, DecodedFile *&file) {
+                if (!handle) return -BMDS_EBADF;
+                file = handle->stream().decodedFile();
+                return file != nullptr ? 0 : -BMDS_ENOTTY;
+        }
+
+        // Copies @p text into @p out (@p size bytes with the NUL), cut at a UTF-8 character's end.
+        void copyText(bmds::StringView text, char *out, uint32_t size) {
+                if (out == nullptr || size == 0) return;
+                size_t n = text.size() < size - 1 ? text.size() : size - 1;
+                if (n < text.size())
+                        while (n > 0 && (static_cast<uint8_t>(text[n]) & 0xc0) == 0x80) --n;
+                std::memcpy(out, text.data(), n);
+                out[n] = '\0';
+                return;
         }
 
         // The audio file behind @p handle (an fd's), or the errno.
@@ -172,6 +200,70 @@ int32_t bmds_k_sound_play(uint32_t sound) {
         if (sound >= bmds::SystemSoundCount) return -BMDS_EINVAL;
         (void)bmds::SystemSounds::play(static_cast<bmds::SystemSound>(sound));
         return 0;
+}
+
+int32_t bmds_k_audio_decode(int32_t fd, const bmds_decode_config_t *config) {
+        KernelCall           call;
+        bmds_decode_config_t c;
+        int32_t              r = copyIn(config, c);
+        if (r < 0) return r;
+        if ((c.flags & ~BMDS_O_CLOEXEC) != 0) return -BMDS_EINVAL;
+        const bool native = c.format == BMDS_DECODE_NATIVE;
+        if (!native && c.format != BMDS_AUDIO_S16LE && c.format != BMDS_AUDIO_S32LE && c.format != BMDS_AUDIO_F32LE)
+                return -BMDS_EINVAL;
+        const auto                          format = native ? SampleFormat::S16Le : static_cast<SampleFormat>(c.format);
+        bmds::Result<bmds::FileHandle::Ptr> opened = bmds::makeError<bmds::FileHandle::Ptr>(Error::BadDescriptor);
+        if (fd == -1) {
+                if (c.data == nullptr && c.length != 0) return -BMDS_EFAULT;
+                opened = DecodedFile::open(bmds::ByteSpan(static_cast<const uint8_t *>(c.data), c.length), format,
+                                           native);
+        } else {
+                bmds::FileHandle::Ptr source = call->handle(fd);
+                if (!source || !source->canRead()) return -BMDS_EBADF;
+                opened = DecodedFile::open(source, format, native);
+        }
+        if (opened.error().isError()) return Process::errnoFor(opened.error());
+        return call->addHandle(std::move(opened.value()), c.flags);
+}
+
+int32_t bmds_k_audio_decode_info(int32_t fd, bmds_decode_info_t *info) {
+        KernelCall                  call;
+        const bmds::FileHandle::Ptr handle = call->handle(fd);
+        DecodedFile                *file = nullptr;
+        const int32_t               r = decodedFileOf(handle, file);
+        if (r < 0) return r;
+        if (info == nullptr) return -BMDS_EFAULT;
+        const Decoder       &d = file->decoder();
+        const Decoder::Info &k = d.info();
+        bmds_decode_info_t   i = {};
+        i.codec = static_cast<uint32_t>(k.codec);
+        copyText(Decoder::name(k.codec), i.name, sizeof(i.name));
+        i.format = static_cast<uint32_t>(d.format());
+        i.channels = k.channels;
+        i.rate = k.rateHz;
+        i.bitrate = k.bitrate;
+        i.frames = k.frames;
+        i.flags = k.estimated ? BMDS_DECODE_ESTIMATED : 0;
+        i.source_bits = k.sourceBits;
+        i.tags = static_cast<uint32_t>(d.tagCount());
+        i.native_format = static_cast<uint32_t>(k.format);
+        i.frame_bytes = static_cast<uint32_t>(d.frameBytes());
+        return copyOut(i, info);
+}
+
+int32_t bmds_k_audio_decode_tag(int32_t fd, uint32_t index, char *key, uint32_t key_size, char *value,
+                                uint32_t value_size) {
+        KernelCall                  call;
+        const bmds::FileHandle::Ptr handle = call->handle(fd);
+        DecodedFile                *file = nullptr;
+        const int32_t               r = decodedFileOf(handle, file);
+        if (r < 0) return r;
+        if ((key == nullptr && key_size != 0) || (value == nullptr && value_size != 0)) return -BMDS_EFAULT;
+        if (index >= file->decoder().tagCount()) return -BMDS_ENOENT;
+        const Decoder::Tag t = file->decoder().tag(index);
+        copyText(t.key, key, key_size);
+        copyText(t.value, value, value_size);
+        return static_cast<int32_t>(t.value.size());
 }
 
 } // extern "C"

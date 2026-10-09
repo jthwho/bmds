@@ -141,6 +141,10 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_AUDIO_STATUS 68u  /**< `int32_t audio_status(int32_t fd, bmds_audio_status_t *status)`. */
 #define BMDS_SYS_AUDIO_CONTROL 69u /**< `int32_t audio_control(int32_t fd, uint32_t op, int32_t value)`. */
 #define BMDS_SYS_SOUND_PLAY 70u    /**< `int32_t sound_play(uint32_t sound)`. */
+#define BMDS_SYS_AUDIO_DECODE                                                                                          \
+        71u /**< `int32_t audio_decode(int32_t fd, const bmds_decode_config_t *config)`: a new fd. */
+#define BMDS_SYS_AUDIO_DECODE_INFO 72u /**< `int32_t audio_decode_info(int32_t fd, bmds_decode_info_t *info)`. */
+#define BMDS_SYS_AUDIO_DECODE_TAG 73u  /**< `int32_t audio_decode_tag(fd, index, key, key_size, value, value_size)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -440,6 +444,52 @@ typedef struct bmds_audio_status_t {
 #define BMDS_SOUND_ERROR 2u  /**< An error (`audio/feedback`). */
 #define BMDS_SOUND_NOTIFY 3u /**< A notification (`audio/feedback`). */
 
+/** @brief `bmds_decode_info_t::codec`: a sound file's coding (appended 2026-10-08). */
+#define BMDS_CODEC_WAV 0u    /**< RIFF/WAVE. */
+#define BMDS_CODEC_MP3 1u    /**< MPEG-1, 2 and 2.5 audio, layers I to III. */
+#define BMDS_CODEC_VORBIS 2u /**< Ogg Vorbis. */
+#define BMDS_CODEC_FLAC 3u   /**< FLAC. */
+
+/** @brief `bmds_decode_config_t::format`: the decoder's own format (`bmds_decode_info_t::native_format`). */
+#define BMDS_DECODE_NATIVE 0xffffffffu
+
+/** @brief `bmds_decode_info_t::frames` when the length isn't known. */
+#define BMDS_DECODE_UNKNOWN_FRAMES 0xffffffffffffffffull
+
+/** @brief `bmds_decode_info_t::flags`. */
+#define BMDS_DECODE_ESTIMATED 1u /**< `frames` from the size and bitrate (an MP3 without a Xing frame). */
+
+/**
+ * @brief What `audio_decode` decodes and how (appended 2026-10-08, `devplan/audio.md` §19).
+ */
+typedef struct bmds_decode_config_t {
+                uint32_t size; /**< Set by the caller: `sizeof(bmds_decode_config_t)`. */
+                uint32_t
+                        format; /**< `BMDS_AUDIO_S16LE`, `BMDS_AUDIO_S32LE`, `BMDS_AUDIO_F32LE`, or `BMDS_DECODE_NATIVE`. */
+                uint32_t    flags;  /**< `BMDS_O_CLOEXEC`, or 0. */
+                uint32_t    length; /**< With fd -1: `data`'s bytes. */
+                const void *data;   /**< With fd -1: the file in memory, copied by the call. */
+} bmds_decode_config_t;
+
+/**
+ * @brief A decoded fd's file and what reads give (`audio_decode_info`).
+ */
+typedef struct bmds_decode_info_t {
+                uint32_t size;          /**< Set by the caller: `sizeof(bmds_decode_info_t)`. */
+                uint32_t codec;         /**< `BMDS_CODEC_WAV`... */
+                char     name[8];       /**< The codec's name, NUL-terminated: `wav`, `mp3`, `vorbis`, `flac`. */
+                uint32_t format;        /**< What reads give: a `BMDS_AUDIO_*` format, interleaved. */
+                uint32_t channels;      /**< 1 or 2. */
+                uint32_t rate;          /**< Frames a second. */
+                uint32_t bitrate;       /**< The file's average, bits a second; 0 unknown. */
+                uint64_t frames;        /**< The length, or `BMDS_DECODE_UNKNOWN_FRAMES`. */
+                uint32_t flags;         /**< `BMDS_DECODE_ESTIMATED`. */
+                uint32_t source_bits;   /**< A lossless file's sample size; 0 lossy. */
+                uint32_t tags;          /**< The number of tags (`audio_decode_tag`). */
+                uint32_t native_format; /**< The decoder's own format (`BMDS_DECODE_NATIVE` gives it). */
+                uint32_t frame_bytes;   /**< The bytes of a frame read. */
+} bmds_decode_info_t;
+
 /** @brief `bmds_stat_t::type`. */
 #define BMDS_TYPE_FILE 1u      /**< A regular file. */
 #define BMDS_TYPE_DIRECTORY 2u /**< A directory (also `/`, `/dev` and mount points). */
@@ -596,6 +646,10 @@ typedef int32_t (*bmds_sys_audio_config_fn)(int32_t fd, const bmds_audio_config_
 typedef int32_t (*bmds_sys_audio_status_fn)(int32_t fd, bmds_audio_status_t *status);
 typedef int32_t (*bmds_sys_audio_control_fn)(int32_t fd, uint32_t op, int32_t value);
 typedef int32_t (*bmds_sys_sound_play_fn)(uint32_t sound);
+typedef int32_t (*bmds_sys_audio_decode_fn)(int32_t fd, const bmds_decode_config_t *config);
+typedef int32_t (*bmds_sys_audio_decode_info_fn)(int32_t fd, bmds_decode_info_t *info);
+typedef int32_t (*bmds_sys_audio_decode_tag_fn)(int32_t fd, uint32_t index, char *key, uint32_t key_size, char *value,
+                                                uint32_t value_size);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -1272,6 +1326,44 @@ static inline int32_t bmds_audio_control(int32_t fd, uint32_t op, int32_t value)
  */
 static inline int32_t bmds_sound_play(uint32_t sound) {
         return ((bmds_sys_sound_play_fn)bmds_sys->slot[BMDS_SYS_SOUND_PLAY])(sound);
+}
+
+/**
+ * @brief Opens a decoder on the sound file @p fd (readable and seekable; or, with @p fd -1,
+ *        @p config's `data`): a new fd whose reads give PCM in @p config's `format`, at the
+ *        file's rate and channels. `lseek` on it is in bytes of that PCM and exact; `fstat`'s
+ *        size is its length when known; it is read-only. Decoding runs in the reading thread.
+ *        The file's fd may be closed meanwhile, but not read or sought from another thread.
+ *        (Slots 71-73, appended 2026-10-08: check `bmds_sys_has(BMDS_SYS_AUDIO_DECODE)`.)
+ * @return The fd, or `-BMDS_EINVAL` (not a sound file known; a bad format, flag or size),
+ *         `-BMDS_ENOTSUP` (a known format in a form not played: Ogg Opus, more than two
+ *         channels; or @p fd doesn't seek), `-BMDS_EBADF`, `-BMDS_EFAULT`, `-BMDS_ENOMEM`,
+ *         `-BMDS_EMFILE`, `-BMDS_EIO` (a read failed). Reads of a damaged file fail with `EIO`.
+ */
+static inline int32_t bmds_audio_decode(int32_t fd, const bmds_decode_config_t *config) {
+        return ((bmds_sys_audio_decode_fn)bmds_sys->slot[BMDS_SYS_AUDIO_DECODE])(fd, config);
+}
+
+/**
+ * @brief Fills @p info (its `size` set) about decoded fd @p fd.
+ * @return 0, or `-BMDS_ENOTTY` (not a decoded fd), `-BMDS_EBADF`, `-BMDS_EFAULT`, `-BMDS_EINVAL`.
+ */
+static inline int32_t bmds_audio_decode_info(int32_t fd, bmds_decode_info_t *info) {
+        return ((bmds_sys_audio_decode_info_fn)bmds_sys->slot[BMDS_SYS_AUDIO_DECODE_INFO])(fd, info);
+}
+
+/**
+ * @brief Copies tag @p index (0 the first) of decoded fd @p fd: its key, in capitals (Vorbis
+ *        comment names: `TITLE`, `ARTIST`, `ALBUM`, `TRACKNUMBER`, `DATE`...), into @p key and
+ *        its value, UTF-8, into @p value, each NUL-terminated and cut at a character's end to
+ *        fit (either may be NULL with a size of 0).
+ * @return The value's whole length in bytes (more than @p value_size - 1: it was cut), or
+ *         `-BMDS_ENOENT` (past the last), `-BMDS_ENOTTY`, `-BMDS_EBADF`.
+ */
+static inline int32_t bmds_audio_decode_tag(int32_t fd, uint32_t index, char *key, uint32_t key_size, char *value,
+                                            uint32_t value_size) {
+        return ((bmds_sys_audio_decode_tag_fn)bmds_sys->slot[BMDS_SYS_AUDIO_DECODE_TAG])(fd, index, key, key_size,
+                                                                                         value, value_size);
 }
 
 #ifdef __cplusplus

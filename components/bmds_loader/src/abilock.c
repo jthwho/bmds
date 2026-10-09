@@ -91,6 +91,8 @@ _Static_assert(BMDS_SYS_AUDIO_CONFIG == 67, "ABI: slot AUDIO_CONFIG");
 _Static_assert(BMDS_SYS_AUDIO_STATUS == 68, "ABI: slot AUDIO_STATUS");
 _Static_assert(BMDS_SYS_AUDIO_CONTROL == 69, "ABI: slot AUDIO_CONTROL");
 _Static_assert(BMDS_SYS_SOUND_PLAY == 70, "ABI: slot SOUND_PLAY");
+_Static_assert(BMDS_SYS_AUDIO_DECODE == 71 && BMDS_SYS_AUDIO_DECODE_INFO == 72 && BMDS_SYS_AUDIO_DECODE_TAG == 73,
+               "ABI: slots AUDIO_DECODE, _INFO, _TAG");
 _Static_assert(BMDS_SYSCONF_KEY_MAX == 63 && BMDS_SYSCONF_VALUE_MAX == 1024, "ABI: sysconf lengths");
 _Static_assert(BMDS_SYSCONF_TYPE_BOOL == 0 && BMDS_SYSCONF_TYPE_INT == 1 && BMDS_SYSCONF_TYPE_STRING == 2 &&
                        BMDS_SYSCONF_TYPE_COLOR == 3 && BMDS_SYSCONF_TYPE_ENUM == 4 && BMDS_SYSCONF_TYPE_PATH == 5 &&
@@ -251,6 +253,30 @@ _Static_assert(BMDS_AUDIO_START == 1 && BMDS_AUDIO_PAUSE == 2 && BMDS_AUDIO_RESU
                "ABI: audio_control ops");
 _Static_assert(BMDS_SOUND_BELL == 0 && BMDS_SOUND_CLICK == 1 && BMDS_SOUND_ERROR == 2 && BMDS_SOUND_NOTIFY == 3,
                "ABI: sounds");
+_Static_assert(BMDS_CODEC_WAV == 0 && BMDS_CODEC_MP3 == 1 && BMDS_CODEC_VORBIS == 2 && BMDS_CODEC_FLAC == 3,
+               "ABI: codecs");
+_Static_assert(BMDS_DECODE_NATIVE == 0xffffffffu && BMDS_DECODE_UNKNOWN_FRAMES == 0xffffffffffffffffull &&
+                       BMDS_DECODE_ESTIMATED == 1,
+               "ABI: decode constants");
+_Static_assert(sizeof(bmds_decode_info_t) == 64, "ABI: bmds_decode_info_t size");
+_Static_assert(offsetof(bmds_decode_info_t, size) == 0, "ABI: decode_info.size");
+_Static_assert(offsetof(bmds_decode_info_t, codec) == 4, "ABI: decode_info.codec");
+_Static_assert(offsetof(bmds_decode_info_t, name) == 8, "ABI: decode_info.name");
+_Static_assert(offsetof(bmds_decode_info_t, format) == 16, "ABI: decode_info.format");
+_Static_assert(offsetof(bmds_decode_info_t, channels) == 20, "ABI: decode_info.channels");
+_Static_assert(offsetof(bmds_decode_info_t, rate) == 24, "ABI: decode_info.rate");
+_Static_assert(offsetof(bmds_decode_info_t, bitrate) == 28, "ABI: decode_info.bitrate");
+_Static_assert(offsetof(bmds_decode_info_t, frames) == 32, "ABI: decode_info.frames");
+_Static_assert(offsetof(bmds_decode_info_t, flags) == 40, "ABI: decode_info.flags");
+_Static_assert(offsetof(bmds_decode_info_t, source_bits) == 44, "ABI: decode_info.source_bits");
+_Static_assert(offsetof(bmds_decode_info_t, tags) == 48, "ABI: decode_info.tags");
+_Static_assert(offsetof(bmds_decode_info_t, native_format) == 52, "ABI: decode_info.native_format");
+_Static_assert(offsetof(bmds_decode_info_t, frame_bytes) == 56, "ABI: decode_info.frame_bytes");
+_Static_assert(offsetof(bmds_decode_config_t, size) == 0, "ABI: decode_config.size");
+_Static_assert(offsetof(bmds_decode_config_t, format) == 4, "ABI: decode_config.format");
+_Static_assert(offsetof(bmds_decode_config_t, flags) == 8, "ABI: decode_config.flags");
+_Static_assert(offsetof(bmds_decode_config_t, length) == 12, "ABI: decode_config.length");
+_Static_assert(offsetof(bmds_decode_config_t, data) == 16, "ABI: decode_config.data");
 
 #if UINTPTR_MAX == 0xffffffffu
 _Static_assert(offsetof(bmds_thread_t, size) == 0, "ABI: thread.size");
@@ -262,6 +288,7 @@ _Static_assert(offsetof(bmds_thread_t, hint) == 20, "ABI: thread.hint");
 _Static_assert(offsetof(bmds_thread_t, clear) == 24, "ABI: thread.clear");
 _Static_assert(offsetof(bmds_thread_t, tid) == 28, "ABI: thread.tid");
 _Static_assert(sizeof(bmds_thread_t) == 32, "ABI: bmds_thread_t size");
+_Static_assert(sizeof(bmds_decode_config_t) == 20, "ABI: bmds_decode_config_t size");
 #endif
 
 _Static_assert(offsetof(bmds_sys_t, magic) == 0, "ABI: bmds_sys_t.magic");
