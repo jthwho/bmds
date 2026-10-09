@@ -145,7 +145,8 @@ Plan: [`input.md`](input.md).
     blocks for instruments (oscillators, envelopes, filters), until an instrument needs them.
   - [ ] 8. Media player (`mediaplayer.md`, planned; the user's choices 2026-10-09): `mplayer`, a
     GUI player for audio and MIDI files (video later), with saved playlists, a library by tags, a
-    visualizer, a MIDI view, a toolkit Open dialog, and a tray controller while it plays hidden.
+    visualizer, a MIDI view, a toolkit Open dialog, and a tray controller while it plays hidden;
+    designed in detail (§6), with a Qt-style system tray API that the volume control moves onto.
   - [ ] Mixer window (`audio.md` §17, planned 2026-10-09): `mixer`, per-application levels (the
     device, each stream, system sounds, the MIDI synth's `synth/gain`); the volume tray icon's
     context menu (Mute, Mixer…). After the media player.

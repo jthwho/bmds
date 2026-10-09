@@ -23,6 +23,7 @@ add_subdirectory(${BMDS_ROOT}/components/bmds_drivers ${CMAKE_BINARY_DIR}/bmds_d
 add_subdirectory(${BMDS_ROOT}/components/bmds_audio ${CMAKE_BINARY_DIR}/bmds_audio)
 add_subdirectory(${BMDS_ROOT}/components/bmds_midi ${CMAKE_BINARY_DIR}/bmds_midi)
 add_subdirectory(${BMDS_ROOT}/components/bmds_synth ${CMAKE_BINARY_DIR}/bmds_synth)
+add_subdirectory(${BMDS_ROOT}/components/bmds_mplayer ${CMAKE_BINARY_DIR}/bmds_mplayer)
 add_subdirectory(${BMDS_ROOT}/components/bmds_input ${CMAKE_BINARY_DIR}/bmds_input)
 add_subdirectory(${BMDS_ROOT}/components/bmds_ui ${CMAKE_BINARY_DIR}/bmds_ui)
 add_subdirectory(${BMDS_ROOT}/components/bmds_gui ${CMAKE_BINARY_DIR}/bmds_gui)
@@ -63,6 +64,7 @@ add_executable(bmds_host_tests
         ${BMDS_ROOT}/sdk/crt/oss.c
         memspace.cpp
         midi.cpp
+        mplayer.cpp
         synth.cpp
         pipe.cpp
         process.cpp
@@ -115,7 +117,7 @@ if(BMDS_ZIC AND Python3_Interpreter_FOUND)
         target_compile_definitions(bmds_host_tests PRIVATE BMDS_TEST_ZONEINFO="${CMAKE_BINARY_DIR}/zoneinfo.bin")
 endif()
 target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_audio bmds_midi bmds_synth bmds_input bmds_ui bmds_gui bmds_clipboard
-        bmds_sysconf bmds_files)
+        bmds_sysconf bmds_files bmds_mplayer)
 bmds_target_options(bmds_host_tests)
 
 # bmds-elfcheck: the loader's format check as a host tool (tools/elfcheck).

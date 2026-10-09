@@ -777,6 +777,9 @@ rate or period restarts a running device, a short gap; a stopped one uses it at 
   - **Mixer…:** opens the mixer window (below). Which application that is comes from a setting
     (`panel/volume/mixer`, a Desktop Entry ID, `mixer.desktop` by default), so the panel names no
     application (`builtin-apps-not-special`).
+- **Planned (the user, 2026-10-09): the control becomes a `TrayIcon`** on the toolkit's new
+  system tray API (`mediaplayer.md` §6e), still in the panel's process, so the tray treats it as
+  any program's icon; the context menu above is its `TrayIcon` menu.
 - **Planned (2026-10-09): the mixer window,** a built-in application, `mixer`, with a launcher
   entry: per-application levels, which the tray's one slider can't give (a MIDI file quieter than
   an MP3 beside it, a program too loud).

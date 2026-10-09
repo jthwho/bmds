@@ -31,6 +31,30 @@ BMDS_NAMESPACE_BEGIN
  */
 namespace MidiDecoder {
 
+        /**
+         * @brief Something a MIDI file did as it played, on the frame it did it, for a
+         *        view of the channels (`devplan/mediaplayer.md` §6h).
+         */
+        struct Activity {
+                        /** @brief What it was. */
+                        enum class Kind : uint8_t {
+                                NoteOn,        ///< `a` the key, `b` the velocity (0: an off).
+                                NoteOff,       ///< `a` the key.
+                                Program,       ///< `a` the program.
+                                Control,       ///< `a` the controller, `b` the value.
+                                Tempo,         ///< `value` microseconds a quarter note.
+                                TimeSignature, ///< `a` the beats a bar, `b` the beat's note (4: a quarter).
+                                Reset,         ///< Every channel as at the start (a snapshot follows).
+                        };
+
+                        uint64_t frame = 0;
+                        uint32_t value = 0;
+                        Kind     kind = Kind::Reset;
+                        uint8_t  channel = 0; ///< 0 to 15.
+                        uint8_t  a = 0;
+                        uint8_t  b = 0;
+        };
+
         /** @brief Opens @p synth on the font to play files with; returns the font. */
         using OpenSynth = Result<SoundFont *> (*)(const Synth::Config &config, Synth &synth);
 

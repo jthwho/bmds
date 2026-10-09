@@ -1,6 +1,7 @@
 # Media Player
 
-Planned 2026-10-09, not started; its main questions answered the same day (§4). The user's request
+Planned 2026-10-09; its main questions answered the same day (§4), designed in detail the same day
+(§6), being built (§9). The user's request
 (2026-10-08): after the synth works, "a proper fully featured GUI media player that'll play both
 audio files and midi files (and perhaps video files in the future)". It is step 8 of
 `devplan/audio.md` §10.
@@ -33,7 +34,7 @@ audio files and midi files (and perhaps video files in the future)". It is step 
   would take its place.
 - **The tray** has a volume control (`audio.md` §17); the panel has a window list and a launcher.
 
-## 3. A shape to start from (to be agreed)
+## 3. A shape to start from (agreed; §6 is the design)
 
 - **`/bin/player`** (or another name), a built-in GUI application with a launcher entry, opened
   for `audio/*` from the file browser and with files on its command line.
@@ -70,7 +71,7 @@ audio files and midi files (and perhaps video files in the future)". It is step 
 - **It keeps playing with its window closed:** closing hides it; a controller in the panel's
   tray brings it back or stops it.
 
-## 5. What the decisions bring with them (to be designed next)
+## 5. What the decisions bring with them (designed in §6)
 
 - **The tray controller** can't be the panel knowing `mplayer` (`builtin-apps-not-special`): it
   needs a general way for an application to put an item in the tray (an icon, a tooltip, a menu,
@@ -86,3 +87,350 @@ audio files and midi files (and perhaps video files in the future)". It is step 
 - **The playlist kept between runs:** in the user's home (`/home/.config/mplayer/`).
 - **Its volume** is its stream's gain, so the planned mixer window (`audio.md` §17) shows and sets
   the same level.
+
+## 6. Design (2026-10-09)
+
+### 6a. Where it lives
+
+- **`components/bmds_mplayer`:** `/bin/mplayer`, a built-in program (`BMDS_PROGRAM_ICONS`,
+  `WHOLE_ARCHIVE`, as the terminal), on the public toolkit and the kernel's public classes only.
+- **Its pure parts** (no toolkit, no IDF; host-tested from `tests/host`): the playlist and its
+  orders, M3U, the library's index, the MIDI channel model, the spectrum's bands.
+- **What other programs can use goes to the shared components:**
+  - the Open and Save dialog, the drop-down list, tabs, tray items: `bmds_gui` (§6d);
+  - the FFT: `bmds_core` (portable, for the SDK's synth library later too);
+  - a decoder's information without decoding, MIDI files' events as they play: `bmds_audio` and
+    `bmds_synth` (§6f, §6h).
+
+### 6b. Playing
+
+- **Two threads:**
+  - the loop (`GuiApplication`): the window, the tray item, the dialogs;
+  - **the playback thread** (`Player`, 8 KB stack in PSRAM: the decoders keep their state off the
+    stack): opens files, decodes, writes to the stream.
+- **The stream:** `/dev/dsp` (the default device) opened for writing, configured from the
+  decoder's rate and channels, in `F32Le` (MIDI's own; the others converted by the decoder).
+- **Commands** (the loop to the thread): play an entry, pause, resume, stop, seek, next, previous,
+  set the gain. In a small queue under a lock; the thread is woken by a semaphore.
+  - **Writes are a period at a time** (about 20 ms), so a command waits one period at most.
+  - **A seek or a stop** also calls `drop()`, which wakes a writer waiting for room
+    (`AudioFile` is thread-safe), and the ring's old sound goes at once.
+  - **Pause** is the stream's own (`setPaused()`): the ring keeps its sound, resume is instant.
+- **Reports** (the thread to the loop) by `GuiApplication::post()`: a track started (its entry,
+  its first frame on the stream), a track ended, an error (the entry, the error), stopped.
+- **Where it is:** the stream's status (frames played, the timestamp of the last). Never a
+  timer's count (`audio.md` §9: the device's clock).
+  - The position in a track: frames played less the track's first frame on the stream, plus the
+    frame it was started or sought at, over the track's rate.
+  - Between status updates, the timestamp moves it on, so the time and the slider move smoothly.
+  - **Redrawn by a timer only while it is shown and playing** (4 a second for the time; the
+    visualizer's 30 when shown, §6g); none while paused, stopped or hidden.
+- **Gapless:** at a track's end the next one opens at once.
+  - **Same rate and channels:** it goes on into the same stream with no drain, so there is no gap.
+    Its first frame on the stream is recorded, and the window changes to it when the played
+    frames reach it.
+  - **Otherwise:** the stream drains, then is configured again (a gap of the ring's length).
+- **Volume:** the stream's gain (`setGain()`, centi-dB), −60 to 0 dB and mute, saved in
+  `mplayer.conf`. The mixer window (`audio.md` §17) will show the same level.
+- **Errors said plainly, then skipped:** in the status bar, the entry marked in the playlist (an
+  icon, the error in its tooltip).
+  - A file that won't open: `Invalid` "Not a sound file this player knows", `NotSupported`
+    "Ogg Opus isn't supported" (the decoder's reason), `CorruptData` "Damaged at 1:23".
+  - A MIDI file with no font: "No SoundFont: install one, or choose one in the MIDI view".
+  - The device in exclusive use: "The sound device is in use (exclusive mode)", and it stops.
+  - Every entry failing in a row stops the player rather than spinning through the list.
+
+### 6c. The window
+
+```
++- Media Player ------------------------------------------------- _ □ x -+
+| File  Playback  View  Help                                              |
++------------+------------------------------------------------------------+
+| ▌▌ ▌ ▌▌▌▌  | He's a Pirate                                              |
+| ▌▌▌▌▌▌▌▌▌  | Klaus Badelt — Pirates of the Caribbean                    |
+| (visualizer| MIDI · 48 kHz · stereo · 3:21                              |
++------------+------------------------------------------------------------+
+| 0:42  [=========o-----------------------------------------]  -2:39     |
+| [|◀][▶‖][■][▶|]  [⟳][⤮]                           🔈 [-------o---]      |
++-------------------------------------------------------------------------+
+| [Playlist] [Library] [MIDI]                                             |
+| #  Title                    Artist          Length  Format              |
+| 1  ▶ He's a Pirate          Klaus Badelt     3:21   MIDI                |
+| 2    Axel F                 Harold Faltermeyer 3:00 MIDI                |
++-------------------------------------------------------------------------+
+| Playing · 14 voices                                     2 of 12 · 41:07 |
++-------------------------------------------------------------------------+
+```
+
+- **Menus:**
+  - **File:** Open… (Ctrl+O: replaces the playlist and plays), Add Files…, Add Folder…, Open
+    Playlist…, Save Playlist As…, Close (Ctrl+W: hides it while playing), Quit (Ctrl+Q).
+  - **Playback:** Play/Pause (Space), Stop, Previous (Ctrl+Left), Next (Ctrl+Right), Back 5 s
+    (Left), Forward 5 s (Right), Repeat (Off, All, One), Shuffle.
+  - **View:** Playlist, Library, MIDI (the tabs: Ctrl+1 to 3), Visualizer: Spectrum, Levels, Off.
+  - **Help:** About.
+- **Now playing:** the title (or the file's name), artist and album, the format line.
+- **The position:** the time played, a `Slider` (seeks on release; while dragged, the time shows
+  where it would go), the time left. A length the decoder estimated is shown with `~`.
+- **Transport:** previous, play or pause, stop, next; repeat and shuffle as checkable buttons;
+  the volume slider (a tooltip with the dB; the wheel 1 dB a notch).
+- **The tabs:** the playlist (a `DetailsView`: number, title, artist, album, length, format; the
+  playing entry marked; double click or Return plays; Delete removes; Ctrl+Up and Ctrl+Down move
+  the selection; files dropped from the file browser later), the library (§6f), the MIDI view
+  (§6h).
+- **Status bar:** the state and what's useful about it (buffering, a MIDI file's voices, the last
+  error), the entry's number and the playlist's total time.
+- **Its icons:** the theme's `media-playback-start` and friends on the buttons;
+  `multimedia-player` for the window, the launcher and the tray.
+
+### 6d. Toolkit additions (`bmds_gui`), for every program
+
+- **`FileDialog`:** Open, Open several, Save, Choose Folder.
+  - **Layout:** a "Look in" row (Back, Up, the folder's path in a `LineEdit`), places on the left
+    (the home folder, the card's partitions, `/boot`), the folder in a `DetailsView` (Details or
+    Icons), then "File name" (a `LineEdit`) and "Files of type" (a `ComboBox`) over Open/Save
+    and Cancel.
+  - **Built on the file browser's parts:** `FolderModel` and `NavigationHistory` (`bmds_files`);
+    `FolderItems` and `FileIcons` move from the panel into `bmds_gui` (as `FolderItemModel` and
+    `FileIcons`), the file browser using them from there unchanged; directory watches keep the
+    folder current while the dialog is open.
+  - **Filters:** a list of names and patterns given by the caller ("Media files" = `*.mp3;*.ogg;
+    *.flac;*.wav;*.mid;*.midi;*.m3u;*.m3u8`, "All files"), applied to files, never to folders.
+  - **Keys:** typing a name selects it; Return on a folder enters it, on a file accepts;
+    Backspace goes up; a path typed in the name field goes there.
+  - **Save** asks before replacing a file (a `MessageBox`) and adds the filter's extension to a
+    name without one.
+  - **Not modal,** as `Dialog`: `Finished` gives the result; `paths()` the chosen ones.
+  - **Where it starts:** the folder the caller gives (the player: the last one it used).
+- **`ComboBox`:** a button showing the chosen item, a `Menu` of the items when pressed; keys Up
+  and Down change it, Alt+Down opens it. For the type filter, the repeat mode, the font.
+- **`TabWidget`:** a row of tabs over stacked pages; a click or Ctrl+Tab, Ctrl+Shift+Tab, or
+  Ctrl+PageDown, Ctrl+PageUp change pages; the hidden pages aren't laid out or painted.
+- **`Slider`:** a `Released` callback, and `isDragging()`, for a seek bar that seeks on release.
+- **`TrayIcon`** (a program's item in the panel's tray, §6e): an icon, a tooltip, `Activated`
+  (a left click) and `ContextMenu` (a right click, at a screen point: the program opens its own
+  `Menu` there).
+- **Each tried in `/bin/widgets`** before the player uses it, host tests for the pure parts
+  (the filter's matching, `ComboBox` and `TabWidget` key handling where pure).
+
+### 6e. The system tray (for every program; the user's, 2026-10-09)
+
+The user asked for "a proper system tray API (perhaps similar to what Qt uses)", with the volume
+control moved onto it. So the tray is a general service: Qt's `QSystemTrayIcon` is the model for
+the program's side, and freedesktop.org's StatusNotifierItem for what the protocol carries.
+
+- **`TrayIcon`** (`bmds_gui`), a program's item:
+  - `setIcon(name)` (a theme name) or `setIcon(const Icon &)` (16 × 16 pixels of its own,
+    copied: the volume's muted speaker is drawn by the program); `setToolTip(text)`, changed
+    live (the volume's dB follows the wheel);
+  - `setContextMenu(Menu *)`: a right click opens it at the point the tray gives;
+  - `setActivated(fn, arg)` with a reason, as Qt's: `Trigger` (a click), `DoubleClick`,
+    `MiddleClick`, `Context` (a right click, also told when there is a menu);
+  - `setScrolled(fn, arg)`: wheel notches (StatusNotifierItem's `Scroll`; Qt has none);
+  - `setCategory()`: `Application` (default), `Communications`, `System`, `Hardware`. The tray
+    places items by category, then in the order they came: hardware at the right end;
+  - `show()`, `hide()`, `isVisible()`;
+  - `geometry()`: its place on the screen, so a program can open a popup against it (the
+    volume's slider);
+  - `isSystemTrayAvailable()` and `setAvailabilityChanged(fn, arg)`;
+  - `showMessage(title, text, icon, timeoutMs)` and `setMessageClicked(fn, arg)`: a balloon by
+    the icon (Qt's), for notifications (built after the rest, step 10).
+- **The protocol: window manager services** (`filebrowser.md` §4h, built):
+  - the panel's tray registers the service `tray`; each program with tray icons registers
+    `tray.<pid>` for the replies;
+  - **a program sends:** Add or Update (its icon's number, its service, the category, an icon
+    name or "pixels follow", the tooltip, shown or not), Pixels (16 × 16 ARGB), Remove, and
+    Show Message;
+  - **the tray sends:** Activated (the reason and the icon's screen rectangle), Scrolled
+    (notches and the rectangle), Geometry (the rectangle, when the row moves), Message Clicked;
+  - **each message is a struct starting with `uint32_t size`** and a kind; fields are appended,
+    never changed (`docs/ABI.md`'s rule, ahead of the GUI API being frozen);
+  - **a 16 × 16 icon is 1 KB,** the service queue's largest message now: `ServiceQueue` grows to
+    2 KB a message and 8 KB waiting (it allocates only what is queued).
+- **Programs and the panel coming and going:** a connection's services go with it. New in the
+  window manager: `watchServices(client, fn, arg)`, telling a connection when any service
+  appears or goes. The tray drops a gone program's icons; `TrayIcon` adds itself again when
+  `tray` comes back (the panel restarted). Each does this on its own; programs write nothing.
+- **The panel's tray area:** a new item kind `tray` in `panel/items`, a 24-pixel cell an icon
+  (16-pixel icons), tooltips by the toolkit's, the cell sunken while pressed. The default
+  becomes `launcher;windows;tray;clock`. A saved value naming `volume` and not `tray` puts the
+  tray where `volume` was, so nobody's panel loses its volume control.
+- **The volume control stays in the panel's process, as a `TrayIcon`** (the user's, 2026-10-09:
+  a program of its own would cost a task, a stack and a connection for nothing). The panel's
+  `VolumeItem` stops being a panel item: its code makes a `TrayIcon` and goes through the same
+  messages as any other program's icon, so the tray treats it as it treats them, and it is the
+  API's first user and test.
+  - Category `Hardware`; the icon and tooltip as now (`gui.md` §4s); a click opens the slider's
+    popup (`VolumePopup`, unchanged) against `geometry()`; the wheel 1 dB a notch; the context
+    menu Mute and Mixer… (`audio.md` §17: Mixer… waits for the mixer window).
+  - It is shown whenever the panel has a tray. No autostart is needed for it; one can come when
+    a tray program of its own needs starting with the desktop.
+- **The player** shows its icon whenever it runs (the user's, 2026-10-09, §6i).
+
+### 6f. The playlist, M3U, the library
+
+- **The playlist** (pure, `Playlist`): entries in one PSRAM text arena (the path; the tags once
+  known: title, artist, album, the length, the format), up to 10,000.
+  - **Orders:** the list's, and shuffle's, which plays each entry once before any again (a new
+    order after all, never starting with the one just played).
+  - **Repeat:** off (stops after the last), all, one.
+  - **Removing or moving entries** keeps the current entry and the shuffle order right.
+  - **Tags filled in the background:** an entry added shows its file's name until the library's
+    scanner (below) has read it.
+- **M3U** (pure): `#EXTM3U` with `#EXTINF:seconds,Artist - Title`, plain lists, `.m3u8` (UTF-8;
+  `.m3u` read as UTF-8 too), CR LF, a BOM, comments; paths relative to the list's folder are
+  resolved on reading and written relative when they are under it. URLs are skipped (no network).
+- **Kept between runs** in `/home/.config/mplayer/`:
+  - `playlist.m3u8`: the playlist;
+  - `mplayer.conf` (INI): the volume and mute, repeat, shuffle, the entry and position playing
+    at the end, the tab and visualizer shown, the window's size, the last folder, the library's
+    folders, the MIDI font (§6h);
+  - written 2 s after the last change (as the tray's volume), and on quitting.
+- **The library:**
+  - **Its folders:** a list in `mplayer.conf`, by default `/home/Music`; Library Folders… in the
+    library's tab adds and removes them (a `FileDialog` choosing folders).
+  - **The scanner,** a thread of its own at the lowest priority: walks the folders, and for each
+    file with a known extension not in the index or changed (its size and time), reads its
+    information. Nothing else while playing is slowed: it yields between files.
+  - **Information without decoding** (new: `Decoder::probe()`): the format, rate, channels,
+    length and tags, without what decoding needs. For a MIDI file this matters most: opening it
+    as a decoder loads the SoundFont; probing parses the file for its length and its name
+    (track 1's name event) only.
+  - **The index:** `/home/.config/mplayer/library.idx`, a line a file (tab-separated: path,
+    size, time, length, format, title, artist, album, track, year); read at start, written by
+    the scanner after it changes.
+  - **Kept current while running** by directory watches on the folders.
+  - **The view:** artists, then their albums, in a `TreeView` on the left; the tracks of the
+    choice in a `DetailsView`; double click plays a track (its album after it), Add to Playlist
+    from the context menu.
+
+### 6g. The visualizer
+
+- **What it shows:** the sound as it is heard (the device's position), not as decoded ahead.
+  - The playback thread keeps the last 4,096 frames it wrote (mixed to mono, float: 16 KB) in a
+    ring, with the stream frame of its newest.
+  - At each of its 30 frames a second (only while shown and playing), the loop takes the 1,024
+    frames ending at the played position (from the stream's status) and analyses them.
+- **Spectrum:** a Hann window, a real FFT of 1,024 points (`bmds_core`'s `Fft`, float, radix 2;
+  host-tested against a plain DFT), 32 bands from 40 Hz to 16 kHz on a log scale, −60 to 0 dB,
+  each bar falling 20 dB a second with a peak mark held a second.
+- **Levels:** left and right peak and RMS bars, from the same frames before mixing (the ring keeps
+  both channels' peaks per 64 frames).
+- **Cost, to measure on the board:** the FFT is about 25,000 float operations (estimated
+  0.1 ms); the bars a 128 × 80 region. If the FFT shows up, PIE's SIMD (`efficiency-every-trick`).
+
+### 6h. The MIDI view
+
+- **Its contents:** for a MIDI file playing,
+  - **16 rows, a channel each:** its number (10 marked drums), the instrument (the font's preset
+    name for its bank and program, or the General MIDI name), volume, pan, and a bar of its
+    notes' activity (the loudest velocity sounding, falling);
+  - **the tempo** (beats per minute), the time signature and the bar and beat;
+  - **the font:** a `ComboBox` of the SoundFonts found in `/sd0/p0/share/soundfonts` and the
+    folders of the fonts already used, and Other… (a `FileDialog`).
+- **Where the state comes from, at the time it is heard:** `MidiDecoder` records what it plays as
+  it renders (program, bank, volume, pan and expression changes; note on and off with their
+  velocity; tempo and time signature), each with its stream frame, in a ring of 512 the player
+  takes after each decode (new: `MidiDecoder::takeEvents()`). The player applies them to a pure
+  `MidiChannels` model when the played frames reach them, as the visualizer does. A ring that
+  overflows sets a flag and gives a snapshot of every channel instead.
+- **A seek** gives a snapshot too: the decoder's seek replays controllers and programs.
+- **Changing the font:** the file is opened again on the new font and sought to the position
+  (a short break, a load of about 0.7 s the first time). The choice is the player's own (§10):
+  the decoder takes a font's path when opened (new: `MidiDecoder::open(source, font)`; the
+  shared font list loads it as it loads `synth/font`), an empty one meaning `synth/font`.
+
+### 6i. Hidden, the tray, one player
+
+- **Closing the window while playing hides it** (the window is closed, the program goes on) and
+  the tray item stays; **closing it while stopped quits**.
+- **The tray item** is shown while the player runs (the user's, 2026-10-09):
+  - **tooltip:** "Title — Artist", the time and length, or "Stopped";
+  - **left click:** shows the window (where it was) and raises it;
+  - **right click:** Play/Pause, Stop, Previous, Next, Show Player, Quit.
+- **One player:** it registers the service `mplayer`. `mplayer FILE...` with one running sends
+  the files to it (replacing the playlist, or `-a` adding to it) and its window shows; `mplayer`
+  alone shows it. Exit status 0 if it took them, 1 with the reason otherwise.
+- **Opening from the file browser:** `mplayer.desktop` (`Exec=mplayer %F`, `MimeType=audio/*`
+  and `audio/x-mpegurl`); `mimeapps.list` gives `audio/*` to it (`play.desktop` stays, for Open
+  With). `.m3u` and `.m3u8` become `audio/x-mpegurl` in the file types' table.
+- **Media keys** come with `hotkeys.md`: the player registers `media.play-pause`, `media.next`,
+  `media.previous` and `media.stop` then. Until then its keys work in its window.
+
+## 7. Budget (estimates, to be measured)
+
+- **Firmware:** the toolkit's additions 12 to 16 KB (the file dialog most), the player 30 to 40 KB,
+  the FFT 2 KB, the tray in the panel and the window manager 3 KB.
+- **Running, in PSRAM:** the program's stack 16 KB and the playback thread's 8 KB, the stream's
+  ring (the device's), the decoder (MP3 about 25 KB, Vorbis up to 200 KB, MIDI the synth's
+  voices with the font shared), the visualizer's ring 16 KB, the playlist about 200 bytes an
+  entry, the library's index about 150 bytes a file (1,000 files: 150 KB). Internal RAM: the
+  threads' kernel records only.
+- **CPU:** decoding as `play` (MP3 a few percent of a core), the visualizer's analysis and bars
+  at 30 a second (measured before choosing the default), nothing at all while paused or hidden
+  but the decoding.
+
+## 8. ABI impact
+
+- **New interfaces kept once shipped:** `mplayer`'s command line (`[-a] [FILE...]`), the files in
+  `/home/.config/mplayer/` (`mplayer.conf`'s keys, the index's columns: appended only), the tray
+  messages (appended only), `panel/items`' new kind `tray` and its new default.
+- **Not frozen yet:** the GUI API (`windows.md` §6) and the kernel classes it adds
+  (`Decoder::probe()`, `MidiDecoder::takeEvents()`). No SDK changes.
+
+## 9. Steps
+
+1. **Pure parts, host-tested** (done, 2026-10-09): `Playlist` (orders, shuffle, repeat, edits),
+   M3U reading and writing, `Fft` and the bands, `MidiChannels`, the library index's lines.
+2. **Toolkit:** `FolderItemModel` and `FileIcons` moved into `bmds_gui` (the file browser on
+   them, unchanged), `ComboBox`, `TabWidget`, `Slider`'s release, `FileDialog`; each tried in
+   `/bin/widgets` on the board.
+3. **The player:** the playback thread and the window (now playing, position, transport,
+   volume, playlist), Open and Add, keys, errors, one player, `mplayer.desktop` and the file
+   types. Checked by ear by the user: WAV, MP3, Ogg, FLAC and MIDI files, seeking, gapless.
+4. **Kept between runs:** `mplayer.conf`, `playlist.m3u8`, Open and Save Playlist.
+5. **The tray** (§6e): `ServiceQueue`'s larger messages, the window manager's
+   `watchServices()`, `TrayIcon`, the panel's `tray` area, the panel's volume control moved onto
+   `TrayIcon` (the user checks it does all it did), then the player's icon and hiding on close.
+6. **The visualizer:** measured on the board, then the default chosen.
+7. **The MIDI view:** `takeEvents()`, the model, the view, the font's choice.
+8. **The library:** `Decoder::probe()` (with the fuzzers), the scanner, the index, the view,
+   the watches.
+9. **As built** (a new §11), `roadmap.md` and `audio.md` updated.
+10. **Tray messages** (`TrayIcon::showMessage()`): the balloon, after the player is done.
+
+## 10. Decided (the user, 2026-10-09)
+
+- **The MIDI view's font choice is the player's own,** saved in `mplayer.conf`, `synth/font`
+  untouched; "Use as the system's default" beside it sets `synth/font` too.
+- **The tray icon shows while the player runs,** on a proper system tray API (§6e). The volume
+  control uses the same API but stays in the panel's process (no program of its own).
+
+## 11. As built
+
+- **Step 1, the pure parts** (2026-10-09), in `components/bmds_mplayer/src` (the component has no
+  program yet) and `bmds_core`'s `Fft`; host-tested (`tests/host/mplayer.cpp`, 11 cases):
+  - **`Playlist`:** in order to the end, Repeat All and One (Next still moves on), Previous
+    stopping at the first; inserts, removals and moves keeping the current entry; removing the
+    one playing leaves none current and its follower next (also when one is inserted in its
+    place, or it was the last); 2,000 changes of information compacting the texts; `Full` at
+    10,000. Shuffle, over 50 seeds: the chosen entry first, each of 20 once a round, the next
+    round (Repeat All) never starting with the last one; one added mid-round plays in it, one
+    removed doesn't; turning it off keeps the entry; moves keep it.
+  - **M3U:** a byte order mark, CR LF, comments, `#EXTINF` with attributes (a comma in quotes),
+    `-1` lengths, backslashes, `..`, absolute paths, a `file://` URL with `%20`, an `http://` one
+    skipped; written relative under the list's folder and read back the same; a list at `/`.
+  - **`Fft`:** every size from 4 to 2,048 points against a plain DFT in double (within 1e-5·N);
+    a full-scale sine's peak N/2; sizes not a power of two, too small or too large refused.
+  - **`Spectrum`:** full-scale sines at 250 Hz, 1 kHz and 5 kHz loudest in their own band (within
+    a band of where they should be), between −3.5 and +0.5 dB, the 16 kHz band below −40 dB;
+    silence at the floor. **`MeterBars`:** up at once, 20 dB a second down, the mark held a
+    second.
+  - **`MidiChannels`:** programs, volume, notes (a note-on of velocity 0 as an off) applied only
+    when the played frames reach them; the loudest sounding, strikes taken once; beats at 120
+    and 60 a minute, bars across a change to 3/4; a reset; the queue's overflow noted.
+  - **`LibraryIndex`:** sorted by path, replaced by path, tabs, line breaks and backslashes
+    escaped and read back, every field round-tripped, bad lines counted (too few fields, a word
+    for a number, no path, a year too large), extra fields ignored.
+  - `MidiDecoder::Activity` (the events a MIDI file's playing will report, step 7) is declared in
+    `mididecoder.h` so the model and the decoder share it.

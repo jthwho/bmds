@@ -16,6 +16,7 @@ set(BMDS_CORE_SRCS
         src/configtypes.cpp
         src/datetime.cpp
         src/desktopentry.cpp
+        src/fft.cpp
         src/pngdecoder.cpp
         src/randompool.cpp
         src/region.cpp

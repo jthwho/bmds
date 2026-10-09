@@ -838,7 +838,9 @@ palette's role names), `/boot/.defaults`' format (a file name a line).
 
 - Icons' format and sizes (G17): PNG needs an inflate (the screenshot code only deflates).
 - A tray's protocol: how another program puts an item on the panel (a window the panel embeds,
-  as XEmbed, or a small message protocol through the window manager).
+  as XEmbed, or a small message protocol through the window manager). Answered 2026-10-09:
+  messages through window manager services, with `TrayIcon` on Qt's model and the volume control
+  moved onto it (`mediaplayer.md` §6e).
 - Keyboard: a key for the launcher's menu (the Windows key) and Alt-Tab, once the window manager
   has global shortcuts.
 
