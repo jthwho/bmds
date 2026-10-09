@@ -35,10 +35,25 @@ target_compile_options(bmds_core PRIVATE -Wno-error)
 set(AUDIO ${BMDS_ROOT}/components/bmds_audio)
 include(${AUDIO}/codecs.cmake)
 list(TRANSFORM BMDS_CODEC_SRCS PREPEND ${AUDIO}/)
+set(SYNTH ${BMDS_ROOT}/components/bmds_synth)
+set(SYNTH_SRCS ${SYNTH}/src/synth.cpp ${SYNTH}/src/tsf.c ${SYNTH}/src/tml.c ${SYNTH}/src/mididecoder.cpp)
+set(SYNTH_INCLUDES ${SYNTH}/include ${SYNTH}/src ${BMDS_ROOT}/thirdparty/tinysoundfont)
 add_executable(decoder_fuzz decoder.cpp ${BMDS_ROOT}/tests/host/hostmemory.cpp ${BMDS_CODEC_SRCS}
-                            ${AUDIO}/src/wavfile.cpp ${AUDIO}/src/sampleformat.cpp)
-target_include_directories(decoder_fuzz PRIVATE ${BMDS_ROOT}/tests/host ${AUDIO}/include ${BMDS_CODEC_INCLUDES})
-target_compile_definitions(decoder_fuzz PRIVATE ${BMDS_CODEC_DEFINITIONS})
+                            ${AUDIO}/src/wavfile.cpp ${AUDIO}/src/sampleformat.cpp ${SYNTH_SRCS})
+target_include_directories(decoder_fuzz PRIVATE ${BMDS_ROOT}/tests/host ${AUDIO}/include ${BMDS_CODEC_INCLUDES}
+                                                ${SYNTH_INCLUDES})
+target_compile_definitions(decoder_fuzz PRIVATE ${BMDS_CODEC_DEFINITIONS}
+                                                BMDS_SYNTH_DIR="${BMDS_ROOT}/tests/host/synth")
 target_compile_options(decoder_fuzz PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti>)
 target_link_libraries(decoder_fuzz PRIVATE bmds_core)
 target_link_options(decoder_fuzz PRIVATE -fsanitize=fuzzer)
+
+# SoundFonts and the synth (devplan/audio.md §22), with stb_vorbis for SF3 fonts.
+add_executable(soundfont_fuzz soundfont.cpp ${BMDS_ROOT}/tests/host/hostmemory.cpp ${SYNTH}/src/synth.cpp
+                              ${SYNTH}/src/tsf.c ${AUDIO}/src/stbvorbis.c)
+target_include_directories(soundfont_fuzz PRIVATE ${BMDS_ROOT}/tests/host ${SYNTH}/include ${SYNTH}/src
+                                                  ${BMDS_ROOT}/thirdparty/tinysoundfont ${BMDS_ROOT}/thirdparty/stb_vorbis)
+target_compile_definitions(soundfont_fuzz PRIVATE ${BMDS_CODEC_DEFINITIONS})
+target_compile_options(soundfont_fuzz PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti>)
+target_link_libraries(soundfont_fuzz PRIVATE bmds_core)
+target_link_options(soundfont_fuzz PRIVATE -fsanitize=fuzzer)

@@ -36,6 +36,8 @@ TEST_CASE("FileFormat: by name") {
         CHECK(str(FileFormat::byName("notes.txt")) == "text/plain");
         CHECK(str(FileFormat::byName("/sd0/p0/Shot.PNG")) == "image/png");
         CHECK(str(FileFormat::byName("main.c")) == "text/x-csrc");
+        CHECK(str(FileFormat::byName("Song.MID")) == "audio/midi");
+        CHECK(str(FileFormat::byName("song.midi")) == "audio/midi");
         CHECK(str(FileFormat::byName("a.tar.gz")) == "application/gzip");
         CHECK(str(FileFormat::byName("terminal.desktop")) == "application/x-desktop");
         // Whole names, any case; a directory's dot isn't the name's.
@@ -67,6 +69,7 @@ TEST_CASE("FileFormat: by content") {
         CHECK(content("BZh91AY") == "application/x-bzip2");
         CHECK(content("OggS....") == "audio/ogg");
         CHECK(content("fLaC....") == "audio/flac");
+        CHECK(content("MThd\0\0\0\x06") == "audio/midi");
         CHECK(content("ID3\x03") == "audio/mpeg");
         {
                 // MPEG audio without a tag: MPEG-2 layer III, 32 kb/s, 22,050 Hz, mono: 104-byte frames.

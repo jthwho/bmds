@@ -243,6 +243,16 @@ int32_t Process::path(const char *path, StringView &out) const {
         return 0;
 }
 
+int32_t Process::absolutePath(const char *path, String &out) {
+        StringView p;
+        if (int32_t r = this->path(path, p); r < 0) return r;
+        Mutex::Locker locker(_pathLock, WaitForever);
+        auto [full, err] = Vfs::normalize(p, cwd());
+        if (err.isError()) return fsErrno(err);
+        out = std::move(full);
+        return 0;
+}
+
 Error Process::setArguments(Span<const StringView> args, Span<const StringView> environment) {
         constexpr size_t MaxCount = 4096;
         constexpr size_t MaxBytes = 256 * 1024;

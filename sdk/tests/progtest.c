@@ -52,6 +52,7 @@
 
 #define _GNU_SOURCE /* gettid() */
 #include <dirent.h>
+#include <math.h>
 #include <stdarg.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -1598,13 +1599,214 @@ static int midi(void) {
         return 0;
 }
 
+/* The synth (devplan/audio.md §22) on FONT (tests/host/synth/sine.sf2: one preset, a 440 Hz
+   sine at its key A4): every bad config refused, events on their frames, the pitch, the queue,
+   S16, a damaged font, two synths sharing the font. */
+static int crossings_f(const float *x, size_t frames, int channels) {
+        int n = 0;
+        for (size_t i = 1; i < frames; ++i)
+                if (x[(i - 1) * (size_t)channels] < 0 && x[i * (size_t)channels] >= 0) ++n;
+        return n;
+}
+
+static bmds_synth_event_t synth_event(uint64_t frame, uint8_t a, uint8_t b, uint8_t c) {
+        bmds_synth_event_t e = {.frame = frame, .length = 3, .data = {a, b, c}};
+        return e;
+}
+
+static int synth(const char *font) {
+        CHECK(bmds_sys_has(BMDS_SYS_AUDIO_SYNTH_INFO));
+        bmds_synth_config_t c = {.size = sizeof(c), .format = BMDS_AUDIO_F32LE, .font = font};
+        bmds_synth_config_t bad = c;
+        bad.format = BMDS_AUDIO_S8;
+        CHECK(bmds_audio_synth(&bad) == -BMDS_EINVAL);
+        bad = c;
+        bad.rate = 1000;
+        CHECK(bmds_audio_synth(&bad) == -BMDS_EINVAL);
+        bad = c;
+        bad.channels = 3;
+        CHECK(bmds_audio_synth(&bad) == -BMDS_EINVAL);
+        bad = c;
+        bad.max_voices = 257;
+        CHECK(bmds_audio_synth(&bad) == -BMDS_EINVAL);
+        bad = c;
+        bad.flags = 0x100;
+        CHECK(bmds_audio_synth(&bad) == -BMDS_EINVAL);
+        bad = c;
+        bad.font = "/ram0/p0/no-such.sf2";
+        CHECK(bmds_audio_synth(&bad) == -BMDS_ENOENT);
+        /* A damaged font. */
+        const int junk = open("/ram0/p0/junk.sf2", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        CHECK(junk >= 0);
+        static char garbage[4096];
+        memset(garbage, 0x5a, sizeof(garbage));
+        memcpy(garbage, "RIFF\x00\x10\x00\x00sfbk", 12);
+        CHECK(write(junk, garbage, sizeof(garbage)) == (ssize_t)sizeof(garbage) && close(junk) == 0);
+        bad.font = "/ram0/p0/junk.sf2";
+        CHECK(bmds_audio_synth(&bad) == -BMDS_EIO);
+        CHECK(unlink("/ram0/p0/junk.sf2") == 0);
+
+        const int fd = bmds_audio_synth(&c);
+        CHECK(fd >= 0);
+        bmds_synth_info_t info = {.size = sizeof(info)};
+        CHECK(bmds_audio_synth_info(fd, &info) == 0);
+        CHECK(info.rate == 48000 && info.channels == 2 && info.format == BMDS_AUDIO_F32LE && info.frames == 0);
+        CHECK(info.max_voices == 32 && info.presets == 1 && info.font_bytes > 4000 &&
+              strstr(info.font, "sine.sf2") != NULL);
+        CHECK(bmds_audio_synth_info(1, &info) == -BMDS_ENOTTY);
+
+        /* A note at frame 100: silence before it, sound after. */
+        bmds_synth_event_t e = synth_event(100, 0x90, 69, 127);
+        CHECK(write(fd, &e, sizeof(e)) == (ssize_t)sizeof(e));
+        CHECK(write(fd, &e, 10) == -1 && errno == EINVAL); /* whole records */
+        static float out[48000 * 2];
+        CHECK(read(fd, out, 256 * 8) == 256 * 8);
+        for (int i = 0; i < 200; ++i) CHECK(out[i] == 0.0f);
+        float peak = 0;
+        for (int i = 200; i < 512; ++i) peak = fabsf(out[i]) > peak ? fabsf(out[i]) : peak;
+        CHECK(peak > 0.01f);
+        CHECK(read(fd, out, 7) == -1 && errno == EINVAL); /* less than a frame */
+        /* A second of A4: 440 Hz. */
+        CHECK(read(fd, out, sizeof(out)) == (ssize_t)sizeof(out));
+        const int n = crossings_f(out, 48000, 2);
+        CHECK(n >= 438 && n <= 442);
+        CHECK(bmds_audio_synth_info(fd, &info) == 0 && info.frames == 48256 && info.voices == 1);
+        CHECK(info.cpu_permille_max > 0);
+
+        /* The queue: 1024 at most, then EAGAIN; a frame already played plays at once. */
+        bmds_synth_event_t sense = {.frame = 1u << 30, .length = 1, .data = {0xfe}};
+        for (int i = 0; i < 1024; ++i) CHECK(write(fd, &sense, sizeof(sense)) == (ssize_t)sizeof(sense));
+        CHECK(write(fd, &sense, sizeof(sense)) == -1 && errno == EAGAIN);
+        CHECK(bmds_audio_synth_info(fd, &info) == 0 && info.queued == 1024 && info.queue_full == 1);
+        CHECK(close(fd) == 0);
+
+        /* S16, mono, and a second synth sharing the font. */
+        c.format = BMDS_AUDIO_S16LE;
+        c.channels = 1;
+        c.rate = 44100;
+        const int a = bmds_audio_synth(&c);
+        const int b = bmds_audio_synth(&c);
+        CHECK(a >= 0 && b >= 0);
+        e = synth_event(0, 0x90, 81, 127);
+        CHECK(write(a, &e, sizeof(e)) == (ssize_t)sizeof(e));
+        static int16_t pcm[44100];
+        CHECK(read(a, pcm, sizeof(pcm)) == (ssize_t)sizeof(pcm));
+        int     up = 0;
+        int16_t top = 0;
+        for (int i = 1; i < 44100; ++i) {
+                if (pcm[i - 1] < 0 && pcm[i] >= 0) ++up;
+                if (pcm[i] > top) top = pcm[i];
+        }
+        CHECK(up >= 876 && up <= 884 && top > 300);
+        CHECK(read(b, pcm, 64) == 64); /* nothing played on b: silence */
+        for (int i = 0; i < 32; ++i) CHECK(pcm[i] == 0);
+        bmds_synth_info_t ia = {.size = sizeof(ia)}, ib = {.size = sizeof(ib)};
+        CHECK(bmds_audio_synth_info(a, &ia) == 0 && bmds_audio_synth_info(b, &ib) == 0 &&
+              ia.font_bytes == ib.font_bytes);
+        CHECK(close(a) == 0 && close(b) == 0);
+        printf("synth: ok, %u bytes of font, A4 at %d crossings a second\n", (unsigned)info.font_bytes, n);
+        return 0;
+}
+
+/* The synth's cost with FONT (a GM font): N notes on piano, strings, guitar and violin, rendered
+   in 64-frame reads for a second each; the CPU per period. */
+static int synthload(const char *font) {
+        bmds_synth_config_t c = {.size = sizeof(c), .format = BMDS_AUDIO_F32LE, .max_voices = 128, .font = font};
+        int64_t             t0 = mono_ns();
+        const int           fd = bmds_audio_synth(&c);
+        CHECK(fd >= 0);
+        printf("open %lld ms\n", (long long)((mono_ns() - t0) / 1000000));
+        static const uint8_t programs[] = {0, 48, 24, 40};
+        static float         out[64 * 2];
+        uint64_t             frame = 0;
+        for (int count = 1; count <= 48; count = count < 8 ? 8 : count * 2) {
+                bmds_synth_event_t off = {.frame = frame, .length = 3, .data = {0xb0, 123, 0}};
+                for (int ch = 0; ch < 4; ++ch) {
+                        off.data[0] = (uint8_t)(0xb0 | ch);
+                        CHECK(write(fd, &off, sizeof(off)) == (ssize_t)sizeof(off));
+                        bmds_synth_event_t p = {
+                                .frame = frame, .length = 2, .data = {(uint8_t)(0xc0 | ch), programs[ch]}};
+                        CHECK(write(fd, &p, sizeof(p)) == (ssize_t)sizeof(p));
+                }
+                for (int i = 0; i < count; ++i) {
+                        bmds_synth_event_t on =
+                                synth_event(frame + 4800, (uint8_t)(0x90 | (i % 4)), (uint8_t)(36 + i), 76);
+                        CHECK(write(fd, &on, sizeof(on)) == (ssize_t)sizeof(on));
+                }
+                /* A tenth of a second for the old notes to end, then a second measured. */
+                for (int i = 0; i < 75; ++i) CHECK(read(fd, out, sizeof(out)) == (ssize_t)sizeof(out));
+                /* The first read starts the notes (their note-ons): timed apart. */
+                uint64_t sum = 0, worst = 0, onset = 0;
+                for (int i = 0; i < 750; ++i) {
+                        const int64_t a = mono_ns();
+                        CHECK(read(fd, out, sizeof(out)) == (ssize_t)sizeof(out));
+                        const uint64_t d = (uint64_t)(mono_ns() - a);
+                        if (i == 0) {
+                                onset = d;
+                                continue;
+                        }
+                        sum += d;
+                        worst = d > worst ? d : worst;
+                }
+                frame += 825 * 64;
+                bmds_synth_info_t info = {.size = sizeof(info)};
+                CHECK(bmds_audio_synth_info(fd, &info) == 0);
+                printf("%2d notes, %3u voices: onset %4llu us, then %4llu us avg / %4llu us worst per 64 frames (1333 "
+                       "us)\n",
+                       count, (unsigned)info.voices, (unsigned long long)(onset / 1000),
+                       (unsigned long long)(sum / 749 / 1000), (unsigned long long)(worst / 1000));
+        }
+        close(fd);
+        return 0;
+}
+
+/* A MIDI file as a decoder (devplan/audio.md §22): FILE (tests/host/synth/scale.mid, 5 s and the
+   release's 2) played by the synth on synth/font, decoded in full, then sought into. */
+static int mididecode(const char *path) {
+        const int file = open(path, O_RDONLY);
+        CHECK(file >= 0);
+        bmds_decode_config_t c = {.size = sizeof(c), .format = BMDS_AUDIO_S16LE};
+        const int64_t        t0 = mono_ns();
+        const int            pcm = bmds_audio_decode(file, &c);
+        CHECK(pcm >= 0);
+        const int64_t      opened = mono_ns() - t0;
+        bmds_decode_info_t info = {.size = sizeof(info)};
+        CHECK(bmds_audio_decode_info(pcm, &info) == 0);
+        CHECK(info.codec == BMDS_CODEC_MIDI && strcmp(info.name, "midi") == 0);
+        CHECK(info.native_format == BMDS_AUDIO_F32LE && info.channels == 2 && info.rate == 48000);
+        CHECK(info.frames >= 48000 * 6 && info.frames <= 48000 * 8);
+        static int16_t buf[4096 * 2];
+        uint64_t       frames = 0;
+        int            peak = 0;
+        int64_t        worst = 0;
+        for (;;) {
+                const int64_t a = mono_ns();
+                const ssize_t n = read(pcm, buf, sizeof(buf));
+                const int64_t d = mono_ns() - a;
+                worst = d > worst ? d : worst;
+                CHECK(n >= 0);
+                if (n == 0) break;
+                for (ssize_t i = 0; i < n / 2; ++i) peak = abs(buf[i]) > peak ? abs(buf[i]) : peak;
+                frames += (uint64_t)n / 4;
+        }
+        CHECK(frames == info.frames);
+        CHECK(peak > 1000);
+        /* Seek to 2 s: the third note on. */
+        CHECK(lseek(pcm, 48000 * 4 * 2, SEEK_SET) == 48000 * 4 * 2);
+        CHECK(read(pcm, buf, sizeof(buf)) == (ssize_t)sizeof(buf));
+        CHECK(close(pcm) == 0 && close(file) == 0);
+        printf("mididecode: ok, opened in %lld ms, %llu frames, peak %d, the slowest read %lld us for 4096 frames\n",
+               (long long)(opened / 1000000), (unsigned long long)frames, peak, (long long)(worst / 1000));
+        return 0;
+}
+
 int main(int argc, char **argv) {
         if (argc < 2) {
                 fprintf(stderr,
                         "usage: progtest status|exit|leak|env|tty|float|files|time|sleep|term|lines|raw|mem|random|cwd|"
                         "spin|calls|posix|abort|spawn|scripts|signals|catch|ignore|fd|ppid|exec|orphan|tree|poll|"
                         "threads|"
-                        "threadspin|filetype|audio|decode|rt|midi "
+                        "threadspin|filetype|audio|decode|rt|midi|synth|synthload "
                         "[arg]\n");
                 return 2;
         }
@@ -1615,6 +1817,9 @@ int main(int argc, char **argv) {
         if (strcmp(what, "decode") == 0) return decode(arg);
         if (strcmp(what, "rt") == 0) return rt();
         if (strcmp(what, "midi") == 0) return midi();
+        if (strcmp(what, "synth") == 0) return synth(arg);
+        if (strcmp(what, "synthload") == 0) return synthload(arg);
+        if (strcmp(what, "mididecode") == 0) return mididecode(arg);
         if (strcmp(what, "audioexit") == 0) {
                 const int           fd = open("/dev/dsp", O_WRONLY);
                 bmds_audio_config_t c = {.size = sizeof(c),

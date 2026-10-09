@@ -1,0 +1,157 @@
+diff --git a/tsf.h b/tsf.h
+index 0db795e..3a90186 100644
+--- a/tsf.h
++++ b/tsf.h
+@@ -870,54 +870,64 @@ static int tsf_load_presets(tsf* res, struct tsf_hydra *hydra, unsigned int font
+ }
+ 
+ #ifdef STB_VORBIS_INCLUDE_STB_VORBIS_H
+-static int tsf_decode_ogg(const tsf_u8 *pSmpl, const tsf_u8 *pSmplEnd, float** pRes, tsf_u32* pResNum, tsf_u32* pResMax, tsf_u32 resInitial)
+-{
+-	float *res = *pRes, *oldres; tsf_u32 resNum = *pResNum; tsf_u32 resMax = *pResMax; stb_vorbis *v;
+-
+-	// Use whatever stb_vorbis API that is available (either pull or push)
+-	#if !defined(STB_VORBIS_NO_PULLDATA_API) && !defined(STB_VORBIS_NO_FROMMEMORY)
+-	v = stb_vorbis_open_memory(pSmpl, (int)(pSmplEnd - pSmpl), TSF_NULL, TSF_NULL);
+-	#else
+-	{ int use, err; v = stb_vorbis_open_pushdata(pSmpl, (int)(pSmplEnd - pSmpl), &use, &err, TSF_NULL); pSmpl += use; }
+-	#endif
++/* BMDS: Vorbis samples decoded to 16-bit, as the renderer reads them; stb_vorbis's memory from one
++   buffer grown until the stream opens (it would call malloc otherwise). The pull API only. */
++static int tsf_decode_ogg(const tsf_u8 *pSmpl, const tsf_u8 *pSmplEnd, short** pRes, tsf_u32* pResNum, tsf_u32* pResMax, tsf_u32 resInitial)
++{
++	short *res = *pRes, *oldres; tsf_u32 resNum = *pResNum; tsf_u32 resMax = *pResMax; stb_vorbis *v = TSF_NULL;
++	stb_vorbis_alloc alloc; int arenaSize, err = 0, i;
++	alloc.alloc_buffer = TSF_NULL;
++	for (arenaSize = 128 * 1024; arenaSize <= 2 * 1024 * 1024 && !v; arenaSize *= 2)
++	{
++		alloc.alloc_buffer = (char*)TSF_MALLOC(arenaSize);
++		alloc.alloc_buffer_length_in_bytes = arenaSize;
++		if (!alloc.alloc_buffer) return 0;
++		v = stb_vorbis_open_memory(pSmpl, (int)(pSmplEnd - pSmpl), &err, &alloc);
++		if (!v) { TSF_FREE(alloc.alloc_buffer); alloc.alloc_buffer = TSF_NULL; if (err != VORBIS_outofmem) return 0; }
++	}
+ 	if (v == TSF_NULL) return 0;
+ 
+ 	for (;;)
+ 	{
+ 		float** outputs; int n_samples;
+-
+-		// Decode one frame of vorbis samples with whatever stb_vorbis API that is available
+-		#if !defined(STB_VORBIS_NO_PULLDATA_API) && !defined(STB_VORBIS_NO_FROMMEMORY)
+ 		n_samples = stb_vorbis_get_frame_float(v, TSF_NULL, &outputs);
+ 		if (!n_samples) break;
+-		#else
+-		if (pSmpl >= pSmplEnd) break;
+-		{ int use = stb_vorbis_decode_frame_pushdata(v, pSmpl, (int)(pSmplEnd - pSmpl), TSF_NULL, &outputs, &n_samples); pSmpl += use; }
+-		if (!n_samples) continue;
+-		#endif
+ 
+-		// Expand our output buffer if necessary then copy over the decoded frame samples
++		// Expand our output buffer if necessary then convert the decoded frame's samples
+ 		resNum += n_samples;
+ 		if (resNum > resMax)
+ 		{
+ 			do { resMax += (resMax ? (resMax < 1048576 ? resMax : 1048576) : resInitial); } while (resNum > resMax);
+ 			oldres = res;
+-			res = (float*)TSF_REALLOC(res, resMax * sizeof(float));
+-			if (!res) { TSF_FREE(oldres); stb_vorbis_close(v); return 0; }
++			res = (short*)TSF_REALLOC(res, resMax * sizeof(short));
++			if (!res) { TSF_FREE(oldres); stb_vorbis_close(v); TSF_FREE(alloc.alloc_buffer); return 0; }
++		}
++		for (i = 0; i < n_samples; ++i)
++		{
++			float x = outputs[0][i] * 32767.0f;
++			res[resNum - n_samples + i] = (short)(x > 32767.0f ? 32767.0f : (x < -32768.0f ? -32768.0f : x));
+ 		}
+-		TSF_MEMCPY(res + resNum - n_samples, outputs[0], n_samples * sizeof(float));
+ 	}
+ 	stb_vorbis_close(v);
++	TSF_FREE(alloc.alloc_buffer);
+ 	*pRes = res; *pResNum = resNum; *pResMax = resMax;
+ 	return 1;
+ }
+ 
+-static int tsf_decode_sf3_samples(const void* rawBuffer, float** pFloatBuffer, unsigned int* pSmplCount, struct tsf_hydra *hydra)
++/* BMDS: returns 2 when no sample is compressed: the raw buffer is the samples, adopted (no copy). */
++static int tsf_decode_sf3_samples(const void* rawBuffer, short** pFloatBuffer, unsigned int* pSmplCount, struct tsf_hydra *hydra)
+ {
+ 	const tsf_u8* smplBuffer = (const tsf_u8*)rawBuffer;
+ 	tsf_u32 smplLength = *pSmplCount, resNum = 0, resMax = 0, resInitial = (smplLength > 0x100000 ? (smplLength & ~0xFFFFF) : 65536);
+-	float *res = TSF_NULL, *oldres;
++	short *res = TSF_NULL, *oldres;
+ 	int i, shdrLast = hydra->shdrNum - 1, is_sf3 = 0;
++	for (i = 0; i <= shdrLast && !(hydra->shdrs[i].sampleType & 0x30); i++) {}
++	if (i > shdrLast)
++	{
++		*pFloatBuffer = (short*)rawBuffer;
++		*pSmplCount = smplLength / (tsf_u32)sizeof(short);
++		return 2;
++	}
+ 	for (i = 0; i <= shdrLast; i++)
+ 	{
+ 		struct tsf_hydra_shdr *shdr = &hydra->shdrs[i];
+@@ -940,7 +950,7 @@ static int tsf_decode_sf3_samples(const void* rawBuffer, float** pFloatBuffer, u
+ 		}
+ 		else // raw PCM sample
+ 		{
+-			float *out; short *in = (short*)smplBuffer + resNum, *inEnd; tsf_u32 oldResNum = resNum;
++			short *out; short *in = (short*)smplBuffer + resNum, *inEnd; tsf_u32 oldResNum = resNum;
+ 			if (is_sf3) // Fix up sample indices in shdr
+ 			{
+ 				tsf_u32 fix_offset = resNum - shdr->start;
+@@ -960,18 +970,18 @@ static int tsf_decode_sf3_samples(const void* rawBuffer, float** pFloatBuffer, u
+ 			{
+ 				do { resMax += (resMax ? (resMax < 1048576 ? resMax : 1048576) : resInitial); } while (resNum > resMax);
+ 				oldres = res;
+-				res = (float*)TSF_REALLOC(res, resMax * sizeof(float));
++				res = (short*)TSF_REALLOC(res, resMax * sizeof(short));
+ 				if (!res) { TSF_FREE(oldres); return 0; }
+ 			}
+ 
+-			// Convert the samples from short to float
++			// Copy the samples
+ 			for (out = res + oldResNum; in < inEnd;)
+-				*(out++) = (float)(*(in++) / 32767.0);
++				*(out++) = *(in++);
+ 		}
+ 	}
+ 
+ 	// Trim the sample buffer down then return success (unless out of memory)
+-	if (!(*pFloatBuffer = (float*)TSF_REALLOC(res, resNum * sizeof(float)))) *pFloatBuffer = res;
++	if (!(*pFloatBuffer = (short*)TSF_REALLOC(res, resNum * sizeof(short)))) *pFloatBuffer = res;
+ 	*pSmplCount = resNum;
+ 	return (res ? 1 : 0);
+ }
+@@ -981,7 +991,7 @@ static int tsf_load_samples(void** pRawBuffer, short** pFloatBuffer, unsigned in
+ {
+ 	#ifdef STB_VORBIS_INCLUDE_STB_VORBIS_H
+ 	// With OGG Vorbis support we cannot pre-allocate the memory for tsf_decode_sf3_samples
+-	tsf_u32 resNum, resMax; float* oldres;
++	tsf_u32 resNum, resMax; short* oldres;
+ 	*pSmplCount = chunkSmpl->size;
+ 	*pRawBuffer = (void*)TSF_MALLOC(*pSmplCount);
+ 	if (!*pRawBuffer || !stream->read(stream->data, *pRawBuffer, chunkSmpl->size)) return 0;
+@@ -991,7 +1001,7 @@ static int tsf_load_samples(void** pRawBuffer, short** pFloatBuffer, unsigned in
+ 	resNum = resMax = 0;
+ 	if (!tsf_decode_ogg((tsf_u8*)*pRawBuffer, (tsf_u8*)*pRawBuffer + chunkSmpl->size, pFloatBuffer, &resNum, &resMax, 65536)) return 0;
+ 	oldres = *pFloatBuffer;
+-	if (!(*pFloatBuffer = (float*)TSF_REALLOC(*pFloatBuffer, resNum * sizeof(float)))) *pFloatBuffer = oldres;
++	if (!(*pFloatBuffer = (short*)TSF_REALLOC(*pFloatBuffer, resNum * sizeof(short)))) *pFloatBuffer = oldres;
+ 	*pSmplCount = resNum;
+ 	return (*pFloatBuffer ? 1 : 0);
+ 	#else
+@@ -1395,7 +1405,12 @@ TSFDEF tsf* tsf_load(struct tsf_stream* stream)
+ 	else
+ 	{
+ 		#ifdef STB_VORBIS_INCLUDE_STB_VORBIS_H
+-		if (!floatBuffer && !tsf_decode_sf3_samples(rawBuffer, &floatBuffer, &smplCount, &hydra)) goto out_of_memory;
++		if (!floatBuffer)
++		{
++			int decoded = tsf_decode_sf3_samples(rawBuffer, &floatBuffer, &smplCount, &hydra);
++			if (!decoded) goto out_of_memory;
++			if (decoded == 2) rawBuffer = TSF_NULL; // BMDS: adopted as the samples
++		}
+ 		#endif
+ 		res = (tsf*)TSF_MALLOC(sizeof(tsf));
+ 		if (res) TSF_MEMSET(res, 0, sizeof(tsf));

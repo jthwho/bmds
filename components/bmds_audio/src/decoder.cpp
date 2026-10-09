@@ -10,6 +10,7 @@
  * conversion to the format asked for).
  */
 
+#include <atomic>
 #include <cstring>
 #include "decoders.h"
 
@@ -39,6 +40,28 @@ namespace {
 
 // ---- Opening
 
+namespace {
+
+        struct AddedFormat {
+                        char            magic[4];
+                        Decoder::Opener open;
+        };
+
+        constinit AddedFormat         addedFormats[Decoder::MaxAddedFormats] = {};
+        constinit std::atomic<size_t> addedFormatCount{0};
+
+} // namespace
+
+Error Decoder::addFormat(const char *magic, Opener open) {
+        if (magic == nullptr || std::strlen(magic) != 4 || open == nullptr) return Error::Invalid;
+        const size_t n = addedFormatCount.load(std::memory_order_relaxed);
+        if (n == MaxAddedFormats) return Error::Full;
+        std::memcpy(addedFormats[n].magic, magic, 4);
+        addedFormats[n].open = open;
+        addedFormatCount.store(n + 1, std::memory_order_release);
+        return Error::Ok;
+}
+
 Result<Decoder *> Decoder::open(const Source &source) {
         if (source.read == nullptr) return makeError<Decoder *>(Error::Invalid);
         uint8_t      p[ProbeBytes] = {};
@@ -67,6 +90,9 @@ Result<Decoder *> Decoder::open(const Source &source) {
                     Decoders::MpegHeader::isValid(next) && Decoders::MpegHeader::isSameStream(p, next))
                         return Decoders::openMp3(source, 0);
         }
+        const size_t added = addedFormatCount.load(std::memory_order_acquire);
+        for (size_t i = 0; i < added; ++i)
+                if (n >= 4 && std::memcmp(p, addedFormats[i].magic, 4) == 0) return addedFormats[i].open(source);
         return makeError<Decoder *>(Error::Invalid);
 }
 
@@ -90,6 +116,7 @@ const char *Decoder::name(Codec codec) {
                 case Codec::Mp3: return "mp3";
                 case Codec::Vorbis: return "vorbis";
                 case Codec::Flac: return "flac";
+                case Codec::Midi: return "midi";
         }
         return "?";
 }

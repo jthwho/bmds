@@ -277,6 +277,12 @@ class AudioDevice {
                  */
                 static void forgetTask(void *task);
 
+                /**
+                 * @brief `forgetTask()` for the calling thread: a kernel thread that
+                 *        cycled a real-time stream calls it before it ends.
+                 */
+                static void forgetCaller();
+
                 /** @brief True while a real-time client owns the device. @nonblocking */
                 bool isExclusive() const { return _exclusiveOn.load(std::memory_order_acquire); }
 

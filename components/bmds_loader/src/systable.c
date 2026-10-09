@@ -94,8 +94,10 @@ int32_t bmds_k_audio_cycle(int32_t fd, bmds_audio_cycle_t *cycle);
 int32_t bmds_k_midi_config(int32_t fd, const bmds_midi_config_t *set, bmds_midi_config_t *got);
 int32_t bmds_k_midi_status(int32_t fd, bmds_midi_status_t *status);
 int32_t bmds_k_midi_control(int32_t fd, uint32_t op, int32_t value);
+int32_t bmds_k_audio_synth(const bmds_synth_config_t *config);
+int32_t bmds_k_audio_synth_info(int32_t fd, bmds_synth_info_t *info);
 
-#define SLOTS 78
+#define SLOTS 80
 
 /* bmds_sys_t with its slots spelled out (same layout; checked below). */
 static const struct {
@@ -188,10 +190,12 @@ static const struct {
                 [BMDS_SYS_MIDI_CONFIG] = (bmds_sys_fn_t)bmds_k_midi_config,
                 [BMDS_SYS_MIDI_STATUS] = (bmds_sys_fn_t)bmds_k_midi_status,
                 [BMDS_SYS_MIDI_CONTROL] = (bmds_sys_fn_t)bmds_k_midi_control,
+                [BMDS_SYS_AUDIO_SYNTH] = (bmds_sys_fn_t)bmds_k_audio_synth,
+                [BMDS_SYS_AUDIO_SYNTH_INFO] = (bmds_sys_fn_t)bmds_k_audio_synth_info,
         },
 };
 
-_Static_assert(SLOTS == BMDS_SYS_MIDI_CONTROL + 1, "every slot is in the table");
+_Static_assert(SLOTS == BMDS_SYS_AUDIO_SYNTH_INFO + 1, "every slot is in the table");
 _Static_assert(sizeof(table) == 16 + SLOTS * sizeof(bmds_sys_fn_t), "table layout");
 
 const bmds_sys_t *bmds_k_sys_table(void) {

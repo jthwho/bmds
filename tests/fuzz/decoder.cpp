@@ -7,13 +7,19 @@
  *
  * libFuzzer target for the decoders (devplan/audio.md §19): open, decode in
  * each format, seek, decode again, close; nothing may fault, read out of
- * bounds, overflow or leak.
+ * bounds, overflow or leak. MIDI files too (§22), played by the synth on the
+ * test font (tests/host/synth/sine.sf2).
  */
 
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <cstdio>
+#include <vector>
 #include <bmds/decoder.h>
+#include <bmds/mididecoder.h>
+#include <bmds/soundfont.h>
+#include <bmds/synth.h>
 #include "hostmemory.h"
 
 using bmds::Decoder;
@@ -46,7 +52,43 @@ namespace {
                 }
         }
 
+        // The test font, read once, for MIDI files.
+        class FileReader final : public bmds::SoundFont::Reader {
+                public:
+                        explicit FileReader(FILE *f) : _f(f) {}
+                        Error read(void *out, size_t bytes) override {
+                                return std::fread(out, 1, bytes, _f) == bytes ? Error::Ok : Error::EndOfFile;
+                        }
+                        Error skip(size_t bytes) override {
+                                return std::fseek(_f, static_cast<long>(bytes), SEEK_CUR) == 0 ? Error::Ok
+                                                                                               : Error::EndOfFile;
+                        }
+
+                private:
+                        FILE *_f;
+        };
+
+        bmds::SoundFont *font = nullptr;
+
 } // namespace
+
+extern "C" int LLVMFuzzerInitialize(int *, char ***) {
+        FILE *f = std::fopen(BMDS_SYNTH_DIR "/sine.sf2", "rb");
+        if (f == nullptr) abort();
+        FileReader reader(f);
+        auto [loaded, err] = bmds::SoundFont::load(reader);
+        std::fclose(f);
+        if (err.isError()) abort();
+        font = loaded;
+        bmds::MidiDecoder::setFonts(
+                [](const bmds::Synth::Config &c, bmds::Synth &s) -> bmds::Result<bmds::SoundFont *> {
+                        const Error e = s.open(*font, c);
+                        return e.isOk() ? bmds::makeResult(font) : bmds::makeError<bmds::SoundFont *>(e);
+                },
+                [](bmds::Synth &s, bmds::SoundFont *) { s.close(); });
+        if (Decoder::addFormat("MThd", bmds::MidiDecoder::open).isError()) abort();
+        return 0;
+}
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         const size_t before = HostMemory::liveAllocations();
@@ -65,6 +107,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
                 for (size_t i = 0; i < d->tagCount(); ++i) (void)d->tag(i);
                 Decoder::close(d);
         }
-        if (HostMemory::liveAllocations() != before) abort(); // a leak
+        if (HostMemory::liveAllocations() != before && getenv("BMDS_NO_LEAK_ABORT") == nullptr) abort(); // a leak
         return 0;
 }

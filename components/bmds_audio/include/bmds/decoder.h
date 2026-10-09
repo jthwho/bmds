@@ -26,6 +26,7 @@ enum class Codec : uint8_t {
         Mp3,    ///< MPEG-1, 2 and 2.5 audio, layers I to III (minimp3).
         Vorbis, ///< Ogg Vorbis (stb_vorbis).
         Flac,   ///< FLAC, native (dr_flac).
+        Midi,   ///< A Standard MIDI File, played by the synth (`bmds_synth`, registered by `addFormat()`).
 };
 
 /**
@@ -98,6 +99,20 @@ class Decoder {
                  *         source's error.
                  */
                 static Result<Decoder *> open(const Source &source);
+
+                /** @brief Opens a format another component adds (`addFormat()`). */
+                using Opener = Result<Decoder *> (*)(const Source &source);
+
+                /** @brief Formats `addFormat()` takes. */
+                static constexpr size_t MaxAddedFormats = 2;
+
+                /**
+                 * @brief Adds a format that starts with the 4 bytes @p magic, opened by
+                 *        @p open (the MIDI files the synth plays: `bmds_synth` sits above
+                 *        this component). At boot, before any `open()`.
+                 * @return `Ok`, `Full`, `Invalid`.
+                 */
+                static Error addFormat(const char *magic, Opener open);
 
                 /** @brief Frees @p decoder (null is fine). */
                 static void close(Decoder *decoder);

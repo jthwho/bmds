@@ -230,6 +230,14 @@ class Process {
                  */
                 int32_t addHandle(FileHandle::Ptr handle, uint32_t flags);
 
+                /**
+                 * @brief Makes the program's @p path absolute (against its current
+                 *        directory, normalized) into @p out, for calls that keep a path.
+                 * @return 0, or `-BMDS_EFAULT`, `-BMDS_ENAMETOOLONG`, `-BMDS_ENOENT`
+                 *         (empty), `-BMDS_ENOMEM`.
+                 */
+                int32_t absolutePath(const char *path, String &out);
+
         private:
                 struct Block;     // an allocation's header, just before what the program gets
                 struct LineInput; // the line editor and its line, once the program reads the console

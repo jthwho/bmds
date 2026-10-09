@@ -1,0 +1,16 @@
+TimGM6mb.sf2
+
+Copyright 2004 Tim Brechbill <https://www.timbrechbill.com>
+          2010 David Bolton <davidkbolton@gmail.com>
+
+License: GPL-2 (the file GPL-2 beside this one). This package is free software; you can
+redistribute it and/or modify it under the terms of the GNU General Public License version 2.
+It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even
+the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+From the MuseScore project, which shipped it (https://musescore.org/en/node/1463#comment-9168):
+Tim Brechbill wrote that "I created some of the samples myself and all others are either public
+domain or fall under the terms of the GNU General Public License."
+
+Source: Debian's timgm6mb-soundfont 1.3 (timgm6mb-soundfont_1.3.orig.tar.gz), whose
+debian/copyright these lines come from.

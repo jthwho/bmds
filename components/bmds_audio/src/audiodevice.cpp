@@ -771,6 +771,11 @@ void AudioDevice::removeRealtime(RtStream &stream) {
         return;
 }
 
+void AudioDevice::forgetCaller() {
+        forgetTask(xTaskGetCurrentTaskHandle());
+        return;
+}
+
 void AudioDevice::raiseCaller(RtStream &stream) {
         void *self = xTaskGetCurrentTaskHandle();
         if (stream._task.load(std::memory_order_acquire) == self &&

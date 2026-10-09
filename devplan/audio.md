@@ -423,7 +423,7 @@ Each step ends with what the user hears and what the board reports.
    driven by the keyboard).
 6. **MIDI:** ports, routing, virtual ports, `midi`; USB MIDI; serial MIDI.
 7. **Synth:** the GM player and the synth library.
-8. **Media player** (the user, 2026-10-08; to be planned in detail when reached): a fully
+8. **Media player** (the user, 2026-10-08; planned in `mediaplayer.md`): a fully
    featured GUI application on the toolkit that plays audio files (the §7 decoders) and MIDI
    files (the step 7 synth), perhaps video later. Opened from the file browser in place of
    `play`.
@@ -1332,7 +1332,7 @@ gets them through the SDK, `play` plays them, and the file browser's Open starts
   - about 85 inputs a second on three cores;
   - the seeds from `make-seeds.sh`: MP3 CBR, VBR, without a tag, MPEG-2 and 2.5, MP2; Vorbis
     stereo and 8 kHz mono; FLAC 16-, 24- and 8-bit, with small frames; WAV; Ogg Opus.
-  - The run's count is below.
+  - A 3-hour run in fork mode (three processes), after the fix: 965,973 inputs, no fault.
 - **Size:**
   - `bmds_audio` 164 KB of flash (114 KB more: the decoders, at `-O2`), 3,796 bytes of BSS
     (1,024 more: stb_vorbis's CRC table);
@@ -1737,4 +1737,183 @@ window manager, under the audio clients); its work per event is small (parsing a
 - **Left for a device:** USB MIDI in and out, unplugging and plugging again, `midi/connect`
   bringing a keyboard back to its port, and the USB task's priority (§21's measurement).
 - **Next:** step 7, the synth.
+
+
+## 22. Step 7: the synth (design, 2026-10-08)
+
+A General MIDI player from a SoundFont, playable from a MIDI port and by programs, and a library
+of building blocks for instruments. §8 is the outline.
+
+### Measured (2026-10-08, the board, a scratch benchmark not in the repository)
+
+TinySoundFont v0.9 (`tsf.h`, MIT; `tml.h`, its MIDI file reader, zlib), unchanged, with
+TimGM6mb (a 5.7 MB GM SoundFont, GPL-2), mono at 48 kHz, notes on piano, strings, guitar and
+violin, 64-frame blocks (1,333 µs):
+
+| Voices | As released (avg / worst) | `double` made `float` (avg / worst) |
+|---|---|---|
+| 1 | 542 / 602 µs | 85 / 179 µs |
+| 18 | 9,018 / 9,554 µs | 967 / 1,057 µs |
+| 35 | 17,617 / 26,759 µs | 1,890 / 3,056 µs |
+| 67 | 33,792 / 51,591 µs | 3,637 / 5,870 µs |
+| 99 | 50,080 / 84,042 µs | 5,373 / 9,679 µs |
+
+- **It keeps a voice's position in `double`.** The P4's FPU is single precision, so every
+  sample of every voice goes through software floating point: a voice took 40 % of a core.
+  With `float` (a crude test: `float` loses the position's fraction in long samples), about
+  54 µs a voice a block: 18 voices still take 72 % of a core at 64 frames. About 300 cycles a
+  sample a voice.
+- **It keeps samples as `float`:** twice the font's size in memory. TimGM6mb's load took 4.2 s
+  from the RAM disk (parsing, converting every sample).
+- **Free PSRAM** with the desktop running: 26.9 MB. A font's samples have to fit beside
+  everything else (decoders, programs, the media player).
+- It reads SF3 (Vorbis-compressed SoundFonts) through stb_vorbis, which the firmware has.
+
+- **A prototype** (the same benchmark, `tsf.h` patched in scratch):
+
+| Voices | 16-bit samples, 32.32 position, `float` filter, gain ramped | ... and `float` `powf`, `expf`, `tan` |
+|---|---|---|
+| 1 | 68 / 99 µs | 21 / 120 µs |
+| 18 | 846 / 985 µs | 259 / 304 µs |
+| 35 | 1,644 / 2,709 µs | 501 / 808 µs |
+| 67 | 3,134 / 5,107 µs | 953 / 1,547 µs |
+| 99 | 4,614 / 8,494 µs | 1,416 / 2,576 µs |
+
+  - **The rest of the cost was musl's `powf`, `expf` and `tanf`:** they compute in `double`
+    internally, so each voice's per-block math (its gain in dB, an exponential envelope's step,
+    the filter's cutoff) went through software floating point. Polynomial `exp2` and `log2`
+    (relative error about 1e-6) and a polynomial `tan` replace them through TinySoundFont's
+    `TSF_POWF`/`TSF_EXPF` hooks.
+  - Now about 14 µs a voice a 64-frame block: 67 voices in 72 % of a core, 35 in 38 %. Loading
+    TimGM6mb: 4.2 s to 0.41 s (no conversion, half the memory: 5.7 MB).
+  - Left: the worst blocks (an envelope's next segment still calls `log` in `double`), the
+    output mode switched per sample, and PIE.
+
+### The plan
+
+- **TinySoundFont for what a SoundFont means** (parsing, presets, regions, generators, the GM
+  drum channel, its MIDI channel model), **a voice renderer of our own** for the inner loop:
+  - samples kept as 16-bit (the font's own; SF3 decoded to 16-bit once): fonts up to twice the
+    size;
+  - the position in fixed point (32.32), the interpolation and the gain in `float`;
+  - envelopes, LFOs, pitch and the filter's coefficients computed every 16 frames, ramped
+    linearly between, so the per-sample work is a fetch, an interpolation, a filter when it is
+    on, and a multiply-add into the mix;
+  - stereo out; the voice count capped by a CPU budget, the quietest voice stolen first;
+  - goal, to be measured: under 10 µs a voice a 64-frame block (32 voices in about a quarter of
+    a core). Then PIE SIMD if the measurement says it pays (`efficiency-every-trick`).
+  - kept as a patch to `tsf.h` in `thirdparty/tinysoundfont/patches/`, as stb_vorbis's are, and
+    fuzzed with the decoders (a SoundFont is untrusted input).
+- **Events placed in time** (§9's rule): an event's `time_ns` against the cycle's `position`
+  and `play_ns` gives its frame; a fixed latency of one period keeps every event at its offset
+  instead of jittering to period starts.
+- **`synth`, a built-in program:** a virtual MIDI port (`synth`, a destination) and a
+  real-time audio client; `midi/connect` brings a keyboard to it. Its font from a setting
+  (`synth/font`). Its status: voices, CPU per period, notes stolen, late periods.
+- **MIDI files:** `play FILE.mid` (and the media player, step 8) through the same engine.
+- **The building blocks** (oscillators with band-limited saw and square, envelopes, filters,
+  delay lines): an SDK C library, since a call per sample can't be a system call.
+
+### Decisions (the user, 2026-10-08)
+
+- **The GM engine is in the firmware, reached through a synth fd** (as a decoder fd): any
+  program gets GM sound from one copy of the code.
+- **TimGM6mb is the default font,** in its own package (a GPL-2 data file, not linked); any SF2
+  or SF3 can be chosen.
+
+### The synth fd (appended slots 78-79)
+
+- `audio_synth(const bmds_synth_config_t *config)`: a new fd. `{size, flags (BMDS_O_CLOEXEC),
+  rate, channels (1 or 2), format (BMDS_AUDIO_F32LE or S16LE), max_voices (0: the default),
+  font (a path; NULL: synth/font)}`. Fonts are loaded once and shared between fds by path.
+- `write()`: `bmds_synth_event_t` records, `{uint64_t frame; uint8_t length; uint8_t flags;
+  uint8_t data[6]}` (16 bytes): a MIDI message for frame `frame` of the fd's own count (frames
+  read so far). Earlier frames play at the next read's start; later ones wait, so a MIDI file
+  player writes ahead and every event lands on its sample, with no thread keeping time.
+- `read()`: renders frames in the fd's format, the queued events at their frames.
+- `audio_synth_info(fd, bmds_synth_info_t *)`: frames rendered, voices playing and their
+  limit, notes stolen, events queued and dropped, the font's path and presets, the render's
+  time (last and longest per frame).
+- A `synth` program over it: its MIDI port and a real-time client; `play FILE.mid` too, through
+  `tml.h`.
+
+### Steps
+
+1. **Vendored and patched TinySoundFont,** the engine (`Synth`: events at frames, rendering,
+   voice limit) host-tested and fuzzed (fonts).
+2. **The synth fd** (slots 78-79), the SDK, `progtest synth`.
+3. **`synth`** (a MIDI port, a real-time client, `synth/font`) and **`play FILE.mid`**.
+4. **The font package** (TimGM6mb), and measurements with the user listening.
+
+### As built (2026-10-09)
+
+- **Component `bmds_synth`:**
+  - portable, host-tested and fuzzed: `SoundFont` and `Synth` on TinySoundFont (four patches,
+    `thirdparty/tinysoundfont/README.md`), `synthmath.h`'s single-precision `pow`, `exp`, `log`
+    and `tan` behind its hooks, and `MidiDecoder` (Standard MIDI Files through `tml.h`, as a
+    `Decoder`);
+  - kernel: `SynthFile` (slots 78-79), `SoundFonts` (fonts loaded once, shared by path, freed
+    with their last synth; a boot stage), the `synth` command, `synth/font`.
+- **MIDI files play wherever sound files do:** `Decoder::addFormat()` (in `bmds_audio`) lets a
+  component above it add a format by its first four bytes; `bmds_synth` adds `MThd` at boot, so
+  `play`, the file browser's Open (`audio/midi`, by name `.mid`/`.midi` and by `MThd`) and
+  `audio_decode` (`BMDS_CODEC_MIDI`) take them. Float stereo at 48 kHz; the file's length and two
+  seconds of release. A seek replays controllers and programs up to the frame, not notes.
+- **The `synth` command:** a MIDI port (`synth`, its destination) and a real-time client
+  (128 frames by default: room for a chord's note-ons), its events placed one period late at
+  their offsets in the period they arrived in; Ctrl+C prints its counts.
+- **The font package:** `dist/soundfont-timgm6mb` (Debian's source, GPL-2 with its copyright),
+  installed as `/sd0/p0/share/soundfonts/TimGM6mb.sf2`, `synth/font`'s default.
+- **Found by fuzzing** (`soundfont_fuzz`; `decoder_fuzz` now plays MIDI files too, on
+  `tests/host/synth/sine.sf2`):
+  - SoundFonts: 977 crashing inputs in the first 10 minutes, in 6 places: the hydra's indices
+    trusted (presets, bags, generators, instruments, samples, the terminal records), sample
+    positions past the samples, SF3 offsets past the chunk, envelope times overflowing an `int`,
+    a list read twice leaking the first, a NaN pitch. All in `bmds-bounds.diff`.
+  - MIDI files: a zero division (`&&` for `||` in `tml.h`'s header check), an empty track
+    (arithmetic on a null pointer), a time overflowing an `int`, unchecked allocations
+    (`bmds-tml.diff`); `tml_load_memory()`'s reader called through a pointer of another type (the
+    decoder reads with `tml_load()` instead); `tml.h` asking its reader to skip with a null
+    buffer.
+  - Then: SoundFonts for an hour (32,396,999 inputs, no fault); every decoder
+    with MIDI for an hour (293,870 inputs, no fault).
+- **Found on the board:**
+  - **`play` of a MIDI file hung the shell:** the decoder returned no frames and no error at the
+    end, where the contract is `EndOfFile`; `play` loops until it sees an error, so it spun and
+    starved the console. Programs weren't affected (`DecodedFile` turns nothing into the end).
+    The fuzzer checks this ("nothing without an error"), and checks MIDI files now.
+  - **A damaged font was "out of memory":** TinySoundFont returns null for both. The synth's
+    allocator counts its failures: a load that fails with none was a damaged font.
+  - **`open()` failed with fonts lacking program 0:** `tsf_channel_set_presetnumber()` returns 0
+    for a missing preset as for no memory.
+- **Measured** (TimGM6mb, the synth fd from a program at its normal priority, 64-frame reads):
+
+| Notes (voices) | Their first period | Then (average / longest) |
+|---|---|---|
+| 1 (1) | 447 to 538 µs | 46 / 75 to 111 µs |
+| 8 (18) | 650 to 697 µs | 317 / 352 µs |
+| 16 (45) | 1,611 to 1,638 µs | 783 / 865 µs |
+| 32 (96) | 3,123 to 3,138 µs | 1,630 / 1,790 µs |
+
+  - About 16 µs a voice a 64-frame block (1,333 µs): 32 voices in 40 % of a core, the default
+    limit. A note-on costs 30 to 60 µs, and the first after a while about 200 µs more (its code
+    runs from flash, cold); a chord's first period is the expensive one, hence 128 frames for
+    `synth`.
+  - **`synth`** with notes sent by `midi send`: 8,124 periods of 128 frames, none late; 8 voices;
+    the render at most 24 % of a period.
+  - **Loading TimGM6mb:** 0.74 s from the RAM disk, 3.0 s from the card; 5,971 KB of PSRAM
+    (16-bit samples, the file's own; as floats it was twice that and took 4.2 s).
+  - **`play scale.mid`** (5 s and the release): 10.06 s with the font loaded from the card.
+- **Not yet heard:** the user listens to `play` and `synth` by ear.
+- **Left:**
+  - a font kept loaded for a while after its last synth (each `play` loads it again: 3 s from the
+    card), weighed against its 6 MB of PSRAM;
+  - the note-on path in single precision and hot code in IRAM, if the cold first note matters;
+  - MIDI file times are whole milliseconds (`tml.h`);
+  - scheduled output for MIDI ports (the reserved `time_ns`), if a sequencer needs it.
+- **Deferred (the user, 2026-10-09):** the SDK's building blocks for instruments (band-limited
+  oscillators, envelopes, filters, delay lines) wait until an instrument or the pedal work needs
+  them; the media player (step 8) comes next.
+- **Size:** the image from 1,267,248 to 1,301,904 bytes (`bmds_synth` 32 KB of flash); 236 bytes
+  of internal RAM. Per synth: its voices and channels and a 16 KB event queue, in PSRAM.
 

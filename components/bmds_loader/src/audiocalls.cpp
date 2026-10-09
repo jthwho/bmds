@@ -9,12 +9,14 @@
  * structs to and from an fd's AudioFile or DecodedFile.
  */
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <bmds/audiodevice.h>
 #include <bmds/audiofile.h>
 #include <bmds/decodedfile.h>
 #include <bmds/errno.h>
+#include <bmds/synthfile.h>
 #include <bmds/sys.h>
 #include "running.h"
 #include "structcopy.h"
@@ -27,6 +29,8 @@ using bmds::Error;
 using bmds::KernelCall;
 using bmds::Process;
 using bmds::SampleFormat;
+using bmds::Synth;
+using bmds::SynthFile;
 using bmds::detail::copyIn;
 using bmds::detail::copyOut;
 using bmds::detail::copyText;
@@ -64,9 +68,25 @@ namespace {
         static_assert(BMDS_CODEC_WAV == static_cast<uint32_t>(Codec::Wav) &&
                               BMDS_CODEC_MP3 == static_cast<uint32_t>(Codec::Mp3) &&
                               BMDS_CODEC_VORBIS == static_cast<uint32_t>(Codec::Vorbis) &&
-                              BMDS_CODEC_FLAC == static_cast<uint32_t>(Codec::Flac),
+                              BMDS_CODEC_FLAC == static_cast<uint32_t>(Codec::Flac) &&
+                              BMDS_CODEC_MIDI == static_cast<uint32_t>(Codec::Midi),
                       "the ABI's codecs are Codec's");
         static_assert(BMDS_DECODE_UNKNOWN_FRAMES == Decoder::UnknownFrames, "the ABI's unknown length");
+        static_assert(sizeof(bmds_synth_event_t) == sizeof(Synth::Event) &&
+                              offsetof(bmds_synth_event_t, frame) == offsetof(Synth::Event, frame) &&
+                              offsetof(bmds_synth_event_t, length) == offsetof(Synth::Event, length) &&
+                              offsetof(bmds_synth_event_t, flags) == offsetof(Synth::Event, flags) &&
+                              offsetof(bmds_synth_event_t, data) == offsetof(Synth::Event, data) &&
+                              sizeof(bmds_synth_event_t::data) == Synth::MaxEventBytes,
+                      "bmds_synth_event_t is Synth::Event");
+        static_assert(BMDS_SYNTH_QUEUE == Synth::QueueEvents, "the ABI's queue length");
+
+        // The synth fd behind @p handle (an fd's), or the errno.
+        int32_t synthFileOf(const bmds::FileHandle::Ptr &handle, SynthFile *&file) {
+                if (!handle) return -BMDS_EBADF;
+                file = handle->stream().synthFile();
+                return file != nullptr ? 0 : -BMDS_ENOTTY;
+        }
 
         // The decoded file behind @p handle (an fd's), or the errno.
         int32_t decodedFileOf(const bmds::FileHandle::Ptr &handle, DecodedFile *&file) {
@@ -270,6 +290,62 @@ int32_t bmds_k_audio_decode_tag(int32_t fd, uint32_t index, char *key, uint32_t 
         copyText(t.key, key, key_size);
         copyText(t.value, value, value_size);
         return static_cast<int32_t>(t.value.size());
+}
+
+int32_t bmds_k_audio_synth(const bmds_synth_config_t *config) {
+        KernelCall          call;
+        bmds_synth_config_t c;
+        int32_t             r = copyIn(config, c);
+        if (r < 0) return r;
+        // Checked here, so that Invalid from the open is the font's (damaged).
+        const uint32_t rate = c.rate != 0 ? c.rate : 48000;
+        const uint32_t channels = c.channels != 0 ? c.channels : 2;
+        if ((c.flags & ~BMDS_O_CLOEXEC) != 0 || rate < 8000 || rate > 96000 || channels > 2 ||
+            (c.format != BMDS_AUDIO_F32LE && c.format != BMDS_AUDIO_S16LE) || c.max_voices > Synth::MaxVoices)
+                return -BMDS_EINVAL;
+        bmds::String font;
+        if (c.font != nullptr) {
+                r = call->absolutePath(c.font, font);
+                if (r < 0) return r;
+        }
+        SynthFile::Config k;
+        k.rateHz = rate;
+        k.channels = static_cast<uint8_t>(channels);
+        k.format = static_cast<SampleFormat>(c.format);
+        k.maxVoices = static_cast<uint16_t>(c.max_voices);
+        k.font = font.view();
+        auto [handle, err] = SynthFile::open(k, bmds::Vfs::Context());
+        if (err == Error::Invalid) return -BMDS_EIO; // a damaged font
+        if (err.isError()) return Process::errnoFor(err);
+        return call->addHandle(std::move(handle), c.flags);
+}
+
+int32_t bmds_k_audio_synth_info(int32_t fd, bmds_synth_info_t *info) {
+        KernelCall                  call;
+        const bmds::FileHandle::Ptr handle = call->handle(fd);
+        SynthFile                  *file = nullptr;
+        const int32_t               r = synthFileOf(handle, file);
+        if (r < 0) return r;
+        if (info == nullptr) return -BMDS_EFAULT;
+        const SynthFile::Info k = file->info();
+        bmds_synth_info_t     i = {};
+        i.rate = k.config.rateHz;
+        i.channels = k.config.channels;
+        i.format = static_cast<uint32_t>(k.config.format);
+        i.frames = k.synth.frames;
+        i.voices = k.synth.voices;
+        i.max_voices = k.synth.maxVoices;
+        i.peak_voices = k.synth.peakVoices;
+        i.notes_at_limit = k.synth.notesAtLimit;
+        i.queued = k.synth.queued;
+        i.queue_full = k.synth.queueFull;
+        i.ignored = k.synth.ignored;
+        i.presets = static_cast<uint32_t>(k.presets);
+        i.font_bytes = static_cast<uint32_t>(k.fontBytes);
+        i.cpu_permille = k.cpuPermille;
+        i.cpu_permille_max = k.cpuPermilleMax;
+        copyText(file->fontPath(), i.font, sizeof(i.font));
+        return copyOut(i, info);
 }
 
 } // extern "C"

@@ -22,6 +22,7 @@ class AudioFile;
 class DecodedFile;
 class FileHandle;
 class MidiFile;
+class SynthFile;
 class WaitList;
 
 /**
@@ -152,6 +153,12 @@ class Stream {
                  *        `devplan/audio.md` §21), or null (the default).
                  */
                 virtual MidiFile *midiFile() { return nullptr; }
+
+                /**
+                 * @brief Returns the synth fd behind this stream (`audio_synth`:
+                 *        `devplan/audio.md` §22), or null (the default).
+                 */
+                virtual SynthFile *synthFile() { return nullptr; }
 
                 /** @brief Writes @p text (see `write(ByteSpan, unsigned int)`). */
                 Result<size_t> write(StringView text, unsigned int timeoutMs) {

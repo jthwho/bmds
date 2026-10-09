@@ -22,6 +22,7 @@ add_subdirectory(${BMDS_ROOT}/components/bmds_loader ${CMAKE_BINARY_DIR}/bmds_lo
 add_subdirectory(${BMDS_ROOT}/components/bmds_drivers ${CMAKE_BINARY_DIR}/bmds_drivers)
 add_subdirectory(${BMDS_ROOT}/components/bmds_audio ${CMAKE_BINARY_DIR}/bmds_audio)
 add_subdirectory(${BMDS_ROOT}/components/bmds_midi ${CMAKE_BINARY_DIR}/bmds_midi)
+add_subdirectory(${BMDS_ROOT}/components/bmds_synth ${CMAKE_BINARY_DIR}/bmds_synth)
 add_subdirectory(${BMDS_ROOT}/components/bmds_input ${CMAKE_BINARY_DIR}/bmds_input)
 add_subdirectory(${BMDS_ROOT}/components/bmds_ui ${CMAKE_BINARY_DIR}/bmds_ui)
 add_subdirectory(${BMDS_ROOT}/components/bmds_gui ${CMAKE_BINARY_DIR}/bmds_gui)
@@ -62,6 +63,7 @@ add_executable(bmds_host_tests
         ${BMDS_ROOT}/sdk/crt/oss.c
         memspace.cpp
         midi.cpp
+        synth.cpp
         pipe.cpp
         process.cpp
         regex.cpp
@@ -95,6 +97,7 @@ target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_
         BMDS_CORPUS_DIR="${CMAKE_CURRENT_LIST_DIR}/corpus"
         BMDS_PNG_DIR="${CMAKE_CURRENT_LIST_DIR}/png"
         BMDS_AUDIO_DIR="${CMAKE_CURRENT_LIST_DIR}/audio"
+        BMDS_SYNTH_DIR="${CMAKE_CURRENT_LIST_DIR}/synth"
         BMDS_COMPAT_DIR="${CMAKE_CURRENT_LIST_DIR}/../compat")
 # The time zone database built from thirdparty/tzdata (devplan/time.md §9), as
 # the distribution builds it, when the host has zic: its every zone is tested.
@@ -111,7 +114,7 @@ if(BMDS_ZIC AND Python3_Interpreter_FOUND)
         add_dependencies(bmds_host_tests bmds_test_zoneinfo)
         target_compile_definitions(bmds_host_tests PRIVATE BMDS_TEST_ZONEINFO="${CMAKE_BINARY_DIR}/zoneinfo.bin")
 endif()
-target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_audio bmds_midi bmds_input bmds_ui bmds_gui bmds_clipboard
+target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_audio bmds_midi bmds_synth bmds_input bmds_ui bmds_gui bmds_clipboard
         bmds_sysconf bmds_files)
 bmds_target_options(bmds_host_tests)
 

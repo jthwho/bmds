@@ -24,6 +24,7 @@ Design notes and implementation plans for BMDS subsystems. Write a plan here **b
 - [`sysconf.md`](sysconf.md) — the system configuration: typed parameters, `sysconf`, watchers, the SDK's calls.
 - [`filebrowser.md`](filebrowser.md) — the file browser: the toolkit's furniture and item views, `bmds_files`, folder windows in the panel, `files`.
 - [`audio.md`](audio.md) — Phase 7: audio devices (ES8311 on I²S), the mixing engine, OSS `/dev/dsp` and native audio fds, real-time clients, decoders, MIDI and the synth.
+- [`mediaplayer.md`](mediaplayer.md) — the media player: audio and MIDI files in a GUI window, a playlist; video later (planned).
 
 ## Plan Document Template
 

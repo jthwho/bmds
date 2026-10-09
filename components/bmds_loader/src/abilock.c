@@ -97,6 +97,8 @@ _Static_assert(BMDS_SYS_AUDIO_CYCLE == 74, "ABI: slot AUDIO_CYCLE");
 _Static_assert(BMDS_SYS_MIDI_CONFIG == 75, "ABI: slot MIDI_CONFIG");
 _Static_assert(BMDS_SYS_MIDI_STATUS == 76, "ABI: slot MIDI_STATUS");
 _Static_assert(BMDS_SYS_MIDI_CONTROL == 77, "ABI: slot MIDI_CONTROL");
+_Static_assert(BMDS_SYS_AUDIO_SYNTH == 78, "ABI: slot AUDIO_SYNTH");
+_Static_assert(BMDS_SYS_AUDIO_SYNTH_INFO == 79, "ABI: slot AUDIO_SYNTH_INFO");
 _Static_assert(BMDS_SYSCONF_KEY_MAX == 63 && BMDS_SYSCONF_VALUE_MAX == 1024, "ABI: sysconf lengths");
 _Static_assert(BMDS_SYSCONF_TYPE_BOOL == 0 && BMDS_SYSCONF_TYPE_INT == 1 && BMDS_SYSCONF_TYPE_STRING == 2 &&
                        BMDS_SYSCONF_TYPE_COLOR == 3 && BMDS_SYSCONF_TYPE_ENUM == 4 && BMDS_SYSCONF_TYPE_PATH == 5 &&
@@ -259,6 +261,7 @@ _Static_assert(BMDS_SOUND_BELL == 0 && BMDS_SOUND_CLICK == 1 && BMDS_SOUND_ERROR
                "ABI: sounds");
 _Static_assert(BMDS_CODEC_WAV == 0 && BMDS_CODEC_MP3 == 1 && BMDS_CODEC_VORBIS == 2 && BMDS_CODEC_FLAC == 3,
                "ABI: codecs");
+_Static_assert(BMDS_CODEC_MIDI == 4, "ABI: codec MIDI");
 _Static_assert(BMDS_DECODE_NATIVE == 0xffffffffu && BMDS_DECODE_UNKNOWN_FRAMES == 0xffffffffffffffffull &&
                        BMDS_DECODE_ESTIMATED == 1,
                "ABI: decode constants");
@@ -324,6 +327,38 @@ _Static_assert(offsetof(bmds_midi_status_t, fd_dropped) == 64, "ABI: midi_status
 _Static_assert(offsetof(bmds_midi_status_t, reserved) == 68, "ABI: midi_status.reserved");
 _Static_assert(offsetof(bmds_midi_status_t, name) == 72, "ABI: midi_status.name");
 _Static_assert(sizeof(bmds_midi_status_t) == 104, "ABI: bmds_midi_status_t size");
+_Static_assert(BMDS_SYNTH_QUEUE == 1024, "ABI: synth queue");
+_Static_assert(offsetof(bmds_synth_event_t, frame) == 0, "ABI: synth_event.frame");
+_Static_assert(offsetof(bmds_synth_event_t, length) == 8, "ABI: synth_event.length");
+_Static_assert(offsetof(bmds_synth_event_t, flags) == 9, "ABI: synth_event.flags");
+_Static_assert(offsetof(bmds_synth_event_t, data) == 10, "ABI: synth_event.data");
+_Static_assert(sizeof(bmds_synth_event_t) == 16, "ABI: bmds_synth_event_t size");
+_Static_assert(offsetof(bmds_synth_config_t, size) == 0, "ABI: synth_config.size");
+_Static_assert(offsetof(bmds_synth_config_t, flags) == 4, "ABI: synth_config.flags");
+_Static_assert(offsetof(bmds_synth_config_t, rate) == 8, "ABI: synth_config.rate");
+_Static_assert(offsetof(bmds_synth_config_t, channels) == 12, "ABI: synth_config.channels");
+_Static_assert(offsetof(bmds_synth_config_t, format) == 16, "ABI: synth_config.format");
+_Static_assert(offsetof(bmds_synth_config_t, max_voices) == 20, "ABI: synth_config.max_voices");
+_Static_assert(offsetof(bmds_synth_config_t, font) == 24, "ABI: synth_config.font");
+_Static_assert(offsetof(bmds_synth_info_t, size) == 0, "ABI: synth_info.size");
+_Static_assert(offsetof(bmds_synth_info_t, rate) == 4, "ABI: synth_info.rate");
+_Static_assert(offsetof(bmds_synth_info_t, channels) == 8, "ABI: synth_info.channels");
+_Static_assert(offsetof(bmds_synth_info_t, format) == 12, "ABI: synth_info.format");
+_Static_assert(offsetof(bmds_synth_info_t, frames) == 16, "ABI: synth_info.frames");
+_Static_assert(offsetof(bmds_synth_info_t, voices) == 24, "ABI: synth_info.voices");
+_Static_assert(offsetof(bmds_synth_info_t, max_voices) == 28, "ABI: synth_info.max_voices");
+_Static_assert(offsetof(bmds_synth_info_t, peak_voices) == 32, "ABI: synth_info.peak_voices");
+_Static_assert(offsetof(bmds_synth_info_t, notes_at_limit) == 36, "ABI: synth_info.notes_at_limit");
+_Static_assert(offsetof(bmds_synth_info_t, queued) == 40, "ABI: synth_info.queued");
+_Static_assert(offsetof(bmds_synth_info_t, queue_full) == 44, "ABI: synth_info.queue_full");
+_Static_assert(offsetof(bmds_synth_info_t, ignored) == 48, "ABI: synth_info.ignored");
+_Static_assert(offsetof(bmds_synth_info_t, presets) == 52, "ABI: synth_info.presets");
+_Static_assert(offsetof(bmds_synth_info_t, font_bytes) == 56, "ABI: synth_info.font_bytes");
+_Static_assert(offsetof(bmds_synth_info_t, cpu_permille) == 60, "ABI: synth_info.cpu_permille");
+_Static_assert(offsetof(bmds_synth_info_t, cpu_permille_max) == 64, "ABI: synth_info.cpu_permille_max");
+_Static_assert(offsetof(bmds_synth_info_t, reserved) == 68, "ABI: synth_info.reserved");
+_Static_assert(offsetof(bmds_synth_info_t, font) == 72, "ABI: synth_info.font");
+_Static_assert(sizeof(bmds_synth_info_t) == 200, "ABI: bmds_synth_info_t size");
 
 #if UINTPTR_MAX == 0xffffffffu
 _Static_assert(offsetof(bmds_thread_t, size) == 0, "ABI: thread.size");
@@ -345,6 +380,7 @@ _Static_assert(offsetof(bmds_audio_cycle_t, late) == 52, "ABI: audio_cycle.late"
 _Static_assert(offsetof(bmds_audio_cycle_t, throttled) == 56, "ABI: audio_cycle.throttled");
 _Static_assert(offsetof(bmds_audio_cycle_t, flags) == 60, "ABI: audio_cycle.flags");
 _Static_assert(sizeof(bmds_audio_cycle_t) == 64, "ABI: bmds_audio_cycle_t size");
+_Static_assert(sizeof(bmds_synth_config_t) == 28, "ABI: bmds_synth_config_t size");
 #endif
 
 _Static_assert(offsetof(bmds_sys_t, magic) == 0, "ABI: bmds_sys_t.magic");

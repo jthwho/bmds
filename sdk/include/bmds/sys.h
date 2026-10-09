@@ -149,6 +149,8 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_MIDI_CONFIG 75u  /**< `int32_t midi_config(int32_t fd, const bmds_midi_config_t *set, ... *got)`. */
 #define BMDS_SYS_MIDI_STATUS 76u  /**< `int32_t midi_status(int32_t fd, bmds_midi_status_t *status)`. */
 #define BMDS_SYS_MIDI_CONTROL 77u /**< `int32_t midi_control(int32_t fd, uint32_t op, int32_t value)`. */
+#define BMDS_SYS_AUDIO_SYNTH 78u  /**< `int32_t audio_synth(const bmds_synth_config_t *config)`: a new fd. */
+#define BMDS_SYS_AUDIO_SYNTH_INFO 79u /**< `int32_t audio_synth_info(int32_t fd, bmds_synth_info_t *info)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -499,6 +501,7 @@ typedef struct bmds_audio_cycle_t {
 #define BMDS_CODEC_MP3 1u    /**< MPEG-1, 2 and 2.5 audio, layers I to III. */
 #define BMDS_CODEC_VORBIS 2u /**< Ogg Vorbis. */
 #define BMDS_CODEC_FLAC 3u   /**< FLAC. */
+#define BMDS_CODEC_MIDI 4u   /**< A Standard MIDI File, played by the synth (`synth/font`; appended 2026-10-08). */
 
 /** @brief `bmds_decode_config_t::format`: the decoder's own format (`bmds_decode_info_t::native_format`). */
 #define BMDS_DECODE_NATIVE 0xffffffffu
@@ -611,6 +614,60 @@ typedef struct bmds_midi_status_t {
 #define BMDS_MIDI_CONNECT 1u    /**< Connects this fd's port's source to port `value`'s destination. */
 #define BMDS_MIDI_DISCONNECT 2u /**< Ends that connection. */
 #define BMDS_MIDI_FLUSH 3u      /**< Throws away what waits to be read. */
+
+/**
+ * @brief A General MIDI synth (`audio_synth`, appended 2026-10-08, `devplan/audio.md` §22): MIDI
+ *        events written with their frames, samples read.
+ */
+typedef struct bmds_synth_config_t {
+                uint32_t    size;       /**< Set by the caller: `sizeof(bmds_synth_config_t)`. */
+                uint32_t    flags;      /**< `BMDS_O_CLOEXEC`, or 0. */
+                uint32_t    rate;       /**< Frames a second, 8000 to 96000 (0: 48000). */
+                uint32_t    channels;   /**< 1 or 2, interleaved (0: 2). */
+                uint32_t    format;     /**< `BMDS_AUDIO_F32LE` or `BMDS_AUDIO_S16LE`. */
+                uint32_t    max_voices; /**< Voices at most, up to 256 (0: 32); past it, voices are stolen. */
+                const char *font;       /**< A SoundFont's path (SF2 or SF3); NULL: the `synth/font` setting. */
+} bmds_synth_config_t;
+
+/**
+ * @brief A MIDI message for a synth fd's frame `frame` (its own count: the frames read so far).
+ *        One for a frame already read plays at the next read's start; a later one waits, so a
+ *        player writes ahead and each event lands on its sample. Whole messages, no running
+ *        status; a SysEx whole in one event (GM System On).
+ */
+typedef struct bmds_synth_event_t {
+                uint64_t frame;   /**< The frame it plays at. */
+                uint8_t  length;  /**< The bytes in `data`, 1 to 6. */
+                uint8_t  flags;   /**< 0. */
+                uint8_t  data[6]; /**< The message. */
+} bmds_synth_event_t;
+
+/** @brief The most events a synth fd holds unplayed; past it, `write()` fails with `EAGAIN`. */
+#define BMDS_SYNTH_QUEUE 1024u
+
+/**
+ * @brief A synth fd's state (`audio_synth_info`).
+ */
+typedef struct bmds_synth_info_t {
+                uint32_t size;             /**< Set by the caller: `sizeof(bmds_synth_info_t)`. */
+                uint32_t rate;             /**< As configured. */
+                uint32_t channels;         /**< As configured. */
+                uint32_t format;           /**< As configured. */
+                uint64_t frames;           /**< Frames read so far: the frame the next read starts at. */
+                uint32_t voices;           /**< Playing now. */
+                uint32_t max_voices;       /**< The limit. */
+                uint32_t peak_voices;      /**< The most at once. */
+                uint32_t notes_at_limit;   /**< Note-ons with every voice busy (one stolen or the note dropped). */
+                uint32_t queued;           /**< Events waiting for their frame. */
+                uint32_t queue_full;       /**< Events refused because the queue was full. */
+                uint32_t ignored;          /**< Messages it doesn't take. */
+                uint32_t presets;          /**< The font's presets. */
+                uint32_t font_bytes;       /**< The memory the font holds (shared by every synth on it). */
+                uint32_t cpu_permille;     /**< The last read's render time over its frames' time, in 1/1000. */
+                uint32_t cpu_permille_max; /**< The most since it opened. */
+                uint32_t reserved;         /**< 0. */
+                char     font[128];        /**< The font's path, NUL-terminated (cut at a character's end). */
+} bmds_synth_info_t;
 
 /** @brief `bmds_stat_t::type`. */
 #define BMDS_TYPE_FILE 1u      /**< A regular file. */
@@ -776,6 +833,8 @@ typedef int32_t (*bmds_sys_audio_cycle_fn)(int32_t fd, bmds_audio_cycle_t *cycle
 typedef int32_t (*bmds_sys_midi_config_fn)(int32_t fd, const bmds_midi_config_t *set, bmds_midi_config_t *got);
 typedef int32_t (*bmds_sys_midi_status_fn)(int32_t fd, bmds_midi_status_t *status);
 typedef int32_t (*bmds_sys_midi_control_fn)(int32_t fd, uint32_t op, int32_t value);
+typedef int32_t (*bmds_sys_audio_synth_fn)(const bmds_synth_config_t *config);
+typedef int32_t (*bmds_sys_audio_synth_info_fn)(int32_t fd, bmds_synth_info_t *info);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -1538,6 +1597,28 @@ static inline int32_t bmds_midi_status(int32_t fd, bmds_midi_status_t *status) {
  */
 static inline int32_t bmds_midi_control(int32_t fd, uint32_t op, int32_t value) {
         return ((bmds_sys_midi_control_fn)bmds_sys->slot[BMDS_SYS_MIDI_CONTROL])(fd, op, value);
+}
+
+/**
+ * @brief Opens a General MIDI synth on a SoundFont (@p config, its `size` set): a new fd. Write
+ *        `bmds_synth_event_t` records (whole ones) and read whole frames; neither waits. Fonts are
+ *        loaded once and shared while any synth plays them; the first open of a font waits for it
+ *        to load (TimGM6mb: about half a second).
+ *        (Slots 78-79, appended 2026-10-08: check `bmds_sys_has(BMDS_SYS_AUDIO_SYNTH)`.)
+ * @return The fd, or `-BMDS_EINVAL` (a rate, channel count, format, voice count or flag),
+ *         `-BMDS_ENOENT` (no font there), `-BMDS_ENOMEM`, `-BMDS_EBUSY` (four fonts loaded already),
+ *         `-BMDS_EIO` (a damaged font), `-BMDS_EMFILE`.
+ */
+static inline int32_t bmds_audio_synth(const bmds_synth_config_t *config) {
+        return ((bmds_sys_audio_synth_fn)bmds_sys->slot[BMDS_SYS_AUDIO_SYNTH])(config);
+}
+
+/**
+ * @brief Fills @p info (its `size` set) with synth fd @p fd's state.
+ * @return 0, or `-BMDS_ENOTTY`, `-BMDS_EBADF`, `-BMDS_EINVAL` (`size`).
+ */
+static inline int32_t bmds_audio_synth_info(int32_t fd, bmds_synth_info_t *info) {
+        return ((bmds_sys_audio_synth_info_fn)bmds_sys->slot[BMDS_SYS_AUDIO_SYNTH_INFO])(fd, info);
 }
 
 #ifdef __cplusplus

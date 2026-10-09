@@ -139,9 +139,13 @@ Plan: [`input.md`](input.md).
     16-frame periods; the `keytone` example).
   - [x] 6. MIDI: ports, routing, virtual ports, `/dev/midiN`, slots 75-77, `midi`, `midimon`
     (§21). USB MIDI built and waiting for a device to try; serial MIDI waits for its circuit.
-  - [ ] 7. Synth: General MIDI player and synth library.
-  - [ ] 8. Media player: a fully featured GUI player for audio and MIDI files (video perhaps
-    later); planned in detail when reached.
+  - [x] 7. Synth: General MIDI player and synth library. Done (§22): the GM engine on a patched,
+    fuzzed TinySoundFont, the synth fd (slots 78-79), `synth`, MIDI files through the decoders
+    (`play`, Open, `audio_decode`), the TimGM6mb package. Deferred (the user): the SDK's building
+    blocks for instruments (oscillators, envelopes, filters), until an instrument needs them.
+  - [ ] 8. Media player (`mediaplayer.md`, planned; the user's choices 2026-10-09): `mplayer`, a
+    GUI player for audio and MIDI files (video later), with saved playlists, a library by tags, a
+    visualizer, a MIDI view, a toolkit Open dialog, and a tray controller while it plays hidden.
   - [ ] 9. Capture and `record` (after the loopback cable), then the pedal work.
   - [ ] 10. AES67 and USB audio (after the network stack).
 - [ ] Ethernet bring-up, IP stack, basic tools (`ping`, file transfer).

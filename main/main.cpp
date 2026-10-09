@@ -21,6 +21,7 @@
 #include <bmds/midi.h>
 #include <bmds/ramdisk.h>
 #include <bmds/storage.h>
+#include <bmds/synthfile.h>
 #include <bmds/sysconf.h>
 #include <bmds/usbhost.h>
 #include <bmds/usbserialconsole.h>
@@ -60,6 +61,7 @@ namespace {
                 {"sysconf", bmds::SysConf::init},     // the system configuration, saved on /boot; /home
                 {"audio", bmds::AudioDevice::init},   // dsp0: made, not started; follows audio/dsp0/...
                 {"midi", bmds::Midi::init},           // the router, /dev/midi*; before USB's MIDI devices
+                {"synth", bmds::SoundFonts::init},    // the fonts synth fds share (none loaded)
                 {"clipboard", bmds::Clipboard::init}, // its configuration on /boot; /dev/clip0
                 {"storage", bmds::Storage::init},
                 {"ramdisk", bmds::RamDisk::init},

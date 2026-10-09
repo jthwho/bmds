@@ -1,0 +1,11 @@
+# TimGM6mb, a small General MIDI SoundFont (5.7 MB): the synth's default font, synth/font's
+# /sd0/p0/share/soundfonts/TimGM6mb.sf2 (devplan/audio.md §22). A data file, played, not linked.
+# The source is Debian's (the file MuseScore shipped), with its copyright notice.
+name = "soundfont-timgm6mb"
+version = "1.3"
+description = "TimGM6mb: a General MIDI SoundFont for the synth, play and MIDI files"
+license = "GPL-2.0-only"
+source = "https://deb.debian.org/debian/pool/main/t/timgm6mb-soundfont/timgm6mb-soundfont_1.3.orig.tar.gz"
+sha256 = "af8f3a00e416dfb262bcaa904a1c84df04a51b72bbc1313aed012bc754bdf99b"
+source_dir = "timgm6mb-soundfont_1.3"
+sdk = false

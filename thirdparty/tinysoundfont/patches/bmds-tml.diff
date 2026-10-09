@@ -1,0 +1,39 @@
+diff --git a/tml.h b/tml.h
+index 3332873..5959fce 100644
+--- a/tml.h
++++ b/tml.h
+@@ -396,10 +396,11 @@ TMLDEF tml_message* tml_load(struct tml_stream* stream)
+ 	if (midi_header[12] & 0x80) { TML_ERROR("File uses unsupported SMPTE timing"); return messages; }
+ 	num_tracks = (int)(midi_header[10] << 8) | midi_header[11];
+ 	division = (int)(midi_header[12] << 8) | midi_header[13]; //division is ticks per beat (quarter-note)
+-	if (num_tracks <= 0 && division <= 0) { TML_ERROR("Doesn't look like a MIDI file: invalid track or division values"); return messages; }
++	if (num_tracks <= 0 || division <= 0) { TML_ERROR("Doesn't look like a MIDI file: invalid track or division values"); return messages; } // BMDS: either (a zero division divided by zero; found by fuzzing)
+ 
+ 	// Allocate temporary tracks array for parsing
+ 	tracks = (struct tml_track*)TML_MALLOC(sizeof(struct tml_track) * num_tracks);
++	if (!tracks) { TML_ERROR("Out of memory"); return messages; } // BMDS
+ 	tracksEnd = &tracks[num_tracks];
+ 	for (t = tracks; t != tracksEnd; t++) t->Idx = t->End = t->Ticks = 0;
+ 
+@@ -416,7 +417,9 @@ TMLDEF tml_message* tml_load(struct tml_stream* stream)
+ 		track_length = track_header[7] | (track_header[6] << 8) | (track_header[5] << 16) | (track_header[4] << 24);
+ 		if (track_length < 0) { TML_WARN("Invalid MTrk header"); break; }
+ 		if (trackbufsize < track_length) { TML_FREE(trackbuf); trackbuf = (unsigned char*)TML_MALLOC(trackbufsize = track_length); }
++		if (track_length && !trackbuf) { trackbufsize = 0; TML_WARN("Out of memory"); break; } // BMDS
+ 		if (stream->read(stream->data, trackbuf, track_length) != track_length) { TML_WARN("Unexpected end of file"); break; }
++		if (!track_length) { t->Idx = t->End = p.message_count; continue; } // BMDS: no arithmetic on a null buffer
+ 
+ 		t->Idx = p.message_count;
+ 		for (p.buf_end = (p.buf = trackbuf) + track_length; p.buf != p.buf_end;)
+@@ -441,7 +444,10 @@ TMLDEF tml_message* tml_load(struct tml_stream* stream)
+ 		for (step_smallest = 0; step_smallest != 0x7fffffff; ticks += step_smallest)
+ 		{
+ 			step_smallest = 0x7fffffff;
+-			msec = tempo_msec + (int)((ticks - tempo_ticks) * ticks2time);
++			{ // BMDS: kept to an int (a long file at a slow tempo overflowed it; found by fuzzing)
++				double ms = tempo_msec + (ticks - tempo_ticks) * ticks2time;
++				msec = (ms >= 0x7fffffff ? 0x7fffffff : (ms > 0 ? (int)ms : 0));
++			}
+ 			for (t = tracks; t != tracksEnd; t++)
+ 			{
+ 				if (t->Idx == t->End) continue;
