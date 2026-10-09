@@ -766,6 +766,40 @@ The user asked for three things:
     window manager's focus, and so had the keys without being given them. Opening a desktop or
     panel window under the focus's number now clears it.
 
+### 4s. Tooltips, sliders, the tray's volume (the user's, 2026-10-08)
+
+The tray's volume item (`audio.md` §17) is a speaker with its level in a tooltip, and a click
+gives a slider. Both are the toolkit's, for any program:
+- **Tooltips:**
+  - **Text:** a widget answers `toolTip()` (none by default).
+  - **Showing:** the pointer resting 600 ms on a widget with one shows it in a small window
+    below the pointer (above it near the screen's bottom), in the palette's new `tooltip` and
+    `tooltip-text` roles.
+  - **Hiding:** a press, a key, or the pointer leaving the widget hides it.
+  - **Changing:** a widget whose text changes while shown tells `toolTipChanged()`, so the
+    volume's tooltip follows the wheel.
+  - **One window an application**, made the first time.
+  - **A window manager level, `Tooltip`,** above menus: the pointer passes through it (it is
+    never under the pointer), it never takes the keys, and it isn't a popup, so it neither
+    closes menus nor swallows the press after it.
+- **Slider:** a `SliderModel` (pure, host-tested: a signed range, the value kept in it, the
+  handle's place along a length and back, a vertical one's maximum at the top), and a `Slider`
+  widget:
+  - a sunken groove and a raised handle;
+  - **Mouse:** drag the handle; a press on the groove brings the handle there and drags it;
+  - **Wheel:** a step a notch;
+  - **Keys:** arrows a step, Page Up and Page Down a page, Home the minimum and End the maximum
+    (as Qt's);
+  - `Changed` is told as the value moves.
+- **The volume item:**
+  - **Icon:** the theme's `audio-volume-high` (a speaker); muted, a red circle and slash over it.
+  - **Tooltip:** `Volume: -9 dBFS`, or `Volume: muted`.
+  - **Click:** a popup with the level over a vertical slider, from 0 dBFS down to −60 and,
+    below that, Mute; under it a Mute button (the user's, 2026-10-08), pressed in while muted.
+    Unmuting returns to the level, which muting keeps. Escape or a press outside closes it.
+  - **Wheel:** 1 dB a notch.
+  - **Settings:** `audio/dsp0/volume` is in dB (−60 to 0) and `audio/dsp0/mute` the bottom notch.
+
 ## 5. Budget (estimates)
 
 - **Firmware:** the toolkit 10 to 15 KB, the panel 5 KB, the window manager's additions 4 KB, the

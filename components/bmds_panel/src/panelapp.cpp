@@ -55,6 +55,7 @@
 #include "folderwindow.h"
 #include "panelentries.h"
 #include "panelicons.h"
+#include "volumeitem.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -73,9 +74,9 @@ namespace {
         // The panel's settings: the system configuration's (devplan/sysconf.md §8).
         BMDS_SYSCONF(panelEdge, "panel/edge", Config::Type::Enum, "top", "The screen edge the panel is on", 0, 0,
                      "top|bottom", nullptr)
-        BMDS_SYSCONF(panelItems, "panel/items", Config::Type::String, "launcher;windows;clock",
-                     "The panel's items in order: launcher, windows, clock, spacer (; between)", 0, 128, nullptr,
-                     nullptr)
+        BMDS_SYSCONF(panelItems, "panel/items", Config::Type::String, "launcher;windows;volume;clock",
+                     "The panel's items in order: launcher, windows, volume, clock, spacer (; between)", 0, 128,
+                     nullptr, nullptr)
         BMDS_SYSCONF(panelIconTheme, "panel/icon-theme", Config::Type::String, "flat-color",
                      "The icon theme (a directory of /sd0/p0/share/icons)", 0, 64, nullptr, nullptr)
         BMDS_SYSCONF(panelLauncherLabel, "panel/launcher/label", Config::Type::String, "Apps",
@@ -329,6 +330,7 @@ namespace {
                         void        say(const char *a, const char *b = "", const char *c = "", const char *d = "");
                         StringView  setting(const Config::Param &param);
                         static void settingsChanged(void *arg, SysConf::Id id);
+                        static void audioChanged(void *arg, SysConf::Id id);
                         static void settingsDue(void *arg);
                         void        applySettings();
                         void        loadEntries(StringView directories);
@@ -357,6 +359,7 @@ namespace {
                         int                            _saveTimer = -1; // places to write
                         BoxLayout                     *_row = nullptr;
                         WindowList                    *_windows = nullptr;
+                        VolumeItem                    *_volume = nullptr; // the volume item, if shown
                         Menu                          *_menu = nullptr;
                         Menu                          *_iconMenu = nullptr;    // an icon's: Open, Cut, Copy, Delete
                         Menu    *_desktopMenu = nullptr; // the desktop's: Applications, New, Paste
@@ -1247,7 +1250,7 @@ namespace {
                 return;
         }
 
-        // The items of panel/items (launcher, windows, clock, spacer), in order, in @p row.
+        // The items of panel/items (launcher, windows, volume, clock, spacer), in order, in @p row.
         Error PanelApp::buildItems(Widget *row) {
                 char             list[128];
                 const StringView value = setting(bmdsConf_panelItems);
@@ -1282,6 +1285,9 @@ namespace {
                                 std::snprintf(format, sizeof(format), "%.*s", int(f.size()), f.data());
                                 if (c->configure(StringView(format), setting(bmdsConf_panelClockZone)).isError())
                                         say("panel: panel/clock/format or panel/clock/zone can't be used\n");
+                        } else if (type == "volume") {
+                                _volume = Widget::create<VolumeItem>(row, _app);
+                                if (_volume == nullptr) return Error::NoMem;
                         } else if (type == "spacer") {
                                 auto *s = Widget::create<Label>(row);
                                 if (s == nullptr) return Error::NoMem;
@@ -1354,6 +1360,8 @@ namespace {
                         say("panel: its settings take effect when it starts again\n");
                 if (_app.watchConfig("files", filesSettingsChanged, this).isError())
                         say("panel: files/... take effect when it starts again\n");
+                if (_app.watchConfig(VolumeItem::Prefix, audioChanged, this).isError())
+                        say("panel: the volume item won't follow changes made elsewhere\n");
                 // `files` opens folder windows here (devplan/filebrowser.md FB6).
                 if (_app.registerService("files", filesMessage, this).isError())
                         say("panel: the files service is taken: 'files' won't open windows here\n");
@@ -1437,6 +1445,14 @@ namespace {
                 return err;
         }
 
+        // The volume or mute changed (the loop's thread): the item shows it.
+        void PanelApp::audioChanged(void *arg, SysConf::Id) {
+                auto *self = static_cast<PanelApp *>(arg);
+                if (self->_volume == nullptr) return;
+                self->_volume->refresh();
+                return;
+        }
+
         // A panel/... parameter changed (the loop's thread): the settings applied once for the changes
         // that came together, after them.
         void PanelApp::settingsChanged(void *arg, SysConf::Id) {
@@ -1490,6 +1506,7 @@ namespace {
                 while (Widget *w = _row->firstChild()) w->destroy();
                 _launcherButton = nullptr;
                 _windows = nullptr;
+                _volume = nullptr;
                 if (buildItems(_row).isError()) say("panel: out of memory for its items\n");
                 _row->relayout();
                 windowsChanged(this);

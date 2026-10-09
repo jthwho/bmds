@@ -645,8 +645,11 @@ void WindowManager::act(uint8_t id, WindowFrame::Part part) {
 
 uint8_t WindowManager::windowAt(uint16_t x, uint16_t y) const {
         const Rect at{x, y, 1, 1};
-        for (size_t z = 0; z < _stack.count(); ++z)
+        for (size_t z = 0; z < _stack.count(); ++z) {
+                // A tooltip shows, but the pointer is over what is under it.
+                if (_stack.levelOf(_stack.idAt(z)) == Level::Tooltip) continue;
                 if (_stack.rectAt(z).contains(at)) return _stack.idAt(z);
+        }
         return 0;
 }
 
@@ -1325,7 +1328,7 @@ Result<uint8_t> WindowManager::openLocked(const WindowConfig &config) {
                 r.x = static_cast<uint16_t>(r.x & ~(Align - 1u));
         }
         if (!WindowFrame::isValid(config.decorations) || r.width < WindowFrame::minWidth(config.decorations) ||
-            r.height < WindowFrame::minHeight(config.decorations) || config.level > Level::Popup)
+            r.height < WindowFrame::minHeight(config.decorations) || config.level > Level::Tooltip)
                 return makeError<uint8_t>(Error::Invalid);
         const uint8_t oldTop = focusId();
         auto [id, err] = _stack.open(r, config.level);
@@ -1626,7 +1629,13 @@ uint8_t WindowManager::focusId() const {
 }
 
 uint8_t WindowManager::topPopup() const {
-        return _stack.count() > 0 && _stack.levelOf(_stack.idAt(0)) == Level::Popup ? _stack.idAt(0) : 0;
+        // The top window but tooltips (which take no keys and close nothing).
+        for (size_t z = 0; z < _stack.count(); ++z) {
+                const uint8_t id = _stack.idAt(z);
+                const Level   level = _stack.levelOf(id);
+                if (level != Level::Tooltip) return level == Level::Popup ? id : 0;
+        }
+        return 0;
 }
 
 void WindowManager::closePopups() {

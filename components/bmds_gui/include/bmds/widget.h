@@ -199,6 +199,13 @@ class Widget {
                 /** @brief Makes it its window's focus widget. */
                 void setFocus();
 
+                /**
+                 * @brief Returns its tooltip (`devplan/gui.md` §4s): shown when the
+                 *        pointer rests on it; empty (the default) for none. Tell
+                 *        `GuiApplication::toolTipChanged()` when it changes.
+                 */
+                virtual StringView toolTip() const { return StringView(); }
+
                 /** @brief Returns its mnemonic's key (`Mnemonic::keyOf()`'s form), or 0: none. */
                 virtual uint32_t mnemonic() const { return 0; }
 

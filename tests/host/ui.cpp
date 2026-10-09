@@ -362,6 +362,12 @@ TEST_CASE("WindowStack: levels keep panels and popups above, a desktop window be
         const uint8_t menu = stack.open(Rect{4, 4, 8, 8}, Level::Popup).value();
         CHECK(order() == std::vector<int>{menu, panel, a, b, desk});
         CHECK(stack.levelOf(menu) == Level::Popup);
+        // A tooltip goes above even a menu; a menu opened after stays under it.
+        const uint8_t tip = stack.open(Rect{4, 4, 8, 4}, Level::Tooltip).value();
+        const uint8_t menu2 = stack.open(Rect{8, 4, 8, 8}, Level::Popup).value();
+        CHECK(order() == std::vector<int>{tip, menu2, menu, panel, a, b, desk});
+        CHECK(stack.close(tip).isOk());
+        CHECK(stack.close(menu2).isOk());
         CHECK(stack.hide(a).isOk());
         CHECK(stack.raise(b).isOk());
         CHECK(stack.show(a).isOk());

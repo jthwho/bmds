@@ -2,9 +2,10 @@
 # over the window manager's public API only, so that it can move into the SDK
 # once GUI programs have an ABI.
 #
-# The pure parts (line layout, the icon grid, scroll bars and furniture; the menu's geometry is bmds_ui's,
-# shared with the window manager's window menu) are also built as a plain
-# CMake library for the host tests (tests/host).
+# The pure parts (line layout, the icon grid, scroll bars, sliders and
+# furniture; the menu's geometry is bmds_ui's, shared with the window manager's
+# window menu) are also built as a plain CMake library for the host tests
+# (tests/host).
 
 set(BMDS_GUI_PURE_SRCS
         src/furniturelayout.cpp
@@ -15,6 +16,7 @@ set(BMDS_GUI_PURE_SRCS
         src/lineeditmodel.cpp
         src/linelayout.cpp
         src/scrollmodel.cpp
+        src/slidermodel.cpp
         src/treerows.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
@@ -36,6 +38,8 @@ if(COMMAND idf_component_register)
                                     src/messagebox.cpp
                                     src/popupedit.cpp
                                     src/scrollarea.cpp
+                                    src/slider.cpp
+                                    src/tooltip.cpp
                                     src/treeview.cpp
                                     src/widget.cpp
                                INCLUDE_DIRS include

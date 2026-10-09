@@ -56,10 +56,12 @@ namespace {
         BMDS_PALETTE_PARAM(HighlightText, "highlight-text", HighlightText, standard<Role::HighlightText>())
         BMDS_PALETTE_PARAM(DisabledText, "disabled-text", DisabledText, standard<Role::DisabledText>())
         BMDS_PALETTE_PARAM(DesktopText, "desktop-text", DesktopText, standard<Role::DesktopText>())
+        BMDS_PALETTE_PARAM(ToolTip, "tooltip", ToolTip, standard<Role::ToolTip>())
+        BMDS_PALETTE_PARAM(ToolTipText, "tooltip-text", ToolTipText, standard<Role::ToolTipText>())
 
 #undef BMDS_PALETTE_PARAM
 
-        static_assert(WindowPalette::RoleCount == 23, "a parameter for each role");
+        static_assert(WindowPalette::RoleCount == 25, "a parameter for each role");
 
         constinit StaticObject<SysConf::Watcher> watcher;
         constinit WindowManager                 *followed = nullptr;

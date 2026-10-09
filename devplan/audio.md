@@ -299,7 +299,7 @@ The codec says almost nothing, so the driver and the engine check everything the
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `audio/default` | string | `dsp0` | The device `/dev/dsp` and system sounds use |
-| `audio/dsp0/volume` | int 0–100 | to choose by ear | Device volume, mapped to dB |
+| `audio/dsp0/volume` | int dB, −60 to 0 | −9 | Device volume (§17) |
 | `audio/dsp0/mute` | bool | false | |
 | `audio/dsp0/rate` | int | 48000 | Device rate for shared use |
 | `audio/dsp0/period` | int frames | 240 | Shared-use period |
@@ -475,9 +475,11 @@ Each step ends with what the user hears and what the board reports.
 - **Small DMA buffers:** fixed small DMA buffers with a variable wake count, against
   reconfiguring per period change (§5).
 - **Mix format:** float or Q31 for the mix (§5); measure.
-- **Volume:** the volume curve for `audio/dsp0/volume` (percent to dB), and its default, chosen
-  by ear.
-- **Idle timeout:** before the codec is put into standby, chosen against the pops.
+- **Volume:** decided (2026-10-08): in dB, −60 to 0, default −9 (§17).
+- **Idle timeout:** before the codec is put into standby, chosen against the pops. (Step 2: 3 s to
+  stop, which is silent; standby itself is not used yet.)
+- **Flash writes:** decided: flash auto-suspend (§17, as built).
+- **Resampler cost:** decided: precomputed rows (§17, as built).
 
 ## 16. Step 1: bring-up (design, 2026-10-08)
 
@@ -616,3 +618,214 @@ Checked on the board:
       holds its fade.
     - A stop during a tone waits for the fade and the queued buffers (25 ms at 48 kHz, 145 ms at
       8 kHz).
+
+## 17. Step 2: the engine (design, 2026-10-08)
+
+Step 1's task filled buffers from one tone. Step 2 puts the engine of §5 in its place: streams
+mixed in float, converted and resampled, a limiter, device volume, system sounds and the bell,
+settings and the tray. No system calls yet: the kernel's own streams (tones, sounds, a test
+sweep) are the clients, and step 3 puts `/dev/dsp` on the same stream class.
+
+### Portable parts (host-tested)
+
+- **`SampleFormat`** (its order becomes ABI in step 3): `u8`, `s8`, `s16le`, `s16be`, `s24le` (24
+  bits in 32), `s24-3le`, `s32le`, `f32le`, `mu-law`, `a-law`.
+  - **To float:** any format, mono or stereo, into interleaved stereo float (mono to both
+    channels). µ-law and A-law through 256-entry tables made at compile time.
+  - **From float:** the reverse, for the tests' round trips (and capture later). Integer formats
+    round-trip exactly.
+- **`Resampler`:** bandlimited interpolation (J. O. Smith's): one Kaiser-windowed sinc table,
+  made at compile time into flash (`constexpr`), sampled finely enough that interpolating
+  linearly between its points costs less than the stopband allows.
+  - Any pair of rates. The position is kept exactly, as a whole input frame and a fraction in
+    units of 1/out, so nothing drifts over hours. (AES67 later steers a ratio this way too.)
+  - Downsampling stretches the kernel so its cutoff follows the output's Nyquist frequency.
+  - A stream at the device's rate skips it.
+  - Its input history is the stream's (allocated at open). The engine asks how many input frames
+    the next period needs, converts that many in, and the resampler adds its output to the mix
+    with the stream's gain.
+  - Taps and table density are chosen by measurement: host tests measure passband, imaging and
+    aliasing of sines through 8, 11.025, 22.05, 44.1 and 96 kHz to 48 kHz and back, by a
+    least-squares fit of the sine and the residual's power (THD+N).
+- **`AudioLimiter`:** transparent below full scale. A frame whose peak passes full scale sets the
+  gain to bring it to full scale at once (no overshoot); the gain then recovers over ~50 ms.
+  Counts the frames it touched, for `audio status`.
+- **Output:** float stereo to the DMA's 32-bit slots, clamped. **A mono codec gets (L + R) / 2 in
+  both slots**, so a stereo source isn't half lost on the ES8311 (`dac-slot` still picks the slot,
+  but both now carry the same mix).
+- **`SineTone`:** float output by a rotating phasor (renormalized each period) instead of `sinf`
+  per frame.
+- **`SystemSound`:** the sounds as a table of notes (frequency, length, level) with 2 ms attack
+  and a fade at the end. Numbered, and the numbers become ABI in step 3: 0 bell, 1 click, 2
+  error, 3 notify.
+- **Volume:** in dB (the user's, 2026-10-08: a first cut in percent, amplitude = (p/100)³, gave
+  way to dB as the tray shows it).
+
+### Streams (kernel)
+
+- **`AudioStream`:** what the engine mixes. Two kinds:
+  - **PCM:** a lock-free ring (`ByteRing`, PSRAM) in the stream's format, rate and channels; the
+    engine converts and resamples from it. A writer blocks while the ring is full and is woken
+    by the engine. The ring must reach its start threshold before it plays; an empty ring once
+    playing is an underrun: counted, silence mixed.
+  - **Generators:** tones and system sounds, which make float at the device's rate in the engine.
+- **Attaching:** a device has `MaxStreams` (8) slots. Attaching takes the device's lock, and
+  starts the device if it is stopped. The engine reads the slots without a lock.
+  - **Detaching:** marks the stream; the engine takes it out at its next period and releases its
+    semaphore. A stopped device takes it out at once.
+  - **Generators that end:** they fade themselves out. The engine takes them out once the DMA has
+    sent the buffer holding their fade, as step 1's tone did, and their waiters are told.
+- **Gain:** per stream, applied in the mix.
+
+### The engine
+
+Each period, on the device's task:
+1. clear the float mix (internal RAM, `MaxPeriodFrames` × 2);
+2. each attached stream adds its frames (converted, resampled, with its gain);
+3. the limiter;
+4. to the DMA buffer's slots (mono-mixed for a mono codec); write the cache back.
+
+- **Idle:** with no streams for **3 s**, the device stops (silent since step 1). The first stream
+  starts it again. `audio start` holds it running until `audio stop`.
+- **Control work on the task:** settings changes and the idle stop happen on the device's task
+  between periods. It never waits for the device's lock: it tries it, and tries again a period
+  later. A volume change is one I²C write (~0.3 ms) inside the period's slack of about two
+  periods. Whether that stays true at 1 ms periods is for step 5.
+
+### Device volume and mute
+
+- **The codec's DAC volume** with its soft ramp (`AudioCodec::setVolume()`), so a change costs no
+  CPU and doesn't click.
+- **`dac-ramp`** now defaults to **3**: 0.25 dB per 16 frames, or 60 dB in 80 ms at 48 kHz.
+- **Mute** sets the DAC volume to its floor (−95.5 dB), which the ramp fades to. `dac-mute` (the
+  instant mute bit) stays a control of its own.
+- `audio ctl dac-volume` and the setting write the same register: the last one wins, until the
+  next start applies the setting again.
+
+### Settings (sysconf, frozen once shipped)
+
+The table in §6.4. Decided here:
+- `audio/dsp0/volume`: int dB, −60 to 0, default **−9** (the user: "fine; it gets saved anyway").
+  Mute is `audio/dsp0/mute`, which the slider's bottom notch sets.
+- `audio/dsp0/rate`: 8000–96000, checked against the clock plan.
+- `audio/dsp0/period`: 48–480 frames. 480 is the most the I²S driver takes in one DMA buffer of
+  4,092 bytes; 48 is 1 ms at 48 kHz. Below that waits for step 5.
+- `audio/default`: `dsp0`.
+- `audio/bell`: `sound` or `off`.
+- `audio/feedback`: whether the click, error and notify sounds play.
+
+Applied: the device watches `audio/` (`SysConf::Watcher`). Volume and mute apply at once. A new
+rate or period restarts a running device, a short gap; a stopped one uses it at its next start.
+
+### System sounds and the bell
+
+- **`AudioDevice::playSound(n)`:** one generator per sound, so a sound already playing isn't
+  started again: a `cat` of a binary rings once, not hundreds of times.
+- **`SystemSounds::play(n)`:** on the `audio/default` device, if `audio/bell` (the bell) or
+  `audio/feedback` (the others) allows it. The call becomes a system call in step 3.
+- **The bell:** `TerminalScreen` counts BELs (as it counts title changes). The terminal app rings
+  when the count moves. The serial console passes BEL on to the host's terminal, as before.
+
+### The tray control
+
+- A panel item **`volume`**, added to `panel/items`' default, using only what any program can:
+  the settings.
+- Revised with the user (2026-10-08), built as toolkit features (`gui.md` §4s):
+  - **Icon:** a speaker; muted, a red circle and slash over it.
+  - **Tooltip:** the volume in dBFS.
+  - **Click:** a slider from 0 dBFS down to −60 dBFS, its bottom notch "Mute", and a Mute
+    button; unmuting returns to the level.
+  - **Wheel:** 1 dB a notch.
+- It follows `audio/dsp0/...` (watched), so `sysconf set` from a shell moves it too, and it saves
+  them 2 s after the last change.
+
+### Commands (appended)
+
+- **`audio sound [DEV] NAME`:** plays a system sound (`bell`, `click`, `error`, `notify`),
+  whatever the settings say.
+- **`audio sweep [DEV] [RATE] [FORMAT] [SECONDS]`:** a logarithmic sweep, 20 Hz to 0.45 × RATE,
+  at −12 dBFS, written by the command into a PCM stream of that rate and format. It checks
+  conversion and resampling by ear: a resampler that aliases plays tones falling as the sweep
+  rises. It also tests the blocking writer that step 3's `/dev/dsp` uses.
+- **`audio tone`** is a generator stream now:
+  - tones started together mix;
+  - an idle device stops 3 s after the last tone, not at once.
+- **`audio status`** adds:
+  - the load: the mix's average time a period, as a share of a core;
+  - volume and mute;
+  - limiter frames;
+  - one line per stream (kind, format, rate, channels, fill, underruns).
+
+### As built (2026-10-08)
+
+Measured on the board, and by the host tests (`tests/host/audio.cpp`):
+- **Resampler** (16 zero crossings a side, Kaiser β = 8, cutoff 0.90 of the lower Nyquist
+  frequency, 256 table entries a crossing; host, a sine at −6 dBFS):
+  - **Passband:** flat to 0.75 of the lower Nyquist frequency (−0.006 dB), −1.8 dB at 0.85.
+  - **THD+N:** −83 to −99 dB from 8, 11.025, 16, 22.05, 32 and 44.1 kHz to 48 kHz.
+  - **Aliasing:** going down, −83 dB or better from 1.08 × Nyquist up. Just above Nyquist it is
+    only −40 dB (24.5 kHz from 96 kHz aliases to 23.5 kHz); at an 8 kHz device rate that is
+    audible (4.1 kHz → 3.9 kHz).
+- **Engine load** (average mixing time a 5 ms period, one sweep stream, `audio status`'s `Load`):
+
+| Stream | Interpolated taps (first cut) | Precomputed rows |
+|---|---|---|
+| A tone, or 48 kHz PCM (no resampling) | 72 to 80 µs (1.5 %) | the same |
+| 44.1 kHz PCM | 389 µs (7.7 %) | 280 µs (5.6 %) |
+| 22.05 kHz PCM | 376 µs (7.5 %) | 270 µs (5.4 %) |
+| 8 kHz PCM | 374 µs (7.4 %) | 258 µs (5.1 %) |
+| 11.025 kHz PCM (640 phases: still interpolated) | 376 µs | 373 µs (7.4 %) |
+| 96 kHz PCM (going down: twice the taps) | 1,310 µs (26 %) | 452 µs (9.0 %) |
+
+  - **Precomputed rows** (the user's go-ahead, 2026-10-08): a rational ratio has out / gcd(in,
+    out) phases. Each one's coefficients are worked out at `configure()` when they fit in 64 KB
+    (`Resampler::MaxRowFloats`, the stream's memory space): 160 rows for 44.1 kHz, 3 for 8, 16
+    and 32 kHz, 1 for 96 kHz. An output then reads one row, with no interpolation per tap.
+  - The inner loop is ~10 instructions a tap, with fused multiply-adds. Moving the table or the
+    history to internal RAM changed nothing (measured). PIE has no float lanes; a fixed-point
+    PIE path is what is left, and isn't planned.
+- **Lateness:** no late periods with tones, sounds, sweeps at every rate and format, and settings
+  changing while playing.
+  - A restart by the engine's own task (a new rate or period) leaves a few periods unfilled
+    while the codec starts. They play silence, and aren't counted.
+- **Flash writes stalled the engine,** until flash auto-suspend (the user's choice,
+  2026-10-08):
+  - **Before:** 256 KB written to `/boot` during a sweep gave 268 late periods (1.3 s of
+    silence); one fill stalled 48 ms. With the cache off while the flash is written, the
+    interrupt (IRAM) ran, but the task (flash code, PSRAM rings) didn't.
+  - **Now:** `CONFIG_SPI_FLASH_AUTO_SUSPEND`, so the caches stay on and an erase or a write
+    suspends when the cache needs the flash. The same write: 0 late periods, 0 underruns.
+  - **Integrity:** 512 KB of random data, copied to `/boot` twice during a sweep, read back
+    identical after a reboot.
+  - **The chip:** IDF allows suspend for Winbond's 0xEF4017 only. The board's W25Q128JV
+    (0xEF4018, read with esptool) has the same suspend and resume commands and SUS bit, so
+    the board supplies IDF's Winbond driver with that check widened
+    (`components/bmds_board/boards/olimex_esp32p4_pc/flashchips.c`, through
+    `CONFIG_SPI_FLASH_OVERRIDE_CHIP_DRIVER_LIST`). The boot log says "detected chip: winbond",
+    "Flash suspend feature is enabled".
+  - **Caveat:** IDF's documentation lists neither the P4 nor this chip for the feature (its code
+    supports the P4). Recheck `flashchips.c` against IDF's Winbond driver when IDF is updated.
+- **Settings:** volume, mute, rate and period apply while playing.
+  - 70 % → 0xAC (−9.5 dB), 50 % → 0x9A, mute → 0x00, each read back (before the setting was dB).
+  - A new rate or period restarts the device, and streams follow at the new rate.
+  - 12,345 Hz is a valid rate: the ES8311 takes any rate at MCLK = 256 × rate.
+- **Idle:** the device stops 3 s after its last stream.
+- **Sounds:** a bell asked for three times at once plays once.
+- **Size:**
+  - `bmds_audio`: 2,740 bytes of BSS (the device, its tone and sound streams, the watcher),
+    102 bytes of IRAM (the interrupt), 43 KB of flash (20 KB of rodata, 16.4 KB of it the sinc
+    table).
+  - At the first start: the mix and scratch buffers, 7,680 bytes of internal RAM, and the
+    task's 4 KB stack.
+- **Icons:** Flat Color has one speaker and no muted one. `icons` aliases the four
+  `audio-volume-*` names to it; `icons-glyphs` has `volume-1/2/3` and `volume-mute`. The tray
+  item asks for `audio-volume-high`, else `speaker`, and draws its own red circle and slash when
+  muted.
+- **The tray, on the board** (driven with `win pointer`, seen in screenshots):
+  - **Tooltip:** "Volume: -9 dBFS" after a rest.
+  - **Click:** the slider opened under the item, the item sunk.
+  - **Wheel** over the popup: three notches took −9 to −6.
+  - **Drag** to the bottom: muted, the red circle and slash drawn, the level kept.
+  - **Closing:** a press outside closed the popup; the middle button unmuted.
+  - **Mute button:** muted with the level kept (−13), pressed in; again, back to −13.
+  - **Saving:** written to `/boot` 2 s after the last change.

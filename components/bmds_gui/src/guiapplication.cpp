@@ -17,10 +17,17 @@
 #include <bmds/interrupt.h>
 #include <bmds/memory.h>
 #include <bmds/system.h>
+#include <bmds/tooltip.h>
 
 BMDS_NAMESPACE_BEGIN
 
 GuiApplication::~GuiApplication() {
+        // Its tooltip is one of its windows: gone while the application is whole.
+        if (_toolTip != nullptr) {
+                _toolTip->~ToolTip();
+                Memory::free(_toolTip);
+                _toolTip = nullptr;
+        }
         // The watches first: a notification may be running on another task until stop() returns.
         for (ConfigWatch *&w : _configWatches) {
                 if (w == nullptr) continue;
@@ -378,6 +385,34 @@ GuiClipboard *GuiApplication::clipboard() {
         void *mem = Memory::alloc(MemSpace::Psram, sizeof(GuiClipboard));
         if (mem != nullptr) _clipboard = ::new (mem) GuiClipboard(*this);
         return _clipboard;
+}
+
+// ---- Tooltips (devplan/gui.md §4s)
+
+void GuiApplication::hoverToolTip(Widget *widget, int screenX, int screenY) {
+        if (_toolTip == nullptr) {
+                if (widget == nullptr || widget->toolTip().isEmpty()) return;
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(ToolTip));
+                if (mem == nullptr) return;
+                _toolTip = ::new (mem) ToolTip(*this);
+        }
+        _toolTip->hover(widget, screenX, screenY);
+        return;
+}
+
+void GuiApplication::hideToolTip() {
+        if (_toolTip != nullptr) _toolTip->hide();
+        return;
+}
+
+void GuiApplication::toolTipChanged(Widget *widget) {
+        if (_toolTip != nullptr) _toolTip->changed(widget);
+        return;
+}
+
+void GuiApplication::forgetToolTip(Widget *widget) {
+        if (_toolTip != nullptr) _toolTip->forget(widget);
+        return;
 }
 
 BMDS_NAMESPACE_END

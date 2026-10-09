@@ -34,6 +34,7 @@
 #include <bmds/program.h>
 #include <bmds/programimage.h>
 #include <bmds/scrollmodel.h>
+#include <bmds/slidermodel.h>
 #include <bmds/switcherlayout.h>
 #include <bmds/treerows.h>
 #include <bmds/windowstack.h>
@@ -1114,4 +1115,40 @@ TEST_CASE("ItemSelection: a Shift range by a grid's rectangle, not the rows' ord
         s.selectRange(2, false);
         CHECK(s.selectedCount() == 3);
         CHECK(s.isSelected(1));
+}
+
+TEST_CASE("SliderModel: a signed range, steps, and the handle's place both ways") {
+        bmds::SliderModel m;
+        m.setRange(0, -61); // backwards: swapped
+        CHECK(m.minimum() == -61);
+        CHECK(m.maximum() == 0);
+        CHECK(m.value() == 0);
+        CHECK_FALSE(m.setValue(5)); // kept at the maximum
+        CHECK(m.setValue(-9));
+        CHECK(m.value() == -9);
+        m.setSteps(1, 6);
+        CHECK(m.step(-2));
+        CHECK(m.value() == -11);
+        CHECK(m.stepPage(-10));
+        CHECK(m.value() == -61);
+        CHECK_FALSE(m.step(-1));
+        // Horizontal: the minimum at the start. A 72-pixel slider, an 11-pixel handle: 61 to travel.
+        CHECK(m.handleStart(72, 11) == 0);
+        (void)m.setValue(0);
+        CHECK(m.handleStart(72, 11) == 61);
+        // Vertical (inverted): the maximum at the top.
+        m.setInverted(true);
+        CHECK(m.handleStart(72, 11) == 0);
+        (void)m.setValue(-61);
+        CHECK(m.handleStart(72, 11) == 61);
+        // Back from a place: every value's handle maps back to it, and past the ends clamps.
+        for (int v = -61; v <= 0; ++v) {
+                (void)m.setValue(v);
+                CHECK(m.valueAt(m.handleStart(133, 11), 133, 11) == v);
+        }
+        CHECK(m.valueAt(-50, 133, 11) == 0);
+        CHECK(m.valueAt(500, 133, 11) == -61);
+        // No room to travel, or no range: the minimum, at the start.
+        CHECK(m.handleStart(10, 11) == 0);
+        CHECK(m.valueAt(3, 10, 11) == -61);
 }

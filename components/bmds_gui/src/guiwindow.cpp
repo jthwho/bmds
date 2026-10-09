@@ -257,6 +257,7 @@ uint8_t GuiWindow::takeDirty(Region &out) {
 }
 
 void GuiWindow::forget(Widget *widget) {
+        _app.forgetToolTip(widget);
         // Its children are being destroyed too: anything inside it.
         if (_default != nullptr) {
                 for (Widget *p = _default; p != nullptr; p = p->parent()) {
@@ -404,6 +405,7 @@ void GuiWindow::handle(const GuiApplication::Event &event) {
 // A key, in the order the class's description gives.
 void GuiWindow::key(const KeyEvent &event) {
         if (event.action == KeyEvent::Action::Release) return;
+        _app.hideToolTip();
         const uint32_t key = Mnemonic::keyOf(event);
         if (key != 0 && event.hasAlt() && activateMnemonic(key)) return;
         bool used = _focus != nullptr && _focus->isEnabled() && _focus->keyPressed(event);
@@ -437,6 +439,7 @@ void GuiWindow::mouse(const WindowManager::MouseEvent &event) {
         }
         switch (event.type) {
                 case MType::Press: {
+                        _app.hideToolTip();
                         Widget *w = widgetAt(event.x, event.y);
                         if (_grab == nullptr) _grab = w;
                         if (w != this && w->isFocusable() && w->isEnabled()) setFocusWidget(w);
@@ -458,13 +461,20 @@ void GuiWindow::mouse(const WindowManager::MouseEvent &event) {
                                 break;
                         }
                         Widget *w = widgetAt(event.x, event.y);
-                        if (_hover != w && _hover != nullptr) _hover->mouseLeft();
+                        if (_hover != w) {
+                                if (_hover != nullptr) _hover->mouseLeft();
+                                // Dragged by the window manager since: where it is, for the tooltip.
+                                auto [client, err] = _app.windowManager().clientRect(id());
+                                if (err.isOk()) _screen = client;
+                        }
                         _hover = w;
+                        _app.hoverToolTip(w, _screen.x + event.x, _screen.y + event.y);
                         pointerOver(w, event.x, event.y);
                         if (w->isEnabled()) w->mouseMoved(event);
                         break;
                 }
                 case MType::Leave:
+                        _app.hoverToolTip(nullptr, 0, 0);
                         // Left, or a popup took the press held: no release will come.
                         if (_hover != nullptr) _hover->mouseLeft();
                         if (_grab != nullptr && _grab != _hover) _grab->mouseLeft();

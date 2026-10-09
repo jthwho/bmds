@@ -199,6 +199,9 @@ class TerminalScreen final : private VtHandler {
                 /** @brief Returns a number that changes whenever the title does. */
                 uint32_t titleGeneration() const { return _titleGeneration; }
 
+                /** @brief Returns the BELs written so far, modulo 2^32 (its owner rings on a change). */
+                uint32_t bellCount() const { return _bellCount; }
+
                 /** @brief Returns true if the program asked for bracketed paste (mode 2004). */
                 bool isBracketedPaste() const { return _bracketedPaste; }
 
@@ -316,6 +319,7 @@ class TerminalScreen final : private VtHandler {
                 char          _title[MaxTitle + 1] = {};
                 uint8_t       _titleLength = 0;
                 uint32_t      _titleGeneration = 0;
+                uint32_t      _bellCount = 0;
                 ReplySink     _replySink = nullptr;
                 void         *_replyContext = nullptr;
                 // OSC 52 as it streams: its targets, then its data or a query.

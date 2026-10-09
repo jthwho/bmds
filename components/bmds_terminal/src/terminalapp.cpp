@@ -41,6 +41,7 @@
 #include <cstring>
 #include <new>
 #include <sdkconfig.h>
+#include <bmds/audiodevice.h>
 #include <bmds/base64.h>
 #include <bmds/builtinprograms.h>
 #include <bmds/clipboard.h>
@@ -215,6 +216,7 @@ namespace {
                         Mutex                          _lock;         // the screen
                         TerminalScreen                 _screen{MemSpace::Psram};
                         uint32_t                       _titleSeen = 0;
+                        uint32_t                       _bellsSeen = 0;
                         TextCell                      *_cells = nullptr; // a row's, internal RAM
                         std::atomic<uint32_t>          _offset{0};       // lines scrolled back
                         uint32_t                       _added = 0;       // the history's lines added, as drawn
@@ -374,11 +376,14 @@ namespace {
                         }
                         if (rerr.isError()) continue;
                         bool titled = false;
+                        bool rang = false;
                         {
                                 Mutex::Locker lock(_lock, WaitForever);
                                 _screen.write(StringView(reinterpret_cast<const char *>(buf), n));
                                 titled = _screen.titleGeneration() != _titleSeen;
                                 _titleSeen = _screen.titleGeneration();
+                                rang = _screen.bellCount() != _bellsSeen;
+                                _bellsSeen = _screen.bellCount();
                                 // Text under the selection changed: it goes (as xterm's).
                                 if (_selection.isActive()) {
                                         const int64_t added = _screen.historyAdded();
@@ -391,6 +396,8 @@ namespace {
                                         }
                                 }
                         }
+                        // The bell (devplan/audio.md §17): once for a read however many BELs it had.
+                        if (rang) (void)SystemSounds::play(SystemSound::Bell);
                         if (_osc52Ready) setFromProgram();
                         const uint8_t window = _window.load(std::memory_order_acquire);
                         if (window != 0 && !_gone.load(std::memory_order_acquire)) {

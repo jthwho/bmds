@@ -166,7 +166,7 @@ else the system default in `/boot/config/NAME`).
 
 | Today | Becomes |
 |---|---|
-| `win color` (the 23 palette roles, not saved anywhere) | `wm/palette/<role>` (`color`), e.g. `wm/palette/desktop` |
+| `win color` (23 palette roles, 25 since 2026-10-08; not saved) | `wm/palette/<role>` (`color`), e.g. `wm/palette/desktop` |
 | `terminal.conf` `[Colors]` Text, Background, Cursor | `terminal/colors/text`, `.../background`, `.../cursor` (`color`) |
 | `terminal.conf` `[Clipboard]` AllowWrite, AllowRead | `terminal/clipboard/allow-write`, `.../allow-read` (`bool`) |
 | `panel.conf` `[Panel]` Edge, Items, IconTheme | `panel/edge` (`enum` top, bottom), `panel/items` (`string`), `panel/icon-theme` (`string`) |
@@ -241,8 +241,8 @@ one not, `/home` following a card pulled and put back, the palette changing live
   - `clock/zone`: default `CONFIG_BMDS_TIMEZONE`, checked by the new
     `Clock::checkTimeZone()`.
   - `clock/tzdata`: default `CONFIG_BMDS_ZONEINFO_PATH`. The storage service no longer sets it.
-  - `wm/palette/<role>`: 23, defaults the palette's; `desktop` defaults to
-    `CONFIG_BMDS_DESKTOP_COLOR`.
+  - `wm/palette/<role>`: 23 (25 since 2026-10-08: `tooltip`, `tooltip-text`), defaults the
+    palette's; `desktop` defaults to `CONFIG_BMDS_DESKTOP_COLOR`.
   - `terminal/colors/<name>`: 19 (`text`, `background`, `cursor`, `color0` to `color15`).
   - `terminal/clipboard/allow-write` and `allow-read`.
   - `panel/...`: 12.

@@ -347,6 +347,7 @@ class WindowStack {
                         Above,   ///< Applications' windows kept above the others ("always on top").
                         Panel,   ///< Above them: panels and docks.
                         Popup,   ///< Above everything: menus.
+                        Tooltip, ///< Above even menus, and the pointer passes through: tooltips.
                 };
 
                 /** @brief The pixel multiple of window x and widths. */

@@ -58,10 +58,12 @@ class WindowPalette {
                         HighlightText,      ///< Text on it.
                         DisabledText,       ///< An item that can't be chosen.
                         DesktopText,        ///< A desktop icon's name (`devplan/gui.md` §4m).
+                        ToolTip,            ///< A tooltip's face.
+                        ToolTipText,        ///< Its text and border.
                 };
 
                 /** @brief The number of roles. */
-                static constexpr size_t RoleCount = 23;
+                static constexpr size_t RoleCount = 25;
 
                 /** @brief The standard colors: a dark grey desktop, blue for the focused window. */
                 constexpr WindowPalette() = default;
@@ -108,6 +110,8 @@ class WindowPalette {
                         0xffffff, // HighlightText
                         0x808080, // DisabledText
                         0xffffff, // DesktopText
+                        0xffffe1, // ToolTip
+                        0x000000, // ToolTipText
                 };
 };
 

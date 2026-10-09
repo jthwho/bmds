@@ -316,7 +316,8 @@ void TerminalScreen::splitWide(uint16_t row, uint16_t column) {
 
 void TerminalScreen::execute(uint8_t control) {
         switch (control) {
-                case 0x08: // BS
+                case 0x07: ++_bellCount; break; // BEL: rung by the owner
+                case 0x08:                      // BS
                         if (_cursor.column > 0) --_cursor.column;
                         _cursor.pendingWrap = false;
                         break;
@@ -330,7 +331,7 @@ void TerminalScreen::execute(uint8_t control) {
                         break;
                 case 0x0e: _cursor.shift = 1; break; // SO
                 case 0x0f: _cursor.shift = 0; break; // SI
-                default: break;                      // BEL and the rest
+                default: break;                      // the rest
         }
         return;
 }

@@ -54,6 +54,8 @@ class Es8311 final : public AudioCodec {
                 Error                    start(uint32_t mclkHz, uint32_t rateHz) override;
                 Error                    stop() override;
                 bool                     isRunning() const override { return _running; }
+                uint8_t                  outputChannels() const override { return 1; }
+                Error                    setVolume(int32_t centiDb) override;
                 Span<const AudioControl> controls() const override;
                 int32_t                  controlValue(size_t index) const override;
                 Error                    setControl(size_t index, int32_t value) override;

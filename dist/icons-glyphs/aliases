@@ -23,3 +23,7 @@ internet-web-browser        globe
 appointment-soon            clock
 alarm                       alarm-clock
 dialog-information          info-circle
+audio-volume-high           volume-3
+audio-volume-medium         volume-2
+audio-volume-low            volume-1
+audio-volume-muted          volume-mute

@@ -80,6 +80,17 @@ class AudioCodec {
                 /** @brief Returns true between a successful `start()` and `stop()`. */
                 virtual bool isRunning() const = 0;
 
+                /** @brief Returns the channels the chip plays (1: one, fed from either slot). */
+                virtual uint8_t outputChannels() const = 0;
+
+                /**
+                 * @brief Sets the hardware volume to @p centiDb (clamped to the chip's
+                 *        range; its floor for a mute), ramped by the chip, at once if
+                 *        running, else at `start()`.
+                 * @blocking
+                 */
+                virtual Error setVolume(int32_t centiDb) = 0;
+
                 /** @brief Returns the controls the chip offers. */
                 virtual Span<const AudioControl> controls() const = 0;
 

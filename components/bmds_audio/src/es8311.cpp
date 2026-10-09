@@ -33,7 +33,8 @@ namespace {
                 {"dac-eq", "The DAC's equalizer (bypassed when off)", Type::Bool, 0, 1, 1, ""},
                 {"drc", "Dynamic range control", Type::Bool, 0, 1, 1, ""},
         };
-        constexpr int32_t Defaults[Es8311::ControlCount] = {0, 0, 0, 0, 0, 0};
+        // dac-ramp 3: 0.25 dB per 16 frames, 60 dB in 80 ms at 48 kHz (devplan/audio.md §17).
+        constexpr int32_t Defaults[Es8311::ControlCount] = {0, 0, 0, 3, 0, 0};
 
         // 0x00 to 0x45, then the chip ID and version.
         constexpr std::array<uint8_t, R::LastRegister + 1 + 3> RegisterList = [] {
@@ -209,6 +210,11 @@ Error Es8311::setControl(size_t index, int32_t value) {
         if (index >= ControlCount) return Error::Invalid;
         _values[index] = value;
         return _running ? apply(index) : Error::Ok;
+}
+
+Error Es8311::setVolume(int32_t centiDb) {
+        const AudioControl &c = Controls[DacVolume];
+        return setControl(DacVolume, centiDb < c.min ? c.min : (centiDb > c.max ? c.max : centiDb));
 }
 
 Error Es8311::apply(size_t index) {

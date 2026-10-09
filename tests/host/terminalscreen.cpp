@@ -111,6 +111,14 @@ TEST_CASE("TerminalScreen: text, CR LF and wrapping") {
         CHECK(s.row(0) == "   qz");
 }
 
+TEST_CASE("TerminalScreen: BEL is counted, not shown") {
+        Screen s(5, 2);
+        CHECK(s.screen.bellCount() == 0);
+        s.write("a\a\ab\x1b]0;t\a");
+        CHECK(s.text() == "ab   |     ");
+        CHECK(s.screen.bellCount() == 2); // the OSC's BEL ends the OSC: no bell
+}
+
 TEST_CASE("TerminalScreen: scrolling at the bottom moves rows") {
         Screen s(4, 3);
         s.write("1\r\n2\r\n3\r\n4\r\n5");

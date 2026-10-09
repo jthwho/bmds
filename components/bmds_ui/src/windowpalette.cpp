@@ -40,6 +40,8 @@ namespace {
                 "highlight-text",
                 "disabled-text",
                 "desktop-text",
+                "tooltip",
+                "tooltip-text",
         };
         // clang-format on
 

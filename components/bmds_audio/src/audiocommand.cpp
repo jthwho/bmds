@@ -5,17 +5,21 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * The `audio` command: devices, their status, controls and registers, and a
- * test tone (devplan/audio.md §16). Its output formats are a userspace
- * interface once shipped: keep the lines and their order, add only at the end.
+ * The `audio` command: devices, their status, controls and registers, test
+ * tones, system sounds and a sweep through a PCM stream (devplan/audio.md
+ * §16, §17). Its output formats are a userspace interface once shipped: keep
+ * the lines and their order, add only at the end.
  */
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 #include <bmds/audiodevice.h>
 #include <bmds/board.h>
 #include <bmds/command.h>
+#include <bmds/memory.h>
 #include <bmds/shell.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -26,6 +30,11 @@ namespace {
 
         constexpr uint32_t DefaultToneMs = 2000;
         constexpr int32_t  DefaultToneCentiDb = -1200;
+        constexpr uint32_t DefaultSweepRate = 44100; // resampled to the usual 48 kHz
+        constexpr uint32_t DefaultSweepMs = 10000;
+        constexpr float    SweepLevel = 0.25f; // -12 dBFS
+        constexpr float    SweepFromHz = 20.0f;
+        constexpr size_t   SweepBlockFrames = 256;
 
         // `dspN` names a device.
         bool isDeviceName(const char *arg) {
@@ -148,22 +157,38 @@ namespace {
                            static_cast<unsigned long>(s.periods), static_cast<unsigned long>(s.late),
                            static_cast<unsigned long>(s.fillUsLast), static_cast<unsigned long>(s.fillUsMax));
                 const uint32_t periodUs =
-                        static_cast<uint32_t>(static_cast<uint64_t>(AudioDevice::PeriodFrames) * 1'000'000 / s.rateHz);
+                        static_cast<uint32_t>(static_cast<uint64_t>(s.periodFrames) * 1'000'000 / s.rateHz);
                 ctx.printf("Period:   %lu frames (%lu.%03lu ms), %u buffers\n",
-                           static_cast<unsigned long>(AudioDevice::PeriodFrames),
-                           static_cast<unsigned long>(periodUs / 1000), static_cast<unsigned long>(periodUs % 1000),
-                           static_cast<unsigned>(AudioDevice::DmaBuffers));
+                           static_cast<unsigned long>(s.periodFrames), static_cast<unsigned long>(periodUs / 1000),
+                           static_cast<unsigned long>(periodUs % 1000), static_cast<unsigned>(AudioDevice::DmaBuffers));
+                if (s.mixedPeriods != 0) {
+                        // The mix's average time a period, against the period: the share of a core.
+                        const uint64_t avg = s.mixedUs / s.mixedPeriods;
+                        const uint64_t tenthsPct = periodUs == 0 ? 0 : s.mixedUs * 1000 / s.mixedPeriods / periodUs;
+                        ctx.printf("Load:     %lu us a period mixing, on average (%lu.%lu%% of a core), over %lu "
+                                   "periods\n",
+                                   static_cast<unsigned long>(avg), static_cast<unsigned long>(tenthsPct / 10),
+                                   static_cast<unsigned long>(tenthsPct % 10),
+                                   static_cast<unsigned long>(s.mixedPeriods));
+                }
+                ctx.printf("Volume:   %ld dBFS%s%s\n", static_cast<long>(s.volumeDb), s.muted ? ", muted" : "",
+                           s.held ? ", held running" : "");
+                ctx.printf("Limiter:  %lu frames reduced\n", static_cast<unsigned long>(s.limited));
+                AudioDevice::StreamLine lines[AudioDevice::MaxStreams];
+                const size_t            n = d.streamLines(lines, AudioDevice::MaxStreams);
+                ctx.printf("Streams:  %u\n", static_cast<unsigned>(n));
+                for (size_t i = 0; i < n; ++i) ctx.printf("  %s\n", lines[i].text);
                 return Shell::ExitSuccess;
         }
 
+        // Starts the device and holds it running (no idle stop) until `audio stop`.
         int runStart(CommandContext &ctx, AudioDevice &d, Args args, size_t at) {
-                uint32_t rate = AudioDevice::DefaultRateHz;
-                if (at < args.size() && !parseNumber(args[at++], rate)) return ctx.usage();
+                uint32_t rate = 0; // the setting's
+                if (at < args.size() && (!parseNumber(args[at++], rate) || rate == 0)) return ctx.usage();
                 if (at != args.size()) return ctx.usage();
-                const Error err = d.start(rate);
+                const Error err = d.hold(rate);
                 if (err.isError()) {
-                        ctx.eprintf("audio: dsp%u: start at %lu Hz: %s\n", static_cast<unsigned>(d.number()),
-                                    static_cast<unsigned long>(rate), err.desc());
+                        ctx.eprintf("audio: dsp%u: start: %s\n", static_cast<unsigned>(d.number()), err.desc());
                         printFault(ctx, d);
                         return Shell::ExitFailure;
                 }
@@ -213,6 +238,116 @@ namespace {
                         return Shell::ExitInterrupted;
                 }
                 return Shell::ExitSuccess;
+        }
+
+        int runSound(CommandContext &ctx, AudioDevice &d, Args args, size_t at) {
+                if (at + 1 != args.size()) return ctx.usage();
+                for (size_t i = 0; i < SystemSoundCount; ++i) {
+                        const auto sound = static_cast<SystemSound>(i);
+                        if (std::strcmp(args[at], systemSoundName(sound)) != 0) continue;
+                        const Error err = d.playSound(sound);
+                        if (err.isError()) {
+                                ctx.eprintf("audio: dsp%u: %s\n", static_cast<unsigned>(d.number()), err.desc());
+                                printFault(ctx, d);
+                                return Shell::ExitFailure;
+                        }
+                        return Shell::ExitSuccess;
+                }
+                ctx.eprintf("audio: sound: bell, click, error or notify\n");
+                return Shell::ExitUsage;
+        }
+
+        // The sweep's stream and a block of its samples (PSRAM: a command's stack is small).
+        struct Sweep {
+                        PcmStream stream{"sweep"};
+                        float     stereo[SweepBlockFrames * 2];
+                        uint8_t   block[SweepBlockFrames * 8];
+        };
+
+        // A logarithmic sweep through a PCM stream: conversion and resampling, by ear.
+        int runSweep(CommandContext &ctx, AudioDevice &d, Args args, size_t at) {
+                PcmStream::Format format;
+                format.rateHz = DefaultSweepRate;
+                format.channels = 2;
+                uint32_t ms = DefaultSweepMs;
+                if (at < args.size() &&
+                    (!parseNumber(args[at++], format.rateHz) || format.rateHz < PcmStream::MinRateHz ||
+                     format.rateHz > PcmStream::MaxRateHz)) {
+                        ctx.eprintf("audio: sweep: a rate from %lu to %lu Hz\n",
+                                    static_cast<unsigned long>(PcmStream::MinRateHz),
+                                    static_cast<unsigned long>(PcmStream::MaxRateHz));
+                        return Shell::ExitUsage;
+                }
+                if (at < args.size()) {
+                        auto [f, err] = SampleFormats::parse(args[at++]);
+                        if (err.isError()) {
+                                ctx.eprintf("audio: sweep: formats: u8 s8 s16le s16be s24le s24-3le s32le f32le mu-law "
+                                            "a-law\n");
+                                return Shell::ExitUsage;
+                        }
+                        format.format = f;
+                }
+                if (at < args.size() && !parseSeconds(args[at++], ms)) return ctx.usage();
+                if (at != args.size()) return ctx.usage();
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(Sweep));
+                if (mem == nullptr) {
+                        ctx.eprintf("audio: sweep: out of memory\n");
+                        return Shell::ExitFailure;
+                }
+                auto        *sweep = new (mem) Sweep;
+                PcmStream   &stream = sweep->stream;
+                const size_t ring = format.rateHz / 5; // 200 ms, playing from 100 ms
+                Error        err = stream.open(format, ring, ring / 2, MemSpace::Psram);
+                if (err.isOk()) err = d.attach(stream);
+                int status = Shell::ExitSuccess;
+                if (err.isError()) {
+                        ctx.eprintf("audio: dsp%u: sweep: %s\n", static_cast<unsigned>(d.number()), err.desc());
+                        printFault(ctx, d);
+                        status = Shell::ExitFailure;
+                }
+                // Float only (double is done in software here): the frequency grows by a constant
+                // factor a frame, the phase by the frequency.
+                const uint64_t  total = static_cast<uint64_t>(ms) * format.rateHz / 1000;
+                const float     toHz = 0.45f * static_cast<float>(format.rateHz);
+                const float     growth = std::exp(std::log(toHz / SweepFromHz) / static_cast<float>(total));
+                constexpr float TwoPi = 6.28318530717958647692f;
+                float           step = TwoPi * SweepFromHz / static_cast<float>(format.rateHz);
+                float           phase = 0;
+                float          *stereo = sweep->stereo;
+                Interrupt      *interrupt = &ctx.shell().interrupt();
+                for (uint64_t n = 0; status == Shell::ExitSuccess && n < total;) {
+                        const size_t frames =
+                                total - n < SweepBlockFrames ? static_cast<size_t>(total - n) : SweepBlockFrames;
+                        for (size_t i = 0; i < frames; ++i, ++n) {
+                                const float v = SweepLevel * std::sin(phase);
+                                stereo[2 * i] = v;
+                                stereo[2 * i + 1] = v;
+                                phase += step;
+                                if (phase > TwoPi) phase -= TwoPi;
+                                step *= growth;
+                        }
+                        SampleFormats::fromFloat(format.format, format.channels, stereo, frames, sweep->block);
+                        auto [taken, werr] =
+                                stream.write(ByteSpan(sweep->block, frames * stream.frameBytes()), false, interrupt);
+                        if (werr == Error::Interrupted) {
+                                status = Shell::ExitInterrupted;
+                        } else if (werr.isError() || taken != frames * stream.frameBytes()) {
+                                ctx.eprintf("audio: sweep: the stream ended: %s\n", werr.desc());
+                                status = Shell::ExitFailure;
+                        }
+                }
+                if (status == Shell::ExitSuccess && stream.drain(interrupt) == Error::Interrupted)
+                        status = Shell::ExitInterrupted;
+                if (status != Shell::ExitFailure || err.isOk()) {
+                        ctx.printf("sweep: %lu frames of %s at %lu Hz played, %lu underruns\n",
+                                   static_cast<unsigned long>(stream.playedFrames()),
+                                   SampleFormats::name(format.format), static_cast<unsigned long>(format.rateHz),
+                                   static_cast<unsigned long>(stream.underruns()));
+                }
+                d.detach(stream);
+                sweep->~Sweep();
+                Memory::free(mem);
+                return status;
         }
 
         void printControl(CommandContext &ctx, const AudioControl &c, int32_t value) {
@@ -356,7 +491,8 @@ namespace {
                 size_t      at = 2;
                 if (std::strcmp(what, "status") == 0 || std::strcmp(what, "start") == 0 ||
                     std::strcmp(what, "stop") == 0 || std::strcmp(what, "tone") == 0 || std::strcmp(what, "ctl") == 0 ||
-                    std::strcmp(what, "regs") == 0 || std::strcmp(what, "reg") == 0) {
+                    std::strcmp(what, "regs") == 0 || std::strcmp(what, "reg") == 0 ||
+                    std::strcmp(what, "sound") == 0 || std::strcmp(what, "sweep") == 0) {
                         AudioDevice *d = deviceArg(ctx, args, at);
                         if (d == nullptr) return Shell::ExitFailure;
                         if (std::strcmp(what, "status") == 0)
@@ -374,6 +510,8 @@ namespace {
                                 return Shell::ExitSuccess;
                         }
                         if (std::strcmp(what, "tone") == 0) return runTone(ctx, *d, args, at);
+                        if (std::strcmp(what, "sound") == 0) return runSound(ctx, *d, args, at);
+                        if (std::strcmp(what, "sweep") == 0) return runSweep(ctx, *d, args, at);
                         if (std::strcmp(what, "ctl") == 0) return runCtl(ctx, *d, args, at);
                         if (std::strcmp(what, "regs") == 0)
                                 return at == args.size() ? showRegisters(ctx, *d) : ctx.usage();
@@ -386,7 +524,9 @@ namespace {
 
 BMDS_SHELL_COMMAND(audio, runAudio,
                    "[status|start [RATE]|stop|tone FREQ [SECONDS] [left|right|both] [dBFS]|ctl [NAME [VALUE]]|"
-                   "regs|reg REG [VALUE]] (each may name a device first: dsp0)",
-                   "Audio devices: status, start and stop, a test tone, the codec's controls and registers")
+                   "regs|reg REG [VALUE]|sound bell|click|error|notify|sweep [RATE] [FORMAT] [SECONDS]] "
+                   "(each may name a device first: dsp0)",
+                   "Audio devices: status, start and stop, test tones and sounds, a sweep, the codec's controls and "
+                   "registers")
 
 BMDS_NAMESPACE_END

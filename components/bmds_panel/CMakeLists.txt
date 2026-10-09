@@ -11,7 +11,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
 idf_component_register(SRCS src/desktopwindow.cpp src/fileicons.cpp src/filejobs.cpp src/filescommand.cpp
                             src/folderactions.cpp src/folderitems.cpp src/folderwindow.cpp src/panelapp.cpp
-                            src/panelentries.cpp
+                            src/panelentries.cpp src/volumeitem.cpp
                        PRIV_REQUIRES bmds_clipboard bmds_core bmds_files bmds_fs bmds_gui bmds_input bmds_kernel bmds_shell
                                      bmds_sysconf bmds_ui
                        WHOLE_ARCHIVE)

@@ -54,10 +54,10 @@ namespace {
         constexpr bmds::Boot::Stage SystemStages[] = {
                 {"console", bmds::UsbSerialConsole::init},
                 {"i2c", bmds::I2cBus::init},
-                {"audio", bmds::AudioDevice::init}, // dsp0: made, not started
                 {"vfs", bmds::Vfs::init},
                 {"boot", bmds::BootDisk::init},       // /boot: the profile and autoexec.sh
                 {"sysconf", bmds::SysConf::init},     // the system configuration, saved on /boot; /home
+                {"audio", bmds::AudioDevice::init},   // dsp0: made, not started; follows audio/dsp0/...
                 {"clipboard", bmds::Clipboard::init}, // its configuration on /boot; /dev/clip0
                 {"storage", bmds::Storage::init},
                 {"ramdisk", bmds::RamDisk::init},

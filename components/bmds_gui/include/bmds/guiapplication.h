@@ -28,6 +28,8 @@ BMDS_NAMESPACE_BEGIN
 
 class GuiClipboard;
 class GuiWindow;
+class ToolTip;
+class Widget;
 
 /**
  * @brief A GUI program's connection to the window system and its event loop
@@ -170,6 +172,22 @@ class GuiApplication {
                  */
                 GuiClipboard *clipboard();
 
+                /**
+                 * @brief The pointer is over @p widget (null: none) at (@p screenX,
+                 *        @p screenY): its tooltip shows after a rest (`devplan/gui.md`
+                 *        §4s). Its windows' calls.
+                 */
+                void hoverToolTip(Widget *widget, int screenX, int screenY);
+
+                /** @brief Hides the tooltip (a press, a key) until the pointer moves to another widget. */
+                void hideToolTip();
+
+                /** @brief @p widget's tooltip text changed: shown again, if it is showing. */
+                void toolTipChanged(Widget *widget);
+
+                /** @brief @p widget is being destroyed (`GuiWindow::forget()`). */
+                void forgetToolTip(Widget *widget);
+
                 /** @brief Returns the application's icons (found and kept on the loop's thread). */
                 IconTheme &icons() { return _icons; }
 
@@ -283,6 +301,7 @@ class GuiApplication {
                 IconTheme         _icons;
                 KeyGrab           _grabs[MaxGrabs];
                 GuiClipboard     *_clipboard = nullptr; // PSRAM, the first time asked for
+                ToolTip          *_toolTip = nullptr;   // PSRAM, the first time a widget has one
                 ConfigWatch      *_configWatches[MaxConfigWatches] = {};
                 Service          *_services[MaxServices] = {};
                 std::atomic<bool> _configChanged{false}; // a watch has news: runConfig() at the loop
