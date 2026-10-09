@@ -771,6 +771,30 @@ rate or period restarts a running device, a short gap; a stopped one uses it at 
   - **Wheel:** 1 dB a notch.
 - It follows `audio/dsp0/...` (watched), so `sysconf set` from a shell moves it too, and it saves
   them 2 s after the last change.
+- **Planned (the user, 2026-10-09): a context menu** on a right click (and the Menu key, as the
+  panel's other items):
+  - **Mute:** checked while muted; toggles `audio/dsp0/mute`, as the slider's Mute button does.
+  - **Mixer…:** opens the mixer window (below). Which application that is comes from a setting
+    (`panel/volume/mixer`, a Desktop Entry ID, `mixer.desktop` by default), so the panel names no
+    application (`builtin-apps-not-special`).
+- **Planned (2026-10-09): the mixer window,** a built-in application, `mixer`, with a launcher
+  entry: per-application levels, which the tray's one slider can't give (a MIDI file quieter than
+  an MP3 beside it, a program too loud).
+  - **A row for the device:** its volume and mute (the tray's settings).
+  - **A row per stream playing:** the program's name (and the stream's label), a level slider
+    (the stream's gain, `BMDS_AUDIO_GAIN`, −96 dB to 0), mute, and a meter of its level.
+  - **System sounds:** a row for the bell and feedback sounds (a gain they don't have yet).
+  - **What it needs:** a way for one program to list every stream on a device (whose, its label,
+    its gain) and set another's gain; `audio status` lists streams, but only in the kernel. A
+    small interface (perhaps on the mixer files, `/dev/mixer`), designed when the window is.
+  - **The MIDI synth** (the user, 2026-10-09): a row for `synth/gain` (−40 to +12 dB), every
+    synth's level, also offered with the synth's other settings (`synth/font`,
+    `synth/keep-fonts`, e.g. in the media player's MIDI view). Today the gain is read when a synth
+    opens; for a slider to be heard as it moves, running synths will follow the setting (watched,
+    applied between periods, ramped against a click).
+  - **To decide then:** whether a program's level is remembered by its name between runs (as
+    PulseAudio's stream restore does), and where the window's settings live.
+  - **When:** after the media player (`mediaplayer.md`), whose own volume is its stream's gain.
 
 ### Commands (appended)
 
@@ -1901,16 +1925,41 @@ violin, 64-frame blocks (1,333 µs):
     `synth`.
   - **`synth`** with notes sent by `midi send`: 8,124 periods of 128 frames, none late; 8 voices;
     the render at most 24 % of a period.
-  - **Loading TimGM6mb:** 0.74 s from the RAM disk, 3.0 s from the card; 5,971 KB of PSRAM
-    (16-bit samples, the file's own; as floats it was twice that and took 4.2 s).
-  - **`play scale.mid`** (5 s and the release): 10.06 s with the font loaded from the card.
+  - **Loading TimGM6mb:** 0.74 s from the RAM disk, 3.0 s from the card at first (0.72 s now:
+    below); 5,971 KB of PSRAM (16-bit samples, the file's own; as floats it was twice that and
+    took 4.2 s).
+  - **`play scale.mid`** (5 s and the release): 10.06 s with the font loaded from the card at
+    first; 7.78 s now, 7.03 s with the font kept.
 - **Not yet heard:** the user listens to `play` and `synth` by ear.
 - **Left:**
-  - a font kept loaded for a while after its last synth (each `play` loads it again: 3 s from the
-    card), weighed against its 6 MB of PSRAM;
   - the note-on path in single precision and hot code in IRAM, if the cold first note matters;
   - MIDI file times are whole milliseconds (`tml.h`);
   - scheduled output for MIDI ports (the reserved `time_ns`), if a sequencer needs it.
+- **Loading fonts faster, and keeping them (the user's request, 2026-10-09):**
+  - **Where the 3 s went** (measured on the board): 92,340 reads of a few bytes for the preset
+    tables, 0.9 s; and the 5.7 MB of samples, 2.1 s, read as one, where `dd` with 1 MB reads takes
+    the whole file in 0.58 s (`cat`, 4 KB at a time, 2.17 s). The samples chunk starts at an odd
+    place in the file: FatFs reads its first partial sector through its window, then whole
+    sectors straight into the destination past it, an address the card's DMA can't take, so every
+    sector went through the driver's 4 KB bounce buffer (`storage.md` §3).
+  - **Now:** small reads come from a 4 KB buffer; large ones go straight from the file's position
+    into a `PsramDma` buffer whose address matches the file's position within a cache line
+    (`SoundFont::setLargeAllocationPhase()`), so the sectors past the first are read by DMA.
+    TimGM6mb loads in 0.72 s from the card (was 3.17).
+  - **Kept:** a font no synth plays stays loaded (`synth/keep-fonts`, default on) until memory
+    runs short. The font list is a `Memory::Reclaimer`; `Memory` now takes several (the
+    program-image cache's first, then the fonts', in boot order), asked in turn until enough is
+    freed, and `mem` shows a line each. A font whose file changed (its size or time) loads again.
+    Loading a font that fails for memory frees the idle fonts itself and tries once more (the
+    reclaimer only tries the list's lock, which the loading thread holds).
+  - **On the board:** `play scale.mid` twice: the second didn't load (7.03 s against 7.78);
+    `mem` showed `cached 6115320 fonts 1`. A program asking for 22 MB made both caches give back
+    (PSRAM free from 21.3 to 27.0 MB); the next `play` loaded the font again.
+- **Headroom (2026-10-09):** the user heard clicks in a busy MIDI file ("He's a Pirate"): no
+  late periods, but the limiter reduced 2,845 frames. The synth had no headroom (a 3-note chord
+  already reached 31,857 of 32,767). `synth/gain` (whole dB, -40 to 12, default -10; FluidSynth's
+  default is about -14) is every synth's gain, read when it opens: `play`, `synth` and programs'
+  synth fds. The same file played again: the limiter reduced 0 frames, none late.
 - **Deferred (the user, 2026-10-09):** the SDK's building blocks for instruments (band-limited
   oscillators, envelopes, filters, delay lines) wait until an instrument or the pedal work needs
   them; the media player (step 8) comes next.

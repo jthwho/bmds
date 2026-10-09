@@ -1603,7 +1603,9 @@ static inline int32_t bmds_midi_control(int32_t fd, uint32_t op, int32_t value) 
  * @brief Opens a General MIDI synth on a SoundFont (@p config, its `size` set): a new fd. Write
  *        `bmds_synth_event_t` records (whole ones) and read whole frames; neither waits. Fonts are
  *        loaded once and shared while any synth plays them; the first open of a font waits for it
- *        to load (TimGM6mb: about half a second).
+ *        to load (TimGM6mb: 0.72 s from the card), and stays loaded after its last synth until memory
+ *        runs short (`synth/keep-fonts`). Its output is at `synth/gain` (dB, -10 by default: headroom
+ *        for many notes at once).
  *        (Slots 78-79, appended 2026-10-08: check `bmds_sys_has(BMDS_SYS_AUDIO_SYNTH)`.)
  * @return The fd, or `-BMDS_EINVAL` (a rate, channel count, format, voice count or flag),
  *         `-BMDS_ENOENT` (no font there), `-BMDS_ENOMEM`, `-BMDS_EBUSY` (four fonts loaded already),

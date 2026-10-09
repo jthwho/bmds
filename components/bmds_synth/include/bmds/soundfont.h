@@ -59,9 +59,16 @@ class SoundFont {
                  * @brief Loads a font from @p reader.
                  * @return The font, or `NoMem`, `Invalid` (not a SoundFont, damaged,
                  *         no samples), or the reader's error.
-                 * @blocking While it reads (TimGM6mb: 0.41 s from the RAM disk).
+                 * @blocking While it reads (TimGM6mb: 0.72 s from the card).
                  */
                 static Result<SoundFont *> load(Reader &reader);
+
+                /**
+                 * @brief For a `Reader` of a file: its position now, so that the sample
+                 *        buffer read next sits where the card's DMA reads into it directly
+                 *        (its address matching the position, mod 64). Optional.
+                 */
+                static void setLargeAllocationPhase(size_t position);
 
                 /** @brief Frees it (no `Synth` may use it any more). */
                 void destroy();

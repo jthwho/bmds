@@ -18,12 +18,19 @@ namespace {
         std::atomic<size_t> live{0};
         std::atomic<long>   remaining{-1};
 
-        std::atomic<bmds::Memory::Reclaimer *> reclaimer{nullptr};
+        std::atomic<bmds::Memory::Reclaimer *> reclaimers[bmds::Memory::MaxReclaimers] = {};
 
+        // As the target's: each in turn, until what was asked is freed.
         bool reclaimed(bmds::MemSpace space, size_t sizeBytes) {
                 if (space != bmds::MemSpace::Psram && space != bmds::MemSpace::PsramDma) return false;
-                bmds::Memory::Reclaimer *r = reclaimer.load();
-                return r != nullptr && r->reclaim(space, sizeBytes) != 0;
+                size_t freed = 0;
+                for (auto &slot : reclaimers) {
+                        bmds::Memory::Reclaimer *r = slot.load();
+                        if (r != nullptr)
+                                freed += r->reclaim(space, sizeBytes - (freed < sizeBytes ? freed : sizeBytes));
+                        if (freed >= sizeBytes) break;
+                }
+                return freed != 0;
         }
 
         bool mayAllocate() {
@@ -70,16 +77,34 @@ void bmds::Memory::free(void *ptr) {
         return;
 }
 
-void bmds::Memory::setReclaimer(Reclaimer *r) {
-        reclaimer.store(r);
+bmds::Error bmds::Memory::addReclaimer(Reclaimer *r) {
+        if (r == nullptr) return Error::Invalid;
+        for (auto &slot : reclaimers)
+                if (slot.load() == r) return Error::Invalid;
+        for (auto &slot : reclaimers) {
+                Reclaimer *none = nullptr;
+                if (slot.compare_exchange_strong(none, r)) return Error::Ok;
+        }
+        return Error::Full;
+}
+
+void bmds::Memory::removeReclaimer(Reclaimer *r) {
+        for (auto &slot : reclaimers) {
+                Reclaimer *was = r;
+                (void)slot.compare_exchange_strong(was, nullptr);
+        }
         return;
 }
 
-bool bmds::Memory::reclaimerUsage(Reclaimer::Usage &usage) {
-        Reclaimer *r = reclaimer.load();
-        if (r == nullptr) return false;
-        usage = r->usage();
-        return true;
+size_t bmds::Memory::reclaimerUsage(Span<Reclaimer::Usage> out) {
+        size_t n = 0;
+        for (auto &slot : reclaimers) {
+                Reclaimer *r = slot.load();
+                if (r == nullptr) continue;
+                if (n < out.size()) out[n] = r->usage();
+                ++n;
+        }
+        return n;
 }
 
 bmds::MemStats bmds::Memory::stats(MemSpace) {

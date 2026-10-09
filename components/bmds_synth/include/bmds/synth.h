@@ -46,12 +46,16 @@ class Synth {
                 static constexpr uint16_t MaxVoices = 256;    ///< The most `Config::maxVoices` takes.
                 static constexpr size_t   QueueEvents = 1024; ///< Events waiting at most.
                 static constexpr size_t   MaxEventBytes = 6;  ///< A message's bytes (GM System On).
+                static constexpr float    MinGainDb = -40;    ///< `Config::gainDb`'s range.
+                static constexpr float    MaxGainDb = 12;
 
                 /** @brief How it renders. */
                 struct Config {
                                 uint32_t rateHz = 48000;
                                 uint8_t  channels = 2;  ///< 1 or 2 (interleaved).
                                 uint16_t maxVoices = 0; ///< 0: `DefaultVoices`.
+                                float    gainDb =
+                                        0; ///< The output's gain, `MinGainDb` to `MaxGainDb` (headroom: below 0).
                 };
 
                 /** @brief A message for a frame (the ABI's `bmds_synth_event_t`). */
@@ -81,7 +85,7 @@ class Synth {
 
                 /**
                  * @brief Starts playing @p font (which must outlive it, until `close()`).
-                 * @return `Ok`, `Invalid` (a rate, channel count or voice count),
+                 * @return `Ok`, `Invalid` (a rate, channel count, voice count or gain),
                  *         `InvalidState` (open), `NoMem`.
                  */
                 Error open(SoundFont &font, const Config &config);

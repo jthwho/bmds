@@ -170,10 +170,15 @@ namespace {
 
         // Installs a reclaimer for one test.
         struct ReclaimerGuard {
-                        explicit ReclaimerGuard(bmds::Memory::Reclaimer &r) { bmds::Memory::setReclaimer(&r); }
-                        ~ReclaimerGuard() { bmds::Memory::setReclaimer(nullptr); }
+                        explicit ReclaimerGuard(bmds::Memory::Reclaimer &r) : _r(r) {
+                                REQUIRE(bmds::Memory::addReclaimer(&r) == bmds::Error::Ok);
+                        }
+                        ~ReclaimerGuard() { bmds::Memory::removeReclaimer(&_r); }
                         ReclaimerGuard(const ReclaimerGuard &) = delete;
                         ReclaimerGuard &operator=(const ReclaimerGuard &) = delete;
+
+                private:
+                        bmds::Memory::Reclaimer &_r;
         };
 
 } // namespace
@@ -199,7 +204,8 @@ TEST_CASE("Image cache: memory running short empties it") {
                         ReclaimerGuard                 guard(cache);
                         HostMemory::FailGuard          fail(0);
                         bmds::Memory::Reclaimer::Usage u;
-                        REQUIRE(bmds::Memory::reclaimerUsage(u));
+                        REQUIRE(bmds::Memory::reclaimerUsage(bmds::Span<bmds::Memory::Reclaimer::Usage>(&u, 1)) == 1);
+                        CHECK(bmds::Memory::addReclaimer(&cache) == bmds::Error::Invalid); // once
                         CHECK(u.reclaimable == entryBytes(1000));
                         CHECK(u.reclaims == 1); // the direct reclaim() above
                         CHECK(bmds::Memory::alloc(MemSpace::Internal, 16) == nullptr);
@@ -214,7 +220,8 @@ TEST_CASE("Image cache: memory running short empties it") {
                 CHECK(cache.usage().reclaimable == 0);
                 CHECK(cache.usage().items == std::string("programs"));
                 bmds::Memory::Reclaimer::Usage none;
-                CHECK_FALSE(bmds::Memory::reclaimerUsage(none)); // uninstalled
+                CHECK(bmds::Memory::reclaimerUsage(bmds::Span<bmds::Memory::Reclaimer::Usage>(&none, 1)) ==
+                      0); // uninstalled
         }
         CHECK(HostMemory::liveAllocations() == live);
 }

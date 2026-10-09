@@ -19,13 +19,20 @@ namespace {
                 return board().memSpace(space).heapCaps;
         }
 
-        constinit std::atomic<Memory::Reclaimer *> reclaimer{nullptr};
+        constinit std::atomic<Memory::Reclaimer *> reclaimers[Memory::MaxReclaimers] = {};
 
-        // A failed allocation in @p space: true if the reclaimer freed something to try again with.
+        // A failed allocation in @p space: true if the reclaimers freed something to try again with.
+        // Each in turn, until what was asked is freed.
         bool reclaimed(MemSpace space, size_t sizeBytes) {
                 if (space != MemSpace::Psram && space != MemSpace::PsramDma) return false;
-                Memory::Reclaimer *r = reclaimer.load();
-                return r != nullptr && r->reclaim(space, sizeBytes) != 0;
+                size_t freed = 0;
+                for (auto &slot : reclaimers) {
+                        Memory::Reclaimer *r = slot.load();
+                        if (r != nullptr)
+                                freed += r->reclaim(space, sizeBytes - (freed < sizeBytes ? freed : sizeBytes));
+                        if (freed >= sizeBytes) break;
+                }
+                return freed != 0;
         }
 
         // The largest cache line (L2, in front of the PSRAM).
@@ -63,16 +70,34 @@ void Memory::free(void *ptr) {
         return;
 }
 
-void Memory::setReclaimer(Reclaimer *r) {
-        reclaimer.store(r);
+Error Memory::addReclaimer(Reclaimer *r) {
+        if (r == nullptr) return Error::Invalid;
+        for (auto &slot : reclaimers)
+                if (slot.load() == r) return Error::Invalid;
+        for (auto &slot : reclaimers) {
+                Reclaimer *none = nullptr;
+                if (slot.compare_exchange_strong(none, r)) return Error::Ok;
+        }
+        return Error::Full;
+}
+
+void Memory::removeReclaimer(Reclaimer *r) {
+        for (auto &slot : reclaimers) {
+                Reclaimer *was = r;
+                (void)slot.compare_exchange_strong(was, nullptr);
+        }
         return;
 }
 
-bool Memory::reclaimerUsage(Reclaimer::Usage &usage) {
-        Reclaimer *r = reclaimer.load();
-        if (r == nullptr) return false;
-        usage = r->usage();
-        return true;
+size_t Memory::reclaimerUsage(Span<Reclaimer::Usage> out) {
+        size_t n = 0;
+        for (auto &slot : reclaimers) {
+                Reclaimer *r = slot.load();
+                if (r == nullptr) continue;
+                if (n < out.size()) out[n] = r->usage();
+                ++n;
+        }
+        return n;
 }
 
 MemStats Memory::stats(MemSpace space) {

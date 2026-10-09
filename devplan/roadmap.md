@@ -146,6 +146,9 @@ Plan: [`input.md`](input.md).
   - [ ] 8. Media player (`mediaplayer.md`, planned; the user's choices 2026-10-09): `mplayer`, a
     GUI player for audio and MIDI files (video later), with saved playlists, a library by tags, a
     visualizer, a MIDI view, a toolkit Open dialog, and a tray controller while it plays hidden.
+  - [ ] Mixer window (`audio.md` §17, planned 2026-10-09): `mixer`, per-application levels (the
+    device, each stream, system sounds, the MIDI synth's `synth/gain`); the volume tray icon's
+    context menu (Mute, Mixer…). After the media player.
   - [ ] 9. Capture and `record` (after the loopback cable), then the pedal work.
   - [ ] 10. AES67 and USB audio (after the network stack).
 - [ ] Ethernet bring-up, IP stack, basic tools (`ping`, file transfer).

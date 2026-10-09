@@ -219,10 +219,13 @@ namespace {
                         ctx.printf("%-11s %10s %10s %10s %10s\n", memSpaceName(space), cells[0], cells[1], cells[2],
                                    cells[3]);
                 }
-                // What a cache holds (the loader's programs): counted as used above,
-                // given back when an allocation would fail.
-                Memory::Reclaimer::Usage u;
-                if (Memory::reclaimerUsage(u)) {
+                // What the caches hold (the loader's programs, the synth's fonts): counted as used
+                // above, given back when an allocation would fail. A line each.
+                Memory::Reclaimer::Usage usage[Memory::MaxReclaimers];
+                const size_t             caches =
+                        Memory::reclaimerUsage(Span<Memory::Reclaimer::Usage>(usage, Memory::MaxReclaimers));
+                for (size_t i = 0; i < caches && i < Memory::MaxReclaimers; ++i) {
+                        const Memory::Reclaimer::Usage &u = usage[i];
                         memCell(u.bytes, human, cells[0]);
                         ctx.printf("%-11s %10s  %s %u, hits %u, misses %u, given back %u\n", "cached", cells[0],
                                    u.items, static_cast<unsigned>(u.count), static_cast<unsigned>(u.hits),

@@ -1586,7 +1586,8 @@ Error Loader::init() {
         if (!imageCache.isCreated()) {
                 imageCache.create(size_t(CONFIG_BMDS_IMAGE_CACHE_KB) * 1024);
                 Vfs::setChangeHook(fileChanged);
-                Memory::setReclaimer(&*imageCache);
+                (void)Memory::addReclaimer(
+                        &*imageCache); // before the fonts' (a later boot stage): programs reload cheaply
         }
         Error err = processes->init();
         if (err.isOk() && signalQueue == nullptr) {

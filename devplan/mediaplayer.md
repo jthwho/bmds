@@ -84,3 +84,5 @@ audio files and midi files (and perhaps video files in the future)". It is step 
 - **The library** reads every file's tags (opening a decoder per file): a scan on its own thread,
   cached on the card, updated by the VFS's directory watches.
 - **The playlist kept between runs:** in the user's home (`/home/.config/mplayer/`).
+- **Its volume** is its stream's gain, so the planned mixer window (`audio.md` §17) shows and sets
+  the same level.

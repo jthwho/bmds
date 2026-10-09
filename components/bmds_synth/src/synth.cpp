@@ -23,7 +23,33 @@ namespace {
 
         constexpr int    MidiChannels = 16;
         constexpr int    DrumChannel = 9;  // channel 10
-        constexpr size_t HeaderBytes = 16; // an allocation's size, kept before it (alignment kept)
+        // An allocation's size and where its block starts, kept just before it.
+        struct Header {
+                        size_t bytes;
+                        size_t offset; // from the block's start to the allocation
+        };
+        constexpr size_t SmallHeader = 16; // keeps max_align_t's alignment
+        constexpr size_t DmaHeader = 64;   // keeps a cache line's
+        static_assert(sizeof(Header) <= SmallHeader, "the header fits before the allocation");
+
+        // Large allocations (a font's samples) are DMA-capable and cache-line aligned, so a card
+        // reads straight into them: through the driver's bounce buffer, TimGM6mb's 5.7 MB of
+        // samples took 2.1 s to read, against 0.6 s in large aligned reads (storage.md §3).
+        constexpr size_t DmaFrom = 64 * 1024;
+
+        // Where a large allocation should sit within its cache line: a font's sample chunk starts
+        // anywhere in its file, and FatFs reads the first partial sector through its window, then
+        // whole sectors into the destination past it. Those are read by DMA only if that address
+        // is aligned, which is when the destination matches the file position (mod 64). The
+        // reader sets it as it goes (setLargeAllocationPhase()); loads don't overlap (SoundFonts'
+        // lock).
+        constinit std::atomic<size_t> largePhase{0};
+
+        Header headerOf(const void *ptr) {
+                Header h;
+                std::memcpy(&h, static_cast<const uint8_t *>(ptr) - sizeof(Header), sizeof(h));
+                return h;
+        }
 
         // The largest allocation tried: a font's sizes come from the file, and none bigger than the
         // PSRAM can fit (a damaged one asked for 3.4 GB while fuzzing).
@@ -44,28 +70,31 @@ BMDS_NAMESPACE_END
 extern "C" {
 
 void *bmdsSynthMalloc(size_t bytes) {
-        auto *block =
-                bytes > bmds::MaxAllocBytes
-                        ? nullptr
-                        : static_cast<uint8_t *>(bmds::Memory::alloc(bmds::MemSpace::Psram, bytes + bmds::HeaderBytes));
+        const bool   dma = bytes >= bmds::DmaFrom;
+        const size_t offset =
+                dma ? bmds::DmaHeader + bmds::largePhase.load(std::memory_order_relaxed) % 64 : bmds::SmallHeader;
+        auto *block = bytes > bmds::MaxAllocBytes
+                              ? nullptr
+                              : static_cast<uint8_t *>(bmds::Memory::alloc(
+                                        dma ? bmds::MemSpace::PsramDma : bmds::MemSpace::Psram, bytes + offset));
         if (block == nullptr) {
                 bmds::allocFailures.fetch_add(1, std::memory_order_relaxed);
                 return nullptr;
         }
-        std::memcpy(block, &bytes, sizeof(bytes));
-        return block + bmds::HeaderBytes;
+        const bmds::Header h{bytes, offset};
+        std::memcpy(block + offset - sizeof(h), &h, sizeof(h));
+        return block + offset;
 }
 
 void bmdsSynthFree(void *ptr) {
-        if (ptr != nullptr) bmds::Memory::free(static_cast<uint8_t *>(ptr) - bmds::HeaderBytes);
+        if (ptr != nullptr) bmds::Memory::free(static_cast<uint8_t *>(ptr) - bmds::headerOf(ptr).offset);
         return;
 }
 
 void *bmdsSynthRealloc(void *ptr, size_t bytes) {
         if (ptr == nullptr) return bmdsSynthMalloc(bytes);
-        size_t old = 0;
-        std::memcpy(&old, static_cast<uint8_t *>(ptr) - bmds::HeaderBytes, sizeof(old));
-        void *grown = bmdsSynthMalloc(bytes);
+        const size_t old = bmds::headerOf(ptr).bytes;
+        void        *grown = bmdsSynthMalloc(bytes);
         if (grown == nullptr) return nullptr;
         std::memcpy(grown, ptr, old < bytes ? old : bytes);
         bmdsSynthFree(ptr);
@@ -77,9 +106,7 @@ size_t bmdsSynthFontBytes(const tsf *f);
 void   bmdsSynthPresetId(const tsf *f, int index, unsigned short *bank, unsigned short *number);
 
 size_t bmdsSynthAllocated(const void *ptr) {
-        size_t bytes = 0;
-        if (ptr != nullptr) std::memcpy(&bytes, static_cast<const uint8_t *>(ptr) - bmds::HeaderBytes, sizeof(bytes));
-        return bytes;
+        return ptr != nullptr ? bmds::headerOf(ptr).bytes : 0;
 }
 
 } // extern "C"
@@ -111,11 +138,17 @@ namespace {
 
 } // namespace
 
+void SoundFont::setLargeAllocationPhase(size_t position) {
+        largePhase.store(position % 64, std::memory_order_relaxed);
+        return;
+}
+
 Result<SoundFont *> SoundFont::load(Reader &reader) {
         StreamArg      arg{&reader, Error::Ok};
         tsf_stream     stream{&arg, readStream, skipStream};
         const uint32_t failures = allocFailures.load(std::memory_order_relaxed);
         ::tsf         *t = tsf_load(&stream);
+        largePhase.store(0, std::memory_order_relaxed);
         if (t == nullptr) {
                 // TinySoundFont doesn't say why: a reader's error is the reader's; an allocation refused
                 // meanwhile, no memory (or a damaged size past MaxAllocBytes); else damaged.
@@ -180,7 +213,8 @@ Error Synth::open(SoundFont &font, const Config &config) {
         if (_tsf != nullptr) return Error::InvalidState;
         Config c = config;
         if (c.maxVoices == 0) c.maxVoices = DefaultVoices;
-        if (c.rateHz < 8000 || c.rateHz > 96000 || c.channels < 1 || c.channels > 2 || c.maxVoices > MaxVoices)
+        if (c.rateHz < 8000 || c.rateHz > 96000 || c.channels < 1 || c.channels > 2 || c.maxVoices > MaxVoices ||
+            !(c.gainDb >= MinGainDb && c.gainDb <= MaxGainDb))
                 return Error::Invalid;
         _events = static_cast<Event *>(Memory::alloc(MemSpace::Psram, QueueEvents * sizeof(Event)));
         if (_events == nullptr) return Error::NoMem;
@@ -189,7 +223,7 @@ Error Synth::open(SoundFont &font, const Config &config) {
                 close();
                 return Error::NoMem;
         }
-        tsf_set_output(_tsf, c.channels == 2 ? TSF_STEREO_INTERLEAVED : TSF_MONO, static_cast<int>(c.rateHz), 0.0f);
+        tsf_set_output(_tsf, c.channels == 2 ? TSF_STEREO_INTERLEAVED : TSF_MONO, static_cast<int>(c.rateHz), c.gainDb);
         _config = c;
         _head = _count = 0;
         _frames = 0;

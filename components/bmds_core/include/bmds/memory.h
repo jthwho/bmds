@@ -11,6 +11,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
+#include <bmds/error.h>
+#include <bmds/span.h>
 #include <bmds/memspace.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -111,19 +113,27 @@ class Memory {
                 /** @brief Returns current usage statistics for @p space. */
                 static MemStats stats(MemSpace space);
 
-                /**
-                 * @brief Installs @p reclaimer (null: none): a `Psram` or `PsramDma`
-                 *        allocation that fails asks it, then tries once more if it
-                 *        freed anything.
-                 * @param reclaimer Lives as long as it is installed.
-                 */
-                static void setReclaimer(Reclaimer *reclaimer);
+                /** @brief Reclaimers installed at once at most. */
+                static constexpr size_t MaxReclaimers = 4;
 
                 /**
-                 * @brief Returns the reclaimer's usage into @p usage.
-                 * @return False if none is installed.
+                 * @brief Installs @p reclaimer: a `Psram` or `PsramDma` allocation that
+                 *        fails asks each installed one in turn, in the order they were
+                 *        installed, until enough is freed, then tries once more if any
+                 *        freed something.
+                 * @param reclaimer Lives as long as it is installed.
+                 * @return `Ok`, `Full`, `Invalid` (null, or installed already).
                  */
-                static bool reclaimerUsage(Reclaimer::Usage &usage);
+                static Error addReclaimer(Reclaimer *reclaimer);
+
+                /** @brief Uninstalls @p reclaimer (nothing if it isn't installed). */
+                static void removeReclaimer(Reclaimer *reclaimer);
+
+                /**
+                 * @brief Fills @p out with the installed reclaimers' usage, in order.
+                 * @return How many are installed.
+                 */
+                static size_t reclaimerUsage(Span<Reclaimer::Usage> out);
 };
 
 BMDS_NAMESPACE_END

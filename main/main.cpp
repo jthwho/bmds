@@ -61,11 +61,11 @@ namespace {
                 {"sysconf", bmds::SysConf::init},     // the system configuration, saved on /boot; /home
                 {"audio", bmds::AudioDevice::init},   // dsp0: made, not started; follows audio/dsp0/...
                 {"midi", bmds::Midi::init},           // the router, /dev/midi*; before USB's MIDI devices
-                {"synth", bmds::SoundFonts::init},    // the fonts synth fds share (none loaded)
                 {"clipboard", bmds::Clipboard::init}, // its configuration on /boot; /dev/clip0
                 {"storage", bmds::Storage::init},
                 {"ramdisk", bmds::RamDisk::init},
-                {"programs", bmds::Loader::init}, // the process table
+                {"programs", bmds::Loader::init},  // the process table
+                {"synth", bmds::SoundFonts::init}, // fonts synths share; after the loader: its cache is reclaimed first
                 {"input", bmds::Input::init},
                 {"usb", bmds::UsbHost::init},
                 {"shell", startSerialShell},

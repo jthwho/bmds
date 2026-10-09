@@ -489,3 +489,32 @@ TEST_CASE("MidiDecoder: a MIDI file decoded through the synth, sought, ended") {
         font->destroy();
         font = nullptr;
 }
+
+TEST_CASE("Synth: the output's gain") {
+        const std::vector<uint8_t> data = FontWriter().build();
+        SoundFont                 *font = loadFont(data);
+        REQUIRE(font != nullptr);
+        auto peakAt = [&](float gainDb) {
+                Synth         synth;
+                Synth::Config c;
+                c.gainDb = gainDb;
+                REQUIRE(synth.open(*font, c) == Error::Ok);
+                CHECK(synth.queue(message(0, {0x90, 69, 127})) == Error::Ok);
+                std::vector<float> out(9600 * 2);
+                synth.render(out.data(), 9600);
+                float peak = 0;
+                for (float v : out) peak = std::fmax(peak, std::fabs(v));
+                return peak;
+        };
+        const float unity = peakAt(0);
+        const float low = peakAt(-10);
+        REQUIRE(unity > 0.01f);
+        CHECK(low / unity == doctest::Approx(0.3162).epsilon(0.02)); // -10 dB
+        Synth         synth;
+        Synth::Config c;
+        c.gainDb = Synth::MaxGainDb + 1;
+        CHECK(synth.open(*font, c) == Error::Invalid);
+        c.gainDb = NAN;
+        CHECK(synth.open(*font, c) == Error::Invalid);
+        font->destroy();
+}

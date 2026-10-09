@@ -64,7 +64,8 @@ class SynthFile final : public Stream {
                  * @return A read-write handle, or `Invalid` (a rate, channel count,
                  *         format or voice count), the font's open or load error
                  *         (`NotExist`, `Invalid` for a damaged one, `NoMem`).
-                 * @blocking While a font loads (TimGM6mb: about 0.4 s from the RAM disk).
+                 * @blocking While a font loads (TimGM6mb: 0.72 s from the card); one loaded
+                 *           before and kept (`synth/keep-fonts`) doesn't.
                  */
                 static Result<FileHandle::Ptr> open(const Config &config, const Vfs::Context &context);
 
@@ -95,7 +96,9 @@ class SynthFile final : public Stream {
 
 /**
  * @brief The fonts loaded, shared by path (`devplan/audio.md` §22). A font
- *        stays while a synth plays it.
+ *        stays while a synth plays it, and after (`synth/keep-fonts`) until
+ *        memory runs short: it is a `Memory::Reclaimer`, the longest idle font
+ *        freed first. A font whose file changed loads again.
  *
  * @par Thread Safety
  * Thread-safe; it also serializes opening and closing synths on a font
@@ -114,7 +117,7 @@ namespace SoundFonts {
 
         /**
          * @brief Opens @p synth on the font at @p path (loading it if no one
-         *        has), with @p config.
+         *        has), with @p config and the gain `synth/gain` sets.
          * @return The font, or its error.
          * @blocking While the font loads.
          */

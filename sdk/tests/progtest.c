@@ -1806,7 +1806,7 @@ int main(int argc, char **argv) {
                         "usage: progtest status|exit|leak|env|tty|float|files|time|sleep|term|lines|raw|mem|random|cwd|"
                         "spin|calls|posix|abort|spawn|scripts|signals|catch|ignore|fd|ppid|exec|orphan|tree|poll|"
                         "threads|"
-                        "threadspin|filetype|audio|decode|rt|midi|synth|synthload "
+                        "threadspin|filetype|audio|decode|rt|midi|synth|synthload|mididecode|hog "
                         "[arg]\n");
                 return 2;
         }
@@ -1820,6 +1820,15 @@ int main(int argc, char **argv) {
         if (strcmp(what, "synth") == 0) return synth(arg);
         if (strcmp(what, "synthload") == 0) return synthload(arg);
         if (strcmp(what, "mididecode") == 0) return mididecode(arg);
+        if (strcmp(what, "hog") == 0) {
+                /* MB of memory at once: more than is free makes the caches give theirs back. */
+                const size_t bytes = (size_t)atoi(arg) * 1024 * 1024;
+                char        *p = malloc(bytes);
+                printf("hog: %s %u MB\n", p != NULL ? "got" : "didn't get", (unsigned)(bytes >> 20));
+                if (p != NULL) memset(p, 1, bytes);
+                free(p);
+                return p != NULL ? 0 : 1;
+        }
         if (strcmp(what, "audioexit") == 0) {
                 const int           fd = open("/dev/dsp", O_WRONLY);
                 bmds_audio_config_t c = {.size = sizeof(c),
