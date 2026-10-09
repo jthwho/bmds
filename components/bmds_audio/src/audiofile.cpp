@@ -88,7 +88,7 @@ Result<FileHandle::Ptr> AudioFile::open(AudioDevice &device, Kind kind, uint8_t 
         return handle;
 }
 
-AudioFile::AudioFile(AudioDevice &device, Kind kind) : _device(device), _kind(kind), _pcm("dsp") {
+AudioFile::AudioFile(AudioDevice &device, Kind kind) : _device(device), _kind(kind), _pcm("dsp"), _rt("rt") {
         if (kind == Kind::Audio) _config.format = SampleFormat::MuLaw;
 }
 
@@ -97,10 +97,10 @@ void AudioFile::handleClosed(uint8_t) {
                 {
                         Mutex::Locker locker(_lock, WaitForever);
                         // What is queued plays out; a signal (a killed program) or a pause drops it.
-                        if (!_pcm.isOver() && (_pcm.isPaused() || drainLocked(drainTimeoutMs()).isError()))
+                        if (!isRealtime() && !_pcm.isOver() &&
+                            (_pcm.isPaused() || drainLocked(drainTimeoutMs()).isError()))
                                 _pcm.cancel();
-                        _device.detach(_pcm);
-                        _pcm.close();
+                        closeLocked();
                 }
                 _device.removeClient();
         }
@@ -112,6 +112,20 @@ void AudioFile::handleClosed(uint8_t) {
 // ---- Configuring
 
 Error AudioFile::checkLocked(const Config &c) const {
+        if ((c.flags & ~(Realtime | Exclusive)) != 0 || c.flags == Exclusive) return Error::Invalid;
+        if ((c.flags & Realtime) != 0) {
+                // Float at the device's rate (or, exclusive, any), no ring, a period it can run.
+                const bool exclusive = (c.flags & Exclusive) != 0;
+                if (c.format != SampleFormat::F32Le || c.channels < 1 || c.channels > 2 || c.ringFrames != 0 ||
+                    c.startFrames != 0 ||
+                    (c.wakeFrames != 0 && (c.wakeFrames < AudioDevice::MinClientPeriodFrames ||
+                                           c.wakeFrames > AudioDevice::MaxPeriodFrames)))
+                        return Error::Invalid;
+                if (exclusive && c.rateHz != 0 && (c.rateHz < PcmStream::MinRateHz || c.rateHz > PcmStream::MaxRateHz))
+                        return Error::Invalid;
+                if (!exclusive && c.rateHz != 0 && c.rateHz != _device.timing().rateHz) return Error::Invalid;
+                return Error::Ok;
+        }
         if (static_cast<size_t>(c.format) >= SampleFormats::Count || c.channels < 1 || c.channels > 2 ||
             c.rateHz < PcmStream::MinRateHz || c.rateHz > PcmStream::MaxRateHz ||
             c.ringFrames > c.rateHz * MaxRingSeconds)
@@ -119,8 +133,10 @@ Error AudioFile::checkLocked(const Config &c) const {
         return Error::Ok;
 }
 
-// Allocates the ring for _config (closed: not attached).
+// Allocates the ring for _config (closed: not attached), or for a real-time client its
+// output, attached at once.
 Error AudioFile::openLocked() {
+        if (isRealtime()) return openRealtimeLocked();
         const uint32_t          ring = _config.ringFrames != 0 ? _config.ringFrames : _config.rateHz / 10;
         const PcmStream::Format format{_config.format, _config.channels, _config.rateHz};
         Error                   err = _pcm.open(format, ring, 0, MemSpace::Psram);
@@ -130,6 +146,39 @@ Error AudioFile::openLocked() {
         _wakeFrames = wakeFramesLocked();
         _pcm.setGain(AudioMix::gainOf(_gainCentiDb));
         return Error::Ok;
+}
+
+Error AudioFile::openRealtimeLocked() {
+        Error err = _rt.open(_config.channels, _config.wakeFrames, MemSpace::Internal);
+        if (err.isError()) return err;
+        _rt.setGain(AudioMix::gainOf(_gainCentiDb));
+        err = _device.addRealtime(_rt);
+        if (err.isOk()) {
+                const bool exclusive = (_config.flags & Exclusive) != 0;
+                err = _device.attachRealtime(_rt, exclusive, exclusive ? _config.rateHz : 0);
+                if (err.isError()) _device.removeRealtime(_rt);
+        }
+        if (err.isError()) {
+                _rt.close();
+                return err;
+        }
+        _realtimeOn.store(true, std::memory_order_release);
+        return Error::Ok;
+}
+
+// Takes the stream out and frees it (_config still says which).
+void AudioFile::closeLocked() {
+        if (isRealtime()) {
+                _realtimeOn.store(false, std::memory_order_release);
+                _rt.cancel(); // a thread waiting in cycle() returns
+                _device.detachRealtime(_rt);
+                _device.removeRealtime(_rt);
+                _rt.close();
+                return;
+        }
+        _device.detach(_pcm);
+        _pcm.close();
+        return;
 }
 
 uint32_t AudioFile::wakeFramesLocked() {
@@ -146,6 +195,12 @@ uint32_t AudioFile::wakeFramesLocked() {
 AudioFile::Config AudioFile::config() {
         Mutex::Locker locker(_lock, WaitForever);
         Config        c = _config;
+        if (isRealtime()) {
+                const AudioDevice::Timing t = _device.timing();
+                c.rateHz = t.rateHz;
+                c.wakeFrames = t.periodFrames;
+                return c;
+        }
         if (_pcm.isOpen()) {
                 c.ringFrames = static_cast<uint32_t>(_pcm.capacityFrames());
                 c.startFrames = static_cast<uint32_t>(_pcm.startFrames());
@@ -159,14 +214,20 @@ Error AudioFile::configure(const Config &config) {
         Mutex::Locker locker(_lock, WaitForever);
         Error         err = checkLocked(config);
         if (err.isError()) return err;
-        if (!_pcm.isOver()) {
+        if (!isRealtime() && !_pcm.isOver()) {
                 err = drainLocked(WaitForever);
                 if (err.isError()) return err;
         }
-        _device.detach(_pcm);
-        _pcm.close();
+        closeLocked();
+        const Config old = _config;
         _config = config;
-        return openLocked();
+        err = openLocked();
+        if (err.isError()) {
+                // As it was (exclusive mode refused, say).
+                _config = old;
+                (void)openLocked();
+        }
+        return err;
 }
 
 // ---- Playing
@@ -192,6 +253,7 @@ Result<size_t> AudioFile::read(WritableByteSpan, unsigned int) {
 
 Result<size_t> AudioFile::write(ByteSpan data, unsigned int timeoutMs) {
         if (_kind == Kind::Mixer) return makeError<size_t>(Error::NotSupported);
+        if (_realtimeOn.load(std::memory_order_acquire)) return makeError<size_t>(Error::Invalid);
         Semaphore       wake(1, 0);
         WaitList::Entry entry(_pcm.waiters(), wake);
         if (!entry.isAdded()) return makeError<size_t>(Error::Busy);
@@ -220,6 +282,7 @@ Result<size_t> AudioFile::write(ByteSpan data, unsigned int timeoutMs) {
 uint8_t AudioFile::readiness() {
         if (_kind == Kind::Mixer) return Readable | Writable;
         Mutex::Locker locker(_lock, WaitForever);
+        if (isRealtime()) return Writable; // a write fails at once (not written: cycled)
         const size_t  free = _pcm.capacityFrames() - _pcm.queuedFrames();
         return free >= _wakeFrames ? Writable : 0;
 }
@@ -230,6 +293,7 @@ WaitList *AudioFile::readinessWaiters() {
 
 Error AudioFile::start() {
         if (_kind == Kind::Mixer) return Error::NotSupported;
+        if (_realtimeOn.load(std::memory_order_acquire)) return Error::Invalid;
         Mutex::Locker locker(_lock, WaitForever);
         if (!_pcm.isOver()) _pcm.startNow();
         return Error::Ok;
@@ -237,6 +301,7 @@ Error AudioFile::start() {
 
 Error AudioFile::setPaused(bool paused) {
         if (_kind == Kind::Mixer) return Error::NotSupported;
+        if (_realtimeOn.load(std::memory_order_acquire)) return Error::Invalid;
         Mutex::Locker locker(_lock, WaitForever);
         _pcm.setPaused(paused);
         return Error::Ok;
@@ -255,6 +320,7 @@ Error AudioFile::drainLocked(unsigned int timeoutMs) {
 
 Error AudioFile::drain() {
         if (_kind == Kind::Mixer) return Error::NotSupported;
+        if (_realtimeOn.load(std::memory_order_acquire)) return Error::Invalid;
         // Not under the lock: the drain doesn't touch the ring, and status goes on meanwhile.
         {
                 Mutex::Locker locker(_lock, WaitForever);
@@ -266,6 +332,7 @@ Error AudioFile::drain() {
 
 Error AudioFile::drop() {
         if (_kind == Kind::Mixer) return Error::NotSupported;
+        if (_realtimeOn.load(std::memory_order_acquire)) return Error::Invalid;
         _pcm.cancel(); // wakes a writer waiting for room, which then takes the lock
         Mutex::Locker locker(_lock, WaitForever);
         _device.detach(_pcm);
@@ -279,6 +346,7 @@ Error AudioFile::setGain(int32_t centiDb) {
         Mutex::Locker locker(_lock, WaitForever);
         _gainCentiDb = centiDb;
         _pcm.setGain(AudioMix::gainOf(centiDb));
+        _rt.setGain(AudioMix::gainOf(centiDb));
         return Error::Ok;
 }
 
@@ -298,6 +366,19 @@ AudioFile::Status AudioFile::status() {
                 return s;
         }
         Mutex::Locker locker(_lock, WaitForever);
+        if (isRealtime()) {
+                // No ring: what was mixed, and the client's own late periods.
+                const PcmStream::Position p = _rt.position();
+                s.state = _rt.isOver() ? State::Idle : State::Playing;
+                s.writtenFrames = _rt.doneFrames();
+                s.playedFrames = p.frames;
+                s.timestampNs = p.ns;
+                s.delayFrames = (AudioDevice::DmaBuffers - 1) * t.periodFrames;
+                s.underruns = _rt.latePeriods();
+                s.latePeriods = _rt.latePeriods();
+                s.gainCentiDb = _gainCentiDb;
+                return s;
+        }
         const bool    attached = !_pcm.isOver();
         if (!attached) {
                 s.state = State::Idle;
@@ -324,6 +405,27 @@ AudioFile::Status AudioFile::status() {
         s.underruns = _pcm.underruns();
         s.gainCentiDb = _gainCentiDb;
         return s;
+}
+
+// ---- Real-time clients
+
+Error AudioFile::cycle(RtStream::Period *next) {
+        if (_kind == Kind::Mixer) return Error::NotSupported;
+        if (!_realtimeOn.load(std::memory_order_acquire)) return Error::Invalid;
+        // Dropped by its device (a stop, a fault): joins again.
+        if (next != nullptr && !_rt.isPlaying()) {
+                Mutex::Locker locker(_lock, WaitForever);
+                if (!isRealtime()) return Error::Invalid;
+                if (!_rt.isPlaying()) {
+                        const bool exclusive = (_config.flags & Exclusive) != 0;
+                        _device.detachRealtime(_rt);
+                        _rt.reset();
+                        const Error err = _device.attachRealtime(_rt, exclusive, exclusive ? _config.rateHz : 0);
+                        if (err.isError()) return err;
+                }
+        }
+        if (next != nullptr) _device.raiseCaller(_rt);
+        return _rt.cycle(next, Interrupt::current());
 }
 
 BMDS_NAMESPACE_END

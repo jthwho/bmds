@@ -1318,6 +1318,133 @@ static int decode(const char *path) {
         return 0;
 }
 
+static int64_t mono_ns(void) {
+        struct timespec t;
+        clock_gettime(CLOCK_MONOTONIC, &t);
+        return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
+}
+
+/* Real-time clients (devplan/audio.md §20): flags and errors, the cycle's fields, a missed
+   deadline counted and skipped over, a stalled thread throttled, exclusive mode. */
+static int rt(void) {
+        CHECK(bmds_sys_has(BMDS_SYS_AUDIO_CYCLE));
+        const int fd = open("/dev/dsp", O_WRONLY);
+        CHECK(fd >= 0);
+        bmds_audio_cycle_t cy = {.size = sizeof(cy)};
+        CHECK(bmds_audio_cycle(fd, &cy) == -BMDS_EINVAL); /* not real-time yet */
+        CHECK(bmds_audio_cycle(1, &cy) == -BMDS_ENOTTY);
+        CHECK(bmds_audio_cycle(99, &cy) == -BMDS_EBADF);
+        bmds_audio_status_t st = {.size = sizeof(st)};
+        CHECK(bmds_audio_status(fd, &st) == 0);
+        const uint32_t      device_rate = st.device_rate;
+        bmds_audio_config_t want = {.size = sizeof(want),
+                                    .format = BMDS_AUDIO_F32LE,
+                                    .channels = 1,
+                                    .wake_frames = 64,
+                                    .flags = BMDS_AUDIO_REALTIME};
+        bmds_audio_config_t bad = want;
+        bad.format = BMDS_AUDIO_S16LE;
+        CHECK(bmds_audio_config(fd, &bad, NULL) == -BMDS_EINVAL);
+        bad = want;
+        bad.channels = 3;
+        CHECK(bmds_audio_config(fd, &bad, NULL) == -BMDS_EINVAL);
+        bad = want;
+        bad.ring_frames = 1024;
+        CHECK(bmds_audio_config(fd, &bad, NULL) == -BMDS_EINVAL);
+        bad = want;
+        bad.wake_frames = BMDS_AUDIO_MIN_PERIOD - 1;
+        CHECK(bmds_audio_config(fd, &bad, NULL) == -BMDS_EINVAL);
+        bad.wake_frames = BMDS_AUDIO_MAX_PERIOD + 1;
+        CHECK(bmds_audio_config(fd, &bad, NULL) == -BMDS_EINVAL);
+        bad = want;
+        bad.flags = BMDS_AUDIO_EXCLUSIVE;
+        CHECK(bmds_audio_config(fd, &bad, NULL) == -BMDS_EINVAL);
+        bad.flags = 0x4;
+        CHECK(bmds_audio_config(fd, &bad, NULL) == -BMDS_EINVAL);
+        bad = want;
+        bad.rate = device_rate == 44100 ? 48000 : 44100; /* shared: the device's rate only */
+        CHECK(bmds_audio_config(fd, &bad, NULL) == -BMDS_EINVAL);
+
+        /* Real-time: the device runs at the period asked for. */
+        bmds_audio_config_t got = {.size = sizeof(got)};
+        CHECK(bmds_audio_config(fd, &want, &got) == 0);
+        CHECK(got.format == BMDS_AUDIO_F32LE && got.channels == 1 && got.rate == device_rate);
+        CHECK(got.wake_frames == 64 && got.flags == BMDS_AUDIO_REALTIME && got.ring_frames == 0);
+        CHECK(bmds_audio_status(fd, &st) == 0);
+        CHECK(st.state == BMDS_AUDIO_PLAYING && st.period_frames == 64);
+        CHECK(write(fd, "x", 1) < 0 && errno == EINVAL);
+        CHECK(bmds_audio_control(fd, BMDS_AUDIO_DRAIN, 0) == -BMDS_EINVAL);
+        CHECK(bmds_audio_control(fd, BMDS_AUDIO_GAIN, -600) == 0);
+
+        /* 500 periods, each made in time: consecutive, with a deadline and a play time ahead. */
+        uint64_t next = 0;
+        int64_t  worst = 0;
+        for (int i = 0; i < 500; ++i) {
+                CHECK(bmds_audio_cycle(fd, &cy) == 0);
+                const int64_t now = mono_ns();
+                CHECK(cy.frames == 64 && cy.channels == 1 && cy.rate == device_rate && cy.out != NULL);
+                CHECK(cy.in == NULL && cy.flags == 0);
+                CHECK(i == 0 || cy.position == next);
+                CHECK(cy.deadline_ns > now - 1000000 && cy.play_ns > cy.deadline_ns);
+                if (cy.play_ns - now > worst) worst = cy.play_ns - now;
+                next = cy.position + cy.frames;
+                for (uint32_t f = 0; f < cy.frames; ++f) cy.out[f] = 0.0f;
+        }
+        CHECK(cy.late == 0 && cy.skipped == 0 && cy.throttled == 0);
+        const int64_t period_ns = 64LL * 1000000000 / device_rate;
+        CHECK(worst <= 2 * period_ns + 200000); /* two periods, give or take the wake */
+
+        /* Out of the cycle for 20 ms: late, skipped over, and throttled meanwhile. */
+        usleep(20000);
+        CHECK(bmds_audio_cycle(fd, &cy) == 0);
+        printf("rt: after the stall: late %u, skipped %u, throttled %u\n", (unsigned)cy.late, (unsigned)cy.skipped,
+               (unsigned)cy.throttled);
+        CHECK(cy.late >= 1 && cy.skipped >= 1 && cy.throttled >= 1);
+        CHECK(cy.position > next);
+        CHECK(bmds_audio_status(fd, &st) == 0 && st.late_periods == cy.late);
+        const uint32_t late = cy.late;
+
+        /* Exclusive mode isn't free while this fd is open. */
+        const int other = open("/dev/dsp", O_WRONLY);
+        CHECK(other >= 0);
+        bmds_audio_config_t ex = {.size = sizeof(ex),
+                                  .format = BMDS_AUDIO_F32LE,
+                                  .channels = 1,
+                                  .rate = 44100,
+                                  .flags = BMDS_AUDIO_REALTIME | BMDS_AUDIO_EXCLUSIVE};
+        CHECK(bmds_audio_config(other, &ex, NULL) == -BMDS_EBUSY);
+        CHECK(close(other) == 0);
+        CHECK(bmds_audio_cycle(fd, NULL) == 0); /* the period ended, no wait */
+        CHECK(close(fd) == 0);
+
+        /* Exclusive at 44.1 kHz: nothing else may open the device; sounds are dropped. */
+        const int exfd = open("/dev/dsp", O_WRONLY);
+        CHECK(exfd >= 0);
+        CHECK(bmds_audio_config(exfd, &ex, &got) == 0);
+        CHECK(got.rate == 44100 && got.flags == (BMDS_AUDIO_REALTIME | BMDS_AUDIO_EXCLUSIVE));
+        CHECK(open("/dev/dsp", O_WRONLY) < 0 && errno == EBUSY);
+        CHECK(bmds_sound_play(BMDS_SOUND_BELL) == 0);
+        for (int i = 0; i < 100; ++i) {
+                CHECK(bmds_audio_cycle(exfd, &cy) == 0);
+                CHECK(cy.rate == 44100);
+                for (uint32_t f = 0; f < cy.frames; ++f) cy.out[f] = 0.0f;
+        }
+        CHECK(cy.late == 0);
+        CHECK(close(exfd) == 0);
+
+        /* Shared again: a plain stream plays at the setting's rate. */
+        const int fd2 = open("/dev/dsp", O_WRONLY);
+        CHECK(fd2 >= 0);
+        bmds_audio_config_t pcm = {.size = sizeof(pcm), .format = BMDS_AUDIO_S16LE, .channels = 2, .rate = 48000};
+        CHECK(bmds_audio_config(fd2, &pcm, NULL) == 0);
+        CHECK(write_silence(fd2, 4800) == 0);
+        CHECK(bmds_audio_control(fd2, BMDS_AUDIO_DRAIN, 0) == 0);
+        CHECK(bmds_audio_status(fd2, &st) == 0 && st.device_rate == device_rate && st.period_frames != 64);
+        CHECK(close(fd2) == 0);
+        printf("rt: ok, 500 periods of 64 frames on time, then %u late after a 20 ms stall\n", (unsigned)late);
+        return 0;
+}
+
 int main(int argc, char **argv) {
         if (argc < 2) {
                 fprintf(stderr,
@@ -1333,6 +1460,7 @@ int main(int argc, char **argv) {
         if (strcmp(what, "status") == 0) return atoi(arg);
         if (strcmp(what, "audio") == 0) return audio();
         if (strcmp(what, "decode") == 0) return decode(arg);
+        if (strcmp(what, "rt") == 0) return rt();
         if (strcmp(what, "audioexit") == 0) {
                 const int           fd = open("/dev/dsp", O_WRONLY);
                 bmds_audio_config_t c = {.size = sizeof(c),

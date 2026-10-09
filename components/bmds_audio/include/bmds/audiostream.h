@@ -52,6 +52,7 @@ class AudioStream {
                 enum class Kind : uint8_t {
                         Pcm,  ///< Written by a client, converted and resampled.
                         Tone, ///< A tone or a system sound, made at the device's rate.
+                        Realtime, ///< Made each period by a client's thread (`RtStream`).
                 };
 
                 AudioStream(const AudioStream &) = delete;
@@ -105,6 +106,9 @@ class AudioStream {
 
         protected:
                 AudioStream(Kind kind, const char *label) : _kind(kind), _label(label), _gone(1, 0) {}
+
+                /** @brief True once its device has dropped it (played out, cancelled, a stop). */
+                bool isDropped() const { return _state.load(std::memory_order_acquire) == Over; }
                 virtual ~AudioStream() = default;
 
         private:
@@ -321,6 +325,173 @@ class PcmStream final : public AudioStream {
                 std::atomic<uint64_t> _written{0}; // bytes
                 SeqLocked<Position>   _position;
                 bool                  _starved = false; // the last period ran short (one underrun each time)
+};
+
+/**
+ * @brief A real-time client's stream (`devplan/audio.md` §20): a program's
+ *        thread makes each period's output as the engine asks for it, with
+ *        no ring between them.
+ *
+ * Each period the engine `offer()`s the period to make, mixes its other
+ * streams, then waits (until the next end-of-frame, a period on) for the
+ * client to end it (`isDone()`), and `render()` adds the output. The
+ * client's thread loops in `cycle()`: it ends the period it had and waits
+ * for the next. A period not ended by then is late: counted, and nothing
+ * added. A client more than a period behind gets the newest period, told
+ * how many it skipped.
+ *
+ * Its output buffer holds `MaxFrames` frames of float in the client's
+ * channels, so a change of the device's period never reallocates it.
+ *
+ * @par Thread Safety
+ * One client thread (`cycle()`) and the engine (`offer()`, `isDone()`,
+ * `render()`, `isStalled()`); `cancel()` and the counters from any task.
+ * `open()` and `close()` while not attached.
+ */
+class RtStream final : public AudioStream {
+        public:
+                /** @brief The most frames a period has (the device's `MaxPeriodFrames`). */
+                static constexpr uint32_t MaxFrames = 480;
+
+                /** @brief A period for the client to make (`cycle()`). */
+                struct Period {
+                                float       *out = nullptr; ///< `frames` × `channels` floats, interleaved.
+                                const float *in = nullptr;  ///< The input's (capture, later): null.
+                                uint32_t     frames = 0;
+                                uint8_t      channels = 0;
+                                uint32_t     rateHz = 0;
+                                uint64_t     position = 0;   ///< The device's frame count at `out[0]`.
+                                int64_t      deadlineNs = 0; ///< `Clock::monotonicNs()` by which to end it.
+                                int64_t      playNs = 0;     ///< When `out[0]` leaves the DMA.
+                                uint32_t     skipped = 0;    ///< Periods skipped since the last call.
+                                uint32_t     late = 0;       ///< Periods late in all.
+                                uint32_t     throttled = 0;  ///< Times its thread was put back to its priority.
+                };
+
+                explicit RtStream(const char *label = "rt") : AudioStream(Kind::Realtime, label), _ready(1, 0) {}
+                ~RtStream();
+
+                /**
+                 * @brief Allocates the output for @p channels (1 or 2) in @p space;
+                 *        @p periodFrames is the period asked for (0: the device's).
+                 * @return `Ok`, `Invalid`, or `NoMem`.
+                 */
+                Error open(uint8_t channels, uint32_t periodFrames, MemSpace space);
+
+                /** @brief Frees the output. */
+                void close();
+
+                /** @brief True once `open()` has allocated its output. */
+                bool isOpen() const { return _out != nullptr; }
+
+                /** @brief Returns the channels. */
+                uint8_t channels() const { return _channels; }
+
+                /** @brief Returns the period asked for (0: the device's). */
+                uint32_t periodFrames() const { return _periodFrames; }
+
+                /** @brief Sets what `cycle()` releases when it ends a period: the engine's wake. */
+                void setEngineWake(Semaphore *wake) { _engineWake = wake; }
+
+                /**
+                 * @brief Forgets the periods handed out and ended, for another attach
+                 *        (the counters stay).
+                 */
+                void reset();
+
+                /**
+                 * @brief The client: ends the period it was given (if any), then, if
+                 *        @p next isn't null, waits for the next and fills it in.
+                 * @return `Ok`, `Interrupted` (@p interrupt raised while waiting),
+                 *         `BrokenPipe` (over: cancelled, or dropped by its device's
+                 *         stop), or `Busy` (too many waiters).
+                 * @blocking When @p next isn't null.
+                 */
+                Error cycle(Period *next, Interrupt *interrupt);
+
+                /**
+                 * @brief The engine: hands out the next period, of @p frames at
+                 *        @p position, to end by @p deadlineNs and heard from @p playNs.
+                 * @hotpath
+                 */
+                void offer(uint64_t position, uint32_t frames, int64_t deadlineNs, int64_t playNs);
+
+                /**
+                 * @brief The engine: true once the period offered is ended, or there
+                 *        is nothing to wait for (no client has cycled yet; over).
+                 */
+                bool isDone() const;
+
+                /**
+                 * @brief The engine: true if the client has been out of `cycle()`
+                 *        for @p periods periods or more since it was last given one.
+                 */
+                bool isStalled(uint32_t periods) const;
+
+                /** @brief The engine: its thread was put back to its own priority. */
+                void noteThrottled() { _throttled.fetch_add(1, std::memory_order_relaxed); }
+
+                /** @brief Returns the periods late in all. */
+                uint32_t latePeriods() const { return _late.load(std::memory_order_relaxed); }
+
+                /** @brief Returns the periods skipped in all. */
+                uint32_t skippedPeriods() const { return _skipped.load(std::memory_order_relaxed); }
+
+                /** @brief Returns the throttles in all. */
+                uint32_t throttles() const { return _throttled.load(std::memory_order_relaxed); }
+
+                /** @brief Returns the periods ended in time and mixed. */
+                uint64_t donePeriods() const { return _done.load(std::memory_order_relaxed); }
+
+                /** @brief Returns the frames ended in time and mixed. */
+                uint64_t doneFrames() const { return _doneFrames.load(std::memory_order_relaxed); }
+
+                /** @brief Where playing has got to: the last period mixed's end, and when. */
+                PcmStream::Position position() const { return _position.load(); }
+
+                void  cancel() override;
+                Error prepare(uint32_t deviceRate, size_t maxFrames) override;
+                bool  render(float *mix, size_t frames, float *scratch) override;
+                void  describe(char *out, size_t size) const override;
+
+        private:
+                friend class AudioDevice;
+
+                // What the engine offered last.
+                struct Offer {
+                                uint64_t number = 0; // from 1
+                                uint64_t position = 0;
+                                int64_t  deadlineNs = 0;
+                                int64_t  playNs = 0;
+                                uint32_t frames = 0;
+                                uint32_t spare = 0; // no padding (SeqLocked)
+                };
+
+                float                         *_out = nullptr;
+                MemSpace                       _space = MemSpace::Internal;
+                uint8_t                        _channels = 0;
+                uint32_t                       _periodFrames = 0;
+                std::atomic<uint32_t>          _rateHz{0};
+                Semaphore                      _ready; // the client waits on it for a period
+                Semaphore                     *_engineWake = nullptr;
+                SeqLocked<Offer>               _offer;
+                std::atomic<uint64_t>          _offered{0}; // the period last offered
+                std::atomic<uint64_t>          _given{0};   // the period the client was last given (0: none yet)
+                std::atomic<uint64_t>          _ended{0};   // the period the client last ended
+                std::atomic<bool>              _inCycle{false};
+                std::atomic<bool>              _cancelled{false};
+                std::atomic<uint32_t>          _late{0};
+                std::atomic<uint32_t>          _skipped{0};
+                std::atomic<uint32_t>          _throttled{0};
+                std::atomic<uint64_t>          _done{0};
+                std::atomic<uint64_t>          _doneFrames{0};
+                SeqLocked<PcmStream::Position> _position;
+
+                // Its thread's priority: the device's, changed under its real-time lock (the
+                // client reads its own entry without it, once a period).
+                std::atomic<void *> _task{nullptr};       // the thread raised for it (a TaskHandle_t)
+                int                 _basePriority = 0;    // what to put it back to
+                std::atomic<bool>   _throttledNow{false}; // put back by the engine: raise it again
 };
 
 BMDS_NAMESPACE_END

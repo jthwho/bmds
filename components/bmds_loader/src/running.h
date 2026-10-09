@@ -102,6 +102,7 @@ struct ProgramThread final : ProcessOwner {
                 std::atomic<bool>     kill{false};
                 bool                  suspendedForStop = false; // under the process table's lock
                 bool                  ended = false;            // under the Running's threadsLock
+                bool realtime = false; // raised by an audio device (audio_cycle): forgotten there before its task goes
 
                 /** @brief The calling task's record (a program thread's: system calls only). */
                 static ProgramThread &self() { return *ProcessOwner::current()->thread; }

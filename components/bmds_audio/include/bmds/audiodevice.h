@@ -59,6 +59,15 @@ class AudioDevice {
                 static constexpr uint32_t MaxPeriodFrames = 480;
                 static constexpr uint32_t DefaultPeriodFrames = 240;
 
+                /** @brief The shortest period a real-time client may ask for (devplan/audio.md §20). */
+                static constexpr uint32_t MinClientPeriodFrames = 16;
+
+                /** @brief Real-time clients (`RtStream`) at once. */
+                static constexpr size_t MaxRealtime = 4;
+
+                /** @brief A real-time client out of its cycle this many periods is put back to its priority. */
+                static constexpr uint32_t StallPeriods = 4;
+
                 /** @brief The rate without a setting. */
                 static constexpr uint32_t DefaultRateHz = 48000;
 
@@ -103,6 +112,10 @@ class AudioDevice {
                                 bool     held = false;        ///< Held running (`hold()`).
                                 size_t   streams = 0;         ///< Streams attached.
                                 bool     toneActive = false;  ///< A tone (`playTone()`) among them.
+                                size_t   realtime = 0;        ///< Real-time clients attached.
+                                bool     exclusive = false;   ///< One of them owns the device.
+                                uint32_t soundsDropped = 0;   ///< System sounds not played (exclusive mode).
+                                uint64_t waitedUs = 0;        ///< Time waiting for real-time clients, in all.
                 };
 
                 /** @brief The rate and period running, or the settings' while stopped. */
@@ -217,6 +230,56 @@ class AudioDevice {
                  */
                 Error playSound(SystemSound sound);
 
+                /**
+                 * @brief Takes @p stream (`open()`ed) as one of the device's real-time
+                 *        clients, whose threads' priorities it manages. Pair with
+                 *        `removeRealtime()`.
+                 * @return `Ok`, or `Busy` (`MaxRealtime`).
+                 */
+                Error addRealtime(RtStream &stream);
+
+                /**
+                 * @brief Puts the thread raised for @p stream back to its priority and
+                 *        forgets @p stream (detached already).
+                 */
+                void removeRealtime(RtStream &stream);
+
+                /**
+                 * @brief Starts real-time client @p stream (`addRealtime()`ed) playing,
+                 *        the device's period becoming the shortest client's; with
+                 *        @p exclusive it owns the device, at @p rateHz (0: the setting's).
+                 *        Pair with `detachRealtime()`.
+                 * @return `Ok`, `Busy` (exclusive: other programs' streams are open, or
+                 *         another client owns it), `NotSupported` (a rate or period the
+                 *         device can't run), or `attach()`'s error.
+                 * @blocking A start or a restart.
+                 */
+                Error attachRealtime(RtStream &stream, bool exclusive, uint32_t rateHz);
+
+                /**
+                 * @brief Takes @p stream out, and the device back to its settings'
+                 *        rate and period if no client needs otherwise.
+                 * @blocking Up to a period, and a restart.
+                 */
+                void detachRealtime(RtStream &stream);
+
+                /**
+                 * @brief Raises the calling thread to `CONFIG_BMDS_AUDIO_CLIENT_PRIORITY`
+                 *        for @p stream (again after a throttle).
+                 * @nonblocking Once raised: one check a period.
+                 */
+                void raiseCaller(RtStream &stream);
+
+                /**
+                 * @brief Forgets task @p task (a `TaskHandle_t`) wherever a device
+                 *        raised it: the loader calls this before deleting a thread's
+                 *        task that cycled a real-time stream.
+                 */
+                static void forgetTask(void *task);
+
+                /** @brief True while a real-time client owns the device. @nonblocking */
+                bool isExclusive() const { return _exclusiveOn.load(std::memory_order_acquire); }
+
                 /** @brief Returns the status. */
                 Status status();
 
@@ -266,6 +329,10 @@ class AudioDevice {
                 void        drop(size_t slot, AudioStream &stream);
                 void        dropAll();
                 void        control();
+                void        waitRealtime(const Finished &f);
+                void        throttleStalled();
+                uint32_t    realtimePeriodLocked(const AudioStream *with, const AudioStream *without) const;
+                Error       followClientsLocked();
                 Settings    readSettings() const;
                 void        applySettingsLocked();
                 Error       applyVolumeLocked();
@@ -275,7 +342,13 @@ class AudioDevice {
                 Error       restartLocked(uint32_t rateHz, uint32_t periodFrames);
                 Error       attachLocked(AudioStream &stream);
                 void        reclaim(AudioStream &stream); // a pool stream that is over, for reuse
-                uint32_t    wantedRate() const { return _rateOverride != 0 ? _rateOverride : _settings.rateHz; }
+                uint32_t    wantedRate() const {
+                        if (_exclusiveRate != 0) return _exclusiveRate;
+                        return _rateOverride != 0 ? _rateOverride : _settings.rateHz;
+                }
+                uint32_t wantedPeriod() const {
+                        return _periodOverride != 0 ? _periodOverride : _settings.periodFrames;
+                }
                 size_t      attachedCount() const;
 
                 AudioCodec &_codec;
@@ -321,11 +394,24 @@ class AudioDevice {
                 std::atomic<uint32_t> _limited{0};
                 std::atomic<uint32_t> _mixedPeriods{0};
                 std::atomic<uint64_t> _mixedUs{0};
+                std::atomic<uint64_t> _waitedUs{0};
+                uint64_t              _framesFilled = 0; // the device's frame count (real-time clients' position)
 
                 // The streams: attached under the lock, read by the engine without it.
                 std::atomic<AudioStream *> _slots[MaxStreams] = {};
                 WaitListOf<2>              _dropped; // told when the engine drops a stream
                 std::atomic<uint8_t>       _clients{0};
+
+                // Real-time clients: the period's override and exclusive mode (under the lock),
+                // and the threads raised (under the real-time lock; the engine only tries it).
+                uint32_t              _periodOverride = 0; // the shortest client's period (0: none)
+                uint32_t              _exclusiveRate = 0;  // the exclusive client's rate (0: none, or the setting's)
+                RtStream             *_exclusive = nullptr;
+                std::atomic<bool>     _exclusiveOn{false};
+                std::atomic<uint32_t> _soundsDropped{0};
+                Mutex                 _rtLock;
+                RtStream             *_realtime[MaxRealtime] = {};
+                std::atomic<uint8_t>  _realtimeCount{0};
 
                 // Its own streams: tones and the system sounds.
                 ToneStream            _tones[MaxTones];

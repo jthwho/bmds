@@ -173,7 +173,14 @@ namespace {
                 }
                 ctx.printf("Volume:   %ld dBFS%s%s\n", static_cast<long>(s.volumeDb), s.muted ? ", muted" : "",
                            s.held ? ", held running" : "");
-                ctx.printf("Limiter:  %lu frames reduced\n", static_cast<unsigned long>(s.limited));
+                ctx.printf("Limiter:  %lu frames reduced%s\n", static_cast<unsigned long>(s.limited),
+                           s.exclusive ? " (off: exclusive)" : "");
+                if (s.realtime != 0 || s.soundsDropped != 0) {
+                        const uint64_t waited = s.periods == 0 ? 0 : s.waitedUs / s.periods;
+                        ctx.printf("Clients:  %u real-time%s, waited %lu us a period on average; %lu sounds dropped\n",
+                                   static_cast<unsigned>(s.realtime), s.exclusive ? ", exclusive" : "",
+                                   static_cast<unsigned long>(waited), static_cast<unsigned long>(s.soundsDropped));
+                }
                 // 16 lines of 112 bytes: not on the shell's stack.
                 auto *lines = static_cast<AudioDevice::StreamLine *>(
                         Memory::alloc(MemSpace::Psram, AudioDevice::MaxStreams * sizeof(AudioDevice::StreamLine)));

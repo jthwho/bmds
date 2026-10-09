@@ -18,6 +18,7 @@
 #include <freertos/queue.h>
 #include <freertos/timers.h>
 #include <sdkconfig.h>
+#include <bmds/audiodevice.h>
 #include <bmds/builtinprograms.h>
 #include <bmds/clock.h>
 #include <bmds/console.h>
@@ -489,6 +490,8 @@ namespace {
 
         // Stops an ended thread's task and frees its record; the Running goes with its last one.
         void reap(ProgramThread &thread) {
+                // An audio device may change a raised thread's priority until it forgets it.
+                if (thread.realtime) AudioDevice::forgetTask(thread.task.handle());
                 (void)thread.task.stop();
                 Running &run = *thread.run;
                 bool     last = false;

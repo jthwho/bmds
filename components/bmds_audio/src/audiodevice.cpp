@@ -184,8 +184,8 @@ void AudioDevice::applySettingsLocked() {
         const Error err = applyVolumeLocked();
         if (err.isError()) bmdsWarn("audio: dsp%u: the volume wasn't set: %s", _number, err.desc());
         if (_state != State::Running) return;
-        if (wantedRate() != _rateHz || _settings.periodFrames != _periodFrames) {
-                const Error rerr = restartLocked(wantedRate(), _settings.periodFrames);
+        if (wantedRate() != _rateHz || wantedPeriod() != _periodFrames) {
+                const Error rerr = restartLocked(wantedRate(), wantedPeriod());
                 if (rerr.isError()) bmdsWarn("audio: dsp%u: the restart failed: %s", _number, rerr.desc());
         }
         return;
@@ -228,7 +228,7 @@ Error AudioDevice::makeChannel(uint32_t periodFrames) {
 Error AudioDevice::startLocked(uint32_t rateHz, uint32_t periodFrames) {
         // Check the rate and period before touching anything.
         if (Es8311Regs::clockPlan(rateHz * MclkMultiple, rateHz).isError()) return Error::NotSupported;
-        if (periodFrames < MinPeriodFrames || periodFrames > MaxPeriodFrames) return Error::NotSupported;
+        if (periodFrames < MinClientPeriodFrames || periodFrames > MaxPeriodFrames) return Error::NotSupported;
         if (_state == State::Running) {
                 if (rateHz == _rateHz && periodFrames == _periodFrames) return Error::Ok;
                 return restartLocked(rateHz, periodFrames);
@@ -291,6 +291,8 @@ Error AudioDevice::startLocked(uint32_t rateHz, uint32_t periodFrames) {
         _limited.store(0, std::memory_order_relaxed);
         _mixedPeriods.store(0, std::memory_order_relaxed);
         _mixedUs.store(0, std::memory_order_relaxed);
+        _waitedUs.store(0, std::memory_order_relaxed);
+        _framesFilled = 0;
         _tail = _head.load(std::memory_order_acquire);
         // The volume goes in with the codec's start (which resets the chip).
         _appliedVolume = INT32_MIN;
@@ -348,6 +350,7 @@ Error AudioDevice::stopLocked(bool keepStreams) {
         }
         const Error err = _state == State::Running ? _codec.stop() : Error::Ok;
         _active.store(false, std::memory_order_release);
+        _wake.release(); // an engine waiting for its real-time clients gives up
         if (_channel != nullptr) (void)i2s_channel_disable(handleOf(_channel));
         {
                 // The task isn't filling once it is out of here (and won't again: not active).
@@ -369,7 +372,7 @@ Error AudioDevice::hold(uint32_t rateHz) {
         Mutex::Locker locker(_lock, WaitForever);
         if (rateHz != 0 && Es8311Regs::clockPlan(rateHz * MclkMultiple, rateHz).isError()) return Error::NotSupported;
         _rateOverride = rateHz;
-        const Error err = startLocked(wantedRate(), _settings.periodFrames);
+        const Error err = startLocked(wantedRate(), wantedPeriod());
         if (err.isOk()) _held = true;
         return err;
 }
@@ -389,12 +392,14 @@ Error AudioDevice::attach(AudioStream &stream) {
 
 Error AudioDevice::attachLocked(AudioStream &stream) {
         if (stream._state.load(std::memory_order_acquire) != AudioStream::Idle) return Error::InvalidState;
+        if (_exclusive != nullptr && &stream != _exclusive) return Error::Busy;
         std::atomic<AudioStream *> *free = nullptr;
         for (auto &slot : _slots)
                 if (free == nullptr && slot.load(std::memory_order_acquire) == nullptr) free = &slot;
         if (free == nullptr) return Error::Full;
-        if (_state != State::Running) {
-                const Error err = startLocked(wantedRate(), _settings.periodFrames);
+        // Stopped, or running at a rate or period no longer wanted (real-time clients came or went).
+        if (_state != State::Running || wantedRate() != _rateHz || wantedPeriod() != _periodFrames) {
+                const Error err = startLocked(wantedRate(), wantedPeriod());
                 if (err.isError()) return err;
         }
         const Error err = stream.prepare(_rateHz, _periodFrames);
@@ -492,6 +497,10 @@ void AudioDevice::cancelTone(uint32_t id) {
 Error AudioDevice::playSound(SystemSound sound) {
         const auto n = static_cast<size_t>(sound);
         if (n >= SystemSoundCount) return Error::Invalid;
+        if (isExclusive()) {
+                _soundsDropped.fetch_add(1, std::memory_order_relaxed);
+                return Error::Ok;
+        }
         Mutex::Locker locker(_lock, WaitForever);
         ToneStream   &s = _sounds[n];
         reclaim(s);
@@ -525,16 +534,24 @@ AudioDevice::Status AudioDevice::status() {
         s.held = _held;
         s.streams = attachedCount();
         for (const ToneStream &t : _tones) s.toneActive |= t.isPlaying();
+        for (const auto &slot : _slots) {
+                const AudioStream *a = slot.load(std::memory_order_acquire);
+                s.realtime += a != nullptr && a->kind() == AudioStream::Kind::Realtime;
+        }
+        s.exclusive = _exclusive != nullptr;
+        s.soundsDropped = _soundsDropped.load(std::memory_order_relaxed);
+        s.waitedUs = _waitedUs.load(std::memory_order_relaxed);
         return s;
 }
 
 AudioDevice::Timing AudioDevice::timing() {
         Mutex::Locker locker(_lock, WaitForever);
         if (_state == State::Running) return Timing{_rateHz, _periodFrames};
-        return Timing{wantedRate(), _settings.periodFrames};
+        return Timing{wantedRate(), wantedPeriod()};
 }
 
 Error AudioDevice::addClient() {
+        if (isExclusive()) return Error::Busy;
         uint8_t n = _clients.load(std::memory_order_relaxed);
         do {
                 if (n >= MaxClients) return Error::Busy;
@@ -572,25 +589,30 @@ void AudioDevice::taskEntry(void *arg) {
 void AudioDevice::run() {
         for (;;) {
                 (void)_wake.acquire(WaitForever);
-                {
-                        Mutex::Locker filling(_fillLock, WaitForever);
-                        for (;;) {
+                // Control work after each period: with a real-time client stalled, each fill waits
+                // until the next end-of-frame, so there is always another buffer to fill.
+                for (bool more = true; more;) {
+                        {
+                                Mutex::Locker  filling(_fillLock, WaitForever);
                                 const uint32_t head = _head.load(std::memory_order_acquire);
-                                if (_tail == head) break;
-                                // Behind by more than the ring holds: those buffers have played.
-                                if (head - _tail > RingSize) _tail = head - RingSize;
-                                const Finished f = _ring[_tail % RingSize];
-                                ++_tail;
-                                if (_active.load(std::memory_order_acquire)) fill(f);
+                                more = _tail != head;
+                                if (more) {
+                                        // Behind by more than the ring holds: those buffers have played.
+                                        if (head - _tail > RingSize) _tail = head - RingSize;
+                                        const Finished f = _ring[_tail % RingSize];
+                                        ++_tail;
+                                        if (_active.load(std::memory_order_acquire)) fill(f);
+                                }
                         }
+                        control();
                 }
-                control();
         }
 }
 
 // Between periods: settings to apply, and the idle stop. Never waits for the lock (a caller
 // holding it may be waiting for this task): tried again next period.
 void AudioDevice::control() {
+        if (_realtimeCount.load(std::memory_order_relaxed) != 0) throttleStalled();
         const bool settings = _settingsChanges.load(std::memory_order_acquire) != _settingsSeen;
         const bool idle = _active.load(std::memory_order_acquire) && !_held &&
                           _idlePeriods * periodMs(_periodFrames, _rateHz) >= IdleMs;
@@ -607,6 +629,20 @@ void AudioDevice::fill(const Finished &f) {
         const uint32_t frames = _periodFrames;
         const uint32_t now = _sequence.load(std::memory_order_relaxed);
         bool           any = false;
+        bool           realtime = false;
+        // Real-time clients first: they make their periods while the rest is mixed. Each has
+        // until the next end-of-frame, a period on; the buffer plays a period after that.
+        const int64_t periodUs = static_cast<int64_t>(frames) * 1'000'000 / _rateHz;
+        for (auto &slot : _slots) {
+                AudioStream *s = slot.load(std::memory_order_acquire);
+                if (s == nullptr || s->kind() != AudioStream::Kind::Realtime ||
+                    s->_state.load(std::memory_order_relaxed) != AudioStream::Attached ||
+                    s->_detach.load(std::memory_order_acquire))
+                        continue;
+                static_cast<RtStream *>(s)->offer(_framesFilled, frames, (f.timeUs + periodUs) * 1000,
+                                                  (f.timeUs + (DmaBuffers - 1) * periodUs) * 1000);
+                realtime = true;
+        }
         for (size_t i = 0; i < MaxStreams; ++i) {
                 AudioStream *s = _slots[i].load(std::memory_order_acquire);
                 if (s == nullptr) continue;
@@ -618,6 +654,7 @@ void AudioDevice::fill(const Finished &f) {
                 }
                 const uint8_t state = s->_state.load(std::memory_order_relaxed);
                 if (state == AudioStream::Attached) {
+                        if (s->kind() == AudioStream::Kind::Realtime) continue; // after the wait
                         if (!s->render(_mix, frames, _scratch)) {
                                 // Its last period is in this buffer: over once the DMA has sent it.
                                 s->_endAt = f.sequence + DmaBuffers;
@@ -627,9 +664,28 @@ void AudioDevice::fill(const Finished &f) {
                         drop(i, *s);
                 }
         }
+        int64_t waited = 0;
+        if (realtime) {
+                const int64_t before = esp_timer_get_time();
+                waitRealtime(f);
+                waited = esp_timer_get_time() - before;
+                _waitedUs.fetch_add(static_cast<uint64_t>(waited), std::memory_order_relaxed);
+                for (auto &slot : _slots) {
+                        AudioStream *s = slot.load(std::memory_order_acquire);
+                        if (s == nullptr || s->kind() != AudioStream::Kind::Realtime ||
+                            s->_state.load(std::memory_order_relaxed) != AudioStream::Attached)
+                                continue;
+                        if (!s->render(_mix, frames, _scratch)) {
+                                s->_endAt = f.sequence + DmaBuffers;
+                                s->_state.store(AudioStream::Ending, std::memory_order_release);
+                        }
+                }
+        }
+        _framesFilled += frames;
         // Nothing playing: the buffer was cleared after the DMA sent it (auto_clear).
         if (any) {
-                _limiter.process(_mix, frames);
+                // Exclusive: the client's samples as they are, only clamped.
+                if (!_exclusiveOn.load(std::memory_order_acquire)) _limiter.process(_mix, frames);
                 AudioMix::toSlots(_mix, f.buffer, frames, _mono);
                 (void)esp_cache_msync(f.buffer, frames * FrameBytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
                 _limited.store(_limiter.limitedFrames(), std::memory_order_relaxed);
@@ -654,13 +710,196 @@ void AudioDevice::fill(const Finished &f) {
                                        std::memory_order_relaxed);
                 _measuredMs.store(static_cast<uint32_t>(us / 1000), std::memory_order_relaxed);
         }
-        const auto took = static_cast<uint32_t>(esp_timer_get_time() - started);
+        // The engine's own time: without the wait for real-time clients.
+        const auto took = static_cast<uint32_t>(esp_timer_get_time() - started - waited);
         if (any) {
                 _mixedPeriods.fetch_add(1, std::memory_order_relaxed);
                 _mixedUs.fetch_add(took, std::memory_order_relaxed);
         }
         _fillUsLast.store(took, std::memory_order_relaxed);
         if (took > _fillUsMax.load(std::memory_order_relaxed)) _fillUsMax.store(took, std::memory_order_relaxed);
+        return;
+}
+
+// Waits until each real-time client offered a period has ended it, or the next end-of-frame
+// (the deadline), or a stop. The clients' cycle() and the interrupt both release _wake; a
+// release that comes after a look is never lost (the semaphore keeps it).
+void AudioDevice::waitRealtime(const Finished &f) {
+        for (;;) {
+                if (!_active.load(std::memory_order_acquire) || _sequence.load(std::memory_order_acquire) != f.sequence)
+                        return;
+                bool done = true;
+                for (auto &slot : _slots) {
+                        AudioStream *s = slot.load(std::memory_order_acquire);
+                        if (s == nullptr || s->kind() != AudioStream::Kind::Realtime ||
+                            s->_detach.load(std::memory_order_acquire))
+                                continue;
+                        done = done && static_cast<RtStream *>(s)->isDone();
+                }
+                if (done) return;
+                (void)_wake.acquire(WaitForever);
+        }
+}
+
+// ---- Real-time clients
+
+Error AudioDevice::addRealtime(RtStream &stream) {
+        Mutex::Locker locker(_rtLock, WaitForever);
+        for (RtStream *&r : _realtime) {
+                if (r != nullptr) continue;
+                r = &stream;
+                stream._task.store(nullptr, std::memory_order_relaxed);
+                stream._throttledNow.store(false, std::memory_order_relaxed);
+                _realtimeCount.fetch_add(1, std::memory_order_relaxed);
+                return Error::Ok;
+        }
+        return Error::Busy;
+}
+
+void AudioDevice::removeRealtime(RtStream &stream) {
+        Mutex::Locker locker(_rtLock, WaitForever);
+        for (RtStream *&r : _realtime) {
+                if (r != &stream) continue;
+                // Still listed, so its thread hasn't been deleted (forgetTask() comes first).
+                void *task = stream._task.exchange(nullptr, std::memory_order_acq_rel);
+                if (task != nullptr && !stream._throttledNow.load(std::memory_order_relaxed))
+                        vTaskPrioritySet(static_cast<TaskHandle_t>(task),
+                                         static_cast<UBaseType_t>(stream._basePriority));
+                r = nullptr;
+                _realtimeCount.fetch_sub(1, std::memory_order_relaxed);
+        }
+        return;
+}
+
+void AudioDevice::raiseCaller(RtStream &stream) {
+        void *self = xTaskGetCurrentTaskHandle();
+        if (stream._task.load(std::memory_order_acquire) == self &&
+            !stream._throttledNow.load(std::memory_order_acquire))
+                return;
+        Mutex::Locker locker(_rtLock, WaitForever);
+        void         *had = stream._task.load(std::memory_order_relaxed);
+        if (had != self) {
+                // Another thread cycled it before: that one goes back to its priority.
+                if (had != nullptr && !stream._throttledNow.load(std::memory_order_relaxed))
+                        vTaskPrioritySet(static_cast<TaskHandle_t>(had),
+                                         static_cast<UBaseType_t>(stream._basePriority));
+                // The caller's own priority, or its first one if another stream raised it.
+                int base = static_cast<int>(uxTaskPriorityGet(nullptr));
+                for (const RtStream *r : _realtime)
+                        if (r != nullptr && r != &stream && r->_task.load(std::memory_order_relaxed) == self)
+                                base = r->_basePriority;
+                stream._basePriority = base;
+                stream._task.store(self, std::memory_order_release);
+        }
+        stream._throttledNow.store(false, std::memory_order_release);
+        if (stream._basePriority < CONFIG_BMDS_AUDIO_CLIENT_PRIORITY)
+                vTaskPrioritySet(nullptr, CONFIG_BMDS_AUDIO_CLIENT_PRIORITY);
+        return;
+}
+
+void AudioDevice::forgetTask(void *task) {
+        for (auto &d : devices) {
+                if (!d.isCreated()) continue;
+                Mutex::Locker locker(d->_rtLock, WaitForever);
+                for (RtStream *r : d->_realtime) {
+                        void *expected = task;
+                        if (r != nullptr) r->_task.compare_exchange_strong(expected, nullptr);
+                }
+        }
+        return;
+}
+
+// Between periods: a client out of its cycle too long goes back to its own priority (it may
+// be stuck in a loop). Never waits for the lock: tried again next period.
+void AudioDevice::throttleStalled() {
+        if (_rtLock.tryLock().isError()) return;
+        for (RtStream *r : _realtime) {
+                if (r == nullptr || r->_throttledNow.load(std::memory_order_relaxed)) continue;
+                void *task = r->_task.load(std::memory_order_relaxed);
+                if (task == nullptr || !r->isStalled(StallPeriods)) continue;
+                vTaskPrioritySet(static_cast<TaskHandle_t>(task), static_cast<UBaseType_t>(r->_basePriority));
+                r->_throttledNow.store(true, std::memory_order_release);
+                r->noteThrottled();
+        }
+        _rtLock.unlock();
+        return;
+}
+
+// The shortest period asked for by the real-time clients attached, with @p with and without
+// @p without (0: none asks).
+uint32_t AudioDevice::realtimePeriodLocked(const AudioStream *with, const AudioStream *without) const {
+        uint32_t shortest = 0;
+        auto     consider = [&shortest](const AudioStream *a) {
+                const uint32_t p = static_cast<const RtStream *>(a)->periodFrames();
+                if (p != 0 && (shortest == 0 || p < shortest)) shortest = p;
+        };
+        for (const auto &slot : _slots) {
+                const AudioStream *a = slot.load(std::memory_order_acquire);
+                if (a != nullptr && a != without && a != with && a->kind() == AudioStream::Kind::Realtime &&
+                    a->_state.load(std::memory_order_acquire) == AudioStream::Attached)
+                        consider(a);
+        }
+        if (with != nullptr) consider(with);
+        return shortest;
+}
+
+// A running device with streams follows the wanted rate and period now; one without waits
+// for its next attach (attachLocked() restarts it then).
+Error AudioDevice::followClientsLocked() {
+        if (_state != State::Running || attachedCount() == 0) return Error::Ok;
+        if (wantedRate() == _rateHz && wantedPeriod() == _periodFrames) return Error::Ok;
+        return restartLocked(wantedRate(), wantedPeriod());
+}
+
+Error AudioDevice::attachRealtime(RtStream &stream, bool exclusive, uint32_t rateHz) {
+        Mutex::Locker locker(_lock, WaitForever);
+        if (_exclusive != nullptr) return Error::Busy;
+        if (exclusive) {
+                // Only this program's fd open, and no stream of the kernel's own PCM (a sweep).
+                if (_clients.load(std::memory_order_acquire) > 1) return Error::Busy;
+                for (const auto &slot : _slots) {
+                        const AudioStream *a = slot.load(std::memory_order_acquire);
+                        if (a != nullptr && a->kind() != AudioStream::Kind::Tone) return Error::Busy;
+                }
+                if (rateHz != 0 && Es8311Regs::clockPlan(rateHz * MclkMultiple, rateHz).isError())
+                        return Error::NotSupported;
+        }
+        const uint32_t oldOverride = _periodOverride;
+        _periodOverride = realtimePeriodLocked(&stream, nullptr);
+        if (exclusive) {
+                _exclusive = &stream;
+                _exclusiveRate = rateHz;
+                _exclusiveOn.store(true, std::memory_order_release);
+                // Tones and sounds playing fade out; nothing else mixes from here.
+                for (auto &slot : _slots) {
+                        AudioStream *a = slot.load(std::memory_order_acquire);
+                        if (a != nullptr) a->cancel();
+                }
+        }
+        stream.setEngineWake(&_wake);
+        const Error err = attachLocked(stream);
+        if (err.isError()) {
+                _periodOverride = oldOverride;
+                if (exclusive) {
+                        _exclusive = nullptr;
+                        _exclusiveRate = 0;
+                        _exclusiveOn.store(false, std::memory_order_release);
+                }
+        }
+        return err;
+}
+
+void AudioDevice::detachRealtime(RtStream &stream) {
+        detach(stream);
+        Mutex::Locker locker(_lock, WaitForever);
+        if (_exclusive == &stream) {
+                _exclusive = nullptr;
+                _exclusiveRate = 0;
+                _exclusiveOn.store(false, std::memory_order_release);
+        }
+        _periodOverride = realtimePeriodLocked(nullptr, &stream);
+        const Error err = followClientsLocked();
+        if (err.isError()) bmdsWarn("audio: dsp%u: the restart failed: %s", _number, err.desc());
         return;
 }
 

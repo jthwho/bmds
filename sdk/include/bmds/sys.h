@@ -145,6 +145,7 @@ static inline int bmds_sys_has(uint32_t n) {
         71u /**< `int32_t audio_decode(int32_t fd, const bmds_decode_config_t *config)`: a new fd. */
 #define BMDS_SYS_AUDIO_DECODE_INFO 72u /**< `int32_t audio_decode_info(int32_t fd, bmds_decode_info_t *info)`. */
 #define BMDS_SYS_AUDIO_DECODE_TAG 73u  /**< `int32_t audio_decode_tag(fd, index, key, key_size, value, value_size)`. */
+#define BMDS_SYS_AUDIO_CYCLE 74u       /**< `int32_t audio_cycle(int32_t fd, bmds_audio_cycle_t *cycle)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -389,9 +390,31 @@ typedef struct bmds_audio_config_t {
                 uint32_t rate;         /**< Frames a second: any from the status's `min_rate` to `max_rate`. */
                 uint32_t ring_frames;  /**< The buffer (0: 100 ms); rounded up to a power of two in bytes. */
                 uint32_t start_frames; /**< Plays once this many are queued (0: half the ring). */
-                uint32_t wake_frames;  /**< `io_poll` says writable when this many fit (0: a device period). */
-                uint32_t flags;        /**< 0 (none defined yet). */
+                uint32_t wake_frames;  /**< `io_poll` says writable when this many fit (0: a device period).
+                                            With `BMDS_AUDIO_REALTIME`: the period asked for (0: the
+                                            device's), read back as the device's. */
+                uint32_t flags;        /**< `BMDS_AUDIO_REALTIME`, `BMDS_AUDIO_EXCLUSIVE`, or 0. */
 } bmds_audio_config_t;
+
+/**
+ * @brief `bmds_audio_config_t::flags` (appended 2026-10-08, `devplan/audio.md` §20). A
+ *        real-time client's thread makes each period as the device asks (`audio_cycle`); its
+ *        configuration is `BMDS_AUDIO_F32LE`, 1 or 2 channels, `ring_frames` and `start_frames`
+ *        0, `rate` 0 (the device's) unless exclusive, and the period in `wake_frames`
+ *        (`BMDS_AUDIO_MIN_PERIOD` to `BMDS_AUDIO_MAX_PERIOD`, or 0). The device runs at the
+ *        shortest period its clients ask for.
+ *
+ *        Exclusive mode: no mixing and no limiter, only the client's samples, clamped; any
+ *        `rate` the device takes (0: its setting's). Refused (`BMDS_EBUSY`) while another
+ *        program has the device open; while it lasts, opens of the device fail with `BMDS_EBUSY`
+ *        and system sounds are dropped. The device's volume still applies.
+ */
+#define BMDS_AUDIO_REALTIME 0x1u  /**< A real-time client: played through `audio_cycle`, not `write`. */
+#define BMDS_AUDIO_EXCLUSIVE 0x2u /**< With `BMDS_AUDIO_REALTIME`: it owns the device. */
+
+/** @brief A real-time client's period bounds, in frames (`bmds_audio_config_t::wake_frames`). */
+#define BMDS_AUDIO_MIN_PERIOD 16u  /**< The shortest. */
+#define BMDS_AUDIO_MAX_PERIOD 480u /**< The longest. */
 
 /** @brief `bmds_audio_status_t::state`. */
 #define BMDS_AUDIO_IDLE 0u     /**< Nothing queued, not playing (just opened, drained or dropped). */
@@ -426,6 +449,26 @@ typedef struct bmds_audio_status_t {
                 uint32_t late_periods;   /**< The device's periods mixed too late (silence) since it started. */
                 uint32_t limited_frames; /**< The device's frames its limiter reduced since it started. */
 } bmds_audio_status_t;
+
+/**
+ * @brief A period for a real-time client to make (`audio_cycle`). Its output is the kernel's
+ *        memory: valid until the thread's next `audio_cycle` on the fd, or the fd's close.
+ */
+typedef struct bmds_audio_cycle_t {
+                uint32_t     size;        /**< Set by the caller: `sizeof(bmds_audio_cycle_t)`. */
+                uint32_t     frames;      /**< The period's frames (the device's period). */
+                uint32_t     channels;    /**< As configured: `out` holds `frames` × `channels` floats. */
+                uint32_t     rate;        /**< The device's rate. */
+                float       *out;         /**< Where to write the period, interleaved, full scale +-1.0. */
+                const float *in;          /**< The input's period (capture, later): NULL. */
+                uint64_t     position;    /**< The device's frame count at `out[0]` since it started. */
+                int64_t      deadline_ns; /**< `BMDS_CLOCK_MONOTONIC` by which to call `audio_cycle` again. */
+                int64_t      play_ns;     /**< When `out[0]` leaves the device (the codec's filters follow). */
+                uint32_t     skipped;     /**< Periods skipped since the last call (it was that late). */
+                uint32_t     late;        /**< Periods not ended by their deadline, in all (silence instead). */
+                uint32_t     throttled;   /**< Times its thread was put back to its priority, in all. */
+                uint32_t     flags;       /**< 0. */
+} bmds_audio_cycle_t;
 
 /** @brief `audio_control` ops. */
 #define BMDS_AUDIO_START 1u  /**< Plays now, without waiting for `start_frames`. */
@@ -650,6 +693,7 @@ typedef int32_t (*bmds_sys_audio_decode_fn)(int32_t fd, const bmds_decode_config
 typedef int32_t (*bmds_sys_audio_decode_info_fn)(int32_t fd, bmds_decode_info_t *info);
 typedef int32_t (*bmds_sys_audio_decode_tag_fn)(int32_t fd, uint32_t index, char *key, uint32_t key_size, char *value,
                                                 uint32_t value_size);
+typedef int32_t (*bmds_sys_audio_cycle_fn)(int32_t fd, bmds_audio_cycle_t *cycle);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -1364,6 +1408,23 @@ static inline int32_t bmds_audio_decode_tag(int32_t fd, uint32_t index, char *ke
                                             uint32_t value_size) {
         return ((bmds_sys_audio_decode_tag_fn)bmds_sys->slot[BMDS_SYS_AUDIO_DECODE_TAG])(fd, index, key, key_size,
                                                                                          value, value_size);
+}
+
+/**
+ * @brief A real-time client's thread (audio fd @p fd configured `BMDS_AUDIO_REALTIME`): ends
+ *        the period it was given, then waits for the next and fills @p cycle (its `size` set)
+ *        in; with @p cycle NULL it only ends the period. From its first period the thread runs
+ *        at the real-time priority, under the device's own task; one that stays out of
+ *        `audio_cycle` for 4 periods is put back to its priority until it calls again. A period
+ *        not ended by its `deadline_ns` (a period after it was given) plays silence; a sample
+ *        written is heard about two periods after the call returned.
+ *        (Slot 74, appended 2026-10-08: check `bmds_sys_has(BMDS_SYS_AUDIO_CYCLE)`.)
+ * @return 0, or `-BMDS_EINTR` (a signal: the period is late), `-BMDS_EPIPE` (the device stopped
+ *         it, `audio stop`: the next call joins again), `-BMDS_EINVAL` (not real-time; `size`),
+ *         `-BMDS_ENOTTY`, `-BMDS_EBADF`, `-BMDS_EBUSY` (exclusive mode taken, rejoining).
+ */
+static inline int32_t bmds_audio_cycle(int32_t fd, bmds_audio_cycle_t *cycle) {
+        return ((bmds_sys_audio_cycle_fn)bmds_sys->slot[BMDS_SYS_AUDIO_CYCLE])(fd, cycle);
 }
 
 #ifdef __cplusplus

@@ -318,4 +318,154 @@ void PcmStream::describe(char *out, size_t size) const {
         return;
 }
 
+// ---- RtStream
+
+RtStream::~RtStream() {
+        close();
+}
+
+Error RtStream::open(uint8_t channels, uint32_t periodFrames, MemSpace space) {
+        if (channels < 1 || channels > 2 || periodFrames > MaxFrames) return Error::Invalid;
+        close();
+        const size_t bytes = MaxFrames * channels * sizeof(float);
+        _out = static_cast<float *>(Memory::alloc(space, bytes));
+        if (_out == nullptr) return Error::NoMem;
+        std::memset(_out, 0, bytes);
+        _space = space;
+        _channels = channels;
+        _periodFrames = periodFrames;
+        reset();
+        return Error::Ok;
+}
+
+void RtStream::close() {
+        Memory::free(_out);
+        _out = nullptr;
+        return;
+}
+
+void RtStream::reset() {
+        _offer.store(Offer{});
+        _offered.store(0, std::memory_order_relaxed);
+        _given.store(0, std::memory_order_relaxed);
+        _ended.store(0, std::memory_order_relaxed);
+        _cancelled.store(false, std::memory_order_relaxed);
+        while (_ready.tryAcquire().isOk()) {}
+        return;
+}
+
+Error RtStream::cycle(Period *next, Interrupt *interrupt) {
+        // The period it had is ended: the engine, waiting for it, looks again.
+        const uint64_t given = _given.load(std::memory_order_relaxed);
+        if (given != 0 && _ended.load(std::memory_order_relaxed) != given) {
+                _ended.store(given, std::memory_order_release);
+                if (_engineWake != nullptr) _engineWake->release();
+        }
+        if (next == nullptr) return Error::Ok;
+        // Told by an offer, and by the device when it drops the stream (a stop).
+        WaitList::Entry entry(waiters(), _ready);
+        if (!entry.isAdded()) return Error::Busy;
+        _inCycle.store(true, std::memory_order_release);
+        const Deadline forever(WaitForever);
+        Offer          o;
+        Error          err = Error::Ok;
+        for (;;) {
+                if (_cancelled.load(std::memory_order_acquire) || isDropped()) {
+                        err = Error::BrokenPipe;
+                        break;
+                }
+                o = _offer.load();
+                if (o.number > given) break;
+                err = Interrupt::wait(interrupt, _ready, forever);
+                if (err.isError()) break;
+        }
+        if (err.isOk()) {
+                const uint64_t skipped = given != 0 ? o.number - given - 1 : 0;
+                if (skipped != 0) _skipped.fetch_add(static_cast<uint32_t>(skipped), std::memory_order_relaxed);
+                _given.store(o.number, std::memory_order_release);
+                next->out = _out;
+                next->in = nullptr;
+                next->frames = o.frames;
+                next->channels = _channels;
+                next->rateHz = _rateHz.load(std::memory_order_relaxed);
+                next->position = o.position;
+                next->deadlineNs = o.deadlineNs;
+                next->playNs = o.playNs;
+                next->skipped = static_cast<uint32_t>(skipped);
+                next->late = latePeriods();
+                next->throttled = throttles();
+        }
+        _inCycle.store(false, std::memory_order_release);
+        return err;
+}
+
+void RtStream::offer(uint64_t position, uint32_t frames, int64_t deadlineNs, int64_t playNs) {
+        const uint64_t n = _offered.load(std::memory_order_relaxed) + 1;
+        _offer.store(Offer{n, position, deadlineNs, playNs, frames, 0});
+        _offered.store(n, std::memory_order_release);
+        _ready.release();
+        return;
+}
+
+bool RtStream::isDone() const {
+        if (_cancelled.load(std::memory_order_acquire)) return true;
+        if (_given.load(std::memory_order_acquire) == 0) return true; // not cycling yet
+        return _ended.load(std::memory_order_acquire) == _offered.load(std::memory_order_relaxed);
+}
+
+bool RtStream::isStalled(uint32_t periods) const {
+        const uint64_t given = _given.load(std::memory_order_acquire);
+        return given != 0 && !_inCycle.load(std::memory_order_acquire) &&
+               _offered.load(std::memory_order_relaxed) - given >= periods;
+}
+
+void RtStream::cancel() {
+        _cancelled.store(true, std::memory_order_release);
+        _ready.release(); // a client waiting for a period
+        waiters().notify();
+        return;
+}
+
+Error RtStream::prepare(uint32_t deviceRate, size_t maxFrames) {
+        if (maxFrames > MaxFrames || _out == nullptr) return Error::Invalid;
+        _rateHz.store(deviceRate, std::memory_order_relaxed);
+        return Error::Ok;
+}
+
+bool RtStream::render(float *mix, size_t frames, float *) {
+        if (_cancelled.load(std::memory_order_acquire)) return false;
+        if (_given.load(std::memory_order_acquire) == 0) return true; // not cycling yet: not late
+        const uint64_t n = _offered.load(std::memory_order_relaxed);
+        if (_ended.load(std::memory_order_acquire) != n) {
+                _late.fetch_add(1, std::memory_order_relaxed);
+                return true;
+        }
+        const float g = gain();
+        if (_channels == 2) {
+                for (size_t i = 0; i < 2 * frames; ++i) mix[i] += g * _out[i];
+        } else {
+                for (size_t i = 0; i < frames; ++i) {
+                        const float v = g * _out[i];
+                        mix[2 * i] += v;
+                        mix[2 * i + 1] += v;
+                }
+        }
+        _done.fetch_add(1, std::memory_order_relaxed);
+        _doneFrames.fetch_add(frames, std::memory_order_relaxed);
+        const int64_t now = Clock::monotonicNs();
+        _position.update([frames, now](PcmStream::Position &p) {
+                p.frames += frames;
+                p.ns = now;
+        });
+        return true;
+}
+
+void RtStream::describe(char *out, size_t size) const {
+        std::snprintf(out, size, "real-time, %u ch, %lu Hz, %llu periods, %lu late, %lu skipped, %lu throttled",
+                      static_cast<unsigned>(_channels), static_cast<unsigned long>(_rateHz.load()),
+                      static_cast<unsigned long long>(donePeriods()), static_cast<unsigned long>(latePeriods()),
+                      static_cast<unsigned long>(skippedPeriods()), static_cast<unsigned long>(throttles()));
+        return;
+}
+
 BMDS_NAMESPACE_END

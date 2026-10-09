@@ -6,7 +6,7 @@ domain, or MIT, as one chooses).
 
 - **Version:** 1.22, commit `1ee679ca2ef753a528db5ba6801e1067b40481b8`. `stb_vorbis.c` as
   released: sha256 `4c7cb2ff1f7011e9d67950446b7eb9ca044f2e464d76bfbb0b84dd2e23e65636`.
-- **Changes:** three BMDS patches, in this order:
+- **Changes:** four BMDS patches, in this order:
   - `patches/bmds-io.diff`: `STB_VORBIS_IO` and `stb_vorbis_open_io()`, a stream read through a
     callback (a positional read) for a file that is neither in memory nor a `FILE *`. It keeps
     memory mode's semantics exactly (a failed read leaves the position; a skip may pass the
@@ -18,6 +18,9 @@ domain, or MIT, as one chooses).
     before they are allocated, and the list's length is only what was allocated. A damaged
     count made `vorbis_deinit()` free through a null list; a negative vendor length wrote before
     its buffer (found by the fuzzer).
+  - `patches/bmds-lookup1.diff`: `lookup1_values()` compares a codebook's powers as floating
+    point, without casting them to `int`: a large codebook's overflowed it, which is undefined
+    (found by the fuzzer).
 - **Built with:** `STB_VORBIS_IO`, `STB_VORBIS_NO_STDIO`, `STB_VORBIS_NO_PUSHDATA_API`
   (`components/bmds_audio/codecs.cmake`), at `-O2`, `-Wshadow` off for this file (its code
   shadows). All its memory comes from a buffer `vorbisdecoder.cpp` gives it (`stb_vorbis_alloc`),

@@ -93,6 +93,7 @@ _Static_assert(BMDS_SYS_AUDIO_CONTROL == 69, "ABI: slot AUDIO_CONTROL");
 _Static_assert(BMDS_SYS_SOUND_PLAY == 70, "ABI: slot SOUND_PLAY");
 _Static_assert(BMDS_SYS_AUDIO_DECODE == 71 && BMDS_SYS_AUDIO_DECODE_INFO == 72 && BMDS_SYS_AUDIO_DECODE_TAG == 73,
                "ABI: slots AUDIO_DECODE, _INFO, _TAG");
+_Static_assert(BMDS_SYS_AUDIO_CYCLE == 74, "ABI: slot AUDIO_CYCLE");
 _Static_assert(BMDS_SYSCONF_KEY_MAX == 63 && BMDS_SYSCONF_VALUE_MAX == 1024, "ABI: sysconf lengths");
 _Static_assert(BMDS_SYSCONF_TYPE_BOOL == 0 && BMDS_SYSCONF_TYPE_INT == 1 && BMDS_SYSCONF_TYPE_STRING == 2 &&
                        BMDS_SYSCONF_TYPE_COLOR == 3 && BMDS_SYSCONF_TYPE_ENUM == 4 && BMDS_SYSCONF_TYPE_PATH == 5 &&
@@ -277,6 +278,13 @@ _Static_assert(offsetof(bmds_decode_config_t, format) == 4, "ABI: decode_config.
 _Static_assert(offsetof(bmds_decode_config_t, flags) == 8, "ABI: decode_config.flags");
 _Static_assert(offsetof(bmds_decode_config_t, length) == 12, "ABI: decode_config.length");
 _Static_assert(offsetof(bmds_decode_config_t, data) == 16, "ABI: decode_config.data");
+_Static_assert(BMDS_AUDIO_REALTIME == 0x1 && BMDS_AUDIO_EXCLUSIVE == 0x2, "ABI: audio_config flags");
+_Static_assert(BMDS_AUDIO_MIN_PERIOD == 16 && BMDS_AUDIO_MAX_PERIOD == 480, "ABI: real-time periods");
+_Static_assert(offsetof(bmds_audio_cycle_t, size) == 0, "ABI: audio_cycle.size");
+_Static_assert(offsetof(bmds_audio_cycle_t, frames) == 4, "ABI: audio_cycle.frames");
+_Static_assert(offsetof(bmds_audio_cycle_t, channels) == 8, "ABI: audio_cycle.channels");
+_Static_assert(offsetof(bmds_audio_cycle_t, rate) == 12, "ABI: audio_cycle.rate");
+_Static_assert(offsetof(bmds_audio_cycle_t, out) == 16, "ABI: audio_cycle.out");
 
 #if UINTPTR_MAX == 0xffffffffu
 _Static_assert(offsetof(bmds_thread_t, size) == 0, "ABI: thread.size");
@@ -289,6 +297,15 @@ _Static_assert(offsetof(bmds_thread_t, clear) == 24, "ABI: thread.clear");
 _Static_assert(offsetof(bmds_thread_t, tid) == 28, "ABI: thread.tid");
 _Static_assert(sizeof(bmds_thread_t) == 32, "ABI: bmds_thread_t size");
 _Static_assert(sizeof(bmds_decode_config_t) == 20, "ABI: bmds_decode_config_t size");
+_Static_assert(offsetof(bmds_audio_cycle_t, in) == 20, "ABI: audio_cycle.in");
+_Static_assert(offsetof(bmds_audio_cycle_t, position) == 24, "ABI: audio_cycle.position");
+_Static_assert(offsetof(bmds_audio_cycle_t, deadline_ns) == 32, "ABI: audio_cycle.deadline_ns");
+_Static_assert(offsetof(bmds_audio_cycle_t, play_ns) == 40, "ABI: audio_cycle.play_ns");
+_Static_assert(offsetof(bmds_audio_cycle_t, skipped) == 48, "ABI: audio_cycle.skipped");
+_Static_assert(offsetof(bmds_audio_cycle_t, late) == 52, "ABI: audio_cycle.late");
+_Static_assert(offsetof(bmds_audio_cycle_t, throttled) == 56, "ABI: audio_cycle.throttled");
+_Static_assert(offsetof(bmds_audio_cycle_t, flags) == 60, "ABI: audio_cycle.flags");
+_Static_assert(sizeof(bmds_audio_cycle_t) == 64, "ABI: bmds_audio_cycle_t size");
 #endif
 
 _Static_assert(offsetof(bmds_sys_t, magic) == 0, "ABI: bmds_sys_t.magic");

@@ -55,6 +55,8 @@ namespace {
                               bmds::SystemSoundCount == BMDS_SOUND_NOTIFY + 1,
                       "the ABI's sounds are SystemSound's");
         static_assert(BMDS_AUDIO_GAIN_MUTED == AudioFile::MutedCentiDb, "the ABI's silent gain");
+        static_assert(BMDS_AUDIO_REALTIME == AudioFile::Realtime && BMDS_AUDIO_EXCLUSIVE == AudioFile::Exclusive,
+                      "the ABI's flags are AudioFile's");
         static_assert(BMDS_CODEC_WAV == static_cast<uint32_t>(Codec::Wav) &&
                               BMDS_CODEC_MP3 == static_cast<uint32_t>(Codec::Mp3) &&
                               BMDS_CODEC_VORBIS == static_cast<uint32_t>(Codec::Vorbis) &&
@@ -122,7 +124,9 @@ int32_t bmds_k_audio_config(int32_t fd, const bmds_audio_config_t *set, bmds_aud
                 bmds_audio_config_t c;
                 r = copyIn(set, c);
                 if (r < 0) return r;
-                if (c.flags != 0 || c.format >= bmds::SampleFormats::Count || c.channels > 255) return -BMDS_EINVAL;
+                if ((c.flags & ~(BMDS_AUDIO_REALTIME | BMDS_AUDIO_EXCLUSIVE)) != 0 ||
+                    c.format >= bmds::SampleFormats::Count || c.channels > 255)
+                        return -BMDS_EINVAL;
                 AudioFile::Config k;
                 k.format = static_cast<SampleFormat>(c.format);
                 k.channels = static_cast<uint8_t>(c.channels);
@@ -130,6 +134,7 @@ int32_t bmds_k_audio_config(int32_t fd, const bmds_audio_config_t *set, bmds_aud
                 k.ringFrames = c.ring_frames;
                 k.startFrames = c.start_frames;
                 k.wakeFrames = c.wake_frames;
+                k.flags = c.flags;
                 r = Process::errnoFor(file->configure(k));
                 if (r < 0) return r;
         }
@@ -142,7 +147,36 @@ int32_t bmds_k_audio_config(int32_t fd, const bmds_audio_config_t *set, bmds_aud
         c.ring_frames = k.ringFrames;
         c.start_frames = k.startFrames;
         c.wake_frames = k.wakeFrames;
+        c.flags = k.flags;
         return copyOut(c, got);
+}
+
+int32_t bmds_k_audio_cycle(int32_t fd, bmds_audio_cycle_t *cycle) {
+        KernelCall            call;
+        bmds::FileHandle::Ptr handle = call->handle(fd);
+        AudioFile            *file = nullptr;
+        int32_t               r = audioFileOf(handle, file);
+        if (r < 0) return r;
+        if (cycle != nullptr && cycle->size < sizeof(uint32_t)) return -BMDS_EINVAL;
+        // Raised from its first period: the device must forget it before its task is deleted.
+        if (cycle != nullptr) bmds::ProgramThread::self().realtime = true;
+        bmds::RtStream::Period p;
+        const Error            err = file->cycle(cycle != nullptr ? &p : nullptr);
+        if (err.isError()) return Process::errnoFor(err);
+        if (cycle == nullptr) return 0;
+        bmds_audio_cycle_t c = {};
+        c.frames = p.frames;
+        c.channels = p.channels;
+        c.rate = p.rateHz;
+        c.out = p.out;
+        c.in = p.in;
+        c.position = p.position;
+        c.deadline_ns = p.deadlineNs;
+        c.play_ns = p.playNs;
+        c.skipped = p.skipped;
+        c.late = p.late;
+        c.throttled = p.throttled;
+        return copyOut(c, cycle);
 }
 
 int32_t bmds_k_audio_status(int32_t fd, bmds_audio_status_t *status) {

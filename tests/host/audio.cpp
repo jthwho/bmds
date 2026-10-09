@@ -7,7 +7,8 @@
  *
  * Audio's portable parts (devplan/audio.md §16): controls' text, the ES8311
  * clock plan against the user guide's table, its volume mapping, and the
- * test tone's frequency and fades.
+ * test tone's frequency and fades; the streams (§17), and a real-time
+ * client's periods (§20).
  */
 
 #include <doctest.h>
@@ -17,11 +18,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 #include <bmds/audiocontrol.h>
 #include <bmds/audiomix.h>
 #include <bmds/audiostream.h>
 #include <bmds/es8311regs.h>
+#include <bmds/interrupt.h>
 #include <bmds/memspace.h>
 #include <bmds/resampler.h>
 #include <bmds/sampleformat.h>
@@ -34,6 +37,7 @@ using bmds::ByteSpan;
 using bmds::Error;
 using bmds::PcmStream;
 using bmds::Resampler;
+using bmds::RtStream;
 using bmds::SampleFormat;
 using bmds::SineTone;
 using bmds::SystemSound;
@@ -651,6 +655,121 @@ TEST_CASE("PcmStream: resampled to the device's rate, and played out at the end"
         const SineFit fit = fitSine(out, 1000.0 / 48000, 400, 4400);
         CHECK(std::fabs(fit.amplitude - 0.5) < 0.005);
         CHECK(fit.restDb < -70);
+}
+
+TEST_CASE("RtStream: periods offered, made and mixed; late, skipped and stalled clients") {
+        constexpr size_t Period = 240;
+        RtStream         rt;
+        CHECK(rt.open(0, 0, bmds::MemSpace::Psram) == Error::Invalid);
+        CHECK(rt.open(3, 0, bmds::MemSpace::Psram) == Error::Invalid);
+        CHECK(rt.open(2, RtStream::MaxFrames + 1, bmds::MemSpace::Psram) == Error::Invalid);
+        REQUIRE(rt.open(2, 64, bmds::MemSpace::Psram).isOk());
+        CHECK(rt.periodFrames() == 64);
+        CHECK(rt.prepare(48000, RtStream::MaxFrames + 1) == Error::Invalid);
+        REQUIRE(rt.prepare(48000, Period).isOk());
+        bmds::Semaphore engine(1, 0);
+        rt.setEngineWake(&engine);
+        std::vector<float> mix(2 * Period, 0.0f);
+        std::vector<float> scratch(2 * Period);
+        // Before the client's first cycle: nothing to wait for, nothing mixed, nothing late.
+        rt.offer(0, Period, 1000, 2000);
+        CHECK(rt.isDone());
+        CHECK(rt.render(mix.data(), Period, scratch.data()));
+        CHECK(rt.latePeriods() == 0);
+        CHECK(std::all_of(mix.begin(), mix.end(), [](float v) { return v == 0.0f; }));
+        // Offered: the cycle returns at once with the newest period (the first was before it came).
+        rt.offer(Period, Period, 3000, 4000);
+        RtStream::Period p;
+        REQUIRE(rt.cycle(&p, nullptr).isOk());
+        CHECK(p.frames == Period);
+        CHECK(p.channels == 2);
+        CHECK(p.rateHz == 48000);
+        CHECK(p.position == Period);
+        CHECK(p.deadlineNs == 3000);
+        CHECK(p.playNs == 4000);
+        CHECK(p.skipped == 0);
+        REQUIRE(p.out != nullptr);
+        CHECK(p.in == nullptr);
+        CHECK_FALSE(rt.isDone());
+        for (size_t i = 0; i < 2 * Period; ++i) p.out[i] = static_cast<float>(i) / 1024.0f;
+        // Ended (the engine's wake released), then mixed with the gain.
+        CHECK(engine.tryAcquire().isError());
+        REQUIRE(rt.cycle(nullptr, nullptr).isOk());
+        CHECK(engine.tryAcquire().isOk());
+        CHECK(rt.isDone());
+        rt.setGain(0.5f);
+        CHECK(rt.render(mix.data(), Period, scratch.data()));
+        int wrong = 0;
+        for (size_t i = 0; i < 2 * Period; ++i) wrong += mix[i] != 0.5f * static_cast<float>(i) / 1024.0f;
+        CHECK(wrong == 0);
+        CHECK(rt.donePeriods() == 1);
+        CHECK(rt.doneFrames() == Period);
+        CHECK(rt.position().frames == Period);
+        // Not ended by the deadline: late, nothing mixed.
+        rt.offer(2 * Period, Period, 5000, 6000);
+        CHECK_FALSE(rt.isDone());
+        std::fill(mix.begin(), mix.end(), 0.0f);
+        CHECK(rt.render(mix.data(), Period, scratch.data()));
+        CHECK(rt.latePeriods() == 1);
+        CHECK(std::all_of(mix.begin(), mix.end(), [](float v) { return v == 0.0f; }));
+        // Out of its cycle: stalled once enough periods have passed since it was last given one.
+        CHECK(rt.isStalled(1));
+        CHECK_FALSE(rt.isStalled(2));
+        rt.offer(3 * Period, Period, 7000, 8000);
+        rt.offer(4 * Period, Period, 9000, 10000);
+        CHECK(rt.isStalled(3));
+        // Behind: the newest period, told how many it skipped.
+        REQUIRE(rt.cycle(&p, nullptr).isOk());
+        CHECK(p.position == 4 * Period);
+        CHECK(p.skipped == 2);
+        CHECK(p.late == 1);
+        CHECK(rt.skippedPeriods() == 2);
+        CHECK_FALSE(rt.isStalled(1));
+        rt.noteThrottled();
+        CHECK(rt.throttles() == 1);
+        rt.close();
+}
+
+TEST_CASE("RtStream: a waiting client wakes for a period, an interrupt, a cancel; mono to both") {
+        RtStream rt;
+        REQUIRE(rt.open(1, 0, bmds::MemSpace::Psram).isOk());
+        REQUIRE(rt.prepare(48000, 48).isOk());
+        // A raised interrupt ends the wait.
+        bmds::Interrupt intr;
+        intr.raise();
+        RtStream::Period p;
+        CHECK(rt.cycle(&p, &intr) == Error::Interrupted);
+        intr.clear();
+        // A client blocked in its cycle wakes when the engine offers.
+        RtStream::Period got;
+        Error            result = Error::Invalid;
+        std::thread      client([&] { result = rt.cycle(&got, &intr); });
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        rt.offer(480, 48, 1, 2);
+        client.join();
+        REQUIRE(result.isOk());
+        CHECK(got.position == 480);
+        CHECK(got.channels == 1);
+        for (uint32_t i = 0; i < 48; ++i) got.out[i] = 0.25f;
+        REQUIRE(rt.cycle(nullptr, nullptr).isOk());
+        std::vector<float> mix(96, 0.0f);
+        std::vector<float> scratch(96);
+        CHECK(rt.render(mix.data(), 48, scratch.data()));
+        CHECK(std::all_of(mix.begin(), mix.end(), [](float v) { return v == 0.25f; }));
+        // A cancel wakes it too, and it is over.
+        std::thread canceller([&] {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                rt.cancel();
+        });
+        CHECK(rt.cycle(&p, &intr) == Error::BrokenPipe);
+        canceller.join();
+        CHECK(rt.isDone());
+        CHECK_FALSE(rt.render(mix.data(), 48, scratch.data()));
+        // Reset for another attach: numbering starts again.
+        rt.reset();
+        rt.offer(0, 48, 1, 2);
+        REQUIRE(rt.cycle(&p, nullptr).isOk());
+        CHECK(p.skipped == 0);
 }
 
 TEST_CASE("ToneStream: a tone and a sound, made at the device's rate; cancelling fades") {

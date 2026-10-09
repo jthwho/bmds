@@ -135,7 +135,8 @@ Plan: [`input.md`](input.md).
   - [x] 3. ABI: native audio fds, `/dev/dsp*`, OSS ioctls in `linux.c`, `play` (WAV).
   - [x] 4. Decoders (MP3, Ogg Vorbis, FLAC) in the firmware via the SDK; Open from the browser
     (§19: minimp3, stb_vorbis, dr_flac; a decoder is an fd, slots 71–73; fuzzed).
-  - [ ] 5. Real-time clients and exclusive mode.
+  - [x] 5. Real-time clients and exclusive mode (§20: slot 74 `audio_cycle`, JACK's model, down to
+    16-frame periods; the `keytone` example).
   - [ ] 6. MIDI: ports, routing, virtual ports; USB and serial MIDI.
   - [ ] 7. Synth: General MIDI player and synth library.
   - [ ] 8. Capture and `record` (after the loopback cable), then the pedal work.

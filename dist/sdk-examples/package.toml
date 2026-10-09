@@ -1,0 +1,7 @@
+# The SDK's audio examples (sdk/examples): tone, player and keytone, built from this repository.
+name = "sdk-examples"
+version = "1"
+description = "SDK examples: tone (a sine), player (a sound file), keytone (a real-time keyboard synth)"
+license = "MIT"
+source_tree = "sdk/examples"
+license_files = ["../../LICENSE"]

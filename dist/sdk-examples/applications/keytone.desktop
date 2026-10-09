@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Key Tone
+Comment=Play the keyboard as a piano octave through a real-time audio client
+Exec=keytone
+Icon=multimedia-player
+Terminal=true
+Categories=AudioVideo;Audio;

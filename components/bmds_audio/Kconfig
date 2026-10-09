@@ -9,6 +9,15 @@ menu "BMDS audio"
             meet a deadline of two periods, so it runs above everything but the display's
             restart task.
 
+    config BMDS_AUDIO_CLIENT_PRIORITY
+        int "Real-time audio client priority"
+        default 19
+        range 1 24
+        help
+            A program's thread while it cycles a real-time audio fd (devplan/audio.md §20): under
+            the device's task, above the rest. One that stays out of its cycle for 4 periods is
+            put back to its own priority until it cycles again.
+
     # The I2S interrupt must run while the flash is written (/boot): with the cache off
     # it still clears finished buffers, so a gap plays silence, not stale audio
     # (devplan/audio.md §16).

@@ -1263,6 +1263,7 @@ gets them through the SDK, `play` plays them, and the file browser's Open starts
   - stb_vorbis freed a comment list through a null pointer after a damaged count, and could
     write before its vendor string's buffer;
   - dr_flac's seek estimate divided by 0 and made the NaN an integer.
+  - stb_vorbis cast a large codebook's powers to `int`, past its range.
 - **Measured on the board:**
   - **`progtest decode`** passes. It covers:
     - each call's errors;
@@ -1309,3 +1310,185 @@ gets them through the SDK, `play` plays them, and the file browser's Open starts
     - Vorbis 128 KB or more (195,552 bytes for the 30 s clip, so 256 KB);
     - FLAC 41 KB for the 30 s clip;
     - each with 4 KB of cache, and 4 KB of tags when it has any.
+
+## 20. Step 5: real-time clients and exclusive mode (design, 2026-10-08)
+
+The low-latency path of §6.3, output only (input comes with capture, step 8; the call carries an
+input buffer from the start so a pedal's code needs no change then). A program's own thread makes
+each period's audio as the engine asks for it, with no ring between them.
+
+### How a period goes (JACK's model)
+
+At each DMA end-of-frame, the engine's task:
+1. **wakes each real-time client** with the period it is to make: its output buffer, the frame
+   position and the deadline;
+2. **mixes the shared streams** meanwhile (rings, tones, sounds): on the other core when the
+   client's thread is running, so the two overlap;
+3. **waits for each client's `done`,** up to the deadline: the next end-of-frame, a period after
+   the one that woke it. The interrupt already wakes the engine then, so no timer is needed (the
+   tick is 1 ms, too coarse), and the buffer still has a period to spare before it plays;
+4. **adds the clients' buffers,** then the limiter and the slots, as now.
+
+- **Latency:** the buffer filled at an end-of-frame plays `DmaBuffers - 1` periods later, so a
+  sample made in the wake is heard 2 periods later (plus the codec's filters). Against a ring,
+  this saves the ring's depth and the period of slack a writer needs. At 48 frames that is
+  2 ms; at 16 frames, 0.67 ms.
+- **A missed deadline:** the client's period is counted late (its counter and the device's), and
+  it adds nothing that period. A client that is more than a period behind skips to the newest
+  period when it next asks, told how many it skipped.
+- **Why not a period ahead** (the client makes period N+1 while the engine mixes N, so the engine
+  never waits): one more period of latency, which a pedal can't spare. The engine waits at most
+  its deadline, so a stuck program costs other streams nothing but its own silence.
+
+### The client's thread
+
+- **Its priority:** a thread that cycles a real-time fd runs at `CONFIG_BMDS_AUDIO_CLIENT_PRIORITY`
+  (19: under the engine's 20, above BMDS's other tasks but the display's scanout), from its first
+  cycle until the fd closes. No general priority call is added for it.
+- **Throttling:** a client that hasn't come back for a period in 4 periods is put back to its
+  own priority (counted as `throttled`), so a real-time thread stuck in a loop can't starve the
+  tasks pinned to its core. Its next cycle raises it again.
+- **Changing another task's priority safely:** the engine (throttling) and a close on another
+  thread change the client thread's priority, which is only safe while its task exists. Each
+  device lists its raised threads under a lock (the engine only tries it); the loader's `reap()`
+  calls `AudioDevice::forgetTask()` before it deletes a task that ever cycled, so a listed task
+  always exists. (IDF's FreeRTOS can't move a task to another core after it is made, so pinning
+  the client wasn't an option.)
+- **Code from PSRAM:** programs run through the caches (`docs/ABI.md`); a client whose loop
+  misses the cache each period is slower than its cycles suggest. The demo measures it.
+
+### Exclusive mode
+
+- **One client owns the device:** no mixer and no limiter, only the conversion to the slots
+  (clamped). The client sets the device's rate (44.1 kHz bit-perfect: 16 and 24-bit samples are
+  exact in float) and its period. Its gain is 1 unless set.
+- **A mono codec** (the ES8311) still gets (L + R) / 2; a 1-channel client is bit-perfect.
+- **Device volume** stays the codec's (the settings), applied in the DAC.
+- **What else is playing:** refused while other programs have the device open (the decisions
+  below); tones and sounds already playing fade out.
+
+### Periods
+
+- **The device's period follows the smallest client's,** as `hold()` sets the rate: an override,
+  not a setting. When the client closes, the setting's period comes back. Both restart the
+  device (a short gap for the shared streams, as a setting's change does now).
+- **Below 48 frames:** clients may ask down to `MinClientPeriodFrames`, chosen on the board by
+  the measurements below (the interrupt, the wakes and the conversion each period). 16 is the
+  aim. The setting's own range (48–480) is unchanged.
+- **The DMA buffers** stay 3. Two, for exclusive mode, would take a period off the latency and
+  leave the fill one period; measured before it is offered.
+
+### The ABI (appended)
+
+- **`bmds_audio_config_t`** keeps its size: the period asked for is `wake_frames` (for a ring,
+  the free space that wakes a writer; for a real-time client, the frames that wake it), 0 for
+  the device's, read back as the device's. Two flags:
+  - `BMDS_AUDIO_REALTIME` 0x1: the fd is a real-time client (format `F32LE`, the device's rate
+    unless exclusive: rate 0 asks for it; 1 or 2 channels, interleaved);
+  - `BMDS_AUDIO_EXCLUSIVE` 0x2: with `REALTIME`, it owns the device.
+- **Slot 74: `int32_t audio_cycle(int32_t fd, bmds_audio_cycle_t *cycle)`.** Ends the period the
+  thread was given (if any) and waits for the next. With `cycle` NULL, it only ends the period.
+  `bmds_audio_cycle_t`:
+  - `size`;
+  - `out`: `float *`, `frames` × `channels` (kernel memory, internal RAM, valid until the
+    thread's next call or the fd's close);
+  - `in`: `const float *`, NULL until capture;
+  - `frames`, `channels`, `rate`;
+  - `position`: the device's frame count at `out[0]` (64-bit);
+  - `deadline_ns`: `BMDS_CLOCK_MONOTONIC` by which to end it;
+  - `play_ns`: when `out[0]` leaves the DMA (for a latency figure);
+  - `skipped`: periods skipped since the last call; `late`, `throttled`: totals;
+  - `flags`: 0.
+  - Errors: `EINTR` (a signal; the period is late), `EPIPE` (the device dropped the stream, as
+    `audio stop` does: the next call joins again), `EINVAL` (not a real-time fd), `ENOTTY`,
+    `EBADF`, `EBUSY` (rejoining while another client owns the device).
+- **On a real-time fd** `write()` fails with `EINVAL`; `audio_status` works (its `state`
+  `PLAYING`, `late_periods` the client's own).
+- **`EBUSY`:** asking for exclusive mode while it isn't free (below); a second exclusive client.
+
+### The demo: `keytone` (SDK example)
+
+- **In a terminal,** through the public ABI only, as a third party's program would be. Programs
+  have no GUI API yet, and a terminal gives key presses but no releases: each note is struck and
+  decays (a plucked or bell-like envelope), 8 voices.
+- **Keys:** two rows as a piano octave (`a s d f g h j k` white, `w e t y u` black), `z`/`x` an
+  octave down and up, `1`–`4` the waveform (sine, triangle, saw, square; the saw and square
+  band-limited by PolyBLEP), `q` quits.
+- **Options:** `-p FRAMES` (the period), `-x` (exclusive), `-r RATE` (with `-x`).
+- **On screen, each second:** the period and the latency it implies (2 periods, from `play_ns`
+  against the wake), the cycle's time (average and longest), late and skipped periods,
+  throttles.
+- **The key-to-sound time** can't be measured until capture (step 8's loopback). What it shows
+  is the program's part: from reading a key to its note's first sample leaving the DMA.
+
+### Measurements (recorded in as-built)
+
+- each period from 240 down to the smallest without late periods: the engine's time per period
+  (wake, mix, wait, convert), the client's cycle time, interrupts a second;
+- the same with the desktop busy (window dragging, an SD copy, a `play` in shared mode);
+- the throttle: a client that spins, Ctrl+C still ending it;
+- exclusive mode at 44.1 kHz: the device's measured rate, and a 1-channel 24-bit stream checked
+  bit for bit at the slots (a host test of the conversion; the board's by reading the DMA
+  buffer back in a test mode).
+
+### Tests
+
+- **Host:** the cycle's bookkeeping (portable: the period handed out, done, late, skipped, the
+  throttle's clock) with a fake engine; the conversion's exactness for exclusive mode.
+- **Board:** `progtest rt` (flags and errors, `EBUSY`, the cycle's fields, a missed deadline
+  counted, a skipped period, close mid-period, a killed client); `keytone` by ear; the
+  measurements above.
+- **ABI lock:** slot 74, the struct's size and offsets, the new field's offset, the flags.
+
+### Decisions (the user, 2026-10-08)
+
+- **Exclusive mode and other streams:** refused (`EBUSY`) while other programs' streams are
+  open; new opens are refused while it lasts.
+- **System sounds during exclusive mode:** dropped, and counted.
+- **The demo:** `keytone`, a terminal program from the SDK.
+
+### As built (2026-10-08)
+
+- **Where it lives:**
+  - `RtStream` (`bmds_audio`, portable, beside `PcmStream`): the periods offered, given and
+    ended, the client's wait, and its output (480 frames of its channels, in internal RAM).
+  - `AudioDevice`: the offers, the wait, exclusive mode, the period override, and the list of
+    raised threads (`addRealtime()`, `raiseCaller()`, `forgetTask()`, the throttle);
+    `AudioFile` holds an `RtStream` when configured real-time, attached at once.
+  - Slot 74 in `bmds_loader/src/audiocalls.cpp`; `ProgramThread::realtime` marks a thread that
+    cycled, for `reap()`.
+- **Found on the board:** the engine ran its control work (settings, the idle stop, now the
+  throttle) only once no buffer was waiting. With a client stalled, every fill waits until the
+  next end-of-frame, so a buffer always was, and the throttle never came. The engine now runs it
+  after each period.
+- **`progtest rt`** passes. It covers:
+  - every flag, format, size and rate refused, `ENOTTY`, `EBADF`, and `EINVAL` before real-time;
+  - the configuration read back, the status, `write()` and `DRAIN` refused, the gain;
+  - 500 periods of 64 frames, each consecutive, with its deadline and play time ahead (at most
+    two periods), none late;
+  - a 20 ms stall: 15 late, 14 skipped, 1 throttle;
+  - `EBUSY` for exclusive mode with another fd open; exclusive at 44.1 kHz with opens refused
+    and a bell dropped, 100 periods none late;
+  - the device back at its settings' rate and period for a plain stream after.
+- **`keytone`** (48 kHz unless said; "made" is from the cycle's return to `play_ns`):
+
+| Period | Made to the DMA | Key to the DMA | Cycle, 2 to 8 voices (average / longest) | Late |
+|---|---|---|---|---|
+| 64 frames (1.33 ms) | 2.61 ms | 2.75 to 3.50 ms | 65 to 86 / 107 µs | 0 |
+| 32 frames (0.67 ms) | 1.29 ms | 1.76 ms | 52 to 67 / 74 µs | 0 |
+| 16 frames (0.33 ms) | 0.61 ms | 0.69 to 0.73 ms | 37 to 48 / 70 µs | 0 |
+| 32 frames, exclusive at 44.1 kHz | 1.41 ms | 1.52 ms | 53 to 68 / 80 µs | 0 |
+
+  - **Under load,** at 16 frames with an MP3 playing (resampled from 44.1 kHz) and a 15 MB copy
+    on the card: 1 late period, in the first second, as the device restarted at the client's
+    period with the MP3 playing; none after, and none for the device.
+  - **The engine's own time** at 64 frames: 45 µs a period (3.3 % of a core); at 32 frames,
+    25 µs (3.8 %).
+  - **Ctrl+C** ends it through its handler (status 0); `kill -9` of one in the background leaves
+    no stream.
+  - Not yet heard: the notes were struck from the serial console; the user listens by ear.
+- **Host:** `RtStream`'s periods (offered, given, ended, mixed with the gain; late, skipped,
+  stalled), a client waking for an offer, an interrupt and a cancel, mono into both channels.
+- **Size:** the image from 1,239,920 to 1,246,192 bytes; `bmds_audio`'s BSS 152 bytes more (the
+  list of raised threads, the counters). Per real-time fd: 1,920 or 3,840 bytes of internal RAM
+  (mono or stereo).
