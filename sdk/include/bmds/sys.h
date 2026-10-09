@@ -146,6 +146,9 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_AUDIO_DECODE_INFO 72u /**< `int32_t audio_decode_info(int32_t fd, bmds_decode_info_t *info)`. */
 #define BMDS_SYS_AUDIO_DECODE_TAG 73u  /**< `int32_t audio_decode_tag(fd, index, key, key_size, value, value_size)`. */
 #define BMDS_SYS_AUDIO_CYCLE 74u       /**< `int32_t audio_cycle(int32_t fd, bmds_audio_cycle_t *cycle)`. */
+#define BMDS_SYS_MIDI_CONFIG 75u  /**< `int32_t midi_config(int32_t fd, const bmds_midi_config_t *set, ... *got)`. */
+#define BMDS_SYS_MIDI_STATUS 76u  /**< `int32_t midi_status(int32_t fd, bmds_midi_status_t *status)`. */
+#define BMDS_SYS_MIDI_CONTROL 77u /**< `int32_t midi_control(int32_t fd, uint32_t op, int32_t value)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -426,7 +429,9 @@ typedef struct bmds_audio_config_t {
 
 /**
  * @brief An audio fd and its device now (`audio_status`). Frame counts are at the stream's rate.
- *        For A/V sync: a frame written now is heard `delay_frames` frames later.
+ *        For A/V sync: a frame written now is heard `delay_frames` frames later. Rates are
+ *        nominal: a device's clock may be steered to track another (AES67), so its real rate
+ *        differs by parts per million; for time, pair `played_frames` with `timestamp_ns`.
  */
 typedef struct bmds_audio_status_t {
                 uint32_t size;           /**< Set by the caller: `sizeof(bmds_audio_status_t)`. */
@@ -453,6 +458,8 @@ typedef struct bmds_audio_status_t {
 /**
  * @brief A period for a real-time client to make (`audio_cycle`). Its output is the kernel's
  *        memory: valid until the thread's next `audio_cycle` on the fd, or the fd's close.
+ *        `rate` is nominal (the device's clock may be steered); `position` with `play_ns` is
+ *        the device's real timeline.
  */
 typedef struct bmds_audio_cycle_t {
                 uint32_t     size;        /**< Set by the caller: `sizeof(bmds_audio_cycle_t)`. */
@@ -532,6 +539,78 @@ typedef struct bmds_decode_info_t {
                 uint32_t native_format; /**< The decoder's own format (`BMDS_DECODE_NATIVE` gives it). */
                 uint32_t frame_bytes;   /**< The bytes of a frame read. */
 } bmds_decode_info_t;
+
+/** @brief `bmds_midi_config_t::flags` (appended 2026-10-08, `devplan/audio.md` §21). */
+#define BMDS_MIDI_EVENTS 0x1u      /**< `read()` and `write()` move `bmds_midi_event_t` records, not bytes. */
+#define BMDS_MIDI_CREATE 0x2u      /**< On `/dev/midinew`: make a virtual port named `name`. */
+#define BMDS_MIDI_SOURCE 0x4u      /**< With `BMDS_MIDI_CREATE`: the port has a source (what the fd writes). */
+#define BMDS_MIDI_DESTINATION 0x8u /**< With `BMDS_MIDI_CREATE`: it has a destination (what the fd reads). */
+
+/** @brief The longest port name in bytes, with its NUL. */
+#define BMDS_MIDI_NAME_MAX 32u
+
+/**
+ * @brief How a MIDI fd reads and writes (`midi_config`). An fd of `/dev/midiN` reads the port's
+ *        source (what a keyboard plays) and writes to its destination; one of `/dev/midinew`
+ *        configured `BMDS_MIDI_CREATE` owns a new port, whose source is what the fd writes and
+ *        whose destination is what the fd reads.
+ */
+typedef struct bmds_midi_config_t {
+                uint32_t size;       /**< Set by the caller: `sizeof(bmds_midi_config_t)`. */
+                uint32_t flags;      /**< `BMDS_MIDI_*`. */
+                uint32_t event_size; /**< With `BMDS_MIDI_EVENTS`: `sizeof(bmds_midi_event_t)` (16 to 256). */
+                uint32_t port;       /**< Got: the port's number (`midiN`); 0xff before `BMDS_MIDI_CREATE`. */
+                char     name[BMDS_MIDI_NAME_MAX]; /**< `BMDS_MIDI_CREATE`: the new port's name; got: the port's. */
+} bmds_midi_config_t;
+
+/**
+ * @brief One MIDI message, or a piece of a SysEx (`BMDS_MIDI_EVENTS`). A message is whole, with
+ *        no running status; a SysEx comes in pieces in order, `F0` first in the first and `F7`
+ *        last in the last; a real-time byte (`F8`-`FF`) is an event of its own. Its time is when
+ *        it arrived: to place it in an audio period, pair it with `audio_cycle`'s `position`
+ *        and `play_ns`, never with a rate.
+ */
+typedef struct bmds_midi_event_t {
+                int64_t time_ns; /**< Read: `BMDS_CLOCK_MONOTONIC` when it arrived. Written: 0 (now; others reserved). */
+                uint8_t port;    /**< Read: the port whose source produced it (0xff: a write to this port's file). */
+                uint8_t length;  /**< The bytes in `data`, 1 to 5. */
+                uint8_t flags;   /**< 0. */
+                uint8_t data[5]; /**< The message. */
+} bmds_midi_event_t;
+
+/** @brief `bmds_midi_status_t::kind`. */
+#define BMDS_MIDI_USB 0u     /**< A USB MIDI device's cable. */
+#define BMDS_MIDI_SERIAL 1u  /**< A serial MIDI port. */
+#define BMDS_MIDI_VIRTUAL 2u /**< A program's (`BMDS_MIDI_CREATE`). */
+
+/** @brief `bmds_midi_status_t::flags`. */
+#define BMDS_MIDI_GONE 0x1u /**< The port went away (unplugged): reads end, writes fail with `EPIPE`. */
+
+/**
+ * @brief A MIDI fd's port and its counters (`midi_status`).
+ */
+typedef struct bmds_midi_status_t {
+                uint32_t size;                     /**< Set by the caller: `sizeof(bmds_midi_status_t)`. */
+                uint32_t port;                     /**< Its number (`midiN`); 0xff: `/dev/midinew` not created yet. */
+                uint32_t kind;                     /**< `BMDS_MIDI_USB`... */
+                uint32_t sides;                    /**< `BMDS_MIDI_SOURCE` and/or `BMDS_MIDI_DESTINATION`. */
+                uint32_t flags;                    /**< `BMDS_MIDI_GONE`. */
+                uint32_t dropped;                  /**< Events its destination had no room for. */
+                uint64_t events_in;                /**< Events from its source. */
+                uint64_t events_out;               /**< Events its destination took. */
+                uint32_t parse_errors;             /**< Bytes its writers' streams threw away, SysExes cut. */
+                uint32_t device_errors;            /**< Transfer, framing and overrun errors. */
+                int64_t  last_ns;                  /**< `BMDS_CLOCK_MONOTONIC` of its last event (0: none yet). */
+                uint64_t fd_events;                /**< Events this fd has read. */
+                uint32_t fd_dropped;               /**< Events this fd's ring had no room for (it read too slowly). */
+                uint32_t reserved;                 /**< 0. */
+                char     name[BMDS_MIDI_NAME_MAX]; /**< The port's name, NUL-terminated. */
+} bmds_midi_status_t;
+
+/** @brief `midi_control` ops. */
+#define BMDS_MIDI_CONNECT 1u    /**< Connects this fd's port's source to port `value`'s destination. */
+#define BMDS_MIDI_DISCONNECT 2u /**< Ends that connection. */
+#define BMDS_MIDI_FLUSH 3u      /**< Throws away what waits to be read. */
 
 /** @brief `bmds_stat_t::type`. */
 #define BMDS_TYPE_FILE 1u      /**< A regular file. */
@@ -694,6 +773,9 @@ typedef int32_t (*bmds_sys_audio_decode_info_fn)(int32_t fd, bmds_decode_info_t 
 typedef int32_t (*bmds_sys_audio_decode_tag_fn)(int32_t fd, uint32_t index, char *key, uint32_t key_size, char *value,
                                                 uint32_t value_size);
 typedef int32_t (*bmds_sys_audio_cycle_fn)(int32_t fd, bmds_audio_cycle_t *cycle);
+typedef int32_t (*bmds_sys_midi_config_fn)(int32_t fd, const bmds_midi_config_t *set, bmds_midi_config_t *got);
+typedef int32_t (*bmds_sys_midi_status_fn)(int32_t fd, bmds_midi_status_t *status);
+typedef int32_t (*bmds_sys_midi_control_fn)(int32_t fd, uint32_t op, int32_t value);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -1425,6 +1507,37 @@ static inline int32_t bmds_audio_decode_tag(int32_t fd, uint32_t index, char *ke
  */
 static inline int32_t bmds_audio_cycle(int32_t fd, bmds_audio_cycle_t *cycle) {
         return ((bmds_sys_audio_cycle_fn)bmds_sys->slot[BMDS_SYS_AUDIO_CYCLE])(fd, cycle);
+}
+
+/**
+ * @brief Configures MIDI fd @p fd (`/dev/midiN`, `/dev/midi`, `/dev/midinew`; its `size` set in
+ *        each struct) from @p set, unless NULL, and fills @p got, unless NULL, with the result.
+ *        Fds read bytes until configured `BMDS_MIDI_EVENTS`. `BMDS_MIDI_CREATE` makes a
+ *        virtual port, once, on `/dev/midinew` only; it ends with the fd.
+ *        (Slots 75-77, appended 2026-10-08: check `bmds_sys_has(BMDS_SYS_MIDI_CONFIG)`.)
+ * @return 0, or `-BMDS_EINVAL` (a flag, size or name not taken), `-BMDS_ENOSPC` (no port left),
+ *         `-BMDS_ENOTTY` (not a MIDI fd), `-BMDS_EBADF`.
+ */
+static inline int32_t bmds_midi_config(int32_t fd, const bmds_midi_config_t *set, bmds_midi_config_t *got) {
+        return ((bmds_sys_midi_config_fn)bmds_sys->slot[BMDS_SYS_MIDI_CONFIG])(fd, set, got);
+}
+
+/**
+ * @brief Fills @p status (its `size` set) with MIDI fd @p fd's port and counters.
+ * @return 0, or `-BMDS_ENOTTY`, `-BMDS_EBADF`, `-BMDS_EINVAL` (`size`).
+ */
+static inline int32_t bmds_midi_status(int32_t fd, bmds_midi_status_t *status) {
+        return ((bmds_sys_midi_status_fn)bmds_sys->slot[BMDS_SYS_MIDI_STATUS])(fd, status);
+}
+
+/**
+ * @brief Does @p op (`BMDS_MIDI_CONNECT`...) on MIDI fd @p fd, with @p value a port's number.
+ * @return 0, or `-BMDS_ENOENT` (no such port or connection), `-BMDS_EEXIST` (connected),
+ *         `-BMDS_EINVAL` (a side missing; an op not known; no port yet), `-BMDS_ENOSPC` (no
+ *         connection left), `-BMDS_ENOTTY`, `-BMDS_EBADF`.
+ */
+static inline int32_t bmds_midi_control(int32_t fd, uint32_t op, int32_t value) {
+        return ((bmds_sys_midi_control_fn)bmds_sys->slot[BMDS_SYS_MIDI_CONTROL])(fd, op, value);
 }
 
 #ifdef __cplusplus

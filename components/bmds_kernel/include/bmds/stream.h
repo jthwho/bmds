@@ -21,6 +21,7 @@ BMDS_NAMESPACE_BEGIN
 class AudioFile;
 class DecodedFile;
 class FileHandle;
+class MidiFile;
 class WaitList;
 
 /**
@@ -145,6 +146,12 @@ class Stream {
                  *        `devplan/audio.md` §19), or null (the default).
                  */
                 virtual DecodedFile *decodedFile() { return nullptr; }
+
+                /**
+                 * @brief Returns the MIDI fd behind this stream (`/dev/midi*`:
+                 *        `devplan/audio.md` §21), or null (the default).
+                 */
+                virtual MidiFile *midiFile() { return nullptr; }
 
                 /** @brief Writes @p text (see `write(ByteSpan, unsigned int)`). */
                 Result<size_t> write(StringView text, unsigned int timeoutMs) {

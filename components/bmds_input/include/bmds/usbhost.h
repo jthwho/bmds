@@ -127,6 +127,9 @@ class UsbHost {
                 /** @brief Returns the counters. */
                 Stats stats();
 
+                /** @brief Returns true when called on the host's task (TinyUSB's own). @nonblocking */
+                bool isOnTask() const;
+
                 // TinyUSB's callbacks, on the host's task. Not for other callers.
                 /// @cond INTERNAL
                 void configured(uint8_t address, const void *config);

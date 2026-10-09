@@ -19,6 +19,7 @@
 #include <bmds/staticobject.h>
 #include <bmds/system.h>
 #include <bmds/usbhost.h>
+#include "usbmidi.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -178,6 +179,10 @@ UsbHost::Stats UsbHost::stats() {
         return _stats;
 }
 
+bool UsbHost::isOnTask() const {
+        return _running && xTaskGetCurrentTaskHandle() == _task.handle();
+}
+
 // TinyUSB's events; between them, until the next key repeat is due.
 void UsbHost::entry(void *arg) {
         auto *self = static_cast<UsbHost *>(arg);
@@ -307,6 +312,8 @@ void UsbHost::stringArrived(uint8_t address, bool product, bool ok) {
         }
         if (!product)
                 (void)tuh_descriptor_get_product_string(address, EnglishUs, d->text, sizeof(d->text), stringDone, 1);
+        else if (ok)
+                detail::usbMidiNamed(address, StringView(d->info.name)); // its MIDI ports, if it has any
         return;
 }
 

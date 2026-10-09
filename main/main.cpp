@@ -18,6 +18,7 @@
 #include <bmds/i2cbus.h>
 #include <bmds/input.h>
 #include <bmds/loader.h>
+#include <bmds/midi.h>
 #include <bmds/ramdisk.h>
 #include <bmds/storage.h>
 #include <bmds/sysconf.h>
@@ -58,6 +59,7 @@ namespace {
                 {"boot", bmds::BootDisk::init},       // /boot: the profile and autoexec.sh
                 {"sysconf", bmds::SysConf::init},     // the system configuration, saved on /boot; /home
                 {"audio", bmds::AudioDevice::init},   // dsp0: made, not started; follows audio/dsp0/...
+                {"midi", bmds::Midi::init},           // the router, /dev/midi*; before USB's MIDI devices
                 {"clipboard", bmds::Clipboard::init}, // its configuration on /boot; /dev/clip0
                 {"storage", bmds::Storage::init},
                 {"ramdisk", bmds::RamDisk::init},

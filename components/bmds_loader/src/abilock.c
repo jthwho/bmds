@@ -94,6 +94,9 @@ _Static_assert(BMDS_SYS_SOUND_PLAY == 70, "ABI: slot SOUND_PLAY");
 _Static_assert(BMDS_SYS_AUDIO_DECODE == 71 && BMDS_SYS_AUDIO_DECODE_INFO == 72 && BMDS_SYS_AUDIO_DECODE_TAG == 73,
                "ABI: slots AUDIO_DECODE, _INFO, _TAG");
 _Static_assert(BMDS_SYS_AUDIO_CYCLE == 74, "ABI: slot AUDIO_CYCLE");
+_Static_assert(BMDS_SYS_MIDI_CONFIG == 75, "ABI: slot MIDI_CONFIG");
+_Static_assert(BMDS_SYS_MIDI_STATUS == 76, "ABI: slot MIDI_STATUS");
+_Static_assert(BMDS_SYS_MIDI_CONTROL == 77, "ABI: slot MIDI_CONTROL");
 _Static_assert(BMDS_SYSCONF_KEY_MAX == 63 && BMDS_SYSCONF_VALUE_MAX == 1024, "ABI: sysconf lengths");
 _Static_assert(BMDS_SYSCONF_TYPE_BOOL == 0 && BMDS_SYSCONF_TYPE_INT == 1 && BMDS_SYSCONF_TYPE_STRING == 2 &&
                        BMDS_SYSCONF_TYPE_COLOR == 3 && BMDS_SYSCONF_TYPE_ENUM == 4 && BMDS_SYSCONF_TYPE_PATH == 5 &&
@@ -285,6 +288,42 @@ _Static_assert(offsetof(bmds_audio_cycle_t, frames) == 4, "ABI: audio_cycle.fram
 _Static_assert(offsetof(bmds_audio_cycle_t, channels) == 8, "ABI: audio_cycle.channels");
 _Static_assert(offsetof(bmds_audio_cycle_t, rate) == 12, "ABI: audio_cycle.rate");
 _Static_assert(offsetof(bmds_audio_cycle_t, out) == 16, "ABI: audio_cycle.out");
+
+_Static_assert(BMDS_MIDI_EVENTS == 0x1 && BMDS_MIDI_CREATE == 0x2 && BMDS_MIDI_SOURCE == 0x4 &&
+                       BMDS_MIDI_DESTINATION == 0x8,
+               "ABI: midi flags");
+_Static_assert(BMDS_MIDI_NAME_MAX == 32, "ABI: midi name");
+_Static_assert(BMDS_MIDI_USB == 0 && BMDS_MIDI_SERIAL == 1 && BMDS_MIDI_VIRTUAL == 2, "ABI: midi kinds");
+_Static_assert(BMDS_MIDI_GONE == 0x1, "ABI: midi status flags");
+_Static_assert(BMDS_MIDI_CONNECT == 1 && BMDS_MIDI_DISCONNECT == 2 && BMDS_MIDI_FLUSH == 3, "ABI: midi ops");
+_Static_assert(offsetof(bmds_midi_config_t, size) == 0, "ABI: midi_config.size");
+_Static_assert(offsetof(bmds_midi_config_t, flags) == 4, "ABI: midi_config.flags");
+_Static_assert(offsetof(bmds_midi_config_t, event_size) == 8, "ABI: midi_config.event_size");
+_Static_assert(offsetof(bmds_midi_config_t, port) == 12, "ABI: midi_config.port");
+_Static_assert(offsetof(bmds_midi_config_t, name) == 16, "ABI: midi_config.name");
+_Static_assert(sizeof(bmds_midi_config_t) == 48, "ABI: bmds_midi_config_t size");
+_Static_assert(offsetof(bmds_midi_event_t, time_ns) == 0, "ABI: midi_event.time_ns");
+_Static_assert(offsetof(bmds_midi_event_t, port) == 8, "ABI: midi_event.port");
+_Static_assert(offsetof(bmds_midi_event_t, length) == 9, "ABI: midi_event.length");
+_Static_assert(offsetof(bmds_midi_event_t, flags) == 10, "ABI: midi_event.flags");
+_Static_assert(offsetof(bmds_midi_event_t, data) == 11, "ABI: midi_event.data");
+_Static_assert(sizeof(bmds_midi_event_t) == 16, "ABI: bmds_midi_event_t size");
+_Static_assert(offsetof(bmds_midi_status_t, size) == 0, "ABI: midi_status.size");
+_Static_assert(offsetof(bmds_midi_status_t, port) == 4, "ABI: midi_status.port");
+_Static_assert(offsetof(bmds_midi_status_t, kind) == 8, "ABI: midi_status.kind");
+_Static_assert(offsetof(bmds_midi_status_t, sides) == 12, "ABI: midi_status.sides");
+_Static_assert(offsetof(bmds_midi_status_t, flags) == 16, "ABI: midi_status.flags");
+_Static_assert(offsetof(bmds_midi_status_t, dropped) == 20, "ABI: midi_status.dropped");
+_Static_assert(offsetof(bmds_midi_status_t, events_in) == 24, "ABI: midi_status.events_in");
+_Static_assert(offsetof(bmds_midi_status_t, events_out) == 32, "ABI: midi_status.events_out");
+_Static_assert(offsetof(bmds_midi_status_t, parse_errors) == 40, "ABI: midi_status.parse_errors");
+_Static_assert(offsetof(bmds_midi_status_t, device_errors) == 44, "ABI: midi_status.device_errors");
+_Static_assert(offsetof(bmds_midi_status_t, last_ns) == 48, "ABI: midi_status.last_ns");
+_Static_assert(offsetof(bmds_midi_status_t, fd_events) == 56, "ABI: midi_status.fd_events");
+_Static_assert(offsetof(bmds_midi_status_t, fd_dropped) == 64, "ABI: midi_status.fd_dropped");
+_Static_assert(offsetof(bmds_midi_status_t, reserved) == 68, "ABI: midi_status.reserved");
+_Static_assert(offsetof(bmds_midi_status_t, name) == 72, "ABI: midi_status.name");
+_Static_assert(sizeof(bmds_midi_status_t) == 104, "ABI: bmds_midi_status_t size");
 
 #if UINTPTR_MAX == 0xffffffffu
 _Static_assert(offsetof(bmds_thread_t, size) == 0, "ABI: thread.size");

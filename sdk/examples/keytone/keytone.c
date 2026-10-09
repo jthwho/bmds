@@ -5,10 +5,12 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * keytone [-p FRAMES] [-x] [-r RATE]: a keyboard played as a piano octave,
- * through a real-time audio client (devplan/audio.md §20). A thread loops in
- * bmds_audio_cycle(), making each period as the device asks for it; the
- * terminal gives key presses only, so each note is struck and decays.
+ * keytone [-p FRAMES] [-x] [-r RATE] [-m PORT]: a keyboard played as a piano
+ * octave, through a real-time audio client (devplan/audio.md §20). A thread
+ * loops in bmds_audio_cycle(), making each period as the device asks for it;
+ * the terminal gives key presses only, so each note is struck and decays.
+ * With -m, a MIDI port's note-ons strike notes too, as loud as their velocity
+ * (devplan/audio.md §21): PORT is midiN, N, a path, or a port's name.
  *
  * Keys: a w s e d f t g y h u j k (C to the next C), z and x an octave down
  * and up, 1-4 the waveform (sine, triangle, saw, square), q quits. Each
@@ -25,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -56,13 +59,15 @@ struct voice {
                 float phase; /* 0 to 1 */
                 float step;  /* phase a frame */
                 float env;
+                float level;
                 int   attack; /* frames of attack left */
                 int   on;
 };
 
 struct note {
                 float   hz;
-                int64_t key_ns; /* when the key was read */
+                float   level;  /* 0 to 1 */
+                int64_t key_ns; /* when the key was read, or the MIDI event arrived */
 };
 
 static float                 sine[TABLE + 1];
@@ -130,7 +135,7 @@ static float wave(int kind, float phase, float dt) {
 }
 
 /* Starts a note on a free voice, or the quietest. */
-static void strike(float hz, uint32_t rate) {
+static void strike(float hz, float level, uint32_t rate) {
         int pick = 0;
         for (int i = 0; i < VOICES; ++i) {
                 if (!voices[i].on) {
@@ -143,6 +148,7 @@ static void strike(float hz, uint32_t rate) {
         v->phase = 0.0f;
         v->step = hz / (float)rate;
         v->env = 0.0f;
+        v->level = level;
         v->attack = (int)(rate * ATTACK_MS / 1000);
         v->on = 1;
 }
@@ -180,7 +186,7 @@ static void *audio_thread(void *arg) {
                 /* Keys pressed since the last period start now. */
                 for (unsigned t = LOAD(ev_tail); t != LOAD(ev_head); ++t) {
                         const struct note *n = &events[t % EVENTS];
-                        strike(n->hz, c.rate);
+                        strike(n->hz, n->level, c.rate);
                         STORE(key_to_play_us, (int32_t)((c.play_ns - n->key_ns) / 1000));
                         STORE(ev_tail, t + 1);
                 }
@@ -200,7 +206,7 @@ static void *audio_thread(void *arg) {
                                 } else {
                                         v->env *= decay;
                                 }
-                                const float s = LEVEL * v->env * wave(kind, v->phase, v->step);
+                                const float s = LEVEL * v->level * v->env * wave(kind, v->phase, v->step);
                                 for (uint32_t ch = 0; ch < c.channels; ++ch) c.out[i * c.channels + ch] += s;
                                 v->phase += v->step;
                                 if (v->phase >= 1.0f) v->phase -= 1.0f;
@@ -212,8 +218,57 @@ static void *audio_thread(void *arg) {
         return NULL;
 }
 
+/* Queues a note for the audio thread (dropped if the queue is full). */
+static void queue_note(float hz, float level, int64_t key_ns) {
+        const unsigned head = LOAD(ev_head);
+        if (head - LOAD(ev_tail) >= EVENTS) return;
+        events[head % EVENTS] = (struct note){hz, level, key_ns};
+        STORE(ev_head, head + 1);
+}
+
+/* Opens MIDI port @p name for reading events: midiN, N, a path, or a port's name. */
+static int open_midi(const char *name) {
+        char path[32];
+        if (name[0] == '/') {
+                snprintf(path, sizeof(path), "%s", name);
+        } else {
+                const char *n = strncmp(name, "midi", 4) == 0 ? name + 4 : name;
+                char       *end = NULL;
+                const long  number = strtol(n, &end, 10);
+                if (end != n && *end == '\0') {
+                        snprintf(path, sizeof(path), "/dev/midi%ld", number);
+                } else {
+                        /* By name: the first port that has it. */
+                        path[0] = '\0';
+                        for (int i = 0; i < 16 && path[0] == '\0'; ++i) {
+                                char probe[16];
+                                snprintf(probe, sizeof(probe), "/dev/midi%d", i);
+                                const int          f = open(probe, O_RDONLY);
+                                bmds_midi_status_t st = {.size = sizeof(st)};
+                                if (f >= 0 && bmds_midi_status(f, &st) == 0 && strcasecmp(st.name, name) == 0)
+                                        snprintf(path, sizeof(path), "%s", probe);
+                                if (f >= 0) close(f);
+                        }
+                        if (path[0] == '\0') {
+                                errno = ENOENT;
+                                return -1;
+                        }
+                }
+        }
+        const int f = open(path, O_RDONLY);
+        if (f < 0) return -1;
+        bmds_midi_config_t c = {.size = sizeof(c), .flags = BMDS_MIDI_EVENTS, .event_size = sizeof(bmds_midi_event_t)};
+        const int32_t      r = bmds_midi_config(f, &c, NULL);
+        if (r < 0) {
+                close(f);
+                errno = -r;
+                return -1;
+        }
+        return f;
+}
+
 static int usage(void) {
-        fprintf(stderr, "usage: keytone [-p FRAMES] [-x] [-r RATE]\n");
+        fprintf(stderr, "usage: keytone [-p FRAMES] [-x] [-r RATE] [-m PORT]\n");
         return 2;
 }
 
@@ -235,8 +290,9 @@ static void show_status(void) {
 }
 
 int main(int argc, char **argv) {
-        uint32_t period = 0, rate = 0;
-        int      exclusive = 0;
+        uint32_t    period = 0, rate = 0;
+        int         exclusive = 0;
+        const char *midi_port = NULL;
         for (int i = 1; i < argc; ++i) {
                 if (strcmp(argv[i], "-x") == 0) {
                         exclusive = 1;
@@ -244,6 +300,8 @@ int main(int argc, char **argv) {
                         period = (uint32_t)strtoul(argv[++i], NULL, 10);
                 } else if (strcmp(argv[i], "-r") == 0 && i + 1 < argc) {
                         rate = (uint32_t)strtoul(argv[++i], NULL, 10);
+                } else if (strcmp(argv[i], "-m") == 0 && i + 1 < argc) {
+                        midi_port = argv[++i];
                 } else {
                         return usage();
                 }
@@ -252,6 +310,18 @@ int main(int argc, char **argv) {
         if (!bmds_sys_has(BMDS_SYS_AUDIO_CYCLE)) {
                 fprintf(stderr, "keytone: this system has no real-time audio\n");
                 return 1;
+        }
+        int midi = -1;
+        if (midi_port != NULL) {
+                if (!bmds_sys_has(BMDS_SYS_MIDI_CONFIG)) {
+                        fprintf(stderr, "keytone: this system has no MIDI\n");
+                        return 1;
+                }
+                midi = open_midi(midi_port);
+                if (midi < 0) {
+                        fprintf(stderr, "keytone: MIDI port %s: %s\n", midi_port, strerror(errno));
+                        return 1;
+                }
         }
         for (int i = 0; i <= TABLE; ++i) sine[i] = sinf(2.0f * (float)M_PI * (float)i / TABLE);
         fd = open("/dev/dsp", O_WRONLY);
@@ -296,12 +366,26 @@ int main(int argc, char **argv) {
         static const char keys[] = "awsedftgyhujk";
         int               octave = 0;
         while (!quit) {
-                struct pollfd p = {.fd = 0, .events = POLLIN};
-                const int     ready = poll(&p, 1, 1000);
+                struct pollfd p[2] = {{.fd = 0, .events = POLLIN}, {.fd = midi, .events = POLLIN}};
+                const int     ready = poll(p, midi >= 0 ? 2 : 1, 1000);
                 if (ready <= 0) {
                         show_status();
                         continue;
                 }
+                if (midi >= 0 && (p[1].revents & (POLLIN | POLLHUP)) != 0) {
+                        /* Note-ons (velocity 0 is a note-off): MIDI note 69 is A4, 440 Hz. */
+                        bmds_midi_event_t ev[16];
+                        const ssize_t     n = read(midi, ev, sizeof(ev));
+                        if (n <= 0) {
+                                fprintf(stderr, "\r\nkeytone: the MIDI port went away\r\n");
+                                break;
+                        }
+                        for (size_t i = 0; i < (size_t)n / sizeof(ev[0]); ++i)
+                                if (ev[i].length == 3 && (ev[i].data[0] & 0xf0) == 0x90 && ev[i].data[2] > 0)
+                                        queue_note(440.0f * powf(2.0f, ((float)ev[i].data[1] - 69.0f) / 12.0f),
+                                                   (float)ev[i].data[2] / 127.0f, ev[i].time_ns);
+                }
+                if ((p[0].revents & POLLIN) == 0) continue;
                 char ch;
                 if (read(0, &ch, 1) != 1) break;
                 const char *k = strchr(keys, ch);
@@ -311,11 +395,8 @@ int main(int argc, char **argv) {
                 if (ch >= '1' && ch <= '4') STORE(waveform, ch - '1');
                 if (k == NULL || ch == '\0') continue;
                 /* C4 is 261.63 Hz; each key a semitone up. */
-                const int      semis = (int)(k - keys) + 12 * octave;
-                const unsigned head = LOAD(ev_head);
-                if (head - LOAD(ev_tail) >= EVENTS) continue;
-                events[head % EVENTS] = (struct note){261.6256f * powf(2.0f, (float)semis / 12.0f), now_ns()};
-                STORE(ev_head, head + 1);
+                const int semis = (int)(k - keys) + 12 * octave;
+                queue_note(261.6256f * powf(2.0f, (float)semis / 12.0f), 1.0f, now_ns());
         }
         quit = 1;
         pthread_join(thread, NULL);
@@ -323,5 +404,6 @@ int main(int argc, char **argv) {
         show_status();
         printf("\n");
         close(fd);
+        if (midi >= 0) close(midi);
         return 0;
 }

@@ -137,10 +137,13 @@ Plan: [`input.md`](input.md).
     (§19: minimp3, stb_vorbis, dr_flac; a decoder is an fd, slots 71–73; fuzzed).
   - [x] 5. Real-time clients and exclusive mode (§20: slot 74 `audio_cycle`, JACK's model, down to
     16-frame periods; the `keytone` example).
-  - [ ] 6. MIDI: ports, routing, virtual ports; USB and serial MIDI.
+  - [x] 6. MIDI: ports, routing, virtual ports, `/dev/midiN`, slots 75-77, `midi`, `midimon`
+    (§21). USB MIDI built and waiting for a device to try; serial MIDI waits for its circuit.
   - [ ] 7. Synth: General MIDI player and synth library.
-  - [ ] 8. Capture and `record` (after the loopback cable), then the pedal work.
-  - [ ] 9. AES67 and USB audio (after the network stack).
+  - [ ] 8. Media player: a fully featured GUI player for audio and MIDI files (video perhaps
+    later); planned in detail when reached.
+  - [ ] 9. Capture and `record` (after the loopback cable), then the pedal work.
+  - [ ] 10. AES67 and USB audio (after the network stack).
 - [ ] Ethernet bring-up, IP stack, basic tools (`ping`, file transfer).
 
 ## Phase 8 — Self-Hosting

@@ -345,11 +345,22 @@ namespace Vfs {
                         Result<FileHandle::Ptr> (*open)(void *arg, uint8_t flags) = nullptr;
                         /** @brief Returns its size now, for `stat()`; must not wait (null: 0). */
                         uint64_t (*size)(void *arg) = nullptr;
-                        void *arg = nullptr; ///< Given to both.
+                        void *arg = nullptr; ///< Given to all three.
+                        /**
+                         * @brief Returns true while it exists (null: always): a file
+                         *        that comes and goes, as a MIDI port's. Must not wait.
+                         */
+                        bool (*present)(void *arg) = nullptr;
+                        /**
+                         * @brief A device, not a file: `stat()` and listings say so, so
+                         *        nothing reads it to see what it holds (a read of a MIDI
+                         *        port waits for a note).
+                         */
+                        bool isDevice = false;
         };
 
         /** @brief The most files `addDeviceFile()` takes. */
-        inline constexpr size_t MaxDeviceFiles = 12;
+        inline constexpr size_t MaxDeviceFiles = 32;
 
         /**
          * @brief Adds @p file to `/dev` (its name and calls kept: static), for

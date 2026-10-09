@@ -367,6 +367,31 @@ The codec says almost nothing, so the driver and the engine check everything the
 - **What the engine needs from now on:**
   - a frame counter with timestamps per device;
   - a way to steer a device's clock.
+- **Clock discipline is a requirement of every audio API** (the user, 2026-10-08): a device's
+  clock will be made to track another (PTP for AES67 first), by steering the hardware (the
+  APLL), by resampling in software with a ratio that moves, or both. So:
+  - **Rates in the ABI are nominal.** A device's real rate differs from it by parts per million
+    and changes while it runs; nothing may assume `frames / rate` is time.
+  - **Time is a device frame count paired with a timestamp** (`BMDS_CLOCK_MONOTONIC`), as
+    `played_frames`/`timestamp_ns` and `position`/`play_ns` already are. A program finds the
+    real rate, and its drift, from two such pairs. New calls follow the same rule.
+  - **The steering itself is the kernel's:** a device has one discipline at a time (none, a
+    reference clock steering the APLL, a resampler ratio), chosen per device. Programs see its
+    state (locked, its offset in ppm) through appended status fields, not through a new kind of
+    stream.
+  - **Internal code** (the engine, the resampler, decoders' A/V timing) uses the measured rate,
+    not the nominal one, wherever time matters.
+- **What steering the APLL would take** (checked in IDF's sources, 2026-10-08; not tried):
+  - one step of its fractional part (`sdm0`) is 40 MHz / 65536 before its divider, against a
+    numerator of 350 to 500 MHz: 1.2 to 1.7 ppm, about 1.55 ppm at 48 kHz (numerator 393 MHz).
+    Finer tracking alternates between neighbouring steps;
+  - IDF's `i2s_channel_tune_rate()` releases and re-acquires the APLL to retune it. With I²S its
+    only user, that powers it down and up, stopping MCLK under the codec: it isn't usable while
+    playing. Steering means writing the coefficients ourselves; whether the APLL's calibration
+    on each write disturbs its output is to be measured on the board (a tone, steps of ±N, the
+    measured rate, the user listening) when AES67 work starts.
+  - Already there: each DMA end-of-frame is timestamped in the interrupt against `esp_timer` (the
+    crystal), which `audio status` turns into a measured rate.
 - **USB audio class devices:** stereo, better converters, inputs. Also numbered `dspN`.
 - **Two clocks at once:** when two devices run on different clocks, a stream crossing between them
   needs drift-tracking resampling. Not needed until a second device exists.
@@ -398,12 +423,16 @@ Each step ends with what the user hears and what the board reports.
    driven by the keyboard).
 6. **MIDI:** ports, routing, virtual ports, `midi`; USB MIDI; serial MIDI.
 7. **Synth:** the GM player and the synth library.
-8. **Capture** (when the user has the loopback cable):
+8. **Media player** (the user, 2026-10-08; to be planned in detail when reached): a fully
+   featured GUI application on the toolkit that plays audio files (the §7 decoders) and MIDI
+   files (the step 7 synth), perhaps video later. Opened from the file browser in place of
+   `play`.
+9. **Capture** (when the user has the loopback cable):
    - the ADC path and `record` (WAV);
    - a loopback self-test (tone out, FFT in) and the measured round-trip latency;
    - then the pedal work (input to output real-time clients), on the new board's codec when it
      exists.
-9. **AES67, USB audio** (after the network stack).
+10. **AES67, USB audio** (after the network stack).
 
 ## 11. Testing
 
@@ -454,6 +483,10 @@ Each step ends with what the user hears and what the board reports.
   there beyond what Linux froze.
 
 ## 14. Decisions (agreed 2026-10-08)
+
+- **Clock discipline** (the user, 2026-10-08): every audio API allows a device's clock to be
+  steered to track another, in hardware, in software or both (§9). The APLL test waits for the
+  AES67 work.
 
 - **Hardware focus:** focus on the I²S side; the user plans a board with a better codec, and a
   pedal-grade input waits for it.
@@ -834,7 +867,7 @@ Measured on the board, and by the host tests (`tests/host/audio.cpp`):
 
 Programs get the engine: an audio fd per open of `/dev/dsp*`, native calls on it, OSS's ioctls
 translated in the SDK, a system sound call, `play` for WAV files and an SDK example. Playback
-only; capture is step 8.
+only; capture is step 9.
 
 ### Device files
 
@@ -842,7 +875,7 @@ only; capture is step 8.
   **`/dev/dsp`**, which opens the device `audio/default` names at the moment of the open.
 - **`/dev/audio`:** the same, but opening at OSS's 8 kHz µ-law mono.
 - **`/dev/mixer0`, `/dev/mixer`:** for OSS's mixer ioctls only. Reading or writing one fails.
-- **Opening for writing** plays. Opening for reading (capture) fails with `ENOTSUP` until step 8.
+- **Opening for writing** plays. Opening for reading (capture) fails with `ENOTSUP` until step 9.
 - Through `Vfs::addDeviceFile()`, each device adding its own at init. Its limit (4, two taken by
   the clipboard) rises to 12. Like `/dev/clip0`, they list as files (`-rw-`).
 
@@ -1313,7 +1346,7 @@ gets them through the SDK, `play` plays them, and the file browser's Open starts
 
 ## 20. Step 5: real-time clients and exclusive mode (design, 2026-10-08)
 
-The low-latency path of §6.3, output only (input comes with capture, step 8; the call carries an
+The low-latency path of §6.3, output only (input comes with capture, step 9; the call carries an
 input buffer from the start so a pedal's code needs no change then). A program's own thread makes
 each period's audio as the engine asks for it, with no ring between them.
 
@@ -1418,7 +1451,7 @@ At each DMA end-of-frame, the engine's task:
 - **On screen, each second:** the period and the latency it implies (2 periods, from `play_ns`
   against the wake), the cycle's time (average and longest), late and skipped periods,
   throttles.
-- **The key-to-sound time** can't be measured until capture (step 8's loopback). What it shows
+- **The key-to-sound time** can't be measured until capture (step 9's loopback). What it shows
   is the program's part: from reading a key to its note's first sample leaving the DMA.
 
 ### Measurements (recorded in as-built)
@@ -1492,3 +1525,216 @@ At each DMA end-of-frame, the engine's task:
 - **Size:** the image from 1,239,920 to 1,246,192 bytes; `bmds_audio`'s BSS 152 bytes more (the
   list of raised threads, the counters). Per real-time fd: 1,920 or 3,840 bytes of internal RAM
   (mono or stereo).
+
+## 21. Step 6: MIDI (design, 2026-10-08)
+
+Ports, a router between them, `/dev/midiN`, timestamped events for programs, USB MIDI; serial
+MIDI designed here and built when the user has the circuit. §8 is the outline; this is the plan.
+
+### Decisions (the user, 2026-10-08)
+
+- **No USB MIDI device yet:** virtual ports, the router and `/dev/midi` first, tested on the
+  board with programs; the USB glue is built and waits for a device to test it.
+- **Connections persist by name** through `midi/connect` (below).
+- **Serial MIDI waits for the circuit,** as capture waits for the cable.
+
+### Facts
+
+- **TinyUSB 0.21.0** (vendored, `thirdparty/tinyusb`) has a MIDI 1.0 host class,
+  `class/midi/midi_host.{c,h}` (checked against the release tarball, same sha256 as the vendored
+  copy). Several devices at once (`CFG_TUH_MIDI` instances; its README's "one device" is out of
+  date), one bulk IN and one bulk OUT endpoint each, up to 16 cables per endpoint. Callbacks on
+  TinyUSB's task: mount (with the cable counts), unmount, data received, send done. It reads the
+  4-byte USB-MIDI packets into MIDI bytes per cable (`tuh_midi_stream_read`), ignoring the CIN
+  field because many devices get it wrong. It needs `class/audio/audio.h` too.
+- **TinyUSB's API isn't thread-safe:** writes to a device go through its task. `usbh_defer_func()`
+  runs a function there.
+- **The USB task runs at priority 4** (`usb0`, `input.md`). A note from a keyboard waits behind
+  every ready task above 4 (the window manager, the compositor, programs). Its priority is part of
+  this step, measured (below).
+- **Serial MIDI:** 31,250 baud, 8N1. The input must be opto-isolated (the MIDI 1.0 electrical
+  spec: an H11L1 or 6N138 and a diode at 3.3 V); the output is two resistors. UEXT has UART0's
+  pins (GPIO37 TX, GPIO38 RX with a 4.7k pull-up); any UART can be routed there by the GPIO
+  matrix. The ROM prints its boot messages on UART0's default pins at reset, which a MIDI device
+  would see as garbage on TX before BMDS takes the pins.
+- **What the bytes are:** status bytes (top bit set) with 0 to 2 data bytes; running status
+  (data bytes reusing the last channel status); real-time bytes (`F8`-`FF`) allowed anywhere, even
+  inside another message; SysEx (`F0` ... `F7`) of any length, ended by `F7` or by any other
+  status byte. USB MIDI has no running status on the wire; serial MIDI usually does.
+
+### The model
+
+- **A port** is one numbered MIDI endpoint, `midiN` (N from 0, the lowest free when it appears;
+  `MaxPorts` 16). Each has two sides, as ALSA's sequencer ports do:
+  - **its source:** the events it produces (what a keyboard plays);
+  - **its destination:** the events delivered to it (what a sound module is sent).
+  A port has one or both. Kinds:
+  - **USB:** one port per cable of a mounted device, named from its product string (cable 2 and
+    up get " 2", " 3"...); the source is the device's IN cable, the destination its OUT cable.
+  - **Serial:** `uart` ports, built with the circuit.
+  - **Virtual:** created by a program. Its source is what the program writes; its destination is
+    what the router delivers, which the program reads. It ends with the fd. The synth (step 7) is
+    one.
+- **The router** (kernel, one per system, `MaxConnections` 32): a connection takes a source to a
+  destination. An event from a source goes to every destination connected to it and to every fd
+  reading that source. `midi connect A B` and `midi disconnect A B`; a port that goes away takes
+  its connections with it.
+- **Events** inside the kernel: a parsed message (1 to 3 bytes, or a piece of SysEx of up to 3
+  bytes) with the port it came from and its time. Parsing happens once, at the source (the parser
+  keeps the running status and the SysEx state per source), so destinations and readers get whole
+  messages and running status never crosses ports. A real-time byte inside a message is an event
+  of its own, in order.
+- **Time** follows §9's clock rule: an event's time is `BMDS_CLOCK_MONOTONIC` nanoseconds when it
+  arrived (USB: when TinyUSB's receive callback ran; serial: the UART's interrupt). Nothing in
+  MIDI counts audio frames. A synth turns an event's time into a frame in its period with the
+  audio device's own pair (`position`/`play_ns` from `audio_cycle`), so steering the audio clock
+  never breaks MIDI timing.
+- **Queues:** each destination that isn't a program (USB OUT, serial TX) and each reading fd has a
+  ring of events (`MidiQueue`, 256 events of 16 bytes, 4 KB from PSRAM, made when the port or fd
+  opens). A full ring drops the new event and counts it; nothing waits in the router. Readers wait
+  on a `WaitList`, so `read()` blocks and `poll()` works, with no polling.
+- **Delivery context:** the source's context (TinyUSB's task, the UART's task, a program's
+  `write()`) runs the router under its lock: a few copies into rings. USB OUT rings are drained on
+  TinyUSB's task (`usbh_defer_func()`), then `tuh_midi_write_flush()`.
+
+### Programs
+
+- **`/dev/midiN`: raw bytes,** as OSS's raw MIDI (`/dev/midi`, `/dev/midi00` in OSS, which ported
+  programs open by path; `/dev/midi` here is `midi/default`'s port). Reading gives the port's
+  source as bytes (whole messages, with no running status); writing parses bytes into events for
+  its destination (running status accepted). `poll()` readiness both ways. Nothing new in
+  `linux.c`: OSS's raw MIDI has no ioctls that matter.
+- **Native calls (appended slots 75-77,** the audio calls' shape):
+  - `midi_config(fd, set, got)`: `bmds_midi_config_t {size, flags, event_size, port, name[32]}`.
+    - `BMDS_MIDI_EVENTS`: `read()` and `write()` move `bmds_midi_event_t` records instead of
+      bytes. `event_size` is the record size the program was built with (`sizeof`), so records
+      can grow by appending.
+    - `BMDS_MIDI_CREATE` on an fd opened on `/dev/midinew`: a virtual port named `name`, its
+      number in `got`. With `BMDS_MIDI_SOURCE` and/or `BMDS_MIDI_DESTINATION` for its sides.
+  - `midi_status(fd, bmds_midi_status_t *)`: the port's number, kind, name, sides, and its
+    counters (events in and out, dropped by a full ring, parse errors, SysEx bytes, device
+    errors), and the fd's own (events read, dropped from its ring).
+  - `midi_control(fd, op, value)`: `BMDS_MIDI_CONNECT` and `BMDS_MIDI_DISCONNECT` (this port's
+    source to port `value`'s destination), `BMDS_MIDI_FLUSH` (drop the fd's ring).
+- **`bmds_midi_event_t`** (16 bytes): `int64_t time_ns; uint8_t port; uint8_t length;
+  uint8_t flags; uint8_t data[5];` (`length` bytes of `data`; SysEx comes in pieces in order, `F0`
+  in the first and `F7` in the last). On `write()`, `time_ns` must be 0 (now) and `port` is
+  ignored: later values are reserved for scheduled output (a sequencer sending to hardware at a
+  time), so v1 refuses them with `EINVAL` rather than guessing.
+- **The SDK example:** `midimon`, a monitor on the event API (a port's events with their times
+  and the gap between them), and keytone (§20) taking notes from a port with `-m PORT`: real-time
+  audio driven by MIDI, the synth's path in miniature.
+
+### Status and errors (§3)
+
+- Per port: events in and out, dropped (a full ring, per destination and per fd), parse errors
+  (data bytes with no status; a SysEx cut off), device errors (TinyUSB transfer failures, UART
+  framing and overrun errors), the time of the last event.
+- `midi` lists them; a dropped or bad event is a counter, never a log line per event.
+
+### Commands (formats frozen once shipped)
+
+- `midi`: the ports (number, kind, sides, name) and the connections.
+- `midi status [PORT]`: the counters.
+- `midi connect SRC DST`, `midi disconnect SRC DST`: by number (`midi1` or `1`) or name.
+- `midi monitor PORT`: its events, one a line, with times, until Ctrl+C.
+- `midi send PORT HEX...`: bytes to a port's destination (`midi send 0 90 3c 64`).
+
+### Settings
+
+- `midi/default`: the port `/dev/midi` opens (`midi0`).
+- **Connections by name** (agreed 2026-10-08): `midi/connect`, a list of `SOURCE>DEST` names
+  made whenever both ports exist, so a keyboard plugged in again reaches the synth again.
+
+### The USB task's priority
+
+Measured with a keyboard on the board: the time from TinyUSB's callback to a reader waking, with
+the desktop busy. If the window manager or compositor delays it, the task goes up (above the
+window manager, under the audio clients); its work per event is small (parsing and a few copies).
+
+### Where the code goes
+
+- **Portable (in `bmds_midi`, also built for the host tests, as `bmds_audio`'s are):**
+  `MidiParser` (bytes to events: running status, real-time inside messages, SysEx pieces, stray
+  bytes counted), `MidiQueue`, `MidiRouter` (ports, connections, fan-out, removal while
+  connected), `MidiUsbPacker` (events into USB-MIDI packets).
+- **Kernel, a new component `bmds_midi`:** `MidiPort`'s registry, the USB class glue (TinyUSB's
+  `tuh_midi_*` callbacks, `CFG_TUH_MIDI` 4, `midi_host.c` and `class/audio/audio.h` added to the
+  vendored files), `MidiFile` (the fds), the `midi` command, the settings.
+- **Loader:** slots 75-77, `abilock.c`, `sys.h`.
+
+### Tests
+
+- **Host:** the parser against running status, real-time bytes inside a message and inside SysEx,
+  SysEx cut by a status, stray data bytes, every message length; the router's fan-out, a full
+  ring, connections dropped with a port, many readers.
+- **Board without hardware:** `progtest midi`: a virtual port, a second fd connected to it,
+  events and bytes both ways, the times in order and close to `write()`'s, a full ring counted,
+  the port gone when its fd closes, every bad flag and size refused. `midi send` to a virtual
+  port with `midi monitor` on it.
+- **Board with a USB MIDI keyboard** (if the user has one): `midi` shows it; `midi monitor`
+  shows notes; keytone `-m` plays them; unplugging and plugging again; the callback-to-reader time
+  under load.
+- **Serial:** with the circuit, a loop from TX to RX and a keyboard's DIN output.
+
+### ABI (frozen once shipped)
+
+- Slots 75-77, `bmds_midi_config_t`, `bmds_midi_status_t`, `bmds_midi_event_t`, their flags and
+  ops; `/dev/midiN`, `/dev/midi`, `/dev/midinew`; the `midi` command's output; `midi/default`
+  and `midi/connect`.
+
+### As built (2026-10-08)
+
+- **Component `bmds_midi`:** the portable parts above; `Midi` (the boot stage `midi`, after
+  `sysconf` and before `usb`; the router; the settings), `MidiFile` (the fds), the `midi`
+  command. Slots 75-77 in `bmds_loader/src/midicalls.cpp`; the loader's struct copies moved to
+  `structcopy.h`, shared with the audio calls.
+- **USB MIDI** (`bmds_input/src/usbmidi.cpp`, beside the HID code, since TinyUSB's callbacks
+  are there): TinyUSB's `midi_host.c` with `CFG_TUH_MIDI` 2 (devices), a port per cable (8 at
+  most a device), named "USB MIDI" until the product string arrives and then by it ("NAME 2"
+  for cable 2). Received bytes go through each cable's parser with TinyUSB's stream read;
+  sending packs events with `MidiUsbPacker` and TinyUSB's packet calls, not its stream write,
+  whose state is one per device and would mix cables mid-message. A device's send ring (64
+  events) is in PSRAM while it is mounted. Built, **not yet tried with a device** (the user has
+  none now).
+- **Two VFS changes:**
+  - `Vfs::DeviceFile::present`: `/dev/midiN` is listed, found and opened only while port N
+    exists. `MaxDeviceFiles` 12 to 32 (18 of them MIDI's).
+  - `Vfs::DeviceFile::isDevice`: `stat()` says a MIDI file is a character device. **Found on
+    the board:** the SDK's `stat()` reads the first bytes of a regular file to give it an execute
+    bit, and added `/dev` files said they were regular files, so `stat("/dev/midi0")` blocked
+    in a read waiting for a note. `/dev/dsp0` had escaped only because it can't be opened for
+    reading; it and `/dev/clip0` still say "file", as before.
+- **A deadlock, found on the board:** the router first read `midi/connect` whenever it had
+  changed, and `present` (under the VFS's lock) asked the router, while reading a setting takes
+  that lock: a program's `stat()` hung. Now `Midi::applySettings()` is called only where no
+  such lock is held (opening a MIDI file, creating a port, a USB device mounted or named, the
+  `midi` command, boot).
+- **The boot's stage limit** (`MaxStages`, sizing a table of timings) was 16, and `midi` made 17:
+  the assert rebooted the board in a loop. Now 24.
+- **`progtest midi`** passes on the board: every bad flag, size and name refused; a virtual
+  port's file there only while it is, a character device; running status written and whole
+  messages read, an event split over two reads; `poll()`; event records with their port, length
+  and time (between the `write()`'s start and end), a bigger record zero-filled; written
+  records checked (time 0, 1 to 5 bytes, whole records); a SysEx in pieces; a second port
+  connected, `EEXIST`, `ENOENT`, `EINVAL`; 300 events unread, 256 kept and 44 counted per reader
+  and on the destination's port; `FLUSH`; the port gone with its fd (reads end, writes `EPIPE`,
+  the file `ENOENT`). `progtest audio`, `rt`, `filetype` and `files` still pass.
+- **By hand:** `midimon -c thru` in the background, `midi send thru 90 3c 64 3e 00` (shown as
+  two note-ons) and a 9-byte SysEx (two pieces); `keytone -m thru -p 64` struck the notes
+  `midi send` gave the thru port (voices 1, then 3; 0 late). Its "key to out" was 3.0 to 4.2 ms:
+  from the thru program's write, through keytone's wake-up and the next period, to the period
+  leaving the device (made to out 2.63 ms at 64 frames).
+- **Host:** the parser (running status, real-time inside messages and SysEx, SysEx ended, cut
+  by a status, `F6` and another `F0`, stray bytes, every length), the ring, the router (ports and
+  names, numbers reused, names cut at a character, full; connections, fan-out, drops, kicks,
+  taps, removal; connections by name with a rename and a replug), the USB packer (every Code
+  Index Number, SysEx across events with a clock inside, cut), and `/dev` files that come and go.
+- **Size:** the image from 1,246,192 to 1,267,248 bytes. Internal RAM: the router 2,144 bytes,
+  the USB devices' state 656, TinyUSB's MIDI buffers 3,744 (1 KB of endpoint buffers a device
+  whatever its packet size, and a 512-byte receive FIFO for high-speed devices). Per fd:
+  4,096 bytes of PSRAM for a reader's ring.
+- **Left for a device:** USB MIDI in and out, unplugging and plugging again, `midi/connect`
+  bringing a keyboard back to its port, and the USB task's priority (§21's measurement).
+- **Next:** step 7, the synth.
+

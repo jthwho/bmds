@@ -17,6 +17,7 @@
 #include <bmds/errno.h>
 #include <bmds/sys.h>
 #include "running.h"
+#include "structcopy.h"
 
 using bmds::AudioFile;
 using bmds::Codec;
@@ -26,6 +27,9 @@ using bmds::Error;
 using bmds::KernelCall;
 using bmds::Process;
 using bmds::SampleFormat;
+using bmds::detail::copyIn;
+using bmds::detail::copyOut;
+using bmds::detail::copyText;
 
 namespace {
 
@@ -64,43 +68,11 @@ namespace {
                       "the ABI's codecs are Codec's");
         static_assert(BMDS_DECODE_UNKNOWN_FRAMES == Decoder::UnknownFrames, "the ABI's unknown length");
 
-        // Copies the caller's struct (its `size` first) into a zeroed full one.
-        template <typename T> int32_t copyIn(const T *in, T &full) {
-                full = T{};
-                if (in == nullptr) return -BMDS_EFAULT;
-                const uint32_t size = in->size;
-                if (size < sizeof(uint32_t)) return -BMDS_EINVAL;
-                std::memcpy(&full, in, size < sizeof(T) ? size : sizeof(T));
-                return 0;
-        }
-
-        // Copies the fields of @p full that fit in the caller's struct, leaving its `size`.
-        template <typename T> int32_t copyOut(const T &full, T *out) {
-                if (out == nullptr) return -BMDS_EFAULT;
-                const uint32_t size = out->size;
-                if (size < sizeof(uint32_t)) return -BMDS_EINVAL;
-                const size_t n = size < sizeof(T) ? size : sizeof(T);
-                std::memcpy(reinterpret_cast<uint8_t *>(out) + sizeof(uint32_t),
-                            reinterpret_cast<const uint8_t *>(&full) + sizeof(uint32_t), n - sizeof(uint32_t));
-                return 0;
-        }
-
         // The decoded file behind @p handle (an fd's), or the errno.
         int32_t decodedFileOf(const bmds::FileHandle::Ptr &handle, DecodedFile *&file) {
                 if (!handle) return -BMDS_EBADF;
                 file = handle->stream().decodedFile();
                 return file != nullptr ? 0 : -BMDS_ENOTTY;
-        }
-
-        // Copies @p text into @p out (@p size bytes with the NUL), cut at a UTF-8 character's end.
-        void copyText(bmds::StringView text, char *out, uint32_t size) {
-                if (out == nullptr || size == 0) return;
-                size_t n = text.size() < size - 1 ? text.size() : size - 1;
-                if (n < text.size())
-                        while (n > 0 && (static_cast<uint8_t>(text[n]) & 0xc0) == 0x80) --n;
-                std::memcpy(out, text.data(), n);
-                out[n] = '\0';
-                return;
         }
 
         // The audio file behind @p handle (an fd's), or the errno.

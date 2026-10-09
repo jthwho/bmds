@@ -1445,13 +1445,166 @@ static int rt(void) {
         return 0;
 }
 
+/* MIDI (devplan/audio.md §21): virtual ports, bytes and events both ways, connections, a full
+   ring counted, a port that goes away. No device needed. */
+static int midi_port_open(uint32_t port, int flags) {
+        char path[24];
+        snprintf(path, sizeof(path), "/dev/midi%u", (unsigned)port);
+        return open(path, flags);
+}
+
+static int midi(void) {
+        CHECK(bmds_sys_has(BMDS_SYS_MIDI_CONTROL));
+        signal(SIGPIPE, SIG_IGN); /* a write to a port that went: EPIPE, not the signal */
+        const int v = open("/dev/midinew", O_RDWR);
+        CHECK(v >= 0);
+        bmds_midi_status_t st = {.size = sizeof(st)};
+        CHECK(bmds_midi_status(v, &st) == 0 && st.port == 0xff);
+        CHECK(bmds_midi_status(1, &st) == -BMDS_ENOTTY);
+        CHECK(bmds_midi_status(99, &st) == -BMDS_EBADF);
+        uint8_t buf[64];
+        CHECK(read(v, buf, sizeof(buf)) == -1 && errno == EINVAL); /* no port yet */
+        CHECK(write(v, buf, 1) == -1 && errno == EINVAL);
+        bmds_midi_config_t c = {.size = sizeof(c)};
+        bmds_midi_config_t got = {.size = sizeof(got)};
+        c.flags = 0x100;
+        CHECK(bmds_midi_config(v, &c, NULL) == -BMDS_EINVAL);
+        c.flags = BMDS_MIDI_EVENTS;
+        c.event_size = 8;
+        CHECK(bmds_midi_config(v, &c, NULL) == -BMDS_EINVAL);
+        c.flags = BMDS_MIDI_SOURCE;
+        CHECK(bmds_midi_config(v, &c, NULL) == -BMDS_EINVAL);
+        c.flags = BMDS_MIDI_CREATE;
+        strcpy(c.name, "progtest");
+        CHECK(bmds_midi_config(v, &c, NULL) == -BMDS_EINVAL); /* no side */
+        c.flags = BMDS_MIDI_CREATE | BMDS_MIDI_SOURCE | BMDS_MIDI_DESTINATION;
+        c.name[0] = '\0';
+        CHECK(bmds_midi_config(v, &c, NULL) == -BMDS_EINVAL); /* no name */
+        strcpy(c.name, "progtest");
+        CHECK(bmds_midi_config(v, &c, &got) == 0);
+        const uint32_t port = got.port;
+        CHECK(port < 16 && strcmp(got.name, "progtest") == 0);
+        CHECK(got.flags == (BMDS_MIDI_CREATE | BMDS_MIDI_SOURCE | BMDS_MIDI_DESTINATION) && got.event_size == 0);
+        CHECK(bmds_midi_config(v, &c, NULL) == -BMDS_EINVAL); /* once */
+        CHECK(bmds_midi_config(v, NULL, &got) == 0 && got.port == port);
+
+        /* Its file exists while it does: r reads its source (what v writes), w writes to its
+           destination (what v reads). */
+        char path[24];
+        snprintf(path, sizeof(path), "/dev/midi%u", (unsigned)port);
+        struct stat sb;
+        CHECK(stat(path, &sb) == 0 && S_ISCHR(sb.st_mode)); /* a device: nothing reads it to look */
+        const int r = midi_port_open(port, O_RDONLY);
+        const int w = midi_port_open(port, O_WRONLY);
+        CHECK(r >= 0 && w >= 0);
+
+        /* Bytes: running status written, whole messages read. */
+        const uint8_t notes[] = {0x90, 0x3c, 0x64, 0x3e, 0x00};
+        CHECK(write(v, notes, sizeof(notes)) == (ssize_t)sizeof(notes));
+        const uint8_t want[] = {0x90, 0x3c, 0x64, 0x90, 0x3e, 0x00};
+        CHECK(read(r, buf, sizeof(buf)) == (ssize_t)sizeof(want) && memcmp(buf, want, sizeof(want)) == 0);
+        const uint8_t volume[] = {0xb0, 0x07, 0x7f};
+        CHECK(write(w, volume, sizeof(volume)) == 3);
+        CHECK(read(v, buf, 2) == 2 && read(v, buf + 2, sizeof(buf)) == 1 && memcmp(buf, volume, 3) == 0);
+
+        /* poll: nothing waiting, then an event. */
+        struct pollfd pf = {.fd = r, .events = POLLIN};
+        CHECK(poll(&pf, 1, 0) == 0);
+        const uint8_t program[] = {0xc0, 0x05};
+        int64_t       t0 = mono_ns();
+        CHECK(write(v, program, 2) == 2);
+        int64_t t1 = mono_ns();
+        CHECK(poll(&pf, 1, 0) == 1 && (pf.revents & POLLIN) != 0);
+
+        /* Events: the record's port, length and time. */
+        c.flags = BMDS_MIDI_EVENTS;
+        c.event_size = sizeof(bmds_midi_event_t);
+        CHECK(bmds_midi_config(r, &c, &got) == 0 && got.event_size == sizeof(bmds_midi_event_t));
+        bmds_midi_event_t ev[4];
+        CHECK(read(r, ev, 8) == -1 && errno == EINVAL); /* smaller than a record */
+        CHECK(read(r, ev, sizeof(ev)) == (ssize_t)sizeof(ev[0]));
+        CHECK(ev[0].port == port && ev[0].length == 2 && ev[0].data[0] == 0xc0 && ev[0].data[1] == 0x05);
+        CHECK(ev[0].time_ns >= t0 && ev[0].time_ns <= t1);
+        /* A bigger record (a later SDK's): the rest zeroed. */
+        c.event_size = 24;
+        CHECK(bmds_midi_config(r, &c, NULL) == 0);
+        uint8_t big[48];
+        memset(big, 0xaa, sizeof(big));
+        CHECK(write(v, program, 2) == 2);
+        CHECK(read(r, big, sizeof(big)) == 24 && big[9] == 2 && big[16] == 0 && big[23] == 0 && big[24] == 0xaa);
+        c.event_size = sizeof(bmds_midi_event_t);
+        CHECK(bmds_midi_config(r, &c, NULL) == 0);
+
+        /* Events written: time 0 and 1 to 5 bytes, a whole number of records. */
+        CHECK(bmds_midi_config(v, &c, NULL) == 0);
+        bmds_midi_event_t out = {.length = 3, .data = {0x80, 0x3c, 0x00}};
+        CHECK(write(v, &out, sizeof(out)) == (ssize_t)sizeof(out));
+        CHECK(read(r, ev, sizeof(ev)) == (ssize_t)sizeof(ev[0]) && ev[0].data[0] == 0x80 && ev[0].length == 3);
+        out.time_ns = 5;
+        CHECK(write(v, &out, sizeof(out)) == -1 && errno == EINVAL);
+        out.time_ns = 0;
+        out.length = 0;
+        CHECK(write(v, &out, sizeof(out)) == -1 && errno == EINVAL);
+        out.length = 3;
+        CHECK(write(v, &out, 10) == -1 && errno == EINVAL);
+        /* A SysEx in pieces. */
+        bmds_midi_event_t sx[2] = {{.length = 5, .data = {0xf0, 0x7e, 0x01, 0x02, 0x03}},
+                                   {.length = 2, .data = {0x04, 0xf7}}};
+        CHECK(write(v, sx, sizeof(sx)) == (ssize_t)sizeof(sx));
+        CHECK(read(r, ev, sizeof(ev)) == 2 * (ssize_t)sizeof(ev[0]));
+        CHECK(ev[0].length == 5 && ev[0].data[0] == 0xf0 && ev[1].length == 2 && ev[1].data[1] == 0xf7);
+
+        /* A second port, destination only, connected from the first. */
+        const int d = open("/dev/midinew", O_RDWR);
+        CHECK(d >= 0);
+        bmds_midi_config_t dc = {.size = sizeof(dc), .flags = BMDS_MIDI_CREATE | BMDS_MIDI_DESTINATION};
+        strcpy(dc.name, "progtest sink");
+        CHECK(bmds_midi_config(d, &dc, &got) == 0);
+        const uint32_t sink = got.port;
+        CHECK(midi_port_open(sink, O_RDONLY) == -1 && errno == ENOTSUP); /* no source to read */
+        CHECK(write(d, buf, 1) == -1 && errno == EINVAL);                /* nor to write */
+        CHECK(bmds_midi_control(v, BMDS_MIDI_CONNECT, (int32_t)sink) == 0);
+        CHECK(bmds_midi_control(v, BMDS_MIDI_CONNECT, (int32_t)sink) == -BMDS_EEXIST);
+        CHECK(bmds_midi_control(d, BMDS_MIDI_CONNECT, (int32_t)port) == -BMDS_EINVAL); /* no source */
+        CHECK(bmds_midi_control(v, BMDS_MIDI_CONNECT, 16) == -BMDS_ENOENT);
+        CHECK(bmds_midi_control(v, BMDS_MIDI_CONNECT, -1) == -BMDS_ENOENT);
+        CHECK(bmds_midi_control(v, 99, 0) == -BMDS_EINVAL);
+        CHECK(write(v, &out, sizeof(out)) == (ssize_t)sizeof(out));
+        CHECK(read(d, buf, sizeof(buf)) == 3 && buf[0] == 0x80); /* d reads bytes */
+        CHECK(read(r, ev, sizeof(ev)) == (ssize_t)sizeof(ev[0]));
+
+        /* A full ring: 300 events unread. Each reader's ring holds 256; the rest are counted. */
+        for (int i = 0; i < 300; ++i) CHECK(write(v, &out, sizeof(out)) == (ssize_t)sizeof(out));
+        CHECK(bmds_midi_status(r, &st) == 0 && st.fd_dropped == 44);
+        CHECK(bmds_midi_status(d, &st) == 0 && st.fd_dropped == 44 && st.dropped == 44); /* its port's too */
+        CHECK(st.events_out == 1 + 256 && st.sides == BMDS_MIDI_DESTINATION && st.kind == BMDS_MIDI_VIRTUAL);
+        CHECK(strcmp(st.name, "progtest sink") == 0);
+        CHECK(bmds_midi_control(r, BMDS_MIDI_FLUSH, 0) == 0);
+        CHECK(poll(&pf, 1, 0) == 0);
+        CHECK(bmds_midi_status(v, &st) == 0 && st.port == port && st.flags == 0);
+        CHECK(st.events_in >= 300 && st.last_ns > 0);
+        CHECK(bmds_midi_control(v, BMDS_MIDI_DISCONNECT, (int32_t)sink) == 0);
+        CHECK(bmds_midi_control(v, BMDS_MIDI_DISCONNECT, (int32_t)sink) == -BMDS_ENOENT);
+
+        /* The port goes with v: reads end, writes break, the file is gone. */
+        CHECK(close(v) == 0);
+        CHECK(read(r, ev, sizeof(ev)) == 0);
+        CHECK(bmds_midi_status(r, &st) == 0 && (st.flags & BMDS_MIDI_GONE) != 0);
+        CHECK(write(w, volume, 3) == -1 && errno == EPIPE);
+        CHECK(stat(path, &sb) == -1 && errno == ENOENT);
+        CHECK(midi_port_open(port, O_RDONLY) == -1 && errno == ENOENT);
+        CHECK(close(r) == 0 && close(w) == 0 && close(d) == 0);
+        printf("midi: ok, ports %u and %u, 300 events with 44 dropped per reader\n", (unsigned)port, (unsigned)sink);
+        return 0;
+}
+
 int main(int argc, char **argv) {
         if (argc < 2) {
                 fprintf(stderr,
                         "usage: progtest status|exit|leak|env|tty|float|files|time|sleep|term|lines|raw|mem|random|cwd|"
                         "spin|calls|posix|abort|spawn|scripts|signals|catch|ignore|fd|ppid|exec|orphan|tree|poll|"
                         "threads|"
-                        "threadspin|filetype "
+                        "threadspin|filetype|audio|decode|rt|midi "
                         "[arg]\n");
                 return 2;
         }
@@ -1461,6 +1614,7 @@ int main(int argc, char **argv) {
         if (strcmp(what, "audio") == 0) return audio();
         if (strcmp(what, "decode") == 0) return decode(arg);
         if (strcmp(what, "rt") == 0) return rt();
+        if (strcmp(what, "midi") == 0) return midi();
         if (strcmp(what, "audioexit") == 0) {
                 const int           fd = open("/dev/dsp", O_WRONLY);
                 bmds_audio_config_t c = {.size = sizeof(c),

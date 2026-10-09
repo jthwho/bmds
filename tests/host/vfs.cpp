@@ -1332,3 +1332,41 @@ TEST_CASE("mount and umount") {
         CHECK(out("mount /dev/ram0p0", bmds::Shell::ExitUsage) == "usage: mount [DEVICE PATH]\n");
         CHECK(out("umount /data") == "");
 }
+
+namespace {
+
+        bool comesAndGoesThere = false;
+
+} // namespace
+
+TEST_CASE("Vfs: added /dev files that come and go, and devices among them") {
+        fresh();
+        Vfs::DeviceFile file;
+        file.name = "comesandgoes";
+        file.open = [](void *, uint8_t) -> bmds::Result<FileHandle::Ptr> {
+                return bmds::makeError<FileHandle::Ptr>(Error::Busy);
+        };
+        file.present = [](void *) {
+                return comesAndGoesThere;
+        };
+        file.isDevice = true;
+        REQUIRE(Vfs::addDeviceFile(file) == Error::Ok);
+        CHECK(Vfs::addDeviceFile(file) == Error::Exists); // gone, but its name is still taken
+        auto listed = [] {
+                const std::vector<std::string> names = list("/dev");
+                return std::find(names.begin(), names.end(), "comesandgoes") != names.end();
+        };
+        // Gone: not there to stat, open or list.
+        comesAndGoesThere = false;
+        CHECK(Vfs::stat("/dev/comesandgoes", Root).error() == Error::NotExist);
+        CHECK(Vfs::open("/dev/comesandgoes", Vfs::Read, Root).error() == Error::NotExist);
+        CHECK_FALSE(listed());
+        // There: a device (nothing reads it to see what it is), opened by its call.
+        comesAndGoesThere = true;
+        auto [info, err] = Vfs::stat("/dev/comesandgoes", Root);
+        REQUIRE(err == Error::Ok);
+        CHECK(info.type == FileType::Device);
+        CHECK(Vfs::open("/dev/comesandgoes", Vfs::Read, Root).error() == Error::Busy);
+        CHECK(listed());
+        comesAndGoesThere = false;
+}

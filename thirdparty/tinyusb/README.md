@@ -7,7 +7,8 @@ Ha Thach's TinyUSB, <https://github.com/hathach/tinyusb>, used by `components/bm
   `b7cdf35c5ccefb0f61640aff94a732ab4ebcb21498201e4a161545891b23ba01`).
 - **Kept:** only what the host side needs, from upstream's `src/`: `tusb.c`, `tusb.h`,
   `tusb_option.h`, `common/`, `osal/osal.h`, `osal/osal_freertos.h`, `osal/osal_none.h`,
-  `host/`, `class/hid/hid.h`, `class/hid/hid_host.{c,h}`, and from
+  `host/`, `class/hid/hid.h`, `class/hid/hid_host.{c,h}`, `class/midi/midi.h`,
+  `class/midi/midi_host.{c,h}` and `class/audio/audio.h` (MIDI, `devplan/audio.md` §21), and from
   `portable/synopsys/dwc2/` the host driver (`hcd_dwc2.c`), `dwc2_common.{c,h}`,
   `dwc2_type.h` and `dwc2_esp32.h`.
 - **Changes:** none. The configuration is BMDS's,

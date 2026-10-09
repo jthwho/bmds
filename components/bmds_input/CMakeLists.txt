@@ -1,4 +1,5 @@
-# bmds_input — USB host, keyboards and mice (devplan/input.md).
+# bmds_input — USB host, keyboards and mice (devplan/input.md), USB MIDI devices
+# (devplan/audio.md §21).
 #
 # The pure parts (key events, the keymap and report decoder, keys as
 # terminal bytes) are also built as a plain CMake library for the host tests
@@ -19,9 +20,10 @@ if(COMMAND idf_component_register)
                                     src/input.cpp
                                     src/usbcommand.cpp
                                     src/usbhost.cpp
+                                    src/usbmidi.cpp
                                INCLUDE_DIRS include
                                REQUIRES bmds_core bmds_kernel
-                               PRIV_REQUIRES bmds_board bmds_shell bmds_tinyusb esp_driver_gpio esp_hw_support
+                               PRIV_REQUIRES bmds_board bmds_midi bmds_shell bmds_tinyusb esp_driver_gpio esp_hw_support
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})
 else()

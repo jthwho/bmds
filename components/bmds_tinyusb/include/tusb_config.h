@@ -39,4 +39,11 @@
 #define CFG_TUH_HID_EPIN_BUFSIZE 64
 #define CFG_TUH_HID_EPOUT_BUFSIZE 8
 
+// USB MIDI devices (devplan/audio.md §21). TinyUSB gives each 1 KB of endpoint buffers whatever
+// the device's packet size; its receive FIFO must hold a whole packet (512 bytes for a high-speed
+// device, as audio interfaces with MIDI often are), its send FIFO a few messages.
+#define CFG_TUH_MIDI 2
+#define CFG_TUH_MIDI_RX_BUFSIZE 512
+#define CFG_TUH_MIDI_TX_BUFSIZE 64
+
 #endif // BMDS_TUSB_CONFIG_H

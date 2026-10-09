@@ -55,11 +55,16 @@ namespace {
         constinit Vfs::DeviceFile     deviceFiles[Vfs::MaxDeviceFiles];
         constinit std::atomic<size_t> deviceFileCount{0};
 
-        // The added file named @p name, or null.
-        const Vfs::DeviceFile *findDeviceFile(StringView name) {
+        bool isPresent(const Vfs::DeviceFile &file) {
+                return file.present == nullptr || file.present(file.arg);
+        }
+
+        // The added file named @p name (while it exists, unless @p evenGone), or null.
+        const Vfs::DeviceFile *findDeviceFile(StringView name, bool evenGone = false) {
                 const size_t n = deviceFileCount.load(std::memory_order_acquire);
                 for (size_t i = 0; i < n; ++i)
-                        if (name == deviceFiles[i].name) return &deviceFiles[i];
+                        if (name == deviceFiles[i].name)
+                                return evenGone || isPresent(deviceFiles[i]) ? &deviceFiles[i] : nullptr;
                 return nullptr;
         }
 
@@ -332,7 +337,7 @@ namespace {
                                 return makeResult(std::move(info));
                         case Kind::DevFile:
                                 (void)info.name.assign(node.name);
-                                info.type = FileType::File;
+                                info.type = node.file->isDevice ? FileType::Device : FileType::File;
                                 if (node.file->size != nullptr) info.size = node.file->size(node.file->arg);
                                 return makeResult(std::move(info));
                         case Kind::HomeLink:
@@ -728,6 +733,9 @@ Result<FileInfo> Directory::next() {
                 case Kind::DevDir: {
                         constexpr size_t Fixed = sizeof(DevNodes) / sizeof(DevNodes[0]);
                         const size_t     added = deviceFileCount.load(std::memory_order_acquire);
+                        // Added files that come and go, skipped while gone.
+                        while (s.index >= Fixed && s.index - Fixed < added && !isPresent(deviceFiles[s.index - Fixed]))
+                                ++s.index;
                         if (s.index < Fixed) {
                                 (void)info.name.assign(DevNodes[s.index].name);
                                 // The console's id is its stream's, unknown here.
@@ -738,7 +746,7 @@ Result<FileInfo> Directory::next() {
                                 if (f.size != nullptr) info.size = f.size(f.arg);
                                 info.id = objectId(&f);
                                 ++s.index;
-                                info.type = FileType::File;
+                                info.type = f.isDevice ? FileType::Device : FileType::File;
                                 return makeResult(std::move(info));
                         } else if (s.index - Fixed - added < Fs::deviceCountLocked()) {
                                 const BlockDevices::Entry &e = Fs::deviceAtLocked(s.index - Fixed - added);
@@ -1105,7 +1113,8 @@ Error Vfs::addDeviceFile(const DeviceFile &file) {
         if (name.isEmpty() || name.contains('/')) return Error::Invalid;
         Mutex::Locker lock(Fs::lock(), WaitForever);
         const size_t  n = deviceFileCount.load(std::memory_order_relaxed);
-        if (findDevNode(name) != nullptr || findDeviceFile(name) != nullptr || Fs::findEntryLocked(name) != nullptr)
+        if (findDevNode(name) != nullptr || findDeviceFile(name, true) != nullptr ||
+            Fs::findEntryLocked(name) != nullptr)
                 return Error::Exists;
         if (n >= MaxDeviceFiles) return Error::Full;
         deviceFiles[n] = file;
