@@ -349,7 +349,7 @@ namespace Vfs {
         };
 
         /** @brief The most files `addDeviceFile()` takes. */
-        inline constexpr size_t MaxDeviceFiles = 4;
+        inline constexpr size_t MaxDeviceFiles = 12;
 
         /**
          * @brief Adds @p file to `/dev` (its name and calls kept: static), for

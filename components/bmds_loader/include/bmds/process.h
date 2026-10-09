@@ -220,6 +220,9 @@ class Process {
                 /** @brief Returns the negated `BMDS_E...` number for @p err. */
                 static int32_t errnoFor(Error err);
 
+                /** @brief Returns a reference to @p fd's handle, or none (for calls on a kind of fd). */
+                FileHandle::Ptr handle(int32_t fd) const { return handleOf(fd); }
+
         private:
                 struct Block;     // an allocation's header, just before what the program gets
                 struct LineInput; // the line editor and its line, once the program reads the console

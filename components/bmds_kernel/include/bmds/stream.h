@@ -18,6 +18,7 @@
 
 BMDS_NAMESPACE_BEGIN
 
+class AudioFile;
 class FileHandle;
 class WaitList;
 
@@ -131,6 +132,12 @@ class Stream {
 
                 /** @brief Returns true if this is an interactive terminal (a console). */
                 virtual bool isTerminal() const { return false; }
+
+                /**
+                 * @brief Returns the audio fd behind this stream (`/dev/dsp`:
+                 *        `devplan/audio.md` §18), or null (the default).
+                 */
+                virtual AudioFile *audioFile() { return nullptr; }
 
                 /** @brief Writes @p text (see `write(ByteSpan, unsigned int)`). */
                 Result<size_t> write(StringView text, unsigned int timeoutMs) {

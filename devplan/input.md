@@ -169,7 +169,8 @@ wm task, each round: drain keys ─► focused window's key callback (Terminal �
 ## 8. Later
 
 - DMA mode for bulk devices (storage), with the cache maintenance TinyUSB's ESP32 port has.
-- Report-protocol HID beyond mice (§5a did mice): media keys, game controllers.
+- Report-protocol HID beyond mice (§5a did mice): media keys (planned in `hotkeys.md`), game
+  controllers.
 - Layouts beyond US; a `keymap` command and a setting.
 - An input ABI for programs (raw key and pointer events, e.g. for a game or a paint program),
   and pointer events for windows' client areas.

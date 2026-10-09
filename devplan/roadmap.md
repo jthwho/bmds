@@ -115,6 +115,9 @@ Plan: [`input.md`](input.md).
 - [x] HID mouse: the pointer (drawn last each round), click to raise, title-bar drags, the close box.
 - [ ] Input event model for the kernel and the SDK.
 - [ ] Keyboard + HDMI console = a full local shell.
+- [ ] Special keys and global hotkeys (`hotkeys.md`, planned 2026-10-08): media keys decoded,
+  named actions and bindings in the kernel, the window manager's keys moved onto them; user
+  bindings later.
 
 ## Phase 6 — Graphics
 
@@ -126,8 +129,8 @@ Plan: [`input.md`](input.md).
 
 - [ ] Audio (`audio.md`, designed 2026-10-08):
   - [x] 1. ES8311 and I²S bring-up; `audio` status, registers, test tone.
-  - [ ] 2. Engine: mixer, conversion, resampling, volume, system sounds and bell, tray control.
-  - [ ] 3. ABI: native audio fds, `/dev/dsp*`, OSS ioctls in `linux.c`, `play` (WAV).
+  - [x] 2. Engine: mixer, conversion, resampling, volume, system sounds and bell, tray control.
+  - [x] 3. ABI: native audio fds, `/dev/dsp*`, OSS ioctls in `linux.c`, `play` (WAV).
   - [ ] 4. Decoders (MP3, Ogg Vorbis, FLAC) in the firmware via the SDK; Open from the browser.
   - [ ] 5. Real-time clients and exclusive mode.
   - [ ] 6. MIDI: ports, routing, virtual ports; USB and serial MIDI.

@@ -30,6 +30,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#include <sys/soundcard.h>
 #include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -42,6 +43,7 @@
 #include <time.h>
 #include <bmds/errno.h>
 #include <bmds/sys.h>
+#include "oss.h"
 
 /* Linux's futex operations (musl's public headers don't have them). */
 #define FUTEX_WAIT 0
@@ -405,7 +407,14 @@ static long gated_read(long fd, void *buf, size_t size) {
 
 static long gated_write(long fd, const void *buf, size_t size) {
         const long g = io_gate(fd, 1);
-        return g <= 0 ? g : (long)(bmds_write((int32_t)fd, buf, (uint32_t)size));
+        if (g <= 0) return g;
+        if (is_nonblock(fd)) {
+                /* An audio fd takes what fits, as OSS's do (the kernel's write takes all of it). */
+                const long room = __bmds_oss_room(fd);
+                if (room == 0) return -EAGAIN;
+                if (room > 0 && (size_t)room < size) size = (size_t)room;
+        }
+        return (long)(bmds_write((int32_t)fd, buf, (uint32_t)size));
 }
 
 static long do_open(long dirfd, const char *path, long flags) {
@@ -426,6 +435,7 @@ static long do_close(long fd) {
         const int i = dir_index(fd);
         if (i >= 0) return close_dir(i);
         set_nonblock(fd, 0);
+        __bmds_oss_closed(fd);
         return (long)(bmds_close((int32_t)fd));
 }
 
@@ -706,6 +716,15 @@ static long tc_set(long fd, const struct termios *t) {
 }
 
 static long do_ioctl(long fd, unsigned long request, void *arg) {
+        /* OSS: /dev/dsp's 'P' requests and /dev/mixer's 'M' (oss.c). */
+        const unsigned long type = request >> 8 & 0xff;
+        if (type == 'P' || type == 'M') {
+                if (request != SNDCTL_DSP_NONBLOCK) return __bmds_oss_ioctl(fd, request, arg);
+                const long room = __bmds_oss_room(fd);
+                if (room < 0) return -ENOTTY;
+                set_nonblock(fd, 1);
+                return 0;
+        }
         switch (request) {
                 case TCGETS: return tc_get(fd, arg);
                 case TCSETS:

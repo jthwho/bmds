@@ -82,8 +82,12 @@ int32_t bmds_k_sysconf_next(const char *prefix, int32_t after);
 int32_t bmds_k_sysconf_declare(const bmds_sysconf_param_t *param);
 int32_t bmds_k_sysconf_watch(const char *prefix, uint32_t flags);
 int32_t bmds_k_sync(void);
+int32_t bmds_k_audio_config(int32_t fd, const bmds_audio_config_t *set, bmds_audio_config_t *got);
+int32_t bmds_k_audio_status(int32_t fd, bmds_audio_status_t *status);
+int32_t bmds_k_audio_control(int32_t fd, uint32_t op, int32_t value);
+int32_t bmds_k_sound_play(uint32_t sound);
 
-#define SLOTS 67
+#define SLOTS 71
 
 /* bmds_sys_t with its slots spelled out (same layout; checked below). */
 static const struct {
@@ -165,10 +169,14 @@ static const struct {
                 [BMDS_SYS_SYSCONF_DECLARE] = (bmds_sys_fn_t)bmds_k_sysconf_declare,
                 [BMDS_SYS_SYSCONF_WATCH] = (bmds_sys_fn_t)bmds_k_sysconf_watch,
                 [BMDS_SYS_SYNC] = (bmds_sys_fn_t)bmds_k_sync,
+                [BMDS_SYS_AUDIO_CONFIG] = (bmds_sys_fn_t)bmds_k_audio_config,
+                [BMDS_SYS_AUDIO_STATUS] = (bmds_sys_fn_t)bmds_k_audio_status,
+                [BMDS_SYS_AUDIO_CONTROL] = (bmds_sys_fn_t)bmds_k_audio_control,
+                [BMDS_SYS_SOUND_PLAY] = (bmds_sys_fn_t)bmds_k_sound_play,
         },
 };
 
-_Static_assert(SLOTS == BMDS_SYS_SYNC + 1, "every slot is in the table");
+_Static_assert(SLOTS == BMDS_SYS_SOUND_PLAY + 1, "every slot is in the table");
 _Static_assert(sizeof(table) == 16 + SLOTS * sizeof(bmds_sys_fn_t), "table layout");
 
 const bmds_sys_t *bmds_k_sys_table(void) {

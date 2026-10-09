@@ -1,12 +1,13 @@
 # bmds_audio — audio devices (devplan/audio.md): the ES8311 codec, I2S output,
-# the device's filling task, and the `audio` command.
+# the device's filling task, /dev/dsp, and the `audio` and `play` commands.
 #
 # The controls, the ES8311's register arithmetic, the tone generator, the
-# sample formats, the resampler, the limiter and the streams are portable: also built as a
-# plain CMake library for the host tests (tests/host).
+# sample formats, the resampler, the limiter, the streams and the WAV reader
+# are portable: also built as a plain CMake library for the host tests
+# (tests/host).
 #
-# WHOLE_ARCHIVE: nothing references audiocommand.cpp by symbol -- its command
-# is found through the linker section.
+# WHOLE_ARCHIVE: nothing references audiocommand.cpp or playcommand.cpp by
+# symbol -- their commands are found through the linker section.
 
 set(BMDS_AUDIO_PORTABLE_SRCS
         src/audiocontrol.cpp
@@ -15,7 +16,8 @@ set(BMDS_AUDIO_PORTABLE_SRCS
         src/es8311regs.cpp
         src/resampler.cpp
         src/sampleformat.cpp
-        src/sinetone.cpp)
+        src/sinetone.cpp
+        src/wavfile.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
@@ -23,9 +25,11 @@ if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_AUDIO_PORTABLE_SRCS}
                                     src/audiocommand.cpp
                                     src/audiodevice.cpp
+                                    src/audiofile.cpp
                                     src/es8311.cpp
+                                    src/playcommand.cpp
                                INCLUDE_DIRS include
-                               REQUIRES bmds_core bmds_kernel bmds_board bmds_drivers bmds_sysconf
+                               REQUIRES bmds_core bmds_kernel bmds_board bmds_drivers bmds_fs bmds_sysconf
                                PRIV_REQUIRES bmds_shell esp_driver_gpio esp_driver_i2s esp_hw_support esp_mm
                                              esp_timer
                                WHOLE_ARCHIVE)

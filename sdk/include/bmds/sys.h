@@ -137,6 +137,10 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_SYSCONF_DECLARE 64u  /**< `int32_t sysconf_declare(const bmds_sysconf_param_t *param)`: an id. */
 #define BMDS_SYS_SYSCONF_WATCH 65u    /**< `int32_t sysconf_watch(const char *prefix, uint32_t flags)`: a new fd. */
 #define BMDS_SYS_SYNC 66u             /**< `int32_t sync(void)`: what the filesystems hold, written. */
+#define BMDS_SYS_AUDIO_CONFIG 67u  /**< `int32_t audio_config(int32_t fd, const bmds_audio_config_t *set, ... *got)`. */
+#define BMDS_SYS_AUDIO_STATUS 68u  /**< `int32_t audio_status(int32_t fd, bmds_audio_status_t *status)`. */
+#define BMDS_SYS_AUDIO_CONTROL 69u /**< `int32_t audio_control(int32_t fd, uint32_t op, int32_t value)`. */
+#define BMDS_SYS_SOUND_PLAY 70u    /**< `int32_t sound_play(uint32_t sound)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -354,6 +358,88 @@ typedef struct bmds_sysconf_param_t {
                 int32_t     max;           /**< An int's largest; a string's or path's longest (0: the most). */
 } bmds_sysconf_param_t;
 
+/**
+ * @brief `bmds_audio_config_t::format`: a sample's encoding. Little-endian unless named
+ *        otherwise; signed integers are two's complement.
+ */
+#define BMDS_AUDIO_U8 0u      /**< Unsigned 8-bit, 128 the middle. */
+#define BMDS_AUDIO_S8 1u      /**< Signed 8-bit. */
+#define BMDS_AUDIO_S16LE 2u   /**< Signed 16-bit. */
+#define BMDS_AUDIO_S16BE 3u   /**< Signed 16-bit, big-endian. */
+#define BMDS_AUDIO_S24LE 4u   /**< Signed 24-bit in the low three bytes of four. */
+#define BMDS_AUDIO_S24_3LE 5u /**< Signed 24-bit in three bytes. */
+#define BMDS_AUDIO_S32LE 6u   /**< Signed 32-bit. */
+#define BMDS_AUDIO_F32LE 7u   /**< IEEE single, full scale +-1.0. */
+#define BMDS_AUDIO_MULAW 8u   /**< G.711 mu-law. */
+#define BMDS_AUDIO_ALAW 9u    /**< G.711 A-law. */
+
+/**
+ * @brief How an audio fd plays (`audio_config`). Opening `/dev/dsp` sets 8 kHz, `BMDS_AUDIO_U8`,
+ *        mono (OSS's defaults; `/dev/audio`: `BMDS_AUDIO_MULAW`), the sizes their defaults.
+ *        Read back, the sizes are those chosen.
+ */
+typedef struct bmds_audio_config_t {
+                uint32_t size;         /**< Set by the caller: `sizeof(bmds_audio_config_t)`. */
+                uint32_t format;       /**< `BMDS_AUDIO_U8`... */
+                uint32_t channels;     /**< 1 or 2 (interleaved, left first). */
+                uint32_t rate;         /**< Frames a second: any from the status's `min_rate` to `max_rate`. */
+                uint32_t ring_frames;  /**< The buffer (0: 100 ms); rounded up to a power of two in bytes. */
+                uint32_t start_frames; /**< Plays once this many are queued (0: half the ring). */
+                uint32_t wake_frames;  /**< `io_poll` says writable when this many fit (0: a device period). */
+                uint32_t flags;        /**< 0 (none defined yet). */
+} bmds_audio_config_t;
+
+/** @brief `bmds_audio_status_t::state`. */
+#define BMDS_AUDIO_IDLE 0u     /**< Nothing queued, not playing (just opened, drained or dropped). */
+#define BMDS_AUDIO_WAITING 1u  /**< Queued below `start_frames`: not playing yet. */
+#define BMDS_AUDIO_PLAYING 2u  /**< Playing (an empty ring plays silence and counts an underrun). */
+#define BMDS_AUDIO_PAUSED 3u   /**< Paused (`BMDS_AUDIO_PAUSE`): its ring is kept. */
+#define BMDS_AUDIO_DRAINING 4u /**< Playing what is queued, then idle. */
+#define BMDS_AUDIO_MIXER 5u    /**< A mixer (`/dev/mixer`): only the device's fields mean anything. */
+
+/**
+ * @brief An audio fd and its device now (`audio_status`). Frame counts are at the stream's rate.
+ *        For A/V sync: a frame written now is heard `delay_frames` frames later.
+ */
+typedef struct bmds_audio_status_t {
+                uint32_t size;           /**< Set by the caller: `sizeof(bmds_audio_status_t)`. */
+                uint32_t state;          /**< `BMDS_AUDIO_IDLE`... */
+                uint32_t device;         /**< The device's number (`/dev/dspN`). */
+                uint32_t device_rate;    /**< The rate the device runs at (streams are resampled to it). */
+                uint32_t period_frames;  /**< The device's period, at its rate. */
+                uint32_t formats;        /**< The formats taken: bit N for format N. */
+                uint32_t min_rate;       /**< The lowest `rate` taken. */
+                uint32_t max_rate;       /**< The highest. */
+                uint32_t max_channels;   /**< The most `channels` taken. */
+                uint32_t ring_frames;    /**< The ring's size. */
+                uint64_t written_frames; /**< Frames written since it was configured. */
+                uint64_t played_frames;  /**< Of those, taken from the ring by the device. */
+                int64_t  timestamp_ns;   /**< `BMDS_CLOCK_MONOTONIC` when `played_frames` last grew (0: never). */
+                uint32_t queued_frames;  /**< In the ring now. */
+                uint32_t delay_frames;   /**< Queued, plus what the device holds before it is heard. */
+                uint32_t underruns;      /**< Times the ring ran dry while playing. */
+                int32_t  gain_cdb;       /**< The stream's gain (`BMDS_AUDIO_GAIN`), centi-dB. */
+                uint32_t late_periods;   /**< The device's periods mixed too late (silence) since it started. */
+                uint32_t limited_frames; /**< The device's frames its limiter reduced since it started. */
+} bmds_audio_status_t;
+
+/** @brief `audio_control` ops. */
+#define BMDS_AUDIO_START 1u  /**< Plays now, without waiting for `start_frames`. */
+#define BMDS_AUDIO_PAUSE 2u  /**< Pauses, keeping what is queued. */
+#define BMDS_AUDIO_RESUME 3u /**< Resumes. */
+#define BMDS_AUDIO_DRAIN 4u  /**< Waits until what is queued has played. */
+#define BMDS_AUDIO_DROP 5u   /**< Throws away what is queued and stops. */
+#define BMDS_AUDIO_GAIN 6u   /**< Sets the stream's gain: `value` centi-dB, -9600 (silent) to 0. */
+
+/** @brief The silent end of `BMDS_AUDIO_GAIN`. */
+#define BMDS_AUDIO_GAIN_MUTED (-9600)
+
+/** @brief `sound_play`'s sounds. */
+#define BMDS_SOUND_BELL 0u   /**< The terminal's bell (`audio/bell`). */
+#define BMDS_SOUND_CLICK 1u  /**< A click (`audio/feedback`). */
+#define BMDS_SOUND_ERROR 2u  /**< An error (`audio/feedback`). */
+#define BMDS_SOUND_NOTIFY 3u /**< A notification (`audio/feedback`). */
+
 /** @brief `bmds_stat_t::type`. */
 #define BMDS_TYPE_FILE 1u      /**< A regular file. */
 #define BMDS_TYPE_DIRECTORY 2u /**< A directory (also `/`, `/dev` and mount points). */
@@ -506,6 +592,10 @@ typedef int32_t (*bmds_sys_sysconf_next_fn)(const char *prefix, int32_t after);
 typedef int32_t (*bmds_sys_sysconf_declare_fn)(const bmds_sysconf_param_t *param);
 typedef int32_t (*bmds_sys_sysconf_watch_fn)(const char *prefix, uint32_t flags);
 typedef int32_t (*bmds_sys_sync_fn)(void);
+typedef int32_t (*bmds_sys_audio_config_fn)(int32_t fd, const bmds_audio_config_t *set, bmds_audio_config_t *got);
+typedef int32_t (*bmds_sys_audio_status_fn)(int32_t fd, bmds_audio_status_t *status);
+typedef int32_t (*bmds_sys_audio_control_fn)(int32_t fd, uint32_t op, int32_t value);
+typedef int32_t (*bmds_sys_sound_play_fn)(uint32_t sound);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -1143,6 +1233,45 @@ static inline int32_t bmds_sysconf_watch(const char *prefix, uint32_t flags) {
  */
 static inline int32_t bmds_sync(void) {
         return ((bmds_sys_sync_fn)bmds_sys->slot[BMDS_SYS_SYNC])();
+}
+
+/**
+ * @brief Configures audio fd @p fd (opened from `/dev/dsp*` for writing) from @p set, if not
+ *        NULL, then fills @p got, if not NULL, with what it chose. Queued audio plays out first.
+ *        (Slots 67-70, appended 2026-10-08: check `bmds_sys_has(BMDS_SYS_AUDIO_CONFIG)`.)
+ * @return 0, or `-BMDS_ENOTTY` (not an audio fd), `-BMDS_ENOTSUP` (setting a mixer's),
+ *         `-BMDS_EINVAL` (a format, channel count, rate, ring over 10 s or flag not taken;
+ *         `size`), `-BMDS_ENOMEM`, `-BMDS_EINTR` (while playing out).
+ */
+static inline int32_t bmds_audio_config(int32_t fd, const bmds_audio_config_t *set, bmds_audio_config_t *got) {
+        return ((bmds_sys_audio_config_fn)bmds_sys->slot[BMDS_SYS_AUDIO_CONFIG])(fd, set, got);
+}
+
+/**
+ * @brief Fills @p status (its `size` set) about audio fd @p fd and its device.
+ * @return 0, or `-BMDS_ENOTTY` (not an audio or mixer fd), `-BMDS_EINVAL` (`size`).
+ */
+static inline int32_t bmds_audio_status(int32_t fd, bmds_audio_status_t *status) {
+        return ((bmds_sys_audio_status_fn)bmds_sys->slot[BMDS_SYS_AUDIO_STATUS])(fd, status);
+}
+
+/**
+ * @brief Does @p op (`BMDS_AUDIO_START`...) on audio fd @p fd; @p value is `BMDS_AUDIO_GAIN`'s,
+ *        else 0. `BMDS_AUDIO_DRAIN` blocks; a signal ends it (`-BMDS_EINTR`) and it plays on.
+ * @return 0, or `-BMDS_ENOTTY`, `-BMDS_ENOTSUP` (a mixer), `-BMDS_EINVAL` (an unknown op; a
+ *         value out of range), `-BMDS_EINTR`.
+ */
+static inline int32_t bmds_audio_control(int32_t fd, uint32_t op, int32_t value) {
+        return ((bmds_sys_audio_control_fn)bmds_sys->slot[BMDS_SYS_AUDIO_CONTROL])(fd, op, value);
+}
+
+/**
+ * @brief Plays system sound @p sound (`BMDS_SOUND_BELL`...) on the default device, if the
+ *        settings allow it (`audio/bell`, `audio/feedback`); one already sounding isn't repeated.
+ * @return 0 (also when the settings say no, or there is no audio device), or `-BMDS_EINVAL`.
+ */
+static inline int32_t bmds_sound_play(uint32_t sound) {
+        return ((bmds_sys_sound_play_fn)bmds_sys->slot[BMDS_SYS_SOUND_PLAY])(sound);
 }
 
 #ifdef __cplusplus

@@ -28,7 +28,7 @@ if(NOT TARGET bmds_crt)
         target_include_directories(bmds_headers INTERFACE ${BMDS_SDK_DIR}/include)
         # The startup code and the Linux system call layer musl runs on
         # (libbmds.a; _start is pulled in with -u).
-        add_library(bmds_crt STATIC ${BMDS_SDK_DIR}/crt/start.c ${BMDS_SDK_DIR}/crt/linux.c
+        add_library(bmds_crt STATIC ${BMDS_SDK_DIR}/crt/start.c ${BMDS_SDK_DIR}/crt/linux.c ${BMDS_SDK_DIR}/crt/oss.c
                                     ${BMDS_SDK_DIR}/crt/vfork.S ${BMDS_SDK_DIR}/crt/syscall_cp.S)
         set_target_properties(bmds_crt PROPERTIES OUTPUT_NAME bmds ARCHIVE_OUTPUT_DIRECTORY "${BMDS_LIBC_LIB}")
         target_link_libraries(bmds_crt PUBLIC bmds_headers)

@@ -13,6 +13,7 @@
 #include <cstring>
 #include <new>
 #include <bmds/audiostream.h>
+#include <bmds/clock.h>
 #include <bmds/deadline.h>
 #include <bmds/memory.h>
 
@@ -123,14 +124,22 @@ Error PcmStream::open(const Format &format, size_t ringFrames, size_t startFrame
         const size_t capacity = bytes / _frameBytes;
         _startFrames = startFrames == 0 ? 1 : (startFrames > capacity ? capacity : startFrames);
         _space = space;
-        _playing = false;
+        _underruns.store(0, std::memory_order_relaxed);
+        _written.store(0, std::memory_order_relaxed);
+        _position.store(Position{});
+        _paused.store(false, std::memory_order_relaxed);
+        reset();
+        return Error::Ok;
+}
+
+void PcmStream::reset() {
+        if (_ring != nullptr) _ring->consume(_ring->available()); // not attached: nobody reads
         _starved = false;
         _flushLeft = 0;
+        _started.store(false, std::memory_order_relaxed);
         _draining.store(false, std::memory_order_relaxed);
-        _cancelled.store(false, std::memory_order_relaxed);
-        _underruns.store(0, std::memory_order_relaxed);
-        _played.store(0, std::memory_order_relaxed);
-        return Error::Ok;
+        _cancelled.store(false, std::memory_order_release);
+        return;
 }
 
 void PcmStream::close() {
@@ -147,6 +156,26 @@ size_t PcmStream::queuedFrames() const {
         return _ring == nullptr || _frameBytes == 0 ? 0 : _ring->available() / _frameBytes;
 }
 
+size_t PcmStream::capacityFrames() const {
+        return _ring == nullptr || _frameBytes == 0 ? 0 : _ring->capacity() / _frameBytes;
+}
+
+void PcmStream::setStartFrames(size_t frames) {
+        const size_t capacity = capacityFrames();
+        _startFrames = frames == 0 ? 1 : (frames > capacity ? capacity : frames);
+        return;
+}
+
+void PcmStream::startNow() {
+        _started.store(true, std::memory_order_release);
+        return;
+}
+
+void PcmStream::setPaused(bool paused) {
+        _paused.store(paused, std::memory_order_release);
+        return;
+}
+
 Result<size_t> PcmStream::write(ByteSpan data, bool nonBlocking, Interrupt *interrupt) {
         if (_ring == nullptr || _cancelled.load(std::memory_order_acquire))
                 return makeError<size_t>(Error::InvalidState);
@@ -155,7 +184,9 @@ Result<size_t> PcmStream::write(ByteSpan data, bool nonBlocking, Interrupt *inte
         const Deadline  forever(WaitForever);
         size_t          done = 0;
         for (;;) {
-                done += _ring->push(data.mid(done));
+                const size_t pushed = _ring->push(data.mid(done));
+                done += pushed;
+                if (pushed > 0) _written.fetch_add(pushed, std::memory_order_relaxed);
                 if (done == data.size()) break;
                 // Full. Nobody empties a stream that isn't playing: take what fit.
                 const bool attached = isPlaying();
@@ -165,22 +196,19 @@ Result<size_t> PcmStream::write(ByteSpan data, bool nonBlocking, Interrupt *inte
                 }
                 if (!entry.isAdded()) return makeError<size_t>(Error::Busy);
                 const Error err = Interrupt::wait(interrupt, wake, forever);
-                if (err.isError()) {
-                        if (done > 0) break;
-                        return makeError<size_t>(err);
-                }
+                if (err.isError()) return Result<size_t>(done, err); // what was taken, and why no more
         }
         return makeResult(done);
 }
 
-Error PcmStream::drain(Interrupt *interrupt) {
+Error PcmStream::drain(Interrupt *interrupt, unsigned int timeoutMs) {
         Semaphore       wake(1, 0);
         WaitList::Entry entry(waiters(), wake);
         if (!entry.isAdded()) return Error::Busy;
         _draining.store(true, std::memory_order_release);
-        const Deadline forever(WaitForever);
+        const Deadline deadline(timeoutMs);
         while (!isOver()) {
-                const Error err = Interrupt::wait(interrupt, wake, forever);
+                const Error err = Interrupt::wait(interrupt, wake, deadline);
                 if (err.isError()) return err;
         }
         return Error::Ok;
@@ -230,12 +258,13 @@ size_t PcmStream::convert(float *stereo, size_t frames) {
 bool PcmStream::render(float *mix, size_t frames, float *scratch) {
         if (_ring == nullptr || _cancelled.load(std::memory_order_acquire)) return false;
         const bool draining = _draining.load(std::memory_order_acquire);
-        if (!_playing) {
+        if (!_started.load(std::memory_order_acquire)) {
                 const size_t queued = queuedFrames();
                 if (queued == 0 && draining) return false; // nothing was ever enough to start
                 if (queued < _startFrames && !draining) return true;
-                _playing = true;
+                _started.store(true, std::memory_order_release);
         }
+        if (_paused.load(std::memory_order_acquire) && !draining) return true;
         const float g = gain();
         size_t      taken = 0;
         size_t      made = 0;
@@ -262,7 +291,11 @@ bool PcmStream::render(float *mix, size_t frames, float *scratch) {
                 made = _resampler.process(mix, frames, g);
         }
         if (taken > 0) {
-                _played.fetch_add(taken, std::memory_order_relaxed);
+                const int64_t now = Clock::monotonicNs();
+                _position.update([taken, now](Position &p) {
+                        p.frames += taken;
+                        p.ns = now;
+                });
                 waiters().notify(); // room for a writer
         }
         if (made < frames) {

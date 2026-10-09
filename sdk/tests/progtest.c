@@ -44,6 +44,8 @@
  *   progtest threadexit   a thread calls exit(9)
  *   progtest mainexit     the first thread ends (pthread_exit) before the other (200 ms)
  *   progtest threadexec SELF  a thread execs SELF status 42
+ *   progtest audio        /dev/dsp: the audio calls, OSS's ioctls and their errors (plays silence)
+ *   progtest audioexit    queue 500 ms of silence on /dev/dsp and exit without closing it
  */
 
 #define _GNU_SOURCE /* gettid() */
@@ -61,6 +63,7 @@
 #include <semaphore.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
+#include <sys/soundcard.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
 #include <sys/time.h>
@@ -68,6 +71,7 @@
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
+#include <bmds/errno.h>
 #include <bmds/sys.h>
 
 #define CHECK(cond)                                                                                                    \
@@ -1067,6 +1071,160 @@ static void *exec_self(void *arg) {
         return NULL;
 }
 
+static int64_t now_ms(void) {
+        struct timespec t;
+        clock_gettime(CLOCK_MONOTONIC, &t);
+        return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+}
+
+static int audio_state(int fd) {
+        bmds_audio_status_t st = {.size = sizeof(st)};
+        return bmds_audio_status(fd, &st) == 0 ? (int)st.state : -1;
+}
+
+/* Writes @p frames frames of 16-bit stereo silence. */
+static int write_silence(int fd, long frames) {
+        static int16_t zeros[2 * 1024];
+        while (frames > 0) {
+                const long n = frames < 1024 ? frames : 1024;
+                if (write(fd, zeros, (size_t)n * 4) != n * 4) return -1;
+                frames -= n;
+        }
+        return 0;
+}
+
+/* /dev/dsp (devplan/audio.md §18): silence only, so nothing is heard. */
+static int audio(void) {
+        CHECK(bmds_sys_has(BMDS_SYS_AUDIO_CONFIG) && bmds_sys_has(BMDS_SYS_SOUND_PLAY));
+        CHECK(open("/dev/dsp", O_RDONLY) < 0 && errno == ENOTSUP); /* no capture yet */
+        const int fd = open("/dev/dsp", O_WRONLY);
+        CHECK(fd >= 0);
+
+        /* Opened at OSS's defaults. */
+        bmds_audio_config_t c = {.size = sizeof(c)};
+        CHECK(bmds_audio_config(fd, NULL, &c) == 0);
+        CHECK(c.format == BMDS_AUDIO_U8 && c.channels == 1 && c.rate == 8000 && c.ring_frames == 1024);
+        bmds_audio_status_t st = {.size = sizeof(st)};
+        CHECK(bmds_audio_status(fd, &st) == 0);
+        CHECK(st.state == BMDS_AUDIO_IDLE && st.formats == 0x3ff && st.max_channels == 2);
+        CHECK(st.min_rate == 4000 && st.max_rate == 192000 && st.device_rate > 0 && st.period_frames > 0);
+
+        /* Configured, and what was chosen read back. */
+        bmds_audio_config_t want = {
+                .size = sizeof(want), .format = BMDS_AUDIO_S16LE, .channels = 2, .rate = 48000, .ring_frames = 4800};
+        CHECK(bmds_audio_config(fd, &want, &c) == 0);
+        CHECK(c.format == BMDS_AUDIO_S16LE && c.channels == 2 && c.rate == 48000);
+        CHECK(c.ring_frames == 8192 && c.start_frames == 4096 && c.wake_frames > 0);
+        bmds_audio_config_t bad = want;
+        bad.rate = 1000;
+        CHECK(bmds_audio_config(fd, &bad, NULL) == -BMDS_EINVAL);
+        bad = want;
+        bad.channels = 3;
+        CHECK(bmds_audio_config(fd, &bad, NULL) == -BMDS_EINVAL);
+        bad = want;
+        bad.flags = 1;
+        CHECK(bmds_audio_config(fd, &bad, NULL) == -BMDS_EINVAL);
+        bad = want;
+        bad.format = 10;
+        CHECK(bmds_audio_config(fd, &bad, NULL) == -BMDS_EINVAL);
+        bad = want;
+        bad.ring_frames = 48000 * 11;
+        CHECK(bmds_audio_config(fd, &bad, NULL) == -BMDS_EINVAL);
+        bad.size = 2;
+        CHECK(bmds_audio_config(fd, &bad, NULL) == -BMDS_EINVAL);
+        CHECK(bmds_audio_config(fd, NULL, &c) == 0 && c.rate == 48000); /* unchanged by the failures */
+
+        /* Other fds. */
+        CHECK(bmds_audio_status(1, &st) == -BMDS_ENOTTY);
+        CHECK(bmds_audio_status(99, &st) == -BMDS_EBADF);
+        CHECK(bmds_audio_control(1, BMDS_AUDIO_DROP, 0) == -BMDS_ENOTTY);
+        CHECK(bmds_audio_control(fd, 99, 0) == -BMDS_EINVAL);
+        CHECK(bmds_audio_control(fd, BMDS_AUDIO_DRAIN, 1) == -BMDS_EINVAL);
+        CHECK(bmds_audio_control(fd, BMDS_AUDIO_GAIN, 1) == -BMDS_EINVAL);
+        CHECK(bmds_audio_control(fd, BMDS_AUDIO_GAIN, -9601) == -BMDS_EINVAL);
+        CHECK(bmds_audio_control(fd, BMDS_AUDIO_GAIN, -600) == 0);
+        CHECK(bmds_audio_status(fd, &st) == 0 && st.gain_cdb == -600);
+        CHECK(bmds_sound_play(4) == -BMDS_EINVAL);
+
+        /* Below the start threshold it waits; START plays it; DRAIN plays it out. */
+        CHECK(write_silence(fd, 1000) == 0);
+        CHECK(bmds_audio_status(fd, &st) == 0);
+        CHECK(st.state == BMDS_AUDIO_WAITING && st.queued_frames == 1000 && st.written_frames == 1000);
+        CHECK(bmds_audio_control(fd, BMDS_AUDIO_START, 0) == 0);
+        CHECK(audio_state(fd) == BMDS_AUDIO_PLAYING);
+        CHECK(bmds_audio_control(fd, BMDS_AUDIO_DRAIN, 0) == 0);
+        CHECK(bmds_audio_status(fd, &st) == 0);
+        CHECK(st.state == BMDS_AUDIO_IDLE && st.played_frames == 1000 && st.timestamp_ns > 0);
+
+        /* Paused, the ring keeps what it has; dropped, it is empty. */
+        CHECK(write_silence(fd, 2000) == 0);
+        CHECK(bmds_audio_control(fd, BMDS_AUDIO_PAUSE, 0) == 0);
+        CHECK(bmds_audio_control(fd, BMDS_AUDIO_START, 0) == 0);
+        usleep(50000);
+        CHECK(bmds_audio_status(fd, &st) == 0);
+        CHECK(st.state == BMDS_AUDIO_PAUSED && st.queued_frames == 2000 && st.played_frames == 1000);
+        CHECK(bmds_audio_control(fd, BMDS_AUDIO_RESUME, 0) == 0);
+        CHECK(bmds_audio_control(fd, BMDS_AUDIO_DROP, 0) == 0);
+        CHECK(bmds_audio_status(fd, &st) == 0 && st.state == BMDS_AUDIO_IDLE && st.queued_frames == 0);
+
+        /* Non-blocking: a write takes what fits, then EAGAIN; poll agrees. */
+        CHECK(bmds_audio_control(fd, BMDS_AUDIO_PAUSE, 0) == 0);
+        CHECK(fcntl(fd, F_SETFL, O_NONBLOCK) == 0);
+        static int16_t big[2 * 10000];
+        CHECK(write(fd, big, sizeof(big)) == 8192 * 4);
+        CHECK(write(fd, big, 4) < 0 && errno == EAGAIN);
+        struct pollfd p = {.fd = fd, .events = POLLOUT};
+        CHECK(poll(&p, 1, 0) == 0);
+        CHECK(bmds_audio_control(fd, BMDS_AUDIO_DROP, 0) == 0);
+        CHECK(poll(&p, 1, 0) == 1 && (p.revents & POLLOUT));
+        CHECK(fcntl(fd, F_SETFL, 0) == 0);
+        CHECK(bmds_audio_control(fd, BMDS_AUDIO_RESUME, 0) == 0);
+
+        /* Six programs' streams a device; the seventh is busy. */
+        int more[6];
+        int opened = 0;
+        for (; opened < 6; ++opened) {
+                more[opened] = open("/dev/dsp0", O_WRONLY);
+                if (more[opened] < 0) break;
+        }
+        CHECK(opened == 5 && errno == EBUSY);
+        for (int i = 0; i < opened; ++i) CHECK(close(more[i]) == 0);
+
+        /* OSS's ioctls on the same calls. */
+        int v = AFMT_S16_LE;
+        CHECK(ioctl(fd, SNDCTL_DSP_SETFMT, &v) == 0 && v == AFMT_S16_LE);
+        v = 2;
+        CHECK(ioctl(fd, SNDCTL_DSP_CHANNELS, &v) == 0 && v == 2);
+        v = 44100;
+        CHECK(ioctl(fd, SNDCTL_DSP_SPEED, &v) == 0 && v == 44100);
+        v = 0x0004000c;
+        CHECK(ioctl(fd, SNDCTL_DSP_SETFRAGMENT, &v) == 0);
+        CHECK(ioctl(fd, SNDCTL_DSP_GETBLKSIZE, &v) == 0 && v == 4096);
+        audio_buf_info info;
+        CHECK(ioctl(fd, SNDCTL_DSP_GETOSPACE, &info) == 0);
+        CHECK(info.fragsize == 4096 && info.fragstotal == 4 && info.fragments == 4 && info.bytes == 16384);
+        CHECK(write_silence(fd, 1024) == 0);
+        CHECK(ioctl(fd, SNDCTL_DSP_GETODELAY, &v) == 0 && v == 4096); /* not started: only what is queued */
+        CHECK(ioctl(fd, SNDCTL_DSP_SYNC) == 0);
+        CHECK(ioctl(1, SNDCTL_DSP_SYNC) < 0 && errno == ENOTTY);
+        const int mixer = open("/dev/mixer", O_RDONLY);
+        CHECK(mixer >= 0);
+        CHECK(ioctl(mixer, SOUND_MIXER_READ_VOLUME, &v) == 0 && (v & 0xff) <= 100 && (v & 0xff) == (v >> 8));
+        CHECK(ioctl(mixer, SOUND_MIXER_READ_DEVMASK, &v) == 0 && v == (SOUND_MASK_VOLUME | SOUND_MASK_PCM));
+        CHECK(read(mixer, &v, 1) < 0);
+        CHECK(close(mixer) == 0);
+
+        /* Closing waits until what is queued has played: the ring's 4096 frames, 93 ms at 44.1 kHz. */
+        CHECK(write_silence(fd, 8820) == 0);
+        const int64_t before = now_ms();
+        CHECK(close(fd) == 0);
+        const int64_t took = now_ms() - before;
+        printf("audio: the close took %d ms\n", (int)took);
+        CHECK(took >= 50);
+        printf("audio: ok\n");
+        return 0;
+}
+
 int main(int argc, char **argv) {
         if (argc < 2) {
                 fprintf(stderr,
@@ -1080,6 +1238,18 @@ int main(int argc, char **argv) {
         const char *what = argv[1];
         const char *arg = argc > 2 ? argv[2] : "0";
         if (strcmp(what, "status") == 0) return atoi(arg);
+        if (strcmp(what, "audio") == 0) return audio();
+        if (strcmp(what, "audioexit") == 0) {
+                const int           fd = open("/dev/dsp", O_WRONLY);
+                bmds_audio_config_t c = {.size = sizeof(c),
+                                         .format = BMDS_AUDIO_S16LE,
+                                         .channels = 2,
+                                         .rate = 48000,
+                                         .ring_frames = 48000};
+                CHECK(fd >= 0 && bmds_audio_config(fd, &c, NULL) == 0);
+                CHECK(write_silence(fd, 24000) == 0);
+                return 0; /* the exit closes it: that waits until it has played */
+        }
         if (strcmp(what, "filetype") == 0) {
                 // filetype PATH [name|content]: the file's type, by the slot (bmds_file_type).
                 if (!bmds_sys_has(BMDS_SYS_FILE_TYPE)) {

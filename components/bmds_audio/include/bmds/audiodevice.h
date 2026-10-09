@@ -62,8 +62,11 @@ class AudioDevice {
                 /** @brief The rate without a setting. */
                 static constexpr uint32_t DefaultRateHz = 48000;
 
-                /** @brief Streams mixed at once. */
-                static constexpr size_t MaxStreams = 8;
+                /** @brief Streams mixed at once: its tones and sounds, programs' and the `audio` command's. */
+                static constexpr size_t MaxStreams = 16;
+
+                /** @brief Programs' streams (`/dev/dsp` opens) at once. */
+                static constexpr size_t MaxClients = 6;
 
                 /** @brief Tones (`playTone()`) at once. */
                 static constexpr size_t MaxTones = 4;
@@ -102,6 +105,12 @@ class AudioDevice {
                                 bool     toneActive = false;  ///< A tone (`playTone()`) among them.
                 };
 
+                /** @brief The rate and period running, or the settings' while stopped. */
+                struct Timing {
+                                uint32_t rateHz = 0;
+                                uint32_t periodFrames = 0;
+                };
+
                 /** @brief One line about a stream, for `audio status`. */
                 struct StreamLine {
                                 char text[112];
@@ -120,6 +129,12 @@ class AudioDevice {
                  * @return The device, or `NotSupported` (no such device on this board).
                  */
                 static Result<AudioDevice *> device(size_t number);
+
+                /**
+                 * @brief Returns the device `audio/default` names.
+                 * @return The device, or `NotSupported` (none, or not a `dspN`).
+                 */
+                static Result<AudioDevice *> defaultDevice();
 
                 AudioDevice(AudioCodec &codec, uint8_t number);
                 AudioDevice(const AudioDevice &) = delete;
@@ -204,6 +219,19 @@ class AudioDevice {
 
                 /** @brief Returns the status. */
                 Status status();
+
+                /** @brief Returns the rate and period. */
+                Timing timing();
+
+                /**
+                 * @brief Counts a program's stream in (`MaxClients`).
+                 * @return `Ok`, or `Busy` (as many as it takes).
+                 * @nonblocking
+                 */
+                Error addClient();
+
+                /** @brief Counts one out. @nonblocking */
+                void removeClient();
 
                 /** @brief Writes a line about each stream into @p out. @return The lines written. */
                 size_t streamLines(StreamLine *out, size_t max);
@@ -297,6 +325,7 @@ class AudioDevice {
                 // The streams: attached under the lock, read by the engine without it.
                 std::atomic<AudioStream *> _slots[MaxStreams] = {};
                 WaitListOf<2>              _dropped; // told when the engine drops a stream
+                std::atomic<uint8_t>       _clients{0};
 
                 // Its own streams: tones and the system sounds.
                 ToneStream            _tones[MaxTones];

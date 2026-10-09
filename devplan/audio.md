@@ -829,3 +829,218 @@ Measured on the board, and by the host tests (`tests/host/audio.cpp`):
   - **Closing:** a press outside closed the popup; the middle button unmuted.
   - **Mute button:** muted with the level kept (−13), pressed in; again, back to −13.
   - **Saving:** written to `/boot` 2 s after the last change.
+
+## 18. Step 3: the ABI (design, 2026-10-08)
+
+Programs get the engine: an audio fd per open of `/dev/dsp*`, native calls on it, OSS's ioctls
+translated in the SDK, a system sound call, `play` for WAV files and an SDK example. Playback
+only; capture is step 8.
+
+### Device files
+
+- **`/dev/dsp0`** for the first device (`/dev/dsp1`… as more appear: no singletons), and
+  **`/dev/dsp`**, which opens the device `audio/default` names at the moment of the open.
+- **`/dev/audio`:** the same, but opening at OSS's 8 kHz µ-law mono.
+- **`/dev/mixer0`, `/dev/mixer`:** for OSS's mixer ioctls only. Reading or writing one fails.
+- **Opening for writing** plays. Opening for reading (capture) fails with `ENOTSUP` until step 8.
+- Through `Vfs::addDeviceFile()`, each device adding its own at init. Its limit (4, two taken by
+  the clipboard) rises to 12. Like `/dev/clip0`, they list as files (`-rw-`).
+
+### The stream behind an fd
+
+- **Each open is a `PcmStream`,** mixed with every other open and the system's sounds. A device
+  takes up to 6; one more fails with `EBUSY`. Its slots grow from 8 to 16, for its 4 tones, 4
+  sounds, 6 programs and the `audio` command's sweep.
+- **Opening** sets OSS's defaults: 8 kHz, `u8`, mono (OSS programs rely on them). Native programs
+  configure before writing.
+- **The ring** is allocated in PSRAM at the open (OSS's default is 1 KB) and again at each
+  configure; the stream is attached to the device at the first write.
+- **Writing blocks** until all of it is in the ring, and is interrupted by a signal.
+  - **O_NONBLOCK:** the SDK's gate already polls first. For an audio fd it also cuts the write
+    to the room in the ring, so a non-blocking write takes what fits, as OSS's does.
+  - **Configuring after writing** plays what is queued first, so no audio is lost.
+- **`poll()`:** writable when `wake_frames` fit (default: one device period at the stream's
+  rate).
+- **Closing** (the user's choice, 2026-10-08, as Linux's OSS): the last close waits until what
+  is queued has played (at most the ring's length and a second), then frees the stream. A
+  program that exits with the fd open plays it out the same way (its exit closes it, on its own
+  thread). A signal ends the wait and drops the rest, so a killed program stops at once; so does
+  a paused stream.
+
+### Native calls (appended slots 67–70; three calls and the sound, the user's choice)
+
+| Slot | Call |
+|---|---|
+| 67 | `int32_t audio_config(int32_t fd, const bmds_audio_config_t *set, bmds_audio_config_t *got)` |
+| 68 | `int32_t audio_status(int32_t fd, bmds_audio_status_t *status)` |
+| 69 | `int32_t audio_control(int32_t fd, uint32_t op, int32_t value)` |
+| 70 | `int32_t sound_play(uint32_t sound)` |
+
+- **`audio_config`:** sets (if `set` isn't NULL), then reads back what was chosen (if `got`
+  isn't NULL). `bmds_audio_config_t`:
+  - `size`;
+  - `format`: `BMDS_AUDIO_U8` = 0, `S8`, `S16LE`, `S16BE`, `S24LE`, `S24_3LE`, `S32LE`, `F32LE`,
+    `MULAW`, `ALAW` = 9 (`SampleFormat`'s order, now frozen, checked in both places);
+  - `channels`: 1 or 2 (more later, downmixed);
+  - `rate`: 4,000 to 192,000 Hz, any integer;
+  - `ring_frames`: 0 for the default (100 ms); rounded up (the ring is a power of two in bytes);
+  - `start_frames`: plays once this many are queued (0: half the ring);
+  - `wake_frames`: `poll()`'s writable mark (0: one device period);
+  - `flags`: none yet (unknown bits fail).
+- **`audio_status`:** everything a player or an OSS ioctl asks, in one copy.
+  `bmds_audio_status_t`:
+  - `size`, `state` (`IDLE`, `WAITING` for the threshold, `PLAYING`, `PAUSED`, `DRAINING`,
+    `MIXER` for a mixer fd);
+  - the device: `device` (its number), `device_rate`, `period_frames`, `formats` (a bit per
+    format), `min_rate`, `max_rate`, `max_channels`;
+  - the stream: `written_frames`, `played_frames` (64-bit), `timestamp_ns` (monotonic, when
+    `played_frames` was counted), `queued_frames`, `delay_frames` (queued, plus the DMA buffers
+    and the resampler's delay, at the stream's rate: for A/V sync), `ring_frames`, `underruns`,
+    `gain_cdb`;
+  - the device's counters: `late_periods`, `limited_frames`.
+- **`audio_control`** ops: `START` (play before the threshold), `PAUSE`, `RESUME`, `DRAIN`
+  (blocks until played; `EINTR` leaves it playing), `DROP`, `GAIN` (`value` in centi-dB, −9600
+  to 0; −9600 is silent).
+- **`sound_play`:** `BMDS_SOUND_BELL` 0, `CLICK` 1, `ERROR` 2, `NOTIFY` 3 (§17's numbers), on the
+  default device, subject to `audio/bell` and `audio/feedback` as the kernel's own calls are.
+- **On another fd** the audio calls fail with `ENOTTY`, as ioctls do.
+- **Device volume** isn't a call: it is the `audio/dspN/volume` and `mute` settings, which
+  programs already have (`bmds_sysconf_*`).
+
+### OSS in the SDK
+
+- **`sdk/crt/oss.c`:** `linux.c`'s `ioctl()` passes the `SNDCTL_DSP_*` and `SOUND_MIXER_*`
+  requests to it. It uses only the calls above and sysconf; the kernel knows nothing of OSS.
+- **`<sys/soundcard.h>`:** the SDK supplies it (musl has none), written for BMDS with Linux's
+  numbers, which Linux froze.
+- **Formats:** Linux's set: `AFMT_MU_LAW`, `A_LAW`, `U8`, `S16_LE`, `S16_BE`, `S8`. OSS 4's
+  24-bit, 32-bit and float numbers aren't in Linux's header; they wait until checked against
+  OSS 4's.
+
+| Request | Does |
+|---|---|
+| `SPEED`, `SETFMT`, `CHANNELS`, `STEREO` | `audio_config`, returning what was chosen (`AFMT_QUERY` reads) |
+| `SETFRAGMENT` (`0xMMMMSSSS`) | ring = M × 2^S bytes, wake = 2^S bytes |
+| `GETBLKSIZE` | the wake mark in bytes |
+| `GETOSPACE` | fragments free, fragments in all, fragment size, bytes free |
+| `GETODELAY`, `GETOPTR` | `delay_frames`; `played_frames` in bytes |
+| `SYNC`, `RESET`, `POST` | `DRAIN`, `DROP`, `START` |
+| `GETTRIGGER`, `SETTRIGGER` | `PCM_ENABLE_OUTPUT` is `RESUME` or `PAUSE` |
+| `NONBLOCK` | the fd's O_NONBLOCK |
+| `GETFMTS`, `GETCAPS` | the formats above; `DSP_CAP_TRIGGER` |
+| `SOUND_MIXER_READ/WRITE_VOLUME` (and `PCM`) | `audio/dspN/volume` and `mute` |
+| `SOUND_MIXER_READ_DEVMASK`, `STEREODEVS`, `RECMASK`, `CAPS`, `SOUND_MIXER_INFO` | `VOLUME` and `PCM`, no recording |
+
+- **Mixer percent:** OSS's 0–100 per side, linear in dB: 100 is 0 dB, 1 is −59.4 dB, 0 is mute.
+  A write sets both sides to the louder one (the device has one volume). It changes the setting
+  for this boot, not the saved one, as `sysconf set` would.
+- **Anything else** fails with `EINVAL`.
+
+### WAV and `play`
+
+- **`WavReader`** (portable, host-tested):
+  - RIFF/WAVE; chunks walked with their odd-length padding, unknown ones skipped;
+  - `fmt `: PCM (1) at 8, 16, 24 and 32 bits, IEEE float (3) at 32, A-law (6), µ-law (7), and
+    `WAVE_FORMAT_EXTENSIBLE` naming one of those;
+  - 1 or 2 channels (more later, downmixed);
+  - `data`: a size of 0 or 0xFFFFFFFF (streamed files) means to the end;
+  - malformed input is an error, never a crash: fuzzed under ASan/UBSan.
+- **`play [-d DEVICE] FILE...`:** a built-in command (the user's choice), so it works without a card:
+  - prints `FILE: 44100 Hz, s16le, stereo, 3:21.4` per file, then plays it;
+  - goes through `/dev/dsp` and the same calls the system calls make;
+  - Ctrl+C drops what is queued and stops; exit status 0, or 1 if a file couldn't be played.
+  - Step 4 adds MP3, Ogg and FLAC to the same command.
+
+### The SDK example
+
+- **`tone [-n] [FREQ] [SECONDS] [RATE]`:** a sine, through OSS (`open("/dev/dsp")`, `SETFMT`,
+  `CHANNELS`, `SPEED`, `write`), or with `-n` through the native calls.
+- **`progtest`** gains the board tests: configure and read back, status, every control, `ENOTTY`
+  on a file, `EBUSY` past 6 streams, non-blocking writes.
+
+### In the kernel
+
+- **`AudioFile`** (`bmds_audio`): the `Stream` behind an fd, holding one of its device's pooled
+  `PcmStream`s.
+- **`Stream::audioFile()`**, null by default, finds it from a handle (as `isTerminal()` finds
+  consoles: no RTTI).
+- **`Process::audioConfig()`, `audioStatus()`, `audioControl()`, `soundPlay()`**; `bmds_loader`
+  requires `bmds_audio`, and `bmds_audio` requires `bmds_fs`.
+- **`PcmStream` gains:** pause and resume, start now, a written count, the wake mark, and a
+  hand-back to the pool when it is over after its fd closed.
+
+### Tests
+
+- **Host:**
+  - the WAV reader (every format, odd chunks, streamed sizes, truncation, fuzzing);
+  - `oss.c` against a fake system call table;
+  - the ABI lock: slots 67–70, both structs' sizes and offsets, every constant.
+- **Board:** `progtest`; `tone` both ways; `play` with WAVs at each rate and format; six streams
+  at once; a close playing out; a program killed mid-play; counters at zero throughout.
+- **By ear:** WAVs the user knows; no pops at start, pause, drop or close.
+
+### ABI
+
+- Slots 67–70; `bmds_audio_config_t`, `bmds_audio_status_t` and their constants in `sys.h`.
+- `<sys/soundcard.h>` (Linux's numbers).
+- Device files: `/dev/dsp`, `/dev/dspN`, `/dev/audio`, `/dev/mixer`, `/dev/mixerN`.
+- The `play` command's format and its output line.
+
+### As built (2026-10-08)
+
+- **Where it lives:**
+  - `AudioFile` (`bmds_audio`, allocated in PSRAM per open) is the `Stream` behind each fd.
+  - The four slots are in `bmds_loader/src/audiocalls.cpp`, which turns the ABI's structs into
+    `AudioFile`'s calls and static-asserts that the ABI's formats, states and sounds are the
+    kernel's numbers.
+  - `Process::handle()` gives an fd's handle to such calls.
+- **Waiting without the lock:** a write takes the file's lock only to push what fits, and waits
+  for room outside it, so `audio_status` and `DROP` go on meanwhile (`DROP` wakes the writer).
+  A drain doesn't hold it either.
+- **The OSS fix found on the board:** `oss.c` set the format, channels and rate by reading the
+  configuration back and changing one field, so the 1 KB ring of the open's 8 kHz `u8` stuck
+  (six tones each had 1,024 frames). Now it asks for the kernel's sizes afresh each time, or
+  for `SETFRAGMENT`'s, which it keeps per fd in bytes and sizes again in the new format's
+  frames.
+- **Ctrl+C in `play`, found by the user:** a write interrupted after taking part of its data
+  returned the count without the error, so `play` went on to the end (the first test had hit a
+  drain). The stream's writes now return the count with `Interrupted`, as `Stream` says; a
+  program's `write()` still gets the count.
+- **Non-blocking:** the SDK's write gate asks an `O_NONBLOCK` fd for its room
+  (`audio_status`), which fails at once on any fd that isn't audio.
+- **Board checks:**
+  - **`progtest audio`** passes. It covers:
+    - the open's defaults;
+    - configure and read back (ring 4,800 → 8,192 frames, start 4,096);
+    - every bad argument (`EINVAL`), `ENOTTY` and `EBADF`;
+    - the waiting, playing, paused, draining and idle states, with counts and timestamps;
+    - non-blocking writes (8,192 frames taken, then `EAGAIN`), with `poll` agreeing;
+    - `EBUSY` on the seventh open;
+    - OSS's format, channels, rate, fragments, space, delay and sync, and the mixer's reads;
+    - a close waiting 109 ms for a 93 ms ring.
+  - **`progtest audioexit`:** 500 ms queued, then exit: it took 0.60 s.
+  - **`tone`:** `-n 440 1 44100` played 44,100 frames, 0 underruns, 0 late; OSS at 22,050 Hz
+    the same.
+  - **`play`:**
+    - WAVs of `s16le` 44.1 kHz, `u8` 8 kHz mono, `s24-3le` 48 kHz, `f32le` extensible
+      96 kHz and µ-law 8 kHz played one after another, 0 late.
+    - A text file is "not a WAV file"; a missing file, a missing device and no arguments each
+      give their message; exit status 1.
+    - Ctrl+C stops at once (130), no stream left.
+  - **A killed program:** `tone -n 440 5`, stopped after 1 s, stopped sounding then; no stream
+    left.
+  - **Six programs at once:** tones at 44.1, 22.05, 48, 32, 11.025 and 48 kHz:
+    - 25.5 % of a core on average while mixing; the longest fill 3.5 ms of a 5 ms period;
+    - 0 underruns, 0 late; the limiter took 510 frames of their sum.
+- **Host:**
+  - the WAV reader: every format plain and extensible, streamed sizes, what it refuses, 20,000
+    mangled headers;
+  - plus 2,000,000 more under ASan and UBSan, built on their own for the reader, with nothing
+    reported;
+  - `oss.c` against a fake system call table (6 cases, 97 checks);
+  - the ABI lock: slots 67–70, both structs' sizes and offsets, every constant.
+- **Size:**
+  - `bmds_audio` 50 KB of flash (7 KB more: the file, `play`, the WAV reader) and 2,772 bytes of
+    BSS (32 more: the 8 more slots);
+  - `/dev`'s table 128 bytes more;
+  - per open: the `AudioFile` and its ring in PSRAM.

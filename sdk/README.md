@@ -11,16 +11,18 @@ the headers in `include/bmds/` are the ABI and never change incompatibly
 |---|---|
 | `include/bmds/sys.h` | The system call table: slot numbers, typed calls (`bmds_open()`, `bmds_term_set()`...), their structs and flags, the startup contract. |
 | `include/bmds/program.h` | The executable format and the program note. |
+| `include/sys/soundcard.h` | OSS (`/dev/dsp`, `/dev/mixer`) with Linux's numbers, carried out by `crt/oss.c` on the audio calls. |
 | `include/bmds/errno.h` | The system calls' error numbers (`BMDS_E...`). Programs using musl see Linux's in `errno`. |
 | `libc/musl/`, `libc/README.md` | musl 1.2.5, vendored with BMDS's patches (`libc/patches/bmds.diff`). |
 | `crt/start.c` | `_start`: the argument and auxiliary vector musl's startup wants, the thread-local template. |
 | `crt/linux.c` | The Linux system calls musl makes, carried out on the BMDS table (`__bmds_syscall`). |
+| `crt/oss.c` | OSS's `SNDCTL_DSP_*` and `SOUND_MIXER_*` ioctls on the audio calls and the `audio/*` settings. |
 | `ld/bmds.ld` | The program layout: one image linked at 0, the note, thread-local storage. |
 | `cmake/bmds-toolchain.cmake` | A CMake toolchain file for Espressif's `riscv32-esp-elf-gcc`. |
 | `cmake/BmdsProgram.cmake` | `bmds_add_program(name SOURCES ... [STACK_SIZE bytes] [ICONS png...])` (ICONS: the program's own icons, 16x16 and 32x32 PNGs, built in as `BMDS_NOTE_ICON` notes: `bmds/program.h`); generates `bmds-cc`. |
 | `cmake/BmdsLibc.cmake` | Builds musl's `libc.a` and assembles its headers in the build tree. |
 | `cmake/bmds-cc.in` | The compiler wrapper for other build systems (`CC=<build>/bmds-cc make`). |
-| `examples/` | `hello`; `cat` (files or stdin, with the raw calls); `ls [-al]` (portable POSIX only). |
+| `examples/` | `hello`; `cat` (files or stdin, with the raw calls); `ls [-al]` (portable POSIX only); `tone` (a sine on `/dev/dsp`, through OSS or the native audio calls). |
 | `tests/` | `progtest`, used by the loader's board tests. |
 
 ## Building a program

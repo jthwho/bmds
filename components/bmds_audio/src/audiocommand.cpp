@@ -174,10 +174,17 @@ namespace {
                 ctx.printf("Volume:   %ld dBFS%s%s\n", static_cast<long>(s.volumeDb), s.muted ? ", muted" : "",
                            s.held ? ", held running" : "");
                 ctx.printf("Limiter:  %lu frames reduced\n", static_cast<unsigned long>(s.limited));
-                AudioDevice::StreamLine lines[AudioDevice::MaxStreams];
-                const size_t            n = d.streamLines(lines, AudioDevice::MaxStreams);
+                // 16 lines of 112 bytes: not on the shell's stack.
+                auto *lines = static_cast<AudioDevice::StreamLine *>(
+                        Memory::alloc(MemSpace::Psram, AudioDevice::MaxStreams * sizeof(AudioDevice::StreamLine)));
+                if (lines == nullptr) {
+                        ctx.eprintf("audio: %s\n", Error(Error::NoMem).desc());
+                        return Shell::ExitFailure;
+                }
+                const size_t n = d.streamLines(lines, AudioDevice::MaxStreams);
                 ctx.printf("Streams:  %u\n", static_cast<unsigned>(n));
                 for (size_t i = 0; i < n; ++i) ctx.printf("  %s\n", lines[i].text);
+                Memory::free(lines);
                 return Shell::ExitSuccess;
         }
 
@@ -336,7 +343,7 @@ namespace {
                                 status = Shell::ExitFailure;
                         }
                 }
-                if (status == Shell::ExitSuccess && stream.drain(interrupt) == Error::Interrupted)
+                if (status == Shell::ExitSuccess && stream.drain(interrupt, WaitForever) == Error::Interrupted)
                         status = Shell::ExitInterrupted;
                 if (status != Shell::ExitFailure || err.isOk()) {
                         ctx.printf("sweep: %lu frames of %s at %lu Hz played, %lu underruns\n",

@@ -26,6 +26,7 @@
 #include <bmds/resampler.h>
 #include <bmds/sampleformat.h>
 #include <bmds/sinetone.h>
+#include <bmds/wavfile.h>
 
 using bmds::AudioControl;
 using bmds::AudioLimiter;
@@ -41,6 +42,7 @@ using bmds::ToneStream;
 namespace AudioMix = bmds::AudioMix;
 namespace Formats = bmds::SampleFormats;
 namespace R = bmds::Es8311Regs;
+namespace WavFile = bmds::WavFile;
 
 namespace {
 
@@ -599,7 +601,7 @@ TEST_CASE("PcmStream: converts, waits for its start threshold, counts underruns,
         // Drained: with nothing left it is over.
         (void)stream.write(ByteSpan(pcm.data(), 100), true, nullptr);
         bmds::Interrupt *none = nullptr;
-        CHECK(stream.drain(none).isOk()); // not attached: over already
+        CHECK(stream.drain(none, bmds::WaitForever).isOk()); // not attached: over already
         std::fill(mix.begin(), mix.end(), 0.0f);
         CHECK_FALSE(stream.render(mix.data(), Period, scratch.data())); // the 50 frames left: its last
         CHECK(mix[2 * 49] != 0.0f);
@@ -631,7 +633,7 @@ TEST_CASE("PcmStream: resampled to the device's rate, and played out at the end"
         REQUIRE(err.isOk());
         CHECK(taken == in.size() * 4);
         bmds::Interrupt *none = nullptr;
-        (void)stream.drain(none);
+        (void)stream.drain(none, bmds::WaitForever);
         std::vector<float> mix(2 * Period);
         std::vector<float> scratch(2 * Period);
         std::vector<float> out;
@@ -683,4 +685,171 @@ TEST_CASE("ToneStream: a tone and a sound, made at the device's rate; cancelling
         while (sound.render(mix.data(), Period, nullptr)) REQUIRE(++periods < 3); // the fade: 3 ms
         sound.describe(text, sizeof(text));
         CHECK(std::string(text) == "bell");
+}
+
+namespace {
+
+        struct WavBytes {
+                        std::vector<uint8_t> bytes;
+
+                        void u16(uint32_t v) {
+                                bytes.push_back(uint8_t(v));
+                                bytes.push_back(uint8_t(v >> 8));
+                        }
+                        void u32(uint32_t v) {
+                                u16(v & 0xffff);
+                                u16(v >> 16);
+                        }
+                        void tag(const char *t) { bytes.insert(bytes.end(), t, t + 4); }
+                        void chunk(const char *t, size_t size, uint8_t fill) {
+                                tag(t);
+                                u32(uint32_t(size));
+                                bytes.insert(bytes.end(), size + (size & 1), fill);
+                        }
+        };
+
+        // A WAV file: RIFF, an odd LIST chunk, `fmt ` (@p extensible: WAVE_FORMAT_EXTENSIBLE),
+        // and @p dataBytes of samples (the size written as @p dataSize, if not ~0).
+        std::vector<uint8_t> makeWav(uint16_t tag, uint16_t channels, uint32_t rate, uint16_t bits, bool extensible,
+                                     size_t dataBytes, uint32_t dataSize = ~0u) {
+                WavBytes w;
+                w.tag("RIFF");
+                w.u32(0); // patched below
+                w.tag("WAVE");
+                w.chunk("LIST", 5, 'x');
+                w.tag("fmt ");
+                w.u32(extensible ? 40 : 16);
+                w.u16(extensible ? 0xfffe : tag);
+                w.u16(channels);
+                w.u32(rate);
+                const uint32_t align = channels * ((bits + 7) / 8);
+                w.u32(rate * align);
+                w.u16(align);
+                w.u16(bits);
+                if (extensible) {
+                        w.u16(22);
+                        w.u16(bits);
+                        w.u32(channels == 1 ? 4 : 3);
+                        w.u16(tag);
+                        const uint8_t tail[14] = {0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71};
+                        w.bytes.insert(w.bytes.end(), tail, tail + 14);
+                }
+                w.tag("data");
+                w.u32(dataSize != ~0u ? dataSize : uint32_t(dataBytes));
+                w.bytes.insert(w.bytes.end(), dataBytes, 0x55);
+                const uint32_t riff = uint32_t(w.bytes.size() - 8);
+                std::memcpy(w.bytes.data() + 4, &riff, 4);
+                return w.bytes;
+        }
+
+        Error readVector(void *arg, uint64_t offset, bmds::WritableByteSpan buf) {
+                const auto &v = *static_cast<const std::vector<uint8_t> *>(arg);
+                if (offset > v.size() || v.size() - offset < buf.size()) return Error::EndOfFile;
+                std::memcpy(buf.data(), v.data() + offset, buf.size());
+                return Error::Ok;
+        }
+
+        bmds::Result<WavFile::Info> parseWav(std::vector<uint8_t> &v) {
+                return WavFile::parse(readVector, &v, v.size());
+        }
+
+} // namespace
+
+TEST_CASE("WavFile: every format, plain and extensible; chunks skipped with their padding") {
+        struct Case {
+                        uint16_t     tag, bits;
+                        SampleFormat format;
+        };
+        const Case cases[] = {{1, 8, SampleFormat::U8},       {1, 16, SampleFormat::S16Le},
+                              {1, 24, SampleFormat::S24_3Le}, {1, 32, SampleFormat::S32Le},
+                              {3, 32, SampleFormat::F32Le},   {6, 8, SampleFormat::ALaw},
+                              {7, 8, SampleFormat::MuLaw}};
+        for (const Case &c : cases) {
+                for (bool extensible : {false, true}) {
+                        for (uint16_t channels : {1, 2}) {
+                                CAPTURE(c.tag);
+                                CAPTURE(c.bits);
+                                CAPTURE(extensible);
+                                const size_t frame = channels * c.bits / 8;
+                                auto         v = makeWav(c.tag, channels, 44100, c.bits, extensible, 100 * frame);
+                                auto [info, err] = parseWav(v);
+                                REQUIRE(err.isOk());
+                                CHECK(info.format == c.format);
+                                CHECK(info.channels == channels);
+                                CHECK(info.rateHz == 44100);
+                                CHECK(info.dataOffset == v.size() - 100 * frame);
+                                CHECK(info.dataBytes == 100 * frame);
+                        }
+                }
+        }
+}
+
+TEST_CASE("WavFile: streamed and oversized data sizes run to the end, in whole frames") {
+        for (uint32_t size : {0u, 0xffffffffu, 100000u}) {
+                auto v = makeWav(1, 2, 48000, 16, false, 402, size); // 100.5 frames
+                auto [info, err] = parseWav(v);
+                REQUIRE(err.isOk());
+                CHECK(info.dataBytes == 400);
+        }
+        auto v = makeWav(1, 2, 48000, 16, false, 400, 200); // a shorter size is kept
+        CHECK(parseWav(v).value().dataBytes == 200);
+}
+
+TEST_CASE("WavFile: what it refuses") {
+        auto expect = [](std::vector<uint8_t> v, Error want) {
+                auto [info, err] = parseWav(v);
+                CHECK(err == want);
+        };
+        expect(makeWav(2, 1, 8000, 4, false, 16), Error::NotSupported);    // MS ADPCM
+        expect(makeWav(1, 6, 48000, 16, false, 120), Error::NotSupported); // 5.1
+        expect(makeWav(3, 2, 48000, 64, false, 160), Error::NotSupported); // double
+        expect(makeWav(1, 2, 48000, 12, false, 160), Error::NotSupported); // 12 bits
+        expect(makeWav(1, 0, 48000, 16, false, 16), Error::Invalid);       // no channels
+        expect(makeWav(1, 2, 0, 16, false, 16), Error::Invalid);           // no rate
+        auto v = makeWav(1, 2, 48000, 16, false, 16);
+        v[0] = 'R', v[1] = 'I', v[2] = 'F', v[3] = 'X';
+        expect(v, Error::NotSupported);
+        v[0] = 'J';
+        expect(v, Error::Invalid);
+        v = makeWav(1, 2, 48000, 16, false, 16);
+        v.resize(30); // inside `fmt `
+        expect(v, Error::Invalid);
+        expect(std::vector<uint8_t>(), Error::Invalid);
+        auto bad = makeWav(1, 2, 48000, 16, false, 16);
+        bad[32] = 3; // blockAlign doesn't match
+        expect(bad, Error::Invalid);
+        // `data` before `fmt `, and no `data` at all.
+        WavBytes w;
+        w.tag("RIFF");
+        w.u32(20);
+        w.tag("WAVE");
+        w.chunk("data", 4, 0);
+        expect(w.bytes, Error::Invalid);
+        auto noData = makeWav(1, 2, 48000, 16, false, 0);
+        noData.resize(noData.size() - 8);
+        expect(noData, Error::Invalid);
+}
+
+TEST_CASE("WavFile: mangled headers are errors, never reads out of bounds") {
+        const auto base = makeWav(1, 2, 44100, 16, true, 64);
+        uint32_t   seed = 12345;
+        auto       next = [&seed] {
+                seed = seed * 1664525u + 1013904223u;
+                return seed >> 8;
+        };
+        int parsed = 0;
+        for (int i = 0; i < 20000; ++i) {
+                auto      v = base;
+                const int edits = 1 + int(next() % 4);
+                for (int e = 0; e < edits; ++e) v[next() % 80] = uint8_t(next());
+                if (next() % 4 == 0) v.resize(next() % v.size());
+                auto [info, err] = parseWav(v);
+                if (err.isOk()) {
+                        ++parsed;
+                        CHECK(info.dataOffset + info.dataBytes <= v.size());
+                        CHECK(info.channels >= 1);
+                        CHECK(info.channels <= 2);
+                }
+        }
+        CHECK(parsed > 0);
 }

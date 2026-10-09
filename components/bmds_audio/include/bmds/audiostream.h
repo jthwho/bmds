@@ -19,6 +19,7 @@
 #include <bmds/resampler.h>
 #include <bmds/result.h>
 #include <bmds/sampleformat.h>
+#include <bmds/seqlocked.h>
 #include <bmds/semaphore.h>
 #include <bmds/sinetone.h>
 #include <bmds/span.h>
@@ -170,9 +171,14 @@ class ToneStream final : public AudioStream {
  * A ring that runs dry while playing is an underrun: counted, and silence
  * mixed until data comes.
  *
+ * Paused, it mixes nothing and keeps its ring (no underruns counted).
+ * Once over (drained, cancelled, dropped), `reset()` empties it for another
+ * attach.
+ *
  * @par Thread Safety
- * One writer task (`write()`, `drain()`) and the engine. `open()` and
- * `close()` while not attached.
+ * One writer task (`write()`, `drain()`) and the engine; `pause()`,
+ * `startNow()` and the counters from any task. `open()`, `close()` and
+ * `reset()` while not attached.
  */
 class PcmStream final : public AudioStream {
         public:
@@ -202,6 +208,18 @@ class PcmStream final : public AudioStream {
                 /** @brief Frees the ring and the resampler. */
                 void close();
 
+                /** @brief True once `open()` has allocated its ring. */
+                bool isOpen() const { return _ring != nullptr; }
+
+                /**
+                 * @brief Empties the ring and forgets the start, a drain and a
+                 *        cancel, for another attach (the counters and a pause stay).
+                 */
+                void reset();
+
+                /** @brief Sets the start threshold (at least 1, at most the ring), while not attached. */
+                void setStartFrames(size_t frames);
+
                 /** @brief Returns the format. */
                 const Format &format() const { return _format; }
 
@@ -211,28 +229,71 @@ class PcmStream final : public AudioStream {
                 /**
                  * @brief Copies @p data into the ring, waiting for room while it is
                  *        full (or not at all if @p nonBlocking).
-                 * @return The bytes taken (all of them, unless interrupted, over or
-                 *         non-blocking); `WouldBlock` (non-blocking and full),
-                 *         `Interrupted` (nothing taken), or `InvalidState` (over).
+                 * @return The bytes taken: all of them, or (over or non-blocking) what
+                 *         fit; interrupted, those taken with `Interrupted`. Nothing
+                 *         taken: `WouldBlock` (non-blocking and full) or `InvalidState`
+                 *         (over).
                  * @blocking Unless @p nonBlocking.
                  */
                 Result<size_t> write(ByteSpan data, bool nonBlocking, Interrupt *interrupt);
 
                 /**
-                 * @brief Plays what is in the ring, then ends: waits until it is over.
-                 * @return `Ok`, or `Interrupted` (it plays on).
+                 * @brief Plays what is in the ring, then ends: waits until it is over,
+                 *        up to @p timeoutMs.
+                 * @return `Ok`, `Interrupted` (it plays on), or `Timeout`.
                  * @blocking
                  */
-                Error drain(Interrupt *interrupt);
+                Error drain(Interrupt *interrupt, unsigned int timeoutMs);
+
+                /** @brief Plays from now on, without waiting for the start threshold. @nonblocking */
+                void startNow();
+
+                /** @brief Pauses (mixes nothing, keeps the ring) or resumes. @nonblocking */
+                void setPaused(bool paused);
+
+                /** @brief True while paused. */
+                bool isPaused() const { return _paused.load(std::memory_order_acquire); }
+
+                /** @brief True once the start threshold was reached (or `startNow()`). */
+                bool hasStarted() const { return _started.load(std::memory_order_acquire); }
+
+                /** @brief True while a drain is asked. */
+                bool isDraining() const { return _draining.load(std::memory_order_acquire); }
 
                 /** @brief Returns the frames in the ring. */
                 size_t queuedFrames() const;
+
+                /** @brief Returns the frames the ring holds in all. */
+                size_t capacityFrames() const;
+
+                /** @brief Returns the start threshold in frames. */
+                size_t startFrames() const { return _startFrames; }
+
+                /** @brief Returns the frames written since it opened. */
+                uint64_t writtenFrames() const {
+                        return _frameBytes == 0 ? 0 : _written.load(std::memory_order_relaxed) / _frameBytes;
+                }
+
+                /**
+                 * @brief Returns the resampler's delay in the stream's frames (0
+                 *        when it plays at the device's rate).
+                 */
+                size_t resamplerDelayFrames() const { return _resampling ? _resampler.delayFrames() : 0; }
+
+                /** @brief Where playing has got to: frames taken from the ring, and when. */
+                struct Position {
+                                uint64_t frames = 0;
+                                int64_t  ns = 0; ///< `Clock::monotonicNs()` when they were taken (0: none yet).
+                };
+
+                /** @brief Returns the position. @nonblocking */
+                Position position() const { return _position.load(); }
 
                 /** @brief Returns the underruns since it opened. */
                 uint32_t underruns() const { return _underruns.load(std::memory_order_relaxed); }
 
                 /** @brief Returns the frames it has played (at its own rate). */
-                uint64_t playedFrames() const { return _played.load(std::memory_order_relaxed); }
+                uint64_t playedFrames() const { return _position.load().frames; }
 
                 void  cancel() override;
                 Error prepare(uint32_t deviceRate, size_t maxFrames) override;
@@ -251,12 +312,14 @@ class PcmStream final : public AudioStream {
                 ByteRing             *_ring = nullptr; // in _storage
                 Resampler             _resampler;
                 bool                  _resampling = false;
-                bool                  _playing = false; // the start threshold was reached
-                size_t                _flushLeft = 0;   // silence to feed the resampler at the end
+                size_t                _flushLeft = 0;  // silence to feed the resampler at the end
+                std::atomic<bool>     _started{false}; // the start threshold was reached (or startNow())
+                std::atomic<bool>     _paused{false};
                 std::atomic<bool>     _draining{false};
                 std::atomic<bool>     _cancelled{false};
                 std::atomic<uint32_t> _underruns{0};
-                std::atomic<uint64_t> _played{0};
+                std::atomic<uint64_t> _written{0}; // bytes
+                SeqLocked<Position>   _position;
                 bool                  _starved = false; // the last period ran short (one underrun each time)
 };
 

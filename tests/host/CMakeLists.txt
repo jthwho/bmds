@@ -56,6 +56,8 @@ add_executable(bmds_host_tests
         littlefs.cpp
         loader.cpp
         memorystream.cpp
+        oss.cpp
+        ${BMDS_ROOT}/sdk/crt/oss.c
         memspace.cpp
         pipe.cpp
         process.cpp

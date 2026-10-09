@@ -19,6 +19,7 @@
 #include <freertos/task.h>
 #include <sdkconfig.h>
 #include <bmds/audiodevice.h>
+#include <bmds/audiofile.h>
 #include <bmds/board.h>
 #include <bmds/deadline.h>
 #include <bmds/es8311.h>
@@ -116,12 +117,25 @@ Error AudioDevice::init() {
                 const Error err = d._watcher.start("audio/dsp0", settingsChanged, &d);
                 if (err.isError()) bmdsWarn("audio: dsp0 won't follow its settings: %s", err.desc());
         }
+        const Error err = AudioFile::addFiles(d);
+        if (err.isError()) bmdsWarn("audio: no /dev/dsp0: %s", err.desc());
         return Error::Ok;
 }
 
 Result<AudioDevice *> AudioDevice::device(size_t number) {
         if (number >= MaxDevices || !devices[number].isCreated()) return makeError<AudioDevice *>(Error::NotSupported);
         return makeResult(&*devices[number]);
+}
+
+Result<AudioDevice *> AudioDevice::defaultDevice() {
+        if (!SysConf::isReady()) return device(0);
+        String name;
+        if (SysConf::get(bmdsConf_audioDefault.key, name).isError())
+                return makeError<AudioDevice *>(Error::NotSupported);
+        const StringView n(name);
+        if (n.size() != 4 || !n.startsWith("dsp") || n[3] < '0' || n[3] > '9')
+                return makeError<AudioDevice *>(Error::NotSupported);
+        return device(static_cast<size_t>(n[3] - '0'));
 }
 
 AudioDevice::AudioDevice(AudioCodec &codec, uint8_t number) : _codec(codec), _wake(1, 0), _number(number) {}
@@ -514,6 +528,25 @@ AudioDevice::Status AudioDevice::status() {
         return s;
 }
 
+AudioDevice::Timing AudioDevice::timing() {
+        Mutex::Locker locker(_lock, WaitForever);
+        if (_state == State::Running) return Timing{_rateHz, _periodFrames};
+        return Timing{wantedRate(), _settings.periodFrames};
+}
+
+Error AudioDevice::addClient() {
+        uint8_t n = _clients.load(std::memory_order_relaxed);
+        do {
+                if (n >= MaxClients) return Error::Busy;
+        } while (!_clients.compare_exchange_weak(n, static_cast<uint8_t>(n + 1), std::memory_order_acq_rel));
+        return Error::Ok;
+}
+
+void AudioDevice::removeClient() {
+        _clients.fetch_sub(1, std::memory_order_acq_rel);
+        return;
+}
+
 size_t AudioDevice::streamLines(StreamLine *out, size_t max) {
         Mutex::Locker locker(_lock, WaitForever);
         size_t        n = 0;
@@ -645,11 +678,7 @@ namespace SystemSounds {
                         auto [on, err] = SysConf::getBool(bmdsConf_audioFeedback.key);
                         if (err.isError() || !on) return Error::Ok;
                 }
-                String name;
-                if (SysConf::get(bmdsConf_audioDefault.key, name).isError()) return Error::Ok;
-                const StringView n(name);
-                if (n.size() != 4 || !n.startsWith("dsp") || n[3] < '0' || n[3] > '9') return Error::Ok;
-                auto [d, derr] = AudioDevice::device(static_cast<size_t>(n[3] - '0'));
+                auto [d, derr] = AudioDevice::defaultDevice();
                 if (derr.isError()) return Error::Ok;
                 return d->playSound(sound);
         }

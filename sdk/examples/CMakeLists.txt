@@ -10,6 +10,7 @@ bmds_add_program(hello SOURCES hello/hello.c ICONS hello/hello-16.png hello/hell
 bmds_add_program(cat SOURCES cat/cat.c)
 bmds_add_program(ls SOURCES ls/ls.c)
 bmds_add_program(conf SOURCES conf/conf.c)
+bmds_add_program(tone SOURCES tone/tone.c)
 
 # Test programs (not examples): the loader's board tests use them.
 bmds_add_program(progtest SOURCES ../tests/progtest.c)
