@@ -1,5 +1,5 @@
 /**
- * @file      folderitems.h
+ * @file      folderitemmodel.h
  * @copyright Jason Howard. All rights reserved.
  *
  * SPDX-License-Identifier: MIT
@@ -12,22 +12,24 @@
 #include <cstdint>
 #include <bmds/config.h>
 #include <bmds/copiedfiles.h>
+#include <bmds/fileicons.h>
 #include <bmds/foldermodel.h>
 #include <bmds/itemmodel.h>
 
-#include "fileicons.h"
 
 BMDS_NAMESPACE_BEGIN
 
 /**
- * @brief A folder window's items (`devplan/filebrowser.md` §4h): a
- *        `FolderModel` as the views' `ItemModel`, with each type's icon and the
- *        columns Name, Size, Type and Modified; a cut item's icon dimmed (§4j).
+ * @brief A folder's items for the views (`devplan/filebrowser.md` §4h): a
+ *        `FolderModel` as an `ItemModel`, with each type's icon and the
+ *        columns Name, Size, Type and Modified; a cut item's icon dimmed (§4j)
+ *        when given the clipboard's files. The file browser's and
+ *        `FileDialog`'s (`devplan/mediaplayer.md` §6d).
  *
  * @par Thread Safety
- * The panel's loop.
+ * The application's loop (drawing asks for icons as `FileIcons` says).
  */
-class FolderItems final : public ItemModel {
+class FolderItemModel final : public ItemModel {
         public:
                 /** @brief The columns. */
                 enum Column : size_t {
@@ -38,8 +40,11 @@ class FolderItems final : public ItemModel {
                         Columns,
                 };
 
-                /** @brief Items with @p icons, those among @p copied's cut ones dimmed. */
-                FolderItems(FileIcons &icons, const CopiedFiles &copied) : _icons(icons), _copied(copied) {}
+                /** @brief Items with @p icons. */
+                explicit FolderItemModel(FileIcons &icons) : _icons(icons) {}
+
+                /** @brief Dims the icons of @p copied's cut items (null: none), kept by the caller. */
+                void setCopied(const CopiedFiles *copied) { _copied = copied; }
 
                 /** @brief Returns the folder. */
                 FolderModel &folder() { return _folder; }
@@ -72,7 +77,7 @@ class FolderItems final : public ItemModel {
         private:
                 FolderModel        _folder;
                 FileIcons         &_icons;
-                const CopiedFiles &_copied;
+                const CopiedFiles *_copied = nullptr;
 };
 
 BMDS_NAMESPACE_END

@@ -18,6 +18,7 @@
 #include <vector>
 #include <bmds/bevel.h>
 #include <bmds/desktopentry.h>
+#include <bmds/filenamelist.h>
 #include <bmds/font.h>
 #include <bmds/furniturelayout.h>
 #include <bmds/icongrid.h>
@@ -36,6 +37,7 @@
 #include <bmds/scrollmodel.h>
 #include <bmds/slidermodel.h>
 #include <bmds/switcherlayout.h>
+#include <bmds/tabrow.h>
 #include <bmds/treerows.h>
 #include <bmds/windowstack.h>
 
@@ -1151,4 +1153,46 @@ TEST_CASE("SliderModel: a signed range, steps, and the handle's place both ways"
         // No room to travel, or no range: the minimum, at the start.
         CHECK(m.handleStart(10, 11) == 0);
         CHECK(m.valueAt(3, 10, 11) == -61);
+}
+
+TEST_CASE("TabRow: tabs side by side on columns, found by x, stepped around the ends") {
+        const uint16_t texts[] = {64, 37, 0};
+        uint16_t       lefts[3], widths[3];
+        CHECK(bmds::TabRow::place(texts, 2, lefts, widths) == 2 + 80 + 56 + 16);
+        CHECK(lefts[0] == 2);
+        CHECK(widths[0] == 80);
+        CHECK(lefts[1] == 82);
+        CHECK(widths[1] == 56); // 37 + 16, up to a column
+        CHECK(lefts[2] == 138);
+        CHECK(widths[2] == 16);
+        CHECK(bmds::TabRow::at(lefts, widths, 1) == -1);
+        CHECK(bmds::TabRow::at(lefts, widths, 2) == 0);
+        CHECK(bmds::TabRow::at(lefts, widths, 81) == 0);
+        CHECK(bmds::TabRow::at(lefts, widths, 82) == 1);
+        CHECK(bmds::TabRow::at(lefts, widths, 154) == -1);
+        CHECK(bmds::TabRow::step(0, 3, 1) == 1);
+        CHECK(bmds::TabRow::step(2, 3, 1) == 0);
+        CHECK(bmds::TabRow::step(0, 3, -1) == 2);
+        CHECK(bmds::TabRow::step(1, 3, -7) == 0);
+        CHECK(bmds::TabRow::step(5, 0, 1) == 0);
+}
+
+TEST_CASE("FileNameList: one name as it is, several in quotes, written back") {
+        bmds::List<bmds::StringView> names(bmds::MemSpace::Psram);
+        REQUIRE(bmds::FileNameList::split("  my song.mp3 ", names).isOk());
+        REQUIRE(names.size() == 1);
+        CHECK(names[0] == "my song.mp3");
+        REQUIRE(bmds::FileNameList::split(R"("a b.mp3" "c.ogg"  " " "d)", names).isOk());
+        REQUIRE(names.size() == 3);
+        CHECK(names[0] == "a b.mp3");
+        CHECK(names[1] == "c.ogg");
+        CHECK(names[2] == "d"); // unclosed: to the end
+        REQUIRE(bmds::FileNameList::split("   ", names).isOk());
+        CHECK(names.isEmpty());
+        bmds::String out(bmds::MemSpace::Psram);
+        REQUIRE(bmds::FileNameList::appendQuoted("a b.mp3", out).isOk());
+        REQUIRE(bmds::FileNameList::appendQuoted("c.ogg", out).isOk());
+        CHECK(out.view() == R"("a b.mp3" "c.ogg")");
+        REQUIRE(bmds::FileNameList::split(out.view(), names).isOk());
+        CHECK(names.size() == 2);
 }

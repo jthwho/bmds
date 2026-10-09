@@ -221,6 +221,15 @@ Error GuiApplication::post(Callback fn, void *arg) {
         return Error();
 }
 
+void GuiApplication::cancelPosts(void *arg) {
+        SpinLock::Locker lock(_queueLock);
+        for (size_t i = 0; i < _count; ++i) {
+                Event &e = _events[(_head + i) % QueueSize];
+                if (e.type == Event::Type::Post && e.arg == arg) e.fn = nullptr; // made a no-op
+        }
+        return;
+}
+
 void GuiApplication::quit(int code) {
         _code = code;
         _quit.store(true, std::memory_order_release);

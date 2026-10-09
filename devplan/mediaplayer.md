@@ -382,9 +382,9 @@ the program's side, and freedesktop.org's StatusNotifierItem for what the protoc
 
 1. **Pure parts, host-tested** (done, 2026-10-09): `Playlist` (orders, shuffle, repeat, edits),
    M3U reading and writing, `Fft` and the bands, `MidiChannels`, the library index's lines.
-2. **Toolkit:** `FolderItemModel` and `FileIcons` moved into `bmds_gui` (the file browser on
-   them, unchanged), `ComboBox`, `TabWidget`, `Slider`'s release, `FileDialog`; each tried in
-   `/bin/widgets` on the board.
+2. **Toolkit** (done, 2026-10-09): `FolderItemModel` and `FileIcons` moved into `bmds_gui` (the
+   file browser on them, unchanged), `ComboBox`, `TabWidget`, `Slider`'s release, `FileDialog`;
+   each tried in `/bin/widgets` on the board.
 3. **The player:** the playback thread and the window (now playing, position, transport,
    volume, playlist), Open and Add, keys, errors, one player, `mplayer.desktop` and the file
    types. Checked by ear by the user: WAV, MP3, Ogg, FLAC and MIDI files, seeking, gapless.
@@ -434,3 +434,50 @@ the program's side, and freedesktop.org's StatusNotifierItem for what the protoc
     for a number, no path, a year too large), extra fields ignored.
   - `MidiDecoder::Activity` (the events a MIDI file's playing will report, step 7) is declared in
     `mididecoder.h` so the model and the decoder share it.
+- **Step 2, the toolkit** (2026-10-09), in `bmds_gui` for every program:
+  - **Moved:** `FolderItems` became `FolderItemModel` (the clipboard's cut files now optional,
+    `setCopied()`), with `FileIcons`, out of the panel; its folder windows use them unchanged.
+  - **`FolderModel::setNameFilter()`** and **`NameFilter`** (`bmds_files`, pure): `;`-separated
+    `*` and `?` patterns without ASCII case, files only (folders always shown); `NoFiles` for
+    choosing a folder; `firstExtension()` for Save's default extension.
+  - **`ComboBox`:** a field with an arrow; a press, Alt+Down, Alt+Up or F4 opens a `Menu` of the
+    items under it (made at the first opening, the current one checked, `&` doubled); Up, Down,
+    Home, End and the wheel step. Items carry a value (`itemData()`).
+  - **`TabWidget`** (its row's geometry and stepping pure, `TabRow`): pages are its children, only
+    the current one visible; the focus moves to the new page's first focusable widget if it was
+    in the old one. Its keys come through a new **`Widget::keyBeforeChild()`**: the focus
+    widget's ancestors are offered a key first, innermost first, as a list would otherwise take
+    Ctrl+PageDown for itself.
+  - **`Slider`:** `Released` (after a drag, or a press on the groove: the press marks it dragging
+    before moving the handle there) and `isDragging()`; keys and the wheel only `Changed`.
+  - **`FileDialog`** (§6d, a `Dialog`): Open, OpenMany, Save, Folder. Its own `FileIcons`; the
+    folder read 64 entries a turn; a directory watch while it is open; the view reset as soon as
+    a folder opens (else its old current row's index named a row of the new folder). The name
+    field: one name, or several in quotes (`FileNameList`, pure); a folder typed is entered, a
+    pattern filters. Escape in a field, the close box and Cancel reject. Also new:
+    `GuiApplication::cancelPosts()` (the dialog's destructor drops its own posted calls) and
+    `Label::setMinimumWidth()` (its labels in one column).
+  - **Host tests:** `NameFilter` and the filtered `FolderModel` (`folders.cpp`), `TabRow` and
+    `FileNameList` (`gui.cpp`); 449 cases pass.
+  - **On the board** (`/bin/widgets`, driven with `win pointer` and `win hid`, seen in
+    screenshots): Files and Controls tabs by click, Ctrl+Tab and Ctrl+PageDown (from the tree
+    too); the combo box's menu (an item with `&` shown as itself) and its choice told; the seek
+    bar showing "(dragging)" then told on release. The dialog: places (Home, `/boot`, `/ram0/p0`,
+    `/sd0/p0`, `/`), the media filter showing `collectathon.wav` among `/home`'s files, Enter on a
+    folder entering it, Backspace going up with the folder left selected, Open choosing the file;
+    Save adding `.m3u8` to `playlist`, and asking before replacing `collectathon.wav` (No kept it
+    open); Choose Folder; Open Several with Ctrl+A in `/boot` taking the four files, not the
+    folders; `p*` typed leaving `profile` and the folders. Ten openings (`mem mark`, `mem new`): 5
+    blocks (496 bytes) new, among them the shell's prompt and the last folder's path; nothing
+    tenfold. The file browser's windows as
+    before.
+  - **The user's look** (2026-10-09) found three things, fixed and checked on the board:
+    - the current tab was drawn first, so the next tab's lit edge drew over its right edge
+      (seen only with the first tab current): the current tab is drawn last now;
+    - `DetailsView`'s header lies outside the viewport a scroll redraws, so scrolling across
+      left it behind (plainly in an empty folder): `scrolled()` redraws it when the scroll
+      across changes;
+    - several files: Ctrl+click and Shift+click select several in Open Several (checked with
+      `win hid` modifiers: four by Shift, two by Ctrl, folders left out of the name field). The
+      names a selection put in the field are cleared on going to another folder (where they name
+      nothing); a name edited since is kept.

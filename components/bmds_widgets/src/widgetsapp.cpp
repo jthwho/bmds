@@ -6,18 +6,24 @@
  * See LICENSE file in the project root folder for license information.
  *
  * /bin/widgets: a window with the toolkit's furniture and item views, to try them
- * (devplan/filebrowser.md §4e, §4g). A menu bar, a tool bar, a splitter between a folder tree and
- * the folder's files as icons or details (View), a status bar, and two dialogs: a question, and a
- * progress bar with Cancel.
+ * (devplan/filebrowser.md §4e, §4g; devplan/mediaplayer.md §6d). A menu bar, a tool bar, tabs: a
+ * splitter between a folder tree and the folder's files as icons or details (View), and controls (a
+ * combo box, a seek bar told on release); a status bar; dialogs: a question, a progress bar with
+ * Cancel, and the file dialog's four kinds.
  */
 
 #include <cstdio>
 #include <cstring>
 #include <new>
+#include <atomic>
 #include <bmds/builtinprograms.h>
+#include <bmds/combobox.h>
 #include <bmds/detailsview.h>
 #include <bmds/dialog.h>
 #include <bmds/fdtable.h>
+#include <bmds/filedialog.h>
+#include <bmds/fileicons.h>
+#include <bmds/folderitemmodel.h>
 #include <bmds/foldermodel.h>
 #include <bmds/furniture.h>
 #include <bmds/guiapplication.h>
@@ -26,6 +32,8 @@
 #include <bmds/memory.h>
 #include <bmds/menu.h>
 #include <bmds/menubar.h>
+#include <bmds/slider.h>
+#include <bmds/tabwidget.h>
 #include <bmds/treeview.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -43,6 +51,10 @@ namespace {
                 LargeIcons,
                 Details,
                 About,
+                OpenFile,
+                OpenFiles,
+                SaveFile,
+                ChooseFolder,
         };
 
         // An icon of the theme, copied (its cache may drop its own).
@@ -63,52 +75,22 @@ namespace {
                         ~OwnedIcon() { Memory::free(pixels); }
         };
 
-        // The folder's entries as the views' model: the folder model's, with sizes and types written out.
-        class FilesModel final : public ItemModel {
-                public:
-                        FolderModel folder;
-                        const Icon *folderSmall = nullptr, *folderLarge = nullptr;
-                        const Icon *fileSmall = nullptr, *fileLarge = nullptr;
-
-                        size_t      count() const override { return folder.count(); }
-                        StringView  text(size_t row) const override { return folder.name(row); }
-                        const Icon *icon(size_t row, uint16_t size) const override {
-                                const bool dir = folder.entry(row).isDirectory();
-                                return size > 16 ? (dir ? folderLarge : fileLarge) : (dir ? folderSmall : fileSmall);
-                        }
-                        size_t     columns() const override { return 3; }
-                        StringView columnTitle(size_t column) const override {
-                                return column == 0 ? StringView("Name") : column == 1 ? StringView("Size") : "Type";
-                        }
-                        uint16_t columnWidth(size_t column) const override {
-                                return column == 0 ? 200 : column == 1 ? 80 : 136;
-                        }
-                        Align    columnAlign(size_t column) const override {
-                                return column == 1 ? Align::Right : Align::Left;
-                        }
-                        StringView columnText(size_t row, size_t column, Span<char> buffer) const override {
-                                const FolderModel::Entry &e = folder.entry(row);
-                                if (column == 0) return folder.name(row);
-                                if (column == 1) {
-                                        if (e.isDirectory() || e.builtin) return StringView();
-                                        const uint64_t kb = (e.size + 1023) / 1024;
-                                        const int      n = std::snprintf(buffer.data(), buffer.size(), "%llu KB",
-                                                                         static_cast<unsigned long long>(kb));
-                                        return StringView(buffer.data(), n > 0 ? size_t(n) : 0);
-                                }
-                                if (e.isDirectory()) return "Folder";
-                                if (e.builtin) return "Built-in program";
-                                return FolderModel::extensionOf(folder.name(row));
-                        }
-        };
-
         class WidgetsWindow final : public GuiWindow {
                 public:
                         WidgetsWindow(GuiApplication &app, const Config &config)
                             : GuiWindow(app, config), _file(app), _view(app), _help(app),
-                              _question(app, "Question", 280, 40), _copying(app, "Copying", 280, 48) {}
+                              _question(app, "Question", 280, 40), _copying(app, "Copying", 280, 48),
+                              _openOne(app, FileDialog::Mode::Open, "Open"),
+                              _openMany(app, FileDialog::Mode::OpenMany, "Open Several"),
+                              _save(app, FileDialog::Mode::Save, "Save As"),
+                              _folder(app, FileDialog::Mode::Folder, "Choose a Folder"), _fileIcons(app.icons()) {
+                                _fileIcons.setAsked(iconsAsked, this);
+                        }
 
-                        ~WidgetsWindow() override { stopFill(); }
+                        ~WidgetsWindow() override {
+                                stopFill();
+                                application().cancelPosts(this);
+                        }
 
                         Error build();
 
@@ -130,6 +112,14 @@ namespace {
                         static void selectionChanged(void *arg, ItemView &view);
                         static void sortAsked(void *arg, DetailsView &view, size_t column);
                         static void fill(void *arg);
+                        static void iconsAsked(void *arg);
+                        static void iconsDue(void *arg);
+                        static void fileChosen(void *arg, FileDialog &dialog, int result);
+                        static void comboChanged(void *arg, ComboBox &box, int index);
+                        static void seekMoved(void *arg, Slider &slider, int32_t value);
+                        static void seekReleased(void *arg, Slider &slider, int32_t value);
+                        static void tabChanged(void *arg, TabWidget &tabs, size_t index);
+                        Error       buildControls(BoxLayout *page);
                         void        startCopy();
                         void        status(const char *text);
                         void        showFolder(StringView path);
@@ -142,14 +132,22 @@ namespace {
                         Menu         _help;
                         Dialog       _question;
                         Dialog       _copying;
+                        FileDialog        _openOne;
+                        FileDialog        _openMany;
+                        FileDialog        _save;
+                        FileDialog        _folder;
+                        FileIcons         _fileIcons;
+                        FolderItemModel   _files{_fileIcons};
+                        TabWidget        *_tabs = nullptr;
+                        Label            *_seekLabel = nullptr;
+                        std::atomic<bool> _iconsPosted{false};
                         StatusBar   *_status = nullptr;
                         ProgressBar *_progress = nullptr;
                         TreeView    *_tree = nullptr;
                         IconView    *_icons = nullptr;
                         DetailsView *_details = nullptr;
                         Splitter    *_split = nullptr;
-                        FilesModel   _files;
-                        OwnedIcon    _owned[6];
+                        OwnedIcon         _owned[3];
                         int          _timer = -1;
                         int          _fillTimer = -1;
                         uint32_t     _done = 0;
@@ -163,10 +161,22 @@ namespace {
                 setCentral(column);
                 auto *bar = Widget::create<MenuBar>(column);
                 auto *tools = Widget::create<ToolBar>(column);
-                _split = Widget::create<Splitter>(column, Splitter::Orientation::Horizontal);
+                _tabs = Widget::create<TabWidget>(column);
                 _status = Widget::create<StatusBar>(column);
-                if (bar == nullptr || tools == nullptr || _split == nullptr || _status == nullptr) return Error::NoMem;
+                if (bar == nullptr || tools == nullptr || _tabs == nullptr || _status == nullptr) return Error::NoMem;
+                _tabs->setStretch(1);
+                _split = Widget::create<Splitter>(_tabs, Splitter::Orientation::Horizontal);
+                auto *controls = Widget::create<BoxLayout>(_tabs, BoxLayout::Direction::Vertical);
+                if (_split == nullptr || controls == nullptr) return Error::NoMem;
+                (void)_tabs->addTab(_split, "Files");
+                (void)_tabs->addTab(controls, "Controls");
+                _tabs->setChanged(tabChanged, this);
 
+                (void)_file.addItem("&Open...", OpenFile);
+                (void)_file.addItem("Open &Several...", OpenFiles);
+                (void)_file.addItem("Save &As...", SaveFile);
+                (void)_file.addItem("Choose &Folder...", ChooseFolder);
+                (void)_file.addSeparator();
                 (void)_file.addItem("&Question...", Question);
                 (void)_file.addItem("&Copy...", Copy);
                 (void)_file.addSeparator();
@@ -184,18 +194,11 @@ namespace {
                 (void)tools->addButton(nullptr, "Question", tool, this);
                 (void)tools->addButton(nullptr, "Copy", tool, this);
 
-                // The icons, copied once.
+                // The tree's icons, copied once; the files' from the toolkit's FileIcons.
                 IconTheme &theme = application().icons();
                 _owned[0].take(theme.find("folder", 16));
-                _owned[1].take(theme.find("folder", 32));
-                _owned[2].take(theme.find("text-x-generic", 16));
-                _owned[3].take(theme.find("text-x-generic", 32));
-                _owned[4].take(theme.find("drive-harddisk", 16));
-                _owned[5].take(theme.find("folder-open", 16));
-                _files.folderSmall = _owned[0].get();
-                _files.folderLarge = _owned[1].get();
-                _files.fileSmall = _owned[2].get();
-                _files.fileLarge = _owned[3].get();
+                _owned[1].take(theme.find("drive-harddisk", 16));
+                _owned[2].take(theme.find("folder-open", 16));
 
                 _tree = Widget::create<TreeView>(_split);
                 // The files' side: both views, one shown.
@@ -212,7 +215,7 @@ namespace {
                 }
                 _details->setSortAsked(sortAsked, this);
                 _details->setSortIndicator(0, false);
-                _tree->setIcons(_owned[4].get(), _owned[0].get(), _owned[5].get());
+                _tree->setIcons(_owned[1].get(), _owned[0].get(), _owned[2].get());
                 _tree->setExpanding(expanding, this);
                 _tree->setChanged(folderChosen, this);
                 // One root, /: the filesystems and the rest under it.
@@ -220,7 +223,18 @@ namespace {
                 _split->setLeast(120, 160);
                 _split->setPosition(200);
                 _split->setWidgets(_tree, right);
-                _split->setStretch(1);
+                if (Error e = buildControls(controls); e.isError()) return e;
+
+                // The file dialogs: media files as the player asks for them, or all.
+                for (FileDialog *d : {&_openOne, &_openMany, &_save}) {
+                        if (d != &_save)
+                                (void)d->addFilter("Media files", "*.mp3;*.ogg;*.flac;*.wav;*.mid;*.midi;*.m3u;*.m3u8");
+                        (void)d->addFilter("Playlists (*.m3u8)", "*.m3u8;*.m3u");
+                        (void)d->addFilter("All files", "");
+                        d->setFinished(fileChosen, this);
+                }
+                (void)_save.setFileName("playlist");
+                _folder.setFinished(fileChosen, this);
 
                 (void)_status->addField(0);
                 (void)_status->addField(160);
@@ -276,6 +290,10 @@ namespace {
                                 self->setDetails(self->_showDetails);
                                 break;
                         case About: self->status("BMDS widgets: the toolkit's furniture and views"); break;
+                        case OpenFile: (void)self->_openOne.open(); break;
+                        case OpenFiles: (void)self->_openMany.open(); break;
+                        case SaveFile: (void)self->_save.open(); break;
+                        case ChooseFolder: (void)self->_folder.open(); break;
                         default: break;
                 }
                 return;
@@ -318,14 +336,14 @@ namespace {
                 if (tree.current() < 0) return;
                 String path(MemSpace::Psram);
                 if (tree.rows().pathOf(size_t(tree.current()), path).isOk() &&
-                    path.view() != self->_files.folder.path())
+                    path.view() != self->_files.folder().path())
                         self->showFolder(path.view());
                 return;
         }
 
         void WidgetsWindow::showFolder(StringView path) {
                 stopFill();
-                if (_files.folder.open(path, Vfs::Context{"/", nullptr}).isError()) {
+                if (_files.folder().open(path, Vfs::Context{"/", nullptr}).isError()) {
                         status("Can't open that folder");
                         filesChanged();
                         return;
@@ -345,8 +363,8 @@ namespace {
 
         void WidgetsWindow::fill(void *arg) {
                 auto *self = static_cast<WidgetsWindow *>(arg);
-                (void)self->_files.folder.fillSome(FillBatch);
-                if (self->_files.folder.isComplete()) self->stopFill();
+                (void)self->_files.folder().fillSome(FillBatch);
+                if (self->_files.folder().isComplete()) self->stopFill();
                 self->filesChanged();
                 return;
         }
@@ -355,9 +373,9 @@ namespace {
                 _icons->modelReset();
                 _details->modelReset();
                 char text[64];
-                std::snprintf(text, sizeof(text), "%zu items, %llu KB%s", _files.folder.count(),
-                              static_cast<unsigned long long>((_files.folder.shownBytes() + 1023) / 1024),
-                              _files.folder.isComplete() ? "" : " (reading)");
+                std::snprintf(text, sizeof(text), "%zu items, %llu KB%s", _files.folder().count(),
+                              static_cast<unsigned long long>((_files.folder().shownBytes() + 1023) / 1024),
+                              _files.folder().isComplete() ? "" : " (reading)");
                 _status->setText(1, StringView(text));
                 return;
         }
@@ -365,15 +383,15 @@ namespace {
         void WidgetsWindow::opened(void *arg, ItemView &view, size_t row) {
                 auto *self = static_cast<WidgetsWindow *>(arg);
                 (void)view;
-                if (!self->_files.folder.entry(row).isDirectory()) {
+                if (!self->_files.folder().entry(row).isDirectory()) {
                         self->status("A file: opened by the folder windows (step 4)");
                         return;
                 }
                 // Into the folder: the tree follows if it shows it.
                 String path(MemSpace::Psram);
-                (void)path.assign(self->_files.folder.path());
+                (void)path.assign(self->_files.folder().path());
                 if (!path.view().endsWith('/')) (void)path.append('/');
-                (void)path.append(self->_files.folder.name(row));
+                (void)path.append(self->_files.folder().name(row));
                 if (self->_tree->current() >= 0) self->_tree->expand(size_t(self->_tree->current()));
                 if (self->_tree->selectPath(path.view()) < 0) self->showFolder(path.view());
                 return;
@@ -384,7 +402,7 @@ namespace {
                 char         text[64];
                 const size_t n = view.selection().selectedCount();
                 if (n == 1 && view.current() >= 0) {
-                        const StringView name = self->_files.folder.name(size_t(view.current()));
+                        const StringView name = self->_files.folder().name(size_t(view.current()));
                         std::snprintf(text, sizeof(text), "%.*s", int(name.size()), name.data());
                 } else {
                         std::snprintf(text, sizeof(text), "%zu selected", n);
@@ -395,12 +413,10 @@ namespace {
 
         void WidgetsWindow::sortAsked(void *arg, DetailsView &view, size_t column) {
                 auto                   *self = static_cast<WidgetsWindow *>(arg);
-                const FolderModel::Sort sorts[] = {FolderModel::Sort::Name, FolderModel::Sort::Size,
-                                                   FolderModel::Sort::Type};
-                const FolderModel::Sort sort = sorts[column < 3 ? column : 0];
-                const bool down = self->_files.folder.sort() == sort && !self->_files.folder.isDescending();
-                self->_files.folder.setSort(sort, down);
-                view.setSortIndicator(int(column), down);
+                const FolderModel::Sort sort = FolderItemModel::sortOf(column);
+                const bool down = self->_files.folder().sort() == sort && !self->_files.folder().isDescending();
+                self->_files.folder().setSort(sort, down);
+                view.setSortIndicator(int(FolderItemModel::columnOf(sort)), down);
                 self->filesChanged();
                 return;
         }
@@ -435,6 +451,112 @@ namespace {
                 self->application().stopTimer(self->_timer);
                 self->_timer = -1;
                 self->status(result == 1 ? "Copied" : "Copy cancelled");
+                return;
+        }
+
+        // Controls: a combo box (told its choice), a seek bar telling where it is dragged, seeking on release.
+        Error WidgetsWindow::buildControls(BoxLayout *page) {
+                page->setMargins(8, 8, 8, 8);
+                page->setSpacing(8);
+                auto *comboRow = Widget::create<BoxLayout>(page, BoxLayout::Direction::Horizontal);
+                auto *seekRow = Widget::create<BoxLayout>(page, BoxLayout::Direction::Horizontal);
+                if (comboRow == nullptr || seekRow == nullptr) return Error::NoMem;
+                comboRow->setSpacing(8);
+                seekRow->setSpacing(8);
+                auto *comboLabel = Widget::create<Label>(comboRow, "&Repeat:");
+                auto *combo = Widget::create<ComboBox>(comboRow);
+                auto *seekLabel = Widget::create<Label>(seekRow, "S&eek:");
+                auto *seek = Widget::create<Slider>(seekRow, Slider::Orientation::Horizontal);
+                _seekLabel = Widget::create<Label>(seekRow, "0:00");
+                if (comboLabel == nullptr || combo == nullptr || seekLabel == nullptr || seek == nullptr ||
+                    _seekLabel == nullptr)
+                        return Error::NoMem;
+                for (Label *l : {comboLabel, seekLabel}) l->setMinimumWidth(80);
+                comboLabel->setBuddy(combo);
+                seekLabel->setBuddy(seek);
+                (void)combo->addItem("Off");
+                (void)combo->addItem("All");
+                (void)combo->addItem("One");
+                (void)combo->addItem("Rock & roll"); // an & shown as itself
+                combo->setChanged(comboChanged, this);
+                seek->setRange(0, 240);
+                seek->setSteps(5, 30);
+                seek->setStretch(1);
+                seek->setChanged(seekMoved, this);
+                seek->setReleased(seekReleased, this);
+                _seekLabel->setMinimumWidth(120);
+                return Error::Ok;
+        }
+
+        void WidgetsWindow::comboChanged(void *arg, ComboBox &box, int index) {
+                auto            *self = static_cast<WidgetsWindow *>(arg);
+                char             text[64];
+                const StringView t = box.itemText(size_t(index));
+                std::snprintf(text, sizeof(text), "Repeat: %.*s", int(t.size()), t.data());
+                self->status(text);
+                return;
+        }
+
+        void WidgetsWindow::seekMoved(void *arg, Slider &slider, int32_t value) {
+                auto *self = static_cast<WidgetsWindow *>(arg);
+                char  text[32];
+                std::snprintf(text, sizeof(text), "%ld:%02ld%s", long(value / 60), long(value % 60),
+                              slider.isDragging() ? " (dragging)" : "");
+                self->_seekLabel->setText(StringView(text));
+                if (!slider.isDragging()) {
+                        std::snprintf(text, sizeof(text), "Seek to %ld:%02ld", long(value / 60), long(value % 60));
+                        self->status(text);
+                }
+                return;
+        }
+
+        void WidgetsWindow::seekReleased(void *arg, Slider &slider, int32_t value) {
+                auto *self = static_cast<WidgetsWindow *>(arg);
+                char  text[32];
+                (void)slider;
+                std::snprintf(text, sizeof(text), "%ld:%02ld", long(value / 60), long(value % 60));
+                self->_seekLabel->setText(StringView(text));
+                std::snprintf(text, sizeof(text), "Released: seek to %ld:%02ld", long(value / 60), long(value % 60));
+                self->status(text);
+                return;
+        }
+
+        void WidgetsWindow::tabChanged(void *arg, TabWidget &tabs, size_t index) {
+                auto *self = static_cast<WidgetsWindow *>(arg);
+                (void)tabs;
+                self->status(index == 0 ? "Files" : "Controls");
+                return;
+        }
+
+        void WidgetsWindow::fileChosen(void *arg, FileDialog &dialog, int result) {
+                auto *self = static_cast<WidgetsWindow *>(arg);
+                char  text[160];
+                if (result != FileDialog::Accepted) {
+                        self->status("Cancelled");
+                        return;
+                }
+                const StringView first = dialog.path(0);
+                std::snprintf(text, sizeof(text), "Chose %.*s%s (%zu)", int(first.size()), first.data(),
+                              dialog.count() > 1 ? " and more" : "", dialog.count());
+                self->status(text);
+                return;
+        }
+
+        // File icons asked for while drawing (the window manager's task): loaded on the loop.
+        void WidgetsWindow::iconsAsked(void *arg) {
+                auto *self = static_cast<WidgetsWindow *>(arg);
+                if (self->_iconsPosted.exchange(true, std::memory_order_acq_rel)) return;
+                if (self->application().post(iconsDue, self).isError())
+                        self->_iconsPosted.store(false, std::memory_order_release);
+                return;
+        }
+
+        void WidgetsWindow::iconsDue(void *arg) {
+                auto *self = static_cast<WidgetsWindow *>(arg);
+                self->_iconsPosted.store(false, std::memory_order_release);
+                if (!self->_fileIcons.loadAsked()) return;
+                self->_icons->update();
+                self->_details->update();
                 return;
         }
 

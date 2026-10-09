@@ -58,6 +58,15 @@ void DetailsView::setColumnWidth(size_t column, uint16_t width) {
         return;
 }
 
+// The header is outside the viewport the scroll redraws: redrawn when the columns move across.
+void DetailsView::scrolled() {
+        if (scrollX() == _headerX) return;
+        _headerX = scrollX();
+        GuiWindow *w = window();
+        if (w != nullptr) w->invalidate(header());
+        return;
+}
+
 void DetailsView::relayout() {
         // The columns from the model when it has other ones.
         const size_t columns =

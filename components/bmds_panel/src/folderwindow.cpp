@@ -47,7 +47,9 @@ namespace {
 // ---- The window
 
 FolderWindow::FolderWindow(GuiApplication &app, const Config &config, FolderWindowHost &host)
-    : GuiWindow(app, config), _host(host), _items(host.fileIcons(), host.folderActions().copied()) {}
+    : GuiWindow(app, config), _host(host), _items(host.fileIcons()) {
+        _items.setCopied(&host.folderActions().copied());
+}
 
 FolderWindow::~FolderWindow() {
         stopReading();
@@ -240,7 +242,7 @@ Error FolderWindow::go(StringView path, StringView select) {
         _select.clear();
         _renameSelected = false;
         if (!select.isEmpty()) (void)_select.assign(select);
-        _details->setSortIndicator(int(FolderItems::columnOf(values.sort)), values.descending);
+        _details->setSortIndicator(int(FolderItemModel::columnOf(values.sort)), values.descending);
         showView(values.view);
         _icons->resetTo(Span<const size_t>(), -1);
         _details->resetTo(Span<const size_t>(), -1);
@@ -510,7 +512,7 @@ void FolderWindow::showView(FolderSettings::View view) {
 void FolderWindow::setSort(FolderModel::Sort sort, bool descending) {
         keepSelection();
         _items.folder().setSort(sort, descending);
-        _details->setSortIndicator(int(FolderItems::columnOf(sort)), descending);
+        _details->setSortIndicator(int(FolderItemModel::columnOf(sort)), descending);
         restoreSelection();
         remember();
         return;
@@ -705,7 +707,7 @@ bool FolderWindow::viewKey(void *arg, ItemView &view, const KeyEvent &event) {
 void FolderWindow::sortAsked(void *arg, DetailsView &view, size_t column) {
         (void)view;
         auto                   *self = static_cast<FolderWindow *>(arg);
-        const FolderModel::Sort sort = FolderItems::sortOf(column);
+        const FolderModel::Sort sort = FolderItemModel::sortOf(column);
         const FolderModel      &folder = self->_items.folder();
         self->setSort(sort, folder.sort() == sort && !folder.isDescending());
         return;

@@ -29,6 +29,7 @@
 #include <bmds/fileformat.h>
 #include <bmds/fileops.h>
 #include <bmds/filenames.h>
+#include <bmds/fileicons.h>
 #include <bmds/foldersettings.h>
 #include <bmds/folderwatches.h>
 #include <bmds/font.h>
@@ -50,7 +51,6 @@
 #include <bmds/widget.h>
 
 #include "desktopwindow.h"
-#include "fileicons.h"
 #include "folderactions.h"
 #include "folderwindow.h"
 #include "panelentries.h"

@@ -2,12 +2,13 @@
 # over the window manager's public API only, so that it can move into the SDK
 # once GUI programs have an ABI.
 #
-# The pure parts (line layout, the icon grid, scroll bars, sliders and
-# furniture; the menu's geometry is bmds_ui's, shared with the window manager's
-# window menu) are also built as a plain CMake library for the host tests
-# (tests/host).
+# The pure parts (line layout, the icon grid, scroll bars, sliders, tab rows,
+# a file dialog's names and furniture; the menu's geometry is bmds_ui's,
+# shared with the window manager's window menu) are also built as a plain
+# CMake library for the host tests (tests/host).
 
 set(BMDS_GUI_PURE_SRCS
+        src/filenamelist.cpp
         src/furniturelayout.cpp
         src/icongrid.cpp
         src/itemlayout.cpp
@@ -17,14 +18,19 @@ set(BMDS_GUI_PURE_SRCS
         src/linelayout.cpp
         src/scrollmodel.cpp
         src/slidermodel.cpp
+        src/tabrow.cpp
         src/treerows.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
 if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_GUI_PURE_SRCS}
+                                    src/combobox.cpp
                                     src/detailsview.cpp
                                     src/dialog.cpp
+                                    src/filedialog.cpp
+                                    src/fileicons.cpp
+                                    src/folderitemmodel.cpp
                                     src/furniture.cpp
                                     src/guiapplication.cpp
                                     src/guiclipboard.cpp
@@ -39,11 +45,12 @@ if(COMMAND idf_component_register)
                                     src/popupedit.cpp
                                     src/scrollarea.cpp
                                     src/slider.cpp
+                                    src/tabwidget.cpp
                                     src/tooltip.cpp
                                     src/treeview.cpp
                                     src/widget.cpp
                                INCLUDE_DIRS include
-                               REQUIRES bmds_clipboard bmds_core bmds_fs bmds_input bmds_kernel bmds_loader bmds_sysconf bmds_ui)
+                               REQUIRES bmds_clipboard bmds_core bmds_files bmds_fs bmds_input bmds_kernel bmds_loader bmds_sysconf bmds_ui)
         bmds_target_options(${COMPONENT_LIB})
 else()
         add_library(bmds_gui STATIC ${BMDS_GUI_PURE_SRCS})

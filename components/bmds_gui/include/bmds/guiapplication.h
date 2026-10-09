@@ -105,6 +105,13 @@ class GuiApplication {
                 Error post(Callback fn, void *arg);
 
                 /**
+                 * @brief Drops the calls posted with @p arg not made yet (an object
+                 *        going away that may have posted to itself).
+                 * @nonblocking
+                 */
+                void cancelPosts(void *arg);
+
+                /**
                  * @brief Calls @p fn(@p arg) after @p intervalMs, and every
                  *        @p intervalMs after if @p repeat.
                  * @return The timer's number (for `stopTimer()`), or `Full`.

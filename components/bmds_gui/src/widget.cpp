@@ -233,8 +233,9 @@ GuiSize Label::sizeHint() const {
         const uint32_t frame = _framed ? 2u * Bevel::width(_frame) : 0u;
         char           text[MaxText + 1];
         const size_t   n = shown(text).length;
-        return GuiSize{columnUp(Fonts::unscii16.textWidth(StringView(text, n)) + 2 * GuiStyle::ButtonPad + frame),
-                       GuiStyle::ButtonHeight};
+        const uint16_t width =
+                columnUp(Fonts::unscii16.textWidth(StringView(text, n)) + 2 * GuiStyle::ButtonPad + frame);
+        return GuiSize{width > _minWidth ? width : _minWidth, GuiStyle::ButtonHeight};
 }
 
 void Label::paint(Painter &painter) {

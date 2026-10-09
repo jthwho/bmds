@@ -19,7 +19,7 @@
 BMDS_NAMESPACE_BEGIN
 
 /**
- * @brief The panel's icons for file types, shared by its folder windows
+ * @brief Icons for file types, shared by a program's folder views
  *        (`devplan/filebrowser.md` §4h): each type's at 16 and 32 pixels, found
  *        once and copied (the theme's cache may drop its own).
  *
@@ -32,7 +32,7 @@ BMDS_NAMESPACE_BEGIN
  * loop instead (`loadAsked()`).
  *
  * @par Thread Safety
- * The panel's loop.
+ * The application's loop, except as `setAsked()` says.
  */
 class FileIcons {
         public:

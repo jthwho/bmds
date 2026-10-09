@@ -65,6 +65,7 @@ class DetailsView : public ItemView {
                 ContentRect rowRect(size_t row) const override;
                 size_t      neighbour(size_t row, int dx, int dy) const override;
                 void        relayout() override;
+                void        scrolled() override;
                 void        paintRows(Painter &painter, const Rect &viewport) override;
 
         private:
@@ -72,6 +73,8 @@ class DetailsView : public ItemView {
                 bool     inHeader(int x, int y) const;
                 void     paintHeader(Painter &painter);
                 uint32_t total() const;
+
+                uint32_t _headerX = 0; // the scroll across the header was drawn at
 
                 uint16_t  _widths[MaxColumns] = {};
                 size_t    _columns = 0;

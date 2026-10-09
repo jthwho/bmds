@@ -31,6 +31,9 @@ class Slider : public Widget {
                 /** @brief Told each value the user moves it to (on the loop's thread). */
                 using Changed = void (*)(void *arg, Slider &slider, int32_t value);
 
+                /** @brief Told the user let the handle go at @p value, after a drag (on the loop's thread). */
+                using Released = void (*)(void *arg, Slider &slider, int32_t value);
+
                 /** @brief Which way it runs. */
                 enum class Orientation : uint8_t {
                         Vertical,
@@ -67,6 +70,20 @@ class Slider : public Widget {
                         return;
                 }
 
+                /**
+                 * @brief Has @p fn told when a drag ends (a seek bar seeks then, its
+                 *        `Changed` only showing the place). Keys and the wheel are
+                 *        told to `Changed` alone.
+                 */
+                void setReleased(Released fn, void *arg) {
+                        _released = fn;
+                        _releasedArg = arg;
+                        return;
+                }
+
+                /** @brief Returns true while the user drags the handle (`setValue()` would fight it). */
+                bool isDragging() const { return _dragging; }
+
                 GuiSize sizeHint() const override;
                 void    paint(Painter &painter) override;
                 void    mousePressed(const WindowManager::MouseEvent &event) override;
@@ -85,6 +102,8 @@ class Slider : public Widget {
                 Orientation _orientation;
                 Changed     _changed = nullptr;
                 void       *_changedArg = nullptr;
+                Released    _released = nullptr;
+                void       *_releasedArg = nullptr;
                 bool        _dragging = false;
                 int         _grab = 0; // where on the handle it was taken
 };

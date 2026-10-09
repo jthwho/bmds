@@ -1,19 +1,18 @@
 /**
- * @file      folderitems.cpp
+ * @file      folderitemmodel.cpp
  * @copyright Jason Howard. All rights reserved.
  *
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * A folder window's items (devplan/filebrowser.md §4h).
+ * A folder's items for the views (devplan/filebrowser.md §4h).
  */
 
 #include <cstdio>
 #include <bmds/clock.h>
 #include <bmds/fileformat.h>
+#include <bmds/folderitemmodel.h>
 #include <bmds/string.h>
-
-#include "folderitems.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -25,7 +24,7 @@ namespace {
 
 } // namespace
 
-FolderModel::Sort FolderItems::sortOf(size_t column) {
+FolderModel::Sort FolderItemModel::sortOf(size_t column) {
         switch (column) {
                 case SizeColumn: return FolderModel::Sort::Size;
                 case TypeColumn: return FolderModel::Sort::Type;
@@ -34,7 +33,7 @@ FolderModel::Sort FolderItems::sortOf(size_t column) {
         }
 }
 
-size_t FolderItems::columnOf(FolderModel::Sort sort) {
+size_t FolderItemModel::columnOf(FolderModel::Sort sort) {
         switch (sort) {
                 case FolderModel::Sort::Size: return SizeColumn;
                 case FolderModel::Sort::Type: return TypeColumn;
@@ -43,7 +42,7 @@ size_t FolderItems::columnOf(FolderModel::Sort sort) {
         }
 }
 
-bool FolderItems::identifySome(size_t count) {
+bool FolderItemModel::identifySome(size_t count) {
         size_t done = 0;
         for (size_t row = 0; row < _folder.count(); ++row) {
                 const FolderModel::Entry &e = _folder.entry(row);
@@ -63,7 +62,7 @@ bool FolderItems::identifySome(size_t count) {
 }
 
 // Drawn on the window manager's task: an icon not loaded yet is asked for, and loaded on the loop.
-const Icon *FolderItems::icon(size_t row, uint16_t size) const {
+const Icon *FolderItemModel::icon(size_t row, uint16_t size) const {
         const FolderModel::Entry &e = _folder.entry(row);
         const uint16_t            side = size > 16 ? 32 : 16;
         const Icon               *icon = nullptr;
@@ -75,23 +74,24 @@ const Icon *FolderItems::icon(size_t row, uint16_t size) const {
                 icon = _icons.loadedForType(e.format.isEmpty() ? FileFormat::Binary : e.format, side);
         }
         // Cut: dimmed until pasted or the clipboard changes (devplan/filebrowser.md §4j).
-        if (icon != nullptr && _copied.isCut(_folder.path(), _folder.name(row))) return _icons.dimmed(icon);
+        if (icon != nullptr && _copied != nullptr && _copied->isCut(_folder.path(), _folder.name(row)))
+                return _icons.dimmed(icon);
         return icon;
 }
 
-StringView FolderItems::columnTitle(size_t column) const {
+StringView FolderItemModel::columnTitle(size_t column) const {
         return column < Columns ? Titles[column] : StringView();
 }
 
-ItemModel::Align FolderItems::columnAlign(size_t column) const {
+ItemModel::Align FolderItemModel::columnAlign(size_t column) const {
         return column == SizeColumn ? Align::Right : Align::Left;
 }
 
-uint16_t FolderItems::columnWidth(size_t column) const {
+uint16_t FolderItemModel::columnWidth(size_t column) const {
         return column < Columns ? Widths[column] : 100;
 }
 
-StringView FolderItems::columnText(size_t row, size_t column, Span<char> buffer) const {
+StringView FolderItemModel::columnText(size_t row, size_t column, Span<char> buffer) const {
         const FolderModel::Entry &e = _folder.entry(row);
         int                       n = 0;
         switch (column) {

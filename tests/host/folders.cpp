@@ -22,6 +22,7 @@
 #include <bmds/fileops.h>
 #include <bmds/fileworker.h>
 #include <bmds/foldermodel.h>
+#include <bmds/namefilter.h>
 #include <bmds/foldersettings.h>
 #include <bmds/folderwatches.h>
 #include <bmds/navigationhistory.h>
@@ -199,6 +200,14 @@ TEST_CASE_FIXTURE(Fixture, "FolderModel: filled in batches, in order at every st
         CHECK(m.hiddenCount() == 0);
         m.setShowHidden(false);
 
+        // A name filter leaves out files only, without case; filled later, they follow it too.
+        REQUIRE(m.setNameFilter("*.DAT ; *.txt").isOk());
+        CHECK(shown(m) == std::vector<std::string>{"alpha", "Zeta", "b.txt", "big.dat", "c.dat"});
+        REQUIRE(m.setNameFilter(bmds::NameFilter::NoFiles).isOk());
+        CHECK(shown(m) == std::vector<std::string>{"alpha", "Zeta"});
+        REQUIRE(m.setNameFilter("").isOk());
+        CHECK(shown(m).size() == 8);
+
         m.setSort(FolderModel::Sort::Size, true); // the largest first, folders still first, ties by name up
         CHECK(shown(m) ==
               std::vector<std::string>{"alpha", "Zeta", "big.dat", "File 10", "File 2", "b.txt", "c.dat", "a"});
@@ -216,6 +225,29 @@ TEST_CASE_FIXTURE(Fixture, "FolderModel: filled in batches, in order at every st
         CHECK(m.count() == 0);
         CHECK(m.open(view(dir + "/a"), Root) == Error::NotDir);
         CHECK(m.open(view(dir + "/none"), Root).isError());
+}
+
+TEST_CASE("NameFilter: patterns by ;, * and ? without case, the first extension") {
+        using bmds::NameFilter::firstExtension;
+        using bmds::NameFilter::matches;
+        using bmds::NameFilter::matchesOne;
+        CHECK(matches("", "anything"));
+        CHECK(matches(" ; ", "anything"));
+        CHECK(matches("*.mp3;*.ogg", "Song.OGG"));
+        CHECK_FALSE(matches("*.mp3;*.ogg", "song.ogg.txt"));
+        CHECK(matchesOne("a?c*", "abcdef"));
+        CHECK(matchesOne("*a*b*c", "xxaxxbxxbxc"));
+        CHECK_FALSE(matchesOne("*a*b*c", "xxaxxbxxbx"));
+        CHECK(matchesOne("*", ""));
+        CHECK_FALSE(matchesOne("?", ""));
+        CHECK(matchesOne("**x", "x"));
+        CHECK_FALSE(matches(bmds::NameFilter::NoFiles, "a"));
+        CHECK(firstExtension("*.mp3;*.ogg") == "mp3");
+        CHECK(firstExtension(" *.m3u8") == "m3u8");
+        CHECK(firstExtension("*").isEmpty());
+        CHECK(firstExtension("*.*").isEmpty());
+        CHECK(firstExtension("a*.txt").isEmpty());
+        CHECK(firstExtension("*.tar.gz").isEmpty());
 }
 
 TEST_CASE_FIXTURE(Fixture, "FileOps: copies, taken names, trees, and not into itself") {

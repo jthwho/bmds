@@ -187,6 +187,17 @@ class Widget {
                         return false;
                 }
 
+                /**
+                 * @brief A key typed while a widget inside it has the focus, offered
+                 *        before that one gets it, innermost first (a tab widget's
+                 *        Ctrl+Tab, which a list would take as its own).
+                 * @return True if used.
+                 */
+                virtual bool keyBeforeChild(const KeyEvent &event) {
+                        (void)event;
+                        return false;
+                }
+
                 /** @brief Returns true if Tab stops on it, and a press gives it the focus. */
                 bool isFocusable() const { return _focusable; }
 
@@ -275,6 +286,9 @@ class Label : public Widget {
                 /** @brief Sets the widget its mnemonic focuses (null: none, and `&` is shown as it is). */
                 void setBuddy(Widget *buddy);
 
+                /** @brief Makes it at least @p width wide in a layout (labels before a column of fields). */
+                void setMinimumWidth(uint16_t width) { _minWidth = width; }
+
                 GuiSize  sizeHint() const override;
                 void     paint(Painter &painter) override;
                 uint32_t mnemonic() const override;
@@ -285,6 +299,7 @@ class Label : public Widget {
 
                 char         _text[MaxText + 1] = {};
                 Widget      *_buddy = nullptr;
+                uint16_t     _minWidth = 0;
                 Align        _align = Align::Left;
                 Bevel::Style _frame = Bevel::Style::Raised;
                 bool         _framed = false;

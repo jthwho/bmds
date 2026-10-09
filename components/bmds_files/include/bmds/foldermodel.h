@@ -29,7 +29,8 @@ BMDS_NAMESPACE_BEGIN
  * draws as the folder fills, never waiting for all of it). The entries shown
  * are in order at every step: folders first, then by the sort's key (names
  * without case, runs of digits as numbers). Hidden entries (a leading `.` or
- * FAT's Hidden attribute) are kept but shown only with `setShowHidden()`.
+ * FAT's Hidden attribute) are kept but shown only with `setShowHidden()`;
+ * files whose names a name filter leaves out (`setNameFilter()`) likewise.
  *
  * A symbolic link is shown as what it leads to (a link to a folder is a
  * folder), marked as a link.
@@ -100,7 +101,7 @@ class FolderModel {
                 /** @brief Returns the entries shown. */
                 size_t count() const { return _order.size(); }
 
-                /** @brief Returns the entries read but not shown (hidden ones). */
+                /** @brief Returns the entries read but not shown (hidden ones, files filtered out). */
                 size_t hiddenCount() const { return _entries.size() - _order.size(); }
 
                 /** @brief Returns entry @p index (unchecked). */
@@ -130,6 +131,16 @@ class FolderModel {
                 /** @brief Shows or leaves out hidden entries. */
                 void setShowHidden(bool show);
 
+                /**
+                 * @brief Shows only the files whose names match @p patterns
+                 *        (`NameFilter`'s; empty: every file), and every folder.
+                 * @return `Ok`, or `NoMem` (the filter as it was).
+                 */
+                Error setNameFilter(StringView patterns);
+
+                /** @brief Returns the name filter's patterns (empty: none). */
+                StringView nameFilter() const { return _filter.view(); }
+
                 /** @brief Returns true if hidden entries are shown. */
                 bool showsHidden() const { return _showHidden; }
 
@@ -148,6 +159,7 @@ class FolderModel {
         private:
                 StringView nameOf(const Entry &e) const { return StringView(_names.data() + e.nameAt, e.nameLength); }
                 bool       isHidden(const Entry &e) const;
+                bool       isShown(const Entry &e) const;        // not hidden, and not filtered out
                 bool       before(uint32_t a, uint32_t b) const; // entry a shown before entry b
                 Error      merge(size_t from);                   // entries [from, end) into the order
                 void       reorder();                            // the order again from all entries
@@ -160,6 +172,7 @@ class FolderModel {
                 List<uint32_t> _order{MemSpace::Psram}; // the entries shown, in order
                 Sort           _sort = Sort::Name;
                 bool           _descending = false;
+                String         _filter{MemSpace::Psram};
                 bool           _showHidden = false;
 };
 

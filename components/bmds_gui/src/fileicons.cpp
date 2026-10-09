@@ -5,15 +5,14 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * The panel's icons for file types (devplan/filebrowser.md §4h).
+ * Icons for file types (devplan/filebrowser.md §4h).
  */
 
 #include <cstring>
 #include <new>
 #include <bmds/fileformat.h>
+#include <bmds/fileicons.h>
 #include <bmds/memory.h>
-
-#include "fileicons.h"
 
 BMDS_NAMESPACE_BEGIN
 

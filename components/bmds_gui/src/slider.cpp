@@ -95,13 +95,13 @@ void Slider::mousePressed(const WindowManager::MouseEvent &event) {
         const int  at = along(event);
         const Rect h = handleRect();
         const int  start = _orientation == Orientation::Vertical ? h.y - geometry().y : h.x - geometry().x;
+        _dragging = true; // a press on the groove too: told to `Released` when let go
         if (at >= start && at < start + HandleLength) {
                 _grab = at - start; // taken where it was pressed
         } else {
                 _grab = HandleLength / 2; // brought under the pointer
                 userSet(_model.valueAt(at - _grab, length(), HandleLength));
         }
-        _dragging = true;
         return;
 }
 
@@ -112,7 +112,9 @@ void Slider::mouseMoved(const WindowManager::MouseEvent &event) {
 }
 
 void Slider::mouseReleased(const WindowManager::MouseEvent &event) {
-        if (event.button == PointerEvent::Left) _dragging = false;
+        if (event.button != PointerEvent::Left || !_dragging) return;
+        _dragging = false;
+        if (_released != nullptr) _released(_releasedArg, *this, _model.value());
         return;
 }
 

@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <bmds/config.h>
 #include <bmds/detailsview.h>
+#include <bmds/fileicons.h>
+#include <bmds/folderitemmodel.h>
 #include <bmds/foldersettings.h>
 #include <bmds/folderwatches.h>
 #include <bmds/furniture.h>
@@ -27,9 +29,7 @@
 #include <bmds/string.h>
 #include <bmds/treeview.h>
 
-#include "fileicons.h"
 #include "folderactions.h"
-#include "folderitems.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -227,7 +227,7 @@ class FolderWindow final : public GuiWindow {
                 const char *folderName() const;
 
                 FolderWindowHost    &_host;
-                FolderItems          _items;
+                FolderItemModel      _items;
                 NavigationHistory    _history;
                 MenuBar             *_bar = nullptr;
                 ToolBar             *_tools = nullptr;

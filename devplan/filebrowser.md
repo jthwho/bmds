@@ -315,11 +315,13 @@ A portable component (built for the host tests too) over `Vfs` and `Trash`, no G
     the window takes the selected names before and finds them after.
   - `GuiWindow::setTitle()`: a folder window's title follows its folder.
 - **The panel:**
-  - **`FileIcons`:** one per panel. It copies each type's icon at 16 and 32 once (the theme's
+  - **`FileIcons`:** one per panel (in `bmds_gui` since `devplan/mediaplayer.md` step 2, for the
+    file dialog too). It copies each type's icon at 16 and 32 once (the theme's
     cache may drop its own), keyed by the type: its icon name, then its generic one, then
     `unknown`. Folders get `folder`, links to folders get it too, built-ins get
     `application-x-executable`.
-  - **`FolderItems`:** a folder window's `ItemModel` over a `FolderModel`, with each row's type.
+  - **`FolderItems`** (`FolderItemModel` in `bmds_gui` since `devplan/mediaplayer.md` step 2):
+    a folder window's `ItemModel` over a `FolderModel`, with each row's type.
     - Types come from the name (`FileFormat::byName`).
     - A file whose name says nothing is identified by its contents (`Vfs::identify`, 512
       bytes), 4 a turn after the folder is read.
@@ -551,7 +553,7 @@ A portable component (built for the host tests too) over `Vfs` and `Trash`, no G
     - A cut pasted empties the clipboard, if it is still ours, and the marks go.
   - **Cut** (Ctrl+X, Edit ▸ Cut, an item's menu, a desktop icon's menu) puts the paths on the
     clipboard as a cut. The cut items are drawn dimmed until the clipboard changes:
-    - in windows, `FolderItems::icon()` gives `FileIcons::dimmed()`, a copy of the icon with
+    - in windows, `FolderItemModel::icon()` gives `FileIcons::dimmed()`, a copy of the icon with
       its alpha halved, made once per icon;
     - on the desktop, `DesktopWindow::setItemIcon()` dims its own copy.
   - **Shift+Delete** (in a window and on the desktop) asks first, in a message box naming up to

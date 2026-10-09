@@ -147,6 +147,8 @@ Plan: [`input.md`](input.md).
     GUI player for audio and MIDI files (video later), with saved playlists, a library by tags, a
     visualizer, a MIDI view, a toolkit Open dialog, and a tray controller while it plays hidden;
     designed in detail (§6), with a Qt-style system tray API that the volume control moves onto.
+    Steps 1 (the pure parts) and 2 (the toolkit: `FileDialog`, `ComboBox`, `TabWidget`, the
+    slider's release) done.
   - [ ] Mixer window (`audio.md` §17, planned 2026-10-09): `mixer`, per-application levels (the
     device, each stream, system sounds, the MIDI synth's `synth/gain`); the volume tray icon's
     context menu (Mute, Mixer…). After the media player.

@@ -408,7 +408,11 @@ void GuiWindow::key(const KeyEvent &event) {
         _app.hideToolTip();
         const uint32_t key = Mnemonic::keyOf(event);
         if (key != 0 && event.hasAlt() && activateMnemonic(key)) return;
-        bool used = _focus != nullptr && _focus->isEnabled() && _focus->keyPressed(event);
+        bool used = false;
+        if (_focus != nullptr && _focus != this)
+                for (Widget *w = _focus->parent(); w != nullptr && w != this && !used; w = w->parent())
+                        used = w->isEnabled() && w->keyBeforeChild(event);
+        if (!used) used = _focus != nullptr && _focus->isEnabled() && _focus->keyPressed(event);
         if (!used && _focus != this) used = keyPressed(event);
         if (!used && event.usage == HidKey::Tab && !event.hasCtrl() && !event.hasAlt())
                 used = focusNext(!event.hasShift());

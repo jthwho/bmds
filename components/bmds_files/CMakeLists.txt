@@ -14,6 +14,7 @@ set(BMDS_FILES_SRCS
         src/foldermodel.cpp
         src/foldersettings.cpp
         src/folderwatches.cpp
+        src/namefilter.cpp
         src/navigationhistory.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)

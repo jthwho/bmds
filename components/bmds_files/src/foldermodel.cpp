@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <bmds/fileformat.h>
 #include <bmds/foldermodel.h>
+#include <bmds/namefilter.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -109,6 +110,11 @@ bool FolderModel::isHidden(const Entry &e) const {
         return (e.nameLength > 0 && _names[e.nameAt] == '.') || (e.attributes & FileInfo::Hidden) != 0;
 }
 
+bool FolderModel::isShown(const Entry &e) const {
+        if (!_showHidden && isHidden(e)) return false;
+        return _filter.isEmpty() || e.isDirectory() || NameFilter::matches(_filter.view(), nameOf(e));
+}
+
 StringView FolderModel::extensionOf(StringView name) {
         const size_t dot = name.lastIndexOf('.');
         return dot == StringView::NPos || dot == 0 ? StringView() : name.mid(dot + 1);
@@ -174,7 +180,7 @@ Error FolderModel::merge(size_t from) {
         Error          err = batch.reserve(_entries.size() - from);
         if (err.isError()) return err;
         for (size_t i = from; i < _entries.size(); ++i)
-                if (_showHidden || !isHidden(_entries[i])) (void)batch.append(static_cast<uint32_t>(i));
+                if (isShown(_entries[i])) (void)batch.append(static_cast<uint32_t>(i));
         if (batch.isEmpty()) return Error::Ok;
         std::sort(batch.begin(), batch.end(), [this](uint32_t a, uint32_t b) { return before(a, b); });
         const size_t old = _order.size();
@@ -196,7 +202,7 @@ void FolderModel::reorder() {
         _order.clear();
         if (_order.reserve(_entries.size()).isError()) return; // shown as far as memory allows
         for (size_t i = 0; i < _entries.size(); ++i)
-                if (_showHidden || !isHidden(_entries[i])) (void)_order.append(static_cast<uint32_t>(i));
+                if (isShown(_entries[i])) (void)_order.append(static_cast<uint32_t>(i));
         std::sort(_order.begin(), _order.end(), [this](uint32_t a, uint32_t b) { return before(a, b); });
         return;
 }
@@ -214,6 +220,14 @@ void FolderModel::setShowHidden(bool show) {
         _showHidden = show;
         reorder();
         return;
+}
+
+Error FolderModel::setNameFilter(StringView patterns) {
+        if (patterns == _filter.view()) return Error::Ok;
+        const Error err = _filter.assign(patterns);
+        if (err.isError()) return err;
+        reorder();
+        return Error::Ok;
 }
 
 int FolderModel::indexOf(StringView name) const {
