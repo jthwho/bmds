@@ -329,6 +329,37 @@ TEST_CASE("rom: mounted: read-only files, directories, a link, Vfs::map()") {
         bmds::BlockDevices::remove(device);
 }
 
+#ifdef BMDS_TEST_ZONEINFO
+TEST_CASE("rom: its time zone database stands in while none is at the path set") {
+        REQUIRE(Vfs::init().isOk());
+        const Loaded            rom(BMDS_TEST_ROM);
+        bmds::MemoryBlockDevice device(rom.span());
+        char                    name[bmds::BlockDevices::MaxName + 1];
+        REQUIRE(bmds::BlockDevices::addNumbered(device, "rom", name).isOk());
+        REQUIRE(Vfs::mount("/rom", device).isOk());
+        REQUIRE(Vfs::setZoneDatabase("/nothere/share/zoneinfo.bin").isOk());
+        auto [info, err] = Vfs::zoneDatabaseInfo();
+        REQUIRE(err.isOk());
+        CHECK(info.fromRom);
+        CHECK(info.count == 597);
+        CHECK(Vfs::zoneRules("Europe/Berlin").error().isOk());
+        auto [zone, serr] = Vfs::stat("/share/zoneinfo/Europe/Berlin", Root);
+        CHECK(serr.isOk());
+        CHECK(zone.type == FileType::File);
+        // None set: not the ROM's either.
+        REQUIRE(Vfs::setZoneDatabase("").isOk());
+        CHECK(Vfs::zoneRules("Europe/Berlin").error() == Error::NotReady);
+        // The ROM's itself, named.
+        REQUIRE(Vfs::setZoneDatabase(Vfs::RomZoneDatabase).isOk());
+        auto [named, nerr] = Vfs::zoneDatabaseInfo();
+        REQUIRE(nerr.isOk());
+        CHECK_FALSE(named.fromRom);
+        REQUIRE(Vfs::setZoneDatabase("").isOk());
+        Vfs::eject(device);
+        bmds::BlockDevices::remove(device);
+}
+#endif
+
 TEST_CASE("rom: a damaged image isn't mounted") {
         REQUIRE(Vfs::init().isOk());
         const Loaded rom(BMDS_TEST_ROM);
@@ -362,8 +393,9 @@ TEST_CASE("rom: the bmds icon theme: every icon as its PNG decodes, by id and by
                 CAPTURE(name);
                 CHECK(icons.name(id) == StringView(name.data(), name.size()));
                 CHECK(icons.idOf(StringView(name.data(), name.size())) == id);
-                const std::string dir =
-                        theme == "glyphs" ? "/thirdparty/glyphs/png/" : "/thirdparty/flat-color-icons/png/";
+                const std::string dir = theme == "glyphs" ? "/thirdparty/glyphs/png/"
+                                        : theme == "bmds" ? "/rom/icons/png/"
+                                                          : "/thirdparty/flat-color-icons/png/";
                 for (uint16_t side : {uint16_t(16), uint16_t(32)}) {
                         const std::string file = readHostFile(std::string(BMDS_ROOT_DIR) + dir + std::to_string(side) +
                                                               "x" + std::to_string(side) + "/" + source + ".png");

@@ -1,0 +1,5 @@
+<svg version="1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+    <!-- BMDS's own (devplan/rom.md §3i): a red square, a white cross. -->
+    <rect x="5" y="5" width="38" height="38" rx="7" fill="#E53935"/>
+    <path d="M15 15 L33 33 M33 15 L15 33" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round"/>
+</svg>

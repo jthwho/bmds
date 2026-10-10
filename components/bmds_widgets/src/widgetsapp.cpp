@@ -172,17 +172,19 @@ namespace {
                 (void)_tabs->addTab(controls, "Controls");
                 _tabs->setChanged(tabChanged, this);
 
-                (void)_file.addItem("&Open...", OpenFile);
-                (void)_file.addItem("Open &Several...", OpenFiles);
-                (void)_file.addItem("Save &As...", SaveFile);
-                (void)_file.addItem("Choose &Folder...", ChooseFolder);
+                IconTheme &theme = application().icons();
+                (void)_file.addItem("&Open...", OpenFile, 0, StringView(), theme.find(IconId::DocumentOpen, 16));
+                (void)_file.addItem("Open &Several...", OpenFiles, 0, StringView(),
+                                    theme.find(IconId::DocumentOpen, 16));
+                (void)_file.addItem("Save &As...", SaveFile, 0, StringView(), theme.find(IconId::DocumentSaveAs, 16));
+                (void)_file.addItem("Choose &Folder...", ChooseFolder, 0, StringView(), theme.find(IconId::Folder, 16));
                 (void)_file.addSeparator();
-                (void)_file.addItem("&Question...", Question);
-                (void)_file.addItem("&Copy...", Copy);
+                (void)_file.addItem("&Question...", Question, 0, StringView(), theme.find(IconId::DialogQuestion, 16));
+                (void)_file.addItem("&Copy...", Copy, 0, StringView(), theme.find(IconId::EditCopy, 16));
                 (void)_file.addSeparator();
-                (void)_file.addItem("E&xit", Quit, 0, "Alt+F4");
+                (void)_file.addItem("E&xit", Quit, 0, "Alt+F4", theme.find(IconId::SystemLogOut, 16));
                 for (Menu *m : {&_file, &_view, &_help}) m->setTriggered(chosen, this);
-                (void)_help.addItem("&About", About);
+                (void)_help.addItem("&About", About, 0, StringView(), theme.find(IconId::HelpAbout, 16));
                 (void)bar->addMenu("&File", _file);
                 (void)bar->addMenu("&View", _view);
                 (void)bar->addMenu("&Help", _help);
@@ -195,10 +197,9 @@ namespace {
                 (void)tools->addButton(nullptr, "Copy", tool, this);
 
                 // The tree's icons, copied once; the files' from the toolkit's FileIcons.
-                IconTheme &theme = application().icons();
-                _owned[0].take(theme.find("folder", 16));
-                _owned[1].take(theme.find("drive-harddisk", 16));
-                _owned[2].take(theme.find("folder-open", 16));
+                _owned[0].take(theme.find(IconId::Folder, 16));
+                _owned[1].take(theme.find(IconId::DriveHarddisk, 16));
+                _owned[2].take(theme.find(IconId::FolderOpen, 16));
 
                 _tree = Widget::create<TreeView>(_split);
                 // The files' side: both views, one shown.

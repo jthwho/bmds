@@ -327,6 +327,10 @@ Rendered with `rsvg-convert` they read well at both 32 and 16 pixels.
   inherits (its `index.theme`'s `Inherits=`, the first; read once the card is there), the
   default theme, `hicolor`. A file of the wrong size for a name is passed over (the first
   build kept it, and returned it the second time it was asked for).
+- **Since 2026-10-09 (`rom.md` §3f, §3i):** the default theme is `bmds`, one file of decoded
+  icons in the ROM (`/rom/share/icons/bmds.icons`) made from both sets, every icon BMDS's own
+  programs use in it, by number (`IconId`) and name. A theme chosen on the card comes first and
+  `bmds` fills in what it lacks; `panel/icon-theme`'s default is `bmds`.
 
 ### 4j. Icons built into programs (the user's question, 2026-10-06; built)
 

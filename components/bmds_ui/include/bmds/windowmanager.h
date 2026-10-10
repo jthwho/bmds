@@ -224,6 +224,7 @@ class WindowManager {
                                         label; ///< Its text (cut at `MaxMenuLabel` bytes); `&` marks its key (`Mnemonic`).
                                 StringView shortcut;  ///< Its key, shown at the right (cut at `MaxMenuShortcut`).
                                 uint8_t    flags = 0; ///< `MenuLayout::Flag`s: `Disabled`, `Separator`, `Checked`.
+                                const Icon *icon = nullptr; ///< 16 × 16 at its left (null: none), kept while it shows.
                 };
 
                 /**
@@ -839,7 +840,8 @@ class WindowManager {
                 static void     menuRedraw(void *arg, Painter &painter);
                 static void     menuMouse(void *arg, const MouseEvent &event);
                 static void     menuKey(void *arg, const KeyEvent &event);
-                void            setMenuItem(size_t i, StringView label, StringView shortcut, uint8_t flags);
+                void            setMenuItem(size_t i, StringView label, StringView shortcut, uint8_t flags,
+                                            const Icon *icon = nullptr);
                 void            menuMnemonic(uint32_t key);
                 static void     menuClosed(void *arg);
                 void            applyPointer();
@@ -971,6 +973,9 @@ class WindowManager {
                 int                   _menuHighlight = -1;
                 MenuLayout            _menuLayout;
                 MenuLayout::Item      _menuItems[MenuItems];
+                // The window menu's icons, the ROM's bmds theme's (devplan/rom.md §3i): Restore,
+                // Minimize, Maximize, Roll Up, Roll Down, Close; found at start(), invalid without it.
+                Icon                  _windowIcons[6];
                 MenuChoice            _menuChoices[MenuItems] = {};
                 Switcher             *_switcher = nullptr; // in PSRAM while Alt+Tab's list shows
                 uint8_t               _switchId = 0;       // its popup

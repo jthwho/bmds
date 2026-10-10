@@ -1,0 +1,7 @@
+<svg version="1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+    <!-- BMDS's own (devplan/rom.md §3i): a window going down to its bar. -->
+    <rect x="9" y="3" width="30" height="20" rx="2" fill="#64B5F6"/>
+    <rect x="12" y="11" width="24" height="9" fill="#E3F2FD"/>
+    <polygon fill="#455A64" points="15,26 33,26 24,35"/>
+    <rect x="6" y="38" width="36" height="6" rx="1" fill="#1976D2"/>
+</svg>

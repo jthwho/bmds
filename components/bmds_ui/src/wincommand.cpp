@@ -24,12 +24,15 @@
 #include <bmds/bevel.h>
 #include <bmds/font.h>
 #include <bmds/glyphrenderer.h>
+#include <bmds/icon.h>
+#include <bmds/iconpack.h>
 #include <bmds/keyboarddecoder.h>
 #include <bmds/memory.h>
 #include <bmds/shell.h>
 #include <bmds/system.h>
 #include <bmds/task.h>
 #include <bmds/utf8.h>
+#include <bmds/vfs.h>
 #include <bmds/windowmanager.h>
 #include <bmds/windowpalette.h>
 
@@ -718,6 +721,72 @@ namespace {
                 return same ? Shell::ExitSuccess : Shell::ExitFailure;
         }
 
+        // One 32 x 32 icon blended into an RGB888 strip, as Painter::image() does. @hotpath
+        void blendIcon(const uint32_t *src, uint8_t *strip) {
+                for (int r = 0; r < 32; ++r) {
+                        uint8_t *out = strip + r * 32 * 3;
+                        for (int c = 0; c < 32; ++c, out += 3) {
+                                const uint32_t rgb = blendOver(src[r * 32 + c], 0xc0c0c0);
+                                out[0] = static_cast<uint8_t>(rgb);
+                                out[1] = static_cast<uint8_t>(rgb >> 8);
+                                out[2] = static_cast<uint8_t>(rgb >> 16);
+                        }
+                }
+                return;
+        }
+
+        // win bench icons (devplan/rom.md §3f): the bmds theme's 32-pixel icons drawn where they
+        // lie (the ROM, through the flash cache) against copies in PSRAM and in internal RAM: each
+        // icon once (more than the caches hold), and one icon again and again (cached).
+        int runIconBench(CommandContext &ctx) {
+                auto [bytes, merr] = Vfs::map("/rom/share/icons/bmds.icons", Vfs::Context());
+                if (merr.isError()) return report(ctx, merr);
+                auto [pack, perr] = IconPack::open(bytes);
+                if (perr.isError()) return report(ctx, perr);
+                constexpr size_t IconWords = 32 * 32, Again = 200;
+                const uint32_t   n = pack.count();
+                auto            *psram = static_cast<uint32_t *>(Memory::alloc(MemSpace::Psram, n * IconWords * 4));
+                auto *internal = static_cast<uint32_t *>(Memory::allocAligned(MemSpace::Internal, IconWords * 4, 64));
+                auto *strip = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::Internal, IconWords * 3, 64));
+                if (psram == nullptr || internal == nullptr || strip == nullptr) {
+                        Memory::free(psram);
+                        Memory::free(internal);
+                        Memory::free(strip);
+                        return report(ctx, Error::NoMem);
+                }
+                for (uint32_t id = 0; id < n; ++id)
+                        std::memcpy(psram + id * IconWords, pack.pixels(id, 32), IconWords * 4);
+                std::memcpy(internal, pack.pixels(0, 32), IconWords * 4);
+                // Cycles an icon: every icon from @p base (the ROM's when null), or @p one again and again.
+                const auto every = [&](const uint32_t *base) {
+                        const uint32_t start = esp_cpu_get_cycle_count();
+                        for (uint32_t id = 0; id < n; ++id)
+                                blendIcon(base != nullptr ? base + id * IconWords : pack.pixels(id, 32), strip);
+                        return (esp_cpu_get_cycle_count() - start) / n;
+                };
+                const auto again = [&](const uint32_t *one) {
+                        blendIcon(one, strip);
+                        const uint32_t start = esp_cpu_get_cycle_count();
+                        for (size_t i = 0; i < Again; ++i) blendIcon(one, strip);
+                        return (esp_cpu_get_cycle_count() - start) / Again;
+                };
+                const uint32_t mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+                const auto     line = [&](const char *what, uint32_t cycles) {
+                        ctx.printf("%-28s %6lu cycles, %4lu us an icon\n", what, static_cast<unsigned long>(cycles),
+                                       static_cast<unsigned long>(cycles / mhz));
+                };
+                ctx.printf("%lu icons of 32 x 32, each blended into internal RAM\n", static_cast<unsigned long>(n));
+                line("each once, ROM (flash):", every(nullptr));
+                line("each once, PSRAM:", every(psram));
+                line("one again, ROM (flash):", again(pack.pixels(0, 32)));
+                line("one again, PSRAM:", again(psram));
+                line("one again, internal RAM:", again(internal));
+                Memory::free(psram);
+                Memory::free(internal);
+                Memory::free(strip);
+                return Shell::ExitSuccess;
+        }
+
         // win term [N]: /bin/terminal in a window, started and not waited for (the Nth cascaded:
         // its top-left corner at 32 + 32 N); its window's number and size when it shows.
         int runTerm(CommandContext &ctx, WindowManager &wm, Args args) {
@@ -965,6 +1034,8 @@ namespace {
                         if (err.isOk()) wm->stop();
                         return Shell::ExitSuccess;
                 }
+                if (args.size() == 3 && std::strcmp(args[1], "bench") == 0 && std::strcmp(args[2], "icons") == 0)
+                        return runIconBench(ctx);
                 if (args.size() >= 2 && std::strcmp(args[1], "bench") == 0)
                         return runBench(ctx, args.size() > 2 ? unsigned(std::atoi(args[2])) : 0);
                 WindowManager *wm = running(ctx);
@@ -1121,7 +1192,7 @@ namespace {
 BMDS_SHELL_COMMAND(
         win, runWin,
         "[start|stop|list|new [X Y W H] [TITLE]|close N|raise N|move N X Y|drag N X Y|"
-        "term [N]|type N TEXT|dump N|scroll N DY|textbench N|check|stats|shuffle N|bench [CELLS]|"
+        "term [N]|type N TEXT|dump N|scroll N DY|textbench N|check|stats|shuffle N|bench [CELLS]|bench icons|"
         "pointer DX DY [BUTTONS [WHEEL]]|decorate N [all|none|+NAME|-NAME...]|minimize N|maximize N|restore N|"
         "resize N W H|pointer on/off|key TEXT|title N [TEXT]|above N on/off|shade N on/off|hid press/release/repeat "
         "USAGE [MODS]]",

@@ -245,8 +245,14 @@ namespace {
                                                                 : CommandContext::errorText(err));
                         return Shell::ExitSuccess;
                 }
-                ctx.printf("%s: tzdata %s, %lu zones\n", path.value().cStr(), info.value().version,
-                           static_cast<unsigned long>(info.value().count));
+                if (info.value().fromRom) {
+                        ctx.printf("%s: not there: the ROM's, %.*s: tzdata %s, %lu zones\n", path.value().cStr(),
+                                   int(Vfs::RomZoneDatabase.size()), Vfs::RomZoneDatabase.data(), info.value().version,
+                                   static_cast<unsigned long>(info.value().count));
+                } else {
+                        ctx.printf("%s: tzdata %s, %lu zones\n", path.value().cStr(), info.value().version,
+                                   static_cast<unsigned long>(info.value().count));
+                }
                 return Shell::ExitSuccess;
         }
 

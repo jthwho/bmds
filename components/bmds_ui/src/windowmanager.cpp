@@ -17,12 +17,15 @@
 #include <bmds/deadline.h>
 #include <bmds/display.h>
 #include <bmds/font.h>
+#include <bmds/iconid.h>
+#include <bmds/iconpack.h>
 #include <bmds/input.h>
 #include <bmds/memory.h>
 #include <bmds/mnemonic.h>
 #include <bmds/staticobject.h>
 #include <bmds/surface.h>
 #include <bmds/system.h>
+#include <bmds/vfs.h>
 #include <bmds/windowmanager.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -55,6 +58,17 @@ Result<WindowManager *> WindowManager::manager(size_t number) {
 }
 
 Error WindowManager::start(Display &display, const WindowPalette &palette) {
+        // The window menu's icons, in the ROM (found before the lock: the VFS has its own).
+        if (auto [bytes, merr] = Vfs::map("/rom/share/icons/bmds.icons", Vfs::Context()); merr.isOk()) {
+                if (auto [pack, perr] = IconPack::open(bytes); perr.isOk()) {
+                        constexpr IconId ids[] = {IconId::WindowRestore, IconId::WindowMinimize, IconId::WindowMaximize,
+                                                  IconId::WindowShade,   IconId::WindowUnshade,  IconId::WindowClose};
+                        for (size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); ++i) {
+                                const uint32_t *pixels = pack.pixels(uint32_t(ids[i]), 16);
+                                if (pixels != nullptr) _windowIcons[i] = Icon{16, 16, pixels};
+                        }
+                }
+        }
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface != nullptr || !display.isRunning()) return Error::InvalidState;
         Surface &surface = display.surface();
@@ -1733,16 +1747,20 @@ Error WindowManager::showWindowMenuLocked(uint8_t id, const Rect &anchor) {
         };
         const bool app = WindowStack::isApplication(_stack.levelOf(id));
         const bool above = _stack.levelOf(id) == Level::Above;
-        setMenuItem(0, "&Restore", "", off(hidden || w.maximized || w.snapped));
+        const auto icon = [this](size_t i) {
+                return _windowIcons[i].isValid() ? &_windowIcons[i] : nullptr;
+        };
+        setMenuItem(0, "&Restore", "", off(hidden || w.maximized || w.snapped), icon(0));
         setMenuItem(1, "Mi&nimize", "Win+Down",
-                    off(_canMinimize && !hidden && (w.decorations & WindowFrame::MinimizeButton) != 0));
-        setMenuItem(2, "Ma&ximize", "Win+Up", off(!w.maximized && (w.decorations & WindowFrame::MaximizeButton) != 0));
+                    off(_canMinimize && !hidden && (w.decorations & WindowFrame::MinimizeButton) != 0), icon(1));
+        setMenuItem(2, "Ma&ximize", "Win+Up", off(!w.maximized && (w.decorations & WindowFrame::MaximizeButton) != 0),
+                    icon(2));
         setMenuItem(3, w.shaded ? "Roll &Down" : "Roll &Up", "",
-                    off(app && !hidden && (w.decorations & WindowFrame::TitleBar) != 0));
+                    off(app && !hidden && (w.decorations & WindowFrame::TitleBar) != 0), icon(w.shaded ? 4 : 3));
         setMenuItem(4, "", "", MenuLayout::Separator);
         setMenuItem(5, "Always on &Top", "", static_cast<uint8_t>(off(app) | (above ? MenuLayout::Checked : 0)));
         setMenuItem(6, "", "", MenuLayout::Separator);
-        setMenuItem(7, "&Close", "Alt+F4", off((w.decorations & WindowFrame::CloseButton) != 0));
+        setMenuItem(7, "&Close", "Alt+F4", off((w.decorations & WindowFrame::CloseButton) != 0), icon(5));
         constexpr MenuChoice choices[] = {MenuChoice::Restore, MenuChoice::Minimize, MenuChoice::Maximize,
                                           MenuChoice::Shade,   MenuChoice::None,     MenuChoice::Above,
                                           MenuChoice::None,    MenuChoice::Close};
@@ -1884,7 +1902,7 @@ Error WindowManager::showMenu(uint8_t id, Span<const MenuItem> items, uint16_t x
                 while (n > 0 && n < text.size() && (uint8_t(text[n]) & 0xc0) == 0x80) --n;
                 std::memcpy(_programShortcuts[i], text.data(), n);
                 _programShortcuts[i][n] = '\0';
-                setMenuItem(i, items[i].label, StringView(_programShortcuts[i], n), items[i].flags);
+                setMenuItem(i, items[i].label, StringView(_programShortcuts[i], n), items[i].flags, items[i].icon);
                 _menuChoices[i] = MenuChoice::Program;
         }
         _menuCount = items.size();
@@ -1927,9 +1945,9 @@ void WindowManager::menuMouse(void *arg, const MouseEvent &event) {
 }
 
 // Item @p i of the menu to open: @p label's marks taken out (into _menuLabels), its key kept.
-void WindowManager::setMenuItem(size_t i, StringView label, StringView shortcut, uint8_t flags) {
+void WindowManager::setMenuItem(size_t i, StringView label, StringView shortcut, uint8_t flags, const Icon *icon) {
         const Mnemonic::Stripped m = Mnemonic::strip(label, Span<char>(_menuLabels[i], MaxMenuLabel + 1));
-        _menuItems[i] = MenuLayout::Item{StringView(_menuLabels[i], m.length), shortcut, flags, nullptr, m.at};
+        _menuItems[i] = MenuLayout::Item{StringView(_menuLabels[i], m.length), shortcut, flags, icon, m.at};
         _menuKeys[i] = m.key;
         return;
 }

@@ -231,8 +231,8 @@ class FolderWindow final : public GuiWindow {
                 NavigationHistory    _history;
                 MenuBar             *_bar = nullptr;
                 ToolBar             *_tools = nullptr;
-                Button              *_toolButtons[10] = {}; // those with icons, with _toolIcons' names
-                const char          *_toolIcons[10] = {};
+                Button              *_toolButtons[10] = {}; // those with icons, with _toolIcons' ids
+                IconId               _toolIcons[10] = {};
                 Button              *_back = nullptr;
                 Button              *_forward = nullptr;
                 Button              *_up = nullptr;

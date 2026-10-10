@@ -224,6 +224,7 @@ namespace {
                         uint32_t                       _cursorRows[(TerminalScreen::MaxSide + 31) / 32] = {};
                         Thread                         _shell; // runs the shell, until it ends
                         IconTheme                      _icons; // its own icon, for its window
+                        const Icon                    *_menuIcons[3] = {}; // the ROM's: Copy, Paste, Select All
                         TerminalColors                 _colors; // the system configuration's: the window manager's lock
                         std::atomic<bool>              _colorsChanged{false}; // read again at the next drawing
                         SysConf::Watcher               _settings;             // terminal/...
@@ -341,6 +342,10 @@ namespace {
                         if (icon != nullptr) (void)_wm->setIcon(id, icon);
                         const Icon *large = _icons.program(StringView(path), 32); // Alt+Tab's
                         if (large != nullptr) (void)_wm->setLargeIcon(id, large);
+                        // Its menu's icons, found here: the menu shows on another task.
+                        _menuIcons[0] = _icons.find(IconId::EditCopy, 16);
+                        _menuIcons[1] = _icons.find(IconId::EditPaste, 16);
+                        _menuIcons[2] = _icons.find(IconId::EditSelectAll, 16);
                         // Placed smaller than asked (the screen's edge): the size it got.
                         auto [placed, cerr] = _wm->clientRect(id);
                         if (cerr.isOk()) resized(this, placed.width, placed.height);
@@ -980,10 +985,10 @@ namespace {
                                    table->find(Span<const StringView>(offered, d.count), ClipboardType::Text).isOk();
                 }
                 const WindowManager::MenuItem items[] = {
-                        {"&Copy", "Ctrl+Shift+C", uint8_t(selected ? 0 : MenuLayout::Disabled)},
-                        {"&Paste", "Ctrl+Shift+V", uint8_t(pastable ? 0 : MenuLayout::Disabled)},
+                        {"&Copy", "Ctrl+Shift+C", uint8_t(selected ? 0 : MenuLayout::Disabled), _menuIcons[0]},
+                        {"&Paste", "Ctrl+Shift+V", uint8_t(pastable ? 0 : MenuLayout::Disabled), _menuIcons[1]},
                         {"", "", MenuLayout::Separator},
-                        {"Select &All", "", 0},
+                        {"Select &All", "", 0, _menuIcons[2]},
                 };
                 const uint32_t at = _menuAt.load(std::memory_order_relaxed);
                 (void)_wm->showMenu(window, Span<const WindowManager::MenuItem>(items), uint16_t(at >> 16),

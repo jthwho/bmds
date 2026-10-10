@@ -30,16 +30,16 @@ namespace {
         constexpr uint16_t MinTextWidth = 200;
 
         struct Look {
-                        const char *iconName;
+                        IconId      icon;
                         uint32_t    badge; // drawn when the theme has no such icon
                         const char *mark;
         };
 
         constexpr Look Looks[] = {
-                {"dialog-information", 0x2060c0, "i"},
-                {"dialog-warning", 0xd0a000, "!"},
-                {"dialog-error", 0xc02020, "\xc3\x97"}, // ×
-                {"dialog-question", 0x2060c0, "?"},
+                {IconId::DialogInformation, 0x2060c0, "i"},
+                {IconId::DialogWarning, 0xd0a000, "!"},
+                {IconId::DialogError, 0xc02020, "\xc3\x97"}, // ×
+                {IconId::DialogQuestion, 0x2060c0, "?"},
         };
 
         const char *label(MessageBox::Answer a) {
@@ -125,7 +125,7 @@ Error MessageBox::show(GuiApplication &app, Kind kind, StringView title, StringV
         box->_done = fn;
         box->_doneArg = arg;
         const Look &look = Looks[static_cast<size_t>(kind)];
-        const Icon *icon = app.icons().find(StringView(look.iconName), IconSide);
+        const Icon *icon = app.icons().find(look.icon, IconSide);
         if (icon != nullptr && icon->isValid() && icon->width <= IconSide && icon->height <= IconSide) {
                 const size_t pixels = size_t(icon->width) * icon->height;
                 box->_iconPixels = static_cast<uint32_t *>(Memory::alloc(MemSpace::Psram, pixels * sizeof(uint32_t)));

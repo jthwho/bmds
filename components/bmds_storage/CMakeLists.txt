@@ -40,9 +40,11 @@ add_custom_command(OUTPUT ${BMDS_BOOT_SRC}
 target_sources(${COMPONENT_LIB} PRIVATE ${BMDS_BOOT_SRC})
 target_include_directories(${COMPONENT_LIB} PRIVATE src)
 
-# The ROM (devplan/rom.md §3c): the bmds icon theme made from rom/icons.list, then the image
-# (and rom/files/, when there is such a tree), refused if it outgrows its partition; idf.py flash
-# writes it. Its content hash becomes romhash.h, which RomDisk compares with what it finds.
+# The ROM (devplan/rom.md §3c): the bmds icon theme made from rom/icons.list, the time zone
+# database from thirdparty/tzdata (with the host's zic: without it, the ROM has none, and says so
+# here), then the image (and rom/files/, when there is such a tree), refused if it outgrows its
+# partition; idf.py flash writes it. Its content hash becomes romhash.h, which RomDisk compares
+# with what it finds.
 if(NOT BOOTLOADER_BUILD)
         set(BMDS_ROM_DIR ${CMAKE_CURRENT_LIST_DIR}/../../rom)
         set(BMDS_MKROM ${CMAKE_CURRENT_LIST_DIR}/../../tools/mkrom.py)
@@ -62,14 +64,32 @@ if(NOT BOOTLOADER_BUILD)
                                    ${BMDS_ROM_OUT}/bmds.LICENSES
                            DEPENDS ${BMDS_MKROM} ${BMDS_ROM_DIR}/icons.list
                            VERBATIM)
+        find_program(BMDS_ZIC zic PATHS /usr/sbin /sbin)
+        set(BMDS_ROM_ZONES)
+        set(BMDS_ROM_ZONES_FILE)
+        if(BMDS_ZIC)
+                set(BMDS_ROM_ZONES_FILE ${BMDS_ROM_OUT}/zoneinfo.bin)
+                set(BMDS_TZBUNDLE ${CMAKE_CURRENT_LIST_DIR}/../../tools/tzbundle)
+                file(GLOB BMDS_TZDATA ${CMAKE_CURRENT_LIST_DIR}/../../thirdparty/tzdata/*)
+                add_custom_command(OUTPUT ${BMDS_ROM_ZONES_FILE}
+                                   COMMAND ${CMAKE_COMMAND} -E env ZIC=${BMDS_ZIC} ${BMDS_STORAGE_PYTHON}
+                                           ${BMDS_TZBUNDLE} ${CMAKE_CURRENT_LIST_DIR}/../../thirdparty/tzdata
+                                           ${BMDS_ROM_ZONES_FILE}
+                                   DEPENDS ${BMDS_TZBUNDLE} ${BMDS_TZDATA}
+                                   VERBATIM)
+                set(BMDS_ROM_ZONES --file share/zoneinfo.bin=${BMDS_ROM_ZONES_FILE})
+        else()
+                message(STATUS "zic not found: the ROM has no time zone database (devplan/rom.md §3g)")
+        endif()
         add_custom_command(OUTPUT ${BMDS_ROM_BIN} ${BMDS_ROM_HASH}
                            COMMAND ${BMDS_STORAGE_PYTHON} ${BMDS_MKROM} image ${BMDS_ROM_BIN}
                                    --max-bytes ${BMDS_ROM_PARTITION_BYTES} ${BMDS_ROM_TREE}
                                    --file share/icons/bmds.icons=${BMDS_ROM_OUT}/bmds.icons
                                    --file share/icons/bmds.LICENSES=${BMDS_ROM_OUT}/bmds.LICENSES
+                                   ${BMDS_ROM_ZONES}
                                    --hash-header ${BMDS_ROM_HASH}
                            DEPENDS ${BMDS_MKROM} ${BMDS_ROM_OUT}/bmds.icons ${BMDS_ROM_OUT}/bmds.LICENSES
-                                   ${BMDS_ROM_TREE_FILES}
+                                   ${BMDS_ROM_TREE_FILES} ${BMDS_ROM_ZONES_FILE}
                            VERBATIM)
         target_sources(${COMPONENT_LIB} PRIVATE ${BMDS_ROM_HASH})
         target_include_directories(${COMPONENT_LIB} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})

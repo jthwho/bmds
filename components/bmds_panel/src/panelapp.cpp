@@ -77,8 +77,9 @@ namespace {
         BMDS_SYSCONF(panelItems, "panel/items", Config::Type::String, "launcher;windows;volume;clock",
                      "The panel's items in order: launcher, windows, volume, clock, spacer (; between)", 0, 128,
                      nullptr, nullptr)
-        BMDS_SYSCONF(panelIconTheme, "panel/icon-theme", Config::Type::String, "flat-color",
-                     "The icon theme (a directory of /sd0/p0/share/icons)", 0, 64, nullptr, nullptr)
+        BMDS_SYSCONF(panelIconTheme, "panel/icon-theme", Config::Type::String, "bmds",
+                     "The icon theme: bmds (built in, /rom), or a directory of /sd0/p0/share/icons", 0, 64, nullptr,
+                     nullptr)
         BMDS_SYSCONF(panelLauncherLabel, "panel/launcher/label", Config::Type::String, "Apps",
                      "The launcher button's label", 0, 32, nullptr, nullptr)
         BMDS_SYSCONF(panelLauncherIcon, "panel/launcher/icon", Config::Type::String, "start-here",
@@ -739,7 +740,7 @@ namespace {
                 const Icon *icon =
                         _app.icons().find(FileFormat::iconName(type, Span<char>(name)), DesktopWindow::IconSide);
                 if (icon == nullptr) icon = _app.icons().find(FileFormat::genericIcon(type), DesktopWindow::IconSide);
-                if (icon == nullptr) icon = _app.icons().find("unknown", DesktopWindow::IconSide);
+                if (icon == nullptr) icon = _app.icons().find(IconId::Unknown, DesktopWindow::IconSide);
                 return icon;
         }
 
@@ -780,24 +781,28 @@ namespace {
                         if (mem == nullptr) return;
                         self->_newMenu = ::new (mem) Menu(self->_app);
                         (void)self->_newMenu->addItem("&Folder", ChooseNewFolder, 0, StringView(),
-                                                      self->_app.icons().find("folder", GuiStyle::IconSize));
-                        (void)self->_newMenu->addItem("&Text Document", ChooseNewText, 0, StringView(),
-                                                      self->_app.icons().find("text-x-generic", GuiStyle::IconSize));
+                                                      self->_app.icons().find(IconId::Folder, GuiStyle::IconSize));
+                        (void)self->_newMenu->addItem(
+                                "&Text Document", ChooseNewText, 0, StringView(),
+                                self->_app.icons().find(IconId::TextXGeneric, GuiStyle::IconSize));
                         (void)self->_newMenu->addItem("&Empty File", ChooseNewFile, 0, StringView(),
-                                                      self->_app.icons().find("unknown", GuiStyle::IconSize));
+                                                      self->_app.icons().find(IconId::Unknown, GuiStyle::IconSize));
                 }
                 self->_menuX = x;
                 self->_menuY = y;
                 Menu         &menu = *self->_desktopMenu;
                 const bool    files = self->_actions.canPaste();
                 menu.clear();
+                IconTheme &icons = self->_app.icons();
                 if (self->_menu != nullptr) {
-                        (void)menu.addSubmenu("&Applications", *self->_menu);
+                        (void)menu.addSubmenu("&Applications", *self->_menu,
+                                              icons.find(IconId::StartHere, GuiStyle::IconSize));
                         (void)menu.addSeparator();
                 }
-                (void)menu.addSubmenu("&New", *self->_newMenu);
+                (void)menu.addSubmenu("&New", *self->_newMenu, icons.find(IconId::DocumentNew, GuiStyle::IconSize));
                 (void)menu.addSeparator();
-                (void)menu.addItem("&Paste", ChoosePaste, files ? 0 : MenuLayout::Disabled);
+                (void)menu.addItem("&Paste", ChoosePaste, files ? 0 : MenuLayout::Disabled, StringView(),
+                                   icons.find(IconId::EditPaste, GuiStyle::IconSize));
                 (void)menu.popup(Rect{x, y, 0, 0});
                 return;
         }
@@ -960,12 +965,17 @@ namespace {
                         if (mem == nullptr) return;
                         self->_iconMenu = ::new (mem) Menu(self->_app);
                         self->_iconMenu->setTriggered(iconChosen, self);
-                        (void)self->_iconMenu->addItem("&Open", 0);
-                        (void)self->_iconMenu->addItem("Cu&t", 4);
-                        (void)self->_iconMenu->addItem("&Copy", 1);
-                        (void)self->_iconMenu->addItem("Re&name", 3);
+                        IconTheme     &icons = self->_app.icons();
+                        const uint16_t side = GuiStyle::IconSize;
+                        (void)self->_iconMenu->addItem("&Open", 0, 0, StringView(),
+                                                       icons.find(IconId::DocumentOpen, side));
+                        (void)self->_iconMenu->addItem("Cu&t", 4, 0, StringView(), icons.find(IconId::EditCut, side));
+                        (void)self->_iconMenu->addItem("&Copy", 1, 0, StringView(), icons.find(IconId::EditCopy, side));
+                        (void)self->_iconMenu->addItem("Re&name", 3, 0, StringView(),
+                                                       icons.find(IconId::EditRename, side));
                         (void)self->_iconMenu->addSeparator();
-                        (void)self->_iconMenu->addItem("&Delete", 2);
+                        (void)self->_iconMenu->addItem("&Delete", 2, 0, StringView(),
+                                                       icons.find(IconId::EditDelete, side));
                 }
                 self->_iconItem = item;
                 (void)self->_iconMenu->popup(Rect{x, y, 0, 0});
@@ -1491,10 +1501,12 @@ namespace {
                         _fileIcons.clear();
                         _app.icons().setTheme(StringView(_theme));
                         for (FolderWindow *w : _folderWindows) w->settingsChanged();
-                        if (_newMenu != nullptr) {
-                                _newMenu->~Menu();
-                                Memory::free(_newMenu);
-                                _newMenu = nullptr;
+                        // Menus made once hold the old theme's icons: made again when next shown.
+                        for (Menu **m : {&_newMenu, &_iconMenu}) {
+                                if (*m == nullptr) continue;
+                                (*m)->~Menu();
+                                Memory::free(*m);
+                                *m = nullptr;
                         }
                 }
                 const StringView apps = setting(bmdsConf_panelLauncherApplications);

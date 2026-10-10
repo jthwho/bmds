@@ -50,11 +50,19 @@ namespace {
                                 if (_reader != nullptr) _volume->closeReader(_reader);
                         }
 
-                        // Opens it and reads its header.
+                        // Opens it (the ROM's while none is at the path) and reads its header.
                         Error open(Timestamp *modified = nullptr) {
                                 if (databasePath[0] == '\0') return Error::NotExist;
-                                const Error err =
-                                        Fs::openReaderLocked(StringView(databasePath), _volume, _reader, modified);
+                                Error err = Fs::openReaderLocked(StringView(databasePath), _volume, _reader, modified);
+                                if ((err == Error::NotExist || err == Error::NoMedia || err == Error::NotDir) &&
+                                    StringView(databasePath) != Vfs::RomZoneDatabase) {
+                                        const Error rom =
+                                                Fs::openReaderLocked(Vfs::RomZoneDatabase, _volume, _reader, modified);
+                                        if (rom.isOk()) {
+                                                err = rom;
+                                                _fromRom = true;
+                                        }
+                                }
                                 if (err.isError()) return err;
                                 Result<ZoneBundle> bundle = ZoneBundle::open(*this, _reader->size());
                                 if (bundle.error().isError()) return bundle.error();
@@ -63,6 +71,8 @@ namespace {
                         }
 
                         const ZoneBundle &bundle() const { return _bundle; }
+
+                        bool isFromRom() const { return _fromRom; }
 
                         Error readAt(uint32_t offset, WritableByteSpan buf) override {
                                 auto [got, err] = _reader->readAt(offset, buf);
@@ -73,6 +83,7 @@ namespace {
                 private:
                         Volume::Reader *_reader = nullptr;
                         Volume         *_volume = nullptr;
+                        bool            _fromRom = false;
                         ZoneBundle      _bundle;
         };
 
@@ -274,6 +285,7 @@ Result<Vfs::ZoneDatabaseInfo> Vfs::zoneDatabaseInfo() {
         const StringView version = db.bundle().version();
         std::memcpy(info.version, version.data(), version.size());
         info.count = db.bundle().count();
+        info.fromRom = db.isFromRom();
         return makeResult(info);
 }
 

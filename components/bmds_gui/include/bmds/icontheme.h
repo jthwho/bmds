@@ -12,25 +12,38 @@
 #include <cstdint>
 #include <bmds/config.h>
 #include <bmds/icon.h>
+#include <bmds/iconid.h>
+#include <bmds/iconpack.h>
 #include <bmds/memspace.h>
 #include <bmds/stringview.h>
 
 BMDS_NAMESPACE_BEGIN
 
 /**
- * @brief Icons by name, decoded and kept (`devplan/gui.md` §4h, §4j).
+ * @brief Icons by number or name (`devplan/gui.md` §4h, §4j; `devplan/rom.md`
+ *        §3f, §3i).
  *
- * A name (`utilities-terminal`, as a Desktop Entry's `Icon=`) is looked for
- * as `SIDExSIDE/NAME.png` in `/boot/icons` (the user's), then the theme's
- * directory on the card (`/sd0/p0/share/icons/THEME`, `DefaultTheme` unless
- * set), then the theme it inherits (its `index.theme`'s `Inherits=`, the
- * first), then `DefaultTheme`, then `hicolor`; an icon of another size there
- * is passed over. An absolute path is read as it is. A
- * program's own icon comes from the program (`ProgramIcons`). An icon found
- * is kept, so it costs its file once: one allocation each, its name and its
- * pixels together, on a list (nothing until the first). Past `MaxBytes` kept,
- * the one used longest ago goes. One not found isn't kept: it is looked for
- * again when asked for again (a card mounted since).
+ * **The bmds theme** (`DefaultTheme`) is one file in the ROM (`PackPath`), its
+ * pixels decoded already and used where they lie: an icon of it costs no
+ * memory and is never dropped. Every icon BMDS's own programs use is in it,
+ * by number (`IconId`, `find(IconId, side)`: an index) and by name.
+ *
+ * **Another theme** (`setTheme()`: a directory of `ThemesDir` on the card)
+ * comes first: a name is looked for as `SIDExSIDE/NAME.png` in `/boot/icons`
+ * (the user's), then the theme's directory, then the theme it inherits (its
+ * `index.theme`'s `Inherits=`, the first), then the bmds theme, then
+ * `hicolor`; an icon of another size there is passed over. An id is looked
+ * for by its name in the chosen theme (and what it inherits), then in the
+ * bmds theme. With the bmds theme chosen, a name is looked for in
+ * `/boot/icons`, then in it; an id is its icon at once.
+ *
+ * An absolute path is read as it is. A program's own icon comes from the
+ * program (`ProgramIcons`). An icon read from a file is kept, so it costs its
+ * file once: one allocation each, its name and its pixels together, on a list
+ * (nothing until the first). Past `MaxBytes` kept, the one used longest ago
+ * goes, except those found by id (kept until `setTheme()`). One not found
+ * isn't kept: it is looked for again when asked for again (a card mounted
+ * since).
  *
  * @par Thread Safety
  * One user at a time (a GUI application's thread).
@@ -51,8 +64,11 @@ class IconTheme {
                 /** @brief The longest theme name. */
                 static constexpr size_t MaxTheme = 31;
 
-                /** @brief The theme used unless set, and the last one looked in. */
-                static constexpr const char *DefaultTheme = "flat-color";
+                /** @brief The theme used unless set, and the last one looked in (in the ROM). */
+                static constexpr const char *DefaultTheme = "bmds";
+
+                /** @brief The bmds theme's file. */
+                static constexpr const char *PackPath = "/rom/share/icons/bmds.icons";
 
                 /** @brief Where themes are (one directory each). */
                 static constexpr const char *ThemesDir = "/sd0/p0/share/icons";
@@ -66,16 +82,32 @@ class IconTheme {
                 IconTheme &operator=(const IconTheme &) = delete;
 
                 /**
-                 * @brief Uses theme @p name (its directory under `ThemesDir`: `flat-color`,
-                 *        `glyphs`); forgets the icons kept (none may be in use).
+                 * @brief Uses theme @p name (`bmds`, or its directory under `ThemesDir`:
+                 *        `flat-color`, `glyphs`); forgets the icons kept (none may be in
+                 *        use; the bmds theme's stay valid).
                  */
                 void setTheme(StringView name);
 
+                /** @brief Returns the theme used. */
+                StringView theme() const { return StringView(_theme); }
+
                 /**
                  * @brief Returns icon @p name (or an absolute path to a PNG) of
-                 *        @p side × @p side pixels, or null (none of that size).
+                 *        @p side × @p side pixels, or null (none of that size). It stays
+                 *        valid while it is among those kept (`MaxBytes`), or for good if
+                 *        `isPermanent()`.
                  */
                 const Icon *find(StringView name, uint16_t side);
+
+                /**
+                 * @brief Returns icon @p id of @p side × @p side pixels (16 or 32), or
+                 *        null (none of that size, or no ROM). It stays valid until
+                 *        `setTheme()` (for good if `isPermanent()`).
+                 */
+                const Icon *find(IconId id, uint16_t side);
+
+                /** @brief Returns true if @p icon is the bmds theme's (in the ROM: valid for good, no copy needed). */
+                bool isPermanent(const Icon *icon) const;
 
                 /**
                  * @brief Returns the icon built into the program at @p path (a path
@@ -106,19 +138,29 @@ class IconTheme {
                                 uint32_t bytes; // the whole allocation
                                 uint16_t side;
                                 bool     fromProgram;
+                                bool     pinned; // found by id: not dropped until setTheme()
                                 uint8_t  keyLength;
 
                                 const char *key() const { return reinterpret_cast<const char *>(this + 1); }
                 };
 
                 Kept       *lookup(StringView key, uint16_t side, bool fromProgram);
+                bool            isBmds() const;
+                const IconPack *pack(); // the bmds theme, mapped the first time: null without the ROM
+                const Icon     *packIcon(uint32_t id, uint16_t side);
+                const Icon     *findFile(StringView name, uint16_t side, bool userToo); // the theme's files, kept
+                const Icon     *readKept(const char *path, StringView key, uint16_t side, bool anySize);
+                const Icon     *keepMapped(StringView key, uint16_t side, const Icon *icon, bool pinned);
                 void        readInherits();
                 void        evictFor(size_t bytes); // the oldest freed until @p bytes more fit
                 const Icon *keep(StringView key, uint16_t side, bool fromProgram, const uint8_t *png, size_t bytes);
 
                 Kept    *_first = nullptr; // the icons kept, the newest first
                 size_t   _bytes = 0;
-                char     _theme[MaxTheme + 1] = "flat-color"; // DefaultTheme
+                IconPack _pack;
+                Icon    *_packIcons = nullptr; // PSRAM, the first time: an Icon per id and size
+                bool     _packTried = false;
+                char     _theme[MaxTheme + 1] = "bmds"; // DefaultTheme
                 char     _inherits[MaxTheme + 1] = {};
                 bool     _inheritsRead = false;
                 uint32_t _clock = 0;

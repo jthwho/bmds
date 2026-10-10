@@ -195,20 +195,21 @@ void FileDialog::setPlaces() {
         Vfs::MountInfo mounts[Vfs::MaxMounts];
         const size_t   n = Vfs::listMounts(Span<Vfs::MountInfo>(mounts));
         size_t         k = 0;
-        const auto     add = [&](StringView label, StringView path, const char *icon) {
+        const auto     add = [&](StringView label, StringView path, IconId icon) {
                 if (k == MaxPlaces) return;
                 Place       &p = _places[k++];
                 const size_t len = path.size() < sizeof(p.path) - 1 ? path.size() : sizeof(p.path) - 1;
                 std::memcpy(p.path, path.data(), len);
                 p.path[len] = '\0';
                 p.button->setText(label);
-                const Icon *i = _icons.named(icon, 16);
-                p.button->setIcon(i != nullptr ? i : _icons.named("folder", 16));
+                p.button->setIcon(_icons.named(icon, 16));
                 p.button->setVisible(true);
         };
-        if (Vfs::stat(Home, Root).isOk()) add("Home", Home, "user-home");
-        for (size_t i = 0; i < n; ++i) add(StringView(mounts[i].path), StringView(mounts[i].path), "drive-harddisk");
-        add("/", "/", "computer");
+        if (Vfs::stat(Home, Root).isOk()) add("Home", Home, IconId::UserHome);
+        for (size_t i = 0; i < n; ++i)
+                add(StringView(mounts[i].path), StringView(mounts[i].path),
+                    StringView(mounts[i].type) == "rom" ? IconId::MediaFlash : IconId::DriveHarddisk);
+        add("/", "/", IconId::Computer);
         for (; k < MaxPlaces; ++k) _places[k].button->setVisible(false);
         static_cast<BoxLayout *>(_places[0].button->parent())->relayout();
         return;

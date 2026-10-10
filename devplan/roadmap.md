@@ -154,8 +154,9 @@ Plan: [`input.md`](input.md).
     the time zone database without a card; `Vfs::map()`, later programs' read-only `mmap()`
     without a copy. A new flash layout with it: a 2 MB recovery firmware, the 4 MB main one, a
     512 KB `/boot`, the rest the ROM. Before the player's step 3.
-    Steps 1 (the format, `RomVolume`, `Vfs::map()`, the `bmds` icon theme, host-tested) and 2
-    (the new flash layout on the board, `/rom` mounted, `rom`) done.
+    Steps 1 (the format, `RomVolume`, `Vfs::map()`, the `bmds` icon theme, host-tested), 2 (the
+    new flash layout on the board, `/rom` mounted, `rom`), 3 (icons drawn from the ROM by id,
+    `bmds` the default theme) and 4 (time zones without a card) done.
   - [ ] Mixer window (`audio.md` §17, planned 2026-10-09): `mixer`, per-application levels (the
     device, each stream, system sounds, the MIDI synth's `synth/gain`); the volume tray icon's
     context menu (Mute, Mixer…). After the media player.

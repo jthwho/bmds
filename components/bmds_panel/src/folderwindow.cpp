@@ -78,22 +78,22 @@ Error FolderWindow::build() {
 
         // The toolbar: each button's choice its data (its icon set by setIcons()).
         struct Tool {
-                        const char *icon;
-                        const char *text;
+                        IconId      icon;
+                        const char *text; // null: a separator
                         Choice      choice;
         };
         constexpr Tool tools[] = {
-                {"go-previous", "Back", ChooseBack},
-                {"go-next", "Forward", ChooseForward},
-                {"go-up", "Up", ChooseUp},
-                {nullptr, nullptr, ChooseOpen},
-                {"edit-cut", "Cut", ChooseCut},
-                {"edit-copy", "Copy", ChooseCopy},
-                {"edit-paste", "Paste", ChoosePaste},
-                {"edit-delete", "Delete", ChooseDelete},
-                {nullptr, nullptr, ChooseOpen},
-                {"view-list-icons", "Icons", ChooseIcons},
-                {"view-list-details", "Details", ChooseDetails},
+                {IconId::GoPrevious, "Back", ChooseBack},
+                {IconId::GoNext, "Forward", ChooseForward},
+                {IconId::GoUp, "Up", ChooseUp},
+                {IconId::Folder, nullptr, ChooseOpen},
+                {IconId::EditCut, "Cut", ChooseCut},
+                {IconId::EditCopy, "Copy", ChooseCopy},
+                {IconId::EditPaste, "Paste", ChoosePaste},
+                {IconId::EditDelete, "Delete", ChooseDelete},
+                {IconId::Folder, nullptr, ChooseOpen},
+                {IconId::ViewListIcons, "Icons", ChooseIcons},
+                {IconId::ViewListDetails, "Details", ChooseDetails},
         };
         size_t iconed = 0;
         for (const Tool &t : tools) {
@@ -104,7 +104,7 @@ Error FolderWindow::build() {
                 Button *b = _tools->addButton(nullptr, t.text, toolClicked, this);
                 if (b == nullptr) return Error::NoMem;
                 b->setData(uintptr_t(t.choice));
-                if (t.icon != nullptr && iconed < sizeof(_toolButtons) / sizeof(_toolButtons[0])) {
+                if (iconed < sizeof(_toolButtons) / sizeof(_toolButtons[0])) {
                         _toolButtons[iconed] = b;
                         _toolIcons[iconed++] = t.icon;
                 }
@@ -167,12 +167,10 @@ Error FolderWindow::build() {
 // The window's and the tree's icons (again after a new theme: the old ones are gone).
 void FolderWindow::setIcons() {
         FileIcons  &icons = _host.fileIcons();
-        const Icon *folder = icons.named("folder", 16);
-        const Icon *drive = icons.named("drive-harddisk", 16);
-        const Icon *open = icons.named("folder-open", 16);
-        _tree->setIcons(drive != nullptr ? drive : folder, folder, open != nullptr ? open : folder);
+        const Icon *folder = icons.named(IconId::Folder, 16);
+        _tree->setIcons(icons.named(IconId::DriveHarddisk, 16), folder, icons.named(IconId::FolderOpen, 16));
         setIcon(folder);
-        setLargeIcon(icons.named("folder", 32));
+        setLargeIcon(icons.named(IconId::Folder, 32));
         for (size_t i = 0; i < sizeof(_toolButtons) / sizeof(_toolButtons[0]); ++i)
                 if (_toolButtons[i] != nullptr) _toolButtons[i]->setIcon(icons.named(_toolIcons[i], 16));
         return;
@@ -999,10 +997,6 @@ FolderMenus::FolderMenus(GuiApplication &app)
       _item(app), _background(app) {
         for (Menu *m : {&_file, &_edit, &_view, &_go, &_help, &_new, &_arrange, &_views, &_item, &_background})
                 m->setTriggered(triggered, this);
-        (void)_new.addItem("&Folder", FolderWindow::ChooseNewFolder);
-        (void)_new.addItem("&Text Document", FolderWindow::ChooseNewText);
-        (void)_new.addItem("&Empty File", FolderWindow::ChooseNewFile);
-        (void)_help.addItem("&About Files", FolderWindow::ChooseAbout);
 }
 
 Error FolderMenus::attach(MenuBar &bar) {
@@ -1060,7 +1054,15 @@ void FolderMenus::fill(Menu &menu, FolderWindow &w) {
         const auto        checked = [](bool on) {
                 return on ? On : uint8_t(0);
         };
+        // Items' icons, the theme's (made again at each showing: a new theme drops the old ones').
+        const auto icon = [this](IconId id) {
+                return _app.icons().find(id, 16);
+        };
         // The submenus first: they show as they are.
+        _new.clear();
+        (void)_new.addItem("&Folder", W::ChooseNewFolder, 0, StringView(), icon(IconId::Folder));
+        (void)_new.addItem("&Text Document", W::ChooseNewText, 0, StringView(), icon(IconId::TextXGeneric));
+        (void)_new.addItem("&Empty File", W::ChooseNewFile, 0, StringView(), icon(IconId::Unknown));
         _arrange.clear();
         const FolderModel::Sort sort = w.sort();
         (void)_arrange.addItem("by &Name", W::ChooseSortName, checked(sort == FolderModel::Sort::Name));
@@ -1072,58 +1074,63 @@ void FolderMenus::fill(Menu &menu, FolderWindow &w) {
         (void)_views.addItem("&Details", W::ChooseDetails, checked(w.showsDetails()));
         menu.clear();
         if (&menu == &_file) {
-                (void)menu.addItem("&Open", W::ChooseOpen, needOne, "Enter");
-                (void)menu.addItem("Open in New &Window", W::ChooseOpenNew, w.folderSelected() ? 0 : Off,
-                                   "Shift+Enter");
+                (void)menu.addItem("&Open", W::ChooseOpen, needOne, "Enter", icon(IconId::DocumentOpen));
+                (void)menu.addItem("Open in New &Window", W::ChooseOpenNew, w.folderSelected() ? 0 : Off, "Shift+Enter",
+                                   icon(IconId::WindowNew));
                 (void)menu.addSeparator();
-                (void)menu.addSubmenu("Ne&w", _new);
+                (void)menu.addSubmenu("Ne&w", _new, icon(IconId::DocumentNew));
                 (void)menu.addSeparator();
-                (void)menu.addItem("&Delete", W::ChooseDelete, needOne, "Del");
-                (void)menu.addItem("Rena&me", W::ChooseRename, selected == 1 ? 0 : Off, "F2");
+                (void)menu.addItem("&Delete", W::ChooseDelete, needOne, "Del", icon(IconId::EditDelete));
+                (void)menu.addItem("Rena&me", W::ChooseRename, selected == 1 ? 0 : Off, "F2", icon(IconId::EditRename));
                 (void)menu.addSeparator();
-                (void)menu.addItem("&Close", W::ChooseClose, 0, "Ctrl+W");
+                (void)menu.addItem("&Close", W::ChooseClose, 0, "Ctrl+W", icon(IconId::WindowClose));
         } else if (&menu == &_edit) {
-                (void)menu.addItem("Cu&t", W::ChooseCut, needOne, "Ctrl+X");
-                (void)menu.addItem("&Copy", W::ChooseCopy, needOne, "Ctrl+C");
-                (void)menu.addItem("&Paste", W::ChoosePaste, paste, "Ctrl+V");
+                (void)menu.addItem("Cu&t", W::ChooseCut, needOne, "Ctrl+X", icon(IconId::EditCut));
+                (void)menu.addItem("&Copy", W::ChooseCopy, needOne, "Ctrl+C", icon(IconId::EditCopy));
+                (void)menu.addItem("&Paste", W::ChoosePaste, paste, "Ctrl+V", icon(IconId::EditPaste));
                 (void)menu.addSeparator();
-                (void)menu.addItem("Select &All", W::ChooseSelectAll, 0, "Ctrl+A");
+                (void)menu.addItem("Select &All", W::ChooseSelectAll, 0, "Ctrl+A", icon(IconId::EditSelectAll));
                 (void)menu.addItem("&Invert Selection", W::ChooseInvert);
         } else if (&menu == &_view) {
                 (void)menu.addItem("Lar&ge Icons", W::ChooseIcons, checked(!w.showsDetails()));
                 (void)menu.addItem("&Details", W::ChooseDetails, checked(w.showsDetails()));
                 (void)menu.addSeparator();
-                (void)menu.addSubmenu("Arrange &Icons", _arrange);
+                (void)menu.addSubmenu("Arrange &Icons", _arrange, icon(IconId::ViewSortAscending));
                 (void)menu.addSeparator();
                 (void)menu.addItem("&Folders", W::ChooseFolders, checked(w.showsTree()));
                 (void)menu.addItem("&Status Bar", W::ChooseStatusBar, checked(w.showsStatusBar()));
                 (void)menu.addSeparator();
-                (void)menu.addItem("&Refresh", W::ChooseRefresh, 0, "F5");
+                (void)menu.addItem("&Refresh", W::ChooseRefresh, 0, "F5", icon(IconId::ViewRefresh));
         } else if (&menu == &_go) {
-                (void)menu.addItem("&Back", W::ChooseBack, w.canGoBack() ? 0 : Off, "Alt+Left");
-                (void)menu.addItem("&Forward", W::ChooseForward, w.canGoForward() ? 0 : Off, "Alt+Right");
-                (void)menu.addItem("&Up One Level", W::ChooseUp, w.canGoUp() ? 0 : Off, "Backspace");
+                (void)menu.addItem("&Back", W::ChooseBack, w.canGoBack() ? 0 : Off, "Alt+Left",
+                                   icon(IconId::GoPrevious));
+                (void)menu.addItem("&Forward", W::ChooseForward, w.canGoForward() ? 0 : Off, "Alt+Right",
+                                   icon(IconId::GoNext));
+                (void)menu.addItem("&Up One Level", W::ChooseUp, w.canGoUp() ? 0 : Off, "Backspace",
+                                   icon(IconId::GoUp));
                 (void)menu.addSeparator();
-                (void)menu.addItem("&Home", W::ChooseHome);
-                (void)menu.addItem("&Desktop", W::ChooseDesktop);
+                (void)menu.addItem("&Home", W::ChooseHome, 0, StringView(), icon(IconId::UserHome));
+                (void)menu.addItem("&Desktop", W::ChooseDesktop, 0, StringView(), icon(IconId::UserDesktop));
         } else if (&menu == &_item) {
-                (void)menu.addItem("&Open", W::ChooseOpen);
-                (void)menu.addItem("Open in New &Window", W::ChooseOpenNew, w.folderSelected() ? 0 : Off);
+                (void)menu.addItem("&Open", W::ChooseOpen, 0, StringView(), icon(IconId::DocumentOpen));
+                (void)menu.addItem("Open in New &Window", W::ChooseOpenNew, w.folderSelected() ? 0 : Off, StringView(),
+                                   icon(IconId::WindowNew));
                 (void)menu.addSeparator();
-                (void)menu.addItem("Cu&t", W::ChooseCut);
-                (void)menu.addItem("&Copy", W::ChooseCopy);
+                (void)menu.addItem("Cu&t", W::ChooseCut, 0, StringView(), icon(IconId::EditCut));
+                (void)menu.addItem("&Copy", W::ChooseCopy, 0, StringView(), icon(IconId::EditCopy));
                 (void)menu.addSeparator();
-                (void)menu.addItem("&Delete", W::ChooseDelete);
-                (void)menu.addItem("Rena&me", W::ChooseRename, selected == 1 ? 0 : Off);
+                (void)menu.addItem("&Delete", W::ChooseDelete, 0, StringView(), icon(IconId::EditDelete));
+                (void)menu.addItem("Rena&me", W::ChooseRename, selected == 1 ? 0 : Off, StringView(),
+                                   icon(IconId::EditRename));
         } else if (&menu == &_background) {
-                (void)menu.addSubmenu("&View", _views);
-                (void)menu.addSubmenu("Arrange &Icons", _arrange);
+                (void)menu.addSubmenu("&View", _views, icon(IconId::ViewListIcons));
+                (void)menu.addSubmenu("Arrange &Icons", _arrange, icon(IconId::ViewSortAscending));
                 (void)menu.addSeparator();
-                (void)menu.addItem("&Paste", W::ChoosePaste, paste);
+                (void)menu.addItem("&Paste", W::ChoosePaste, paste, StringView(), icon(IconId::EditPaste));
                 (void)menu.addSeparator();
-                (void)menu.addSubmenu("Ne&w", _new);
+                (void)menu.addSubmenu("Ne&w", _new, icon(IconId::DocumentNew));
         } else if (&menu == &_help) {
-                (void)menu.addItem("&About Files", W::ChooseAbout);
+                (void)menu.addItem("&About Files", W::ChooseAbout, 0, StringView(), icon(IconId::HelpAbout));
         }
         return;
 }

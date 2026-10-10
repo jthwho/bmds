@@ -29,7 +29,7 @@ void FileIcons::clear() {
 
 void FileIcons::forgetMissing() {
         for (size_t i = _kept.size(); i-- > 0;) {
-                if (_kept[i]->pixels != nullptr) continue;
+                if (_kept[i]->icon.isValid()) continue;
                 Memory::free(_kept[i]);
                 _kept.removeAt(i);
         }
@@ -38,7 +38,7 @@ void FileIcons::forgetMissing() {
 
 const Icon *FileIcons::dimmed(const Icon *icon) {
         for (Kept *k : _kept) {
-                if (icon != &k->icon || k->pixels == nullptr) continue;
+                if (icon != &k->icon || !k->icon.isValid()) continue;
                 if (k->dimPixels == nullptr) {
                         const size_t n = size_t(icon->width) * icon->height;
                         k->dimPixels = static_cast<uint32_t *>(Memory::alloc(MemSpace::Psram, n * sizeof(uint32_t)));
@@ -75,7 +75,7 @@ const Icon *FileIcons::loadedNamed(StringView name, uint16_t side) {
 
 const Icon *FileIcons::loaded(StringView key, uint16_t side, bool isName) {
         if (key.isEmpty() || key.size() > MaxKey) return nullptr;
-        if (const Kept *k = kept(key, side, isName); k != nullptr) return k->pixels != nullptr ? &k->icon : nullptr;
+        if (const Kept *k = kept(key, side, isName); k != nullptr) return k->icon.isValid() ? &k->icon : nullptr;
         for (const Wanted &w : _wanted)
                 if (w.side == side && w.isName == isName && StringView(w.key) == key) return nullptr; // asked
         Wanted w;
@@ -96,7 +96,7 @@ bool FileIcons::loadAsked() {
 
 const Icon *FileIcons::find(StringView key, uint16_t side, bool isName) {
         if (key.isEmpty() || key.size() > MaxKey) return nullptr;
-        if (const Kept *k = kept(key, side, isName); k != nullptr) return k->pixels != nullptr ? &k->icon : nullptr;
+        if (const Kept *k = kept(key, side, isName); k != nullptr) return k->icon.isValid() ? &k->icon : nullptr;
         // Looked for once: the type's own, its generic one, unknown.
         const Icon *found = nullptr;
         if (isName) {
@@ -105,7 +105,7 @@ const Icon *FileIcons::find(StringView key, uint16_t side, bool isName) {
                 char name[FileFormat::MaxType + 1];
                 found = _theme.find(FileFormat::iconName(key, Span<char>(name)), side);
                 if (found == nullptr) found = _theme.find(FileFormat::genericIcon(key), side);
-                if (found == nullptr) found = _theme.find("unknown", side);
+                if (found == nullptr) found = _theme.find(IconId::Unknown, side);
         }
         if (_kept.reserve(_kept.size() + 1).isError()) return found; // not kept: valid for now
         void *mem = Memory::alloc(MemSpace::Psram, sizeof(Kept));
@@ -114,7 +114,9 @@ const Icon *FileIcons::find(StringView key, uint16_t side, bool isName) {
         std::memcpy(k->key, key.data(), key.size());
         k->side = side;
         k->isName = isName;
-        if (found != nullptr && found->isValid()) {
+        if (found != nullptr && found->isValid() && _theme.isPermanent(found)) {
+                k->icon = *found; // the ROM's: used where it is
+        } else if (found != nullptr && found->isValid()) {
                 const size_t n = size_t(found->width) * found->height;
                 k->pixels = static_cast<uint32_t *>(Memory::alloc(MemSpace::Psram, n * sizeof(uint32_t)));
                 if (k->pixels != nullptr) {
@@ -122,13 +124,13 @@ const Icon *FileIcons::find(StringView key, uint16_t side, bool isName) {
                         k->icon = Icon{found->width, found->height, k->pixels};
                 }
         }
-        if (found != nullptr && k->pixels == nullptr) {
+        if (found != nullptr && !k->icon.isValid()) {
                 // No memory for the copy: the theme's, for now, not kept.
                 Memory::free(k);
                 return found;
         }
         (void)_kept.append(k);
-        return k->pixels != nullptr ? &k->icon : nullptr;
+        return k->icon.isValid() ? &k->icon : nullptr;
 }
 
 BMDS_NAMESPACE_END

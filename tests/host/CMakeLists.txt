@@ -118,8 +118,8 @@ if(BMDS_ZIC AND Python3_Interpreter_FOUND)
         target_compile_definitions(bmds_host_tests PRIVATE BMDS_TEST_ZONEINFO="${CMAKE_BINARY_DIR}/zoneinfo.bin")
 endif()
 # The ROM's parts (devplan/rom.md), as the firmware's build makes them: the bmds icon theme
-# and its IconId header from rom/icons.list, and an image of tests/host/rom with the theme
-# in it; the icon names BMDS's .desktop files use are checked to be in the theme.
+# from rom/icons.list (its IconId header is bmds_core's), and an image of tests/host/rom with the
+# theme in it; the icon names BMDS's .desktop files use are checked to be in the theme.
 if(Python3_Interpreter_FOUND)
         set(BMDS_MKROM ${BMDS_ROOT}/tools/mkrom.py)
         set(BMDS_ICONS_LIST ${BMDS_ROOT}/rom/icons.list)
@@ -130,24 +130,26 @@ if(Python3_Interpreter_FOUND)
                         ${BMDS_ROM_OUT}/bmds.icons ${BMDS_ROM_OUT}/bmds.LICENSES
                 DEPENDS ${BMDS_MKROM} ${BMDS_ICONS_LIST}
                 VERBATIM)
-        add_custom_command(OUTPUT ${BMDS_ROM_OUT}/include/bmds/iconid.h
-                COMMAND ${Python3_EXECUTABLE} ${BMDS_MKROM} iconid ${BMDS_ICONS_LIST}
-                        ${BMDS_ROM_OUT}/include/bmds/iconid.h
-                DEPENDS ${BMDS_MKROM} ${BMDS_ICONS_LIST}
-                VERBATIM)
+        # With the time zone database when it is built (zic): the ROM's, used without a card.
+        set(BMDS_TEST_ROM_ZONES)
+        set(BMDS_TEST_ROM_ZONES_FILE)
+        if(TARGET bmds_test_zoneinfo)
+                set(BMDS_TEST_ROM_ZONES --file share/zoneinfo.bin=${CMAKE_BINARY_DIR}/zoneinfo.bin)
+                set(BMDS_TEST_ROM_ZONES_FILE ${CMAKE_BINARY_DIR}/zoneinfo.bin)
+        endif()
         add_custom_command(OUTPUT ${BMDS_ROM_OUT}/test.rom ${BMDS_ROM_OUT}/include/romhash.h
                 COMMAND ${Python3_EXECUTABLE} ${BMDS_MKROM} image ${BMDS_ROM_OUT}/test.rom
                         --dir =${CMAKE_CURRENT_LIST_DIR}/rom
                         --file images/grey.png=${CMAKE_CURRENT_LIST_DIR}/png/grey.png
                         --file share/icons/bmds.icons=${BMDS_ROM_OUT}/bmds.icons
+                        ${BMDS_TEST_ROM_ZONES}
                         --link docs/hello-link=/rom/hello.txt
                         --mappable images/*
                         --hash-header ${BMDS_ROM_OUT}/include/romhash.h
                 DEPENDS ${BMDS_MKROM} ${BMDS_TEST_ROM_FILES} ${CMAKE_CURRENT_LIST_DIR}/png/grey.png
-                        ${BMDS_ROM_OUT}/bmds.icons
+                        ${BMDS_ROM_OUT}/bmds.icons ${BMDS_TEST_ROM_ZONES_FILE}
                 VERBATIM)
-        add_custom_target(bmds_test_rom DEPENDS ${BMDS_ROM_OUT}/bmds.icons ${BMDS_ROM_OUT}/include/bmds/iconid.h
-                                                ${BMDS_ROM_OUT}/test.rom)
+        add_custom_target(bmds_test_rom DEPENDS ${BMDS_ROM_OUT}/bmds.icons ${BMDS_ROM_OUT}/test.rom)
         add_dependencies(bmds_host_tests bmds_test_rom)
         target_include_directories(bmds_host_tests PRIVATE ${BMDS_ROM_OUT}/include)
         target_compile_definitions(bmds_host_tests PRIVATE BMDS_TEST_ROM="${BMDS_ROM_OUT}/test.rom"

@@ -506,12 +506,17 @@ namespace Vfs {
         /** @brief Longest database path (`setZoneDatabase()`). */
         inline constexpr size_t MaxZoneDatabasePath = 127;
 
+        /** @brief The ROM's time zone database (`devplan/rom.md` §3g): used when the one set isn't there. */
+        inline constexpr StringView RomZoneDatabase("/rom/share/zoneinfo.bin");
+
         /**
          * @brief Uses the bundle at @p path (`zoneinfo.bin`, built by
          *        `tools/tzbundle`) as the time zone database, and retries a
-         *        pending kernel zone name with it.
-         * @param path Absolute, at most `MaxZoneDatabasePath` bytes; "" for none.
-         *        It needn't exist yet (the card may come later).
+         *        pending kernel zone name with it. While no file is there (no
+         *        card), the ROM's (`RomZoneDatabase`) is used, if there is one.
+         * @param path Absolute, at most `MaxZoneDatabasePath` bytes; "" for none
+         *        (not the ROM's either). It needn't exist yet (the card may come
+         *        later).
          * @return `Ok` or `Invalid`.
          */
         Error setZoneDatabase(StringView path);
@@ -523,6 +528,7 @@ namespace Vfs {
         struct ZoneDatabaseInfo {
                         char     version[9] = {}; ///< The tzdata release, "2026e".
                         uint32_t count = 0;       ///< Zone names, aliases included.
+                        bool     fromRom = false; ///< The ROM's: none at the path set (`RomZoneDatabase`).
         };
 
         /**

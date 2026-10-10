@@ -1,0 +1,12 @@
+<svg version="1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+    <!-- BMDS's own (devplan/rom.md §3i): flat-color's document, twice, the copy in front. -->
+    <polygon fill="#64B5F6" points="30,35 4,35 4,3 22,3 30,11"/>
+    <polygon fill="#BBDEFB" points="29,12 21,12 21,4"/>
+    <polygon fill="#90CAF9" points="44,46 18,46 18,14 36,14 44,22"/>
+    <polygon fill="#E1F5FE" points="43,23 35,23 35,15"/>
+    <g fill="#1976D2">
+        <rect x="23" y="28" width="16" height="3"/>
+        <rect x="23" y="34" width="12" height="3"/>
+        <rect x="23" y="40" width="16" height="3"/>
+    </g>
+</svg>

@@ -49,6 +49,7 @@ namespace {
 
 IconTheme::~IconTheme() {
         clear();
+        Memory::free(_packIcons);
 }
 
 void IconTheme::clear() {
@@ -84,9 +85,10 @@ IconTheme::Kept *IconTheme::lookup(StringView key, uint16_t side, bool fromProgr
 void IconTheme::evictFor(size_t bytes) {
         while (_first != nullptr && _bytes + bytes > MaxBytes) {
                 // The one used longest ago (few are kept: a walk).
-                Kept **oldest = &_first;
+                Kept **oldest = nullptr;
                 for (Kept **at = &_first; *at != nullptr; at = &(*at)->next)
-                        if ((*at)->age < (*oldest)->age) oldest = at;
+                        if (!(*at)->pinned && (oldest == nullptr || (*at)->age < (*oldest)->age)) oldest = at;
+                if (oldest == nullptr) return; // all found by id: kept
                 Kept *gone = *oldest;
                 *oldest = gone->next;
                 _bytes -= gone->bytes;
@@ -154,46 +156,146 @@ void IconTheme::readInherits() {
         return;
 }
 
+bool IconTheme::isBmds() const {
+        return std::strcmp(_theme, DefaultTheme) == 0;
+}
+
+const IconPack *IconTheme::pack() {
+        if (!_packTried) {
+                _packTried = true;
+                auto [bytes, err] = Vfs::map(StringView(PackPath), Vfs::Context());
+                if (err.isOk()) {
+                        auto [opened, perr] = IconPack::open(bytes);
+                        if (perr.isOk()) _pack = opened;
+                }
+        }
+        return _pack.count() > 0 ? &_pack : nullptr;
+}
+
+const Icon *IconTheme::packIcon(uint32_t id, uint16_t side) {
+        const IconPack *p = pack();
+        if (p == nullptr || id >= p->count()) return nullptr;
+        size_t s = 0;
+        while (s < IconPack::MaxSizes && p->side(s) != side) ++s;
+        if (s == IconPack::MaxSizes) return nullptr;
+        if (_packIcons == nullptr) {
+                const size_t n = size_t(p->count()) * IconPack::MaxSizes;
+                _packIcons = static_cast<Icon *>(Memory::alloc(MemSpace::Psram, n * sizeof(Icon)));
+                if (_packIcons == nullptr) return nullptr;
+                for (size_t i = 0; i < n; ++i) ::new (&_packIcons[i]) Icon();
+        }
+        Icon &icon = _packIcons[size_t(id) * IconPack::MaxSizes + s];
+        if (!icon.isValid()) {
+                const uint32_t *pixels = p->pixels(id, side);
+                if (pixels == nullptr) return nullptr;
+                icon = Icon{side, side, pixels};
+        }
+        return &icon;
+}
+
+bool IconTheme::isPermanent(const Icon *icon) const {
+        if (icon == nullptr || _pack.count() == 0) return false;
+        const auto *p = reinterpret_cast<const uint8_t *>(icon->pixels);
+        return p >= _pack.bytes().data() && p < _pack.bytes().data() + _pack.bytes().size();
+}
+
+// @p icon (the bmds theme's) kept under @p key, so a name finds it again without looking in
+// the files first: the record only, its pixels where they are.
+const Icon *IconTheme::keepMapped(StringView key, uint16_t side, const Icon *icon, bool pinned) {
+        if (icon == nullptr || key.size() > MaxName) return icon;
+        const size_t head = (sizeof(Kept) + key.size() + 1 + 3) & ~size_t(3);
+        evictFor(head);
+        auto *mem = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, head));
+        if (mem == nullptr) return icon;
+        auto *k = ::new (mem) Kept();
+        char *name = reinterpret_cast<char *>(k + 1);
+        std::memcpy(name, key.data(), key.size());
+        name[key.size()] = '\0';
+        k->keyLength = static_cast<uint8_t>(key.size());
+        k->icon = *icon;
+        k->age = ++_clock;
+        k->bytes = static_cast<uint32_t>(head);
+        k->side = side;
+        k->pinned = pinned;
+        k->next = _first;
+        _first = k;
+        _bytes += head;
+        return icon;
+}
+
+// A PNG at @p path of @p side pixels (any size for a path), kept under @p key; null if not there.
+const Icon *IconTheme::readKept(const char *path, StringView key, uint16_t side, bool anySize) {
+        size_t   bytes = 0;
+        uint8_t *png = readFile(path, bytes);
+        if (png == nullptr) return nullptr;
+        auto [size, err] = Png::size(ByteSpan(png, bytes));
+        const Icon *icon = nullptr;
+        if (err.isOk() && (anySize || (size.width == side && size.height == side)))
+                icon = keep(key, side, false, png, bytes);
+        Memory::free(png);
+        return icon;
+}
+
+const Icon *IconTheme::findFile(StringView name, uint16_t side, bool userToo) {
+        // The user's, the theme (on the card), what it inherits: never bmds's, which is the ROM's.
+        char   dirs[3][80];
+        size_t count = 0;
+        if (userToo) std::snprintf(dirs[count++], sizeof(dirs[0]), "/boot/icons/%ux%u/", side, side);
+        if (!isBmds()) {
+                readInherits();
+                std::snprintf(dirs[count++], sizeof(dirs[0]), "%s/%s/%ux%u/", ThemesDir, _theme, side, side);
+                if (_inherits[0] != '\0' && std::strcmp(_inherits, _theme) != 0 &&
+                    std::strcmp(_inherits, DefaultTheme) != 0)
+                        std::snprintf(dirs[count++], sizeof(dirs[0]), "%s/%s/%ux%u/", ThemesDir, _inherits, side, side);
+        }
+        for (size_t i = 0; i < count; ++i) {
+                char path[512]; // a directory (under 80) and a name (MaxName) with .png
+                std::snprintf(path, sizeof(path), "%s%.*s%s", dirs[i], int(name.size()), name.data(),
+                              name.endsWith(StringView(".png")) ? "" : ".png");
+                if (const Icon *icon = readKept(path, name, side, false); icon != nullptr) return icon;
+        }
+        return nullptr;
+}
+
 const Icon *IconTheme::find(StringView name, uint16_t side) {
         if (name.isEmpty() || name.size() > MaxName || side == 0 || side > MaxSide) return nullptr;
         if (Kept *k = lookup(name, side, false); k != nullptr) return &k->icon;
-        const bool isPath = name.startsWith('/');
-        // Where it may be: a path as it is; else the user's, the theme, what it inherits, the
-        // default theme, hicolor.
-        char   dirs[5][80];
-        size_t count = 0;
-        if (isPath) {
-                dirs[count++][0] = '\0';
-        } else {
-                readInherits();
-                std::snprintf(dirs[count++], sizeof(dirs[0]), "/boot/icons/%ux%u/", side, side);
-                const char *themes[] = {_theme, _inherits, DefaultTheme};
-                for (size_t t = 0; t < 3; ++t) {
-                        bool again = themes[t][0] == '\0';
-                        for (size_t u = 0; u < t; ++u) again = again || std::strcmp(themes[u], themes[t]) == 0;
-                        if (!again)
-                                std::snprintf(dirs[count++], sizeof(dirs[0]), "%s/%s/%ux%u/", ThemesDir, themes[t],
-                                              side, side);
-                }
-                std::snprintf(dirs[count++], sizeof(dirs[0]), "%s/hicolor/%ux%u/apps/", ThemesDir, side, side);
+        if (name.startsWith('/')) {
+                char path[MaxName + 1];
+                std::snprintf(path, sizeof(path), "%.*s", int(name.size()), name.data());
+                return readKept(path, name, side, true);
         }
-        uint8_t *png = nullptr;
-        size_t   bytes = 0;
-        for (size_t i = 0; i < count && png == nullptr; ++i) {
-                char path[512]; // a directory (under 80) and a name (MaxName) with .png
-                std::snprintf(path, sizeof(path), "%s%.*s%s", dirs[i], int(name.size()), name.data(),
-                              isPath || name.endsWith(StringView(".png")) ? "" : ".png");
-                png = readFile(path, bytes);
-                // A name's icon of another size isn't this size's (a path's is what it is): further on.
-                auto [size, err] = Png::size(ByteSpan(png, png != nullptr ? bytes : 0));
-                if (png != nullptr && !isPath && (err.isError() || size.width != side || size.height != side)) {
-                        Memory::free(png);
-                        png = nullptr;
+        if (const Icon *icon = findFile(name, side, true); icon != nullptr) return icon;
+        if (const IconPack *p = pack(); p != nullptr) {
+                const uint32_t id = p->idOf(name);
+                if (id != IconPack::NoIcon) {
+                        if (const Icon *icon = packIcon(id, side); icon != nullptr)
+                                return keepMapped(name, side, icon, false);
                 }
         }
-        const Icon *icon = keep(name, side, false, png, bytes);
-        Memory::free(png);
-        return icon;
+        char path[512];
+        std::snprintf(path, sizeof(path), "%s/hicolor/%ux%u/apps/%.*s.png", ThemesDir, side, side, int(name.size()),
+                      name.data());
+        return readKept(path, name, side, false);
+}
+
+const Icon *IconTheme::find(IconId iconId, uint16_t side) {
+        const IconPack *p = pack();
+        if (p == nullptr || side == 0 || side > MaxSide) return nullptr;
+        const uint32_t id = static_cast<uint32_t>(iconId);
+        if (isBmds()) return packIcon(id, side);
+        // Another theme: its icon of the name first, found once and kept until setTheme().
+        const StringView name = p->name(id);
+        if (name.isEmpty()) return nullptr;
+        if (Kept *k = lookup(name, side, false); k != nullptr) {
+                k->pinned = true;
+                return &k->icon;
+        }
+        if (const Icon *icon = findFile(name, side, false); icon != nullptr) {
+                if (Kept *k = lookup(name, side, false); k != nullptr) k->pinned = true;
+                return icon;
+        }
+        return keepMapped(name, side, packIcon(id, side), true);
 }
 
 const Icon *IconTheme::program(StringView path, uint16_t side) {
@@ -210,7 +312,7 @@ const Icon *IconTheme::program(StringView path, uint16_t side) {
 const Icon *IconTheme::forProgram(StringView name, StringView path, uint16_t side) {
         const Icon *icon = find(name, side);
         if (icon == nullptr) icon = program(path, side);
-        if (icon == nullptr) icon = find("application-x-executable", side);
+        if (icon == nullptr) icon = find(IconId::ApplicationXExecutable, side);
         return icon;
 }
 

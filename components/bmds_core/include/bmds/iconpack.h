@@ -80,6 +80,9 @@ class IconPack {
                 /** @brief Returns the id of the icon named @p name (a binary search), or `NoIcon`. */
                 uint32_t idOf(StringView name) const;
 
+                /** @brief Returns the pack's bytes (empty for an empty pack). */
+                ByteSpan bytes() const { return _bytes; }
+
         private:
                 const uint8_t *row(uint32_t id) const { return _bytes.data() + _table + id * RowBytes; }
 

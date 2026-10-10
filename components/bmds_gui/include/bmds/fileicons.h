@@ -13,6 +13,7 @@
 #include <bmds/config.h>
 #include <bmds/icon.h>
 #include <bmds/icontheme.h>
+#include <bmds/iconid.h>
 #include <bmds/list.h>
 #include <bmds/stringview.h>
 
@@ -24,7 +25,8 @@ BMDS_NAMESPACE_BEGIN
  *        once and copied (the theme's cache may drop its own).
  *
  * A type's icon is its own name's (`text-plain`), else its generic one
- * (`text-x-generic`), else `unknown`. One not found is remembered as none
+ * (`text-x-generic`), else `unknown`. The bmds theme's icons are in the ROM
+ * (`IconTheme::isPermanent()`): those are used where they are, not copied. One not found is remembered as none
  * until `clear()` (a new theme, a card mounted later), so a folder of
  * unknown files doesn't look for it on every redraw. Drawing asks with
  * `loadedForType()` and `loadedNamed()`: it runs on the window manager's task
@@ -46,6 +48,12 @@ class FileIcons {
 
                 /** @brief Returns icon @p name of @p side pixels (`folder`), or null. */
                 const Icon *named(StringView name, uint16_t side);
+
+                /**
+                 * @brief Returns icon @p id of @p side pixels, or null: the theme's own
+                 *        (`IconTheme::find(IconId, uint16_t)`), valid until a new theme.
+                 */
+                const Icon *named(IconId id, uint16_t side) { return _theme.find(id, side); }
 
                 /** @brief Told an icon was asked for that isn't loaded (from any task, the application's lock held). */
                 using Asked = void (*)(void *arg);
@@ -91,8 +99,8 @@ class FileIcons {
                                 char      key[MaxKey + 1] = {};
                                 uint16_t  side = 0;
                                 bool      isName = false; // looked up by name, not by type
-                                Icon      icon;
-                                uint32_t *pixels = nullptr; // PSRAM, or null: not found
+                                Icon      icon;           // invalid: not found
+                                uint32_t *pixels = nullptr; // PSRAM: the copy (null: none, or the ROM's own)
                                 Icon      dim;
                                 uint32_t *dimPixels = nullptr; // PSRAM, made when first asked for
                 };

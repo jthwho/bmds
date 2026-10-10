@@ -78,6 +78,10 @@ class VolumeItem final : public Widget {
                 /** @brief The quietest level before Mute (the setting's least). */
                 static constexpr int32_t FloorDb = -60;
 
+                /** @brief The levels its icon changes at: below `LowDb` no waves, from `HighDb` two. */
+                static constexpr int32_t LowDb = -40;
+                static constexpr int32_t HighDb = -15;
+
                 VolumeItem(Widget *parent, GuiApplication &app);
                 ~VolumeItem() override;
 

@@ -42,36 +42,6 @@ namespace {
                 return c;
         }
 
-        // The red circle and slash over a 16-pixel icon at (@p x, @p y): a run of pixels a row
-        // at a time, from the circle's ring (radius 6.5 to 8) and the band along its diagonal.
-        void drawMuted(Painter &painter, int x, int y) {
-                Rect   runs[48];
-                size_t n = 0;
-                for (int row = 0; row < 16; ++row) {
-                        int start = -1;
-                        for (int col = 0; col <= 16; ++col) {
-                                bool red = false;
-                                if (col < 16) {
-                                        const int dx = 2 * col - 15; // doubled, from the centre (7.5, 7.5)
-                                        const int dy = 2 * row - 15;
-                                        const int d2 = dx * dx + dy * dy;
-                                        const int diag = dx - dy; // the top-left to bottom-right line
-                                        red = (d2 >= 13 * 13 && d2 <= 16 * 16) ||
-                                              (d2 < 13 * 13 && diag >= -3 && diag <= 3);
-                                }
-                                if (red && start < 0) start = col;
-                                if (!red && start >= 0) {
-                                        if (n < sizeof(runs) / sizeof(runs[0]))
-                                                runs[n++] = Rect{uint16_t(x + start), uint16_t(y + row),
-                                                                 uint16_t(col - start), 1};
-                                        start = -1;
-                                }
-                        }
-                }
-                (void)painter.fill(Span<const Rect>(runs, n), MutedRed);
-                return;
-        }
-
 } // namespace
 
 // ---- VolumePopup
@@ -261,16 +231,18 @@ void VolumeItem::paint(Painter &painter) {
         }
         const int x = g.x + (g.width - GuiStyle::IconSize) / 2;
         const int y = g.y + (g.height - GuiStyle::IconSize) / 2;
-        // The freedesktop.org name, else the themes' own speaker (installed before the aliases).
-        const Icon *icon = _app.icons().find("audio-volume-high", GuiStyle::IconSize);
-        if (icon == nullptr) icon = _app.icons().find("speaker", GuiStyle::IconSize);
+        // The level's speaker: muted, quiet (no waves), middling (one), loud (two).
+        const IconId level = _muted || _db <= FloorDb ? IconId::AudioVolumeMuted
+                             : _db < LowDb            ? IconId::AudioVolumeLow
+                             : _db < HighDb           ? IconId::AudioVolumeMedium
+                                                      : IconId::AudioVolumeHigh;
+        const Icon  *icon = _app.icons().find(level, GuiStyle::IconSize);
         if (icon != nullptr) {
                 (void)painter.image(x, y, *icon, face);
         } else {
                 (void)painter.text(x, y, StringView("Vol"), Fonts::unscii16, painter.palette().color(Role::FaceText),
                                    face, uint16_t(g.width));
         }
-        if (_muted) drawMuted(painter, x, y);
         return;
 }
 

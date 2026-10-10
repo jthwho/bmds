@@ -74,6 +74,7 @@ MAX_ICON_NAME = 63
 THEMES = {
     "flat-color": ("thirdparty/flat-color-icons", "LICENSE.md", "icons8's Flat Color Icons"),
     "glyphs": ("thirdparty/glyphs", "LICENSE", "Glyphs (gorango/glyphs, core set, coloured)"),
+    "bmds": ("rom/icons", "../../LICENSE", "BMDS's own (rom/icons/svg, drawn after flat-color)"),
 }
 
 

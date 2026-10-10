@@ -4,8 +4,9 @@
 #   NAME                        THEME       SOURCE          [mirror]
 #
 # NAME: freedesktop.org's Icon Naming Specification's name (BMDS's own, for what it doesn't
-#       name). THEME: flat-color or glyphs. SOURCE: the icon's file in that set, without .png,
-#       at 16x16 and 32x32. mirror: flipped left to right.
+#       name). THEME: flat-color, glyphs, or bmds (BMDS's own: rom/icons/svg, rendered into
+#       rom/icons/png by tools/render-icons rom/icons). SOURCE: the icon's file in that set,
+#       without .png, at 16x16 and 32x32. mirror: flipped left to right.
 #
 # A line's place is its IconId's number (bmds/iconid.h, generated): add lines at the END only,
 # never remove, rename or reorder one once shipped. Flat-color where it has the icon (the
@@ -95,9 +96,9 @@ document-save-as                glyphs      save-1
 document-print                  flat-color  print
 document-properties             glyphs      sliders
 document-send                   glyphs      send
-edit-copy                       glyphs      copy
+edit-copy                       bmds        edit-copy
 edit-cut                        glyphs      scissors
-edit-paste                      glyphs      paste
+edit-paste                      glyphs      note-clipboard
 edit-delete                     flat-color  empty_trash
 edit-undo                       flat-color  undo
 edit-redo                       flat-color  redo
@@ -122,7 +123,7 @@ view-fullscreen                 glyphs      arrows-expand-quad
 view-restore                    glyphs      arrows-compress-quad
 zoom-in                         glyphs      zoom-in
 zoom-out                        glyphs      zoom-out
-window-close                    glyphs      x
+window-close                    bmds        window-close
 window-new                      glyphs      window
 process-stop                    flat-color  cancel
 system-search                   flat-color  search
@@ -158,10 +159,10 @@ media-eject                     glyphs      eject
 media-playlist-repeat           glyphs      repeat
 media-playlist-repeat-song      glyphs      repeat-once
 media-playlist-shuffle          glyphs      arrows-cross
-audio-volume-high               glyphs      volume-3
-audio-volume-medium             glyphs      volume-2
-audio-volume-low                glyphs      volume-1
-audio-volume-muted              glyphs      volume-mute
+audio-volume-high               bmds        audio-volume-high
+audio-volume-medium             bmds        audio-volume-medium
+audio-volume-low                bmds        audio-volume-low
+audio-volume-muted              bmds        audio-volume-muted
 
 # --- Status and dialogs
 dialog-information              flat-color  info
@@ -178,3 +179,10 @@ emblem-default                  flat-color  checkmark
 image-missing                   flat-color  broken_link
 security-high                   glyphs      shield
 task-due                        flat-color  todo_list
+
+# --- Window controls (the window manager's window menu): BMDS's own
+window-minimize                 bmds        window-minimize
+window-maximize                 bmds        window-maximize
+window-restore                  bmds        window-restore
+window-shade                    bmds        window-shade
+window-unshade                  bmds        window-unshade
