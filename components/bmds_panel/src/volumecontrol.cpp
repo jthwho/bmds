@@ -1,23 +1,23 @@
 /**
- * @file      volumeitem.cpp
+ * @file      volumecontrol.cpp
  * @copyright Jason Howard. All rights reserved.
  *
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * The panel's volume item and its slider (devplan/audio.md §17, devplan/gui.md §4s).
+ * The volume control, a tray icon in the panel's process, and its slider (devplan/audio.md §17,
+ * devplan/gui.md §4s, devplan/mediaplayer.md §6e).
  */
 
 #include <cstdio>
 #include <new>
 #include <bmds/bevel.h>
-#include <bmds/font.h>
 #include <bmds/inputevent.h>
 #include <bmds/memory.h>
 #include <bmds/menulayout.h>
 #include <bmds/sysconf.h>
 
-#include "volumeitem.h"
+#include "volumecontrol.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -25,12 +25,16 @@ namespace {
 
         using Role = WindowPalette::Role;
 
-        constexpr int32_t  MuteNotch = VolumeItem::FloorDb - 1; // the slider's bottom
-        constexpr uint16_t PopupWidth = 96;                     // "-60 dBFS" and the label's padding
-        constexpr uint16_t PopupHeight = 196;                   // the level, the slider, the Mute button
-        constexpr uint16_t Margin = 6;                          // inside the popup's bevel
+        constexpr int32_t  MuteNotch = VolumeControl::FloorDb - 1; // the slider's bottom
+        constexpr uint16_t PopupWidth = 96;                        // "-60 dBFS" and the label's padding
+        constexpr uint16_t PopupHeight = 196;                      // the level, the slider, the Mute button
+        constexpr uint16_t Margin = 6;                             // inside the popup's bevel
         constexpr uint16_t LevelHeight = 20;
-        constexpr uint32_t MutedRed = 0xd02020; // the circle and slash over a muted speaker
+
+        enum Choice : int {
+                ChooseMute = 1,
+                ChooseMixer,
+        };
 
         GuiWindow::Config popupConfig() {
                 GuiWindow::Config c;
@@ -46,7 +50,7 @@ namespace {
 
 // ---- VolumePopup
 
-VolumePopup::VolumePopup(GuiApplication &app, VolumeItem &item) : GuiWindow(app, popupConfig()), _item(item) {
+VolumePopup::VolumePopup(GuiApplication &app, VolumeControl &control) : GuiWindow(app, popupConfig()), _item(control) {
         _level = Widget::create<Label>(this);
         if (_level != nullptr) _level->setAlign(Label::Align::Center);
         _slider = Widget::create<Slider>(this, Slider::Orientation::Vertical);
@@ -146,13 +150,18 @@ void VolumePopup::closedByManager() {
         return;
 }
 
-// ---- VolumeItem
+// ---- VolumeControl
 
-VolumeItem::VolumeItem(Widget *parent, GuiApplication &app) : Widget(parent), _app(app) {
+VolumeControl::VolumeControl(GuiApplication &app) : _app(app), _icon(app), _menu(app) {
+        _icon.setCategory(TrayIcon::Category::Hardware);
+        _icon.setActivated(activated, this);
+        _icon.setScrolled(scrolled, this);
+        _icon.setContextMenu(&_menu);
+        _menu.setTriggered(chosen, this);
         refresh();
 }
 
-VolumeItem::~VolumeItem() {
+VolumeControl::~VolumeControl() {
         if (_saveTimer >= 0) {
                 _app.stopTimer(_saveTimer);
                 save(this);
@@ -163,7 +172,11 @@ VolumeItem::~VolumeItem() {
         }
 }
 
-void VolumeItem::refresh() {
+Error VolumeControl::start() {
+        return _icon.show();
+}
+
+void VolumeControl::refresh() {
         if (auto [v, e] = SysConf::getInt(VolumeKey); e.isOk()) _db = v;
         if (auto [m, e] = SysConf::getBool(MuteKey); e.isOk()) _muted = m;
         if (_muted) {
@@ -171,13 +184,26 @@ void VolumeItem::refresh() {
         } else {
                 std::snprintf(_tip, sizeof(_tip), "Volume: %ld dBFS", static_cast<long>(_db));
         }
-        update();
-        _app.toolTipChanged(this);
+        // The level's speaker: muted, quiet (no waves), middling (one), loud (two).
+        _icon.setIcon(_muted || _db <= FloorDb ? StringView("audio-volume-muted")
+                      : _db < LowDb            ? StringView("audio-volume-low")
+                      : _db < HighDb           ? StringView("audio-volume-medium")
+                                               : StringView("audio-volume-high"));
+        _icon.setToolTip(StringView(_tip));
+        fillMenu();
         if (_popup != nullptr && _popup->isShown()) _popup->refresh(_db, _muted);
         return;
 }
 
-void VolumeItem::set(const char *key, StringView value) {
+void VolumeControl::fillMenu() {
+        _menu.clear();
+        (void)_menu.addItem("&Mute", ChooseMute, _muted ? MenuLayout::Checked : 0);
+        (void)_menu.addSeparator();
+        (void)_menu.addItem("Mi&xer...", ChooseMixer, MenuLayout::Disabled); // the mixer window, later
+        return;
+}
+
+void VolumeControl::set(const char *key, StringView value) {
         if (SysConf::set(StringView(key), value).isError()) return;
         // Kept across a restart: written to /boot once the changes stop.
         if (_saveTimer >= 0) _app.stopTimer(_saveTimer);
@@ -186,15 +212,15 @@ void VolumeItem::set(const char *key, StringView value) {
         return;
 }
 
-void VolumeItem::save(void *arg) {
-        auto *self = static_cast<VolumeItem *>(arg);
+void VolumeControl::save(void *arg) {
+        auto *self = static_cast<VolumeControl *>(arg);
         self->_saveTimer = -1;
         (void)SysConf::save(StringView(VolumeKey));
         (void)SysConf::save(StringView(MuteKey));
         return;
 }
 
-void VolumeItem::setLevel(int32_t db) {
+void VolumeControl::setLevel(int32_t db) {
         if (db < FloorDb) {
                 if (!_muted) set(MuteKey, "true"); // the level is kept for unmuting
                 return;
@@ -209,44 +235,12 @@ void VolumeItem::setLevel(int32_t db) {
         return;
 }
 
-void VolumeItem::setMuted(bool muted) {
+void VolumeControl::setMuted(bool muted) {
         if (muted != _muted) set(MuteKey, muted ? "true" : "false"); // the level is kept meanwhile
         return;
 }
 
-GuiSize VolumeItem::sizeHint() const {
-        return GuiSize{GuiStyle::ButtonHeight, GuiStyle::ButtonHeight};
-}
-
-void VolumeItem::paint(Painter &painter) {
-        const Rect    &g = geometry();
-        const uint32_t face = painter.palette().color(Role::Face);
-        const bool     open = _popup != nullptr && _popup->isShown();
-        (void)painter.fill(g, face);
-        // Flat, as the classic trays: a thin edge under the pointer, sunk while its slider is open.
-        if (open) {
-                drawBevel(painter, g, Bevel::Style::Status);
-        } else if (_over) {
-                drawBevel(painter, g, Bevel::Style::Thin);
-        }
-        const int x = g.x + (g.width - GuiStyle::IconSize) / 2;
-        const int y = g.y + (g.height - GuiStyle::IconSize) / 2;
-        // The level's speaker: muted, quiet (no waves), middling (one), loud (two).
-        const IconId level = _muted || _db <= FloorDb ? IconId::AudioVolumeMuted
-                             : _db < LowDb            ? IconId::AudioVolumeLow
-                             : _db < HighDb           ? IconId::AudioVolumeMedium
-                                                      : IconId::AudioVolumeHigh;
-        const Icon  *icon = _app.icons().find(level, GuiStyle::IconSize);
-        if (icon != nullptr) {
-                (void)painter.image(x, y, *icon, face);
-        } else {
-                (void)painter.text(x, y, StringView("Vol"), Fonts::unscii16, painter.palette().color(Role::FaceText),
-                                   face, uint16_t(g.width));
-        }
-        return;
-}
-
-void VolumeItem::openPopup() {
+void VolumeControl::openPopup() {
         if (_popup == nullptr) {
                 void *mem = Memory::alloc(MemSpace::Psram, sizeof(VolumePopup));
                 if (mem == nullptr) return;
@@ -254,47 +248,37 @@ void VolumeItem::openPopup() {
         }
         if (_popup->isShown()) {
                 _popup->close(); // a second click closes it
-                update();
                 return;
         }
-        GuiWindow *w = window();
-        if (w == nullptr) return;
-        const Rect s = w->screenRect();
-        const Rect g = geometry();
+        const Rect at = _icon.geometry();
+        if (at.width == 0) return; // the tray hasn't said where it is yet
         _popup->refresh(_db, _muted);
-        _popup->open(Rect{uint16_t(s.x + g.x), uint16_t(s.y + g.y), g.width, g.height});
-        update();
+        _popup->open(at);
         return;
 }
 
-void VolumeItem::mousePressed(const WindowManager::MouseEvent &event) {
-        if (event.button == PointerEvent::Middle) {
-                setMuted(!_muted);
-                return;
+void VolumeControl::activated(void *arg, TrayIcon &, TrayIcon::Reason reason) {
+        auto *self = static_cast<VolumeControl *>(arg);
+        if (reason == TrayIcon::Reason::Trigger) {
+                self->openPopup();
+        } else if (reason == TrayIcon::Reason::MiddleClick) {
+                self->setMuted(!self->_muted);
         }
-        if (event.button == PointerEvent::Left || event.button == PointerEvent::Right) openPopup();
+        return; // Context: its menu, opened by the icon
+}
+
+void VolumeControl::scrolled(void *arg, TrayIcon &, int notches) {
+        auto *self = static_cast<VolumeControl *>(arg);
+        if (self->_muted && notches < 0) return; // silent already
+        const int32_t db = self->_db + notches;
+        self->setLevel(db < FloorDb ? FloorDb : db); // up from muted unmutes
         return;
 }
 
-void VolumeItem::mouseMoved(const WindowManager::MouseEvent &) {
-        if (!_over) {
-                _over = true;
-                update();
-        }
+void VolumeControl::chosen(void *arg, int item) {
+        auto *self = static_cast<VolumeControl *>(arg);
+        if (item == ChooseMute) self->setMuted(!self->_muted);
         return;
-}
-
-void VolumeItem::mouseLeft() {
-        _over = false;
-        update();
-        return;
-}
-
-bool VolumeItem::wheelTurned(int notches) {
-        if (_muted && notches < 0) return true; // silent already
-        const int32_t db = _db + notches;
-        setLevel(db < FloorDb ? FloorDb : db); // up from muted unmutes
-        return true;
 }
 
 BMDS_NAMESPACE_END

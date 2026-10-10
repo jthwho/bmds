@@ -57,7 +57,7 @@ Error GuiWindow::show(const Rect &rect) {
         c.rect = rect;
         c.title = _title;
         c.redraw = redraw;
-        c.closed = closedEntry;
+        c.closedAt = closedEntry;
         c.key = keyEntry;
         c.resized = resizedEntry;
         c.wheel = wheelEntry;
@@ -95,7 +95,11 @@ Error GuiWindow::show(const Rect &rect) {
 
 void GuiWindow::close() {
         const uint8_t id = _id.exchange(0, std::memory_order_acq_rel);
-        if (id != 0) (void)_app.windowManager().close(id);
+        if (id != 0) {
+                auto [outer, err] = _app.windowManager().rect(id);
+                if (err.isOk()) _lastRect = outer;
+                (void)_app.windowManager().close(id);
+        }
         _screen = Rect();
         _grab = _hover = nullptr;
         _active = false;
@@ -311,9 +315,13 @@ void GuiWindow::queue(GuiApplication::Event event) {
         return;
 }
 
-void GuiWindow::closedEntry(void *arg) {
+void GuiWindow::closedEntry(void *arg, const Rect &outer) {
         GuiApplication::Event e;
         e.type = Type::Closed;
+        e.x = outer.x;
+        e.y = outer.y;
+        e.width = outer.width;
+        e.height = outer.height;
         static_cast<GuiWindow *>(arg)->queue(e);
         return;
 }
@@ -390,6 +398,7 @@ void GuiWindow::handle(const GuiApplication::Event &event) {
                 }
                 case Type::Closed:
                         if (_id.exchange(0, std::memory_order_acq_rel) != 0) {
+                                if (event.width != 0) _lastRect = Rect{event.x, event.y, event.width, event.height};
                                 _screen = Rect();
                                 _grab = _hover = nullptr;
                                 _active = false;

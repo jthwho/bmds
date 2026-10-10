@@ -27,6 +27,19 @@ namespace {
         constinit SeqLocked<KernelZone>            zone;
         constinit std::atomic<Clock::ZoneResolver> resolver{nullptr};
 
+        // An unset clock made to start (at boot) at 1955-11-05 06:15 local time in @p rules: the UTC
+        // that reads so. The offset is taken twice, the second time at the first guess, so a zone whose
+        // daylight saving changes near there still lands on 6:15.
+        void startUnset(const TimeZone &rules) {
+                if (model.load().source() != ClockSource::None) return;
+                const int64_t local = ClockModel::UnsetEpoch.ns;
+                const int64_t guess =
+                        local - int64_t(rules.localTime(ClockModel::UnsetEpoch).utcOffset) * 1'000'000'000;
+                const int64_t start = local - int64_t(rules.localTime(Timestamp{guess}).utcOffset) * 1'000'000'000;
+                model.update([&](ClockModel &m) { m.setUnsetStart(Timestamp{start}); });
+                return;
+        }
+
         // A name as the database has them: no path, no ".".
         bool validName(StringView name) {
                 return !name.isEmpty() && name.size() <= Clock::MaxZoneName && name[0] != '/' &&
@@ -120,7 +133,10 @@ namespace {
 Error Clock::setTimeZone(StringView tz) {
         KernelZone  next;
         const Error err = prepareZone(tz, next);
-        if (err.isOk()) zone.store(next);
+        if (err.isOk()) {
+                zone.store(next);
+                startUnset(next.rules);
+        }
         return err;
 }
 
@@ -149,9 +165,13 @@ void Clock::retryZoneName() {
         KernelZone next;
         (void)resolve(pending.view(), next);
         // Only if it wasn't set again meanwhile.
+        bool changed = false;
         zone.update([&](KernelZone &z) {
-                if (z.name.pending != ZonePending::None && z.name.view() == pending.view()) z = next;
+                if (z.name.pending == ZonePending::None || z.name.view() != pending.view()) return;
+                z = next;
+                changed = true;
         });
+        if (changed) startUnset(next.rules);
         return;
 }
 

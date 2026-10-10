@@ -2,7 +2,7 @@
 Type=Application
 Name=Media Player
 Comment=Plays sound files and MIDI files, with a playlist
-Exec=mplayer %F
+Exec=mplayer -p %F
 Icon=multimedia-player
 Terminal=false
 Categories=AudioVideo;Audio;Player;

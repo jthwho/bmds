@@ -53,9 +53,17 @@ namespace {
                 return err;
         }
 
-        Error formatOne(String &out, char conversion, const LocalTime &t) {
+        // @p flag: GNU's padding flag before the conversion ('-' none, '_' spaces, '0' zeros; 0: none
+        // given), for the numbers.
+        Error formatOne(String &out, char conversion, char flag, const LocalTime &t) {
                 const DateTime &d = t.local;
                 const int       hour12 = d.hour % 12 == 0 ? 12 : d.hour % 12;
+                const auto      num = [&out, flag](int64_t value, int width, char pad) {
+                        if (flag == '-') width = 1;
+                        if (flag == '_') pad = ' ';
+                        if (flag == '0') pad = '0';
+                        return appendNumber(out, value, width, pad);
+                };
                 switch (conversion) {
                         case 'a': return appendName(out, WeekdayNames[d.weekday % 7], true);
                         case 'A': return appendName(out, WeekdayNames[d.weekday % 7], false);
@@ -63,38 +71,40 @@ namespace {
                         case 'h': return appendName(out, MonthNames[(d.month + 11) % 12], true);
                         case 'B': return appendName(out, MonthNames[(d.month + 11) % 12], false);
                         case 'c': return formatTime(out, "%a %b %e %H:%M:%S %Y", t);
-                        case 'C': return appendNumber(out, floorDiv(d.year, 100), 2, '0');
-                        case 'd': return appendNumber(out, d.day, 2, '0');
+                        case 'C': return num(floorDiv(d.year, 100), 2, '0');
+                        case 'd': return num(d.day, 2, '0');
                         case 'D': return formatTime(out, "%m/%d/%y", t);
-                        case 'e': return appendNumber(out, d.day, 2, ' ');
+                        case 'e': return num(d.day, 2, ' ');
                         case 'F': return formatTime(out, "%Y-%m-%d", t);
-                        case 'H': return appendNumber(out, d.hour, 2, '0');
-                        case 'I': return appendNumber(out, hour12, 2, '0');
-                        case 'j': return appendNumber(out, d.yearDay + 1, 3, '0');
-                        case 'k': return appendNumber(out, d.hour, 2, ' ');
-                        case 'l': return appendNumber(out, hour12, 2, ' ');
-                        case 'm': return appendNumber(out, d.month, 2, '0');
-                        case 'M': return appendNumber(out, d.minute, 2, '0');
+                        case 'H': return num(d.hour, 2, '0');
+                        case 'I': return num(hour12, 2, '0');
+                        case 'j': return num(d.yearDay + 1, 3, '0');
+                        case 'k': return num(d.hour, 2, ' ');
+                        case 'l': return num(hour12, 2, ' ');
+                        case 'm': return num(d.month, 2, '0');
+                        case 'M': return num(d.minute, 2, '0');
                         case 'n': return out.append('\n');
-                        case 'N': return appendNumber(out, d.nanosecond, 9, '0');
+                        case 'N': return num(d.nanosecond, 9, '0');
                         case 'p': return out.append(d.hour < 12 ? "AM" : "PM");
                         case 'r': return formatTime(out, "%I:%M:%S %p", t);
                         case 'R': return formatTime(out, "%H:%M", t);
-                        case 's': return appendNumber(out, t.unixSeconds, 1, '0');
-                        case 'S': return appendNumber(out, d.second, 2, '0');
+                        case 's': return num(t.unixSeconds, 1, '0');
+                        case 'S': return num(d.second, 2, '0');
                         case 't': return out.append('\t');
                         case 'T': return formatTime(out, "%H:%M:%S", t);
-                        case 'u': return appendNumber(out, d.weekday == 0 ? 7 : d.weekday, 1, '0');
-                        case 'w': return appendNumber(out, d.weekday, 1, '0');
-                        case 'y':
-                                return appendNumber(out, d.year % 100 < 0 ? d.year % 100 + 100 : d.year % 100, 2, '0');
-                        case 'Y': return appendNumber(out, d.year, 1, '0');
+                        case 'u': return num(d.weekday == 0 ? 7 : d.weekday, 1, '0');
+                        case 'w': return num(d.weekday, 1, '0');
+                        case 'y': return num(d.year % 100 < 0 ? d.year % 100 + 100 : d.year % 100, 2, '0');
+                        case 'Y': return num(d.year, 1, '0');
                         case 'z': return appendOffset(out, t.utcOffset);
                         case 'Z': return out.append(StringView(t.abbreviation));
                         case '%': return out.append('%');
                         default: {
-                                const char text[] = {'%', conversion};
-                                return out.append(StringView(text, 2));
+                                // Copied as it is, its flag too.
+                                const char text[] = {'%', flag, conversion};
+                                return flag != 0                                ? out.append(StringView(text, 3))
+                                       : out.append(StringView(text, 1)).isOk() ? out.append(conversion)
+                                                                                : Error(Error::NoMem);
                         }
                 }
         }
@@ -142,10 +152,13 @@ Error formatTime(String &out, StringView format, const LocalTime &time) {
         size_t literal = 0; // Start of the pending run of plain text.
         for (size_t i = 0; i < format.size(); ++i) {
                 if (format[i] != '%' || i + 1 == format.size()) continue;
-                Error err = out.append(format.mid(literal, i - literal));
-                if (err.isOk()) err = formatOne(out, format[i + 1], time);
+                // A GNU padding flag first: %-d, %_H, %0e.
+                const char flag = format[i + 1];
+                const bool flagged = (flag == '-' || flag == '_' || flag == '0') && i + 2 < format.size();
+                Error      err = out.append(format.mid(literal, i - literal));
+                if (err.isOk()) err = formatOne(out, format[i + (flagged ? 2 : 1)], flagged ? flag : 0, time);
                 if (err.isError()) return err;
-                ++i;
+                i += flagged ? 2 : 1;
                 literal = i + 1;
         }
         return out.append(format.mid(literal));

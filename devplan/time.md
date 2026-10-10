@@ -60,7 +60,7 @@ The board has a 32.768 kHz crystal for the always-on RTC domain, whose timer kee
 
 ### Unset clock
 
-Until a source sets it, `isSet()` is false and `now()` counts from 2026-01-01 00:00 UTC plus uptime, so time stamps are plausible and ordered rather than 1970. `date` says the clock is unset.
+Until a source sets it, `isSet()` is false and `now()` counts from 1955-11-05 06:15 local time plus uptime (the user's easter egg, 2026-10-09: the day Doc Brown thought of the flux capacitor; 2026-01-01 00:00 UTC before). Whenever the kernel zone is set or resolved while the clock is unset, the UTC that reads 6:15 AM in it is worked out (`ClockModel::setUnsetStart()`), so the clock always starts at 6:15 AM local. Files written meanwhile get 1955 times: FAT keeps 1980-01-01 (its earliest), littlefs the time as it is. `date` says the clock is unset.
 
 ### IDF usage
 
@@ -78,7 +78,7 @@ Until a source sets it, `isSet()` is false and `now()` counts from 2026-01-01 00
 | `date +FORMAT` | `strftime` subset: `%a %A %b %B %c %C %d %D %e %F %h %H %I %j %k %l %m %M %n %N %p %r %R %s %S %t %T %u %w %y %Y %z %Z %%`; anything else is copied. |
 | `date -u` | UTC. |
 | `date -s DATE` | Sets the clock (source `Manual`) and prints it: `'YYYY-MM-DD HH:MM[:SS]'` (or `T` between), `YYYY-MM-DD` (midnight), `HH:MM[:SS]` (today), read in the display zone (`-u`: UTC); `@SECONDS[.frac]`. An invalid date: `date: invalid date '...'`, status 1. |
-| `clock` | Five lines: `Time:` (with nanoseconds, kernel zone), `Source:` (name and when it was set, or `none (not set; counting from 2026-01-01)`), `Slew:` (`±S.NNNNNNNNN s remaining`), `Frequency:` (`±N ppb`), `Zone:` (the `TZ` string, abbreviation and UTC offset; a zone set by name shows the name first, or that it is pending, §9). |
+| `clock` | Five lines: `Time:` (with nanoseconds, kernel zone), `Source:` (name and when it was set, or `none (not set; counting from 1955-11-05 06:15 local)`), `Slew:` (`±S.NNNNNNNNN s remaining`), `Frequency:` (`±N ppb`), `Zone:` (the `TZ` string, abbreviation and UTC offset; a zone set by name shows the name first, or that it is pending, §9). |
 | `clock adjust ±SECONDS` (`clock zone TZ` until 2026-10-07: now `sysconf set clock/zone`, `sysconf.md` §13) | Set the kernel time zone (POSIX rules, or a name in the database, §9: `clock: unknown time zone 'X'` if it hasn't that name); slew by hand (mostly for testing the slew). |
 | `clock tzdata [PATH]` | The time zone database (§9): `/sd0/p0/share/zoneinfo.bin: tzdata 2026e, 597 zones`, or why it can't be read; with `PATH`, use that file. |
 

@@ -25,7 +25,8 @@ BMDS_NAMESPACE_BEGIN
  * Wall time is a software clock over the monotonic time base (see
  * `ClockModel`): sources step it (`set()`), slew it (`adjust()`) and
  * correct its rate (`setFrequency()`). Until a source sets it, it counts
- * from 2026-01-01. A set clock survives resets: the target keeps its
+ * from 1955-11-05 06:15 local time: whenever the kernel zone is set or
+ * resolved while it is unset, the UTC that reads so in it is worked out. A set clock survives resets: the target keeps its
  * offset from the RTC timer in memory a reset doesn't clear, and
  * `init()` resumes from it (source `Rtc`). The C library's `time()` is
  * stepped along with it.

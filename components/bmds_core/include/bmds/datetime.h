@@ -142,7 +142,9 @@ struct LocalTime {
  *
  * Conversions: `%a %A %b %B %c %C %d %D %e %F %h %H %I %j %k %l %m %M %n %N
  * %p %r %R %s %S %t %T %u %w %y %Y %z %Z %%` (as GNU `date`; `%N` is
- * nanoseconds). Anything else is copied as it is.
+ * nanoseconds), and GNU's flags before a number's: `-` not padded (`%-d`:
+ * "1"), `_` padded with spaces, `0` with zeros. Anything else is copied as
+ * it is.
  * @return `Ok` or `NoMem`.
  */
 Error formatTime(String &out, StringView format, const LocalTime &time);

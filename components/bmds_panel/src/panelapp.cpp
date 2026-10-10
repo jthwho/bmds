@@ -55,7 +55,8 @@
 #include "folderwindow.h"
 #include "panelentries.h"
 #include "panelicons.h"
-#include "volumeitem.h"
+#include "notifyarea.h"
+#include "volumecontrol.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -74,9 +75,9 @@ namespace {
         // The panel's settings: the system configuration's (devplan/sysconf.md §8).
         BMDS_SYSCONF(panelEdge, "panel/edge", Config::Type::Enum, "top", "The screen edge the panel is on", 0, 0,
                      "top|bottom", nullptr)
-        BMDS_SYSCONF(panelItems, "panel/items", Config::Type::String, "launcher;windows;volume;clock",
-                     "The panel's items in order: launcher, windows, volume, clock, spacer (; between)", 0, 128,
-                     nullptr, nullptr)
+        BMDS_SYSCONF(panelItems, "panel/items", Config::Type::String, "launcher;windows;tray;clock",
+                     "The panel's items in order: launcher, windows, tray, clock, spacer (; between)", 0, 128, nullptr,
+                     nullptr)
         BMDS_SYSCONF(panelIconTheme, "panel/icon-theme", Config::Type::String, "bmds",
                      "The icon theme: bmds (built in, /rom), or a directory of /sd0/p0/share/icons", 0, 64, nullptr,
                      nullptr)
@@ -91,8 +92,10 @@ namespace {
                      "Entries past which the launcher groups them by category (0: never)", 0, 1000, nullptr, nullptr)
         BMDS_SYSCONF(panelWindowsMaxWidth, "panel/windows/max-width", Config::Type::Int, "200",
                      "The widest a window list button gets, in pixels", 16, 2000, nullptr, nullptr)
-        BMDS_SYSCONF(panelClockFormat, "panel/clock/format", Config::Type::String, "%a %d %b %H:%M",
+        BMDS_SYSCONF(panelClockFormat, "panel/clock/format", Config::Type::String, "%l:%M %p",
                      "The clock's format (strftime's %-fields)", 0, 64, nullptr, nullptr)
+        BMDS_SYSCONF(panelClockTooltip, "panel/clock/tooltip", Config::Type::String, "%A, %B %-d, %Y",
+                     "The clock's tooltip: the date (strftime's %-fields)", 0, 48, nullptr, nullptr)
         BMDS_SYSCONF(panelClockZone, "panel/clock/zone", Config::Type::String, "",
                      "The clock's time zone (empty: the kernel's)", 0, 64, nullptr, nullptr)
         BMDS_SYSCONF(panelSpacerWidth, "panel/spacer/width", Config::Type::Int, "0",
@@ -233,35 +236,6 @@ namespace {
                         uint16_t  _maxWidth = 200;
         };
 
-        // The time, redrawn as it changes (each minute, or second if shown).
-        class ClockLabel final : public Label {
-                public:
-                        ClockLabel(Widget *parent, GuiApplication &app) : Label(parent), _app(app) {
-                                setAlign(Align::Center);
-                                setFrame(Bevel::Style::Status); // sunk into the bar, as the classic trays
-                        }
-
-                        ~ClockLabel() override { _app.stopTimer(_timer); }
-
-                        Error   configure(StringView format, StringView zone);
-                        void    tick();
-                        GuiSize sizeHint() const override { return GuiSize{_width, GuiStyle::ButtonHeight}; }
-
-                private:
-                        static void timeout(void *arg) {
-                                static_cast<ClockLabel *>(arg)->tick();
-                                return;
-                        }
-
-                        GuiApplication &_app;
-                        char            _format[32] = "%a %d %b %H:%M";
-                        TimeZone        _zone;
-                        bool            _hasZone = false;
-                        bool            _seconds = false;
-                        uint16_t        _width = 0;
-                        int             _timer = -1;
-        };
-
         class PanelApp final : public FolderWindowHost {
                 public:
                         explicit PanelApp(const BuiltinProgram::Context &context)
@@ -342,7 +316,7 @@ namespace {
                         void        freeLauncher();
                         void        reloadLauncher();
                         void        buildMenu(size_t submenuAfter);
-                        Error       buildItems(Widget *row);
+                        Error       buildItems(BoxLayout *row);
                         Error       openWindows();
                         void        open(const Entry &entry);
                         const Icon *fileIcon(StringView type);
@@ -360,7 +334,8 @@ namespace {
                         int                            _saveTimer = -1; // places to write
                         BoxLayout                     *_row = nullptr;
                         WindowList                    *_windows = nullptr;
-                        VolumeItem                    *_volume = nullptr; // the volume item, if shown
+                        TrayService                    _tray{_app};       // while panel/items has a tray
+                        VolumeControl                 *_volume = nullptr; // its icon in the tray (PSRAM)
                         Menu                          *_menu = nullptr;
                         Menu                          *_iconMenu = nullptr;    // an icon's: Open, Cut, Copy, Delete
                         Menu    *_desktopMenu = nullptr; // the desktop's: Applications, New, Paste
@@ -467,43 +442,6 @@ namespace {
                 return;
         }
 
-        Error ClockLabel::configure(StringView format, StringView zone) {
-                if (!format.isEmpty()) {
-                        if (format.size() >= sizeof(_format)) return Error::BufferTooSmall;
-                        std::memcpy(_format, format.data(), format.size());
-                        _format[format.size()] = '\0';
-                }
-                if (!zone.isEmpty()) {
-                        Result<TimeZone> rules = TimeZone::isName(zone) ? Vfs::zoneRules(zone) : TimeZone::parse(zone);
-                        if (rules.error().isError()) return rules.error();
-                        _zone = rules.value();
-                        _hasZone = true;
-                }
-                const StringView f(_format);
-                _seconds = f.contains(StringView("%S")) || f.contains(StringView("%T")) ||
-                           f.contains(StringView("%s")) || f.contains(StringView("%r"));
-                // Wide enough for any time: a sample's width and a little more.
-                tick();
-                _width = static_cast<uint16_t>((Fonts::unscii16.textWidth(text()) + 4 * Fonts::unscii16.width() + 3) &
-                                               ~3u);
-                return Error();
-        }
-
-        void ClockLabel::tick() {
-                const Timestamp now = Clock::now();
-                const LocalTime local = _hasZone ? _zone.localTime(now) : Clock::localTime(now);
-                String          text;
-                if (formatTime(text, StringView(_format), local).isOk()) setText(text.view());
-                // The next change: the next second or minute's start.
-                const int64_t ms = now.ns / 1'000'000;
-                const int64_t period = _seconds ? 1000 : 60'000;
-                const int64_t wait = period - ((ms % period) + period) % period + 5;
-                _app.stopTimer(_timer);
-                auto [timer, err] = _app.startTimer(static_cast<uint32_t>(wait), false, timeout, this);
-                _timer = err.isOk() ? timer : -1;
-                return;
-        }
-
         // ---- The panel
 
         // The launcher's menus and entries, gone.
@@ -537,6 +475,10 @@ namespace {
 
         PanelApp::~PanelApp() {
                 // The windows (and their widgets) before the application they belong to.
+                if (_volume != nullptr) {
+                        _volume->~VolumeControl();
+                        Memory::free(_volume);
+                }
                 closeFolders();
                 freeLauncher();
                 if (_watchTimer >= 0) _app.stopTimer(_watchTimer);
@@ -1260,20 +1202,41 @@ namespace {
                 return;
         }
 
-        // The items of panel/items (launcher, windows, volume, clock, spacer), in order, in @p row.
-        Error PanelApp::buildItems(Widget *row) {
+        // The items of panel/items (launcher, windows, tray, clock, spacer), in order, in @p row. The
+        // tray's service runs while there is a tray. `volume` (the volume item's, before the tray had
+        // the volume control) is the tray where the list has none, so nobody's panel loses it. A tray
+        // and a clock side by side share one sunken box, as the classic notification areas.
+        Error PanelApp::buildItems(BoxLayout *row) {
                 char             list[128];
                 const StringView value = setting(bmdsConf_panelItems);
                 std::snprintf(list, sizeof(list), "%.*s", int(value.size()), value.data());
+                // The kinds, in lower case, first: an item's neighbours decide where it goes.
+                char       types[MaxItems][16] = {};
+                size_t     count = 0;
+                bool       namesTray = false;
                 StringView items(list);
-                size_t     made = 0;
-                for (StringView name = IniReader::nextListItem(items); !name.isEmpty() && made < MaxItems;
-                     name = IniReader::nextListItem(items), ++made) {
-                        char lower[16] = {};
-                        for (size_t i = 0; i < name.size() && i + 1 < sizeof(lower); ++i)
-                                lower[i] = StringView::toLower(name[i]);
-                        const StringView type(lower);
-                        if (type == "launcher") {
+                for (StringView name = IniReader::nextListItem(items); !name.isEmpty() && count < MaxItems;
+                     name = IniReader::nextListItem(items), ++count) {
+                        for (size_t i = 0; i < name.size() && i + 1 < sizeof(types[0]); ++i)
+                                types[count][i] = StringView::toLower(name[i]);
+                        namesTray = namesTray || StringView(types[count]) == "tray";
+                }
+                bool trayMade = false;
+                for (size_t i = 0; i < count; ++i) {
+                        const StringView t(types[i]);
+                        const char      *now = t == "volume"             ? (namesTray ? "" : "tray") // the tray has it
+                                               : t == "tray" && trayMade ? ""                        // one tray
+                                                                         : nullptr;                  // as it is
+                        if (now != nullptr) std::snprintf(types[i], sizeof(types[i]), "%s", now);
+                        trayMade = trayMade || StringView(types[i]) == "tray";
+                }
+                bool  hasTray = false;
+                Error result;
+                for (size_t i = 0; i < count && result.isOk(); ++i) {
+                        const StringView type(types[i]);
+                        if (type.isEmpty()) {
+                                continue;
+                        } else if (type == "launcher") {
                                 auto *b = Widget::create<Button>(row, setting(bmdsConf_panelLauncherLabel));
                                 if (b == nullptr) return Error::NoMem;
                                 const StringView icon = setting(bmdsConf_panelLauncherIcon);
@@ -1287,17 +1250,31 @@ namespace {
                                 if (_windows == nullptr) return Error::NoMem;
                                 const int32_t w = intSetting(bmdsConf_panelWindowsMaxWidth);
                                 if (w > 0) _windows->setMaxWidth(static_cast<uint16_t>(w));
-                        } else if (type == "clock") {
-                                auto *c = Widget::create<ClockLabel>(row, _app);
-                                if (c == nullptr) return Error::NoMem;
-                                char             format[64];
-                                const StringView f = setting(bmdsConf_panelClockFormat);
-                                std::snprintf(format, sizeof(format), "%.*s", int(f.size()), f.data());
-                                if (c->configure(StringView(format), setting(bmdsConf_panelClockZone)).isError())
-                                        say("panel: panel/clock/format or panel/clock/zone can't be used\n");
-                        } else if (type == "volume") {
-                                _volume = Widget::create<VolumeItem>(row, _app);
-                                if (_volume == nullptr) return Error::NoMem;
+                        } else if (type == "tray" || type == "clock") {
+                                // The notification area: a tray and a clock side by side are one.
+                                const StringView next = i + 1 < count ? StringView(types[i + 1]) : StringView();
+                                const bool       pair =
+                                        (type == "tray" && next == "clock") || (type == "clock" && next == "tray");
+                                const auto parts =
+                                        !pair ? (type == "tray" ? NotifyArea::Parts::Tray : NotifyArea::Parts::Clock)
+                                        : type == "tray" ? NotifyArea::Parts::TrayClock
+                                                         : NotifyArea::Parts::ClockTray;
+                                if (pair) ++i;
+                                auto *area = Widget::create<NotifyArea>(row, *row, _app, _tray, parts);
+                                if (area == nullptr) return Error::NoMem;
+                                hasTray = hasTray || parts != NotifyArea::Parts::Clock;
+                                if (parts != NotifyArea::Parts::Tray) {
+                                        char             format[64];
+                                        const StringView f = setting(bmdsConf_panelClockFormat);
+                                        std::snprintf(format, sizeof(format), "%.*s", int(f.size()), f.data());
+                                        char             tip[64];
+                                        const StringView d = setting(bmdsConf_panelClockTooltip);
+                                        std::snprintf(tip, sizeof(tip), "%.*s", int(d.size()), d.data());
+                                        if (area->configureClock(StringView(format), StringView(tip),
+                                                                 setting(bmdsConf_panelClockZone))
+                                                    .isError())
+                                                say("panel: panel/clock/format, tooltip or zone can't be used\n");
+                                }
                         } else if (type == "spacer") {
                                 auto *s = Widget::create<Label>(row);
                                 if (s == nullptr) return Error::NoMem;
@@ -1314,7 +1291,12 @@ namespace {
                                 say("panel: an item of a kind not known: ", t, "\n");
                         }
                 }
-                return Error();
+                if (!hasTray) {
+                        _tray.stop();
+                } else if (Error e = _tray.start(); e.isError()) {
+                        say("panel: the tray service is taken: no tray icons here (", e.desc(), ")\n");
+                }
+                return result;
         }
 
         int PanelApp::run() {
@@ -1370,7 +1352,15 @@ namespace {
                         say("panel: its settings take effect when it starts again\n");
                 if (_app.watchConfig("files", filesSettingsChanged, this).isError())
                         say("panel: files/... take effect when it starts again\n");
-                if (_app.watchConfig(VolumeItem::Prefix, audioChanged, this).isError())
+                // The volume control: its icon in the tray (this one, another's, or one to come).
+                {
+                        Mutex::Locker lock(_app.lock(), WaitForever);
+                        void         *mem = Memory::alloc(MemSpace::Psram, sizeof(VolumeControl));
+                        if (mem != nullptr) _volume = ::new (mem) VolumeControl(_app);
+                        if (_volume == nullptr || _volume->start().isError())
+                                say("panel: no volume control in the tray\n");
+                }
+                if (_app.watchConfig(VolumeControl::Prefix, audioChanged, this).isError())
                         say("panel: the volume item won't follow changes made elsewhere\n");
                 // `files` opens folder windows here (devplan/filebrowser.md FB6).
                 if (_app.registerService("files", filesMessage, this).isError())
@@ -1458,8 +1448,7 @@ namespace {
         // The volume or mute changed (the loop's thread): the item shows it.
         void PanelApp::audioChanged(void *arg, SysConf::Id) {
                 auto *self = static_cast<PanelApp *>(arg);
-                if (self->_volume == nullptr) return;
-                self->_volume->refresh();
+                if (self->_volume != nullptr) self->_volume->refresh();
                 return;
         }
 
@@ -1518,7 +1507,6 @@ namespace {
                 while (Widget *w = _row->firstChild()) w->destroy();
                 _launcherButton = nullptr;
                 _windows = nullptr;
-                _volume = nullptr;
                 if (buildItems(_row).isError()) say("panel: out of memory for its items\n");
                 _row->relayout();
                 windowsChanged(this);

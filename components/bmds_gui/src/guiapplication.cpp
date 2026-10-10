@@ -175,6 +175,59 @@ void GuiApplication::serviceDue(void *arg) {
         }
 }
 
+Error GuiApplication::unregisterService(StringView name) {
+        for (Service *&slot : _services) {
+                if (slot == nullptr || StringView(slot->name) != name) continue;
+                const Error err = _wm->unregisterService(_client, name);
+                // No notification now: a post of it waiting goes, then the record.
+                cancelPosts(slot);
+                Memory::free(slot);
+                slot = nullptr;
+                return err;
+        }
+        return Error::NotFound;
+}
+
+Error GuiApplication::watchServices(Callback fn, void *arg) {
+        if (fn == nullptr) return Error::Invalid;
+        for (Watcher &w : _serviceWatches) {
+                if (w.fn != nullptr) continue;
+                if (!_watchingServices) {
+                        const Error err = _wm->watchServices(_client, servicesNotified, this);
+                        if (err.isError()) return err;
+                        _watchingServices = true;
+                }
+                w = Watcher{fn, arg};
+                return Error::Ok;
+        }
+        return Error::Full;
+}
+
+void GuiApplication::unwatchServices(Callback fn, void *arg) {
+        for (Watcher &w : _serviceWatches)
+                if (w.fn == fn && w.arg == arg) w = Watcher();
+        return;
+}
+
+// A service named or gone (another task, the window manager locked): the watches told on the
+// loop, once for any number of changes before it runs.
+void GuiApplication::servicesNotified(void *arg) {
+        auto *self = static_cast<GuiApplication *>(arg);
+        if (self->_servicesPosted.exchange(true, std::memory_order_acq_rel)) return;
+        if (self->post(servicesDue, self).isError()) self->_servicesPosted.store(false, std::memory_order_release);
+        return;
+}
+
+void GuiApplication::servicesDue(void *arg) {
+        auto *self = static_cast<GuiApplication *>(arg);
+        self->_servicesPosted.store(false, std::memory_order_release);
+        for (size_t i = 0; i < MaxServiceWatches; ++i) {
+                const Watcher w = self->_serviceWatches[i]; // one may stop itself
+                if (w.fn != nullptr) w.fn(w.arg);
+        }
+        return;
+}
+
 Error GuiApplication::setWindowsChanged(Callback fn, void *arg) {
         _watchFn = fn;
         _watchArg = arg;

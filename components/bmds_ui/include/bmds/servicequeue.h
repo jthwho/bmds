@@ -30,11 +30,11 @@ BMDS_NAMESPACE_BEGIN
  */
 class ServiceQueue {
         public:
-                /** @brief The longest message. */
-                static constexpr size_t MaxMessage = 1024;
+                /** @brief The longest message (a tray icon's 16 x 16 pixels and their header fit). */
+                static constexpr size_t MaxMessage = 2048;
 
                 /** @brief The bytes of messages (and their lengths) kept at most. */
-                static constexpr size_t MaxPending = 4096;
+                static constexpr size_t MaxPending = 8192;
 
                 /**
                  * @brief Adds @p message after the others.

@@ -60,8 +60,8 @@ window), and their order.
 - **Processes:** the loader owns them (`ps`, `ps -T`). Each has its threads (FreeRTOS tasks), so
   a process's CPU is the sum of its tasks', and its memory is what it allocated
   (`_allocatedBytes`).
-- **The panel** has tray items (the volume item is one), tooltips, and `panel/items` to choose
-  them.
+- **The panel** has a system tray (`mediaplayer.md` §6e: any program's `TrayIcon`, the volume
+  control among them), tooltips, and `panel/items` to choose its items.
 
 ## 3. Design
 

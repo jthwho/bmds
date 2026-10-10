@@ -391,9 +391,10 @@ the program's side, and freedesktop.org's StatusNotifierItem for what the protoc
    user: WAV, MP3, Ogg, FLAC and MIDI files, seeking, gapless.
 4. **Kept between runs** (built 2026-10-09): `mplayer.conf`, `playlist.m3u8`, Open and Save
    Playlist.
-5. **The tray** (§6e): `ServiceQueue`'s larger messages, the window manager's
-   `watchServices()`, `TrayIcon`, the panel's `tray` area, the panel's volume control moved onto
-   `TrayIcon` (the user checks it does all it did), then the player's icon and hiding on close.
+5. **The tray** (§6e; built 2026-10-09, §11): `ServiceQueue`'s larger messages, the window
+   manager's `watchServices()`, `TrayIcon`, the panel's `tray` area, the panel's volume control
+   moved onto `TrayIcon` (the user checks it does all it did), then the player's icon and hiding
+   on close.
 6. **The visualizer:** measured on the board, then the default chosen.
 7. **The MIDI view:** `takeEvents()`, the model, the view, the font's choice.
 8. **The library:** `Decoder::probe()` (with the fuzzers), the scanner, the index, the view,
@@ -574,3 +575,75 @@ the program's side, and freedesktop.org's StatusNotifierItem for what the protoc
     now 34 KB of flash (5 KB more), no static RAM.
   - **Host tests:** `PlayerSettings` (defaults, reading, bad values, written and read back); 460
     cases pass.
+- **Step 5, the system tray** (2026-10-09):
+  - **Window manager:** `ServiceQueue` takes 2 KB messages, 8 KB waiting; `watchServices()`
+    (told on any service named or gone, the manager locked: it wakes a loop), `hasService()`,
+    `unregisterService()`; a window's `closedAt` (told where it was as it closed, instead of
+    `closed`), so `GuiWindow::lastRect()` can open it there again.
+  - **Toolkit:** `GuiApplication` has 4 services, `unregisterService()`, `watchServices()` (4
+    watches, one notification for any number of changes) and `hasService()`. `TrayProtocol`
+    (the messages: `Header`, `Update`, `Pixels`, `Event`, each `size` first, read with the
+    fields a sender didn't know zero), `TrayRow` (pure: the icons by reply service and number,
+    ordered by category then arrival, 16 at most, a 24-pixel cell each) and `TrayIcon` (Qt's
+    shape: theme icon or 16 x 16 pixels, tooltip sent only when it changes, category, context
+    menu opened at the icon, `Activated` with Trigger, DoubleClick, MiddleClick or Context,
+    `Scrolled`, `geometry()`, availability). An application's icons share one reply service,
+    `tray.<connection>` (the plan said the pid; the connection is as unique and at hand), and
+    one service watch; they are sent again when `tray` comes back.
+  - **Panel:** `TrayService` (the service `tray`, kept while the panel runs so the icons outlive
+    its items being made again; started while `panel/items` has a tray) and `TrayArea` (the
+    item: cells, a thin edge under the pointer, sunken while pressed, tooltips; a press tells the
+    program, a left one twice within the double-click time also DoubleClick; the wheel;
+    `Geometry` sent to each program after the row moves). `panel/items`' default is
+    `launcher;windows;tray;clock`; a saved `volume` is read as `tray` where the list has none.
+    `VolumeItem` became `VolumeControl`, a `TrayIcon` (Hardware): click the slider, wheel 1 dB,
+    middle button mute, right click Mute and Mixer... (disabled until the mixer window). The cell
+    isn't sunken while the slider is open any more (the tray doesn't know of the popup).
+  - **Player:** its icon (`multimedia-player`) while it runs; the tooltip "Title — Artist · 0:46
+    / 2:56" (" (paused)"), or "Media Player: stopped"; a left click shows the window where it
+    was and raises it; a right click Play/Pause, Stop, Previous, Next, Show Player, Quit. Close
+    (the frame's, File > Close, Ctrl+W) while playing or paused, with a tray there, closes the
+    window and plays on; stopped, or with no tray, it quits. `mplayer` with one running shows it.
+  - **On the board:** the volume in the tray (slider by it, wheel 0 to -3 dB and back, Mute from
+    its menu with the muted icon, the middle button unmuting); the player's icon left of it, its
+    tooltip following the time, closed while playing (sound on), Next from its menu, shown again
+    by a click where it was moved to, Quit from its menu (the icon gone); the panel killed and
+    started again with the player running: both icons back. Two sessions under `mem mark`: the
+    second left nothing (the first, 0.6 KB of lists grown once).
+  - **Cost:** 6.2 KB of flash for the tray (`TrayIcon` 2.1 KB, `TrayRow` 1.5 KB, `TrayArea` and
+    `TrayService` 2.7 KB), more than §7's 3 KB; the player 1.1 KB more. No static RAM. Per
+    program with icons: a 2 KB service buffer (PSRAM); the tray: about 1.4 KB an icon.
+  - **Host tests:** `TrayProtocol` (older shorter messages, lying sizes, unended strings, cutting
+    on a character) and `TrayRow` (order, hiding, updates, pixels, removal, programs gone,
+    `Full`); 462 cases pass.
+  - **After the user's look** (2026-10-09):
+    - **Tooltips were unsteady:** every tooltip change (the player's, each second) went the way
+      of a row that moved: the hover forgotten, the places sent again. `TrayRow::update()` now
+      says whether the icons moved; a change of look only redraws, and re-shows the tooltip if
+      it is that icon's.
+    - **One notification area:** `TrayArea` and the clock's label became `NotifyArea`, one
+      widget drawing the icons and the clock in one sunken field (`panel/items`' `tray` and
+      `clock` side by side, in their order; either alone is an area of its own). The clock has a
+      character's room each side (two before). Found on the way: text and icons must be drawn
+      from a column (`GuiStyle::Column`), so a 1-pixel bevel's inside needs aligning, which is
+      why the first try (a box around the two) drew nothing.
+    - **Flat icons:** no edge under the pointer or while pressed.
+    - **The clock:** `panel/clock/format` defaults to `%l:%M %p` (" 1:00 AM", the hour padded
+      with a space); the new `panel/clock/tooltip` (default `%A, %B %-d, %Y`, "Thursday, January
+      1, 2026") is its tooltip, made again each tick so it turns at midnight. `formatTime()`
+      gained GNU's flags (`%-d` not padded, `%_H` spaces, `%0e` zeros). Between the icons and
+      the clock, 8 pixels (12 before): text and icons start on a 4-pixel column, so half of 12
+      can't be.
+    - **Narrower cells:** 20 pixels (24 before), 4 between icons, a column's room before the
+      first; the clock still 8 pixels after the last.
+    - **Los Angeles:** the board's `clock/zone` is `America/Los_Angeles` (saved). After a
+      reboot, unset, it read 06:15 PDT (13:15 UTC) 11 s after boot: the name resolved from the
+      card's zone database and the start was worked out then, the local reading unchanged.
+    - **Opening from the file browser:** `mplayer -p FILE...` (and the service's request 4,
+      Play): a sound file already in the list is played there, one that isn't is added at its
+      end, folders and playlists are added; the first plays from its start, the window shown.
+      `mplayer.desktop` runs `mplayer -p %F`. Plain `mplayer FILE` keeps replacing the list (a
+      shipped interface).
+    - **Tab and Shift+Tab** in the player move the focus through the seek bar, the buttons, the
+      volume and the list, and around, on the board (`win hid`); not changed until the case that
+      failed is known.

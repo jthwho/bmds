@@ -22,6 +22,7 @@
 #include <bmds/slider.h>
 #include <bmds/string.h>
 #include <bmds/tabwidget.h>
+#include <bmds/trayicon.h>
 
 #include "player.h"
 #include "playersettings.h"
@@ -83,6 +84,7 @@ class PlayerWindow final : public GuiWindow {
                         Show = 1, ///< The window shown.
                         Open = 2, ///< The files replace the playlist and play.
                         Add = 3,  ///< The files are added.
+                        Play = 4, ///< Each added if it isn't there; the first played from its start.
                 };
 
                 PlayerWindow(GuiApplication &app, const Config &config, Player &player, StringView cwd);
@@ -92,10 +94,12 @@ class PlayerWindow final : public GuiWindow {
                 Error build();
 
                 /**
-                 * @brief Adds @p paths (absolute: sound files, playlists, folders) to
-                 *        the playlist; @p replace: instead of it, and plays the first.
+                 * @brief Puts @p paths (absolute: sound files, playlists, folders) in
+                 *        the playlist, as @p how says: `Open` instead of it, playing the
+                 *        first; `Add` after it; `Play` each sound file only if it isn't
+                 *        there, then the first of them played from its start.
                  */
-                void addPaths(Span<const StringView> paths, bool replace);
+                void addPaths(Span<const StringView> paths, Request how);
 
                 /**
                  * @brief Reads `mplayer.conf` into @p out (the defaults where it
@@ -113,6 +117,9 @@ class PlayerWindow final : public GuiWindow {
 
                 /** @brief Writes what is kept now, if anything changed (at quitting, the thread running). */
                 void saveNow();
+
+                /** @brief Shows the window (where it was, if hidden) and raises it. */
+                void showPlayer();
 
                 /** @brief The playback thread has a report (any thread). */
                 static void reportWaiting(void *arg);
@@ -175,6 +182,7 @@ class PlayerWindow final : public GuiWindow {
                 static void filesChosen(void *arg, FileDialog &dialog, int result);
                 static void saveChosen(void *arg, FileDialog &dialog, int result);
                 static void saveDue(void *arg);
+                static void trayActivated(void *arg, TrayIcon &icon, TrayIcon::Reason reason);
                 static void reportsDue(void *arg);
                 static void tick(void *arg);
                 static void messageDone(void *arg);
@@ -210,10 +218,13 @@ class PlayerWindow final : public GuiWindow {
                 void       showVolume();
                 void       say(StringView text); // the status bar's message, for a while
                 void       addPath(StringView path, size_t depth);
+                void         playPaths(Span<const StringView> paths);
                 void       addFolder(StringView path, size_t depth);
                 void       addPlaylistFile(StringView path);
                 Error      appendEntry(StringView path);
                 void         changed(bool playlist); // what is kept: written soon
+                void         closeOrHide();          // Close: hidden while playing (the tray shows it again)
+                void         showTrayTip(uint64_t ms);
                 void         settingsNow(PlayerSettings &out);
                 static Error writeFile(StringView path, StringView cwd, StringView text);
                 void         savePlaylistAs(StringView path);
@@ -255,6 +266,8 @@ class PlayerWindow final : public GuiWindow {
                 Menu          _playbackMenu;
                 Menu          _repeatMenu;
                 Menu          _helpMenu;
+                Menu          _trayMenu;
+                TrayIcon      _tray;
                 FileDialog    _openDialog;
                 FileDialog    _addDialog;
                 FileDialog    _folderDialog;

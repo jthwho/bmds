@@ -79,6 +79,9 @@ class GuiWindow : public Widget {
                 /** @brief Opens it at @p rect (outer) instead. */
                 Error show(const Rect &rect);
 
+                /** @brief Returns its rectangle (outer) when it last closed, to open it there again (empty: never). */
+                Rect lastRect() const { return _lastRect; }
+
                 /** @brief Closes it (it may be shown again). */
                 void close();
 
@@ -217,7 +220,7 @@ class GuiWindow : public Widget {
 
         private:
                 static void redraw(void *arg, Painter &painter);
-                static void closedEntry(void *arg);
+                static void closedEntry(void *arg, const Rect &outer);
                 static void keyEntry(void *arg, const KeyEvent &event);
                 static void activatedEntry(void *arg, bool active);
                 bool        activateMnemonic(uint32_t key);
@@ -241,6 +244,7 @@ class GuiWindow : public Widget {
                 uint8_t              _slot = 0;
                 uint8_t              _generation = 0;
                 Rect                 _screen;
+                Rect                   _lastRect; // outer, as it last closed
                 Widget              *_central = nullptr;
                 const Icon          *_icon = nullptr;
                 const Icon          *_largeIcon = nullptr;

@@ -60,7 +60,7 @@ TEST_CASE("Calendar and DateTime") {
         CHECK(daysFromCivil(1970, 1, 1) == 0);
         CHECK(daysFromCivil(2000, 3, 1) == 11017);
         CHECK(daysFromCivil(1969, 12, 31) == -1);
-        CHECK(ClockModel::UnsetEpoch.ns == 1767225600 * Second);
+        CHECK(ClockModel::UnsetEpoch.ns == -446751900 * Second); // 1955-11-05 06:15:00 UTC
 
         SUBCASE("round trips over centuries") {
                 for (int64_t days = daysFromCivil(1600, 1, 1); days < daysFromCivil(2400, 1, 1); days += 13) {
@@ -124,6 +124,12 @@ TEST_CASE("formatTime") {
         CHECK(format("%c", t) == "Wed Mar  4 15:06:07 2026");
         CHECK(format("a%nb%tc %q trailing %", t) == "a\nb\tc %q trailing %");
         CHECK(format("", t) == "");
+        // GNU's flags: not padded, spaces, zeros; on a conversion that isn't a number, copied.
+        CHECK(format("%A, %B %-d, %Y", t) == "Wednesday, March 4, 2026");
+        CHECK(format("%l:%M %p|%-I|%_m|%0e|%-j", t) == " 3:06 PM|3| 3|04|63");
+        CHECK(format("%-q %- %_", t) == "%-q %- %_");
+        LocalTime m = TimeZone().localTime(Timestamp::fromSeconds(utc(2026, 1, 1, 0, 30, 0), 0));
+        CHECK(format("%l:%M %p", m) == "12:30 AM");
 }
 
 TEST_CASE("TimeZone") {
@@ -203,10 +209,17 @@ TEST_CASE("TimeZone") {
 TEST_CASE("ClockModel") {
         ClockModel c;
 
-        SUBCASE("an unset clock counts from 2026") {
+        SUBCASE("an unset clock counts from 1955-11-05 06:15; its start set from a zone, not once set") {
                 CHECK(c.wallAt(0) == ClockModel::UnsetEpoch);
                 CHECK(c.wallAt(5 * Second).ns == ClockModel::UnsetEpoch.ns + 5 * Second);
                 CHECK_FALSE(c.status(0).isSet());
+                // UTC-8: 6:15 there is 14:15 UTC, from boot (m = 0) on.
+                c.setUnsetStart(Timestamp{ClockModel::UnsetEpoch.ns + 8 * 3600 * Second});
+                CHECK(c.wallAt(5 * Second).ns == ClockModel::UnsetEpoch.ns + 8 * 3600 * Second + 5 * Second);
+                CHECK_FALSE(c.status(0).isSet());
+                c.set(0, Timestamp::fromSeconds(1000), ClockSource::Manual);
+                c.setUnsetStart(ClockModel::UnsetEpoch);
+                CHECK(c.wallAt(0).ns == 1000 * Second);
         }
 
         SUBCASE("set steps") {

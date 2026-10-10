@@ -63,6 +63,7 @@ namespace {
                 ChooseRepeatOne,
                 ChooseShuffle,
                 ChooseAbout,
+                ChooseShow,
         };
 
         // The transport's buttons, by their data.
@@ -272,7 +273,8 @@ StringView PlaylistView::toolTip() const {
 
 PlayerWindow::PlayerWindow(GuiApplication &app, const Config &config, Player &player, StringView cwd)
     : GuiWindow(app, config), _player(player), _fileMenu(app), _playbackMenu(app), _repeatMenu(app), _helpMenu(app),
-      _openDialog(app, FileDialog::Mode::OpenMany, "Open"), _addDialog(app, FileDialog::Mode::OpenMany, "Add Files"),
+      _trayMenu(app), _tray(app), _openDialog(app, FileDialog::Mode::OpenMany, "Open"),
+      _addDialog(app, FileDialog::Mode::OpenMany, "Add Files"),
       _folderDialog(app, FileDialog::Mode::Folder, "Add Folder"),
       _listDialog(app, FileDialog::Mode::Open, "Open Playlist"),
       _saveDialog(app, FileDialog::Mode::Save, "Save Playlist As") {
@@ -339,6 +341,13 @@ Error PlayerWindow::build() {
         setIcon(theme.find(IconId::MultimediaPlayer, 16));
         setLargeIcon(theme.find(IconId::MultimediaPlayer, 32));
 
+        // In the tray while it runs (devplan/mediaplayer.md §6i).
+        _tray.setIcon("multimedia-player");
+        _tray.setContextMenu(&_trayMenu);
+        _tray.setActivated(trayActivated, this);
+        showTrayTip(0);
+        (void)_tray.show();
+
         showTrack(nullptr);
         showMode();
         showVolume();
@@ -372,7 +381,26 @@ Error PlayerWindow::buildMenus() {
         if (err.isOk()) err = fillPlaybackMenu();
         if (err.isOk())
                 err = _helpMenu.addItem("&About", ChooseAbout, 0, StringView(), theme.find(IconId::HelpAbout, 16));
-        for (Menu *m : {&_fileMenu, &_playbackMenu, &_repeatMenu, &_helpMenu}) m->setTriggered(chosen, this);
+        // The tray icon's.
+        if (err.isOk())
+                err = _trayMenu.addItem("&Play/Pause", ChoosePlayPause, 0, StringView(),
+                                        theme.find(IconId::MediaPlaybackStart, 16));
+        if (err.isOk())
+                err = _trayMenu.addItem("&Stop", ChooseStop, 0, StringView(),
+                                        theme.find(IconId::MediaPlaybackStop, 16));
+        if (err.isOk())
+                err = _trayMenu.addItem("Pre&vious", ChoosePrevious, 0, StringView(),
+                                        theme.find(IconId::MediaSkipBackward, 16));
+        if (err.isOk())
+                err = _trayMenu.addItem("&Next", ChooseNext, 0, StringView(), theme.find(IconId::MediaSkipForward, 16));
+        if (err.isOk()) err = _trayMenu.addSeparator();
+        if (err.isOk())
+                err = _trayMenu.addItem("Show P&layer", ChooseShow, 0, StringView(),
+                                        theme.find(IconId::MultimediaPlayer, 16));
+        if (err.isOk())
+                err = _trayMenu.addItem("&Quit", ChooseQuit, 0, StringView(), theme.find(IconId::SystemLogOut, 16));
+        for (Menu *m : {&_fileMenu, &_playbackMenu, &_repeatMenu, &_helpMenu, &_trayMenu})
+                m->setTriggered(chosen, this);
         return err;
 }
 
@@ -492,8 +520,9 @@ void PlayerWindow::chosen(void *arg, int item) {
                 case ChooseAddFolder: (void)self->_folderDialog.open(); break;
                 case ChooseOpenPlaylist: (void)self->_listDialog.open(); break;
                 case ChooseSavePlaylist: (void)self->_saveDialog.open(); break;
-                case ChooseClose:
+                case ChooseClose: self->closeOrHide(); break;
                 case ChooseQuit: self->application().quit(0); break;
+                case ChooseShow: self->showPlayer(); break;
                 case ChoosePlayPause: self->playPause(); break;
                 case ChooseStop: self->stopPlaying(); break;
                 case ChoosePrevious: self->previous(); break;
@@ -565,8 +594,10 @@ bool PlayerWindow::keyUnused(const KeyEvent &event) {
         const bool ctrl = event.hasCtrl() && !event.hasAlt() && !event.hasShift();
         if (ctrl && event.usage == KeyO) {
                 (void)_openDialog.open();
-        } else if (ctrl && (event.usage == KeyQ || event.usage == KeyW)) {
+        } else if (ctrl && event.usage == KeyQ) {
                 application().quit(0);
+        } else if (ctrl && event.usage == KeyW) {
+                closeOrHide();
         } else {
                 return playerKey(event);
         }
@@ -582,9 +613,60 @@ void PlayerWindow::resized() {
         return;
 }
 
+// Closed by its frame (or the window manager): as Close.
 void PlayerWindow::closedByManager() {
         GuiWindow::closedByManager();
-        application().quit(0);
+        if (_mode == Mode::Stopped || !_tray.isSystemTrayAvailable()) application().quit(0);
+        return;
+}
+
+// While something plays, and a tray can show it again, the window goes and the player goes on;
+// otherwise it quits.
+void PlayerWindow::closeOrHide() {
+        if (_mode == Mode::Stopped || !_tray.isSystemTrayAvailable()) {
+                application().quit(0);
+                return;
+        }
+        close();
+        return;
+}
+
+void PlayerWindow::showPlayer() {
+        if (!isShown()) {
+                const Rect was = lastRect();
+                if (was.width != 0 ? show(was).isError() : show().isError()) return;
+        }
+        activate();
+        return;
+}
+
+void PlayerWindow::trayActivated(void *arg, TrayIcon &, TrayIcon::Reason reason) {
+        auto *self = static_cast<PlayerWindow *>(arg);
+        if (reason == TrayIcon::Reason::Trigger) self->showPlayer();
+        return; // Context: its menu, opened by the icon
+}
+
+// "Title — Artist · 1:23 / 3:45", or what it is doing (sent only when it changes).
+void PlayerWindow::showTrayTip(uint64_t ms) {
+        const TrackText *t = _mode != Mode::Stopped ? textOf(_shownTrack) : nullptr;
+        if (t == nullptr) {
+                _tray.setToolTip(_mode == Mode::Stopped ? "Media Player: stopped" : "Media Player");
+                return;
+        }
+        char      tip[128];
+        const int n = std::snprintf(tip, sizeof(tip), "%.60s%s%.40s", t->title.cStr(),
+                                    t->artist.isEmpty() ? "" : " \xe2\x80\x94 ", t->artist.cStr());
+        if (n > 0 && size_t(n) < sizeof(tip)) {
+                char        at[TimeText::MaxText];
+                char        length[TimeText::MaxText] = "";
+                const bool  known = t->rateHz != 0 && t->frames != Decoder::UnknownFrames;
+                const char *paused = _mode == Mode::Paused ? " (paused)" : "";
+                TimeText::format(ms, Span<char>(at));
+                if (known) TimeText::format(t->frames * 1000 / t->rateHz, Span<char>(length));
+                std::snprintf(tip + n, sizeof(tip) - size_t(n), " \xc2\xb7 %s%s%s%s", at, known ? " / " : "", length,
+                              paused);
+        }
+        _tray.setToolTip(StringView(tip));
         return;
 }
 
@@ -1123,6 +1205,7 @@ void PlayerWindow::showPosition() {
                 _seek->setRange(0, known ? int32_t(length / 1000) : 0);
                 _seek->setValue(int64_t(ms / 1000));
         }
+        showTrayTip(ms);
         return;
 }
 
@@ -1233,12 +1316,18 @@ void PlayerWindow::filesChosen(void *arg, FileDialog &dialog, int result) {
              {&self->_openDialog, &self->_addDialog, &self->_folderDialog, &self->_listDialog, &self->_saveDialog})
                 if (d != &dialog) (void)d->setFolder(folder.view());
         (void)self->_lastFolder.assign(folder.view());
-        self->addPaths(paths.span(), &dialog == &self->_openDialog || &dialog == &self->_listDialog);
+        self->addPaths(paths.span(),
+                       &dialog == &self->_openDialog || &dialog == &self->_listDialog ? Request::Open : Request::Add);
         self->changed(false);
         return;
 }
 
-void PlayerWindow::addPaths(Span<const StringView> paths, bool replace) {
+void PlayerWindow::addPaths(Span<const StringView> paths, Request how) {
+        if (how == Request::Play) {
+                playPaths(paths);
+                return;
+        }
+        const bool replace = how == Request::Open;
         if (replace) {
                 if (_mode != Mode::Stopped) stopPlaying();
                 _playlist.clear();
@@ -1260,6 +1349,43 @@ void PlayerWindow::addPaths(Span<const StringView> paths, bool replace) {
         } else if (replace) {
                 say("Nothing to play there");
         }
+        return;
+}
+
+// The file browser's open (`mplayer -p`): a sound file already in the list is played there, one
+// that isn't is added at its end; folders and playlists are added. The first of them plays, from
+// its start.
+void PlayerWindow::playPaths(Span<const StringView> paths) {
+        const Vfs::Context context{_cwd.view(), nullptr};
+        const size_t       before = _playlist.count();
+        size_t             target = Playlist::NoEntry;
+        _addedSome = false;
+        for (const StringView p : paths) {
+                auto [info, err] = Vfs::stat(p, context);
+                if (err.isOk() && info.type != FileType::Directory && !isPlaylistName(p)) {
+                        size_t at = Playlist::NoEntry;
+                        for (size_t i = 0; i < _playlist.count() && at == Playlist::NoEntry; ++i)
+                                if (_playlist.path(i) == p) at = i;
+                        if (at == Playlist::NoEntry && appendEntry(p).isOk()) at = _playlist.count() - 1;
+                        if (target == Playlist::NoEntry) target = at;
+                        continue;
+                }
+                const size_t was = _playlist.count();
+                addPath(p, 0);
+                if (target == Playlist::NoEntry && _playlist.count() > was) target = was;
+        }
+        showList(true);
+        if (_playlist.count() > before) changed(true);
+        if (target == Playlist::NoEntry) {
+                say("Nothing to play there");
+                return;
+        }
+        _playlist.setCurrent(target);
+        _failedInRow = 0;
+        _resumeEntry = Playlist::NoEntry; // from its start
+        playEntry(target, Player::Start::Now);
+        _list->resetTo(Span<const size_t>(&target, 1), int(target));
+        _list->showRow(target);
         return;
 }
 

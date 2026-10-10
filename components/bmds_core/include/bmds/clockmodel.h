@@ -59,8 +59,10 @@ struct ClockStatus {
  * over any uptime. Reading is a pure function of the state and `m`; the
  * caller supplies `m` (nanoseconds of a monotonic clock) and the locking.
  *
- * Unset, the clock counts from 2026-01-01 00:00:00 UTC at `m` = 0, so time
- * stamps are plausible and ordered rather than 1970.
+ * Unset, the clock counts from 1955-11-05 06:15 local time at `m` = 0 (the
+ * day Doc Brown thought of the flux capacitor; the user's easter egg): the
+ * kernel works out from its zone the UTC that reads so (`setUnsetStart()`);
+ * until it does, `UnsetEpoch`, that time in UTC.
  *
  * Fixed size, no padding: it can be held in a `SeqLocked`.
  *
@@ -69,9 +71,9 @@ struct ClockStatus {
  */
 class ClockModel {
         public:
-                /** @brief Where an unset clock starts: 2026-01-01 00:00:00 UTC. */
-                static constexpr Timestamp UnsetEpoch =
-                        Timestamp::fromSeconds(Calendar::daysFromCivil(2026, 1, 1) * Calendar::SecondsPerDay);
+                /** @brief An unset clock's local start, 1955-11-05 06:15:00, as UTC (the start where the zone is UTC). */
+                static constexpr Timestamp UnsetEpoch = Timestamp::fromSeconds(
+                        Calendar::daysFromCivil(1955, 11, 5) * Calendar::SecondsPerDay + 6 * 3600 + 15 * 60);
 
                 /** @brief Largest frequency correction, in ppb (500 ppm). */
                 static constexpr int32_t MaxFrequencyPpb = 500'000;
@@ -102,6 +104,17 @@ class ClockModel {
 
                 /** @brief Returns the source, last set time, remaining slew and frequency. */
                 ClockStatus status(int64_t monoNs) const;
+
+                /**
+                 * @brief Makes an unset clock read @p wall at `m` = 0 (the UTC its zone
+                 *        reads as 6:15 AM); a set clock is left as it is.
+                 */
+                void setUnsetStart(Timestamp wall) {
+                        if (_source != 0) return;
+                        _anchorMono = 0;
+                        _anchorWall = wall.ns;
+                        return;
+                }
 
                 /** @brief Returns where the time came from. */
                 ClockSource source() const { return static_cast<ClockSource>(_source); }

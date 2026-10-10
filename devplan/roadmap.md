@@ -152,6 +152,8 @@ Plan: [`input.md`](input.md).
     keys, errors, one player, `mplayer.desktop`) built and tried on the board; the user's ear next.
     Step 4 (kept between runs: `mplayer.conf`, `playlist.m3u8`, Open and Save Playlist) built and
     tried on the board.
+    Step 5 (the system tray: `TrayIcon` and the panel's `tray` item, the volume control moved onto
+    it, the player's icon and hiding on close) built and tried on the board.
   - [x] The ROM (`rom.md`, planned 2026-10-09, the user's idea and layout): a read-only `/rom` in
     its own flash partition, mapped in place: standard icons (pre-decoded, drawn from flash) and
     the time zone database without a card; `Vfs::map()`, later programs' read-only `mmap()`

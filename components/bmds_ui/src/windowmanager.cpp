@@ -175,8 +175,14 @@ void WindowManager::stop() {
         if (_surface == nullptr) return;
         Input::setSink(nullptr);
         for (size_t i = 0; i < _stack.count() + _stack.hiddenCount(); ++i) {
-                Window &w = _windows[(i < _stack.count() ? _stack.idAt(i) : _stack.hiddenIdAt(i - _stack.count())) - 1];
-                if (w.closed != nullptr) w.closed(w.arg);
+                const uint8_t id = i < _stack.count() ? _stack.idAt(i) : _stack.hiddenIdAt(i - _stack.count());
+                Window       &w = _windows[id - 1];
+                if (w.closedAt != nullptr) {
+                        const Result<Rect> r = _stack.rectOf(id);
+                        w.closedAt(w.arg, r.isOk() ? r.value() : Rect());
+                } else if (w.closed != nullptr) {
+                        w.closed(w.arg);
+                }
                 w = Window();
         }
         // The applications told: their windows are gone, and so is the window manager.
@@ -1381,6 +1387,7 @@ Result<uint8_t> WindowManager::openLocked(const WindowConfig &config) {
         w.focusable = config.focusable && (WindowStack::isApplication(config.level) || keysLevel);
         w.focusOnPress = config.focusOnPress;
         w.activated = config.activated;
+        w.closedAt = config.closedAt;
         if (w.focusable && !keysLevel) _focusId = id;
         if (keysLevel && _focusId == id) _focusId = 0; // a closed window's number, reused: not focused
         if (WindowStack::isApplication(config.level)) _listChanged = true;
@@ -1406,6 +1413,8 @@ Error WindowManager::close(uint8_t id) {
 Error WindowManager::closeLocked(uint8_t id) {
         const uint8_t oldTop = focusId();
         const Level   level = _stack.levelOf(id);
+        const Result<Rect> was = _stack.rectOf(id); // for closedAt
+        const Rect         outer = was.isOk() ? was.value() : Rect();
         const Error   err = _stack.close(id);
         if (err.isError()) return err;
         const Window w = _windows[id - 1];
@@ -1415,7 +1424,11 @@ Error WindowManager::closeLocked(uint8_t id) {
                 _bandId = 0;
                 _bandPieces.clear();
         }
-        if (w.closed != nullptr) w.closed(w.arg);
+        if (w.closedAt != nullptr) {
+                w.closedAt(w.arg, outer);
+        } else if (w.closed != nullptr) {
+                w.closed(w.arg);
+        }
         if (_grabId == id) _grabId = 0;
         if (_sizeId == id) _sizeId = 0;
         if (_pressId == id) _pressId = 0;
@@ -2191,13 +2204,22 @@ WindowManager::Service *WindowManager::findService(StringView name) {
 
 // Connection @p client's services (0: every one), forgotten with their messages.
 void WindowManager::dropServices(uint8_t client) {
+        bool dropped = false;
         for (size_t i = _services.size(); i-- > 0;) {
                 Service *s = _services[i];
                 if (client != 0 && s->client != client) continue;
                 s->~Service();
                 Memory::free(s);
                 _services.removeAt(i);
+                dropped = true;
         }
+        if (dropped) servicesChanged();
+        return;
+}
+
+void WindowManager::servicesChanged() {
+        for (const Client &c : _clients)
+                if (c.used && c.servicesWatch != nullptr) c.servicesWatch(c.servicesWatchArg);
         return;
 }
 
@@ -2216,6 +2238,7 @@ Error WindowManager::registerService(uint8_t client, StringView name, ServiceNot
         s->fn = fn;
         s->arg = arg;
         (void)_services.append(s);
+        servicesChanged();
         return Error::Ok;
 }
 
@@ -2234,6 +2257,34 @@ Result<size_t> WindowManager::takeServiceMessage(uint8_t client, StringView name
         Service      *s = findService(name);
         if (s == nullptr || s->client != client) return makeError<size_t>(Error::NotFound);
         return s->queue.take(out);
+}
+
+Error WindowManager::unregisterService(uint8_t client, StringView name) {
+        Mutex::Locker lock(_lock, WaitForever);
+        for (size_t i = 0; i < _services.size(); ++i) {
+                Service *s = _services[i];
+                if (StringView(s->name) != name || s->client != client) continue;
+                s->~Service();
+                Memory::free(s);
+                _services.removeAt(i);
+                servicesChanged();
+                return Error::Ok;
+        }
+        return Error::NotFound;
+}
+
+bool WindowManager::hasService(StringView name) {
+        Mutex::Locker lock(_lock, WaitForever);
+        return findService(name) != nullptr;
+}
+
+Error WindowManager::watchServices(uint8_t client, ServiceNotify fn, void *arg) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        if (client == 0 || client > _clients.size() || !_clients[client - 1].used) return Error::NotFound;
+        _clients[client - 1].servicesWatch = fn;
+        _clients[client - 1].servicesWatchArg = arg;
+        return Error::Ok;
 }
 
 // The window keys (devplan/gui.md §4p): Win+Up/Down/Left/Right, Alt+F10 on the focused

@@ -19,6 +19,7 @@ set(BMDS_GUI_PURE_SRCS
         src/scrollmodel.cpp
         src/slidermodel.cpp
         src/tabrow.cpp
+        src/trayrow.cpp
         src/treerows.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
@@ -47,6 +48,7 @@ if(COMMAND idf_component_register)
                                     src/slider.cpp
                                     src/tabwidget.cpp
                                     src/tooltip.cpp
+                                    src/trayicon.cpp
                                     src/treeview.cpp
                                     src/widget.cpp
                                INCLUDE_DIRS include

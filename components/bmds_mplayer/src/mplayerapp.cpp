@@ -5,9 +5,10 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * /bin/mplayer, the media player (devplan/mediaplayer.md): `mplayer [-a] [FILE...]`. One player:
- * it registers the service `mplayer`, and with one running the files go to it instead (§6i):
- * replacing its playlist, or added with -a. Its command line and its service's messages are
+ * /bin/mplayer, the media player (devplan/mediaplayer.md): `mplayer [-a | -p] [FILE...]`. One
+ * player: it registers the service `mplayer`, and with one running the files go to it instead
+ * (§6i): replacing its playlist; added with -a; with -p (the file browser's) each added if it isn't
+ * there and the first played from its start. Its command line and its service's messages are
  * interfaces once shipped: append only.
  */
 
@@ -75,14 +76,15 @@ namespace {
                 }
                 const auto request = static_cast<PlayerWindow::Request>(h.request);
                 if (!paths.isEmpty() &&
-                    (request == PlayerWindow::Request::Open || request == PlayerWindow::Request::Add))
-                        self->window->addPaths(paths.span(), request == PlayerWindow::Request::Open);
-                self->window->activate();
+                    (request == PlayerWindow::Request::Open || request == PlayerWindow::Request::Add ||
+                     request == PlayerWindow::Request::Play))
+                        self->window->addPaths(paths.span(), request);
+                self->window->showPlayer(); // hidden: shown again
                 return;
         }
 
         // Sends @p paths (absolute) to the player running. @return The exit status.
-        int sendToRunning(App &a, Span<const StringView> paths, bool add) {
+        int sendToRunning(App &a, Span<const StringView> paths, PlayerWindow::Request how) {
                 WindowManager &wm = a.app->windowManager();
                 String         message(MemSpace::Psram);
                 const auto     begin = [&message](PlayerWindow::Request request) {
@@ -98,9 +100,7 @@ namespace {
                                                  : "mplayer: the player running can't be reached\n");
                         return false;
                 };
-                PlayerWindow::Request request = paths.size() == 0 ? PlayerWindow::Request::Show
-                                                : add             ? PlayerWindow::Request::Add
-                                                                  : PlayerWindow::Request::Open;
+                PlayerWindow::Request request = paths.size() == 0 ? PlayerWindow::Request::Show : how;
                 if (begin(request).isError()) return 1;
                 for (const StringView p : paths) {
                         if (p.size() + 1 + sizeof(ServiceHeader) > WindowManager::MaxServiceMessage) {
@@ -121,18 +121,18 @@ namespace {
                 App a{context};
                 a.err = context.fds != nullptr ? context.fds->handle(FdTable::Stderr) : nullptr;
                 // Its files, absolute and there.
-                bool             add = false;
+                auto             how = PlayerWindow::Request::Open; // -a: Add; -p: Play
                 bool             bad = false;
                 List<String>     owned(MemSpace::Psram);
                 List<StringView> paths(MemSpace::Psram);
                 for (size_t i = 1; i < context.args.size(); ++i) {
                         const StringView arg = context.args[i];
-                        if (arg == "-a" && paths.isEmpty() && !add) {
-                                add = true;
+                        if ((arg == "-a" || arg == "-p") && owned.isEmpty() && how == PlayerWindow::Request::Open) {
+                                how = arg == "-a" ? PlayerWindow::Request::Add : PlayerWindow::Request::Play;
                                 continue;
                         }
                         if (arg.startsWith('-')) {
-                                a.say("usage: mplayer [-a] [FILE...]\n");
+                                a.say("usage: mplayer [-a | -p] [FILE...]\n");
                                 return 2;
                         }
                         auto [path, nerr] = Vfs::normalize(arg, context.cwd);
@@ -158,7 +158,7 @@ namespace {
                 if (a.app->connect(0).isError()) {
                         a.say("mplayer: the window system isn't running ('win start')\n");
                 } else if (Error e = a.app->registerService(Service, serviceMessage, &a); e == Error::Exists) {
-                        status = sendToRunning(a, paths.span(), add);
+                        status = sendToRunning(a, paths.span(), how);
                         if (bad) status = 1;
                 } else {
                         if (e.isError()) a.say("mplayer: its service can't be registered: a second one may start\n");
@@ -185,7 +185,7 @@ namespace {
                                         if (err.isOk()) {
                                                 a.window = window;
                                                 window->restore(settings);
-                                                if (!paths.isEmpty()) window->addPaths(paths.span(), true);
+                                                if (!paths.isEmpty()) window->addPaths(paths.span(), how);
                                         }
                                 }
                                 if (err.isOk()) {

@@ -29,6 +29,7 @@ BMDS_NAMESPACE_BEGIN
 class GuiClipboard;
 class GuiWindow;
 class ToolTip;
+class TrayIcon;
 class Widget;
 
 /**
@@ -161,7 +162,7 @@ class GuiApplication {
                 using ServiceMessage = void (*)(void *arg, ByteSpan message);
 
                 /** @brief Services at once. */
-                static constexpr size_t MaxServices = 2;
+                static constexpr size_t MaxServices = 4;
 
                 /**
                  * @brief Names a service of the application (`WindowManager::registerService()`,
@@ -171,6 +172,33 @@ class GuiApplication {
                  *         program has the name).
                  */
                 Error registerService(StringView name, ServiceMessage fn, void *arg);
+
+                /**
+                 * @brief Gives up service @p name (`registerService()`'s): no message
+                 *        for it is told after.
+                 * @return `Ok`, or `NotFound`.
+                 */
+                Error unregisterService(StringView name);
+
+                /** @brief Returns true if any program has a service named @p name. */
+                bool hasService(StringView name) { return _wm != nullptr && _wm->hasService(name); }
+
+                /** @brief Tray icons (`TrayIcon`) at once. */
+                static constexpr size_t MaxTrayIcons = 4;
+
+                /** @brief Service watches at once. */
+                static constexpr size_t MaxServiceWatches = 4;
+
+                /**
+                 * @brief Has @p fn(@p arg) called on the loop's thread, the lock held,
+                 *        when a service of any program is named or goes
+                 *        (`WindowManager::watchServices()`): it asks `hasService()`.
+                 * @return `Ok`, `Full`, or the window manager's error.
+                 */
+                Error watchServices(Callback fn, void *arg);
+
+                /** @brief Stops `watchServices()`'s @p fn with @p arg. */
+                void unwatchServices(Callback fn, void *arg);
 
                 /**
                  * @brief Returns the application's clipboard (`devplan/clipboard.md`
@@ -231,6 +259,8 @@ class GuiApplication {
                                 int16_t                   wheel = 0;
                                 uint16_t                  width = 0;
                                 uint16_t                  height = 0;
+                                uint16_t                  x = 0; ///< `Closed`: where it was (with the size).
+                                uint16_t                  y = 0;
                                 Callback                  fn = nullptr;
                                 void                     *arg = nullptr;
                 };
@@ -251,6 +281,11 @@ class GuiApplication {
                 struct Slot {
                                 GuiWindow *window = nullptr;
                                 uint8_t    generation = 0;
+                };
+
+                struct Watcher {
+                                Callback fn = nullptr;
+                                void    *arg = nullptr;
                 };
 
                 struct KeyGrab {
@@ -282,6 +317,8 @@ class GuiApplication {
                 static void keyGrabbed(void *arg, uint8_t usage);
                 static void               serviceNotified(void *arg);
                 static void               serviceDue(void *arg);
+                static void               servicesNotified(void *arg);
+                static void               servicesDue(void *arg);
                 static void watched(void *arg);
                 void        dispatch(const Event &event);
                 void        runTimers();
@@ -311,6 +348,13 @@ class GuiApplication {
                 ToolTip          *_toolTip = nullptr;   // PSRAM, the first time a widget has one
                 ConfigWatch      *_configWatches[MaxConfigWatches] = {};
                 Service          *_services[MaxServices] = {};
+                Watcher           _serviceWatches[MaxServiceWatches];
+                bool              _watchingServices = false; // told by the window manager
+                std::atomic<bool> _servicesPosted{false};
+                // The tray icons (TrayIcon's, its file): their service for the tray's replies.
+                friend class TrayIcon;
+                TrayIcon         *_trayIcons[MaxTrayIcons] = {};
+                uint32_t          _lastTrayId = 0;
                 std::atomic<bool> _configChanged{false}; // a watch has news: runConfig() at the loop
 };
 

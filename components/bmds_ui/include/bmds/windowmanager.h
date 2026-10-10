@@ -120,6 +120,12 @@ class WindowManager {
                 using Closed = void (*)(void *arg);
 
                 /**
+                 * @brief Told that the window closed, and where it was (@p outer, frame
+                 *        included), as `Closed` (in its place when set).
+                 */
+                using ClosedAt = void (*)(void *arg, const Rect &outer);
+
+                /**
                  * @brief Takes a key typed while the window has the focus (on the
                  *        window manager's task, locked: it must not call it).
                  */
@@ -308,6 +314,7 @@ class WindowManager {
                                                               ///< (`cascadeRect()`): `rect`'s size kept, its place not.
                                 bool      focusOnPress = true; ///< False: a press doesn't focus it (`raise()` does).
                                 Activated activated = nullptr; ///< May be null.
+                                ClosedAt  closedAt = nullptr;  ///< May be null; told instead of `closed`.
                 };
 
                 /** @brief A window, as `list()` reports it. */
@@ -539,6 +546,25 @@ class WindowManager {
                 Result<size_t> takeServiceMessage(uint8_t client, StringView name, WritableByteSpan out);
 
                 /**
+                 * @brief Forgets connection @p client's service @p name, with the
+                 *        messages waiting for it: no notification for it comes after.
+                 * @return `Ok`, or `NotFound` (not its service).
+                 */
+                Error unregisterService(uint8_t client, StringView name);
+
+                /** @brief Returns true if a service is named @p name (any task). */
+                bool hasService(StringView name);
+
+                /**
+                 * @brief Has @p fn told when a service is named or goes (null: no
+                 *        more), for connection @p client (`devplan/mediaplayer.md`
+                 *        §6e): on the task that changed them, the window manager
+                 *        locked: it only wakes a loop, which asks `hasService()`.
+                 * @return `Ok`, `NotFound` (no such connection), `InvalidState`.
+                 */
+                Error watchServices(uint8_t client, ServiceNotify fn, void *arg);
+
+                /**
                  * @brief Puts window @p id on top, filling the work area until restored.
                  * @return `Ok`, `NotFound`, or `InvalidState` (not a normal window: a panel's).
                  */
@@ -751,6 +777,7 @@ class WindowManager {
                                 bool        focusable = true;
                                 bool        focusOnPress = true;
                                 Activated   activated = nullptr;
+                                ClosedAt    closedAt = nullptr;
                 };
 
                 struct Client {
@@ -759,6 +786,8 @@ class WindowManager {
                                 bool  used = false;
                                 Watch watch = nullptr;
                                 void *watchArg = nullptr;
+                                ServiceNotify servicesWatch = nullptr;
+                                void         *servicesWatchArg = nullptr;
                 };
 
                 // A registerService()'s (PSRAM, one allocation each).
@@ -875,6 +904,7 @@ class WindowManager {
                 bool            grabbed(const KeyEvent &event); // a key a program claimed
                 Service        *findService(StringView name);
                 void            dropServices(uint8_t client); // 0: all
+                void            servicesChanged();            // the watches told (locked)
                 Error           dragLocked(uint8_t id, uint16_t x, uint16_t y);
                 Error           outlineLocked(uint8_t id, const Rect &rect);
                 Error           dropLocked();

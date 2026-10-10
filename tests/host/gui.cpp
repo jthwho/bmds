@@ -13,7 +13,9 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstddef>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 #include <bmds/bevel.h>
@@ -38,6 +40,8 @@
 #include <bmds/slidermodel.h>
 #include <bmds/switcherlayout.h>
 #include <bmds/tabrow.h>
+#include <bmds/trayprotocol.h>
+#include <bmds/trayrow.h>
 #include <bmds/treerows.h>
 #include <bmds/windowstack.h>
 
@@ -1195,4 +1199,133 @@ TEST_CASE("FileNameList: one name as it is, several in quotes, written back") {
         CHECK(out.view() == R"("a b.mp3" "c.ogg")");
         REQUIRE(bmds::FileNameList::split(out.view(), names).isOk());
         CHECK(names.size() == 2);
+}
+
+TEST_CASE("TrayProtocol: read takes what was sent, the rest zero; short or lying messages refused") {
+        namespace TP = bmds::TrayProtocol;
+        TP::Update u;
+        u.id = 7;
+        TP::copy(u.reply, "tray.3");
+        TP::copy(u.icon, "audio-volume-high");
+        TP::copy(u.toolTip, "Volume: -9 dBFS");
+        u.flags = TP::Visible;
+        const bmds::ByteSpan all = TP::bytes(u);
+        CHECK(TP::kindOf(all) == uint32_t(TP::Kind::Update));
+        TP::Update back;
+        REQUIRE(TP::read(all, back));
+        CHECK(back.id == 7);
+        CHECK(TP::view(back.reply) == "tray.3");
+        CHECK(TP::view(back.toolTip) == "Volume: -9 dBFS");
+        // An older sender's shorter struct: what it knew, the fields after it zero.
+        std::vector<uint8_t> old(all.data(), all.data() + all.size());
+        const uint32_t       shorter = uint32_t(offsetof(TP::Update, icon));
+        std::memcpy(old.data(), &shorter, sizeof(shorter));
+        old.resize(shorter);
+        REQUIRE(TP::read(bmds::ByteSpan(old.data(), old.size()), back));
+        CHECK(back.id == 7);
+        CHECK(back.flags == TP::Visible);
+        CHECK(TP::view(back.icon).isEmpty());
+        CHECK(TP::view(back.toolTip).isEmpty());
+        // A size past the bytes, or less than size and kind: refused.
+        const uint32_t       lie = uint32_t(all.size() + 1);
+        std::vector<uint8_t> bad(all.data(), all.data() + all.size());
+        std::memcpy(bad.data(), &lie, sizeof(lie));
+        CHECK_FALSE(TP::read(bmds::ByteSpan(bad.data(), bad.size()), back));
+        CHECK_FALSE(TP::read(bmds::ByteSpan(bad.data(), 4), back));
+        // An unended string is read to its array's end; a copy is cut on a character.
+        std::memset(back.toolTip, 'x', sizeof(back.toolTip));
+        CHECK(TP::view(back.toolTip).size() == sizeof(back.toolTip));
+        char small[4];
+        TP::copy(small, "a\xc2\xb7z"); // a, a two-byte character, z: 'a' and the character fit
+        CHECK(std::string(small) == "a\xc2\xb7");
+        TP::copy(small, "ab\xc2\xb7"); // the character would be cut: left out
+        CHECK(std::string(small) == "ab");
+}
+
+TEST_CASE("TrayRow: added, ordered by category then arrival, updated, removed, programs gone") {
+        namespace TP = bmds::TrayProtocol;
+        bmds::TrayRow row;
+        const auto    update = [&row](const char *reply, uint32_t id, TP::Category c, bool visible, const char *tip) {
+                TP::Update u;
+                u.id = id;
+                TP::copy(u.reply, reply);
+                u.category = c;
+                u.flags = visible ? uint32_t(TP::Visible) : 0u;
+                TP::copy(u.toolTip, tip);
+                return row.update(u);
+        };
+        REQUIRE(update("tray.1", 1, TP::Category::Hardware, true, "volume").isOk());
+        REQUIRE(update("tray.2", 1, TP::Category::Application, true, "player").isOk());
+        REQUIRE(update("tray.3", 5, TP::Category::System, false, "hidden").isOk());
+        REQUIRE(update("tray.4", 1, TP::Category::Application, true, "second").isOk());
+        CHECK(row.shownCount() == 3);
+        CHECK(row.width() == 3 * bmds::TrayRow::CellWidth);
+        // Applications in the order they came, the hardware at the right end.
+        CHECK(TP::view(row.shown(0)->toolTip) == "player");
+        CHECK(TP::view(row.shown(1)->toolTip) == "second");
+        CHECK(TP::view(row.shown(2)->toolTip) == "volume");
+        CHECK(row.shown(3) == nullptr);
+        CHECK(row.positionOf("tray.1", 1) == 2);
+        CHECK(row.positionOf("tray.3", 5) == -1); // hidden
+        CHECK(row.positionAt(0) == 0);
+        CHECK(row.positionAt(bmds::TrayRow::CellWidth * 2 + 3) == 2);
+        CHECK(row.positionAt(bmds::TrayRow::CellWidth * 3) == -1);
+        CHECK(row.positionAt(-1) == -1);
+        // Shown, it keeps its arrival: after the others of its category.
+        REQUIRE(update("tray.3", 5, TP::Category::System, true, "shown").isOk());
+        CHECK(TP::view(row.shown(2)->toolTip) == "shown");
+        // Updated in place: only its look (the icons didn't move); hidden or shown again: moved.
+        {
+                TP::Update u;
+                u.id = 1;
+                TP::copy(u.reply, "tray.2");
+                u.flags = TP::Visible;
+                TP::copy(u.toolTip, "playing");
+                bool moved = true;
+                REQUIRE(row.update(u, &moved).isOk());
+                CHECK_FALSE(moved);
+                CHECK(TP::view(row.shown(0)->toolTip) == "playing");
+                u.flags = 0;
+                REQUIRE(row.update(u, &moved).isOk());
+                CHECK(moved);
+                u.flags = TP::Visible;
+                REQUIRE(row.update(u, &moved).isOk());
+                CHECK(moved);
+                u.category = TP::Category::System;
+                REQUIRE(row.update(u, &moved).isOk());
+                CHECK(moved);
+                u.category = TP::Category::Application;
+                REQUIRE(row.update(u, &moved).isOk());
+                u.id = 77; // a new one
+                REQUIRE(row.update(u, &moved).isOk());
+                CHECK(moved);
+                CHECK(row.remove("tray.2", 77));
+        }
+        // Pixels: only for an icon there, 16 x 16.
+        auto pixels = std::make_unique<TP::Pixels>();
+        TP::copy(pixels->reply, "tray.2");
+        pixels->id = 1;
+        pixels->argb[0] = 0xff112233;
+        CHECK(row.setPixels(*pixels).isOk());
+        CHECK(row.shown(0)->pixels().isValid());
+        CHECK(row.shown(0)->pixels().pixels[0] == 0xff112233);
+        pixels->id = 9;
+        CHECK(row.setPixels(*pixels) == bmds::Error::NotFound);
+        pixels->id = 1;
+        pixels->width = 8;
+        CHECK(row.setPixels(*pixels) == bmds::Error::Invalid);
+        // Removed; a program gone takes its icons.
+        CHECK(row.remove("tray.4", 1));
+        CHECK_FALSE(row.remove("tray.4", 1));
+        const auto gone = [](void *, bmds::StringView reply) {
+                return reply == "tray.2";
+        };
+        CHECK(row.dropGone(gone, nullptr) == 1);
+        CHECK(row.shownCount() == 2);
+        CHECK(TP::view(row.shown(0)->toolTip) == "shown");
+        // No reply service: refused; past MaxIcons: Full.
+        CHECK(update("", 1, TP::Category::Application, true, "x") == bmds::Error::Invalid);
+        for (uint32_t i = 2; i < bmds::TrayRow::MaxIcons; ++i)
+                REQUIRE(update("tray.9", 100 + i, TP::Category::Application, true, "many").isOk());
+        CHECK(update("tray.9", 999, TP::Category::Application, true, "one more") == bmds::Error::Full);
 }

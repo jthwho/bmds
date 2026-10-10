@@ -203,7 +203,7 @@ int TimeCommands::clock(CommandContext &ctx) {
                 ctx.printf("Source:    %s, set %s\n", clockSourceName(status.source),
                            formatted("%Y-%m-%d %H:%M:%S %Z", zone.localTime(status.lastSet)).cStr());
         } else {
-                ctx.print("Source:    none (not set; counting from 2026-01-01)\n");
+                ctx.print("Source:    none (not set; counting from 1955-11-05 06:15 local)\n");
         }
         const int64_t  slew = status.slewRemainingNs;
         const uint64_t magnitude = slew < 0 ? 0 - static_cast<uint64_t>(slew) : static_cast<uint64_t>(slew);

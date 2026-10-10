@@ -803,6 +803,11 @@ gives a slider. Both are the toolkit's, for any program:
     Unmuting returns to the level, which muting keeps. Escape or a press outside closes it.
   - **Wheel:** 1 dB a notch.
   - **Settings:** `audio/dsp0/volume` is in dB (−60 to 0) and `audio/dsp0/mute` the bottom notch.
+  - **Since 2026-10-09 a tray icon** (`mediaplayer.md` §6e, §11 step 5): `VolumeControl`, a
+    `TrayIcon` in the panel's process, category Hardware, in the panel's notification area (the
+    tray's icons and the clock in one sunken field, `NotifyArea`); the same
+    icon, tooltip, click, wheel and settings; the middle button mutes; a right click opens Mute
+    and Mixer... (the mixer window, later). `panel/items`' `volume` is read as `tray`.
 
 ## 5. Budget (estimates)
 
