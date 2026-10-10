@@ -31,7 +31,9 @@ namespace {
 
 } // namespace
 
-TrayIcon::TrayIcon(GuiApplication &app) : _app(app) {}
+TrayIcon::TrayIcon(GuiApplication &app) : _app(app), _notifier(app) {
+        _notifier.setTold(messageTold, this);
+}
 
 TrayIcon::~TrayIcon() {
         leave();
@@ -225,6 +227,35 @@ void TrayIcon::told(const TrayProtocol::Event &event) {
                         break;
                 default: break; // Geometry: kept above
         }
+        return;
+}
+
+Error TrayIcon::showMessage(StringView title, StringView text, StringView icon, int32_t timeoutMs) {
+        Notification n;
+        const auto   put = [](char *out, size_t size, StringView v) {
+                const size_t len = v.size() < size - 1 ? v.size() : size - 1;
+                std::memcpy(out, v.data(), len);
+                out[len] = '\0'; // the log cuts it at a character's end
+        };
+        put(n.title, sizeof(n.title), title);
+        put(n.body, sizeof(n.body), text);
+        put(n.icon, sizeof(n.icon), icon);
+        n.timeoutMs = timeoutMs;
+        n.replaces = _messageId; // one message at a time, as Qt's
+        Result<uint32_t> id = _notifier.show(n);
+        if (id.isError() && n.replaces != 0) { // the last one went meanwhile: a new one
+                n.replaces = 0;
+                id = _notifier.show(n);
+        }
+        if (id.isError()) return id.error();
+        _messageId = id.value();
+        return Error::Ok;
+}
+
+void TrayIcon::messageTold(void *arg, Notifier &, uint32_t id, Notifier::Event event, uint32_t action) {
+        auto *self = static_cast<TrayIcon *>(arg);
+        if (id != self->_messageId || event != Notifier::Event::Activated || action != 0) return;
+        if (self->_messageClicked != nullptr) self->_messageClicked(self->_messageClickedArg, *self);
         return;
 }
 

@@ -57,6 +57,7 @@
 #include "panelicons.h"
 #include "notifyarea.h"
 #include "cpumeter.h"
+#include "notificationserver.h"
 #include "panelitems.h"
 #include "volumecontrol.h"
 
@@ -107,6 +108,8 @@ namespace {
                      "The CPU meter's graph: a band for each core, or their mean", 0, 0, "cores|combined", nullptr)
         BMDS_SYSCONF(panelTrayVolume, "panel/tray/volume", Config::Type::Bool, "true", "The volume control in the tray",
                      0, 0, nullptr, nullptr)
+        BMDS_SYSCONF(panelTrayNotifications, "panel/tray/notifications", Config::Type::Bool, "true",
+                     "The notification centre's icon in the tray", 0, 0, nullptr, nullptr)
         BMDS_SYSCONF(panelSpacerWidth, "panel/spacer/width", Config::Type::Int, "0",
                      "A spacer's width in pixels (0: what is left)", 0, 2000, nullptr, nullptr)
         BMDS_SYSCONF(panelDesktopMenu, "panel/desktop/menu", Config::Type::Bool, "true",
@@ -156,6 +159,7 @@ namespace {
         enum PanelChoice : int {
                 ChooseCpuMeter = 1,
                 ChooseVolume,
+                ChooseNotifications,
                 ChooseClock,
                 ChooseTop,
                 ChooseBottom,
@@ -384,6 +388,11 @@ namespace {
                         void        saveSetting(const Config::Param &param, StringView value);
                         static void panelMenu(void *arg, int x, int y);
                         static void panelChosen(void *arg, int choice);
+                        void        startNotifications();
+                        static void notifyChanged(void *arg, SysConf::Id id);
+                        static void notifyOpen(void *arg, StringView path);
+                        static void notifyShow(void *arg, StringView path);
+                        static void notifyLaunch(void *arg, StringView id);
                         Error       openWindows();
                         void        open(const Entry &entry);
                         const Icon *fileIcon(StringView type);
@@ -405,6 +414,7 @@ namespace {
                         VolumeControl                 *_volume = nullptr; // its icon in the tray (PSRAM)
                         CpuMeter *_cpuMeter = nullptr;  // panel/tray/cpu: its icon in the tray (PSRAM)
                         Menu     *_panelMenu = nullptr; // the panel's own (devplan/gui.md §4t)
+                        NotificationServer            *_notify = nullptr;    // balloons and the centre (PSRAM)
                         Menu                          *_menu = nullptr;
                         Menu                          *_iconMenu = nullptr;    // an icon's: Open, Cut, Copy, Delete
                         Menu    *_desktopMenu = nullptr; // the desktop's: Applications, New, Paste
@@ -546,6 +556,10 @@ namespace {
                 // The windows (and their widgets) before the application they belong to.
                 setCpuMeter(false);
                 setVolumeControl(false);
+                if (_notify != nullptr) {
+                        _notify->~NotificationServer();
+                        Memory::free(_notify);
+                }
                 if (_panelMenu != nullptr) {
                         _panelMenu->~Menu();
                         Memory::free(_panelMenu);
@@ -1378,6 +1392,61 @@ namespace {
         void PanelApp::applyTray() {
                 setCpuMeter(boolSetting(bmdsConf_panelTrayCpu));
                 setVolumeControl(boolSetting(bmdsConf_panelTrayVolume));
+                if (_notify != nullptr) _notify->setCentreShown(boolSetting(bmdsConf_panelTrayNotifications));
+                return;
+        }
+
+        // The notification server (devplan/notifications.md §3.4): balloons by the tray, the centre.
+        void PanelApp::startNotifications() {
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(NotificationServer));
+                if (mem == nullptr) {
+                        say("panel: out of memory for notifications\n");
+                        return;
+                }
+                NotificationServer::Targets targets;
+                targets.open = notifyOpen;
+                targets.show = notifyShow;
+                targets.launch = notifyLaunch;
+                targets.arg = this;
+                _notify = ::new (mem) NotificationServer(_app, targets);
+                _notify->setPanel(_bottom, Height);
+                if (Error e = _notify->start(); e.isError()) {
+                        say("panel: another server shows notifications (", e.desc(), ")\n");
+                        _notify->~NotificationServer();
+                        Memory::free(_notify);
+                        _notify = nullptr;
+                }
+                return;
+        }
+
+        void PanelApp::notifyChanged(void *arg, SysConf::Id) {
+                auto *self = static_cast<PanelApp *>(arg);
+                if (self->_notify != nullptr) self->_notify->settingsChanged();
+                return;
+        }
+
+        // A notification's targets: a file by its type's application, a file in its folder, an
+        // application.
+        void PanelApp::notifyOpen(void *arg, StringView path) {
+                static_cast<PanelApp *>(arg)->_actions.open(path);
+                return;
+        }
+
+        void PanelApp::notifyShow(void *arg, StringView path) {
+                auto        *self = static_cast<PanelApp *>(arg);
+                const size_t slash = path.lastIndexOf('/');
+                if (slash == StringView::NPos || slash + 1 == path.size()) {
+                        self->_actions.open(path); // a folder itself
+                        return;
+                }
+                self->openFolder(slash == 0 ? StringView("/") : path.left(slash), path.mid(slash + 1));
+                return;
+        }
+
+        void PanelApp::notifyLaunch(void *arg, StringView id) {
+                auto *self = static_cast<PanelApp *>(arg);
+                if (!self->_actions.openWith(id, StringView()))
+                        self->say("panel: a notification's application isn't there\n");
                 return;
         }
 
@@ -1451,6 +1520,8 @@ namespace {
                                    checked(self->boolSetting(bmdsConf_panelTrayCpu)));
                 (void)menu.addItem("Show &Volume Control", ChooseVolume,
                                    checked(self->boolSetting(bmdsConf_panelTrayVolume)));
+                (void)menu.addItem("Show &Notifications", ChooseNotifications,
+                                   checked(self->boolSetting(bmdsConf_panelTrayNotifications)));
                 (void)menu.addItem("Show C&lock", ChooseClock, checked(clock));
                 (void)menu.addSeparator();
                 (void)menu.addItem("Panel at &Top", ChooseTop, checked(!self->_bottom));
@@ -1471,6 +1542,11 @@ namespace {
                         case ChooseVolume:
                                 self->saveSetting(bmdsConf_panelTrayVolume,
                                                   self->boolSetting(bmdsConf_panelTrayVolume) ? "false" : "true");
+                                break;
+                        case ChooseNotifications:
+                                self->saveSetting(bmdsConf_panelTrayNotifications,
+                                                  self->boolSetting(bmdsConf_panelTrayNotifications) ? "false"
+                                                                                                     : "true");
                                 break;
                         case ChooseClock: {
                                 char             now[160];
@@ -1551,12 +1627,15 @@ namespace {
                         say("panel: its settings take effect when it starts again\n");
                 if (_app.watchConfig("files", filesSettingsChanged, this).isError())
                         say("panel: files/... take effect when it starts again\n");
-                // The volume control and the CPU meter: icons in the tray (this one, another's, or one to
-                // come).
+                // The volume control, the CPU meter and the notification centre: icons in the tray (this
+                // one, another's, or one to come); the notifications' balloons.
                 {
                         Mutex::Locker lock(_app.lock(), WaitForever);
+                        startNotifications();
                         applyTray();
                 }
+                if (_app.watchConfig("notify", notifyChanged, this).isError())
+                        say("panel: notify/... take effect when it starts again\n");
                 if (_app.watchConfig(VolumeControl::Prefix, audioChanged, this).isError())
                         say("panel: the volume item won't follow changes made elsewhere\n");
                 // `files` opens folder windows here (devplan/filebrowser.md FB6).
@@ -1679,6 +1758,7 @@ namespace {
                 if (moved) {
                         _bottom = bottom;
                         (void)_panel->move(0, static_cast<uint16_t>(bottom ? _screen.height - Height : 0));
+                        if (_notify != nullptr) _notify->setPanel(_bottom, Height); // the balloons by it
                 }
                 // A new theme drops the old one's icons: whatever holds them is made again.
                 const StringView theme = setting(bmdsConf_panelIconTheme);

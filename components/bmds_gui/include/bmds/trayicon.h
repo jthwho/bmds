@@ -14,6 +14,7 @@
 #include <bmds/error.h>
 #include <bmds/rect.h>
 #include <bmds/icon.h>
+#include <bmds/notifier.h>
 #include <bmds/stringview.h>
 #include <bmds/trayprotocol.h>
 
@@ -51,6 +52,9 @@ class TrayIcon {
 
                 /** @brief Told that the tray came or went. */
                 using AvailabilityChanged = void (*)(void *arg, TrayIcon &icon, bool available);
+
+                /** @brief Told that its message (`showMessage()`) was clicked. */
+                using MessageClicked = void (*)(void *arg, TrayIcon &icon);
 
                 explicit TrayIcon(GuiApplication &app);
                 ~TrayIcon();
@@ -92,6 +96,21 @@ class TrayIcon {
                         _availabilityArg = arg;
                 }
 
+                /**
+                 * @brief Shows a message by the tray (a notification, `devplan/notifications.md`
+                 *        §3.5, Qt's `showMessage()`): @p title, @p text, a theme @p icon
+                 *        (empty: the application's), for @p timeoutMs (0: the setting's); the
+                 *        last message replaced.
+                 * @return `Ok`, or the notification's error.
+                 */
+                Error showMessage(StringView title, StringView text, StringView icon = StringView(),
+                                  int32_t timeoutMs = 0);
+
+                void setMessageClicked(MessageClicked fn, void *arg) {
+                        _messageClicked = fn;
+                        _messageClickedArg = arg;
+                }
+
                 /** @brief Shows it in the tray (now, or when there is one). @return `Ok`, `Full` or `NoMem`. */
                 Error show();
 
@@ -120,6 +139,8 @@ class TrayIcon {
                 static void servicesChanged(void *arg);
                 void        replyName(char (&out)[TrayProtocol::MaxReplyName + 1]) const;
                 void        told(const TrayProtocol::Event &event);
+                static void messageTold(void *arg, Notifier &notifier, uint32_t id, Notifier::Event event,
+                                        uint32_t action);
 
                 GuiApplication     &_app;
                 uint32_t            _id = 0;
@@ -138,6 +159,10 @@ class TrayIcon {
                 void               *_scrolledArg = nullptr;
                 AvailabilityChanged _availability = nullptr;
                 void               *_availabilityArg = nullptr;
+                Notifier            _notifier;
+                uint32_t            _messageId = 0; // the last message's notification
+                MessageClicked      _messageClicked = nullptr;
+                void               *_messageClickedArg = nullptr;
 };
 
 BMDS_NAMESPACE_END

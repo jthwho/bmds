@@ -118,17 +118,46 @@ screenshot), Do Not Disturb schedules, per-application rules.
 - **Sound:** normal and critical play `SystemSound::Notify` unless silent or `notify/sound` is
   off.
 - **Settings:** `notify/sound` (bool, true), `notify/timeout` (ms, 1,000 to 60,000, 6,000),
+  `notify/quiet` (bool, false: Do Not Disturb until turned off),
   `notify/balloons` (bool, true: false keeps them in the centre only), `panel/tray/notifications`
   (bool, true: the centre's icon, as the meter's).
 
+- **The centre's menu** (a right click on its icon; the user's ask after trying it, 2026-10-10):
+  - **Show Balloons**, **Play Sounds** (checked as set): `notify/balloons`, `notify/sound`;
+  - **Balloon Time** ▸ 3, 6, 10 or 20 seconds (`notify/timeout`; the one in force checked);
+  - **Do Not Disturb** ▸ For 10 Minutes, For 1 Hour, For 8 Hours, For 24 Hours, Until Turned Off;
+    Turn Off (while on);
+  - **Clear All**.
+  - Each setting saved at once, as the panel's menu's.
+- **Do Not Disturb:** while on, notifications go straight to the centre, unread, with no balloon
+  and no sound; a critical one still shows (and sounds): a full disk shouldn't wait for 8 hours.
+  The centre's icon is drawn at half alpha, its tooltip saying until when ("Do Not Disturb, 52
+  more minutes"; "Do Not Disturb").
+  - **Until Turned Off** is a setting (`notify/quiet`, bool, false), kept across restarts.
+  - **The timed ones** count on the monotonic clock in the panel, and end with it (a restart of
+    the panel or the board): the real-time clock may not be set at boot, so a deadline in real
+    time could end at once or never.
+  - **As built (2026-10-10):** seen on the board: the menu and its submenus (opening leftward by
+    the screen's edge), For 10 Minutes holding a normal notification back to the centre while a
+    critical one showed, the icon faded and its tooltip "Do Not Disturb until 6:26 AM", the menu
+    saying "Do Not Disturb (on)" with Turn Off enabled, Until Turned Off saved, Balloon Time's 10
+    seconds saved; each put back to its default after.
+
 ### 3.5 The toolkit
 
-- **`Notification`** (bmds_gui, Qt-style): set its fields, `show()`, `close()`, `setActivated(fn,
-  arg)`, told on the application's loop (a listener posting to it).
-- **`TrayIcon::showMessage(title, text, icon, timeoutMs)`** (the media player's plan, §6e step 10)
-  becomes a `Notification` with the program's name, and `setMessageClicked()` its activation.
-- **The media player:** "Now playing" when a track starts while its window is hidden (replacing
-  the last), its click raising the player, actions Previous, Pause, Next.
+- **`Notifier`** (bmds_gui; not `Notification`, which is the kernel's struct it posts): `show(n)`
+  (`replaces`: one of its own), `close(id)`, `setTold(fn, arg)`, told on the application's loop
+  (its listener queues the events and posts). A notification without an application's name gets
+  `GuiApplication::applicationName()` (new, `setApplicationName()`, Qt's display name). An
+  in-process program doesn't know its pid, so its notifications are owned by its listener
+  (`Notifications::listenerOwner()`, a negative number below -1, never a pid).
+- **`TrayIcon::showMessage(title, text, icon, timeoutMs)`** (the media player's plan, §6e step 10):
+  a notification through the icon's own `Notifier`, the last message replaced (Qt's), and
+  `setMessageClicked()` told of a click on it.
+- **The media player:** "Now playing" when a track starts while its window is hidden: the title,
+  the artist and album, its icon, low urgency, silent and transient (a track list in the centre
+  would be clutter), replacing the last; a click shows the player (which closes it), the buttons
+  are Previous, Pause (Play while paused) and Next. `mplayer` names itself "Media Player".
 
 ## 4. Screenshots
 
@@ -151,18 +180,38 @@ screenshot), Do Not Disturb schedules, per-application rules.
    prompt, a name with `_` refused, `hostname ''` back to the default with nothing stored;
    `progtest system` passes (`uname -n` and `gethostname()` agree, an older program's smaller
    struct gets what fits).
-2. **The registry:** `NotificationLog` (host-tested), `Notifications`, the `notify` command.
-3. **The calls:** `notify_open`, `notify_send`, `notify_close`, their structs, `progtest notify`.
-4. **Balloons:** the window level, the panel's server, targets, actions, sound.
-5. **The centre:** its tray icon, the list, read and unread, the settings.
-6. **The toolkit and the player:** `Notification`, `TrayIcon::showMessage()`, the player's.
+2. **The registry** (done 2026-10-10): `NotificationLog` (bmds_core, host-tested: posting, order,
+   replacing, a balloon's end, closing, transient, Clear All, a full log, texts cut at a
+   character), `Notifications` (bmds_kernel, a boot stage; host-tested with a server, a listener
+   and an events fd), `notify`. On the board: `notify`, `notify list`, `notify close`.
+3. **The calls** (done 2026-10-10): `notify_open` (an events fd, `Stream::notificationListener()`),
+   `notify_send`, `notify_close` (slots 89-91), `bmds_notification_t` (772 bytes),
+   `bmds_notify_event_t` (16, the kernel's `EventRecord`). `progtest notify` passes; with
+   `served` (the panel running) its balloon's expiry is read from the fd.
+4. **Balloons** (done 2026-10-10): the window manager's `Notification` level (between `Panel` and
+   `Popup`; the stack orders by level), `NotificationServer`, `NotificationBalloon`, targets
+   through the panel (`FolderActions::open()`, `openFolder()` with the file selected,
+   `openWith()`, a service's message), actions, the `Notify` sound. The toolkit's windows gain
+   `pointerEntered()` and `pointerLeft()` (anywhere in the window, its widgets too): a balloon's
+   time waited only over its own background before, not over its buttons.
+5. **The centre** (done 2026-10-10): its tray icon (the theme's information sign, a red dot drawn
+   on it while some are unread; its tooltip the count), the list (newest first, a red mark on the
+   unread, scrolled by the wheel, a close box each, Clear All), read once it closes (so the marks
+   show while it is open), the settings, the panel's menu's Show Notifications.
+6. **The toolkit and the player** (done 2026-10-10): `Notifier`, `TrayIcon::showMessage()`,
+   `GuiApplication::setApplicationName()`, the player's "Now playing". Seen on the board: two
+   balloons stacked (the newest by the panel, the critical one red-edged, the other's body
+   wrapped), the normal one expiring after 6 s, the critical one staying until its close box, the
+   centre listing both; the player hidden, Next from its tray menu: "Media Player · t.ogg" with
+   its three buttons; Pause paused it (the time held at 0:12), staying 12 s under the pointer; a
+   click on the body showed the player.
 7. **Screenshots:** `Screenshot::save()`, Print Screen, its notification.
 
 ## 6. ABI impact
 
 - **Calls** (appended, slots 88-91): `system_info`, `notify_open`, `notify_send`, `notify_close`,
   with `bmds_system_info_t`, `bmds_notification_t`, `bmds_notify_event_t` and their constants.
-- **Settings:** `system/hostname`, `notify/sound`, `notify/timeout`, `notify/balloons`,
+- **Settings:** `system/hostname`, `notify/sound`, `notify/timeout`, `notify/balloons`, `notify/quiet`,
   `panel/tray/notifications`.
 - **Shell:** `hostname`, `notify` (their output frozen); `version` gains a line; `HOSTNAME` and
   `BMDS_SERIAL`; the default prompt shows the host name.
@@ -171,11 +220,21 @@ screenshot), Do Not Disturb schedules, per-application rules.
 
 ## 7. Budget
 
-- The log: 64 × about 600 bytes, 38 KB of PSRAM, allocated with the first notification.
+- The log: 64 × about 800 bytes (a notification's texts are most of it), 52 KB of PSRAM,
+  allocated with the first notification.
 - A balloon: a window of 320 × about 100 pixels, while shown; the centre's list while open.
 - Print Screen: the screen's copy (3.5 MB of PSRAM at 1280 × 720) while the PNG is written.
 
-## 8. Decisions (the user, 2026-10-10)
+## 8. Revisions
+
+- **2026-10-10, steps 2-6 as built:** the toolkit's class is `Notifier` (the kernel's struct is
+  `Notification`); toolkit programs' notifications are owned by their listener (they don't know
+  their pid); the centre marks what it showed read when it closes, not when it opens; a balloon
+  waits under the pointer anywhere in it (`GuiWindow::pointerEntered()`); text and icons in the
+  centre's rows start on 4-pixel columns (the painter draws nothing elsewhere: the first rows
+  came out empty).
+
+## 9. Decisions (the user, 2026-10-10)
 
 - **An OS-level API**, as the tray, the media player its first user and Print Screen its second.
 - **Clicks:** targets the system runs, and events for programs that want them (actions).

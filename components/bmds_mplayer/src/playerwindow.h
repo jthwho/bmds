@@ -22,6 +22,7 @@
 #include <bmds/slider.h>
 #include <bmds/string.h>
 #include <bmds/tabwidget.h>
+#include <bmds/notifier.h>
 #include <bmds/trayicon.h>
 
 #include "player.h"
@@ -183,6 +184,8 @@ class PlayerWindow final : public GuiWindow {
                 static void saveChosen(void *arg, FileDialog &dialog, int result);
                 static void saveDue(void *arg);
                 static void trayActivated(void *arg, TrayIcon &icon, TrayIcon::Reason reason);
+                static void nowPlayingTold(void *arg, Notifier &notifier, uint32_t id, Notifier::Event event,
+                                           uint32_t action);
                 static void reportsDue(void *arg);
                 static void tick(void *arg);
                 static void messageDone(void *arg);
@@ -225,6 +228,7 @@ class PlayerWindow final : public GuiWindow {
                 void         changed(bool playlist); // what is kept: written soon
                 void         closeOrHide();          // Close: hidden while playing (the tray shows it again)
                 void         showTrayTip(uint64_t ms);
+                void         tellNowPlaying(const TrackText &text); // a notification, while hidden
                 void         settingsNow(PlayerSettings &out);
                 static Error writeFile(StringView path, StringView cwd, StringView text);
                 void         savePlaylistAs(StringView path);
@@ -268,6 +272,8 @@ class PlayerWindow final : public GuiWindow {
                 Menu          _helpMenu;
                 Menu          _trayMenu;
                 TrayIcon      _tray;
+                Notifier      _notifier;       // "Now playing", while hidden (devplan/notifications.md §3.5)
+                uint32_t      _nowPlaying = 0; // its notification
                 FileDialog    _openDialog;
                 FileDialog    _addDialog;
                 FileDialog    _folderDialog;

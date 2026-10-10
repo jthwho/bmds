@@ -449,6 +449,15 @@ GuiClipboard *GuiApplication::clipboard() {
         return _clipboard;
 }
 
+void GuiApplication::setApplicationName(StringView name) {
+        size_t n = name.size() < sizeof(_applicationName) - 1 ? name.size() : sizeof(_applicationName) - 1;
+        if (n < name.size())
+                while (n > 0 && (static_cast<uint8_t>(name[n]) & 0xc0u) == 0x80u) --n; // a whole character
+        std::memcpy(_applicationName, name.data(), n);
+        _applicationName[n] = '\0';
+        return;
+}
+
 // ---- Tooltips (devplan/gui.md §4s)
 
 void GuiApplication::hoverToolTip(Widget *widget, int screenX, int screenY) {

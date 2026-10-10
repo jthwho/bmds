@@ -400,7 +400,10 @@ the program's side, and freedesktop.org's StatusNotifierItem for what the protoc
 8. **The library:** `Decoder::probe()` (with the fuzzers), the scanner, the index, the view,
    the watches.
 9. **As built** (a new §11), `roadmap.md` and `audio.md` updated.
-10. **Tray messages** (`TrayIcon::showMessage()`): the balloon, after the player is done.
+10. **Tray messages** (`TrayIcon::showMessage()`): the balloon, after the player is done. Done
+    2026-10-10, brought forward as the system's notifications (`notifications.md`): a tray
+    message is a notification; the player says "Now playing" while hidden, with Previous, Pause
+    and Next.
 
 ## 10. Decided (the user, 2026-10-09)
 

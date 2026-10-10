@@ -154,6 +154,7 @@ namespace {
                 void *memory = Memory::alloc(MemSpace::Psram, sizeof(GuiApplication));
                 if (memory == nullptr) return 1;
                 a.app = ::new (memory) GuiApplication();
+                a.app->setApplicationName("Media Player"); // its notifications
                 int status = 1;
                 if (a.app->connect(0).isError()) {
                         a.say("mplayer: the window system isn't running ('win start')\n");

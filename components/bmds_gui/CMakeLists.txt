@@ -45,6 +45,7 @@ if(COMMAND idf_component_register)
                                     src/menu.cpp
                                     src/menubar.cpp
                                     src/messagebox.cpp
+                                    src/notifier.cpp
                                     src/popupedit.cpp
                                     src/scrollarea.cpp
                                     src/slider.cpp

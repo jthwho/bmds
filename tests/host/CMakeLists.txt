@@ -71,6 +71,7 @@ add_executable(bmds_host_tests
         cpumeter.cpp
         topview.cpp
         hostname.cpp
+        notifications.cpp
         synth.cpp
         pipe.cpp
         process.cpp

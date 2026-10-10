@@ -27,6 +27,7 @@ set(BMDS_CORE_SRCS
         src/fileformat.cpp
         src/iconpack.cpp
         src/mimeapps.cpp
+        src/notificationlog.cpp
         src/hostname.cpp
         src/inflate.cpp
         src/inireader.cpp

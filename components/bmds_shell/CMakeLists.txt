@@ -35,6 +35,7 @@ if(COMMAND idf_component_register)
         # never pull that object out of the archive.
         idf_component_register(SRCS ${BMDS_SHELL_PURE_SRCS}
                                     src/builtins.cpp
+                                    src/notifycommand.cpp
                                     src/shellesp.cpp
                                INCLUDE_DIRS include
                                REQUIRES bmds_core bmds_kernel bmds_console bmds_fs bmds_sysconf

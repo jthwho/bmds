@@ -346,6 +346,7 @@ class WindowStack {
                         Normal,  ///< Applications' windows.
                         Above,   ///< Applications' windows kept above the others ("always on top").
                         Panel,   ///< Above them: panels and docks.
+                        Notification, ///< Above the panel, below menus: notifications' balloons.
                         Popup,   ///< Above everything: menus.
                         Tooltip, ///< Above even menus, and the pointer passes through: tooltips.
                 };

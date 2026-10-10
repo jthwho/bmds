@@ -21,6 +21,7 @@
 #include <bmds/memory.h>
 #include <bmds/semaphore.h>
 #include <bmds/staticobject.h>
+#include <bmds/notifications.h>
 #include <bmds/stats.h>
 #include <bmds/system.h>
 
@@ -59,10 +60,9 @@ namespace {
 
         // The boot stages, in order. Lives in rodata.
         constexpr Stage Stages[] = {
-                {"memory", initMemory},
-                {"random", Random::init}, // before anything reads it
-                {"clock", Clock::init},
-                {"stats", Stats::init}, // before any component adds its counters
+                {"memory", initMemory},          {"random", Random::init}, // before anything reads it
+                {"clock", Clock::init},          {"stats", Stats::init},   // before any component adds its counters
+                {"notify", Notifications::init},                           // before a program can post one
         };
         constexpr size_t StageCount = sizeof(Stages) / sizeof(Stages[0]);
 

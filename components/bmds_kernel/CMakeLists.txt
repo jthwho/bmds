@@ -14,6 +14,7 @@ set(BMDS_KERNEL_PORTABLE_SRCS
         src/filehandle.cpp
         src/interrupt.cpp
         src/memorystream.cpp
+        src/notifications.cpp
         src/pipe.cpp
         src/random.cpp
         src/stats.cpp

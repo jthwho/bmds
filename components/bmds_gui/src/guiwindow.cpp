@@ -468,6 +468,10 @@ void GuiWindow::mouse(const WindowManager::MouseEvent &event) {
                         break;
                 }
                 case MType::Motion: {
+                        if (!_pointerInside) {
+                                _pointerInside = true;
+                                pointerEntered();
+                        }
                         if (_grab != nullptr) {
                                 pointerOver(_grab, event.x, event.y);
                                 _grab->mouseMoved(event);
@@ -490,6 +494,10 @@ void GuiWindow::mouse(const WindowManager::MouseEvent &event) {
                 }
                 case MType::Leave:
                         _app.hoverToolTip(nullptr, 0, 0);
+                        if (_pointerInside) {
+                                _pointerInside = false;
+                                pointerLeft();
+                        }
                         // Left, or a popup took the press held: no release will come.
                         if (_hover != nullptr) _hover->mouseLeft();
                         if (_grab != nullptr && _grab != _hover) _grab->mouseLeft();

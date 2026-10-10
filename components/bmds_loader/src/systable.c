@@ -105,8 +105,11 @@ int32_t bmds_k_stats_status(bmds_stats_status_t *status);
 int32_t bmds_k_task_list(bmds_task_info_t *out, uint32_t max);
 int32_t bmds_k_proc_info(int32_t pid, uint32_t flags, bmds_proc_info_t *info);
 int32_t bmds_k_system_info(bmds_system_info_t *info);
+int32_t bmds_k_notify_open(uint32_t flags);
+int32_t bmds_k_notify_send(int32_t fd, const bmds_notification_t *n);
+int32_t bmds_k_notify_close(uint32_t id);
 
-#define SLOTS 89
+#define SLOTS 92
 
 /* bmds_sys_t with its slots spelled out (same layout; checked below). */
 static const struct {
@@ -210,10 +213,13 @@ static const struct {
                 [BMDS_SYS_TASK_LIST] = (bmds_sys_fn_t)bmds_k_task_list,
                 [BMDS_SYS_PROC_INFO] = (bmds_sys_fn_t)bmds_k_proc_info,
                 [BMDS_SYS_SYSTEM_INFO] = (bmds_sys_fn_t)bmds_k_system_info,
+                [BMDS_SYS_NOTIFY_OPEN] = (bmds_sys_fn_t)bmds_k_notify_open,
+                [BMDS_SYS_NOTIFY_SEND] = (bmds_sys_fn_t)bmds_k_notify_send,
+                [BMDS_SYS_NOTIFY_CLOSE] = (bmds_sys_fn_t)bmds_k_notify_close,
         },
 };
 
-_Static_assert(SLOTS == BMDS_SYS_SYSTEM_INFO + 1, "every slot is in the table");
+_Static_assert(SLOTS == BMDS_SYS_NOTIFY_CLOSE + 1, "every slot is in the table");
 _Static_assert(sizeof(table) == 16 + SLOTS * sizeof(bmds_sys_fn_t), "table layout");
 
 const bmds_sys_t *bmds_k_sys_table(void) {

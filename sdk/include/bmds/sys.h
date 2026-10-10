@@ -160,6 +160,9 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_TASK_LIST 86u        /**< `int32_t task_list(bmds_task_info_t *out, uint32_t max)`. */
 #define BMDS_SYS_PROC_INFO 87u        /**< `int32_t proc_info(int32_t pid, uint32_t flags, bmds_proc_info_t *info)`. */
 #define BMDS_SYS_SYSTEM_INFO 88u      /**< `int32_t system_info(bmds_system_info_t *info)`. */
+#define BMDS_SYS_NOTIFY_OPEN 89u      /**< `int32_t notify_open(uint32_t flags)`: an fd of events. */
+#define BMDS_SYS_NOTIFY_SEND 90u      /**< `int32_t notify_send(int32_t fd, const bmds_notification_t *n)`: its id. */
+#define BMDS_SYS_NOTIFY_CLOSE 91u     /**< `int32_t notify_close(uint32_t id)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -869,6 +872,63 @@ typedef struct bmds_system_info_t {
                 char     version[16];   /**< BMDS's version. */
 } bmds_system_info_t;
 
+/** @brief `bmds_notification_t::urgency` (devplan/notifications.md §3.1). */
+#define BMDS_NOTIFY_LOW 0u      /**< A balloon, no sound. */
+#define BMDS_NOTIFY_NORMAL 1u   /**< A balloon and a sound. */
+#define BMDS_NOTIFY_CRITICAL 2u /**< A sound, a red edge; it stays until dismissed. */
+
+/** @brief `bmds_notification_t::flags`. */
+#define BMDS_NOTIFY_SILENT 0x1u    /**< No sound. */
+#define BMDS_NOTIFY_TRANSIENT 0x2u /**< Not kept in the centre once its balloon is gone. */
+
+/** @brief `bmds_notification_t::target`: what a click does (the system does it). */
+#define BMDS_NOTIFY_TARGET_NONE 0u
+#define BMDS_NOTIFY_TARGET_OPEN 1u    /**< `target_text`: a path, opened by its type's application. */
+#define BMDS_NOTIFY_TARGET_SHOW 2u    /**< `target_text`: a path, shown selected in its folder. */
+#define BMDS_NOTIFY_TARGET_LAUNCH 3u  /**< `target_text`: a Desktop Entry's id, started. */
+#define BMDS_NOTIFY_TARGET_SERVICE 4u /**< `target_text`: a service's name, sent `message`. */
+
+/** @brief `bmds_notification_t::timeout_ms`'s special values. */
+#define BMDS_NOTIFY_DEFAULT_TIMEOUT 0 /**< The setting's (`notify/timeout`). */
+#define BMDS_NOTIFY_NO_TIMEOUT (-1)   /**< Until dismissed. */
+
+/** @brief The most action buttons a notification has. */
+#define BMDS_NOTIFY_MAX_ACTIONS 3u
+
+/** @brief `bmds_notify_event_t::event`. */
+#define BMDS_NOTIFY_ACTIVATED 1u /**< Clicked: `action` 0 the body, 1 to 3 a button. */
+#define BMDS_NOTIFY_DISMISSED 2u /**< Closed by the user. */
+#define BMDS_NOTIFY_EXPIRED 3u   /**< Its balloon's time passed (it stays in the centre). */
+
+/**
+ * @brief A notification to post (`notify_send`, devplan/notifications.md §3). The caller sets
+ *        `size`; texts are UTF-8, cut at a character's end where they don't fit.
+ */
+typedef struct bmds_notification_t {
+                uint32_t size;             /**< Set by the caller: `sizeof(bmds_notification_t)`. */
+                uint32_t replaces;         /**< One of the caller's to update in place (0: a new one). */
+                uint32_t urgency;          /**< `BMDS_NOTIFY_LOW`, `_NORMAL`, `_CRITICAL`. */
+                uint32_t flags;            /**< `BMDS_NOTIFY_SILENT`, `_TRANSIENT`. */
+                int32_t  timeout_ms;       /**< Its balloon's, `BMDS_NOTIFY_DEFAULT_TIMEOUT` or `_NO_TIMEOUT`. */
+                uint32_t target;           /**< `BMDS_NOTIFY_TARGET_...`. */
+                uint32_t action_count;     /**< Action buttons, up to `BMDS_NOTIFY_MAX_ACTIONS`. */
+                char     app[32];          /**< The application's name (empty: the program's). */
+                char     icon[64];         /**< A theme icon's name (empty: the application's). */
+                char     title[64];        /**< The title. */
+                char     body[256];        /**< The text; may have `\n`. */
+                char     target_text[192]; /**< The target's path, Desktop Entry or service. */
+                char     message[64];      /**< `BMDS_NOTIFY_TARGET_SERVICE`'s message. */
+                char     actions[3][24];   /**< The buttons' labels. */
+} bmds_notification_t;
+
+/** @brief An event of a notification, read from its events fd (`notify_open`). */
+typedef struct bmds_notify_event_t {
+                uint32_t size;   /**< `sizeof(bmds_notify_event_t)`. */
+                uint32_t id;     /**< The notification. */
+                uint32_t event;  /**< `BMDS_NOTIFY_ACTIVATED`, `_DISMISSED`, `_EXPIRED`. */
+                uint32_t action; /**< `BMDS_NOTIFY_ACTIVATED`'s: 0 the body, 1 to 3 a button. */
+} bmds_notify_event_t;
+
 /** @brief `bmds_stat_t::type`. */
 #define BMDS_TYPE_FILE 1u      /**< A regular file. */
 #define BMDS_TYPE_DIRECTORY 2u /**< A directory (also `/`, `/dev` and mount points). */
@@ -1045,6 +1105,9 @@ typedef int32_t (*bmds_sys_stats_status_fn)(bmds_stats_status_t *status);
 typedef int32_t (*bmds_sys_task_list_fn)(bmds_task_info_t *out, uint32_t max);
 typedef int32_t (*bmds_sys_proc_info_fn)(int32_t pid, uint32_t flags, bmds_proc_info_t *info);
 typedef int32_t (*bmds_sys_system_info_fn)(bmds_system_info_t *info);
+typedef int32_t (*bmds_sys_notify_open_fn)(uint32_t flags);
+typedef int32_t (*bmds_sys_notify_send_fn)(int32_t fd, const bmds_notification_t *n);
+typedef int32_t (*bmds_sys_notify_close_fn)(uint32_t id);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -1922,6 +1985,34 @@ static inline int32_t bmds_proc_info(int32_t pid, uint32_t flags, bmds_proc_info
  */
 static inline int32_t bmds_system_info(bmds_system_info_t *info) {
         return ((bmds_sys_system_info_fn)bmds_sys->slot[BMDS_SYS_SYSTEM_INFO])(info);
+}
+
+/**
+ * @brief Opens an fd of the events of the notifications posted with it: `bmds_notify_event_t`
+ *        records, readable and pollable. Closing it stops the events; the notifications stay.
+ *        @p flags: `BMDS_O_CLOEXEC`. (Slots 89-91, appended 2026-10-10: check `bmds_sys_has()`.)
+ * @return The fd, or `-BMDS_EINVAL`, `-BMDS_ENOMEM`, `-BMDS_EMFILE`, `-BMDS_EBUSY` (too many).
+ */
+static inline int32_t bmds_notify_open(uint32_t flags) {
+        return ((bmds_sys_notify_open_fn)bmds_sys->slot[BMDS_SYS_NOTIFY_OPEN])(flags);
+}
+
+/**
+ * @brief Posts @p n (its `size` set), its events to @p fd (from `bmds_notify_open`; -1: none);
+ *        with `replaces`, updates that one of the caller's.
+ * @return Its id, or `-BMDS_EBADF`, `-BMDS_ENOTTY` (@p fd isn't an events fd), `-BMDS_EINVAL`,
+ *         `-BMDS_EPERM` (`replaces` someone else's), `-BMDS_ENOMEM`, `-BMDS_EFAULT`.
+ */
+static inline int32_t bmds_notify_send(int32_t fd, const bmds_notification_t *n) {
+        return ((bmds_sys_notify_send_fn)bmds_sys->slot[BMDS_SYS_NOTIFY_SEND])(fd, n);
+}
+
+/**
+ * @brief Closes notification @p id, one of the caller's (its balloon goes, and it leaves the centre).
+ * @return 0, or `-BMDS_ENOENT`, `-BMDS_EPERM`.
+ */
+static inline int32_t bmds_notify_close(uint32_t id) {
+        return ((bmds_sys_notify_close_fn)bmds_sys->slot[BMDS_SYS_NOTIFY_CLOSE])(id);
 }
 
 #ifdef __cplusplus

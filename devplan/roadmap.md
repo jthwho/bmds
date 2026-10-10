@@ -120,6 +120,10 @@ Plan: [`input.md`](input.md).
   the board's serial;
   notifications for every program (balloons by the tray, a centre of the last 64, targets and
   events, a sound by urgency); Print Screen saving to `~/Images/Screenshots/`.
+  Step 1 done 2026-10-10: the serial (the board's reader), `system/hostname` (`bmds-e2e222`),
+  `hostname`, the prompt, `system_info`. Steps 2-6 done 2026-10-10: the kernel's notifications,
+  `notify`, the calls (slots 89-91), balloons by the tray and the centre in the panel, the
+  toolkit's `Notifier` and `TrayIcon::showMessage()`, the media player's "Now playing".
 - [ ] Special keys and global hotkeys (`hotkeys.md`, planned 2026-10-08): media keys decoded,
   named actions and bindings in the kernel, the window manager's keys moved onto them; user
   bindings later.

@@ -210,6 +210,12 @@ class GuiWindow : public Widget {
                 /** @brief It gained or lost the keys (`isActive()`); the focus widget is redrawn already. */
                 virtual void activeChanged() {}
 
+                /** @brief The pointer came over it (anywhere in it, its widgets too). */
+                virtual void pointerEntered() {}
+
+                /** @brief The pointer left it. */
+                virtual void pointerLeft() {}
+
                 /** @brief A key no widget used. @return True if used. */
                 virtual bool keyUnused(const KeyEvent &event) {
                         (void)event;
@@ -259,6 +265,7 @@ class GuiWindow : public Widget {
                 Button              *_default = nullptr;
                 MenuBar               *_menuBar = nullptr;
                 WindowManager::Pointer _pointer = WindowManager::Pointer::Arrow; // the shape set
+                bool                   _pointerInside = false; // pointerEntered() told, pointerLeft() not yet
                 bool                 _active = false;
 };
 

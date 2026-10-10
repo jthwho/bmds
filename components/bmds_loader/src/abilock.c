@@ -105,6 +105,17 @@ _Static_assert(BMDS_SYS_STATS_PROBLEMS == 83 && BMDS_SYS_STATS_CONTROL == 84 && 
                "ABI: slots STATS_PROBLEMS, _CONTROL, _STATUS");
 _Static_assert(BMDS_SYS_TASK_LIST == 86 && BMDS_SYS_PROC_INFO == 87, "ABI: slots TASK_LIST, PROC_INFO");
 _Static_assert(BMDS_SYS_SYSTEM_INFO == 88, "ABI: slot SYSTEM_INFO");
+_Static_assert(BMDS_SYS_NOTIFY_OPEN == 89 && BMDS_SYS_NOTIFY_SEND == 90 && BMDS_SYS_NOTIFY_CLOSE == 91,
+               "ABI: slots NOTIFY_OPEN, NOTIFY_SEND, NOTIFY_CLOSE");
+_Static_assert(BMDS_NOTIFY_LOW == 0 && BMDS_NOTIFY_NORMAL == 1 && BMDS_NOTIFY_CRITICAL == 2, "ABI: notify urgency");
+_Static_assert(BMDS_NOTIFY_SILENT == 0x1 && BMDS_NOTIFY_TRANSIENT == 0x2, "ABI: notify flags");
+_Static_assert(BMDS_NOTIFY_TARGET_NONE == 0 && BMDS_NOTIFY_TARGET_OPEN == 1 && BMDS_NOTIFY_TARGET_SHOW == 2 &&
+                       BMDS_NOTIFY_TARGET_LAUNCH == 3 && BMDS_NOTIFY_TARGET_SERVICE == 4,
+               "ABI: notify targets");
+_Static_assert(BMDS_NOTIFY_DEFAULT_TIMEOUT == 0 && BMDS_NOTIFY_NO_TIMEOUT == -1 && BMDS_NOTIFY_MAX_ACTIONS == 3,
+               "ABI: notify timeouts, actions");
+_Static_assert(BMDS_NOTIFY_ACTIVATED == 1 && BMDS_NOTIFY_DISMISSED == 2 && BMDS_NOTIFY_EXPIRED == 3,
+               "ABI: notify events");
 _Static_assert(BMDS_SYSCONF_KEY_MAX == 63 && BMDS_SYSCONF_VALUE_MAX == 1024, "ABI: sysconf lengths");
 _Static_assert(BMDS_SYSCONF_TYPE_BOOL == 0 && BMDS_SYSCONF_TYPE_INT == 1 && BMDS_SYSCONF_TYPE_STRING == 2 &&
                        BMDS_SYSCONF_TYPE_COLOR == 3 && BMDS_SYSCONF_TYPE_ENUM == 4 && BMDS_SYSCONF_TYPE_PATH == 5 &&
@@ -473,6 +484,26 @@ _Static_assert(offsetof(bmds_system_info_t, hostname) == 48, "ABI: system_info.h
 _Static_assert(offsetof(bmds_system_info_t, board) == 112, "ABI: system_info.board");
 _Static_assert(offsetof(bmds_system_info_t, version) == 144, "ABI: system_info.version");
 _Static_assert(sizeof(bmds_system_info_t) == 160, "ABI: bmds_system_info_t size");
+
+_Static_assert(offsetof(bmds_notification_t, size) == 0, "ABI: notification.size");
+_Static_assert(offsetof(bmds_notification_t, replaces) == 4, "ABI: notification.replaces");
+_Static_assert(offsetof(bmds_notification_t, urgency) == 8, "ABI: notification.urgency");
+_Static_assert(offsetof(bmds_notification_t, flags) == 12, "ABI: notification.flags");
+_Static_assert(offsetof(bmds_notification_t, timeout_ms) == 16, "ABI: notification.timeout_ms");
+_Static_assert(offsetof(bmds_notification_t, target) == 20, "ABI: notification.target");
+_Static_assert(offsetof(bmds_notification_t, action_count) == 24, "ABI: notification.action_count");
+_Static_assert(offsetof(bmds_notification_t, app) == 28, "ABI: notification.app");
+_Static_assert(offsetof(bmds_notification_t, icon) == 60, "ABI: notification.icon");
+_Static_assert(offsetof(bmds_notification_t, title) == 124, "ABI: notification.title");
+_Static_assert(offsetof(bmds_notification_t, body) == 188, "ABI: notification.body");
+_Static_assert(offsetof(bmds_notification_t, target_text) == 444, "ABI: notification.target_text");
+_Static_assert(offsetof(bmds_notification_t, message) == 636, "ABI: notification.message");
+_Static_assert(offsetof(bmds_notification_t, actions) == 700, "ABI: notification.actions");
+_Static_assert(sizeof(bmds_notification_t) == 772, "ABI: bmds_notification_t size");
+_Static_assert(offsetof(bmds_notify_event_t, id) == 4 && offsetof(bmds_notify_event_t, event) == 8 &&
+                       offsetof(bmds_notify_event_t, action) == 12,
+               "ABI: notify_event fields");
+_Static_assert(sizeof(bmds_notify_event_t) == 16, "ABI: bmds_notify_event_t size");
 
 #if UINTPTR_MAX == 0xffffffffu
 _Static_assert(offsetof(bmds_thread_t, size) == 0, "ABI: thread.size");

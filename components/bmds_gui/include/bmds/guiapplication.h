@@ -183,6 +183,12 @@ class GuiApplication {
                 /** @brief Returns true if any program has a service named @p name. */
                 bool hasService(StringView name) { return _wm != nullptr && _wm->hasService(name); }
 
+                /** @brief Sets the application's name, as people see it ("Media Player"; cut at 31 bytes): its notifications'. */
+                void setApplicationName(StringView name);
+
+                /** @brief Returns the application's name ("" until set). */
+                StringView applicationName() const { return StringView(_applicationName); }
+
                 /** @brief Tray icons (`TrayIcon`) at once. */
                 static constexpr size_t MaxTrayIcons = 4;
 
@@ -355,6 +361,7 @@ class GuiApplication {
                 friend class TrayIcon;
                 TrayIcon         *_trayIcons[MaxTrayIcons] = {};
                 uint32_t          _lastTrayId = 0;
+                char              _applicationName[32] = {};
                 std::atomic<bool> _configChanged{false}; // a watch has news: runConfig() at the loop
 };
 

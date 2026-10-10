@@ -25,6 +25,7 @@ if(COMMAND idf_component_register)
                                     src/audiocalls.cpp
                                     src/loader.cpp
                                     src/midicalls.cpp
+                                    src/notifycalls.cpp
                                     src/proccommand.cpp
                                     src/statscalls.cpp
                                     src/syscalls.cpp

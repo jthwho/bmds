@@ -24,6 +24,9 @@ class FileHandle;
 class MidiFile;
 class SynthFile;
 class WaitList;
+namespace Notifications {
+        class Listener;
+} // namespace Notifications
 
 /**
  * @brief A byte stream: what a file descriptor ultimately refers to.
@@ -159,6 +162,12 @@ class Stream {
                  *        `devplan/audio.md` §22), or null (the default).
                  */
                 virtual SynthFile *synthFile() { return nullptr; }
+
+                /**
+                 * @brief Returns the notification listener behind this stream (an events
+                 *        fd, `notify_open`: `devplan/notifications.md` §3.3), or null.
+                 */
+                virtual Notifications::Listener *notificationListener() { return nullptr; }
 
                 /** @brief Writes @p text (see `write(ByteSpan, unsigned int)`). */
                 Result<size_t> write(StringView text, unsigned int timeoutMs) {

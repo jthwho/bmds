@@ -54,6 +54,8 @@
  *   progtest procs SELF   proc_info: this process, iterating, a zombie's time, time and start across exec
  *   progtest rusage SELF  getrusage, times, the CPU clocks and sysinfo; a child's time once waited for
  *   progtest system       system_info: the serial, the host name (uname's and gethostname's), the board
+ *   progtest notify [served]  notify_open/send/close: posting, replacing, closing, errors; served: a
+ *                         balloon's expiry read from the events fd (the panel running)
  */
 
 #define _GNU_SOURCE /* gettid() */
@@ -2153,6 +2155,60 @@ static int system_test(void) {
         return 0;
 }
 
+/* Notifications (devplan/notifications.md §3.3): an events fd, posting with and without it,
+   replacing one's own, closing, the errors; with SERVED, the panel's balloon expiring is read. */
+static int notify_test(int served) {
+        CHECK(bmds_sys_has(BMDS_SYS_NOTIFY_CLOSE));
+        const int fd = bmds_notify_open(BMDS_O_CLOEXEC);
+        CHECK(fd >= 0);
+        bmds_notification_t n;
+        memset(&n, 0, sizeof(n));
+        n.size = sizeof(n);
+        n.urgency = BMDS_NOTIFY_LOW;
+        n.flags = BMDS_NOTIFY_SILENT;
+        n.timeout_ms = 400;
+        snprintf(n.title, sizeof(n.title), "progtest");
+        snprintf(n.body, sizeof(n.body), "a notification from progtest notify");
+        const int32_t id = bmds_notify_send(fd, &n);
+        CHECK(id > 0);
+        /* Replacing it: the same id. */
+        n.replaces = (uint32_t)id;
+        snprintf(n.body, sizeof(n.body), "replaced");
+        CHECK(bmds_notify_send(fd, &n) == id);
+        /* Fire and forget: no fd. */
+        n.replaces = 0;
+        const int32_t other = bmds_notify_send(-1, &n);
+        CHECK(other > 0 && other != id);
+        CHECK(bmds_notify_close((uint32_t)other) == 0);
+        CHECK(bmds_notify_close((uint32_t)other) == -BMDS_ENOENT);
+        /* Errors: not an events fd, a bad urgency, too many actions, a bad fd. */
+        CHECK(bmds_notify_send(1, &n) == -BMDS_ENOTTY);
+        CHECK(bmds_notify_send(99, &n) == -BMDS_EBADF);
+        n.urgency = 9;
+        CHECK(bmds_notify_send(-1, &n) == -BMDS_EINVAL);
+        n.urgency = BMDS_NOTIFY_LOW;
+        n.action_count = 4;
+        CHECK(bmds_notify_send(-1, &n) == -BMDS_EINVAL);
+        n.action_count = 0;
+        CHECK(bmds_notify_open(0x80) == -BMDS_EINVAL);
+        CHECK(bmds_notify_send(-1, NULL) == -BMDS_EFAULT);
+        /* Nothing has happened to it yet. */
+        struct pollfd p = {.fd = fd, .events = POLLIN};
+        if (!served) CHECK(poll(&p, 1, 0) == 0);
+        if (served) {
+                /* The panel shows it for 400 ms: then it expires, and the fd says so. */
+                CHECK(poll(&p, 1, 5000) == 1 && (p.revents & POLLIN) != 0);
+                bmds_notify_event_t e;
+                CHECK(read(fd, &e, sizeof(e)) == (ssize_t)sizeof(e));
+                printf("notify: event %u for %u (action %u)\n", (unsigned)e.event, (unsigned)e.id, (unsigned)e.action);
+                CHECK(e.size == sizeof(e) && e.id == (uint32_t)id && e.event == BMDS_NOTIFY_EXPIRED);
+        }
+        CHECK(bmds_notify_close((uint32_t)id) == 0);
+        close(fd);
+        printf("notify: all passed\n");
+        return 0;
+}
+
 /* Burns 200 ms, then execs SELF proccheck START_NS: which finds its time and start kept. */
 static int proc_exec(const char *self) {
         bmds_proc_info_t p = {.size = sizeof(p)};
@@ -2204,6 +2260,7 @@ int main(int argc, char **argv) {
         if (strcmp(what, "procs") == 0) return procs(arg);
         if (strcmp(what, "rusage") == 0) return rusage_test(arg);
         if (strcmp(what, "system") == 0) return system_test();
+        if (strcmp(what, "notify") == 0) return notify_test(argc > 2 && strcmp(arg, "served") == 0);
         if (strcmp(what, "procexec") == 0) return proc_exec(arg);
         if (strcmp(what, "proccheck") == 0) return proc_check(arg);
         if (strcmp(what, "burn") == 0) {

@@ -273,12 +273,13 @@ StringView PlaylistView::toolTip() const {
 
 PlayerWindow::PlayerWindow(GuiApplication &app, const Config &config, Player &player, StringView cwd)
     : GuiWindow(app, config), _player(player), _fileMenu(app), _playbackMenu(app), _repeatMenu(app), _helpMenu(app),
-      _trayMenu(app), _tray(app), _openDialog(app, FileDialog::Mode::OpenMany, "Open"),
+      _trayMenu(app), _tray(app), _notifier(app), _openDialog(app, FileDialog::Mode::OpenMany, "Open"),
       _addDialog(app, FileDialog::Mode::OpenMany, "Add Files"),
       _folderDialog(app, FileDialog::Mode::Folder, "Add Folder"),
       _listDialog(app, FileDialog::Mode::Open, "Open Playlist"),
       _saveDialog(app, FileDialog::Mode::Save, "Save Playlist As") {
         (void)_cwd.assign(cwd);
+        _notifier.setTold(nowPlayingTold, this);
 }
 
 PlayerWindow::~PlayerWindow() {
@@ -632,6 +633,10 @@ void PlayerWindow::closeOrHide() {
 }
 
 void PlayerWindow::showPlayer() {
+        if (_nowPlaying != 0) { // the player says it now
+                (void)_notifier.close(_nowPlaying);
+                _nowPlaying = 0;
+        }
         if (!isShown()) {
                 const Rect was = lastRect();
                 if (was.width != 0 ? show(was).isError() : show().isError()) return;
@@ -1081,6 +1086,54 @@ void PlayerWindow::started(const Player::Report &r) {
         showMode();
         showPosition();
         showList(false);
+        if (first && !isShown()) tellNowPlaying(*t); // hidden: said by the tray
+        return;
+}
+
+// "Now playing" (devplan/notifications.md §3.5): the track, its artist and album; the last one
+// replaced, quiet, not kept; a click shows the player, its buttons are the player's.
+void PlayerWindow::tellNowPlaying(const TrackText &text) {
+        Notification n;
+        const auto   put = [](char *out, size_t size, StringView v) {
+                const size_t len = v.size() < size - 1 ? v.size() : size - 1;
+                std::memcpy(out, v.data(), len);
+                out[len] = '\0';
+        };
+        put(n.title, sizeof(n.title), text.title.view());
+        String body(MemSpace::Psram);
+        if (!text.artist.isEmpty()) (void)body.append(text.artist.view());
+        if (!text.album.isEmpty()) {
+                if (!body.isEmpty()) (void)body.append('\n');
+                (void)body.append(text.album.view());
+        }
+        put(n.body, sizeof(n.body), body.view());
+        put(n.icon, sizeof(n.icon), StringView("multimedia-player"));
+        n.urgency = Notification::Urgency::Low;
+        n.flags = Notification::Silent | Notification::Transient;
+        n.actionCount = 3;
+        put(n.actions[0], sizeof(n.actions[0]), StringView("Previous"));
+        put(n.actions[1], sizeof(n.actions[1]), StringView(isPaused() ? "Play" : "Pause"));
+        put(n.actions[2], sizeof(n.actions[2]), StringView("Next"));
+        n.replaces = _nowPlaying;
+        Result<uint32_t> id = _notifier.show(n);
+        if (id.isError() && n.replaces != 0) { // the last one went meanwhile: a new one
+                n.replaces = 0;
+                id = _notifier.show(n);
+        }
+        _nowPlaying = id.isOk() ? id.value() : 0;
+        return;
+}
+
+void PlayerWindow::nowPlayingTold(void *arg, Notifier &, uint32_t id, Notifier::Event event, uint32_t action) {
+        auto *self = static_cast<PlayerWindow *>(arg);
+        if (id != self->_nowPlaying || event != Notifier::Event::Activated) return;
+        switch (action) {
+                case 0: self->showPlayer(); break;
+                case 1: self->previous(); break;
+                case 2: self->playPause(); break;
+                case 3: self->next(); break;
+                default: break;
+        }
         return;
 }
 
