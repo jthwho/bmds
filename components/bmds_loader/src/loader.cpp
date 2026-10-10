@@ -39,6 +39,7 @@
 #include <bmds/stats.h>
 #include <bmds/shebang.h>
 #include <bmds/sys.h>
+#include <bmds/tasklist.h>
 #include <bmds/vfs.h>
 #include "running.h"
 
@@ -450,6 +451,7 @@ namespace {
         }
 
         void destroyRunning(Running *run) {
+                run->releaseStats(); // an exec that failed to start, say
                 run->~Running();
                 Memory::free(run);
                 return;
@@ -905,11 +907,11 @@ namespace {
         // Records that @p pid ended with @p status, and tells its parent (SIGCHLD). Its stopped
         // children, which nobody would continue now, are hung up and continued (Linux's rule for
         // orphaned process groups, per process).
-        void recordEnd(int32_t pid, int32_t status) {
+        void recordEnd(int32_t pid, int32_t status, uint64_t cpuUs = 0) {
                 int32_t       stopped[ProcessTable::Capacity];
                 const size_t  count = processes->stoppedChildren(pid, stopped, ProcessTable::Capacity);
                 const int32_t parent = processes->parentOf(pid);
-                processes->exited(pid, status);
+                processes->exited(pid, status, cpuUs);
                 for (size_t i = 0; i < count && i < ProcessTable::Capacity; ++i) {
                         signalProcess(stopped[i], BMDS_SIGHUP);
                         signalProcess(stopped[i], BMDS_SIGCONT);
@@ -1124,6 +1126,12 @@ int32_t ProgramThread::exec(const char *path, char *const *argv, char *const *en
                 s.detach(*signals);
         }
         Running *replacement = createRunning(loaded, target, targetPid);
+        if (replacement != nullptr && depth == 0) {
+                // The process goes on: its time so far and its watch with it (a vfork child's time
+                // was its parent's).
+                replacement->cpuBaseUs = run->cpuUs();
+                replacement->watchingStats.store(run->watchingStats.exchange(false));
+        }
         if (replacement != nullptr) {
                 processes->setRuntime(targetPid, replacement);
                 err = startRunning(*replacement, p, loaded.stackBytes);
@@ -1460,6 +1468,7 @@ Error Running::attach(Member &member) {
 
 void Running::detach(Member &member) {
         Mutex::Locker locker(threadsLock, WaitForever);
+        endedCpuUs += TaskList::cpuUs(member.task); // the thread itself, ending
         for (Member **m = &threads; *m != nullptr; m = &(*m)->next) {
                 if (*m != &member) continue;
                 *m = member.next;
@@ -1489,6 +1498,7 @@ void Running::threadEnded(ProgramThread &gone, int32_t status) {
                 Mutex::Locker locker(threadsLock, WaitForever);
                 if (gone.ended) return;
                 gone.ended = true;
+                if (gone.task.isRunning()) endedCpuUs += TaskList::cpuUs(gone.task.handle());
                 // Gone from program code: a joiner may free its memory now. The program's memory is
                 // there while this thread is still counted.
                 if (gone.clear != nullptr) {
@@ -1511,12 +1521,34 @@ void Running::threadEnded(ProgramThread &gone, int32_t status) {
         return;
 }
 
+uint64_t Running::cpuUs() {
+        Mutex::Locker locker(threadsLock, WaitForever);
+        return cpuUsLocked();
+}
+
+uint64_t Running::cpuUsLocked() {
+        uint64_t total = cpuBaseUs + endedCpuUs;
+        auto     program = [&](const ProgramThread &t) {
+                if (!t.ended && t.task.isRunning()) total += TaskList::cpuUs(t.task.handle());
+        };
+        program(main);
+        for (const ProgramThread *t = others; t != nullptr; t = t->next) program(*t);
+        for (const Member *m = threads; m != nullptr; m = m->next) total += TaskList::cpuUs(m->task);
+        return total;
+}
+
+void Running::releaseStats() {
+        if (watchingStats.exchange(false)) Stats::unwatch();
+        return;
+}
+
 void Running::end(int32_t status) {
         endThreads();
+        releaseStats();
         if (process != nullptr) {
                 leaveTerminal(*process, pid);
                 process->release();
-                recordEnd(pid, status);
+                recordEnd(pid, status, cpuUs());
                 Process::destroy(process);
                 process = nullptr;
         }
@@ -1649,40 +1681,89 @@ Error Loader::init() {
         return err;
 }
 
+namespace {
+
+        // Under the table's lock a running entry's Running and Process are alive: both are freed
+        // only after the entry ends (Running::end()).
+        void describeProcess(const ProcessTable::View &v, Loader::ProcessInfo &p) {
+                using State = Loader::ProcessInfo::State;
+                p = Loader::ProcessInfo{};
+                p.pid = v.pid;
+                p.parent = v.parent;
+                p.group = v.group;
+                p.session = v.session;
+                p.status = v.status;
+                p.startedUs = v.startedUs;
+                p.cpuUs = v.cpuUs;
+                p.state = v.ended ? State::Zombie : v.stopped ? State::Stopped : State::Running;
+                auto *run = static_cast<Running *>(v.runtime);
+                if (run == nullptr) return;
+                std::memcpy(p.command, run->command, sizeof(p.command));
+                const Process *process = run->processOf(v.pid);
+                p.memory = process != nullptr ? process->allocatedBytes() : 0;
+                if (v.pid != run->pid) {
+                        p.state = State::Vfork; // its time is its parent's: it runs on the parent's task
+                        return;
+                }
+                Mutex::Locker locker(run->threadsLock, WaitForever);
+                const int     tasks = run->live + run->threadCount;
+                p.threads = static_cast<uint8_t>(tasks < 255 ? tasks : 255);
+                p.cpuUs = run->cpuUsLocked();
+                if (run->ending) p.state = State::Ending;
+                return;
+        }
+
+} // namespace
+
 size_t Loader::listProcesses(Span<ProcessInfo> out) {
         size_t n = 0;
         if (!processes.isCreated()) return 0;
-        // Under the table's lock a running entry's Running and Process are alive: both are
-        // freed only after the entry ends (Running::end()).
         processes->forEach([&](const ProcessTable::View &v) {
-                if (n < out.size()) {
-                        ProcessInfo &p = out[n];
-                        p = ProcessInfo{};
-                        p.pid = v.pid;
-                        p.parent = v.parent;
-                        p.group = v.group;
-                        p.session = v.session;
-                        p.status = v.status;
-                        p.state = v.ended     ? ProcessInfo::State::Zombie
-                                  : v.stopped ? ProcessInfo::State::Stopped
-                                              : ProcessInfo::State::Running;
-                        if (auto *run = static_cast<Running *>(v.runtime); run != nullptr) {
-                                std::memcpy(p.command, run->command, sizeof(p.command));
-                                const Process *process = run->processOf(v.pid);
-                                p.memory = process != nullptr ? process->allocatedBytes() : 0;
-                                if (v.pid != run->pid) {
-                                        p.state = ProcessInfo::State::Vfork;
-                                } else {
-                                        Mutex::Locker locker(run->threadsLock, WaitForever);
-                                        const int     tasks = run->live + run->threadCount;
-                                        p.threads = static_cast<uint8_t>(tasks < 255 ? tasks : 255);
-                                        if (run->ending) p.state = ProcessInfo::State::Ending;
-                                }
-                        }
-                }
+                if (n < out.size()) describeProcess(v, out[n]);
                 ++n;
         });
         return n;
+}
+
+Error Loader::processInfo(int32_t pid, bool next, ProcessInfo &out) {
+        if (!processes.isCreated()) return Error::NotExist;
+        bool found = false;
+        processes->forEach([&](const ProcessTable::View &v) { // in pid order
+                if (found || (next ? v.pid <= pid : v.pid != pid)) return;
+                describeProcess(v, out);
+                found = true;
+        });
+        return found ? Error::Ok : Error::NotExist;
+}
+
+void Loader::findTaskOwners(Span<TaskOwnership> tasks) {
+        for (TaskOwnership &t : tasks) {
+                t.pid = 0;
+                t.tid = 0;
+                t.main = false;
+        }
+        if (!processes.isCreated()) return;
+        auto mark = [&](void *task, int32_t pid, int32_t tid, bool main) {
+                for (TaskOwnership &t : tasks) {
+                        if (t.task != task) continue;
+                        t.pid = pid;
+                        t.tid = tid;
+                        t.main = main;
+                }
+        };
+        processes->forEach([&](const ProcessTable::View &v) {
+                auto *run = static_cast<Running *>(v.runtime);
+                if (run == nullptr || v.pid != run->pid) return;
+                Mutex::Locker locker(run->threadsLock, WaitForever);
+                auto          program = [&](const ProgramThread &t) {
+                        if (!t.ended && t.task.isRunning()) mark(t.task.handle(), v.pid, t.tid, &t == &run->main);
+                };
+                program(run->main);
+                for (const ProgramThread *t = run->others; t != nullptr; t = t->next) program(*t);
+                for (const TaskOwner::Member *m = run->threads; m != nullptr; m = m->next)
+                        mark(m->task, v.pid, 0, false);
+        });
+        return;
 }
 
 namespace {

@@ -16,6 +16,7 @@
 #include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/semaphore.h>
+#include <bmds/tasklist.h>
 #include <bmds/taskowner.h>
 #include <bmds/thread.h>
 
@@ -34,6 +35,7 @@ namespace {
                         void             *arg = nullptr;
                         TaskOwner        *owner = nullptr; // its process (the starter's), or null
                         TaskOwner::Member member;
+                        TaskList::Node    listed; // in the task list while it exists
                         Semaphore         done{1, 0};
                         std::atomic<bool> detached{false}; // freed by the timer task when it ends
         };
@@ -43,6 +45,7 @@ namespace {
         void reap(void *p, uint32_t) {
                 Record *rec = static_cast<Record *>(p);
                 while (eTaskGetState(rec->handle) != eSuspended) vTaskDelay(1); // parking, on the other core
+                TaskList::remove(rec->listed);
                 vTaskDelete(rec->handle);
                 Memory::free(rec->stack);
                 rec->~Record();
@@ -90,7 +93,7 @@ Error Thread::start(const Config &config, Entry entry, void *arg) {
         // In the starter's process, if it has one (devplan/processes.md §3.1). A static task's
         // handle is its TCB, known before it exists.
         TaskOwner *const starter = TaskOwner::current();
-        rec->owner = starter != nullptr ? starter->threadOwner() : nullptr;
+        rec->owner = starter != nullptr && !config.kernel ? starter->threadOwner() : nullptr;
         rec->member.task = &rec->tcb;
         if (rec->owner != nullptr) {
                 const Error err = rec->owner->attach(rec->member);
@@ -102,9 +105,11 @@ Error Thread::start(const Config &config, Entry entry, void *arg) {
                 }
         }
         _impl = rec;
+        TaskList::add(rec->listed, &rec->tcb);
         // ESP-IDF stack depth is in bytes (StackType_t is uint8_t).
         rec->handle = xTaskCreateStaticPinnedToCore(trampoline, config.name, config.stackBytes / sizeof(StackType_t),
                                                     rec, config.priority, stack, &rec->tcb, tskNO_AFFINITY);
+        TaskList::setLive(rec->listed);
         bmdsDebug("Thread(%p '%s'): started, %u-byte stack in %s", this, config.name,
                   static_cast<unsigned>(config.stackBytes), memSpaceName(config.stackSpace));
         return Error::Ok;
@@ -130,6 +135,7 @@ void Thread::join() {
         (void)rec->done.acquire(WaitForever);
         // Usually already parked; on the other core it may take a moment.
         while (eTaskGetState(rec->handle) != eSuspended) vTaskDelay(1);
+        TaskList::remove(rec->listed);
         vTaskDelete(rec->handle);
         Memory::free(rec->stack);
         rec->~Record();

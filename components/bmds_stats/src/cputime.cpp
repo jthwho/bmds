@@ -18,6 +18,7 @@
 #include <bmds/cputime.h>
 #include <bmds/log.h>
 #include <bmds/sysconf.h>
+#include <bmds/tasklist.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -90,11 +91,14 @@ BMDS_NAMESPACE_END
 #if configGENERATE_RUN_TIME_STATS
 // FreeRTOS's run-time clock (portGET_RUN_TIME_COUNTER_VALUE), read at every context switch: the
 // ESP timer while counting, else 0, so no task is charged (CMakeLists.txt wraps the port's). It is
-// also read by a task asking for every task's state; either way the core's idle task isn't
-// running then, so its stretch is over.
+// also read by a task asking for every task's state with the total (nothing in BMDS does);
+// either way the core's idle task isn't running then, so its stretch is over.
 extern "C" IRAM_ATTR configRUN_TIME_COUNTER_TYPE __wrap_xPortGetRunTimeCounterValue(void) {
         if (!bmds::counting) return 0;
-        bmds::idleSince[esp_cpu_get_core_id()] = 0;
-        return configRUN_TIME_COUNTER_TYPE(esp_timer_get_time());
+        const int     core = esp_cpu_get_core_id();
+        const int64_t now = esp_timer_get_time();
+        bmds::idleSince[core] = 0;
+        bmds::TaskList::switchedInUs[core] = now; // where the task switched in now starts counting
+        return configRUN_TIME_COUNTER_TYPE(now);
 }
 #endif

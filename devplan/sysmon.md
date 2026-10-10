@@ -225,8 +225,9 @@ host-tested.
   problem), `rule=NAME`, `warn=N`, `crit=N` (`none`: unused) or `hold=S`. The last matching
   entry wins. Entries not understood are skipped and logged ("sysmon/limits: 1 entry not
   understood").
-- **Stacks** will be judged with the tasks (step 3, `task_list`): under 512 bytes free warns,
-  under 256 is critical.
+- **Stacks** are judged by whoever lists the tasks (§3.6: the window, `top`): under 512 bytes
+  free warns, under 256 is critical. Not by the sampler, since reading every stack's high-water
+  mark means scanning it.
 - **The problem log:** episodes, not events. When a counter goes out of normal an episode opens
   (when its problem began, the counter, its health, the value); it counts the further increases
   (an event rule) or the samples out of normal (a level rule), takes the worst health, and closes
@@ -248,7 +249,7 @@ host-tested.
 - **Runs from the first watcher to the last:** a thread (`stats`, priority 3, a 4 KB stack in
   PSRAM) waits `sysmon/interval` (1 s by default, 100 ms to 60 s) on a semaphore, reads every
   group, runs the rules and keeps history; the last `unwatch()` wakes it to end. Programs will
-  watch with `stats_watch` (§3.6); `stats -w` does from the shell.
+  watch with `stats_control` (§3.6); `stats -w` does from the shell.
 - **History:** the last 120 samples of each counter flagged `KeepHistory`: a `Total`'s increase
   each interval, else its value, 32 bits each, kept per group (about 30 such counters now:
   under 15 KB), freed when the last watcher goes.
@@ -291,6 +292,45 @@ host-tested.
 - **Opened from** the launcher, the tray meter, and later a hotkey (`hotkeys.md`:
   Ctrl+Shift+Esc). A second start raises the window (a `sysmon` service, as `mplayer` has).
 
+#### Step 4 as built (2026-10-10)
+
+- **`components/bmds_sysmon`,** `/bin/sysmon`, an ordinary GUI program on the public toolkit and
+  the kernel's public classes, as `mplayer` is (built in only to have it at hand):
+  - **`Source`:** every read the window makes, one function per §3.6 call (counters listed and
+    read, history, problems, watching, seen, clear, status, tasks, a process, a signal). The
+    built-in's `KernelSource` answers from `Stats`, `TaskList` and `Loader`; a program built from
+    the SDK would answer from the calls, nothing else changing.
+  - **`Monitor`** (pure, host-tested): the counters' catalogue (listed again when the generation
+    changes), each tick's values and health in one `read`, rates from two reads, lookups by
+    name, the worst health under a name pattern (a tab's), and the values' text with their units
+    (`1.25 MB`, `3.4 ms`, `12.5 %`, a state's label).
+  - **`SysmonWindow`:** the tabs, refreshed by a 1-second timer while the window is shown and not
+    minimized; only the current tab's widgets are filled, but every tab's title is marked (`Audio
+    !`) from the one read. Graphs are set from the registry's history each tick (so they follow
+    `sysmon/interval`), a `Total`'s increases turned into a rate a second.
+- **Tabs as built:**
+  - **Overview:** CPU 0 and CPU 1 graphs (busy %, the levels drawn), memory per space as bars, the
+    headline line (audio load and late periods, frames a second, the compositor's slowest round,
+    storage throughput), the Problems list (health, state, counter, began, lasted, count, value)
+    and Clear. Shown, the problems up to now are marked seen.
+  - **CPU:** the two graphs; the tasks (name, process, core, priority, state, CPU %, CPU time,
+    stack never used), sortable, a stack under 512 bytes amber, under 256 red.
+  - **Processes:** pid, command, state, CPU %, CPU time, memory, threads, parent; End Process
+    (`SIGTERM`, then `SIGKILL` if it is still there 2 s later).
+  - **Memory:** per space total, used, free, largest, low-water; internal and PSRAM graphs; the
+    caches.
+  - **Audio, Display, I/O:** their graphs (mixing load and fill; frames a second and the round
+    time; read and write throughput) over the counters of their groups (`audio.*`, `synth.*`,
+    `midi.*`; `display*`, `wm*`; `storage.*`, `usb*`, `input`, `console.*`): counter, value,
+    rate, help.
+  - **Counters:** every counter: name, value, rate, unit, rule, warning, critical, health.
+- **Toolkit additions** (`bmds_gui`, public): `Graph` (series of samples as 1-pixel columns, runs
+  of equal height merged into one fill; the levels as lines; a caption; a border in the health's
+  colour) with its pure `GraphLayout`; `ItemModel::emphasis()`, a row drawn amber or red by
+  `DetailsView`; `WindowManager::isMinimized()`.
+- **Opened from** the launcher (`sysmon.desktop`, icon `utilities-system-monitor`); a second
+  `sysmon` raises the first (the service `sysmon`).
+
 #### The panel's tray meter
 
 - **A `TrayIcon` in the panel** (category System), as the volume control is: a 16 × 16 graph of
@@ -330,23 +370,59 @@ host-tested.
 
 ### 3.6 Programs: system calls (appended)
 
-- **`stats_list(uint32_t index, bmds_stat_info_t *)`:** the counter at `index`: its id, name,
-  unit, kind, flags, rule and levels as in force, state labels, and the registry's generation.
-- **`stats_read(const uint32_t *ids, uint32_t count, int64_t *values, int64_t *time_ns)`:** the
-  values of several counters at one moment.
-- **`stats_watch(int32_t on)`:** the calling process watches (runs the sampler) or stops.
+Slots 80-87 (step 3); check `bmds_sys_has(BMDS_SYS_STATS_LIST)`. Every struct starts with
+`uint32_t size`; an array of them takes its stride from the first entry's `size`, as `io_poll`'s
+does. The kernel's enums are the ABI's numbers (`Stat::Unit`, `Kind`, `Rule`, `Health`), pinned by
+`static_assert`s.
+
+- **`stats_list(uint32_t index, bmds_counter_t *)`:** the counter at `index` (registration
+  order): its id, the registry's generation, name, unit, kind, flags, rule, the rule's health,
+  hold (the event default filled in), warning and critical levels as in force, state labels and
+  help. No value: it reads nothing, so listing every counter costs no group a read. A reader
+  lists again when the generation changes. `-BMDS_ENOENT` past the last.
+- **`stats_read(const uint32_t *ids, uint32_t count, int64_t *values, uint8_t *health,
+  int64_t *time_ns)`:** several counters at one moment (a group read once for its run of ids),
+  `BMDS_COUNTER_UNAVAILABLE` for one gone; `health` (optional) each one's at the last sample, or
+  `BMDS_HEALTH_UNJUDGED` while nobody watches. Rates are the reader's: two reads and their times.
 - **`stats_history(uint32_t id, int64_t *values, uint32_t max, int64_t *newest_ns)`:** a
-  counter's samples, the newest last.
-- **`stats_problems(uint64_t after, bmds_stat_problem_t *out, uint32_t max)`:** the episodes
-  numbered after `after`, and the open ones' updates.
-- **`task_list(uint32_t index, bmds_task_info_t *)`:** a task's name, pid, tid, state, priority,
-  core, stack free, CPU time.
-- **`proc_stats(int32_t pid, bmds_proc_stats_t *)`:** a process's CPU time, start time, memory,
-  threads and state; iterated by pid (`-1` from the start, as `sysconf_next` iterates).
-- **Every struct starts with `uint32_t size`**, as the ABI requires.
-- **Linux's view through the SDK:** `getrusage()` and `times()` from the process's own time;
-  `sysinfo()` from memory and uptime (`linux.c` makes some of these up today). A `/proc` is its
-  own design, if ever.
+  counter's samples, the oldest first (a `Total`'s increase each interval, else its value, kept
+  as 32 bits), and when the newest was taken.
+- **`stats_problems(uint64_t after, bmds_problem_t *out, uint32_t max)`:** the episodes
+  changed after change `after`, in the order of their changes (a reader passes the last one's
+  `changed` next time, so it sees new episodes and the open ones' updates).
+- **`stats_control(uint32_t op, uint64_t value)`:**
+  - `BMDS_STATS_WATCH` (1 or 0): the calling process watches (the sampler runs) or stops; once
+    per process, carried across `exec`, dropped when it ends.
+  - `BMDS_STATS_SEEN`: the problems up to change `value` were shown (the tray stops alarming).
+  - `BMDS_STATS_CLEAR`: forgets the closed problems.
+- **`stats_status(bmds_stats_status_t *)`:** the generation, counter count, watchers, interval,
+  whether CPU time is counted and whether the caller watches, the cores, the newest problem
+  change, the unseen problems' worst health (the tray's colour), and the last sample's time.
+- **`task_list(bmds_task_info_t *out, uint32_t max)`:** every task BMDS started (its `Task`s and
+  `Thread`s, which register themselves) and the system's own (the idle tasks, the timer service,
+  `ipc0`/`ipc1`, `esp_timer` if present): name, pid and tid (0: the kernel's), state, priority
+  and base priority, core, stack never used, CPU time, FreeRTOS's task number. Returns how many
+  there are (more than `max`: the rest left out).
+  - **Not `uxTaskGetSystemState()`:** on this SMP port it holds the kernel's spinlock, with
+    interrupts masked, while it scans every task's stack: measured 2.7-3.2 ms on the board
+    (2026-10-09; the shell's 64 KB stack in PSRAM is most of it), which a once-a-second window
+    must not cost the audio engine. The task list's own lock is a mutex; each task's state comes
+    from `vTaskGetInfo()` without the stack scan (a short critical section), and the stack is
+    scanned afterwards with interrupts on, while the list's lock keeps the task from being
+    deleted.
+- **`proc_info(int32_t pid, uint32_t flags, bmds_proc_info_t *)`:** process `pid`, or with
+  `BMDS_PROC_NEXT` the first after it (0: from the start): pid, parent, group, session, state,
+  threads, memory, CPU time, start time, a zombie's status, the command line. Returns its pid,
+  or `-BMDS_ESRCH`.
+  - **A process's CPU time:** its tasks' counters summed, plus those of its ended threads (taken
+    as each ends), plus the program's before an `exec`. A vfork child's time is its parent's
+    (it runs on the parent's task). A zombie keeps the time it had when it ended.
+- **Stacks are judged by the reader,** not the sampler (§3.3): scanning every stack each second
+  inside the registry's lock is the cost `task_list` avoids. `bmds/sys.h` gives the levels:
+  under `BMDS_TASK_STACK_WARN` (512) free warns, under `BMDS_TASK_STACK_CRIT` (256) is critical.
+- **Linux's view through the SDK** (step 6): `getrusage()` and `times()` from the process's own
+  time; `sysinfo()` from memory and uptime (`linux.c` makes some of these up today). A `/proc` is
+  its own design, if ever.
 
 ## 4. Phasing (the window early: the user, 2026-10-09)
 
@@ -359,15 +435,23 @@ host-tested.
    - the kernel's registry, sampler and problem log;
    - every subsystem's counters registered (§6), and the new ones (block devices, input, ISR
      time, the console).
-3. **The system calls** (§3.6), with a `progtest` mode for each.
-4. **The window:** the `Graph` widget, then `sysmon` with every tab.
+3. **The system calls** (done 2026-10-10, §3.6): `progtest stats`, `tasks` and `procs` pass on
+   the board, as do the loader's other suites (spawn, threads, signals, poll, scripts).
+4. **The window** (done 2026-10-10, §3.5's step 4): the `Graph` widget, then `sysmon` with every
+   tab. Seen on the board: `yes` on core 1 turns its graph's border red and marks CPU, Overview
+   and Counters "(!!)", its problem red in the list; End Process ends it (a zombie keeping its
+   1:08 of CPU time); the Overview shown marks the problems seen; closing the window ends its
+   watch; a second `sysmon` raises the first.
 5. **The tray meter** with its problem colours; `panel/items` gains `cpu`.
-6. **The shell:** `top`, `tasks`' CPU column; `getrusage()`, `times()` and `sysinfo()`.
+6. **The shell:** `top`, `tasks`' CPU column; `getrusage()`, `times()` and `sysinfo()`. `tasks`
+   lists from the kernel's task list (the user, 2026-10-10), not `uxTaskGetSystemState()`, its
+   format unchanged.
 
 ## 5. ABI impact
 
-- **New system calls** (appended): `stats_list`, `stats_read`, `stats_watch`, `stats_history`,
-  `stats_problems`, `task_list`, `proc_stats`, with their structs.
+- **New system calls** (appended, slots 80-87): `stats_list`, `stats_read`, `stats_history`,
+  `stats_problems`, `stats_control`, `stats_status`, `task_list`, `proc_info`, with their structs
+  and constants.
 - **Counter names, units, kinds and state labels** are an interface once shipped.
 - **New shell commands:** `top`, `stats` (their batch output frozen); `tasks` gains a column.
 - **Settings:** `sysmon/enable` (bool, per boot, default on), `sysmon/interval` (ms, 100 to
@@ -422,6 +506,27 @@ counter's help line is in its description (`stats rules`).
   - **The window early:** after the registry and the calls, before `top`.
 
 ## 8. Revisions
+
+- **2026-10-10, after step 4 (the user's look):** a fill batch with two rectangles ending in one
+  4-pixel group lost the first's pixels there (both read the group before either wrote it):
+  `Surface::fillEdges()` now sends the batch first, which also fixes neighbouring fills elsewhere;
+  a graph's columns share its whole width (3 or 4 pixels each); a counter's first sample after a
+  pause starts its history at the next one (it covered the whole pause, a spike); a details
+  view's header text stops short of its button's edge.
+- **2026-10-10, step 4 as built:** the window reads through a `Source` (the kernel's classes
+  for the built-in), so it could be built from the SDK unchanged; tab titles marked `(!)` and
+  `(!!)`; the problems' values are the counter's own (a total's, for a rate rule); a process's
+  memory is what its program allocated, so built-ins show 0 B.
+- **2026-10-10, step 3 as built:** a running task's counter lacks its current stretch (FreeRTOS
+  adds it at the next switch), so the run-time clock's reader records each core's switch time and
+  the task list adds the stretch; the sampler thread is the kernel's even when a process's task
+  starts it (`Thread::Config::kernel`), since a watching program (or the shell's `stats -w`) took
+  it into its own process and waited for it at exit.
+- **2026-10-09, step 3:** the calls as designed for building (§3.6): `stats_control` (watch,
+  seen, clear) and `stats_status` instead of `stats_watch` alone; `stats_list` without a value
+  and `stats_read` with each counter's health; `proc_info` (by pid, or the next) instead of
+  `proc_stats`; `task_list` fills an array from BMDS's own task list, since FreeRTOS's listing
+  masks interrupts for about 3 ms; stacks judged by the reader, not the sampler.
 
 - **2026-10-09, step 2:** the counters' names as built (§6): numbered groups (`display0`, `wm0`,
   `usb0`), the audio clock's error in ppb (`clock_ppb`) for its precision, the device's stream

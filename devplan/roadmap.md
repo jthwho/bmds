@@ -125,6 +125,10 @@ Plan: [`input.md`](input.md).
   (about 0.9 µs a context switch, no audio cost), `sysmon/enable` on by default. Step 2 done
   2026-10-09: the registry (`Stats`), rules, overrides and problem log; every subsystem's counters
   (audio, synths, MIDI, display, compositor, storage, caches, USB, input, console); `stats`.
+  Step 3 done 2026-10-10: the calls (slots 80-87: counters, history, problems, watching, tasks,
+  processes' CPU time), with `progtest stats|tasks|procs`.
+  Step 4 done 2026-10-10: the toolkit's `Graph`, and `/bin/sysmon` (Overview, CPU, Processes,
+  Memory, Audio, Display, I/O, Counters; problems in amber and red, tabs marked, End Process).
 
 ## Phase 6 — Graphics
 

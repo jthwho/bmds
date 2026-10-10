@@ -151,6 +151,14 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_MIDI_CONTROL 77u /**< `int32_t midi_control(int32_t fd, uint32_t op, int32_t value)`. */
 #define BMDS_SYS_AUDIO_SYNTH 78u  /**< `int32_t audio_synth(const bmds_synth_config_t *config)`: a new fd. */
 #define BMDS_SYS_AUDIO_SYNTH_INFO 79u /**< `int32_t audio_synth_info(int32_t fd, bmds_synth_info_t *info)`. */
+#define BMDS_SYS_STATS_LIST 80u       /**< `int32_t stats_list(uint32_t index, bmds_counter_t *info)`. */
+#define BMDS_SYS_STATS_READ 81u       /**< `int32_t stats_read(ids, count, values, health, time_ns)`. */
+#define BMDS_SYS_STATS_HISTORY 82u    /**< `int32_t stats_history(id, values, max, newest_ns)`. */
+#define BMDS_SYS_STATS_PROBLEMS 83u   /**< `int32_t stats_problems(uint64_t after, bmds_problem_t *out, max)`. */
+#define BMDS_SYS_STATS_CONTROL 84u    /**< `int32_t stats_control(uint32_t op, uint64_t value)`. */
+#define BMDS_SYS_STATS_STATUS 85u     /**< `int32_t stats_status(bmds_stats_status_t *status)`. */
+#define BMDS_SYS_TASK_LIST 86u        /**< `int32_t task_list(bmds_task_info_t *out, uint32_t max)`. */
+#define BMDS_SYS_PROC_INFO 87u        /**< `int32_t proc_info(int32_t pid, uint32_t flags, bmds_proc_info_t *info)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -669,6 +677,179 @@ typedef struct bmds_synth_info_t {
                 char     font[128];        /**< The font's path, NUL-terminated (cut at a character's end). */
 } bmds_synth_info_t;
 
+/* --- The system's counters, tasks and processes (devplan/sysmon.md §3.6) --- */
+
+/** @brief A counter's value not measured now (CPU time off this boot, a device gone). */
+#define BMDS_COUNTER_UNAVAILABLE INT64_MIN
+
+/** @brief The longest counter name, without its NUL (`audio.dsp0.client_throttled`). */
+#define BMDS_COUNTER_NAME_MAX 47u
+
+/** @brief `bmds_counter_t::unit`. */
+#define BMDS_UNIT_COUNT 0u
+#define BMDS_UNIT_BYTES 1u
+#define BMDS_UNIT_MICROS 2u   /**< µs. */
+#define BMDS_UNIT_PERMILLE 3u /**< 1/1000. */
+#define BMDS_UNIT_HZ 4u
+#define BMDS_UNIT_MILLIHZ 5u
+#define BMDS_UNIT_PPM 6u
+#define BMDS_UNIT_FRAMES 7u
+#define BMDS_UNIT_CYCLES 8u
+#define BMDS_UNIT_DECIBELS 9u
+#define BMDS_UNIT_NANOS 10u
+#define BMDS_UNIT_PPB 11u
+
+/** @brief `bmds_counter_t::kind`. */
+#define BMDS_COUNTER_TOTAL 0u /**< Running, only grows (a restart may reset it): a total and a rate. */
+#define BMDS_COUNTER_LEVEL 1u /**< A value now. */
+#define BMDS_COUNTER_PEAK 2u  /**< A running largest (a restart may reset it). */
+#define BMDS_COUNTER_STATE 3u /**< A number with labels (`bmds_counter_t::labels`). */
+#define BMDS_COUNTER_INFO 4u  /**< A fact that seldom changes (a rate, a size). */
+
+/** @brief `bmds_counter_t::flags`. */
+#define BMDS_COUNTER_HISTORY 0x1u  /**< Its samples are kept while anyone watches (`stats_history`). */
+#define BMDS_COUNTER_ADJUSTED 0x2u /**< Its levels are set from what its component knows (a period, a size). */
+
+/** @brief `bmds_counter_t::rule`: what is abnormal. */
+#define BMDS_RULE_NONE 0u  /**< Never judged. */
+#define BMDS_RULE_ZERO 1u  /**< Any increase is a problem (`health`), for `hold` seconds after the last. */
+#define BMDS_RULE_ABOVE 2u /**< Above `warn` or `crit` for `hold` s (a total's rate a second; a peak rising past). */
+#define BMDS_RULE_BELOW 3u /**< Below `warn` or `crit` for `hold` s. */
+#define BMDS_RULE_DRIFT 4u /**< Its magnitude above `warn` or `crit` for `hold` s. */
+#define BMDS_RULE_STATE 5u /**< In a state whose bit is set in `warn` or `crit`. */
+
+/** @brief A counter's or problem's health. */
+#define BMDS_HEALTH_NORMAL 0u
+#define BMDS_HEALTH_WARNING 1u    /**< Amber. */
+#define BMDS_HEALTH_CRITICAL 2u   /**< Red. */
+#define BMDS_HEALTH_UNJUDGED 255u /**< `stats_read`: nobody watches, so nothing is judged. */
+
+/** @brief `bmds_counter_t::warn` and `crit`: a level not used. */
+#define BMDS_COUNTER_NO_LEVEL INT64_MIN
+
+/**
+ * @brief A counter (`stats_list`): what it is and its rule as in force (adjusted, then
+ *        overridden by `sysmon/limits`). Its name, unit, kind and labels are an interface.
+ */
+typedef struct bmds_counter_t {
+                uint32_t size;       /**< Set by the caller: `sizeof(bmds_counter_t)`. */
+                uint32_t id;         /**< For `stats_read` and `stats_history`; never another counter's. */
+                uint32_t generation; /**< The registry's: it changes as counters come and go. */
+                uint32_t unit;       /**< `BMDS_UNIT_...`. */
+                uint32_t kind;       /**< `BMDS_COUNTER_TOTAL`, ... */
+                uint32_t flags;      /**< `BMDS_COUNTER_HISTORY`, `BMDS_COUNTER_ADJUSTED`. */
+                uint32_t rule;       /**< `BMDS_RULE_...`. */
+                uint32_t health;     /**< `BMDS_RULE_ZERO`: the problem an increase is. */
+                uint32_t hold;       /**< Seconds (see `rule`). */
+                uint32_t reserved;   /**< 0. */
+                int64_t warn; /**< The warning level (`BMDS_RULE_STATE`: a bit per state), or `BMDS_COUNTER_NO_LEVEL`. */
+                int64_t crit;       /**< The critical level, likewise. */
+                char    name[48];   /**< `audio.dsp0.late`, NUL-terminated. */
+                char    labels[64]; /**< `BMDS_COUNTER_STATE`: the states' names, `|` between (`stopped|running`). */
+                char    help[128];  /**< One line saying what it counts (cut at a character's end). */
+} bmds_counter_t;
+
+/** @brief `bmds_problem_t::flags`. */
+#define BMDS_PROBLEM_OPEN 0x1u    /**< Not normal again yet. */
+#define BMDS_PROBLEM_EARLIER 0x2u /**< Found at the first look: it happened before anyone watched. */
+
+/**
+ * @brief A problem (`stats_problems`): one episode of a counter out of normal, from when it
+ *        began until it was normal again.
+ */
+typedef struct bmds_problem_t {
+                uint32_t size;        /**< Set by the caller: `sizeof(bmds_problem_t)`. */
+                uint32_t id;          /**< The counter's. */
+                uint32_t health;      /**< The worst it reached: `BMDS_HEALTH_WARNING` or `_CRITICAL`. */
+                uint32_t flags;       /**< `BMDS_PROBLEM_OPEN`, `BMDS_PROBLEM_EARLIER`. */
+                uint64_t changed;     /**< The change that last touched it (pass the last one's as `after`). */
+                int64_t  start_ns;    /**< When it began (monotonic). */
+                int64_t  end_ns;      /**< When it ended (open: its last update). */
+                int64_t  first_value; /**< The counter's value as it began. */
+                int64_t  last_value;  /**< At the end (open: now). */
+                uint64_t count;       /**< An increase rule's increases; a level rule's samples out of normal. */
+                char     name[48];    /**< The counter's name. */
+} bmds_problem_t;
+
+/** @brief `stats_control` ops. */
+#define BMDS_STATS_WATCH 1u /**< `value` 1: this process watches (the sampler runs); 0: stops. */
+#define BMDS_STATS_SEEN 2u  /**< The problems up to change `value` were shown to the user. */
+#define BMDS_STATS_CLEAR 3u /**< Forget the problems that have ended. */
+
+/** @brief `bmds_stats_status_t::flags`. */
+#define BMDS_STATS_CPU_COUNTED 0x1u /**< Tasks' CPU time is counted this boot (`sysmon/enable`). */
+#define BMDS_STATS_WATCHING 0x2u    /**< The calling process watches. */
+
+/** @brief The counters' registry as a whole (`stats_status`). */
+typedef struct bmds_stats_status_t {
+                uint32_t size;           /**< Set by the caller: `sizeof(bmds_stats_status_t)`. */
+                uint32_t generation;     /**< As `bmds_counter_t::generation`. */
+                uint32_t count;          /**< The counters. */
+                uint32_t watchers;       /**< Watching (processes, the shell's `stats -w`). */
+                uint32_t interval_ms;    /**< Between samples (`sysmon/interval`). */
+                uint32_t flags;          /**< `BMDS_STATS_CPU_COUNTED`, `BMDS_STATS_WATCHING`. */
+                uint32_t unseen;         /**< The worst health of the open problems and those not yet seen. */
+                uint32_t cores;          /**< CPU cores. */
+                uint64_t last_change;    /**< The newest problem change. */
+                int64_t  last_sample_ns; /**< When the last sample was taken (monotonic; 0: none). */
+} bmds_stats_status_t;
+
+/** @brief `bmds_task_info_t::state` (FreeRTOS's). */
+#define BMDS_TASK_RUNNING 0u
+#define BMDS_TASK_READY 1u
+#define BMDS_TASK_BLOCKED 2u
+#define BMDS_TASK_SUSPENDED 3u
+#define BMDS_TASK_DELETED 4u
+
+/** @brief `bmds_task_info_t::flags`. */
+#define BMDS_TASK_MAIN 0x1u /**< A process's first thread. */
+
+/** @brief A task with less stack than these never used is in danger (warn, critical). */
+#define BMDS_TASK_STACK_WARN 512u
+#define BMDS_TASK_STACK_CRIT 256u
+
+/** @brief A task (`task_list`): a process's thread, or the kernel's. */
+typedef struct bmds_task_info_t {
+                uint32_t size;          /**< Set by the caller: `sizeof(bmds_task_info_t)`. */
+                int32_t  pid;           /**< Its process (0: the kernel's). */
+                int32_t  tid;           /**< A program thread's id (0: a kernel task or thread). */
+                uint32_t state;         /**< `BMDS_TASK_...`. */
+                uint32_t priority;      /**< Now (raised while it holds a lock someone waits on). */
+                uint32_t base_priority; /**< Its own. */
+                int32_t  core;          /**< The core it is pinned to, or -1. */
+                uint32_t stack_free;    /**< Bytes of its stack never used. */
+                uint64_t cpu_us;        /**< Time it has run (0: not counted, see `stats_status`). */
+                uint32_t number;        /**< A number no other task has had this boot. */
+                uint32_t flags;         /**< `BMDS_TASK_MAIN`. */
+                char     name[16];      /**< NUL-terminated. */
+} bmds_task_info_t;
+
+/** @brief `proc_info` flags. */
+#define BMDS_PROC_INFO_NEXT 0x1u /**< The first process after `pid` (0: the first). */
+
+/** @brief `bmds_proc_info_t::state`. */
+#define BMDS_PROC_RUNNING 0u /**< Its threads run. */
+#define BMDS_PROC_VFORK 1u   /**< A vfork child, on its parent's task (its time is the parent's). */
+#define BMDS_PROC_ENDING 2u  /**< Its program returned; its threads are ending. */
+#define BMDS_PROC_ZOMBIE 3u  /**< Ended; its parent hasn't waited for it. */
+#define BMDS_PROC_STOPPED 4u /**< Stopped by a signal, until continued. */
+
+/** @brief A process (`proc_info`). */
+typedef struct bmds_proc_info_t {
+                uint32_t size;        /**< Set by the caller: `sizeof(bmds_proc_info_t)`. */
+                int32_t  pid;         /**< Its id. */
+                int32_t  parent;      /**< Its parent's (0: none; -1: the kernel). */
+                int32_t  group;       /**< Its process group. */
+                int32_t  session;     /**< Its session. */
+                uint32_t state;       /**< `BMDS_PROC_RUNNING`, ... */
+                uint32_t threads;     /**< Its tasks. */
+                int32_t  status;      /**< A zombie's wait status. */
+                uint64_t memory;      /**< Bytes it has allocated. */
+                uint64_t cpu_us;      /**< Its tasks' time, ended ones' and before an exec included. */
+                int64_t  start_ns;    /**< When it started (monotonic). */
+                char     command[48]; /**< Its command line, cut. */
+} bmds_proc_info_t;
+
 /** @brief `bmds_stat_t::type`. */
 #define BMDS_TYPE_FILE 1u      /**< A regular file. */
 #define BMDS_TYPE_DIRECTORY 2u /**< A directory (also `/`, `/dev` and mount points). */
@@ -835,6 +1016,15 @@ typedef int32_t (*bmds_sys_midi_status_fn)(int32_t fd, bmds_midi_status_t *statu
 typedef int32_t (*bmds_sys_midi_control_fn)(int32_t fd, uint32_t op, int32_t value);
 typedef int32_t (*bmds_sys_audio_synth_fn)(const bmds_synth_config_t *config);
 typedef int32_t (*bmds_sys_audio_synth_info_fn)(int32_t fd, bmds_synth_info_t *info);
+typedef int32_t (*bmds_sys_stats_list_fn)(uint32_t index, bmds_counter_t *info);
+typedef int32_t (*bmds_sys_stats_read_fn)(const uint32_t *ids, uint32_t count, int64_t *values, uint8_t *health,
+                                          int64_t *time_ns);
+typedef int32_t (*bmds_sys_stats_history_fn)(uint32_t id, int64_t *values, uint32_t max, int64_t *newest_ns);
+typedef int32_t (*bmds_sys_stats_problems_fn)(uint64_t after, bmds_problem_t *out, uint32_t max);
+typedef int32_t (*bmds_sys_stats_control_fn)(uint32_t op, uint64_t value);
+typedef int32_t (*bmds_sys_stats_status_fn)(bmds_stats_status_t *status);
+typedef int32_t (*bmds_sys_task_list_fn)(bmds_task_info_t *out, uint32_t max);
+typedef int32_t (*bmds_sys_proc_info_fn)(int32_t pid, uint32_t flags, bmds_proc_info_t *info);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -1621,6 +1811,88 @@ static inline int32_t bmds_audio_synth(const bmds_synth_config_t *config) {
  */
 static inline int32_t bmds_audio_synth_info(int32_t fd, bmds_synth_info_t *info) {
         return ((bmds_sys_audio_synth_info_fn)bmds_sys->slot[BMDS_SYS_AUDIO_SYNTH_INFO])(fd, info);
+}
+
+/**
+ * @brief Fills @p info (its `size` set) with the counter at @p index (0 up, in registration
+ *        order; no value: see `bmds_stats_read`). List again from 0 when `generation` changes.
+ *        (Slots 80-87, appended 2026-10-09: check `bmds_sys_has(BMDS_SYS_STATS_LIST)`.)
+ * @return 0, or `-BMDS_ENOENT` (past the last), `-BMDS_EINVAL` (`size`), `-BMDS_EFAULT`.
+ */
+static inline int32_t bmds_stats_list(uint32_t index, bmds_counter_t *info) {
+        return ((bmds_sys_stats_list_fn)bmds_sys->slot[BMDS_SYS_STATS_LIST])(index, info);
+}
+
+/**
+ * @brief Reads @p count counters (@p ids) at one moment into @p values (`BMDS_COUNTER_UNAVAILABLE`
+ *        for one gone or not measured now); @p health (may be NULL) gets each one's health at the
+ *        last sample, or `BMDS_HEALTH_UNJUDGED` while nobody watches; @p time_ns (may be NULL) the
+ *        moment (monotonic), for rates.
+ * @return @p count, or `-BMDS_EFAULT`, `-BMDS_EINVAL` (more than 1024).
+ */
+static inline int32_t bmds_stats_read(const uint32_t *ids, uint32_t count, int64_t *values, uint8_t *health,
+                                      int64_t *time_ns) {
+        return ((bmds_sys_stats_read_fn)bmds_sys->slot[BMDS_SYS_STATS_READ])(ids, count, values, health, time_ns);
+}
+
+/**
+ * @brief Copies counter @p id's samples (one each interval while anyone watches, the last 120;
+ *        only counters flagged `BMDS_COUNTER_HISTORY`) into @p values, the oldest first: a total's
+ *        increase each interval, else its value. @p newest_ns (may be NULL) gets the newest one's
+ *        time (monotonic).
+ * @return How many (0: none kept), or `-BMDS_EFAULT`.
+ */
+static inline int32_t bmds_stats_history(uint32_t id, int64_t *values, uint32_t max, int64_t *newest_ns) {
+        return ((bmds_sys_stats_history_fn)bmds_sys->slot[BMDS_SYS_STATS_HISTORY])(id, values, max, newest_ns);
+}
+
+/**
+ * @brief Copies the problems changed after change @p after (0: all kept) into @p out, in the
+ *        order of their changes, as many as @p max. Set the first entry's `size` (the others are
+ *        set to it). Pass the last one's `changed` next time to see new problems and the open
+ *        ones' updates.
+ * @return How many, or `-BMDS_EFAULT`, `-BMDS_EINVAL` (`size`).
+ */
+static inline int32_t bmds_stats_problems(uint64_t after, bmds_problem_t *out, uint32_t max) {
+        return ((bmds_sys_stats_problems_fn)bmds_sys->slot[BMDS_SYS_STATS_PROBLEMS])(after, out, max);
+}
+
+/**
+ * @brief `BMDS_STATS_WATCH`: this process watches (@p value 1; once, however often asked) or
+ *        stops (0); a watch lasts across `exec` and ends with the process. `BMDS_STATS_SEEN`:
+ *        the problems up to change @p value were shown. `BMDS_STATS_CLEAR`: forget the ended ones.
+ * @return 0, or `-BMDS_EINVAL`, `-BMDS_ENOMEM` (the sampler couldn't start).
+ */
+static inline int32_t bmds_stats_control(uint32_t op, uint64_t value) {
+        return ((bmds_sys_stats_control_fn)bmds_sys->slot[BMDS_SYS_STATS_CONTROL])(op, value);
+}
+
+/**
+ * @brief Fills @p status (its `size` set) with the registry's state.
+ * @return 0, or `-BMDS_EINVAL` (`size`), `-BMDS_EFAULT`.
+ */
+static inline int32_t bmds_stats_status(bmds_stats_status_t *status) {
+        return ((bmds_sys_stats_status_fn)bmds_sys->slot[BMDS_SYS_STATS_STATUS])(status);
+}
+
+/**
+ * @brief Fills @p out with the tasks, as many as @p max: those BMDS started, then the system's
+ *        (idle, timers, ipc). Set the first entry's `size` (the others are set to it). Listing
+ *        scans each stack (interrupts on): a few ms; once a second is fine.
+ * @return How many there are (more than @p max: the rest left out), or `-BMDS_EFAULT`,
+ *         `-BMDS_EINVAL` (`size`), `-BMDS_ENOMEM`.
+ */
+static inline int32_t bmds_task_list(bmds_task_info_t *out, uint32_t max) {
+        return ((bmds_sys_task_list_fn)bmds_sys->slot[BMDS_SYS_TASK_LIST])(out, max);
+}
+
+/**
+ * @brief Fills @p info (its `size` set) with process @p pid, or with `BMDS_PROC_INFO_NEXT` the
+ *        first after it in pid order (0: the first), zombies included.
+ * @return Its pid, or `-BMDS_ESRCH` (none), `-BMDS_EINVAL` (`size`, @p flags), `-BMDS_EFAULT`.
+ */
+static inline int32_t bmds_proc_info(int32_t pid, uint32_t flags, bmds_proc_info_t *info) {
+        return ((bmds_sys_proc_info_fn)bmds_sys->slot[BMDS_SYS_PROC_INFO])(pid, flags, info);
 }
 
 #ifdef __cplusplus

@@ -6,6 +6,7 @@
  * See LICENSE file in the project root folder for license information.
  */
 
+#include <bmds/detail/platform.h>
 #include <bmds/memory.h>
 #include <bmds/processtable.h>
 
@@ -90,9 +91,18 @@ Result<int32_t> ProcessTable::add(int32_t parent, int32_t group, int32_t session
                 pid = pid >= MaxPid ? InitPid + 1 : pid + 1;
         } while (isIdInUse(pid));
         _lastPid = pid;
-        *slot = Entry{
-                pid,   parent, groupId > 0 ? groupId : pid, sessionId != 0 ? sessionId : pid, 0, notify, runtime, 0,
-                false, false};
+        *slot = Entry{pid,
+                      parent,
+                      groupId > 0 ? groupId : pid,
+                      sessionId != 0 ? sessionId : pid,
+                      0,
+                      notify,
+                      runtime,
+                      0,
+                      false,
+                      false,
+                      Detail::monotonicUs(),
+                      0};
         return makeResult(pid);
 }
 
@@ -155,7 +165,7 @@ void ProcessTable::setRuntime(int32_t pid, void *runtime) {
         return;
 }
 
-void ProcessTable::exited(int32_t pid, int32_t status) {
+void ProcessTable::exited(int32_t pid, int32_t status, uint64_t cpuUs) {
         Mutex::Locker locker(_lock, WaitForever);
         Entry        *e = find(pid);
         if (e == nullptr || e->ended) return;
@@ -178,6 +188,7 @@ void ProcessTable::exited(int32_t pid, int32_t status) {
                 e->ended = true;
                 e->status = status;
                 e->runtime = nullptr;
+                e->cpuUs = cpuUs;
         }
         if (notify != nullptr) notify->release();
         return;

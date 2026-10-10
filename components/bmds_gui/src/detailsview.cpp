@@ -22,6 +22,8 @@ namespace {
         constexpr uint16_t IconX = 4;  // the name column's icon, from the column's left
         constexpr uint16_t TextX = 24; // its text
         constexpr uint16_t CellPad = 4;
+        constexpr uint32_t WarningText = 0xa05a00;  // a row's emphasis: amber, readable on the face
+        constexpr uint32_t CriticalText = 0xc00000; // red
 
         Rect cut(int x, int y, int w, int h, const Rect &clip) {
                 const int l = x > clip.x ? x : clip.x, t = y > clip.y ? y : clip.y;
@@ -149,7 +151,10 @@ void DetailsView::paintHeader(Painter &painter) {
                         (void)painter.fill(Bevel::inside(whole, style), face);
                         if (c < _columns && model() != nullptr) {
                                 const int ty = h.y + (h.height - GuiStyle::TextHeight) / 2 + (in ? 1 : 0);
-                                const int room = width - 2 * CellPad - (int(c) == _sortColumn ? 16 : 0);
+                                // Short of the button's right bevel (and the sort arrow), so a cut title
+                                // never draws over the edge.
+                                const int room = (width - 3 * CellPad - (int(c) == _sortColumn ? 16 : 0)) &
+                                                 ~int(GuiStyle::Column - 1);
                                 if (room > 0)
                                         (void)painter.text(x + 2 * CellPad, ty, model()->columnTitle(c),
                                                            Fonts::unscii16, p.color(Role::FaceText), face,
@@ -181,6 +186,10 @@ void DetailsView::paintRows(Painter &painter, const Rect &viewport) {
                 int        x = int(viewport.x) - int(scrollX());
                 const int  ty = y + (RowHeight - GuiStyle::TextHeight) / 2;
                 const bool selected = selection().isSelected(row);
+                const ItemModel::Emphasis emphasis = model()->emphasis(row);
+                const uint32_t            text = emphasis == ItemModel::Emphasis::Critical  ? CriticalText
+                                                 : emphasis == ItemModel::Emphasis::Warning ? WarningText
+                                                                                            : p.color(Role::FaceText);
                 for (size_t c = 0; c < _columns; ++c) {
                         const int width = _widths[c];
                         if (x + width > viewport.x && x < int(viewport.right())) {
@@ -198,8 +207,8 @@ void DetailsView::paintRows(Painter &painter, const Rect &viewport) {
                                                 const int      bx = x + TextX - 2, bw = shown + 4;
                                                 const uint32_t bg = drawLabel(painter, viewport, bx, y, bw, selected,
                                                                               focus, int(row) == current(), background);
-                                                const uint32_t fg = p.color(selected && focus ? Role::HighlightText
-                                                                                              : Role::FaceText);
+                                                const uint32_t fg =
+                                                        selected && focus ? p.color(Role::HighlightText) : text;
                                                 if (room > 0)
                                                         (void)painter.text(x + TextX, ty, name, Fonts::unscii16, fg, bg,
                                                                            uint16_t(room));
@@ -207,15 +216,15 @@ void DetailsView::paintRows(Painter &painter, const Rect &viewport) {
                                                         focusRect(painter, viewport, bx, y, bw);
                                         }
                                 } else {
-                                        const StringView text = model()->columnText(row, c, Span<char>(buffer));
-                                        const int        tw = int(Fonts::unscii16.textWidth(text));
+                                        const StringView cell = model()->columnText(row, c, Span<char>(buffer));
+                                        const int        tw = int(Fonts::unscii16.textWidth(cell));
                                         const int        room = width - 2 * CellPad;
-                                        if (room > 0 && !text.isEmpty()) {
+                                        if (room > 0 && !cell.isEmpty()) {
                                                 int tx = x + CellPad;
                                                 if (model()->columnAlign(c) == ItemModel::Align::Right && tw < room)
                                                         tx = (x + width - CellPad - tw) & ~3;
-                                                (void)painter.text(tx, ty, text, Fonts::unscii16,
-                                                                   p.color(Role::FaceText), background, uint16_t(room));
+                                                (void)painter.text(tx, ty, cell, Fonts::unscii16, text, background,
+                                                                   uint16_t(room));
                                         }
                                 }
                         }

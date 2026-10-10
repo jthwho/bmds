@@ -48,10 +48,15 @@
  *   progtest audioexit    queue 500 ms of silence on /dev/dsp and exit without closing it
  *   progtest decode FLAC  the decoder calls on FLAC (tests/host/audio/tone.flac): info, tags, reads,
  *                         seeks, a buffer, and their errors
+ *   progtest stats SELF   the counters' calls: listing, reading, health, history, problems, watching
+ *                         (dropped at exit, kept across exec), and their errors
+ *   progtest tasks        task_list: this task, a thread's, the kernel's, strides and errors
+ *   progtest procs SELF   proc_info: this process, iterating, a zombie's time, time and start across exec
  */
 
 #define _GNU_SOURCE /* gettid() */
 #include <dirent.h>
+#include <stddef.h>
 #include <math.h>
 #include <stdarg.h>
 #include <errno.h>
@@ -1800,13 +1805,280 @@ static int mididecode(const char *path) {
         return 0;
 }
 
+/* The system monitor's calls (devplan/sysmon.md §3.6). */
+/* Keeps a core busy for MS milliseconds. */
+static void burn_ms(int ms) {
+        const int64_t end = mono_ns() + (int64_t)ms * 1000000;
+        while (mono_ns() < end) {}
+}
+
+/* The id of the counter named NAME, or 0. */
+static uint32_t counter_id(const char *name, bmds_counter_t *out) {
+        for (uint32_t i = 0;; ++i) {
+                out->size = sizeof(*out);
+                if (bmds_stats_list(i, out) != 0) return 0;
+                if (strcmp(out->name, name) == 0) return out->id;
+        }
+}
+
+static int stats(const char *self) {
+        CHECK(bmds_sys_has(BMDS_SYS_PROC_INFO));
+        bmds_stats_status_t st = {.size = sizeof(st)};
+        CHECK(bmds_stats_status(&st) == 0);
+        CHECK(st.count > 100 && st.generation != 0 && st.cores == 2 && st.interval_ms >= 100);
+        CHECK((st.flags & BMDS_STATS_WATCHING) == 0);
+        const uint32_t watchers = st.watchers;
+        const int      counted = (st.flags & BMDS_STATS_CPU_COUNTED) != 0;
+
+        /* Every counter listed: ids distinct from their neighbours', names dotted, rules sane. */
+        bmds_counter_t c;
+        uint32_t       n = 0, previous = 0;
+        for (;; ++n) {
+                c.size = sizeof(c);
+                const int32_t r = bmds_stats_list(n, &c);
+                if (r == -BMDS_ENOENT) break;
+                CHECK(r == 0 && c.id != 0 && c.id != previous && strchr(c.name, '.') != NULL);
+                CHECK(c.kind <= BMDS_COUNTER_INFO && c.unit <= BMDS_UNIT_PPB && c.rule <= BMDS_RULE_STATE);
+                CHECK(c.generation == st.generation || n > 0); /* may change while listing */
+                CHECK(c.help[0] != '\0');
+                previous = c.id;
+        }
+        CHECK(n >= st.count - 8 && n <= st.count + 8);
+        /* A known counter, as described. */
+        const uint32_t busy = counter_id("cpu.core0.busy_us", &c);
+        CHECK(busy != 0 && c.unit == BMDS_UNIT_MICROS && c.kind == BMDS_COUNTER_TOTAL && c.rule == BMDS_RULE_ABOVE);
+        CHECK(c.warn == 900000 && c.crit == 980000 && c.hold == 5 && (c.flags & BMDS_COUNTER_HISTORY) != 0);
+        const uint32_t late = counter_id("audio.dsp0.late", &c);
+        CHECK(late != 0 && c.rule == BMDS_RULE_ZERO && c.health == BMDS_HEALTH_CRITICAL && c.hold == 60);
+        const uint32_t state = counter_id("audio.dsp0.state", &c);
+        CHECK(state != 0 && c.kind == BMDS_COUNTER_STATE && strcmp(c.labels, "stopped|running|faulted") == 0);
+        /* An older, shorter struct: only what fits is filled. */
+        bmds_counter_t old;
+        memset(&old, 0x5a, sizeof(old));
+        old.size = (uint32_t)offsetof(bmds_counter_t, name);
+        CHECK(bmds_stats_list(0, &old) == 0 && old.id != 0 && (unsigned char)old.name[0] == 0x5a);
+        /* Errors. */
+        c.size = 0;
+        CHECK(bmds_stats_list(0, &c) == -BMDS_EINVAL);
+        CHECK(bmds_stats_list(0, NULL) == -BMDS_EFAULT);
+        c.size = sizeof(c);
+        CHECK(bmds_stats_list(100000, &c) == -BMDS_ENOENT);
+
+        /* Reading: values at one moment, unjudged while nobody watches (if nobody did). */
+        uint32_t ids[3] = {busy, late, 0x7fffff00u};
+        int64_t  values[3], t0 = 0, t1 = 0;
+        uint8_t  health[3];
+        CHECK(bmds_stats_read(ids, 3, values, health, &t0) == 3);
+        CHECK(values[2] == BMDS_COUNTER_UNAVAILABLE && health[2] == BMDS_HEALTH_UNJUDGED);
+        CHECK(counted ? values[0] > 0 : values[0] == BMDS_COUNTER_UNAVAILABLE);
+        if (watchers == 0) CHECK(health[0] == BMDS_HEALTH_UNJUDGED);
+        const int64_t busy0 = values[0];
+        burn_ms(200);
+        CHECK(bmds_stats_read(ids, 1, values, NULL, &t1) == 1 && t1 - t0 >= 200000000);
+        if (counted) CHECK(values[0] >= busy0); /* this core or the other: either may have run it */
+        CHECK(bmds_stats_read(ids, 0, NULL, NULL, NULL) == 0);
+        CHECK(bmds_stats_read(NULL, 1, values, NULL, NULL) == -BMDS_EFAULT);
+        CHECK(bmds_stats_read(ids, 2000, values, NULL, NULL) == -BMDS_EINVAL);
+
+        /* Watching: the sampler runs, health is judged, history is kept. */
+        CHECK(bmds_stats_control(BMDS_STATS_WATCH, 1) == 0);
+        CHECK(bmds_stats_control(BMDS_STATS_WATCH, 1) == 0); /* once per process */
+        CHECK(bmds_stats_status(&st) == 0 && (st.flags & BMDS_STATS_WATCHING) != 0);
+        CHECK(st.watchers == watchers + 1);
+        usleep((useconds_t)(st.interval_ms * 2500));
+        CHECK(bmds_stats_read(ids, 3, values, health, NULL) == 3);
+        CHECK(health[0] <= BMDS_HEALTH_CRITICAL && health[1] <= BMDS_HEALTH_CRITICAL);
+        int64_t       samples[200], newest = 0;
+        const int32_t kept = bmds_stats_history(busy, samples, 200, &newest);
+        CHECK(kept >= 2 && kept <= 120 && newest > 0 && newest <= mono_ns());
+        CHECK(bmds_stats_history(busy, samples, 1, NULL) == 1);
+        CHECK(bmds_stats_history(late, samples, 200, NULL) == 0); /* not kept */
+        CHECK(bmds_stats_history(busy, NULL, 4, NULL) == -BMDS_EFAULT);
+        CHECK(bmds_stats_status(&st) == 0 && st.last_sample_ns > 0);
+
+        /* Problems: whatever the log holds, in the order of its changes. */
+        bmds_problem_t problems[16];
+        problems[0].size = sizeof(problems[0]);
+        int32_t got = bmds_stats_problems(0, problems, 16);
+        CHECK(got >= 0 && got <= 16);
+        for (int i = 0; i < got; ++i) {
+                CHECK(problems[i].size == sizeof(problems[0]) && problems[i].name[0] != '\0');
+                CHECK(problems[i].health == BMDS_HEALTH_WARNING || problems[i].health == BMDS_HEALTH_CRITICAL);
+                CHECK(problems[i].changed <= st.last_change &&
+                      (i == 0 || problems[i].changed > problems[i - 1].changed));
+                CHECK(problems[i].start_ns <= problems[i].end_ns);
+        }
+        CHECK(bmds_stats_problems(st.last_change, problems, 16) == 0);
+        CHECK(bmds_stats_problems(0, problems, 0) == 0);
+        problems[0].size = 0;
+        CHECK(bmds_stats_problems(0, problems, 16) == -BMDS_EINVAL);
+        CHECK(bmds_stats_problems(0, NULL, 16) == -BMDS_EFAULT);
+        CHECK(bmds_stats_control(BMDS_STATS_SEEN, st.last_change) == 0);
+        CHECK(bmds_stats_control(BMDS_STATS_WATCH, 2) == -BMDS_EINVAL);
+        CHECK(bmds_stats_control(BMDS_STATS_CLEAR, 1) == -BMDS_EINVAL);
+        CHECK(bmds_stats_control(99, 0) == -BMDS_EINVAL);
+        CHECK(bmds_stats_control(BMDS_STATS_WATCH, 0) == 0);
+        CHECK(bmds_stats_control(BMDS_STATS_WATCH, 0) == 0);
+        CHECK(bmds_stats_status(&st) == 0 && (st.flags & BMDS_STATS_WATCHING) == 0 && st.watchers == watchers);
+
+        /* A watch ends with its process, and goes on across exec. */
+        CHECK(status_of(start(self, NULL, NULL, "statswatch", NULL)) == 0);
+        CHECK(bmds_stats_status(&st) == 0 && st.watchers == watchers);
+        CHECK(status_of(start(self, NULL, NULL, "statswatch", self, NULL)) == 0);
+        CHECK(bmds_stats_status(&st) == 0 && st.watchers == watchers);
+        printf("stats: all passed (%u counters, CPU time %s)\n", (unsigned)n, counted ? "counted" : "not counted");
+        return 0;
+}
+
+/* Watches and ends without stopping; with SELF, execs SELF statswatching first. */
+static int stats_watch(const char *self) {
+        CHECK(bmds_stats_control(BMDS_STATS_WATCH, 1) == 0);
+        if (self != NULL) {
+                char *eargv[] = {"progtest", "statswatching", NULL};
+                execve(self, eargv, environ);
+                return 1;
+        }
+        return 0;
+}
+
+static int stats_watching(void) {
+        bmds_stats_status_t st = {.size = sizeof(st)};
+        CHECK(bmds_stats_status(&st) == 0 && (st.flags & BMDS_STATS_WATCHING) != 0);
+        return 0;
+}
+
+static void *task_thread(void *arg) {
+        (void)arg;
+        usleep(500000);
+        return NULL;
+}
+
+static int tasks(void) {
+        bmds_stats_status_t st = {.size = sizeof(st)};
+        CHECK(bmds_stats_status(&st) == 0);
+        const int counted = (st.flags & BMDS_STATS_CPU_COUNTED) != 0;
+        pthread_t t;
+        CHECK(pthread_create(&t, NULL, task_thread, NULL) == 0);
+        usleep(50000);
+        burn_ms(100);
+        static bmds_task_info_t list[96];
+        list[0].size = sizeof(list[0]);
+        const int32_t n = bmds_task_list(list, 96);
+        CHECK(n >= 12 && n <= 96);
+        int self = 0, thread = 0, idle = 0, timers = 0;
+        for (int i = 0; i < n; ++i) {
+                const bmds_task_info_t *e = &list[i];
+                CHECK(e->size == sizeof(*e) && e->name[0] != '\0' && e->state <= BMDS_TASK_DELETED);
+                CHECK(e->stack_free > 0 && e->number != 0 && e->core >= -1 && e->core <= 1);
+                if (e->pid == getpid() && (e->flags & BMDS_TASK_MAIN) != 0) {
+                        ++self;
+                        CHECK(e->tid == getpid() && e->state == BMDS_TASK_RUNNING &&
+                              strncmp(e->name, "progtest", 8) == 0);
+                        CHECK(counted ? e->cpu_us >= 80000 : e->cpu_us == 0);
+                } else if (e->pid == getpid()) {
+                        ++thread;
+                        CHECK(e->tid != getpid() && e->tid > 0);
+                }
+                if (strncmp(e->name, "IDLE", 4) == 0) {
+                        ++idle;
+                        CHECK(e->pid == 0 && e->tid == 0 && e->priority == 0 && e->core == e->name[4] - '0');
+                }
+                if (strcmp(e->name, "Tmr Svc") == 0) ++timers;
+        }
+        CHECK(self == 1 && thread == 1 && idle == 2 && timers == 1);
+        /* Fewer than there are: the total still. A wider stride: each entry at it. */
+        list[0].size = sizeof(list[0]);
+        CHECK(bmds_task_list(list, 2) == n || bmds_task_list(list, 2) >= n - 2);
+        CHECK(bmds_task_list(NULL, 0) >= n - 2);
+        static uint8_t    wide[8][sizeof(bmds_task_info_t) + 16];
+        bmds_task_info_t *w = (bmds_task_info_t *)wide[0];
+        w->size = sizeof(wide[0]);
+        CHECK(bmds_task_list(w, 8) >= 8);
+        CHECK(((bmds_task_info_t *)wide[7])->size == sizeof(wide[0]) && ((bmds_task_info_t *)wide[7])->name[0] != '\0');
+        list[0].size = 0;
+        CHECK(bmds_task_list(list, 4) == -BMDS_EINVAL);
+        CHECK(bmds_task_list(NULL, 4) == -BMDS_EFAULT);
+        CHECK(pthread_join(t, NULL) == 0);
+        printf("tasks: all passed (%d tasks)\n", (int)n);
+        return 0;
+}
+
+static int procs(const char *self) {
+        bmds_stats_status_t st = {.size = sizeof(st)};
+        CHECK(bmds_stats_status(&st) == 0);
+        const int counted = (st.flags & BMDS_STATS_CPU_COUNTED) != 0;
+        burn_ms(100);
+        bmds_proc_info_t p = {.size = sizeof(p)};
+        CHECK(bmds_proc_info(getpid(), 0, &p) == getpid());
+        CHECK(p.pid == getpid() && p.parent == getppid() && p.state == BMDS_PROC_RUNNING && p.threads == 1);
+        CHECK(strstr(p.command, "progtest") != NULL && strstr(p.command, " procs") != NULL && p.memory > 0);
+        CHECK(p.start_ns > 0 && p.start_ns < mono_ns());
+        CHECK(counted ? p.cpu_us >= 80000 : p.cpu_us == 0);
+        /* Every process, in pid order: pid 1 and this one among them. */
+        int32_t pid = 0, last = 0, seen_init = 0, seen_self = 0;
+        while ((pid = bmds_proc_info(pid, BMDS_PROC_INFO_NEXT, &p)) > 0) {
+                CHECK(pid > last && p.pid == pid);
+                seen_init += pid == 1;
+                seen_self += pid == getpid();
+                last = pid;
+        }
+        CHECK(pid == -BMDS_ESRCH && seen_init == 1 && seen_self == 1);
+        CHECK(bmds_proc_info(30000, 0, &p) == -BMDS_ESRCH);
+        CHECK(bmds_proc_info(getpid(), 2, &p) == -BMDS_EINVAL);
+        p.size = 0;
+        CHECK(bmds_proc_info(getpid(), 0, &p) == -BMDS_EINVAL);
+        p.size = sizeof(p);
+
+        /* A zombie keeps its time and status until waited for. */
+        const pid_t child = start(self, NULL, NULL, "burn", "300", NULL);
+        CHECK(child > 0);
+        for (int i = 0; i < 100; ++i) {
+                CHECK(bmds_proc_info(child, 0, &p) == child);
+                if (p.state == BMDS_PROC_ZOMBIE) break;
+                usleep(20000);
+        }
+        CHECK(p.state == BMDS_PROC_ZOMBIE && p.status == (5 << 8) && p.parent == getpid());
+        CHECK(counted ? p.cpu_us >= 250000 : p.cpu_us == 0);
+        CHECK(status_of(child) == 5);
+        CHECK(bmds_proc_info(child, 0, &p) == -BMDS_ESRCH);
+
+        /* Across exec: the time so far and the start stay the process's. */
+        CHECK(status_of(start(self, NULL, NULL, "procexec", self, NULL)) == 0);
+        printf("procs: all passed\n");
+        return 0;
+}
+
+/* Burns 200 ms, then execs SELF proccheck START_NS: which finds its time and start kept. */
+static int proc_exec(const char *self) {
+        bmds_proc_info_t p = {.size = sizeof(p)};
+        CHECK(bmds_proc_info(getpid(), 0, &p) == getpid());
+        burn_ms(200);
+        char start_text[32];
+        snprintf(start_text, sizeof(start_text), "%lld", (long long)p.start_ns);
+        char *eargv[] = {"progtest", "proccheck", start_text, NULL};
+        execve(self, eargv, environ);
+        return 1;
+}
+
+static int proc_check(const char *start_text) {
+        bmds_stats_status_t st = {.size = sizeof(st)};
+        CHECK(bmds_stats_status(&st) == 0);
+        bmds_proc_info_t p = {.size = sizeof(p)};
+        CHECK(bmds_proc_info(getpid(), 0, &p) == getpid());
+        CHECK(p.start_ns == atoll(start_text));
+        CHECK((st.flags & BMDS_STATS_CPU_COUNTED) == 0 || p.cpu_us >= 150000);
+        CHECK(strcmp(p.command, "progtest proccheck ") > 0 && strncmp(p.command, "progtest proccheck ", 19) == 0);
+        return 0;
+}
+
 int main(int argc, char **argv) {
         if (argc < 2) {
                 fprintf(stderr,
                         "usage: progtest status|exit|leak|env|tty|float|files|time|sleep|term|lines|raw|mem|random|cwd|"
                         "spin|calls|posix|abort|spawn|scripts|signals|catch|ignore|fd|ppid|exec|orphan|tree|poll|"
                         "threads|"
-                        "threadspin|filetype|audio|decode|rt|midi|synth|synthload|mididecode|hog "
+                        "threadspin|filetype|audio|decode|rt|midi|synth|synthload|mididecode|hog|stats|tasks|"
+                        "procs "
                         "[arg]\n");
                 return 2;
         }
@@ -1820,6 +2092,17 @@ int main(int argc, char **argv) {
         if (strcmp(what, "synth") == 0) return synth(arg);
         if (strcmp(what, "synthload") == 0) return synthload(arg);
         if (strcmp(what, "mididecode") == 0) return mididecode(arg);
+        if (strcmp(what, "stats") == 0) return stats(arg);
+        if (strcmp(what, "statswatch") == 0) return stats_watch(argc > 2 ? arg : NULL);
+        if (strcmp(what, "statswatching") == 0) return stats_watching();
+        if (strcmp(what, "tasks") == 0) return tasks();
+        if (strcmp(what, "procs") == 0) return procs(arg);
+        if (strcmp(what, "procexec") == 0) return proc_exec(arg);
+        if (strcmp(what, "proccheck") == 0) return proc_check(arg);
+        if (strcmp(what, "burn") == 0) {
+                burn_ms(atoi(arg));
+                return 5;
+        }
         if (strcmp(what, "hog") == 0) {
                 /* MB of memory at once: more than is free makes the caches give theirs back. */
                 const size_t bytes = (size_t)atoi(arg) * 1024 * 1024;

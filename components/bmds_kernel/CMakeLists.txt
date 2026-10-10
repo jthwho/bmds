@@ -36,6 +36,7 @@ if(COMMAND idf_component_register)
                                     src/semaphore.cpp
                                     src/system.cpp
                                     src/task.cpp
+                                    src/tasklist.cpp
                                     src/thread.cpp
                                INCLUDE_DIRS include
                                REQUIRES bmds_core bmds_board freertos

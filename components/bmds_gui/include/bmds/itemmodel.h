@@ -72,6 +72,19 @@ class ItemModel {
 
                 /** @brief Returns column @p column's width at first, in pixels. */
                 virtual uint16_t columnWidth(size_t column) const { return column == 0 ? 200 : 100; }
+
+                /** @brief How a row stands out: a problem's colour (`devplan/sysmon.md` §3.5). */
+                enum class Emphasis : uint8_t {
+                        None,
+                        Warning,  ///< Its text amber.
+                        Critical, ///< Its text red.
+                };
+
+                /** @brief Returns how row @p row stands out (a details view's). */
+                virtual Emphasis emphasis(size_t row) const {
+                        (void)row;
+                        return Emphasis::None;
+                }
 };
 
 /**

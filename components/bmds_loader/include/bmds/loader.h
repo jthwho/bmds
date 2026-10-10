@@ -65,8 +65,18 @@ class Loader final : public ProgramLauncher {
                                 int32_t status;                ///< How it ended (`Zombie`).
                                 State   state;                 ///< What it is doing.
                                 uint8_t threads;               ///< Its tasks (its own and its `Thread`s).
-                                size_t  memory;                ///< Bytes it has allocated.
-                                char    command[CommandBytes]; ///< Its command line, cut.
+                                size_t   memory;                ///< Bytes it has allocated.
+                                char     command[CommandBytes]; ///< Its command line, cut.
+                                uint64_t cpuUs;     ///< CPU time (`devplan/sysmon.md` §3.6; 0: not counted).
+                                int64_t  startedUs; ///< When it started (monotonic).
+                };
+
+                /** @brief Whose a task is (`findTaskOwners()`). */
+                struct TaskOwnership {
+                                void   *task; ///< Its handle (set by the caller).
+                                int32_t pid;  ///< Its process (0: the kernel's).
+                                int32_t tid;  ///< A program thread's id (0: a kernel task or `Thread`).
+                                bool    main; ///< The process's first thread.
                 };
 
                 /** @brief A task of a process, as `ps -T` shows it. */
@@ -87,6 +97,16 @@ class Loader final : public ProgramLauncher {
                  * @return How many there are (more than `out.size()`: those past it are left out).
                  */
                 static size_t listProcesses(Span<ProcessInfo> out);
+
+                /**
+                 * @brief Describes process @p pid, or with @p next the first after it
+                 *        (pid order; 0: the first).
+                 * @return `Ok`, or `NotExist` (none).
+                 */
+                static Error processInfo(int32_t pid, bool next, ProcessInfo &out);
+
+                /** @brief Fills in whose each of @p tasks is (`TaskOwnership::task` set). */
+                static void findTaskOwners(Span<TaskOwnership> tasks);
 
                 /**
                  * @brief Fills @p out with the tasks of every running process.

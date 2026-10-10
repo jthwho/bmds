@@ -215,11 +215,11 @@ namespace {
 
 } // namespace
 
-Error Thread::start(const Config &, Entry entry, void *arg) {
+Error Thread::start(const Config &config, Entry entry, void *arg) {
         if (_impl != nullptr) return Error::InvalidState;
         auto            *t = new HostThread;
         TaskOwner *const starter = TaskOwner::current();
-        TaskOwner       *owner = starter != nullptr ? starter->threadOwner() : nullptr;
+        TaskOwner       *owner = starter != nullptr && !config.kernel ? starter->threadOwner() : nullptr;
         if (owner != nullptr) {
                 const Error err = owner->attach(t->member);
                 if (err.isError()) {

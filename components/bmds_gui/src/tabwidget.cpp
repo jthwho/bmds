@@ -58,6 +58,7 @@ void TabWidget::setTitle(size_t index, StringView title) {
         if (index >= _count) return;
         size_t n = title.size() < MaxTitle ? title.size() : MaxTitle;
         while (n > 0 && n < title.size() && (uint8_t(title[n]) & 0xc0) == 0x80) --n;
+        if (StringView(_tabs[index].title) == title.left(n)) return; // unchanged: no layout, no redraw
         std::memcpy(_tabs[index].title, title.data(), n);
         _tabs[index].title[n] = '\0';
         layout();

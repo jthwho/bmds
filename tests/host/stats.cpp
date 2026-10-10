@@ -449,6 +449,26 @@ TEST_CASE("Stats: groups, ids, listing and reading") {
         }
         CHECK(found);
         CHECK(Stats::info(Stats::count(), info) == Error::NotFound);
+        // Described without a read; health not judged while nobody watches.
+        found = false;
+        for (size_t i = 0; Stats::describe(i, info).isOk(); ++i) {
+                if (info.id != g.idOf(0)) continue;
+                found = true;
+                CHECK(std::string(info.name) == "test.dsp0.late");
+                CHECK(info.value == Stat::Unavailable);
+                CHECK(!info.judged);
+        }
+        CHECK(found);
+        CHECK(Stats::describe(Stats::count(), info) == Error::NotFound);
+        uint8_t health[3] = {};
+        CHECK(Stats::read(Span<const uint32_t>(ids, 3), Span<int64_t>(values, 3), Span<uint8_t>(health, 2)) == 3);
+        CHECK(values[1] == 4);
+        CHECK(health[0] == Stats::Unjudged);
+        CHECK(health[1] == Stats::Unjudged);
+        const Stats::Status status = Stats::status();
+        CHECK(status.count == Stats::count());
+        CHECK(status.generation == Stats::generation());
+        CHECK(status.watchers == 0);
 
         // Overrides apply to the listing and the rules.
         REQUIRE(Stats::setOverrides("test.*.fill_us_max:warn=1000").isOk());
@@ -534,6 +554,14 @@ TEST_CASE("Stats: the sampler runs while watched, with history") {
         }
         const size_t n = Stats::history(g.idOf(1), Span<int32_t>(samples, Stats::HistoryDepth));
         CHECK(n >= 3);
+        // Judged while watched: health at the last sample, and its time.
+        const uint32_t ids[] = {g.idOf(0)};
+        int64_t        value = 0;
+        uint8_t        health = Stats::Unjudged;
+        CHECK(Stats::read(Span<const uint32_t>(ids, 1), Span<int64_t>(&value, 1), Span<uint8_t>(&health, 1)) == 1);
+        CHECK(health == uint8_t(Health::Normal));
+        CHECK(Stats::status().lastSampleMs > 0);
+        CHECK(Stats::status().watchers == 2);
         CHECK(Stats::history(g.idOf(0), Span<int32_t>(samples, 4)) == 0); // not kept
         Stats::unwatch();
         CHECK(Stats::watchers() == 1);
@@ -544,6 +572,19 @@ TEST_CASE("Stats: the sampler runs while watched, with history") {
         for (int i = 0; i < 300 && Stats::history(g.idOf(1), Span<int32_t>(samples, 4)) > 0; ++i)
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
         CHECK(Stats::history(g.idOf(1), Span<int32_t>(samples, 4)) == 0);
+        // Watched again after a long pause: the pause's increase isn't one interval's (no spike).
+        dev.busyUs += 50000000;
+        REQUIRE(Stats::watch().isOk());
+        for (int i = 0; i < 300 && Stats::history(g.idOf(1), Span<int32_t>(samples, 4)) < 2; ++i) {
+                dev.busyUs += 1000;
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        const size_t again = Stats::history(g.idOf(1), Span<int32_t>(samples, Stats::HistoryDepth));
+        CHECK(again >= 2);
+        for (size_t i = 0; i < again; ++i) CHECK(samples[i] < 1000000);
+        Stats::unwatch();
+        for (int i = 0; i < 300 && Stats::history(g.idOf(1), Span<int32_t>(samples, 4)) > 0; ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
         Stats::setInterval(1);
         CHECK(Stats::interval() == 100);
         Stats::setInterval(Stats::DefaultIntervalMs);

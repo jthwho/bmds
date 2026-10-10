@@ -2870,6 +2870,13 @@ Result<List<WindowManager::Info>> WindowManager::windows() {
         return makeResult(std::move(out));
 }
 
+bool WindowManager::isMinimized(uint8_t id) {
+        Mutex::Locker lock(_lock, WaitForever);
+        for (size_t i = 0; i < _stack.hiddenCount(); ++i)
+                if (_stack.hiddenIdAt(i) == id) return true;
+        return false;
+}
+
 Result<Rect> WindowManager::rect(uint8_t id) {
         Mutex::Locker lock(_lock, WaitForever);
         return _stack.rectOf(id);

@@ -99,6 +99,11 @@ _Static_assert(BMDS_SYS_MIDI_STATUS == 76, "ABI: slot MIDI_STATUS");
 _Static_assert(BMDS_SYS_MIDI_CONTROL == 77, "ABI: slot MIDI_CONTROL");
 _Static_assert(BMDS_SYS_AUDIO_SYNTH == 78, "ABI: slot AUDIO_SYNTH");
 _Static_assert(BMDS_SYS_AUDIO_SYNTH_INFO == 79, "ABI: slot AUDIO_SYNTH_INFO");
+_Static_assert(BMDS_SYS_STATS_LIST == 80 && BMDS_SYS_STATS_READ == 81 && BMDS_SYS_STATS_HISTORY == 82,
+               "ABI: slots STATS_LIST, _READ, _HISTORY");
+_Static_assert(BMDS_SYS_STATS_PROBLEMS == 83 && BMDS_SYS_STATS_CONTROL == 84 && BMDS_SYS_STATS_STATUS == 85,
+               "ABI: slots STATS_PROBLEMS, _CONTROL, _STATUS");
+_Static_assert(BMDS_SYS_TASK_LIST == 86 && BMDS_SYS_PROC_INFO == 87, "ABI: slots TASK_LIST, PROC_INFO");
 _Static_assert(BMDS_SYSCONF_KEY_MAX == 63 && BMDS_SYSCONF_VALUE_MAX == 1024, "ABI: sysconf lengths");
 _Static_assert(BMDS_SYSCONF_TYPE_BOOL == 0 && BMDS_SYSCONF_TYPE_INT == 1 && BMDS_SYSCONF_TYPE_STRING == 2 &&
                        BMDS_SYSCONF_TYPE_COLOR == 3 && BMDS_SYSCONF_TYPE_ENUM == 4 && BMDS_SYSCONF_TYPE_PATH == 5 &&
@@ -359,6 +364,103 @@ _Static_assert(offsetof(bmds_synth_info_t, cpu_permille_max) == 64, "ABI: synth_
 _Static_assert(offsetof(bmds_synth_info_t, reserved) == 68, "ABI: synth_info.reserved");
 _Static_assert(offsetof(bmds_synth_info_t, font) == 72, "ABI: synth_info.font");
 _Static_assert(sizeof(bmds_synth_info_t) == 200, "ABI: bmds_synth_info_t size");
+
+_Static_assert(BMDS_COUNTER_UNAVAILABLE == INT64_MIN && BMDS_COUNTER_NO_LEVEL == INT64_MIN, "ABI: counter markers");
+_Static_assert(BMDS_COUNTER_NAME_MAX == 47, "ABI: counter name length");
+_Static_assert(BMDS_UNIT_COUNT == 0 && BMDS_UNIT_BYTES == 1 && BMDS_UNIT_MICROS == 2 && BMDS_UNIT_PERMILLE == 3,
+               "ABI: units 0-3");
+_Static_assert(BMDS_UNIT_HZ == 4 && BMDS_UNIT_MILLIHZ == 5 && BMDS_UNIT_PPM == 6 && BMDS_UNIT_FRAMES == 7,
+               "ABI: units 4-7");
+_Static_assert(BMDS_UNIT_CYCLES == 8 && BMDS_UNIT_DECIBELS == 9 && BMDS_UNIT_NANOS == 10 && BMDS_UNIT_PPB == 11,
+               "ABI: units 8-11");
+_Static_assert(BMDS_COUNTER_TOTAL == 0 && BMDS_COUNTER_LEVEL == 1 && BMDS_COUNTER_PEAK == 2 &&
+                       BMDS_COUNTER_STATE == 3 && BMDS_COUNTER_INFO == 4,
+               "ABI: counter kinds");
+_Static_assert(BMDS_COUNTER_HISTORY == 0x1 && BMDS_COUNTER_ADJUSTED == 0x2, "ABI: counter flags");
+_Static_assert(BMDS_RULE_NONE == 0 && BMDS_RULE_ZERO == 1 && BMDS_RULE_ABOVE == 2 && BMDS_RULE_BELOW == 3 &&
+                       BMDS_RULE_DRIFT == 4 && BMDS_RULE_STATE == 5,
+               "ABI: rules");
+_Static_assert(BMDS_HEALTH_NORMAL == 0 && BMDS_HEALTH_WARNING == 1 && BMDS_HEALTH_CRITICAL == 2 &&
+                       BMDS_HEALTH_UNJUDGED == 255,
+               "ABI: health");
+_Static_assert(BMDS_PROBLEM_OPEN == 0x1 && BMDS_PROBLEM_EARLIER == 0x2, "ABI: problem flags");
+_Static_assert(BMDS_STATS_WATCH == 1 && BMDS_STATS_SEEN == 2 && BMDS_STATS_CLEAR == 3, "ABI: stats_control ops");
+_Static_assert(BMDS_STATS_CPU_COUNTED == 0x1 && BMDS_STATS_WATCHING == 0x2, "ABI: stats_status flags");
+_Static_assert(BMDS_TASK_RUNNING == 0 && BMDS_TASK_READY == 1 && BMDS_TASK_BLOCKED == 2 && BMDS_TASK_SUSPENDED == 3 &&
+                       BMDS_TASK_DELETED == 4,
+               "ABI: task states");
+_Static_assert(BMDS_TASK_MAIN == 0x1 && BMDS_TASK_STACK_WARN == 512 && BMDS_TASK_STACK_CRIT == 256,
+               "ABI: task flags and stack levels");
+_Static_assert(BMDS_PROC_INFO_NEXT == 0x1, "ABI: proc_info flags");
+_Static_assert(BMDS_PROC_RUNNING == 0 && BMDS_PROC_VFORK == 1 && BMDS_PROC_ENDING == 2 && BMDS_PROC_ZOMBIE == 3 &&
+                       BMDS_PROC_STOPPED == 4,
+               "ABI: process states");
+
+_Static_assert(offsetof(bmds_counter_t, size) == 0, "ABI: counter.size");
+_Static_assert(offsetof(bmds_counter_t, id) == 4, "ABI: counter.id");
+_Static_assert(offsetof(bmds_counter_t, generation) == 8, "ABI: counter.generation");
+_Static_assert(offsetof(bmds_counter_t, unit) == 12, "ABI: counter.unit");
+_Static_assert(offsetof(bmds_counter_t, kind) == 16, "ABI: counter.kind");
+_Static_assert(offsetof(bmds_counter_t, flags) == 20, "ABI: counter.flags");
+_Static_assert(offsetof(bmds_counter_t, rule) == 24, "ABI: counter.rule");
+_Static_assert(offsetof(bmds_counter_t, health) == 28, "ABI: counter.health");
+_Static_assert(offsetof(bmds_counter_t, hold) == 32, "ABI: counter.hold");
+_Static_assert(offsetof(bmds_counter_t, reserved) == 36, "ABI: counter.reserved");
+_Static_assert(offsetof(bmds_counter_t, warn) == 40, "ABI: counter.warn");
+_Static_assert(offsetof(bmds_counter_t, crit) == 48, "ABI: counter.crit");
+_Static_assert(offsetof(bmds_counter_t, name) == 56, "ABI: counter.name");
+_Static_assert(offsetof(bmds_counter_t, labels) == 104, "ABI: counter.labels");
+_Static_assert(offsetof(bmds_counter_t, help) == 168, "ABI: counter.help");
+_Static_assert(sizeof(bmds_counter_t) == 296, "ABI: bmds_counter_t size");
+_Static_assert(offsetof(bmds_problem_t, size) == 0, "ABI: problem.size");
+_Static_assert(offsetof(bmds_problem_t, id) == 4, "ABI: problem.id");
+_Static_assert(offsetof(bmds_problem_t, health) == 8, "ABI: problem.health");
+_Static_assert(offsetof(bmds_problem_t, flags) == 12, "ABI: problem.flags");
+_Static_assert(offsetof(bmds_problem_t, changed) == 16, "ABI: problem.changed");
+_Static_assert(offsetof(bmds_problem_t, start_ns) == 24, "ABI: problem.start_ns");
+_Static_assert(offsetof(bmds_problem_t, end_ns) == 32, "ABI: problem.end_ns");
+_Static_assert(offsetof(bmds_problem_t, first_value) == 40, "ABI: problem.first_value");
+_Static_assert(offsetof(bmds_problem_t, last_value) == 48, "ABI: problem.last_value");
+_Static_assert(offsetof(bmds_problem_t, count) == 56, "ABI: problem.count");
+_Static_assert(offsetof(bmds_problem_t, name) == 64, "ABI: problem.name");
+_Static_assert(sizeof(bmds_problem_t) == 112, "ABI: bmds_problem_t size");
+_Static_assert(offsetof(bmds_stats_status_t, size) == 0, "ABI: stats_status.size");
+_Static_assert(offsetof(bmds_stats_status_t, generation) == 4, "ABI: stats_status.generation");
+_Static_assert(offsetof(bmds_stats_status_t, count) == 8, "ABI: stats_status.count");
+_Static_assert(offsetof(bmds_stats_status_t, watchers) == 12, "ABI: stats_status.watchers");
+_Static_assert(offsetof(bmds_stats_status_t, interval_ms) == 16, "ABI: stats_status.interval_ms");
+_Static_assert(offsetof(bmds_stats_status_t, flags) == 20, "ABI: stats_status.flags");
+_Static_assert(offsetof(bmds_stats_status_t, unseen) == 24, "ABI: stats_status.unseen");
+_Static_assert(offsetof(bmds_stats_status_t, cores) == 28, "ABI: stats_status.cores");
+_Static_assert(offsetof(bmds_stats_status_t, last_change) == 32, "ABI: stats_status.last_change");
+_Static_assert(offsetof(bmds_stats_status_t, last_sample_ns) == 40, "ABI: stats_status.last_sample_ns");
+_Static_assert(sizeof(bmds_stats_status_t) == 48, "ABI: bmds_stats_status_t size");
+_Static_assert(offsetof(bmds_task_info_t, size) == 0, "ABI: task_info.size");
+_Static_assert(offsetof(bmds_task_info_t, pid) == 4, "ABI: task_info.pid");
+_Static_assert(offsetof(bmds_task_info_t, tid) == 8, "ABI: task_info.tid");
+_Static_assert(offsetof(bmds_task_info_t, state) == 12, "ABI: task_info.state");
+_Static_assert(offsetof(bmds_task_info_t, priority) == 16, "ABI: task_info.priority");
+_Static_assert(offsetof(bmds_task_info_t, base_priority) == 20, "ABI: task_info.base_priority");
+_Static_assert(offsetof(bmds_task_info_t, core) == 24, "ABI: task_info.core");
+_Static_assert(offsetof(bmds_task_info_t, stack_free) == 28, "ABI: task_info.stack_free");
+_Static_assert(offsetof(bmds_task_info_t, cpu_us) == 32, "ABI: task_info.cpu_us");
+_Static_assert(offsetof(bmds_task_info_t, number) == 40, "ABI: task_info.number");
+_Static_assert(offsetof(bmds_task_info_t, flags) == 44, "ABI: task_info.flags");
+_Static_assert(offsetof(bmds_task_info_t, name) == 48, "ABI: task_info.name");
+_Static_assert(sizeof(bmds_task_info_t) == 64, "ABI: bmds_task_info_t size");
+_Static_assert(offsetof(bmds_proc_info_t, size) == 0, "ABI: proc_info.size");
+_Static_assert(offsetof(bmds_proc_info_t, pid) == 4, "ABI: proc_info.pid");
+_Static_assert(offsetof(bmds_proc_info_t, parent) == 8, "ABI: proc_info.parent");
+_Static_assert(offsetof(bmds_proc_info_t, group) == 12, "ABI: proc_info.group");
+_Static_assert(offsetof(bmds_proc_info_t, session) == 16, "ABI: proc_info.session");
+_Static_assert(offsetof(bmds_proc_info_t, state) == 20, "ABI: proc_info.state");
+_Static_assert(offsetof(bmds_proc_info_t, threads) == 24, "ABI: proc_info.threads");
+_Static_assert(offsetof(bmds_proc_info_t, status) == 28, "ABI: proc_info.status");
+_Static_assert(offsetof(bmds_proc_info_t, memory) == 32, "ABI: proc_info.memory");
+_Static_assert(offsetof(bmds_proc_info_t, cpu_us) == 40, "ABI: proc_info.cpu_us");
+_Static_assert(offsetof(bmds_proc_info_t, start_ns) == 48, "ABI: proc_info.start_ns");
+_Static_assert(offsetof(bmds_proc_info_t, command) == 56, "ABI: proc_info.command");
+_Static_assert(sizeof(bmds_proc_info_t) == 104, "ABI: bmds_proc_info_t size");
 
 #if UINTPTR_MAX == 0xffffffffu
 _Static_assert(offsetof(bmds_thread_t, size) == 0, "ABI: thread.size");

@@ -10,6 +10,7 @@
 set(BMDS_GUI_PURE_SRCS
         src/filenamelist.cpp
         src/furniturelayout.cpp
+        src/graphlayout.cpp
         src/icongrid.cpp
         src/itemlayout.cpp
         src/itemmodel.cpp
@@ -33,6 +34,7 @@ if(COMMAND idf_component_register)
                                     src/fileicons.cpp
                                     src/folderitemmodel.cpp
                                     src/furniture.cpp
+                                    src/graph.cpp
                                     src/guiapplication.cpp
                                     src/guiclipboard.cpp
                                     src/guiwindow.cpp

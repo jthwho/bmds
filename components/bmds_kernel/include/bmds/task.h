@@ -14,6 +14,7 @@
 #include <bmds/config.h>
 #include <bmds/error.h>
 #include <bmds/memspace.h>
+#include <bmds/tasklist.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -105,9 +106,10 @@ class Task {
                 static void sleep(unsigned int delayMs);
 
         private:
-                TaskHandle_t  _handle = nullptr;
-                StaticTask_t *_tcb = nullptr;
-                StackType_t  *_stack = nullptr;
+                TaskHandle_t   _handle = nullptr;
+                StaticTask_t  *_tcb = nullptr;
+                StackType_t   *_stack = nullptr;
+                TaskList::Node _listed; // in the task list (`TaskList`) while it runs
 };
 
 BMDS_NAMESPACE_END

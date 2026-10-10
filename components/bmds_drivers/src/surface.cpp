@@ -333,9 +333,19 @@ Error Surface::fillEdges(Span<const Rect> rects, uint32_t rgb, const Deadline &d
                 count = 0;
                 used = 0;
         };
+        // Two edges of one group on the same rows in one batch would both read its old pixels, and
+        // the second's write would undo the first's (neighbouring fills: a graph's bars): the batch
+        // goes first.
+        auto clashes = [&](uint16_t x, uint16_t y, uint16_t rows) {
+                for (size_t i = 0; i < count; ++i) {
+                        const Edge &e = batch[i];
+                        if (e.x == x && y < e.y + e.rows && e.y < y + rows) return true;
+                }
+                return false;
+        };
         auto addEdge = [&](uint16_t x, uint16_t y, uint16_t rows, uint8_t from, uint8_t to) {
                 while (rows > 0 && err.isOk()) {
-                        if (count == MaxPieces || used == capacity) flush();
+                        if (count == MaxPieces || used == capacity || clashes(x, y, rows)) flush();
                         const auto n = static_cast<uint16_t>(rows < capacity - used ? rows : capacity - used);
                         batch[count++] = Edge{x, y, n, from, to, static_cast<uint16_t>(used)};
                         used += n;

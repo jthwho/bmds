@@ -23,6 +23,7 @@
 #include <bmds/filenamelist.h>
 #include <bmds/font.h>
 #include <bmds/furniturelayout.h>
+#include <bmds/graphlayout.h>
 #include <bmds/icongrid.h>
 #include <bmds/itemlayout.h>
 #include <bmds/itemmodel.h>
@@ -829,6 +830,66 @@ TEST_CASE("ScrollModel: the value kept in range, steps, and the bar's parts") {
         g = m.geometry(216, 16);
         CHECK(g.thumbLength == 0);
         CHECK(ScrollModel::partAt(g, 216, 100) == Part::None);
+}
+
+TEST_CASE("GraphLayout: bar heights, the automatic scale, runs from the right") {
+        using bmds::GraphLayout;
+        CHECK(GraphLayout::barHeight(0, 100, 50) == 0);
+        CHECK(GraphLayout::barHeight(-5, 100, 50) == 0);
+        CHECK(GraphLayout::barHeight(1, 100, 50) == 1); // above zero shows
+        CHECK(GraphLayout::barHeight(50, 100, 50) == 25);
+        CHECK(GraphLayout::barHeight(150, 100, 50) == 50);
+        CHECK(GraphLayout::barHeight(50, 0, 50) == 0);
+        CHECK(GraphLayout::barHeight(50, 100, 0) == 0);
+        CHECK(GraphLayout::barHeight(INT64_MAX / 2, INT64_MAX, 100) >= 49); // no overflow
+        CHECK(GraphLayout::barHeight(INT64_MAX / 2, INT64_MAX, 100) <= 51);
+        CHECK(GraphLayout::niceMaximum(0) == 1);
+        CHECK(GraphLayout::niceMaximum(1) == 1);
+        CHECK(GraphLayout::niceMaximum(3) == 5);
+        CHECK(GraphLayout::niceMaximum(7) == 10);
+        CHECK(GraphLayout::niceMaximum(150) == 200);
+        CHECK(GraphLayout::niceMaximum(1000000) == 1000000);
+        CHECK(GraphLayout::niceMaximum(1000001) == 2000000);
+        CHECK(GraphLayout::columns(400, 120) == 120);
+        CHECK(GraphLayout::columns(100, 120) == 100); // a pixel each at least
+        CHECK(GraphLayout::columns(100, 0) == 1);
+        CHECK(GraphLayout::columnX(0, 120, 390) == 0);
+        CHECK(GraphLayout::columnX(120, 120, 390) == 390); // the last column ends at the right edge
+        CHECK(GraphLayout::columnX(60, 120, 390) == 195);
+
+        std::vector<GraphLayout::Run> runs;
+        auto                          collect = [&](const GraphLayout::Run &r) {
+                runs.push_back(r);
+        };
+        // Equal neighbours merge; zero leaves a gap; the newest at the right edge.
+        const int32_t samples[] = {10, 10, 0, 5, 10};
+        GraphLayout::forEachRun(samples, 10, 30, 20, 10, collect); // 3 pixels a column
+        REQUIRE(runs.size() == 3);
+        CHECK((runs[0].x == 15 && runs[0].width == 6 && runs[0].height == 20));
+        CHECK((runs[1].x == 24 && runs[1].width == 3 && runs[1].height == 10));
+        CHECK((runs[2].x == 27 && runs[2].width == 3 && runs[2].height == 20));
+        // A full history spans the whole width, columns of 3 and 4 pixels with no gaps.
+        runs.clear();
+        std::vector<int32_t> full(120);
+        for (size_t i = 0; i < full.size(); ++i) full[i] = int32_t(i % 2 + 1);
+        GraphLayout::forEachRun(full, 2, 390, 10, 120, collect);
+        REQUIRE(runs.size() == 120);
+        CHECK(runs.front().x == 0);
+        CHECK(runs.back().x + runs.back().width == 390);
+        for (size_t i = 1; i < runs.size(); ++i) {
+                CHECK(runs[i].x == runs[i - 1].x + runs[i - 1].width);
+                CHECK((runs[i].width == 3 || runs[i].width == 4));
+        }
+        // More samples than fit: the oldest left out.
+        runs.clear();
+        const int32_t many[] = {1, 2, 3, 4, 5, 6};
+        GraphLayout::forEachRun(many, 6, 4, 6, 4, collect);
+        REQUIRE(runs.size() == 4);
+        CHECK((runs[0].x == 0 && runs[0].height == 3));
+        CHECK((runs[3].x == 3 && runs[3].height == 6));
+        runs.clear();
+        GraphLayout::forEachRun(bmds::Span<const int32_t>(), 6, 4, 6, 4, collect);
+        CHECK(runs.empty());
 }
 
 TEST_CASE("Furniture: menu bar titles, splitter sides, progress blocks, a dialog's buttons") {

@@ -106,6 +106,8 @@ namespace Stats {
                         friend size_t   count();
                         friend Error    watch();
                         friend size_t   history(uint32_t id, Span<int32_t> out);
+                        friend size_t        read(Span<const uint32_t> ids, Span<int64_t> values, Span<uint8_t> health);
+                        friend struct Status status();
 
                         const Stat::Desc *_descs;
                         Read              _read;
@@ -130,6 +132,20 @@ namespace Stats {
                                 Stat::Unavailable; ///< A `Total`'s a second, at the last sample (while `judged`).
                         bool     judged = false;   ///< Watched: the sampler runs the rules.
                         uint32_t generation = 0;   ///< The registry's (`generation()`).
+        };
+
+        /** @brief `read()`'s health of a counter not judged now (nobody watches). */
+        constexpr uint8_t Unjudged = 0xff;
+
+        /** @brief The registry as a whole (`status()`). */
+        struct Status {
+                        uint32_t     generation = 0;                 ///< `generation()`.
+                        size_t       count = 0;                      ///< `count()`.
+                        size_t       watchers = 0;                   ///< `watchers()`.
+                        uint32_t     intervalMs = DefaultIntervalMs; ///< `interval()`.
+                        int64_t      lastSampleMs = 0;               ///< The last sample's time (monotonic; 0: none).
+                        uint64_t     lastProblemChange = 0;          ///< `lastProblemChange()`.
+                        Stat::Health unseen = Stat::Health::Normal;  ///< `unseenProblems()`.
         };
 
         /** @brief Sets the registry up (no allocation). @return `Ok`. Idempotent. */
@@ -159,6 +175,13 @@ namespace Stats {
          */
         Error info(size_t index, Info &out);
 
+        /**
+         * @brief As `info()`, without reading the value (`Info::value` is
+         *        `Stat::Unavailable`): listing costs no group a read.
+         * @return `Ok`, or `NotFound` past the last.
+         */
+        Error describe(size_t index, Info &out);
+
         /** @brief Returns the id of the counter named @p name (`NoId`: none). */
         uint32_t find(StringView name);
 
@@ -168,6 +191,13 @@ namespace Stats {
          * @return How many were read.
          */
         size_t read(Span<const uint32_t> ids, Span<int64_t> values);
+
+        /**
+         * @brief As `read()`, with each counter's health at the last sample in
+         *        @p health (a `Stat::Health`, or `Unjudged`), as many as it holds.
+         * @return How many were read.
+         */
+        size_t read(Span<const uint32_t> ids, Span<int64_t> values, Span<uint8_t> health);
 
         /**
          * @brief Starts watching: the first watcher starts the sampler (each
@@ -204,6 +234,9 @@ namespace Stats {
 
         /** @brief Copies the problems changed after @p after into @p out (`Stat::ProblemLog::changedAfter()`). */
         size_t problems(uint64_t after, Span<Stat::ProblemLog::Episode> out);
+
+        /** @brief Returns the registry's state as a whole, at one moment. */
+        Status status();
 
         /** @brief Returns the newest problem change's number. */
         uint64_t lastProblemChange();

@@ -47,6 +47,8 @@ class Thread {
                                 size_t       stackBytes = 8192;            ///< Stack size in bytes.
                                 unsigned int priority = 1;                 ///< FreeRTOS priority.
                                 MemSpace     stackSpace = MemSpace::Psram; ///< Where the stack lives.
+                                /** A kernel thread even if a process's task starts it (a subsystem's own, started on demand). */
+                                bool kernel = false;
                 };
 
                 /** @brief Constructs a thread that is not started. */

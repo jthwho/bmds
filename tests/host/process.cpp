@@ -741,6 +741,8 @@ TEST_CASE("ProcessTable") {
                         CHECK(v.parent == (v.pid == parent ? Kernel : parent));
                         CHECK(v.group == parent);
                         CHECK(v.session == parent);
+                        CHECK(v.startedUs > 0); // when it was added
+                        CHECK(v.cpuUs == 0);
                 });
                 CHECK(seen == std::vector<int32_t>{parent, a, b});
                 int inGroup = 0;
@@ -752,7 +754,7 @@ TEST_CASE("ProcessTable") {
                 CHECK(table.reap(parent, -1).error() == Error::WouldBlock);
                 CHECK(table.reap(parent, 77).error() == Error::NotExist);
                 CHECK(table.reap(a, -1).error() == Error::NotExist);
-                table.exited(b, ProcessTable::exitStatus(3));
+                table.exited(b, ProcessTable::exitStatus(3), 1234);
                 CHECK(parentEvent.tryAcquire().isOk());
                 table.exited(b, ProcessTable::exitStatus(9)); // once only
                 int zombies = 0;
@@ -762,6 +764,7 @@ TEST_CASE("ProcessTable") {
                         CHECK(v.pid == b);
                         CHECK(v.status == ProcessTable::exitStatus(3));
                         CHECK(v.runtime == nullptr);
+                        CHECK(v.cpuUs == 1234); // the time it ran, kept
                 });
                 CHECK(zombies == 1);
                 inGroup = 0;

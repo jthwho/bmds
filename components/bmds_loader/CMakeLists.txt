@@ -26,11 +26,12 @@ if(COMMAND idf_component_register)
                                     src/loader.cpp
                                     src/midicalls.cpp
                                     src/proccommand.cpp
+                                    src/statscalls.cpp
                                     src/syscalls.cpp
                                     src/systable.c
                                INCLUDE_DIRS include ${BMDS_SDK_INCLUDE}
                                REQUIRES bmds_core bmds_kernel bmds_console bmds_fs bmds_sysconf
-                               PRIV_REQUIRES bmds_audio bmds_midi bmds_synth bmds_shell esp_hw_support esp_mm freertos
+                               PRIV_REQUIRES bmds_audio bmds_midi bmds_stats bmds_synth bmds_shell esp_hw_support esp_mm freertos
                                # proccommand.cpp's commands are found through their linker
                                # section, not by symbol.
                                WHOLE_ARCHIVE)

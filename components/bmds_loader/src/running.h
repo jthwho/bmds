@@ -195,6 +195,8 @@ struct Running final : ProcessOwner, ProcessControl {
                 ProgramThread        main;              // the first thread
                 std::atomic<int32_t> killStatus{0};     // what a kill ends it with
                 std::atomic<bool>    killed{false};
+                std::atomic<bool>    watchingStats{false};               // stats_control(WATCH): released with it
+                uint64_t             cpuBaseUs = 0;                      // the program's before an exec
                 char                 command[Loader::CommandBytes] = {}; // argv joined, cut (ps)
                 Mutex                threadsLock;                        // the fields below
                 Member              *threads = nullptr;                  // its kernel Threads
@@ -204,6 +206,7 @@ struct Running final : ProcessOwner, ProcessControl {
                 ProgramThread       *others = nullptr;    // program threads but the first
                 int                  live = 1;            // program threads not ended
                 int                  records = 1;         // thread records not yet stopped and freed
+                uint64_t             endedCpuUs = 0;      // the time of its tasks that ended
                 bool                 execWaiting = false; // an exec waits for the other threads to end:
                 Semaphore            othersGone{1, 0};
 
@@ -241,6 +244,18 @@ struct Running final : ProcessOwner, ProcessControl {
 
                 /** @brief The Process of @p pid on one of its threads (its own, a vfork child's), or null. */
                 Process *processOf(int32_t pid);
+
+                /**
+                 * @brief Returns the CPU time it has had, in µs: its live tasks', its
+                 *        ended ones', and the program's before an exec (0: not counted).
+                 */
+                uint64_t cpuUs();
+
+                /** @brief `cpuUs()` with `threadsLock` held. */
+                uint64_t cpuUsLocked();
+
+                /** @brief Stops watching the counters if it does (`stats_control`). */
+                void releaseStats();
 
                 /** @brief No more kernel threads; waits for those left, interrupting them first. */
                 void endThreads();

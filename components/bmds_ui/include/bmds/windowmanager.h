@@ -731,6 +731,9 @@ class WindowManager {
                  */
                 Result<List<Info>> windows();
 
+                /** @brief Returns true if window @p id is minimized (false: shown, or no such window). */
+                bool isMinimized(uint8_t id);
+
                 /** @brief Returns window @p id's outer rectangle (screen coordinates; minimized too). */
                 Result<Rect> rect(uint8_t id);
 

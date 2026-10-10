@@ -59,6 +59,7 @@ namespace Stats {
                         size_t           watchers = 0;
                         bool             sampling = false; // the sampler thread runs
                         uint32_t         intervalMs = DefaultIntervalMs;
+                        int64_t          lastSampleMs = 0;
                         Stat::ProblemLog problems{MemSpace::Psram};
                         Stat::Overrides  overrides{MemSpace::Psram};
 
@@ -94,6 +95,31 @@ namespace Stats {
                                 for (Group *g = groups; g != nullptr; g = g->_next)
                                         if (g->_serial == serial) return true;
                                 return false;
+                        }
+
+                        bool isJudged(const Group &g) const { return sampling && watchers > 0 && g._state != nullptr; }
+
+                        // The counter at @p index, described (no value).
+                        Group *describe(size_t index, Info &out) const {
+                                for (Group *g = groups; g != nullptr; g = g->_next) {
+                                        if (index >= g->_count) {
+                                                index -= g->_count;
+                                                continue;
+                                        }
+                                        const Stat::Desc &d = g->_descs[index];
+                                        out = Info{};
+                                        out.id = g->idOf(index);
+                                        const size_t len = fullName(StringView(g->_name), d, out.name);
+                                        out.desc = d;
+                                        out.limits = limitsOf(*g, index, StringView(out.name, len));
+                                        out.judged = isJudged(*g);
+                                        out.health =
+                                                out.judged ? g->_state->judges[index].health() : Stat::Health::Normal;
+                                        out.rate = out.judged ? g->_state->judges[index].rate() : Stat::Unavailable;
+                                        out.generation = generation;
+                                        return g;
+                                }
+                                return nullptr;
                         }
 
                         void readGroup(Group &g, int64_t (&values)[MaxPerGroup]) const {
@@ -139,6 +165,7 @@ namespace Stats {
 
                         void sampleAll(int64_t nowMs) {
                                 for (Group *g = groups; g != nullptr; g = g->_next) sampleGroup(*g, nowMs);
+                                lastSampleMs = nowMs;
                                 return;
                         }
 
@@ -149,6 +176,7 @@ namespace Stats {
                                 const StringView groupName(g._name);
                                 int32_t          kept[MaxPerGroup];
                                 size_t           keptCount = 0;
+                                bool             untimed = false; // a total's increase over no known interval
                                 for (size_t i = 0; i < g._count; ++i) {
                                         const Stat::Desc  &d = g._descs[i];
                                         char               name[Stat::MaxName + 1];
@@ -172,11 +200,16 @@ namespace Stats {
                                         const uint64_t n = event ? uint64_t(judge.delta() > 0 ? judge.delta() : 0) : 1;
                                         (void)problems.note(g.idOf(i), nameView, before, after, values[i], n, nowMs,
                                                             judge.since());
+                                        if (d.kind == Stat::Kind::Total && values[i] != Stat::Unavailable &&
+                                            judge.rate() == Stat::Unavailable)
+                                                untimed = true;
                                         if ((d.flags & Stat::KeepHistory) != 0 && keptCount < MaxPerGroup)
                                                 kept[keptCount++] = clamp32(d.kind == Stat::Kind::Total ? judge.delta()
                                                                                                         : values[i]);
                                 }
-                                if (watchers > 0 && g._state->history.series() > 0)
+                                // The first sample after a pause (or ever) counts the whole gap as one
+                                // interval: a spike in a graph. The history starts at the next one.
+                                if (watchers > 0 && g._state->history.series() > 0 && !untimed)
                                         g._state->history.push(Span<const int32_t>(kept, keptCount));
                                 return;
                         }
@@ -297,28 +330,18 @@ namespace Stats {
                 if (!registry.isCreated()) return Error::NotFound;
                 Registry     &r = *registry;
                 Mutex::Locker locker(r.lock, WaitForever);
-                for (Group *g = r.groups; g != nullptr; g = g->_next) {
-                        if (index >= g->_count) {
-                                index -= g->_count;
-                                continue;
-                        }
-                        const Stat::Desc &d = g->_descs[index];
-                        out = Info{};
-                        out.id = g->idOf(index);
-                        const size_t len = fullName(StringView(g->_name), d, out.name);
-                        out.desc = d;
-                        out.limits = r.limitsOf(*g, index, StringView(out.name, len));
-                        out.judged = r.sampling && r.watchers > 0;
-                        out.judged = out.judged && g->_state != nullptr;
-                        out.health = out.judged ? g->_state->judges[index].health() : Stat::Health::Normal;
-                        out.rate = out.judged ? g->_state->judges[index].rate() : Stat::Unavailable;
-                        int64_t values[MaxPerGroup];
-                        r.readGroup(*g, values);
-                        out.value = values[index];
-                        out.generation = r.generation;
-                        return Error::Ok;
-                }
-                return Error::NotFound;
+                Group        *g = r.describe(index, out);
+                if (g == nullptr) return Error::NotFound;
+                int64_t values[MaxPerGroup];
+                r.readGroup(*g, values);
+                out.value = values[out.id & 0xff];
+                return Error::Ok;
+        }
+
+        Error describe(size_t index, Info &out) {
+                if (!registry.isCreated()) return Error::NotFound;
+                Mutex::Locker locker(registry->lock, WaitForever);
+                return registry->describe(index, out) != nullptr ? Error::Ok : Error::NotFound;
         }
 
         uint32_t find(StringView name) {
@@ -338,9 +361,14 @@ namespace Stats {
         }
 
         size_t read(Span<const uint32_t> ids, Span<int64_t> values) {
+                return read(ids, values, Span<uint8_t>());
+        }
+
+        size_t read(Span<const uint32_t> ids, Span<int64_t> values, Span<uint8_t> health) {
                 const size_t n = ids.size() < values.size() ? ids.size() : values.size();
                 if (!registry.isCreated()) {
                         for (size_t i = 0; i < n; ++i) values[i] = Stat::Unavailable;
+                        for (size_t i = 0; i < n && i < health.size(); ++i) health[i] = Unjudged;
                         return n;
                 }
                 Registry     &r = *registry;
@@ -349,6 +377,10 @@ namespace Stats {
                 int64_t       buffer[MaxPerGroup];
                 for (size_t i = 0; i < n; ++i) {
                         Group *g = r.groupOf(ids[i]);
+                        if (i < health.size())
+                                health[i] = g != nullptr && r.isJudged(*g)
+                                                    ? uint8_t(g->_state->judges[ids[i] & 0xff].health())
+                                                    : Unjudged;
                         if (g == nullptr) {
                                 values[i] = Stat::Unavailable;
                                 continue;
@@ -374,6 +406,7 @@ namespace Stats {
                 config.stackBytes = 4096;
                 config.priority = 3;
                 config.stackSpace = MemSpace::Psram;
+                config.kernel = true; // not the watching process's, if one asked
                 const Error err = r.sampler.start(config, Registry::samplerMain, nullptr);
                 if (err.isError()) {
                         --r.watchers;
@@ -437,6 +470,21 @@ namespace Stats {
                 if (!registry.isCreated()) return 0;
                 Mutex::Locker locker(registry->lock, WaitForever);
                 return registry->problems.changedAfter(after, out);
+        }
+
+        Status status() {
+                Status s;
+                if (!registry.isCreated()) return s;
+                Registry     &r = *registry;
+                Mutex::Locker locker(r.lock, WaitForever);
+                s.generation = r.generation;
+                for (Group *g = r.groups; g != nullptr; g = g->_next) s.count += g->_count;
+                s.watchers = r.watchers;
+                s.intervalMs = r.intervalMs;
+                s.lastSampleMs = r.lastSampleMs;
+                s.lastProblemChange = r.problems.lastChange();
+                s.unseen = r.problems.unseen();
+                return s;
         }
 
         uint64_t lastProblemChange() {

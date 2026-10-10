@@ -96,8 +96,16 @@ int32_t bmds_k_midi_status(int32_t fd, bmds_midi_status_t *status);
 int32_t bmds_k_midi_control(int32_t fd, uint32_t op, int32_t value);
 int32_t bmds_k_audio_synth(const bmds_synth_config_t *config);
 int32_t bmds_k_audio_synth_info(int32_t fd, bmds_synth_info_t *info);
+int32_t bmds_k_stats_list(uint32_t index, bmds_counter_t *info);
+int32_t bmds_k_stats_read(const uint32_t *ids, uint32_t count, int64_t *values, uint8_t *health, int64_t *time_ns);
+int32_t bmds_k_stats_history(uint32_t id, int64_t *values, uint32_t max, int64_t *newest_ns);
+int32_t bmds_k_stats_problems(uint64_t after, bmds_problem_t *out, uint32_t max);
+int32_t bmds_k_stats_control(uint32_t op, uint64_t value);
+int32_t bmds_k_stats_status(bmds_stats_status_t *status);
+int32_t bmds_k_task_list(bmds_task_info_t *out, uint32_t max);
+int32_t bmds_k_proc_info(int32_t pid, uint32_t flags, bmds_proc_info_t *info);
 
-#define SLOTS 80
+#define SLOTS 88
 
 /* bmds_sys_t with its slots spelled out (same layout; checked below). */
 static const struct {
@@ -192,10 +200,18 @@ static const struct {
                 [BMDS_SYS_MIDI_CONTROL] = (bmds_sys_fn_t)bmds_k_midi_control,
                 [BMDS_SYS_AUDIO_SYNTH] = (bmds_sys_fn_t)bmds_k_audio_synth,
                 [BMDS_SYS_AUDIO_SYNTH_INFO] = (bmds_sys_fn_t)bmds_k_audio_synth_info,
+                [BMDS_SYS_STATS_LIST] = (bmds_sys_fn_t)bmds_k_stats_list,
+                [BMDS_SYS_STATS_READ] = (bmds_sys_fn_t)bmds_k_stats_read,
+                [BMDS_SYS_STATS_HISTORY] = (bmds_sys_fn_t)bmds_k_stats_history,
+                [BMDS_SYS_STATS_PROBLEMS] = (bmds_sys_fn_t)bmds_k_stats_problems,
+                [BMDS_SYS_STATS_CONTROL] = (bmds_sys_fn_t)bmds_k_stats_control,
+                [BMDS_SYS_STATS_STATUS] = (bmds_sys_fn_t)bmds_k_stats_status,
+                [BMDS_SYS_TASK_LIST] = (bmds_sys_fn_t)bmds_k_task_list,
+                [BMDS_SYS_PROC_INFO] = (bmds_sys_fn_t)bmds_k_proc_info,
         },
 };
 
-_Static_assert(SLOTS == BMDS_SYS_AUDIO_SYNTH_INFO + 1, "every slot is in the table");
+_Static_assert(SLOTS == BMDS_SYS_PROC_INFO + 1, "every slot is in the table");
 _Static_assert(sizeof(table) == 16 + SLOTS * sizeof(bmds_sys_fn_t), "table layout");
 
 const bmds_sys_t *bmds_k_sys_table(void) {

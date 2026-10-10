@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=System Monitor
+Comment=How the system is behaving: CPU, memory, processes, audio, display and storage
+Exec=sysmon
+Icon=utilities-system-monitor
+Terminal=false
+Categories=System;Monitor;

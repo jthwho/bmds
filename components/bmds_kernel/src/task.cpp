@@ -11,6 +11,7 @@
 #include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/task.h>
+#include <bmds/tasklist.h>
 
 BMDS_DEBUG(Task)
 
@@ -35,10 +36,12 @@ Error Task::start(const Config &config, Entry entry, void *arg) {
         // may run on the other core, and even end and be stopped, before the
         // create call returns.
         _handle = reinterpret_cast<TaskHandle_t>(tcb);
+        TaskList::add(_listed, tcb);
         const TaskHandle_t handle = xTaskCreateStaticPinnedToCore(
                 entry, config.name, config.stackBytes / sizeof(StackType_t), arg, config.priority, stack, tcb, core);
         BMDS_ASSERT(handle == reinterpret_cast<TaskHandle_t>(tcb));
         (void)handle;
+        TaskList::setLive(_listed);
         bmdsDebug("Task(%p '%s'): started, %u-byte stack in %s, priority %u", this, config.name,
                   static_cast<unsigned>(config.stackBytes), memSpaceName(config.stackSpace), config.priority);
         return Error();
@@ -50,6 +53,7 @@ Error Task::stop() {
         // deleted (the port's delete hook may still touch the stack: FPU and
         // PIE state), and only then are its buffers freed.
         (void)suspend();
+        TaskList::remove(_listed);
         vTaskDelete(_handle);
         Memory::free(_stack);
         Memory::free(_tcb);

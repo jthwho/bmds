@@ -140,13 +140,14 @@ class ProcessTable {
                 void setRuntime(int32_t pid, void *runtime);
 
                 /**
-                 * @brief Records that @p pid ended with wait status @p status.
+                 * @brief Records that @p pid ended with wait status @p status, having
+                 *        run @p cpuUs (kept while it is a zombie).
                  *
                  * It becomes a zombie for its parent, or is freed if it has none;
                  * its own zombies are freed, its living children become orphans;
                  * its parent's semaphore is released.
                  */
-                void exited(int32_t pid, int32_t status);
+                void exited(int32_t pid, int32_t status, uint64_t cpuUs = 0);
 
                 /**
                  * @brief Records that @p pid stopped (by @p signal) or, with 0, continued:
@@ -231,8 +232,10 @@ class ProcessTable {
                                 int32_t session; ///< Its session.
                                 int32_t status;  ///< How it ended (a zombie).
                                 void   *runtime; ///< Its runner's object (running only; may be null).
-                                bool    ended;   ///< A zombie.
-                                bool    stopped; ///< Stopped.
+                                bool     ended;   ///< A zombie.
+                                bool     stopped; ///< Stopped.
+                                int64_t  startedUs; ///< When it was added (monotonic).
+                                uint64_t cpuUs;     ///< A zombie's time run (`exited()`).
                 };
 
                 /**
@@ -253,7 +256,8 @@ class ProcessTable {
                                 if (next == nullptr) return;
                                 last = next->pid;
                                 fn(View{next->pid, next->parent, next->group, next->session, next->status,
-                                        next->ended ? nullptr : next->runtime, next->ended, next->stopped});
+                                        next->ended ? nullptr : next->runtime, next->ended, next->stopped,
+                                        next->startedUs, next->cpuUs});
                         }
                 }
 
@@ -290,6 +294,8 @@ class ProcessTable {
                                 int32_t    change; // a stop or continue to report (its status), or 0
                                 bool       ended;
                                 bool       stopped;
+                                int64_t    startedUs; // monotonic
+                                uint64_t   cpuUs;     // a zombie's
                 };
 
                 Entry *find(int32_t pid);
