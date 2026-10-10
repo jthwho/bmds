@@ -136,6 +136,7 @@ class Directory {
  * /dev/sd0       a block device (BlockDevices); /dev/sd0p0 a partition
  * /sd0/p0        a mounted FAT or exFAT filesystem (the storage service's default path)
  * /boot          littlefs on the board's flash (devplan/storage.md §13d)
+ * /rom           the ROM image on the board's flash, read-only (devplan/rom.md)
  * /home          a link to the user's home (setHome(); devplan/sysconf.md §7)
  * ```
  *
@@ -181,14 +182,14 @@ namespace Vfs {
         /** @brief Longest mount path. */
         inline constexpr size_t MaxMountPath = 63;
 
-        /** @brief Most mounts at once. */
-        inline constexpr size_t MaxMounts = 4;
+        /** @brief Most mounts at once (each filesystem type has its own pool, fewer). */
+        inline constexpr size_t MaxMounts = 8;
 
         /** @brief A mount, as `listMounts()` reports it. */
         struct MountInfo {
                         char        path[MaxMountPath + 1] = {}; ///< Where it is mounted.
                         char        device[12] = {};             ///< The device's name ("sd0p0").
-                        const char *type = "";                   ///< "fat12", "fat16", "fat32", "exfat" or "littlefs".
+                        const char *type = ""; ///< "fat12", "fat16", "fat32", "exfat", "littlefs" or "rom".
         };
 
         /** @brief Sets up the VFS (the storage lock). Boot stage; idempotent. */
@@ -221,15 +222,17 @@ namespace Vfs {
         void setChangeHook(ChangeHook hook);
 
         /**
-         * @brief Mounts the filesystem on @p device at @p path: littlefs on a
-         *        flash (`BlockDevice::flash()`), FAT or exFAT on anything else.
+         * @brief Mounts the filesystem on @p device at @p path: a ROM image where
+         *        the device's bytes are mapped and one starts there
+         *        (`BlockDevice::mapped()`, `devplan/rom.md` §3d), littlefs on a flash
+         *        (`BlockDevice::flash()`), FAT or exFAT on anything else.
          * @param path Absolute (normalized here); not `/`, not in `/dev`, `/bin`
          *        or `/share/zoneinfo`, not inside or above another mount; at
          *        most `MaxMountPath` bytes.
          * @return `Ok`, `Invalid` (the path), `Exists` (something is there),
          *         `Busy` (@p device, a partition of it or the device it is part of
          *         is mounted already), `Full`, `NoMedia`,
-         *         `NoFilesystem`, `IoError`, ...
+         *         `NoFilesystem`, `CorruptData` (a damaged ROM image), `IoError`, ...
          */
         Error mount(StringView path, BlockDevice &device);
 
@@ -426,6 +429,16 @@ namespace Vfs {
          * @blocking A `stat()` and a 512-byte read, unless the name says.
          */
         Result<StringView> identify(StringView path, uint32_t flags, const Context &context);
+
+        /**
+         * @brief Returns file @p path's bytes where they lie, without copying
+         *        (`devplan/rom.md` §6): only a filesystem whose bytes are in memory
+         *        can (a ROM image). Links are followed. The view stays valid while
+         *        the filesystem is mounted (`/rom` always is).
+         * @return The bytes, `NotSupported` (not such a filesystem), `NotExist`,
+         *         `IsDir`, ...
+         */
+        Result<ByteSpan> map(StringView path, const Context &context);
 
         /**
          * @brief Returns the target of the symbolic link @p path (as written:

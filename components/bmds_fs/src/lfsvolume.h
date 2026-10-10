@@ -25,7 +25,7 @@ BMDS_NAMESPACE_BEGIN
 /**
  * @brief A littlefs filesystem while mounted on a flash.
  *
- * A static pool of `Vfs::MaxMounts`. littlefs's buffers (Psram) are
+ * A static pool of `MaxVolumes`. littlefs's buffers (Psram) are
  * allocated at mount and freed at unmount. Files and directories still
  * open when it is unmounted go stale: they fail with `NoMedia` and are only
  * freed when closed (a generation number tells them).
@@ -37,6 +37,9 @@ BMDS_NAMESPACE_BEGIN
  */
 class LittleFsVolume final : public Volume {
         public:
+                /** @brief littlefs filesystems mounted at once. */
+                static constexpr size_t MaxVolumes = 4;
+
                 /** @brief littlefs's read and program caches, and each file's buffer. */
                 static constexpr uint32_t CacheBytes = 512;
 

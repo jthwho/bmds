@@ -49,7 +49,7 @@
 
 /*--- Volumes ---------------------------------------------------------------*/
 
-#define FF_VOLUMES         4 /* Mounted FAT filesystems at once (Vfs::MaxMounts). */
+#define FF_VOLUMES 4         /* Mounted FAT filesystems at once (at most Vfs::MaxMounts). */
 #define FF_STR_VOLUME_ID   0 /* The VFS maps mounts to drive numbers ("0:"). */
 #define FF_VOLUME_STRS     "0", "1", "2", "3"
 #define FF_MULTI_PARTITION 0 /* BMDS reads partition tables itself; FatFs mounts a partition device. */

@@ -19,10 +19,12 @@ set(BMDS_CORE_SRCS
         src/fft.cpp
         src/pngdecoder.cpp
         src/randompool.cpp
+        src/romimage.cpp
         src/region.cpp
         src/error.cpp
         src/filenames.cpp
         src/fileformat.cpp
+        src/iconpack.cpp
         src/mimeapps.cpp
         src/inflate.cpp
         src/inireader.cpp

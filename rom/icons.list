@@ -1,0 +1,180 @@
+# The bmds icon theme (devplan/rom.md §3f, §3i): the icons BMDS's own applications use, made
+# from the two icon sets in thirdparty/ by tools/mkrom.py into /rom/share/icons/bmds.icons.
+#
+#   NAME                        THEME       SOURCE          [mirror]
+#
+# NAME: freedesktop.org's Icon Naming Specification's name (BMDS's own, for what it doesn't
+#       name). THEME: flat-color or glyphs. SOURCE: the icon's file in that set, without .png,
+#       at 16x16 and 32x32. mirror: flipped left to right.
+#
+# A line's place is its IconId's number (bmds/iconid.h, generated): add lines at the END only,
+# never remove, rename or reorder one once shipped. Flat-color where it has the icon (the
+# desktop's look), glyphs for the rest.
+
+# --- Places
+folder                          flat-color  folder
+folder-open                     flat-color  opened_folder
+user-home                       flat-color  home
+user-desktop                    glyphs      monitor
+user-trash                      flat-color  empty_trash
+user-trash-full                 flat-color  full_trash
+user-bookmarks                  flat-color  bookmark
+folder-music                    flat-color  music
+folder-pictures                 flat-color  picture
+folder-documents                flat-color  document
+folder-download                 flat-color  download
+start-here                      flat-color  services
+
+# --- Devices
+computer                        glyphs      monitor
+drive-harddisk                  glyphs      hard-drive
+drive-removable-media           glyphs      sd-card
+media-flash                     glyphs      sd-card-1
+media-optical                   flat-color  cd_logo
+audio-card                      flat-color  speaker
+audio-input-microphone          glyphs      microphone
+audio-headphones                flat-color  headset
+input-keyboard                  glyphs      keyboard
+input-mouse                     glyphs      mouse
+input-gaming                    glyphs      gamepad
+video-display                   glyphs      monitor
+printer                         flat-color  print
+camera-photo                    flat-color  camera
+camera-web                      flat-color  webcam
+phone                           flat-color  phone
+network-wired                   glyphs      plug
+network-wireless                glyphs      wifi
+battery                         flat-color  full_battery
+drive-usb                       flat-color  usb
+
+# --- File types (generic, as FileFormat names them, and some specific)
+unknown                         flat-color  file
+text-x-generic                  flat-color  document
+text-x-script                   glyphs      code
+image-x-generic                 flat-color  image_file
+audio-x-generic                 flat-color  audio_file
+video-x-generic                 flat-color  video_file
+package-x-generic               flat-color  package
+application-x-executable        flat-color  template
+audio-x-mpegurl                 glyphs      music-list
+font-x-generic                  glyphs      font
+x-office-document               flat-color  document
+x-office-spreadsheet            flat-color  grid
+x-office-presentation           flat-color  podium_with_audience
+inode-symlink                   flat-color  link
+
+# --- Applications
+system-file-manager             flat-color  folder
+utilities-terminal              flat-color  command_line
+utilities-system-monitor        flat-color  line_chart
+accessories-text-editor         flat-color  document
+accessories-calculator          flat-color  calculator
+multimedia-player               flat-color  music
+multimedia-volume-control       glyphs      sliders
+image-viewer                    flat-color  picture
+internet-web-browser            flat-color  globe
+help-browser                    flat-color  info
+preferences-system              flat-color  settings
+preferences-desktop             glyphs      palette
+preferences-desktop-theme       glyphs      palette
+applications-system             flat-color  settings
+applications-utilities          glyphs      toolbox
+applications-multimedia         flat-color  music
+applications-graphics           glyphs      paint-brush
+applications-development        glyphs      code
+applications-games              glyphs      gamepad
+applications-internet           flat-color  globe
+applications-office             flat-color  briefcase
+applications-other              flat-color  template
+
+# --- Actions
+document-new                    glyphs      file-add
+document-open                   flat-color  opened_folder
+document-save                   glyphs      save
+document-save-as                glyphs      save-1
+document-print                  flat-color  print
+document-properties             glyphs      sliders
+document-send                   glyphs      send
+edit-copy                       glyphs      copy
+edit-cut                        glyphs      scissors
+edit-paste                      glyphs      paste
+edit-delete                     flat-color  empty_trash
+edit-undo                       flat-color  undo
+edit-redo                       flat-color  redo
+edit-find                       flat-color  search
+edit-select-all                 glyphs      object-select
+edit-clear                      flat-color  cancel
+edit-rename                     glyphs      pencil
+list-add                        flat-color  plus
+list-remove                     flat-color  minus
+go-up                           flat-color  up
+go-down                         flat-color  down
+go-previous                     flat-color  left
+go-next                         flat-color  right
+go-home                         flat-color  home
+go-jump                         flat-color  advance
+view-refresh                    flat-color  refresh
+view-list-icons                 flat-color  grid
+view-list-details               flat-color  view_details
+view-sort-ascending             flat-color  generic_sorting_asc
+view-sort-descending            flat-color  generic_sorting_desc
+view-fullscreen                 glyphs      arrows-expand-quad
+view-restore                    glyphs      arrows-compress-quad
+zoom-in                         glyphs      zoom-in
+zoom-out                        glyphs      zoom-out
+window-close                    glyphs      x
+window-new                      glyphs      window
+process-stop                    flat-color  cancel
+system-search                   flat-color  search
+system-run                      flat-color  command_line
+system-lock-screen              flat-color  lock
+system-log-out                  flat-color  leave
+system-shutdown                 glyphs      power
+system-reboot                   glyphs      replay
+help-about                      flat-color  about
+help-contents                   flat-color  info
+mail-send                       glyphs      send
+object-flip-horizontal          glyphs      flip
+object-rotate-right             glyphs      arrow-round
+format-text-bold                glyphs      bold
+format-text-italic              glyphs      italic
+format-text-underline           glyphs      underline
+insert-link                     flat-color  link
+insert-image                    flat-color  add_image
+bookmark-new                    flat-color  bookmark
+document-import                 flat-color  import
+document-export                 flat-color  export
+
+# --- Media
+media-playback-start            glyphs      play
+media-playback-pause            glyphs      pause
+media-playback-stop             glyphs      stop
+media-skip-forward              glyphs      seek-skip-1
+media-skip-backward             glyphs      seek-skip-1     mirror
+media-seek-forward              glyphs      seek-skip
+media-seek-backward             glyphs      seek-skip       mirror
+media-record                    glyphs      record
+media-eject                     glyphs      eject
+media-playlist-repeat           glyphs      repeat
+media-playlist-repeat-song      glyphs      repeat-once
+media-playlist-shuffle          glyphs      arrows-cross
+audio-volume-high               glyphs      volume-3
+audio-volume-medium             glyphs      volume-2
+audio-volume-low                glyphs      volume-1
+audio-volume-muted              glyphs      volume-mute
+
+# --- Status and dialogs
+dialog-information              flat-color  info
+dialog-warning                  flat-color  high_priority
+dialog-error                    flat-color  cancel
+dialog-question                 glyphs      question-circle
+dialog-password                 flat-color  key
+appointment-soon                flat-color  clock
+alarm                           flat-color  alarm_clock
+emblem-symbolic-link            flat-color  link
+emblem-readonly                 flat-color  lock
+emblem-important                flat-color  high_priority
+emblem-default                  flat-color  checkmark
+image-missing                   flat-color  broken_link
+security-high                   glyphs      shield
+task-due                        flat-color  todo_list

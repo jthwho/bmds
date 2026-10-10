@@ -19,7 +19,8 @@ BMDS_NAMESPACE_BEGIN
  * @brief A disk: an array of fixed-size sectors.
  *
  * The filesystem's view of storage. `SdCard` implements it on the target,
- * `RamBlockDevice` in memory (the host tests, a RAM disk).
+ * `RamBlockDevice` in memory (the host tests, a RAM disk), `MemoryBlockDevice`
+ * over memory read in place (a ROM image).
  *
  * `read()` and `write()` move whole sectors and check their arguments
  * before calling the implementation: a buffer that is empty or not a
@@ -111,6 +112,14 @@ class BlockDevice {
                  *        else null.
                  */
                 virtual FlashDevice *flash() { return nullptr; }
+
+                /**
+                 * @brief Returns the device's bytes where they can be read in place (a
+                 *        flash mapped through the cache, an image in memory), valid while
+                 *        the device is; empty if they can't be. A ROM image there is
+                 *        mounted as one, used in place (`devplan/rom.md` §3d).
+                 */
+                virtual ByteSpan mapped() const { return ByteSpan(); }
 
         protected:
                 constexpr BlockDevice() = default;

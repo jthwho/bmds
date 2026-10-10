@@ -17,10 +17,12 @@
 #include <bmds/memory.h>
 #include <bmds/memorystream.h>
 #include <bmds/partitions.h>
+#include <bmds/romimage.h>
 
 #include "fatlayer.h"
 #include "fslayer.h"
 #include "lfsvolume.h"
+#include "romvolume.h"
 #include "zoneinfo.h"
 
 BMDS_NAMESPACE_BEGIN
@@ -870,9 +872,21 @@ namespace {
 
         Error mountAt(StringView path, BlockDevice &device);
 
-        // The filesystem on @p device mounted on a volume from its pool: littlefs on a
-        // flash, FAT on anything else (devplan/storage.md §13d). Lock held.
+        // The filesystem on @p device mounted on a volume from its pool: a ROM image in
+        // mapped bytes (devplan/rom.md §3d), littlefs on a flash, FAT on anything else
+        // (devplan/storage.md §13d). Lock held.
         Error mountVolumeLocked(BlockDevice &device, Volume *&out) {
+                if (RomImage::looksLike(device.mapped())) {
+                        RomVolume *volume = RomVolume::acquire();
+                        if (volume == nullptr) return Error::Full;
+                        const Error err = volume->mount(device);
+                        if (err.isError()) {
+                                volume->release();
+                                return err;
+                        }
+                        out = volume;
+                        return Error::Ok;
+                }
                 if (FlashDevice *flash = device.flash(); flash != nullptr) {
                         LittleFsVolume *volume = LittleFsVolume::acquire();
                         if (volume == nullptr) return Error::Full;
@@ -1310,6 +1324,20 @@ Result<FileInfo> Vfs::stat(StringView path, const Context &context) {
 
 Result<FileInfo> Vfs::lstat(StringView path, const Context &context) {
         return statAt(path, context, false);
+}
+
+Result<ByteSpan> Vfs::map(StringView path, const Context &context) {
+        Mutex::Locker lock(Fs::lock(), WaitForever);
+        String        storage;
+        const Error   err = normalizeLocked(path, context.cwd, storage, true);
+        if (err.isError()) return makeError<ByteSpan>(err);
+        Node                   node;
+        const Result<FileInfo> info = statFollowLocked(storage, true, node);
+        if (info.error().isError()) return makeError<ByteSpan>(info.error());
+        if (info.value().isDirectory()) return makeError<ByteSpan>(Error::IsDir);
+        if (node.kind != Kind::Mounted) return makeError<ByteSpan>(Error::NotSupported);
+        bool noPath = false;
+        return node.volume->map(node.rest, noPath);
 }
 
 Result<String> Vfs::readLink(StringView path, const Context &context) {

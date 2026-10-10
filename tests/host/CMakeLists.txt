@@ -69,6 +69,7 @@ add_executable(bmds_host_tests
         pipe.cpp
         process.cpp
         regex.cpp
+        rom.cpp
         result.cpp
         run.cpp
         pty.cpp
@@ -115,6 +116,45 @@ if(BMDS_ZIC AND Python3_Interpreter_FOUND)
         add_custom_target(bmds_test_zoneinfo DEPENDS ${CMAKE_BINARY_DIR}/zoneinfo.bin)
         add_dependencies(bmds_host_tests bmds_test_zoneinfo)
         target_compile_definitions(bmds_host_tests PRIVATE BMDS_TEST_ZONEINFO="${CMAKE_BINARY_DIR}/zoneinfo.bin")
+endif()
+# The ROM's parts (devplan/rom.md), as the firmware's build makes them: the bmds icon theme
+# and its IconId header from rom/icons.list, and an image of tests/host/rom with the theme
+# in it; the icon names BMDS's .desktop files use are checked to be in the theme.
+if(Python3_Interpreter_FOUND)
+        set(BMDS_MKROM ${BMDS_ROOT}/tools/mkrom.py)
+        set(BMDS_ICONS_LIST ${BMDS_ROOT}/rom/icons.list)
+        set(BMDS_ROM_OUT ${CMAKE_BINARY_DIR}/rom)
+        file(GLOB_RECURSE BMDS_TEST_ROM_FILES CONFIGURE_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/rom/*)
+        add_custom_command(OUTPUT ${BMDS_ROM_OUT}/bmds.icons ${BMDS_ROM_OUT}/bmds.LICENSES
+                COMMAND ${Python3_EXECUTABLE} ${BMDS_MKROM} icons ${BMDS_ICONS_LIST} ${BMDS_ROOT}
+                        ${BMDS_ROM_OUT}/bmds.icons ${BMDS_ROM_OUT}/bmds.LICENSES
+                DEPENDS ${BMDS_MKROM} ${BMDS_ICONS_LIST}
+                VERBATIM)
+        add_custom_command(OUTPUT ${BMDS_ROM_OUT}/include/bmds/iconid.h
+                COMMAND ${Python3_EXECUTABLE} ${BMDS_MKROM} iconid ${BMDS_ICONS_LIST}
+                        ${BMDS_ROM_OUT}/include/bmds/iconid.h
+                DEPENDS ${BMDS_MKROM} ${BMDS_ICONS_LIST}
+                VERBATIM)
+        add_custom_command(OUTPUT ${BMDS_ROM_OUT}/test.rom ${BMDS_ROM_OUT}/include/romhash.h
+                COMMAND ${Python3_EXECUTABLE} ${BMDS_MKROM} image ${BMDS_ROM_OUT}/test.rom
+                        --dir =${CMAKE_CURRENT_LIST_DIR}/rom
+                        --file images/grey.png=${CMAKE_CURRENT_LIST_DIR}/png/grey.png
+                        --file share/icons/bmds.icons=${BMDS_ROM_OUT}/bmds.icons
+                        --link docs/hello-link=/rom/hello.txt
+                        --mappable images/*
+                        --hash-header ${BMDS_ROM_OUT}/include/romhash.h
+                DEPENDS ${BMDS_MKROM} ${BMDS_TEST_ROM_FILES} ${CMAKE_CURRENT_LIST_DIR}/png/grey.png
+                        ${BMDS_ROM_OUT}/bmds.icons
+                VERBATIM)
+        add_custom_target(bmds_test_rom DEPENDS ${BMDS_ROM_OUT}/bmds.icons ${BMDS_ROM_OUT}/include/bmds/iconid.h
+                                                ${BMDS_ROM_OUT}/test.rom)
+        add_dependencies(bmds_host_tests bmds_test_rom)
+        target_include_directories(bmds_host_tests PRIVATE ${BMDS_ROM_OUT}/include)
+        target_compile_definitions(bmds_host_tests PRIVATE BMDS_TEST_ROM="${BMDS_ROM_OUT}/test.rom"
+                BMDS_TEST_ICONS="${BMDS_ROM_OUT}/bmds.icons" BMDS_ICONS_LIST="${BMDS_ICONS_LIST}"
+                BMDS_ROOT_DIR="${BMDS_ROOT}")
+        add_test(NAME rom_icon_names COMMAND ${Python3_EXECUTABLE} ${BMDS_MKROM} check ${BMDS_ICONS_LIST}
+                 ${BMDS_ROOT}/boot ${BMDS_ROOT}/dist ${BMDS_ROOT}/rom)
 endif()
 target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_audio bmds_midi bmds_synth bmds_input bmds_ui bmds_gui bmds_clipboard
         bmds_sysconf bmds_files bmds_mplayer)

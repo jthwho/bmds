@@ -385,7 +385,7 @@ the program's side, and freedesktop.org's StatusNotifierItem for what the protoc
 2. **Toolkit** (done, 2026-10-09): `FolderItemModel` and `FileIcons` moved into `bmds_gui` (the
    file browser on them, unchanged), `ComboBox`, `TabWidget`, `Slider`'s release, `FileDialog`;
    each tried in `/bin/widgets` on the board.
-3. **The player:** the playback thread and the window (now playing, position, transport,
+3. **The player** (after `rom.md`, which brings the `media-*` icons): the playback thread and the window (now playing, position, transport,
    volume, playlist), Open and Add, keys, errors, one player, `mplayer.desktop` and the file
    types. Checked by ear by the user: WAV, MP3, Ogg, FLAC and MIDI files, seeking, gapless.
 4. **Kept between runs:** `mplayer.conf`, `playlist.m3u8`, Open and Save Playlist.

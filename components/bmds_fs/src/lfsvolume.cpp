@@ -20,7 +20,7 @@ BMDS_NAMESPACE_BEGIN
 
 namespace {
 
-        constinit LittleFsVolume volumes[Vfs::MaxMounts];
+        constinit LittleFsVolume volumes[LittleFsVolume::MaxVolumes];
 
         constexpr uint32_t ReadBytes = 16;
         constexpr uint32_t ProgramBytes = 16;

@@ -25,7 +25,7 @@
 #include "ff.h"
 #include "fslayer.h"
 
-static_assert(FF_VOLUMES == bmds::Vfs::MaxMounts, "one FatFs volume per mount");
+static_assert(FF_VOLUMES <= bmds::Vfs::MaxMounts, "no more FatFs volumes than mounts");
 
 BMDS_NAMESPACE_BEGIN
 

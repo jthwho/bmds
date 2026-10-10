@@ -39,7 +39,7 @@ class DirectoryWatch;
  * is a file (the VFS then looks for a symbolic link along the way); the
  * error is `NotExist` then.
  *
- * Implementations come from static pools (`FatVolume`, `LittleFsVolume`),
+ * Implementations come from static pools (`FatVolume`, `LittleFsVolume`, `RomVolume`),
  * acquired when mounted and released when unmounted; never deleted through
  * this interface. Everything expects the storage lock.
  */
@@ -143,6 +143,18 @@ class Volume {
 
                 /** @brief Closes @p cursor (null is fine). */
                 virtual void closeDirectory(Cursor *cursor) = 0;
+
+                /**
+                 * @brief Returns file @p path's bytes where they lie, valid while the
+                 *        volume is mounted (`Vfs::map()`).
+                 * @return The bytes, `NotSupported` (a volume that can't), `NotExist`,
+                 *         `IsDir`, ...
+                 */
+                virtual Result<ByteSpan> map(StringView path, bool &noPath) {
+                        (void)path;
+                        noPath = false;
+                        return makeError<ByteSpan>(Error::NotSupported);
+                }
 
         protected:
                 constexpr Volume() = default;

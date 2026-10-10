@@ -20,9 +20,11 @@ set(BMDS_FS_SRCS
         src/fslayer.cpp
         src/identify.cpp
         src/lfsvolume.cpp
+        src/memoryblockdevice.cpp
         src/partitions.cpp
         src/ramblockdevice.cpp
         src/ramflashdevice.cpp
+        src/romvolume.cpp
         src/sectorcache.cpp
         src/trash.cpp
         src/vfs.cpp
