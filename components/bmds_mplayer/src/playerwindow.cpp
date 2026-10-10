@@ -20,6 +20,7 @@
 #include <bmds/messagebox.h>
 #include <bmds/sampleformat.h>
 #include <bmds/vfs.h>
+#include <bmds/windowstack.h>
 
 #include "m3u.h"
 
@@ -36,12 +37,19 @@ namespace {
         constexpr int32_t     HighDb = -15;
         constexpr size_t      MaxDepth = 6; // Add Folder's folders within folders
         constexpr size_t      MaxPlaylistBytes = 1024 * 1024;
+        constexpr size_t      MaxSettingsBytes = 4096;
+        constexpr uint32_t    SaveMs = 2000; // what is kept: written this long after the last change
+        constexpr const char *KeptDir = "/home/.config/mplayer";
+        constexpr const char *SettingsName = "mplayer.conf";
+        constexpr const char *PlaylistName = "playlist.m3u8";
         constexpr const char *AppTitle = "Media Player";
 
         enum Choice : int {
                 ChooseOpen = 1,
                 ChooseAddFiles,
                 ChooseAddFolder,
+                ChooseOpenPlaylist,
+                ChooseSavePlaylist,
                 ChooseClose,
                 ChooseQuit,
                 ChoosePlayPause,
@@ -265,13 +273,16 @@ StringView PlaylistView::toolTip() const {
 PlayerWindow::PlayerWindow(GuiApplication &app, const Config &config, Player &player, StringView cwd)
     : GuiWindow(app, config), _player(player), _fileMenu(app), _playbackMenu(app), _repeatMenu(app), _helpMenu(app),
       _openDialog(app, FileDialog::Mode::OpenMany, "Open"), _addDialog(app, FileDialog::Mode::OpenMany, "Add Files"),
-      _folderDialog(app, FileDialog::Mode::Folder, "Add Folder") {
+      _folderDialog(app, FileDialog::Mode::Folder, "Add Folder"),
+      _listDialog(app, FileDialog::Mode::Open, "Open Playlist"),
+      _saveDialog(app, FileDialog::Mode::Save, "Save Playlist As") {
         (void)_cwd.assign(cwd);
 }
 
 PlayerWindow::~PlayerWindow() {
         if (_timer >= 0) application().stopTimer(_timer);
         if (_messageTimer >= 0) application().stopTimer(_messageTimer);
+        if (_saveTimer >= 0) application().stopTimer(_saveTimer);
         application().cancelPosts(this);
 }
 
@@ -311,6 +322,15 @@ Error PlayerWindow::build() {
         }
         (void)_folderDialog.setFolder("/home");
         _folderDialog.setFinished(filesChosen, this);
+        (void)_listDialog.addFilter("Playlists", "*.m3u;*.m3u8");
+        (void)_listDialog.addFilter("All files", "");
+        (void)_listDialog.setFolder("/home");
+        _listDialog.setFinished(filesChosen, this);
+        (void)_saveDialog.addFilter("Playlists (UTF-8)", "*.m3u8");
+        (void)_saveDialog.addFilter("Playlists", "*.m3u");
+        (void)_saveDialog.setFolder("/home");
+        (void)_saveDialog.setFileName("Playlist.m3u8");
+        _saveDialog.setFinished(saveChosen, this);
 
         IconTheme &theme = application().icons();
         _playIcon = theme.find(IconId::MediaPlaybackStart, 16);
@@ -337,6 +357,11 @@ Error PlayerWindow::buildMenus() {
         if (err.isOk())
                 err = _fileMenu.addItem("Add &Folder...", ChooseAddFolder, 0, StringView(),
                                         theme.find(IconId::FolderMusic, 16));
+        if (err.isOk()) err = _fileMenu.addSeparator();
+        if (err.isOk()) err = _fileMenu.addItem("Open &Playlist...", ChooseOpenPlaylist);
+        if (err.isOk())
+                err = _fileMenu.addItem("&Save Playlist As...", ChooseSavePlaylist, 0, StringView(),
+                                        theme.find(IconId::DocumentSaveAs, 16));
         if (err.isOk()) err = _fileMenu.addSeparator();
         if (err.isOk())
                 err = _fileMenu.addItem("&Close", ChooseClose, 0, "Ctrl+W", theme.find(IconId::WindowClose, 16));
@@ -465,6 +490,8 @@ void PlayerWindow::chosen(void *arg, int item) {
                 case ChooseOpen: (void)self->_openDialog.open(); break;
                 case ChooseAddFiles: (void)self->_addDialog.open(); break;
                 case ChooseAddFolder: (void)self->_folderDialog.open(); break;
+                case ChooseOpenPlaylist: (void)self->_listDialog.open(); break;
+                case ChooseSavePlaylist: (void)self->_saveDialog.open(); break;
                 case ChooseClose:
                 case ChooseQuit: self->application().quit(0); break;
                 case ChoosePlayPause: self->playPause(); break;
@@ -546,6 +573,15 @@ bool PlayerWindow::keyUnused(const KeyEvent &event) {
         return true;
 }
 
+void PlayerWindow::resized() {
+        GuiWindow::resized();
+        if (geometry().width != 0 && geometry().height != 0) {
+                _keptWidth = geometry().width;
+                _keptHeight = geometry().height;
+        }
+        return;
+}
+
 void PlayerWindow::closedByManager() {
         GuiWindow::closedByManager();
         application().quit(0);
@@ -623,6 +659,8 @@ void PlayerWindow::removeSelected() {
         // From the last, so the rows before keep their numbers.
         for (size_t row = _playlist.count(); row-- > 0;)
                 if (sel.isSelected(row)) _playlist.remove(row);
+        _resumeEntry = Playlist::NoEntry;
+        changed(true);
         const int    current = _list->current();
         const size_t keep = current >= 0 && size_t(current) < _playlist.count() ? size_t(current)
                             : _playlist.count() > 0                             ? _playlist.count() - 1
@@ -639,6 +677,8 @@ void PlayerWindow::moveCurrent(int by) {
         const long to = long(row) + by;
         if (to < 0 || size_t(to) >= _playlist.count()) return;
         _playlist.move(size_t(row), size_t(to));
+        _resumeEntry = Playlist::NoEntry;
+        changed(true);
         const size_t keep = size_t(to);
         _list->resetTo(Span<const size_t>(&keep, 1), int(to));
         _list->showRow(keep);
@@ -648,6 +688,16 @@ void PlayerWindow::moveCurrent(int by) {
 
 void PlayerWindow::setRepeat(Playlist::Repeat repeat) {
         _playlist.setRepeat(repeat);
+        showRepeat();
+        say(repeat == Playlist::Repeat::Off   ? "Repeat: off"
+            : repeat == Playlist::Repeat::All ? "Repeat: all"
+                                              : "Repeat: this one");
+        changed(false);
+        return;
+}
+
+void PlayerWindow::showRepeat() {
+        const Playlist::Repeat repeat = _playlist.repeat();
         _repeatMenu.clear();
         (void)_repeatMenu.addItem("&Off", ChooseRepeatOff, repeat == Playlist::Repeat::Off ? MenuLayout::Checked : 0);
         (void)_repeatMenu.addItem("&All", ChooseRepeatAll, repeat == Playlist::Repeat::All ? MenuLayout::Checked : 0);
@@ -656,9 +706,6 @@ void PlayerWindow::setRepeat(Playlist::Repeat repeat) {
         _repeatButton->setIcon(theme.find(
                 repeat == Playlist::Repeat::One ? IconId::MediaPlaylistRepeatSong : IconId::MediaPlaylistRepeat, 16));
         _repeatButton->setChecked(repeat != Playlist::Repeat::Off);
-        say(repeat == Playlist::Repeat::Off   ? "Repeat: off"
-            : repeat == Playlist::Repeat::All ? "Repeat: all"
-                                              : "Repeat: this one");
         return;
 }
 
@@ -668,10 +715,16 @@ void PlayerWindow::setShuffled(bool shuffled) {
                 say("Out of memory: not shuffled");
                 shuffled = false;
         }
-        _shuffleButton->setChecked(shuffled);
+        showShuffled();
+        say(shuffled ? "Shuffle: on" : "Shuffle: off");
+        changed(false);
+        return;
+}
+
+void PlayerWindow::showShuffled() {
+        _shuffleButton->setChecked(_playlist.isShuffled());
         _playbackMenu.clear();
         (void)fillPlaybackMenu();
-        say(shuffled ? "Shuffle: on" : "Shuffle: off");
         return;
 }
 
@@ -714,7 +767,10 @@ void PlayerWindow::playEntry(size_t index, Player::Start how) {
         TrackText     &t = newText(track);
         (void)t.path.assign(_playlist.path(index));
         (void)t.title.assign(fileName(t.path.view()));
-        const Error err = _player.play(track, t.path.view(), 0, how);
+        // The entry playing when it last quit: from where it was, once.
+        const uint64_t startMs = index == _resumeEntry ? _resumeMs : 0;
+        _resumeEntry = Playlist::NoEntry;
+        const Error err = _player.play(track, t.path.view(), startMs, how);
         if (err.isError()) {
                 say("The player is busy: try again");
                 return;
@@ -759,6 +815,7 @@ void PlayerWindow::playPause() {
 }
 
 void PlayerWindow::stopPlaying() {
+        _resumeEntry = Playlist::NoEntry; // stopped: from the start next time
         if (_mode == Mode::Stopped) return;
         const uint32_t track = newTrack();
         if (_player.stop(track).isError()) return;
@@ -834,6 +891,7 @@ void PlayerWindow::seekTo(uint64_t ms) {
 void PlayerWindow::setMuted(bool muted) {
         _muted = muted;
         applyGain();
+        changed(false);
         return;
 }
 
@@ -848,6 +906,7 @@ void PlayerWindow::volumeChanged(void *arg, Slider &slider, int32_t value) {
         (void)slider;
         (void)value;
         self->applyGain();
+        self->changed(false);
         return;
 }
 
@@ -932,7 +991,9 @@ void PlayerWindow::started(const Player::Report &r) {
                         info.format = StringView(formatName(r.info.codec));
                         (void)_playlist.setInfo(entry, info);
                         _playlist.setError(entry, Error::Ok);
+                        _playlistUnsaved = _restored; // written with the next change, or at quitting
                 }
+                changed(false); // the entry playing
         }
         if (_mode == Mode::Stopped) _mode = Mode::Playing;
         showMode();
@@ -1160,7 +1221,20 @@ void PlayerWindow::filesChosen(void *arg, FileDialog &dialog, int result) {
         if (result != FileDialog::Accepted || dialog.count() == 0) return;
         List<StringView> paths(MemSpace::Psram);
         for (size_t i = 0; i < dialog.count(); ++i) (void)paths.append(dialog.path(i));
-        self->addPaths(paths.span(), &dialog == &self->_openDialog);
+        // The folder the dialogs open in next: this one (a folder chosen: the one it is in).
+        String           folder(MemSpace::Psram);
+        const StringView chosen = &dialog == &self->_folderDialog ? dialog.path(0) : dialog.folder();
+        const size_t     slash = chosen.lastIndexOf('/');
+        if (&dialog != &self->_folderDialog)
+                (void)folder.assign(chosen);
+        else
+                (void)folder.assign(slash == StringView::NPos || slash == 0 ? StringView("/") : chosen.left(slash));
+        for (FileDialog *d :
+             {&self->_openDialog, &self->_addDialog, &self->_folderDialog, &self->_listDialog, &self->_saveDialog})
+                if (d != &dialog) (void)d->setFolder(folder.view());
+        (void)self->_lastFolder.assign(folder.view());
+        self->addPaths(paths.span(), &dialog == &self->_openDialog || &dialog == &self->_listDialog);
+        self->changed(false);
         return;
 }
 
@@ -1168,12 +1242,14 @@ void PlayerWindow::addPaths(Span<const StringView> paths, bool replace) {
         if (replace) {
                 if (_mode != Mode::Stopped) stopPlaying();
                 _playlist.clear();
+                _resumeEntry = Playlist::NoEntry;
         }
         const size_t before = _playlist.count();
         _addedSome = false;
         for (const StringView p : paths) addPath(p, 0);
         showList(true);
         const size_t added = _playlist.count() - before;
+        if (added > 0 || replace) changed(true);
         char         text[64];
         std::snprintf(text, sizeof(text), "%zu file%s added", added, added == 1 ? "" : "s");
         if (!replace) say(StringView(text));
@@ -1265,18 +1341,8 @@ void PlayerWindow::addFolder(StringView path, size_t depth) {
 }
 
 void PlayerWindow::addPlaylistFile(StringView path) {
-        const Vfs::Context context{_cwd.view(), nullptr};
-        auto [file, err] = Vfs::open(path, Vfs::Read, context);
-        String text(MemSpace::Psram);
-        while (err.isOk()) {
-                char buf[512];
-                auto [n, rerr] =
-                        file->read(WritableByteSpan(reinterpret_cast<uint8_t *>(buf), sizeof(buf)), WaitForever);
-                if (rerr == Error::EndOfFile || (rerr.isOk() && n == 0)) break;
-                err = rerr;
-                if (err.isOk() && text.size() + n > MaxPlaylistBytes) err = Error::OutOfRange;
-                if (err.isOk()) err = text.append(StringView(buf, n));
-        }
+        String      text(MemSpace::Psram);
+        const Error err = readText(path, _cwd.view(), MaxPlaylistBytes, text);
         if (err.isError()) {
                 char msg[160];
                 std::snprintf(msg, sizeof(msg), "%.*s: %s", int(fileName(path).size()), fileName(path).data(),
@@ -1289,6 +1355,211 @@ void PlayerWindow::addPlaylistFile(StringView path) {
         auto [result, merr] = M3u::read(text.view(), folder, _playlist);
         if (merr == Error::Full) say("The playlist is full (10,000 files)");
         if (result.added > 0) _addedSome = true;
+        return;
+}
+
+// ---- Kept between runs (devplan/mediaplayer.md §6f)
+
+Error PlayerWindow::readText(StringView path, StringView cwd, size_t maxBytes, String &out) {
+        out.clear();
+        auto [file, err] = Vfs::open(path, Vfs::Read, Vfs::Context{cwd, nullptr});
+        while (err.isOk()) {
+                char buf[512];
+                auto [n, rerr] =
+                        file->read(WritableByteSpan(reinterpret_cast<uint8_t *>(buf), sizeof(buf)), WaitForever);
+                if (rerr == Error::EndOfFile || (rerr.isOk() && n == 0)) break;
+                err = rerr;
+                if (err.isOk() && out.size() + n > maxBytes) err = Error::OutOfRange;
+                if (err.isOk()) err = out.append(StringView(buf, n));
+        }
+        return err;
+}
+
+// Written beside it first, then put in its place: a card taken out, or the power going, while
+// writing leaves the old one or the new one (the new one's name read if the old one went).
+Error PlayerWindow::writeFile(StringView path, StringView cwd, StringView text) {
+        const Vfs::Context context{cwd, nullptr};
+        String             temporary(MemSpace::Psram);
+        Error              err = temporary.appendf("%.*s.new", int(path.size()), path.data());
+        if (err.isError()) return err;
+        {
+                auto [file, oerr] = Vfs::open(temporary.view(), Vfs::Write | Vfs::Create | Vfs::Truncate, context);
+                if (oerr.isError()) return oerr;
+                auto [n, werr] =
+                        file->write(ByteSpan(reinterpret_cast<const uint8_t *>(text.data()), text.size()), WaitForever);
+                err = werr.isError() ? werr : n != text.size() ? Error(Error::IoError) : Error();
+        }
+        if (err.isOk()) {
+                err = Vfs::remove(path, context);
+                if (err == Error::NotExist) err = Error::Ok;
+        }
+        if (err.isOk()) err = Vfs::rename(temporary.view(), path, context);
+        if (err.isError()) (void)Vfs::remove(temporary.view(), context);
+        return err;
+}
+
+void PlayerWindow::readSettings(StringView cwd, PlayerSettings &out) {
+        String path(MemSpace::Psram);
+        String text(MemSpace::Psram);
+        if (path.appendf("%s/%s", KeptDir, SettingsName).isError()) return;
+        Error err = readText(path.view(), cwd, MaxSettingsBytes, text);
+        if (err == Error::NotExist && path.append(".new").isOk())
+                err = readText(path.view(), cwd, MaxSettingsBytes, text);
+        if (err.isOk()) (void)out.parse(text.view());
+        return;
+}
+
+void PlayerWindow::restore(const PlayerSettings &settings) {
+        _volume->setValue(settings.volumeDb);
+        _muted = settings.muted;
+        applyGain();
+        _playlist.setRepeat(settings.repeat);
+        showRepeat();
+        // The playlist, then its order (shuffled: a new one) and the entry it was at.
+        String path(MemSpace::Psram);
+        String text(MemSpace::Psram);
+        if (path.appendf("%s/%s", KeptDir, PlaylistName).isOk()) {
+                Error err = readText(path.view(), _cwd.view(), MaxPlaylistBytes, text);
+                if (err == Error::NotExist && path.append(".new").isOk())
+                        err = readText(path.view(), _cwd.view(), MaxPlaylistBytes, text);
+                if (err.isOk()) (void)M3u::read(text.view(), StringView(KeptDir), _playlist);
+        }
+        if (settings.shuffled) {
+                _playlist.setSeed(uint32_t(Clock::monotonicNs()) | 1);
+                (void)_playlist.setShuffled(true);
+        }
+        showShuffled();
+        if (settings.entry < _playlist.count()) {
+                _playlist.setCurrent(settings.entry);
+                _resumeEntry = settings.entry;
+                _resumeMs = settings.positionMs;
+                // What Play plays, and from where.
+                char             elapsed[TimeText::MaxText];
+                const StringView title = _model.text(settings.entry);
+                char             line[96];
+                std::snprintf(line, sizeof(line), "%.*s", int(title.size()), title.data());
+                _title->setText(StringView(line));
+                _elapsed->setText(StringView(TimeText::format(_resumeMs, Span<char>(elapsed))));
+        }
+        if (settings.tab < _tabs->count()) _tabs->setCurrent(settings.tab);
+        if (!settings.lastFolder.isEmpty()) {
+                (void)_lastFolder.assign(settings.lastFolder.view());
+                for (FileDialog *d : {&_openDialog, &_addDialog, &_folderDialog, &_listDialog, &_saveDialog})
+                        (void)d->setFolder(_lastFolder.view());
+        }
+        showList(true);
+        if (_resumeEntry != Playlist::NoEntry) {
+                const size_t row = _resumeEntry;
+                _list->resetTo(Span<const size_t>(&row, 1), int(row));
+                _list->showRow(row);
+        }
+        _restored = true;
+        return;
+}
+
+void PlayerWindow::changed(bool playlist) {
+        if (!_restored) return;
+        _settingsUnsaved = true;
+        _playlistUnsaved = _playlistUnsaved || playlist;
+        if (_saveTimer >= 0) application().stopTimer(_saveTimer); // 2 s after the last
+        auto [id, err] = application().startTimer(SaveMs, false, saveDue, this);
+        _saveTimer = err.isOk() ? id : -1;
+        return;
+}
+
+void PlayerWindow::saveDue(void *arg) {
+        auto *self = static_cast<PlayerWindow *>(arg);
+        self->_saveTimer = -1;
+        self->saveNow();
+        return;
+}
+
+void PlayerWindow::settingsNow(PlayerSettings &out) {
+        out.volumeDb = _volume->value();
+        out.muted = _muted;
+        out.repeat = _playlist.repeat();
+        out.shuffled = _playlist.isShuffled();
+        // The entry, and where in it: the track heard if it is that entry's, else its start.
+        const size_t current = _playlist.current();
+        out.entry = current;
+        out.positionMs = 0;
+        if (current != Playlist::NoEntry && _mode != Mode::Stopped) {
+                const TrackText *t = textOf(_requested);
+                if (t != nullptr && _clock.shown() == _requested && t->path.view() == _playlist.path(current))
+                        out.positionMs = _seeking ? _seekMs : positionMs();
+        } else if (current != Playlist::NoEntry && current == _resumeEntry) {
+                out.positionMs = _resumeMs; // never played since
+        }
+        if (_keptWidth != 0 && _keptHeight != 0) {
+                out.width = WindowFrame::outerWidth(_keptWidth, WindowFrame::Standard);
+                out.height = WindowFrame::outerHeight(_keptHeight, WindowFrame::Standard);
+        }
+        out.tab = uint32_t(_tabs->current());
+        (void)out.lastFolder.assign(_lastFolder.view());
+        return;
+}
+
+void PlayerWindow::saveNow() {
+        if (!_restored) return;
+        if (_saveTimer >= 0) {
+                application().stopTimer(_saveTimer);
+                _saveTimer = -1;
+        }
+        const Vfs::Context context{_cwd.view(), nullptr};
+        (void)Vfs::mkdir("/home/.config", context);
+        (void)Vfs::mkdir(StringView(KeptDir), context);
+        String path(MemSpace::Psram);
+        String text(MemSpace::Psram);
+        Error  err = Error::Ok;
+        if (_playlistUnsaved) {
+                err = M3u::write(_playlist, StringView(KeptDir), text);
+                if (err.isOk()) err = path.appendf("%s/%s", KeptDir, PlaylistName);
+                if (err.isOk()) err = writeFile(path.view(), _cwd.view(), text.view());
+                if (err.isOk()) _playlistUnsaved = false;
+        }
+        // The settings every time: the position moves on.
+        PlayerSettings settings;
+        settingsNow(settings);
+        path.clear();
+        Error serr = settings.write(text);
+        if (serr.isOk()) serr = path.appendf("%s/%s", KeptDir, SettingsName);
+        if (serr.isOk()) serr = writeFile(path.view(), _cwd.view(), text.view());
+        if (serr.isOk()) _settingsUnsaved = false;
+        if (err.isError() || serr.isError()) {
+                char msg[96];
+                std::snprintf(msg, sizeof(msg), "Not kept for next time: %s", (err.isError() ? err : serr).desc());
+                say(StringView(msg));
+        }
+        return;
+}
+
+void PlayerWindow::saveChosen(void *arg, FileDialog &dialog, int result) {
+        auto *self = static_cast<PlayerWindow *>(arg);
+        if (result != FileDialog::Accepted || dialog.count() == 0) return;
+        self->savePlaylistAs(dialog.path(0));
+        return;
+}
+
+void PlayerWindow::savePlaylistAs(StringView path) {
+        const size_t     slash = path.lastIndexOf('/');
+        const StringView folder = slash == StringView::NPos || slash == 0 ? StringView("/") : path.left(slash);
+        String           text(MemSpace::Psram);
+        Error            err = M3u::write(_playlist, folder, text);
+        if (err.isOk()) err = writeFile(path, _cwd.view(), text.view());
+        char             msg[160];
+        const StringView name = fileName(path);
+        if (err.isOk()) {
+                std::snprintf(msg, sizeof(msg), "Saved %.*s", int(name.size()), name.data());
+        } else {
+                std::snprintf(msg, sizeof(msg), "%.*s: can't save it: %s", int(name.size()), name.data(), err.desc());
+        }
+        say(StringView(msg));
+        if (err.isOk() && _lastFolder.view() != folder) {
+                (void)_lastFolder.assign(folder);
+                for (FileDialog *d : {&_openDialog, &_addDialog, &_folderDialog, &_listDialog})
+                        (void)d->setFolder(folder);
+                changed(false);
+        }
         return;
 }
 

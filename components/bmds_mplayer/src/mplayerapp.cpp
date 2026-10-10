@@ -31,6 +31,8 @@ BMDS_NAMESPACE_BEGIN
 namespace {
 
         constexpr StringView Service("mplayer");
+        constexpr uint16_t   MinWidth = 320; // a size kept smaller than this: the default instead
+        constexpr uint16_t   MinHeight = 240;
 
         /**
          * A message to the service: this header (`size` its own size: fields appended, never
@@ -163,9 +165,15 @@ namespace {
                         void *pmem = Memory::alloc(MemSpace::Psram, sizeof(Player));
                         void *wmem = Memory::alloc(MemSpace::Psram, sizeof(PlayerWindow));
                         if (pmem != nullptr && wmem != nullptr) {
-                                auto             *player = ::new (pmem) Player();
+                                auto          *player = ::new (pmem) Player();
+                                PlayerSettings settings;
+                                PlayerWindow::readSettings(context.cwd, settings);
                                 GuiWindow::Config config;
                                 config.rect = Rect{200, 120, 680, 480};
+                                if (settings.width >= MinWidth && settings.height >= MinHeight) {
+                                        config.rect.width = settings.width;
+                                        config.rect.height = settings.height;
+                                }
                                 config.title = "Media Player";
                                 config.kind = "mplayer";
                                 auto *window = ::new (wmem) PlayerWindow(*a.app, config, *player, context.cwd);
@@ -176,6 +184,7 @@ namespace {
                                         if (err.isOk()) err = window->show();
                                         if (err.isOk()) {
                                                 a.window = window;
+                                                window->restore(settings);
                                                 if (!paths.isEmpty()) window->addPaths(paths.span(), true);
                                         }
                                 }
@@ -184,6 +193,10 @@ namespace {
                                         if (bad && status == 0) status = 1;
                                 } else {
                                         a.say("mplayer: can't open its window\n");
+                                }
+                                if (a.window != nullptr) {
+                                        Mutex::Locker lock(a.app->lock(), WaitForever);
+                                        window->saveNow(); // where it was playing: the thread still running
                                 }
                                 player->quit(); // before the window it reports to goes
                                 {

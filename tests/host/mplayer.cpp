@@ -7,7 +7,7 @@
  *
  * The media player's pure parts (devplan/mediaplayer.md §6): the playlist and its orders, M3U,
  * the FFT and the spectrum's bands, the meter bars, the MIDI channels, the library's index, the
- * track clock.
+ * track clock, the settings.
  */
 
 #include <doctest.h>
@@ -24,6 +24,7 @@
 #include "libraryindex.h"
 #include "m3u.h"
 #include "midichannels.h"
+#include "playersettings.h"
 #include "playlist.h"
 #include "spectrum.h"
 #include "trackclock.h"
@@ -598,4 +599,69 @@ TEST_CASE("TimeText") {
         CHECK(std::string(bmds::TimeText::format(3600000, t)) == "1:00:00");
         CHECK(std::string(bmds::TimeText::format(37230000, t)) == "10:20:30");
         CHECK(std::string(bmds::TimeText::format(UINT64_MAX, t)).size() < sizeof(t));
+}
+
+TEST_CASE("PlayerSettings: defaults, read, bad values kept out, written and read back") {
+        using bmds::PlayerSettings;
+        using bmds::Playlist;
+        PlayerSettings d;
+        REQUIRE(d.parse("").isOk());
+        CHECK(d.volumeDb == 0);
+        CHECK(d.entry == PlayerSettings::NoEntry);
+        CHECK(d.width == 0);
+        CHECK(d.lastFolder.isEmpty());
+
+        PlayerSettings s;
+        REQUIRE(s.parse("# a comment\n[Playback]\nVolume=-12\nMuted=yes\nRepeat=One\nShuffle=true\nEntry=3\r\n"
+                        "Position=61500\nUnknown=1\n[Window]\nWidth=700\nHeight=500\nTab=2\n"
+                        "[Folders]\nLast=/home/Music\n[Other]\nVolume=-30\n")
+                        .isOk());
+        CHECK(s.volumeDb == -12);
+        CHECK(s.muted);
+        CHECK(s.repeat == Playlist::Repeat::One);
+        CHECK(s.shuffled);
+        CHECK(s.entry == 2);
+        CHECK(s.positionMs == 61500);
+        CHECK(s.width == 700);
+        CHECK(s.height == 500);
+        CHECK(s.tab == 2);
+        CHECK(std::string(s.lastFolder.cStr()) == "/home/Music");
+
+        // Out of range or unreadable: the value before stays.
+        REQUIRE(s.parse("[Playback]\nVolume=-61\nRepeat=sometimes\nEntry=0\nPosition=x\nMuted=maybe\n"
+                        "[Window]\nWidth=0\nHeight=4001\nTab=-1\n[Folders]\nLast=relative\n")
+                        .isOk());
+        CHECK(s.volumeDb == -12);
+        CHECK(s.repeat == Playlist::Repeat::One);
+        CHECK(s.entry == 2);
+        CHECK(s.positionMs == 61500);
+        CHECK(s.muted);
+        CHECK(s.width == 700);
+        CHECK(s.height == 500);
+        CHECK(s.tab == 2);
+        CHECK(std::string(s.lastFolder.cStr()) == "/home/Music");
+
+        bmds::String text(bmds::MemSpace::Psram);
+        REQUIRE(s.write(text).isOk());
+        PlayerSettings back;
+        REQUIRE(back.parse(text.view()).isOk());
+        CHECK(back.volumeDb == -12);
+        CHECK(back.muted);
+        CHECK(back.repeat == Playlist::Repeat::One);
+        CHECK(back.shuffled);
+        CHECK(back.entry == 2);
+        CHECK(back.positionMs == 61500);
+        CHECK(back.width == 700);
+        CHECK(back.height == 500);
+        CHECK(back.tab == 2);
+        CHECK(std::string(back.lastFolder.cStr()) == "/home/Music");
+
+        // Nothing playing and the defaults: their keys left out, read back as defaults.
+        REQUIRE(d.write(text).isOk());
+        CHECK(std::string(text.cStr()).find("Entry=") == std::string::npos);
+        CHECK(std::string(text.cStr()).find("Width=") == std::string::npos);
+        PlayerSettings again;
+        REQUIRE(again.parse(text.view()).isOk());
+        CHECK(again.entry == PlayerSettings::NoEntry);
+        CHECK(again.width == 0);
 }

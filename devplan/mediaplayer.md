@@ -389,7 +389,8 @@ the program's side, and freedesktop.org's StatusNotifierItem for what the protoc
    playback thread and the window (now playing, position, transport, volume, playlist), Open and
    Add, keys, errors, one player, `mplayer.desktop` and the file types. Checked by ear by the
    user: WAV, MP3, Ogg, FLAC and MIDI files, seeking, gapless.
-4. **Kept between runs:** `mplayer.conf`, `playlist.m3u8`, Open and Save Playlist.
+4. **Kept between runs** (built 2026-10-09): `mplayer.conf`, `playlist.m3u8`, Open and Save
+   Playlist.
 5. **The tray** (§6e): `ServiceQueue`'s larger messages, the window manager's
    `watchServices()`, `TrayIcon`, the panel's `tray` area, the panel's volume control moved onto
    `TrayIcon` (the user checks it does all it did), then the player's icon and hiding on close.
@@ -545,4 +546,31 @@ the program's side, and freedesktop.org's StatusNotifierItem for what the protoc
     buffers, made at its first start since boot).
   - **Host tests:** `TrackClock` (seeks, gapless changes, marks past `MaxMarks`, a fresh stream;
     the frames heard from a status), `TimeText`, the M3U file type; 459 cases pass.
-
+- **Step 4, kept between runs** (2026-10-09), in `/home/.config/mplayer/`:
+  - **`mplayer.conf`** (`PlayerSettings`, pure, host-tested): `[Playback]` Volume (dB), Muted,
+    Repeat (off, all, one), Shuffle, Entry (from 1; none: no key), Position (ms); `[Window]` Width
+    and Height (the frame's included), Tab; `[Folders]` Last. Keys appended only; a value out of
+    range or unreadable leaves its default. The visualizer, the library's folders and the MIDI
+    font are appended in their steps.
+  - **`playlist.m3u8`:** `M3u::write`, with the lengths and titles learned from the files.
+  - **When:** 2 s after the last change (volume, mute, repeat, shuffle, an edit of the list, the
+    entry playing, the dialogs' folder), and at quitting while the thread still runs, so the
+    position is the one heard. A title or length learned from a file doesn't start the timer:
+    it goes with the next write (a long list isn't written at every track).
+  - **Written safely:** to `NAME.new`, the old one removed, then renamed (`Vfs::rename` doesn't
+    replace); reading falls back to `NAME.new` if `NAME` is missing (a power cut between the two).
+  - **At start:** the size before the window is made (the default below 320 x 240); after
+    `build()` the volume, repeat, the list, shuffle (a new order), the entry selected with its
+    name and position shown; nothing plays until asked, and Play starts from the position, once
+    (Stop, or an edit that moves entries, forgets it). `mplayer FILE...` still replaces the list.
+  - **The size** is kept from `resized()`: the window's rect is gone when the manager closes it.
+  - **File:** Open Playlist... (a playlist replaces the list and plays) and Save Playlist As...
+    (`FileDialog` Save, `Playlist.m3u8` offered; paths under its folder written relative). The
+    folder of the last dialog accepted opens all of them next time.
+  - **On the board:** the files written 2 s after a change and at closing; a second start put
+    back the list, the entry and 1:18 (Play went on from there), repeat and shuffle; Save As to
+    `/home` (paths `Music/...`), then Open Playlist of it (relative paths read, played shuffled);
+    `Last=/home` kept; no `.new` left; a session under `mem mark` left nothing. The component is
+    now 34 KB of flash (5 KB more), no static RAM.
+  - **Host tests:** `PlayerSettings` (defaults, reading, bad values, written and read back); 460
+    cases pass.

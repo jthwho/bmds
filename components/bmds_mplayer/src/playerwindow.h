@@ -24,6 +24,7 @@
 #include <bmds/tabwidget.h>
 
 #include "player.h"
+#include "playersettings.h"
 #include "playlist.h"
 #include "trackclock.h"
 
@@ -96,6 +97,23 @@ class PlayerWindow final : public GuiWindow {
                  */
                 void addPaths(Span<const StringView> paths, bool replace);
 
+                /**
+                 * @brief Reads `mplayer.conf` into @p out (the defaults where it
+                 *        isn't there or can't be read), before the window is made:
+                 *        its size is in it.
+                 */
+                static void readSettings(StringView cwd, PlayerSettings &out);
+
+                /**
+                 * @brief Puts back what was kept (@p settings, and the playlist
+                 *        from `playlist.m3u8`), after `build()`: nothing plays
+                 *        until asked, from where it was.
+                 */
+                void restore(const PlayerSettings &settings);
+
+                /** @brief Writes what is kept now, if anything changed (at quitting, the thread running). */
+                void saveNow();
+
                 /** @brief The playback thread has a report (any thread). */
                 static void reportWaiting(void *arg);
 
@@ -119,6 +137,7 @@ class PlayerWindow final : public GuiWindow {
 
         protected:
                 void closedByManager() override;
+                void resized() override;
                 bool keyUnused(const KeyEvent &event) override;
 
         private:
@@ -154,6 +173,8 @@ class PlayerWindow final : public GuiWindow {
                 static void activated(void *arg, ItemView &view, size_t row);
                 static void selectionChanged(void *arg, ItemView &view);
                 static void filesChosen(void *arg, FileDialog &dialog, int result);
+                static void saveChosen(void *arg, FileDialog &dialog, int result);
+                static void saveDue(void *arg);
                 static void reportsDue(void *arg);
                 static void tick(void *arg);
                 static void messageDone(void *arg);
@@ -173,6 +194,8 @@ class PlayerWindow final : public GuiWindow {
                 void       moveCurrent(int by);
                 void       setRepeat(Playlist::Repeat repeat);
                 void       setShuffled(bool shuffled);
+                void         showRepeat();
+                void         showShuffled();
                 void       setMuted(bool muted);
                 void       applyGain();
                 uint32_t   newTrack();
@@ -190,6 +213,11 @@ class PlayerWindow final : public GuiWindow {
                 void       addFolder(StringView path, size_t depth);
                 void       addPlaylistFile(StringView path);
                 Error      appendEntry(StringView path);
+                void         changed(bool playlist); // what is kept: written soon
+                void         settingsNow(PlayerSettings &out);
+                static Error writeFile(StringView path, StringView cwd, StringView text);
+                void         savePlaylistAs(StringView path);
+                static Error readText(StringView path, StringView cwd, size_t maxBytes, String &out);
 
                 Player           &_player;
                 String            _cwd{MemSpace::Psram};
@@ -207,6 +235,15 @@ class PlayerWindow final : public GuiWindow {
                 uint64_t          _seekMs = 0;
                 bool              _muted = false;
                 bool              _addedSome = false; // addPath() added an entry
+                bool              _restored = false;  // changes are kept from now on
+                bool              _settingsUnsaved = false;
+                bool              _playlistUnsaved = false;
+                size_t            _resumeEntry = Playlist::NoEntry; // played from _resumeMs when asked
+                uint64_t          _resumeMs = 0;
+                int               _saveTimer = -1;
+                String            _lastFolder{MemSpace::Psram}; // where the dialogs open
+                uint16_t          _keptWidth = 0;               // its client area, as last sized (kept after closing)
+                uint16_t          _keptHeight = 0;
                 std::atomic<bool> _reportPosted{false};
                 int               _timer = -1;
                 int               _messageTimer = -1;
@@ -221,6 +258,8 @@ class PlayerWindow final : public GuiWindow {
                 FileDialog    _openDialog;
                 FileDialog    _addDialog;
                 FileDialog    _folderDialog;
+                FileDialog    _listDialog;
+                FileDialog    _saveDialog;
                 Label        *_title = nullptr;
                 Label        *_subtitle = nullptr;
                 Label        *_format = nullptr;

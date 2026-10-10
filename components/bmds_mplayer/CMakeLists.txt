@@ -13,6 +13,7 @@ set(BMDS_MPLAYER_PURE_SRCS
         src/libraryindex.cpp
         src/m3u.cpp
         src/midichannels.cpp
+        src/playersettings.cpp
         src/playlist.cpp
         src/spectrum.cpp
         src/trackclock.cpp)
