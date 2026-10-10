@@ -144,6 +144,16 @@ class MidiRouter {
                  */
                 void removePort(uint8_t number);
 
+                /** @brief Told that ports came or went (after, without the router's lock). */
+                using PortsChanged = void (*)(void *arg);
+
+                /** @brief Sets who is told that ports came or went (one; null: none). Before ports are added. */
+                void setPortsChanged(PortsChanged fn, void *arg) {
+                        _portsChanged = fn;
+                        _portsChangedArg = arg;
+                        return;
+                }
+
                 /** @brief Renames port @p number. @return `Ok`, `NotExist`. */
                 Error rename(uint8_t number, StringView name);
 
@@ -238,6 +248,8 @@ class MidiRouter {
                 size_t     _connectionCount = 0;
                 Tap        _taps[MaxTaps];
                 char       _autoConnect[MaxAutoConnect] = {};
+                PortsChanged _portsChanged = nullptr;
+                void        *_portsChangedArg = nullptr;
 };
 
 BMDS_NAMESPACE_END

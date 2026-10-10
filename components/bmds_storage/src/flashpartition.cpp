@@ -12,6 +12,7 @@
 #include <cstring>
 #include <sdkconfig.h>
 #include <bmds/deadline.h>
+#include <bmds/detail/platform.h>
 #include <bmds/log.h>
 #include <bmds/memspace.h>
 
@@ -44,6 +45,13 @@ bool FlashPartition::fits(uint64_t address, size_t bytes) const {
 }
 
 Error FlashPartition::read(uint32_t address, WritableByteSpan buf) {
+        const int64_t started = Detail::monotonicUs();
+        const Error   err = readMapped(address, buf);
+        countRequest(false, buf.size(), err, started); // littlefs's reads (devplan/sysmon.md §6)
+        return err;
+}
+
+Error FlashPartition::readMapped(uint32_t address, WritableByteSpan buf) {
         if (!fits(address, buf.size())) return Error::OutOfRange;
         Mutex::Locker lock(_lock, WaitForever);
         std::memcpy(buf.data(), _mapped + address, buf.size());
@@ -52,7 +60,7 @@ Error FlashPartition::read(uint32_t address, WritableByteSpan buf) {
 }
 
 Error FlashPartition::readSectors(uint64_t sector, WritableByteSpan buf) {
-        return read(static_cast<uint32_t>(sector * SectorBytes), buf);
+        return readMapped(static_cast<uint32_t>(sector * SectorBytes), buf); // counted by BlockDevice::read()
 }
 
 // One record into the queue, waiting for room as long as it takes.
@@ -75,19 +83,24 @@ Error FlashPartition::queue(FlashQueue::Kind kind, uint32_t address, ByteSpan da
 
 Error FlashPartition::program(uint32_t address, ByteSpan data) {
         if (!fits(address, data.size())) return Error::OutOfRange;
-        while (!data.isEmpty()) {
+        const int64_t started = Detail::monotonicUs();
+        const size_t  bytes = data.size();
+        Error         err = Error::Ok;
+        while (!data.isEmpty() && err.isOk()) {
                 const size_t n = data.size() < _queue.maxProgram() ? data.size() : _queue.maxProgram();
-                const Error  err = queue(FlashQueue::Kind::Program, address, ByteSpan(data.data(), n));
-                if (err.isError()) return err;
+                err = queue(FlashQueue::Kind::Program, address, ByteSpan(data.data(), n));
                 address += static_cast<uint32_t>(n);
                 data = ByteSpan(data.data() + n, data.size() - n);
         }
-        return Error::Ok;
+        countRequest(true, bytes, err, started); // queued: the time is the wait for room
+        return err;
 }
 
 Error FlashPartition::erase(uint32_t block) {
         if (block >= _blocks) return Error::OutOfRange;
-        return queue(FlashQueue::Kind::Erase, block * BlockBytes, ByteSpan());
+        const Error err = queue(FlashQueue::Kind::Erase, block * BlockBytes, ByteSpan());
+        if (err.isOk()) countErase();
+        return err;
 }
 
 Error FlashPartition::flush(unsigned int timeoutMs) {

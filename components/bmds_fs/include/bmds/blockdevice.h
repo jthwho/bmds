@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <bmds/config.h>
 #include <bmds/error.h>
@@ -87,6 +88,20 @@ class BlockDevice {
                  */
                 Error write(uint64_t sector, ByteSpan data);
 
+                /** @brief What it has done (`devplan/sysmon.md` §3.2), since it was made. */
+                struct IoStats {
+                                uint32_t reads = 0;        ///< Read requests.
+                                uint32_t writes = 0;       ///< Write requests.
+                                uint64_t readBytes = 0;    ///< Bytes read.
+                                uint64_t writtenBytes = 0; ///< Bytes written.
+                                uint32_t errors = 0;       ///< Requests the device failed (a medium gone not counted).
+                                uint64_t ioUs = 0;   ///< Time in requests, in all (overlapping ones each counted).
+                                uint32_t erases = 0; ///< Blocks erased (a flash).
+                };
+
+                /** @brief Returns what it has done. @nonblocking */
+                IoStats ioStats() const;
+
                 /**
                  * @brief Waits until written data is on the medium.
                  * @return `Ok`, `NoMedia`, or a device error.
@@ -136,6 +151,24 @@ class BlockDevice {
 
                 /** @brief Checks a request of @p bytes at @p sector, as `read()` and `write()` do. */
                 Error checkRequest(uint64_t sector, size_t bytes) const;
+
+                /**
+                 * @brief Counts a request made another way than `read()` and `write()`
+                 *        (a flash's own calls): started at @p startedUs (monotonic).
+                 */
+                void countRequest(bool write, size_t bytes, Error err, int64_t startedUs);
+
+                /** @brief Counts a block erased. */
+                void countErase() { _erases.fetch_add(1, std::memory_order_relaxed); }
+
+        private:
+                std::atomic<uint32_t> _reads{0};
+                std::atomic<uint32_t> _writes{0};
+                std::atomic<uint32_t> _errors{0};
+                std::atomic<uint64_t> _readBytes{0};
+                std::atomic<uint64_t> _writtenBytes{0};
+                std::atomic<uint64_t> _ioUs{0};
+                std::atomic<uint32_t> _erases{0};
 };
 
 BMDS_NAMESPACE_END

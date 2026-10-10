@@ -78,6 +78,7 @@ add_executable(bmds_host_tests
         signals.cpp
         span.cpp
         staticobject.cpp
+        stats.cpp
         string.cpp
         stringview.cpp
         syntax.cpp

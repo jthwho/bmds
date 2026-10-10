@@ -7,9 +7,13 @@
  */
 
 #include <atomic>
+#include <cstdio>
 #include <esp_heap_caps.h>
 #include <bmds/board.h>
 #include <bmds/memory.h>
+#include <bmds/mutex.h>
+#include <bmds/staticobject.h>
+#include <bmds/stats.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -20,6 +24,48 @@ namespace {
         }
 
         constinit std::atomic<Memory::Reclaimer *> reclaimers[Memory::MaxReclaimers] = {};
+
+        // Each cache's counters (devplan/sysmon.md §6), cache.ITEMS: names are an interface once shipped.
+        constexpr Stat::Desc CacheStats[] = {
+                {"bytes", Stat::Unit::Bytes, Stat::Kind::Level, Stat::KeepHistory, {}, "", "Bytes it holds"},
+                {"items", Stat::Unit::Count, Stat::Kind::Level, 0, {}, "", "Items it holds"},
+                {"reclaimable", Stat::Unit::Bytes, Stat::Kind::Level, 0, {}, "", "Bytes it could give back now"},
+                {"hits", Stat::Unit::Count, Stat::Kind::Total, 0, {}, "", "Lookups that found an item"},
+                {"misses", Stat::Unit::Count, Stat::Kind::Total, 0, {}, "", "Lookups that didn't"},
+                {"reclaims",
+                 Stat::Unit::Count,
+                 Stat::Kind::Total,
+                 0,
+                 {},
+                 "",
+                 "Times it gave memory back to an allocation that failed"},
+        };
+
+        void readCache(void *arg, Span<int64_t> v) {
+                const Memory::Reclaimer *r = reclaimers[reinterpret_cast<uintptr_t>(arg)].load();
+                if (r == nullptr) return;
+                const Memory::Reclaimer::Usage u = r->usage();
+                v[0] = int64_t(u.bytes);
+                v[1] = int64_t(u.count);
+                v[2] = int64_t(u.reclaimable);
+                v[3] = u.hits;
+                v[4] = u.misses;
+                v[5] = u.reclaims;
+                return;
+        }
+
+        struct CacheCounters {
+                        Stats::Group groups[Memory::MaxReclaimers] = {
+                                {CacheStats, 6, readCache, reinterpret_cast<void *>(uintptr_t(0))},
+                                {CacheStats, 6, readCache, reinterpret_cast<void *>(uintptr_t(1))},
+                                {CacheStats, 6, readCache, reinterpret_cast<void *>(uintptr_t(2))},
+                                {CacheStats, 6, readCache, reinterpret_cast<void *>(uintptr_t(3))},
+                        };
+        };
+        static_assert(Memory::MaxReclaimers == 4 && sizeof(CacheStats) / sizeof(CacheStats[0]) == 6);
+
+        constinit StaticObject<CacheCounters> cacheCounters;
+        constinit StaticObject<Mutex>         cacheCountersLock; // made by the first reclaimer (at boot)
 
         // A failed allocation in @p space: true if the reclaimers freed something to try again with.
         // Each in turn, until what was asked is freed.
@@ -74,20 +120,37 @@ Error Memory::addReclaimer(Reclaimer *r) {
         if (r == nullptr) return Error::Invalid;
         for (auto &slot : reclaimers)
                 if (slot.load() == r) return Error::Invalid;
-        for (auto &slot : reclaimers) {
+        for (size_t i = 0; i < MaxReclaimers; ++i) {
                 Reclaimer *none = nullptr;
-                if (slot.compare_exchange_strong(none, r)) return Error::Ok;
+                if (!reclaimers[i].compare_exchange_strong(none, r)) continue;
+                // Its counters, cache.ITEMS (the first reclaimer comes at boot, one task at a time).
+                if (!cacheCountersLock.isCreated()) cacheCountersLock.create();
+                {
+                        Mutex::Locker locker(*cacheCountersLock, WaitForever);
+                        if (!cacheCounters.isCreated()) cacheCounters.create();
+                        Stats::Group &g = cacheCounters->groups[i];
+                        char          name[Stats::MaxGroupName + 1];
+                        std::snprintf(name, sizeof(name), "cache.%s", r->usage().items);
+                        g.setName(name);
+                        (void)Stats::add(g);
+                }
+                return Error::Ok;
         }
         return Error::Full;
 }
 
 void Memory::removeReclaimer(Reclaimer *r) {
-        for (auto &slot : reclaimers) {
+        for (size_t i = 0; i < MaxReclaimers; ++i) {
                 Reclaimer *was = r;
-                (void)slot.compare_exchange_strong(was, nullptr);
+                if (!reclaimers[i].compare_exchange_strong(was, nullptr)) continue;
+                if (cacheCountersLock.isCreated()) {
+                        Mutex::Locker locker(*cacheCountersLock, WaitForever);
+                        if (cacheCounters.isCreated()) Stats::remove(cacheCounters->groups[i]);
+                }
         }
         return;
 }
+
 
 size_t Memory::reclaimerUsage(Span<Reclaimer::Usage> out) {
         size_t n = 0;

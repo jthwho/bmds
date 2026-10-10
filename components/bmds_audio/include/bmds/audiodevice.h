@@ -21,6 +21,7 @@
 #include <bmds/result.h>
 #include <bmds/semaphore.h>
 #include <bmds/sinetone.h>
+#include <bmds/stats.h>
 #include <bmds/sysconf.h>
 #include <bmds/task.h>
 #include <bmds/waitlist.h>
@@ -116,6 +117,11 @@ class AudioDevice {
                                 bool     exclusive = false;   ///< One of them owns the device.
                                 uint32_t soundsDropped = 0;   ///< System sounds not played (exclusive mode).
                                 uint64_t waitedUs = 0;        ///< Time waiting for real-time clients, in all.
+                                // Across its streams, since boot (not reset by a start).
+                                uint32_t underruns = 0;       ///< Written streams running dry while playing.
+                                uint32_t clientLate = 0;      ///< Real-time clients' periods not done in time.
+                                uint32_t clientSkipped = 0;   ///< Real-time clients' periods missed altogether.
+                                uint32_t clientThrottled = 0; ///< Real-time clients' threads put back.
                 };
 
                 /** @brief The rate and period running, or the settings' while stopped. */
@@ -415,6 +421,7 @@ class AudioDevice {
                 RtStream             *_exclusive = nullptr;
                 std::atomic<bool>     _exclusiveOn{false};
                 std::atomic<uint32_t> _soundsDropped{0};
+                std::atomic<uint32_t> _tallies[AudioStream::TallyCount] = {}; // its streams' problems, since boot
                 Mutex                 _rtLock;
                 RtStream             *_realtime[MaxRealtime] = {};
                 std::atomic<uint8_t>  _realtimeCount{0};
@@ -430,6 +437,11 @@ class AudioDevice {
                 uint32_t              _settingsSeen = 0;
                 Settings              _settings;
                 int32_t               _appliedVolume = INT32_MIN; // centi-dB sent to the codec
+
+                // Its counters, audio.dspN (devplan/sysmon.md §6).
+                Stats::Group _stats;
+                static void  readStats(void *arg, Span<int64_t> values);
+                static void  adjustStats(void *arg, size_t index, Stat::Limits &limits);
 };
 
 /**

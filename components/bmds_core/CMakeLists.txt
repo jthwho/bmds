@@ -20,6 +20,7 @@ set(BMDS_CORE_SRCS
         src/pngdecoder.cpp
         src/randompool.cpp
         src/romimage.cpp
+        src/stat.cpp
         src/region.cpp
         src/error.cpp
         src/filenames.cpp

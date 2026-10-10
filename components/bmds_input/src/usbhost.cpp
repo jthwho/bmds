@@ -17,6 +17,7 @@
 #include <bmds/input.h>
 #include <bmds/log.h>
 #include <bmds/staticobject.h>
+#include <bmds/stats.h>
 #include <bmds/system.h>
 #include <bmds/usbhost.h>
 #include "usbmidi.h"
@@ -35,6 +36,39 @@ namespace {
         constexpr size_t   TaskStack = 4096;
 
         constinit StaticObject<UsbHost> hosts[UsbHost::MaxHosts];
+
+        // A host's counters (devplan/sysmon.md §6): names are an interface once shipped.
+        constexpr Stat::Desc UsbStats[] = {
+                {"added", Stat::Unit::Count, Stat::Kind::Total, 0, {}, "", "Devices enumerated (hubs included)"},
+                {"gone", Stat::Unit::Count, Stat::Kind::Total, 0, {}, "", "Devices disconnected"},
+                {"hid_reports",
+                 Stat::Unit::Count,
+                 Stat::Kind::Total,
+                 Stat::KeepHistory,
+                 {},
+                 "",
+                 "HID reports received"},
+                {"keyboards", Stat::Unit::Count, Stat::Kind::Level, 0, {}, "", "Keyboards attached now"},
+                {"mice", Stat::Unit::Count, Stat::Kind::Level, 0, {}, "", "Mice attached now"},
+        };
+
+        void readUsb(void *arg, Span<int64_t> v) {
+                const UsbHost::Stats s = static_cast<UsbHost *>(arg)->stats();
+                v[0] = s.added;
+                v[1] = s.gone;
+                v[2] = s.hidReports;
+                v[3] = s.keyboards;
+                v[4] = s.mice;
+                return;
+        }
+
+        struct HostCounters {
+                        HostCounters(UsbHost &host)
+                            : group(UsbStats, sizeof(UsbStats) / sizeof(UsbStats[0]), readUsb, &host) {}
+                        ::bmds::Stats::Group group;
+        };
+
+        constinit StaticObject<HostCounters> hostCounters[UsbHost::MaxHosts];
 
 } // namespace
 
@@ -90,6 +124,9 @@ Result<UsbHost *> UsbHost::host(size_t number) {
         if (!hosts[number].isCreated()) {
                 hosts[number].create();
                 hosts[number]->_number = static_cast<uint8_t>(number);
+                hostCounters[number].create(*hosts[number]);
+                hostCounters[number]->group.setName("usb", int(number));
+                (void)::bmds::Stats::add(hostCounters[number]->group);
         }
         return makeResult(&*hosts[number]);
 }

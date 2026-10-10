@@ -10,10 +10,13 @@
  */
 
 #include <atomic>
+#include <new>
 #include <bmds/log.h>
+#include <bmds/memory.h>
 #include <bmds/midi.h>
 #include <bmds/midifile.h>
 #include <bmds/staticobject.h>
+#include <bmds/stats.h>
 #include <bmds/string.h>
 #include <bmds/sysconf.h>
 
@@ -29,14 +32,103 @@ namespace {
                      "MIDI connections made whenever both ports exist: SOURCE>DEST, comma-separated", 0,
                      static_cast<int32_t>(MidiRouter::MaxAutoConnect - 1), nullptr, nullptr)
 
+        // A port's counters (devplan/sysmon.md §6): names, units and labels are an interface once
+        // shipped.
+        enum StatIndex : size_t {
+                StatKind,
+                StatEventsIn,
+                StatEventsOut,
+                StatDropped,
+                StatParseErrors,
+                StatDeviceErrors,
+                StatCount
+        };
+
+        constexpr Stat::Desc PortStats[] = {
+                {"kind", Stat::Unit::Count, Stat::Kind::State, 0, {}, "usb|serial|virtual", "What the port is"},
+                {"events_in",
+                 Stat::Unit::Count,
+                 Stat::Kind::Total,
+                 Stat::KeepHistory,
+                 {},
+                 "",
+                 "Events from its source"},
+                {"events_out", Stat::Unit::Count, Stat::Kind::Total, 0, {}, "", "Events its destination took"},
+                {"dropped",
+                 Stat::Unit::Count,
+                 Stat::Kind::Total,
+                 0,
+                 {Stat::Rule::Zero, Stat::Health::Warning},
+                 "",
+                 "Events its destination had no room for"},
+                {"parse_errors",
+                 Stat::Unit::Count,
+                 Stat::Kind::Total,
+                 0,
+                 {Stat::Rule::Zero, Stat::Health::Warning},
+                 "",
+                 "Bytes its producers threw away, SysExes cut"},
+                {"device_errors",
+                 Stat::Unit::Count,
+                 Stat::Kind::Total,
+                 0,
+                 {Stat::Rule::Zero, Stat::Health::Critical},
+                 "",
+                 "Transfer, framing and overrun errors"},
+        };
+        static_assert(sizeof(PortStats) / sizeof(PortStats[0]) == StatCount);
+
+        void readPort(void *arg, Span<int64_t> v);
+
+        // Each port number's counters, registered while the port exists.
+        struct PortCounters {
+                        PortCounters() : group(PortStats, StatCount, readPort, this) {}
+                        uint8_t      number = 0;
+                        Stats::Group group;
+        };
+
         struct System {
                         MidiRouter        router;
                         SysConf::Watcher  watcher;
                         std::atomic<bool> connectChanged{true}; // read midi/connect at the next use
+                        Mutex             countersLock;         // the counters' registration
+                        PortCounters     *counters = nullptr;   // MaxPorts of them, in PSRAM
         };
 
         constinit StaticObject<System> midi;
         constinit std::atomic<bool>    ready{false};
+
+        void readPort(void *arg, Span<int64_t> v) {
+                const PortCounters *c = static_cast<PortCounters *>(arg);
+                auto [info, err] = midi->router.port(c->number);
+                if (err.isError()) return; // gone: unavailable
+                v[StatKind] = int64_t(info.kind);
+                v[StatEventsIn] = int64_t(info.counters.eventsIn);
+                v[StatEventsOut] = int64_t(info.counters.eventsOut);
+                v[StatDropped] = info.counters.dropped;
+                v[StatParseErrors] = info.counters.parseErrors;
+                v[StatDeviceErrors] = info.counters.deviceErrors;
+                return;
+        }
+
+        // Ports came or went (on the task that added or removed one, without the router's lock):
+        // each port's counters registered while it exists.
+        void portsChanged(void *) {
+                System       &s = *midi;
+                Mutex::Locker locker(s.countersLock, WaitForever);
+                if (s.counters == nullptr) return;
+                for (uint8_t n = 0; n < MidiRouter::MaxPorts; ++n) {
+                        Stats::Group &g = s.counters[n].group;
+                        const bool    exists = s.router.port(n).isOk();
+                        if (exists && !g.isAdded()) {
+                                g.setName("midi.port", n);
+                                (void)Stats::add(g);
+                        } else if (!exists && g.isAdded()) {
+                                Stats::remove(g);
+                        }
+                }
+                return;
+        }
 
         // On the task that changed it, which may hold the registry: the next user reads it.
         void connectChanged(void *) {
@@ -48,6 +140,15 @@ namespace {
 
 Error Midi::init() {
         midi.create();
+        void *block = Memory::alloc(MemSpace::Psram, sizeof(PortCounters) * MidiRouter::MaxPorts);
+        if (block != nullptr) {
+                midi->counters = static_cast<PortCounters *>(block);
+                for (uint8_t n = 0; n < MidiRouter::MaxPorts; ++n) new (&midi->counters[n]) PortCounters();
+                for (uint8_t n = 0; n < MidiRouter::MaxPorts; ++n) midi->counters[n].number = n;
+                midi->router.setPortsChanged(portsChanged, nullptr);
+        } else {
+                bmdsWarn("midi: the ports' counters aren't shown (no memory)");
+        }
         if (SysConf::isReady()) {
                 const Error err = midi->watcher.start(bmdsConf_midiConnect.key, connectChanged, nullptr);
                 if (err.isError()) bmdsWarn("midi: midi/connect won't be followed: %s", err.desc());

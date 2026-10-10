@@ -17,6 +17,7 @@
 #include <bmds/result.h>
 #include <bmds/sampleformat.h>
 #include <bmds/soundfont.h>
+#include <bmds/stats.h>
 #include <bmds/stream.h>
 #include <bmds/string.h>
 #include <bmds/synth.h>
@@ -82,8 +83,10 @@ class SynthFile final : public Stream {
                 void       handleClosed(uint8_t mode) override;
 
         private:
-                SynthFile() = default;
+                SynthFile();
                 ~SynthFile() = default;
+
+                static void readStats(void *arg, Span<int64_t> values);
 
                 Mutex      _lock;
                 Synth      _synth;
@@ -92,6 +95,8 @@ class SynthFile final : public Stream {
                 Config     _config;
                 uint32_t   _cpuPermille = 0;
                 uint32_t   _cpuPermilleMax = 0;
+                int8_t       _statsNumber = -1; // N of its counters, synth.N (-1: none)
+                Stats::Group _stats;            // devplan/sysmon.md §6
 };
 
 /**

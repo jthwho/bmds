@@ -160,6 +160,7 @@ struct ScanoutIsr {
                         s._primed = true;
                         const uint32_t cycles = esp_cpu_get_cycle_count() - started;
                         if (cycles > s._isrCyclesMax) s._isrCyclesMax = cycles;
+                        s._isrCycles += cycles;
                         return false;
                 }
 
@@ -215,6 +216,7 @@ Error Scanout::start(const Config &config, Surface &surface) {
         _swapPhase = 0;
         _notifyPending = false;
         _isrCyclesMax = 0;
+        _isrCycles = 0;
         _resyncs = 0;
         _rebuilds = 0;
         _failures = 0;
@@ -635,6 +637,7 @@ Scanout::Stats Scanout::stats() const {
         s.rebuilds = _rebuilds;
         s.failures = _failures;
         s.isrCyclesMax = _isrCyclesMax;
+        s.isrCycles = _isrCycles;
         s.dmaItem = _lastItem;
         if (_hw != nullptr) {
                 s.pixelHz = _hw->pixelHz;

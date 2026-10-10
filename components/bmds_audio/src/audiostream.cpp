@@ -300,7 +300,10 @@ bool PcmStream::render(float *mix, size_t frames, float *scratch) {
         }
         if (made < frames) {
                 if (draining && _flushLeft == 0) return false; // played out
-                if (!draining && !_starved) _underruns.fetch_add(1, std::memory_order_relaxed);
+                if (!draining && !_starved) {
+                        _underruns.fetch_add(1, std::memory_order_relaxed);
+                        tally(Tally::Underrun);
+                }
                 _starved = true;
         } else {
                 _starved = false;
@@ -381,7 +384,10 @@ Error RtStream::cycle(Period *next, Interrupt *interrupt) {
         }
         if (err.isOk()) {
                 const uint64_t skipped = given != 0 ? o.number - given - 1 : 0;
-                if (skipped != 0) _skipped.fetch_add(static_cast<uint32_t>(skipped), std::memory_order_relaxed);
+                if (skipped != 0) {
+                        _skipped.fetch_add(static_cast<uint32_t>(skipped), std::memory_order_relaxed);
+                        tally(Tally::ClientSkipped, static_cast<uint32_t>(skipped));
+                }
                 _given.store(o.number, std::memory_order_release);
                 next->out = _out;
                 next->in = nullptr;
@@ -438,6 +444,7 @@ bool RtStream::render(float *mix, size_t frames, float *) {
         const uint64_t n = _offered.load(std::memory_order_relaxed);
         if (_ended.load(std::memory_order_acquire) != n) {
                 _late.fetch_add(1, std::memory_order_relaxed);
+                tally(Tally::ClientLate);
                 return true;
         }
         const float g = gain();

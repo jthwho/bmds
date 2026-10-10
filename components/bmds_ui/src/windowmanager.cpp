@@ -18,6 +18,7 @@
 #include <bmds/display.h>
 #include <bmds/font.h>
 #include <bmds/iconid.h>
+#include <bmds/log.h>
 #include <bmds/iconpack.h>
 #include <bmds/input.h>
 #include <bmds/memory.h>
@@ -49,11 +50,97 @@ namespace {
                 return;
         }
 
+        // The compositor's counters (devplan/sysmon.md §6): names, units and labels are an interface
+        // once shipped.
+        enum StatIndex : size_t {
+                StatRounds,
+                StatPieces,
+                StatRedraws,
+                StatDmaCalls,
+                StatFallbacks,
+                StatErrors,
+                StatRoundUs,
+                StatRoundUsMax,
+                StatLastRoundUs,
+                StatDeferred,
+                StatWindows,
+                StatCount
+        };
+
+        constexpr Stat::Desc WmStats[] = {
+                {"rounds", Stat::Unit::Count, Stat::Kind::Total, Stat::KeepHistory, {}, "", "Compositor rounds drawn"},
+                {"pieces", Stat::Unit::Count, Stat::Kind::Total, 0, {}, "", "Damage pieces planned"},
+                {"redraws", Stat::Unit::Count, Stat::Kind::Total, 0, {}, "", "Windows' redraw callbacks"},
+                {"dma_calls", Stat::Unit::Count, Stat::Kind::Total, 0, {}, "", "2D-DMA fills and copies"},
+                {"fallbacks",
+                 Stat::Unit::Count,
+                 Stat::Kind::Total,
+                 0,
+                 {},
+                 "",
+                 "Damage too broken up to plan whole (drawn as one rectangle)"},
+                {"errors",
+                 Stat::Unit::Count,
+                 Stat::Kind::Total,
+                 0,
+                 {Stat::Rule::Zero, Stat::Health::Critical},
+                 "",
+                 "Drawing errors"},
+                {"round_us",
+                 Stat::Unit::Micros,
+                 Stat::Kind::Total,
+                 Stat::KeepHistory,
+                 {},
+                 "",
+                 "Time drawing rounds (presents not included)"},
+                {"round_us_max",
+                 Stat::Unit::Micros,
+                 Stat::Kind::Peak,
+                 0,
+                 {Stat::Rule::Above, Stat::Health::Warning, 0, 33333, 100000},
+                 "",
+                 "The longest round (judged against two 60 Hz frames and six)"},
+                {"last_round_us", Stat::Unit::Micros, Stat::Kind::Level, 0, {}, "", "The last round's time"},
+                {"deferred",
+                 Stat::Unit::Count,
+                 Stat::Kind::Total,
+                 0,
+                 {},
+                 "",
+                 "Redraws put off because the window's owner was busy"},
+                {"windows", Stat::Unit::Count, Stat::Kind::Level, 0, {}, "", "Windows, shown and minimized"},
+        };
+        static_assert(sizeof(WmStats) / sizeof(WmStats[0]) == StatCount);
+
 } // namespace
+
+WindowManager::WindowManager() : _counters(WmStats, StatCount, readCounters, this) {}
+
+void WindowManager::readCounters(void *arg, Span<int64_t> v) {
+        const Stats s = static_cast<WindowManager *>(arg)->stats();
+        v[StatRounds] = s.rounds;
+        v[StatPieces] = s.pieces;
+        v[StatRedraws] = s.redraws;
+        v[StatDmaCalls] = s.calls;
+        v[StatFallbacks] = s.fallbacks;
+        v[StatErrors] = s.errors;
+        v[StatRoundUs] = int64_t(s.roundUs);
+        v[StatRoundUsMax] = s.roundUsMax;
+        v[StatLastRoundUs] = s.lastRoundUs;
+        v[StatDeferred] = s.deferred;
+        v[StatWindows] = s.windows;
+        return;
+}
 
 Result<WindowManager *> WindowManager::manager(size_t number) {
         if (number >= MaxManagers) return makeError<WindowManager *>(Error::NotSupported);
-        if (!managers[number].isCreated()) managers[number].create();
+        if (!managers[number].isCreated()) {
+                managers[number].create();
+                ::bmds::Stats::Group &g = managers[number]->_counters;
+                g.setName("wm", int(number));
+                const Error err = ::bmds::Stats::add(g);
+                if (err.isError()) bmdsWarn("wm%u's counters aren't shown: %s", unsigned(number), err.desc());
+        }
         return makeResult(&*managers[number]);
 }
 
@@ -2827,7 +2914,9 @@ Error WindowManager::sync(unsigned int timeoutMs) {
 
 WindowManager::Stats WindowManager::stats() {
         Mutex::Locker lock(_lock, WaitForever);
-        return _stats;
+        Stats         s = _stats;
+        s.windows = uint32_t(_stack.count() + _stack.hiddenCount());
+        return s;
 }
 
 BMDS_NAMESPACE_END

@@ -24,6 +24,7 @@
 #include <bmds/storage.h>
 #include <bmds/synthfile.h>
 #include <bmds/sysconf.h>
+#include <bmds/sysmon.h>
 #include <bmds/usbhost.h>
 #include <bmds/usbserialconsole.h>
 #include <bmds/vfs.h>
@@ -61,6 +62,7 @@ namespace {
                 {"boot", bmds::BootDisk::init},       // /boot: the profile and autoexec.sh
                 {"rom", bmds::RomDisk::init},         // /rom: the files that come with the firmware
                 {"sysconf", bmds::SysConf::init},     // the system configuration, saved on /boot; /home
+                {"sysmon", bmds::Sysmon::init},       // the tasks' CPU time, the system's counters
                 {"audio", bmds::AudioDevice::init},   // dsp0: made, not started; follows audio/dsp0/...
                 {"midi", bmds::Midi::init},           // the router, /dev/midi*; before USB's MIDI devices
                 {"clipboard", bmds::Clipboard::init}, // its configuration on /boot; /dev/clip0

@@ -49,37 +49,45 @@ Result<uint8_t> MidiRouter::addPort(Kind kind, uint8_t sides, StringView name, M
         if ((sides & (Source | Destination)) == 0 || (sides & ~(Source | Destination)) != 0 ||
             ((sides & Destination) != 0 && destination == nullptr))
                 return makeError<uint8_t>(Error::Invalid);
-        Mutex::Locker lock(_lock, WaitForever);
-        for (uint8_t n = 0; n < MaxPorts; ++n) {
-                Port &p = _ports[n];
-                if (p.used) continue;
-                p = Port();
-                p.used = true;
-                p.kind = kind;
-                p.sides = sides;
-                p.sink = (sides & Destination) != 0 ? destination : nullptr;
-                setName(p.name, name);
-                autoConnectLocked();
-                return makeResult(n);
+        uint8_t number = NoPort;
+        {
+                Mutex::Locker lock(_lock, WaitForever);
+                for (uint8_t n = 0; n < MaxPorts && number == NoPort; ++n) {
+                        Port &p = _ports[n];
+                        if (p.used) continue;
+                        p = Port();
+                        p.used = true;
+                        p.kind = kind;
+                        p.sides = sides;
+                        p.sink = (sides & Destination) != 0 ? destination : nullptr;
+                        setName(p.name, name);
+                        autoConnectLocked();
+                        number = n;
+                }
         }
-        return makeError<uint8_t>(Error::Full);
+        if (number == NoPort) return makeError<uint8_t>(Error::Full);
+        if (_portsChanged != nullptr) _portsChanged(_portsChangedArg);
+        return makeResult(number);
 }
 
 void MidiRouter::removePort(uint8_t number) {
-        Mutex::Locker lock(_lock, WaitForever);
-        if (number >= MaxPorts || !_ports[number].used) return;
-        size_t kept = 0;
-        for (size_t i = 0; i < _connectionCount; ++i) {
-                const Connection c = _connections[i];
-                if (c.source != number && c.destination != number) _connections[kept++] = c;
+        {
+                Mutex::Locker lock(_lock, WaitForever);
+                if (number >= MaxPorts || !_ports[number].used) return;
+                size_t kept = 0;
+                for (size_t i = 0; i < _connectionCount; ++i) {
+                        const Connection c = _connections[i];
+                        if (c.source != number && c.destination != number) _connections[kept++] = c;
+                }
+                _connectionCount = kept;
+                for (Tap &t : _taps) {
+                        if (t.sink == nullptr || t.port != number) continue;
+                        t.sink->portGone();
+                        t = Tap();
+                }
+                _ports[number] = Port();
         }
-        _connectionCount = kept;
-        for (Tap &t : _taps) {
-                if (t.sink == nullptr || t.port != number) continue;
-                t.sink->portGone();
-                t = Tap();
-        }
-        _ports[number] = Port();
+        if (_portsChanged != nullptr) _portsChanged(_portsChangedArg);
         return;
 }
 

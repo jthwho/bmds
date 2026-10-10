@@ -21,6 +21,7 @@
 #include <bmds/memory.h>
 #include <bmds/semaphore.h>
 #include <bmds/staticobject.h>
+#include <bmds/stats.h>
 #include <bmds/system.h>
 
 BMDS_DEBUG(Boot)
@@ -61,6 +62,7 @@ namespace {
                 {"memory", initMemory},
                 {"random", Random::init}, // before anything reads it
                 {"clock", Clock::init},
+                {"stats", Stats::init}, // before any component adds its counters
         };
         constexpr size_t StageCount = sizeof(Stages) / sizeof(Stages[0]);
 

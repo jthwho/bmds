@@ -15,6 +15,7 @@
 #include <bmds/lt8912b.h>
 #include <bmds/result.h>
 #include <bmds/scanout.h>
+#include <bmds/stats.h>
 #include <bmds/surface.h>
 #include <bmds/videomodes.h>
 
@@ -101,6 +102,8 @@ class Display {
 
         private:
                 static void onLinkRestart(void *arg);
+                static void readStats(void *arg, Span<int64_t> values);
+                static void adjustStats(void *arg, size_t index, Stat::Limits &limits);
 
                 Lt8912b     _bridge;
                 Scanout     _scanout;
@@ -109,6 +112,11 @@ class Display {
                 const char *_owner = nullptr;
                 uint8_t     _number;
                 bool        _attached = false;
+
+                // Its counters, displayN (devplan/sysmon.md §6); the interrupt's cycles, widened.
+                Stats::Group _stats;
+                uint32_t     _isrCyclesSeen = 0;
+                uint64_t     _isrCyclesTotal = 0;
 };
 
 BMDS_NAMESPACE_END

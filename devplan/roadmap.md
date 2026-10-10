@@ -118,8 +118,13 @@ Plan: [`input.md`](input.md).
 - [ ] Special keys and global hotkeys (`hotkeys.md`, planned 2026-10-08): media keys decoded,
   named actions and bindings in the kernel, the window manager's keys moved onto them; user
   bindings later.
-- [ ] System monitor (`sysmon.md`, planned 2026-10-08): CPU per core, task and process from
-  run-time stats; `top`; system calls; a tray CPU meter and a System Monitor window.
+- [ ] System monitor (`sysmon.md`, planned 2026-10-08, revised 2026-10-09): CPU per core, task
+  and process from run-time stats; every subsystem's counters in one named registry with rules
+  for what is abnormal and a problem log; system calls; a System Monitor window, a tray meter that
+  turns amber or red, `top` and `stats`. Step 1 done 2026-10-09: each task's CPU time is counted
+  (about 0.9 µs a context switch, no audio cost), `sysmon/enable` on by default. Step 2 done
+  2026-10-09: the registry (`Stats`), rules, overrides and problem log; every subsystem's counters
+  (audio, synths, MIDI, display, compositor, storage, caches, USB, input, console); `stats`.
 
 ## Phase 6 — Graphics
 

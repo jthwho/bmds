@@ -73,6 +73,7 @@ class Scanout {
                                 uint32_t isrCyclesMax = 0;   ///< The slowest block interrupt.
                                 uint32_t dmaItem = 0;        ///< The block the DMA is on.
                                 uint32_t bridgeFifo = 0;     ///< The DSI bridge's FIFO depth.
+                                uint32_t isrCycles = 0;      ///< The block interrupts' cycles in all (wraps).
                 };
 
                 /** @brief A scanout on DSI bus @p bus (0 on the ESP32-P4). */
@@ -132,6 +133,7 @@ class Scanout {
                 std::atomic<bool>     _stalled{false};
                 std::atomic<bool>     _underran{false}; // the bridge ran dry: the picture is out of step
                 uint32_t              _isrCyclesMax = 0;
+                uint32_t              _isrCycles = 0; // written by the interrupt alone
                 uint32_t              _resyncs = 0;
                 uint32_t              _rebuilds = 0;
                 uint32_t              _failures = 0;

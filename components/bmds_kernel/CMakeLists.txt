@@ -16,6 +16,7 @@ set(BMDS_KERNEL_PORTABLE_SRCS
         src/memorystream.cpp
         src/pipe.cpp
         src/random.cpp
+        src/stats.cpp
         src/taskowner.cpp
         src/waitlist.cpp
         src/workerpool.cpp)

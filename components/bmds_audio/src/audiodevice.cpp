@@ -30,6 +30,7 @@
 #include <bmds/memory.h>
 #include <bmds/placement.h>
 #include <bmds/staticobject.h>
+#include <bmds/stats.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -65,6 +66,147 @@ namespace {
                      "dsp0's period in frames (240: 5 ms at 48 kHz)",
                      static_cast<int32_t>(AudioDevice::MinPeriodFrames),
                      static_cast<int32_t>(AudioDevice::MaxPeriodFrames), nullptr, nullptr)
+
+        // The device's counters (devplan/sysmon.md §6): names, units and labels are an interface once
+        // shipped. The indices are StatIndex's.
+        using Stat::Health;
+        using Stat::Kind;
+        using Stat::Rule;
+        using Stat::Unit;
+
+        enum StatIndex : size_t {
+                StatState,
+                StatRate,
+                StatPeriod,
+                StatMclkAsked,
+                StatMclk,
+                StatApll,
+                StatMeasured,
+                StatClockPpb,
+                StatPeriods,
+                StatLate,
+                StatFill,
+                StatFillMax,
+                StatMixUs,
+                StatMixedPeriods,
+                StatLimited,
+                StatStreams,
+                StatRealtime,
+                StatWaited,
+                StatSoundsDropped,
+                StatVolume,
+                StatMuted,
+                StatUnderruns,
+                StatClientLate,
+                StatClientSkipped,
+                StatClientThrottled,
+                StatHeld,
+                StatExclusive,
+                StatCount
+        };
+
+        constexpr Stat::Desc AudioStats[] = {
+                {"state",
+                 Unit::Count,
+                 Kind::State,
+                 0,
+                 {Rule::State, Health::Warning, 0, Stat::NoLevel, 1 << 2},
+                 "stopped|running|faulted",
+                 "What the device is doing (faulted: see 'audio status')"},
+                {"rate_hz", Unit::Hz, Kind::Info, 0, {}, "", "The rate running, or last run"},
+                {"period_frames", Unit::Frames, Kind::Info, 0, {}, "", "The period running, or last run"},
+                {"mclk_asked_hz", Unit::Hz, Kind::Info, 0, {}, "", "MCLK asked for (256 times the rate)"},
+                {"mclk_hz", Unit::Hz, Kind::Info, 0, {}, "", "MCLK as the I2S driver set it"},
+                {"apll_hz", Unit::Hz, Kind::Info, 0, {}, "", "The audio PLL's frequency"},
+                {"measured_mhz",
+                 Unit::MilliHz,
+                 Kind::Level,
+                 0,
+                 {},
+                 "",
+                 "Frames a second as counted against the system timer"},
+                {"clock_ppb",
+                 Unit::Ppb,
+                 Kind::Level,
+                 0,
+                 {Rule::Drift, Health::Warning, 10, 100000, 500000},
+                 "",
+                 "The measured rate's error from the nominal"},
+                {"periods", Unit::Count, Kind::Total, 0, {}, "", "Periods filled since the device started"},
+                {"late",
+                 Unit::Count,
+                 Kind::Total,
+                 0,
+                 {Rule::Zero, Health::Critical},
+                 "",
+                 "Periods filled after the DMA reached them: each played silence"},
+                {"fill_us", Unit::Micros, Kind::Level, 0, {}, "", "The last period's fill time"},
+                {"fill_us_max",
+                 Unit::Micros,
+                 Kind::Peak,
+                 Stat::Adjusted,
+                 {Rule::Above, Health::Warning},
+                 "",
+                 "The longest fill since the start (judged against half and 0.8 of a period)"},
+                {"mix_us",
+                 Unit::Micros,
+                 Kind::Total,
+                 Stat::KeepHistory,
+                 {Rule::Above, Health::Warning, 5, 500000, 800000},
+                 "",
+                 "Time filling periods that had streams to mix (a rate of 1,000,000 a second is a whole core)"},
+                {"mixed_periods", Unit::Count, Kind::Total, 0, {}, "", "Periods that had streams to mix"},
+                {"limited",
+                 Unit::Frames,
+                 Kind::Total,
+                 0,
+                 {Rule::Zero, Health::Warning},
+                 "",
+                 "Frames the limiter reduced (the mix was too loud)"},
+                {"streams", Unit::Count, Kind::Level, Stat::KeepHistory, {}, "", "Streams attached"},
+                {"realtime", Unit::Count, Kind::Level, 0, {}, "", "Real-time clients attached"},
+                {"waited_us", Unit::Micros, Kind::Total, 0, {}, "", "Time the engine waited for real-time clients"},
+                {"sounds_dropped",
+                 Unit::Count,
+                 Kind::Total,
+                 0,
+                 {Rule::Zero, Health::Warning},
+                 "",
+                 "System sounds not played (a client had the device to itself)"},
+                {"volume_db", Unit::Decibels, Kind::Level, 0, {}, "", "The volume setting"},
+                {"muted", Unit::Count, Kind::State, 0, {}, "no|yes", "The mute setting"},
+                {"underruns",
+                 Unit::Count,
+                 Kind::Total,
+                 0,
+                 {Rule::Zero, Health::Warning},
+                 "",
+                 "Written streams that ran dry while playing, since boot"},
+                {"client_late",
+                 Unit::Count,
+                 Kind::Total,
+                 0,
+                 {Rule::Zero, Health::Warning},
+                 "",
+                 "Real-time clients' periods not done in time, since boot"},
+                {"client_skipped",
+                 Unit::Count,
+                 Kind::Total,
+                 0,
+                 {Rule::Zero, Health::Warning},
+                 "",
+                 "Real-time clients' periods missed altogether, since boot"},
+                {"client_throttled",
+                 Unit::Count,
+                 Kind::Total,
+                 0,
+                 {Rule::Zero, Health::Warning},
+                 "",
+                 "Real-time clients' threads put back to their own priority, since boot"},
+                {"held", Unit::Count, Kind::State, 0, {}, "no|yes", "Held running"},
+                {"exclusive", Unit::Count, Kind::State, 0, {}, "no|yes", "A real-time client has the device to itself"},
+        };
+        static_assert(sizeof(AudioStats) / sizeof(AudioStats[0]) == StatCount);
 
         constinit StaticObject<Es8311>      codecs[AudioDevice::MaxDevices];
         constinit StaticObject<AudioDevice> devices[AudioDevice::MaxDevices];
@@ -119,6 +261,9 @@ Error AudioDevice::init() {
         }
         const Error err = AudioFile::addFiles(d);
         if (err.isError()) bmdsWarn("audio: no /dev/dsp0: %s", err.desc());
+        d._stats.setName("audio.dsp", 0);
+        const Error statsErr = Stats::add(d._stats);
+        if (statsErr.isError()) bmdsWarn("audio: dsp0's counters aren't shown: %s", statsErr.desc());
         return Error::Ok;
 }
 
@@ -138,7 +283,53 @@ Result<AudioDevice *> AudioDevice::defaultDevice() {
         return device(static_cast<size_t>(n[3] - '0'));
 }
 
-AudioDevice::AudioDevice(AudioCodec &codec, uint8_t number) : _codec(codec), _wake(1, 0), _number(number) {}
+AudioDevice::AudioDevice(AudioCodec &codec, uint8_t number)
+    : _codec(codec), _wake(1, 0), _number(number), _stats(AudioStats, StatCount, readStats, this, adjustStats) {}
+
+void AudioDevice::readStats(void *arg, Span<int64_t> v) {
+        const Status s = static_cast<AudioDevice *>(arg)->status();
+        v[StatState] = int64_t(s.state);
+        v[StatRate] = s.rateHz;
+        v[StatPeriod] = s.periodFrames;
+        v[StatMclkAsked] = s.mclkAskedHz;
+        v[StatMclk] = s.mclkHz;
+        v[StatApll] = s.apllHz;
+        const bool measured = s.measuredMilliHz != 0 && s.rateHz != 0;
+        v[StatMeasured] = measured ? int64_t(s.measuredMilliHz) : Stat::Unavailable;
+        // (measured − nominal) ÷ nominal, in parts per billion; the measurement is in mHz.
+        v[StatClockPpb] =
+                measured ? (int64_t(s.measuredMilliHz) - int64_t(s.rateHz) * 1000) * 1000000 / int64_t(s.rateHz)
+                         : Stat::Unavailable;
+        v[StatPeriods] = s.periods;
+        v[StatLate] = s.late;
+        v[StatFill] = s.fillUsLast;
+        v[StatFillMax] = s.fillUsMax;
+        v[StatMixUs] = int64_t(s.mixedUs);
+        v[StatMixedPeriods] = s.mixedPeriods;
+        v[StatLimited] = s.limited;
+        v[StatStreams] = int64_t(s.streams);
+        v[StatRealtime] = int64_t(s.realtime);
+        v[StatWaited] = int64_t(s.waitedUs);
+        v[StatSoundsDropped] = s.soundsDropped;
+        v[StatVolume] = s.volumeDb;
+        v[StatMuted] = s.muted ? 1 : 0;
+        v[StatUnderruns] = s.underruns;
+        v[StatClientLate] = s.clientLate;
+        v[StatClientSkipped] = s.clientSkipped;
+        v[StatClientThrottled] = s.clientThrottled;
+        v[StatHeld] = s.held ? 1 : 0;
+        v[StatExclusive] = s.exclusive ? 1 : 0;
+        return;
+}
+
+void AudioDevice::adjustStats(void *arg, size_t index, Stat::Limits &limits) {
+        if (index != StatFillMax) return;
+        const Timing  t = static_cast<AudioDevice *>(arg)->timing();
+        const int64_t periodUs = t.rateHz == 0 ? 0 : int64_t(t.periodFrames) * 1000000 / t.rateHz;
+        limits.warn = periodUs == 0 ? Stat::NoLevel : periodUs / 2;
+        limits.crit = periodUs == 0 ? Stat::NoLevel : periodUs * 4 / 5;
+        return;
+}
 
 const char *AudioDevice::stateName(State state) {
         switch (state) {
@@ -404,6 +595,7 @@ Error AudioDevice::attachLocked(AudioStream &stream) {
         }
         const Error err = stream.prepare(_rateHz, _periodFrames);
         if (err.isError()) return err;
+        stream._tallies = _tallies;
         (void)stream._gone.tryAcquire(); // released once per attach, when the engine lets go
         stream._detach.store(false, std::memory_order_relaxed);
         stream._state.store(AudioStream::Attached, std::memory_order_release);
@@ -541,6 +733,10 @@ AudioDevice::Status AudioDevice::status() {
         s.exclusive = _exclusive != nullptr;
         s.soundsDropped = _soundsDropped.load(std::memory_order_relaxed);
         s.waitedUs = _waitedUs.load(std::memory_order_relaxed);
+        s.underruns = _tallies[size_t(AudioStream::Tally::Underrun)].load(std::memory_order_relaxed);
+        s.clientLate = _tallies[size_t(AudioStream::Tally::ClientLate)].load(std::memory_order_relaxed);
+        s.clientSkipped = _tallies[size_t(AudioStream::Tally::ClientSkipped)].load(std::memory_order_relaxed);
+        s.clientThrottled = _tallies[size_t(AudioStream::Tally::ClientThrottled)].load(std::memory_order_relaxed);
         return s;
 }
 

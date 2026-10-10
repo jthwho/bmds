@@ -36,6 +36,7 @@
 #include <bmds/program.h>
 #include <bmds/programimage.h>
 #include <bmds/staticobject.h>
+#include <bmds/stats.h>
 #include <bmds/shebang.h>
 #include <bmds/sys.h>
 #include <bmds/vfs.h>
@@ -1578,6 +1579,39 @@ Error Running::setSignalAction(int sig, SignalAction action) {
 
 // --- Loader -------------------------------------------------------------------
 
+namespace {
+
+        // The process table's counters (devplan/sysmon.md §6): names are an interface once shipped.
+        constexpr Stat::Desc ProcessStats[] = {
+                {"count",
+                 Stat::Unit::Count,
+                 Stat::Kind::Level,
+                 Stat::KeepHistory,
+                 {Stat::Rule::Above, Stat::Health::Warning, 0, ProcessTable::Capacity * 3 / 4,
+                  ProcessTable::Capacity - 2},
+                 "",
+                 "Processes, zombies included (the table holds 32)"},
+                {"zombies", Stat::Unit::Count, Stat::Kind::Level, 0, {}, "", "Ended processes not yet waited for"},
+                {"stopped", Stat::Unit::Count, Stat::Kind::Level, 0, {}, "", "Stopped processes"},
+        };
+
+        void readProcesses(void *, Span<int64_t> v) {
+                int64_t count = 0, zombies = 0, stopped = 0;
+                processes->forEach([&](const ProcessTable::View &p) {
+                        ++count;
+                        zombies += p.ended ? 1 : 0;
+                        stopped += p.stopped ? 1 : 0;
+                });
+                v[0] = count;
+                v[1] = zombies;
+                v[2] = stopped;
+                return;
+        }
+
+        constinit StaticObject<Stats::Group> processCounters;
+
+} // namespace
+
 Error Loader::init() {
         if (!stopLock.isCreated()) stopLock.create();
         if (!groupLock.isCreated()) groupLock.create();
@@ -1605,6 +1639,12 @@ Error Loader::init() {
         if (err.isOk()) {
                 Console::setSignalHook(queueConsoleSignals);
                 Console::setReadHook(admitReader);
+        }
+        if (err.isOk() && !processCounters.isCreated()) {
+                processCounters.create(ProcessStats, sizeof(ProcessStats) / sizeof(ProcessStats[0]), readProcesses,
+                                       nullptr);
+                processCounters->setName("proc");
+                (void)Stats::add(*processCounters);
         }
         return err;
 }

@@ -17,6 +17,7 @@
 #include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/staticobject.h>
+#include <bmds/stats.h>
 #include <bmds/usbserialconsole.h>
 
 BMDS_DEBUG(UsbSerialConsole)
@@ -103,6 +104,24 @@ namespace {
                 return;
         }
 
+        // The console's counters (devplan/sysmon.md §6): names are an interface once shipped.
+        constexpr Stat::Desc ConsoleStats[] = {
+                {"rx_dropped",
+                 Stat::Unit::Bytes,
+                 Stat::Kind::Total,
+                 0,
+                 {Stat::Rule::Zero, Stat::Health::Warning},
+                 "",
+                 "Bytes received with the ring full (typed or pasted faster than read)"},
+        };
+
+        void readConsole(void *arg, Span<int64_t> v) {
+                v[0] = static_cast<UsbSerialConsole *>(arg)->rxDroppedBytes();
+                return;
+        }
+
+        constinit StaticObject<Stats::Group> counters;
+
 } // namespace
 
 UsbSerialConsole::UsbSerialConsole(WritableByteSpan txStorage, WritableByteSpan rxStorage)
@@ -121,6 +140,9 @@ Error UsbSerialConsole::init() {
         }
         UsbSerialConsole &c = console.create(WritableByteSpan(tx, CONFIG_BMDS_USJ_TX_BYTES),
                                              WritableByteSpan(rx, CONFIG_BMDS_USJ_RX_BYTES));
+        counters.create(ConsoleStats, sizeof(ConsoleStats) / sizeof(ConsoleStats[0]), readConsole, &c);
+        counters->setName("console.usbserial");
+        (void)Stats::add(*counters);
 
         // The ROM and ESP-IDF console normally have the peripheral running
         // already; this is what IDF's own driver does in case they don't.

@@ -94,6 +94,7 @@ class FlashPartition final : public BlockDevice, public FlashDevice {
 
         private:
                 bool  fits(uint64_t address, size_t bytes) const;
+                Error readMapped(uint32_t address, WritableByteSpan buf); // uncounted
                 Error queue(FlashQueue::Kind kind, uint32_t address, ByteSpan data);
                 void  work();
 

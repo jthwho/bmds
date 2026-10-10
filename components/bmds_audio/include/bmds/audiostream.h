@@ -64,6 +64,17 @@ class AudioStream {
                 /** @brief Returns the label `audio status` shows (`tone`, `bell`, `sweep`). */
                 const char *label() const { return _label; }
 
+                /** @brief The problems its device counts across its streams (`AudioDevice::Status`). */
+                enum class Tally : uint8_t {
+                        Underrun,        ///< A written stream ran dry while playing.
+                        ClientLate,      ///< A real-time client didn't finish a period in time.
+                        ClientSkipped,   ///< A real-time client missed periods altogether.
+                        ClientThrottled, ///< A real-time client's thread was put back to its own priority.
+                };
+
+                /** @brief `Tally`'s values. */
+                static constexpr size_t TallyCount = 4;
+
                 /** @brief Sets the gain applied in the mix (1: as written). */
                 void setGain(float gain);
 
@@ -111,6 +122,12 @@ class AudioStream {
                 bool isDropped() const { return _state.load(std::memory_order_acquire) == Over; }
                 virtual ~AudioStream() = default;
 
+                /** @brief Adds @p n to its device's count of @p what. @hotpath */
+                void tally(Tally what, uint32_t n = 1) {
+                        if (_tallies != nullptr) _tallies[size_t(what)].fetch_add(n, std::memory_order_relaxed);
+                        return;
+                }
+
         private:
                 friend class AudioDevice;
 
@@ -124,6 +141,7 @@ class AudioStream {
 
                 Kind                  _kind;
                 const char           *_label;
+                std::atomic<uint32_t> *_tallies = nullptr; // its device's (set when attached)
                 std::atomic<uint8_t>  _state{Idle};
                 std::atomic<bool>     _detach{false};    // its owner asks the engine to drop it
                 std::atomic<uint32_t> _gain{0x3f800000}; // 1.0f's bits
@@ -429,7 +447,11 @@ class RtStream final : public AudioStream {
                 bool isStalled(uint32_t periods) const;
 
                 /** @brief The engine: its thread was put back to its own priority. */
-                void noteThrottled() { _throttled.fetch_add(1, std::memory_order_relaxed); }
+                void noteThrottled() {
+                        _throttled.fetch_add(1, std::memory_order_relaxed);
+                        tally(Tally::ClientThrottled);
+                        return;
+                }
 
                 /** @brief Returns the periods late in all. */
                 uint32_t latePeriods() const { return _late.load(std::memory_order_relaxed); }

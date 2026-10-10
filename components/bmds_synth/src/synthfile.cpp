@@ -8,6 +8,7 @@
  * Synth fds and the fonts they share (devplan/audio.md §22).
  */
 
+#include <atomic>
 #include <cstring>
 #include <new>
 #include <bmds/clock.h>
@@ -337,6 +338,108 @@ void SoundFonts::closeSynth(Synth &synth, SoundFont *font) {
 
 // ---- Synth fds
 
+namespace {
+
+        // A synth's counters (devplan/sysmon.md §6): names, units and labels are an interface once
+        // shipped.
+        enum StatIndex : size_t {
+                StatVoices,
+                StatPeakVoices,
+                StatMaxVoices,
+                StatNotesAtLimit,
+                StatQueued,
+                StatQueueFull,
+                StatIgnored,
+                StatFrames,
+                StatCpu,
+                StatCpuMax,
+                StatRate,
+                StatPresets,
+                StatFontBytes,
+                StatCount
+        };
+
+        constexpr Stat::Desc SynthStats[] = {
+                {"voices", Stat::Unit::Count, Stat::Kind::Level, Stat::KeepHistory, {}, "", "Voices playing now"},
+                {"peak_voices", Stat::Unit::Count, Stat::Kind::Peak, 0, {}, "", "The most voices at once"},
+                {"max_voices", Stat::Unit::Count, Stat::Kind::Info, 0, {}, "", "Its voice limit"},
+                {"notes_at_limit",
+                 Stat::Unit::Count,
+                 Stat::Kind::Total,
+                 0,
+                 {Stat::Rule::Zero, Stat::Health::Warning},
+                 "",
+                 "Note-ons with every voice busy (one stolen or dropped)"},
+                {"queued", Stat::Unit::Count, Stat::Kind::Level, 0, {}, "", "Events waiting"},
+                {"queue_full",
+                 Stat::Unit::Count,
+                 Stat::Kind::Total,
+                 0,
+                 {Stat::Rule::Zero, Stat::Health::Warning},
+                 "",
+                 "Events refused (the queue was full)"},
+                {"ignored", Stat::Unit::Count, Stat::Kind::Total, 0, {}, "", "Messages it doesn't take"},
+                {"frames", Stat::Unit::Frames, Stat::Kind::Total, 0, {}, "", "Frames made"},
+                {"cpu",
+                 Stat::Unit::Permille,
+                 Stat::Kind::Level,
+                 Stat::KeepHistory,
+                 {Stat::Rule::Above, Stat::Health::Warning, 5, 500, 800},
+                 "",
+                 "The last read's render time over its frames' time"},
+                {"cpu_max",
+                 Stat::Unit::Permille,
+                 Stat::Kind::Peak,
+                 0,
+                 {Stat::Rule::Above, Stat::Health::Warning, 0, 900, 1000},
+                 "",
+                 "The most since it opened (over 1000: slower than real time)"},
+                {"rate_hz", Stat::Unit::Hz, Stat::Kind::Info, 0, {}, "", "The rate it plays at"},
+                {"presets", Stat::Unit::Count, Stat::Kind::Info, 0, {}, "", "Its font's presets"},
+                {"font_bytes", Stat::Unit::Bytes, Stat::Kind::Info, 0, {}, "", "Its font's size in memory"},
+        };
+        static_assert(sizeof(SynthStats) / sizeof(SynthStats[0]) == StatCount);
+
+        // The numbers synths' counters use (synth.N), the lowest free taken.
+        constinit std::atomic<uint32_t> statsNumbers{0};
+
+        int8_t takeStatsNumber() {
+                uint32_t used = statsNumbers.load(std::memory_order_relaxed);
+                for (;;) {
+                        if (used == UINT32_MAX) return -1;
+                        const int      n = __builtin_ctz(~used);
+                        const uint32_t next = used | (1u << n);
+                        if (statsNumbers.compare_exchange_weak(used, next, std::memory_order_acq_rel)) return int8_t(n);
+                }
+        }
+
+        void giveStatsNumber(int8_t n) {
+                if (n >= 0) statsNumbers.fetch_and(~(1u << n), std::memory_order_acq_rel);
+                return;
+        }
+
+} // namespace
+
+SynthFile::SynthFile() : _stats(SynthStats, StatCount, readStats, this) {}
+
+void SynthFile::readStats(void *arg, Span<int64_t> v) {
+        const Info i = static_cast<SynthFile *>(arg)->info();
+        v[StatVoices] = i.synth.voices;
+        v[StatPeakVoices] = i.synth.peakVoices;
+        v[StatMaxVoices] = i.synth.maxVoices;
+        v[StatNotesAtLimit] = i.synth.notesAtLimit;
+        v[StatQueued] = i.synth.queued;
+        v[StatQueueFull] = i.synth.queueFull;
+        v[StatIgnored] = i.synth.ignored;
+        v[StatFrames] = int64_t(i.synth.frames);
+        v[StatCpu] = i.cpuPermille;
+        v[StatCpuMax] = i.cpuPermilleMax;
+        v[StatRate] = i.config.rateHz;
+        v[StatPresets] = int64_t(i.presets);
+        v[StatFontBytes] = int64_t(i.fontBytes);
+        return;
+}
+
 Result<FileHandle::Ptr> SynthFile::open(const Config &config, const Vfs::Context &context) {
         if (config.format != SampleFormat::F32Le && config.format != SampleFormat::S16Le)
                 return makeError<FileHandle::Ptr>(Error::Invalid);
@@ -369,11 +472,21 @@ Result<FileHandle::Ptr> SynthFile::open(const Config &config, const Vfs::Context
         file->_config.font = file->_fontPath.view();
         file->_config.maxVoices = file->_synth.config().maxVoices;
         Result<FileHandle::Ptr> handle = FileHandle::open(*file, FileHandle::ReadWrite);
-        if (handle.error().isError()) file->handleClosed(0);
+        if (handle.error().isError()) {
+                file->handleClosed(0);
+                return handle;
+        }
+        file->_statsNumber = takeStatsNumber();
+        if (file->_statsNumber >= 0) {
+                file->_stats.setName("synth.", file->_statsNumber);
+                (void)Stats::add(file->_stats);
+        }
         return handle;
 }
 
 void SynthFile::handleClosed(uint8_t) {
+        Stats::remove(_stats);
+        giveStatsNumber(_statsNumber);
         SoundFonts::closeSynth(_synth, _font);
         this->~SynthFile();
         Memory::free(this);

@@ -28,6 +28,7 @@
 #include <bmds/stream.h>
 #include <bmds/stringview.h>
 #include <bmds/span.h>
+#include <bmds/stats.h>
 #include <bmds/switcherlayout.h>
 #include <bmds/task.h>
 #include <bmds/waitlist.h>
@@ -344,6 +345,7 @@ class WindowManager {
                                 uint32_t roundUsMax = 0;
                                 uint32_t lastRoundUs = 0;
                                 uint32_t deferred = 0; ///< Redraws put off (`Painter::defer()`).
+                                uint32_t windows = 0;  ///< Windows now, shown and hidden (not a count).
                 };
 
                 /** @brief Window managers: one per display. */
@@ -355,7 +357,7 @@ class WindowManager {
                  */
                 static Result<WindowManager *> manager(size_t number);
 
-                WindowManager() = default;
+                WindowManager();
                 WindowManager(const WindowManager &) = delete;
                 WindowManager &operator=(const WindowManager &) = delete;
 
@@ -1022,6 +1024,9 @@ class WindowManager {
                 std::atomic<uint32_t> _drawn{0};          // changes drawn
                 uint32_t              _presented = 0;     // the last present's number
                 Stats                 _stats;
+                ::bmds::Stats::Group  _counters; // wmN (devplan/sysmon.md §6)
+
+                static void           readCounters(void *arg, Span<int64_t> values);
                 Semaphore             _wake{1, 0};
                 WaitListOf<4>         _idle; // woken after each round
                 Task                  _task;
