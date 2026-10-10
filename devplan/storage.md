@@ -433,6 +433,9 @@ wear levelling (§13d). The rest of this section is the FAT design as it was bui
 board's flash that is **always** mounted at `/boot`. `autoexec.sh` moves there: the system starts
 the same with or without a card, and a script that wants the card checks for it itself.
 
+**Since 2026-10-09** the flash's layout is `rom.md` §3a's: `/boot` is 512 KB at 0x620000, after
+the main and recovery firmware and `otadata`, with the ROM after it. What follows is the history.
+
 **Facts:** 16 MB of flash; the table has `nvs` (24 KB at 0x9000) and the 4 MB factory app at
 0x10000 (the firmware is 597 KB today), so about 11.9 MB is free. The VFS mounts FAT on any
 `BlockDevice` through FatFs, with 512-byte sectors (`FF_MAX_SS`). ESP-IDF's `wear_levelling`

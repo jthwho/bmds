@@ -10,7 +10,7 @@
 # header generated from the same list, and checks that every icon name BMDS's
 # files ask for is in the theme.
 #
-#   mkrom.py image OUT [--hash-header H] [--file DEST=SRC] [--dir DEST=SRC]
+#   mkrom.py image OUT [--hash-header H] [--max-bytes N] [--file DEST=SRC] [--dir DEST=SRC]
 #                      [--link DEST=TARGET] [--mappable GLOB]...
 #   mkrom.py icons LIST ROOT OUT_ICONS OUT_LICENSES
 #   mkrom.py iconid LIST OUT_HEADER
@@ -135,7 +135,7 @@ def place(root, dest, node):
     at.children[name] = node
 
 
-def build_image(out, files, dirs, links, mappable, hash_header):
+def build_image(out, files, dirs, links, mappable, hash_header, max_bytes):
     root = Node("")
     newest = 0
 
@@ -199,6 +199,8 @@ def build_image(out, files, dirs, links, mappable, hash_header):
     size = offset
     if size > 0xFFFFFFFF:
         die("the image is over 4 GB")
+    if max_bytes is not None and size > max_bytes:
+        die("the image is %d bytes: its partition holds %d" % (size, max_bytes))
 
     image = bytearray(size)
     for i, e in enumerate(entries):
@@ -451,7 +453,7 @@ def main(argv):
         if not args:
             die("image OUT ...")
         out, rest = args[0], args[1:]
-        files, dirs, links, mappable, hash_header = [], [], [], [], None
+        files, dirs, links, mappable, hash_header, max_bytes = [], [], [], [], None, None
         i = 0
         while i < len(rest):
             option = rest[i]
@@ -468,11 +470,13 @@ def main(argv):
                 mappable.append(value)
             elif option == "--hash-header":
                 hash_header = value
+            elif option == "--max-bytes":
+                max_bytes = int(value, 0)
             else:
                 die("no option %s" % option)
             i += 2
         build_image(out, pairs(files, "--file"), pairs(dirs, "--dir"), pairs(links, "--link"), mappable,
-                    hash_header)
+                    hash_header, max_bytes)
     elif command == "icons" and len(args) == 4:
         build_icons(*args)
     elif command == "iconid" and len(args) == 2:

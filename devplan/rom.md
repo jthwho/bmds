@@ -56,12 +56,19 @@ ROM; the device may be reformatted. It comes before `mediaplayer.md` step 3.
 | Partition | Type | Offset | Size | |
 |---|---|---|---|---|
 | `nvs` | data, nvs | 0x9000 | 24 KB | as now (IDF's own use) |
-| `factory` | app, factory | 0x10000 | 2 MB | the recovery firmware (§3b) |
-| `ota_0` | app, ota_0 | 0x210000 | 4 MB | the main firmware |
+| `ota_0` | app, ota_0 | 0x10000 | 4 MB | the main firmware (where the app always was) |
+| `ota_1` | app, ota_1 | 0x410000 | 2 MB | the recovery firmware (§3b) |
 | `otadata` | data, ota | 0x610000 | 8 KB | which firmware boots |
 | (spare) | | 0x612000 | 56 KB | so `boot` starts on a 64 KB page |
 | `boot` | data, littlefs | 0x620000 | 512 KB | `/boot`, read and write (§3h) |
-| `rom` | data, custom | 0x6A0000 | 9.375 MB | `/rom`, read-only (§3c) |
+| `rom` | data, 0x40 | 0x6A0000 | 9.375 MB | `/rom`, read-only (§3c) |
+
+- **Recovery is `ota_1`, not `factory`** (changed in step 2): IDF's `idf.py flash` writes the
+  app to `factory` when there is one, and its bootloader, with no `factory` and a blank
+  `otadata`, boots `ota_0`, and if `ota_0` won't load tries the other slots
+  (`bootloader_utility.c`, read 2026-10-09). So the main firmware flashes where it should with
+  no change to IDF's flashing, a broken main firmware falls through to recovery by itself, and
+  recovery is chosen by setting `otadata` to `ota_1`. The main firmware stays at 0x10000.
 
 - **`/rom` last, after `/boot`:** if `/boot` is resized later, its start stays put and the ROM's
   start moves. The ROM is written whole by every flash and update, so moving it costs nothing;
@@ -78,19 +85,18 @@ ROM; the device may be reformatted. It comes before `mediaplayer.md` step 3.
 ### 3b. Booting, recovery and updates (the layout's part now; their firmware is later work)
 
 - **Normally** `otadata` chooses `ota_0`, and the main firmware boots.
-- **Recovery** runs when `otadata` is blank, when the main firmware fails its rollback check, or
-  when asked: `reboot recovery` from the main firmware (it sets the boot partition to
-  `factory` for one boot), and a key held at power-on (later, with the recovery's own plan).
+- **Recovery** runs when the main firmware won't load or fails its rollback check, or when
+  asked: `reboot recovery` from the main firmware (it sets `otadata` to `ota_1`), and a key held
+  at power-on (later, with the recovery's own plan).
 - **An update** (later, its own plan): the main firmware checks and keeps the new firmware and
   ROM on the card, then reboots into recovery, which writes `ota_0` and `rom`, checks them, and
   sets `otadata`. The main firmware can't write itself or the ROM it has mounted.
 - **The recovery firmware doesn't use `/rom`** (it may be what is being repaired): its icons and
   fonts are its own. It is a second build of the same components with a smaller configuration;
-  its plan comes later. Until it exists, `factory` is empty.
-- **`idf.py flash`** writes the bootloader, the table, the main firmware to `ota_0` (not
-  IDF's default, `factory`), an `otadata` choosing `ota_0`, and the ROM. How the build wires the
-  app to `ota_0` is worked out in step 2; so is what the bootloader does with an empty `factory`
-  and a blank `otadata` (it should then try `ota_0`, but is checked on the board).
+  its plan comes later. Until it exists, `ota_1` is empty.
+- **`idf.py flash`** writes the bootloader, the table, the main firmware to `ota_0` (IDF's
+  choice with no `factory`), a blank `otadata` (`app_update`'s, which boots `ota_0`), and the
+  ROM.
 
 ### 3c. The ROM image
 
@@ -302,11 +308,8 @@ ROM; the device may be reformatted. It comes before `mediaplayer.md` step 3.
 1. **The format and the volume, host-tested** (done, 2026-10-09): `mkrom.py`, `RomImage`,
    `IconPack`, `MemoryBlockDevice`, `RomVolume`, `Vfs::map()`, `MaxMounts`; the `bmds` theme's
    list, `bmds.icons` and `iconid.h`; the build's check of the names asked for (§11).
-2. **The new layout on the board:** the table, the main firmware written to `ota_0` and an
-   `otadata` choosing it, booting with an empty `factory`, `/boot` made again at its new place
-   and size,
-   `fsbench`'s scratch (the ROM's unused end, or none), the ROM written by `idf.py flash` and
-   mounted at `/rom`, the hash match, `rom` and `rom check`; the icon set's size measured.
+2. **The new layout on the board** (done, 2026-10-09): the table, `ota_0`, the ROM written by
+   `idf.py flash` and mounted at `/rom`, the hash match, `rom` and `rom check` (§11).
 3. **Icons in place:** `IconTheme::find(IconId)`, the new order, `bmds` the default theme, the
    OS's code moved to ids; drawing from flash measured; the user looks over the theme on the
    board.
@@ -349,3 +352,27 @@ ROM; the device may be reformatted. It comes before `mediaplayer.md` step 3.
     the `Icon=` of every `.desktop` file under `boot/`, `dist/` and `rom/`.
   - **The firmware:** builds warning-free, 2,912 bytes larger (the readers, the volume), with no
     ROM yet (step 2).
+- **Step 2** (2026-10-09), on the board:
+  - **The table** (`partitions.csv`, §3a with recovery in `ota_1`); `idf.py flash` writes
+    `bootloader`, the table, `ota_data_initial.bin` (blank: `app_update`'s), `rom/rom.bin` at
+    0x6A0000 and `bmds.bin` at 0x10000. The board booted `ota_0`; `/boot` was blank at its new
+    place and was made again with the defaults (13.9 ms for the boot stage, formatting
+    included). `fsbench` needed nothing: it takes a directory (the scratch region of
+    `storage.md` §13 was the measurement's, not the command's).
+  - **The build** (`bmds_storage`): `mkrom.py icons`, then `image` with `--max-bytes` the
+    partition's size (the build fails if the ROM outgrows it), `rom/files/` added when there is
+    such a tree; `romhash.h` (the content hash) compiled into `RomDisk`; the image is part of
+    `all` and of `flash`.
+  - **`RomDisk`** (a boot stage after `boot`, 0.9 ms): the partition mapped whole through the
+    cache (`esp_partition_mmap`) as `RomPartition`, the block device `rom0`, mounted at `/rom` and
+    pinned. Its log line: "/dev/rom0 mounted on /rom, 786 KB, 5 entries, content e0b571be...",
+    or a warning for no partition, no image, or another build's content (mounted anyway).
+  - **`rom`** (`rom info`): the path, format and entry count, the build time, the content hash,
+    whether it matches the firmware, the size of the partition's, the firmware running
+    (`ota_0 (main), at 0x10000`). **`rom check`**: 786 KB hashed in 243 ms, "content good".
+  - **Tried on the board:** `ls -la`, `df -h` (`/dev/rom0 787K 787K 0 100% /rom`), `mount`
+    (`type rom`); `touch`, `rm`, `mkdir` refused "Read-only file system"; `umount /rom` refused
+    (pinned); `head` of `bmds.LICENSES`; `bmds.icons` fetched by YMODEM through the VFS
+    (794,816 bytes in 4.2 s) and identical to the build's.
+  - **Size:** the firmware 1,325,024 bytes (2,736 more than step 1: `RomDisk`, `rom`); the ROM
+    805,376 bytes of its 9,600 KB.

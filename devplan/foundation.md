@@ -104,7 +104,7 @@ Provide the skeleton everything else is built on:
 
 ### sdkconfig.defaults Choices
 
-- **Flash and partitions:** 16 MB flash and a custom partition table (`nvs` plus a 4 MB `factory` app; the rest is unallocated for now).
+- **Flash and partitions:** 16 MB flash and a custom partition table (`nvs` plus a 4 MB `factory` app; the rest is unallocated for now). Since 2026-10-09: `rom.md` §3a (the main firmware in `ota_0`, recovery in `ota_1`, `otadata`, `/boot`, the ROM).
 - **PSRAM at 80 MHz.** The IDF default is 20 MHz; 200 MHz needs `IDF_EXPERIMENTAL_FEATURES`.
 - **PSRAM boot memory test disabled** (`SPIRAM_MEMTEST=n`). It cost about 1.3 s of every boot.
 - **Console:** USB-Serial/JTAG.
