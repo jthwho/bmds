@@ -78,6 +78,10 @@ TEST_CASE("prompts") {
         CHECK(f.prompt("\\w") == "/sdx");
         (void)f.shell->execute("PWD=/sd/work");
         CHECK(f.prompt("\\[\\e[1m\\]bold\\[\\e[0m\\]> ") == "\x1b[1mbold\x1b[0m> ");
+        // The host name: the system's on the target, $HOSTNAME here; \h up to a dot, \H whole.
+        CHECK(f.prompt("\\h") == "box"); // the fixture's
+        (void)f.shell->execute("HOSTNAME=studio.local");
+        CHECK(f.prompt("\\h:\\H") == "studio:studio.local");
         CHECK(f.prompt("$(echo sub) ${USER} \\\\ \\101\\n") == "sub me \\ A\n");
         // A prompt whose expansion fails is shown as is, and leaves no flow behind.
         CHECK(f.prompt("${nope:?x}> ") == "${nope:?x}> ");

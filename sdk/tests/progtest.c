@@ -53,6 +53,7 @@
  *   progtest tasks        task_list: this task, a thread's, the kernel's, strides and errors
  *   progtest procs SELF   proc_info: this process, iterating, a zombie's time, time and start across exec
  *   progtest rusage SELF  getrusage, times, the CPU clocks and sysinfo; a child's time once waited for
+ *   progtest system       system_info: the serial, the host name (uname's and gethostname's), the board
  */
 
 #define _GNU_SOURCE /* gettid() */
@@ -2123,6 +2124,35 @@ static int rusage_test(const char *self) {
         return 0;
 }
 
+/* The system's serial number and name (devplan/notifications.md §2): system_info, and uname and
+   gethostname agreeing with it. */
+static int system_test(void) {
+        CHECK(bmds_sys_has(BMDS_SYS_SYSTEM_INFO));
+        bmds_system_info_t si;
+        memset(&si, 0, sizeof(si));
+        si.size = sizeof(si);
+        CHECK(bmds_system_info(&si) == 0);
+        printf("system: serial %s, host %s, board %s, BMDS %s, %u cores at %u MHz, rev %u\n", si.serial, si.hostname,
+               si.board, si.version, (unsigned)si.cores, (unsigned)si.cpu_mhz, (unsigned)si.chip_revision);
+        CHECK(si.serial[0] != '\0' && strlen(si.serial) < sizeof(si.serial));
+        CHECK(si.hostname[0] != '\0' && si.board[0] != '\0' && si.version[0] != '\0');
+        CHECK(si.cores == 2 && si.cpu_mhz >= 100);
+        struct utsname u;
+        CHECK(uname(&u) == 0 && strcmp(u.nodename, si.hostname) == 0);
+        char host[65];
+        CHECK(gethostname(host, sizeof(host)) == 0 && strcmp(host, si.hostname) == 0);
+        /* An older program's smaller struct: the fields that fit. */
+        bmds_system_info_t old;
+        memset(&old, 0x55, sizeof(old));
+        old.size = offsetof(bmds_system_info_t, hostname);
+        CHECK(bmds_system_info(&old) == 0 && strcmp(old.serial, si.serial) == 0 && old.hostname[0] == 0x55);
+        old.size = 0;
+        CHECK(bmds_system_info(&old) == -BMDS_EINVAL);
+        CHECK(bmds_system_info(NULL) == -BMDS_EFAULT);
+        printf("system: all passed\n");
+        return 0;
+}
+
 /* Burns 200 ms, then execs SELF proccheck START_NS: which finds its time and start kept. */
 static int proc_exec(const char *self) {
         bmds_proc_info_t p = {.size = sizeof(p)};
@@ -2173,6 +2203,7 @@ int main(int argc, char **argv) {
         if (strcmp(what, "tasks") == 0) return tasks();
         if (strcmp(what, "procs") == 0) return procs(arg);
         if (strcmp(what, "rusage") == 0) return rusage_test(arg);
+        if (strcmp(what, "system") == 0) return system_test();
         if (strcmp(what, "procexec") == 0) return proc_exec(arg);
         if (strcmp(what, "proccheck") == 0) return proc_check(arg);
         if (strcmp(what, "burn") == 0) {

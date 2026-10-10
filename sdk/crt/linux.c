@@ -1143,6 +1143,16 @@ static long do_uname(struct utsname *u) {
         memset(u, 0, sizeof(*u));
         strcpy(u->sysname, "BMDS");
         strcpy(u->nodename, "bmds");
+        if (bmds_sys_has(BMDS_SYS_SYSTEM_INFO)) {
+                /* The host name (gethostname(), uname -n, BusyBox's hostname). */
+                bmds_system_info_t si;
+                memset(&si, 0, sizeof(si));
+                si.size = sizeof(si);
+                if (bmds_system_info(&si) == 0 && si.hostname[0] != '\0') {
+                        strncpy(u->nodename, si.hostname, sizeof(u->nodename) - 1);
+                        u->nodename[sizeof(u->nodename) - 1] = '\0';
+                }
+        }
         u->release[0] = (char)('0' + BMDS_ABI_VERSION);
         strcpy(u->version, "ABI");
         strcpy(u->machine, "riscv32");

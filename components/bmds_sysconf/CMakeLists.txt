@@ -16,7 +16,7 @@ set(BMDS_SYSCONF_SRCS
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
 if(COMMAND idf_component_register)
-        idf_component_register(SRCS ${BMDS_SYSCONF_SRCS} src/sysconfinit.cpp
+        idf_component_register(SRCS ${BMDS_SYSCONF_SRCS} src/sysconfinit.cpp src/sysconfsystem.cpp
                                INCLUDE_DIRS include
                                PRIV_INCLUDE_DIRS src
                                REQUIRES bmds_core bmds_kernel bmds_fs

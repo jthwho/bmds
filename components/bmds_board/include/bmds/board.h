@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
 #include <bmds/memspace.h>
@@ -160,6 +161,25 @@ struct BoardAudio {
                 GpioLine        powerOn = {};                  ///< Codec supply enable (asserted = powered).
 };
 
+/**
+ * @brief Reads the board's serial number into @p out (@p size bytes, NUL ended):
+ *        each board says where its own is (`devplan/notifications.md` §2).
+ * @return Its length (0: none).
+ */
+using BoardSerialReader = size_t (*)(char *out, size_t size);
+
+/**
+ * @brief The chip's factory MAC address from its eFuses, as 12 lower-case hex
+ *        digits: a board's serial reader when the chip's identity is the board's.
+ */
+size_t chipMacSerial(char *out, size_t size);
+
+/** @brief A board without a serial number: "" (the default reader). */
+inline size_t noSerial(char *out, size_t size) {
+        if (out != nullptr && size > 0) out[0] = '\0';
+        return 0;
+}
+
 /** @brief A complete board description. */
 struct Board {
                 const char   *name = "";                     ///< Human-readable board name.
@@ -177,6 +197,7 @@ struct Board {
                 BoardUsbHost  usbHost = {};          ///< USB host.
                 BoardEthernet ethernet = {};         ///< Ethernet.
                 BoardAudio    audio = {};            ///< Audio.
+                BoardSerialReader serial = noSerial;     ///< Reads its serial number.
 
                 /** @brief Returns the heap mapping for @p space. */
                 constexpr const BoardMemSpace &memSpace(MemSpace space) const {

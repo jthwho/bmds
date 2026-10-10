@@ -15,6 +15,7 @@
 #include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/shell.h>
+#include <bmds/sysconf.h>
 #include <bmds/system.h>
 #include <bmds/vfs.h>
 
@@ -38,6 +39,34 @@ namespace {
                 ctx.printf("Board: %s\n", info.boardName);
                 ctx.printf("Chip: ESP32-P4 rev v%u.%u, %u cores @ %u MHz\n", info.chipRevMajor, info.chipRevMinor,
                            info.cores, info.cpuMhz);
+                ctx.printf("Serial: %s\n", System::serial());
+                return Shell::ExitSuccess;
+        }
+
+        // The system's host name (devplan/notifications.md §2); with NAME, set and kept, as
+        // hostnamectl's (a device's name is meant to stay). '' goes back to the default.
+        int runHostname(CommandContext &ctx) {
+                const Args args = ctx.args();
+                if (args.size() > 2) return ctx.usage();
+                if (args.size() == 2) {
+                        const StringView name(args[1]);
+                        if (!HostName::isValid(name)) {
+                                ctx.eprintf("hostname: %s: letters, digits and - only, at most %u, not starting or "
+                                            "ending with -\n",
+                                            args[1], unsigned(HostName::MaxBytes));
+                                return Shell::ExitFailure;
+                        }
+                        Error err = SysConf::set(StringView("system/hostname"), name);
+                        if (err.isOk()) err = SysConf::save(StringView("system/hostname"));
+                        if (err.isError()) {
+                                ctx.eprintf("hostname: can't set it: %s\n", err.desc());
+                                return Shell::ExitFailure;
+                        }
+                        return Shell::ExitSuccess;
+                }
+                char name[HostName::MaxBytes + 1];
+                (void)SysConf::hostname(name);
+                ctx.printf("%s\n", name);
                 return Shell::ExitSuccess;
         }
 
@@ -349,6 +378,8 @@ namespace {
 } // namespace
 
 BMDS_SHELL_COMMAND(help, Shell::runHelp, "[command]", "List commands, or show one command's usage")
+BMDS_SHELL_COMMAND(hostname, runHostname, "[NAME]",
+                   "Show the system's name, or set and keep it ('' for the default, bmds- and the serial's end)")
 BMDS_SHELL_COMMAND(log, runLog, "[show]",
                    "Show the log level and debug modules (sysconf's log/level and log/debug set them); "
                    "show the log history")
@@ -358,6 +389,6 @@ BMDS_SHELL_COMMAND(mem, runMem, "[-h | mark | new]",
 BMDS_SHELL_COMMAND(reboot, runReboot, "", "Restart the system")
 BMDS_SHELL_COMMAND(sleep, runSleep, "<seconds>", "Wait for a number of seconds (fractions allowed, e.g. 0.5)")
 BMDS_SHELL_COMMAND(uptime, runUptime, "", "Show time since boot")
-BMDS_SHELL_COMMAND(version, runVersion, "", "Show BMDS, build, board and chip versions")
+BMDS_SHELL_COMMAND(version, runVersion, "", "Show BMDS, build, board and chip versions, and the serial number")
 
 BMDS_NAMESPACE_END

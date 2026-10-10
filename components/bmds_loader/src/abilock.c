@@ -104,6 +104,7 @@ _Static_assert(BMDS_SYS_STATS_LIST == 80 && BMDS_SYS_STATS_READ == 81 && BMDS_SY
 _Static_assert(BMDS_SYS_STATS_PROBLEMS == 83 && BMDS_SYS_STATS_CONTROL == 84 && BMDS_SYS_STATS_STATUS == 85,
                "ABI: slots STATS_PROBLEMS, _CONTROL, _STATUS");
 _Static_assert(BMDS_SYS_TASK_LIST == 86 && BMDS_SYS_PROC_INFO == 87, "ABI: slots TASK_LIST, PROC_INFO");
+_Static_assert(BMDS_SYS_SYSTEM_INFO == 88, "ABI: slot SYSTEM_INFO");
 _Static_assert(BMDS_SYSCONF_KEY_MAX == 63 && BMDS_SYSCONF_VALUE_MAX == 1024, "ABI: sysconf lengths");
 _Static_assert(BMDS_SYSCONF_TYPE_BOOL == 0 && BMDS_SYSCONF_TYPE_INT == 1 && BMDS_SYSCONF_TYPE_STRING == 2 &&
                        BMDS_SYSCONF_TYPE_COLOR == 3 && BMDS_SYSCONF_TYPE_ENUM == 4 && BMDS_SYSCONF_TYPE_PATH == 5 &&
@@ -462,6 +463,16 @@ _Static_assert(offsetof(bmds_proc_info_t, start_ns) == 48, "ABI: proc_info.start
 _Static_assert(offsetof(bmds_proc_info_t, command) == 56, "ABI: proc_info.command");
 _Static_assert(offsetof(bmds_proc_info_t, children_cpu_us) == 104, "ABI: proc_info.children_cpu_us");
 _Static_assert(sizeof(bmds_proc_info_t) == 112, "ABI: bmds_proc_info_t size"); /* 104 before 2026-10-10 */
+
+_Static_assert(offsetof(bmds_system_info_t, size) == 0, "ABI: system_info.size");
+_Static_assert(offsetof(bmds_system_info_t, cores) == 4, "ABI: system_info.cores");
+_Static_assert(offsetof(bmds_system_info_t, cpu_mhz) == 8, "ABI: system_info.cpu_mhz");
+_Static_assert(offsetof(bmds_system_info_t, chip_revision) == 12, "ABI: system_info.chip_revision");
+_Static_assert(offsetof(bmds_system_info_t, serial) == 16, "ABI: system_info.serial");
+_Static_assert(offsetof(bmds_system_info_t, hostname) == 48, "ABI: system_info.hostname");
+_Static_assert(offsetof(bmds_system_info_t, board) == 112, "ABI: system_info.board");
+_Static_assert(offsetof(bmds_system_info_t, version) == 144, "ABI: system_info.version");
+_Static_assert(sizeof(bmds_system_info_t) == 160, "ABI: bmds_system_info_t size");
 
 #if UINTPTR_MAX == 0xffffffffu
 _Static_assert(offsetof(bmds_thread_t, size) == 0, "ABI: thread.size");

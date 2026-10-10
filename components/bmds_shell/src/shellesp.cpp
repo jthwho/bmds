@@ -61,6 +61,14 @@ void Shell::prepareInteractive(bool login) {
                 return e != nullptr && (e->flags & Variables::Exported) != 0;
         };
         (void)vars.set("BMDS_VERSION", System::info().bmdsVersion);
+        // The chip's serial number, for programs; the host name as bash keeps it (devplan/notifications.md §2).
+        (void)vars.set("BMDS_SERIAL", System::serial());
+        (void)vars.addFlags("BMDS_SERIAL", Variables::Exported);
+        {
+                char name[HostName::MaxBytes + 1];
+                (void)SysConf::hostname(name);
+                (void)vars.set("HOSTNAME", name);
+        }
         // HOME is /home, the link to the user's home (devplan/sysconf.md §7), unless inherited.
         if (!inherited("HOME")) {
                 (void)vars.set("HOME", "/home");
@@ -74,8 +82,15 @@ void Shell::prepareInteractive(bool login) {
                 (void)vars.addFlags("PATH", Variables::Exported);
         }
         // A colored prompt with the directory; the console fits the color to its terminal.
-        if (!inherited("PS1"))
-                (void)vars.set("PS1", "\\[\\e[1;32m\\]bmds\\[\\e[0m\\]:\\[\\e[1;34m\\]\\w\\[\\e[0m\\]> ");
+        if (!inherited("PS1")) (void)vars.set("PS1", "\\[\\e[1;32m\\]\\h\\[\\e[0m\\]:\\[\\e[1;34m\\]\\w\\[\\e[0m\\]> ");
+        return;
+}
+
+// The system's host name, read each time a prompt is drawn: a change shows at the next.
+void Shell::hostName(String &out) const {
+        char         name[HostName::MaxBytes + 1];
+        const size_t n = SysConf::hostname(name);
+        (void)out.assign(StringView(name, n));
         return;
 }
 

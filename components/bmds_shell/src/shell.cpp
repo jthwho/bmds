@@ -333,7 +333,15 @@ void Shell::renderPrompt(StringView ps, String &out) {
                         case '[':
                         case ']': break; // non-printing markers: the editor doesn't need widths
                         case 'h':
-                        case 'H': (void)raw.append(var("HOSTNAME", "bmds")); break;
+                        case 'H': {
+                                // The system's, each time (bash's gethostname()): \h up to a dot, \H whole.
+                                String name(MemSpace::Psram);
+                                hostName(name);
+                                const StringView n = name.view();
+                                const size_t     dot = c == 'h' ? n.indexOf('.') : StringView::NPos;
+                                (void)raw.append(dot == StringView::NPos ? n : n.left(dot));
+                                break;
+                        }
                         case 'u': (void)raw.append(var("USER", "user")); break;
                         case 'w': {
                                 // As bash: $HOME and below shown as ~ (also where it leads: cd keeps the
@@ -740,6 +748,13 @@ int shellAppletMain(const BuiltinProgram::Context &) {
 
 // Nothing to wait for, no defaults beyond init()'s (shellesp.cpp on the target).
 void Shell::prepareInteractive(bool) {
+        return;
+}
+
+// $HOSTNAME, or bmds (the system's on the target, shellesp.cpp).
+void Shell::hostName(String &out) const {
+        const String *v = _state.vars.value("HOSTNAME");
+        (void)out.assign(v != nullptr ? v->view() : StringView("bmds"));
         return;
 }
 #endif

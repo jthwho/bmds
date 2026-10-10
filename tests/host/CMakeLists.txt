@@ -70,6 +70,7 @@ add_executable(bmds_host_tests
         sysmon.cpp
         cpumeter.cpp
         topview.cpp
+        hostname.cpp
         synth.cpp
         pipe.cpp
         process.cpp

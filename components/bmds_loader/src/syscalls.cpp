@@ -18,7 +18,10 @@
 #include <bmds/interrupt.h>
 #include <bmds/processtable.h>
 #include <bmds/random.h>
+#include <bmds/sysconf.h>
+#include <bmds/system.h>
 #include "running.h"
+#include "structcopy.h"
 
 using bmds::Deadline;
 using bmds::Error;
@@ -412,6 +415,30 @@ int32_t bmds_k_thread_kill(int32_t tid, int32_t sig, uint32_t flags) {
 int32_t bmds_k_thread_clear(volatile int32_t *word) {
         KernelCall call;
         return call.thread().setClear(word);
+}
+
+int32_t bmds_k_system_info(bmds_system_info_t *info) {
+        KernelCall         call;
+        bmds_system_info_t s;
+        const int32_t      r = bmds::detail::copyIn(info, s);
+        if (r < 0) return r;
+        const bmds::SystemInfo k = bmds::System::info();
+        s = bmds_system_info_t{};
+        s.cores = k.cores;
+        s.cpu_mhz = k.cpuMhz;
+        s.chip_revision = k.chipRevMajor * 100 + k.chipRevMinor;
+        static_assert(sizeof(s.hostname) == bmds::HostName::MaxBytes + 1, "the ABI's host name");
+        static_assert(sizeof(s.serial) == bmds::System::MaxSerialBytes + 1, "the ABI's serial number");
+        (void)bmds::SysConf::hostname(s.hostname);
+        const auto copy = [](char *out, size_t size, const char *text) {
+                size_t n = 0;
+                for (; text != nullptr && text[n] != '\0' && n + 1 < size; ++n) out[n] = text[n];
+                out[n] = '\0';
+        };
+        copy(s.serial, sizeof(s.serial), bmds::System::serial());
+        copy(s.board, sizeof(s.board), k.boardName);
+        copy(s.version, sizeof(s.version), k.bmdsVersion);
+        return bmds::detail::copyOut(s, info);
 }
 
 } // extern "C"

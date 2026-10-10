@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
 
@@ -35,6 +36,17 @@ class System {
         public:
                 /** @brief Returns version, board and chip information. */
                 static SystemInfo info();
+
+                /** @brief The longest serial number, in bytes. */
+                static constexpr size_t MaxSerialBytes = 31;
+
+                /**
+                 * @brief Returns the board's serial number, as its definition reads it
+                 *        (`Board::serial`; this board's: the chip's factory MAC, 12 hex
+                 *        digits; `devplan/notifications.md` §2), or "" if it has none. Read
+                 *        once; thread-safe.
+                 */
+                static const char *serial();
 
                 /** @brief Returns microseconds since reset. @nonblocking */
                 static uint64_t uptimeUs();

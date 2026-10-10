@@ -115,6 +115,11 @@ Plan: [`input.md`](input.md).
 - [x] HID mouse: the pointer (drawn last each round), click to raise, title-bar drags, the close box.
 - [ ] Input event model for the kernel and the SDK.
 - [ ] Keyboard + HDMI console = a full local shell.
+- [ ] Notifications, screenshots and the system's name (`notifications.md`, planned 2026-10-10):
+  a host name (`system/hostname`, by default `bmds-` and the serial's last six, in the prompt) and
+  the board's serial;
+  notifications for every program (balloons by the tray, a centre of the last 64, targets and
+  events, a sound by urgency); Print Screen saving to `~/Images/Screenshots/`.
 - [ ] Special keys and global hotkeys (`hotkeys.md`, planned 2026-10-08): media keys decoded,
   named actions and bindings in the kernel, the window manager's keys moved onto them; user
   bindings later.

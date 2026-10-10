@@ -118,6 +118,8 @@ namespace Detail {
                                 // Drives the codec LDO's CE; pulled up, so powered by default.
                                 .powerOn = {.gpio = 6, .activeLow = false},
                         },
+                // No serial number of its own: the chip's factory MAC address.
+                .serial = chipMacSerial,
         };
 
 } // namespace Detail

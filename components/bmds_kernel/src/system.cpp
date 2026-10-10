@@ -6,6 +6,7 @@
  * See LICENSE file in the project root folder for license information.
  */
 
+#include <cstring>
 #include <esp_app_desc.h>
 #include <esp_chip_info.h>
 #include <esp_system.h>
@@ -31,6 +32,22 @@ SystemInfo System::info() {
         info.cores = chip.cores;
         info.cpuMhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
         return info;
+}
+
+const char *System::serial() {
+        // Read at the first call; the same bytes each time. Whether it was read is published
+        // last, so a reader that sees it sees the rest.
+        static char text[MaxSerialBytes + 1];
+        static bool read;
+        if (!__atomic_load_n(&read, __ATOMIC_ACQUIRE)) {
+                char         out[MaxSerialBytes + 1] = {};
+                const size_t n = board().serial(out, sizeof(out)); // the board's own reader
+
+                out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
+                std::memcpy(text, out, sizeof(text));
+                __atomic_store_n(&read, true, __ATOMIC_RELEASE);
+        }
+        return text;
 }
 
 uint64_t System::uptimeUs() {

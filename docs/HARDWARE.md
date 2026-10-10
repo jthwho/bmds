@@ -31,6 +31,7 @@ U1 is a bare QFN104 ESP32-P4 chip soldered to the board, not a module.
 | Crystals | 40 MHz main crystal (Q3). A 32.768 kHz crystal (Q1) is on **GPIO0/GPIO1, so those pins are taken**. |
 | Core supply | External buck converter driven by the P4's EN_DCDC/FB_DCDC: TLV62569 on Rev C, TPS62A02 on Rev B. |
 | Chip revision | **v1.3** (eFuse block v0.3), confirmed by esptool and the boot banner on our board. BMDS builds with `ESP32P4_SELECTS_REV_LESS_V3` (the IDF default, and what Olimex's production test uses). Newer production runs may ship v3.x silicon, which needs that option off. |
+| Serial number | The board has none of its own: BMDS uses the chip's factory MAC address (eFuse block 1, burned by Espressif), 12 hex digits; ours is `e8f60ae2e222` (Espressif's OUI `e8:f6:0a`). The board definition names the reader (`.serial = chipMacSerial`; `devplan/notifications.md` §2). |
 | Radio | **None.** The ESP32-P4 has no Wi-Fi or Bluetooth. |
 | Accelerators | 2D-DMA, PPA (scale/rotate/blend), JPEG codec, H.264 encoder |
 

@@ -301,6 +301,7 @@ class Shell final : public LineCompleter {
                 void runInput();
                 void endInterrupt();
                 void prepareInteractive(bool login); // target: the defaults, the boot (shellesp.cpp)
+                void       hostName(String &out) const;    // the prompt's \h: the system's (shellesp.cpp)
                 void       reportJobs();                   // jobs that ended, before a prompt (jobs.cpp)
                 bool       isEnding() const { return _process != nullptr && _process->isEnding(); }
                 static int backgroundMain(const BuiltinProgram::Context &context);

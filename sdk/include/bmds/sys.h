@@ -159,6 +159,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_STATS_STATUS 85u     /**< `int32_t stats_status(bmds_stats_status_t *status)`. */
 #define BMDS_SYS_TASK_LIST 86u        /**< `int32_t task_list(bmds_task_info_t *out, uint32_t max)`. */
 #define BMDS_SYS_PROC_INFO 87u        /**< `int32_t proc_info(int32_t pid, uint32_t flags, bmds_proc_info_t *info)`. */
+#define BMDS_SYS_SYSTEM_INFO 88u      /**< `int32_t system_info(bmds_system_info_t *info)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -853,6 +854,21 @@ typedef struct bmds_proc_info_t {
                 uint64_t children_cpu_us;
 } bmds_proc_info_t;
 
+/**
+ * @brief The system (`system_info`, devplan/notifications.md §2): its serial number, its host
+ *        name, the board, BMDS's version, the cores. The caller sets `size`.
+ */
+typedef struct bmds_system_info_t {
+                uint32_t size;          /**< Set by the caller: `sizeof(bmds_system_info_t)`. */
+                uint32_t cores;         /**< CPU cores. */
+                uint32_t cpu_mhz;       /**< Their clock. */
+                uint32_t chip_revision; /**< The chip's revision: major × 100 + minor. */
+                char     serial[32];    /**< The board's serial number (this board's: its chip's MAC, 12 hex digits). */
+                char     hostname[64];  /**< The host name (`system/hostname`, else `bmds-` and the serial's end). */
+                char     board[32];     /**< The board's name. */
+                char     version[16];   /**< BMDS's version. */
+} bmds_system_info_t;
+
 /** @brief `bmds_stat_t::type`. */
 #define BMDS_TYPE_FILE 1u      /**< A regular file. */
 #define BMDS_TYPE_DIRECTORY 2u /**< A directory (also `/`, `/dev` and mount points). */
@@ -1028,6 +1044,7 @@ typedef int32_t (*bmds_sys_stats_control_fn)(uint32_t op, uint64_t value);
 typedef int32_t (*bmds_sys_stats_status_fn)(bmds_stats_status_t *status);
 typedef int32_t (*bmds_sys_task_list_fn)(bmds_task_info_t *out, uint32_t max);
 typedef int32_t (*bmds_sys_proc_info_fn)(int32_t pid, uint32_t flags, bmds_proc_info_t *info);
+typedef int32_t (*bmds_sys_system_info_fn)(bmds_system_info_t *info);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -1896,6 +1913,15 @@ static inline int32_t bmds_task_list(bmds_task_info_t *out, uint32_t max) {
  */
 static inline int32_t bmds_proc_info(int32_t pid, uint32_t flags, bmds_proc_info_t *info) {
         return ((bmds_sys_proc_info_fn)bmds_sys->slot[BMDS_SYS_PROC_INFO])(pid, flags, info);
+}
+
+/**
+ * @brief Fills @p info (its `size` set) with the system's serial number, host name, board,
+ *        version and cores. (Slot 88, appended 2026-10-10: check `bmds_sys_has()`.)
+ * @return 0, or `-BMDS_EINVAL` (`size`), `-BMDS_EFAULT`.
+ */
+static inline int32_t bmds_system_info(bmds_system_info_t *info) {
+        return ((bmds_sys_system_info_fn)bmds_sys->slot[BMDS_SYS_SYSTEM_INFO])(info);
 }
 
 #ifdef __cplusplus

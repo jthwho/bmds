@@ -14,6 +14,7 @@
 #include <bmds/configtypes.h>
 #include <bmds/error.h>
 #include <bmds/filehandle.h>
+#include <bmds/hostname.h>
 #include <bmds/result.h>
 #include <bmds/span.h>
 #include <bmds/string.h>
@@ -116,6 +117,14 @@ namespace SysConf {
 
         /** @brief Sets @p out to @p key's current value. @return `Ok`, `NotExist`, `NoMem`. */
         Error get(StringView key, String &out);
+
+        /**
+         * @brief Writes the system's host name into @p out: `system/hostname`, or
+         *        `bmds-` and the serial number's last six while it is empty (`devplan/notifications.md` §2;
+         *        target only).
+         * @return Its length.
+         */
+        size_t hostname(char (&out)[HostName::MaxBytes + 1]);
 
         /** @brief Sets @p out to @p id's current value. @return `Ok`, `NotExist`, `NoMem`. */
         Error get(Id id, String &out);
