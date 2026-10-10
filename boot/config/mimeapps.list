@@ -12,4 +12,4 @@
 text/*=vi.desktop
 text/plain=vi.desktop
 application/x-executable=run.desktop
-audio/*=play.desktop
+audio/*=mplayer.desktop;play.desktop

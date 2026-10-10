@@ -81,6 +81,8 @@ namespace {
                 {"flac", "audio/flac", 0},
                 {"mid", "audio/midi", 0},
                 {"midi", "audio/midi", 0},
+                {"m3u", "audio/x-mpegurl", Text},
+                {"m3u8", "audio/x-mpegurl", Text},
                 {"mp4", "video/mp4", 0},
                 {"avi", "video/x-msvideo", 0},
                 {"mkv", "video/x-matroska", 0},

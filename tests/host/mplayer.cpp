@@ -6,7 +6,8 @@
  * See LICENSE file in the project root folder for license information.
  *
  * The media player's pure parts (devplan/mediaplayer.md §6): the playlist and its orders, M3U,
- * the FFT and the spectrum's bands, the meter bars, the MIDI channels, the library's index.
+ * the FFT and the spectrum's bands, the meter bars, the MIDI channels, the library's index, the
+ * track clock.
  */
 
 #include <doctest.h>
@@ -25,6 +26,7 @@
 #include "midichannels.h"
 #include "playlist.h"
 #include "spectrum.h"
+#include "trackclock.h"
 
 using bmds::Error;
 using bmds::Playlist;
@@ -508,4 +510,92 @@ TEST_CASE("LibraryIndex: sorted by path, replaced, escapes, bad lines, written a
         CHECK(index.count() == 2);
         index.clear();
         CHECK(index.count() == 0);
+}
+
+TEST_CASE("TrackClock: what is heard, across seeks and gapless changes") {
+        using bmds::TrackClock;
+        TrackClock clock;
+        CHECK(clock.at(1000).track == TrackClock::NoTrack);
+
+        // Track 1 from its start at stream frame 0.
+        clock.start(1, 0, 0, true);
+        CHECK(clock.shown() == 1);
+        CHECK(clock.at(0).frame == 0);
+        CHECK(clock.at(4800).frame == 4800);
+
+        // A seek to file frame 96000, written from stream frame 9600 (the old sound thrown away):
+        // until it is heard, the target is shown.
+        clock.start(1, 9600, 96000, true);
+        CHECK(clock.at(5000).frame == 96000);
+        CHECK(clock.at(9600).frame == 96000);
+        CHECK(clock.at(10600).frame == 97000);
+
+        // Track 2 gapless after it, from stream frame 50000: track 1 shown until then.
+        clock.start(2, 50000, 0, false);
+        CHECK(clock.newest() == 2);
+        TrackClock::Now now = clock.at(49999);
+        CHECK(now.track == 1);
+        CHECK(now.frame == 96000 + 49999 - 9600);
+        now = clock.at(50000);
+        CHECK(now.track == 2);
+        CHECK(now.frame == 0);
+        CHECK(clock.shown() == 2);
+        // Track 1's mark is gone: earlier frames show track 2 at its start.
+        CHECK(clock.at(40000).track == 2);
+        CHECK(clock.at(40000).frame == 0);
+
+        // Short tracks ahead: past MaxMarks the oldest goes.
+        clock.start(3, 60000, 0, false);
+        clock.start(4, 61000, 0, false);
+        clock.start(5, 62000, 0, false);
+        clock.start(6, 63000, 10, false);
+        CHECK(clock.shown() == 3);
+        CHECK(clock.at(62500).track == 5);
+        CHECK(clock.at(62500).frame == 500);
+        CHECK(clock.at(70000).track == 6);
+        CHECK(clock.at(70000).frame == 7010);
+
+        // A stream configured again counts from 0: a fresh mark forgets the rest.
+        clock.start(7, 0, 0, true);
+        CHECK(clock.at(100).track == 7);
+        CHECK(clock.at(100).frame == 100);
+        clock.clear();
+        CHECK(clock.shown() == TrackClock::NoTrack);
+}
+
+TEST_CASE("TrackClock: frames heard from a status") {
+        using bmds::TrackClock;
+        TrackClock::Sample s;
+        s.playedFrames = 48000;
+        s.timestampNs = 1000000000;
+        s.lagFrames = 1920;
+        s.rateHz = 48000;
+        s.playing = true;
+        // At the status: played less what the device still holds.
+        CHECK(TrackClock::heard(s, 1000000000) == 48000 - 1920);
+        // 10 ms later: moved on 480 frames.
+        CHECK(TrackClock::heard(s, 1010000000) == 48000 - 1920 + 480);
+        // A late status is moved on at most MaxExtrapolateMs.
+        CHECK(TrackClock::heard(s, 3000000000) == 48000 - 1920 + 48000 * TrackClock::MaxExtrapolateMs / 1000);
+        // Paused or waiting: where it is.
+        s.playing = false;
+        CHECK(TrackClock::heard(s, 1010000000) == 48000 - 1920);
+        // No status yet, or less played than the lag: 0.
+        s.playedFrames = 100;
+        CHECK(TrackClock::heard(s, 1010000000) == 0);
+        s.timestampNs = 0;
+        s.playing = true;
+        s.playedFrames = 5000;
+        CHECK(TrackClock::heard(s, 1010000000) == 5000 - 1920);
+}
+
+TEST_CASE("TimeText") {
+        char t[bmds::TimeText::MaxText];
+        CHECK(std::string(bmds::TimeText::format(0, t)) == "0:00");
+        CHECK(std::string(bmds::TimeText::format(59999, t)) == "0:59");
+        CHECK(std::string(bmds::TimeText::format(201000, t)) == "3:21");
+        CHECK(std::string(bmds::TimeText::format(3599999, t)) == "59:59");
+        CHECK(std::string(bmds::TimeText::format(3600000, t)) == "1:00:00");
+        CHECK(std::string(bmds::TimeText::format(37230000, t)) == "10:20:30");
+        CHECK(std::string(bmds::TimeText::format(UINT64_MAX, t)).size() < sizeof(t));
 }

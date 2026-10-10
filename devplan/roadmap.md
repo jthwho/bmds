@@ -148,8 +148,9 @@ Plan: [`input.md`](input.md).
     visualizer, a MIDI view, a toolkit Open dialog, and a tray controller while it plays hidden;
     designed in detail (§6), with a Qt-style system tray API that the volume control moves onto.
     Steps 1 (the pure parts) and 2 (the toolkit: `FileDialog`, `ComboBox`, `TabWidget`, the
-    slider's release) done. Step 3 waits for the ROM (below), for its icons.
-  - [ ] The ROM (`rom.md`, planned 2026-10-09, the user's idea and layout): a read-only `/rom` in
+    slider's release) done. Step 3 (the player: the playback thread, the window, Open and Add,
+    keys, errors, one player, `mplayer.desktop`) built and tried on the board; the user's ear next.
+  - [x] The ROM (`rom.md`, planned 2026-10-09, the user's idea and layout): a read-only `/rom` in
     its own flash partition, mapped in place: standard icons (pre-decoded, drawn from flash) and
     the time zone database without a card; `Vfs::map()`, later programs' read-only `mmap()`
     without a copy. A new flash layout with it: a 2 MB recovery firmware, the 4 MB main one, a

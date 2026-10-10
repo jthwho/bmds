@@ -38,6 +38,9 @@ TEST_CASE("FileFormat: by name") {
         CHECK(str(FileFormat::byName("main.c")) == "text/x-csrc");
         CHECK(str(FileFormat::byName("Song.MID")) == "audio/midi");
         CHECK(str(FileFormat::byName("song.midi")) == "audio/midi");
+        CHECK(str(FileFormat::byName("Album.M3U")) == "audio/x-mpegurl"); // a playlist, text-like
+        CHECK(str(FileFormat::byName("album.m3u8")) == "audio/x-mpegurl");
+        CHECK(FileFormat::isText("audio/x-mpegurl"));
         CHECK(str(FileFormat::byName("a.tar.gz")) == "application/gzip");
         CHECK(str(FileFormat::byName("terminal.desktop")) == "application/x-desktop");
         // Whole names, any case; a directory's dot isn't the name's.

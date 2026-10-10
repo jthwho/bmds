@@ -385,9 +385,10 @@ the program's side, and freedesktop.org's StatusNotifierItem for what the protoc
 2. **Toolkit** (done, 2026-10-09): `FolderItemModel` and `FileIcons` moved into `bmds_gui` (the
    file browser on them, unchanged), `ComboBox`, `TabWidget`, `Slider`'s release, `FileDialog`;
    each tried in `/bin/widgets` on the board.
-3. **The player** (after `rom.md`, which brings the `media-*` icons): the playback thread and the window (now playing, position, transport,
-   volume, playlist), Open and Add, keys, errors, one player, `mplayer.desktop` and the file
-   types. Checked by ear by the user: WAV, MP3, Ogg, FLAC and MIDI files, seeking, gapless.
+3. **The player** (built 2026-10-09, after `rom.md`, which brought the `media-*` icons): the
+   playback thread and the window (now playing, position, transport, volume, playlist), Open and
+   Add, keys, errors, one player, `mplayer.desktop` and the file types. Checked by ear by the
+   user: WAV, MP3, Ogg, FLAC and MIDI files, seeking, gapless.
 4. **Kept between runs:** `mplayer.conf`, `playlist.m3u8`, Open and Save Playlist.
 5. **The tray** (§6e): `ServiceQueue`'s larger messages, the window manager's
    `watchServices()`, `TrayIcon`, the panel's `tray` area, the panel's volume control moved onto
@@ -481,3 +482,67 @@ the program's side, and freedesktop.org's StatusNotifierItem for what the protoc
       `win hid` modifiers: four by Shift, two by Ctrl, folders left out of the name field). The
       names a selection put in the field are cleared on going to another folder (where they name
       nothing); a name edited since is kept.
+- **Step 3, the player** (2026-10-09), `components/bmds_mplayer`: `/bin/mplayer`
+  (`BMDS_PROGRAM_ICONS`, flat-color's `music` built in), 29 KB of flash with step 1's parts, no
+  static RAM.
+  - **`Player`** (`player.cpp`), the playback thread (8 KB PSRAM stack, the shell's priority + 1):
+    commands in a queue of 8 under a lock, woken by a semaphore; a command that throws the queue
+    away (a new track, a seek, Stop) also drops the stream from the loop, which wakes a write
+    waiting for room or a drain at once. Writes of 20 ms. `/dev/dsp` is opened at the first track
+    and closed at a stop or the list's end (its ring, 500 ms asked, 743 ms at 44.1 kHz, freed).
+    A track is a number from the loop; `play()` with the open track's number seeks in it. Its
+    reports (a queue of 16, the loop told through `post()`): Started (the track's stream frame and
+    file frame, its information and tags), Ended (all decoded: the loop answers with the next,
+    `Follow`, or `finish()`), Failed, Stopped. Pause is the stream's own and the thread's (no
+    writes while paused; a seek while paused stays paused).
+  - **Gapless:** the next track goes into the same stream when the rate and channels match (the
+    stream's frame counter goes on); else the thread drains, configures again (counting from 0),
+    and the report says the marks before are over.
+  - **Where it is:** `TrackClock` (pure, host-tested): marks of (track, stream frame, file
+    frame); the frames heard are the stream's played frames less what the device still holds
+    (`delayFrames` − `queuedFrames`), moved on by the time since the status (at most 50 ms) while
+    playing. The window shows the next track when the frames heard reach its mark, so the title
+    changes when it is heard, not when it is decoded. A seek shows its target until it starts.
+    Redrawn 4 times a second only while playing.
+  - **The window** (`playerwindow.cpp`): the title, artist and album, the format line (`MP3 ·
+    44.1 kHz · stereo · 192 kbps · 0:30`), the time played and left (`~` for an estimate), the
+    seek bar (seeks on release, or at once by keys and the wheel), the transport (icon buttons with
+    tooltips: previous, play or pause, stop, next, repeat cycling Off, All, One with its icon,
+    shuffle), mute (its icon by the level, as the tray's) and the volume (−60 to 0 dB, the wheel
+    1 dB a notch, its dB in the tooltip), the playlist in a tab (Title with the playing or failed
+    entry's icon, Artist, Album, Length, Format, filled in as each file starts), a status bar
+    (the state or a message for 5 s; the entry's number, the count and the total time, `+` for
+    unknown lengths). Menus File (Open, Add Files, Add Folder, Close, Quit), Playback (with
+    Repeat as a submenu, Shuffle checked), Help.
+  - **Keys:** Space, Left and Right (5 s), Ctrl+Left and Ctrl+Right, Ctrl+Up and Ctrl+Down (move
+    the entry), Delete, Return (play the row), Ctrl+O, Ctrl+W and Ctrl+Q; in the list too (its
+    view offers them to the player first).
+  - **Adding:** files, M3U playlists (read as step 1's `M3u`), folders (their sound files sorted
+    without case, then their folders, 6 deep). Previous restarts a track past 3 s. Next and
+    Previous in a gapless change's last moments go to the track already queued.
+  - **Errors** in the status bar, the entry marked with `dialog-error` and its reason as the
+    row's tooltip: "Not a sound file this player knows", "damaged at 1:23", "No SoundFont"
+    (a MIDI file whose font is missing), the device in exclusive use (it stops). A failed entry is
+    passed over even with Repeat One; every entry failing in a row stops it.
+  - **One player:** the service `mplayer`; a second `mplayer [-a] FILE...` sends the files
+    (absolute) to it and exits (0, or 1 with the reason): a message is a header (`uint32_t size`,
+    a request: 1 Show, 2 Open, 3 Add) and paths each ending in a NUL, the first message Open and
+    the rest Add when they need several. `mplayer` alone shows the window.
+  - **File types:** `.m3u` and `.m3u8` are `audio/x-mpegurl` (text-like); `mplayer.desktop`
+    (`Exec=mplayer %F`); `/boot/config/mimeapps.list`'s default gives `audio/*` to it before
+    `play.desktop` (a `/boot` made before keeps its own file: the manifest installs only new ones).
+  - **Not yet, as planned:** closing while playing quits (hiding comes with the tray, step 5); the
+    MIDI voices in the status bar come with the MIDI view (step 7); a MIDI file's own name (its
+    first track's) isn't a tag the decoder gives (step 8's `probe()` reads it). No `#` column: the
+    view's first column is the name, so the entry's number is in the status bar.
+  - **On the board:** MP3 into Ogg into FLAC into WAV without a stop, seeking by keys while
+    playing and paused, pause and resume, Next, Stop (the device stops), the list's end (stopped,
+    the device closed), a PNG passed over with its reason, `mplayer -a` and a missing file from a
+    second instance, a folder (`mplayer /home`), a MIDI file through the synth (the font loaded
+    in 739 ms), the volume by the wheel (the stream's gain), moving and deleting entries (the one
+    playing deleted plays on), the Open dialog. Two sessions under `mem mark`: nothing left after
+    the second (the first left 19 KB of internal blocks, by their sizes the audio device's period
+    buffers, made at its first start since boot).
+  - **Host tests:** `TrackClock` (seeks, gapless changes, marks past `MaxMarks`, a fresh stream;
+    the frames heard from a status), `TimeText`, the M3U file type; 459 cases pass.
+
