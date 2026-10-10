@@ -56,6 +56,8 @@
 #include "panelentries.h"
 #include "panelicons.h"
 #include "notifyarea.h"
+#include "cpumeter.h"
+#include "panelitems.h"
 #include "volumecontrol.h"
 
 BMDS_NAMESPACE_BEGIN
@@ -98,6 +100,13 @@ namespace {
                      "The clock's tooltip: the date (strftime's %-fields)", 0, 48, nullptr, nullptr)
         BMDS_SYSCONF(panelClockZone, "panel/clock/zone", Config::Type::String, "",
                      "The clock's time zone (empty: the kernel's)", 0, 64, nullptr, nullptr)
+        // The tray's own icons, in whichever tray there is (devplan/gui.md §4t).
+        BMDS_SYSCONF(panelTrayCpu, "panel/tray/cpu", Config::Type::Bool, "true",
+                     "The CPU meter in the tray (devplan/sysmon.md)", 0, 0, nullptr, nullptr)
+        BMDS_SYSCONF(panelTrayCpuGraph, "panel/tray/cpu-graph", Config::Type::Enum, "cores",
+                     "The CPU meter's graph: a band for each core, or their mean", 0, 0, "cores|combined", nullptr)
+        BMDS_SYSCONF(panelTrayVolume, "panel/tray/volume", Config::Type::Bool, "true", "The volume control in the tray",
+                     0, 0, nullptr, nullptr)
         BMDS_SYSCONF(panelSpacerWidth, "panel/spacer/width", Config::Type::Int, "0",
                      "A spacer's width in pixels (0: what is left)", 0, 2000, nullptr, nullptr)
         BMDS_SYSCONF(panelDesktopMenu, "panel/desktop/menu", Config::Type::Bool, "true",
@@ -141,6 +150,42 @@ namespace {
                 ChooseNewFolder = -3,
                 ChooseNewText = -4,
                 ChooseNewFile = -5,
+        };
+
+        // The panel's own menu's choices (devplan/gui.md §4t).
+        enum PanelChoice : int {
+                ChooseCpuMeter = 1,
+                ChooseVolume,
+                ChooseClock,
+                ChooseTop,
+                ChooseBottom,
+        };
+
+        // Told of a right press at (x, y) in the panel window where nothing else takes it.
+        using MenuAsked = void (*)(void *arg, int x, int y);
+
+        // @p Base whose right press opens the panel's menu (the row's gaps, a spacer).
+        template <typename Base> class MenuArea final : public Base {
+                public:
+                        using Base::Base;
+
+                        void setMenuAsked(MenuAsked fn, void *arg) {
+                                _menuAsked = fn;
+                                _menuArg = arg;
+                        }
+
+                        void mousePressed(const WindowManager::MouseEvent &event) override {
+                                if (event.button == PointerEvent::Right && _menuAsked != nullptr) {
+                                        _menuAsked(_menuArg, event.x, event.y);
+                                        return;
+                                }
+                                Base::mousePressed(event);
+                                return;
+                        }
+
+                private:
+                        MenuAsked _menuAsked = nullptr;
+                        void     *_menuArg = nullptr;
         };
 
         // @p text with each & doubled, for a menu that takes & as its key's mark (gui.md §4r).
@@ -226,6 +271,18 @@ namespace {
 
                         void setMaxWidth(uint16_t width) { _maxWidth = width; }
 
+                        // Its empty part's right press: the panel's menu.
+                        void setMenuAsked(MenuAsked fn, void *arg) {
+                                _menuAsked = fn;
+                                _menuArg = arg;
+                        }
+
+                        void mousePressed(const WindowManager::MouseEvent &event) override {
+                                if (event.button == PointerEvent::Right && _menuAsked != nullptr)
+                                        _menuAsked(_menuArg, event.x, event.y);
+                                return;
+                        }
+
                         void refresh(Span<const Info> windows);
 
                 private:
@@ -234,6 +291,8 @@ namespace {
 
                         PanelApp &_panel;
                         uint16_t  _maxWidth = 200;
+                        MenuAsked _menuAsked = nullptr;
+                        void     *_menuArg = nullptr;
         };
 
         class PanelApp final : public FolderWindowHost {
@@ -317,6 +376,14 @@ namespace {
                         void        reloadLauncher();
                         void        buildMenu(size_t submenuAfter);
                         Error       buildItems(BoxLayout *row);
+                        void        applyTray();
+                        void        setCpuMeter(bool shown);
+                        void        setVolumeControl(bool shown);
+                        static void startMonitor(void *arg);
+                        bool        boolSetting(const Config::Param &param);
+                        void        saveSetting(const Config::Param &param, StringView value);
+                        static void panelMenu(void *arg, int x, int y);
+                        static void panelChosen(void *arg, int choice);
                         Error       openWindows();
                         void        open(const Entry &entry);
                         const Icon *fileIcon(StringView type);
@@ -336,6 +403,8 @@ namespace {
                         WindowList                    *_windows = nullptr;
                         TrayService                    _tray{_app};       // while panel/items has a tray
                         VolumeControl                 *_volume = nullptr; // its icon in the tray (PSRAM)
+                        CpuMeter *_cpuMeter = nullptr;  // panel/tray/cpu: its icon in the tray (PSRAM)
+                        Menu     *_panelMenu = nullptr; // the panel's own (devplan/gui.md §4t)
                         Menu                          *_menu = nullptr;
                         Menu                          *_iconMenu = nullptr;    // an icon's: Open, Cut, Copy, Delete
                         Menu    *_desktopMenu = nullptr; // the desktop's: Applications, New, Paste
@@ -475,9 +544,11 @@ namespace {
 
         PanelApp::~PanelApp() {
                 // The windows (and their widgets) before the application they belong to.
-                if (_volume != nullptr) {
-                        _volume->~VolumeControl();
-                        Memory::free(_volume);
+                setCpuMeter(false);
+                setVolumeControl(false);
+                if (_panelMenu != nullptr) {
+                        _panelMenu->~Menu();
+                        Memory::free(_panelMenu);
                 }
                 closeFolders();
                 freeLauncher();
@@ -1248,6 +1319,7 @@ namespace {
                         } else if (type == "windows") {
                                 _windows = Widget::create<WindowList>(row, *this);
                                 if (_windows == nullptr) return Error::NoMem;
+                                _windows->setMenuAsked(panelMenu, this);
                                 const int32_t w = intSetting(bmdsConf_panelWindowsMaxWidth);
                                 if (w > 0) _windows->setMaxWidth(static_cast<uint16_t>(w));
                         } else if (type == "tray" || type == "clock") {
@@ -1262,6 +1334,7 @@ namespace {
                                 if (pair) ++i;
                                 auto *area = Widget::create<NotifyArea>(row, *row, _app, _tray, parts);
                                 if (area == nullptr) return Error::NoMem;
+                                area->setMenuAsked(panelMenu, this);
                                 hasTray = hasTray || parts != NotifyArea::Parts::Clock;
                                 if (parts != NotifyArea::Parts::Tray) {
                                         char             format[64];
@@ -1276,8 +1349,9 @@ namespace {
                                                 say("panel: panel/clock/format, tooltip or zone can't be used\n");
                                 }
                         } else if (type == "spacer") {
-                                auto *s = Widget::create<Label>(row);
+                                auto *s = Widget::create<MenuArea<Label>>(row);
                                 if (s == nullptr) return Error::NoMem;
+                                s->setMenuAsked(panelMenu, this);
                                 const int32_t w = intSetting(bmdsConf_panelSpacerWidth);
                                 if (w > 0) {
                                         s->setMaximumWidth(static_cast<uint16_t>(w));
@@ -1297,6 +1371,131 @@ namespace {
                         say("panel: the tray service is taken: no tray icons here (", e.desc(), ")\n");
                 }
                 return result;
+        }
+
+        // The tray's own icons as panel/tray/... says: made, kept or destroyed (devplan/gui.md §4t).
+        // Shown in whichever tray there is, so they don't follow the row being made again.
+        void PanelApp::applyTray() {
+                setCpuMeter(boolSetting(bmdsConf_panelTrayCpu));
+                setVolumeControl(boolSetting(bmdsConf_panelTrayVolume));
+                return;
+        }
+
+        bool PanelApp::boolSetting(const Config::Param &param) {
+                const Result<bool> v = SysConf::getBool(param.key);
+                return v.isOk() ? v.value() : StringView(param.defaultValue) == "true";
+        }
+
+        // A setting changed from the panel's menus, and kept across a restart: the panel follows it
+        // (applySettings(), posted).
+        void PanelApp::saveSetting(const Config::Param &param, StringView value) {
+                if (SysConf::set(StringView(param.key), value).isOk()) (void)SysConf::save(StringView(param.key));
+                return;
+        }
+
+        void PanelApp::setVolumeControl(bool shown) {
+                if (!shown) {
+                        if (_volume == nullptr) return;
+                        _volume->~VolumeControl();
+                        Memory::free(_volume);
+                        _volume = nullptr;
+                        return;
+                }
+                if (_volume != nullptr) return;
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(VolumeControl));
+                if (mem != nullptr) _volume = ::new (mem) VolumeControl(_app);
+                if (_volume == nullptr || _volume->start().isError()) say("panel: no volume control in the tray\n");
+                return;
+        }
+
+        // The CPU meter made or destroyed (kept while the row is made again: its watch goes on).
+        void PanelApp::setCpuMeter(bool shown) {
+                if (!shown) {
+                        if (_cpuMeter == nullptr) return;
+                        _cpuMeter->~CpuMeter();
+                        Memory::free(_cpuMeter);
+                        _cpuMeter = nullptr;
+                        return;
+                }
+                if (_cpuMeter == nullptr) {
+                        void *mem = Memory::alloc(MemSpace::Psram, sizeof(CpuMeter));
+                        if (mem == nullptr) {
+                                say("panel: out of memory for the CPU meter\n");
+                                return;
+                        }
+                        _cpuMeter = ::new (mem) CpuMeter(_app, startMonitor, this);
+                }
+                _cpuMeter->setForm(setting(bmdsConf_panelTrayCpuGraph) == "combined" ? CpuMeterPicture::Form::Combined
+                                                                                     : CpuMeterPicture::Form::Cores);
+                if (Error e = _cpuMeter->start(); e.isError()) say("panel: no CPU meter (", e.desc(), ")\n");
+                return;
+        }
+
+        // The panel's own menu (devplan/gui.md §4t), by a right press at (@p x, @p y) in its window
+        // where nothing else takes it: the tray's own icons, the clock, the edge.
+        void PanelApp::panelMenu(void *arg, int x, int y) {
+                auto *self = static_cast<PanelApp *>(arg);
+                if (self->_panelMenu == nullptr) {
+                        void *mem = Memory::alloc(MemSpace::Psram, sizeof(Menu));
+                        if (mem == nullptr) return;
+                        self->_panelMenu = ::new (mem) Menu(self->_app);
+                        self->_panelMenu->setTriggered(panelChosen, self);
+                }
+                Menu &menu = *self->_panelMenu;
+                menu.clear();
+                const auto checked = [](bool on) {
+                        return on ? uint8_t(MenuLayout::Checked) : uint8_t(0);
+                };
+                const bool clock = PanelItems::has(self->setting(bmdsConf_panelItems), "clock");
+                (void)menu.addItem("Show &CPU Meter", ChooseCpuMeter,
+                                   checked(self->boolSetting(bmdsConf_panelTrayCpu)));
+                (void)menu.addItem("Show &Volume Control", ChooseVolume,
+                                   checked(self->boolSetting(bmdsConf_panelTrayVolume)));
+                (void)menu.addItem("Show C&lock", ChooseClock, checked(clock));
+                (void)menu.addSeparator();
+                (void)menu.addItem("Panel at &Top", ChooseTop, checked(!self->_bottom));
+                (void)menu.addItem("Panel at &Bottom", ChooseBottom, checked(self->_bottom));
+                const int top = self->_bottom ? self->_screen.height - Height : 0;
+                (void)menu.popup(Rect{uint16_t(x), uint16_t(top + y), 0, 0});
+                return;
+        }
+
+        // Saved at once; the panel follows (the row made again after this call returns: posted).
+        void PanelApp::panelChosen(void *arg, int choice) {
+                auto *self = static_cast<PanelApp *>(arg);
+                switch (choice) {
+                        case ChooseCpuMeter:
+                                self->saveSetting(bmdsConf_panelTrayCpu,
+                                                  self->boolSetting(bmdsConf_panelTrayCpu) ? "false" : "true");
+                                break;
+                        case ChooseVolume:
+                                self->saveSetting(bmdsConf_panelTrayVolume,
+                                                  self->boolSetting(bmdsConf_panelTrayVolume) ? "false" : "true");
+                                break;
+                        case ChooseClock: {
+                                char             now[160];
+                                const StringView v = self->setting(bmdsConf_panelItems);
+                                std::snprintf(now, sizeof(now), "%.*s", int(v.size()), v.data());
+                                char         list[160];
+                                const size_t n = PanelItems::withItem(StringView(now), "clock",
+                                                                      !PanelItems::has(StringView(now), "clock"),
+                                                                      Span<char>(list, sizeof(list)));
+                                if (n > 0) self->saveSetting(bmdsConf_panelItems, StringView(list, n));
+                                break;
+                        }
+                        case ChooseTop: self->saveSetting(bmdsConf_panelEdge, "top"); break;
+                        case ChooseBottom: self->saveSetting(bmdsConf_panelEdge, "bottom"); break;
+                        default: break;
+                }
+                return;
+        }
+
+        // The CPU meter's click with no System Monitor running: the launcher's, started.
+        void PanelApp::startMonitor(void *arg) {
+                auto *self = static_cast<PanelApp *>(arg);
+                if (!self->_actions.openWith("sysmon.desktop", StringView()))
+                        self->say("panel: there's no sysmon.desktop among the launcher's entries\n");
+                return;
         }
 
         int PanelApp::run() {
@@ -1352,13 +1551,11 @@ namespace {
                         say("panel: its settings take effect when it starts again\n");
                 if (_app.watchConfig("files", filesSettingsChanged, this).isError())
                         say("panel: files/... take effect when it starts again\n");
-                // The volume control: its icon in the tray (this one, another's, or one to come).
+                // The volume control and the CPU meter: icons in the tray (this one, another's, or one to
+                // come).
                 {
                         Mutex::Locker lock(_app.lock(), WaitForever);
-                        void         *mem = Memory::alloc(MemSpace::Psram, sizeof(VolumeControl));
-                        if (mem != nullptr) _volume = ::new (mem) VolumeControl(_app);
-                        if (_volume == nullptr || _volume->start().isError())
-                                say("panel: no volume control in the tray\n");
+                        applyTray();
                 }
                 if (_app.watchConfig(VolumeControl::Prefix, audioChanged, this).isError())
                         say("panel: the volume item won't follow changes made elsewhere\n");
@@ -1415,7 +1612,9 @@ namespace {
                 _panel = ::new (mem) PanelWindow(_app, pc, panelEscaped, this);
                 _panel->setClosed(windowClosed, this);
                 _panel->setTabOut(panelTabOut, this);
-                _row = Widget::create<BoxLayout>(_panel, BoxLayout::Direction::Horizontal);
+                auto *row = Widget::create<MenuArea<BoxLayout>>(_panel, BoxLayout::Direction::Horizontal);
+                if (row != nullptr) row->setMenuAsked(panelMenu, this); // its gaps
+                _row = row;
                 Error err = _row == nullptr ? Error(Error::NoMem) : buildItems(_row);
                 if (err.isOk()) {
                         _row->setSpacing(Spacing);
@@ -1472,7 +1671,7 @@ namespace {
         void PanelApp::applySettings() {
                 _settingsPending = false;
                 // Menus open on the old settings close: their items are made again.
-                for (Menu *m : {_menu, _desktopMenu, _iconMenu, _newMenu})
+                for (Menu *m : {_menu, _desktopMenu, _iconMenu, _newMenu, _panelMenu})
                         if (m != nullptr && m->isShown()) m->dismiss();
                 _launcher = nullptr;
                 const bool bottom = setting(bmdsConf_panelEdge) == "bottom";
@@ -1509,6 +1708,7 @@ namespace {
                 _windows = nullptr;
                 if (buildItems(_row).isError()) say("panel: out of memory for its items\n");
                 _row->relayout();
+                applyTray();
                 windowsChanged(this);
                 if (_desktop != nullptr) {
                         const Result<bool> asked = SysConf::getBool(bmdsConf_panelDesktopMenu.key);

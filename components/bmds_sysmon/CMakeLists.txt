@@ -1,7 +1,8 @@
 # bmds_sysmon — /bin/sysmon, the System Monitor (devplan/sysmon.md §3.5): how the system is
 # behaving, down to every subsystem's counters, with whatever is out of normal in amber or red; an
 # ordinary GUI program on the public toolkit and the kernel's public classes (through its Source),
-# built into the firmware only to have it at hand. Nothing in the OS refers to it.
+# built into the firmware only to have it at hand. Nothing in the OS refers to it. The shell's
+# `top` and `tasks` read through the same Source.
 #
 # Its pure part (Monitor: the counters' catalogue, rates, health, text) is also built as a plain
 # CMake library for the host tests (tests/host).
@@ -20,7 +21,10 @@ if(COMMAND idf_component_register)
                                     src/sysmonapp.cpp
                                     src/sysmonwindow.cpp
                                     src/tablemodel.cpp
-                               PRIV_REQUIRES bmds_core bmds_gui bmds_kernel bmds_loader bmds_stats bmds_ui
+                                    src/taskscommand.cpp
+                                    src/topcommand.cpp
+                               PRIV_REQUIRES bmds_console bmds_core bmds_fs bmds_gui bmds_kernel bmds_loader bmds_shell
+                                             bmds_stats bmds_ui
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})
 

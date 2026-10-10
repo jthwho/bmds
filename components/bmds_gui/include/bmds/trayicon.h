@@ -62,7 +62,8 @@ class TrayIcon {
 
                 /**
                  * @brief Shows @p icon's own pixels (16 x 16, copied: drawn by the
-                 *        program).
+                 *        program); nothing is sent for the same pixels, so a live
+                 *        picture may be set at every change of what it shows.
                  * @return `Ok`, `Invalid` (not 16 x 16) or `NoMem`.
                  */
                 Error setIcon(const Icon &icon);
@@ -112,7 +113,9 @@ class TrayIcon {
         private:
                 Error       join(); // into the application's icons, its reply service made
                 void        leave();
-                void        send();
+                void        send(); // all of it
+                void        sendUpdate();
+                void        sendPixels();
                 static void replied(void *arg, ByteSpan message);
                 static void servicesChanged(void *arg);
                 void        replyName(char (&out)[TrayProtocol::MaxReplyName + 1]) const;

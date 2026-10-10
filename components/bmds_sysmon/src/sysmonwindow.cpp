@@ -364,6 +364,12 @@ void SysmonWindow::raise() {
         return;
 }
 
+void SysmonWindow::raiseOverview() {
+        if (_tabs != nullptr) _tabs->setCurrent(Overview);
+        raise();
+        return;
+}
+
 void SysmonWindow::tick(void *arg) {
         auto *self = static_cast<SysmonWindow *>(arg);
         // Nobody sees it: nothing read (the sampler goes on, so the graphs are whole when shown).

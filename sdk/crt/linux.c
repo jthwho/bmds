@@ -66,9 +66,31 @@ static int64_t now(uint32_t clock) {
         return ns;
 }
 
-/* CPU time: the program's own time running, approximated by its age (the
- * program has its core to itself while it computes). */
+/* When the program started: its CPU time on a kernel without proc_info,
+ * approximated by its age (the program has its core to itself while it
+ * computes). */
 static int64_t started_ns;
+
+/* The process itself (proc_info): 0, or -1 on a kernel without the call. */
+static int self_info(bmds_proc_info_t *p) {
+        memset(p, 0, sizeof(*p));
+        p->size = sizeof(*p);
+        if (!bmds_sys_has(BMDS_SYS_PROC_INFO)) return -1;
+        return bmds_proc_info(bmds_proc_id(BMDS_PROC_SELF), 0, p) >= 0 ? 0 : -1;
+}
+
+/* The process's CPU time (its tasks', ended ones' and before an exec
+ * included), or its age without proc_info. BMDS doesn't split user time from
+ * system time: all of it is the user's. */
+static int64_t cpu_ns_of(const bmds_proc_info_t *p, int known) {
+        return known ? (int64_t)p->cpu_us * 1000 : now(BMDS_CLOCK_MONOTONIC) - started_ns;
+}
+
+static int64_t cpu_ns(void) {
+        bmds_proc_info_t p;
+        const int        known = self_info(&p) == 0;
+        return cpu_ns_of(&p, known);
+}
 
 /* Linux's struct timespec for the time64 calls: two 64-bit words. musl's
  * own has a 32-bit tv_nsec and padding, so only the low half of the second
@@ -93,8 +115,9 @@ static long clock_ns(long clock, int64_t *ns) {
                 case CLOCK_MONOTONIC_RAW:
                 case CLOCK_MONOTONIC_COARSE:
                 case CLOCK_BOOTTIME: *ns = now(BMDS_CLOCK_MONOTONIC); return 0;
+                /* A thread's own would need the task list, which scans the stacks: the process's. */
                 case CLOCK_PROCESS_CPUTIME_ID:
-                case CLOCK_THREAD_CPUTIME_ID: *ns = now(BMDS_CLOCK_MONOTONIC) - started_ns; return 0;
+                case CLOCK_THREAD_CPUTIME_ID: *ns = cpu_ns(); return 0;
                 default: return -EINVAL;
         }
 }
@@ -1134,7 +1157,30 @@ static long do_sysinfo(struct sysinfo *s) {
         s->totalram = m.total_bytes;
         s->freeram = m.free_bytes;
         s->procs = 1;
+        if (bmds_sys_has(BMDS_SYS_PROC_INFO)) {
+                /* Every process, zombies included, as Linux counts them. */
+                bmds_proc_info_t p = {.size = sizeof(p)};
+                unsigned         n = 0;
+                for (int32_t pid = 0; (pid = bmds_proc_info(pid, BMDS_PROC_INFO_NEXT, &p)) > 0;) ++n;
+                if (n > 0) s->procs = (unsigned short)n;
+        }
         s->mem_unit = 1;
+        return 0;
+}
+
+/* getrusage: musl's riscv32 build reads four longs (user and system time,
+ * seconds and µs) then the fourteen counts from ru_maxrss on. RUSAGE_CHILDREN
+ * is the children waited for, with theirs (0 from a kernel before
+ * children_cpu_us). */
+static long do_getrusage(long who, long *k) {
+        if (who != RUSAGE_SELF && who != RUSAGE_CHILDREN && who != RUSAGE_THREAD) return -EINVAL;
+        memset(k, 0, 18 * sizeof(long));
+        bmds_proc_info_t p;
+        const int        known = self_info(&p) == 0;
+        const int64_t    us = who == RUSAGE_CHILDREN ? (int64_t)p.children_cpu_us : cpu_ns_of(&p, known) / 1000;
+        k[0] = (long)(us / 1000000);
+        k[1] = (long)(us % 1000000);
+        if (who != RUSAGE_CHILDREN) k[4] = (long)(p.memory / 1024); /* ru_maxrss: its memory now (no peak) */
         return 0;
 }
 
@@ -1146,10 +1192,12 @@ static long do_prlimit(long resource, struct rlimit *old) {
 }
 
 static long do_times(struct tms *t) {
-        const int64_t cpu = now(BMDS_CLOCK_MONOTONIC) - started_ns;
+        bmds_proc_info_t p;
+        const int        known = self_info(&p) == 0;
         if (t != NULL) {
                 memset(t, 0, sizeof(*t));
-                t->tms_utime = (clock_t)(cpu / (1000000000 / 100));
+                t->tms_utime = (clock_t)(cpu_ns_of(&p, known) / (1000000000 / 100));
+                t->tms_cutime = (clock_t)(p.children_cpu_us / (1000000 / 100));
         }
         return (long)(now(BMDS_CLOCK_MONOTONIC) / (1000000000 / 100));
 }
@@ -1490,6 +1538,7 @@ static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
                         return r;
                 }
                 case SYS_times: return do_times((struct tms *)a);
+                case SYS_getrusage: return do_getrusage(a, (long *)b);
                 case SYS_setitimer: return -ENOSYS; /* alarm() needs signals from outside */
 
                 /* Memory */

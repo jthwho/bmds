@@ -220,7 +220,8 @@ Echo uses relative cursor movement (`ESC[nD`, `ESC[nC`, `ESC[K`), so the editor 
 | `version` | `BMDS <ver> (build <git>, ESP-IDF <ver>)`, `Board: <name>`, `Chip: ESP32-P4 rev vX.Y, N cores @ M MHz`. |
 | `uptime` | `up <d>d <hh>:<mm>:<ss>.<mmm>` |
 | `mem [-h]` | One row per MemSpace: total, free, min free, largest free block (bytes; `-h`: powers of 1024 with two decimals, `16.55M`, `432.43k`). Then a `cached` line for the loader's image cache: the bytes it holds (counted as used above, given back when memory runs short), then `programs N, hits N, misses N, given back N` (lookups since boot, and how often a failed allocation emptied it). |
-| `tasks` | One row per task: name, state, priority, core (`-` = any), stack high-water (bytes free). Needs `CONFIG_FREERTOS_USE_TRACE_FACILITY`. |
+| `tasks` | One row per task: name, state, priority, core (`-` = any), stack high-water (bytes free), then `cpu_ms` (its CPU time; `-` while not counted). From the kernel's task list since 2026-10-10 (`sysmon.md` step 6), in `bmds_sysmon`. |
+| `top [-d SECONDS] [-n COUNT] [-T]` | The load, memory and processes by CPU every interval; a screen on a terminal (`q` or Ctrl-C ends it), batch lines with `-n` or when not a terminal (`sysmon.md` §3.5, step 6). |
 | `log` | Level and the debug modules (on/off). |
 | `log level`, `log on\|off` | Removed (2026-10-07): sysconf's `log/level` and `log/debug` (`sysconf.md` §13). |
 | `log show` | Print the log history. |

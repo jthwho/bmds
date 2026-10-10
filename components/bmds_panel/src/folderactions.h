@@ -88,6 +88,13 @@ class FolderActions {
                  */
                 void open(StringView path);
 
+                /**
+                 * @brief Starts application @p id (a Desktop Entry file in the launcher's
+                 *        directories, the first found) on @p file (empty: none).
+                 * @return False if it isn't there.
+                 */
+                bool openWith(StringView id, StringView file);
+
                 /** @brief Opens file @p path of type @p type by the application `mimeapps.list` names. */
                 void openFile(StringView path, StringView type);
 
@@ -137,7 +144,6 @@ class FolderActions {
                 static void  lost(void *arg, Clipboard::Selection selection);
                 void         offer(StringView paths, bool cut);
                 bool         moveNow(StringView paths, StringView directory);
-                bool         openWith(StringView id, StringView file);
 
                 GuiApplication                &_app;
                 const BuiltinProgram::Context &_context;

@@ -28,8 +28,10 @@ namespace {
 
         constexpr StringView Service("sysmon");
 
-        // The service's one message so far: "raise" (any message raises it, for later ones).
+        // The service's messages: "raise" (any message not known raises it, for later ones), and
+        // "overview" (raised at Overview: the tray meter's click while it alarms).
         constexpr StringView RaiseMessage("raise");
+        constexpr StringView OverviewMessage("overview");
 
         struct App {
                         FileHandle   *err = nullptr;
@@ -44,9 +46,12 @@ namespace {
         };
 
         void serviceMessage(void *arg, ByteSpan message) {
-                (void)message;
                 auto *self = static_cast<App *>(arg);
-                if (self->window != nullptr) self->window->raise();
+                if (self->window == nullptr) return;
+                if (StringView(reinterpret_cast<const char *>(message.data()), message.size()) == OverviewMessage)
+                        self->window->raiseOverview();
+                else
+                        self->window->raise();
                 return;
         }
 

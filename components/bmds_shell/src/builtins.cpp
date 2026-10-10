@@ -10,8 +10,6 @@
  */
 
 #include <cstdio>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 #include <esp_heap_caps.h>
 #include <bmds/console.h>
 #include <bmds/log.h>
@@ -234,56 +232,6 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
-        const char *taskStateName(eTaskState state) {
-                switch (state) {
-                        case eRunning: return "running";
-                        case eReady: return "ready";
-                        case eBlocked: return "blocked";
-                        case eSuspended: return "suspended";
-                        case eDeleted: return "deleted";
-                        default: return "unknown";
-                }
-        }
-
-        int runTasks(CommandContext &ctx) {
-                const Args args = ctx.args();
-                if (args.size() != 1) return ctx.usage();
-                // Room for a few tasks created between counting and listing.
-                UBaseType_t capacity = uxTaskGetNumberOfTasks() + 4;
-                auto       *tasks =
-                        static_cast<TaskStatus_t *>(Memory::alloc(MemSpace::Psram, capacity * sizeof(TaskStatus_t)));
-                if (tasks == nullptr) {
-                        ctx.eprint("tasks: out of memory\n");
-                        return Shell::ExitFailure;
-                }
-                const UBaseType_t count = uxTaskGetSystemState(tasks, capacity, nullptr);
-
-                // Sort by name so the listing is stable from run to run.
-                for (UBaseType_t i = 1; i < count; ++i) {
-                        for (UBaseType_t j = i;
-                             j > 0 && StringView(tasks[j].pcTaskName) < StringView(tasks[j - 1].pcTaskName); --j) {
-                                const TaskStatus_t t = tasks[j];
-                                tasks[j] = tasks[j - 1];
-                                tasks[j - 1] = t;
-                        }
-                }
-
-                ctx.printf("%-16s %-9s %4s %4s %10s\n", "name", "state", "prio", "core", "stack_free");
-                for (UBaseType_t i = 0; i < count; ++i) {
-                        const TaskStatus_t &t = tasks[i];
-                        const BaseType_t    core = xTaskGetCoreID(t.xHandle);
-                        char                coreText[12] = "-";
-                        if (core != tskNO_AFFINITY)
-                                std::snprintf(coreText, sizeof(coreText), "%d", static_cast<int>(core));
-                        // ESP-IDF reports the high-water mark in bytes.
-                        ctx.printf("%-16s %-9s %4u %4s %10u\n", t.pcTaskName, taskStateName(t.eCurrentState),
-                                   static_cast<unsigned>(t.uxCurrentPriority), coreText,
-                                   static_cast<unsigned>(t.usStackHighWaterMark));
-                }
-                Memory::free(tasks);
-                return Shell::ExitSuccess;
-        }
-
         const char *levelName(LogLevel level) {
                 switch (level) {
                         case LogLevel::Debug: return "debug";
@@ -409,7 +357,6 @@ BMDS_SHELL_COMMAND(mem, runMem, "[-h | mark | new]",
                    "'mark' records the heap blocks in use, 'new' lists those in use now that weren't then")
 BMDS_SHELL_COMMAND(reboot, runReboot, "", "Restart the system")
 BMDS_SHELL_COMMAND(sleep, runSleep, "<seconds>", "Wait for a number of seconds (fractions allowed, e.g. 0.5)")
-BMDS_SHELL_COMMAND(tasks, runTasks, "", "List tasks: state, priority, core, free stack (bytes)")
 BMDS_SHELL_COMMAND(uptime, runUptime, "", "Show time since boot")
 BMDS_SHELL_COMMAND(version, runVersion, "", "Show BMDS, build, board and chip versions")
 

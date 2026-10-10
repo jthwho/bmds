@@ -481,9 +481,11 @@ void GuiWindow::mouse(const WindowManager::MouseEvent &event) {
                                 if (err.isOk()) _screen = client;
                         }
                         _hover = w;
-                        _app.hoverToolTip(w, _screen.x + event.x, _screen.y + event.y);
                         pointerOver(w, event.x, event.y);
                         if (w->isEnabled()) w->mouseMoved(event);
+                        // After the widget saw it: a tooltip by the part under the pointer (a tray's
+                        // icon) is known from the first move onto it.
+                        _app.hoverToolTip(w, _screen.x + event.x, _screen.y + event.y);
                         break;
                 }
                 case MType::Leave:

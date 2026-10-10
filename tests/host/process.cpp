@@ -701,6 +701,37 @@ TEST_CASE("Process: clocks, sleeping, memory") {
         p.memFree(m);
 }
 
+TEST_CASE("ProcessTable: a child's time is its parent's children's once reaped") {
+        using bmds::ProcessTable;
+        constexpr int32_t Kernel = ProcessTable::KernelParent;
+        constexpr int32_t Inherit = ProcessTable::Inherit;
+        ProcessTable      table;
+        REQUIRE(table.init().isOk());
+        const int32_t p = table.add(Kernel, Inherit, Inherit, nullptr, nullptr).value();
+        const int32_t c = table.add(p, Inherit, Inherit, nullptr, nullptr).value();
+        const int32_t g = table.add(c, Inherit, Inherit, nullptr, nullptr).value();
+        const int32_t orphan = table.add(p, Inherit, Inherit, nullptr, nullptr).value();
+        const auto    children = [&](int32_t pid) {
+                uint64_t t = UINT64_MAX;
+                table.forEach([&](const ProcessTable::View &v) {
+                        if (v.pid == pid) t = v.childrenCpuUs;
+                });
+                return t;
+        };
+        table.exited(g, ProcessTable::exitStatus(0), 100);
+        CHECK(children(c) == 0); // a zombie: not until waited for
+        REQUIRE(table.reap(c, g).isOk());
+        CHECK(children(c) == 100);
+        table.exited(c, ProcessTable::exitStatus(0), 50);
+        CHECK(children(c) == 100); // a zombie keeps its children's
+        CHECK(children(p) == 0);
+        REQUIRE(table.reap(p, c).isOk());
+        CHECK(children(p) == 150); // its own and its child's
+        table.exited(orphan, ProcessTable::exitStatus(0), 1000);
+        table.detach(orphan); // freed without a wait: not counted
+        CHECK(children(p) == 150);
+}
+
 TEST_CASE("ProcessTable") {
         using bmds::Error;
         using bmds::ProcessTable;

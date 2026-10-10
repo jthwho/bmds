@@ -102,6 +102,7 @@ Result<int32_t> ProcessTable::add(int32_t parent, int32_t group, int32_t session
                       false,
                       false,
                       Detail::monotonicUs(),
+                      0,
                       0};
         return makeResult(pid);
 }
@@ -247,6 +248,8 @@ Result<ProcessTable::Ended> ProcessTable::reap(int32_t parent, int32_t pid, uint
                         continue;
                 }
                 const Ended ended{c.pid, c.status};
+                // Waited for: its time, and its own children's, are its parent's children's now.
+                if (Entry *p = find(parent); p != nullptr) p->childrenCpuUs += c.cpuUs + c.childrenCpuUs;
                 free(c);
                 return makeResult(ended);
         }

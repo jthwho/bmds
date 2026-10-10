@@ -848,6 +848,9 @@ typedef struct bmds_proc_info_t {
                 uint64_t cpu_us;      /**< Its tasks' time, ended ones' and before an exec included. */
                 int64_t  start_ns;    /**< When it started (monotonic). */
                 char     command[48]; /**< Its command line, cut. */
+                /** Its children's CPU time: those it waited for, with theirs (appended 2026-10-10:
+                    0 from an older kernel). */
+                uint64_t children_cpu_us;
 } bmds_proc_info_t;
 
 /** @brief `bmds_stat_t::type`. */

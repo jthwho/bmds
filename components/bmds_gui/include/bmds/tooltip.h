@@ -17,8 +17,8 @@ BMDS_NAMESPACE_BEGIN
 /**
  * @brief An application's tooltip (`devplan/gui.md` §4s): a widget's
  *        `toolTip()`, shown in a small window by the pointer after it rests
- *        on the widget for `DelayMs`. Made by `GuiApplication` the first time
- *        a widget with a tooltip is hovered.
+ *        on the widget for `DelayMs`, a line at each `\n`. Made by
+ *        `GuiApplication` the first time a widget with a tooltip is hovered.
  *
  * Its window is on the window manager's `Tooltip` level: the pointer passes
  * through it, it never takes the keys, and it closes no menus.
@@ -31,8 +31,11 @@ class ToolTip final : public GuiWindow {
                 /** @brief The pointer's rest before it shows. */
                 static constexpr uint32_t DelayMs = 600;
 
-                /** @brief The longest text shown, in bytes. */
-                static constexpr size_t MaxText = 95;
+                /** @brief The longest text shown, in bytes (a tray icon's longest). */
+                static constexpr size_t MaxText = 127;
+
+                /** @brief The most lines shown. */
+                static constexpr size_t MaxLines = 4;
 
                 explicit ToolTip(GuiApplication &app);
                 ~ToolTip() override;
@@ -46,7 +49,7 @@ class ToolTip final : public GuiWindow {
                 /** @brief Hides it (a press, a key, the pointer gone) until the next widget. */
                 void hide();
 
-                /** @brief @p widget's text changed: shown again with it, if it is showing. */
+                /** @brief @p widget's text changed: shown again with it (in place if as big), if showing. */
                 void changed(Widget *widget);
 
                 /** @brief @p widget (and what is inside it) is being destroyed. */
@@ -57,6 +60,7 @@ class ToolTip final : public GuiWindow {
         private:
                 static void due(void *arg);
                 void        open();
+                static StringView nextLine(StringView &rest); // the text up to a \n, @p rest after it
 
                 Widget *_target = nullptr; // the widget hovered (shown or waiting)
                 int     _x = 0;            // the pointer when it came, on the screen

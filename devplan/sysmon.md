@@ -342,7 +342,52 @@ host-tested.
   - **A click** opens (or raises) the monitor, at Overview when a problem is shown.
   - **CPU time off this boot:** a dimmed icon, "CPU time isn't measured (sysmon/enable)", still
     turning amber or red for the other counters.
-- **On by default** (the user, 2026-10-08): `panel/items`' default gains `cpu`.
+- **On by default** (the user, 2026-10-08): `panel/tray/cpu` (`gui.md` §4t), default true.
+
+#### Step 5 as built (2026-10-10)
+
+- **`CpuMeter` in the panel's process,** as the volume control is: a `TrayIcon` (category
+  System) drawing its own 16 × 16 pixels, reading the kernel's public `Stats` (no other OS code;
+  it keeps no extra state in the kernel). No process of its own: a tray meter costs a timer and a
+  watch, not a task and a window manager client.
+- **`panel/tray/cpu`** (bool, default true; `gui.md` §4t): the meter, in whichever tray the panel
+  has. First built as a `cpu` item of `panel/items`; the user pointed out that a tray icon's place
+  in the list means nothing, so it is a setting of its own, as the volume control's is now.
+- **A watcher for its life:** it holds `Stats::watch()` from when it is made until
+  `panel/tray/cpu` goes false or the panel ends, so the rules run and the history fills while the desktop is up (the
+  decision of 2026-10-08). It reads every `sysmon/interval` (a repeating timer, started again when
+  the interval changes): the samples the sampler took already, not a second measurement.
+- **The picture (`CpuMeterPicture`, pure, host-tested):** a 2-pixel frame (grey, then black);
+  inside, the last 12 samples as bars from the bottom (`GraphLayout`), each a share of the
+  interval, under half a pixel none (an idle core would be a line across a picture this small):
+  - `panel/tray/cpu-graph` `cores` (the default): core 0 in the top half, core 1 in the bottom, bars
+    up to 5 pixels with a pixel between; `combined`: the cores' mean, the whole height.
+  - **Problems:** the unseen problems' worst health (`Stats::unseenProblems()`) colours both of
+    the frame's pixels (amber, red), over no bars.
+  - **CPU time not counted** (`system.cpu_counted` is `no`): no bars and the field at half
+    alpha, still coloured for problems.
+- **Its tooltip** (the toolkit's tooltips gain lines, split at `\n`, and 127 bytes):
+  - `CPU 12% · 9%` (each core's newest sample), or `CPU time isn't measured (sysmon/enable)`;
+  - `Memory: 3.1 MB of 32.5 MB` (internal RAM and PSRAM together);
+  - while alarming, the newest open or unseen problem: `cpu.core1.busy_us critical, 12 s` (open:
+    for how long) or `... 40 s ago` (ended).
+- **A click** sends `overview` to the service `sysmon` (it selects Overview and raises the window,
+  which marks the problems seen) while alarming, else `raise`; with no monitor running it starts
+  the launcher's `sysmon.desktop` (a new one opens at Overview).
+- **Its menu** (a right click, the user's ask after trying it): System Monitor; Graph Each Core and
+  Graph Both Together (`panel/tray/cpu-graph`, checked as set); Remove from Panel, which sets
+  `panel/tray/cpu` false (the panel's own menu, `gui.md` §4t, shows it again). Each is saved, as
+  the volume control's changes are; the panel, following its settings, destroys the meter. Remove
+  is posted, so the meter and its menu aren't destroyed inside the menu's own call.
+- **The tray's icons when one goes:** a program's `Remove`, or its reply service gone with it,
+  lays the row out again and tells every program where its icons are now (`TrayService::changed()`
+  and `moved()`, from step 5 of `mediaplayer.md`); clicks are mapped by position at the moment.
+  The area is right-aligned, so icons left of the one gone move right. Seen: with mplayer's note
+  left of the meter, taking the meter away moved the note into its cell, and a right click there
+  opened the player's menu at it.
+- **The toolkit:** `TrayIcon::setIcon(const Icon &)` sends nothing for the same pixels, and only
+  the pixels when they change; `setToolTip()` only the update. The meter changes its tooltip each
+  second, which before resent its pixels too.
 
 #### The shell
 
@@ -367,6 +412,71 @@ host-tested.
 - **Batch mode** (`-n COUNT`, or output not a terminal): plain lines a script can read, their
   format frozen once shipped, like the other commands.
 - **`tasks` gains a CPU column** (appended). **`ps` unchanged** (its format is frozen).
+
+#### Step 6 as built (2026-10-10)
+
+- **`tasks`** moves to `bmds_sysmon` (beside `top`, both reading through the monitor's `Source`:
+  `bmds_stats` can't reach the loader, which needs it) and lists from `TaskList` (the user's
+  choice: `uxTaskGetSystemState()` masks interrupts for about 3 ms), sorted by name as before, the
+  same columns, then `cpu_ms`: the time it has run, in whole ms (`-` while CPU time isn't
+  counted). Checked against the old listing on the board: the same 16 tasks. `ipc0` and `ipc1`
+  now say `blocked` where they said `suspended`: they wait on a semaphore for ever, which puts
+  them on FreeRTOS's suspended list, and the old call called the whole list suspended; the task's
+  own state (`vTaskGetInfo()`) says what it is doing.
+- **`top [-d SECONDS] [-n COUNT] [-T]`** (`bmds_sysmon`), a shell command:
+  - **Each frame** reads through `KernelSource` and `Monitor`, as the window does: the processes,
+    the tasks with their owners, and the counters (each core's `busy_us` rate, `mem.*`, the
+    headline's). A process's or task's share is the change in its time since the last frame
+    over the time between them, in ‰ of a core (`TopView::share()`); the first frame comes after
+    half a second.
+  - **It watches** while it runs (the rules run, so the header's open problems are current), as
+    the monitor's window does.
+  - **The frame** (its batch form frozen once shipped; `TopView`, pure, host-tested):
+
+        top - up 0:00:26, 3 processes, 17 tasks, 0 open problems
+        CPU0   1.4%  CPU1 100.0%
+        internal   236.8 KB of 593.2 KB, largest 256.0 KB, lowest free 356.4 KB
+        psram        7.0 MB of 32.0 MB, largest 24.5 MB, lowest free 25.0 MB
+        audio dsp0 0.0% 0 late, display0 59 fps
+
+          PID NAME                   CPU%      TIME    MEMORY  THR STATE
+            3 yes                   100.0   0:00.54       0 B    1 running
+            3   \_ yes              100.0   0:00.54         -    - running
+            0 kernel                  0.0   0:00.10         -   12 -
+            0   \_ stats              0.0   0:00.03         -    - blocked
+
+    (from the board, `yes` running). The headline's storage devices are those with traffic;
+    rows of the same share go by pid, then by name, so the frames are stable.
+
+    With `-T`, each process's tasks under it (`  \_ name`, the same columns, the task's state),
+    the kernel's under `kernel`; the idle tasks are left out of `kernel` (they are the cores'
+    idle time, in the header).
+  - **On a terminal** (its console understands ANSI): the screen cleared once, each frame drawn
+    from the top, its lines cut to the terminal's width and the rows to its height, the cursor
+    hidden meanwhile. It waits for a key with the interval as the read's timeout (no polling):
+    `q` ends it, as Ctrl-C does (the read is interrupted).
+  - **Batch** (`-n COUNT`, or output not a terminal): the frames one after another, a blank line
+    between, no escapes; the wait is the shell's interruptible sleep.
+- **`stats -w`** waits the same way (it slept 100 ms at a time, looking for Ctrl-C in between).
+- **Linux's view** (`sdk/crt/linux.c`, from `proc_info` on the caller):
+  - `getrusage(RUSAGE_SELF)`: the process's CPU time as user time (BMDS doesn't split user from
+    system), `ru_maxrss` its memory now in KB (no peak is kept);
+  - `times()`: the same in `tms_utime`, in 1/100 s;
+  - `clock_gettime(CLOCK_PROCESS_CPUTIME_ID)` the process's CPU time (it was the time since it
+    started), and `CLOCK_THREAD_CPUTIME_ID` the same for now (a thread's own would need the task
+    list, which scans the stacks: too slow for a clock);
+  - `sysinfo()`: the processes counted (it said 1); `totalram`/`freeram` stay what a program's
+    `malloc` draws from (PSRAM, `mem_info`), as before;
+  - **Children's time** (`RUSAGE_CHILDREN`, `tms_cutime`): the children waited for, with their
+    own waited-for children's, as Linux counts it. `ProcessTable::reap()` adds a freed child's
+    time and its `childrenCpuUs` to its parent's entry (a zombie keeps its own; one freed without
+    a wait, `detach()`, isn't counted), so it survives an exec. `bmds_proc_info_t` gains
+    `children_cpu_us` (appended: 104 to 112 bytes, its ABI lock moved with it, the user agreeing:
+    nobody else uses the ABI yet). A program built before reads the fields that fit (checked).
+  - `progtest rusage SELF` checks them against a burn and a sleep: on the board a 300 ms burn
+    reads 300 ms from all three, a 300 ms sleep nothing, a child's 300 ms burn 301 ms of
+    children's time once waited for (nothing while a zombie), `sysinfo()` 3 processes. A kernel without
+    `proc_info` gets the old approximation (the program's age).
 
 ### 3.6 Programs: system calls (appended)
 
@@ -412,8 +522,8 @@ does. The kernel's enums are the ABI's numbers (`Stat::Unit`, `Kind`, `Rule`, `H
     deleted.
 - **`proc_info(int32_t pid, uint32_t flags, bmds_proc_info_t *)`:** process `pid`, or with
   `BMDS_PROC_NEXT` the first after it (0: from the start): pid, parent, group, session, state,
-  threads, memory, CPU time, start time, a zombie's status, the command line. Returns its pid,
-  or `-BMDS_ESRCH`.
+  threads, memory, CPU time, start time, a zombie's status, the command line; since step 6 its
+  children's CPU time (`children_cpu_us`, appended). Returns its pid, or `-BMDS_ESRCH`.
   - **A process's CPU time:** its tasks' counters summed, plus those of its ended threads (taken
     as each ends), plus the program's before an `exec`. A vfork child's time is its parent's
     (it runs on the parent's task). A zombie keeps the time it had when it ended.
@@ -442,10 +552,19 @@ does. The kernel's enums are the ABI's numbers (`Stat::Unit`, `Kind`, `Rule`, `H
    and Counters "(!!)", its problem red in the list; End Process ends it (a zombie keeping its
    1:08 of CPU time); the Overview shown marks the problems seen; closing the window ends its
    watch; a second `sysmon` raises the first.
-5. **The tray meter** with its problem colours; `panel/items` gains `cpu`.
-6. **The shell:** `top`, `tasks`' CPU column; `getrusage()`, `times()` and `sysinfo()`. `tasks`
-   lists from the kernel's task list (the user, 2026-10-10), not `uxTaskGetSystemState()`, its
-   format unchanged.
+5. **The tray meter** (done 2026-10-10, §3.5's step 5): `panel/tray/cpu`, and the panel's menu
+   (`gui.md` §4t). Seen on the
+   board: an idle meter is a grey frame round a black field; `yes` on core 1 fills the bottom
+   band and turns the frame red within 6 s; the tooltip's three lines (`CPU 3% · 100%`, the
+   memory, `cpu.core1.busy_us critical, 14 s`); a click with no monitor starts it at Overview
+   (the problem seen, the frame grey again); a click on one at the CPU tab shows Overview; the
+   meter taken away live ends its watch, put back starts it; `combined` draws the mean; the
+   menu's graph choice and Remove from Panel are saved and followed.
+6. **The shell** (done 2026-10-10, §3.5's step 6): `top`, `tasks`' CPU column; `getrusage()`,
+   `times()` and `sysinfo()`. `tasks` lists from the kernel's task list (the user, 2026-10-10).
+   Seen on the board: `top -n 2 -T` with `yes` running (100 % on core 1, the kernel's tasks under
+   `kernel`), the screen form on the serial console and in the GUI terminal, `q` and Ctrl-C each
+   ending it within 50 ms; `progtest rusage` passes.
 
 ## 5. ABI impact
 
@@ -453,11 +572,14 @@ does. The kernel's enums are the ABI's numbers (`Stat::Unit`, `Kind`, `Rule`, `H
   `stats_problems`, `stats_control`, `stats_status`, `task_list`, `proc_info`, with their structs
   and constants.
 - **Counter names, units, kinds and state labels** are an interface once shipped.
-- **New shell commands:** `top`, `stats` (their batch output frozen); `tasks` gains a column.
+- **New shell commands:** `top`, `stats` (their batch output frozen); `tasks` gains a column
+  (`cpu_ms`).
 - **Settings:** `sysmon/enable` (bool, per boot, default on), `sysmon/interval` (ms, 100 to
-  60,000, default 1,000), `sysmon/limits` (string, default empty), the meter's graph form;
-  `panel/items`' default gains `cpu`.
-- **A new built-in program:** `sysmon`, with `sysmon.desktop`.
+  60,000, default 1,000), `sysmon/limits` (string, default empty), `panel/tray/cpu` (bool,
+  default true), `panel/tray/cpu-graph` (enum `cores|combined`, default `cores`) and
+  `panel/tray/volume` (bool, default true; `gui.md` §4t).
+- **A new built-in program:** `sysmon`, with `sysmon.desktop`; its service `sysmon` takes `raise`
+  and `overview` (any other message raises it).
 
 ## 6. The counters (as built, step 2)
 
@@ -474,7 +596,7 @@ counter's help line is in its description (`stats rules`).
 | `synth.N` | `voices` (history), `peak_voices`, `max_voices`, `notes_at_limit`, `queued`, `queue_full`, `ignored`, `frames`, `cpu` (‰, history), `cpu_max`, `rate_hz`, `presets`, `font_bytes` | `notes_at_limit`, `queue_full` zero warning; `cpu` above 500 / 800, 5 s; `cpu_max` peak above 900 / 1,000 |
 | `midi.portN` | `kind` (`usb\|serial\|virtual`), `events_in` (history), `events_out`, `dropped`, `parse_errors`, `device_errors` | `dropped`, `parse_errors` zero warning; `device_errors` zero critical |
 | `displayN` | `running`, `width`, `height`, `pixel_hz`; `scanout.frames` (history), `.blocks`, `.blocks_per_frame`, `.swaps`, `.stalls`, `.underruns`, `.resyncs`, `.rebuilds`, `.failures`, `.isr_us` (history), `.isr_cycles_max`, `.dma_item`, `.bridge_fifo`; `surface.presents` (history), `.shown`, `.forwards`, `.forward_pixels`, `.forward_us`, `.forward_us_max`, `.wait_us`, `.wait_us_max` | `stalls`, `underruns`, `failures` zero critical; `resyncs`, `rebuilds` zero warning; `forward_us_max`, `wait_us_max` peak above 2 / 4 frames |
-| `wmN` | `rounds` (history), `pieces`, `redraws`, `dma_calls`, `fallbacks`, `errors`, `round_us` (history), `round_us_max`, `last_round_us`, `deferred`, `windows` | `errors` zero critical; `round_us_max` peak above 33,333 / 100,000 µs |
+| `wmN` | `rounds` (history), `pieces`, `redraws`, `dma_calls`, `fallbacks`, `errors`, `round_us` (history), `round_us_max`, `last_round_us`, `deferred`, `windows` | `errors` zero critical; `round_us_max` peak above 250,000 / 1,000,000 µs |
 | `storage.DEV` (`sd0`, `sd0p0`, `ram0`, `ram0p0`, `flash0`, `rom0`) | `reads`, `writes`, `read_bytes`, `written_bytes` (history), `errors`, `io_us`, `erases` | `errors` zero critical |
 | `cache.ITEMS` (`programs`, `fonts`) | `bytes` (history), `items`, `reclaimable`, `hits`, `misses`, `reclaims` | none |
 | `proc` | `count` (history), `zombies`, `stopped` | `count` above 24 / 30 (of 32) |
@@ -507,6 +629,22 @@ counter's help line is in its description (`stats rules`).
 
 ## 8. Revisions
 
+- **2026-10-10, step 5 as built:**
+  - The meter was first a `cpu` item of `panel/items`; the user pointed out that a tray icon's
+    place in the list means nothing, and that Remove from Panel left only the shell to get it back.
+    It is `panel/tray/cpu` now, beside a new `panel/tray/volume`, and the panel has a menu of its
+    own to show either again (`gui.md` §4t).
+  - The meter watching from the panel's start made the first full-screen round (68 ms) an open
+    problem at every boot, and opening an 800 × 560 window takes an 83 ms round: `wm.round_us_max`
+    warned at 33 ms, so the meter would have been amber after any window opened. Its levels are now
+    250 ms (a hitch) and 1 s (a freeze).
+  - A 2-pixel frame, not 1 pixel and a ring drawn over the bars (which hid the newest column and
+    core 1's lowest row); under half a pixel draws nothing (an idle core was a line across).
+  - Tooltips gain lines (at `\n`, 4 at most, 127 bytes) and are drawn again in place when a live
+    one's size is the same (a close and show each second before).
+  - A window asked for the hovered widget's tooltip before the widget saw the move, so a tray
+    (its tooltip by the icon under the pointer) had none on the first move onto it: only after a
+    second. The widget now sees the move first.
 - **2026-10-10, after step 4 (the user's look):** a fill batch with two rectangles ending in one
   4-pixel group lost the first's pixels there (both read the group before either wrote it):
   `Surface::fillEdges()` now sends the batch first, which also fixes neighbouring fills elsewhere;

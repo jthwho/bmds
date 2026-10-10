@@ -807,7 +807,39 @@ gives a slider. Both are the toolkit's, for any program:
     `TrayIcon` in the panel's process, category Hardware, in the panel's notification area (the
     tray's icons and the clock in one sunken field, `NotifyArea`); the same
     icon, tooltip, click, wheel and settings; the middle button mutes; a right click opens Mute
-    and Mixer... (the mixer window, later). `panel/items`' `volume` is read as `tray`.
+    and Mixer... (the mixer window, later). `panel/items`' `volume` is read as `tray`. Since
+    2026-10-10 it can be turned off (`panel/tray/volume`, §4t).
+
+### 4t. The panel's menu and the tray's own settings (the user's, 2026-10-10)
+
+The CPU meter's Remove from Panel left no way back but the shell, and the meter is always a tray
+icon: its place in `panel/items` meant nothing. So the tray's icons get settings of their own,
+and the panel a menu for its settings (the start of a taskbar's Properties):
+
+- **The tray's own icons** (shown in whichever tray there is; none without one):
+  - `panel/tray/cpu` (bool, default true): the CPU meter (`sysmon.md` §3.5);
+  - `panel/tray/cpu-graph` (enum `cores|combined`, default `cores`): its graph;
+  - `panel/tray/volume` (bool, default true): the volume control (§4s), shown always before.
+  - Made and destroyed as they change, as every panel setting is followed (`sysconf.md` §12.3);
+    the meter's watch lasts as long as it does.
+- **The panel's menu:** a right click on the panel where nothing else takes it (the gaps between
+  items, the window list's empty part, a spacer, the notification area outside its icons and on
+  the clock). Buttons and tray icons keep their own (a window's menu, a program's).
+  - **Show CPU Meter, Show Volume Control** (checked when shown): `panel/tray/cpu`, `.../volume`.
+  - **Show Clock:** `clock` taken out of `panel/items`, or put back after the tray (beside it, so
+    they share the notification area) or at the end (`PanelItems::withItem()`, pure,
+    host-tested).
+  - **Panel at Top, Panel at Bottom** (the one in force checked): `panel/edge`.
+  - Each is saved at once, as the volume control's changes are; the panel follows its settings,
+    so its row is made again after the menu's call returns (posted).
+- **The meter's Remove from Panel** sets `panel/tray/cpu` false; the panel's menu brings it back.
+- **As built (2026-10-10):** the right press reaches whichever widget is under the pointer, so
+  the row (`MenuArea<BoxLayout>`, its gaps), a spacer (`MenuArea<Label>`), the window list and the
+  notification area each tell the panel. Seen on the board: the menu from the empty window list,
+  the clock and the bottom edge (opening upward); the meter taken away by its own Remove from
+  Panel and brought back here; the volume control off and on (its tooltip working after); Show
+  Clock off, then on beside the tray; the panel moved to the bottom and back. Each setting put
+  back to its default leaves nothing in the store.
 
 ## 5. Budget (estimates)
 

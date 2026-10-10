@@ -31,6 +31,7 @@ set(BMDS_CORE_SRCS
         src/inireader.cpp
         src/string.cpp
         src/timezone.cpp
+        src/topview.cpp
         src/utf8.cpp
         src/vtparser.cpp
         src/zonebundle.cpp)

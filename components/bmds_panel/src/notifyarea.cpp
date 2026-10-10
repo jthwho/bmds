@@ -353,7 +353,12 @@ void NotifyArea::paint(Painter &painter) {
 
 void NotifyArea::mousePressed(const WindowManager::MouseEvent &event) {
         const int p = iconAt(event.x);
-        if (p < 0) return;
+        if (p < 0) {
+                // Outside the icons (the clock, the edges): the panel's.
+                if (event.button == PointerEvent::Right && _menuAsked != nullptr)
+                        _menuAsked(_menuArg, event.x, event.y);
+                return;
+        }
         if (event.button == PointerEvent::Middle) {
                 _tray.activate(size_t(p), TrayProtocol::Reason::MiddleClick);
         } else if (event.button == PointerEvent::Right) {

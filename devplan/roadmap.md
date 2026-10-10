@@ -118,7 +118,7 @@ Plan: [`input.md`](input.md).
 - [ ] Special keys and global hotkeys (`hotkeys.md`, planned 2026-10-08): media keys decoded,
   named actions and bindings in the kernel, the window manager's keys moved onto them; user
   bindings later.
-- [ ] System monitor (`sysmon.md`, planned 2026-10-08, revised 2026-10-09): CPU per core, task
+- [x] System monitor (`sysmon.md`, planned 2026-10-08, revised 2026-10-09): CPU per core, task
   and process from run-time stats; every subsystem's counters in one named registry with rules
   for what is abnormal and a problem log; system calls; a System Monitor window, a tray meter that
   turns amber or red, `top` and `stats`. Step 1 done 2026-10-09: each task's CPU time is counted
@@ -129,6 +129,11 @@ Plan: [`input.md`](input.md).
   processes' CPU time), with `progtest stats|tasks|procs`.
   Step 4 done 2026-10-10: the toolkit's `Graph`, and `/bin/sysmon` (Overview, CPU, Processes,
   Memory, Audio, Display, I/O, Counters; problems in amber and red, tabs marked, End Process).
+  Step 5 done 2026-10-10: the panel's tray meter (`panel/items`' `cpu`, on by default): each core's
+  load, amber or red for problems not yet seen, a click opens the monitor at Overview.
+  Step 6 done 2026-10-10: `top` (`-d`, `-n`, `-T`), `tasks` from the kernel's task list with a
+  `cpu_ms` column, and `getrusage()`, `times()`, the CPU clocks and `sysinfo()` from the process's
+  own time.
 
 ## Phase 6 — Graphics
 

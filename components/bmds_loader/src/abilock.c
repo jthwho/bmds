@@ -460,7 +460,8 @@ _Static_assert(offsetof(bmds_proc_info_t, memory) == 32, "ABI: proc_info.memory"
 _Static_assert(offsetof(bmds_proc_info_t, cpu_us) == 40, "ABI: proc_info.cpu_us");
 _Static_assert(offsetof(bmds_proc_info_t, start_ns) == 48, "ABI: proc_info.start_ns");
 _Static_assert(offsetof(bmds_proc_info_t, command) == 56, "ABI: proc_info.command");
-_Static_assert(sizeof(bmds_proc_info_t) == 104, "ABI: bmds_proc_info_t size");
+_Static_assert(offsetof(bmds_proc_info_t, children_cpu_us) == 104, "ABI: proc_info.children_cpu_us");
+_Static_assert(sizeof(bmds_proc_info_t) == 112, "ABI: bmds_proc_info_t size"); /* 104 before 2026-10-10 */
 
 #if UINTPTR_MAX == 0xffffffffu
 _Static_assert(offsetof(bmds_thread_t, size) == 0, "ABI: thread.size");

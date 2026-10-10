@@ -170,7 +170,9 @@ class ProcessTable {
 
                 /**
                  * @brief Frees an ended child of @p parent: @p pid, or any if -1; with
-                 *        @p flags (`ReapFlag`), takes a stop or continue instead.
+                 *        @p flags (`ReapFlag`), takes a stop or continue instead. A
+                 *        child freed adds its time, and its own children's, to
+                 *        @p parent's `childrenCpuUs` (as Linux's `RUSAGE_CHILDREN`).
                  * @return The child (its status says which), `WouldBlock` (matching
                  *         children, none to take yet), or `NotExist` (no such child).
                  */
@@ -236,6 +238,7 @@ class ProcessTable {
                                 bool     stopped; ///< Stopped.
                                 int64_t  startedUs; ///< When it was added (monotonic).
                                 uint64_t cpuUs;     ///< A zombie's time run (`exited()`).
+                                uint64_t childrenCpuUs; ///< Its children's that it reaped, and theirs (`reap()`).
                 };
 
                 /**
@@ -257,7 +260,7 @@ class ProcessTable {
                                 last = next->pid;
                                 fn(View{next->pid, next->parent, next->group, next->session, next->status,
                                         next->ended ? nullptr : next->runtime, next->ended, next->stopped,
-                                        next->startedUs, next->cpuUs});
+                                        next->startedUs, next->cpuUs, next->childrenCpuUs});
                         }
                 }
 
@@ -294,8 +297,9 @@ class ProcessTable {
                                 int32_t    change; // a stop or continue to report (its status), or 0
                                 bool       ended;
                                 bool       stopped;
-                                int64_t    startedUs; // monotonic
-                                uint64_t   cpuUs;     // a zombie's
+                                int64_t    startedUs;     // monotonic
+                                uint64_t   cpuUs;         // a zombie's
+                                uint64_t   childrenCpuUs; // the reaped children's and theirs (getrusage's)
                 };
 
                 Entry *find(int32_t pid);

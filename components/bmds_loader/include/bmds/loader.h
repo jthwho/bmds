@@ -69,6 +69,7 @@ class Loader final : public ProgramLauncher {
                                 char     command[CommandBytes]; ///< Its command line, cut.
                                 uint64_t cpuUs;     ///< CPU time (`devplan/sysmon.md` §3.6; 0: not counted).
                                 int64_t  startedUs; ///< When it started (monotonic).
+                                uint64_t childrenCpuUs; ///< Its children's it waited for, and theirs.
                 };
 
                 /** @brief Whose a task is (`findTaskOwners()`). */

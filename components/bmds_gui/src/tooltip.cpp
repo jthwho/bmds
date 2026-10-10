@@ -93,7 +93,7 @@ void ToolTip::due(void *arg) {
 }
 
 // Its text from the widget, in a window fitted to it below the pointer (above it near the
-// screen's bottom), on the window manager's columns.
+// screen's bottom), on the window manager's columns; a line at each \n.
 void ToolTip::open() {
         const StringView text = _target->toolTip();
         size_t           n = text.size() < MaxText ? text.size() : MaxText;
@@ -105,9 +105,18 @@ void ToolTip::open() {
                 return;
         }
         const Rect screen = application().windowManager().screen();
-        uint32_t   w = Fonts::unscii16.textWidth(StringView(_text)) + 2 * Pad + 2;
+        uint32_t   widest = 0;
+        size_t     lines = 0;
+        StringView rest(_text);
+        while (!rest.isEmpty() && lines < MaxLines) {
+                const StringView line = nextLine(rest);
+                const uint32_t   lw = Fonts::unscii16.textWidth(line);
+                widest = lw > widest ? lw : widest;
+                ++lines;
+        }
+        uint32_t w = widest + 2 * Pad + 2;
         w = (w + Align - 1) / Align * Align;
-        const uint16_t h = GuiStyle::TextHeight + 2 * PadY + 2;
+        const uint16_t h = uint16_t(lines * GuiStyle::TextHeight + 2 * PadY + 2);
         if (w > screen.width) w = screen.width;
         int x = _x;
         int y = _y + Below;
@@ -117,10 +126,22 @@ void ToolTip::open() {
         if (y < screen.y) y = screen.y;
         x -= x % Align;
         const Rect r{uint16_t(x), uint16_t(y), uint16_t(w), h};
-        if (isShown()) close(); // its size may have changed
+        if (isShown() && geometry() == r) {
+                update(); // as big: drawn again where it is (a live tooltip, without a blink)
+                return;
+        }
+        if (isShown()) close(); // its size changed
         (void)show(r);
         update();
         return;
+}
+
+StringView ToolTip::nextLine(StringView &rest) {
+        size_t end = 0;
+        while (end < rest.size() && rest[end] != '\n') ++end;
+        const StringView line = rest.left(end);
+        rest = end < rest.size() ? rest.mid(end + 1) : StringView();
+        return line;
 }
 
 void ToolTip::paint(Painter &painter) {
@@ -135,8 +156,10 @@ void ToolTip::paint(Painter &painter) {
         (void)painter.fill(Span<const Rect>(border), fg);
         (void)painter.fill(Rect{uint16_t(g.x + 1), uint16_t(g.y + 1), uint16_t(g.width - 2), uint16_t(g.height - 2)},
                            bg);
-        (void)painter.text(g.x + Pad, g.y + 1 + PadY, StringView(_text), Fonts::unscii16, fg, bg,
-                           uint16_t(g.width - 2 - Pad));
+        StringView rest(_text);
+        int        y = g.y + 1 + PadY;
+        for (size_t i = 0; i < MaxLines && !rest.isEmpty(); ++i, y += GuiStyle::TextHeight)
+                (void)painter.text(g.x + Pad, y, nextLine(rest), Fonts::unscii16, fg, bg, uint16_t(g.width - 2 - Pad));
         return;
 }
 

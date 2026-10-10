@@ -63,6 +63,9 @@ class SysmonWindow final : public GuiWindow {
                 /** @brief Shows it again and raises it (a second `sysmon`). */
                 void raise();
 
+                /** @brief Raises it at Overview (the tray meter, alarming: the problems shown are seen). */
+                void raiseOverview();
+
         private:
                 // A tab of a subsystem's: two graphs over its groups' counters.
                 struct GroupPage {

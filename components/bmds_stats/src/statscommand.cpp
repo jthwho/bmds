@@ -17,7 +17,6 @@
 #include <bmds/command.h>
 #include <bmds/shell.h>
 #include <bmds/stats.h>
-#include <bmds/thread.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -135,7 +134,7 @@ namespace {
                                 ctx.eprintf("stats: the sampler couldn't start\n");
                                 return Shell::ExitFailure;
                         }
-                        for (long ms = watchS * 1000; ms > 0 && !ctx.isInterrupted(); ms -= 100) Thread::sleep(100);
+                        (void)ctx.shell().interrupt().sleep(unsigned(watchS * 1000)); // Ctrl-C wakes it
                 }
                 int status;
                 if (word != nullptr && std::strcmp(word, "problems") == 0 && at + 1 == args.size())

@@ -98,6 +98,12 @@ bool TrayIcon::isSystemTrayAvailable() const {
 
 // All of it, each time: the tray keeps no state a message could leave half changed.
 void TrayIcon::send() {
+        sendUpdate();
+        sendPixels();
+        return;
+}
+
+void TrayIcon::sendUpdate() {
         if (!_joined || !_available) return;
         TrayProtocol::Update u;
         u.id = _id;
@@ -107,16 +113,19 @@ void TrayIcon::send() {
                   (_pixels != nullptr ? uint32_t(TrayProtocol::HasPixels) : 0u);
         std::memcpy(u.icon, _icon, sizeof(u.icon));
         std::memcpy(u.toolTip, _toolTip, sizeof(u.toolTip));
-        WindowManager &wm = _app.windowManager();
-        (void)wm.sendToService(TrayProtocol::Service, TrayProtocol::bytes(u));
-        if (_pixels == nullptr) return;
+        (void)_app.windowManager().sendToService(TrayProtocol::Service, TrayProtocol::bytes(u));
+        return;
+}
+
+void TrayIcon::sendPixels() {
+        if (!_joined || !_available || _pixels == nullptr) return;
         void *mem = Memory::alloc(MemSpace::Psram, sizeof(TrayProtocol::Pixels));
         if (mem == nullptr) return;
         auto *p = ::new (mem) TrayProtocol::Pixels();
         p->id = _id;
         replyName(p->reply);
         std::memcpy(p->argb, _pixels, sizeof(p->argb));
-        (void)wm.sendToService(TrayProtocol::Service, TrayProtocol::bytes(*p));
+        (void)_app.windowManager().sendToService(TrayProtocol::Service, TrayProtocol::bytes(*p));
         Memory::free(mem);
         return;
 }
@@ -132,12 +141,18 @@ void TrayIcon::setIcon(StringView name) {
 Error TrayIcon::setIcon(const Icon &icon) {
         if (!icon.isValid() || icon.width != TrayProtocol::IconSide || icon.height != TrayProtocol::IconSide)
                 return Error::Invalid;
-        if (_pixels == nullptr) {
+        const bool had = _pixels != nullptr;
+        if (had && std::memcmp(_pixels, icon.pixels, PixelCount * sizeof(uint32_t)) == 0) return Error::Ok;
+        if (!had) {
                 _pixels = static_cast<uint32_t *>(Memory::alloc(MemSpace::Psram, PixelCount * sizeof(uint32_t)));
                 if (_pixels == nullptr) return Error::NoMem;
         }
         std::memcpy(_pixels, icon.pixels, PixelCount * sizeof(uint32_t));
-        send();
+        // Only the pixels once the tray has the rest: a live picture is a message, not two.
+        if (had)
+                sendPixels();
+        else
+                send();
         return Error::Ok;
 }
 
@@ -146,7 +161,7 @@ void TrayIcon::setToolTip(StringView text) {
         TrayProtocol::copy(next, text);
         if (std::strcmp(next, _toolTip) == 0) return; // nothing sent for the same
         std::memcpy(_toolTip, next, sizeof(next));
-        send();
+        sendUpdate(); // the tray keeps the pixels it has
         return;
 }
 

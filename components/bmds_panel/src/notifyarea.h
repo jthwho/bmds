@@ -119,6 +119,14 @@ class NotifyArea final : public Widget {
                  */
                 Error configureClock(StringView format, StringView tipFormat, StringView zone);
 
+                /** @brief Told of a right press outside the icons (at @p x, @p y in the window): the panel's menu. */
+                using MenuAsked = void (*)(void *arg, int x, int y);
+
+                void setMenuAsked(MenuAsked fn, void *arg) {
+                        _menuAsked = fn;
+                        _menuArg = arg;
+                }
+
                 /** @brief The icons came, went or moved: sized, drawn again and their places told. */
                 void refresh();
 
@@ -164,6 +172,8 @@ class NotifyArea final : public Widget {
                 uint64_t        _lastClickNs = 0;
                 Rect            _toldAt; // where the icons were last told to be
                 bool            _movedPosted = false;
+                MenuAsked       _menuAsked = nullptr;
+                void           *_menuArg = nullptr;
                 // The clock's.
                 static constexpr int ClockHovered = -2; // _hovered: the clock (its tooltip, the date)
                 uint16_t             clockWidth() const;

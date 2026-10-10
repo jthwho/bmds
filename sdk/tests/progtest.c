@@ -52,6 +52,7 @@
  *                         (dropped at exit, kept across exec), and their errors
  *   progtest tasks        task_list: this task, a thread's, the kernel's, strides and errors
  *   progtest procs SELF   proc_info: this process, iterating, a zombie's time, time and start across exec
+ *   progtest rusage SELF  getrusage, times, the CPU clocks and sysinfo; a child's time once waited for
  */
 
 #define _GNU_SOURCE /* gettid() */
@@ -72,7 +73,10 @@
 #include <sys/ioctl.h>
 #include <sys/select.h>
 #include <sys/soundcard.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/sysinfo.h>
+#include <sys/times.h>
 #include <sys/utsname.h>
 #include <sys/time.h>
 #include <sys/wait.h>
@@ -2048,6 +2052,77 @@ static int procs(const char *self) {
         return 0;
 }
 
+/* Linux's view of the process's time (devplan/sysmon.md §3.5, step 6): a burn counts, a sleep
+   doesn't; times() and CLOCK_PROCESS_CPUTIME_ID agree with getrusage(); sysinfo() counts the
+   processes and the memory. */
+static int rusage_test(const char *self) {
+        bmds_stats_status_t st = {.size = sizeof(st)};
+        CHECK(bmds_stats_status(&st) == 0);
+        const int counted = (st.flags & BMDS_STATS_CPU_COUNTED) != 0;
+#define RU_US(r) ((int64_t)(r).ru_utime.tv_sec * 1000000 + (r).ru_utime.tv_usec)
+#define TS_NS(t) ((int64_t)(t).tv_sec * 1000000000 + (t).tv_nsec)
+        struct rusage   r0, r1, r2;
+        struct tms      t0, t1;
+        struct timespec c0, c1;
+        CHECK(getrusage(RUSAGE_SELF, &r0) == 0);
+        CHECK(times(&t0) != (clock_t)-1);
+        CHECK(clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &c0) == 0);
+        burn_ms(300);
+        CHECK(getrusage(RUSAGE_SELF, &r1) == 0);
+        CHECK(times(&t1) != (clock_t)-1);
+        CHECK(clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &c1) == 0);
+        const int64_t burned = RU_US(r1) - RU_US(r0);
+        printf("rusage: burned %lld us, times %ld ticks, clock %lld us, maxrss %ld KB\n", (long long)burned,
+               (long)(t1.tms_utime - t0.tms_utime), (long long)((TS_NS(c1) - TS_NS(c0)) / 1000), r1.ru_maxrss);
+        if (counted) {
+                CHECK(burned >= 250000 && burned <= 400000);
+                CHECK(t1.tms_utime - t0.tms_utime >= 25 && t1.tms_utime - t0.tms_utime <= 40);
+                CHECK(TS_NS(c1) - TS_NS(c0) >= 250000000 && TS_NS(c1) - TS_NS(c0) <= 400000000);
+        }
+        CHECK(r1.ru_stime.tv_sec == 0 && r1.ru_stime.tv_usec == 0 && t1.tms_stime == 0);
+        CHECK(r1.ru_maxrss >= 0);
+        usleep(300000);
+        CHECK(getrusage(RUSAGE_SELF, &r2) == 0);
+        if (counted) CHECK(RU_US(r2) - RU_US(r1) < 50000); /* asleep: not running */
+        /* A child's time is the parent's children's once waited for (not before). */
+        struct rusage rc, rc2;
+        struct tms    tc;
+        CHECK(getrusage(RUSAGE_CHILDREN, &rc) == 0);
+        const pid_t child = start(self, NULL, NULL, "burn", "300", NULL);
+        CHECK(child > 0);
+        bmds_proc_info_t p = {.size = sizeof(p)};
+        for (int i = 0; i < 100; ++i) {
+                CHECK(bmds_proc_info(child, 0, &p) == child);
+                if (p.state == BMDS_PROC_ZOMBIE) break;
+                usleep(20000);
+        }
+        CHECK(getrusage(RUSAGE_CHILDREN, &rc2) == 0 && RU_US(rc2) == RU_US(rc)); /* a zombie: not yet */
+        CHECK(status_of(child) == 5);
+        CHECK(getrusage(RUSAGE_CHILDREN, &rc2) == 0);
+        CHECK(times(&tc) != (clock_t)-1);
+        printf("rusage: a child's 300 ms burn, waited for: children %lld us, %ld ticks\n",
+               (long long)(RU_US(rc2) - RU_US(rc)), (long)tc.tms_cutime);
+        if (counted) {
+                CHECK(RU_US(rc2) - RU_US(rc) >= 250000 && RU_US(rc2) - RU_US(rc) <= 400000);
+                CHECK(tc.tms_cutime >= 25);
+        }
+        /* An older program's smaller struct still works (the fields that fit). */
+        bmds_proc_info_t old = {.size = offsetof(bmds_proc_info_t, children_cpu_us)};
+        old.children_cpu_us = 12345;
+        CHECK(bmds_proc_info(getpid(), 0, &old) == getpid() && old.children_cpu_us == 12345);
+        errno = 0;
+        CHECK(getrusage(99, &rc) == -1 && errno == EINVAL);
+        struct sysinfo si;
+        CHECK(sysinfo(&si) == 0);
+        CHECK(si.totalram > 0 && si.freeram > 0 && si.freeram <= si.totalram && si.mem_unit == 1);
+        CHECK(si.procs >= 2 && si.uptime > 0); /* init and this one at least */
+        printf("rusage: %u processes, %lu of %lu bytes free; all passed\n", (unsigned)si.procs,
+               (unsigned long)si.freeram, (unsigned long)si.totalram);
+#undef RU_US
+#undef TS_NS
+        return 0;
+}
+
 /* Burns 200 ms, then execs SELF proccheck START_NS: which finds its time and start kept. */
 static int proc_exec(const char *self) {
         bmds_proc_info_t p = {.size = sizeof(p)};
@@ -2097,6 +2172,7 @@ int main(int argc, char **argv) {
         if (strcmp(what, "statswatching") == 0) return stats_watching();
         if (strcmp(what, "tasks") == 0) return tasks();
         if (strcmp(what, "procs") == 0) return procs(arg);
+        if (strcmp(what, "rusage") == 0) return rusage_test(arg);
         if (strcmp(what, "procexec") == 0) return proc_exec(arg);
         if (strcmp(what, "proccheck") == 0) return proc_check(arg);
         if (strcmp(what, "burn") == 0) {

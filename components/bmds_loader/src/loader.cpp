@@ -1695,6 +1695,7 @@ namespace {
                 p.status = v.status;
                 p.startedUs = v.startedUs;
                 p.cpuUs = v.cpuUs;
+                p.childrenCpuUs = v.childrenCpuUs;
                 p.state = v.ended ? State::Zombie : v.stopped ? State::Stopped : State::Running;
                 auto *run = static_cast<Running *>(v.runtime);
                 if (run == nullptr) return;

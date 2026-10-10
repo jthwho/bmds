@@ -303,6 +303,7 @@ int32_t bmds_k_proc_info(int32_t pid, uint32_t flags, bmds_proc_info_t *info) {
         p.memory = k.memory;
         p.cpu_us = k.cpuUs;
         p.start_ns = k.startedUs * 1000;
+        p.children_cpu_us = k.childrenCpuUs;
         std::memcpy(p.command, k.command, sizeof(p.command));
         p.command[sizeof(p.command) - 1] = '\0';
         r = copyOut(p, info);
