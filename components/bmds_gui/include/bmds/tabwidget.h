@@ -35,7 +35,7 @@ class TabWidget : public Widget {
                 /** @brief Told the page the user changed to (on the loop's thread). */
                 using Changed = void (*)(void *arg, TabWidget &tabs, size_t index);
 
-                static constexpr size_t   MaxTabs = 8;
+                static constexpr size_t   MaxTabs = 16;
                 static constexpr size_t   MaxTitle = 31;
                 static constexpr uint16_t RowHeight = 24; ///< The tabs' row, the current one 2 pixels taller.
                 static constexpr uint16_t Inset = 4;      ///< A page from the frame's outer edge.

@@ -226,8 +226,13 @@ Plan: [`input.md`](input.md).
     and names against the LAN, TCP about 20 Mbit/s each way through this host's Wi-Fi and 47
     over loopback; `alarm`/`setitimer` (slot 108, `programs.md` §18) for BusyBox `ping`,
     `nc -w`, `wget -T`. Left: checksum offload, a wired peer.
-  - [ ] 3a. The tray's network icon: `NetStatus` (public, change-driven), its SDK calls, the
-    tooltip with each interface's link, addresses and DHCP or static (§17).
+  - [x] 3a. The tray's network icon: `NetStatus` (public, change-driven: compared after each
+    marked event, no timer), `net_watch` (slot 109), the panel's `NetworkStatus` (a drawn
+    socket, the tooltip per interface, a menu with the lease's time left, Copy Address, Renew
+    Lease), `panel/tray/network`; tray tooltips to 383 bytes and 12 lines, §20.
+  - [x] 3b. The network in sysmon: `net.ethN` and `net.ip` (lwIP's heap, pools and MIB-II
+    counts) in the registry, the System Monitor's Network tab and Overview line, `top`'s
+    headline, §21.
   - [ ] 4. NTP and mDNS.
   - [ ] 5. SSH: Dropbear, passwords in sysconf, our own `sftp-server`.
   - [ ] 5a. The crypto engines (AES, SHA, MPI, ECC) behind SSH, measured.

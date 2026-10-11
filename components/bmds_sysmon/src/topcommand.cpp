@@ -173,8 +173,8 @@ namespace {
                 return 0;
         }
 
-        // "audio dsp0 5.6% 0 late, display0 60 fps, sd0 1.2 MB/s": the subsystems there are, and
-        // the whole storage devices with traffic.
+        // "audio dsp0 5.6% 0 late, display0 60 fps, sd0 1.2 MB/s, eth0 in 1.2 MB/s out 3.0 KB/s": the
+        // subsystems there are, and the whole storage devices and network interfaces with traffic.
         void Top::headline(char (&out)[TopView::LineBytes]) const {
                 size_t     n = 0;
                 const auto add = [&](const char *part) {
@@ -219,6 +219,21 @@ namespace {
                         if (bytes <= 0) continue;
                         std::snprintf(part, sizeof(part), "%.*s %s/s", int(dev.size()), dev.data(),
                                       TopView::formatBytes(a, uint64_t(bytes)));
+                        add(part);
+                }
+                // The network interfaces with traffic: "eth0 in 1.2 MB/s out 3.0 KB/s".
+                for (size_t i = 0; i < _monitor.count(); ++i) {
+                        const StringView c(_monitor.counter(i).name);
+                        if (!c.startsWith("net.") || !c.endsWith(".rx_bytes")) continue;
+                        const StringView dev = c.mid(4, c.size() - 4 - 9);
+                        std::snprintf(name, sizeof(name), "net.%.*s.tx_bytes", int(dev.size()), dev.data());
+                        int64_t r = _monitor.rate(i), w = _monitor.rateOf(name);
+                        r = r == Unavailable ? 0 : r;
+                        w = w == Unavailable ? 0 : w;
+                        if (r <= 0 && w <= 0) continue;
+                        char b[TopView::TextBytes];
+                        std::snprintf(part, sizeof(part), "%.*s in %s/s out %s/s", int(dev.size()), dev.data(),
+                                      TopView::formatBytes(a, uint64_t(r)), TopView::formatBytes(b, uint64_t(w)));
                         add(part);
                 }
                 return;

@@ -126,6 +126,7 @@
 #define UDP_STATS 0
 #define TCP_STATS 0
 #define SYS_STATS 0
+#define MIB2_STATS 1 // IP, TCP, UDP and ICMP counters for sysmon (net.ip, devplan/network.md §21)
 
 // --- Checksums: in software for now (devplan/network.md §15) --------------------------------
 

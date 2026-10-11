@@ -614,4 +614,13 @@ int32_t bmds_k_net_info(uint32_t index, bmds_net_info_t *info) {
         return bmds::detail::copyOut(out, info);
 }
 
+int32_t bmds_k_net_watch(uint32_t flags) {
+        KernelCall call;
+        if ((flags & ~BMDS_O_CLOEXEC) != 0) return -BMDS_EINVAL;
+        auto [handle, err] = NetStatus::openWatch();
+        if (err == Error::InvalidState) return -BMDS_ENODEV;
+        if (err.isError()) return -BMDS_ENOMEM;
+        return call->addHandle(std::move(handle), flags);
+}
+
 } // extern "C"

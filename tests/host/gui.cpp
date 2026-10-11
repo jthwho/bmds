@@ -1310,6 +1310,27 @@ TEST_CASE("TrayProtocol: read takes what was sent, the rest zero; short or lying
         CHECK(std::string(small) == "a\xc2\xb7");
         TP::copy(small, "ab\xc2\xb7"); // the character would be cut: left out
         CHECK(std::string(small) == "ab");
+        // A long tooltip in both parts, split on a character; joined back; an older sender's only
+        // the first part.
+        TP::Update        tip;
+        const std::string text = std::string(126, 'a') + "\xc2\xb7" + std::string(300, 'b');
+        TP::setToolTip(tip, bmds::StringView(text.data(), text.size()));
+        CHECK(TP::view(tip.toolTip).size() == 126);
+        CHECK(TP::view(tip.toolTipMore).size() == 255);
+        char joined[TP::MaxToolTip + 1];
+        TP::toolTipOf(tip, joined);
+        CHECK(std::string(joined) == text.substr(0, 126 + 255)); // the character opens the second
+        TP::setToolTip(tip, "short");
+        TP::toolTipOf(tip, joined);
+        CHECK(std::string(joined) == "short");
+        TP::copy(tip.toolTipMore, "never sent");
+        const uint32_t       before = uint32_t(offsetof(TP::Update, toolTipMore));
+        std::vector<uint8_t> first(sizeof(tip));
+        std::memcpy(first.data(), &tip, sizeof(tip));
+        std::memcpy(first.data(), &before, sizeof(before));
+        REQUIRE(TP::read(bmds::ByteSpan(first.data(), before), back));
+        TP::toolTipOf(back, joined);
+        CHECK(std::string(joined) == "short");
 }
 
 TEST_CASE("TrayRow: added, ordered by category then arrival, updated, removed, programs gone") {

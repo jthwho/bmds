@@ -181,6 +181,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_NET_INFO 107u        /**< `int32_t net_info(uint32_t index, bmds_net_info_t *info)`. */
 #define BMDS_SYS_PROC_TIMER                                                                                            \
         108u /**< `int32_t proc_timer(uint32_t which, const bmds_timer_t *set, bmds_timer_t *old)`. */
+#define BMDS_SYS_NET_WATCH 109u /**< `int32_t net_watch(uint32_t flags)`: a new fd. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -1370,6 +1371,7 @@ typedef int32_t (*bmds_sys_getsockopt_fn)(int32_t fd, int32_t level, int32_t nam
 typedef int32_t (*bmds_sys_shutdown_fn)(int32_t fd, uint32_t how);
 typedef int32_t (*bmds_sys_net_info_fn)(uint32_t index, bmds_net_info_t *info);
 typedef int32_t (*bmds_sys_proc_timer_fn)(uint32_t which, const bmds_timer_t *set, bmds_timer_t *old);
+typedef int32_t (*bmds_sys_net_watch_fn)(uint32_t flags);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -2464,6 +2466,21 @@ static inline int32_t bmds_net_info(uint32_t index, bmds_net_info_t *info) {
  */
 static inline int32_t bmds_proc_timer(uint32_t which, const bmds_timer_t *set, bmds_timer_t *old) {
         return ((bmds_sys_proc_timer_fn)bmds_sys->slot[BMDS_SYS_PROC_TIMER])(which, set, old);
+}
+
+/**
+ * @brief Opens a watch on the network interfaces' state: a descriptor that is readable
+ *        (`io_poll`) after a change to anything `net_info` gives but the counters and the
+ *        lease's time left (an interface enabled or not, its link, settings, addresses,
+ *        DHCP's state). A read (a multiple of 4 bytes) gives one `uint32_t`, the number of
+ *        changes since boot, and waits while nothing changed since the descriptor's last
+ *        read or its opening; then read what matters with `net_info`. Closing it ends the
+ *        watch. @p flags: 0 or `BMDS_O_CLOEXEC`.
+ * @return The descriptor, or `-BMDS_EINVAL`, `-BMDS_ENODEV` (no network stack),
+ *         `-BMDS_ENOMEM`, `-BMDS_EMFILE`.
+ */
+static inline int32_t bmds_net_watch(uint32_t flags) {
+        return ((bmds_sys_net_watch_fn)bmds_sys->slot[BMDS_SYS_NET_WATCH])(flags);
 }
 
 #ifdef __cplusplus

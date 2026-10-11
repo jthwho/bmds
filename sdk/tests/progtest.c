@@ -60,7 +60,9 @@
  *                         bad values; not inherited, kept across exec, SIGALRM's default
  *   progtest net          sockets through musl on loopback: TCP (blocking and not, half closes,
  *                         resets, timeouts, poll), UDP (cut datagrams), raw ICMP, the interface
- *                         ioctls and net_info, the errors
+ *                         ioctls, net_info and net_watch, the errors
+ *   progtest netwatch [N] print the interfaces, then again after each of N changes (net_watch;
+ *                         default 1)
  */
 
 #define _GNU_SOURCE /* gettid() */
@@ -2574,6 +2576,16 @@ static int net_test(void) {
         struct ifconf conf = {.ifc_len = sizeof(reqs), .ifc_req = reqs};
         CHECK(ioctl(q, SIOCGIFCONF, &conf) == 0 && conf.ifc_len >= (int)sizeof(struct ifreq));
         close(q);
+
+        /* net_watch: nothing to read until a change; whole records; its errors. */
+        const int w = bmds_net_watch(BMDS_O_CLOEXEC);
+        CHECK(w >= 0 && (fcntl(w, F_GETFD) & FD_CLOEXEC));
+        struct pollfd pw = {.fd = w, .events = POLLIN};
+        CHECK(poll(&pw, 1, 0) == 0);
+        CHECK(read(w, buf, 3) < 0 && errno == EINVAL);
+        CHECK(write(w, "x", 1) < 0);
+        close(w);
+        CHECK(bmds_net_watch(0x80000000u) == -BMDS_EINVAL);
         close(l);
         printf("net: all passed\n");
         return 0;
@@ -2793,6 +2805,41 @@ static int proc_check(const char *start_text) {
         return 0;
 }
 
+/* Each interface's state on one line, after the watch's record @p change (0: the first). */
+static void print_interfaces(uint32_t change) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        for (uint32_t i = 0;; ++i) {
+                bmds_net_info_t info;
+                memset(&info, 0, sizeof(info));
+                info.size = sizeof(info);
+                if (bmds_net_info(i, &info) < 0) break;
+                if (info.flags & BMDS_NET_LOOPBACK) continue;
+                struct in_addr ip = {info.address};
+                printf("netwatch: %lld.%03ld change %u: %s %s%s %u Mbit/s mtu %u %s mode %u dhcp %u lease %u s\n",
+                       (long long)now.tv_sec, now.tv_nsec / 1000000, (unsigned)change, info.name,
+                       (info.flags & BMDS_NET_UP) ? "up" : "down", (info.flags & BMDS_NET_LINK) ? " link" : "",
+                       (unsigned)info.speed_mbps, (unsigned)info.mtu, inet_ntoa(ip), info.mode, info.dhcp,
+                       (unsigned)info.lease_s);
+        }
+        fflush(stdout);
+        return;
+}
+
+/* The interfaces, then again after each of @p count changes (net_watch). */
+static int net_watch_test(int count) {
+        const int w = bmds_net_watch(0);
+        CHECK(w >= 0);
+        print_interfaces(0);
+        for (int i = 0; i < count; ++i) {
+                uint32_t change = 0;
+                CHECK(read(w, &change, sizeof(change)) == (ssize_t)sizeof(change));
+                print_interfaces(change);
+        }
+        close(w);
+        return 0;
+}
+
 int main(int argc, char **argv) {
         if (argc < 2) {
                 fprintf(stderr,
@@ -2801,7 +2848,7 @@ int main(int argc, char **argv) {
                         "threads|"
                         "threadspin|filetype|audio|decode|rt|midi|synth|synthload|mididecode|hog|stats|tasks|"
                         "procs|"
-                        "system|notify|expand|image [arg]\n");
+                        "system|notify|expand|image|net|netwatch [arg]\n");
                 return 2;
         }
         const char *what = argv[1];
@@ -2825,6 +2872,7 @@ int main(int argc, char **argv) {
         if (strcmp(what, "image") == 0) return image_test(argc > 2 ? arg : NULL);
         if (strcmp(what, "notify") == 0) return notify_test(argc > 2 && strcmp(arg, "served") == 0);
         if (strcmp(what, "net") == 0) return net_test();
+        if (strcmp(what, "netwatch") == 0) return net_watch_test(argc > 2 ? atoi(arg) : 1);
         if (strcmp(what, "procexec") == 0) return proc_exec(arg);
         if (strcmp(what, "proccheck") == 0) return proc_check(arg);
         if (strcmp(what, "burn") == 0) {

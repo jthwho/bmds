@@ -29,8 +29,10 @@
 #include <bmds/task.h>
 
 #include "lwipport.h"
+#include "netchanges.h"
 #include "netinterface.h"
 #include "netnames.h"
+#include "netstats.h"
 
 extern "C" {
 unsigned char *bmds_lwip_heap = nullptr;
@@ -85,6 +87,7 @@ namespace {
                                 NetNames::poll();
                                 runCalls();
                                 sys_check_timeouts();
+                                NetStatus::publish(); // after all of it: one change told for several
                                 sleepMs = sys_timeouts_sleeptime();
                         }
                         if (sleepMs == 0) continue;
@@ -113,6 +116,7 @@ Error NetStack::init() {
                 }
         }
         if (err.isError()) return err;
+        NetStats::init(); // counters only: the stack works without them
         err = NetNames::init();
         if (err.isError()) return err;
         Task::Config tc;

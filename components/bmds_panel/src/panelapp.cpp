@@ -58,6 +58,7 @@
 #include "panelicons.h"
 #include "notifyarea.h"
 #include "cpumeter.h"
+#include "networkstatus.h"
 #include "notificationserver.h"
 #include "panelitems.h"
 #include "screenshottaker.h"
@@ -110,6 +111,8 @@ namespace {
                      "The CPU meter's graph: a band for each core, or their mean", 0, 0, "cores|combined", nullptr)
         BMDS_SYSCONF(panelTrayVolume, "panel/tray/volume", Config::Type::Bool, "true", "The volume control in the tray",
                      0, 0, nullptr, nullptr)
+        BMDS_SYSCONF(panelTrayNetwork, "panel/tray/network", Config::Type::Bool, "true",
+                     "The network icon in the tray (devplan/network.md)", 0, 0, nullptr, nullptr)
         BMDS_SYSCONF(panelTrayNotifications, "panel/tray/notifications", Config::Type::Bool, "true",
                      "The notification centre's icon in the tray", 0, 0, nullptr, nullptr)
         BMDS_SYSCONF(panelSpacerWidth, "panel/spacer/width", Config::Type::Int, "0",
@@ -165,6 +168,7 @@ namespace {
                 ChooseClock,
                 ChooseTop,
                 ChooseBottom,
+                ChooseNetwork,
         };
 
         // Told of a right press at (x, y) in the panel window where nothing else takes it.
@@ -386,6 +390,7 @@ namespace {
                         void        applyTray();
                         void        setCpuMeter(bool shown);
                         void        setVolumeControl(bool shown);
+                        void        setNetworkStatus(bool shown);
                         static void startMonitor(void *arg);
                         bool        boolSetting(const Config::Param &param);
                         void        saveSetting(const Config::Param &param, StringView value);
@@ -415,6 +420,7 @@ namespace {
                         WindowList                    *_windows = nullptr;
                         TrayService                    _tray{_app};       // while panel/items has a tray
                         VolumeControl                 *_volume = nullptr; // its icon in the tray (PSRAM)
+                        NetworkStatus *_network = nullptr;   // panel/tray/network: its icon in the tray (PSRAM)
                         CpuMeter *_cpuMeter = nullptr;  // panel/tray/cpu: its icon in the tray (PSRAM)
                         Menu     *_panelMenu = nullptr; // the panel's own (devplan/gui.md §4t)
                         NotificationServer            *_notify = nullptr;    // balloons and the centre (PSRAM)
@@ -560,6 +566,7 @@ namespace {
                 // The windows (and their widgets) before the application they belong to.
                 setCpuMeter(false);
                 setVolumeControl(false);
+                setNetworkStatus(false);
                 if (_notify != nullptr) {
                         _notify->~NotificationServer();
                         Memory::free(_notify);
@@ -1402,6 +1409,7 @@ namespace {
         void PanelApp::applyTray() {
                 setCpuMeter(boolSetting(bmdsConf_panelTrayCpu));
                 setVolumeControl(boolSetting(bmdsConf_panelTrayVolume));
+                setNetworkStatus(boolSetting(bmdsConf_panelTrayNetwork));
                 if (_notify != nullptr) _notify->setCentreShown(boolSetting(bmdsConf_panelTrayNotifications));
                 return;
         }
@@ -1487,6 +1495,22 @@ namespace {
                 return;
         }
 
+        // The network icon made or destroyed, as the volume control is (its watch goes on meanwhile).
+        void PanelApp::setNetworkStatus(bool shown) {
+                if (!shown) {
+                        if (_network == nullptr) return;
+                        _network->~NetworkStatus();
+                        Memory::free(_network);
+                        _network = nullptr;
+                        return;
+                }
+                if (_network != nullptr) return;
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(NetworkStatus));
+                if (mem != nullptr) _network = ::new (mem) NetworkStatus(_app);
+                if (_network == nullptr || _network->start().isError()) say("panel: no network icon in the tray\n");
+                return;
+        }
+
         // The CPU meter made or destroyed (kept while the row is made again: its watch goes on).
         void PanelApp::setCpuMeter(bool shown) {
                 if (!shown) {
@@ -1530,6 +1554,8 @@ namespace {
                                    checked(self->boolSetting(bmdsConf_panelTrayCpu)));
                 (void)menu.addItem("Show &Volume Control", ChooseVolume,
                                    checked(self->boolSetting(bmdsConf_panelTrayVolume)));
+                (void)menu.addItem("Show Ne&twork", ChooseNetwork,
+                                   checked(self->boolSetting(bmdsConf_panelTrayNetwork)));
                 (void)menu.addItem("Show &Notifications", ChooseNotifications,
                                    checked(self->boolSetting(bmdsConf_panelTrayNotifications)));
                 (void)menu.addItem("Show C&lock", ChooseClock, checked(clock));
@@ -1552,6 +1578,10 @@ namespace {
                         case ChooseVolume:
                                 self->saveSetting(bmdsConf_panelTrayVolume,
                                                   self->boolSetting(bmdsConf_panelTrayVolume) ? "false" : "true");
+                                break;
+                        case ChooseNetwork:
+                                self->saveSetting(bmdsConf_panelTrayNetwork,
+                                                  self->boolSetting(bmdsConf_panelTrayNetwork) ? "false" : "true");
                                 break;
                         case ChooseNotifications:
                                 self->saveSetting(bmdsConf_panelTrayNotifications,

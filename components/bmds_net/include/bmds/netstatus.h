@@ -15,12 +15,20 @@
 #include <cstdint>
 #include <bmds/config.h>
 #include <bmds/error.h>
+#include <bmds/filehandle.h>
 
 BMDS_NAMESPACE_BEGIN
 
 /**
  * @brief Snapshots of the network interfaces, taken under the core lock: no
- *        lwIP or driver types.
+ *        lwIP or driver types; and their changes, told to watchers.
+ *
+ * A change is one to anything in `Info` but the counters and the lease's time
+ * left: an interface enabled or not, its link, its settings, its addresses,
+ * DHCP's state. The network task compares the interfaces' state after each
+ * event that may have changed it (a link's interrupt, a setting, an address,
+ * a DHCP acknowledgement) with the state last told, and tells the watchers
+ * only of a real change: nothing is looked at on a timer.
  *
  * @par Thread Safety
  * Thread-safe; not from lwIP's callbacks (the core lock).
@@ -72,6 +80,62 @@ namespace NetStatus {
                         uint32_t rxDropped = 0; ///< No buffer, the FIFO full, or the stack had no memory.
                         uint32_t txDropped = 0;
         };
+
+        /**
+         * @brief Told of each change (`changes()` moved on), on the network task with
+         *        the core lock held: it must not block, nor take the core lock.
+         *
+         * Owned by the listener. `start()` and `stop()` take the core lock: a
+         * notification running on the network task has ended when `stop()` returns.
+         */
+        class Watcher {
+                public:
+                        /** @brief The notification. */
+                        using Notify = void (*)(void *arg);
+
+                        constexpr Watcher() = default;
+                        ~Watcher() { stop(); }
+                        Watcher(const Watcher &) = delete;
+                        Watcher &operator=(const Watcher &) = delete;
+
+                        /**
+                         * @brief Starts telling @p notify (not null) of changes.
+                         * @return `Ok`, `InvalidState` (started, or no network stack), `Invalid`.
+                         */
+                        Error start(Notify notify, void *arg);
+
+                        /** @brief Stops (nothing if not started). @blocking (the core lock) */
+                        void stop();
+
+                        /** @brief Returns true if started. */
+                        bool isStarted() const { return _notify != nullptr; }
+
+                        // The watch list's (core lock held).
+                        Watcher *nextWatcher = nullptr;
+                        void     tell() { _notify(_arg); }
+
+                private:
+                        Notify _notify = nullptr;
+                        void  *_arg = nullptr;
+        };
+
+        /** @brief Returns the number of changes told since boot (it wraps). @nonblocking */
+        uint32_t changes();
+
+        /**
+         * @brief Opens a watch as a file (the SDK's `net_watch`, `devplan/network.md` §20):
+         *        a read gives one `uint32_t` record, `changes()` after the change, waiting
+         *        while nothing changed since the handle's last read (or its opening); it is
+         *        readable for `io_poll` when something did. The watch ends with the handle.
+         * @return The handle (`FileHandle::Read`), or `InvalidState` (no network stack), `NoMem`.
+         */
+        Result<FileHandle::Ptr> openWatch();
+
+        /**
+         * @brief Asks DHCP to renew interface @p position's lease now.
+         * @return `Ok`, `NotExist`, `InvalidState` (the interface holds no DHCP lease), or `IoError`.
+         */
+        Error renewLease(size_t position);
 
         /** @brief Returns the number of interfaces (with `lo`). */
         size_t count();

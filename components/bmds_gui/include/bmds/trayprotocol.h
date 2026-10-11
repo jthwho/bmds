@@ -38,6 +38,9 @@ namespace TrayProtocol {
         /** @brief A reply service's name: `tray.` and the connection's number. */
         constexpr size_t MaxReplyName = 31;
 
+        /** @brief A tooltip's longest text in bytes: `Update::toolTip` and `toolTipMore` together. */
+        constexpr size_t MaxToolTip = 383;
+
         /** @brief An icon's side in pixels (`Pixels`). */
         constexpr uint32_t IconSide = 16;
 
@@ -93,6 +96,8 @@ namespace TrayProtocol {
                         uint32_t flags = 0;     ///< `Flag` bits.
                         char     icon[64] = {}; ///< A theme's icon name.
                         char     toolTip[128] = {};
+                        /** The tooltip past `toolTip`'s 127 bytes (appended 2026-10-11): `setToolTip()`. */
+                        char toolTipMore[256] = {};
         };
 
         /** @brief An icon's own pixels, ARGB (straight alpha), row by row. */
@@ -160,6 +165,27 @@ namespace TrayProtocol {
         /** @brief Returns @p text (a received array) as a view, to its NUL. */
         template <size_t N> StringView view(const char (&text)[N]) {
                 return StringView(text, ::strnlen(text, N));
+        }
+
+        /**
+         * @brief Puts @p text (cut at `MaxToolTip` bytes on a character's boundary) in
+         *        @p u's `toolTip` and, past its 127 bytes, `toolTipMore`.
+         */
+        inline void setToolTip(Update &u, StringView text) {
+                copy(u.toolTip, text);
+                const size_t first = ::strlen(u.toolTip);
+                copy(u.toolTipMore, first < text.size() ? text.mid(first) : StringView());
+                return;
+        }
+
+        /** @brief Copies @p u's tooltip, both parts, into @p out (NUL-ended). */
+        inline void toolTipOf(const Update &u, char (&out)[MaxToolTip + 1]) {
+                const StringView first = view(u.toolTip);
+                const StringView more = view(u.toolTipMore);
+                std::memcpy(out, first.data(), first.size());
+                std::memcpy(out + first.size(), more.data(), more.size()); // 127 + 256 at most
+                out[first.size() + more.size()] = '\0';
+                return;
         }
 
 } // namespace TrayProtocol

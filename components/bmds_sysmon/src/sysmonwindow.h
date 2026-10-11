@@ -29,7 +29,7 @@ class TabWidget;
 
 /**
  * @brief The System Monitor's window (`devplan/sysmon.md` §3.5): tabs for the
- *        overview, CPU, processes, memory, audio, display, I/O and every
+ *        overview, CPU, processes, memory, audio, display, I/O, network and every
  *        counter, refreshed each second while it is shown and not minimized;
  *        whatever is out of normal is drawn amber or red, its tab marked.
  *
@@ -47,6 +47,7 @@ class SysmonWindow final : public GuiWindow {
                         Audio,
                         Display,
                         Io,
+                        Network,
                         Counters,
                         TabCount,
                 };
@@ -122,7 +123,7 @@ class SysmonWindow final : public GuiWindow {
                 Graph       *_overviewCpu[2] = {};
                 ProgressBar *_memoryBars[2] = {};
                 Label       *_memoryText[2] = {};
-                Label       *_headline[2] = {};
+                Label       *_headline[3] = {};
                 DetailsView *_problemsView = nullptr;
                 TableModel   _problems;
 
@@ -154,6 +155,7 @@ class SysmonWindow final : public GuiWindow {
                 GroupPage _audio;
                 GroupPage _display;
                 GroupPage _io;
+                GroupPage _network;
 
                 DetailsView *_countersView = nullptr;
                 TableModel   _counters;

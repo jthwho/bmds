@@ -53,6 +53,7 @@ if(COMMAND idf_component_register)
                                     src/netinterface.cpp
                                     src/netnames.cpp
                                     src/netstack.cpp
+                                    src/netstats.cpp
                                     src/netstatus.cpp
                                     src/pingcommand.cpp
                                     src/socket.cpp

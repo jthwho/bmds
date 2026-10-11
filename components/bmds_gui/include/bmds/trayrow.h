@@ -43,7 +43,7 @@ class TrayRow {
                                 TrayProtocol::Category category = TrayProtocol::Category::Application;
                                 uint32_t               flags = 0;
                                 char                   icon[64] = {};
-                                char                   toolTip[128] = {};
+                                char                   toolTip[TrayProtocol::MaxToolTip + 1] = {};
                                 uint32_t               order = 0; // when it came
                                 bool                   hasPixels = false;
                                 uint32_t               argb[TrayProtocol::IconSide * TrayProtocol::IconSide] = {};

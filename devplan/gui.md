@@ -820,14 +820,15 @@ and the panel a menu for its settings (the start of a taskbar's Properties):
   - `panel/tray/cpu` (bool, default true): the CPU meter (`sysmon.md` §3.5);
   - `panel/tray/cpu-graph` (enum `cores|combined`, default `cores`): its graph;
   - `panel/tray/volume` (bool, default true): the volume control (§4s), shown always before.
-  - `panel/tray/network` (bool, default true): the network icon (`network.md` §17; planned,
-    network step 3a).
+  - `panel/tray/network` (bool, default true): the network icon (`network.md` §17, §20; built
+    2026-10-11).
   - Made and destroyed as they change, as every panel setting is followed (`sysconf.md` §12.3);
     the meter's watch lasts as long as it does.
 - **The panel's menu:** a right click on the panel where nothing else takes it (the gaps between
   items, the window list's empty part, a spacer, the notification area outside its icons and on
   the clock). Buttons and tray icons keep their own (a window's menu, a program's).
-  - **Show CPU Meter, Show Volume Control** (checked when shown): `panel/tray/cpu`, `.../volume`.
+  - **Show CPU Meter, Show Volume Control, Show Network** (checked when shown): `panel/tray/cpu`,
+    `.../volume`, `.../network`.
   - **Show Clock:** `clock` taken out of `panel/items`, or put back after the tray (beside it, so
     they share the notification area) or at the end (`PanelItems::withItem()`, pure,
     host-tested).

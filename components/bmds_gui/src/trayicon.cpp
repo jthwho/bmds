@@ -114,7 +114,7 @@ void TrayIcon::sendUpdate() {
         u.flags = (_visible ? uint32_t(TrayProtocol::Visible) : 0u) |
                   (_pixels != nullptr ? uint32_t(TrayProtocol::HasPixels) : 0u);
         std::memcpy(u.icon, _icon, sizeof(u.icon));
-        std::memcpy(u.toolTip, _toolTip, sizeof(u.toolTip));
+        TrayProtocol::setToolTip(u, StringView(_toolTip));
         (void)_app.windowManager().sendToService(TrayProtocol::Service, TrayProtocol::bytes(u));
         return;
 }

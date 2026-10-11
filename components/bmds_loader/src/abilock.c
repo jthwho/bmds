@@ -119,6 +119,7 @@ _Static_assert(BMDS_SYS_SETSOCKOPT == 104 && BMDS_SYS_GETSOCKOPT == 105 && BMDS_
                        BMDS_SYS_NET_INFO == 107,
                "ABI: slots SETSOCKOPT, GETSOCKOPT, SHUTDOWN, NET_INFO");
 _Static_assert(BMDS_SYS_PROC_TIMER == 108, "ABI: slot PROC_TIMER");
+_Static_assert(BMDS_SYS_NET_WATCH == 109, "ABI: slot NET_WATCH");
 _Static_assert(BMDS_TIMER_REAL == 0, "ABI: timers (Linux's ITIMER_REAL)");
 _Static_assert(offsetof(bmds_timer_t, size) == 0 && offsetof(bmds_timer_t, reserved) == 4 &&
                        offsetof(bmds_timer_t, value_us) == 8 && offsetof(bmds_timer_t, interval_us) == 16 &&

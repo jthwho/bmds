@@ -20,6 +20,7 @@
 #include <bmds/staticobject.h>
 #include <bmds/string.h>
 
+#include "netchanges.h"
 #include "netinterface.h"
 #include "netnames.h"
 
@@ -287,6 +288,7 @@ void NetInterface::applyLink() {
                 netif_set_link_up(&_netif);
         else
                 netif_set_link_down(&_netif);
+        NetStatus::noteChange();
         return;
 }
 
@@ -308,6 +310,7 @@ void NetInterface::applySettings() {
         apply(was);
         _applying = false;
         logAddress();
+        NetStatus::noteChange();
         return;
 }
 
@@ -379,6 +382,7 @@ void NetInterface::apply(Mode was) {
 void NetInterface::statusChanged(struct netif *netif) {
         auto &n = *static_cast<NetInterface *>(netif->state);
         if (!n._applying) n.logAddress();
+        NetStatus::noteChange();
         // A lease lost takes its servers with it.
         if (ip4_addr_isany_val(*netif_ip4_addr(netif)) || n._mode != Mode::Dhcp) {
                 n._leaseServers = LeaseServers{};
@@ -392,6 +396,7 @@ void NetInterface::dhcpOption(unsigned int type, unsigned int option, unsigned i
         constexpr unsigned int Ack = 5;
         constexpr unsigned int Dns = 6;
         constexpr unsigned int Ntp = 42;
+        if (type == Ack) NetStatus::noteChange(); // a renewal: the lease's length, its servers
         if (type != Ack || (option != Dns && option != Ntp)) return;
         uint32_t    servers[2] = {};
         const u16_t n = static_cast<u16_t>(length / 4 < 2 ? length / 4 * 4 : 8);

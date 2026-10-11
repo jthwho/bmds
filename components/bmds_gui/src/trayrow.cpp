@@ -48,7 +48,7 @@ Error TrayRow::update(const TrayProtocol::Update &message, bool *moved) {
                              : TrayProtocol::Category::Application;
         e.flags = message.flags;
         TrayProtocol::copy(e.icon, TrayProtocol::view(message.icon));
-        TrayProtocol::copy(e.toolTip, TrayProtocol::view(message.toolTip));
+        TrayProtocol::toolTipOf(message, e.toolTip);
         if ((e.flags & TrayProtocol::HasPixels) == 0) e.hasPixels = false;
         return Error::Ok;
 }

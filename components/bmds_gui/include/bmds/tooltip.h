@@ -32,10 +32,10 @@ class ToolTip final : public GuiWindow {
                 static constexpr uint32_t DelayMs = 600;
 
                 /** @brief The longest text shown, in bytes (a tray icon's longest). */
-                static constexpr size_t MaxText = 127;
+                static constexpr size_t MaxText = 383;
 
                 /** @brief The most lines shown. */
-                static constexpr size_t MaxLines = 4;
+                static constexpr size_t MaxLines = 12;
 
                 explicit ToolTip(GuiApplication &app);
                 ~ToolTip() override;

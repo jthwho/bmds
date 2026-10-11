@@ -509,7 +509,7 @@ The P4's engines (ESP-IDF's `soc_caps.h`):
 | 1 | **Driver.** EMAC and IP101 bring-up; read the feature register (AV channels?); rings, zero-copy buffers, the 1588 clock running, link timer; `net` shows link and counters. **Done** (§14). | Frames out and in (an ARP request answered by hand); the feature register's answer in `docs/platforms/esp32p4.md` |
 | 2 | **lwIP.** Vendored; `Netif` glue; DHCP or static from sysconf (live); ARP, ICMP, IGMP and the MAC filters; `lo`; the shell's `ping`. Host tests: lwIP builds on the host against a loopback netif. **Done** (§16). | Ping both ways, DHCP lease, `net` shows addresses and groups; flood ping without leaks |
 | 3 | **Sockets.** `Socket` as a `Stream`; the slots; `linux.c` (sockets, ioctls); the `/etc` pseudo filesystem; DNS (§18). | BusyBox `nc`, `wget`, `telnet` and `ping` work; `poll` over sockets; throughput measured (TCP both ways) |
-| 3a | **The tray's network icon** (§17). `NetStatus` (public kernel API, change-driven), the SDK's calls for it; `NetworkStatus` in the panel's tray; `panel/tray/network`. | Unplugging and replugging the cable, DHCP and static changes and `enabled` off show in the icon and the tooltip at once, with no timer running |
+| 3a | **The tray's network icon** (§17). **Done** (§20). `NetStatus` (public kernel API, change-driven), the SDK's calls for it; `NetworkStatus` in the panel's tray; `panel/tray/network`. | Unplugging and replugging the cable, DHCP and static changes and `enabled` off show in the icon and the tooltip at once, with no timer running |
 | 4 | **NTP and mDNS.** The kernel NTP client disciplining the clock; `ntp`; `${HOSTNAME}.local`. | The clock within a few ms of the pool after a boot; `ping bmds-….local` from a PC |
 | 5 | **SSH.** Dropbear (server, client, scp) as SDK programs; the `secret` setting type, `system/password` and `passwd`; host keys; authorized keys; the server's on/off setting; our `sftp-server`. | `ssh` with a key and with a password, `scp`, `sftp`, `sshfs` and a file manager's `sftp://` from Linux; `ssh`/`scp` from the board to Linux |
 | 5a | **Crypto.** `bmds_crypto` over the engines; SDK calls; Dropbear's hardware descriptors; software-against-hardware measurements decide the server's algorithm offer. | Transfer speed and login time measured both ways, recorded here |
@@ -666,6 +666,9 @@ The P4's engines (ESP-IDF's `soc_caps.h`):
 
 ## 17. The tray's network icon (the user's, 2026-10-11)
 
+Built in step 3a: §20 has what changed on the way (the tooltip's length, the lease's time left
+in the menu, a drawn icon).
+
 A network icon in the panel's tray, its tooltip the state of every interface. Step 3a, after the
 sockets' ABI (step 3), whose slots it appends to.
 
@@ -708,8 +711,8 @@ sockets' ABI (step 3), whose slots it appends to.
 - **A click:** a menu with the same lines; Copy Address; Renew Lease (DHCP only); Network
   Settings... (the control panel, later); Remove from Panel.
 - **`panel/tray/network`** (bool, default true; `gui.md` §4t), as `panel/tray/cpu`.
-- **Proposed, not decided:** a notification when a link goes down or comes up, or an address is
-  gained or lost (`notifications.md`), off by default.
+- **Not done (the user, 2026-10-11):** a notification when a link goes down or comes up, or an
+  address is gained or lost. The icon is enough.
 
 ## 18. Step 3's design: sockets, `/etc`, DNS (2026-10-11)
 
@@ -889,3 +892,125 @@ sockets' ABI (step 3), whose slots it appends to.
   `nc -w 1` (1.02 s), `wget -T 2` (2.02 s) and `timeout 1 sleep 5` behave as on Linux.
 - **Not yet looked at:** checksum offload and the transmit FIFO (§19's step 2 notes); a wired
   peer; `telnet` against a server.
+
+## 20. Step 3a: the tray's network icon (2026-10-11)
+
+§17's design, built. What changed on the way:
+
+- **Changes are found by comparing, not by hooks alone.** Everything that may change what
+  `NetStatus` reports calls `NetStatus::noteChange()`:
+  - a link change (`applyLink()`);
+  - settings applied;
+  - lwIP's status callback (address, up/down);
+  - a DHCP acknowledgement (in the option hook).
+  
+  At the end of each pass the network task's `NetStatus::publish()` compares every interface's
+  state with the state last told. Only a real difference counts a change and tells the
+  watchers. Compared: everything but the counters and the lease's time left. A pass with no
+  mark costs one atomic load; nothing runs on a timer. lwIP has no hook for a lease renewed
+  unchanged, and none is needed: a renewal that changes the lease's length or its DNS servers
+  comes with an acknowledgement, which marks.
+- **`NetStatus::Watcher`** (owned by the listener, an intrusive list):
+  - The list is kept under the stack's core lock, with no lock of its own.
+  - The notification runs on the network task with the core lock held, so it must not block.
+  - `stop()` takes the core lock, so a notification running elsewhere has ended when it
+    returns.
+  - `NetStatus::changes()` is the change count.
+  - `NetStatus::renewLease()` serves the menu.
+  - `info()` now fills `dns` (DHCP's servers). It was in the ABI and left zero before.
+- **For programs:** slot 109, `net_watch(flags)` (`BMDS_O_CLOEXEC`). It returns a descriptor:
+  - A read takes one `uint32_t`, the change count, and waits while nothing changed since that
+    descriptor's last read (or its opening).
+  - It is readable for `poll` when something did; the reader then calls `net_info`.
+  - There is no overflow to report: a count says "something changed", and that is all a reader
+    needs.
+  - `progtest net` checks it, and `progtest netwatch N` prints the interfaces after each change.
+- **The tray's tooltips were too small:** 127 bytes and 4 lines, set by the tray protocol, the
+  tray's row and the tooltip window. One interface's block is about 150 bytes in 5 lines.
+  - `TrayProtocol::Update` gains `toolTipMore[256]` (appended, as the protocol allows; an older
+    sender's message reads it empty).
+  - `setToolTip()` and `toolTipOf()` split the text and join it again.
+  - Tooltips now hold 383 bytes and 12 lines.
+- **The icon is drawn, not themed:** the theme has no network icon. `NetworkView` (pure,
+  host-tested) draws an RJ45 socket whose two lights tell the state:
+  - connected: both green;
+  - acquiring: the left one amber;
+  - no link: dark, dimmed and crossed out in red;
+  - off: dark and dimmed.
+- **The lease's time left is in the menu, not the tooltip.** A tooltip is text sent once, and
+  keeping a countdown right needs a timer. The tooltip gives the lease's length ("lease 2 h");
+  the menu, read when it opens, adds "Lease: 1 h 52 min left".
+- **`NetworkStatus`** lives in the panel (category Hardware) and follows `panel/tray/network`
+  (default true; the panel's menu has Show Network).
+  - A change posts one refresh to the loop (an atomic flag, as the folder watches do).
+  - A click, left or right, opens the menu: each interface's lines, Copy Address (the first
+    connected interface's), Renew *eth0*'s Lease (an interface holding a lease) and Remove from
+    Panel.
+- **Resources:** firmware 1 681 472 bytes (+6.4 KB on the build before it, with `alarm`). The
+  watch costs nothing between changes; `publish()` keeps one `Info` per interface (`.bss`).
+- **On the board (2026-10-11):**
+  - `progtest net` passes (with `net_watch`'s checks).
+  - `progtest netwatch` printed each change once and at once, its count running on with no
+    gap: the MTU set and put back, static mode, back to DHCP (the address dropped, then
+    bound), and `enabled` false and true. Setting the static address and gateway while in DHCP
+    mode told nothing, as it should, since nothing that is reported changed.
+  - The icon showed connected (both lights green) with the tooltip block above; with
+    `enabled` false it dimmed, and the tooltip, open under the pointer, changed to "eth0: off"
+    at once.
+  - A left click opened the menu, which showed "Lease: 1 h 58 min left".
+    - Copy Address put `172.20.200.221` on the clipboard (`clip paste`).
+    - Renew eth0's Lease renewed it (7200 of 7200 s left after).
+    - Remove from Panel saved `panel/tray/network` false and the icon went; the default
+      brought it back.
+  - The user pulled the cable and put it back: the icon went to the crossed-out socket, then
+    back to connected with the right address in the tooltip, and the board answered pings
+    from their PC.
+- **No notification** when a link or an address comes or goes: the user decided against §17's
+  proposal (2026-10-11).
+
+## 21. The network in sysmon (the user's ask, 2026-10-11)
+
+The network's counters join the system's registry (`sysmon.md` §3.2, §6), so `stats`, `top`,
+the System Monitor and the tray meter's alarms see the network like any subsystem.
+- **`net.ethN`,** one group per interface (`netstats.cpp`), read under the core lock:
+  - the link (state `down|up`), its speed;
+  - bytes and frames each way, both bytes kept for graphs;
+  - receive and send errors, and frames dropped either way: any increase warns, as the
+    rule `zero` does;
+  - frames copied by the receive threshold, receive buffers held, link changes.
+- **`net.ip`, the stack's group:**
+  - lwIP's heap: in use (kept for graphs), the most in use (a peak: warns past ¾ of the
+    256 KB heap, critical past 15/16), allocations refused (warns);
+  - allocations its pools refused (warns);
+  - TCP connections open.
+  - lwIP's MIB-II counts, `MIB2_STATS` turned on (about 200 bytes of counters and an increment
+    per packet):
+    - IP packets in and out, and those dropped coming in;
+    - TCP opens, both active and passive, attempts that failed, segments each way, fast
+      retransmits, segments with errors;
+    - UDP datagrams each way, those sent to no open port, those with errors;
+    - ICMP messages each way.
+- **What lwIP's MIB-II counters don't mean,** found on the board:
+  - `tcpEstabResets` is counted for every close lwIP starts from an open connection, a FIN
+    included, so every `wget` "reset" its connection. It isn't offered.
+  - `tcpRetransSegs` counts only fast retransmits, so the counter is `tcp_fast_retransmits`.
+  - A ping's replies are taken by its raw socket before ICMP sees them, so `icmp_in` doesn't
+    count them.
+- **The groups are added after the interfaces,** without the core lock: the registry's lock is
+  held while a read takes the core lock, so nothing holding the core lock may add a group.
+- **The System Monitor:**
+  - a Network tab, with graphs of eth0 received and sent over the `net.*` counters;
+  - a line on the Overview: "Network: in 3.0 KB/s, out 1.0 KB/s", every interface's bytes
+    together.
+  - The window had nine tabs, past `TabWidget::MaxTabs` (8): the window failed to open, so the
+    limit is 16 now.
+- **`top`'s headline** names each interface with traffic, after the storage devices: `eth0 in
+  1.2 KB/s out 300 B/s`.
+- **On the board (2026-10-11):**
+  - `stats 'net.*'` and `stats rules 'net.*'` list both groups and their rules.
+  - After `wget`s, the TCP opens and segments, UDP (the DNS lookups) and IP counts moved as
+    expected.
+  - The System Monitor's Network tab showed the received and sent graphs and the counters, and
+    the Overview its Network line.
+  - `top -n 5` during 30 `wget`s gave `..., eth0 in 14.2 KB/s out 4.8 KB/s`.
+  - Firmware 1 687 568 bytes (+6.1 KB).

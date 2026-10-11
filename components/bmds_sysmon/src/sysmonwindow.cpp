@@ -40,8 +40,8 @@ namespace {
         constexpr int64_t  MessageNs = 4000000000; // a message's time in the status bar
         constexpr int64_t  Unavailable = Stat::Unavailable;
 
-        constexpr const char *TabTitles[SysmonWindow::TabCount] = {"Overview", "CPU",     "Processes", "Memory",
-                                                                   "Audio",    "Display", "I/O",       "Counters"};
+        constexpr const char *TabTitles[SysmonWindow::TabCount] = {"Overview", "CPU", "Processes", "Memory",  "Audio",
+                                                                   "Display",  "I/O", "Network",   "Counters"};
 
         // The counters each tab shows, whose health marks its title.
         constexpr const char *CpuPatterns[] = {"cpu.*", "system.*"};
@@ -50,6 +50,7 @@ namespace {
         constexpr const char *AudioPatterns[] = {"audio.*", "synth.*", "midi.*"};
         constexpr const char *DisplayPatterns[] = {"display*", "wm*"};
         constexpr const char *IoPatterns[] = {"storage.*", "usb*", "input.*", "console.*", "clock.*"};
+        constexpr const char *NetworkPatterns[] = {"net.*"};
         constexpr const char *AllPatterns[] = {"*"};
 
         Span<const char *const> patternsOf(size_t tab) {
@@ -60,6 +61,7 @@ namespace {
                         case SysmonWindow::Audio: return AudioPatterns;
                         case SysmonWindow::Display: return DisplayPatterns;
                         case SysmonWindow::Io: return IoPatterns;
+                        case SysmonWindow::Network: return NetworkPatterns;
                         case SysmonWindow::Counters: return AllPatterns;
                         default: return Span<const char *const>();
                 }
@@ -199,6 +201,7 @@ Error SysmonWindow::build() {
         if (err.isOk()) err = buildGroup(_audio, Audio, TabTitles[Audio]);
         if (err.isOk()) err = buildGroup(_display, Display, TabTitles[Display]);
         if (err.isOk()) err = buildGroup(_io, Io, TabTitles[Io]);
+        if (err.isOk()) err = buildGroup(_network, Network, TabTitles[Network]);
         if (err.isOk()) err = buildCounters();
         if (err.isError()) return err;
         _tabs->setChanged(tabChanged, this);
@@ -398,6 +401,7 @@ void SysmonWindow::refresh() {
                 case Audio: refreshGroup(_audio, AudioPatterns); break;
                 case Display: refreshGroup(_display, DisplayPatterns); break;
                 case Io: refreshGroup(_io, IoPatterns); break;
+                case Network: refreshGroup(_network, NetworkPatterns); break;
                 case Counters: refreshCounters(); break;
                 default: break;
         }
@@ -557,9 +561,20 @@ void SysmonWindow::refreshOverview() {
                 if (name.endsWith(".read_bytes")) read += _monitor.rate(i);
                 if (name.endsWith(".written_bytes")) written += _monitor.rate(i);
         }
+        // Every interface's traffic (net.ip, the stack's, counts packets, not bytes).
+        int64_t received = 0, sent = 0;
+        for (size_t i = 0; i < _monitor.count(); ++i) {
+                const StringView name(_monitor.counter(i).name);
+                if (!name.startsWith("net.") || _monitor.rate(i) == Unavailable) continue;
+                if (name.endsWith(".rx_bytes")) received += _monitor.rate(i);
+                if (name.endsWith(".tx_bytes")) sent += _monitor.rate(i);
+        }
         std::snprintf(text, sizeof(text), "Storage: read %s/s, written %s/s",
                       Monitor::format(a, Stat::Unit::Bytes, read), Monitor::format(b, Stat::Unit::Bytes, written));
         _headline[1]->setText(text);
+        std::snprintf(text, sizeof(text), "Network: in %s/s, out %s/s", Monitor::format(a, Stat::Unit::Bytes, received),
+                      Monitor::format(b, Stat::Unit::Bytes, sent));
+        _headline[2]->setText(text);
 
         // The problems: open ones first, then the rest, newest first (the log gives the oldest first).
         Stat::ProblemLog::Episode       episodes[ProblemBatch];
@@ -798,6 +813,9 @@ void SysmonWindow::refreshGroup(GroupPage &group, Span<const char *const> patter
         } else if (&group == &_display) {
                 fillGraph(group.graphs[0], "display0.scanout.frames", "Frames a second");
                 fillGraph(group.graphs[1], "wm0.round_us", "Compositor", true);
+        } else if (&group == &_network) {
+                fillGraph(group.graphs[0], "net.eth0.rx_bytes", "eth0 received");
+                fillGraph(group.graphs[1], "net.eth0.tx_bytes", "eth0 sent");
         } else {
                 fillGraph(group.graphs[0], "storage.sd0.written_bytes", "sd0 written");
                 fillGraph(group.graphs[1], "input.pointer_events", "Pointer events");

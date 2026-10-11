@@ -72,7 +72,7 @@ class TrayIcon {
                  */
                 Error setIcon(const Icon &icon);
 
-                /** @brief Sets the tooltip (cut at 127 bytes), changed live. */
+                /** @brief Sets the tooltip (cut at `TrayProtocol::MaxToolTip` bytes), changed live. */
                 void setToolTip(StringView text);
 
                 /** @brief Sets where the tray puts it (`Application` by default). */
@@ -146,7 +146,7 @@ class TrayIcon {
                 uint32_t            _id = 0;
                 Category            _category = Category::Application;
                 char                _icon[64] = {};
-                char                _toolTip[128] = {};
+                char                _toolTip[TrayProtocol::MaxToolTip + 1] = {};
                 uint32_t           *_pixels = nullptr; // 16 x 16, PSRAM, when set
                 Menu               *_menu = nullptr;
                 Rect                _geometry;
