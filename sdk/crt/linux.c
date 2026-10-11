@@ -14,13 +14,18 @@
  * What BMDS doesn't have is approximated, as noted at each call: one user
  * (root), no hard links, modes made up from the FAT attributes, O_NONBLOCK
  * per descriptor, signals delivered between calls (programs.md §15), no fork()
- * (vfork, and posix_spawn on it: programs.md §13). Sockets fail.
+ * (vfork, and posix_spawn on it: programs.md §13), only the real-time interval
+ * timer (alarm, setitimer: programs.md §18). Sockets are IPv4 (network.md §18):
+ * no AF_UNIX, AF_INET6 or netlink (getifaddrs, if_nameindex fail).
  */
 
 #define _GNU_SOURCE
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <net/if.h>
+#include <net/if_arp.h>
+#include <netinet/in.h>
 #include <poll.h>
 #include <sched.h>
 #include <signal.h>
@@ -32,6 +37,7 @@
 #include <sys/resource.h>
 #include <sys/soundcard.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
@@ -423,12 +429,26 @@ static long io_gate(long fd, int writing) {
         return 1;
 }
 
+static long socket_io(long fd, const struct iovec *v, long count, int writing);
+
 static long gated_read(long fd, void *buf, size_t size) {
+        if (is_nonblock(fd)) {
+                /* A socket takes MSG_DONTWAIT; anything else answers ENOTSOCK and polls. */
+                const struct iovec piece = {buf, size};
+                const long         r = socket_io(fd, &piece, 1, 0);
+                if (r != -ENOTSOCK) return r;
+        }
         const long g = io_gate(fd, 0);
         return g <= 0 ? g : (long)(bmds_read((int32_t)fd, buf, (uint32_t)size));
 }
 
 static long gated_write(long fd, const void *buf, size_t size) {
+        if (is_nonblock(fd)) {
+                /* A non-blocking TCP write takes what fits, not all of it. */
+                const struct iovec piece = {(void *)buf, size};
+                const long         r = socket_io(fd, &piece, 1, 1);
+                if (r != -ENOTSOCK) return r;
+        }
         const long g = io_gate(fd, 1);
         if (g <= 0) return g;
         if (is_nonblock(fd)) {
@@ -463,6 +483,10 @@ static long do_close(long fd) {
 }
 
 static long io_vector(long fd, const struct iovec *v, long count, int writing) {
+        if (is_nonblock(fd)) {
+                const long r = socket_io(fd, v, count, writing);
+                if (r != -ENOTSOCK) return r;
+        }
         const long g = io_gate(fd, writing);
         if (g <= 0) return g;
         long total = 0;
@@ -738,6 +762,8 @@ static long tc_set(long fd, const struct termios *t) {
         return 0;
 }
 
+static long net_ioctl(unsigned long request, void *arg);
+
 static long do_ioctl(long fd, unsigned long request, void *arg) {
         /* OSS: /dev/dsp's 'P' requests and /dev/mixer's 'M' (oss.c). */
         const unsigned long type = request >> 8 & 0xff;
@@ -785,6 +811,19 @@ static long do_ioctl(long fd, unsigned long request, void *arg) {
                 case TCXONC:
                 case TCSBRK:
                 case TIOCSCTTY: return bmds_isatty((int32_t)fd) == 1 ? 0 : -ENOTTY;
+                case FIONBIO:
+                        if (arg == NULL) return -EFAULT;
+                        set_nonblock(fd, *(const int *)arg != 0);
+                        return 0;
+                case SIOCGIFCONF:
+                case SIOCGIFNAME:
+                case SIOCGIFINDEX:
+                case SIOCGIFMTU:
+                case SIOCGIFFLAGS:
+                case SIOCGIFADDR:
+                case SIOCGIFNETMASK:
+                case SIOCGIFBRDADDR:
+                case SIOCGIFHWADDR: return net_ioctl(request, arg);
                 default: return -ENOTTY;
         }
 }
@@ -1182,6 +1221,29 @@ static long do_sysinfo(struct sysinfo *s) {
  * seconds and µs) then the fourteen counts from ru_maxrss on. RUSAGE_CHILDREN
  * is the children waited for, with theirs (0 from a kernel before
  * children_cpu_us). */
+/* setitimer/getitimer (ITIMER_REAL only: proc_timer, devplan/programs.md §18). On rv32 musl
+ * passes 32-bit timevals as longs: interval seconds, microseconds, then the value's. */
+static long do_itimer(long which, const long *set, long *old) {
+        if (!bmds_sys_has(BMDS_SYS_PROC_TIMER)) return -ENOSYS;
+        bmds_timer_t want = {sizeof(want), 0, 0, 0};
+        bmds_timer_t was = {sizeof(was), 0, 0, 0};
+        if (set != NULL) {
+                if (set[0] < 0 || set[1] < 0 || set[1] >= 1000000 || set[2] < 0 || set[3] < 0 || set[3] >= 1000000)
+                        return -EINVAL;
+                want.interval_us = (uint64_t)set[0] * 1000000u + (uint64_t)set[1];
+                want.value_us = (uint64_t)set[2] * 1000000u + (uint64_t)set[3];
+        }
+        const int32_t r = bmds_proc_timer((uint32_t)which, set != NULL ? &want : NULL, old != NULL ? &was : NULL);
+        if (r < 0) return r;
+        if (old != NULL) {
+                old[0] = (long)(was.interval_us / 1000000u);
+                old[1] = (long)(was.interval_us % 1000000u);
+                old[2] = (long)(was.value_us / 1000000u);
+                old[3] = (long)(was.value_us % 1000000u);
+        }
+        return 0;
+}
+
 static long do_getrusage(long who, long *k) {
         if (who != RUSAGE_SELF && who != RUSAGE_CHILDREN && who != RUSAGE_THREAD) return -EINVAL;
         memset(k, 0, 18 * sizeof(long));
@@ -1425,6 +1487,197 @@ static long do_pipe2(int *fds, long flags) {
         return 0;
 }
 
+/* --- Sockets (network.md §18) ----------------------------------------------
+ *
+ * The kernel's slots take Linux's sockaddr layouts and option numbers as they
+ * are; what Linux keeps per open file (O_NONBLOCK) is this layer's, so a call
+ * on a non-blocking descriptor asks the kernel not to wait. musl's msghdr and
+ * iovec are Linux's 32-bit layouts: the kernel's take them field by field. */
+
+static int have_sockets(void) {
+        return bmds_sys_has(BMDS_SYS_SOCKET);
+}
+
+static uint32_t dont_wait(long fd) {
+        return is_nonblock(fd) ? BMDS_SOCK_DONTWAIT : 0;
+}
+
+static uint32_t msg_flags(long fd, long flags) {
+        return (uint32_t)flags | (is_nonblock(fd) ? BMDS_MSG_DONTWAIT : 0);
+}
+
+static long do_socket(long domain, long type, long protocol) {
+        if (domain != AF_INET || !have_sockets()) return -EAFNOSUPPORT;
+        if (type & ~(0xf | SOCK_NONBLOCK | SOCK_CLOEXEC)) return -EINVAL;
+        const int32_t fd = bmds_socket(AF_INET, (uint32_t)(type & 0xf), (uint32_t)protocol,
+                                       (type & SOCK_CLOEXEC) ? BMDS_SOCK_CLOEXEC : 0);
+        if (fd >= 0) set_nonblock(fd, (type & SOCK_NONBLOCK) != 0);
+        return (long)(fd);
+}
+
+static long do_accept(long fd, void *addr, socklen_t *length, long flags) {
+        if (!have_sockets()) return -ENOTSOCK;
+        if (flags & ~(SOCK_NONBLOCK | SOCK_CLOEXEC)) return -EINVAL;
+        const int32_t r = bmds_accept((int32_t)fd, addr, (uint32_t *)length,
+                                      ((flags & SOCK_CLOEXEC) ? BMDS_SOCK_CLOEXEC : 0) | dont_wait(fd));
+        if (r >= 0) set_nonblock(r, (flags & SOCK_NONBLOCK) != 0);
+        return (long)(r);
+}
+
+static void to_kernel(const struct msghdr *m, bmds_msghdr_t *k) {
+        k->size = sizeof(*k);
+        k->name = m->msg_name;
+        k->name_length = m->msg_namelen;
+        k->iov = (const bmds_iovec_t *)m->msg_iov;
+        k->iov_count = (uint32_t)m->msg_iovlen;
+        k->control = m->msg_control;
+        k->control_length = m->msg_controllen;
+        k->flags = 0;
+        return;
+}
+
+static long do_sendmsg(long fd, const struct msghdr *m, long flags) {
+        if (!have_sockets()) return -ENOTSOCK;
+        if (m == NULL) return -EFAULT;
+        bmds_msghdr_t k;
+        to_kernel(m, &k);
+        return (long)(bmds_sendmsg((int32_t)fd, &k, msg_flags(fd, flags)));
+}
+
+static long do_recvmsg(long fd, struct msghdr *m, long flags) {
+        if (!have_sockets()) return -ENOTSOCK;
+        if (m == NULL) return -EFAULT;
+        bmds_msghdr_t k;
+        to_kernel(m, &k);
+        const int32_t r = bmds_recvmsg((int32_t)fd, &k, msg_flags(fd, flags));
+        if (r >= 0) {
+                m->msg_namelen = k.name_length;
+                m->msg_controllen = k.control_length;
+                m->msg_flags = (int)k.flags;
+        }
+        return (long)(r);
+}
+
+static long do_sendto(long fd, const void *buf, size_t size, long flags, const void *addr, socklen_t length) {
+        if (!have_sockets()) return -ENOTSOCK;
+        const bmds_iovec_t piece = {(void *)buf, (uint32_t)size};
+        bmds_msghdr_t      k = {.size = sizeof(k),
+                                .name = (void *)addr,
+                                .name_length = addr != NULL ? length : 0,
+                                .iov = &piece,
+                                .iov_count = 1};
+        return (long)(bmds_sendmsg((int32_t)fd, &k, msg_flags(fd, flags)));
+}
+
+static long do_recvfrom(long fd, void *buf, size_t size, long flags, void *addr, socklen_t *length) {
+        if (!have_sockets()) return -ENOTSOCK;
+        const bmds_iovec_t piece = {buf, (uint32_t)size};
+        bmds_msghdr_t      k = {.size = sizeof(k),
+                                .name = addr,
+                                .name_length = length != NULL ? *length : 0,
+                                .iov = &piece,
+                                .iov_count = 1};
+        const int32_t      r = bmds_recvmsg((int32_t)fd, &k, msg_flags(fd, flags));
+        if (r >= 0 && length != NULL) *length = k.name_length;
+        return (long)(r);
+}
+
+/* sendmmsg and recvmmsg: one message at a time; what was done before an error counts. */
+static long do_mmsg(long fd, struct mmsghdr *v, unsigned long count, long flags, int sending) {
+        unsigned long i = 0;
+        for (; i < count; ++i) {
+                const long r = sending ? do_sendmsg(fd, &v[i].msg_hdr, flags) : do_recvmsg(fd, &v[i].msg_hdr, flags);
+                if (r < 0) return i > 0 ? (long)i : r;
+                v[i].msg_len = (unsigned)r;
+                if (!sending && (flags & MSG_WAITFORONE)) flags |= MSG_DONTWAIT;
+        }
+        return (long)i;
+}
+
+/* A non-blocking read or write on @p fd as a socket call: -ENOTSOCK if it isn't one. */
+static long socket_io(long fd, const struct iovec *v, long count, int writing) {
+        if (!have_sockets()) return -ENOTSOCK;
+        const bmds_msghdr_t k = {.size = sizeof(k), .iov = (const bmds_iovec_t *)v, .iov_count = (uint32_t)count};
+        return writing ? (long)(bmds_sendmsg((int32_t)fd, &k, BMDS_MSG_DONTWAIT))
+                       : (long)(bmds_recvmsg((int32_t)fd, (bmds_msghdr_t *)&k, BMDS_MSG_DONTWAIT));
+}
+
+/* The interface named @p name (or with index @p index when the name is NULL). */
+static int net_find(const char *name, int index, bmds_net_info_t *info) {
+        if (!have_sockets()) return -ENODEV;
+        for (uint32_t i = 0;; ++i) {
+                memset(info, 0, sizeof(*info));
+                info->size = sizeof(*info);
+                if (bmds_net_info(i, info) < 0) return -ENODEV;
+                if (name != NULL ? strncmp(info->name, name, IFNAMSIZ) == 0 : (int)info->index == index) return 0;
+        }
+}
+
+static void put_ipv4(struct sockaddr *out, uint32_t address) {
+        struct sockaddr_in in = {.sin_family = AF_INET, .sin_addr = {.s_addr = address}};
+        memcpy(out, &in, sizeof(in));
+        return;
+}
+
+/* The interface ioctls (netdevice(7)): reading only; sysconf sets addresses. */
+static long net_ioctl(unsigned long request, void *arg) {
+        if (arg == NULL) return -EFAULT;
+        if (request == SIOCGIFCONF) {
+                struct ifconf  *c = arg;
+                const int       room = c->ifc_req != NULL ? c->ifc_len / (int)sizeof(struct ifreq) : 0;
+                int             n = 0;
+                bmds_net_info_t info;
+                for (uint32_t i = 0; have_sockets(); ++i) {
+                        info.size = sizeof(info);
+                        if (bmds_net_info(i, &info) < 0) break;
+                        if (info.address == 0) continue; /* Linux lists those with an address */
+                        if (c->ifc_req != NULL) {
+                                if (n == room) break;
+                                struct ifreq *r = &c->ifc_req[n];
+                                memset(r, 0, sizeof(*r));
+                                strncpy(r->ifr_name, info.name, IFNAMSIZ - 1);
+                                put_ipv4(&r->ifr_addr, info.address);
+                        }
+                        ++n;
+                }
+                c->ifc_len = n * (int)sizeof(struct ifreq);
+                return 0;
+        }
+        struct ifreq   *r = arg;
+        bmds_net_info_t info;
+        const int       found =
+                request == SIOCGIFNAME ? net_find(NULL, r->ifr_ifindex, &info) : net_find(r->ifr_name, 0, &info);
+        if (found < 0) return found;
+        switch (request) {
+                case SIOCGIFNAME: strncpy(r->ifr_name, info.name, IFNAMSIZ - 1); return 0;
+                case SIOCGIFINDEX: r->ifr_ifindex = (int)info.index; return 0;
+                case SIOCGIFMTU: r->ifr_mtu = (int)info.mtu; return 0;
+                case SIOCGIFFLAGS:
+                        r->ifr_flags = (short)(((info.flags & BMDS_NET_UP) ? IFF_UP : 0) |
+                                               ((info.flags & BMDS_NET_LINK) ? IFF_RUNNING : 0) |
+                                               ((info.flags & BMDS_NET_BROADCAST) ? IFF_BROADCAST : 0) |
+                                               ((info.flags & BMDS_NET_LOOPBACK) ? IFF_LOOPBACK : 0) |
+                                               ((info.flags & BMDS_NET_MULTICAST) ? IFF_MULTICAST : 0));
+                        return 0;
+                case SIOCGIFADDR:
+                case SIOCGIFNETMASK:
+                case SIOCGIFBRDADDR: {
+                        if (info.address == 0) return -EADDRNOTAVAIL;
+                        const uint32_t a = request == SIOCGIFADDR      ? info.address
+                                           : request == SIOCGIFNETMASK ? info.netmask
+                                                                       : (info.address | ~info.netmask);
+                        put_ipv4(&r->ifr_addr, a);
+                        return 0;
+                }
+                case SIOCGIFHWADDR:
+                        memset(&r->ifr_hwaddr, 0, sizeof(r->ifr_hwaddr));
+                        r->ifr_hwaddr.sa_family = (info.flags & BMDS_NET_LOOPBACK) ? ARPHRD_LOOPBACK : ARPHRD_ETHER;
+                        memcpy(r->ifr_hwaddr.sa_data, info.mac, sizeof(info.mac));
+                        return 0;
+                default: return -ENOTTY;
+        }
+}
+
 /* Called by the startup code before musl starts. */
 void __bmds_linux_start(void) {
         started_ns = now(BMDS_CLOCK_MONOTONIC);
@@ -1549,7 +1802,8 @@ static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 }
                 case SYS_times: return do_times((struct tms *)a);
                 case SYS_getrusage: return do_getrusage(a, (long *)b);
-                case SYS_setitimer: return -ENOSYS; /* alarm() needs signals from outside */
+                case SYS_setitimer: return do_itimer(a, (const long *)b, (long *)c);
+                case SYS_getitimer: return do_itimer(a, NULL, (long *)b);
 
                 /* Memory */
                 case SYS_mmap2: return do_mmap((size_t)b, c, d, e, f);
@@ -1611,8 +1865,39 @@ static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 case SYS_pselect6_time64:
                         return do_select(a, (fd_set *)b, (fd_set *)c, (fd_set *)d, (const void *)e, (const long *)f);
 
-                /* No sockets; no fork (SYS_clone: vfork.S handles CLONE_VFORK). */
-                case SYS_socket: return -EAFNOSUPPORT;
+                /* Sockets */
+                case SYS_socket: return do_socket(a, b, c);
+                case SYS_socketpair: return -EAFNOSUPPORT; /* no AF_UNIX yet */
+                case SYS_bind:
+                        return have_sockets() ? (long)(bmds_bind((int32_t)a, (const void *)b, (uint32_t)c)) : -ENOTSOCK;
+                case SYS_listen: return have_sockets() ? (long)(bmds_listen((int32_t)a, (int32_t)b)) : -ENOTSOCK;
+                case SYS_accept: return do_accept(a, (void *)b, (socklen_t *)c, 0);
+                case SYS_accept4: return do_accept(a, (void *)b, (socklen_t *)c, d);
+                case SYS_connect:
+                        if (!have_sockets()) return -ENOTSOCK;
+                        return (long)(bmds_connect((int32_t)a, (const void *)b, (uint32_t)c, dont_wait(a)));
+                case SYS_getsockname:
+                case SYS_getpeername:
+                        if (!have_sockets()) return -ENOTSOCK;
+                        return (long)(bmds_sock_name((int32_t)a,
+                                                     n == SYS_getsockname ? BMDS_SOCK_NAME_LOCAL : BMDS_SOCK_NAME_PEER,
+                                                     (void *)b, (uint32_t *)c));
+                case SYS_sendto: return do_sendto(a, (const void *)b, (size_t)c, d, (const void *)e, (socklen_t)f);
+                case SYS_recvfrom: return do_recvfrom(a, (void *)b, (size_t)c, d, (void *)e, (socklen_t *)f);
+                case SYS_sendmsg: return do_sendmsg(a, (const struct msghdr *)b, c);
+                case SYS_recvmsg: return do_recvmsg(a, (struct msghdr *)b, c);
+                case SYS_sendmmsg: return do_mmsg(a, (struct mmsghdr *)b, (unsigned long)c, d, 1);
+                case SYS_recvmmsg_time64: return do_mmsg(a, (struct mmsghdr *)b, (unsigned long)c, d, 0);
+                case SYS_setsockopt:
+                        if (!have_sockets()) return -ENOTSOCK;
+                        return (long)(bmds_setsockopt((int32_t)a, (int32_t)b, (int32_t)c, (const void *)d,
+                                                      (uint32_t)e));
+                case SYS_getsockopt:
+                        if (!have_sockets()) return -ENOTSOCK;
+                        return (long)(bmds_getsockopt((int32_t)a, (int32_t)b, (int32_t)c, (void *)d, (uint32_t *)e));
+                case SYS_shutdown: return have_sockets() ? (long)(bmds_shutdown((int32_t)a, (uint32_t)b)) : -ENOTSOCK;
+
+                /* No fork (SYS_clone: vfork.S handles CLONE_VFORK). */
                 default: return -ENOSYS;
         }
 }
@@ -1628,7 +1913,13 @@ static int restartable(long n) {
                 case SYS_pwrite64:
                 case SYS_ioctl:
                 case SYS_waitid:
-                case SYS_openat: return 1;
+                case SYS_openat:
+                case SYS_accept:
+                case SYS_accept4:
+                case SYS_sendto:
+                case SYS_recvfrom:
+                case SYS_sendmsg:
+                case SYS_recvmsg: return 1;
                 default: return 0;
         }
 }

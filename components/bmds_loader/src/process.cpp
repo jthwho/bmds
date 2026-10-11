@@ -315,6 +315,19 @@ int32_t Process::errnoFor(Error err) {
                 case Error::Interrupted: return -BMDS_EINTR;
                 case Error::BrokenPipe: return -BMDS_EPIPE;
                 case Error::NoMedia: return -BMDS_ENOMEDIUM;
+                case Error::AddressInUse: return -BMDS_EADDRINUSE;
+                case Error::AddressNotAvailable: return -BMDS_EADDRNOTAVAIL;
+                case Error::ConnectionRefused: return -BMDS_ECONNREFUSED;
+                case Error::ConnectionReset: return -BMDS_ECONNRESET;
+                case Error::ConnectionAborted: return -BMDS_ECONNABORTED;
+                case Error::NotConnected: return -BMDS_ENOTCONN;
+                case Error::AlreadyConnected: return -BMDS_EISCONN;
+                case Error::InProgress: return -BMDS_EINPROGRESS;
+                case Error::AlreadyInProgress: return -BMDS_EALREADY;
+                case Error::NetworkDown: return -BMDS_ENETDOWN;
+                case Error::NetworkUnreachable: return -BMDS_ENETUNREACH;
+                case Error::HostUnreachable: return -BMDS_EHOSTUNREACH;
+                case Error::MessageTooLong: return -BMDS_EMSGSIZE;
                 default: return -BMDS_EIO;
         }
 }

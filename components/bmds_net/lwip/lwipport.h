@@ -6,12 +6,15 @@
  * See LICENSE file in the project root folder for license information.
  *
  * What lwIP needs from BMDS (devplan/network.md §15), as C: the heap's
- * block, the core lock's check, random numbers, and calls queued for the
- * network task. The network stack defines them on the target, the host
+ * block, the core lock's check, random numbers, calls queued for the
+ * network task, interfaces by BMDS's names, DHCP's options lwIP skips, and
+ * the names the resolver knows itself. The network stack defines them on the target, the host
  * tests their own.
  */
 
 #pragma once
+
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -40,6 +43,30 @@ typedef void (*tcpip_callback_fn)(void *ctx);
 int bmds_lwip_schedule(tcpip_callback_fn fn, void *ctx);
 
 #define tcpip_try_callback(fn, ctx) ((err_t)bmds_lwip_schedule((fn), (ctx)))
+
+struct netif;
+
+/**
+ * @brief The interface BMDS calls @p name ("eth0", "lo"), or null: lwIP's own names are two
+ *        letters and a number. Core lock held.
+ */
+struct netif *bmds_netif_named(const char *name);
+
+struct pbuf;
+
+/**
+ * @brief Option @p option of a DHCP message of type @p type, @p length bytes at @p offset in
+ *        @p p, one lwIP doesn't handle (`LWIP_HOOK_DHCP_PARSE_OPTION`): DNS and NTP servers.
+ */
+void bmds_dhcp_option(struct netif *netif, unsigned int type, unsigned int option, unsigned int length,
+                      const struct pbuf *p, unsigned int offset);
+
+/**
+ * @brief A name the resolver answers itself (`DNS_LOOKUP_LOCAL_EXTERN`): localhost, the host
+ *        name, `net/hosts`. @p address is an `ip_addr_t`.
+ * @return 0 with @p address set, or -1.
+ */
+int bmds_dns_local(const char *name, size_t length, void *address);
 
 #ifdef __cplusplus
 }

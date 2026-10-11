@@ -21,6 +21,7 @@
 #include <bmds/string.h>
 
 #include "netinterface.h"
+#include "netnames.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -378,6 +379,28 @@ void NetInterface::apply(Mode was) {
 void NetInterface::statusChanged(struct netif *netif) {
         auto &n = *static_cast<NetInterface *>(netif->state);
         if (!n._applying) n.logAddress();
+        // A lease lost takes its servers with it.
+        if (ip4_addr_isany_val(*netif_ip4_addr(netif)) || n._mode != Mode::Dhcp) {
+                n._leaseServers = LeaseServers{};
+                NetNames::serversChanged();
+        }
+        return;
+}
+
+void NetInterface::dhcpOption(unsigned int type, unsigned int option, unsigned int length, const struct pbuf *p,
+                              unsigned int offset) {
+        constexpr unsigned int Ack = 5;
+        constexpr unsigned int Dns = 6;
+        constexpr unsigned int Ntp = 42;
+        if (type != Ack || (option != Dns && option != Ntp)) return;
+        uint32_t    servers[2] = {};
+        const u16_t n = static_cast<u16_t>(length / 4 < 2 ? length / 4 * 4 : 8);
+        if (pbuf_copy_partial(p, servers, n, static_cast<u16_t>(offset)) != n) return;
+        uint32_t(&kept)[2] = option == Dns ? _leaseServers.dns : _leaseServers.ntp;
+        if (kept[0] == servers[0] && kept[1] == servers[1]) return;
+        kept[0] = servers[0];
+        kept[1] = servers[1];
+        NetNames::serversChanged();
         return;
 }
 

@@ -508,7 +508,8 @@ The P4's engines (ESP-IDF's `soc_caps.h`):
 |---|---|---|
 | 1 | **Driver.** EMAC and IP101 bring-up; read the feature register (AV channels?); rings, zero-copy buffers, the 1588 clock running, link timer; `net` shows link and counters. **Done** (§14). | Frames out and in (an ARP request answered by hand); the feature register's answer in `docs/platforms/esp32p4.md` |
 | 2 | **lwIP.** Vendored; `Netif` glue; DHCP or static from sysconf (live); ARP, ICMP, IGMP and the MAC filters; `lo`; the shell's `ping`. Host tests: lwIP builds on the host against a loopback netif. **Done** (§16). | Ping both ways, DHCP lease, `net` shows addresses and groups; flood ping without leaks |
-| 3 | **Sockets.** `Socket` as a `Stream`; the slots; `linux.c` (sockets, ioctls); the `/etc` pseudo filesystem; DNS. | BusyBox `nc`, `wget`, `telnet` and `ping` work; `poll` over sockets; throughput measured (TCP both ways) |
+| 3 | **Sockets.** `Socket` as a `Stream`; the slots; `linux.c` (sockets, ioctls); the `/etc` pseudo filesystem; DNS (§18). | BusyBox `nc`, `wget`, `telnet` and `ping` work; `poll` over sockets; throughput measured (TCP both ways) |
+| 3a | **The tray's network icon** (§17). `NetStatus` (public kernel API, change-driven), the SDK's calls for it; `NetworkStatus` in the panel's tray; `panel/tray/network`. | Unplugging and replugging the cable, DHCP and static changes and `enabled` off show in the icon and the tooltip at once, with no timer running |
 | 4 | **NTP and mDNS.** The kernel NTP client disciplining the clock; `ntp`; `${HOSTNAME}.local`. | The clock within a few ms of the pool after a boot; `ping bmds-….local` from a PC |
 | 5 | **SSH.** Dropbear (server, client, scp) as SDK programs; the `secret` setting type, `system/password` and `passwd`; host keys; authorized keys; the server's on/off setting; our `sftp-server`. | `ssh` with a key and with a password, `scp`, `sftp`, `sshfs` and a file manager's `sftp://` from Linux; `ssh`/`scp` from the board to Linux |
 | 5a | **Crypto.** `bmds_crypto` over the engines; SDK calls; Dropbear's hardware descriptors; software-against-hardware measurements decide the server's algorithm offer. | Transfer speed and login time measured both ways, recorded here |
@@ -662,3 +663,229 @@ The P4's engines (ESP-IDF's `soc_caps.h`):
   each. `MulticastFilter`, `Ipv4` (CIDR), `declareKernel()`.
 - **Not yet:** checksum offload (§15), the receive path's copy threshold under TCP (step 3),
   DNS (step 3), hardware stamps for lwIP's sockets (step 6).
+
+## 17. The tray's network icon (the user's, 2026-10-11)
+
+A network icon in the panel's tray, its tooltip the state of every interface. Step 3a, after the
+sockets' ABI (step 3), whose slots it appends to.
+
+- **Where:** `NetworkStatus`, a `TrayIcon` in the panel's process (category Hardware), as the
+  volume control and the CPU meter are (`gui.md` §4s, `sysmon.md` §3.5): no process or task of its
+  own. It uses only public API (the built-in apps' rule).
+- **What it reads: `NetStatus`**, a new public kernel API (`bmds/netstatus.h`), so the panel never
+  sees lwIP or the driver:
+  - `count()`, and `info(index, Info &)`: a snapshot taken under the core lock. `Info`: the name,
+    MAC address, enabled, link (up, speed, duplex), the IPv4 mode (DHCP, static, off), address and
+    prefix, gateway, DHCP's state (asking, bound), server and lease left; counters (bytes and
+    frames each way, errors). Later steps add DNS servers (3), NTP's sync (4) and PTP's state (7).
+  - **Change-driven:** a watch released on every change to any of it but the counters (link,
+    addresses, DHCP's state, settings). The tray icon waits on it in the toolkit's loop, as it
+    waits on sysconf's watches: no timer. The lease's time left is worked out when the tooltip is
+    drawn.
+  - `renewLease(index)` for the menu below.
+  - **For programs** the same as SDK calls: `bmds_net_info(index, bmds_net_info_t *)` (a
+    boundary struct starting with `uint32_t size`), brought forward to step 3 for the interface
+    `ioctl`s (§18), and `bmds_net_watch()` (step 3a appends it), a descriptor that is readable
+    after a change (as `sysconf_watch` is).
+- **The icon:** the theme's `network-wired`, drawn in four states:
+  - connected (an interface has a link and an address);
+  - acquiring (a link but no address yet: DHCP asking, or static without one), amber;
+  - no link (cable out), dimmed with a cross;
+  - off (every interface disabled or `ipv4/mode` off), dimmed.
+  With several interfaces it shows the best one's state.
+- **The tooltip**, one block per interface:
+
+  ```
+  eth0: connected, 100 Mbit/s full duplex
+    172.20.200.221/16, gateway 172.20.0.1
+    DHCP from 172.20.0.1, lease 1 h 52 min left
+    MAC e8:f6:0a:e2:e2:22
+  ```
+
+  - static: "static" in the DHCP line's place; no link: "eth0: cable unplugged"; off: "eth0: off".
+  - Later lines: DNS servers (step 3), "clock synced to pool.ntp.org" (step 4), the PTP role and
+    offset (step 7).
+- **A click:** a menu with the same lines; Copy Address; Renew Lease (DHCP only); Network
+  Settings... (the control panel, later); Remove from Panel.
+- **`panel/tray/network`** (bool, default true; `gui.md` §4t), as `panel/tray/cpu`.
+- **Proposed, not decided:** a notification when a link goes down or comes up, or an address is
+  gained or lost (`notifications.md`), off by default.
+
+## 18. Step 3's design: sockets, `/etc`, DNS (2026-10-11)
+
+- **The kernel's `Socket`** (`bmds_net`, public `bmds/socket.h`, no lwIP types in it) is a
+  `Stream`, so descriptors, `read`/`write`, `dup`, inheritance, `poll` and `close` work as they do
+  for pipes (§7). Step 3 has `AF_INET` with `SOCK_STREAM` (TCP), `SOCK_DGRAM` (UDP) and
+  `SOCK_RAW` with `IPPROTO_ICMP` (BusyBox `ping`). `AF_PACKET` comes with PTP (step 6/7); `AF_UNIX`
+  and with it `socketpair` after the first SSH (step 5).
+  - **lwIP's raw API under the core lock**, in the caller's task: a call locks, works on its PCB,
+    unlocks, and waits outside the lock (`Interrupt::waitCurrent`, so Ctrl-C and signals give
+    `EINTR`). lwIP's callbacks (received, sent, accepted, connected, error) run in the network
+    task, change the socket's state, release its semaphores and notify its `WaitList` (`poll`).
+    lwIP's `sockets.c` and `netconn` stay unbuilt.
+  - **Memory:** a socket is one `Psram` allocation (about 200 bytes), freed when its last handle
+    closes. Data waiting lives in lwIP's heap (256 KB of PSRAM): TCP keeps the received pbufs and
+    opens its window as they are read (`TCP_WND`, 8 segments); UDP and raw sockets queue
+    datagrams with their source up to the receive buffer (`SO_RCVBUF`, 16 KB by default) and
+    count what they drop. A pbuf over a driver buffer that a socket holds counts against the
+    receive path's copy threshold (`MaxHeld`, §15), which step 3 measures under TCP.
+  - **Sending:** TCP copies into lwIP's send buffer (`TCP_SND_BUF`, 8 segments) and waits for
+    the `sent` callback when it is full; one `tcp_output` per call. UDP and raw: a pbuf per
+    datagram, sent at once.
+  - **Listening:** lwIP's backlog; each connection lwIP accepts gets its socket at once (data may
+    arrive before `accept()`), queued on the listener until `accept()` takes it.
+  - **Closing** (the last handle): a TCP socket with unread data is reset, as Linux does;
+    otherwise `tcp_close`, and lwIP finishes sending and closing on its own (`SO_LINGER` with 0
+    resets). The PCB's callbacks are cut first, so nothing reaches a freed socket.
+  - **Not waiting:** every socket call that can wait takes `MSG_DONTWAIT` (Linux's value) in its
+    flags: `sendmsg`, `recvmsg`, `accept` and `connect` (which then answers `EINPROGRESS`; `poll`
+    for writable and `SO_ERROR` tell the outcome). `O_NONBLOCK` stays `linux.c`'s, per descriptor
+    (programs.md §16); `linux.c` passes `MSG_DONTWAIT` for a non-blocking descriptor, and its
+    non-blocking `read`/`write` try `recvmsg`/`sendmsg` first (`ENOTSOCK` falls back), so a
+    non-blocking TCP write takes what fits instead of waiting for all of it.
+  - **Readiness:** readable with data, a connection to accept, the peer's FIN (reads end) or an
+    error; writable with room in the send buffer, or once a connect has ended; an error or reset
+    sets `HungUp` and `Broken` (`POLLHUP`, `POLLERR`). Writing after a reset gives `EPIPE` and
+    `SIGPIPE`, unless `MSG_NOSIGNAL`.
+  - **Options** (Linux's numbers): `SO_REUSEADDR`, `SO_KEEPALIVE` with `TCP_KEEPIDLE`,
+    `TCP_KEEPINTVL`, `TCP_KEEPCNT`; `SO_RCVBUF`, `SO_SNDBUF` (the fixed size), `SO_RCVTIMEO`,
+    `SO_SNDTIMEO` (kept in the kernel, so `read` honours them), `SO_ERROR`, `SO_TYPE`,
+    `SO_DOMAIN`, `SO_PROTOCOL`, `SO_ACCEPTCONN`, `SO_BROADCAST`, `SO_LINGER`, `SO_BINDTODEVICE`;
+    `TCP_NODELAY`; `IP_TTL`, `IP_TOS`, `IP_ADD_MEMBERSHIP`, `IP_DROP_MEMBERSHIP`,
+    `IP_MULTICAST_IF`, `IP_MULTICAST_TTL`, `IP_MULTICAST_LOOP`. Others answer `ENOPROTOOPT`.
+    `SO_TIMESTAMPING`, `SO_PRIORITY` and `SO_BMDS_FASTPATH` are step 6's.
+- **The ABI: 12 slots appended** (96-107), each socket slot's address in Linux's `sockaddr`
+  layouts with its length (so `AF_INET6`, `AF_PACKET` and `AF_UNIX` need no new slots):
+  - `socket(family, type, protocol, flags)`: `flags` `BMDS_SOCK_CLOEXEC`;
+  - `bind(fd, addr, len)`, `listen(fd, backlog)`;
+  - `accept(fd, addr, len *, flags)`: `BMDS_SOCK_CLOEXEC` for the new one, `BMDS_SOCK_DONTWAIT`;
+  - `connect(fd, addr, len, flags)`: `BMDS_SOCK_DONTWAIT`;
+  - (`accept` and `connect` have BMDS's own flag: `BMDS_O_CLOEXEC` is 0x40, Linux's
+    `MSG_DONTWAIT`, so the two can't share a word. `sendmsg` and `recvmsg` take Linux's
+    `MSG_*`);
+  - `sock_name(fd, which, addr, len *)`: its own address or the peer's (one slot for
+    `getsockname` and `getpeername`);
+  - `sendmsg(fd, const bmds_msghdr_t *, flags)`, `recvmsg(fd, bmds_msghdr_t *, flags)`:
+    `bmds_msghdr_t` starts with `uint32_t size` (`docs/ABI.md`); its `iovec`s and control
+    messages are Linux's layouts. `send`, `recv`, `sendto` and `recvfrom` are these in `linux.c`;
+  - `setsockopt(fd, level, name, value, len)`, `getsockopt(fd, level, name, value, len *)`;
+  - `shutdown(fd, how)`;
+  - `net_info(index, bmds_net_info_t *)`: one interface's state, step 3a's `NetStatus::info()`
+    brought forward because `linux.c` needs it for the interface `ioctl`s (`SIOCGIFCONF`,
+    `SIOCGIFADDR`, `SIOCGIFNETMASK`, `SIOCGIFBRDADDR`, `SIOCGIFFLAGS`, `SIOCGIFHWADDR`,
+    `SIOCGIFINDEX`, `SIOCGIFNAME`, `SIOCGIFMTU`) and `if_nametoindex`. Setting addresses is
+    sysconf's. musl's `getifaddrs` and `if_nameindex` use netlink, which the plan leaves out:
+    they fail for now (step 5 decides whether Dropbear needs them).
+  - `sys.h` gets `bmds_sockaddr_in_t`, `bmds_iovec_t`, `bmds_msghdr_t`, `bmds_net_info_t` and the
+    family, type and flag constants the slots use; option numbers are Linux's.
+- **`/etc`** (§8): a virtual directory in the VFS, as `/share/zoneinfo` is. Components register
+  its files at boot (`Vfs::addEtcFile(name, generate)`); opening one runs its generator into a
+  read-only, seekable memory stream (`Psram`), so a file is a snapshot of the settings when it
+  was opened. `stat` says 0 bytes, as Linux's `/proc` does: a generator reads settings, whose
+  store is on `/boot`, so it never runs under the VFS's lock (sysconf writes `/boot` under its
+  own). Step 3's files:
+  - `resolv.conf`: `nameserver` for each of `net/dns/servers`, or DHCP's when that is empty;
+    `search` from `net/dns/search`;
+  - `hosts`: `127.0.0.1 localhost`, each interface's address with `system/hostname`, and
+    `net/hosts`;
+  - `hostname`;
+  - `services` and `protocols`: rodata tables of the common ones.
+  `passwd` and `group` come with Dropbear (step 5), which decides the user's shell and home.
+- **DNS:**
+  - In programs, musl's resolver, from `/etc/resolv.conf` and `/etc/hosts`: nothing in the kernel.
+  - In the kernel, lwIP's `dns.c` (`LWIP_DNS`) for the shell's `ping NAME` now and NTP in step 4,
+    with `net/hosts` as its local table.
+  - DHCP's DNS servers (option 6) are caught by `LWIP_HOOK_DHCP_PARSE_OPTION` per interface,
+    not by lwIP's own handling (which would overwrite the setting); the same hook takes NTP's
+    (option 42) for step 4. `net/dns/servers` wins when set.
+  - New keys: `net/dns/servers`, `net/dns/search`, `net/hosts` (§6's table), declared by
+    `bmds_net` and watched.
+- **Order of work:**
+  1. `Socket` with host tests: two lwIP interfaces back to back (§16), a thread standing in for
+     the network task, sockets used from test threads: TCP connect, accept, both ways, half
+     close, reset, refused, timeouts, `MSG_DONTWAIT`, readiness; UDP with multicast; ICMP raw.
+  2. The slots, `linux.c`, the ABI lock test; `sdk/tests` programs.
+  3. `/etc`, DNS, the DHCP hook; `ping NAME`.
+  4. BusyBox's `nc`, `wget`, `telnet`, `ping`, `nslookup` on (`dist/busybox/config`); TCP
+     throughput both ways (with `nc` and the host's `nc`; the host is on Wi-Fi, so a wired
+     peer's figure is wanted too); the network task's stack under TCP; the copy threshold;
+     the transmit FIFO and checksum offload (§15).
+
+## 19. As built: step 3 so far (2026-10-11)
+
+- **The kernel's `Socket`** (`bmds/socket.h`, `socket.cpp`), as §18 designed:
+  - TCP, UDP, and raw sockets of one protocol (ICMP), each a `Stream` in `Psram`, freed with its
+    last handle; lwIP's raw API under the core lock in the caller's task, waits outside it.
+  - TCP keeps lwIP's segments (window 8 segments); UDP and raw keep up to 16 datagrams or
+    `SO_RCVBUF` bytes (16 KB) and count what they drop. A datagram in a driver buffer is copied
+    as it is queued, so a socket nobody reads never holds the receive ring's buffers; raw
+    sockets always copy (lwIP goes on with the packet: ICMP answers the echo).
+  - Options are kept in the socket and applied to its PCB, and an accepted connection inherits
+    the listener's (lwIP's listening PCB has no room for most of them).
+  - A close with data unread, or `SO_LINGER` 0, resets; otherwise lwIP closes on its own. The
+    listener's connections not yet accepted close with it.
+  - New `Error` codes for sockets (`AddressInUse`, `ConnectionRefused`, `ConnectionReset`,
+    `InProgress`, `NetworkUnreachable`, ...), and their `BMDS_E*` numbers (Linux's).
+  - `NetStack::unlockQuietly()`: `poll` asks a socket's readiness under the lock without waking
+    the network task each time.
+  - `bmds_netif_named()` (the port): `SO_BINDTODEVICE` takes BMDS's names (`eth0`, `lo`), not
+    lwIP's two letters.
+- **The ABI:** slots 96-107 as §18 (with the flags noted there), `bmds_sockaddr_in_t`,
+  `bmds_iovec_t`, `bmds_msghdr_t` and `bmds_net_info_t` (120 bytes: an explicit reserved word
+  keeps its counters 8-aligned), all in the ABI lock. `netcalls.cpp` turns Linux's option
+  numbers, both `SO_RCVTIMEO` layouts (musl tries the 64-bit one first), `ip_mreq`/`ip_mreqn`
+  and `struct linger` into the socket's calls; a gone connection's send raises `SIGPIPE` unless
+  `MSG_NOSIGNAL`.
+- **`linux.c`:** the socket calls; `sendmmsg`/`recvmmsg` one message at a time; on a
+  non-blocking descriptor the calls pass the kernel's don't-wait flags, and `read`, `write`,
+  `readv` and `writev` try `recvmsg`/`sendmsg` first (`ENOTSOCK` falls back), so only
+  non-blocking descriptors pay for it; `FIONBIO`; the interface `ioctl`s from `net_info`
+  (`SIOCGIFCONF`, `NAME`, `INDEX`, `MTU`, `FLAGS`, `ADDR`, `NETMASK`, `BRDADDR`, `HWADDR`);
+  accept, send and receive restart after a handler with `SA_RESTART`. `if_nametoindex` fails:
+  musl's opens an `AF_UNIX` socket for its `ioctl`.
+- **`NetStatus`** (`bmds/netstatus.h`): `count()` and `info()` for `net_info`, `lo` first (the
+  interface index order). Step 3a adds its watch.
+- **Names (`netnames.cpp`):**
+  - lwIP's resolver on (4 entries, names to 128 bytes); DHCP's DNS and NTP servers caught from
+    the ACK by `LWIP_HOOK_DHCP_PARSE_OPTION` (lwIP's own use of them is off), dropped with the
+    lease; `net/dns/servers` wins when set.
+  - `DNS_LOOKUP_LOCAL_EXTERN` answers `localhost`, the host name and `net/hosts` itself.
+  - `NetStack::resolve()`: a lookup from any task, with a fixed pool of four; one that times
+    out keeps its slot until lwIP answers, so a late answer never reaches a dead stack.
+  - `ping` takes names (`ping pool.ntp.org`).
+  - `/etc`: `resolv.conf`, `hosts`, `hostname`, `services`, `protocols`.
+- **BusyBox:** `nc` (with `-l` and the extras), `wget`, `telnet`, `ping`, `nslookup` and
+  `/etc/services` lookups on. `nslookup` is the full one (`FEATURE_NSLOOKUP_BIG`): the small
+  one prints the server from glibc's `_res`, which musl hasn't (`can't resolve '(null)'`).
+- **Host tests:** the lwIP harness split out (`lwipwire.{h,cpp}`) with a network thread and the
+  core lock checked while it runs; `tests/host/socket.cpp`: TCP 200 KB one way and gathered
+  pieces back, half closes, refusals, connects and accepts without waiting, peeks, a receive
+  timeout, resets (linger 0, data unread), an interrupted receive, UDP (sources, a cut
+  datagram, the queue's drops, connected, shut), multicast with and without loopback, raw ICMP,
+  inherited options, a listener closed with connections waiting; lwIP's heap back where it was
+  after each. `/etc` in the VFS tests.
+- **Resources:** firmware 1 673 520 bytes (+29.2 KB on step 2).
+- **`lo`'s MTU** is 65535: lwIP leaves it 0, its "no limit", which programs would show
+  (`ifconfig`'s `MTU:0`). lwIP only takes the smaller of it and `TCP_MSS` for TCP, and checks
+  it for fragmenting, so nothing on the wire changes.
+- **On the board (2026-10-11),** the host on Wi-Fi through the office switch:
+  - `progtest net` passes; DHCP's DNS server reaches `/etc/resolv.conf`; `ping localhost`,
+    `ping bmds-e2e222` (the host name, answered locally), `ping example.com`; a missing name
+    fails at once with NXDOMAIN.
+  - `wget` 4 MB from the host in 1.8 s; BusyBox `nslookup`; `nc` echo to the host.
+  - TCP with `nc`, 8 MB each way: 19.4 Mbit/s in, 20.6-23.7 Mbit/s out, both about what this
+    host's Wi-Fi gives; a wired peer is still wanted for the board's own ceiling. Over
+    loopback (both ends, `dd` and the pipe on the board) 16 MB in 2.84 s, 47 Mbit/s.
+  - The network task used 2.2 KB of its 6 KB stack through all of it (the sending side runs
+    `tcp_output` in the caller's task); `eth0`'s task 1.8 KB of 4 KB; lwIP's heap at most
+    28 KB of 256 KB; no frame errors, missed frames or drops; 27 frames copied by the receive
+    threshold out of 17 560.
+  - BusyBox's small `nc` (without `NC_110_COMPAT`) ends when the network side ends, as on
+    Linux: a listener with `< /dev/null` half-closes at once and the sender stops early. Not
+    ours; the half-close itself carries 2 MB from this host to a board listener.
+- **Found missing, then built:** `alarm`/`setitimer` returned `ENOSYS` (left out in programs.md's
+  signals step), so BusyBox `ping` sent one request and waited, and `nc -w`, `wget -T` and
+  `timeout` couldn't time out. Now slot 108 (`proc_timer`, programs.md §18): `ping -c 3`,
+  `nc -w 1` (1.02 s), `wget -T 2` (2.02 s) and `timeout 1 sleep 5` behave as on Linux.
+- **Not yet looked at:** checksum offload and the transmit FIFO (§19's step 2 notes); a wired
+  peer; `telnet` against a server.

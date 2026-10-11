@@ -41,6 +41,7 @@ add_executable(bmds_host_tests
         audio.cpp
         blockdevice.cpp
         bytering.cpp
+        intervaltimers.cpp
         clipboard.cpp
         decoder.cpp
         edid.cpp
@@ -64,6 +65,8 @@ add_executable(bmds_host_tests
         list.cpp
         littlefs.cpp
         lwip.cpp
+        lwipwire.cpp
+        socket.cpp
         loader.cpp
         memorystream.cpp
         oss.cpp

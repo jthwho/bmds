@@ -38,6 +38,7 @@ namespace {
         constexpr unsigned int MaxSize = 8192;
         constexpr unsigned int DefaultIntervalMs = 1000;
         constexpr unsigned int DefaultWaitMs = 1000;
+        constexpr unsigned int ResolveTimeoutMs = 10'000; // lwIP's resolver gives up sooner
         constexpr unsigned int FloodWaitMs = 10; // flood: the next one goes after a reply, or this long
         constexpr size_t       Window = 64;      // send times kept, by sequence number
 
@@ -113,7 +114,8 @@ namespace {
                         unsigned long waitMs = DefaultWaitMs;
                         bool          flood = false;
                         bool          quiet = false;
-                        uint32_t      target = 0;
+                        const char   *host = nullptr; // a name or an address
+                        uint32_t      target = 0;     // its address
         };
 
         bool parseOptions(Span<char *const> args, Options &o) {
@@ -134,7 +136,7 @@ namespace {
                         } else if (std::strcmp(a, "-q") == 0) {
                                 o.quiet = true;
                         } else if (a[0] != '-' && !haveTarget) {
-                                if (!Ipv4::parse(StringView(a), o.target)) return false;
+                                o.host = a;
                                 haveTarget = true;
                         } else {
                                 return false;
@@ -172,6 +174,18 @@ namespace {
                         return Shell::ExitFailure;
                 }
                 if (o.flood) o.intervalMs = FloodWaitMs;
+                uint32_t    found = 0;
+                const Error rerr = NetStack::resolve(StringView(o.host), found, ResolveTimeoutMs);
+                if (rerr.isError()) {
+                        const char *why = rerr == Error::NotExist      ? "Name or service not known"
+                                          : rerr == Error::NotReady    ? "No DNS server"
+                                          : rerr == Error::Timeout     ? "Temporary failure in name resolution"
+                                          : rerr == Error::Interrupted ? "Interrupted"
+                                                                       : rerr.desc();
+                        ctx.eprintf("ping: %s: %s\n", o.host, why);
+                        return Shell::ExitFailure;
+                }
+                o.target = lwip_ntohl(found);
 
                 Pinger pinger;
                 Random::fill(&pinger.id, sizeof(pinger.id));
@@ -188,7 +202,7 @@ namespace {
 
                 char target[Ipv4::TextBytes + 1];
                 Ipv4::format(o.target, target);
-                ctx.printf("PING %s (%s) %lu(%lu) bytes of data.\n", target, target, o.size,
+                ctx.printf("PING %s (%s) %lu(%lu) bytes of data.\n", o.host, target, o.size,
                            o.size + EchoHeaderBytes + IP_HLEN);
 
                 uint64_t       sentAt[Window] = {};
@@ -282,7 +296,7 @@ namespace {
 
 } // namespace
 
-BMDS_SHELL_COMMAND(ping, runPing, "[-c COUNT] [-i MS] [-s BYTES] [-W MS] [-f] [-q] ADDRESS",
-                   "Send ICMP echo requests to an IPv4 address and show the replies (-f: flood)")
+BMDS_SHELL_COMMAND(ping, runPing, "[-c COUNT] [-i MS] [-s BYTES] [-W MS] [-f] [-q] HOST",
+                   "Send ICMP echo requests to a host (a name or IPv4 address) and show the replies (-f: flood)")
 
 BMDS_NAMESPACE_END

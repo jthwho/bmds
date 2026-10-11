@@ -340,6 +340,11 @@ int32_t bmds_k_proc_kill(int32_t pid, int32_t sig) {
         return call.thread().sendSignal(pid, sig);
 }
 
+int32_t bmds_k_proc_timer(uint32_t which, const bmds_timer_t *set, bmds_timer_t *old) {
+        KernelCall call;
+        return call.thread().timer(which, set, old);
+}
+
 int32_t bmds_k_proc_exit_signal(int32_t sig) {
         KernelCall call;
         return call.thread().exitSignal(sig);

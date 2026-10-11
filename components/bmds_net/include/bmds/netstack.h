@@ -10,8 +10,10 @@
 
 #pragma once
 
+#include <cstdint>
 #include <bmds/config.h>
 #include <bmds/error.h>
+#include <bmds/stringview.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -46,11 +48,28 @@ namespace NetStack {
         /** @brief Releases the core lock, waking the network task to look at lwIP's timers again. */
         void unlock();
 
+        /**
+         * @brief Releases the core lock without waking the network task: for a
+         *        holder that only looked (it moved no timer and queued nothing).
+         */
+        void unlockQuietly();
+
         /** @brief True if the calling task holds the core lock. @nonblocking */
         bool isLocked();
 
         /** @brief Wakes the network task (frames or work for it). Any task. @nonblocking */
         void wake();
+
+        /**
+         * @brief Finds @p name's IPv4 address (network order) into @p ipv4: a dotted quad
+         *        as it is; localhost, the host name and `net/hosts` at once; otherwise
+         *        asks the DNS servers (`net/dns/servers`, else DHCP's), waiting up to
+         *        @p timeoutMs. Not with the core lock held.
+         * @return `Ok`, `NotExist` (no such name), `Timeout`, `Interrupted`, `NotReady`
+         *         (no DNS server), `Busy` (too many lookups at once), `Invalid`.
+         * @blocking
+         */
+        Error resolve(StringView name, uint32_t &ipv4, unsigned int timeoutMs);
 
         /** @brief Holds the core lock for its scope. */
         class Locker {
@@ -59,6 +78,15 @@ namespace NetStack {
                         ~Locker() { unlock(); }
                         Locker(const Locker &) = delete;
                         Locker &operator=(const Locker &) = delete;
+        };
+
+        /** @brief Holds the core lock for its scope, only to look (`unlockQuietly()`). */
+        class QuietLocker {
+                public:
+                        QuietLocker() { lock(); }
+                        ~QuietLocker() { unlockQuietly(); }
+                        QuietLocker(const QuietLocker &) = delete;
+                        QuietLocker &operator=(const QuietLocker &) = delete;
         };
 
 } // namespace NetStack

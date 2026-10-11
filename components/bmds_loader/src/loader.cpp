@@ -27,6 +27,7 @@
 #include <bmds/futex.h>
 #include <bmds/imagecache.h>
 #include <bmds/interrupt.h>
+#include <bmds/intervaltimers.h>
 #include <bmds/list.h>
 #include <bmds/loader.h>
 #include <bmds/log.h>
@@ -42,6 +43,7 @@
 #include <bmds/tasklist.h>
 #include <bmds/vfs.h>
 #include "running.h"
+#include "structcopy.h"
 
 // Programs run from PSRAM: with XIP from PSRAM, IDF's PMP makes the PSRAM
 // heap non-executable (devplan/programs.md §2).
@@ -97,6 +99,10 @@ namespace {
         // takes the foreground, and while one that ends gives it back (devplan/processes.md §3.6.1).
         constinit StaticObject<Mutex> groupLock;
 
+        // Held while a process's end is recorded and its parent told (SIGCHLD); a wait that reaps
+        // passes through it before returning, so the signal is pending by then, as on Linux.
+        constinit StaticObject<Mutex> endLock;
+
         // Consoles with signals to deliver (their hook queues them; a console may be queued more
         // than once: a later delivery finds its set empty) and the task that delivers them,
         // above the shells' priority so a busy program can't hold a Ctrl-C up.
@@ -104,6 +110,12 @@ namespace {
         constexpr size_t        SignalTaskStackBytes = 8192; // it may end programs (close their files)
         constinit QueueHandle_t signalQueue = nullptr;
         constinit Task          signalTask;
+
+        // Interval timers (devplan/programs.md §18): one per process, `SIGALRM` when due, run by
+        // the signal task, which waits for its queue until the earliest.
+        using ProcessTimers = IntervalTimers<ProcessTable::Capacity>;
+        constinit ProcessTimers       timers;    // by pid, on the monotonic clock
+        constinit StaticObject<Mutex> timerLock; // timers'
 
         // A file through the VFS, as the format check reads it.
         class FileSource final : public ProgramImage::Source {
@@ -824,10 +836,48 @@ namespace {
                 return;
         }
 
+        // Wakes the signal task to look at the timers again (a full queue wakes it anyway).
+        void timersChanged() {
+                Console *none = nullptr;
+                (void)xQueueSend(signalQueue, &none, 0);
+                return;
+        }
+
+        // Process @p pid ended: its timer goes, before the pid can be used again.
+        void dropTimer(int32_t pid) {
+                Mutex::Locker locker(*timerLock, WaitForever);
+                timers.drop(pid);
+                return;
+        }
+
+        // Sends SIGALRM for the timers due now; returns the next deadline, or Never.
+        int64_t runTimers() {
+                int32_t due[ProcessTable::Capacity];
+                size_t  dueCount = 0;
+                int64_t next = ProcessTimers::Never;
+                {
+                        Mutex::Locker locker(*timerLock, WaitForever);
+                        dueCount = timers.takeDue(Clock::monotonicNs(), due, next);
+                }
+                for (size_t i = 0; i < dueCount; ++i) signalProcess(due[i], BMDS_SIGALRM);
+                return next;
+        }
+
         void signalTaskMain(void *) {
+                constexpr int64_t TickNs = 1000000000 / configTICK_RATE_HZ;
                 for (;;) {
+                        const int64_t next = runTimers();
+                        TickType_t    wait = portMAX_DELAY;
+                        if (next != ProcessTimers::Never) {
+                                // A tick more: the first tick may come at once. Woken early, the
+                                // timers are looked at again, so none fires early.
+                                const int64_t left = next - Clock::monotonicNs();
+                                const int64_t ticks = left <= 0 ? 0 : (left + TickNs - 1) / TickNs + 1;
+                                wait = ticks < int64_t(portMAX_DELAY) ? static_cast<TickType_t>(ticks)
+                                                                      : portMAX_DELAY - 1;
+                        }
                         Console *console = nullptr;
-                        if (xQueueReceive(signalQueue, &console, portMAX_DELAY) == pdTRUE && console != nullptr)
+                        if (xQueueReceive(signalQueue, &console, wait) == pdTRUE && console != nullptr)
                                 deliverConsoleSignals(*console);
                 }
         }
@@ -911,12 +961,22 @@ namespace {
                 int32_t       stopped[ProcessTable::Capacity];
                 const size_t  count = processes->stoppedChildren(pid, stopped, ProcessTable::Capacity);
                 const int32_t parent = processes->parentOf(pid);
-                processes->exited(pid, status, cpuUs);
+                dropTimer(pid);
+                {
+                        Mutex::Locker locker(*endLock, WaitForever);
+                        processes->exited(pid, status, cpuUs);
+                        if (parent > 0) tellParent(parent);
+                }
                 for (size_t i = 0; i < count && i < ProcessTable::Capacity; ++i) {
                         signalProcess(stopped[i], BMDS_SIGHUP);
                         signalProcess(stopped[i], BMDS_SIGCONT);
                 }
-                if (parent > 0) tellParent(parent);
+                return;
+        }
+
+        // A wait reaped a child: its end's SIGCHLD is pending once this returns (endLock).
+        void endRecorded() {
+                Mutex::Locker locker(*endLock, WaitForever);
                 return;
         }
 
@@ -1204,6 +1264,7 @@ int32_t ProgramThread::wait(int32_t child, int32_t *status, uint32_t flags) {
         for (;;) {
                 const Result<ProcessTable::Ended> got = processes->reap(currentPid, child, reap);
                 if (got.isOk()) {
+                        endRecorded();
                         if (status != nullptr) *status = got.value().status;
                         return got.value().pid;
                 }
@@ -1214,6 +1275,7 @@ int32_t ProgramThread::wait(int32_t child, int32_t *status, uint32_t flags) {
                 // A child that ended meanwhile (its SIGCHLD may be the signal) still counts.
                 const Result<ProcessTable::Ended> late = processes->reap(currentPid, child, reap);
                 if (late.isOk()) {
+                        endRecorded();
                         if (status != nullptr) *status = late.value().status;
                         return late.value().pid;
                 }
@@ -1401,6 +1463,34 @@ int32_t ProgramThread::exitSignal(int32_t sig) {
         const int32_t status = ProcessTable::killedStatus(sig);
         if (depth > 0) return endChild(status);
         endProcess(status);
+}
+
+int32_t ProgramThread::timer(uint32_t which, const bmds_timer_t *set, bmds_timer_t *old) {
+        if (which != BMDS_TIMER_REAL) return -BMDS_EINVAL;
+        constexpr uint64_t MaxUs = ProcessTimers::MaxNs / 1000;
+        bmds_timer_t       wanted{};
+        if (set != nullptr) {
+                if (const int32_t r = detail::copyIn(set, wanted); r < 0) return r;
+        }
+        ProcessTimers::Setting was;
+        {
+                Mutex::Locker locker(*timerLock, WaitForever);
+                const int64_t now = Clock::monotonicNs();
+                was = timers.setting(currentPid, now);
+                if (set != nullptr) {
+                        ProcessTimers::Setting s;
+                        s.valueNs = (wanted.value_us < MaxUs ? wanted.value_us : MaxUs) * 1000;
+                        s.intervalNs = (wanted.interval_us < MaxUs ? wanted.interval_us : MaxUs) * 1000;
+                        // Full can't be: an entry per process.
+                        if (timers.set(currentPid, now, s).isError()) return -BMDS_EAGAIN;
+                }
+        }
+        if (set != nullptr) timersChanged();
+        if (old == nullptr) return 0;
+        bmds_timer_t out{};
+        out.value_us = (was.valueNs + 999) / 1000; // rounded up: an armed timer never reads 0
+        out.interval_us = was.intervalNs / 1000;
+        return detail::copyOut(out, old);
 }
 
 int32_t ProgramThread::group(uint32_t op, int32_t target, int32_t pgid) {
@@ -1647,6 +1737,8 @@ namespace {
 Error Loader::init() {
         if (!stopLock.isCreated()) stopLock.create();
         if (!groupLock.isCreated()) groupLock.create();
+        if (!timerLock.isCreated()) timerLock.create();
+        if (!endLock.isCreated()) endLock.create();
         if (!processes.isCreated()) processes.create();
         if (!futexes.isCreated()) futexes.create();
         if (!imageCache.isCreated()) {

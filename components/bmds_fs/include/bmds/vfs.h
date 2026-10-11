@@ -125,12 +125,13 @@ class Directory {
  *        filesystems and the device nodes.
  *
  * ```
- * /              virtual: /bin, /dev, and the directories leading to mounts
+ * /              virtual: /bin, /dev, /etc, and the directories leading to mounts
  * /bin/NAME      a program built into the firmware (BuiltinPrograms): an
  *                empty file, run by the loader; /bin is read-only (ReadOnly)
  * /dev/null      discards writes, reads end at once
  * /dev/zero      reads zeros; /dev/urandom, /dev/random read random bytes
  * /dev/console   the caller's terminal (Context::terminal)
+ * /etc/NAME      a file built from the settings when opened (addEtcFile()), read-only
  * /share/zoneinfo  the time zone database (setZoneDatabase()), read-only:
  *                one TZif file per zone name (devplan/time.md §9)
  * /dev/sd0       a block device (BlockDevices); /dev/sd0p0 a partition
@@ -374,6 +375,35 @@ namespace Vfs {
          * @return `Ok`, `Exists` (a node of that name), `Full`, or `Invalid`.
          */
         Error addDeviceFile(const DeviceFile &file);
+
+        /** @brief Where the files built from the settings are (`devplan/network.md` §8, §18). */
+        inline constexpr StringView EtcPath("/etc");
+
+        /**
+         * @brief A file in `/etc` that another component builds from the settings
+         *        when it is opened (`resolv.conf`, `hosts`): read-only, a snapshot
+         *        of what they were at the open. Its size is 0 to `stat()` and in
+         *        listings, as Linux's `/proc` files are (nothing is built for a
+         *        look); reads go to its end.
+         */
+        struct EtcFile {
+                        const char *name = nullptr; ///< Its name in `/etc`.
+                        /**
+                         * @brief Appends the file's contents to @p out. Called
+                         *        without the VFS's lock (it reads settings).
+                         */
+                        Error (*generate)(void *arg, String &out) = nullptr;
+                        void *arg = nullptr; ///< Given to `generate`.
+        };
+
+        /** @brief The most files `addEtcFile()` takes. */
+        inline constexpr size_t MaxEtcFiles = 16;
+
+        /**
+         * @brief Adds @p file to `/etc` (its name and call kept: static), for good.
+         * @return `Ok`, `Exists`, `Full`, or `Invalid`.
+         */
+        Error addEtcFile(const EtcFile &file);
 
         /**
          * @brief Opens a file or device.

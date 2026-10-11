@@ -264,7 +264,7 @@ TEST_CASE("Vfs: devices, partitions and mounts") {
         CHECK(Vfs::findDevice("/dev/null", Root) == nullptr);
         CHECK(mountList() == std::vector<std::string>{"ram0p0 /ram0/p0 fat32"});
 
-        CHECK(list("/") == std::vector<std::string>{"bin/", "dev/", "ram0/", "share/"});
+        CHECK(list("/") == std::vector<std::string>{"bin/", "dev/", "etc/", "ram0/", "share/"});
         CHECK(list("/ram0") == std::vector<std::string>{"p0/"});
         CHECK(list("/dev") == std::vector<std::string>{"clip0", "clip0p", "console", "null", "ram0", "ram0p0", "random",
                                                        "urandom", "zero"});
@@ -283,11 +283,11 @@ TEST_CASE("Vfs: devices, partitions and mounts") {
         SUBCASE("mounting by hand, and what is refused") {
                 CHECK(Vfs::unmount("/ram0/p0").isOk());
                 CHECK(Vfs::unmount("/ram0/p0") == Error::NotExist);
-                CHECK(list("/") == std::vector<std::string>{"bin/", "dev/", "share/"});
+                CHECK(list("/") == std::vector<std::string>{"bin/", "dev/", "etc/", "share/"});
                 CHECK(Vfs::stat("/ram0", Root).error() == Error::NotExist);
                 CHECK(Vfs::mount("/data/main", *p0).isOk());
                 CHECK(Vfs::stat("/data/../data/main/../main/.", Root).value().isDirectory());
-                CHECK(list("/") == std::vector<std::string>{"bin/", "data/", "dev/", "share/"});
+                CHECK(list("/") == std::vector<std::string>{"bin/", "data/", "dev/", "etc/", "share/"});
                 CHECK(Vfs::mount("/data/main", *p0) == Error::Exists);
                 CHECK(Vfs::mount("/other", *p0) == Error::Busy);
                 CHECK(Vfs::mount("/other", ram) == Error::Busy); // the whole device under a mounted partition
@@ -1369,4 +1369,50 @@ TEST_CASE("Vfs: added /dev files that come and go, and devices among them") {
         CHECK(Vfs::open("/dev/comesandgoes", Vfs::Read, Root).error() == Error::Busy);
         CHECK(listed());
         comesAndGoesThere = false;
+}
+
+TEST_CASE("Vfs: /etc, built from the settings when opened") {
+        disk();
+        static int                built = 0;
+        static const Vfs::EtcFile Hosts = {"hosts",
+                                           [](void *, bmds::String &out) {
+                                                   ++built;
+                                                   return out.appendf("127.0.0.1\tlocalhost # %d\n", built);
+                                           },
+                                           nullptr};
+        static bool               added = false;
+        if (!added) {
+                REQUIRE(Vfs::addEtcFile(Hosts).isOk());
+                added = true;
+        }
+        CHECK(Vfs::addEtcFile(Hosts) == Error::Exists);
+        CHECK(Vfs::addEtcFile(Vfs::EtcFile{"a/b", Hosts.generate, nullptr}) == Error::Invalid);
+        CHECK(Vfs::addEtcFile(Vfs::EtcFile{"none", nullptr, nullptr}) == Error::Invalid);
+
+        // Built at each open, nothing for a look: stat says 0 (as /proc does).
+        const int before = built;
+        CHECK(Vfs::stat("/etc", Root).value().isDirectory());
+        CHECK(Vfs::stat("/etc/hosts", Root).value().type == FileType::File);
+        CHECK(Vfs::stat("/etc/hosts", Root).value().size == 0);
+        CHECK(Vfs::stat("/etc/nope", Root).error() == Error::NotExist);
+        CHECK(list("/etc") == std::vector<std::string>{"hosts"});
+        CHECK(built == before);
+        CHECK(get("/etc/hosts") == "127.0.0.1\tlocalhost # " + std::to_string(before + 1) + "\n");
+        CHECK(get("/etc/../etc/./hosts") == "127.0.0.1\tlocalhost # " + std::to_string(before + 2) + "\n");
+
+        // Seekable; read-only; nothing mounts there.
+        FileHandle::Ptr h = open("/etc/hosts", Vfs::Read);
+        CHECK(h->stream().seek(0, bmds::Stream::SeekFrom::End).value() == 24); // "127.0.0.1\tlocalhost # N\n"
+        CHECK(h->stream().seek(10, bmds::Stream::SeekFrom::Start).value() == 10);
+        uint8_t buf[9];
+        CHECK(h->read(WritableByteSpan(buf), WaitForever).value() == 9);
+        CHECK(std::string(reinterpret_cast<char *>(buf), 9) == "localhost");
+        h.reset();
+        CHECK(Vfs::open("/etc/hosts", Vfs::Write, Root).error() == Error::ReadOnly);
+        CHECK(Vfs::open("/etc/new", Vfs::Write | Vfs::Create, Root).error() == Error::ReadOnly);
+        CHECK(Vfs::open("/etc", Vfs::Read, Root).error() == Error::IsDir);
+        CHECK(Vfs::remove("/etc/hosts", Root) == Error::ReadOnly);
+        CHECK(Vfs::mkdir("/etc/sub", Root) == Error::ReadOnly);
+        CHECK(Vfs::mount("/etc", disk().device) == Error::Invalid);
+        CHECK(Vfs::openDirectory("/etc/hosts", Root).error() == Error::NotDir);
 }

@@ -167,6 +167,20 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_IMAGE_INFO 93u       /**< `int32_t image_info(fd, data, length, want, info)`. */
 #define BMDS_SYS_IMAGE_DECODE 94u     /**< `int32_t image_decode(int32_t fd, const bmds_image_decode_t *d, info)`. */
 #define BMDS_SYS_IMAGE_ENCODE 95u     /**< `int32_t image_encode(int32_t fd, const bmds_image_encode_t *e)`. */
+#define BMDS_SYS_SOCKET 96u           /**< `int32_t socket(family, type, protocol, flags)`: a new fd. */
+#define BMDS_SYS_BIND 97u             /**< `int32_t bind(int32_t fd, const void *addr, uint32_t length)`. */
+#define BMDS_SYS_LISTEN 98u           /**< `int32_t listen(int32_t fd, int32_t backlog)`. */
+#define BMDS_SYS_ACCEPT 99u           /**< `int32_t accept(fd, addr, length, flags)`: a new fd. */
+#define BMDS_SYS_CONNECT 100u         /**< `int32_t connect(fd, addr, length, flags)`. */
+#define BMDS_SYS_SOCK_NAME 101u       /**< `int32_t sock_name(fd, which, addr, length)`. */
+#define BMDS_SYS_SENDMSG 102u         /**< `int32_t sendmsg(int32_t fd, const bmds_msghdr_t *msg, uint32_t flags)`. */
+#define BMDS_SYS_RECVMSG 103u         /**< `int32_t recvmsg(int32_t fd, bmds_msghdr_t *msg, uint32_t flags)`. */
+#define BMDS_SYS_SETSOCKOPT 104u      /**< `int32_t setsockopt(fd, level, name, value, length)`. */
+#define BMDS_SYS_GETSOCKOPT 105u      /**< `int32_t getsockopt(fd, level, name, value, length)`. */
+#define BMDS_SYS_SHUTDOWN 106u        /**< `int32_t shutdown(int32_t fd, uint32_t how)`. */
+#define BMDS_SYS_NET_INFO 107u        /**< `int32_t net_info(uint32_t index, bmds_net_info_t *info)`. */
+#define BMDS_SYS_PROC_TIMER                                                                                            \
+        108u /**< `int32_t proc_timer(uint32_t which, const bmds_timer_t *set, bmds_timer_t *old)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -1114,6 +1128,145 @@ typedef struct bmds_thread_t {
 /** @brief `thread_kill` flags. */
 #define BMDS_THREAD_WAKE 0x1u /**< Also end the call the thread is blocked in, or its next one (`BMDS_EINTR`). */
 
+/* --- Sockets (devplan/network.md §18) ------------------------------- */
+
+/*
+ * Addresses are Linux's `sockaddr` layouts with their length, so musl's
+ * structures go to the kernel as they are; option levels and names, and the
+ * `BMDS_MSG_*` flags, are Linux's numbers. IPv4 only for now.
+ */
+
+/** @brief Address families. */
+#define BMDS_AF_UNSPEC 0u /**< `connect` with it forgets a datagram socket's peer. */
+#define BMDS_AF_INET 2u   /**< IPv4: `bmds_sockaddr_in_t`. */
+
+/** @brief Socket types. */
+#define BMDS_SOCK_STREAM 1u /**< TCP. */
+#define BMDS_SOCK_DGRAM 2u  /**< UDP. */
+#define BMDS_SOCK_RAW 3u    /**< Raw IP of one protocol (ICMP, 1): received with the IP header. */
+
+/** @brief `socket` and `accept` flags (the new fd's). */
+#define BMDS_SOCK_CLOEXEC BMDS_O_CLOEXEC /**< Closed by `bmds_proc_exec`. */
+
+/** @brief `accept` and `connect` flags. */
+#define BMDS_SOCK_DONTWAIT 0x1u /**< Don't wait: `-BMDS_EAGAIN`, or `-BMDS_EINPROGRESS` for a connect. */
+
+/** @brief `sendmsg` and `recvmsg` flags, and `bmds_msghdr_t::flags` (Linux's values). */
+#define BMDS_MSG_PEEK 0x2u        /**< Receive without taking. */
+#define BMDS_MSG_CTRUNC 0x8u      /**< Out: the control messages were cut. */
+#define BMDS_MSG_TRUNC 0x20u      /**< In: return a datagram's whole length; out: it was cut. */
+#define BMDS_MSG_DONTWAIT 0x40u   /**< Don't wait: `-BMDS_EAGAIN`. */
+#define BMDS_MSG_WAITALL 0x100u   /**< TCP: wait until the buffers are full. */
+#define BMDS_MSG_NOSIGNAL 0x4000u /**< No `SIGPIPE` when the connection is gone (`-BMDS_EPIPE` still). */
+#define BMDS_MSG_MORE 0x8000u     /**< TCP: more follows; don't push yet. */
+
+/** @brief `shutdown` sides. */
+#define BMDS_SHUT_RD 0u   /**< Receiving: reads end. */
+#define BMDS_SHUT_WR 1u   /**< Sending: TCP sends its FIN. */
+#define BMDS_SHUT_RDWR 2u /**< Both. */
+
+/** @brief `sock_name`: which address. */
+#define BMDS_SOCK_NAME_LOCAL 0u /**< The socket's own (`getsockname`). */
+#define BMDS_SOCK_NAME_PEER 1u  /**< The peer's (`getpeername`). */
+
+/** @brief An IPv4 address and port: Linux's `struct sockaddr_in`. */
+typedef struct bmds_sockaddr_in_t {
+                uint16_t family;  /**< `BMDS_AF_INET`. */
+                uint16_t port;    /**< In network order. */
+                uint32_t addr;    /**< In network order. */
+                uint8_t  zero[8]; /**< Zero. */
+} bmds_sockaddr_in_t;
+
+/** @brief A piece of a message: Linux's `struct iovec` (32-bit). */
+typedef struct bmds_iovec_t {
+                void    *base;   /**< Where it is. */
+                uint32_t length; /**< Its bytes. */
+} bmds_iovec_t;
+
+/**
+ * @brief A message for `sendmsg` and `recvmsg`: Linux's `struct msghdr` with
+ *        `size` first. The caller sets `size`; `recvmsg` writes back
+ *        `name_length`, `control_length` and `flags`.
+ */
+typedef struct bmds_msghdr_t {
+                uint32_t            size;           /**< Set by the caller: `sizeof(bmds_msghdr_t)`. */
+                void               *name;           /**< The address to send to or received from, or NULL. */
+                uint32_t            name_length;    /**< Its bytes (in and out). */
+                const bmds_iovec_t *iov;            /**< The pieces. */
+                uint32_t            iov_count;      /**< How many (at most `BMDS_IOV_MAX`). */
+                void               *control;        /**< Control messages (Linux's `cmsghdr`s), or NULL. */
+                uint32_t            control_length; /**< Their bytes (in and out). */
+                uint32_t            flags;          /**< Out: `BMDS_MSG_TRUNC`, `BMDS_MSG_CTRUNC`. */
+} bmds_msghdr_t;
+
+/** @brief The most pieces one message has. */
+#define BMDS_IOV_MAX 64u
+
+/** @brief `bmds_net_info_t::flags`. */
+#define BMDS_NET_UP 0x1u          /**< Enabled. */
+#define BMDS_NET_LINK 0x2u        /**< The link is up (cable in). */
+#define BMDS_NET_FULL_DUPLEX 0x4u /**< The link is full duplex. */
+#define BMDS_NET_LOOPBACK 0x8u    /**< The loopback interface (`lo`). */
+#define BMDS_NET_BROADCAST 0x10u  /**< Has a broadcast address. */
+#define BMDS_NET_MULTICAST 0x20u  /**< Joins multicast groups. */
+
+/** @brief `bmds_net_info_t::mode`: how the IPv4 address is found. */
+#define BMDS_NET_MODE_DHCP 0u   /**< DHCP. */
+#define BMDS_NET_MODE_STATIC 1u /**< Set (`net/ethN/ipv4/address`). */
+#define BMDS_NET_MODE_OFF 2u    /**< None. */
+
+/** @brief `bmds_net_info_t::dhcp`: DHCP's state. */
+#define BMDS_NET_DHCP_NONE 0u   /**< Not used. */
+#define BMDS_NET_DHCP_ASKING 1u /**< Asking (no lease yet, or renewing one lost). */
+#define BMDS_NET_DHCP_BOUND 2u  /**< A lease is held. */
+
+/**
+ * @brief One network interface's state (`net_info`). The caller sets `size`;
+ *        the kernel fills the fields that fit in it. Addresses are IPv4 in
+ *        network order; 0 is none.
+ */
+typedef struct bmds_net_info_t {
+                uint32_t size;         /**< Set by the caller: `sizeof(bmds_net_info_t)`. */
+                char     name[16];     /**< "eth0", "lo". */
+                uint32_t index;        /**< Its interface index (`if_nametoindex`). */
+                uint32_t flags;        /**< `BMDS_NET_*`. */
+                uint32_t mtu;          /**< Bytes. */
+                uint32_t speed_mbps;   /**< The link's speed; 0 with no link. */
+                uint8_t  mac[6];       /**< Its hardware address (zero for `lo`). */
+                uint8_t  mode;         /**< `BMDS_NET_MODE_*`. */
+                uint8_t  dhcp;         /**< `BMDS_NET_DHCP_*`. */
+                uint32_t address;      /**< Its IPv4 address. */
+                uint32_t netmask;      /**< Its netmask. */
+                uint32_t gateway;      /**< Its gateway. */
+                uint32_t dhcp_server;  /**< The DHCP server's address. */
+                uint32_t lease_s;      /**< The lease's length in seconds. */
+                uint32_t lease_left_s; /**< Seconds left of it. */
+                uint32_t dns[2];       /**< The DNS servers DHCP gave. */
+                uint32_t reserved;     /**< Zero. */
+                uint64_t rx_bytes;     /**< Received since boot. */
+                uint64_t tx_bytes;     /**< Sent since boot. */
+                uint32_t rx_frames;    /**< Frames received. */
+                uint32_t tx_frames;    /**< Frames sent. */
+                uint32_t rx_errors;    /**< Frames received damaged. */
+                uint32_t tx_errors;    /**< Frames that failed to go. */
+                uint32_t rx_dropped;   /**< Frames dropped (no buffer). */
+                uint32_t tx_dropped;   /**< Frames dropped (the device was busy). */
+} bmds_net_info_t;
+
+/** @brief `proc_timer`'s timers. */
+#define BMDS_TIMER_REAL 0u /**< Real time, raising `SIGALRM` (Linux's `ITIMER_REAL`). */
+
+/**
+ * @brief A process timer for `proc_timer`. The caller sets `size`; the kernel
+ *        fills the fields that fit in it.
+ */
+typedef struct bmds_timer_t {
+                uint32_t size;        /**< Set by the caller: `sizeof(bmds_timer_t)`. */
+                uint32_t reserved;    /**< Zero. */
+                uint64_t value_us;    /**< Microseconds until it fires; 0: disarmed (disarms). */
+                uint64_t interval_us; /**< Then again every so many; 0: once. */
+} bmds_timer_t;
+
 /* --- Calls ----------------------------------------------------------- */
 
 typedef void (*bmds_sys_exit_fn)(int32_t status);
@@ -1204,6 +1357,19 @@ typedef int32_t (*bmds_sys_image_info_fn)(int32_t fd, const void *data, uint32_t
                                           const bmds_image_decode_t *want, bmds_image_info_t *info);
 typedef int32_t (*bmds_sys_image_decode_fn)(int32_t fd, const bmds_image_decode_t *d, bmds_image_info_t *info);
 typedef int32_t (*bmds_sys_image_encode_fn)(int32_t fd, const bmds_image_encode_t *e);
+typedef int32_t (*bmds_sys_socket_fn)(uint32_t family, uint32_t type, uint32_t protocol, uint32_t flags);
+typedef int32_t (*bmds_sys_bind_fn)(int32_t fd, const void *addr, uint32_t length);
+typedef int32_t (*bmds_sys_listen_fn)(int32_t fd, int32_t backlog);
+typedef int32_t (*bmds_sys_accept_fn)(int32_t fd, void *addr, uint32_t *length, uint32_t flags);
+typedef int32_t (*bmds_sys_connect_fn)(int32_t fd, const void *addr, uint32_t length, uint32_t flags);
+typedef int32_t (*bmds_sys_sock_name_fn)(int32_t fd, uint32_t which, void *addr, uint32_t *length);
+typedef int32_t (*bmds_sys_sendmsg_fn)(int32_t fd, const bmds_msghdr_t *msg, uint32_t flags);
+typedef int32_t (*bmds_sys_recvmsg_fn)(int32_t fd, bmds_msghdr_t *msg, uint32_t flags);
+typedef int32_t (*bmds_sys_setsockopt_fn)(int32_t fd, int32_t level, int32_t name, const void *value, uint32_t length);
+typedef int32_t (*bmds_sys_getsockopt_fn)(int32_t fd, int32_t level, int32_t name, void *value, uint32_t *length);
+typedef int32_t (*bmds_sys_shutdown_fn)(int32_t fd, uint32_t how);
+typedef int32_t (*bmds_sys_net_info_fn)(uint32_t index, bmds_net_info_t *info);
+typedef int32_t (*bmds_sys_proc_timer_fn)(uint32_t which, const bmds_timer_t *set, bmds_timer_t *old);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -2157,6 +2323,147 @@ static inline int32_t bmds_image_decode(int32_t fd, const bmds_image_decode_t *d
  */
 static inline int32_t bmds_image_encode(int32_t fd, const bmds_image_encode_t *e) {
         return ((bmds_sys_image_encode_fn)bmds_sys->slot[BMDS_SYS_IMAGE_ENCODE])(fd, e);
+}
+
+/**
+ * @brief Makes a socket (devplan/network.md §18): @p family `BMDS_AF_INET`, @p type
+ *        `BMDS_SOCK_STREAM`, `BMDS_SOCK_DGRAM` or `BMDS_SOCK_RAW`, @p protocol 0 for the
+ *        type's own (raw: 1, ICMP); @p flags `BMDS_SOCK_CLOEXEC`. A socket is a file
+ *        descriptor: `read`, `write`, `io_poll`, `dup` and `close` work on it. A call that
+ *        waits honours the socket's timeouts (`SO_RCVTIMEO`, `SO_SNDTIMEO`) and ends with
+ *        `-BMDS_EINTR` when a signal is due.
+ *        (Slots 96-107, appended 2026-10-11: check `bmds_sys_has(BMDS_SYS_SOCKET)`.)
+ * @return The new fd, or `-BMDS_EAFNOSUPPORT`, `-BMDS_EPROTONOSUPPORT`, `-BMDS_EINVAL`,
+ *         `-BMDS_EMFILE`, `-BMDS_ENOMEM`.
+ */
+static inline int32_t bmds_socket(uint32_t family, uint32_t type, uint32_t protocol, uint32_t flags) {
+        return ((bmds_sys_socket_fn)bmds_sys->slot[BMDS_SYS_SOCKET])(family, type, protocol, flags);
+}
+
+/**
+ * @brief Gives socket @p fd its address (@p addr, @p length bytes; port 0: one is chosen).
+ * @return 0, or `-BMDS_EADDRINUSE`, `-BMDS_EADDRNOTAVAIL`, `-BMDS_EINVAL` (bound already, or
+ *         @p length short), `-BMDS_EAFNOSUPPORT`, `-BMDS_ENOTSOCK`, `-BMDS_EBADF`.
+ */
+static inline int32_t bmds_bind(int32_t fd, const void *addr, uint32_t length) {
+        return ((bmds_sys_bind_fn)bmds_sys->slot[BMDS_SYS_BIND])(fd, addr, length);
+}
+
+/**
+ * @brief Listens on TCP socket @p fd, at most @p backlog connections waiting (at most 8).
+ * @return 0, or `-BMDS_ENOTSUP` (not TCP), `-BMDS_EINVAL` (connected).
+ */
+static inline int32_t bmds_listen(int32_t fd, int32_t backlog) {
+        return ((bmds_sys_listen_fn)bmds_sys->slot[BMDS_SYS_LISTEN])(fd, backlog);
+}
+
+/**
+ * @brief Takes a connection from listening socket @p fd: a new fd (@p flags
+ *        `BMDS_SOCK_CLOEXEC`), its peer's address in @p addr (if not NULL: as `sock_name`).
+ *        `BMDS_SOCK_DONTWAIT` in @p flags: `-BMDS_EAGAIN` rather than wait.
+ * @return The new fd, or `-BMDS_EAGAIN`, `-BMDS_EINVAL` (not listening), `-BMDS_EINTR`,
+ *         `-BMDS_EMFILE`, `-BMDS_ENOMEM`.
+ */
+static inline int32_t bmds_accept(int32_t fd, void *addr, uint32_t *length, uint32_t flags) {
+        return ((bmds_sys_accept_fn)bmds_sys->slot[BMDS_SYS_ACCEPT])(fd, addr, length, flags);
+}
+
+/**
+ * @brief Connects socket @p fd to @p addr (TCP), or sets where its datagrams go and come from
+ *        (`BMDS_AF_UNSPEC` forgets it). `BMDS_SOCK_DONTWAIT` in @p flags: TCP answers
+ *        `-BMDS_EINPROGRESS` and goes on; `io_poll` for writing and `SO_ERROR` tell the outcome.
+ * @return 0, or `-BMDS_EINPROGRESS`, `-BMDS_EALREADY`, `-BMDS_EISCONN`, `-BMDS_ECONNREFUSED`,
+ *         `-BMDS_ETIMEDOUT`, `-BMDS_ENETUNREACH`, `-BMDS_EINTR` (it goes on).
+ */
+static inline int32_t bmds_connect(int32_t fd, const void *addr, uint32_t length, uint32_t flags) {
+        return ((bmds_sys_connect_fn)bmds_sys->slot[BMDS_SYS_CONNECT])(fd, addr, length, flags);
+}
+
+/**
+ * @brief Puts socket @p fd's own address (`BMDS_SOCK_NAME_LOCAL`) or its peer's
+ *        (`BMDS_SOCK_NAME_PEER`) in @p addr: as much as `*length` bytes hold; `*length` is set to
+ *        the address's whole length.
+ * @return 0, or `-BMDS_ENOTCONN` (no peer), `-BMDS_EINVAL`, `-BMDS_EFAULT`.
+ */
+static inline int32_t bmds_sock_name(int32_t fd, uint32_t which, void *addr, uint32_t *length) {
+        return ((bmds_sys_sock_name_fn)bmds_sys->slot[BMDS_SYS_SOCK_NAME])(fd, which, addr, length);
+}
+
+/**
+ * @brief Sends @p msg's pieces on socket @p fd: TCP bytes, or one datagram (to @p msg's
+ *        `name`, or the connected peer). @p flags `BMDS_MSG_DONTWAIT`, `BMDS_MSG_NOSIGNAL`,
+ *        `BMDS_MSG_MORE`. A connection that is gone gives `SIGPIPE` unless `BMDS_MSG_NOSIGNAL`.
+ * @return The bytes sent (TCP: fewer only when not waiting, or after a signal or the timeout),
+ *         or `-BMDS_EAGAIN`, `-BMDS_EPIPE`, `-BMDS_ECONNRESET`, `-BMDS_ENOTCONN`,
+ *         `-BMDS_EDESTADDRREQ`, `-BMDS_EMSGSIZE`, `-BMDS_ENETUNREACH`, `-BMDS_EINTR`.
+ */
+static inline int32_t bmds_sendmsg(int32_t fd, const bmds_msghdr_t *msg, uint32_t flags) {
+        return ((bmds_sys_sendmsg_fn)bmds_sys->slot[BMDS_SYS_SENDMSG])(fd, msg, flags);
+}
+
+/**
+ * @brief Receives on socket @p fd into @p msg's pieces: what TCP has (at least a byte), or
+ *        one datagram (cut to fit: `BMDS_MSG_TRUNC` in `flags`), its source in `name`.
+ *        @p flags `BMDS_MSG_DONTWAIT`, `BMDS_MSG_PEEK`, `BMDS_MSG_WAITALL`, `BMDS_MSG_TRUNC`.
+ * @return The bytes received (with `BMDS_MSG_TRUNC`, a datagram's whole length), 0 at the end
+ *         (the peer finished), or `-BMDS_EAGAIN`, `-BMDS_ECONNRESET`, `-BMDS_ENOTCONN`,
+ *         `-BMDS_EINTR`.
+ */
+static inline int32_t bmds_recvmsg(int32_t fd, bmds_msghdr_t *msg, uint32_t flags) {
+        return ((bmds_sys_recvmsg_fn)bmds_sys->slot[BMDS_SYS_RECVMSG])(fd, msg, flags);
+}
+
+/**
+ * @brief Sets socket @p fd's option @p name at @p level (Linux's numbers): `SO_REUSEADDR`,
+ *        `SO_KEEPALIVE`, `SO_RCVBUF`, `SO_SNDBUF`, `SO_RCVTIMEO`, `SO_SNDTIMEO` (both layouts),
+ *        `SO_BROADCAST`, `SO_LINGER`, `SO_BINDTODEVICE`, `TCP_NODELAY`, `TCP_KEEPIDLE`,
+ *        `TCP_KEEPINTVL`, `TCP_KEEPCNT`, `IP_TTL`, `IP_TOS`, `IP_ADD_MEMBERSHIP`,
+ *        `IP_DROP_MEMBERSHIP`, `IP_MULTICAST_IF`, `IP_MULTICAST_TTL`, `IP_MULTICAST_LOOP`.
+ * @return 0, or `-BMDS_ENOPROTOOPT` (another), `-BMDS_EINVAL`, `-BMDS_EADDRINUSE` (joined),
+ *         `-BMDS_EADDRNOTAVAIL`, `-BMDS_ENOBUFS` (groups), `-BMDS_ENODEV`.
+ */
+static inline int32_t bmds_setsockopt(int32_t fd, int32_t level, int32_t name, const void *value, uint32_t length) {
+        return ((bmds_sys_setsockopt_fn)bmds_sys->slot[BMDS_SYS_SETSOCKOPT])(fd, level, name, value, length);
+}
+
+/**
+ * @brief Reads socket @p fd's option @p name at @p level into @p value (`*length` bytes;
+ *        set to the bytes written): those `setsockopt` takes, and `SO_ERROR` (the pending
+ *        error, cleared), `SO_TYPE`, `SO_DOMAIN`, `SO_PROTOCOL`, `SO_ACCEPTCONN`, `TCP_MAXSEG`.
+ * @return 0, or `-BMDS_ENOPROTOOPT`, `-BMDS_EINVAL`, `-BMDS_EFAULT`.
+ */
+static inline int32_t bmds_getsockopt(int32_t fd, int32_t level, int32_t name, void *value, uint32_t *length) {
+        return ((bmds_sys_getsockopt_fn)bmds_sys->slot[BMDS_SYS_GETSOCKOPT])(fd, level, name, value, length);
+}
+
+/**
+ * @brief Shuts socket @p fd's receiving side (`BMDS_SHUT_RD`: reads end), sending side
+ *        (`BMDS_SHUT_WR`: TCP sends its FIN), or both.
+ * @return 0, or `-BMDS_ENOTCONN`, `-BMDS_EINVAL`.
+ */
+static inline int32_t bmds_shutdown(int32_t fd, uint32_t how) {
+        return ((bmds_sys_shutdown_fn)bmds_sys->slot[BMDS_SYS_SHUTDOWN])(fd, how);
+}
+
+/**
+ * @brief Fills @p info (its `size` set) with network interface @p index's state: 0 up to the
+ *        number of interfaces, in the order of their interface indexes (`lo` first).
+ * @return 0, or `-BMDS_ENODEV` (past the last), `-BMDS_EFAULT`, `-BMDS_EINVAL`.
+ */
+static inline int32_t bmds_net_info(uint32_t index, bmds_net_info_t *info) {
+        return ((bmds_sys_net_info_fn)bmds_sys->slot[BMDS_SYS_NET_INFO])(index, info);
+}
+
+/**
+ * @brief Sets the calling process's timer @p which (`BMDS_TIMER_REAL`) to @p set, or with
+ *        @p set null only reads it; @p old, if not null, gets what was left of it and its
+ *        interval. One timer per process: kept across `proc_exec`, not given to children,
+ *        gone when the process ends. On expiry the kernel sends `SIGALRM`, never early;
+ *        a repeating timer goes on by whole intervals, so a late one doesn't fire in bursts.
+ * @return 0, or `-BMDS_EINVAL` (another timer, a `size` too small), `-BMDS_EFAULT`.
+ */
+static inline int32_t bmds_proc_timer(uint32_t which, const bmds_timer_t *set, bmds_timer_t *old) {
+        return ((bmds_sys_proc_timer_fn)bmds_sys->slot[BMDS_SYS_PROC_TIMER])(which, set, old);
 }
 
 #ifdef __cplusplus

@@ -30,6 +30,7 @@
 
 #include "lwipport.h"
 #include "netinterface.h"
+#include "netnames.h"
 
 extern "C" {
 unsigned char *bmds_lwip_heap = nullptr;
@@ -81,6 +82,7 @@ namespace {
                         {
                                 NetStack::Locker lock;
                                 NetInterface::pollAll();
+                                NetNames::poll();
                                 runCalls();
                                 sys_check_timeouts();
                                 sleepMs = sys_timeouts_sleeptime();
@@ -102,11 +104,16 @@ Error NetStack::init() {
         {
                 Locker lock;
                 lwip_init();
+                // lwIP leaves the loopback's MTU 0, its "no limit"; programs read it, so the
+                // largest IPv4 packet instead (TCP's MSS is the smaller of it and TCP_MSS).
+                if (struct netif *lo = netif_find("lo0"); lo != nullptr) lo->mtu = 0xffff;
                 for (size_t i = 0; i < EthernetDevice::count() && err.isOk(); ++i) {
                         auto [device, e] = EthernetDevice::device(i);
                         err = e.isOk() ? NetInterface::create(*device) : e;
                 }
         }
+        if (err.isError()) return err;
+        err = NetNames::init();
         if (err.isError()) return err;
         Task::Config tc;
         tc.name = "net";
@@ -133,6 +140,12 @@ void NetStack::unlock() {
         stack->core.unlock();
         // The holder may have set a timer sooner than the task's sleep.
         if (stack->task.handle() != xTaskGetCurrentTaskHandle()) stack->wake.release();
+        return;
+}
+
+void NetStack::unlockQuietly() {
+        stack->holder.store(nullptr, std::memory_order_relaxed);
+        stack->core.unlock();
         return;
 }
 
@@ -168,6 +181,12 @@ unsigned int bmds_lwip_rand(void) {
 
 void bmds_lwip_assert(const char *message, const char *file, int line) {
         bmds::Detail::assertFailed(message, file, line);
+}
+
+struct netif *bmds_netif_named(const char *name) {
+        if (bmds::StringView(name) == "lo") return netif_find("lo0"); // lwIP's loopback
+        bmds::NetInterface *n = bmds::NetInterface::find(name);
+        return n != nullptr ? &n->netif() : nullptr;
 }
 
 int bmds_lwip_schedule(tcpip_callback_fn fn, void *ctx) {

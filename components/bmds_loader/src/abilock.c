@@ -110,6 +110,54 @@ _Static_assert(BMDS_SYS_NOTIFY_OPEN == 89 && BMDS_SYS_NOTIFY_SEND == 90 && BMDS_
 _Static_assert(BMDS_SYS_EXPAND == 92, "ABI: slot EXPAND");
 _Static_assert(BMDS_SYS_IMAGE_INFO == 93 && BMDS_SYS_IMAGE_DECODE == 94 && BMDS_SYS_IMAGE_ENCODE == 95,
                "ABI: slots IMAGE_INFO, IMAGE_DECODE, IMAGE_ENCODE");
+_Static_assert(BMDS_SYS_SOCKET == 96 && BMDS_SYS_BIND == 97 && BMDS_SYS_LISTEN == 98 && BMDS_SYS_ACCEPT == 99,
+               "ABI: slots SOCKET, BIND, LISTEN, ACCEPT");
+_Static_assert(BMDS_SYS_CONNECT == 100 && BMDS_SYS_SOCK_NAME == 101 && BMDS_SYS_SENDMSG == 102 &&
+                       BMDS_SYS_RECVMSG == 103,
+               "ABI: slots CONNECT, SOCK_NAME, SENDMSG, RECVMSG");
+_Static_assert(BMDS_SYS_SETSOCKOPT == 104 && BMDS_SYS_GETSOCKOPT == 105 && BMDS_SYS_SHUTDOWN == 106 &&
+                       BMDS_SYS_NET_INFO == 107,
+               "ABI: slots SETSOCKOPT, GETSOCKOPT, SHUTDOWN, NET_INFO");
+_Static_assert(BMDS_SYS_PROC_TIMER == 108, "ABI: slot PROC_TIMER");
+_Static_assert(BMDS_TIMER_REAL == 0, "ABI: timers (Linux's ITIMER_REAL)");
+_Static_assert(offsetof(bmds_timer_t, size) == 0 && offsetof(bmds_timer_t, reserved) == 4 &&
+                       offsetof(bmds_timer_t, value_us) == 8 && offsetof(bmds_timer_t, interval_us) == 16 &&
+                       sizeof(bmds_timer_t) == 24,
+               "ABI: bmds_timer_t");
+_Static_assert(BMDS_AF_UNSPEC == 0 && BMDS_AF_INET == 2, "ABI: address families (Linux's)");
+_Static_assert(BMDS_SOCK_STREAM == 1 && BMDS_SOCK_DGRAM == 2 && BMDS_SOCK_RAW == 3, "ABI: socket types (Linux's)");
+_Static_assert(BMDS_SOCK_CLOEXEC == BMDS_O_CLOEXEC && BMDS_SOCK_DONTWAIT == 0x1, "ABI: socket flags");
+_Static_assert(BMDS_MSG_PEEK == 0x2 && BMDS_MSG_CTRUNC == 0x8 && BMDS_MSG_TRUNC == 0x20 && BMDS_MSG_DONTWAIT == 0x40 &&
+                       BMDS_MSG_WAITALL == 0x100 && BMDS_MSG_NOSIGNAL == 0x4000 && BMDS_MSG_MORE == 0x8000,
+               "ABI: message flags (Linux's)");
+_Static_assert(BMDS_SHUT_RD == 0 && BMDS_SHUT_WR == 1 && BMDS_SHUT_RDWR == 2, "ABI: shutdown sides");
+_Static_assert(BMDS_SOCK_NAME_LOCAL == 0 && BMDS_SOCK_NAME_PEER == 1, "ABI: sock_name");
+_Static_assert(BMDS_IOV_MAX == 64, "ABI: BMDS_IOV_MAX");
+_Static_assert(BMDS_NET_UP == 0x1 && BMDS_NET_LINK == 0x2 && BMDS_NET_FULL_DUPLEX == 0x4 && BMDS_NET_LOOPBACK == 0x8 &&
+                       BMDS_NET_BROADCAST == 0x10 && BMDS_NET_MULTICAST == 0x20,
+               "ABI: net_info flags");
+_Static_assert(BMDS_NET_MODE_DHCP == 0 && BMDS_NET_MODE_STATIC == 1 && BMDS_NET_MODE_OFF == 2, "ABI: net_info modes");
+_Static_assert(BMDS_NET_DHCP_NONE == 0 && BMDS_NET_DHCP_ASKING == 1 && BMDS_NET_DHCP_BOUND == 2,
+               "ABI: net_info DHCP states");
+_Static_assert(offsetof(bmds_sockaddr_in_t, port) == 2 && offsetof(bmds_sockaddr_in_t, addr) == 4 &&
+                       sizeof(bmds_sockaddr_in_t) == 16,
+               "ABI: bmds_sockaddr_in_t (Linux's sockaddr_in)");
+_Static_assert(offsetof(bmds_net_info_t, name) == 4 && offsetof(bmds_net_info_t, index) == 20 &&
+                       offsetof(bmds_net_info_t, flags) == 24 && offsetof(bmds_net_info_t, mtu) == 28 &&
+                       offsetof(bmds_net_info_t, speed_mbps) == 32 && offsetof(bmds_net_info_t, mac) == 36 &&
+                       offsetof(bmds_net_info_t, mode) == 42 && offsetof(bmds_net_info_t, dhcp) == 43,
+               "ABI: bmds_net_info_t, to dhcp");
+_Static_assert(offsetof(bmds_net_info_t, address) == 44 && offsetof(bmds_net_info_t, netmask) == 48 &&
+                       offsetof(bmds_net_info_t, gateway) == 52 && offsetof(bmds_net_info_t, dhcp_server) == 56 &&
+                       offsetof(bmds_net_info_t, lease_s) == 60 && offsetof(bmds_net_info_t, lease_left_s) == 64 &&
+                       offsetof(bmds_net_info_t, dns) == 68 && offsetof(bmds_net_info_t, reserved) == 76,
+               "ABI: bmds_net_info_t, addresses");
+_Static_assert(offsetof(bmds_net_info_t, rx_bytes) == 80 && offsetof(bmds_net_info_t, tx_bytes) == 88 &&
+                       offsetof(bmds_net_info_t, rx_frames) == 96 && offsetof(bmds_net_info_t, tx_frames) == 100 &&
+                       offsetof(bmds_net_info_t, rx_errors) == 104 && offsetof(bmds_net_info_t, tx_errors) == 108 &&
+                       offsetof(bmds_net_info_t, rx_dropped) == 112 && offsetof(bmds_net_info_t, tx_dropped) == 116 &&
+                       sizeof(bmds_net_info_t) == 120,
+               "ABI: bmds_net_info_t, counters");
 _Static_assert(BMDS_IMAGE_PNG == 0 && BMDS_IMAGE_JPEG == 1 && BMDS_IMAGE_BMP == 2, "ABI: image codecs");
 _Static_assert(BMDS_PIXEL_BGR24 == 0 && BMDS_PIXEL_RGB24 == 1 && BMDS_PIXEL_BGRA32 == 2 && BMDS_PIXEL_RGB565 == 3 &&
                        BMDS_PIXEL_GRAY8 == 4,
@@ -571,6 +619,12 @@ _Static_assert(offsetof(bmds_audio_cycle_t, throttled) == 56, "ABI: audio_cycle.
 _Static_assert(offsetof(bmds_audio_cycle_t, flags) == 60, "ABI: audio_cycle.flags");
 _Static_assert(sizeof(bmds_audio_cycle_t) == 64, "ABI: bmds_audio_cycle_t size");
 _Static_assert(sizeof(bmds_synth_config_t) == 28, "ABI: bmds_synth_config_t size");
+_Static_assert(offsetof(bmds_iovec_t, length) == 4 && sizeof(bmds_iovec_t) == 8, "ABI: bmds_iovec_t");
+_Static_assert(offsetof(bmds_msghdr_t, name) == 4 && offsetof(bmds_msghdr_t, name_length) == 8 &&
+                       offsetof(bmds_msghdr_t, iov) == 12 && offsetof(bmds_msghdr_t, iov_count) == 16 &&
+                       offsetof(bmds_msghdr_t, control) == 20 && offsetof(bmds_msghdr_t, control_length) == 24 &&
+                       offsetof(bmds_msghdr_t, flags) == 28 && sizeof(bmds_msghdr_t) == 32,
+               "ABI: bmds_msghdr_t");
 #endif
 
 _Static_assert(offsetof(bmds_sys_t, magic) == 0, "ABI: bmds_sys_t.magic");
@@ -616,3 +670,12 @@ _Static_assert(BMDS_EPIPE == 32 && BMDS_ERANGE == 34 && BMDS_ENAMETOOLONG == 36 
 _Static_assert(BMDS_ENOTEMPTY == 39 && BMDS_ELOOP == 40 && BMDS_EOVERFLOW == 75 && BMDS_EILSEQ == 84, "ABI: errno 39-84");
 _Static_assert(BMDS_ENOTSUP == 95 && BMDS_ETIMEDOUT == 110 && BMDS_ENOMEDIUM == 123, "ABI: errno 95-123");
 _Static_assert(BMDS_ECANCELED == 125, "ABI: errno 125 (Linux's values throughout)");
+_Static_assert(BMDS_ENOTSOCK == 88 && BMDS_EDESTADDRREQ == 89 && BMDS_EMSGSIZE == 90 && BMDS_EPROTOTYPE == 91,
+               "ABI: errno 88-91");
+_Static_assert(BMDS_ENOPROTOOPT == 92 && BMDS_EPROTONOSUPPORT == 93 && BMDS_EAFNOSUPPORT == 97, "ABI: errno 92-97");
+_Static_assert(BMDS_EADDRINUSE == 98 && BMDS_EADDRNOTAVAIL == 99 && BMDS_ENETDOWN == 100 && BMDS_ENETUNREACH == 101,
+               "ABI: errno 98-101");
+_Static_assert(BMDS_ECONNABORTED == 103 && BMDS_ECONNRESET == 104 && BMDS_ENOBUFS == 105 && BMDS_EISCONN == 106,
+               "ABI: errno 103-106");
+_Static_assert(BMDS_ENOTCONN == 107 && BMDS_ECONNREFUSED == 111 && BMDS_EHOSTUNREACH == 113, "ABI: errno 107-113");
+_Static_assert(BMDS_EALREADY == 114 && BMDS_EINPROGRESS == 115, "ABI: errno 114-115");

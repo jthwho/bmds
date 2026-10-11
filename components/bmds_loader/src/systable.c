@@ -113,8 +113,21 @@ int32_t bmds_k_image_info(int32_t fd, const void *data, uint32_t length, const b
                           bmds_image_info_t *info);
 int32_t bmds_k_image_decode(int32_t fd, const bmds_image_decode_t *d, bmds_image_info_t *info);
 int32_t bmds_k_image_encode(int32_t fd, const bmds_image_encode_t *e);
+int32_t bmds_k_socket(uint32_t family, uint32_t type, uint32_t protocol, uint32_t flags);
+int32_t bmds_k_bind(int32_t fd, const void *addr, uint32_t length);
+int32_t bmds_k_listen(int32_t fd, int32_t backlog);
+int32_t bmds_k_accept(int32_t fd, void *addr, uint32_t *length, uint32_t flags);
+int32_t bmds_k_connect(int32_t fd, const void *addr, uint32_t length, uint32_t flags);
+int32_t bmds_k_sock_name(int32_t fd, uint32_t which, void *addr, uint32_t *length);
+int32_t bmds_k_sendmsg(int32_t fd, const bmds_msghdr_t *msg, uint32_t flags);
+int32_t bmds_k_recvmsg(int32_t fd, bmds_msghdr_t *msg, uint32_t flags);
+int32_t bmds_k_setsockopt(int32_t fd, int32_t level, int32_t name, const void *value, uint32_t length);
+int32_t bmds_k_getsockopt(int32_t fd, int32_t level, int32_t name, void *value, uint32_t *length);
+int32_t bmds_k_shutdown(int32_t fd, uint32_t how);
+int32_t bmds_k_net_info(uint32_t index, bmds_net_info_t *info);
+int32_t bmds_k_proc_timer(uint32_t which, const bmds_timer_t *set, bmds_timer_t *old);
 
-#define SLOTS 96
+#define SLOTS 109
 
 /* bmds_sys_t with its slots spelled out (same layout; checked below). */
 static const struct {
@@ -225,10 +238,23 @@ static const struct {
                 [BMDS_SYS_IMAGE_INFO] = (bmds_sys_fn_t)bmds_k_image_info,
                 [BMDS_SYS_IMAGE_DECODE] = (bmds_sys_fn_t)bmds_k_image_decode,
                 [BMDS_SYS_IMAGE_ENCODE] = (bmds_sys_fn_t)bmds_k_image_encode,
+                [BMDS_SYS_SOCKET] = (bmds_sys_fn_t)bmds_k_socket,
+                [BMDS_SYS_BIND] = (bmds_sys_fn_t)bmds_k_bind,
+                [BMDS_SYS_LISTEN] = (bmds_sys_fn_t)bmds_k_listen,
+                [BMDS_SYS_ACCEPT] = (bmds_sys_fn_t)bmds_k_accept,
+                [BMDS_SYS_CONNECT] = (bmds_sys_fn_t)bmds_k_connect,
+                [BMDS_SYS_SOCK_NAME] = (bmds_sys_fn_t)bmds_k_sock_name,
+                [BMDS_SYS_SENDMSG] = (bmds_sys_fn_t)bmds_k_sendmsg,
+                [BMDS_SYS_RECVMSG] = (bmds_sys_fn_t)bmds_k_recvmsg,
+                [BMDS_SYS_SETSOCKOPT] = (bmds_sys_fn_t)bmds_k_setsockopt,
+                [BMDS_SYS_GETSOCKOPT] = (bmds_sys_fn_t)bmds_k_getsockopt,
+                [BMDS_SYS_SHUTDOWN] = (bmds_sys_fn_t)bmds_k_shutdown,
+                [BMDS_SYS_NET_INFO] = (bmds_sys_fn_t)bmds_k_net_info,
+                [BMDS_SYS_PROC_TIMER] = (bmds_sys_fn_t)bmds_k_proc_timer,
         },
 };
 
-_Static_assert(SLOTS == BMDS_SYS_IMAGE_ENCODE + 1, "every slot is in the table");
+_Static_assert(SLOTS == BMDS_SYS_PROC_TIMER + 1, "every slot is in the table");
 _Static_assert(sizeof(table) == 16 + SLOTS * sizeof(bmds_sys_fn_t), "table layout");
 
 const bmds_sys_t *bmds_k_sys_table(void) {

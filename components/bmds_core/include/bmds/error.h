@@ -86,6 +86,19 @@ class [[nodiscard]] Error {
                         NoMedia,                ///< No medium in the drive: the card is out (ENOMEDIUM).
                         NoFilesystem,           ///< The medium holds no filesystem BMDS can mount.
                         TooManyLinks,           ///< Too many symbolic links in a row (ELOOP).
+                        AddressInUse,           ///< The address or port is taken (EADDRINUSE).
+                        AddressNotAvailable,    ///< No interface has the address (EADDRNOTAVAIL).
+                        ConnectionRefused,      ///< Nobody listens there (ECONNREFUSED).
+                        ConnectionReset,        ///< The peer reset the connection (ECONNRESET).
+                        ConnectionAborted,      ///< The connection was dropped here (ECONNABORTED).
+                        NotConnected,           ///< The socket isn't connected (ENOTCONN).
+                        AlreadyConnected,       ///< The socket is connected already (EISCONN).
+                        InProgress,             ///< A connection was started; it goes on (EINPROGRESS).
+                        AlreadyInProgress,      ///< A connection is being made already (EALREADY).
+                        NetworkDown,            ///< The interface is down (ENETDOWN).
+                        NetworkUnreachable,     ///< No route to the network (ENETUNREACH).
+                        HostUnreachable,        ///< The host doesn't answer (EHOSTUNREACH).
+                        MessageTooLong,         ///< The datagram is too big to send (EMSGSIZE).
                         CodeCount               ///< Number of codes (not an error code).
                 };
 

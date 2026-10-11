@@ -19,6 +19,7 @@
 #include <bmds/partitions.h>
 #include <bmds/romimage.h>
 
+#include "etc.h"
 #include "fatlayer.h"
 #include "fslayer.h"
 #include "lfsvolume.h"
@@ -103,6 +104,8 @@ namespace {
                 ZoneFile,   // /share/zoneinfo/NAME
                 DevFile,    // a file another component added (Vfs::addDeviceFile)
                 HomeLink,   // /home, the link setHome() made (devplan/sysconf.md §7)
+                EtcDir,     // /etc (devplan/network.md §8)
+                EtcFile,    // /etc/NAME, built when opened (Vfs::addEtcFile)
         };
 
         // Where the programs built into the firmware are listed (read-only).
@@ -125,6 +128,7 @@ namespace {
                         const ProgramEntry *program = nullptr; // BinProgram
                         Stream             *stream = nullptr;  // DevStream
                         const Vfs::DeviceFile *file = nullptr;    // DevFile
+                        const Vfs::EtcFile    *etc = nullptr;     // EtcFile
                         uint32_t            zoneOffset = 0;    // ZoneFile: its data in the database
                         uint32_t            zoneLength = 0;
                         Timestamp           zoneModified; // ZoneDir, ZoneFile: the database's
@@ -169,9 +173,9 @@ namespace {
         }
 
         // True if normalized @p path is in a tree nothing can be written to:
-        // the programs built in, the time zone database.
+        // the programs built in, the time zone database, /etc.
         bool isReadOnlyTree(StringView path) {
-                return isAtOrBelow(path, BinPath) || isAtOrBelow(path, ZoneInfoPath);
+                return isAtOrBelow(path, BinPath) || isAtOrBelow(path, ZoneInfoPath) || isAtOrBelow(path, Vfs::EtcPath);
         }
 
         // Resolves a normalized path. Lock held.
@@ -211,6 +215,16 @@ namespace {
                                 path.lastIndexOf('/') == BinPath.size() ? BuiltinPrograms::find(node.name) : nullptr;
                         if (node.program == nullptr) return makeError<Node>(Error::NotExist);
                         node.kind = Kind::BinProgram;
+                        return makeResult(node);
+                }
+                if (isAtOrBelow(path, Vfs::EtcPath)) {
+                        if (path == Vfs::EtcPath) {
+                                node.kind = Kind::EtcDir;
+                                return makeResult(node);
+                        }
+                        node.etc = path.lastIndexOf('/') == Vfs::EtcPath.size() ? Etc::find(node.name) : nullptr;
+                        if (node.etc == nullptr) return makeError<Node>(Error::NotExist);
+                        node.kind = Kind::EtcFile;
                         return makeResult(node);
                 }
                 if (isAtOrBelow(path, ZoneInfoPath)) {
@@ -322,7 +336,12 @@ namespace {
                 switch (node.kind) {
                         case Kind::Virtual:
                         case Kind::BinDir:
+                        case Kind::EtcDir:
                         case Kind::DevDir: return makeResult(directoryInfo(node.name));
+                        case Kind::EtcFile:
+                                (void)info.name.assign(node.name);
+                                info.type = FileType::File; // size 0: built when opened
+                                return makeResult(std::move(info));
                         case Kind::BinProgram:
                                 (void)info.name.assign(node.name);
                                 info.type = FileType::File; // empty: run, not read
@@ -582,8 +601,8 @@ namespace {
         // the next component of each mount below. Returns child @p index, or
         // an empty view past the end. Lock held.
         StringView virtualChild(StringView dir, size_t index) {
-                static constexpr StringView InRoot[] = {"bin", "dev", "share"};
-                static constexpr StringView InRootHome[] = {"bin", "dev", "home", "share"};
+                static constexpr StringView InRoot[] = {"bin", "dev", "etc", "share"};
+                static constexpr StringView InRootHome[] = {"bin", "dev", "etc", "home", "share"};
                 static constexpr StringView InShare[] = {"zoneinfo"};
                 Span<const StringView>      fixed;
                 if (dir == "/") fixed = homeTarget != nullptr ? Span<const StringView>(InRootHome) : InRoot;
@@ -704,6 +723,14 @@ Result<FileInfo> Directory::next() {
                                 info.size = homeLocked().size();
                         }
                         info.id = idAppend(idAppend(s.idPrefix, "/"), child);
+                        return makeResult(std::move(info));
+                }
+                case Kind::EtcDir: {
+                        if (s.index >= Etc::count()) return makeError<FileInfo>(Error::EndOfFile);
+                        (void)info.name.assign(Etc::at(s.index).name);
+                        info.type = FileType::File;
+                        info.id = idAppend(idAppend(s.idPrefix, "/"), info.name.view());
+                        ++s.index;
                         return makeResult(std::move(info));
                 }
                 case Kind::BinDir: {
@@ -926,7 +953,7 @@ namespace {
                 if (normalized.error().isError()) return normalized.error();
                 const StringView p = normalized.value().view();
                 if (p == "/" || isAtOrBelow(p, "/dev") || isAtOrBelow(p, BinPath) || isAtOrBelow(p, ZoneInfoPath) ||
-                    isAtOrBelow(p, HomePath) || p.size() > MaxMountPath)
+                    isAtOrBelow(p, HomePath) || isAtOrBelow(p, EtcPath) || p.size() > MaxMountPath)
                         return Error::Invalid;
                 Mutex::Locker lock(Fs::lock(), WaitForever);
                 for (size_t i = 0; i < mountCount; ++i) {
@@ -1136,9 +1163,28 @@ Error Vfs::addDeviceFile(const DeviceFile &file) {
         return Error::Ok;
 }
 
+Error Vfs::addEtcFile(const EtcFile &file) {
+        return Etc::add(file);
+}
+
 Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context &context) {
         if ((flags & (Read | Write)) == 0 || ((flags & (Truncate | Append)) != 0 && (flags & Write) == 0))
                 return makeError<FileHandle::Ptr>(Error::Invalid);
+        // /etc's files: built without the lock (they read settings, whose store is on /boot).
+        if (Etc::count() != 0) {
+                Result<String>   normalized = normalize(path, context.cwd);
+                const StringView p = normalized.error().isOk() ? normalized.value().view() : StringView();
+                if (isBelow(p, EtcPath) && p.lastIndexOf('/') == EtcPath.size()) {
+                        const Vfs::EtcFile *file = Etc::find(p.mid(EtcPath.size() + 1));
+                        if (file != nullptr) {
+                                if ((flags & (Write | Truncate | Append)) != 0)
+                                        return makeError<FileHandle::Ptr>(Error::ReadOnly);
+                                Result<FileHandle::Ptr> handle = Etc::open(*file);
+                                if (handle.error().isOk()) handle.value()->setIdentity(pathId(p), 0);
+                                return handle;
+                        }
+                }
+        }
         // A file another component added: opened without the lock (a clipboard's may wait for
         // the program that copied). /dev has no links, so the name is enough.
         if (deviceFileCount.load(std::memory_order_acquire) != 0) {
@@ -1173,7 +1219,11 @@ Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context 
                         case Kind::Virtual:
                         case Kind::BinDir:
                         case Kind::ZoneDir:
+                        case Kind::EtcDir:
                         case Kind::DevDir: return makeError<FileHandle::Ptr>(Error::IsDir);
+                        // Reached through a link (the name itself is opened above, unlocked):
+                        // building it here would wait on the settings under the lock.
+                        case Kind::EtcFile: return makeError<FileHandle::Ptr>(Error::NotSupported);
                         case Kind::ZoneFile: {
                                 if ((flags & (Write | Truncate | Append)) != 0)
                                         return makeError<FileHandle::Ptr>(Error::ReadOnly);
@@ -1412,7 +1462,8 @@ Result<Directory> Vfs::openDirectory(StringView path, const Context &context) {
                 if (found.error().isError()) return makeError<Directory>(found.error());
                 const Node &node = found.value();
                 if (node.kind == Kind::DevStream || node.kind == Kind::DevConsole || node.kind == Kind::DevBlock ||
-                    node.kind == Kind::DevFile || node.kind == Kind::BinProgram || node.kind == Kind::ZoneFile)
+                    node.kind == Kind::DevFile || node.kind == Kind::BinProgram || node.kind == Kind::ZoneFile ||
+                    node.kind == Kind::EtcFile)
                         return makeError<Directory>(Error::NotDir);
                 void *mem = Memory::alloc(MemSpace::Psram, sizeof(Directory::State));
                 if (mem == nullptr) return makeError<Directory>(Error::NoMem);

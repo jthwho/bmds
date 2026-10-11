@@ -56,6 +56,11 @@
  *   progtest system       system_info: the serial, the host name (uname's and gethostname's), the board
  *   progtest notify [served]  notify_open/send/close: posting, replacing, closing, errors; served: a
  *                         balloon's expiry read from the events fd (the panel running)
+ *   progtest timers SELF  alarm, setitimer, getitimer: an interrupted read, counting down, repeating,
+ *                         bad values; not inherited, kept across exec, SIGALRM's default
+ *   progtest net          sockets through musl on loopback: TCP (blocking and not, half closes,
+ *                         resets, timeouts, poll), UDP (cut datagrams), raw ICMP, the interface
+ *                         ioctls and net_info, the errors
  */
 
 #define _GNU_SOURCE /* gettid() */
@@ -73,8 +78,13 @@
 #include <poll.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <arpa/inet.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <sys/soundcard.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
@@ -2334,6 +2344,380 @@ static int image_test(const char *file) {
 
 /* Notifications (devplan/notifications.md §3.3): an events fd, posting with and without it,
    replacing one's own, closing, the errors; with SERVED, the panel's balloon expiring is read. */
+/* Sockets (devplan/network.md §18) through musl, on loopback: nothing outside the board. */
+static struct sockaddr_in loopback(uint16_t port) {
+        struct sockaddr_in a;
+        memset(&a, 0, sizeof(a));
+        a.sin_family = AF_INET;
+        a.sin_port = htons(port);
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        return a;
+}
+
+static int64_t ms_now(void) {
+        struct timespec t;
+        clock_gettime(CLOCK_MONOTONIC, &t);
+        return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+}
+
+static int net_test(void) {
+        CHECK(bmds_sys_has(BMDS_SYS_NET_INFO));
+        signal(SIGPIPE, SIG_IGN);
+
+        /* What isn't there. */
+        errno = 0;
+        CHECK(socket(AF_INET6, SOCK_STREAM, 0) < 0 && errno == EAFNOSUPPORT);
+        CHECK(socket(AF_UNIX, SOCK_STREAM, 0) < 0 && errno == EAFNOSUPPORT);
+        CHECK(socket(AF_INET, SOCK_DGRAM, IPPROTO_TCP) < 0 && errno == EPROTONOSUPPORT);
+        int p[2];
+        CHECK(pipe(p) == 0);
+        int       v = 1;
+        socklen_t vl = sizeof(v);
+        CHECK(getsockopt(p[0], SOL_SOCKET, SO_TYPE, &v, &vl) < 0 && errno == ENOTSOCK);
+        close(p[0]);
+        close(p[1]);
+
+        /* A listener on an ephemeral port. */
+        const int l = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        CHECK(l >= 0);
+        CHECK(setsockopt(l, SOL_SOCKET, SO_REUSEADDR, &v, sizeof(v)) == 0);
+        struct sockaddr_in a = loopback(0);
+        CHECK(bind(l, (struct sockaddr *)&a, sizeof(a)) == 0);
+        CHECK(listen(l, 4) == 0);
+        socklen_t al = sizeof(a);
+        CHECK(getsockname(l, (struct sockaddr *)&a, &al) == 0 && al == sizeof(a) && ntohs(a.sin_port) != 0);
+        CHECK(getsockopt(l, SOL_SOCKET, SO_ACCEPTCONN, &v, &vl) == 0 && v == 1);
+        CHECK(getsockopt(l, SOL_SOCKET, SO_TYPE, &v, &vl) == 0 && v == SOCK_STREAM);
+        CHECK(getsockopt(l, SOL_SOCKET, SO_DOMAIN, &v, &vl) == 0 && v == AF_INET);
+        CHECK(getsockopt(l, SOL_SOCKET, SO_PROTOCOL, &v, &vl) == 0 && v == IPPROTO_TCP);
+        CHECK(fcntl(l, F_GETFD) == FD_CLOEXEC);
+        struct sockaddr_in bad = loopback(0);
+        bad.sin_addr.s_addr = inet_addr("10.255.255.1");
+        const int t = socket(AF_INET, SOCK_STREAM, 0);
+        CHECK(t >= 0);
+        CHECK(bind(t, (struct sockaddr *)&bad, sizeof(bad)) < 0 && errno == EADDRNOTAVAIL);
+        CHECK(bind(t, (struct sockaddr *)&a, sizeof(a)) < 0 && errno == EADDRINUSE);
+        close(t);
+
+        /* Connecting without waiting: EINPROGRESS, then writable and SO_ERROR 0. */
+        const int c = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+        CHECK(c >= 0);
+        CHECK(connect(c, (struct sockaddr *)&a, sizeof(a)) == 0 || errno == EINPROGRESS);
+        struct pollfd pc = {.fd = c, .events = POLLOUT};
+        CHECK(poll(&pc, 1, 2000) == 1 && (pc.revents & POLLOUT));
+        int       err = -1;
+        socklen_t el = sizeof(err);
+        CHECK(getsockopt(c, SOL_SOCKET, SO_ERROR, &err, &el) == 0 && err == 0);
+        struct pollfd pl = {.fd = l, .events = POLLIN};
+        CHECK(poll(&pl, 1, 2000) == 1 && (pl.revents & POLLIN));
+        struct sockaddr_in peer;
+        socklen_t          pl2 = sizeof(peer);
+        const int          s = accept4(l, (struct sockaddr *)&peer, &pl2, SOCK_NONBLOCK);
+        CHECK(s >= 0);
+        CHECK(peer.sin_family == AF_INET && peer.sin_addr.s_addr == htonl(INADDR_LOOPBACK));
+        CHECK(fcntl(s, F_GETFL) & O_NONBLOCK);
+        char buf[4096];
+        CHECK(recv(s, buf, sizeof(buf), 0) < 0 && errno == EAGAIN);
+        CHECK(read(s, buf, sizeof(buf)) < 0 && errno == EAGAIN);
+
+        /* Both ways; a peek; TCP_NODELAY. */
+        CHECK(setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &v, sizeof(v)) == 0);
+        CHECK(getsockopt(c, IPPROTO_TCP, TCP_NODELAY, &v, &vl) == 0 && v == 1);
+        CHECK(write(c, "hello", 5) == 5);
+        struct pollfd ps = {.fd = s, .events = POLLIN};
+        CHECK(poll(&ps, 1, 2000) == 1);
+        CHECK(recv(s, buf, sizeof(buf), MSG_PEEK) == 5 && memcmp(buf, "hello", 5) == 0);
+        CHECK(read(s, buf, sizeof(buf)) == 5 && memcmp(buf, "hello", 5) == 0);
+        /* 64 KB the other way, sent without waiting: what fits each time. */
+        static char big[65536];
+        for (size_t i = 0; i < sizeof(big); ++i) big[i] = (char)(i * 13);
+        size_t        sent = 0, got = 0;
+        const int64_t start = ms_now();
+        while (got < sizeof(big) && ms_now() - start < 10000) {
+                if (sent < sizeof(big)) {
+                        const ssize_t n = send(s, big + sent, sizeof(big) - sent, 0);
+                        if (n > 0)
+                                sent += (size_t)n;
+                        else
+                                CHECK(errno == EAGAIN);
+                }
+                const ssize_t n = recv(c, buf, sizeof(buf), 0);
+                if (n > 0) {
+                        CHECK(memcmp(buf, big + got, (size_t)n) == 0);
+                        got += (size_t)n;
+                } else {
+                        CHECK(n < 0 && errno == EAGAIN);
+                        struct pollfd w[2] = {{.fd = c, .events = POLLIN},
+                                              {.fd = s, .events = sent < sizeof(big) ? POLLOUT : 0}};
+                        CHECK(poll(w, 2, 1000) >= 1);
+                }
+        }
+        CHECK(sent == sizeof(big) && got == sizeof(big));
+        printf("net: 64 KB over loopback in %d ms\n", (int)(ms_now() - start));
+
+        /* Half close: the reader sees the end; the other way still works. */
+        CHECK(shutdown(c, SHUT_WR) == 0);
+        CHECK(poll(&ps, 1, 2000) == 1);
+        CHECK(read(s, buf, sizeof(buf)) == 0);
+        CHECK(write(c, "x", 1) < 0 && errno == EPIPE); /* SIGPIPE ignored */
+        CHECK(send(s, "bye", 3, MSG_NOSIGNAL) == 3);
+        struct pollfd pcin = {.fd = c, .events = POLLIN};
+        CHECK(poll(&pcin, 1, 2000) == 1 && read(c, buf, sizeof(buf)) == 3);
+        close(s);
+        CHECK(poll(&pcin, 1, 2000) == 1 && read(c, buf, sizeof(buf)) == 0);
+        close(c);
+
+        /* Refused; a receive timeout. */
+        const int          r = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in closed = loopback(9);
+        CHECK(connect(r, (struct sockaddr *)&closed, sizeof(closed)) < 0 && errno == ECONNREFUSED);
+        close(r);
+        const int u = socket(AF_INET, SOCK_DGRAM, 0);
+        CHECK(u >= 0);
+        struct sockaddr_in ua = loopback(0);
+        CHECK(bind(u, (struct sockaddr *)&ua, sizeof(ua)) == 0);
+        al = sizeof(ua);
+        CHECK(getsockname(u, (struct sockaddr *)&ua, &al) == 0);
+        struct timeval tv = {.tv_sec = 0, .tv_usec = 100000};
+        CHECK(setsockopt(u, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0);
+        struct timeval tv2;
+        socklen_t      tl = sizeof(tv2);
+        CHECK(getsockopt(u, SOL_SOCKET, SO_RCVTIMEO, &tv2, &tl) == 0 && tv2.tv_sec == 0 && tv2.tv_usec == 100000);
+        int64_t t0 = ms_now();
+        CHECK(recv(u, buf, sizeof(buf), 0) < 0 && errno == EAGAIN);
+        CHECK(ms_now() - t0 >= 90);
+
+        /* UDP: the source, a cut datagram, MSG_TRUNC. */
+        const int us = socket(AF_INET, SOCK_DGRAM, 0);
+        CHECK(sendto(us, "datagram", 8, 0, (struct sockaddr *)&ua, sizeof(ua)) == 8);
+        struct sockaddr_in from;
+        socklen_t          fl = sizeof(from);
+        CHECK(recvfrom(u, buf, sizeof(buf), 0, (struct sockaddr *)&from, &fl) == 8 && memcmp(buf, "datagram", 8) == 0);
+        CHECK(fl == sizeof(from) && from.sin_addr.s_addr == htonl(INADDR_LOOPBACK) && from.sin_port != 0);
+        CHECK(sendto(us, "0123456789", 10, 0, (struct sockaddr *)&ua, sizeof(ua)) == 10);
+        struct iovec  iov = {buf, 4};
+        struct msghdr m = {.msg_name = &from, .msg_namelen = sizeof(from), .msg_iov = &iov, .msg_iovlen = 1};
+        CHECK(recvmsg(u, &m, 0) == 4 && (m.msg_flags & MSG_TRUNC));
+        CHECK(sendto(us, "0123456789", 10, 0, (struct sockaddr *)&ua, sizeof(ua)) == 10);
+        CHECK(recv(u, buf, 4, MSG_TRUNC) == 10);
+        CHECK(send(us, "x", 1, 0) < 0 && errno == EDESTADDRREQ);
+        close(us);
+        close(u);
+
+        /* Raw ICMP: an echo to 127.0.0.1 and its reply, with the IP header. */
+        const int ic = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+        CHECK(ic >= 0);
+        unsigned char echo[16] = {8, 0, 0, 0, 0x42, 0x42, 0, 1, 'p', 'r', 'o', 'g', 't', 'e', 's', 't'};
+        uint32_t      sum = 0;
+        for (size_t i = 0; i < sizeof(echo); i += 2) sum += (uint32_t)(echo[i] << 8 | echo[i + 1]);
+        while (sum >> 16) sum = (sum & 0xffff) + (sum >> 16);
+        sum = ~sum & 0xffff;
+        echo[2] = (unsigned char)(sum >> 8);
+        echo[3] = (unsigned char)sum;
+        struct sockaddr_in lo = loopback(0);
+        CHECK(sendto(ic, echo, sizeof(echo), 0, (struct sockaddr *)&lo, sizeof(lo)) == sizeof(echo));
+        int replied = 0;
+        for (int i = 0; i < 4 && !replied; ++i) {
+                struct pollfd pi = {.fd = ic, .events = POLLIN};
+                CHECK(poll(&pi, 1, 1000) == 1);
+                const ssize_t n = recv(ic, buf, sizeof(buf), 0);
+                CHECK(n >= 20 + (ssize_t)sizeof(echo));
+                const int ihl = (buf[0] & 0x0f) * 4;
+                replied = (unsigned char)buf[ihl] == 0 && (unsigned char)buf[ihl + 4] == 0x42;
+        }
+        CHECK(replied);
+        close(ic);
+
+        /* The interfaces: net_info and the ioctls agree. */
+        bmds_net_info_t info;
+        int             interfaces = 0, eth = -1;
+        for (uint32_t i = 0;; ++i) {
+                memset(&info, 0, sizeof(info));
+                info.size = sizeof(info);
+                if (bmds_net_info(i, &info) < 0) break;
+                struct in_addr ip = {info.address};
+                printf("net: %s index %u flags %#x mtu %u %u Mbit/s %s mode %u dhcp %u lease %u/%u s\n", info.name,
+                       (unsigned)info.index, (unsigned)info.flags, (unsigned)info.mtu, (unsigned)info.speed_mbps,
+                       inet_ntoa(ip), info.mode, info.dhcp, (unsigned)info.lease_left_s, (unsigned)info.lease_s);
+                if (strncmp(info.name, "eth", 3) == 0 && eth < 0) eth = (int)i;
+                ++interfaces;
+        }
+        CHECK(interfaces >= 2);
+        info.size = sizeof(info);
+        CHECK(bmds_net_info((uint32_t)interfaces, &info) == -BMDS_ENODEV);
+        CHECK(bmds_net_info(0, NULL) == -BMDS_EFAULT);
+        const int    q = socket(AF_INET, SOCK_DGRAM, 0);
+        struct ifreq ifr;
+        memset(&ifr, 0, sizeof(ifr));
+        strcpy(ifr.ifr_name, "lo");
+        CHECK(ioctl(q, SIOCGIFFLAGS, &ifr) == 0 && (ifr.ifr_flags & IFF_LOOPBACK) && (ifr.ifr_flags & IFF_UP));
+        CHECK(ioctl(q, SIOCGIFADDR, &ifr) == 0);
+        CHECK(((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr.s_addr == htonl(INADDR_LOOPBACK));
+        CHECK(ioctl(q, SIOCGIFINDEX, &ifr) == 0 && ifr.ifr_ifindex > 0);
+        memset(&ifr, 0, sizeof(ifr));
+        strcpy(ifr.ifr_name, "nope0");
+        CHECK(ioctl(q, SIOCGIFFLAGS, &ifr) < 0 && errno == ENODEV);
+        if (eth >= 0) {
+                memset(&info, 0, sizeof(info));
+                info.size = sizeof(info);
+                CHECK(bmds_net_info((uint32_t)eth, &info) == 0);
+                memset(&ifr, 0, sizeof(ifr));
+                strcpy(ifr.ifr_name, info.name);
+                CHECK(ioctl(q, SIOCGIFHWADDR, &ifr) == 0 && memcmp(ifr.ifr_hwaddr.sa_data, info.mac, 6) == 0);
+                CHECK(ioctl(q, SIOCGIFMTU, &ifr) == 0 && ifr.ifr_mtu == (int)info.mtu);
+                CHECK(ioctl(q, SIOCGIFINDEX, &ifr) == 0 && ifr.ifr_ifindex == (int)info.index);
+                memset(&ifr, 0, sizeof(ifr));
+                ifr.ifr_ifindex = (int)info.index;
+                CHECK(ioctl(q, SIOCGIFNAME, &ifr) == 0 && strcmp(ifr.ifr_name, info.name) == 0);
+        }
+        struct ifreq  reqs[8];
+        struct ifconf conf = {.ifc_len = sizeof(reqs), .ifc_req = reqs};
+        CHECK(ioctl(q, SIOCGIFCONF, &conf) == 0 && conf.ifc_len >= (int)sizeof(struct ifreq));
+        close(q);
+        close(l);
+        printf("net: all passed\n");
+        return 0;
+}
+
+/* Interval timers (devplan/programs.md §18): alarm, setitimer, getitimer. */
+static int64_t timer_left_us(void) {
+        struct itimerval it;
+        if (getitimer(ITIMER_REAL, &it) != 0) return -1;
+        return (int64_t)it.it_value.tv_sec * 1000000 + it.it_value.tv_usec;
+}
+
+static volatile pid_t alarm_tid;
+
+static void note_alarm_thread(int sig) {
+        alarm_tid = gettid();
+        ++got[sig];
+        return;
+}
+
+static void *wait_for_alarm(void *arg) {
+        (void)arg;
+        sigset_t set;
+        sigemptyset(&set);
+        sigaddset(&set, SIGALRM);
+        pthread_sigmask(SIG_UNBLOCK, &set, NULL);
+        while (got[SIGALRM] == 0) pause();
+        return (void *)(intptr_t)gettid();
+}
+
+static int timers(const char *self) {
+        struct itimerval it, old;
+        int              fds[2];
+        char             b = 0;
+        // Nothing armed reads 0.
+        CHECK(timer_left_us() == 0);
+        // alarm() interrupts a blocking read (no SA_RESTART), never early.
+        CHECK(catch_signal(SIGALRM, count_signal, 0) == 0 && pipe(fds) == 0);
+        int64_t start_ms = ms_now();
+        CHECK(alarm(1) == 0);
+        CHECK(read(fds[0], &b, 1) == -1 && errno == EINTR && got[SIGALRM] == 1);
+        int64_t took = ms_now() - start_ms;
+        printf("timers: alarm(1) after %d ms\n", (int)took);
+        CHECK(took >= 1000 && took < 1100);
+        CHECK(close(fds[0]) == 0 && close(fds[1]) == 0 && timer_left_us() == 0);
+        // alarm() returns what was left (rounded up); 0 disarms.
+        CHECK(alarm(5) == 0 && alarm(0) == 5 && timer_left_us() == 0);
+        // getitimer counts down; setitimer returns the old value and interval.
+        memset(&it, 0, sizeof(it));
+        it.it_value.tv_sec = 2;
+        it.it_interval.tv_usec = 250000;
+        CHECK(setitimer(ITIMER_REAL, &it, NULL) == 0 && usleep(300000) == 0);
+        const int64_t left = timer_left_us();
+        CHECK(left > 1600000 && left <= 1700000);
+        memset(&it, 0, sizeof(it));
+        CHECK(setitimer(ITIMER_REAL, &it, &old) == 0);
+        CHECK(old.it_interval.tv_sec == 0 && old.it_interval.tv_usec == 250000 && old.it_value.tv_sec == 1);
+        CHECK(timer_left_us() == 0);
+        // A repeating timer: three SIGALRMs 100 ms apart, never early.
+        got[SIGALRM] = 0;
+        it.it_value.tv_usec = 100000;
+        it.it_interval.tv_usec = 100000;
+        start_ms = ms_now();
+        CHECK(setitimer(ITIMER_REAL, &it, NULL) == 0);
+        while (got[SIGALRM] < 3) pause();
+        took = ms_now() - start_ms;
+        memset(&it, 0, sizeof(it));
+        CHECK(setitimer(ITIMER_REAL, &it, NULL) == 0);
+        printf("timers: 3 x 100 ms after %d ms\n", (int)took);
+        CHECK(took >= 300 && took < 400);
+        // Bad values and timers BMDS hasn't.
+        it.it_value.tv_usec = 1000000;
+        CHECK(setitimer(ITIMER_REAL, &it, NULL) == -1 && errno == EINVAL);
+        it.it_value.tv_usec = 1000;
+        CHECK(setitimer(ITIMER_PROF, &it, NULL) == -1 && errno == EINVAL);
+        CHECK(signal(SIGALRM, SIG_DFL) == count_signal);
+        // A child doesn't get the timer; exec keeps it; by default SIGALRM ends the process.
+        CHECK(alarm(5) == 0);
+        pid_t c = start(self, NULL, NULL, "timerleft", "0", NULL);
+        CHECK(c > 0 && status_of(c) == 0);
+        CHECK(alarm(0) > 0);
+        c = start(self, NULL, NULL, "timerexec", self, NULL);
+        CHECK(c > 0 && status_of(c) == 0);
+        c = start(self, NULL, NULL, "alarmdie", NULL);
+        CHECK(c > 0 && ending_of(c) == 1000 + SIGALRM);
+        // Many processes that end with their timer armed: each frees its entry (32 of them).
+        for (int i = 0; i < 100; ++i) {
+                c = start(self, NULL, NULL, "alarmexit", NULL);
+                CHECK(c > 0 && status_of(c) == 0);
+        }
+        // A process computing, never making a system call, still ends by its SIGALRM.
+        start_ms = ms_now();
+        c = start(self, NULL, NULL, "alarmspin", NULL);
+        CHECK(c > 0 && ending_of(c) == 1000 + SIGALRM);
+        took = ms_now() - start_ms;
+        printf("timers: a spinning process ended after %d ms\n", (int)took);
+        CHECK(took >= 1000 && took < 1500);
+        // Several at once: each child checks its own fires on time, never early.
+        pid_t at[3];
+        CHECK((at[0] = start(self, NULL, NULL, "alarmat", "300", NULL)) > 0);
+        CHECK((at[1] = start(self, NULL, NULL, "alarmat", "50", NULL)) > 0);
+        CHECK((at[2] = start(self, NULL, NULL, "alarmat", "120", NULL)) > 0);
+        for (int i = 0; i < 3; ++i) CHECK(status_of(at[i]) == 0);
+        // SA_RESTART: a read the handler interrupted goes on and gets what comes later.
+        CHECK(catch_signal(SIGALRM, count_signal, SA_RESTART) == 0 && pipe(fds) == 0);
+        char fdbuf[16];
+        snprintf(fdbuf, sizeof(fdbuf), "%d", fds[1]);
+        got[SIGALRM] = 0;
+        c = start(self, NULL, NULL, "later", "300", fdbuf, NULL);
+        CHECK(c > 0 && close(fds[1]) == 0);
+        CHECK(ualarm(100000, 0) == 0);
+        CHECK(read(fds[0], &b, 1) == 1 && b == 'x' && got[SIGALRM] == 1);
+        CHECK(status_of(c) == 0 && close(fds[0]) == 0);
+        // Stopped when it fires: pending until continued, then handled.
+        c = start(self, NULL, NULL, "alarmcatch", NULL);
+        CHECK(c > 0 && usleep(50000) == 0 && kill(c, SIGSTOP) == 0 && usleep(400000) == 0);
+        int st = 0;
+        CHECK(waitpid(c, &st, WNOHANG) == 0);
+        CHECK(kill(c, SIGCONT) == 0 && status_of(c) == 7);
+        // Threads: the signal goes to the thread that doesn't block it.
+        CHECK(catch_signal(SIGALRM, note_alarm_thread, 0) == 0);
+        sigset_t set, was;
+        sigemptyset(&set);
+        sigaddset(&set, SIGALRM);
+        CHECK(pthread_sigmask(SIG_BLOCK, &set, &was) == 0);
+        got[SIGALRM] = 0;
+        pthread_t t;
+        void     *tid = NULL;
+        CHECK(pthread_create(&t, NULL, wait_for_alarm, NULL) == 0);
+        CHECK(ualarm(100000, 0) == 0);
+        CHECK(pthread_join(t, &tid) == 0 && got[SIGALRM] == 1 && alarm_tid == (pid_t)(intptr_t)tid);
+        CHECK(alarm_tid != gettid() && pthread_sigmask(SIG_SETMASK, &was, NULL) == 0);
+        CHECK(signal(SIGALRM, SIG_DFL) == note_alarm_thread);
+        // Long values: 63 years reads back, nothing overflows.
+        memset(&it, 0, sizeof(it));
+        it.it_value.tv_sec = 2000000000;
+        it.it_interval.tv_sec = 2000000000;
+        CHECK(setitimer(ITIMER_REAL, &it, NULL) == 0 && getitimer(ITIMER_REAL, &old) == 0);
+        CHECK(old.it_value.tv_sec >= 1999999999 && old.it_value.tv_sec <= 2000000000);
+        CHECK(old.it_interval.tv_sec == 2000000000 && alarm(0) >= 1999999999u);
+        printf("timers: all passed\n");
+        return 0;
+}
+
 static int notify_test(int served) {
         CHECK(bmds_sys_has(BMDS_SYS_NOTIFY_CLOSE));
         const int fd = bmds_notify_open(BMDS_O_CLOEXEC);
@@ -2440,6 +2824,7 @@ int main(int argc, char **argv) {
         if (strcmp(what, "expand") == 0) return expand_test();
         if (strcmp(what, "image") == 0) return image_test(argc > 2 ? arg : NULL);
         if (strcmp(what, "notify") == 0) return notify_test(argc > 2 && strcmp(arg, "served") == 0);
+        if (strcmp(what, "net") == 0) return net_test();
         if (strcmp(what, "procexec") == 0) return proc_exec(arg);
         if (strcmp(what, "proccheck") == 0) return proc_check(arg);
         if (strcmp(what, "burn") == 0) {
@@ -2544,6 +2929,47 @@ int main(int argc, char **argv) {
         }
         if (strcmp(what, "scripts") == 0) return scripts(arg, argc > 3 ? argv[3] : ".");
         if (strcmp(what, "signals") == 0) return signals(arg);
+        if (strcmp(what, "timers") == 0) return timers(arg);
+        if (strcmp(what, "timerleft") == 0) {
+                // 0: nothing armed; otherwise more than that many seconds left.
+                const int64_t left = timer_left_us();
+                return atoi(arg) == 0 ? (left == 0 ? 0 : 1) : (left > (int64_t)atoi(arg) * 1000000 ? 0 : 1);
+        }
+        if (strcmp(what, "timerexec") == 0) {
+                char *eargv[] = {"progtest", "timerleft", "4", NULL};
+                alarm(5);
+                execve(arg, eargv, environ);
+                return 2;
+        }
+        if (strcmp(what, "alarmexit") == 0) {
+                // Ends with its timer armed; failing to arm it means the table filled.
+                struct itimerval it = {{0, 0}, {10, 0}};
+                return setitimer(ITIMER_REAL, &it, NULL) == 0 && timer_left_us() > 0 ? 0 : 1;
+        }
+        if (strcmp(what, "alarmspin") == 0) {
+                alarm(1);
+                for (volatile unsigned n = 0;; ++n) {}
+        }
+        if (strcmp(what, "alarmat") == 0) {
+                const int ms = atoi(arg);
+                if (catch_signal(SIGALRM, count_signal, 0) != 0) return 2;
+                const int64_t from = ms_now();
+                ualarm((useconds_t)ms * 1000, 0);
+                while (got[SIGALRM] == 0) pause();
+                const int64_t took = ms_now() - from;
+                if (took < ms || took >= ms + 50) printf("alarmat %d: after %d ms\n", ms, (int)took);
+                return took >= ms && took < ms + 50 ? 0 : 1;
+        }
+        if (strcmp(what, "alarmcatch") == 0) {
+                if (catch_signal(SIGALRM, count_signal, 0) != 0) return 2;
+                ualarm(200000, 0);
+                while (got[SIGALRM] == 0) pause();
+                return 7;
+        }
+        if (strcmp(what, "alarmdie") == 0) {
+                ualarm(100000, 0);
+                for (;;) pause();
+        }
         if (strcmp(what, "catch") == 0) {
                 if (catch_signal(SIGINT, count_signal, 0) != 0 || catch_signal(SIGTERM, count_signal, 0) != 0) return 1;
                 printf("catch: ready\n");

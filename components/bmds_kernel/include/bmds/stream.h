@@ -22,6 +22,7 @@ class AudioFile;
 class DecodedFile;
 class FileHandle;
 class MidiFile;
+class Socket;
 class SynthFile;
 class WaitList;
 namespace Notifications {
@@ -168,6 +169,12 @@ class Stream {
                  *        fd, `notify_open`: `devplan/notifications.md` §3.3), or null.
                  */
                 virtual Notifications::Listener *notificationListener() { return nullptr; }
+
+                /**
+                 * @brief Returns the socket behind this stream (`devplan/network.md` §18),
+                 *        or null (the default).
+                 */
+                virtual Socket *socket() { return nullptr; }
 
                 /** @brief Writes @p text (see `write(ByteSpan, unsigned int)`). */
                 Result<size_t> write(StringView text, unsigned int timeoutMs) {

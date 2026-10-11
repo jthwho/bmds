@@ -51,7 +51,27 @@
 #define BMDS_ELOOP 40        /**< Too many levels of symbolic links. */
 #define BMDS_EOVERFLOW 75    /**< Value too large. */
 #define BMDS_EILSEQ 84       /**< Illegal byte sequence. */
-#define BMDS_ENOTSUP 95      /**< Not supported. */
+#define BMDS_ENOTSOCK 88     /**< Not a socket. */
+#define BMDS_EDESTADDRREQ 89 /**< A datagram socket without an address to send to. */
+#define BMDS_EMSGSIZE 90     /**< Message too long. */
+#define BMDS_EPROTOTYPE 91   /**< The protocol doesn't fit the socket type. */
+#define BMDS_ENOPROTOOPT 92  /**< No such socket option. */
+#define BMDS_EPROTONOSUPPORT 93 /**< Protocol not supported. */
+#define BMDS_ENOTSUP 95         /**< Not supported (also EOPNOTSUPP). */
+#define BMDS_EAFNOSUPPORT 97    /**< Address family not supported. */
+#define BMDS_EADDRINUSE 98      /**< Address in use. */
+#define BMDS_EADDRNOTAVAIL 99   /**< Address not available. */
+#define BMDS_ENETDOWN 100       /**< Network is down. */
+#define BMDS_ENETUNREACH 101    /**< Network is unreachable. */
+#define BMDS_ECONNABORTED 103   /**< Connection aborted. */
+#define BMDS_ECONNRESET 104     /**< Connection reset by peer. */
+#define BMDS_ENOBUFS 105        /**< No buffer space. */
+#define BMDS_EISCONN 106        /**< Already connected. */
+#define BMDS_ENOTCONN 107       /**< Not connected. */
+#define BMDS_ECONNREFUSED 111   /**< Connection refused. */
+#define BMDS_EHOSTUNREACH 113   /**< No route to host. */
+#define BMDS_EALREADY 114       /**< Operation already in progress. */
+#define BMDS_EINPROGRESS 115    /**< Operation in progress. */
 #define BMDS_ETIMEDOUT 110   /**< Timed out. */
 #define BMDS_ENOMEDIUM 123   /**< No medium (the card is out). */
 #define BMDS_ECANCELED 125   /**< Cancelled. */

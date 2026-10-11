@@ -34,122 +34,11 @@
 #include <bmds/assert.h>
 #include <bmds/multicastfilter.h>
 
-#include "lwipport.h"
+#include "lwipwire.h"
 
 namespace {
 
-        u32_t nowMs = 0;
-
-        struct Call {
-                        tcpip_callback_fn fn;
-                        void             *ctx;
-        };
-        std::vector<Call> calls;
-
-        // One side of the wire: its interface, the frames sent to it, the filter requests.
-        struct Port {
-                        struct netif                     netif = {};
-                        uint8_t                          mac[6] = {};
-                        Port                            *peer = nullptr;
-                        std::deque<std::vector<uint8_t>> inbox;
-                        std::vector<std::string>         filterLog;
-        };
-
-        Port a;
-        Port b;
-
-        err_t linkOutput(struct netif *netif, struct pbuf *p) {
-                auto                &port = *static_cast<Port *>(netif->state);
-                std::vector<uint8_t> frame(p->tot_len);
-                (void)pbuf_copy_partial(p, frame.data(), p->tot_len, 0);
-                port.peer->inbox.push_back(std::move(frame));
-                return ERR_OK;
-        }
-
-        err_t igmpFilter(struct netif *netif, const ip4_addr_t *group, enum netif_mac_filter_action action) {
-                auto &port = *static_cast<Port *>(netif->state);
-                port.filterLog.push_back(std::string(action == NETIF_ADD_MAC_FILTER ? "+" : "-") + ip4addr_ntoa(group));
-                return ERR_OK;
-        }
-
-        err_t portInit(struct netif *netif) {
-                auto &port = *static_cast<Port *>(netif->state);
-                netif->hwaddr_len = ETH_HWADDR_LEN;
-                std::memcpy(netif->hwaddr, port.mac, 6);
-                netif->mtu = 1500;
-                netif->flags = NETIF_FLAG_BROADCAST | NETIF_FLAG_ETHARP | NETIF_FLAG_ETHERNET | NETIF_FLAG_IGMP;
-                netif->output = &etharp_output;
-                netif->linkoutput = &linkOutput;
-                netif_set_igmp_mac_filter(netif, &igmpFilter);
-                return ERR_OK;
-        }
-
-        ip4_addr_t addr(const char *text) {
-                ip4_addr_t x;
-                REQUIRE(ip4addr_aton(text, &x));
-                return x;
-        }
-
-        // Delivers what is on the wire, runs the calls lwIP queued and its timers, a few times
-        // over (replies make more frames), 10 ms of lwIP's time each.
-        void pump() {
-                for (int round = 0; round < 8; ++round) {
-                        for (Port *p : {&a, &b}) {
-                                while (!p->inbox.empty()) {
-                                        std::vector<uint8_t> frame = std::move(p->inbox.front());
-                                        p->inbox.pop_front();
-                                        struct pbuf *q =
-                                                pbuf_alloc(PBUF_RAW, static_cast<u16_t>(frame.size()), PBUF_RAM);
-                                        REQUIRE(q != nullptr);
-                                        (void)pbuf_take(q, frame.data(), static_cast<u16_t>(frame.size()));
-                                        if (p->netif.input(q, &p->netif) != ERR_OK) pbuf_free(q);
-                                }
-                        }
-                        std::vector<Call> due;
-                        due.swap(calls);
-                        for (const Call &c : due) c.fn(c.ctx);
-                        nowMs += 10;
-                        sys_check_timeouts();
-                }
-                return;
-        }
-
-        // Lets @p ms of lwIP's time pass (its timers: ARP giving up, IGMP's reports).
-        void idle(u32_t ms) {
-                for (u32_t t = 0; t < ms; t += 100) {
-                        nowMs += 100;
-                        sys_check_timeouts();
-                }
-                pump();
-                return;
-        }
-
-        void setUp() {
-                static bool done = false;
-                if (done) return;
-                done = true;
-                static unsigned char heap[MEM_SIZE + 2 * MEM_ALIGNMENT] __attribute__((aligned(MEM_ALIGNMENT)));
-                bmds_lwip_heap = heap;
-                lwip_init();
-                const uint8_t macA[6] = {0x02, 0, 0, 0, 0, 0x0a};
-                const uint8_t macB[6] = {0x02, 0, 0, 0, 0, 0x0b};
-                std::memcpy(a.mac, macA, 6);
-                std::memcpy(b.mac, macB, 6);
-                a.peer = &b;
-                b.peer = &a;
-                const ip4_addr_t mask = addr("255.255.255.0");
-                const ip4_addr_t ipA = addr("10.0.0.1");
-                const ip4_addr_t ipB = addr("10.0.0.2");
-                const ip4_addr_t none = addr("0.0.0.0");
-                REQUIRE(netif_add(&a.netif, &ipA, &mask, &none, &a, &portInit, &ethernet_input) != nullptr);
-                REQUIRE(netif_add(&b.netif, &ipB, &mask, &none, &b, &portInit, &ethernet_input) != nullptr);
-                for (Port *p : {&a, &b}) {
-                        netif_set_up(&p->netif);
-                        netif_set_link_up(&p->netif);
-                }
-                pump();
-                return;
-        }
+        using namespace LwipWire;
 
         // An ICMP echo, its replies counted by a raw PCB.
         struct Echo {
@@ -220,40 +109,9 @@ namespace {
 
 } // namespace
 
-// --- lwIP's port, as the host tests have it (the firmware's is netstack.cpp) -----------------
-
-extern "C" {
-
-unsigned char *bmds_lwip_heap = nullptr;
-
-void bmds_lwip_assert_locked(void) {
-        return;
-}
-
-unsigned int bmds_lwip_rand(void) {
-        static unsigned int x = 12345;
-        x = x * 1103515245u + 12345u;
-        return x;
-}
-
-void bmds_lwip_assert(const char *message, const char *file, int line) {
-        bmds::Detail::assertFailed(message, file, line);
-}
-
-int bmds_lwip_schedule(tcpip_callback_fn fn, void *ctx) {
-        calls.push_back({fn, ctx});
-        return 0;
-}
-
-u32_t sys_now(void) {
-        return nowMs;
-}
-
-} // extern "C"
-
 TEST_CASE("lwIP: ARP and ping between two interfaces") {
         setUp();
-        const mem_size_t used = lwip_stats.mem.used;
+        const size_t used = heapUsed();
         CHECK(ping(&a.netif, "10.0.0.2") == 1);
         CHECK(ping(&b.netif, "10.0.0.1") == 1);
         struct eth_addr  *mac = nullptr;
@@ -263,12 +121,12 @@ TEST_CASE("lwIP: ARP and ping between two interfaces") {
         CHECK(std::memcmp(mac->addr, b.mac, 6) == 0);
         CHECK(ping(&a.netif, "10.0.0.9") == 0); // nobody: ARP asks, and gives up (the echo freed)
         idle(10'000);
-        CHECK(lwip_stats.mem.used == used);
+        CHECK(heapUsed() == used);
 }
 
 TEST_CASE("lwIP: UDP between two interfaces") {
         setUp();
-        const mem_size_t used = lwip_stats.mem.used;
+        const size_t     used = heapUsed();
         Inbox            inbox;
         struct udp_pcb  *pcb = udp_new();
         REQUIRE(pcb != nullptr);
@@ -281,12 +139,12 @@ TEST_CASE("lwIP: UDP between two interfaces") {
         CHECK(inbox.datagrams[0] == "hello");
         udp_remove(pcb);
         pump();
-        CHECK(lwip_stats.mem.used == used);
+        CHECK(heapUsed() == used);
 }
 
 TEST_CASE("lwIP: IGMP asks for MAC filters, IP drops the groups not joined") {
         setUp();
-        const mem_size_t used = lwip_stats.mem.used;
+        const size_t used = heapUsed();
         // The all-systems group from the start.
         REQUIRE_FALSE(a.filterLog.empty());
         CHECK(a.filterLog[0] == "+224.0.0.1");
@@ -325,16 +183,16 @@ TEST_CASE("lwIP: IGMP asks for MAC filters, IP drops the groups not joined") {
 
         udp_remove(pcb);
         pump();
-        CHECK(lwip_stats.mem.used == used);
+        CHECK(heapUsed() == used);
 }
 
 TEST_CASE("lwIP: loopback through the scheduled poll") {
         setUp();
-        const mem_size_t used = lwip_stats.mem.used;
+        const size_t used = heapUsed();
         CHECK(ping(nullptr, "127.0.0.1") == 1);
         CHECK(ping(nullptr, "10.0.0.1") == 1); // an interface's own address loops back too
         CHECK(calls.empty());
-        CHECK(lwip_stats.mem.used == used);
+        CHECK(heapUsed() == used);
 }
 
 TEST_CASE("MulticastFilter: users counted per address, order kept") {

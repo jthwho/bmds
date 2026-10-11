@@ -706,3 +706,59 @@ already a shell command, the serial terminal's size).
   argument), `#!/bin/env sh` and `#!/bin/env hello` ($PATH), `#!/usr/bin/env` and
   `#!/usr/bin/bash` refused; `env` (set and put back, unset again, a name twice, the listing
   without unexported variables, a missing command).
+
+## 18. Interval timers: `alarm`, `setitimer` (design, 2026-10-11; built)
+
+Left out of step 9; found missing by the network work (BusyBox `ping` sends its later requests
+from `SIGALRM`, and `nc -w`, `wget -T`, `timeout`'s own use all time out with `alarm`).
+
+- **One real-time timer per process** (`ITIMER_REAL`), as Linux's: kept across `exec`, not
+  given to a child (a vfork child has its own pid, so its own timer), gone when the process
+  ends. It raises `SIGALRM` from the kernel (`BMDS_SI_KERNEL`); a repeating one moves on by
+  whole intervals past now, so a late firing never queues a burst (a pending `SIGALRM` is one
+  signal anyway).
+- **Where it runs:** a table of `ProcessTable::Capacity` entries (pid, deadline, interval) in
+  the loader under a lock of its own, run by the existing `sig` task: it waits on its queue
+  until the earliest deadline (nothing polls; no timer task, no FreeRTOS timer each), and a
+  change posts an empty entry to wake it. Deadlines are on the monotonic clock in
+  nanoseconds; the wait rounds up to the tick, so a timer never fires early.
+- **Slot 108:** `int32_t proc_timer(uint32_t which, const bmds_timer_t *set, bmds_timer_t
+  *old)`. `bmds_timer_t` is `{size, reserved, value_us, interval_us}` (`value_us` 0 disarms);
+  `set` null only reads; `old`, if given, gets what was left and the interval. `which` is
+  `BMDS_TIMER_REAL` (0, Linux's `ITIMER_REAL`); `ITIMER_VIRTUAL` and `ITIMER_PROF` (CPU time)
+  are `EINVAL` for now: they need the process's CPU time charged as it runs.
+- **`linux.c`:** `setitimer` and `getitimer` (musl passes 32-bit `timeval`s on rv32; a
+  `tv_usec` outside 0-999999 is `EINVAL`, as Linux); `alarm` and `ualarm` are musl's over them.
+- **Not yet:** POSIX timers (`timer_create`: several per process, `SIGEV_THREAD`), CPU-time
+  timers, overrun counts.
+- **Budget:** a `constinit` table of 32 × 24 bytes (768 bytes of `.bss`); no task, no
+  allocation.
+- **Testing:** `progtest timers`: `alarm` interrupting a blocking pipe read (`EINTR` without
+  `SA_RESTART`), `setitimer` repeating (three `SIGALRM`s at about the interval, never early),
+  `getitimer` counting down, disarming, the old value returned, kept across `exec`, gone in a
+  vfork child, `EINVAL` for bad values; BusyBox `ping -c 3`, `nc -w 1`, `timeout`.
+
+**As built** (2026-10-11): as above. On the board `progtest timers` passes (`alarm(1)` after
+1001 ms; three 100 ms periods in 302 ms), and BusyBox `ping -c 3`, `nc -w 1`, `wget -T 2` and
+`timeout 1 sleep 5` time out as on Linux. Building it found a race older than it: a child's
+end was recorded (waking the parent's `waitpid`) before its `SIGCHLD` was sent, so on the
+other core `waitpid` could return before the handler was due (`progtest signals` failed now
+and then once the timer's clean-up sat between the two). The end and the `SIGCHLD` now happen
+under one lock that a reaping wait passes through before returning, so the signal is pending
+by then, as on Linux; `progtest signals` passed five runs in a row after.
+
+**Testing it further** (2026-10-11):
+- The table's logic moved to `bmds_core` (`IntervalTimers`, header-only) with a host test:
+  deadlines never early, one firing for a late look at a repeating timer, several owners
+  and the earliest next, replacing, disarming, dropping, a full table, values cut without
+  overflow.
+- A dead process's timer is now dropped before its end is recorded: before, the parent could
+  reap it and a new process take the pid in between, and get its SIGALRM.
+- `progtest timers` grew: 100 children each ending with a timer armed (none leaks an
+  entry), a process computing without system calls ended by SIGALRM after 1030 ms, three
+  timers at once each on time (50, 120, 300 ms), `SA_RESTART` (an interrupted read gets what
+  comes later), a process stopped when its timer fires (handled after `SIGCONT`), threads
+  (the signal reaches the one not blocking it), 63-year values read back.
+- On the board every non-interactive `progtest` suite, the RAM disk and card `posix`, the
+  `tree` Ctrl-C, and the v1 corpus pass; the distribution rebuilt and installed with the new
+  `linux.c`.

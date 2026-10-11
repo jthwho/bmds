@@ -54,6 +54,12 @@ class NetInterface {
                         Off,
                 };
 
+                /** @brief The servers the DHCP lease named (network order; 0: none). */
+                struct LeaseServers {
+                                uint32_t dns[2] = {};
+                                uint32_t ntp[2] = {};
+                };
+
                 /** @brief Counters since boot, beyond the device's and lwIP's. */
                 struct Counters {
                                 uint32_t rxCopied = 0;  ///< Frames copied because lwIP held many buffers.
@@ -100,6 +106,19 @@ class NetInterface {
 
                 /** @brief Returns the received buffers lwIP holds now. */
                 uint32_t held() const { return _held.load(std::memory_order_relaxed); }
+
+                /** @brief Returns the servers DHCP's lease named (core lock held). */
+                const LeaseServers &leaseServers() const { return _leaseServers; }
+
+                /** @brief Returns the host name DHCP sends (`system/hostname`; core lock held). */
+                const char *hostname() const { return _hostname; }
+
+                /**
+                 * @brief DHCP's option @p option, @p length bytes at @p offset in @p p, of a
+                 *        message of type @p type (lwIP's parse hook; core lock held).
+                 */
+                void dhcpOption(unsigned int type, unsigned int option, unsigned int length, const struct pbuf *p,
+                                unsigned int offset);
 
         private:
                 struct RxPbuf {
@@ -157,6 +176,7 @@ class NetInterface {
                 SysConf::Watcher  _hostnameWatcher;
                 SysConf::Id       _settings[SettingCount] = {};
                 char              _hostname[HostName::MaxBytes + 1] = {};
+                LeaseServers      _leaseServers;
                 bool              _applying = false;
                 uint32_t          _loggedAddress = 0;
                 uint32_t          _loggedMask = 0;

@@ -168,7 +168,14 @@ on BMDS's table; programs never see that layer. What differs from Linux:
   usage is zero: CPU time isn't counted). `exec` runs programs,
   `#!` scripts and `.sh` files; `/bin/sh` is the BMDS shell, so `system` and
   `popen` work.
-- **Not yet:** threads, sockets (`EAFNOSUPPORT`), `alarm`/`setitimer`,
+- **Sockets** (`devplan/network.md` §18): IPv4 TCP, UDP and raw ICMP, as Linux has them:
+  blocking or not (`O_NONBLOCK`, `MSG_DONTWAIT`), `poll`/`select`, `SO_RCVTIMEO`, multicast
+  (`IP_ADD_MEMBERSHIP`), the interface `ioctl`s (`SIOCGIFCONF`, `SIOCGIFADDR`, ...), and
+  `getaddrinfo` through `/etc/resolv.conf` and `/etc/hosts` (built from the settings). No
+  `AF_UNIX`, `AF_INET6` or netlink yet: `socketpair`, `getifaddrs` and `if_nametoindex` fail.
+- **Timers** (`devplan/programs.md` §18): `alarm`, `ualarm`, `setitimer` and `getitimer` with
+  `ITIMER_REAL` (`SIGALRM`, never early). `ITIMER_VIRTUAL`/`ITIMER_PROF` are `EINVAL`.
+- **Not yet:** threads, POSIX timers (`timer_create`),
   `sigaltstack`, `sigwaitinfo`, realtime signals, the sender's pid in
   `siginfo`.
 - **Size:** a `printf` hello is about 40 KB (`long double` is 128-bit on

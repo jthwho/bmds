@@ -157,6 +157,7 @@ struct ProgramThread final : ProcessOwner {
                 int32_t sigSuspend(uint32_t mask);
                 int32_t sendSignal(int32_t target, int32_t sig);
                 int32_t exitSignal(int32_t sig);
+                int32_t           timer(uint32_t which, const bmds_timer_t *set, bmds_timer_t *old);
                 int32_t group(uint32_t op, int32_t target, int32_t pgid);
                 int32_t termForeground(int32_t fd, int32_t pgid);
                 int32_t           startThread(const bmds_thread_t *spec);

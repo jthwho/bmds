@@ -80,7 +80,17 @@
 #define LWIP_DHCP_DOES_ACD_CHECK 0
 #define LWIP_AUTOIP 0
 #define LWIP_IGMP 1
-#define LWIP_DNS 0 // step 3
+#define LWIP_DNS 1
+#define DNS_TABLE_SIZE 4
+#define DNS_MAX_NAME_LENGTH 128
+#define DNS_MAX_SERVERS 2
+#define LWIP_DHCP_MAX_DNS_SERVERS 0 // DHCP's servers through the hook below: net/dns/servers wins
+#define DNS_LOOKUP_LOCAL_EXTERN(name, length, address, type) bmds_dns_local((name), (length), (address))
+#define LWIP_HOOK_DHCP_PARSE_OPTION(netif, dhcp, state, msg, type, option, length, p, offset)                          \
+        do {                                                                                                           \
+                LWIP_UNUSED_ARG(msg);                                                                                  \
+                bmds_dhcp_option((netif), (type), (option), (length), (p), (offset));                                  \
+        } while (0)
 #define LWIP_UDP 1
 #define LWIP_UDPLITE 0
 #define LWIP_TCP 1

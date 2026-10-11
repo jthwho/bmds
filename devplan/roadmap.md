@@ -219,7 +219,15 @@ Plan: [`input.md`](input.md).
   - [x] 1. Driver (EMAC, IP101, rings, 1588 clock; no AV DMA channels on this chip): `net`, §14.
   - [x] 2. lwIP 2.2.1 (`NO_SYS`, our task and core lock, heap in PSRAM), DHCP/static live from
     sysconf, ARP, ICMP, IGMP over the MAC's 8 filters, `lo`, `ping`; flood-tested, §16.
-  - [ ] 3. Sockets ABI, `linux.c`, DNS; BusyBox's network applets.
+  - [ ] 3. Sockets ABI, `linux.c`, DNS; BusyBox's network applets. Done (§19): the kernel's
+    `Socket` (TCP, UDP, raw ICMP) with host tests, slots 96-107, `linux.c`, `NetStatus`,
+    `/etc`, DNS (DHCP's servers or `net/dns/servers`, `net/hosts`), `ping NAME`; BusyBox built
+    with `nc`, `wget`, `telnet`, `ping`, `nslookup`; on the board `progtest net`, the applets
+    and names against the LAN, TCP about 20 Mbit/s each way through this host's Wi-Fi and 47
+    over loopback; `alarm`/`setitimer` (slot 108, `programs.md` §18) for BusyBox `ping`,
+    `nc -w`, `wget -T`. Left: checksum offload, a wired peer.
+  - [ ] 3a. The tray's network icon: `NetStatus` (public, change-driven), its SDK calls, the
+    tooltip with each interface's link, addresses and DHCP or static (§17).
   - [ ] 4. NTP and mDNS.
   - [ ] 5. SSH: Dropbear, passwords in sysconf, our own `sftp-server`.
   - [ ] 5a. The crypto engines (AES, SHA, MPI, ECC) behind SSH, measured.
