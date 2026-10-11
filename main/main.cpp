@@ -15,6 +15,7 @@
 #include <bmds/bootdisk.h>
 #include <bmds/clipboard.h>
 #include <bmds/ethernetdevice.h>
+#include <bmds/netstack.h>
 #include <bmds/filehandle.h>
 #include <bmds/i2cbus.h>
 #include <bmds/input.h>
@@ -74,6 +75,7 @@ namespace {
                 {"input", bmds::Input::init},
                 {"usb", bmds::UsbHost::init},
                 {"net", bmds::EthernetDevice::init}, // eth0 (devplan/network.md)
+                {"ip", bmds::NetStack::init},        // lwIP, lo, and eth0's addresses from sysconf
                 {"shell", startSerialShell},
         };
 

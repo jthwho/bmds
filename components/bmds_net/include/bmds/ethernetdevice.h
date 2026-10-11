@@ -168,6 +168,12 @@ class EthernetDevice {
                  */
                 using Receiver = void (*)(void *arg, EthernetDevice &device, const RxFrame &frame);
 
+                /** @brief Told of a link change (`link()`), on the device's task; must not block. */
+                using LinkHandler = void (*)(void *arg, EthernetDevice &device);
+
+                /** @brief Address filters the MAC has beyond the station's: the most groups filtered exactly. */
+                static constexpr size_t MaxFilters = 15;
+
                 /**
                  * @brief Boot stage: makes and starts the board's Ethernet devices (`eth0`). A board
                  *        without Ethernet has none.
@@ -191,8 +197,33 @@ class EthernetDevice {
                 /** @brief Returns the device's name, "eth0". */
                 const char *name() const { return _name; }
 
-                /** @brief Returns the station address. */
-                MacAddress address() const { return _address; }
+                /** @brief Returns the station address. @nonblocking */
+                MacAddress address() const;
+
+                /** @brief Returns the address the chip came with (its eFuse). */
+                MacAddress factoryAddress() const { return _factoryAddress; }
+
+                /**
+                 * @brief Sets the station address: frames to it are received, and it is what senders
+                 *        should put as their source.
+                 * @return `Ok`, or `Invalid` for a group or zero address.
+                 */
+                Error setAddress(const MacAddress &address);
+
+                /**
+                 * @brief Sets the multicast groups to receive: the MAC's address filters
+                 *        (`multicastFilters()`) when they are enough, else every multicast frame
+                 *        (the chip has no hash filter; the stack drops what nobody joined).
+                 *        Broadcast is always received.
+                 * @return `Ok`, or `Invalid` for an address that isn't a group's.
+                 */
+                Error setMulticast(Span<const MacAddress> groups);
+
+                /** @brief Returns how many address filters the MAC has for groups (probed at start). */
+                size_t multicastFilters() const { return _multicastFilters; }
+
+                /** @brief Returns true while every multicast frame is received (more groups than filters). */
+                bool passesAllMulticast() const { return _allMulticast; }
 
                 /** @brief Returns the link. @nonblocking */
                 Link link() const;
@@ -205,8 +236,17 @@ class EthernetDevice {
 
                 /**
                  * @brief Sets the receiver of every frame (nullptr: frames are dropped and counted).
+                 *        A call to the old receiver that has begun is waited for, so its argument may
+                 *        go away once this returns.
+                 * @blocking Briefly (receivers don't block).
                  */
                 void setReceiver(Receiver receiver, void *arg);
+
+                /** @brief Returns the receiver and its argument (to pass frames on to it). */
+                Receiver receiver(void *&arg) const;
+
+                /** @brief Sets who is told of link changes (nullptr: nobody). */
+                void setLinkHandler(LinkHandler handler, void *arg);
 
                 /** @brief Gives a received frame's buffer back. Any task. @nonblocking */
                 void release(const RxFrame &frame);
@@ -220,6 +260,14 @@ class EthernetDevice {
                  * @blocking
                  */
                 Result<uint32_t> transmit(Span<const uint8_t> frame, uint32_t flags, unsigned int timeoutMs);
+
+                /**
+                 * @brief As `transmit()`, the frame gathered from @p pieces, in order (an IP stack's
+                 *        chained buffers).
+                 * @blocking
+                 */
+                Result<uint32_t> transmit(Span<const Span<const uint8_t>> pieces, uint32_t flags,
+                                          unsigned int timeoutMs);
 
                 /**
                  * @brief Waits for the departure time of a frame sent with `TxStamp`.
@@ -275,6 +323,7 @@ class EthernetDevice {
                 Error       startMac();
                 void        startPtp();
                 void        readFeatures();
+                void        probeFilters();
                 void        receive();
                 void        refill();
                 void        reclaim();
@@ -286,7 +335,11 @@ class EthernetDevice {
                 uint8_t    _number;
                 char       _name[8] = {};
                 MacAddress _address;
+                MacAddress _factoryAddress;
                 Features   _features;
+                size_t     _multicastFilters = 0;
+                bool       _allMulticast = false;
+                Mutex      _filterLock; // the address registers
 
                 // The descriptors and buffers: one block in internal DMA memory.
                 uint8_t *_memory = nullptr;
@@ -315,8 +368,11 @@ class EthernetDevice {
                 TxSlot        _txSlots[TxDescriptors];
                 WaitListOf<4> _txStampWaiters;
 
-                Receiver _receiver = nullptr;
-                void    *_receiverArg = nullptr;
+                Receiver          _receiver = nullptr; // with its argument, under _stateLock
+                void             *_receiverArg = nullptr;
+                std::atomic<bool> _inReceiver{false};
+                LinkHandler       _linkHandler = nullptr;
+                void             *_linkHandlerArg = nullptr;
 
                 Semaphore _wake;
                 Task      _task;

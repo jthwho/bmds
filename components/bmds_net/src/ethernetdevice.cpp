@@ -272,6 +272,7 @@ Error EthernetDevice::start() {
         }
         if (err.isError()) return err;
         readFeatures();
+        probeFilters();
         startPtp();
 
         // The rings: chained descriptors, the receive ring given buffers from the pool.
@@ -301,9 +302,10 @@ Error EthernetDevice::start() {
 
         char mac[MacAddress::TextBytes + 1];
         _address.toString(mac);
-        bmdsInfo("%s: %s, MAC %08lx, features %08lx (%u+%u DMA channels%s)", _name, mac,
+        bmdsInfo("%s: %s, MAC %08lx, features %08lx (%u+%u DMA channels%s, %u group filters)", _name, mac,
                  static_cast<unsigned long>(_features.version), static_cast<unsigned long>(_features.raw),
-                 _features.rxChannels, _features.txChannels, _features.avb ? ", AV" : "");
+                 _features.rxChannels, _features.txChannels, _features.avb ? ", AV" : "",
+                 static_cast<unsigned>(_multicastFilters));
         Task::Config tc;
         tc.name = _name;
         tc.stackBytes = 4096;
@@ -409,8 +411,9 @@ Error EthernetDevice::startMac() {
         uint8_t         addr[MacAddress::Bytes];
         const esp_err_t macErr = esp_read_mac(addr, ESP_MAC_ETH);
         if (macErr != ESP_OK) return espError(macErr);
-        std::memcpy(_address.bytes, addr, MacAddress::Bytes);
-        emac_ll_set_addr(mac, addr);
+        std::memcpy(_factoryAddress.bytes, addr, MacAddress::Bytes);
+        if (_address.isZero()) _address = _factoryAddress; // a set address survives the PHY's reset
+        emac_ll_set_addr(mac, _address.bytes);
         return Error::Ok;
 }
 
@@ -430,6 +433,54 @@ void EthernetDevice::readFeatures() {
         _features.flexiblePps = (f & EMAC_FLEXIPPSEN) != 0;
         _features.mmc = (f & EMAC_MMCSEL) != 0;
         return;
+}
+
+void EthernetDevice::probeFilters() {
+        // The register file has room for 15 filters beyond the station's; ESP-IDF's register layer
+        // says 8. A filter that is there reads back what was written: written from the last down,
+        // so a missing one that aliased a lower one reads that one's value. None are enabled.
+        _multicastFilters = 0;
+        if (!_features.extraAddresses) return;
+        emac_mac_dev_t *mac = &EMAC_MAC;
+        for (size_t i = MaxFilters; i-- > 0;) mac->emacaddr[i].emacaddrlow = 0x5a000000u | static_cast<uint32_t>(i);
+        size_t n = 0;
+        while (n < MaxFilters && mac->emacaddr[n].emacaddrlow == (0x5a000000u | n)) ++n;
+        for (size_t i = 0; i < MaxFilters; ++i) mac->emacaddr[i].emacaddrlow = 0;
+        _multicastFilters = n;
+        return;
+}
+
+MacAddress EthernetDevice::address() const {
+        SpinLock::Locker lock(_stateLock);
+        return _address;
+}
+
+Error EthernetDevice::setAddress(const MacAddress &address) {
+        if (address.isMulticast() || address.isZero()) return Error::Invalid;
+        Mutex::Locker lock(_filterLock, WaitForever);
+        {
+                SpinLock::Locker state(_stateLock);
+                _address = address;
+        }
+        emac_ll_set_addr(&EMAC_MAC, address.bytes); // the high half, then the low half that loads both
+        return Error::Ok;
+}
+
+Error EthernetDevice::setMulticast(Span<const MacAddress> groups) {
+        for (const MacAddress &g : groups)
+                if (!g.isMulticast()) return Error::Invalid;
+        Mutex::Locker   lock(_filterLock, WaitForever);
+        emac_mac_dev_t *mac = &EMAC_MAC;
+        const bool      all = groups.size() > _multicastFilters;
+        for (size_t i = 0; i < _multicastFilters; ++i) {
+                if (!all && i < groups.size())
+                        emac_ll_add_addr_filter(mac, static_cast<uint8_t>(i + 1), groups[i].bytes, 0, false);
+                else
+                        emac_ll_rm_addr_filter(mac, static_cast<uint8_t>(i + 1));
+        }
+        emac_ll_pass_all_multicast_enable(mac, all);
+        _allMulticast = all;
+        return Error::Ok;
 }
 
 void EthernetDevice::startPtp() {
@@ -524,19 +575,25 @@ void EthernetDevice::receive() {
                         release(f);
                         continue;
                 }
-                Receiver to = _receiver;
+                Receiver to;
+                void    *arg;
                 {
                         SpinLock::Locker lock(_stateLock);
+                        to = _receiver;
+                        arg = _receiverArg;
+                        _inReceiver = to != nullptr; // setReceiver() waits for the call to end
                         ++_counters.rxFrames;
                         _counters.rxBytes += f.length;
                         ++_counters.rxHeld;
                         if (_counters.rxHeld > _counters.rxHeldMax) _counters.rxHeldMax = _counters.rxHeld;
                         if (to == nullptr) ++_counters.rxUnclaimed;
                 }
-                if (to != nullptr)
-                        to(_receiverArg, *this, f);
-                else
+                if (to != nullptr) {
+                        to(arg, *this, f);
+                        _inReceiver.store(false);
+                } else {
                         release(f);
+                }
         }
         return;
 }
@@ -590,7 +647,15 @@ void EthernetDevice::refill() {
 }
 
 Result<uint32_t> EthernetDevice::transmit(Span<const uint8_t> frame, uint32_t flags, unsigned int timeoutMs) {
-        if (frame.size() < Ethernet::HeaderBytes || frame.size() > Ethernet::MaxFrameBytes)
+        const Span<const uint8_t> pieces[] = {frame};
+        return transmit(Span<const Span<const uint8_t>>(pieces, 1), flags, timeoutMs);
+}
+
+Result<uint32_t> EthernetDevice::transmit(Span<const Span<const uint8_t>> pieces, uint32_t flags,
+                                          unsigned int timeoutMs) {
+        size_t bytes = 0;
+        for (const Span<const uint8_t> &p : pieces) bytes += p.size();
+        if (bytes < Ethernet::HeaderBytes || bytes > Ethernet::MaxFrameBytes)
                 return makeError<uint32_t>(Error::Invalid);
         if ((flags & ~static_cast<uint32_t>(TxStamp)) != 0) return makeError<uint32_t>(Error::Invalid);
         if (!link().up) return makeError<uint32_t>(Error::NotReady);
@@ -606,17 +671,21 @@ Result<uint32_t> EthernetDevice::transmit(Span<const uint8_t> frame, uint32_t fl
         const size_t  i = _txHead;
         auto         &d = static_cast<TxDesc *>(_txDesc)[i];
         uint8_t      *buffer = _txPool + i * BufferBytes;
-        std::memcpy(buffer, frame.data(), frame.size());
-        writeBack(buffer, frame.size(), false);
+        size_t        at = 0;
+        for (const Span<const uint8_t> &p : pieces) {
+                std::memcpy(buffer + at, p.data(), p.size());
+                at += p.size();
+        }
+        writeBack(buffer, bytes, false);
         const bool stamp = (flags & TxStamp) != 0;
         TxSlot    &s = _txSlots[i];
         s.ticket = ++_txTicket;
-        s.length = static_cast<uint16_t>(frame.size());
+        s.length = static_cast<uint16_t>(bytes);
         s.wantsStamp = stamp;
         s.done = false;
         s.stamped = false;
         d.TDES1.Value = 0;
-        d.TDES1.TransmitBuffer1Size = static_cast<uint32_t>(frame.size());
+        d.TDES1.TransmitBuffer1Size = static_cast<uint32_t>(bytes);
         d.TimeStampLow = 0;
         d.TimeStampHigh = 0;
         d.TDES0.Value = TxOwn | TxInterrupt | TxLast | TxFirst | TxChained | (stamp ? TxTimestampEnable : 0);
@@ -698,15 +767,34 @@ EthernetDevice::Counters EthernetDevice::counters() const {
         return _counters;
 }
 
-void EthernetDevice::setReceiver(Receiver receiver, void *arg) {
-        // Set while the task may be calling the old one: the pair is swapped with the task's
-        // view consistent at each frame (the argument first when setting, last when clearing).
-        if (receiver != nullptr) {
+void EthernetDevice::setReceiver(Receiver fn, void *arg) {
+        // The task reads the pair under the same lock, so it calls one or the other; a call to
+        // the old one that has begun is waited for (receivers don't block), so the old one's
+        // argument may go away once this returns.
+        {
+                SpinLock::Locker lock(_stateLock);
+                _receiver = fn;
                 _receiverArg = arg;
-                _receiver = receiver;
+        }
+        if (_task.handle() != xTaskGetCurrentTaskHandle())
+                while (_inReceiver.load()) Task::sleep(1);
+        return;
+}
+
+EthernetDevice::Receiver EthernetDevice::receiver(void *&arg) const {
+        SpinLock::Locker lock(_stateLock);
+        arg = _receiverArg;
+        return _receiver;
+}
+
+void EthernetDevice::setLinkHandler(LinkHandler handler, void *arg) {
+        // As setReceiver().
+        if (handler != nullptr) {
+                _linkHandlerArg = arg;
+                _linkHandler = handler;
         } else {
-                _receiver = nullptr;
-                _receiverArg = arg;
+                _linkHandler = nullptr;
+                _linkHandlerArg = arg;
         }
         return;
 }
@@ -877,6 +965,8 @@ void EthernetDevice::applyLink(const Link &l) {
                 bmdsInfo("%s: link up, %u Mbit/s, %s duplex", _name, l.speedMbps, l.fullDuplex ? "full" : "half");
         else
                 bmdsInfo("%s: link down", _name);
+        const LinkHandler handler = _linkHandler;
+        if (handler != nullptr) handler(_linkHandlerArg, *this);
         return;
 }
 

@@ -21,6 +21,7 @@ using bmds::MacAddress;
 using bmds::Span;
 using bmds::StringView;
 namespace Arp = bmds::Arp;
+namespace Ipv4 = bmds::Ipv4;
 namespace Ethernet = bmds::Ethernet;
 
 TEST_CASE("MacAddress: text both ways") {
@@ -124,19 +125,40 @@ TEST_CASE("Arp: what isn't Ethernet/IPv4 ARP is refused") {
         CHECK_FALSE(Arp::parse(Span<const uint8_t>(payload, Arp::PacketBytes), back));
 }
 
-TEST_CASE("Arp: dotted quads") {
+TEST_CASE("Ipv4: dotted quads") {
         uint32_t ip = 0;
-        CHECK(Arp::parseIpv4(StringView("172.20.0.1"), ip));
+        CHECK(Ipv4::parse(StringView("172.20.0.1"), ip));
         CHECK(ip == 0xac140001);
-        CHECK(Arp::parseIpv4(StringView("0.0.0.0"), ip));
+        CHECK(Ipv4::parse(StringView("0.0.0.0"), ip));
         CHECK(ip == 0);
-        CHECK(Arp::parseIpv4(StringView("255.255.255.255"), ip));
+        CHECK(Ipv4::parse(StringView("255.255.255.255"), ip));
         CHECK(ip == 0xffffffff);
         for (const char *bad : {"", "1.2.3", "1.2.3.4.5", "256.1.1.1", "1..2.3", "1.2.3.4 ", "a.b.c.d", "1.2.3.0004"})
-                CHECK_FALSE(Arp::parseIpv4(StringView(bad), ip));
-        char text[Arp::Ipv4TextBytes + 1];
-        Arp::formatIpv4(0xc0a80102, text);
+                CHECK_FALSE(Ipv4::parse(StringView(bad), ip));
+        char text[Ipv4::TextBytes + 1];
+        Ipv4::format(0xc0a80102, text);
         CHECK(std::string(text) == "192.168.1.2");
-        Arp::formatIpv4(0xffffffff, text);
+        Ipv4::format(0xffffffff, text);
         CHECK(std::string(text) == "255.255.255.255");
+}
+
+TEST_CASE("Ipv4: CIDR prefixes and masks") {
+        uint32_t ip = 0;
+        uint8_t  prefix = 0;
+        REQUIRE(Ipv4::parseCidr(StringView("192.168.1.50/24"), ip, prefix));
+        CHECK(ip == 0xc0a80132);
+        CHECK(prefix == 24);
+        REQUIRE(Ipv4::parseCidr(StringView("10.0.0.1"), ip, prefix));
+        CHECK(prefix == 32);
+        REQUIRE(Ipv4::parseCidr(StringView("0.0.0.0/0"), ip, prefix));
+        CHECK(prefix == 0);
+        for (const char *bad : {"", "/24", "10.0.0.1/", "10.0.0.1/33", "10.0.0.1/2a", "10.0.0.1/024", "10.0.0/8"})
+                CHECK_FALSE(Ipv4::parseCidr(StringView(bad), ip, prefix));
+        CHECK(Ipv4::maskOf(0) == 0);
+        CHECK(Ipv4::maskOf(16) == 0xffff0000u);
+        CHECK(Ipv4::maskOf(32) == 0xffffffffu);
+        CHECK(Ipv4::prefixOf(0xffffff00u) == 24);
+        CHECK(Ipv4::prefixOf(0) == 0);
+        CHECK(Ipv4::prefixOf(0xffffffffu) == 32);
+        CHECK(Ipv4::prefixOf(0xff00ff00u) == -1);
 }

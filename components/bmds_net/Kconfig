@@ -9,4 +9,13 @@ menu "BMDS network"
             DMA has received, reclaims sent ones and checks the link. Above the audio engine,
             so real-time frames (PTP, AES67) reach their consumers without waiting for it.
 
+    config BMDS_NET_STACK_PRIORITY
+        int "IP stack task priority"
+        default 6
+        range 1 24
+        help
+            The network task (devplan/network.md §15): it gives received frames to lwIP and
+            runs lwIP's timers. Above the window manager, so the network keeps up while the
+            screen is busy; below audio, which bulk traffic must never hold up.
+
 endmenu

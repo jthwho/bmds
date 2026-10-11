@@ -55,6 +55,9 @@ The user's requirements:
     `MaxRuntime` keys (64), kept until reboot.
   - Saved values for keys nobody has declared yet are kept in the store and applied when the key is
     declared. A program's settings therefore persist although the program isn't built in.
+  - A program's check function is dropped (its code may go away). Kernel code declaring at run
+    time, for a device that appears (`net/eth0/...`, `network.md` §16), uses `declareKernel()`,
+    which keeps it.
 
 ## 3. Values and their states
 

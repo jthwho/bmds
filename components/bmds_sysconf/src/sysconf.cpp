@@ -618,51 +618,63 @@ namespace SysConf {
                 return makeError<Id>(Error::NotExist);
         }
 
+        namespace {
+
+                Result<Id> declareImpl(const Param &param, bool keepCheck) {
+                        if (!isReady()) return makeError<Id>(Error::InvalidState);
+                        String canon(MemSpace::Psram);
+                        if (param.key == nullptr || !Config::isValidKey(StringView(param.key)))
+                                return makeError<Id>(Error::Invalid);
+                        Mutex::Locker lock(*registryLock, WaitForever);
+                        // Declared already (a program started again): its id, whatever this default says.
+                        const int existing = findLocked(StringView(param.key));
+                        if (existing >= 0)
+                                return state.entries[existing].param->type == param.type ? makeResult(Id(existing))
+                                                                                         : makeError<Id>(Error::Exists);
+                        Error err = Config::canonical(
+                                param, StringView(param.defaultValue != nullptr ? param.defaultValue : ""), canon);
+                        if (err.isError()) return makeError<Id>(err);
+                        if (state.ownedCount == MaxRuntime) return makeError<Id>(Error::Full);
+                        Owned &o = *::new (&state.owned[state.ownedCount]) Owned();
+                        err = o.key.assign(StringView(param.key));
+                        if (err.isOk()) err = o.defaultValue.assign(canon.view());
+                        if (err.isOk()) err = o.help.assign(StringView(param.help != nullptr ? param.help : ""));
+                        if (err.isOk() && param.choices != nullptr) err = o.choices.assign(StringView(param.choices));
+                        if (err.isError()) {
+                                o.~Owned();
+                                return makeError<Id>(err);
+                        }
+                        o.param = param;
+                        o.param.key = o.key.cStr();
+                        o.param.defaultValue = o.defaultValue.cStr();
+                        o.param.help = o.help.cStr();
+                        o.param.choices = param.choices != nullptr ? o.choices.cStr() : nullptr;
+                        if (!keepCheck) o.param.check = nullptr; // a program's code may go away
+                        const size_t index = state.count;        // addLocked() appends
+                        err = addLocked(o.param);
+                        if (err.isError()) {
+                                o.~Owned();
+                                return makeError<Id>(err);
+                        }
+                        ++state.ownedCount;
+                        // Its saved value, kept for it.
+                        for (size_t i = 0; i < state.orphanCount; ++i) {
+                                if (state.orphans[i].key.view() != StringView(param.key)) continue;
+                                if (applySavedLocked(index, state.orphans[i].value.view()))
+                                        removeOrphanLocked(StringView(param.key));
+                                break;
+                        }
+                        return makeResult(Id(index));
+                }
+
+        } // namespace
+
         Result<Id> declare(const Param &param) {
-                if (!isReady()) return makeError<Id>(Error::InvalidState);
-                String canon(MemSpace::Psram);
-                if (param.key == nullptr || !Config::isValidKey(StringView(param.key)))
-                        return makeError<Id>(Error::Invalid);
-                Mutex::Locker lock(*registryLock, WaitForever);
-                // Declared already (a program started again): its id, whatever this default says.
-                const int existing = findLocked(StringView(param.key));
-                if (existing >= 0)
-                        return state.entries[existing].param->type == param.type ? makeResult(Id(existing))
-                                                                                 : makeError<Id>(Error::Exists);
-                Error err = Config::canonical(
-                        param, StringView(param.defaultValue != nullptr ? param.defaultValue : ""), canon);
-                if (err.isError()) return makeError<Id>(err);
-                if (state.ownedCount == MaxRuntime) return makeError<Id>(Error::Full);
-                Owned &o = *::new (&state.owned[state.ownedCount]) Owned();
-                err = o.key.assign(StringView(param.key));
-                if (err.isOk()) err = o.defaultValue.assign(canon.view());
-                if (err.isOk()) err = o.help.assign(StringView(param.help != nullptr ? param.help : ""));
-                if (err.isOk() && param.choices != nullptr) err = o.choices.assign(StringView(param.choices));
-                if (err.isError()) {
-                        o.~Owned();
-                        return makeError<Id>(err);
-                }
-                o.param = param;
-                o.param.key = o.key.cStr();
-                o.param.defaultValue = o.defaultValue.cStr();
-                o.param.help = o.help.cStr();
-                o.param.choices = param.choices != nullptr ? o.choices.cStr() : nullptr;
-                o.param.check = nullptr; // a program's code may go away
-                const size_t index = state.count; // addLocked() appends
-                err = addLocked(o.param);
-                if (err.isError()) {
-                        o.~Owned();
-                        return makeError<Id>(err);
-                }
-                ++state.ownedCount;
-                // Its saved value, kept for it.
-                for (size_t i = 0; i < state.orphanCount; ++i) {
-                        if (state.orphans[i].key.view() != StringView(param.key)) continue;
-                        if (applySavedLocked(index, state.orphans[i].value.view()))
-                                removeOrphanLocked(StringView(param.key));
-                        break;
-                }
-                return makeResult(Id(index));
+                return declareImpl(param, false);
+        }
+
+        Result<Id> declareKernel(const Param &param) {
+                return declareImpl(param, true);
         }
 
         // --- Watcher ----------------------------------------------------------------------

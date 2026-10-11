@@ -217,7 +217,8 @@ Plan: [`input.md`](input.md).
   real-time fast path (classifier, priority transmit queue, 1588 timestamps) for PTP and AES67,
   NTP and PTP in the kernel, SSH (keys and passwords, off by default) and SFTP for `sshfs`.
   - [x] 1. Driver (EMAC, IP101, rings, 1588 clock; no AV DMA channels on this chip): `net`, §14.
-  - [ ] 2. lwIP, DHCP/static, ARP, ICMP, IGMP, `ping`.
+  - [x] 2. lwIP 2.2.1 (`NO_SYS`, our task and core lock, heap in PSRAM), DHCP/static live from
+    sysconf, ARP, ICMP, IGMP over the MAC's 8 filters, `lo`, `ping`; flood-tested, §16.
   - [ ] 3. Sockets ABI, `linux.c`, DNS; BusyBox's network applets.
   - [ ] 4. NTP and mDNS.
   - [ ] 5. SSH: Dropbear, passwords in sysconf, our own `sftp-server`.

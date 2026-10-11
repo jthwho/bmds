@@ -47,7 +47,8 @@ AES67 itself is a later phase (`audio.md` step 10). This plan builds what it wil
     - Target-time interrupts.
     - PPS 0, which can be routed to any GPIO (`EMAC_PTP_PPS_PAD_OUT_IDX`). The register file has
       four; the feature register says no flexible PPS (below).
-  - **Filters:** perfect address filters (eight addresses in the register file) and VLAN tags.
+  - **Filters:** perfect address filters (15 in the register file, 8 on this chip: §16) and VLAN
+    tags.
     The register file also has a 64-bin multicast hash and a layer 3/4 filter; **this chip has
     neither** (below).
   - **Registers for three DMA channels:**
@@ -506,7 +507,7 @@ The P4's engines (ESP-IDF's `soc_caps.h`):
 | Step | What | Done when |
 |---|---|---|
 | 1 | **Driver.** EMAC and IP101 bring-up; read the feature register (AV channels?); rings, zero-copy buffers, the 1588 clock running, link timer; `net` shows link and counters. **Done** (§14). | Frames out and in (an ARP request answered by hand); the feature register's answer in `docs/platforms/esp32p4.md` |
-| 2 | **lwIP.** Vendored; `Netif` glue; DHCP or static from sysconf (live); ARP, ICMP, IGMP and the MAC filters; `lo`; the shell's `ping`. Host tests: lwIP builds on the host against a loopback netif. | Ping both ways, DHCP lease, `net` shows addresses and groups; flood ping without leaks |
+| 2 | **lwIP.** Vendored; `Netif` glue; DHCP or static from sysconf (live); ARP, ICMP, IGMP and the MAC filters; `lo`; the shell's `ping`. Host tests: lwIP builds on the host against a loopback netif. **Done** (§16). | Ping both ways, DHCP lease, `net` shows addresses and groups; flood ping without leaks |
 | 3 | **Sockets.** `Socket` as a `Stream`; the slots; `linux.c` (sockets, ioctls); the `/etc` pseudo filesystem; DNS. | BusyBox `nc`, `wget`, `telnet` and `ping` work; `poll` over sockets; throughput measured (TCP both ways) |
 | 4 | **NTP and mDNS.** The kernel NTP client disciplining the clock; `ntp`; `${HOSTNAME}.local`. | The clock within a few ms of the pool after a boot; `ping bmds-….local` from a PC |
 | 5 | **SSH.** Dropbear (server, client, scp) as SDK programs; the `secret` setting type, `system/password` and `passwd`; host keys; authorized keys; the server's on/off setting; our `sftp-server`. | `ssh` with a key and with a password, `scp`, `sftp`, `sshfs` and a file manager's `sftp://` from Linux; `ssh`/`scp` from the board to Linux |
@@ -574,5 +575,90 @@ The P4's engines (ESP-IDF's `soc_caps.h`):
   - 0 receive errors, 0 dropped buffers in all of it.
 - **Firmware:** +15 KB (1 571 488 → 1 586 624 bytes).
 - **Not yet:** throughput (needs the IP stack: step 2's flood ping and step 3's TCP), the
-  address filters' count on this chip (eight in the register file; step 2 programs them), PPS
-  output.
+  address filters' count on this chip (eight, step 2 found: §16), PPS output.
+
+## 15. Step 2's design: lwIP (2026-10-11)
+
+- **Vendored:** lwIP 2.2.1 in `thirdparty/lwip`: `src/core` (with `ipv6/`, not built yet),
+  `src/include`, `src/netif/ethernet.c`, `src/apps/mdns` (step 4). No patches so far.
+- **`NO_SYS=1`, with our own network task** (`net`, `CONFIG_BMDS_NET_STACK_PRIORITY`, 6: above
+  the window manager, below audio), not lwIP's `tcpip` thread:
+  - lwIP runs only under **the core lock** (a `Mutex`), taken by the network task and, from
+    step 3, by sockets in their callers' tasks. `LWIP_ASSERT_CORE_LOCKED` checks it.
+  - The task sleeps on one semaphore until lwIP's next timeout (`sys_timeouts_sleeptime()`) or a
+    wake: frames in, a call queued, a setting changed. Nothing ticks.
+  - No `sys_arch` threads, mailboxes or semaphores: lwIP's `sockets.c`/`netconn` aren't built.
+  - Loopback (`lo`, and packets to the interface's own address) schedules `netif_poll` on the
+    task through `tcpip_try_callback`, which BMDS provides (`LWIP_NETIF_LOOPBACK_MULTITHREADING`).
+- **Memory:**
+  - lwIP's heap (`mem.c`, 256 KB) is one block of PSRAM (MemSpace `Psram`) allocated at boot;
+    its pools (`MEMP_MEM_MALLOC`) are carved from it too, so lwIP adds nothing to internal RAM
+    but its globals.
+  - Received frames stay in the driver's buffers (internal DMA memory): each buffer has a
+    `pbuf_custom` whose free gives it back. When lwIP holds more than 6 of them (TCP's queues),
+    frames are copied into the heap instead, so the ring never starves.
+  - Sending gathers the pbuf chain into a transmit buffer (one copy, as before).
+- **Checksums in software for now.** The MAC can insert them, but only with transmit
+  store-and-forward, and the transmit FIFO's size is not known yet. Step 3 measures it.
+- **The interface (`NetInterface`)** joins an `EthernetDevice` and lwIP's `netif`:
+  - received frames: the driver's task queues them, the network task feeds them to lwIP;
+  - the link: `netif_set_link_up/down` from the driver's link handler;
+  - the settings: `net/eth0/{enabled, mac, mtu, ipv4/mode, ipv4/address, ipv4/gateway}`,
+    declared when the interface appears and watched, so a change applies at once;
+  - DHCP sends `system/hostname`;
+  - multicast: lwIP's IGMP asks for MAC filters; a reference-counted list
+    (`MulticastFilter`, portable) goes to the driver, which uses its perfect filters, or passes
+    all multicast when there are more groups than filters (IP's own check then drops the rest).
+- **`ping`** in the shell, on a raw ICMP PCB: `-c`, `-i`, `-s`, `-W`, `-f` (flood), statistics as
+  iputils prints them, Ctrl-C.
+- **`net`** adds the addresses, gateway, DHCP's state, the groups joined, and lwIP's memory use.
+- **Host tests:** lwIP with the same `lwipopts.h`, two interfaces wired back to back: ARP, ping,
+  UDP, IGMP's filter requests; `MulticastFilter`.
+
+## 16. As built: step 2, lwIP (2026-10-11)
+
+- **As designed in §15,** with these details:
+  - `NetStack` (`netstack.h`): the boot stage `ip` after `net`, the core lock (`NetStack::Locker`;
+    releasing it wakes the task, whose timers the holder may have moved), the task, lwIP's port.
+  - `NetInterface` (private: it shows lwIP's types): received frames queued by the device's task
+    in a ring as long as the device's buffers (it can't overflow); the link from a new driver
+    callback (`setLinkHandler()`); `net/eth0/*` declared with the new
+    `SysConf::declareKernel()`, which keeps a parameter's check (`declare()` drops a program's,
+    whose code may go away), so a bad address, gateway or MAC is refused by `sysconf set`.
+  - The driver gained gathered sends (`transmit()` over pieces), `setAddress()`,
+    `setMulticast()` (the probed filters, else pass-all), and a receiver swap that waits for a
+    call to the old receiver to end (`net arp` now passes frames on to lwIP while it listens).
+  - Changing `net/eth0/mac` on DHCP releases the lease and asks again with the new address; a
+    gratuitous ARP tells the neighbours. The address is logged once a change has applied.
+  - `net join GROUP` / `net leave GROUP`: IGMP on eth0 for testing until sockets can (step 3).
+- **Measured on the board** (the user's LAN, the gateway on the same switch):
+  - DHCP lease about 50 ms after the stage starts (the link kept across the reset: 0.62 s after
+    reset).
+  - Ping to the gateway: 0.15-0.30 ms; 4000 and 6000 bytes (fragmented both ways) fine.
+  - Flood ping (`-f`) to the gateway: 5000 in 1.03 s, 0 lost; 1000 of 1472 bytes (full frames)
+    in 0.51 s, 0 lost. From this host (Wi-Fi), 1000 of 1400 bytes every 5 ms, 0 lost.
+  - **No leaks:** lwIP's heap back to 284 bytes after every run (the most used: 6.5 KB); no
+    driver buffers held; 0 receive errors, 0 dropped buffers, nothing copied (lwIP never held
+    more than 5 buffers).
+  - Live settings: static address and back to DHCP, a MAC override (seen in this host's ARP
+    cache) and back, `enabled` off and on: each applied at once.
+  - The link: a PHY reset makes sends fail ("Network is unreachable") while it is down, 3 s;
+    after it comes back the switch forwards nothing for 22 s (§14, `docs/HARDWARE.md`); the lease
+    is confirmed after.
+  - Multicast: the board answered this host's ping to 224.0.0.1 (the all-hosts group, in an exact
+    filter; pass-all is off by default, so the filter passed it); "pass all multicast" follows
+    the group count (frame filter `00000010` with 11 groups, `0` with 1). **Not verified on the
+    wire:** groups beyond 224.0.0.1 and the pass-all path. Multicast from this host (Wi-Fi)
+    barely reaches the wired side (2 of 100 frames for 224.0.0.1, none for 239.x); a wired
+    sender is needed: the second board in step 3, or one of the user's Linux machines.
+- **Resources:** firmware +57.7 KB (1 586 624 → 1 644 320 bytes); `bmds_net`'s static internal
+  RAM 5.2 KB in all (driver, interface, lwIP's globals); the network task's stack 6 KB (2.2 KB
+  used at most under flood and DHCP: kept until TCP is measured in step 3); lwIP's heap 256 KB of
+  PSRAM.
+- **Host tests** (`tests/host/lwip.cpp`): lwIP with the firmware's `lwipopts.h` on two interfaces
+  back to back: ARP and ping both ways, an address nobody has (ARP gives up, the packet freed),
+  UDP, IGMP's filter requests (one per MAC address, with users counted) and IP dropping a group
+  not joined, multicast ping, loopback through the scheduled poll; lwIP's heap checked after
+  each. `MulticastFilter`, `Ipv4` (CIDR), `declareKernel()`.
+- **Not yet:** checksum offload (§15), the receive path's copy threshold under TCP (step 3),
+  DNS (step 3), hardware stamps for lwIP's sockets (step 6).

@@ -228,6 +228,13 @@ namespace SysConf {
         Result<Id> declare(const Param &param);
 
         /**
+         * @brief As `declare()`, for kernel code (a device's settings, declared when it appears):
+         *        `Param::check` is kept, as the kernel's code never goes away. A program's check
+         *        is dropped by `declare()`.
+         */
+        Result<Id> declareKernel(const Param &param);
+
+        /**
          * @brief Told which parameters change under a prefix.
          *
          * Owned by the listener (no allocation in the registry). The prefix is

@@ -116,7 +116,7 @@ size_t Arp::writeFrame(const Packet &packet, Span<uint8_t> out) {
         return Ethernet::MinFrameBytes;
 }
 
-bool Arp::parseIpv4(StringView text, uint32_t &out) {
+bool Ipv4::parse(StringView text, uint32_t &out) {
         uint32_t ip = 0;
         size_t   i = 0;
         for (int part = 0; part < 4; ++part) {
@@ -139,8 +139,38 @@ bool Arp::parseIpv4(StringView text, uint32_t &out) {
         return true;
 }
 
-void Arp::formatIpv4(uint32_t ip, char *out) {
-        std::snprintf(out, Ipv4TextBytes + 1, "%u.%u.%u.%u", static_cast<unsigned>(ip >> 24),
+bool Ipv4::parseCidr(StringView text, uint32_t &address, uint8_t &prefix) {
+        size_t slash = text.size();
+        for (size_t i = 0; i < text.size(); ++i)
+                if (text[i] == '/') {
+                        slash = i;
+                        break;
+                }
+        uint32_t a = 0;
+        if (!parse(text.left(slash), a)) return false;
+        uint32_t bits = 32;
+        if (slash < text.size()) {
+                const StringView digits = text.mid(slash + 1);
+                if (digits.isEmpty() || digits.size() > 2) return false;
+                bits = 0;
+                for (size_t i = 0; i < digits.size(); ++i) {
+                        if (digits[i] < '0' || digits[i] > '9') return false;
+                        bits = bits * 10 + static_cast<uint32_t>(digits[i] - '0');
+                }
+                if (bits > 32) return false;
+        }
+        address = a;
+        prefix = static_cast<uint8_t>(bits);
+        return true;
+}
+
+int Ipv4::prefixOf(uint32_t mask) {
+        const int ones = __builtin_popcount(mask);
+        return mask == maskOf(static_cast<uint8_t>(ones)) ? ones : -1;
+}
+
+void Ipv4::format(uint32_t ip, char *out) {
+        std::snprintf(out, TextBytes + 1, "%u.%u.%u.%u", static_cast<unsigned>(ip >> 24),
                       static_cast<unsigned>((ip >> 16) & 0xff), static_cast<unsigned>((ip >> 8) & 0xff),
                       static_cast<unsigned>(ip & 0xff));
         return;

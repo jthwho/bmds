@@ -182,18 +182,44 @@ namespace Arp {
          */
         size_t writeFrame(const Packet &packet, Span<uint8_t> out);
 
+} // namespace Arp
+
+/**
+ * @brief IPv4 addresses as text: dotted quads and CIDR prefixes.
+ *
+ * Addresses are in host order (192.168.1.2 is 0xc0a80102).
+ *
+ * @par Thread Safety
+ * Stateless.
+ */
+namespace Ipv4 {
+
+        /** @brief Characters `format()` writes at most, without the terminator. */
+        constexpr size_t TextBytes = 15;
+
         /**
-         * @brief Parses dotted-quad IPv4 text ("192.168.1.2") into host order.
+         * @brief Parses dotted-quad text ("192.168.1.2").
          * @return True and @p out, or false.
          */
-        bool parseIpv4(StringView text, uint32_t &out);
+        bool parse(StringView text, uint32_t &out);
 
-        /** @brief Characters `formatIpv4()` writes at most, without the terminator. */
-        constexpr size_t Ipv4TextBytes = 15;
+        /**
+         * @brief Parses an address with its prefix length ("192.168.1.2/24"); without one, /32.
+         * @return True, @p address and @p prefix (0-32), or false.
+         */
+        bool parseCidr(StringView text, uint32_t &address, uint8_t &prefix);
 
-        /** @brief Writes @p ip as dotted-quad text and a terminator into @p out (`Ipv4TextBytes` + 1). */
-        void formatIpv4(uint32_t ip, char *out);
+        /** @brief Returns the netmask of a prefix length (24: 255.255.255.0); 0 for 0, all ones above 31. */
+        constexpr uint32_t maskOf(uint8_t prefix) {
+                return prefix == 0 ? 0 : prefix >= 32 ? 0xffffffffu : ~((1u << (32 - prefix)) - 1);
+        }
 
-} // namespace Arp
+        /** @brief Returns a netmask's prefix length, or -1 if its ones aren't contiguous. */
+        int prefixOf(uint32_t mask);
+
+        /** @brief Writes @p ip as dotted-quad text and a terminator into @p out (`TextBytes` + 1). */
+        void format(uint32_t ip, char *out);
+
+} // namespace Ipv4
 
 BMDS_NAMESPACE_END

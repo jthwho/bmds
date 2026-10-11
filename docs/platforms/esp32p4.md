@@ -121,6 +121,12 @@ until silicon v3; then test again.
 - **Also from that register:** no multicast hash filter (only the perfect address filters), no
   layer 3/4 filter, no flexible PPS, no RMON counters; IEEE 1588-2008 timestamps, checksum
   offload both ways, the alternate (enhanced) descriptors, RMII. Read it with `net`.
+- **Eight address filters beyond the station's**, though the register file has room for 15
+  (`emacaddr[15]`). Found by writing a value to each filter's low half, the last first, and
+  reading them back (2026-10-11): `emacaddr[0..7]` (addresses 1-8) hold theirs, the rest read 0.
+  ESP-IDF's `EMAC_LL_MAX_MAC_ADDR_NUM` (8) is right. The driver probes at start
+  (`EthernetDevice::multicastFilters()`) and uses them for multicast groups; with more groups it
+  sets "pass all multicast" (frame filter bit 4) and IP drops what nobody joined.
 - **The receive FIFO is 256 bytes**, too small for store-and-forward (ESP-IDF turns it off):
   frames pass through as they come, and a bad one arrives with its error in the descriptor.
 - **Descriptors are 64 bytes**, one L1 line each, so each is synced alone; the timestamps are in

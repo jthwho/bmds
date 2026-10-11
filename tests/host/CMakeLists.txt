@@ -63,6 +63,7 @@ add_executable(bmds_host_tests
         lfsvfs.cpp
         list.cpp
         littlefs.cpp
+        lwip.cpp
         loader.cpp
         memorystream.cpp
         oss.cpp
@@ -174,7 +175,7 @@ if(Python3_Interpreter_FOUND)
                  ${BMDS_ROOT}/boot ${BMDS_ROOT}/dist ${BMDS_ROOT}/rom)
 endif()
 target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_audio bmds_midi bmds_synth bmds_input bmds_ui bmds_gui bmds_clipboard
-        bmds_sysconf bmds_files bmds_mplayer bmds_sysmon bmds_panel bmds_imageview bmds_net)
+        bmds_sysconf bmds_files bmds_mplayer bmds_sysmon bmds_panel bmds_imageview bmds_net bmds_lwip)
 bmds_target_options(bmds_host_tests)
 
 # bmds-elfcheck: the loader's format check as a host tool (tools/elfcheck).

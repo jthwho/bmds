@@ -425,6 +425,23 @@ TEST_CASE("SysConf: ids") {
         panel.stop();
 }
 
+TEST_CASE("SysConf: a kernel declaration keeps its check, a program's doesn't") {
+        Flash f("/cfg");
+        REQUIRE(SysConf::initForHost(Params, "/cfg/sysconf").isOk());
+        constexpr Config::Check evenOnly = [](bmds::StringView v) -> Error {
+                return (Config::toInt(v) % 2) == 0 ? Error::Ok : Error::Invalid;
+        };
+        const Config::Param kernel{"net/eth9/even", Config::Type::Int, "0", "", 0, 100, nullptr, evenOnly};
+        const Config::Param program{"app/even", Config::Type::Int, "0", "", 0, 100, nullptr, evenOnly};
+        REQUIRE(SysConf::declareKernel(kernel).isOk());
+        REQUIRE(SysConf::declare(program).isOk());
+        CHECK(SysConf::set("net/eth9/even", "4").isOk());
+        CHECK(SysConf::set("net/eth9/even", "5") == Error::Invalid);
+        CHECK(get("net/eth9/even") == "4");
+        CHECK(SysConf::set("app/even", "5").isOk()); // the program's code may be gone: no check
+        CHECK(SysConf::set("net/eth9/even", "102") == Error::OutOfRange);
+}
+
 TEST_CASE("SysConf: the SDK's calls (sysconf_*)") {
         Flash f("/cfg");
         REQUIRE(SysConf::initForHost(Params, "/cfg/sysconf").isOk());

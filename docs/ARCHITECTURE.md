@@ -92,4 +92,4 @@ devplan/                Design notes and plans per subsystem
 - **Filesystem.** FatFs for SD compatibility with PCs. Proposed in `devplan/storage.md`: FatFs vendored with exFAT, under BMDS's own VFS (files as `Stream`s behind `FileHandle`s), not IDF's VFS and newlib.
 - **USB host stack.** IDF's `usb_host` + HID class driver vs. a lighter custom stack for keyboard/mouse.
 - **Display path.** HDMI via the board's MIPI-DSI-to-HDMI bridge; resolution/timing choices; text rendering via the P4's 2D-DMA / PPA hardware where it helps.
-- **Networking stack.** Proposed (`devplan/network.md`): upstream lwIP vendored, under the kernel's own sockets, with BMDS's own EMAC driver and a real-time path beside it.
+- **Networking stack.** Decided (`devplan/network.md`): upstream lwIP vendored (`thirdparty/lwip`, `NO_SYS`, run by BMDS's network task under a core lock), with BMDS's own EMAC driver; the kernel's own sockets on its raw API and a real-time path beside it are steps 3 and 6.
