@@ -1,0 +1,12 @@
+menu "BMDS network"
+
+    config BMDS_NET_PRIORITY
+        int "Ethernet device task priority"
+        default 21
+        range 1 24
+        help
+            The task of each Ethernet device (devplan/network.md §4): it takes the frames the
+            DMA has received, reclaims sent ones and checks the link. Above the audio engine,
+            so real-time frames (PTP, AES67) reach their consumers without waiting for it.
+
+endmenu

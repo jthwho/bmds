@@ -211,7 +211,19 @@ Plan: [`input.md`](input.md).
     context menu (Mute, Mixer…). After the media player.
   - [ ] 9. Capture and `record` (after the loopback cable), then the pedal work.
   - [ ] 10. AES67 and USB audio (after the network stack).
-- [ ] Ethernet bring-up, IP stack, basic tools (`ping`, file transfer).
+- [ ] Network (`network.md`, designed 2026-10-10; the user's requirements and decisions):
+  Ethernet on `eth0`, vendored lwIP under the kernel's own BSD sockets (musl's Linux calls),
+  sysconf for every parameter (`/etc` a pseudo filesystem over it), multicast first class, a
+  real-time fast path (classifier, priority transmit queue, 1588 timestamps) for PTP and AES67,
+  NTP and PTP in the kernel, SSH (keys and passwords, off by default) and SFTP for `sshfs`.
+  - [x] 1. Driver (EMAC, IP101, rings, 1588 clock; no AV DMA channels on this chip): `net`, §14.
+  - [ ] 2. lwIP, DHCP/static, ARP, ICMP, IGMP, `ping`.
+  - [ ] 3. Sockets ABI, `linux.c`, DNS; BusyBox's network applets.
+  - [ ] 4. NTP and mDNS.
+  - [ ] 5. SSH: Dropbear, passwords in sysconf, our own `sftp-server`.
+  - [ ] 5a. The crypto engines (AES, SHA, MPI, ECC) behind SSH, measured.
+  - [ ] 6. Real time: fast path, priority queue, timestamps, `netlat`.
+  - [ ] 7. PTP, master and slave (BMCA): two boards alone elect a grandmaster.
 
 ## Phase 8 — Self-Hosting
 

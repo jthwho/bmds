@@ -111,6 +111,25 @@ until silicon v3; then test again.
 - **2D-DMA:** 3 TX and 2 RX channels on this revision; TX 0-2 convert colours
   (`devplan/display.md`).
 
+## 4a. The Ethernet MAC (`devplan/network.md`)
+
+- **One DMA channel each way, no AV queues.** The DMA feature register (`EMAC_HWFEATURE_REG`)
+  reads `4b056725` on our chip (MAC version `00001137`): no AV feature, no additional channels,
+  although ESP-IDF's `emac_reg.h` lists `CHANNEL1*`/`CHANNEL2*` registers with credit-based
+  shapers (the GMAC's full configuration, not this one's). Real-time frames get no hardware queue
+  of their own: the driver bounds how much bulk traffic sits ahead of them (§5.2 of the plan).
+- **Also from that register:** no multicast hash filter (only the perfect address filters), no
+  layer 3/4 filter, no flexible PPS, no RMON counters; IEEE 1588-2008 timestamps, checksum
+  offload both ways, the alternate (enhanced) descriptors, RMII. Read it with `net`.
+- **The receive FIFO is 256 bytes**, too small for store-and-forward (ESP-IDF turns it off):
+  frames pass through as they come, and a bad one arrives with its error in the descriptor.
+- **Descriptors are 64 bytes**, one L1 line each, so each is synced alone; the timestamps are in
+  words 6 and 7 (digital rollover: seconds and nanoseconds).
+- **ESP-IDF's `emac_hal.c` is built only with its Ethernet driver**; BMDS uses `hal/emac_ll.h`
+  (header-only) and `soc/emac_periph.h`'s pin tables, and does the bring-up itself.
+- **Start the MAC and its DMA on link-up, stop them on link-down** (ESP-IDF's order; transmit:
+  MAC then DMA, the other way round can hang the transmitter).
+
 ## 5. ESP-IDF
 
 - **Wrapping a driver function** is legitimate and cheap: `target_link_libraries(lib INTERFACE

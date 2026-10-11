@@ -25,6 +25,7 @@ Design notes and implementation plans for BMDS subsystems. Write a plan here **b
 - [`filebrowser.md`](filebrowser.md) — the file browser: the toolkit's furniture and item views, `bmds_files`, folder windows in the panel, `files`.
 - [`audio.md`](audio.md) — Phase 7: audio devices (ES8311 on I²S), the mixing engine, OSS `/dev/dsp` and native audio fds, real-time clients, decoders, MIDI and the synth.
 - [`mediaplayer.md`](mediaplayer.md) — the media player: audio and MIDI files in a GUI window, a playlist; video later (planned).
+- [`network.md`](network.md) — Phase 7: Ethernet and the IPv4 stack (vendored lwIP), BSD sockets, a real-time fast path for PTP and AES67, NTP, SSH.
 
 ## Plan Document Template
 

@@ -14,6 +14,7 @@
 #include <bmds/boot.h>
 #include <bmds/bootdisk.h>
 #include <bmds/clipboard.h>
+#include <bmds/ethernetdevice.h>
 #include <bmds/filehandle.h>
 #include <bmds/i2cbus.h>
 #include <bmds/input.h>
@@ -72,6 +73,7 @@ namespace {
                 {"synth", bmds::SoundFonts::init}, // fonts synths share; after the loader: its cache is reclaimed first
                 {"input", bmds::Input::init},
                 {"usb", bmds::UsbHost::init},
+                {"net", bmds::EthernetDevice::init}, // eth0 (devplan/network.md)
                 {"shell", startSerialShell},
         };
 
