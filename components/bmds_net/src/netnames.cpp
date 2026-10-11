@@ -28,6 +28,7 @@
 
 #include "lwipport.h"
 #include "netinterface.h"
+#include "netmdns.h"
 #include "netnames.h"
 
 BMDS_NAMESPACE_BEGIN
@@ -36,7 +37,7 @@ namespace {
 
         // net/hosts, parsed: names the resolver answers itself.
         constexpr size_t MaxHosts = 16;
-        constexpr size_t MaxHostName = 63;
+        constexpr size_t MaxHostName = NetNames::MaxHostName;
 
         // Lookups waiting for lwIP's resolver at once (NetStack::resolve()).
         constexpr size_t MaxLookups = 4;
@@ -84,37 +85,9 @@ namespace {
                 return lwip_htonl(hostOrder);
         }
 
-        bool isSeparator(char c) {
-                return c == ';' || c == ',' || c == ' ' || c == '\t';
-        }
-
-        // Calls @p fn with each item of a list separated by ';', ',' or blanks; false stops it.
-        template <typename Fn> bool forEachItem(StringView list, Fn &&fn) {
-                size_t at = 0;
-                while (at < list.size()) {
-                        while (at < list.size() && isSeparator(list[at])) ++at;
-                        size_t end = at;
-                        while (end < list.size() && !isSeparator(list[end])) ++end;
-                        if (end > at && !fn(list.mid(at, end - at))) return false;
-                        at = end;
-                }
-                return true;
-        }
-
-        // A name of letters, digits, '-', '_' and '.'.
-        bool isHostName(StringView name) {
-                if (name.isEmpty() || name.size() > MaxHostName) return false;
-                for (char c : name) {
-                        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-                                        c == '-' || c == '_' || c == '.';
-                        if (!ok) return false;
-                }
-                return true;
-        }
-
         Error checkServers(StringView value) {
                 size_t     count = 0;
-                const bool ok = forEachItem(value, [&](StringView item) {
+                const bool ok = NetNames::forEachItem(value, [&](StringView item) {
                         uint32_t a = 0;
                         return Ipv4::parse(item, a) && ++count <= DNS_MAX_SERVERS;
                 });
@@ -122,17 +95,18 @@ namespace {
         }
 
         Error checkSearch(StringView value) {
-                return forEachItem(value, [](StringView item) { return isHostName(item); }) ? Error::Ok
-                                                                                            : Error::Invalid;
+                return NetNames::forEachItem(value, [](StringView item) { return NetNames::isHostName(item); })
+                               ? Error::Ok
+                               : Error::Invalid;
         }
 
         // "name=address", ';'-separated.
         Error checkHosts(StringView value) {
                 size_t     count = 0;
-                const bool ok = forEachItem(value, [&](StringView item) {
+                const bool ok = NetNames::forEachItem(value, [&](StringView item) {
                         const size_t eq = item.indexOf('=');
                         uint32_t     a = 0;
-                        return eq != StringView::NPos && isHostName(item.left(eq)) &&
+                        return eq != StringView::NPos && NetNames::isHostName(item.left(eq)) &&
                                Ipv4::parse(item.mid(eq + 1), a) && ++count <= MaxHosts;
                 });
                 return ok ? Error::Ok : Error::Invalid;
@@ -155,7 +129,7 @@ namespace {
                 for (uint32_t &s : names->servers) s = 0;
                 if (SysConf::get(names->settings[DnsServers], text).isOk()) {
                         size_t n = 0;
-                        (void)forEachItem(text.view(), [&](StringView item) {
+                        (void)NetNames::forEachItem(text.view(), [&](StringView item) {
                                 uint32_t a = 0;
                                 if (n < DNS_MAX_SERVERS && Ipv4::parse(item, a)) names->servers[n++] = networkOrder(a);
                                 return true;
@@ -163,11 +137,11 @@ namespace {
                 }
                 names->hostCount = 0;
                 if (SysConf::get(names->settings[Hosts], text).isOk()) {
-                        (void)forEachItem(text.view(), [](StringView item) {
+                        (void)NetNames::forEachItem(text.view(), [](StringView item) {
                                 const size_t eq = item.indexOf('=');
                                 uint32_t     a = 0;
                                 if (eq == StringView::NPos || names->hostCount == MaxHosts ||
-                                    !isHostName(item.left(eq)) || !Ipv4::parse(item.mid(eq + 1), a))
+                                    !NetNames::isHostName(item.left(eq)) || !Ipv4::parse(item.mid(eq + 1), a))
                                         return true;
                                 Host &h = names->hosts[names->hostCount++];
                                 std::memcpy(h.name, item.data(), eq);
@@ -254,7 +228,7 @@ namespace {
                 String search;
                 if (err.isOk() && SysConf::get(names->settings[DnsSearch], search).isOk() && !search.isEmpty()) {
                         err = out.append("search");
-                        (void)forEachItem(search.view(), [&](StringView item) {
+                        (void)NetNames::forEachItem(search.view(), [&](StringView item) {
                                 if (err.isOk()) err = out.append(' ');
                                 if (err.isOk()) err = out.append(item);
                                 return err.isOk();
@@ -345,6 +319,16 @@ namespace {
         constexpr StringView ProtocolsText = Protocols;
 
 } // namespace
+
+bool NetNames::isHostName(StringView name) {
+        if (name.isEmpty() || name.size() > MaxHostName) return false;
+        for (char c : name) {
+                const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                                c == '-' || c == '_' || c == '.';
+                if (!ok) return false;
+        }
+        return true;
+}
 
 Error NetNames::init() {
         names.create();
@@ -468,7 +452,7 @@ int bmds_dns_local(const char *name, size_t length, void *address) {
                 a = lwip_htonl(0x7f000001);
         } else if (started) {
                 const char *own = ownName();
-                if (own[0] != '\0' && n.equalsIgnoreCase(own)) a = ownAddress();
+                if ((own[0] != '\0' && n.equalsIgnoreCase(own)) || NetMdns::isOwnName(n)) a = ownAddress();
                 for (size_t i = 0; a == 0 && i < names->hostCount; ++i) {
                         if (n.equalsIgnoreCase(names->hosts[i].name)) a = names->hosts[i].ipv4;
                 }

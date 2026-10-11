@@ -58,7 +58,8 @@
 #define LWIP_HAVE_LOOPIF 1
 #define LWIP_LOOPBACK_MAX_PBUFS 16
 #define LWIP_SINGLE_NETIF 0
-#define LWIP_NUM_NETIF_CLIENT_DATA 0
+#define LWIP_NUM_NETIF_CLIENT_DATA 1     // mDNS's
+#define LWIP_NETIF_EXT_STATUS_CALLBACK 1 // mDNS restarts on a link or address change
 #define LWIP_CHECKSUM_CTRL_PER_NETIF 1
 #define ETH_PAD_SIZE 0
 
@@ -91,11 +92,18 @@
                 LWIP_UNUSED_ARG(msg);                                                                                  \
                 bmds_dhcp_option((netif), (type), (option), (length), (p), (offset));                                  \
         } while (0)
+#define LWIP_DNS_SUPPORT_MDNS_QUERIES 1 // a .local name is asked of the mDNS group
 #define LWIP_UDP 1
 #define LWIP_UDPLITE 0
 #define LWIP_TCP 1
 #define LWIP_BROADCAST_PING 1
 #define LWIP_MULTICAST_PING 1
+
+// --- mDNS (devplan/network.md §22): ${HOSTNAME}.local; one service (step 5's _ssh._tcp) ----
+
+#define LWIP_MDNS_RESPONDER 1
+#define MDNS_MAX_SERVICES 1
+#define LWIP_MDNS_SEARCH 0
 
 // --- TCP ------------------------------------------------------------------------------------
 

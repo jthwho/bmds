@@ -14,8 +14,8 @@ The lwIP TCP/IP stack, <https://savannah.nongnu.org/projects/lwip/> (mirror:
   mDNS's only), `src/include/netif/{ethernet,etharp}.h`, `src/include/netif/ppp/{ppp_opts,ppp_impl}.h`
   (`init.c` includes them whatever the options; PPP is off), `src/netif/ethernet.c`,
   `src/apps/mdns` (`network.md` step 4).
-- **Built:** the core, IPv4, DHCP, IGMP and Ethernet (`components/bmds_net/CMakeLists.txt`);
-  IPv6, DNS and mDNS are vendored for later steps. The configuration is
+- **Built:** the core, IPv4, DHCP, IGMP, DNS, Ethernet and mDNS's responder
+  (`components/bmds_net/CMakeLists.txt`); IPv6 is vendored for a later step. The configuration is
   `components/bmds_net/lwip/lwipopts.h` and the port `components/bmds_net/lwip/` (`arch/cc.h`,
   `lwipport.h`); the firmware's port functions are in `components/bmds_net/src/netstack.cpp`, the
   host tests' in `tests/host/lwip.cpp`.

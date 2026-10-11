@@ -1014,3 +1014,106 @@ the System Monitor and the tray meter's alarms see the network like any subsyste
     the Overview its Network line.
   - `top -n 5` during 30 `wget`s gave `..., eth0 in 14.2 KB/s out 4.8 KB/s`.
   - Firmware 1 687 568 bytes (+6.1 KB).
+
+## 22. Step 4's design: NTP and mDNS (2026-10-11)
+
+- **The host name first** (the user's ask): this board is `bmds0` now (`sysconf set
+  system/hostname bmds0`, saved). A change of `system/hostname` renews a DHCP lease at once, so
+  the DHCP server, and the DNS it feeds, learn the new name without waiting for the lease's
+  renewal. mDNS answers for the new name at once too (below).
+- **NTP: a kernel service on lwIP's raw UDP API**, in the network task under the core lock, run
+  by lwIP's timers (`sys_timeout`): nothing runs between polls. `src/ntpclient.cpp`.
+  - **Servers:** each of `net/ntp/servers` (names or addresses, `;`-separated, at most 4; default
+    `pool.ntp.org`), and each interface's DHCP option 42 (two at most), 6 in all. A name is
+    resolved through lwIP's resolver when it is needed, and again after 8 polls without an
+    answer (a pool gives another server).
+  - **Requests:** one UDP socket on a random port. A request's transmit timestamp is 64 random
+    bits, not the time (RFC 9109's advice): a reply must echo them as its origin, from the server's
+    address, or it is dropped. T1 and T4 are the system clock's when the request goes and the
+    reply is taken (step 6's hardware timestamps can replace them).
+  - **The parser** (`include/bmds/ntp.h`, pure, host-tested and fuzzed: `tests/fuzz/ntp.cpp`):
+    48 bytes at least (extensions are ignored), version 1-4, mode 4 (server), the origin ours,
+    the receive and transmit stamps non-zero, leap not 3 (unsynchronised), stratum 1-15, root
+    delay and dispersion under 16 s. Stratum 0 is a kiss-o'-death: `RATE` doubles the poll,
+    `DENY` and `RSTR` stop asking that server until the settings change. NTP's era: a seconds
+    field below 2^31 is era 1, so 1968 to 2104 read right, whatever the clock says.
+  - **The clock filter:** per server, the last 8 samples (offset, delay, when); the best is the
+    least delay plus 15 ppm of its age (RFC 5905's dispersion growth). Jitter is the RMS of the
+    other samples' offsets from the best's.
+  - **Selection:** among servers with a sample, the least root distance (root delay / 2 + root
+    dispersion + the best sample's delay / 2 + jitter). Not RFC 5905's intersection algorithm:
+    the plan's simple selection (§10).
+  - **The discipline** (pure too, `Ntp::Discipline`, host-tested), applied when the chosen server's
+    newest sample is its best (a sample taken now, so its offset is now's):
+    - the clock unset, or an offset beyond 128 ms: `Clock::set()` (a step, source `ntp`);
+    - otherwise `Clock::adjust(offset)` (a slew at 500 ppm: 1 ms takes 2 s), and the frequency:
+      the offset not explained by the slew still pending is the rate's error over the time since
+      the last update, which, from 32 s on, moves `Clock::setFrequency()` by interval / (interval
+      + 1024 s) of it (6% at 64 s, half at 1024 s and beyond), within ±500 ppm. A pool server's
+      few ms of jitter over 64 s is tens of ppm of noise, so a short interval moves it little.
+      (First built taking all of the first estimate and a quarter of each after; the board's
+      pool server showed 2-5 ms of jitter, which makes that too noisy.)
+  - **The poll:** a burst of 4 requests 2 s apart to each server at start, when the servers or
+    an interface's address change, and on `ntp poll`; then every 64 s, doubling to 1024 s while
+    the offsets stay within 4 jitters (at least 1 ms), and back to 64 s on a step or an offset
+    beyond it.
+  - **Settings:** `net/ntp/enabled` (bool, `true`), `net/ntp/servers` (string, `pool.ntp.org`).
+    Live: a change restarts the client with a burst.
+  - **`ntp`** shows the state (synced to which server, stratum, poll), the clock's offset, delay,
+    jitter and frequency, and each server: name, address, stratum, reach (the last 8 polls,
+    octal as ntpq shows it), last answer, offset, delay, jitter. `ntp poll` sends a burst now.
+  - **Counters:** `net.ntp` in sysmon: `synced` (no|yes), `offset_us` (with history), `delay_us`,
+    `jitter_us`, `stratum`, `poll_s`, `requests`, `replies`, `rejected`.
+  - Later: the tray's "clock synced to …" line (a public status call, decided with step 7's PTP
+    status), and serving time to the LAN.
+- **mDNS: lwIP's responder** (`src/apps/mdns`, unpatched), for each Ethernet interface:
+  - It answers for `${HOSTNAME}.local` (A records; IPv6 comes later) and probes for it first. A
+    conflict (another host has the name) is logged and the responder takes `NAME-2`, `NAME-3`, …,
+    as Avahi does; `net` shows the name in use.
+  - It follows `system/hostname` live (`mdns_resp_rename_netif`), and lwIP's extended netif
+    callback restarts it on a link or address change (`LWIP_NETIF_EXT_STATUS_CALLBACK`).
+  - `net/mdns/enabled` (bool, `true`) adds or removes it live.
+  - One service slot (`MDNS_MAX_SERVICES`), for step 5's `_ssh._tcp`; no searching
+    (`LWIP_MDNS_SEARCH` 0).
+  - **The board asking:** lwIP's resolver sends a `.local` name to the mDNS group
+    (`LWIP_DNS_SUPPORT_MDNS_QUERIES`), so the shell's `ping other.local` works; its own
+    `${HOSTNAME}.local` is answered locally. Programs' resolver (musl) asks the DNS server only.
+  - **Memory:** one `mdns_host` (about 1.5 KB) per interface from lwIP's heap; packets in pbufs.
+- **Tests:** `tests/host/ntp.cpp` (the parser against hand-built packets, era, offset and delay,
+  the filter, the discipline's steps, slews and frequency); lwIP's host build compiles mDNS. The
+  fuzz target runs the parser over arbitrary packets with arbitrary cookies.
+- **Done when:** after a boot the clock is within a few ms of the pool (`ntp`'s offset, and a PC
+  on NTP comparing, `date` both sides), and `ping bmds0.local` from a PC answers.
+
+## 23. As built: step 4, NTP and mDNS (2026-10-11)
+
+- As designed in §22, except the frequency's update, which is weighted by the interval (§22).
+  Files: `include/bmds/ntp.h` and `src/ntp.cpp` (pure), `src/ntpclient.{h,cpp}`,
+  `src/ntpcommand.cpp`, `src/netmdns.{h,cpp}`; lwIP's `apps/mdns` built (unpatched).
+  `NetNames`' list and name helpers moved to `netnames.h` for the client's setting.
+- **What it costs:** firmware 1 713 616 bytes (+26 KB, most of it lwIP's mDNS); one
+  `mdns_host` per interface and one UDP PCB from lwIP's heap; the client's state is static.
+- **Tests:** `tests/host/ntp.cpp` (6 cases: time stamps and eras, the request, replies good and
+  bad, samples, the filter, the discipline). `ntp_fuzz` ran 117 million inputs in 13 minutes
+  (old and new discipline) with no finding.
+- **On the board (2026-10-11):**
+  - The first boot with it synced to `pool.ntp.org` (stratum 2) within the first burst: a step,
+    then offsets of a fraction of a ms. The board's clock against this PC's (NTP-synced),
+    read over the serial console: -0.3 to -1.1 ms, inside the ±5 ms the console's round trip
+    allows.
+  - Over 30 minutes after a reflash: offsets under 1 ms but one (+4.5 ms), delay 82-87 ms,
+    the server's jitter 1-3.5 ms; the poll went from 64 s to 256 s; the frequency went from
+    -6.6 ppm (kept across the reset in the clock's reset record) to -1.6 ppm and was still
+    settling. Requests 17, replies 17, rejected 0.
+  - `ntp poll` looks the pool up again (another server answered) and bursts.
+  - `stats 'net.ntp*'` shows the counters; the System Monitor's Network tab picks them up.
+  - `ping bmds0.local` from the PC answers; the board pings `clarke.local` (the PC) and its own
+    `bmds0.local`. `net eth0` shows `mDNS bmds0.local` and the group 224.0.0.251.
+  - A live rename (`system/hostname` to `bmds1`) answers in about 3 s (probing); the old name
+    stops answering (a direct one-shot query), though avahi's cache answers for it a while: lwIP
+    sends no goodbye.
+  - A conflict (the PC publishing `bmds2.local`, then the board renamed to `bmds2`): the board
+    took `bmds2-2.local`. Renamed back to `bmds0`, it answered as `bmds0.local` again.
+  - **Not settled:** the network's own DNS (172.20.0.2) still maps 172.20.200.221 to
+    `bmds-e2e222` after reboots and renewals with `bmds0`. Whether the DHCP server isn't feeding
+    that DNS, or keeps a fixed entry, couldn't be told from here (no capture without root).

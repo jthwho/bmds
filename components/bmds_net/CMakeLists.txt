@@ -1,9 +1,10 @@
 # bmds_net — the network stack (devplan/network.md): the Ethernet driver, lwIP (vendored in
-# thirdparty/lwip) with its port and interfaces, and the `net` and `ping` commands.
+# thirdparty/lwip) with its port and interfaces, NTP and mDNS, and the `net`, `ping` and `ntp`
+# commands.
 #
-# Ethernet framing, ARP, IPv4 text, the multicast filter and the sockets are portable: also built
-# as a plain CMake library for the host tests (tests/host), with lwIP itself as bmds_lwip (the
-# same lwipopts.h; the host tests define the port's functions and NetStack's).
+# Ethernet framing, ARP, IPv4 text, the multicast filter, NTP's arithmetic and the sockets are
+# portable: also built as a plain CMake library for the host tests (tests/host), with lwIP itself
+# as bmds_lwip (the same lwipopts.h; the host tests define the port's functions and NetStack's).
 #
 # WHOLE_ARCHIVE: nothing references the commands by symbol -- they are found through the linker
 # section.
@@ -12,9 +13,10 @@ set(BMDS_LWIP_DIR ${CMAKE_CURRENT_LIST_DIR}/../../thirdparty/lwip/src)
 
 set(BMDS_NET_PORTABLE_SRCS
         src/ethernet.cpp
-        src/multicastfilter.cpp)
+        src/multicastfilter.cpp
+        src/ntp.cpp)
 
-# lwIP: the core, IPv4 and DNS (IPv6 and mDNS are vendored for later steps, not built yet).
+# lwIP: the core, IPv4, DNS and mDNS's responder (IPv6 is vendored for later, not built yet).
 set(BMDS_LWIP_SRCS
         ${BMDS_LWIP_DIR}/core/def.c
         ${BMDS_LWIP_DIR}/core/dns.c
@@ -39,7 +41,10 @@ set(BMDS_LWIP_SRCS
         ${BMDS_LWIP_DIR}/core/ipv4/ip4.c
         ${BMDS_LWIP_DIR}/core/ipv4/ip4_addr.c
         ${BMDS_LWIP_DIR}/core/ipv4/ip4_frag.c
-        ${BMDS_LWIP_DIR}/netif/ethernet.c)
+        ${BMDS_LWIP_DIR}/netif/ethernet.c
+        ${BMDS_LWIP_DIR}/apps/mdns/mdns.c
+        ${BMDS_LWIP_DIR}/apps/mdns/mdns_domain.c
+        ${BMDS_LWIP_DIR}/apps/mdns/mdns_out.c)
 
 set(BMDS_LWIP_INCLUDES ${CMAKE_CURRENT_LIST_DIR}/lwip ${BMDS_LWIP_DIR}/include)
 
@@ -51,10 +56,13 @@ if(COMMAND idf_component_register)
                                     src/ethernetdevice.cpp
                                     src/netcommand.cpp
                                     src/netinterface.cpp
+                                    src/netmdns.cpp
                                     src/netnames.cpp
                                     src/netstack.cpp
                                     src/netstats.cpp
                                     src/netstatus.cpp
+                                    src/ntpclient.cpp
+                                    src/ntpcommand.cpp
                                     src/pingcommand.cpp
                                     src/socket.cpp
                                INCLUDE_DIRS include

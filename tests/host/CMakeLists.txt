@@ -77,6 +77,7 @@ add_executable(bmds_host_tests
         sysmon.cpp
         cpumeter.cpp
         networkview.cpp
+        ntp.cpp
         topview.cpp
         hostname.cpp
         texttemplate.cpp

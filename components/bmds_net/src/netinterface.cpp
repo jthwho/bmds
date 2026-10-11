@@ -23,6 +23,7 @@
 #include "netchanges.h"
 #include "netinterface.h"
 #include "netnames.h"
+#include "ntpclient.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -304,11 +305,17 @@ void NetInterface::applySettings() {
         (void)_watcher.overflowed();
         while (_hostnameWatcher.next(id)) {}
         (void)_hostnameWatcher.overflowed();
+        char was[sizeof(_hostname)];
+        std::memcpy(was, _hostname, sizeof(was));
         (void)SysConf::hostname(_hostname);
         _applying = true; // the address is logged once, at the end
-        const Mode was = _mode;
-        apply(was);
+        const Mode wasMode = _mode;
+        apply(wasMode);
         _applying = false;
+        // A new name renews the lease at once: the DHCP server (and the DNS it feeds) learns it.
+        if (_mode == Mode::Dhcp && wasMode == Mode::Dhcp && std::strcmp(was, _hostname) != 0 &&
+            dhcp_supplied_address(&_netif))
+                (void)dhcp_renew(&_netif);
         logAddress();
         NetStatus::noteChange();
         return;
@@ -384,7 +391,9 @@ void NetInterface::statusChanged(struct netif *netif) {
         if (!n._applying) n.logAddress();
         NetStatus::noteChange();
         // A lease lost takes its servers with it.
+        NtpClient::addressChanged();
         if (ip4_addr_isany_val(*netif_ip4_addr(netif)) || n._mode != Mode::Dhcp) {
+                if (n._leaseServers.ntp[0] != 0) NtpClient::serversChanged();
                 n._leaseServers = LeaseServers{};
                 NetNames::serversChanged();
         }
@@ -405,7 +414,10 @@ void NetInterface::dhcpOption(unsigned int type, unsigned int option, unsigned i
         if (kept[0] == servers[0] && kept[1] == servers[1]) return;
         kept[0] = servers[0];
         kept[1] = servers[1];
-        NetNames::serversChanged();
+        if (option == Ntp)
+                NtpClient::serversChanged();
+        else
+                NetNames::serversChanged();
         return;
 }
 

@@ -57,3 +57,11 @@ target_compile_definitions(soundfont_fuzz PRIVATE ${BMDS_CODEC_DEFINITIONS})
 target_compile_options(soundfont_fuzz PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti>)
 target_link_libraries(soundfont_fuzz PRIVATE bmds_core)
 target_link_options(soundfont_fuzz PRIVATE -fsanitize=fuzzer)
+
+# NTP's parser and arithmetic (devplan/network.md §22): bmds_net's portable ntp.cpp alone.
+set(NET ${BMDS_ROOT}/components/bmds_net)
+add_executable(ntp_fuzz ntp.cpp ${NET}/src/ntp.cpp)
+target_include_directories(ntp_fuzz PRIVATE ${NET}/include)
+target_compile_options(ntp_fuzz PRIVATE -fno-exceptions -fno-rtti)
+target_link_libraries(ntp_fuzz PRIVATE bmds_core)
+target_link_options(ntp_fuzz PRIVATE -fsanitize=fuzzer)

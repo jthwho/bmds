@@ -605,6 +605,7 @@ counter's help line is in its description (`stats rules`).
 | `console.usbserial` | `rx_dropped` (bytes) | zero warning |
 | `net.ethN` (`network.md` §21) | `link` (state `down\|up`), `speed_mbps` (info), `rx_bytes`, `tx_bytes` (history), `rx_frames`, `tx_frames`, `rx_errors`, `tx_errors`, `rx_dropped`, `tx_dropped`, `rx_copied`, `rx_held`, `link_changes` | `rx_errors`, `tx_errors`, `rx_dropped`, `tx_dropped` zero warning |
 | `net.ip` | `heap_used` (history), `heap_max` (peak), `heap_failed`, `pools_failed`, `tcp_connections` (history), `ip_in`, `ip_out`, `ip_in_discards`, `tcp_active_opens`, `tcp_passive_opens`, `tcp_attempt_fails`, `tcp_in_segs`, `tcp_out_segs`, `tcp_fast_retransmits`, `tcp_in_errors`, `udp_in`, `udp_out`, `udp_no_port`, `udp_in_errors`, `icmp_in`, `icmp_out` | `heap_max` peak above ¾ / 15/16 of the heap; `heap_failed`, `pools_failed` zero warning |
+| `net.ntp` (`network.md` §22) | `synced` (state `no\|yes`), `offset_us` (history), `delay_us`, `jitter_us`, `stratum`, `poll_s` (info), `requests`, `replies`, `rejected` | none |
 
 - **Numbered, not singletons** (the user's rule): `displayN`, `wmN`, `usbN`, `audio.dspN`,
   `storage.DEV`, as the devices are named. `system`, `clock`, `input`, `proc` and the console

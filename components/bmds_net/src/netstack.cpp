@@ -31,8 +31,10 @@
 #include "lwipport.h"
 #include "netchanges.h"
 #include "netinterface.h"
+#include "netmdns.h"
 #include "netnames.h"
 #include "netstats.h"
+#include "ntpclient.h"
 
 extern "C" {
 unsigned char *bmds_lwip_heap = nullptr;
@@ -85,6 +87,8 @@ namespace {
                                 NetStack::Locker lock;
                                 NetInterface::pollAll();
                                 NetNames::poll();
+                                NtpClient::poll();
+                                NetMdns::poll();
                                 runCalls();
                                 sys_check_timeouts();
                                 NetStatus::publish(); // after all of it: one change told for several
@@ -118,6 +122,10 @@ Error NetStack::init() {
         if (err.isError()) return err;
         NetStats::init(); // counters only: the stack works without them
         err = NetNames::init();
+        if (err.isError()) return err;
+        err = NtpClient::init();
+        if (err.isError()) return err;
+        err = NetMdns::init();
         if (err.isError()) return err;
         Task::Config tc;
         tc.name = "net";

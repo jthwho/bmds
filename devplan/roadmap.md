@@ -233,7 +233,10 @@ Plan: [`input.md`](input.md).
   - [x] 3b. The network in sysmon: `net.ethN` and `net.ip` (lwIP's heap, pools and MIB-II
     counts) in the registry, the System Monitor's Network tab and Overview line, `top`'s
     headline, §21.
-  - [ ] 4. NTP and mDNS.
+  - [x] 4. NTP and mDNS: the kernel's NTP client (filter, selection, step/slew/frequency
+    discipline, a poll from 64 s to 1024 s), `ntp`, `net.ntp` counters; lwIP's mDNS responder
+    for `${HOSTNAME}.local` with conflicts and live renames; a hostname change renews DHCP;
+    the parser fuzzed, §22-23.
   - [ ] 5. SSH: Dropbear, passwords in sysconf, our own `sftp-server`.
   - [ ] 5a. The crypto engines (AES, SHA, MPI, ECC) behind SSH, measured.
   - [ ] 6. Real time: fast path, priority queue, timestamps, `netlat`.

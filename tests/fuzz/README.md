@@ -7,6 +7,8 @@ the host tests: they run for as long as one lets them.
   decode, convert, seek, decode again, read the tags, close; no fault, no read out of bounds, no
   undefined behaviour, no leak, no read that gives nothing without an error. MIDI files too
   (`devplan/audio.md` §22), played by the synth on `tests/host/synth/sine.sf2`.
+- **`ntp_fuzz`:** NTP's parser (`devplan/network.md` §22) with an arbitrary cookie and T1, and
+  what parses through the sample, a clock filter and the discipline; no fault, no overflow.
 - **`soundfont_fuzz`:** SoundFonts (§22): load, play notes on every preset, the drums and across
   the keyboard with controllers and bends, render; every sample finite, no leak.
 
@@ -25,6 +27,13 @@ tests/fuzz/make-midi-seeds.py /mnt/data/tmp/midi        # a MIDI file: notes, ch
 ./soundfont_fuzz -fork=3 -ignore_crashes=1 -max_len=65536 -max_total_time=3600 \
         -artifact_prefix=/mnt/data/tmp/ /mnt/data/tmp/fcorpus /mnt/data/tmp/fonts
 ```
+
+```sh
+./ntp_fuzz -max_len=256 -max_total_time=600 -artifact_prefix=./ntp- ntp-corpus ntp-seeds
+```
+
+`ntp-seeds` holds the input layout (8 bytes cookie, 8 bytes T1, little-endian, then the packet):
+a good reply and a kiss-o'-death are enough for it to find the rest.
 
 A finding is fixed (a patch in `thirdparty/`, listed in its `README.md`), and the input is kept in
 `tests/host/audio/fuzz/`, `tests/host/synth/fuzz/` (fonts) or `tests/host/synth/fuzz-midi/`, which

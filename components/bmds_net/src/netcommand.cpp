@@ -26,6 +26,7 @@
 #include <bmds/shell.h>
 
 #include "netinterface.h"
+#include "netmdns.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -68,6 +69,7 @@ namespace {
                         size_t                 macGroups = 0;
                         uint32_t               held = 0;
                         NetInterface::Counters counters;
+                        char                   mdns[NetMdns::MaxName + 1] = {};
         };
 
         uint32_t hostOrder(const ip4_addr_t *a) {
@@ -127,6 +129,8 @@ namespace {
                         s.macGroups = ni->groups().groups().size();
                         s.held = ni->held();
                         s.counters = ni->counters();
+                        for (size_t i = 0; i < NetInterface::count(); ++i)
+                                if (&NetInterface::at(i) == ni) (void)NetMdns::name(i, s.mdns);
                 }
                 showAddress(ctx, s);
                 if (s.mode == NetInterface::Mode::Dhcp) {
@@ -139,6 +143,7 @@ namespace {
                 } else {
                         ctx.printf("  %s\n", s.mode == NetInterface::Mode::Static ? "static" : "off");
                 }
+                if (s.mdns[0] != '\0') ctx.printf("  mDNS %s.local\n", s.mdns);
                 ctx.printf("  MAC filters: %u group%s, %s (%u filters)\n", static_cast<unsigned>(s.macGroups),
                            s.macGroups == 1 ? "" : "s", d.passesAllMulticast() ? "all multicast passed" : "exact",
                            static_cast<unsigned>(d.multicastFilters()));
