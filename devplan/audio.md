@@ -1815,6 +1815,20 @@ violin, 64-frame blocks (1,333 µs):
     TimGM6mb: 4.2 s to 0.41 s (no conversion, half the memory: 5.7 MB).
   - Left: the worst blocks (an envelope's next segment still calls `log` in `double`), the
     output mode switched per sample, and PIE.
+  - **The voice loop** (2026-10-10, `thirdparty/tinysoundfont/patches/bmds-voiceloop.diff`):
+    one function for each case (the filter on or off, looping or not) into interleaved stereo,
+    out of line (inside `tsf_voice_render` GCC ran out of float registers and kept the filter's
+    coefficients in integer ones, moved across every sample), the sample interpolated in
+    integers with a 16-bit fraction (one conversion to float instead of three). Measured with
+    `mcycle` around `tsf_render_float` while `HotelCalifornia.mid` played (10-11 voices): 80
+    cycles a voice a sample, 68 with the loop split, 58 with the integer interpolation, 53 out
+    of line. Unrolling (`#pragma GCC unroll 4`) changed nothing. The output against the old
+    loop's (the host, `rich.sf2`, 8 s of chords and bends): the same but for the position's
+    rounding, about 1/65536 of a sample (like 0.3 ns of jitter at 48 kHz): 82 dB below the
+    signal, 125 dB for the sine font.
+  - **Not PIE:** the voice loop is `float` (PIE has no float vectors) and reads its samples at
+    the voice's pitch (no gathers). The engine's own work (mixing, resampling, the limiter) took
+    2.2 % of a core (`top`'s `audio dsp0`) while the synth took 9-17 %.
 
 ### The plan
 

@@ -29,8 +29,8 @@ bits folded into the arithmetic, unaligned loads, saturation and rounding, and h
 |-------|------|----------------|-----------|
 | `ImageScaler::scale` | across: u8 × u16 taps; down: u16 × u16 rows summed | 1920 × 1080 to 1280 × 720: 730 ms | Very good: a row's sum is a vector multiply-accumulate; across, 3- and 4-channel taps |
 | TJpgDec | IDCT (8 × 8, 16-bit), YCbCr to RGB, the 1/2-1/4 reductions | 12 MP at 1/4: 5.1 s | Good for the IDCT and colour (a vendored-code patch, §4); Huffman isn't SIMD |
-| `Pixels::fromArgb` / `toArgb` | format conversions, alpha blending (÷255) | to measure (every decode into a non-native format) | Good: byte shuffles and u8 multiplies |
-| `Painter::image` | icons blended over a colour, per pixel (÷255) | to measure (every redraw of icons) | Good: u8 × u8, 16 pixels a step |
+| `Pixels::fromArgb` / `toArgb` | format conversions, alpha blending (÷255) | done: into 24-bit pixels (§3b) | Good: byte shuffles and u8 multiplies |
+| `Painter::image` | icons blended over a colour, per pixel (÷255) | done: through `fromArgb` (§3b) | Good: u8 × u8, 16 pixels a step |
 | `ImageScaler::orient` | turns and mirrors | to measure | Fair: memory-bound; 4-pixel blocks |
 | `Png::decode` | unfiltering (Up, Sub, Avg, Paeth), rows to ARGB | 1280 × 720: 580 ms in all | Up and the row conversion vector; Sub, Avg and Paeth chain through each pixel (3 or 4 bytes at once); most of the time is inflate (not SIMD: the ROM's `tinfl` is a separate fix) |
 | `Png::write` | filter choice (three candidates' sums of absolute values), B, G, R to R, G, B | 1280 × 720: read 62 + filter 83 ms | Very good: `vabs`/sums, shuffles |
@@ -69,10 +69,12 @@ bits folded into the arithmetic, unaligned loads, saturation and rounding, and h
 | PNG decode, 1280 × 720 RGB | 581 ms | 283 ms | not SIMD: a loop per filter (was a switch per byte), the ROM's `tinfl` (a weak hook from bmds_ui), straight RGB to B, G, R rows, a CRC table |
 | PNG encode, 1920 × 1080 | 1341 ms | 937 ms | the filter and the swap above; the rest is the ROM's deflate |
 | Screenshot to PNG, 1280 × 720 | 542 ms | 463 ms | |
+| `Pixels::fromArgb` into B, G, R or R, G, B (a 48 × 48 icon) | 357 µs from PSRAM, 240 µs from internal RAM | 145 µs, 36 µs | §3b: planes by vunzip, exact ÷255 in two passes of QACC; `Painter::image` draws icons through it |
+| TinySoundFont's voice loop (a voice, a sample) | 80 cycles | 53 cycles | §3b: not SIMD; a loop for each case, out of line, integer interpolation |
 
 `simd test` checks every kernel against its scalar twin on random input (scale: 200 cases;
 glyphs 500; swap24 2000; pngfilter 2000 rows; softjpeg 192 decodes of the codec's own JPEGs, every
-sampling and reduction), all identical; `simd bench` times them.
+sampling and reduction; blend 2000 rows), all identical; `simd bench` times them.
 
 **What the board taught (v2p1)** (kept for every kernel to come in `docs/platforms/esp32p4.md`):
 
@@ -96,6 +98,35 @@ sampling and reduction), all identical; `simd bench` times them.
   writes the buffer's lines back first (and retries with twice the room if the stream comes near
   filling it: the codec stops at the room without saying so).
 
+## 3b. The GUI and audio (2026-10-10)
+
+The user's question: what in the GUI and audio could use what the image work taught. Measured
+first (`top` with its threads, `simd bench`, `mcycle`):
+
+- **The GUI's CPU work per pixel** is glyphs (PIE already), icons, and the image viewer's decoding
+  and scaling (§3a). Fills, copies, scrolls and composition are the 2D-DMA's. **Icons** were the
+  one left: `blendOver()` a pixel, 357 µs a 48 × 48 icon (64 icons in a folder window: 23 ms).
+  `Pixels::fromArgb` into B, G, R and R, G, B is now a PIE kernel, and `Painter::image` draws
+  through it (so do RGBA PNGs, BMPs and anything else made into 24-bit pixels):
+  - 16 pixels a step: four loads, then two levels of `vunzip.8` give planes B, G, R and A.
+  - Each channel is `(t + 127) / 255` with `t = s × a + d × (255 − a)`, as
+    `(t + 128 + ((t + 128) >> 8)) >> 8`, in two passes of QACC (16 lanes of u8 products):
+    `mov.u8.qacc` of 128s starts the first, whose result (`(t + 128) >> 8`) starts the second
+    (`mov.u8.qacc` again). Neither relies on what `srcmb` leaves in QACC.
+  - G and R wait in a 48-byte scratch on the stack (eight registers don't hold four planes,
+    `~A`, the background, the constants and a temporary); `vzipt.8` weaves the three planes.
+  - 6.7× in internal RAM (240 to 36 µs an icon), 2.4× from PSRAM (357 to 145 µs), where the icon
+    themes live: the kernel now waits on PSRAM (about 84 MB/s for its reads). A software
+    prefetch (a scalar load 192 bytes ahead) changed nothing.
+- **Audio is `float` throughout** (the engine, the decoders, the synth) and PIE has no float
+  vectors. While a MIDI file played (10-11 voices), the synth took 9-17 % of a core and the
+  engine (mixing, resampling, the limiter) 2.2 %. So the synth's voice loop, not by PIE (it is
+  `float` and reads its samples at the voice's pitch: no gathers) but by the lessons of PNG's
+  unfiltering: a loop for each case rather than a branch per sample, and fewer conversions.
+  80 to 53 cycles a voice a sample (`devplan/audio.md` §22).
+- **Not worth it now:** the resampler (32 taps a channel, within the engine's 2.2 %), the
+  spectrum's FFT (1024 points a frame, about 1 % of a core), sample-format conversions.
+
 **Next, measured:**
 
 - **TJpgDec's IDCT** (269 M of the photo's 1831 M cycles) in PIE, or better at 1/2 and 1/4 a reduced
@@ -104,10 +135,9 @@ sampling and reduction), all identical; `simd bench` times them.
 - **PNG decode is memory-bound now:** the raw image goes through PSRAM three times (inflate,
   unfilter, conversion). Inflating through a 32 KB window in internal RAM a row at a time
   (`tinfl` without non-wrapping output) would leave only the output's write.
-- **A blend kernel** (`Pixels::fromArgb` over a colour: icons, RGBA PNGs): exact in PIE's terms
-  (`((t + 128) × 257) >> 16` is `(t + 127) / 255` for every t), but four planes, their widened
-  halves and the constants need more than PIE's eight registers; worth it only measured.
 - **The spectrum's FFT** in fixed point (PIE's 16-bit FFT instructions), `memcpy` in internal RAM.
+- **Icons from PSRAM** are bound by PSRAM now: keeping the drawn sizes in internal RAM, or icons
+  pre-blended over the common backgrounds, would be the next step if folder windows are slow.
 
 ## 4. Vendored code
 

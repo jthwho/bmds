@@ -142,7 +142,9 @@ Plan: [`input.md`](input.md).
   the scaler (730 to 291 ms for 1080p to 720p), PNG's write filter (8.8×), the RGB swap, TJpgDec's
   output (YCbCr averaged before converting; PIE conversion), plus non-SIMD: orient (5.5×), PNG
   decode (2×); the glyph renderer off the hardware loop (a silicon bug); the JPEG encoder's cache
-  bug. Next: TJpgDec's IDCT (or a reduced one), streaming PNG inflate, a blend kernel.
+  bug. Then the GUI and audio: the alpha blend (icons, RGBA pictures: 6.7× in internal RAM, 2.4×
+  from PSRAM) and the synth's voice loop (not SIMD: 80 to 53 cycles a voice a sample). Next:
+  TJpgDec's IDCT (or a reduced one), streaming PNG inflate.
 - [ ] Special keys and global hotkeys (`hotkeys.md`, planned 2026-10-08): media keys decoded,
   named actions and bindings in the kernel, the window manager's keys moved onto them; user
   bindings later.

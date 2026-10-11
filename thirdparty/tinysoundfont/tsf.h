@@ -1271,6 +1271,71 @@ static void tsf_voice_calcpitchratio(struct tsf_voice* v, float pitchShift, floa
 
 /* BMDS: the voice loop rewritten for a single-precision FPU (devplan/audio.md §22): 16-bit
    samples, the position in 32.32 fixed point, the gain ramped across each block, a float filter. */
+/* BMDS: a block of one voice into interleaved stereo, a loop for each case (the filter on or off,
+ * looping or not: constants where it is inlined) instead of a branch for each sample. Otherwise
+ * the general loop's arithmetic (in tsf_voice_render). Returns the samples made. */
+#if defined(__GNUC__)
+#  define TSF_ALWAYS_INLINE inline __attribute__((always_inline))
+#else
+#  define TSF_ALWAYS_INLINE
+#endif
+static TSF_ALWAYS_INLINE int tsf_voice_run(const short* input, float* out, int count, unsigned int* pPos, unsigned int* pFrac,
+	unsigned int stepInt, unsigned int stepFrac, unsigned int sampleEnd, unsigned int loopStart, unsigned int loopEnd, unsigned int loopLength,
+	float gain, float gainStep, float panLeft, float panRight, struct tsf_voice_lowpass* lp, TSF_BOOL filtered, TSF_BOOL looping)
+{
+	unsigned int pos = *pPos, frac = *pFrac;
+	/* Samples interpolated in integers (a 16-bit fraction), 65536 times their value: one conversion
+	 * a sample instead of three. The gain and the filter's state take the scale (exact). */
+	float a0 = lp->a0, a1 = lp->a1, b1 = lp->b1, b2 = lp->b2, z1 = lp->z1 * 65536.0f, z2 = lp->z2 * 65536.0f;
+	int i;
+	gain *= 1.0f / 65536.0f, gainStep *= 1.0f / 65536.0f;
+	for (i = 0; i < count && pos < sampleEnd; ++i)
+	{
+		unsigned int nextPos = (looping && pos >= loopEnd ? loopStart : pos + 1), nextFrac;
+		/* Wrapping arithmetic: d × f can pass 2^31, the sum (s0 + d × f / 65536, times 65536) can't. */
+		unsigned int s0 = (unsigned int)input[pos], d = (unsigned int)input[nextPos] - s0;
+		float val = (float)(int)((s0 << 16) + d * (frac >> 16));
+		if (filtered)
+		{
+			float o = val * a0 + z1;
+			z1 = val * a1 + z2 - b1 * o;
+			z2 = val * a0 - b2 * o;
+			val = o;
+		}
+		val *= gain;
+		gain += gainStep;
+		out[0] += val * panLeft;
+		out[1] += val * panRight;
+		out += 2;
+		nextFrac = frac + stepFrac;
+		pos += stepInt + (nextFrac < frac);
+		frac = nextFrac;
+		if (looping && pos > loopEnd) pos -= loopLength;
+	}
+	if (filtered) lp->z1 = z1 * (1.0f / 65536.0f), lp->z2 = z2 * (1.0f / 65536.0f);
+	*pPos = pos, *pFrac = frac;
+	return i;
+}
+
+/* Each case its own function: inside tsf_voice_render the loop runs short of float registers. */
+#if defined(__GNUC__)
+#  define TSF_NOINLINE __attribute__((noinline))
+#else
+#  define TSF_NOINLINE
+#endif
+#define TSF_VOICE_RUN_CASE(name, filtered, looping) \
+	static TSF_NOINLINE int name(const short* input, float* out, int count, unsigned int* pPos, unsigned int* pFrac, \
+		unsigned int stepInt, unsigned int stepFrac, unsigned int sampleEnd, unsigned int loopStart, unsigned int loopEnd, \
+		unsigned int loopLength, float gain, float gainStep, float panLeft, float panRight, struct tsf_voice_lowpass* lp) \
+	{ \
+		return tsf_voice_run(input, out, count, pPos, pFrac, stepInt, stepFrac, sampleEnd, loopStart, loopEnd, loopLength, \
+			gain, gainStep, panLeft, panRight, lp, filtered, looping); \
+	}
+TSF_VOICE_RUN_CASE(tsf_voice_run_plain, 0, 0)
+TSF_VOICE_RUN_CASE(tsf_voice_run_looped, 0, 1)
+TSF_VOICE_RUN_CASE(tsf_voice_run_filtered, 1, 0)
+TSF_VOICE_RUN_CASE(tsf_voice_run_filtered_looped, 1, 1)
+
 static void tsf_voice_render(tsf* f, struct tsf_voice* v, float* outputBuffer, int numSamples)
 {
 	struct tsf_region* region = v->region;
@@ -1341,7 +1406,18 @@ static void tsf_voice_render(tsf* f, struct tsf_voice* v, float* outputBuffer, i
 		gain = gainStart, gainStep = (gainEnd - gainStart) / (float)blockSamples;
 		panLeft = (f->outputmode == TSF_MONO ? 1.0f : v->panFactorLeft), panRight = v->panFactorRight;
 
-		for (i = 0; i < blockSamples && pos < sampleEnd; ++i)
+		if (f->outputmode == TSF_STEREO_INTERLEAVED)
+		{
+			/* BMDS: tsf_voice_run, one function for each case. */
+			const TSF_BOOL filtered = tmpLowpass.active;
+			int made;
+			int (*run)(const short*, float*, int, unsigned int*, unsigned int*, unsigned int, unsigned int, unsigned int, unsigned int,
+				unsigned int, unsigned int, float, float, float, float, struct tsf_voice_lowpass*) =
+				filtered ? (isLooping ? tsf_voice_run_filtered_looped : tsf_voice_run_filtered) : (isLooping ? tsf_voice_run_looped : tsf_voice_run_plain);
+			made = run(input, outL, blockSamples, &pos, &frac, stepInt, stepFrac, sampleEnd, loopStart, loopEnd, loopLength, gain, gainStep, panLeft, panRight, &tmpLowpass);
+			outL += 2 * made;
+		}
+		else for (i = 0; i < blockSamples && pos < sampleEnd; ++i)
 		{
 			unsigned int nextPos = (pos >= loopEnd && isLooping ? loopStart : pos + 1), nextFrac;
 			float s0 = (float)input[pos], val = s0 + ((float)input[nextPos] - s0) * ((float)frac * fracScale);

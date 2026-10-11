@@ -9,6 +9,7 @@
  * (devplan/windows.md W8, §4a, §4d).
  */
 
+#include <bmds/image.h>
 #include <bmds/painter.h>
 #include <bmds/surface.h>
 
@@ -245,16 +246,9 @@ Error Painter::image(int x, int y, const Icon &icon, uint32_t bg) {
                         static_cast<uint16_t>(icon.height - top < _tools.height ? icon.height - top : _tools.height);
                 (void)run(x, y + top, width, rows, [&](uint8_t *strip, size_t stride, uint16_t room, bool &more) {
                         const uint16_t w = room < width ? static_cast<uint16_t>(room & ~3u) : width;
-                        for (uint16_t r = 0; r < rows; ++r) {
-                                const uint32_t *src = icon.pixels + size_t(top + r) * icon.width;
-                                uint8_t        *out = strip + size_t(r) * stride;
-                                for (uint16_t c = 0; c < w; ++c, out += 3) {
-                                        const uint32_t rgb = blendOver(src[c], bg);
-                                        out[0] = static_cast<uint8_t>(rgb);
-                                        out[1] = static_cast<uint8_t>(rgb >> 8);
-                                        out[2] = static_cast<uint8_t>(rgb >> 16);
-                                }
-                        }
+                        for (uint16_t r = 0; r < rows; ++r) // blendOver() a pixel, PIE's 16 at a time
+                                Pixels::fromArgb(icon.pixels + size_t(top + r) * icon.width, w,
+                                                 strip + size_t(r) * stride, PixelFormat::Bgr24, bg);
                         more = false;
                         return w;
                 });

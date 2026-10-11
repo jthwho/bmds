@@ -216,6 +216,74 @@ namespace {
                 return;
         }
 
+        // Alpha as icons have it: mostly clear or opaque, the edges between.
+        void iconPixels(Noise &noise, uint32_t *p, size_t n) {
+                for (size_t i = 0; i < n; ++i) {
+                        const uint32_t kind = noise.below(10);
+                        const uint32_t a = kind < 4 ? 0 : kind < 8 ? 0xff : noise.below(256);
+                        p[i] = a << 24 | (noise.next() & 0xffffff);
+                }
+                return;
+        }
+
+        int testBlend(CommandContext &ctx, Noise &noise) {
+                constexpr size_t Most = 600;
+                Block            in(MemSpace::Psram, 4 * Most + 64), a(MemSpace::Internal, 3 * Most + 32),
+                        b(MemSpace::Internal, 3 * Most + 32);
+                if (in.p == nullptr || a.p == nullptr || b.p == nullptr) return Shell::ExitFailure;
+                auto *pixels = reinterpret_cast<uint32_t *>(in.p);
+                for (unsigned c = 0; c < 2000; ++c) {
+                        const size_t      n = noise.below(Most), io = noise.below(16), oo = noise.below(16);
+                        const uint32_t    bg = noise.next() & 0xffffff;
+                        const PixelFormat f = noise.below(2) == 0 ? PixelFormat::Bgr24 : PixelFormat::Rgb24;
+                        iconPixels(noise, pixels, Most + 16);
+                        std::memset(a.p, 0x5a, 3 * Most + 32);
+                        std::memset(b.p, 0x5a, 3 * Most + 32);
+                        Pixels::fromArgb(pixels + io, n, a.p + oo, f, bg, Simd::Kernel::Scalar);
+                        Pixels::fromArgb(pixels + io, n, b.p + oo, f, bg, Simd::Kernel::Pie);
+                        if (std::memcmp(a.p, b.p, 3 * Most + 32) != 0) {
+                                size_t at = 0;
+                                while (a.p[at] == b.p[at]) ++at;
+                                ctx.printf("blend: case %u (%u pixels, +%u to +%u, %s) differs at byte %u: %u, %u\n", c,
+                                           unsigned(n), unsigned(io), unsigned(oo),
+                                           f == PixelFormat::Bgr24 ? "bgr24" : "rgb24", unsigned(at), a.p[at], b.p[at]);
+                                return Shell::ExitFailure;
+                        }
+                }
+                ctx.printf("blend: 2000 cases, the same\n");
+                return Shell::ExitSuccess;
+        }
+
+        // As the painter draws icons: 48 × 48 into a strip in internal RAM, from PSRAM (where the
+        // icon themes are) and from internal RAM (the kernel's own speed).
+        void benchBlend(CommandContext &ctx) {
+                constexpr size_t Side = 48, Icons = 64;
+                Block in(MemSpace::Psram, 4 * Side * Side * Icons), near(MemSpace::Internal, 4 * Side * Side),
+                        out(MemSpace::Internal, 3 * Side * Side);
+                if (in.p == nullptr || near.p == nullptr || out.p == nullptr) return;
+                Noise noise;
+                iconPixels(noise, reinterpret_cast<uint32_t *>(in.p), Side * Side * Icons);
+                std::memcpy(near.p, in.p, 4 * Side * Side);
+                for (const bool psram : {true, false}) {
+                        uint32_t us[2];
+                        for (int k = 0; k < 2; ++k) {
+                                const uint64_t t = System::uptimeUs();
+                                for (size_t i = 0; i < Icons; ++i) {
+                                        const auto *icon = reinterpret_cast<const uint32_t *>(
+                                                psram ? in.p + 4 * Side * Side * i : near.p);
+                                        for (size_t r = 0; r < Side; ++r)
+                                                Pixels::fromArgb(icon + r * Side, Side, out.p + r * Side * 3,
+                                                                 PixelFormat::Bgr24, 0xc0c0c0,
+                                                                 k == 0 ? Simd::Kernel::Scalar : Simd::Kernel::Pie);
+                                }
+                                us[k] = uint32_t(System::uptimeUs() - t) / Icons;
+                        }
+                        ctx.printf("blend a 48x48 icon from %s: scalar %u us, pie %u us\n",
+                                   psram ? "psram" : "internal", unsigned(us[0]), unsigned(us[1]));
+                }
+                return;
+        }
+
         // PNG's filters: rows of a smooth picture with noise (so each filter wins somewhere), any length.
         void pngRows(Noise &noise, uint8_t *prev, uint8_t *cur, size_t bytes) {
                 const unsigned kind = noise.below(4);
@@ -422,6 +490,7 @@ namespace {
                 {"pngfilter", testPngFilter, benchPngFilter},
                 {"softjpeg", testSoftJpeg, benchSoftJpeg},
                 {"orient", testOrient, benchOrient},
+                {"blend", testBlend, benchBlend},
         };
 
         int runSimd(CommandContext &ctx) {

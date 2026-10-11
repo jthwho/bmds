@@ -118,10 +118,13 @@ namespace Pixels {
 
         /**
          * @brief Stores @p count 0xAARRGGBB pixels @p in at @p out in @p format; into a
-         *        format without alpha each is blended over @p background (0xRRGGBB).
+         *        format without alpha each is blended over @p background (0xRRGGBB):
+         *        `(s × a + d × (255 − a) + 127) / 255` a channel. PIE (into B, G, R and R, G, B):
+         *        16 pixels a step, the same bytes.
          * @hotpath
          */
-        void fromArgb(const uint32_t *in, size_t count, uint8_t *out, PixelFormat format, uint32_t background);
+        void fromArgb(const uint32_t *in, size_t count, uint8_t *out, PixelFormat format, uint32_t background,
+                      Simd::Kernel kernel = Simd::best());
 
         /** @brief Reads @p count pixels of @p format at @p in as 0xAARRGGBB (opaque formats: alpha 0xff). @hotpath */
         void toArgb(const uint8_t *in, size_t count, uint32_t *out, PixelFormat format);

@@ -26,7 +26,7 @@ U1 is a bare QFN104 ESP32-P4 chip soldered to the board, not a module.
 | Internal SRAM | 768 KB of HP L2 memory. **Scarce: reserve it for things that need it.** |
 | TCM | 8 KB (the heap reports it as "HP core RAM"), mapped to `MemSpace::Fast` |
 | LP SRAM | 32 KB |
-| PSRAM | 32 MB in-package, HEX mode (AP Memory, generation 4, confirmed at boot). The production test runs it at 200 MHz; BMDS currently uses 80 MHz, because 200 MHz needs `IDF_EXPERIMENTAL_FEATURES`. |
+| PSRAM | 32 MB in-package, HEX mode (AP Memory, generation 4, confirmed at boot). The production test runs it at 200 MHz; so does BMDS since 2026-10-05 (`devplan/psram.md`), through `IDF_EXPERIMENTAL_FEATURES`. |
 | Flash | 16 MB Winbond W25Q128JVSIQ (U3, ID 0xEF4018), DIO 80 MHz, LDO VO1; auto-suspend (`flashchips.c`) |
 | Crystals | 40 MHz main crystal (Q3). A 32.768 kHz crystal (Q1) is on **GPIO0/GPIO1, so those pins are taken**. |
 | Core supply | External buck converter driven by the P4's EN_DCDC/FB_DCDC: TLV62569 on Rev C, TPS62A02 on Rev B. |

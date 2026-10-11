@@ -45,7 +45,12 @@ the board for what it does: **check every kernel on the board** (`simd test`).
 - **Accumulators:** QACC (two 256-bit halves) holds 8 lanes of 64 bits for 16-bit MACs or 16 of 32
   for 8-bit ones; XACC is one 40-bit sum of all lanes (`esp.vmulas.u8.xacc` with a vector of ones
   sums 16 bytes). There is one QACC: a kernel needing two accumulations runs them one after the
-  other.
+  other. **`esp.mov.u8.qacc q`** loads QACC from 16 bytes (zero-extended): a start value, such as
+  a rounding constant, without a multiply-accumulate, or one pass's result as the next pass's
+  start. The TRM's v2p2 `srcmb` also writes its shifted result back into QACC; what v2p1's does
+  isn't checked, so kernels don't rely on QACC after a `srcmb` (they reload it).
+- **Exact ÷255 in u8 lanes:** `(t + 127) / 255 == (t + 128 + ((t + 128) >> 8)) >> 8` for t up to
+  65025: two QACC passes of u8 products, 16 lanes at a time (the alpha blend, `pixels.cpp`).
 - **No floating-point vectors.** Audio and the float decoders aren't PIE's.
 - **Registers live between asm statements**, as GCC doesn't know they exist: constants can be
   loaded once and used by later statements, if no PIE-using function is called between.
@@ -73,11 +78,20 @@ until silicon v3; then test again.
   display and screenshot code).
 - **The CPU's PSRAM traffic can't be ranked below the 2D-DMA's** (the caches bypass the
   interconnect): drawing is in internal RAM and copied by DMA (`devplan/display.md` V9).
-- **PSRAM is slow for the CPU in bulk:** about 70 MB/s for a copy-like loop at 80 MHz PSRAM (a 1080p
-  RGB swap, 12 MB of traffic: 223 ms scalar, 180 ms with PIE, which does 16 pixels a step). A kernel
+- **PSRAM is slow for the CPU in bulk**, though it runs at 200 MHz (hex mode): the CPU gets about
+  70 MB/s for a copy-like loop (a 1080p RGB swap, 12 MB of traffic: 223 ms scalar, 180 ms with PIE,
+  which does 16 pixels a step) and about 84 MB/s reading (the alpha blend from PSRAM: 145 µs an
+  icon against 36 µs from internal RAM). The display scans surface 0 from the same PSRAM. A kernel
   that reads and writes PSRAM is memory-bound long before it is compute-bound: measure the scalar
   and PIE times before tuning instructions. Column-order access thrashes the cache (turning a
   picture: 1525 ms by rows, 277 ms in 32 × 32 tiles).
+- **A software prefetch doesn't help:** a scalar load 192 bytes ahead in the blend's loop changed
+  nothing (2026-10-10).
+- **The L2 cache's 128-byte line** (half the misses for streaming) couldn't be chosen with the
+  128 KB L2 on this ESP-IDF: `reconfigure` put `CONFIG_CACHE_L2_CACHE_LINE_64B` back each time,
+  with or without the size line. The likely cause: the choice and the line size's value share the
+  name `CACHE_L2_CACHE_LINE_SIZE` in `esp_system/port/soc/esp32p4/Kconfig.cache`. Not tried
+  further. BMDS's DMA allocations are already aligned to 128 bytes (`memory.cpp`).
 
 ## 4. The accelerators (`devplan/images.md`)
 
@@ -115,10 +129,26 @@ until silicon v3; then test again.
 - **Using a ROM function from a pure component:** declare a weak `extern "C"` hook in the pure
   code, defined by a target component; the host build falls back to the portable code.
 
-## 7. Measuring
+## 7. The compiler
+
+- **`-O2` for inner loops:** the build's `-Os` leaves them several times slower; hot files set
+  `-O2` in their component's `CMakeLists.txt`.
+- **Float registers run out in big functions:** inside TinySoundFont's `tsf_voice_render`, GCC
+  kept the filter's coefficients in integer registers and moved them across (`fmv.w.x`) every
+  sample; the same loop in a function of its own (called once a block) went from 58 to 53
+  cycles a sample. Read the disassembly of a hot loop (`riscv32-esp-elf-objdump -d` on the ELF,
+  `--start-address` at the symbol `nm` gives).
+- **A loop for each case, not a branch per element:** PNG's unfiltering (a loop per filter) and
+  the synth's voice loop (filter and looping as constants) both gained from it.
+- **Integer-to-float conversions are costly:** the voice loop gained 15 % by interpolating in
+  integers and converting once instead of converting three values.
+- **`#pragma GCC unroll 4` didn't help** the voice loop (68 cycles a sample either way).
+
+## 8. Measuring
 
 - **Cycles:** `csrr rd, mcycle` around a section (360 MHz on this silicon). Remove the
-  instrumentation after.
+  instrumentation after. A `printf` in the synth, running in a background `play`, never showed on
+  the console; `bmdsInfo()` did (read with `log show`).
 - **`simd bench`** times each vector kernel against its scalar twin; **`simd test`** checks them
   byte for byte on random input (sizes, offsets, formats). A kernel goes in with both.
 - **Compare against an exact reference, not a library's idea of it:** Pillow's "box" filter isn't
