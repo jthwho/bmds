@@ -13,3 +13,4 @@ text/*=vi.desktop
 text/plain=vi.desktop
 application/x-executable=run.desktop
 audio/*=mplayer.desktop;play.desktop
+image/*=imageview.desktop

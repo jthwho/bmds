@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Image Viewer
+Comment=Shows pictures, fitted to its window or zoomed, and the others in their folder
+Exec=imageview %F
+Icon=image-viewer
+Terminal=false
+Categories=Graphics;Viewer;
+MimeType=image/png;image/jpeg;image/bmp;

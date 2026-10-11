@@ -120,6 +120,8 @@ namespace Detail {
                         },
                 // No serial number of its own: the chip's factory MAC address.
                 .serial = chipMacSerial,
+                // The ESP32-P4's JPEG codec (TRM: JPEG Codec): baseline decoding and encoding.
+                .jpegCodecs = 1,
         };
 
 } // namespace Detail

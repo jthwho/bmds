@@ -131,6 +131,12 @@ Plan: [`input.md`](input.md).
   `HOSTNAME`, `SERIAL`, `DATE`, `TIME`) expanded alike by the OS and programs (slot 92); paths
   become settings with defaults, templates where they name by the date or host. The scheme,
   `bmds_expand` and `screenshot/path` done 2026-10-10; the paths left in the code to go (§6).
+- [x] Images (`images.md`, planned and done 2026-10-10): PNG (every kind), BMP and JPEG for the OS
+  and programs (`image_info`, `image_decode`, `image_encode`, slots 93-95), JPEG decoded and
+  encoded by the P4's codec (`jpeg0`, zero-copy when the buffer allows, full-range colour loaded
+  into the 2D-DMA) and TJpgDec for photos too big for memory; `image`; screenshots as JPEG;
+  `/bin/imageview` (fit, zoom, pan, turn, the folder a key away, opened from the file browser).
+  To do: SIMD for the scaler and TJpgDec, progressive JPEG.
 - [ ] Special keys and global hotkeys (`hotkeys.md`, planned 2026-10-08): media keys decoded,
   named actions and bindings in the kernel, the window manager's keys moved onto them; user
   bindings later.

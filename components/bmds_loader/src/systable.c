@@ -109,8 +109,12 @@ int32_t bmds_k_notify_open(uint32_t flags);
 int32_t bmds_k_notify_send(int32_t fd, const bmds_notification_t *n);
 int32_t bmds_k_notify_close(uint32_t id);
 int32_t bmds_k_expand(const char *text, char *out, uint32_t size);
+int32_t bmds_k_image_info(int32_t fd, const void *data, uint32_t length, const bmds_image_decode_t *want,
+                          bmds_image_info_t *info);
+int32_t bmds_k_image_decode(int32_t fd, const bmds_image_decode_t *d, bmds_image_info_t *info);
+int32_t bmds_k_image_encode(int32_t fd, const bmds_image_encode_t *e);
 
-#define SLOTS 93
+#define SLOTS 96
 
 /* bmds_sys_t with its slots spelled out (same layout; checked below). */
 static const struct {
@@ -218,10 +222,13 @@ static const struct {
                 [BMDS_SYS_NOTIFY_SEND] = (bmds_sys_fn_t)bmds_k_notify_send,
                 [BMDS_SYS_NOTIFY_CLOSE] = (bmds_sys_fn_t)bmds_k_notify_close,
                 [BMDS_SYS_EXPAND] = (bmds_sys_fn_t)bmds_k_expand,
+                [BMDS_SYS_IMAGE_INFO] = (bmds_sys_fn_t)bmds_k_image_info,
+                [BMDS_SYS_IMAGE_DECODE] = (bmds_sys_fn_t)bmds_k_image_decode,
+                [BMDS_SYS_IMAGE_ENCODE] = (bmds_sys_fn_t)bmds_k_image_encode,
         },
 };
 
-_Static_assert(SLOTS == BMDS_SYS_EXPAND + 1, "every slot is in the table");
+_Static_assert(SLOTS == BMDS_SYS_IMAGE_ENCODE + 1, "every slot is in the table");
 _Static_assert(sizeof(table) == 16 + SLOTS * sizeof(bmds_sys_fn_t), "table layout");
 
 const bmds_sys_t *bmds_k_sys_table(void) {

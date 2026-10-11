@@ -211,6 +211,32 @@ Error Painter::text(int x, int y, StringView utf8, const Font &font, uint32_t fg
         });
 }
 
+Error Painter::pixels(int x, int y, const uint8_t *bgr, size_t stride, uint16_t width, uint16_t height) {
+        const int32_t sx = int32_t(x) + _originX, sy = int32_t(y) + _originY;
+        if ((uint32_t(sx) & AlignMask) != 0 || (width & AlignMask) != 0 || bgr == nullptr ||
+            stride % Surface::BytesPerPixel != 0 || stride < size_t(width) * Surface::BytesPerPixel) {
+                note(Error::Invalid);
+                return _error;
+        }
+        // What of it is on the surface (cut in fours across: x, the width and the surface's are).
+        const int32_t left = sx < 0 ? 0 : sx, top = sy < 0 ? 0 : sy;
+        int32_t       right = sx + int32_t(width), bottom = sy + int32_t(height);
+        if (right > int32_t(_surface.width())) right = int32_t(_surface.width()) & ~int32_t(AlignMask);
+        if (bottom > int32_t(_surface.height())) bottom = _surface.height();
+        if (right <= left || bottom <= top) return _error;
+        const Rect to{uint16_t(left), uint16_t(top), uint16_t(right - left), uint16_t(bottom - top)};
+        bool       shown = false;
+        for (const Rect &piece : _clip) shown |= piece.intersects(to);
+        if (!shown) return _error;
+        const uint8_t *from = bgr + size_t(top - sy) * stride + size_t(left - sx) * Surface::BytesPerPixel;
+        ++_calls;
+        Error err = _surface.startBlit(to, from, stride, _clip, _timeoutMs);
+        if (err.isOk()) err = _surface.wait(_timeoutMs); // the caller's picture is free to change after
+        _tools.busyHalf = -1;                            // the strip's last copy is done too
+        note(err);
+        return _error;
+}
+
 Error Painter::image(int x, int y, const Icon &icon, uint32_t bg) {
         if (!icon.isValid()) return _error;
         const uint16_t width = static_cast<uint16_t>(icon.width & ~3u); // whole groups of 4

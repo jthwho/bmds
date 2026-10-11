@@ -2183,6 +2183,155 @@ static int expand_test(void) {
         return 0;
 }
 
+/* Pictures (devplan/images.md §3f): a pattern written as PNG and read back exactly, as JPEG and
+   read back near, through an fd and from memory, every pixel format; with FILE (a baseline JPEG the
+   codec takes), decoded by the codec into a buffer laid out as image_info says (no copy). */
+static int image_test(const char *file) {
+        CHECK(bmds_sys_has(BMDS_SYS_IMAGE_ENCODE));
+        enum {
+                W = 64,
+                H = 48
+        };
+        static uint8_t pic[W * H * 3], back[W * H * 4];
+        for (int y = 0; y < H; ++y)
+                for (int x = 0; x < W; ++x) {
+                        uint8_t *p = pic + (y * W + x) * 3; /* B, G, R: smooth, so JPEG keeps it close */
+                        p[0] = (uint8_t)(x * 4);
+                        p[1] = (uint8_t)(y * 5);
+                        p[2] = (uint8_t)(255 - x * 2 - y);
+                }
+        static const char *const names[] = {"/ram0/p0/progtest.png", "/ram0/p0/progtest.jpg"};
+        for (int k = 0; k < 2; ++k) {
+                const int fd = open(names[k], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                CHECK(fd >= 0);
+                bmds_image_encode_t e;
+                memset(&e, 0, sizeof(e));
+                e.size = sizeof(e);
+                e.codec = k == 0 ? BMDS_IMAGE_PNG : BMDS_IMAGE_JPEG;
+                e.format = BMDS_PIXEL_BGR24;
+                e.width = W;
+                e.height = H;
+                e.pixels = pic;
+                e.quality = 95;
+                e.sampling = BMDS_JPEG_YUV444;
+                const int32_t bytes = bmds_image_encode(fd, &e);
+                close(fd);
+                printf("image: %s, %d bytes\n", names[k], (int)bytes);
+                CHECK(bytes > 0);
+                /* Its info, from the fd. */
+                const int rfd = open(names[k], O_RDONLY);
+                CHECK(rfd >= 0);
+                bmds_image_info_t info;
+                memset(&info, 0, sizeof(info));
+                info.size = sizeof(info);
+                const int32_t got = bmds_image_info(rfd, NULL, 0, NULL, &info);
+                if (got != 0) printf("image: image_info from the fd: %d\n", (int)got);
+                CHECK(got == 0);
+                close(rfd);
+                CHECK(info.codec == (k == 0 ? BMDS_IMAGE_PNG : BMDS_IMAGE_JPEG));
+                CHECK(info.width == W && info.height == H && info.decode_width == W && info.orientation == 1);
+                CHECK(info.decoder == (k == 0 ? BMDS_IMAGE_DECODER_PNG : BMDS_IMAGE_DECODER_HARDWARE));
+                /* Decoded from the fd into each format, compared through BGR. */
+                for (uint32_t f = BMDS_PIXEL_BGR24; f <= BMDS_PIXEL_GRAY8; ++f) {
+                        bmds_image_decode_t d;
+                        memset(&d, 0, sizeof(d));
+                        d.size = sizeof(d);
+                        d.format = f;
+                        d.out = back;
+                        d.out_size = sizeof(back);
+                        const int dfd = open(names[k], O_RDONLY);
+                        CHECK(dfd >= 0);
+                        CHECK(bmds_image_decode(dfd, &d, NULL) == 0);
+                        close(dfd);
+                        /* Every format back to B, G, R, compared (5-6-5 and grey lose bits). */
+                        int most = 0;
+                        for (int i = 0; i < W * H; ++i) {
+                                const uint8_t *want = pic + i * 3;
+                                int            b, g, r;
+                                if (f == BMDS_PIXEL_BGR24) {
+                                        b = back[i * 3], g = back[i * 3 + 1], r = back[i * 3 + 2];
+                                } else if (f == BMDS_PIXEL_RGB24) {
+                                        r = back[i * 3], g = back[i * 3 + 1], b = back[i * 3 + 2];
+                                } else if (f == BMDS_PIXEL_BGRA32) {
+                                        b = back[i * 4], g = back[i * 4 + 1], r = back[i * 4 + 2];
+                                } else if (f == BMDS_PIXEL_RGB565) {
+                                        const int v = back[i * 2] | back[i * 2 + 1] << 8;
+                                        r = (v >> 11) << 3, g = (v >> 5 & 63) << 2, b = (v & 31) << 3;
+                                } else { /* grey: its luma against the picture's, put where B is compared */
+                                        const int y = (77 * want[2] + 150 * want[1] + 29 * want[0] + 128) >> 8;
+                                        b = back[i] - y + want[0], g = want[1], r = want[2];
+                                }
+                                const int d[3] = {abs(b - want[0]), abs(g - want[1]), abs(r - want[2])};
+                                for (int c = 0; c < 3; ++c) most = d[c] > most ? d[c] : most;
+                        }
+                        const int allowed =
+                                (k == 0 ? 0 : 12) + (f == BMDS_PIXEL_RGB565 ? 8 : 0) + (f == BMDS_PIXEL_GRAY8 ? 2 : 0);
+                        printf("image: %s as format %u, largest difference %d\n", names[k], (unsigned)f, most);
+                        CHECK(most <= allowed);
+                }
+        }
+        /* From memory, too small a buffer, nonsense. */
+        bmds_image_decode_t d;
+        memset(&d, 0, sizeof(d));
+        d.size = sizeof(d);
+        d.out = back;
+        d.out_size = 100;
+        d.data = pic;
+        d.length = sizeof(pic);
+        CHECK(bmds_image_decode(-1, &d, NULL) == -BMDS_ENOTSUP); /* not a picture */
+        bmds_image_info_t info;
+        memset(&info, 0, sizeof(info));
+        info.size = sizeof(info);
+        CHECK(bmds_image_info(-1, NULL, 0, NULL, &info) == -BMDS_EFAULT);
+        d.format = 99;
+        CHECK(bmds_image_info(-1, pic, sizeof(pic), &d, &info) == -BMDS_EINVAL);
+        if (file != NULL) {
+                /* A real JPEG: laid out as image_info says, the codec writes straight in. */
+                FILE *f = fopen(file, "rb");
+                CHECK(f != NULL);
+                fseek(f, 0, SEEK_END);
+                const long n = ftell(f);
+                fseek(f, 0, SEEK_SET);
+                uint8_t *jpeg = malloc((size_t)n);
+                CHECK(jpeg != NULL && fread(jpeg, 1, (size_t)n, f) == (size_t)n);
+                fclose(f);
+                memset(&d, 0, sizeof(d));
+                d.size = sizeof(d);
+                CHECK(bmds_image_info(-1, jpeg, (uint32_t)n, &d, &info) == 0);
+                printf("image: %s %ux%u, decoder %u, buffer align %u stride %u bytes %u\n", file, (unsigned)info.width,
+                       (unsigned)info.height, (unsigned)info.decoder, (unsigned)info.align, (unsigned)info.stride,
+                       (unsigned)info.bytes);
+                CHECK(info.decoder == BMDS_IMAGE_DECODER_HARDWARE && info.align == 64 && info.bytes != 0);
+                void *out = bmds_mem_alloc(info.bytes, info.align, 0);
+                CHECK(out != NULL);
+                d.out = out;
+                d.out_size = info.bytes;
+                d.stride = info.stride;
+                d.data = jpeg;
+                d.length = (uint32_t)n;
+                struct timespec t0, t1;
+                clock_gettime(CLOCK_MONOTONIC, &t0);
+                CHECK(bmds_image_decode(-1, &d, &info) == 0);
+                clock_gettime(CLOCK_MONOTONIC, &t1);
+                printf("image: decoded in %ld us\n",
+                       (long)((t1.tv_sec - t0.tv_sec) * 1000000 + (t1.tv_nsec - t0.tv_nsec) / 1000));
+                /* Reduced for a box: a software decode at 1/2 or more for a big one, else whole. */
+                memset(&d, 0, sizeof(d));
+                d.size = sizeof(d);
+                d.box_width = 320;
+                d.box_height = 240;
+                CHECK(bmds_image_info(-1, jpeg, (uint32_t)n, &d, &info) == 0);
+                printf("image: for 320x240: %ux%u by decoder %u at 1/%u\n", (unsigned)info.decode_width,
+                       (unsigned)info.decode_height, (unsigned)info.decoder, 1u << info.shift);
+                bmds_mem_free(out);
+                free(jpeg);
+        }
+        unlink(names[0]);
+        unlink(names[1]);
+        printf("image: all passed\n");
+        return 0;
+}
+
 /* Notifications (devplan/notifications.md §3.3): an events fd, posting with and without it,
    replacing one's own, closing, the errors; with SERVED, the panel's balloon expiring is read. */
 static int notify_test(int served) {
@@ -2268,7 +2417,7 @@ int main(int argc, char **argv) {
                         "threads|"
                         "threadspin|filetype|audio|decode|rt|midi|synth|synthload|mididecode|hog|stats|tasks|"
                         "procs|"
-                        "system|notify|expand [arg]\n");
+                        "system|notify|expand|image [arg]\n");
                 return 2;
         }
         const char *what = argv[1];
@@ -2289,6 +2438,7 @@ int main(int argc, char **argv) {
         if (strcmp(what, "rusage") == 0) return rusage_test(arg);
         if (strcmp(what, "system") == 0) return system_test();
         if (strcmp(what, "expand") == 0) return expand_test();
+        if (strcmp(what, "image") == 0) return image_test(argc > 2 ? arg : NULL);
         if (strcmp(what, "notify") == 0) return notify_test(argc > 2 && strcmp(arg, "served") == 0);
         if (strcmp(what, "procexec") == 0) return proc_exec(arg);
         if (strcmp(what, "proccheck") == 0) return proc_check(arg);

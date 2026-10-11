@@ -19,6 +19,7 @@ if(COMMAND idf_component_register)
                                     src/display.cpp
                                     src/displaycommand.cpp
                                     src/i2cbus.cpp
+                                    src/jpegcodec.cpp
                                     src/lt8912b.cpp
                                     src/memtestcommand.cpp
                                     src/blitchain.cpp
@@ -26,10 +27,12 @@ if(COMMAND idf_component_register)
                                     src/surface.cpp
                                INCLUDE_DIRS include
                                REQUIRES bmds_core bmds_kernel
-                               PRIV_REQUIRES bmds_board bmds_shell bmds_sysconf esp_driver_i2c esp_hw_support esp_hal_lcd esp_mm esp_timer
+                               PRIV_REQUIRES bmds_board bmds_shell bmds_sysconf esp_driver_i2c esp_driver_jpeg esp_hw_support esp_hal_lcd esp_mm esp_timer
                                              spi_flash
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})
+        # The JPEG codec loads full-range YUV-to-RGB coefficients into the 2D-DMA (jpegcodec.cpp).
+        target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=dma2d_configure_color_space_conversion")
 else()
         add_library(bmds_drivers STATIC ${BMDS_DRIVERS_PORTABLE_SRCS})
         target_include_directories(bmds_drivers PUBLIC include)

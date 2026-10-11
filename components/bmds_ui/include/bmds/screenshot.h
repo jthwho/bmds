@@ -55,8 +55,9 @@ namespace Screenshot {
 
         /**
          * @brief Copies display 0's picture (the window manager's last whole round)
-         *        and writes it to @p path as a PNG of @p level (`Png`), relative to
-         *        @p context; with `Unique` @p path is set to the name used.
+         *        and writes it to @p path as a PNG of @p level (`Png`), or a JPEG
+         *        (the codec, quality 90) when @p path ends in `.jpg` or `.jpeg`,
+         *        relative to @p context; with `Unique` @p path is set to the name used.
          * @return `Ok`, or the error (`Report::failed` says where).
          * @blocking The copy (about 10 ms) and the PNG (a second or so).
          */

@@ -12,6 +12,7 @@
 #include <cstring>
 #include <esp_cache.h>
 #include <bmds/display.h>
+#include <bmds/jpegcodec.h>
 #include <bmds/memory.h>
 #include <bmds/screenshot.h>
 #include <bmds/surface.h>
@@ -64,6 +65,28 @@ namespace {
                         data = ByteSpan(data.data() + n, data.size() - n);
                 }
                 return Error::Ok;
+        }
+
+        // A name ending in .jpg or .jpeg (any case): written as a JPEG.
+        bool isJpegName(StringView path) {
+                const size_t dot = path.lastIndexOf('.');
+                if (dot == StringView::NPos) return false;
+                const StringView ext = path.mid(dot + 1);
+                char             lower[5] = {};
+                if (ext.size() > 4) return false;
+                for (size_t i = 0; i < ext.size(); ++i) lower[i] = char(ext[i] | 0x20);
+                return StringView(lower) == "jpg" || StringView(lower) == "jpeg";
+        }
+
+        struct Counted {
+                        FileHandle *file;
+                        size_t      bytes = 0;
+        };
+
+        Error countedToFile(void *arg, ByteSpan data) {
+                auto *c = static_cast<Counted *>(arg);
+                c->bytes += data.size();
+                return toFile(c->file, data);
         }
 
         // Each directory above the file @p path (normalized) made.
@@ -157,9 +180,26 @@ Error Screenshot::save(String &path, int level, uint8_t flags, const Vfs::Contex
                 err = ferr;
                 file = std::move(f);
         }
-        if (err.isOk())
+        if (err.isOk() && isJpegName(path.view())) {
+                // A JPEG by the codec (devplan/images.md §7): the copy is the codec's B, G, R already.
+                auto [codec, cerr] = JpegCodec::codec(0);
+                err = cerr;
+                if (err.isOk()) {
+                        ImageBuffer in;
+                        in.pixels = copy.to;
+                        in.width = surface.width();
+                        in.height = surface.height();
+                        in.stride = surface.stride();
+                        in.format = PixelFormat::Bgr24;
+                        Counted counted{&*file};
+                        err = codec->encode(in, JpegCodec::Encode{}, countedToFile, &counted, WaitForever);
+                        report.stats.bytes = counted.bytes;
+                        report.stats.compressUs = uint32_t(System::uptimeUs() - start) - report.copyUs;
+                }
+        } else if (err.isOk()) {
                 err = Png::write(copy.to, surface.width(), surface.height(), surface.stride(), level, toFile, &*file,
                                  &report.stats);
+        }
         Memory::free(copy.to);
         file.reset(); // closed: written out
         report.totalUs = uint32_t(System::uptimeUs() - start);

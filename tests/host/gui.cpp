@@ -543,10 +543,19 @@ TEST_CASE("Png: every supported kind decodes to its pixels; the rest is refused"
                                         bmds::Span<uint32_t>(small.data(), small.size()), bmds::MemSpace::Psram)
                               .error() == Error::BufferTooSmall);
         }
+        // Once refused, now decoded (devplan/images.md §3b; tests/host/images.cpp checks their pixels).
+        for (const char *name : {"bad-16bit"}) {
+                INFO(std::string(name));
+                const std::vector<uint8_t> file = readFile(dir + "/" + name + ".png");
+                std::vector<uint32_t>      pixels(4096);
+                CHECK(bmds::Png::decode(bmds::ByteSpan(file.data(), file.size()),
+                                        bmds::Span<uint32_t>(pixels.data(), pixels.size()), bmds::MemSpace::Psram)
+                              .isOk());
+        }
         const std::pair<const char *, Error> bad[] = {{"bad-crc", Error::CorruptData},
                                                       {"bad-truncated", Error::CorruptData},
-                                                      {"bad-interlaced", Error::NotSupported},
-                                                      {"bad-16bit", Error::NotSupported}};
+                                                      // Says Adam7, but its data isn't (make.py never interlaced it).
+                                                      {"bad-interlaced", Error::CorruptData}};
         for (const auto &[name, why] : bad) {
                 INFO(std::string(name));
                 const std::vector<uint8_t> file = readFile(dir + "/" + name + ".png");

@@ -15,8 +15,7 @@ BMDS_NAMESPACE_BEGIN
 
 namespace {
 
-        constexpr uint8_t  Signature[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
-        constexpr uint32_t MaxSide = 4096;
+        constexpr uint8_t Signature[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
 
         enum ColorType : uint8_t {
                 Grey = 0,
@@ -35,6 +34,7 @@ namespace {
                         uint32_t height = 0;
                         uint8_t  depth = 0;
                         uint8_t  type = 0;
+                        bool     interlaced = false;
         };
 
         // A chunk at @p at of @p file (its CRC checked), or false at a bad one.
@@ -73,16 +73,17 @@ namespace {
                 h.height = be32(c.data + 4);
                 h.depth = c.data[8];
                 h.type = c.data[9];
-                if (h.width == 0 || h.height == 0 || c.data[10] != 0 || c.data[11] != 0) return Error::CorruptData;
-                if (h.width > MaxSide || h.height > MaxSide) return Error::NotSupported;
-                if (c.data[12] != 0) return Error::NotSupported; // interlaced
-                const bool paletteDepth = h.depth == 1 || h.depth == 2 || h.depth == 4 || h.depth == 8;
+                h.interlaced = c.data[12] == 1;
+                if (h.width == 0 || h.height == 0 || c.data[10] != 0 || c.data[11] != 0 || c.data[12] > 1)
+                        return Error::CorruptData;
+                if (h.width > Png::MaxSide || h.height > Png::MaxSide) return Error::NotSupported;
+                const bool lowDepth = h.depth == 1 || h.depth == 2 || h.depth == 4 || h.depth == 8;
                 switch (h.type) {
-                        case Grey:
+                        case Grey: return lowDepth || h.depth == 16 ? Error() : Error(Error::CorruptData);
                         case Rgb:
                         case GreyAlpha:
-                        case Rgba: return h.depth == 8 ? Error() : Error(Error::NotSupported);
-                        case Palette: return paletteDepth ? Error() : Error(Error::CorruptData);
+                        case Rgba: return h.depth == 8 || h.depth == 16 ? Error() : Error(Error::CorruptData);
+                        case Palette: return lowDepth ? Error() : Error(Error::CorruptData);
                         default: return Error::CorruptData;
                 }
         }
@@ -149,54 +150,205 @@ Result<Png::Size> Png::size(ByteSpan file) {
         return makeResult(Size{uint16_t(h.width), uint16_t(h.height)});
 }
 
+Result<ImageInfo> Png::info(ByteSpan file) {
+        Header      h;
+        const Error err = header(file, h);
+        if (err.isError()) return makeError<ImageInfo>(err);
+        ImageInfo info;
+        info.codec = ImageCodec::Png;
+        info.width = h.width;
+        info.height = h.height;
+        // Alpha: its own channel, or a tRNS chunk before the data.
+        bool   alpha = h.type == GreyAlpha || h.type == Rgba;
+        size_t at = 8;
+        for (Chunk c; !alpha && next(file, at, c).isOk() && c.type != tag("IDAT") && c.type != tag("IEND");)
+                alpha = c.type == tag("tRNS");
+        info.flags = uint8_t((alpha ? ImageInfo::HasAlpha : 0) | (h.interlaced ? ImageInfo::Progressive : 0));
+        return makeResult(info);
+}
+
 Result<Png::Size> Png::decode(ByteSpan file, Span<uint32_t> pixels, MemSpace space) {
+        Header      h;
+        const Error herr = header(file, h);
+        if (herr.isError()) return makeError<Size>(herr);
+        if (pixels.size() < size_t(h.width) * h.height) return makeError<Size>(Error::BufferTooSmall);
+        ImageBuffer out;
+        out.pixels = reinterpret_cast<uint8_t *>(pixels.data()); // little-endian: B, G, R, A
+        out.width = h.width;
+        out.height = h.height;
+        out.stride = size_t(h.width) * 4;
+        out.format = PixelFormat::Bgra32;
+        const Error err = decode(file, out, 0, space);
+        if (err.isError()) return makeError<Size>(err);
+        return makeResult(Size{uint16_t(h.width), uint16_t(h.height)});
+}
+
+namespace {
+
+        // What turns a row of samples into 0xAARRGGBB.
+        struct Samples {
+                        const Header *h = nullptr;
+                        uint32_t      palette[256] = {};
+                        size_t        paletteCount = 0;
+                        bool          keyed = false; // a tRNS colour key for grey or RGB
+                        uint16_t      key[3] = {};
+        };
+
+        // Sample @p i of @p row (@p depth bits each, the leftmost in the high bits).
+        unsigned sample(const uint8_t *row, size_t i, unsigned depth) {
+                if (depth == 8) return row[i];
+                if (depth == 16) return unsigned(row[2 * i]) << 8 | row[2 * i + 1];
+                const size_t   bit = i * depth;
+                const unsigned shift = 8 - depth - bit % 8;
+                return (row[bit / 8] >> shift) & ((1u << depth) - 1);
+        }
+
+        Error toArgb(const Samples &s, const uint8_t *row, uint32_t *out) {
+                const Header  &h = *s.h;
+                const unsigned d = h.depth;
+                // The common kinds, quickly: 8-bit RGB (no key) and RGBA.
+                if (d == 8 && h.type == Rgba) {
+                        for (uint32_t x = 0; x < h.width; ++x, row += 4)
+                                out[x] = uint32_t(row[3]) << 24 | uint32_t(row[0]) << 16 | uint32_t(row[1]) << 8 |
+                                         row[2];
+                        return Error();
+                }
+                if (d == 8 && h.type == Rgb && !s.keyed) {
+                        for (uint32_t x = 0; x < h.width; ++x, row += 3)
+                                out[x] = 0xff000000u | uint32_t(row[0]) << 16 | uint32_t(row[1]) << 8 | row[2];
+                        return Error();
+                }
+                const unsigned top = (1u << d) - 1; // the largest sample
+                const auto     eight = [d, top](unsigned v) {
+                        return d == 16 ? v >> 8 : d == 8 ? v : v * 255 / top;
+                };
+                for (uint32_t x = 0; x < h.width; ++x) {
+                        uint32_t argb = 0;
+                        switch (h.type) {
+                                case Grey: {
+                                        const unsigned raw = sample(row, x, d);
+                                        const uint32_t v = eight(raw);
+                                        argb = (s.keyed && raw == s.key[0] ? 0u : 0xff000000u) | v * 0x010101u;
+                                        break;
+                                }
+                                case GreyAlpha: {
+                                        const uint32_t v = eight(sample(row, 2 * x, d));
+                                        argb = eight(sample(row, 2 * x + 1, d)) << 24 | v * 0x010101u;
+                                        break;
+                                }
+                                case Rgb: {
+                                        const unsigned r = sample(row, 3 * x, d), g = sample(row, 3 * x + 1, d),
+                                                       b = sample(row, 3 * x + 2, d);
+                                        const bool clear = s.keyed && r == s.key[0] && g == s.key[1] && b == s.key[2];
+                                        argb = (clear ? 0u : 0xff000000u) | eight(r) << 16 | eight(g) << 8 | eight(b);
+                                        break;
+                                }
+                                case Rgba:
+                                        argb = eight(sample(row, 4 * x + 3, d)) << 24 |
+                                               eight(sample(row, 4 * x, d)) << 16 |
+                                               eight(sample(row, 4 * x + 1, d)) << 8 | eight(sample(row, 4 * x + 2, d));
+                                        break;
+                                default: { // a palette index
+                                        const unsigned index = sample(row, x, d);
+                                        if (index >= s.paletteCount) return Error::CorruptData;
+                                        argb = s.palette[index];
+                                        break;
+                                }
+                        }
+                        out[x] = argb;
+                }
+                return Error();
+        }
+
+        // Adam7's passes: where each starts and its steps.
+        struct Pass {
+                        uint8_t x0, y0, dx, dy;
+        };
+        constexpr Pass Passes[7] = {{0, 0, 8, 8}, {4, 0, 8, 8}, {0, 4, 4, 8}, {2, 0, 4, 4},
+                                    {0, 2, 2, 4}, {1, 0, 2, 2}, {0, 1, 1, 2}};
+
+        uint32_t passSide(uint32_t side, uint8_t start, uint8_t step) {
+                return side > start ? (side - start + step - 1) / step : 0;
+        }
+
+        // Copies pixel @p from of @p src to pixel @p to of @p dst (@p bpp bits each).
+        void copyPixel(const uint8_t *src, size_t from, uint8_t *dst, size_t to, unsigned bpp) {
+                if (bpp >= 8) {
+                        std::memcpy(dst + to * (bpp / 8), src + from * (bpp / 8), bpp / 8);
+                        return;
+                }
+                const unsigned v = sample(src, from, bpp);
+                const size_t   bit = to * bpp;
+                const unsigned shift = 8 - bpp - bit % 8;
+                const unsigned mask = ((1u << bpp) - 1) << shift;
+                dst[bit / 8] = uint8_t((dst[bit / 8] & ~mask) | (v << shift));
+                return;
+        }
+
+} // namespace
+
+Error Png::decode(ByteSpan file, const ImageBuffer &out, uint32_t background, MemSpace space) {
         Header h;
         Error  err = header(file, h);
-        if (err.isError()) return makeError<Size>(err);
-        if (pixels.size() < size_t(h.width) * h.height) return makeError<Size>(Error::BufferTooSmall);
+        if (err.isError()) return err;
+        if (out.pixels == nullptr || out.width < h.width || out.height < h.height ||
+            out.stride < size_t(h.width) * bytesPerPixel(out.format))
+                return Error::BufferTooSmall;
         // The chunks: the palette, its alpha, and the image data's total size.
-        uint32_t palette[256] = {};
-        size_t   paletteCount = 0;
-        bool     keyed = false; // a tRNS colour key for grey or RGB
-        uint16_t key[3] = {};
-        size_t   compressed = 0;
-        size_t   at = 8;
-        bool     ended = false;
+        Samples s;
+        s.h = &h;
+        size_t compressed = 0;
+        size_t at = 8;
+        bool   ended = false;
         while (!ended) {
                 Chunk c;
                 err = next(file, at, c);
-                if (err.isError()) return makeError<Size>(err);
+                if (err.isError()) return err;
                 if (c.type == tag("PLTE")) {
-                        if (c.length % 3 != 0 || c.length / 3 > 256) return makeError<Size>(Error::CorruptData);
-                        paletteCount = c.length / 3;
-                        for (size_t i = 0; i < paletteCount; ++i)
-                                palette[i] = 0xff000000u | uint32_t(c.data[3 * i]) << 16 |
-                                             uint32_t(c.data[3 * i + 1]) << 8 | c.data[3 * i + 2];
+                        if (c.length % 3 != 0 || c.length / 3 > 256) return Error::CorruptData;
+                        s.paletteCount = c.length / 3;
+                        for (size_t i = 0; i < s.paletteCount; ++i)
+                                s.palette[i] = 0xff000000u | uint32_t(c.data[3 * i]) << 16 |
+                                               uint32_t(c.data[3 * i + 1]) << 8 | c.data[3 * i + 2];
                 } else if (c.type == tag("tRNS")) {
                         if (h.type == Palette) {
                                 for (size_t i = 0; i < c.length && i < 256; ++i)
-                                        palette[i] = (palette[i] & 0x00ffffffu) | uint32_t(c.data[i]) << 24;
+                                        s.palette[i] = (s.palette[i] & 0x00ffffffu) | uint32_t(c.data[i]) << 24;
                         } else if (h.type == Grey && c.length == 2) {
-                                keyed = true;
-                                key[0] = uint16_t(c.data[0] << 8 | c.data[1]);
+                                s.keyed = true;
+                                s.key[0] = uint16_t(c.data[0] << 8 | c.data[1]);
                         } else if (h.type == Rgb && c.length == 6) {
-                                keyed = true;
-                                for (int i = 0; i < 3; ++i) key[i] = uint16_t(c.data[2 * i] << 8 | c.data[2 * i + 1]);
+                                s.keyed = true;
+                                for (int i = 0; i < 3; ++i) s.key[i] = uint16_t(c.data[2 * i] << 8 | c.data[2 * i + 1]);
                         }
                 } else if (c.type == tag("IDAT")) {
                         compressed += c.length;
                 } else if (c.type == tag("IEND")) {
                         ended = true;
                 } else if (c.type != tag("IHDR") && (c.type >> 24 & 0x20) == 0) {
-                        return makeError<Size>(Error::NotSupported); // a critical chunk not known
+                        return Error::NotSupported; // a critical chunk not known
                 }
         }
-        if (compressed == 0 || (h.type == Palette && paletteCount == 0)) return makeError<Size>(Error::CorruptData);
-        const unsigned bitsPerPixel = channels(h.type) * h.depth;
-        const size_t   stride = (size_t(h.width) * bitsPerPixel + 7) / 8;
-        const size_t   rawBytes = (1 + stride) * h.height;
-        auto          *work = static_cast<uint8_t *>(Memory::alloc(space, compressed + rawBytes));
-        if (work == nullptr) return makeError<Size>(Error::NoMem);
+        if (compressed == 0 || (h.type == Palette && s.paletteCount == 0)) return Error::CorruptData;
+        const unsigned bpp = channels(h.type) * h.depth; // bits a pixel
+        const unsigned filterBpp = (bpp + 7) / 8;
+        const size_t   stride = (size_t(h.width) * bpp + 7) / 8;
+        // The raw (filtered) bytes: one image, or Adam7's seven.
+        uint64_t rawBytes = 0;
+        if (h.interlaced) {
+                for (const Pass &p : Passes) {
+                        const uint32_t pw = passSide(h.width, p.x0, p.dx), ph = passSide(h.height, p.y0, p.dy);
+                        if (pw != 0 && ph != 0) rawBytes += uint64_t(ph) * (1 + (uint64_t(pw) * bpp + 7) / 8);
+                }
+        } else {
+                rawBytes = uint64_t(h.height) * (1 + stride);
+        }
+        const uint64_t flatBytes = h.interlaced ? uint64_t(h.height) * stride : 0;
+        const uint64_t argbAt = (compressed + rawBytes + flatBytes + 3) & ~uint64_t(3); // a row of 0xAARRGGBB
+        const uint64_t work64 = argbAt + uint64_t(h.width) * 4;
+        if (work64 > SIZE_MAX / 2) return Error::NoMem;
+        auto *work = static_cast<uint8_t *>(Memory::alloc(space, size_t(work64)));
+        if (work == nullptr) return Error::NoMem;
         // The IDAT chunks' data together, then inflated after it.
         size_t gathered = 0;
         at = 8;
@@ -206,62 +358,38 @@ Result<Png::Size> Png::decode(ByteSpan file, Span<uint32_t> pixels, MemSpace spa
                 gathered += c.length;
         }
         uint8_t *raw = work + compressed;
-        auto [n, ierr] = Inflate::zlib(ByteSpan(work, compressed), WritableByteSpan(raw, rawBytes));
+        uint8_t *flat = raw + rawBytes;
+        auto    *argb = reinterpret_cast<uint32_t *>(work + argbAt);
+        auto [n, ierr] = Inflate::zlib(ByteSpan(work, compressed), WritableByteSpan(raw, size_t(rawBytes)));
         err = ierr.isError()  ? (ierr == Error::BufferTooSmall ? Error(Error::CorruptData) : ierr)
               : n != rawBytes ? Error(Error::CorruptData)
-                              : unfilter(raw, h.height, stride, (bitsPerPixel + 7) / 8);
-        if (err.isOk()) {
-                uint32_t *out = pixels.data();
-                for (uint32_t y = 0; y < h.height; ++y) {
-                        const uint8_t *row = raw + y * (1 + stride) + 1;
-                        for (uint32_t x = 0; x < h.width; ++x) {
-                                uint32_t argb = 0;
-                                switch (h.type) {
-                                        case Grey: {
-                                                const uint8_t v = row[x];
-                                                argb = (keyed && v == key[0] ? 0u : 0xff000000u) | uint32_t(v) << 16 |
-                                                       uint32_t(v) << 8 | v;
-                                                break;
-                                        }
-                                        case GreyAlpha: {
-                                                const uint8_t v = row[2 * x];
-                                                argb = uint32_t(row[2 * x + 1]) << 24 | uint32_t(v) << 16 |
-                                                       uint32_t(v) << 8 | v;
-                                                break;
-                                        }
-                                        case Rgb: {
-                                                const uint8_t *p = row + 3 * x;
-                                                const bool     clear =
-                                                        keyed && p[0] == key[0] && p[1] == key[1] && p[2] == key[2];
-                                                argb = (clear ? 0u : 0xff000000u) | uint32_t(p[0]) << 16 |
-                                                       uint32_t(p[1]) << 8 | p[2];
-                                                break;
-                                        }
-                                        case Rgba: {
-                                                const uint8_t *p = row + 4 * x;
-                                                argb = uint32_t(p[3]) << 24 | uint32_t(p[0]) << 16 |
-                                                       uint32_t(p[1]) << 8 | p[2];
-                                                break;
-                                        }
-                                        default: { // a palette index, 1 to 8 bits, the leftmost pixel in the high bits
-                                                const unsigned bit = x * h.depth;
-                                                const unsigned shift = 8 - h.depth - bit % 8;
-                                                const unsigned index = (row[bit / 8] >> shift) & ((1u << h.depth) - 1);
-                                                if (index >= paletteCount) {
-                                                        err = Error::CorruptData;
-                                                        break;
-                                                }
-                                                argb = palette[index];
-                                                break;
-                                        }
-                                }
-                                *out++ = argb;
+                              : Error();
+        // Each row's filter undone; Adam7's passes put in place in `flat`.
+        if (err.isOk() && !h.interlaced) err = unfilter(raw, h.height, stride, filterBpp);
+        if (err.isOk() && h.interlaced) {
+                std::memset(flat, 0, size_t(flatBytes));
+                uint8_t *pass = raw;
+                for (const Pass &p : Passes) {
+                        const uint32_t pw = passSide(h.width, p.x0, p.dx), ph = passSide(h.height, p.y0, p.dy);
+                        if (pw == 0 || ph == 0) continue;
+                        const size_t ps = (size_t(pw) * bpp + 7) / 8;
+                        err = unfilter(pass, ph, ps, filterBpp);
+                        if (err.isError()) break;
+                        for (uint32_t y = 0; y < ph; ++y) {
+                                const uint8_t *src = pass + y * (1 + ps) + 1;
+                                uint8_t       *dst = flat + size_t(p.y0 + y * p.dy) * stride;
+                                for (uint32_t x = 0; x < pw; ++x) copyPixel(src, x, dst, p.x0 + x * p.dx, bpp);
                         }
+                        pass += ph * (1 + ps);
                 }
         }
+        for (uint32_t y = 0; err.isOk() && y < h.height; ++y) {
+                const uint8_t *row = h.interlaced ? flat + size_t(y) * stride : raw + y * (1 + stride) + 1;
+                err = toArgb(s, row, argb);
+                if (err.isOk()) Pixels::fromArgb(argb, h.width, out.row(y), out.format, background);
+        }
         Memory::free(work);
-        if (err.isError()) return makeError<Size>(err);
-        return makeResult(Size{uint16_t(h.width), uint16_t(h.height)});
+        return err;
 }
 
 BMDS_NAMESPACE_END

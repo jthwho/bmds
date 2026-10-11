@@ -198,6 +198,7 @@ struct Board {
                 BoardEthernet ethernet = {};         ///< Ethernet.
                 BoardAudio    audio = {};            ///< Audio.
                 BoardSerialReader serial = noSerial;     ///< Reads its serial number.
+                uint8_t           jpegCodecs = 0;        ///< JPEG codec blocks (`devplan/images.md` §3c): `jpeg0`...
 
                 /** @brief Returns the heap mapping for @p space. */
                 constexpr const BoardMemSpace &memSpace(MemSpace space) const {

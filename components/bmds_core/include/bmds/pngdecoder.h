@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <bmds/config.h>
 #include <bmds/error.h>
+#include <bmds/image.h>
 #include <bmds/memspace.h>
 #include <bmds/result.h>
 #include <bmds/span.h>
@@ -22,15 +23,20 @@ BMDS_NAMESPACE_BEGIN
  * @brief Reads PNG images into 0xAARRGGBB pixels (`devplan/gui.md` §4h): the
  *        icons, and anything small of the same kinds.
  *
- * Supported: 8-bit greyscale, RGB, greyscale with alpha and RGBA; palettes of
- * 1, 2, 4 or 8 bits (with `tRNS` alpha); every filter. Refused
- * (`NotSupported`): 16-bit samples, greyscale under 8 bits, interlacing. Chunk
- * CRCs and the zlib checksum are checked; ancillary chunks are skipped.
+ * Supported (`devplan/images.md` §3b): every kind PNG has. Greyscale of 1, 2,
+ * 4, 8 or 16 bits; RGB, greyscale with alpha and RGBA of 8 or 16 bits (16 taken
+ * to 8); palettes of 1, 2, 4 or 8 bits (with `tRNS` alpha); every filter; Adam7
+ * interlacing. Refused (`NotSupported`): sides over `MaxSide`, an unknown
+ * critical chunk. Chunk CRCs and the zlib checksum are checked; ancillary
+ * chunks are skipped. Decoding holds the compressed and the raw bytes at once.
  *
  * @par Thread Safety
  * Reentrant.
  */
 namespace Png {
+
+        /** @brief The largest width or height decoded. */
+        inline constexpr uint32_t MaxSide = 16384;
 
         /** @brief An image's size. */
         struct Size {
@@ -53,6 +59,21 @@ namespace Png {
          *         (@p pixels), or `NoMem`.
          */
         Result<Size> decode(ByteSpan file, Span<uint32_t> pixels, MemSpace space);
+
+        /**
+         * @brief Reads @p file's header: its size, alpha (an alpha channel or `tRNS`), interlacing
+         *        (`ImageInfo::Progressive`).
+         * @return Its info; `CorruptData` or `NotSupported`.
+         */
+        Result<ImageInfo> info(ByteSpan file);
+
+        /**
+         * @brief Decodes @p file into @p out's top-left corner (at least the image's size), in
+         *        its format; into a format without alpha each pixel is blended over
+         *        @p background (0xRRGGBB). Working memory from @p space.
+         * @return `Ok`, `CorruptData`, `NotSupported`, `BufferTooSmall`, `NoMem`.
+         */
+        Error decode(ByteSpan file, const ImageBuffer &out, uint32_t background, MemSpace space);
 
         /** @brief Returns the CRC-32 (PNG's, zlib's) of @p data continuing from @p crc (0 to start). */
         uint32_t crc32(ByteSpan data, uint32_t crc = 0);

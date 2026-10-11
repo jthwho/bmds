@@ -141,6 +141,19 @@ class Painter {
                 Error image(int x, int y, const Icon &icon, uint32_t bg);
 
                 /**
+                 * @brief Copies a picture's @p width × @p height B, G, R pixels (the
+                 *        surface's order; @p stride bytes a row, a multiple of 3; PSRAM
+                 *        or internal RAM) to (@p x, @p y), what of it shows, by the
+                 *        2D-DMA: no CPU a pixel (`devplan/images.md` §4b). @p x (made
+                 *        the surface's) and @p width are on 4-pixel columns; it may lie
+                 *        partly off the surface. Returns once copied: the picture may
+                 *        change after.
+                 * @return The first error so far (`Invalid`: off the columns, a bad stride).
+                 * @blocking The copy.
+                 */
+                Error pixels(int x, int y, const uint8_t *bgr, size_t stride, uint16_t width, uint16_t height);
+
+                /**
                  * @brief Moves what shows of @p area by @p dy rows (down if
                  *        positive), inside the surface. A pixel is moved only if
                  *        its source shows and isn't damaged; @p area's other

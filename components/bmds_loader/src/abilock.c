@@ -108,6 +108,21 @@ _Static_assert(BMDS_SYS_SYSTEM_INFO == 88, "ABI: slot SYSTEM_INFO");
 _Static_assert(BMDS_SYS_NOTIFY_OPEN == 89 && BMDS_SYS_NOTIFY_SEND == 90 && BMDS_SYS_NOTIFY_CLOSE == 91,
                "ABI: slots NOTIFY_OPEN, NOTIFY_SEND, NOTIFY_CLOSE");
 _Static_assert(BMDS_SYS_EXPAND == 92, "ABI: slot EXPAND");
+_Static_assert(BMDS_SYS_IMAGE_INFO == 93 && BMDS_SYS_IMAGE_DECODE == 94 && BMDS_SYS_IMAGE_ENCODE == 95,
+               "ABI: slots IMAGE_INFO, IMAGE_DECODE, IMAGE_ENCODE");
+_Static_assert(BMDS_IMAGE_PNG == 0 && BMDS_IMAGE_JPEG == 1 && BMDS_IMAGE_BMP == 2, "ABI: image codecs");
+_Static_assert(BMDS_PIXEL_BGR24 == 0 && BMDS_PIXEL_RGB24 == 1 && BMDS_PIXEL_BGRA32 == 2 && BMDS_PIXEL_RGB565 == 3 &&
+                       BMDS_PIXEL_GRAY8 == 4,
+               "ABI: pixel formats");
+_Static_assert(BMDS_IMAGE_ALPHA == 0x1 && BMDS_IMAGE_PROGRESSIVE == 0x2 && BMDS_IMAGE_HARDWARE == 0x4,
+               "ABI: image flags");
+_Static_assert(BMDS_IMAGE_DECODER_PNG == 0 && BMDS_IMAGE_DECODER_BMP == 1 && BMDS_IMAGE_DECODER_HARDWARE == 2 &&
+                       BMDS_IMAGE_DECODER_SOFTWARE == 3,
+               "ABI: image decoders");
+_Static_assert(BMDS_IMAGE_ORIENT == 0x1 && BMDS_IMAGE_NO_HARDWARE == 0x2, "ABI: image decode flags");
+_Static_assert(BMDS_JPEG_YUV420 == 0 && BMDS_JPEG_YUV422 == 1 && BMDS_JPEG_YUV444 == 2 && BMDS_JPEG_GRAY == 3 &&
+                       BMDS_PNG_STORED == 10,
+               "ABI: image encoding");
 _Static_assert(BMDS_NOTIFY_LOW == 0 && BMDS_NOTIFY_NORMAL == 1 && BMDS_NOTIFY_CRITICAL == 2, "ABI: notify urgency");
 _Static_assert(BMDS_NOTIFY_SILENT == 0x1 && BMDS_NOTIFY_TRANSIENT == 0x2, "ABI: notify flags");
 _Static_assert(BMDS_NOTIFY_TARGET_NONE == 0 && BMDS_NOTIFY_TARGET_OPEN == 1 && BMDS_NOTIFY_TARGET_SHOW == 2 &&
@@ -484,6 +499,35 @@ _Static_assert(offsetof(bmds_system_info_t, serial) == 16, "ABI: system_info.ser
 _Static_assert(offsetof(bmds_system_info_t, hostname) == 48, "ABI: system_info.hostname");
 _Static_assert(offsetof(bmds_system_info_t, board) == 112, "ABI: system_info.board");
 _Static_assert(offsetof(bmds_system_info_t, version) == 144, "ABI: system_info.version");
+#if UINTPTR_MAX == 0xffffffffu // (pointers inside)
+_Static_assert(offsetof(bmds_image_decode_t, format) == 4 && offsetof(bmds_image_decode_t, flags) == 8 &&
+                       offsetof(bmds_image_decode_t, background) == 12 &&
+                       offsetof(bmds_image_decode_t, min_width) == 16 &&
+                       offsetof(bmds_image_decode_t, min_height) == 20 &&
+                       offsetof(bmds_image_decode_t, box_width) == 24 &&
+                       offsetof(bmds_image_decode_t, box_height) == 28 && offsetof(bmds_image_decode_t, out) == 32 &&
+                       offsetof(bmds_image_decode_t, out_size) == 36 && offsetof(bmds_image_decode_t, stride) == 40 &&
+                       offsetof(bmds_image_decode_t, data) == 44 && offsetof(bmds_image_decode_t, length) == 48 &&
+                       sizeof(bmds_image_decode_t) == 52,
+               "ABI: bmds_image_decode_t");
+#endif
+_Static_assert(offsetof(bmds_image_info_t, codec) == 4 && offsetof(bmds_image_info_t, width) == 8 &&
+                       offsetof(bmds_image_info_t, height) == 12 && offsetof(bmds_image_info_t, flags) == 16 &&
+                       offsetof(bmds_image_info_t, orientation) == 20 &&
+                       offsetof(bmds_image_info_t, decode_width) == 24 &&
+                       offsetof(bmds_image_info_t, decode_height) == 28 && offsetof(bmds_image_info_t, decoder) == 32 &&
+                       offsetof(bmds_image_info_t, shift) == 36 && offsetof(bmds_image_info_t, align) == 40 &&
+                       offsetof(bmds_image_info_t, stride) == 44 && offsetof(bmds_image_info_t, bytes) == 48 &&
+                       sizeof(bmds_image_info_t) == 52,
+               "ABI: bmds_image_info_t");
+#if UINTPTR_MAX == 0xffffffffu // (pointers inside)
+_Static_assert(offsetof(bmds_image_encode_t, codec) == 4 && offsetof(bmds_image_encode_t, format) == 8 &&
+                       offsetof(bmds_image_encode_t, width) == 12 && offsetof(bmds_image_encode_t, height) == 16 &&
+                       offsetof(bmds_image_encode_t, stride) == 20 && offsetof(bmds_image_encode_t, pixels) == 24 &&
+                       offsetof(bmds_image_encode_t, quality) == 28 && offsetof(bmds_image_encode_t, sampling) == 32 &&
+                       offsetof(bmds_image_encode_t, level) == 36 && sizeof(bmds_image_encode_t) == 40,
+               "ABI: bmds_image_encode_t");
+#endif
 _Static_assert(sizeof(bmds_system_info_t) == 160, "ABI: bmds_system_info_t size");
 
 _Static_assert(offsetof(bmds_notification_t, size) == 0, "ABI: notification.size");

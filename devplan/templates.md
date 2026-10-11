@@ -53,6 +53,7 @@ Examples: `${HOME}/Images/Screenshots/${HOSTNAME}_${DATE}_${TIME}.png` gives
 
 - **`screenshot/path`**: `${HOME}/Images/Screenshots/${HOSTNAME}_${DATE}_${TIME}.png`, Print
   Screen's file (`devplan/notifications.md` §4); `screenshot` without a path saves there too.
+  Ending in `.jpg`, it saves JPEGs (`devplan/images.md` §7).
 
 ## 6. Paths still in the code (to become settings)
 

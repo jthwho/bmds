@@ -25,6 +25,7 @@ add_subdirectory(${BMDS_ROOT}/components/bmds_midi ${CMAKE_BINARY_DIR}/bmds_midi
 add_subdirectory(${BMDS_ROOT}/components/bmds_synth ${CMAKE_BINARY_DIR}/bmds_synth)
 add_subdirectory(${BMDS_ROOT}/components/bmds_mplayer ${CMAKE_BINARY_DIR}/bmds_mplayer)
 add_subdirectory(${BMDS_ROOT}/components/bmds_sysmon ${CMAKE_BINARY_DIR}/bmds_sysmon)
+add_subdirectory(${BMDS_ROOT}/components/bmds_imageview ${CMAKE_BINARY_DIR}/bmds_imageview)
 add_subdirectory(${BMDS_ROOT}/components/bmds_panel ${CMAKE_BINARY_DIR}/bmds_panel)
 add_subdirectory(${BMDS_ROOT}/components/bmds_input ${CMAKE_BINARY_DIR}/bmds_input)
 add_subdirectory(${BMDS_ROOT}/components/bmds_ui ${CMAKE_BINARY_DIR}/bmds_ui)
@@ -72,6 +73,8 @@ add_executable(bmds_host_tests
         topview.cpp
         hostname.cpp
         texttemplate.cpp
+        images.cpp
+        imageview.cpp
         notifications.cpp
         synth.cpp
         pipe.cpp
@@ -108,6 +111,7 @@ target_compile_definitions(bmds_host_tests PRIVATE LFS_NO_MALLOC LFS_NO_DEBUG LF
 target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
         BMDS_CORPUS_DIR="${CMAKE_CURRENT_LIST_DIR}/corpus"
         BMDS_PNG_DIR="${CMAKE_CURRENT_LIST_DIR}/png"
+        BMDS_IMAGES_DIR="${CMAKE_CURRENT_LIST_DIR}/images"
         BMDS_AUDIO_DIR="${CMAKE_CURRENT_LIST_DIR}/audio"
         BMDS_SYNTH_DIR="${CMAKE_CURRENT_LIST_DIR}/synth"
         BMDS_COMPAT_DIR="${CMAKE_CURRENT_LIST_DIR}/../compat")
@@ -168,7 +172,7 @@ if(Python3_Interpreter_FOUND)
                  ${BMDS_ROOT}/boot ${BMDS_ROOT}/dist ${BMDS_ROOT}/rom)
 endif()
 target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_audio bmds_midi bmds_synth bmds_input bmds_ui bmds_gui bmds_clipboard
-        bmds_sysconf bmds_files bmds_mplayer bmds_sysmon bmds_panel)
+        bmds_sysconf bmds_files bmds_mplayer bmds_sysmon bmds_panel bmds_imageview)
 bmds_target_options(bmds_host_tests)
 
 # bmds-elfcheck: the loader's format check as a host tool (tools/elfcheck).

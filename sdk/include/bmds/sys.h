@@ -164,6 +164,9 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_NOTIFY_SEND 90u      /**< `int32_t notify_send(int32_t fd, const bmds_notification_t *n)`: its id. */
 #define BMDS_SYS_NOTIFY_CLOSE 91u     /**< `int32_t notify_close(uint32_t id)`. */
 #define BMDS_SYS_EXPAND 92u           /**< `int32_t expand(const char *text, char *out, uint32_t size)`. */
+#define BMDS_SYS_IMAGE_INFO 93u       /**< `int32_t image_info(fd, data, length, want, info)`. */
+#define BMDS_SYS_IMAGE_DECODE 94u     /**< `int32_t image_decode(int32_t fd, const bmds_image_decode_t *d, info)`. */
+#define BMDS_SYS_IMAGE_ENCODE 95u     /**< `int32_t image_encode(int32_t fd, const bmds_image_encode_t *e)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -873,6 +876,93 @@ typedef struct bmds_system_info_t {
                 char     version[16];   /**< BMDS's version. */
 } bmds_system_info_t;
 
+/** @brief `bmds_image_info_t::codec`: a picture's file format (devplan/images.md §3f; appended 2026-10-10). */
+#define BMDS_IMAGE_PNG 0u
+#define BMDS_IMAGE_JPEG 1u
+#define BMDS_IMAGE_BMP 2u
+
+/** @brief Pixel formats, named by their bytes in memory. */
+#define BMDS_PIXEL_BGR24 0u  /**< Bytes B, G, R (the screen's). */
+#define BMDS_PIXEL_RGB24 1u  /**< Bytes R, G, B. */
+#define BMDS_PIXEL_BGRA32 2u /**< Bytes B, G, R, A: 0xAARRGGBB as a little-endian word. */
+#define BMDS_PIXEL_RGB565 3u /**< A little-endian 16-bit word, red in the top 5 bits. */
+#define BMDS_PIXEL_GRAY8 4u  /**< One byte of luma. */
+
+/** @brief `bmds_image_info_t::flags`. */
+#define BMDS_IMAGE_ALPHA 0x1u       /**< Some pixels may be transparent. */
+#define BMDS_IMAGE_PROGRESSIVE 0x2u /**< A progressive JPEG (not decoded yet), an interlaced PNG. */
+#define BMDS_IMAGE_HARDWARE 0x4u    /**< The JPEG codec can decode it. */
+
+/** @brief `bmds_image_info_t::decoder`: what `image_decode` would use. */
+#define BMDS_IMAGE_DECODER_PNG 0u
+#define BMDS_IMAGE_DECODER_BMP 1u
+#define BMDS_IMAGE_DECODER_HARDWARE 2u /**< The JPEG codec. */
+#define BMDS_IMAGE_DECODER_SOFTWARE 3u /**< TJpgDec (baseline JPEG, maybe reduced). */
+
+/** @brief `bmds_image_decode_t::flags`. */
+#define BMDS_IMAGE_ORIENT 0x1u      /**< Undo the EXIF orientation: the picture comes upright. */
+#define BMDS_IMAGE_NO_HARDWARE 0x2u /**< Don't use the JPEG codec. */
+
+/** @brief `bmds_image_encode_t::sampling`: a JPEG's chroma. */
+#define BMDS_JPEG_YUV420 0u
+#define BMDS_JPEG_YUV422 1u
+#define BMDS_JPEG_YUV444 2u
+#define BMDS_JPEG_GRAY 3u
+
+/** @brief `bmds_image_encode_t::level`: 0 the default (2), 1-9 that level, this one stored. */
+#define BMDS_PNG_STORED 10u
+
+/**
+ * @brief How to decode a picture (`image_decode`), or what for (`image_info`). Zeroed but for
+ *        `size`, it asks for the whole picture as `BMDS_PIXEL_BGR24`.
+ */
+typedef struct bmds_image_decode_t {
+                uint32_t    size;       /**< Set by the caller: `sizeof(bmds_image_decode_t)`. */
+                uint32_t    format;     /**< `BMDS_PIXEL_*`. */
+                uint32_t    flags;      /**< `BMDS_IMAGE_ORIENT`, `BMDS_IMAGE_NO_HARDWARE`. */
+                uint32_t    background; /**< 0xRRGGBB: alpha is blended over it into formats without. */
+                uint32_t    min_width;  /**< The smallest wanted (a JPEG may come reduced); 0: whole. */
+                uint32_t    min_height;
+                uint32_t    box_width; /**< Shown fitted in this box: no smaller than that fit is wanted. */
+                uint32_t    box_height;
+                void       *out;      /**< `image_decode`: the pixels' memory. */
+                uint32_t    out_size; /**< Its bytes. */
+                uint32_t    stride;   /**< Bytes a row; 0: packed. */
+                const void *data;     /**< With fd -1: the file in memory. */
+                uint32_t    length;   /**< Its bytes. */
+} bmds_image_decode_t;
+
+/** @brief What a picture is, and what decoding it as asked gives (`image_info`, `image_decode`). */
+typedef struct bmds_image_info_t {
+                uint32_t size;  /**< Set by the caller: `sizeof(bmds_image_info_t)`. */
+                uint32_t codec; /**< `BMDS_IMAGE_*`. */
+                uint32_t width; /**< The file's picture. */
+                uint32_t height;
+                uint32_t flags;        /**< `BMDS_IMAGE_ALPHA`, `BMDS_IMAGE_PROGRESSIVE`, `BMDS_IMAGE_HARDWARE`. */
+                uint32_t orientation;  /**< EXIF's, 1-8 (1: upright). */
+                uint32_t decode_width; /**< What decoding as asked gives (reduced, turned). */
+                uint32_t decode_height;
+                uint32_t decoder; /**< `BMDS_IMAGE_DECODER_*`. */
+                uint32_t shift;   /**< A JPEG reduced by 1/2^shift. */
+                uint32_t align;   /**< A no-copy buffer: its address and size aligned to this (0: none). */
+                uint32_t stride;  /**< ... its bytes a row, */
+                uint32_t bytes;   /**< ... and its size. */
+} bmds_image_info_t;
+
+/** @brief A picture to write (`image_encode`). */
+typedef struct bmds_image_encode_t {
+                uint32_t    size;   /**< Set by the caller: `sizeof(bmds_image_encode_t)`. */
+                uint32_t    codec;  /**< `BMDS_IMAGE_PNG` or `BMDS_IMAGE_JPEG`. */
+                uint32_t    format; /**< `BMDS_PIXEL_*` (alpha is dropped). */
+                uint32_t    width;
+                uint32_t    height;
+                uint32_t    stride; /**< Bytes a row; 0: packed. */
+                const void *pixels;
+                uint32_t    quality;  /**< JPEG: 1-100; 0: 90. */
+                uint32_t    sampling; /**< JPEG: `BMDS_JPEG_*`. */
+                uint32_t    level;    /**< PNG: 0 the default, 1-9, `BMDS_PNG_STORED`. */
+} bmds_image_encode_t;
+
 /** @brief `bmds_notification_t::urgency` (devplan/notifications.md §3.1). */
 #define BMDS_NOTIFY_LOW 0u      /**< A balloon, no sound. */
 #define BMDS_NOTIFY_NORMAL 1u   /**< A balloon and a sound. */
@@ -1110,6 +1200,10 @@ typedef int32_t (*bmds_sys_notify_open_fn)(uint32_t flags);
 typedef int32_t (*bmds_sys_notify_send_fn)(int32_t fd, const bmds_notification_t *n);
 typedef int32_t (*bmds_sys_notify_close_fn)(uint32_t id);
 typedef int32_t (*bmds_sys_expand_fn)(const char *text, char *out, uint32_t size);
+typedef int32_t (*bmds_sys_image_info_fn)(int32_t fd, const void *data, uint32_t length,
+                                          const bmds_image_decode_t *want, bmds_image_info_t *info);
+typedef int32_t (*bmds_sys_image_decode_fn)(int32_t fd, const bmds_image_decode_t *d, bmds_image_info_t *info);
+typedef int32_t (*bmds_sys_image_encode_fn)(int32_t fd, const bmds_image_encode_t *e);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -2028,6 +2122,41 @@ static inline int32_t bmds_notify_close(uint32_t id) {
  */
 static inline int32_t bmds_expand(const char *text, char *out, uint32_t size) {
         return ((bmds_sys_expand_fn)bmds_sys->slot[BMDS_SYS_EXPAND])(text, out, size);
+}
+
+/**
+ * @brief Fills @p info (its `size` set) about the picture in @p fd (read from where it is to
+ *        its end) or, with @p fd -1, @p data's @p length bytes: what it is, and what decoding it
+ *        as @p want asks (NULL: whole, `BMDS_PIXEL_BGR24`) gives, with the layout of a buffer the
+ *        JPEG codec decodes into without a copy. PNG, JPEG (baseline) and BMP.
+ *        (Slots 93-95, appended 2026-10-10: check `bmds_sys_has(BMDS_SYS_IMAGE_INFO)`.)
+ * @return 0, or `-BMDS_ENOTSUP` (not a picture known; a progressive JPEG: `info` still filled),
+ *         `-BMDS_ERANGE` (more pixels than `image/decode-max` allows, even reduced),
+ *         `-BMDS_EBADF`, `-BMDS_EFAULT`, `-BMDS_EINVAL`, `-BMDS_ENOMEM`, `-BMDS_EIO`.
+ */
+static inline int32_t bmds_image_info(int32_t fd, const void *data, uint32_t length, const bmds_image_decode_t *want,
+                                      bmds_image_info_t *info) {
+        return ((bmds_sys_image_info_fn)bmds_sys->slot[BMDS_SYS_IMAGE_INFO])(fd, data, length, want, info);
+}
+
+/**
+ * @brief Decodes the picture in @p fd (read to its end) or, with @p fd -1, @p d's `data` into
+ *        @p d's `out` as @p d asks; @p info (if not NULL, its `size` set) says what was done. A
+ *        buffer laid out as `image_info` says is decoded into by the JPEG codec without a copy.
+ * @return 0, or as `image_info`, `-BMDS_EOVERFLOW` (`out` too small for `decode_width` ×
+ *         `decode_height`), `-BMDS_EIO` (the file is damaged).
+ */
+static inline int32_t bmds_image_decode(int32_t fd, const bmds_image_decode_t *d, bmds_image_info_t *info) {
+        return ((bmds_sys_image_decode_fn)bmds_sys->slot[BMDS_SYS_IMAGE_DECODE])(fd, d, info);
+}
+
+/**
+ * @brief Writes @p e's picture to @p fd as a PNG or (by the codec) a baseline JPEG.
+ * @return The bytes written, or `-BMDS_EINVAL`, `-BMDS_ENOTSUP` (no JPEG codec), `-BMDS_EBADF`,
+ *         `-BMDS_EFAULT`, `-BMDS_ENOMEM`, `-BMDS_EIO`, or the write's error.
+ */
+static inline int32_t bmds_image_encode(int32_t fd, const bmds_image_encode_t *e) {
+        return ((bmds_sys_image_encode_fn)bmds_sys->slot[BMDS_SYS_IMAGE_ENCODE])(fd, e);
 }
 
 #ifdef __cplusplus
