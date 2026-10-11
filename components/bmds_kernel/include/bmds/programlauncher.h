@@ -19,6 +19,7 @@
 BMDS_NAMESPACE_BEGIN
 
 class Console;
+class Semaphore;
 class Interrupt;
 struct ProgramEntry;
 
@@ -91,6 +92,12 @@ class ProgramLauncher {
                                  */
                                 int32_t *stopped = nullptr;
                                 /**
+                                 * @brief `start()` without `waited`: released once when the
+                                 *        program ends (a kernel service that keeps a program
+                                 *        running and sleeps until it ends); null: nothing.
+                                 */
+                                Semaphore *ended = nullptr;
+                                /**
                                  * @brief The stop signals are ignored in the new process (what
                                  *        a shell runs without job control in a job-control
                                  *        shell: a command substitution's programs).
@@ -130,6 +137,18 @@ class ProgramLauncher {
                 virtual Result<int32_t> start(const Request &request) {
                         (void)request;
                         return makeError<int32_t>(Error::NotSupported);
+                }
+
+                /**
+                 * @brief Sends @p sig to process @p pid, as `kill()` (a service stopping
+                 *        what it started).
+                 * @return `Ok`, `NotExist`, `Invalid`, `PermissionDenied`; `NotSupported`
+                 *         by a launcher that can't.
+                 */
+                virtual Error sendSignal(int32_t pid, int sig) {
+                        (void)pid;
+                        (void)sig;
+                        return Error::NotSupported;
                 }
 
         protected:

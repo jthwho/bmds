@@ -1,0 +1,116 @@
+BMDS has no fork: the server's accept loop vforks and execs itself with the connection on
+stdin (re-exec mode's -2), the child touching nothing of the parent's; DROPBEAR_VFORK_REEXEC
+(localoptions.h) turns it on and re-exec mode with it (musl's fexecve needs /proc).
+
+--- a/src/sysoptions.h
++++ b/src/sysoptions.h
+@@ -42,7 +42,7 @@
+ #endif
+ 
+ /* Would probably work on freebsd but hasn't been tested */
+-#if defined(HAVE_FEXECVE) && DROPBEAR_REEXEC && defined(__linux__)
++#if (defined(HAVE_FEXECVE) && DROPBEAR_REEXEC && defined(__linux__)) || DROPBEAR_VFORK_REEXEC
+ #define DROPBEAR_DO_REEXEC 1
+ #else
+ #define DROPBEAR_DO_REEXEC 0
+--- a/src/svr-main.c
++++ b/src/svr-main.c
+@@ -123,6 +123,32 @@
+ #endif /* INETD_MODE */
+ 
+ #if NON_INETD_MODE
++#if DROPBEAR_VFORK_REEXEC
++/* The child of a connection without fork: a session of its own, the connection on stdin, the
++ * server run again (-2 childpipe). It only closes, dups and execs, in the child's own
++ * descriptors, and ends with exec or _exit: nothing of the parent's memory changes. In a
++ * function of its own, so no variable of the accept loop lives across the vfork. */
++static pid_t vfork_reexec(int childsock, int childpipe_read, const int *listensocks, size_t listensockcount,
++		const char *path, char **argv) {
++	pid_t pid = vfork();
++	if (pid == 0) {
++		size_t j;
++		(void)setsid();
++		for (j = 0; j < listensockcount; j++) {
++			(void)close(listensocks[j]);
++		}
++		(void)close(childpipe_read);
++		if (dup2(childsock, STDIN_FILENO) < 0) {
++			_exit(1);
++		}
++		(void)close(childsock);
++		execv(path, argv);
++		_exit(1);
++	}
++	return pid;
++}
++#endif
++
+ static void main_noinetd(int argc, char ** argv, const char* multipath) {
+ 	fd_set fds;
+ 	unsigned int i, j;
+@@ -165,7 +191,9 @@
+ 		FD_SET(listensocks[i], &fds);
+ 	}
+ 
+-#if DROPBEAR_DO_REEXEC
++#if DROPBEAR_VFORK_REEXEC
++	(void)execfd;
++#elif DROPBEAR_DO_REEXEC
+ 	if (multipath) {
+ 		execfd = open(multipath, O_CLOEXEC|O_RDONLY);
+ 	} else {
+@@ -302,6 +330,46 @@
+ 				goto out;
+ 			}
+ 
++#if DROPBEAR_VFORK_REEXEC
++			/* No fork (a system without one, as BMDS): the child execs the server again with the
++			 * connection on stdin, as re-exec mode does, so it needs nothing of the parent's
++			 * memory. Everything it uses is made here first; the child only closes, dups and
++			 * execs, and never returns into the parent's code. */
++			{
++				char **new_argv = m_malloc(sizeof(char*) * (argc+4));
++				char buf[12];
++				int pos0 = 0, new_argc = argc+2;
++
++				getaddrstring(&remoteaddr, NULL, &remote_port, 0);
++				dropbear_log(LOG_INFO, "Child connection from %s:%s", remote_host, remote_port);
++				m_free(remote_port);
++				if (multipath) {
++					new_argv[0] = (char*)multipath;
++					pos0 = 1;
++					new_argc++;
++				}
++				memcpy(&new_argv[pos0], argv, sizeof(char*) * argc);
++				new_argv[new_argc-2] = "-2";
++				snprintf(buf, sizeof(buf), "%d", childpipe[1]);
++				new_argv[new_argc-1] = buf;
++				new_argv[new_argc] = NULL;
++
++				fork_ret = vfork_reexec(childsock, childpipe[0], listensocks, listensockcount,
++						multipath ? multipath : argv[0], new_argv);
++				m_free(new_argv);
++			}
++			if (fork_ret < 0) {
++				dropbear_log(LOG_WARNING, "Error forking: %s", strerror(errno));
++				m_close(childpipe[0]);
++				m_close(childpipe[1]);
++				goto out;
++			}
++			addrandom((void*)&fork_ret, sizeof(fork_ret));
++			childpipes[conn_idx] = childpipe[0];
++			m_close(childpipe[1]);
++			preauth_addrs[conn_idx] = remote_host;
++			remote_host = NULL;
++#else
+ #if DEBUG_NOFORK
+ 			fork_ret = 0;
+ #else
+@@ -386,6 +454,7 @@
+ 				/* don't return */
+ 				dropbear_assert(0);
+ 			}
++#endif /* DROPBEAR_VFORK_REEXEC */
+ 
+ out:
+ 			/* This section is important for the parent too */

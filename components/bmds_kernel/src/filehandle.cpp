@@ -16,7 +16,9 @@ Result<FileHandle::Ptr> FileHandle::open(Stream &stream, uint8_t mode) {
         if (mode == 0 || (mode & ~ReadWrite) != 0) return makeError<Ptr>(Error::Invalid);
         void *block = Memory::alloc(MemSpace::Psram, sizeof(FileHandle));
         if (block == nullptr) return makeError<Ptr>(Error::NoMem);
-        return makeResult(Ptr(new (block) FileHandle(stream, mode)));
+        Ptr handle(new (block) FileHandle(stream, mode));
+        stream.handleOpened(mode);
+        return makeResult(std::move(handle));
 }
 
 void FileHandle::unref() {

@@ -160,6 +160,7 @@ struct ProgramThread final : ProcessOwner {
                 int32_t           timer(uint32_t which, const bmds_timer_t *set, bmds_timer_t *old);
                 int32_t group(uint32_t op, int32_t target, int32_t pgid);
                 int32_t termForeground(int32_t fd, int32_t pgid);
+                int32_t           termControl(int32_t fd, uint32_t op, uint32_t value);
                 int32_t           startThread(const bmds_thread_t *spec);
                 [[noreturn]] void exitThread(int32_t status, void *release);
                 int32_t           killThread(int32_t target, int32_t sig, uint32_t flags);

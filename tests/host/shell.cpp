@@ -369,9 +369,11 @@ TEST_CASE("Shell: as a program (/bin/sh)") {
                 CHECK(run({"sh", "/nowhere/x.sh"}) == Shell::ExitNotFound);
                 CHECK(run({"sh", "-c", "nonesuch"}) == Shell::ExitNotFound);
                 CHECK(con.take().find("nonesuch: command not found") != std::string::npos);
-                // No terminal: refused.
+                // No terminal (a command over SSH without a pty): it runs, through its descriptors.
                 context.console = nullptr;
-                CHECK(run({"sh", "-c", "echo x"}) == Shell::ExitCannotRun);
+                out.clear();
+                CHECK(run({"sh", "-c", "echo x"}) == 0);
+                CHECK(std::string(out.contents().data(), out.contents().size()) == "x\n");
         }
         CHECK(HostMemory::liveAllocations() == base);
 }

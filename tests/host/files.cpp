@@ -171,7 +171,7 @@ TEST_CASE("Files: ls") {
         CHECK(f.out("cd /disk0/p0; ls b.txt docs") == "b.txt\n\ndocs:\n");
         CHECK(f.out("ls /") == "bin/  dev/  disk0/  disk1/  etc/  share/\n");
         CHECK(f.out("ls /dev") ==
-              "clip0    disk0    disk1p0  urandom\nclip0p   disk0p0  null     zero\nconsole  disk1    random\n");
+              "clip0    disk0    disk1p0  tty\nclip0p   disk0p0  null     urandom\nconsole  disk1    random   zero\n");
         const std::string longList = f.out("ls -l /disk0/p0/b.txt /disk0/p0/A.txt");
         CHECK(longList.find("-rw-  2  ") == 0);
         CHECK(longList.find("/disk0/p0/A.txt\n") != std::string::npos);

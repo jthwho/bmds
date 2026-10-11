@@ -65,6 +65,7 @@ if(COMMAND idf_component_register)
                                     src/ntpcommand.cpp
                                     src/pingcommand.cpp
                                     src/socket.cpp
+                                    src/sshservice.cpp
                                INCLUDE_DIRS include
                                PRIV_INCLUDE_DIRS ${BMDS_LWIP_INCLUDES}
                                REQUIRES bmds_core bmds_kernel

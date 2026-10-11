@@ -371,11 +371,30 @@ namespace SysConf {
                 return StringView(state.entries[size_t(id)].param->key); // declarations stay
         }
 
+        namespace {
+
+                // What a reader is given of @p value: a secret's is only whether it is set.
+                StringView shown(const Entry &e, StringView value) {
+                        if (e.param->type != Config::Type::Secret) return value;
+                        return value.isEmpty() ? StringView() : Config::SecretSet;
+                }
+
+        } // namespace
+
         Error get(Id id, String &out) {
                 if (!isReady()) return Error::NotExist;
                 Mutex::Locker lock(*registryLock, WaitForever);
                 if (size_t(id) >= state.count) return Error::NotExist;
-                return out.assign(state.entries[size_t(id)].current.view());
+                const Entry &e = state.entries[size_t(id)];
+                return out.assign(shown(e, e.current.view()));
+        }
+
+        Error getSecret(StringView key, String &out) {
+                const Result<Id> id = find(key);
+                if (id.isError()) return id.error();
+                Mutex::Locker lock(*registryLock, WaitForever);
+                if (size_t(id.value()) >= state.count) return Error::NotExist;
+                return out.assign(state.entries[size_t(id.value())].current.view());
         }
 
         Error get(StringView key, String &out) {
@@ -561,9 +580,9 @@ namespace SysConf {
                         out.isDefault = e.current.view() == e.defaultValue.view();
                         // Programs' keys come after the built-ins: declared once the built-ins are in.
                         out.runtime = index >= state.count - state.ownedCount;
-                        Error err = out.value.assign(e.current.view());
-                        if (err.isOk()) err = out.saved.assign(e.saved.view());
-                        if (err.isOk()) err = out.defaultValue.assign(e.defaultValue.view());
+                        Error err = out.value.assign(shown(e, e.current.view()));
+                        if (err.isOk()) err = out.saved.assign(shown(e, e.saved.view()));
+                        if (err.isOk()) err = out.defaultValue.assign(shown(e, e.defaultValue.view()));
                         return err;
                 }
 

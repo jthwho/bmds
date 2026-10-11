@@ -7,6 +7,7 @@
  */
 
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <new>
 #include <utility>
@@ -71,6 +72,41 @@ namespace {
                 return nullptr;
         }
 
+        // Directories of numbered devices other components added (Vfs::addDeviceDirectory).
+        constinit Vfs::DeviceDirectory deviceDirs[Vfs::MaxDeviceDirectories];
+        constinit std::atomic<size_t>  deviceDirCount{0};
+
+        const Vfs::DeviceDirectory *findDeviceDir(StringView name) {
+                const size_t n = deviceDirCount.load(std::memory_order_acquire);
+                for (size_t i = 0; i < n; ++i)
+                        if (name == deviceDirs[i].name) return &deviceDirs[i];
+                return nullptr;
+        }
+
+        // @p text as an entry's number (decimal, no leading zeros) below @p dir's count.
+        bool deviceIndex(const Vfs::DeviceDirectory &dir, StringView text, size_t &index) {
+                if (text.isEmpty() || text.size() > 4 || (text.size() > 1 && text[0] == '0')) return false;
+                size_t v = 0;
+                for (char c : text) {
+                        if (c < '0' || c > '9') return false;
+                        v = v * 10 + static_cast<size_t>(c - '0');
+                }
+                if (v >= dir.count) return false;
+                index = v;
+                return true;
+        }
+
+        // /dev/NAME/N as an added directory's present entry: true with @p dir and @p index set.
+        bool findDeviceEntry(StringView path, const Vfs::DeviceDirectory *&dir, size_t &index) {
+                if (!path.startsWith("/dev/")) return false;
+                const StringView rest = path.mid(5);
+                const size_t     slash = rest.indexOf('/');
+                if (slash == StringView::NPos) return false;
+                dir = findDeviceDir(rest.left(slash));
+                return dir != nullptr && deviceIndex(*dir, rest.mid(slash + 1), index) &&
+                       (dir->present == nullptr || dir->present(dir->arg, index));
+        }
+
         // The fixed device nodes in /dev, listed before the block devices.
         // All but the console are streams without state, shared by every caller.
         struct DevNode {
@@ -79,7 +115,7 @@ namespace {
         };
         constexpr DevNode DevNodes[] = {
                 {"console", nullptr},     {"null", &devNull}, {"random", &devRandom},
-                {"urandom", &devUrandom}, {"zero", &devZero},
+                {"urandom", &devUrandom}, {"zero", &devZero}, {"tty", nullptr},
         };
 
         // The fixed node named @p name, or null.
@@ -106,6 +142,8 @@ namespace {
                 HomeLink,   // /home, the link setHome() made (devplan/sysconf.md §7)
                 EtcDir,     // /etc (devplan/network.md §8)
                 EtcFile,    // /etc/NAME, built when opened (Vfs::addEtcFile)
+                DevSubDir,  // /dev/NAME, a directory of numbered devices (Vfs::addDeviceDirectory)
+                DevSubFile, // /dev/NAME/N, one of them
         };
 
         // Where the programs built into the firmware are listed (read-only).
@@ -129,6 +167,8 @@ namespace {
                         Stream             *stream = nullptr;  // DevStream
                         const Vfs::DeviceFile *file = nullptr;    // DevFile
                         const Vfs::EtcFile    *etc = nullptr;     // EtcFile
+                        const Vfs::DeviceDirectory *devDir = nullptr;  // DevSubDir, DevSubFile
+                        size_t                      devIndex = 0;      // DevSubFile
                         uint32_t            zoneOffset = 0;    // ZoneFile: its data in the database
                         uint32_t            zoneLength = 0;
                         Timestamp           zoneModified; // ZoneDir, ZoneFile: the database's
@@ -191,13 +231,18 @@ namespace {
                         if (path == "/dev") {
                                 node.kind = Kind::DevDir;
                         } else if (path.lastIndexOf('/') != 4) {
-                                return makeError<Node>(Error::NotExist);
+                                if (!findDeviceEntry(path, node.devDir, node.devIndex))
+                                        return makeError<Node>(Error::NotExist);
+                                node.kind = Kind::DevSubFile;
                         } else if (const DevNode *dev = findDevNode(node.name)) {
                                 node.kind = dev->stream != nullptr ? Kind::DevStream : Kind::DevConsole;
                                 node.stream = dev->stream;
                         } else if (const Vfs::DeviceFile *file = findDeviceFile(node.name)) {
                                 node.kind = Kind::DevFile;
                                 node.file = file;
+                        } else if (const Vfs::DeviceDirectory *dir = findDeviceDir(node.name)) {
+                                node.kind = Kind::DevSubDir;
+                                node.devDir = dir;
                         } else {
                                 const BlockDevices::Entry *e = Fs::findEntryLocked(node.name);
                                 if (e == nullptr) return makeError<Node>(Error::NotExist);
@@ -337,6 +382,7 @@ namespace {
                         case Kind::Virtual:
                         case Kind::BinDir:
                         case Kind::EtcDir:
+                        case Kind::DevSubDir:
                         case Kind::DevDir: return makeResult(directoryInfo(node.name));
                         case Kind::EtcFile:
                                 (void)info.name.assign(node.name);
@@ -368,6 +414,7 @@ namespace {
                                 return makeResult(std::move(info));
                         case Kind::DevStream:
                         case Kind::DevConsole:
+                        case Kind::DevSubFile:
                         case Kind::DevBlock:
                                 (void)info.name.assign(node.name);
                                 info.type = FileType::Device;
@@ -666,6 +713,7 @@ struct Directory::State {
                 Volume         *volume = nullptr;
                 Volume::Cursor *cursor = nullptr;            // Mounted
                 char            path[MaxMountPath + 1] = {}; // Virtual directories.
+                const Vfs::DeviceDirectory *devDir = nullptr;            // DevSubDir
                 String     zones{MemSpace::Psram}; // ZoneDir: its children (Zones::listLocked())
                 size_t     zoneAt = 0;             // ZoneDir: the next record
                 Timestamp  zoneModified;
@@ -759,6 +807,18 @@ Result<FileInfo> Directory::next() {
                         info.id = idAppend(idAppend(s.idPrefix, "/"), name);
                         return makeResult(std::move(info));
                 }
+                case Kind::DevSubDir: {
+                        const Vfs::DeviceDirectory &d = *s.devDir;
+                        while (s.index < d.count && d.present != nullptr && !d.present(d.arg, s.index)) ++s.index;
+                        if (s.index >= d.count) return makeError<FileInfo>(Error::EndOfFile);
+                        char      number[8];
+                        const int n = std::snprintf(number, sizeof(number), "%u", static_cast<unsigned>(s.index));
+                        (void)info.name.assign(StringView(number, static_cast<size_t>(n)));
+                        info.type = FileType::Device;
+                        info.id = idAppend(idAppend(s.idPrefix, "/"), info.name.view());
+                        ++s.index;
+                        return makeResult(std::move(info));
+                }
                 case Kind::DevDir: {
                         constexpr size_t Fixed = sizeof(DevNodes) / sizeof(DevNodes[0]);
                         const size_t     added = deviceFileCount.load(std::memory_order_acquire);
@@ -777,8 +837,16 @@ Result<FileInfo> Directory::next() {
                                 ++s.index;
                                 info.type = f.isDevice ? FileType::Device : FileType::File;
                                 return makeResult(std::move(info));
-                        } else if (s.index - Fixed - added < Fs::deviceCountLocked()) {
-                                const BlockDevices::Entry &e = Fs::deviceAtLocked(s.index - Fixed - added);
+                        } else if (s.index - Fixed - added < deviceDirCount.load(std::memory_order_acquire)) {
+                                const Vfs::DeviceDirectory &d = deviceDirs[s.index - Fixed - added];
+                                ++s.index;
+                                info = directoryInfo(StringView(d.name));
+                                info.id = idAppend(idAppend(s.idPrefix, "/"), StringView(d.name));
+                                return makeResult(std::move(info));
+                        } else if (s.index - Fixed - added - deviceDirCount.load(std::memory_order_acquire) <
+                                   Fs::deviceCountLocked()) {
+                                const BlockDevices::Entry &e = Fs::deviceAtLocked(
+                                        s.index - Fixed - added - deviceDirCount.load(std::memory_order_acquire));
                                 (void)info.name.assign(e.name);
                                 info.size = e.device->sectorCount() * e.device->sectorSize();
                                 info.id = objectId(e.device);
@@ -1163,6 +1231,21 @@ Error Vfs::addDeviceFile(const DeviceFile &file) {
         return Error::Ok;
 }
 
+Error Vfs::addDeviceDirectory(const DeviceDirectory &directory) {
+        if (directory.name == nullptr || directory.open == nullptr || directory.count == 0) return Error::Invalid;
+        const StringView name(directory.name);
+        if (name.isEmpty() || name.contains('/')) return Error::Invalid;
+        Mutex::Locker lock(Fs::lock(), WaitForever);
+        const size_t  n = deviceDirCount.load(std::memory_order_relaxed);
+        if (findDevNode(name) != nullptr || findDeviceFile(name, true) != nullptr || findDeviceDir(name) != nullptr ||
+            Fs::findEntryLocked(name) != nullptr)
+                return Error::Exists;
+        if (n >= MaxDeviceDirectories) return Error::Full;
+        deviceDirs[n] = directory;
+        deviceDirCount.store(n + 1, std::memory_order_release);
+        return Error::Ok;
+}
+
 Error Vfs::addEtcFile(const EtcFile &file) {
         return Etc::add(file);
 }
@@ -1187,8 +1270,19 @@ Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context 
         }
         // A file another component added: opened without the lock (a clipboard's may wait for
         // the program that copied). /dev has no links, so the name is enough.
-        if (deviceFileCount.load(std::memory_order_acquire) != 0) {
+        if (deviceFileCount.load(std::memory_order_acquire) != 0 ||
+            deviceDirCount.load(std::memory_order_acquire) != 0) {
                 Result<String> normalized = normalize(path, context.cwd);
+                const Vfs::DeviceDirectory *dir = nullptr;
+                size_t                      index = 0;
+                if (normalized.error().isOk() && findDeviceEntry(normalized.value().view(), dir, index)) {
+                        if ((flags & (Create | Exclusive)) == (Create | Exclusive))
+                                return makeError<FileHandle::Ptr>(Error::Exists);
+                        Result<FileHandle::Ptr> handle = dir->open(dir->arg, index, flags);
+                        if (handle.error().isOk() && dir->identity == nullptr)
+                                handle.value()->setIdentity(objectId(dir) + index, 0);
+                        return handle;
+                }
                 if (normalized.error().isOk() && normalized.value().view().startsWith("/dev/")) {
                         const Vfs::DeviceFile *file = findDeviceFile(normalized.value().view().mid(5));
                         if (file != nullptr) {
@@ -1220,7 +1314,9 @@ Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context 
                         case Kind::BinDir:
                         case Kind::ZoneDir:
                         case Kind::EtcDir:
+                        case Kind::DevSubDir:
                         case Kind::DevDir: return makeError<FileHandle::Ptr>(Error::IsDir);
+                        case Kind::DevSubFile: return node.devDir->open(node.devDir->arg, node.devIndex, flags);
                         // Reached through a link (the name itself is opened above, unlocked):
                         // building it here would wait on the settings under the lock.
                         case Kind::EtcFile: return makeError<FileHandle::Ptr>(Error::NotSupported);
@@ -1293,6 +1389,11 @@ namespace {
                         case Kind::DevConsole: fi.id = objectId(context.terminal); break;
                         case Kind::DevBlock: fi.id = objectId(node.device); break;
                         case Kind::DevFile: fi.id = objectId(node.file); break;
+                        case Kind::DevSubFile:
+                                fi.id = node.devDir->identity != nullptr
+                                                ? node.devDir->identity(node.devDir->arg, node.devIndex)
+                                                : objectId(node.devDir) + node.devIndex;
+                                break;
                         default:
                                 fi.id = pathId(storage);
                                 fi.device = node.mount;
@@ -1463,7 +1564,7 @@ Result<Directory> Vfs::openDirectory(StringView path, const Context &context) {
                 const Node &node = found.value();
                 if (node.kind == Kind::DevStream || node.kind == Kind::DevConsole || node.kind == Kind::DevBlock ||
                     node.kind == Kind::DevFile || node.kind == Kind::BinProgram || node.kind == Kind::ZoneFile ||
-                    node.kind == Kind::EtcFile)
+                    node.kind == Kind::EtcFile || node.kind == Kind::DevSubFile)
                         return makeError<Directory>(Error::NotDir);
                 void *mem = Memory::alloc(MemSpace::Psram, sizeof(Directory::State));
                 if (mem == nullptr) return makeError<Directory>(Error::NoMem);
@@ -1472,6 +1573,7 @@ Result<Directory> Vfs::openDirectory(StringView path, const Context &context) {
                 state->volume = node.volume;
                 state->device = node.mount;
                 state->idPrefix = pathId(storage.view());
+                state->devDir = node.devDir;
                 if (node.kind == Kind::Virtual) {
                         const size_t n = storage.size() < MaxMountPath ? storage.size() : MaxMountPath;
                         std::memcpy(state->path, storage.data(), n);
@@ -1587,7 +1689,7 @@ Error Vfs::remove(StringView path, const Context &context) {
                 err = targetLocked(storage, Error::IsDir, node);
                 const bool deviceNode = node.kind == Kind::DevStream || node.kind == Kind::DevConsole ||
                                         node.kind == Kind::DevBlock || node.kind == Kind::DevFile ||
-                                        node.kind == Kind::HomeLink;
+                                        node.kind == Kind::DevSubFile || node.kind == Kind::HomeLink;
                 if (err == Error::IsDir && deviceNode) err = Error::PermissionDenied;
                 if (err.isError()) return err;
                 bool                   noPath = false;

@@ -1069,3 +1069,37 @@ echo a/b/*
 inside
 b/
 a/b/f
+
+=== exec runs the command, then the shell leaves
+echo before
+(exec echo inside; echo not reached)
+echo after
+--- out
+before
+inside
+after
+
+=== exec with only redirections keeps them
+(exec 1>&2; echo hidden)
+echo shown
+--- out
+shown
+
+=== exec sh -c, as ssh-copy-id sends it
+exec sh -c 'echo ok; exit 3'
+echo not reached
+--- out
+ok
+--- status 3
+
+=== umask
+umask 027
+umask
+(umask 077; umask)
+umask
+umask -S
+--- out
+0027
+0077
+0027
+u=rwx,g=rx,o=

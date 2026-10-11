@@ -81,14 +81,38 @@ if(NOT BOOTLOADER_BUILD)
         else()
                 message(STATUS "zic not found: the ROM has no time zone database (devplan/rom.md §3g)")
         endif()
+        # The SSH programs (devplan/network.md §24): Dropbear and our sftp-server, built by
+        # tools/bmds-dist into this build directory (nested: no build wrapper, one job at a time;
+        # Dropbear's release is fetched once into ~/.cache/bmds-dist) and put in /rom/bin.
+        set(BMDS_ROOT_DIR ${CMAKE_CURRENT_LIST_DIR}/../..)
+        set(BMDS_ROM_DIST ${BMDS_ROM_OUT}/dist)
+        set(BMDS_ROM_DROPBEAR ${BMDS_ROM_DIST}/stage/dropbear)
+        set(BMDS_ROM_SFTP ${BMDS_ROM_DIST}/stage/sftp-server)
+        file(GLOB_RECURSE BMDS_ROM_DIST_SOURCES CONFIGURE_DEPENDS ${BMDS_ROOT_DIR}/dist/dropbear/*
+             ${BMDS_ROOT_DIR}/dist/sftp-server/* ${BMDS_ROOT_DIR}/programs/sftp-server/*
+             ${BMDS_ROOT_DIR}/sdk/crt/* ${BMDS_ROOT_DIR}/sdk/include/* ${BMDS_ROOT_DIR}/sdk/cmake/*
+             ${BMDS_ROOT_DIR}/sdk/ld/*)
+        add_custom_command(OUTPUT ${BMDS_ROM_DROPBEAR}/bin/dropbearmulti ${BMDS_ROM_SFTP}/bin/sftp-server
+                           COMMAND ${BMDS_STORAGE_PYTHON} ${BMDS_ROOT_DIR}/tools/bmds-dist --out ${BMDS_ROM_DIST}
+                                   --nested build dropbear sftp-server
+                           DEPENDS ${BMDS_ROOT_DIR}/tools/bmds-dist ${BMDS_ROM_DIST_SOURCES}
+                           VERBATIM)
+        set(BMDS_ROM_SSH
+            --file bin/dropbearmulti=${BMDS_ROM_DROPBEAR}/bin/dropbearmulti
+            --link bin/dropbear=dropbearmulti --link bin/dbclient=dropbearmulti --link bin/ssh=dropbearmulti
+            --link bin/dropbearkey=dropbearmulti --link bin/dropbearconvert=dropbearmulti
+            --link bin/scp=dropbearmulti
+            --file bin/sftp-server=${BMDS_ROM_SFTP}/bin/sftp-server
+            --file share/licenses/dropbear/LICENSE=${BMDS_ROM_DROPBEAR}/share/licenses/dropbear/LICENSE)
         add_custom_command(OUTPUT ${BMDS_ROM_BIN} ${BMDS_ROM_HASH}
                            COMMAND ${BMDS_STORAGE_PYTHON} ${BMDS_MKROM} image ${BMDS_ROM_BIN}
                                    --max-bytes ${BMDS_ROM_PARTITION_BYTES} ${BMDS_ROM_TREE}
                                    --file share/icons/bmds.icons=${BMDS_ROM_OUT}/bmds.icons
                                    --file share/icons/bmds.LICENSES=${BMDS_ROM_OUT}/bmds.LICENSES
-                                   ${BMDS_ROM_ZONES}
+                                   ${BMDS_ROM_ZONES} ${BMDS_ROM_SSH}
                                    --hash-header ${BMDS_ROM_HASH}
                            DEPENDS ${BMDS_MKROM} ${BMDS_ROM_OUT}/bmds.icons ${BMDS_ROM_OUT}/bmds.LICENSES
+                                   ${BMDS_ROM_DROPBEAR}/bin/dropbearmulti ${BMDS_ROM_SFTP}/bin/sftp-server
                                    ${BMDS_ROM_TREE_FILES} ${BMDS_ROM_ZONES_FILE}
                            VERBATIM)
         target_sources(${COMPONENT_LIB} PRIVATE ${BMDS_ROM_HASH})

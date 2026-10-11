@@ -186,6 +186,11 @@ int32_t bmds_k_random(void *buf, uint32_t size) {
         return 0;
 }
 
+int32_t bmds_k_fs_info(const char *path, bmds_fs_info_t *info) {
+        KernelCall call;
+        return call->fsInfo(path, info);
+}
+
 int32_t bmds_k_set_mtime(const char *path, int64_t ns) {
         KernelCall call;
         return call->setMtime(path, ns);
@@ -371,6 +376,11 @@ int32_t bmds_k_proc_group(uint32_t op, int32_t pid, int32_t pgid) {
 int32_t bmds_k_term_foreground(int32_t fd, int32_t pgid) {
         KernelCall call;
         return call.thread().termForeground(fd, pgid);
+}
+
+int32_t bmds_k_term_ctl(int32_t fd, uint32_t op, uint32_t arg) {
+        KernelCall call;
+        return call.thread().termControl(fd, op, arg);
 }
 
 int32_t bmds_k_thread_start(const bmds_thread_t *thread) {

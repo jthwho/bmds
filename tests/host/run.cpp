@@ -68,6 +68,7 @@ namespace {
                 {"cp", "", "", F::cp},
                 {"echo", "", "", T::echo},
                 {"eval", "", "", L::eval},
+                {"exec", "", "", L::exec},
                 {"exit", "", "", L::exitCmd},
                 {"export", "", "", L::exportCmd},
                 {"false", "", "", L::falseCmd},
@@ -91,6 +92,7 @@ namespace {
                 {"touch", "", "", F::touch},
                 {"true", "", "", L::colon},
                 {"type", "", "", L::type},
+                {"umask", "", "", L::umask},
                 {"unset", "", "", L::unset},
                 {"wc", "", "", T::wc},
         };

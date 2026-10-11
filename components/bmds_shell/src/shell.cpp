@@ -14,6 +14,7 @@
 #include <bmds/console.h>
 #include <bmds/glob.h>
 #include <bmds/memory.h>
+#include <bmds/nullconsole.h>
 #include <bmds/parser.h>
 #include <bmds/programlauncher.h>
 #include <bmds/shell.h>
@@ -69,10 +70,12 @@ int Shell::runAsProgram(const BuiltinProgram::Context &context, Span<const Comma
                                                 WaitForever);
                 return ExitCannotRun;
         };
-        if (context.console == nullptr || context.fds == nullptr) return fail("sh: no terminal\n");
+        if (context.fds == nullptr) return fail("sh: no descriptors\n");
         void *memory = Memory::alloc(MemSpace::Psram, sizeof(Shell));
         if (memory == nullptr) return fail("sh: out of memory\n");
-        Shell       *shell = new (memory) Shell(*context.console, commands, stackBytes);
+        // Without a terminal (a command over SSH without a pty): one that has nothing.
+        Console     &console = context.console != nullptr ? *context.console : NullConsole::instance();
+        Shell       *shell = new (memory) Shell(console, commands, stackBytes);
         ShellState  &state = shell->state();
         Error        e = shell->init();
         List<String> args;
@@ -92,6 +95,7 @@ int Shell::runAsProgram(const BuiltinProgram::Context &context, Span<const Comma
                 e = state.vars.set(name, entry.mid(eq + 1));
                 if (e.isOk()) e = state.vars.addFlags(name, Variables::Exported);
         }
+        if (e.isOk()) shell->prepareProgram();
         // The command does the rest (`sh`: `-c`, a script, options; an applet: its own).
         if (e.isOk()) e = args.reserve(context.args.size() + 1);
         if (e.isOk()) e = args.append(String());
@@ -748,6 +752,10 @@ int shellAppletMain(const BuiltinProgram::Context &) {
 
 // Nothing to wait for, no defaults beyond init()'s (shellesp.cpp on the target).
 void Shell::prepareInteractive(bool) {
+        return;
+}
+
+void Shell::prepareProgram() {
         return;
 }
 

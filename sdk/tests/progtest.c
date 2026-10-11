@@ -58,6 +58,10 @@
  *                         balloon's expiry read from the events fd (the panel running)
  *   progtest timers SELF  alarm, setitimer, getitimer: an interrupted read, counting down, repeating,
  *                         bad values; not inherited, kept across exec, SIGALRM's default
+ *   progtest pty SELF     pseudo-terminals: openpty, ptsname, both directions, a child making the
+ *                         program end its terminal (setsid, TIOCSCTTY) and the size it sees, the
+ *                         end of output once it exits, /dev/pts/N gone after
+ *   progtest ctty         print what a pty's child sees of its terminal (for pty)
  *   progtest net          sockets through musl on loopback: TCP (blocking and not, half closes,
  *                         resets, timeouts, poll), UDP (cut datagrams), raw ICMP, the interface
  *                         ioctls, net_info and net_watch, the errors
@@ -79,6 +83,7 @@
 #include <string.h>
 #include <poll.h>
 #include <pthread.h>
+#include <pty.h>
 #include <semaphore.h>
 #include <arpa/inet.h>
 #include <net/if.h>
@@ -2616,6 +2621,95 @@ static void *wait_for_alarm(void *arg) {
         return (void *)(intptr_t)gettid();
 }
 
+// What a child on a pty's program end sees of its terminal.
+static int controlling(void) {
+        struct winsize ws = {0};
+        const int      ok = ioctl(0, TIOCGWINSZ, &ws) == 0;
+        const int      tty = open("/dev/tty", O_RDWR | O_NOCTTY);
+        printf("ctty: tty %d %d %d, sid %d, own %d, size %ux%u, /dev/tty %s\n", isatty(0), isatty(1), isatty(2),
+               tcgetsid(0) == getpid(), ok, (unsigned)ws.ws_col, (unsigned)ws.ws_row, tty >= 0 ? "yes" : "no");
+        if (tty >= 0) close(tty);
+        return 0;
+}
+
+// Reads @p fd (a pty's emulator end) until its end, into @p out.
+static size_t read_all(int fd, char *out, size_t size) {
+        size_t got = 0;
+        while (got + 1 < size) {
+                const ssize_t n = read(fd, out + got, size - 1 - got);
+                if (n <= 0) break;
+                got += (size_t)n;
+        }
+        out[got] = '\0';
+        return got;
+}
+
+static int ptys(const char *self) {
+        int            m = -1, s = -1;
+        char           name[32];
+        struct winsize ws = {.ws_col = 100, .ws_row = 30};
+        CHECK(openpty(&m, &s, name, NULL, &ws) == 0);
+        printf("pty: %s\n", name);
+        CHECK(strncmp(name, "/dev/pts/", 9) == 0);
+        CHECK(strcmp(ptsname(m), name) == 0);
+        CHECK(isatty(m) == 0 || isatty(m) == 1);
+        // The program end is a terminal with a name (ttyname: /proc/self/fd/N), before it is anyone's.
+        CHECK(isatty(s) == 1);
+        CHECK(ttyname(s) != NULL && strcmp(ttyname(s), name) == 0);
+        struct termios tio;
+        CHECK(tcgetattr(s, &tio) == 0 && (tio.c_lflag & ICANON) != 0);
+        CHECK(tcsetattr(s, TCSANOW, &tio) == 0);
+        struct stat st;
+        CHECK(stat(name, &st) == 0 && S_ISCHR(st.st_mode));
+        // Both ways: the program's output as CR LF; input as typed.
+        CHECK(write(s, "out\n", 4) == 4);
+        char buf[512];
+        CHECK(read(m, buf, sizeof(buf)) == 5 && memcmp(buf, "out\r\n", 5) == 0);
+        CHECK(write(m, "in", 2) == 2);
+        CHECK(read(s, buf, sizeof(buf)) == 2 && memcmp(buf, "in", 2) == 0);
+        // A child: a session of its own with the program end as its terminal. Its environment
+        // changes before the exec don't reach ours (the memory is shared until then).
+        CHECK(setenv("PT_KEEP", "kept", 1) == 0);
+        const pid_t pid = vfork();
+        if (pid == 0) {
+                clearenv();
+                (void)setenv("PT_CHILD", "1", 1);
+                if (setsid() < 0 || ioctl(s, TIOCSCTTY, 0) != 0) _exit(3);
+                if (dup2(s, 0) < 0 || dup2(s, 1) < 0 || dup2(s, 2) < 0) _exit(4);
+                close(s);
+                close(m);
+                char *eargv[] = {"progtest", "ctty", NULL};
+                execve(self, eargv, environ);
+                _exit(5);
+        }
+        CHECK(pid > 0);
+        CHECK(getenv("PT_KEEP") != NULL && strcmp(getenv("PT_KEEP"), "kept") == 0);
+        CHECK(getenv("PT_CHILD") == NULL);
+        close(s);
+        const size_t n = read_all(m, buf, sizeof(buf));
+        int          status = -1;
+        CHECK(waitpid(pid, &status, 0) == pid);
+        printf("pty: child said %.*s", (int)n, buf);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        CHECK(strstr(buf, "ctty: tty 1 1 1, sid 1, own 1, size 100x30, /dev/tty yes") != NULL);
+        // A new size; the pair goes with its last handle.
+        ws.ws_col = 80;
+        CHECK(ioctl(m, TIOCSWINSZ, &ws) == 0);
+        close(m);
+        CHECK(stat(name, &st) != 0 && errno == ENOENT);
+        // posix_openpt's way, and its errors.
+        m = posix_openpt(O_RDWR | O_NOCTTY);
+        CHECK(m >= 0 && grantpt(m) == 0 && unlockpt(m) == 0);
+        s = open(ptsname(m), O_RDWR | O_NOCTTY);
+        CHECK(s >= 0);
+        unsigned int number = 99;
+        CHECK(ioctl(s, TIOCGPTN, &number) != 0 && errno == ENOTTY); // the program's end has no number
+        close(s);
+        close(m);
+        printf("pty: ok\n");
+        return 0;
+}
+
 static int timers(const char *self) {
         struct itimerval it, old;
         int              fds[2];
@@ -2978,6 +3072,8 @@ int main(int argc, char **argv) {
         if (strcmp(what, "scripts") == 0) return scripts(arg, argc > 3 ? argv[3] : ".");
         if (strcmp(what, "signals") == 0) return signals(arg);
         if (strcmp(what, "timers") == 0) return timers(arg);
+        if (strcmp(what, "pty") == 0) return ptys(arg);
+        if (strcmp(what, "ctty") == 0) return controlling();
         if (strcmp(what, "timerleft") == 0) {
                 // 0: nothing armed; otherwise more than that many seconds left.
                 const int64_t left = timer_left_us();

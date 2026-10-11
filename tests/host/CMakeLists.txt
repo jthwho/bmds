@@ -78,6 +78,7 @@ add_executable(bmds_host_tests
         cpumeter.cpp
         networkview.cpp
         ntp.cpp
+        shacrypt.cpp
         topview.cpp
         hostname.cpp
         texttemplate.cpp

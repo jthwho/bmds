@@ -267,3 +267,66 @@ TEST_CASE("Pty: the program's end finishes: the emulator reads the rest, then th
         CHECK(pty.read(WritableByteSpan(buf, sizeof(buf)), 0).error() == Error::EndOfFile);
         CHECK(pty.write(bytes("k"), 0).error() == Error::BrokenPipe);
 }
+
+TEST_CASE("Pty: a counted pair lives as long as its ends' users (/dev/ptmx's)") {
+        using bmds::FileHandle;
+        auto opened = Pty::openCounted(MemSpace::Psram);
+        REQUIRE(opened.isOk());
+        Pty          &pty = *opened.value();
+        const uint8_t n = pty.number();
+        auto          emulator = FileHandle::open(pty, FileHandle::ReadWrite);
+        REQUIRE(emulator.isOk());
+        CHECK(Pty::isCountedOpen(n));
+        CHECK(pty.pty() == &pty);
+        // Another number: no counted pair there.
+        CHECK(Pty::openProgramEnd(static_cast<uint8_t>((n + 1) % Pty::MaxPtys), FileHandle::ReadWrite).error() ==
+              Error::NotExist);
+        {
+                auto program = Pty::openProgramEnd(n, FileHandle::ReadWrite);
+                REQUIRE(program.isOk());
+                CHECK(&program.value()->stream() == &pty.console());
+                // A process taking it as its terminal is a user too.
+                pty.console().addUser();
+                CHECK(pty.console().write(bytes("hi\n"), 0).isOk());
+                CHECK(drain(pty) == "hi\r\n");
+        }
+        // Its handle gone, the process still uses it: the emulator's reads go on.
+        CHECK((pty.readiness() & bmds::Stream::HungUp) == 0);
+        pty.console().removeUser();
+        CHECK((pty.readiness() & bmds::Stream::HungUp) != 0); // the program's side ended
+        CHECK(Pty::isCountedOpen(n));                         // the emulator still has it
+        emulator.value().reset();
+        CHECK_FALSE(Pty::isCountedOpen(n)); // both done: freed
+        CHECK(Pty::openProgramEnd(n, FileHandle::ReadWrite).error() == Error::NotExist);
+}
+
+TEST_CASE("Pty: a counted pair's emulator writes what fits; the program's end hangs up with it") {
+        using bmds::FileHandle;
+        auto opened = Pty::openCounted(MemSpace::Psram);
+        REQUIRE(opened.isOk());
+        Pty &pty = *opened.value();
+        auto emulator = FileHandle::open(pty, FileHandle::ReadWrite);
+        REQUIRE(emulator.isOk());
+        auto program = Pty::openProgramEnd(pty.number(), FileHandle::ReadWrite);
+        REQUIRE(program.isOk());
+        auto mode = pty.console().mode();
+        mode.signals = false;
+        pty.console().setMode(mode);
+        const std::string big(Pty::InputBytes + 100, 'x');
+        auto              w = pty.write(bytes(big), 0);
+        CHECK(w.value() == Pty::InputBytes); // what fits, not a wait for the rest
+        CHECK((pty.readiness() & bmds::Stream::Writable) == 0);
+        bmds::Semaphore       woken(1, 0);
+        bmds::WaitList::Entry entry(*pty.readinessWaiters(), woken);
+        REQUIRE(entry.isAdded());
+        CHECK(typed(pty).size() == Pty::InputBytes);
+        CHECK(woken.acquire(10).isOk()); // writable again: its pollers are told
+        CHECK((pty.readiness() & bmds::Stream::Writable) != 0);
+        // The emulator's last handle: the program's reads end.
+        emulator.value().reset();
+        uint8_t b[4];
+        CHECK(pty.console().tryRead(WritableByteSpan(b, sizeof(b))).error() == Error::EndOfFile);
+        CHECK(Pty::isCountedOpen(pty.number()));
+        program.value().reset();
+        CHECK_FALSE(Pty::isCountedOpen(pty.number()));
+}

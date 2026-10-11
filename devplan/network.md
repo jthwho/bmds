@@ -247,9 +247,8 @@ into a heap buffer, offers no queue choice, and hides the descriptors that carry
     | `net/ssh/server` | bool | `false` | off until the user turns it on (§9) |
     | `net/ssh/port` | int | 22 | |
     | `net/ssh/password-login` | bool | `true` | only with a password set |
-    | `net/ssh/key-login` | bool | `true` | |
-    | `net/ssh/host-keys` | path | `/boot/ssh` | generated on first start |
-    | `net/ssh/authorized-keys` | path | `${HOME}/.ssh/authorized_keys` | the user's file, OpenSSH format |
+    | `net/ssh/host-keys` | path | `/boot/ssh` | a directory; keys generated on first start |
+    | `net/ssh/authorized-keys-dir` | string | `${HOME}/.ssh` | holds OpenSSH's `authorized_keys` (§24) |
     | `system/password` | secret | empty | salted hash (§9); empty means no password |
     | `net/ptp/…` | | | domain, profile, priorities, slave-only (§10) |
   - The `ipv4/` level leaves room for `ipv6/` beside it.
@@ -339,7 +338,7 @@ into a heap buffer, offers no queue choice, and hides the descriptors that carry
   starts `dropbear -F` once the interface is up and stops it when the setting goes false. Each
   session gets a pseudo-terminal and a shell, as the terminal application does.
 - **Logins, keys and passwords both** (decided):
-  - **Keys:** from `net/ssh/authorized-keys` (OpenSSH's format).
+  - **Keys:** `authorized_keys` (OpenSSH's format) in `net/ssh/authorized-keys-dir` (§24).
   - **Password:** `system/password`, the machine's one user's password, not SSH's own, so a
     console login can use it later. It holds a salted hash in crypt(3)'s form: `$6$` (SHA-512
     crypt, which musl's `crypt()` also reads), checked in the kernel with the SHA engine, with
@@ -1117,3 +1116,202 @@ the System Monitor and the tray meter's alarms see the network like any subsyste
   - **Not settled:** the network's own DNS (172.20.0.2) still maps 172.20.200.221 to
     `bmds-e2e222` after reboots and renewals with `bmds0`. Whether the DHCP server isn't feeding
     that DNS, or keeps a fixed entry, couldn't be told from here (no capture without root).
+
+## 24. Step 5's design: SSH, SFTP (2026-10-11)
+
+What Dropbear 2025.88 and BMDS each need, found by reading both before porting:
+
+- **Dropbear without `fork`:** its server accepts in one process and handles each connection in a
+  child. Its re-exec mode (`DROPBEAR_REEXEC`, Linux's default) already has the child exec the
+  server again with the connection on stdin (`-2 pipe`), so nothing is shared after the exec:
+  exactly `vfork` + `exec`. Patch: the accept loop `vfork`s and `execv`s the server's own path
+  (musl's `fexecve` needs `/proc`), and a child whose exec fails `_exit`s instead of falling back
+  to an in-process session (which would run in the parent's memory). With `HAVE_FORK` undefined,
+  its uClinux paths (`DROPBEAR_VFORK`) start shells and commands with `vfork` already.
+  - Built as one program (`dropbearmulti`) with links: `dropbear`, `dbclient`, `ssh` (to
+    `dbclient`), `dropbearkey`, `dropbearconvert`, `scp`. One image in the loader's cache serves
+    the server, its sessions and the client.
+  - `localoptions.h`: no utmp, wtmp, lastlog, shadow, syslog (it logs to stderr with `-E`),
+    multi-user changes (`DROPBEAR_SVR_MULTIUSER` 0: every process is root); `SFTPSERVER_PATH`
+    is `sftp-server`, found on `PATH` by the shell, not a fixed path.
+- **Programs need pseudo-terminals** (pty.md §6 left them for "when the program ABI needs them";
+  Dropbear's `openpty()` does):
+  - `/dev/ptmx` opens a new pair: the descriptor is the emulator's end (`Pty`), in `Psram`.
+    `/dev/pts/N` is the program's end (`PtyConsole`), a directory the VFS lists while the pairs
+    are open (`Vfs::DeviceDirectory`: entries named by number, from another component).
+    `/dev/tty` is the caller's terminal, as `/dev/console` is.
+  - **Ends are counted by their handles** (`Stream::handleClosed`): the last emulator handle
+    closing hangs the program's end up (its session gets `SIGHUP`, as now); the last program
+    handle closing ends the emulator's reads once the output is read; both done frees the
+    pair. The terminal application's ptys keep their explicit calls.
+  - **A controlling terminal:** a session leader that opens `/dev/pts/N` without `O_NOCTTY`, or
+    calls `TIOCSCTTY` on it, makes it its terminal: the process's console (what termios, the
+    line editor, `/dev/tty` and job control use) becomes that pty's, the console's session is
+    the caller's. Children and the programs they exec inherit it, as they inherit the console
+    now. `TIOCNOTTY` lets go.
+  - **One slot appended, 110, `term_ctl(fd, op, arg)`:** `BMDS_TERM_PTY_NUMBER` (an emulator
+    end's N: `TIOCGPTN`), `BMDS_TERM_PTY_UNLOCK` (`TIOCSPTLCK`; pairs are never locked),
+    `BMDS_TERM_SET_SIZE` (columns and rows: `TIOCSWINSZ` on either end, so `SIGWINCH`),
+    `BMDS_TERM_CONTROL` (`TIOCSCTTY`), `BMDS_TERM_RELEASE` (`TIOCNOTTY`). musl's `posix_openpt`,
+    `grantpt`, `unlockpt`, `ptsname` and `openpty` then work unchanged.
+- **The one user, in `/etc`:** `passwd` is `root:x:0:0:root:/home:/bin/sh` (`getuid()` is
+  already 0; `/home` is the user's home link, sysconf.md §7) and `group` is `root:x:0:`. The
+  `x` never means a hash in `/etc`: Dropbear asks the kernel (below).
+- **Passwords:**
+  - **`secret`, a new setting type** (`Config::Type::Secret`, `BMDS_SYSCONF_TYPE_SECRET` 7):
+    stored like a string, but every reader gets `(set)` or the empty string instead of the
+    value, through the shell's `sysconf` and the SDK alike. Its declaration's check decides
+    what may go in.
+  - **`system/password`** (secret, empty): empty, or SHA-512 crypt (`$6$rounds=N$salt$hash`,
+    which musl's `crypt()` also reads). Its check takes only that form, so a plain password
+    can't be stored by mistake. `/boot/sysconf` holds the hash, as `/etc/shadow` would; every
+    program is root, so this is a hash's protection, not a file's.
+  - **SHA-512 and SHA-512 crypt in `bmds_core`** (pure, host-tested against the algorithm's
+    published vectors), in software; step 5a puts the SHA engine under them. The rounds are
+    chosen when a password is set so a check takes about 0.1 s on the board (measured), and
+    kept in the hash.
+  - **`passwd`** (a shell command): asks for the new password twice without echo, hashes it
+    with 16 random salt characters, sets and saves `system/password`. `passwd -d` clears it.
+    The plain password is never stored or logged.
+  - **Slot 111, `password_check(password, length, source)`:** 0 if it matches,
+    `-BMDS_EACCES` if not, `-BMDS_ENOENT` with no password set. A failure delays that source's
+    (the caller's text: Dropbear passes the peer's address) next checks: 1 s after the third
+    failure, doubling to 60 s, forgotten after a success or 10 minutes; 8 sources are tracked,
+    the oldest giving way. Failures are logged with the source.
+  - Dropbear's patch: `svr_auth_password` calls it instead of `crypt()` on `pw_passwd`.
+- **The server as a kernel service** (`SshService`, `bmds_net`):
+  - **Settings** (§6's table, revised before shipping): `net/ssh/server` (bool, `false`),
+    `net/ssh/port` (int, 22), `net/ssh/password-login` (bool, `true`; refused anyway without a
+    password), `net/ssh/host-keys` (path, `/boot/ssh`: a directory), and
+    `net/ssh/authorized-keys-dir` (string, a template, `${HOME}/.ssh`: the directory holding
+    OpenSSH's `authorized_keys`, which is how Dropbear takes it, `-D`). §6's
+    `net/ssh/key-login` is dropped (Dropbear can't turn keys off) and `net/ssh/authorized-keys`
+    becomes the directory key.
+  - **While `net/ssh/server` is true**, a kernel thread (PSRAM stack; none while off) runs it:
+    `dropbear` is looked up on `shell/path`, the host key made if missing
+    (`dropbearkey -t ed25519 -f DIR/dropbear_ed25519_host_key`, the directory made first;
+    ECDSA P-256 joins in step 5a if the engine makes it worth it), then `dropbear -F -E -p PORT
+    -r KEY -D DIR [-s] -P /dev/null` started, its stdout and stderr to the kernel log
+    (`LogStream`: lines, prefixed `ssh:`). A change of any `net/ssh/` key stops it (`SIGTERM`)
+    and starts it again with the new arguments; `false` stops it. If it ends on its own it is
+    started again after 5 s, doubling to 5 minutes (a missing program, a card not in yet).
+  - **The launcher's additions** (kernel API, not ABI): `ProgramLauncher::signal(pid, sig)`,
+    and `Request::ended`, a semaphore `start()` releases when a program nobody waits for ends,
+    so the thread sleeps on one semaphore for both "settings changed" and "it ended".
+  - **mDNS** advertises `_ssh._tcp` on the port while it runs (§22's one service slot).
+- **Our `sftp-server`** (§9.2): an SDK program in this repository (`programs/sftp-server`,
+  packaged as `dist/sftp-server`), SFTP version 3 as OpenSSH's `sftp`, `scp` (9.0 and later),
+  `sshfs` and file managers speak it:
+  - `INIT`, `OPEN`, `CLOSE`, `READ`, `WRITE`, `STAT`, `LSTAT`, `FSTAT`, `SETSTAT`, `FSETSTAT`
+    (size and times; modes and owners are FAT's, ignored), `OPENDIR`, `READDIR`, `REMOVE`,
+    `MKDIR`, `RMDIR`, `REALPATH`, `RENAME`, `READLINK`, `SYMLINK` (BMDS's emulated links); the
+    extensions `posix-rename@openssh.com`, `fsync@openssh.com`, `limits@openssh.com` (so
+    clients size their reads) and `statvfs@openssh.com` (`df` in `sshfs`), on musl's POSIX
+    calls.
+  - The protocol is a portable core (`sftp.c`: a packet in, replies out, the file calls through
+    a table) and a loop (`main.c`), so the core is fuzzed on the host with fake file calls
+    (`tests/fuzz/sftp.cpp`), as §12 asks of what parses a peer's input.
+  - Up to 32 handles; reads and writes up to 64 KB (what `limits` reports).
+- **Order of work:**
+  1. Kernel: `/dev/ptmx`, `/dev/pts`, `/dev/tty`, the controlling terminal, slot 110 and
+     `linux.c`'s `ioctl`s; `/etc/passwd` and `group`; host tests (`pty`, VFS) and a `progtest`
+     case (`openpty`, a child on the slave, `TIOCSWINSZ`).
+  2. SHA-512 and its crypt (host vectors), `secret`, `system/password`, `passwd`, slot 111; the
+     check's time measured on the board and the rounds chosen.
+  3. `dist/dropbear` (recipe, options, patches); `dbclient` from the board to this PC first (no
+     server side needed), then the server run by hand.
+  4. `LogStream`, the launcher's additions, `SshService`, mDNS's service.
+  5. `sftp-server` with its fuzz target.
+- **Done when** (§12): from this PC, `ssh` with a key and with a password, `scp` (SFTP, and `-O`
+  for Dropbear's own), `sftp`, `sshfs`, and a file manager's `sftp://`; from the board, `ssh`
+  and `scp` to this PC. Measured: login time, and `scp` both ways (step 5a's baseline).
+
+### 24a. Revised (the user's, 2026-10-11)
+
+Asked whether SSH should be built in and whether the Dropbear patches belonged in BMDS instead:
+
+- **SSH is in `/rom`:** `dropbearmulti` with its links, `sftp-server` and Dropbear's licence under
+  `/rom/bin` and `/rom/share/licenses`, so the server and client work with no card. The firmware's
+  build runs `tools/bmds-dist --out build/rom/dist --nested build dropbear sftp-server` (nested:
+  no `build` wrapper, whose project lock the outer build holds, and one job at a time) and
+  `mkrom.py` takes the result. They stay SDK programs, run by the loader as from the card; not
+  linked into the firmware (whose `ota_1` is 2 MB). `shell/path` defaults to
+  `/bin:/rom/bin:/sd0/p0/bin`: the ROM's before the card's.
+- **Patch 0004 (the environment after `vfork`) is BMDS's now:** `linux.c` keeps the parent's
+  `environ` with the rest of what a `vfork` child gets a copy of, and puts it back when the parent
+  goes on, so every program's child may `clearenv()` and `setenv()` before its exec.
+- **Passwords as on Linux:** `/etc/shadow` (built from `system/password` when opened: `root:HASH`,
+  or `root:!` without one) and musl's `crypt()`. Patch 0002 and slot 111 (`password_check`) are
+  gone, with the kernel's per-address delays: every program is root and `/boot/sysconf` is
+  readable anyway, so hiding the hash bought little; Dropbear's own delay (a quarter second or
+  more), its 10 tries a connection and its cap on connections not yet in remain. `fs_info` takes
+  slot 111. The `secret` type stays: `sysconf` and listings still show `(set)`.
+- **Left as patches:** 0001 (the accept loop's `fork()`: nothing without an MMU can give it; worth
+  offering upstream for no-MMU systems) and 0002, formerly 0003 (Dropbear's fixed `PATH`; the
+  alternatives put fixed paths in).
+
+## 25. As built: step 5, SSH and SFTP (2026-10-11)
+
+As §24 and §24a designed; what changed on the way, and what was found:
+
+- **Pseudo-terminals for programs** (`bmds_console`, `bmds_fs`, `bmds_loader`):
+  - `Pty::openCounted()`: a pair whose ends count their users (`Stream::handleOpened()`, new, beside
+    `handleClosed()`; `Console::addUser()`/`removeUser()` for processes that have it as their
+    terminal). The emulator end's writes take what fits (a write that waited for all of it
+    deadlocked against a shell waiting for its output to be read).
+  - `/dev/ptmx`, `/dev/pts/N` (`Vfs::DeviceDirectory`: numbered entries another component lists,
+    with their identity, so `stat` and `fstat` agree), `/dev/tty`.
+  - `Process::setConsole()`: the console is an atomic pointer now; the old one's line editor is
+    dropped with it.
+  - Slot 110, `term_ctl`: `PTY_NUMBER`, `PTY_UNLOCK`, `SET_SIZE`, `CONTROL`, `RELEASE`, and
+    `PTS_NUMBER` (a program end's N, for `ttyname()`).
+- **POSIX gaps found by Dropbear, fixed in BMDS:**
+  - termios on a terminal that isn't the caller's own: Dropbear's `ttyname()` of a fresh pty failed
+    (musl's `isatty()` is `TIOCGWINSZ`). Its modes are the console's; the line input's are
+    reported as a new terminal's.
+  - `ttyname()`: `linux.c` answers `readlink("/proc/self/fd/N")` for terminals (`/dev/pts/N`,
+    `/dev/console`), the way musl reads it.
+  - `setgroups` succeeds (root's `initgroups()`): Dropbear's single-user mode insists that
+    `getgroups` fail with `ENOSYS`, which it rightly doesn't, so Dropbear stays multi-user.
+  - The environment after `vfork` (§24a).
+  - `statfs` (slot 111, `fs_info`, over `Vfs::statfs()`): `df` on an sshfs mount shows the card.
+  - A shell with no terminal runs (`NullConsole`): `ssh host command` has none; it refused.
+  - A new shell, interactive or not, takes `shell/path` when it inherits no `PATH` (`sh -c` over
+    SSH found nothing).
+- **Passwords:** SHA-512 and SHA-512 crypt in `bmds_core` (OpenSSL's and the specification's
+  vectors); 5000 rounds took 265 ms on the board, so new hashes get 2000 (about 0.1 s);
+  `secret`, `system/password`, `passwd` (`-d` removes it), `/etc/passwd`, `/etc/group`,
+  `/etc/shadow`.
+- **`SshService`** (`bmds_net`): as §24, with `ProgramLauncher::sendSignal()` and
+  `Request::ended`, and `LogStream`. Dropbear without syslog has no `-E` (it logs to stderr
+  always). `Boot`'s most stages went from 24 to 32: the new stage was the 25th, and the assert
+  stopped every boot.
+- **Dropbear 2025.88** (`dist/dropbear`): `localoptions.h` and two patches (§24a). `scp` runs
+  `dbclient` by name (`DROPBEAR_PATH_SSH_PROGRAM`).
+- **`sftp-server`** (`programs/sftp-server`, `dist/sftp-server`): version 3 and
+  `posix-rename`, `fsync`, `limits`, `expand-path`, `statvfs` (OpenSSH's). Fuzzed with made-up
+  file calls (`sftp_fuzz`: 2.1 million inputs in 5 minutes, no finding). libFuzzer stalled on this machine printing new functions (its
+  symbolizer); `-print_funcs=0` runs it at about 28,000 inputs a second.
+- **`bmds-dist`:** sends a User-Agent (Dropbear's site refuses Python's), and has `--out` and
+  `--nested` for the firmware's build.
+- **On the board (2026-10-11),** this PC on Wi-Fi, OpenSSH 9.6 on it:
+  - From the PC: `ssh` with a key (1.4 s for a command, connection included) and a password
+    (1.2 s), a wrong password refused; an interactive session (prompt, commands, `exit`); `scp`
+    (SFTP) 4 MB up 4.3 s and down 3.3 s, `scp -O` up 6.5 s and down 3.0 s; `sftp` (`ls -l`,
+    `put`, `get`, `rename`, `rm`, `mkdir`, `rmdir`); `sshfs` (listing, writing, a 1 MB copy
+    intact, renaming, removing, `df`); `bmds0.local` and `_ssh._tcp` from avahi.
+  - From the board: `ssh` to the PC (3.0 s for `uname -n`), `scp` 4 MB down 6.2 s and up 5.0 s.
+  - The service: started by `net/ssh/server`, again on a new port, again 5 s after a `kill -9`,
+    stopped by `false` (its thread gone); the host key made the first time.
+  - Memory: the server process 17 KB of heap, a session 42 KB, besides each one's copy of the
+    program (739 KB); the service's thread used 2.7 KB of its 6 KB stack.
+  - These times are software crypto over this PC's Wi-Fi: step 5a's baseline.
+- **Size:** firmware 1 729 504 bytes (+16 KB); the ROM 2.0 MB of its 9.4 MB (Dropbear 739 KB,
+  `sftp-server` 211 KB).
+- **`ssh-copy-id`** (found by the user): it sends `exec sh -c '...'`, and the shell had no `exec`
+  (nor `umask`, which the script uses). `exec CMD` runs the command and the shell then leaves with
+  its status (the shell is kernel code: it can't be replaced in place); `exec` alone keeps its
+  redirections; `umask` keeps and shows a mask (FAT has no modes). In the corpus, agreeing with
+  bash. `ssh-copy-id` then added two keys in turn from this PC, one a line, and they logged in.
+- **Not yet:** a file manager's `sftp://` (GNOME Files) was not tried from here (it needs the
+  desktop's keyring or agent); `fstatfs`; `AF_UNIX` for agent forwarding.

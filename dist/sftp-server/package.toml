@@ -1,0 +1,8 @@
+# Our SFTP server (programs/sftp-server), the SSH server's sftp subsystem: scp, sftp, sshfs and
+# file managers' sftp:// (devplan/network.md §24).
+name = "sftp-server"
+version = "1"
+description = "SFTP for the SSH server: scp, sftp, sshfs and file managers' sftp:// reach the card"
+license = "MIT"
+source_tree = "programs/sftp-server"
+license_files = ["../../LICENSE"]

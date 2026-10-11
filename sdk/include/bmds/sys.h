@@ -182,6 +182,8 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_PROC_TIMER                                                                                            \
         108u /**< `int32_t proc_timer(uint32_t which, const bmds_timer_t *set, bmds_timer_t *old)`. */
 #define BMDS_SYS_NET_WATCH 109u /**< `int32_t net_watch(uint32_t flags)`: a new fd. */
+#define BMDS_SYS_TERM_CTL 110u  /**< `int32_t term_ctl(int32_t fd, uint32_t op, uint32_t arg)`. */
+#define BMDS_SYS_FS_INFO 111u   /**< `int32_t fs_info(const char *path, bmds_fs_info_t *info)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -242,6 +244,8 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYSCONF_TYPE_ENUM 4u   /**< One of the choices (words separated by `|`). */
 #define BMDS_SYSCONF_TYPE_PATH 5u   /**< An absolute path, normalized. */
 #define BMDS_SYSCONF_TYPE_PATHS 6u  /**< Absolute paths separated by `;`. */
+/** A string never shown (appended 2026-10-11; `system/password`): its value reads as `(set)` or "". */
+#define BMDS_SYSCONF_TYPE_SECRET 7u
 
 /** @brief `sysconf_get` fields. */
 #define BMDS_SYSCONF_FIELD_VALUE 0u   /**< The current value. */
@@ -1079,6 +1083,18 @@ typedef struct bmds_stat_t {
 #define BMDS_TERM_ICRNL 0x40u   /**< Raw input: CR is read as LF. */
 
 /**
+ * @brief `term_ctl` operations (appended 2026-10-11, slot 110; devplan/network.md §24): the
+ *        pseudo-terminals programs open (`/dev/ptmx` opens a pair: its descriptor is the
+ *        emulator's end; `/dev/pts/N` is the program's), and the controlling terminal.
+ */
+#define BMDS_TERM_PTY_NUMBER 0u /**< @p fd a pair's emulator end: returns N (`/dev/pts/N`). */
+#define BMDS_TERM_PTY_UNLOCK 1u /**< @p fd a pair's emulator end: unlocks it (pairs never are locked). */
+#define BMDS_TERM_SET_SIZE 2u   /**< @p arg `columns | rows << 16`: either end's size (`SIGWINCH`). */
+#define BMDS_TERM_CONTROL 3u    /**< A session leader without one: @p fd's terminal becomes its terminal. */
+#define BMDS_TERM_RELEASE 4u    /**< The caller lets go of its terminal (a leader: the session too). */
+#define BMDS_TERM_PTS_NUMBER 5u /**< @p fd a pair's program end: returns N (its name: `/dev/pts/N`). */
+
+/**
  * @brief A terminal (`term_get`). The caller sets `size`, the kernel the rest
  *        (the fields that fit).
  */
@@ -1254,6 +1270,18 @@ typedef struct bmds_net_info_t {
                 uint32_t tx_dropped;   /**< Frames dropped (the device was busy). */
 } bmds_net_info_t;
 
+/**
+ * @brief The filesystem a path is on (`fs_info`, appended 2026-10-11, slot 111): what `statfs`
+ *        and `df` show. The caller sets `size`; the kernel fills the fields that fit in it.
+ */
+typedef struct bmds_fs_info_t {
+                uint32_t size;        /**< Set by the caller: `sizeof(bmds_fs_info_t)`. */
+                uint32_t block_bytes; /**< Its allocation unit (FAT's cluster, littlefs' block). */
+                uint64_t total_bytes; /**< Its data area. */
+                uint64_t free_bytes;  /**< Free now. */
+                char     type[16];    /**< "FAT12", "FAT16", "FAT32", "exFAT", "littlefs". */
+} bmds_fs_info_t;
+
 /** @brief `proc_timer`'s timers. */
 #define BMDS_TIMER_REAL 0u /**< Real time, raising `SIGALRM` (Linux's `ITIMER_REAL`). */
 
@@ -1372,6 +1400,8 @@ typedef int32_t (*bmds_sys_shutdown_fn)(int32_t fd, uint32_t how);
 typedef int32_t (*bmds_sys_net_info_fn)(uint32_t index, bmds_net_info_t *info);
 typedef int32_t (*bmds_sys_proc_timer_fn)(uint32_t which, const bmds_timer_t *set, bmds_timer_t *old);
 typedef int32_t (*bmds_sys_net_watch_fn)(uint32_t flags);
+typedef int32_t (*bmds_sys_term_ctl_fn)(int32_t fd, uint32_t op, uint32_t arg);
+typedef int32_t (*bmds_sys_fs_info_fn)(const char *path, bmds_fs_info_t *info);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -2481,6 +2511,31 @@ static inline int32_t bmds_proc_timer(uint32_t which, const bmds_timer_t *set, b
  */
 static inline int32_t bmds_net_watch(uint32_t flags) {
         return ((bmds_sys_net_watch_fn)bmds_sys->slot[BMDS_SYS_NET_WATCH])(flags);
+}
+
+/**
+ * @brief Pseudo-terminals and the controlling terminal: `op` is a `BMDS_TERM_PTY_NUMBER`, ...
+ *        (what musl's `posix_openpt`, `ptsname`, `TIOCSWINSZ`, `TIOCSCTTY` and `TIOCNOTTY` use).
+ *        `BMDS_TERM_CONTROL` makes @p fd's terminal the caller's (its console: what termios,
+ *        `/dev/tty`, Ctrl-C and job control use) if the caller leads its session and has no
+ *        terminal of that session, and the terminal belongs to no other session; its children
+ *        inherit it.
+ * @return 0, N for `BMDS_TERM_PTY_NUMBER`; or `-BMDS_EBADF`, `-BMDS_ENOTTY` (not a terminal,
+ *         or not a pair's emulator end where one is needed), `-BMDS_EPERM` (`BMDS_TERM_CONTROL`
+ *         refused), `-BMDS_EINVAL`.
+ */
+static inline int32_t bmds_term_ctl(int32_t fd, uint32_t op, uint32_t arg) {
+        return ((bmds_sys_term_ctl_fn)bmds_sys->slot[BMDS_SYS_TERM_CTL])(fd, op, arg);
+}
+
+/**
+ * @brief Describes the mounted filesystem @p path is on: its size, free space, allocation unit
+ *        and type (`statfs`, `statvfs`, `df`).
+ * @return 0, or `-BMDS_ENOENT`, `-BMDS_ENOSYS` (not on a mounted filesystem: `/dev`, `/bin`),
+ *         `-BMDS_EFAULT`, `-BMDS_EINVAL`.
+ */
+static inline int32_t bmds_fs_info(const char *path, bmds_fs_info_t *info) {
+        return ((bmds_sys_fs_info_fn)bmds_sys->slot[BMDS_SYS_FS_INFO])(path, info);
 }
 
 #ifdef __cplusplus

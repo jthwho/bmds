@@ -40,7 +40,18 @@ namespace Config {
                 Enum,   ///< One of `Param::choices` (words separated by `|`).
                 Path,   ///< An absolute path, normalized.
                 Paths,  ///< Absolute paths separated by `;`, each normalized.
+                /**
+                 * A string never shown (`system/password`'s hash): stored as `String`
+                 * is, but readers get `SecretSet` or "" instead of the value
+                 * (`SysConf::get()`, `info()`, `list()`, the SDK); only
+                 * `SysConf::getSecret()` gives it. Its declaration's check decides
+                 * what may go in.
+                 */
+                Secret,
         };
+
+        /** @brief What a set `Secret` reads as. */
+        inline constexpr StringView SecretSet("(set)");
 
         /**
          * @brief A further check of a value already in its canonical form
@@ -93,7 +104,10 @@ namespace Config {
          */
         bool isValidKey(StringView key);
 
-        /** @brief Returns the type's name: "bool", "int", "string", "color", "enum", "path", "paths". */
+        /**
+         * @brief Returns the type's name: "bool", "int", "string", "color", "enum", "path", "paths",
+         *        "secret".
+         */
         const char *typeName(Type type);
 
         /**

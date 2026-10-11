@@ -92,6 +92,7 @@ namespace Config {
                         case Type::Enum: return "enum";
                         case Type::Path: return "path";
                         case Type::Paths: return "paths";
+                        case Type::Secret: return "secret";
                 }
                 return "?";
         }
@@ -113,6 +114,7 @@ namespace Config {
                                 return out.appendf("%ld", static_cast<long>(v));
                         }
                         case Type::String:
+                        case Type::Secret:
                                 if (input.size() > longest(param)) return Error::OutOfRange;
                                 for (char c : input)
                                         if (c == '\0') return Error::Invalid;

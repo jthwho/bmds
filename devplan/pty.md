@@ -81,3 +81,11 @@ wired straight into its screen model; that is what goes.
   `win term`; `wait()` and `signal()` wait for a user. `/dev/ptyN` and `/dev/ptmx` wait for the
   program ABI to need them.
 - Measured: `time seq 1 3000` 0.45 s, against 0.51 s with `ScreenConsole` (`windows.md` §9).
+
+## 7. Programs' pseudo-terminals (2026-10-11, `network.md` §24-25)
+
+- `/dev/ptmx` and `/dev/pts/N` for programs (Dropbear's sessions): `Pty::openCounted()` makes a
+  pair that finishes on its own when its ends' users (handles, and processes that have the program
+  end as their terminal) are gone; the terminal application's pairs keep their explicit calls.
+- A session leader takes a pty as its terminal (`TIOCSCTTY`, or an open without `O_NOCTTY`):
+  `Process::setConsole()`. Slot 110, `term_ctl`, carries the pty and terminal operations.

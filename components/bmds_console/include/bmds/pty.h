@@ -14,6 +14,7 @@
 #include <bmds/bytering.h>
 #include <bmds/config.h>
 #include <bmds/console.h>
+#include <bmds/filehandle.h>
 #include <bmds/memspace.h>
 #include <bmds/mutex.h>
 #include <bmds/result.h>
@@ -44,6 +45,11 @@ class PtyConsole final : public Console {
                 uint32_t       capabilities() const override { return Ansi; }
                 Result<size_t> write(ByteSpan data, unsigned int timeoutMs) override;
                 Error          flush(unsigned int timeoutMs) override;
+                void           handleOpened(uint8_t mode) override;
+                void           handleClosed(uint8_t mode) override;
+                void           addUser() override;
+                void           removeUser() override;
+                int            ptyNumber() const override;
 
                 using Console::write;
 
@@ -78,6 +84,14 @@ class PtyConsole final : public Console {
  * the emulator's reads end once its output is read). `release()` returns
  * the pair once both are done.
  *
+ * A counted pair (`openCounted()`, `/dev/ptmx`'s) finishes on its own
+ * instead: its ends count their users (handles opened on either end, and
+ * processes that have the program's end as their terminal); the emulator
+ * end's last user going hangs up, the program end's last ends the program's
+ * side, and both gone release it. Its emulator end's writes then take what
+ * fits and wait only while nothing does, and it is writable only with room,
+ * as a descriptor's users expect.
+ *
  * @par Thread Safety
  * Thread-safe: one emulator reads at a time; writers and readers of either
  * end may be on any task.
@@ -98,6 +112,29 @@ class Pty final : public Stream {
                  * @return It, `Full`, or `NoMem`.
                  */
                 static Result<Pty *> open(MemSpace space);
+
+                /**
+                 * @brief Opens the next free pair as a counted one (see the class),
+                 *        its buffers in @p space. The caller opens a handle on it
+                 *        at once; a pair whose handle couldn't be opened is
+                 *        `release()`d.
+                 * @return It, `Full`, or `NoMem`.
+                 */
+                static Result<Pty *> openCounted(MemSpace space);
+
+                /**
+                 * @brief Opens a handle with @p mode (`FileHandle::Mode`) on counted
+                 *        pair @p number's program end (`/dev/pts/N`).
+                 * @return The handle, `NotExist` (no such counted pair open, or
+                 *         finishing), or `NoMem`.
+                 */
+                static Result<FileHandle::Ptr> openProgramEnd(uint8_t number, uint8_t mode);
+
+                /** @brief Returns true while counted pair @p number is open (listings). */
+                static bool isCountedOpen(uint8_t number);
+
+                /** @brief Returns pair @p number's program end, or null (never made): its identity. */
+                static const PtyConsole *programEnd(uint8_t number);
 
                 explicit Pty(uint8_t number);
                 Pty(const Pty &) = delete;
@@ -143,6 +180,15 @@ class Pty final : public Stream {
                 /** @brief Released when output arrives or the program's end finishes. */
                 WaitList *readinessWaiters() override { return &_outputWaiters; }
 
+                /** @brief Returns this pair (a descriptor's `term_ctl`). */
+                Pty *pty() override { return this; }
+
+                /** @brief A counted pair counts its emulator end's handles. */
+                void handleOpened(uint8_t mode) override;
+
+                /** @brief See `handleOpened()`: the last one hangs up. */
+                void handleClosed(uint8_t mode) override;
+
                 /** @brief Sets the terminal size the program sees. */
                 void setSize(Console::Size size) {
                         _console.setSize(size);
@@ -165,6 +211,8 @@ class Pty final : public Stream {
                 friend class PtyConsole;
 
                 Error reset(MemSpace space);
+                void  emulatorUsers(int delta); // a counted pair's emulator end gained or lost a user
+                void  programUsers(int delta);  // a counted pair's program end gained or lost a user
 
                 PtyConsole        _console{*this};
                 Mutex             _writeLock;         // the program's writers, one at a time
@@ -179,6 +227,11 @@ class Pty final : public Stream {
                 std::atomic<bool> _hungUp{false};
                 std::atomic<bool> _ended{false};
                 std::atomic<bool> _inUse{false};
+                mutable Mutex     _countLock;         // a counted pair's users and its release decision
+                std::atomic<bool> _counted{false};    // openCounted(): it finishes when its users are gone
+                bool              _done = false;      // counted: its release is decided (_countLock)
+                uint16_t          _emulatorUsers = 0; // counted: handles on this end (_countLock)
+                uint16_t          _programUsers = 0;  // counted: handles and processes on the console (_countLock)
                 uint8_t           _number;
 };
 

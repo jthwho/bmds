@@ -36,6 +36,7 @@
 #include <bmds/processtable.h>
 #include <bmds/program.h>
 #include <bmds/programimage.h>
+#include <bmds/pty.h>
 #include <bmds/staticobject.h>
 #include <bmds/stats.h>
 #include <bmds/shebang.h>
@@ -1530,6 +1531,67 @@ int32_t ProgramThread::termForeground(int32_t fd, int32_t pgid) {
         return pgid;
 }
 
+// Pseudo-terminals and the controlling terminal (devplan/network.md §24).
+int32_t ProgramThread::termControl(int32_t fd, uint32_t op, uint32_t value) {
+        Process *const        p = current;
+        const FileHandle::Ptr h = p->handle(fd);
+        if (!h) return -BMDS_EBADF;
+        Stream &stream = h->stream();
+        switch (op) {
+                case BMDS_TERM_PTY_NUMBER: return stream.pty() != nullptr ? stream.pty()->number() : -BMDS_ENOTTY;
+                case BMDS_TERM_PTY_UNLOCK: return stream.pty() != nullptr ? 0 : -BMDS_ENOTTY;
+                case BMDS_TERM_PTS_NUMBER: {
+                        const int n = stream.isTerminal() ? static_cast<Console &>(stream).ptyNumber() : -1;
+                        return n >= 0 ? n : -BMDS_ENOTTY;
+                }
+                case BMDS_TERM_SET_SIZE: {
+                        const Console::Size size{static_cast<uint16_t>(value & 0xffffu),
+                                                 static_cast<uint16_t>(value >> 16)};
+                        if (size.columns == 0 || size.rows == 0) return -BMDS_EINVAL;
+                        if (Pty *pty = stream.pty(); pty != nullptr) {
+                                pty->setSize(size);
+                                return 0;
+                        }
+                        if (!stream.isTerminal()) return -BMDS_ENOTTY;
+                        static_cast<Console &>(stream).setSize(size); // every terminal is a Console
+                        return 0;
+                }
+                case BMDS_TERM_CONTROL: {
+                        if (!stream.isTerminal()) return -BMDS_ENOTTY;
+                        Console &console = static_cast<Console &>(stream);
+                        {
+                                Mutex::Locker locker(*groupLock, WaitForever);
+                                const int32_t session = processes->sessionOf(currentPid);
+                                if (session != currentPid) return -BMDS_EPERM;
+                                const Console *mine = p->console();
+                                if (mine == &console && console.session() == session) return 0;
+                                if (mine != nullptr && mine->session() == session) return -BMDS_EPERM;
+                                if (console.session() != 0 && console.session() != session) return -BMDS_EPERM;
+                                console.setSession(session);
+                                console.setForeground(processes->groupOf(currentPid));
+                                console.setUnansweredGroup(0);
+                        }
+                        p->setConsole(&console);
+                        return 0;
+                }
+                case BMDS_TERM_RELEASE: {
+                        Console *const mine = p->console();
+                        if (mine == nullptr) return -BMDS_ENOTTY;
+                        {
+                                Mutex::Locker locker(*groupLock, WaitForever);
+                                const int32_t session = processes->sessionOf(currentPid);
+                                if (session == currentPid && mine->session() == session) {
+                                        mine->setSession(0);
+                                        mine->setForeground(0);
+                                }
+                        }
+                        p->setConsole(nullptr);
+                        return 0;
+                }
+                default: return -BMDS_EINVAL;
+        }
+}
+
 FutexTable &programFutexes() {
         return *futexes;
 }
@@ -1734,6 +1796,48 @@ namespace {
 
 } // namespace
 
+namespace {
+
+        // The pseudo-terminals programs open (devplan/network.md §24): /dev/ptmx makes a counted
+        // pair, its descriptor the emulator's end; /dev/pts/N is pair N's program end.
+        uint8_t handleMode(uint8_t flags) {
+                return static_cast<uint8_t>(((flags & Vfs::Read) ? FileHandle::Read : 0) |
+                                            ((flags & Vfs::Write) ? FileHandle::Write : 0));
+        }
+
+        Result<FileHandle::Ptr> openPtmx(void *, uint8_t flags) {
+                const Result<Pty *> pty = Pty::openCounted(MemSpace::Psram);
+                if (pty.isError())
+                        return makeError<FileHandle::Ptr>(pty.error() == Error::Full ? Error::Busy : pty.error());
+                Result<FileHandle::Ptr> handle = FileHandle::open(*pty.value(), handleMode(flags));
+                if (handle.isError()) pty.value()->release();
+                return handle;
+        }
+
+        bool ptsPresent(void *, size_t index) {
+                return Pty::isCountedOpen(static_cast<uint8_t>(index));
+        }
+
+        Result<FileHandle::Ptr> openPts(void *, size_t index, uint8_t flags) {
+                return Pty::openProgramEnd(static_cast<uint8_t>(index), handleMode(flags));
+        }
+
+        // The program end's handles have the console's identity, whoever opened them.
+        uint64_t ptsIdentity(void *, size_t index) {
+                return reinterpret_cast<uintptr_t>(Pty::programEnd(static_cast<uint8_t>(index)));
+        }
+
+        Error addPtyFiles() {
+                static constexpr Vfs::DeviceFile      Ptmx{"ptmx", openPtmx, nullptr, nullptr, nullptr, true};
+                static constexpr Vfs::DeviceDirectory Pts{"pts",   Pty::MaxPtys, ptsPresent,
+                                                          openPts, nullptr,      ptsIdentity};
+                Error                                 err = Vfs::addDeviceFile(Ptmx);
+                if (err.isOk()) err = Vfs::addDeviceDirectory(Pts);
+                return err == Error::Exists ? Error::Ok : err; // a second init()
+        }
+
+} // namespace
+
 Error Loader::init() {
         if (!stopLock.isCreated()) stopLock.create();
         if (!groupLock.isCreated()) groupLock.create();
@@ -1764,6 +1868,7 @@ Error Loader::init() {
                 Console::setSignalHook(queueConsoleSignals);
                 Console::setReadHook(admitReader);
         }
+        if (err.isOk()) err = addPtyFiles();
         if (err.isOk() && !processCounters.isCreated()) {
                 processCounters.create(ProcessStats, sizeof(ProcessStats) / sizeof(ProcessStats[0]), readProcesses,
                                        nullptr);
@@ -2176,8 +2281,9 @@ Result<int32_t> Loader::start(const Request &request) {
         if (own.group == nullptr && !own.session) own.group = &background;
         const Result<int32_t> started = begin(own, notify, savedMode, parent);
         if (started.isError()) return started;
-        // Nobody waits: an orphan, freed when it ends (at once if it already has).
-        if (!request.waited) processes->detach(started.value());
+        // Nobody waits: an orphan, freed when it ends (at once if it already has); its end
+        // released to whoever asked.
+        if (!request.waited) processes->detach(started.value(), request.ended);
         return started;
 }
 

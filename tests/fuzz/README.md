@@ -9,6 +9,10 @@ the host tests: they run for as long as one lets them.
   (`devplan/audio.md` §22), played by the synth on `tests/host/synth/sine.sf2`.
 - **`ntp_fuzz`:** NTP's parser (`devplan/network.md` §22) with an arbitrary cookie and T1, and
   what parses through the sample, a clock filter and the discipline; no fault, no overflow.
+- **`sftp_fuzz`:** our SFTP server's protocol core (`programs/sftp-server/sftp.c`,
+  `devplan/network.md` §24) after an INIT, requests in sequence, the file calls made up (files,
+  directories, links, errors, names as long as names get); every reply whole and fitting, every
+  handle closed at the end, no fault, no leak.
 - **`soundfont_fuzz`:** SoundFonts (§22): load, play notes on every preset, the drums and across
   the keyboard with controllers and bends, render; every sample finite, no leak.
 
@@ -31,6 +35,15 @@ tests/fuzz/make-midi-seeds.py /mnt/data/tmp/midi        # a MIDI file: notes, ch
 ```sh
 ./ntp_fuzz -max_len=256 -max_total_time=600 -artifact_prefix=./ntp- ntp-corpus ntp-seeds
 ```
+
+```sh
+tests/fuzz/make-sftp-seeds.py sftp-seeds
+./sftp_fuzz -max_len=8192 -max_total_time=600 -rss_limit_mb=1024 -print_funcs=0 \
+        -artifact_prefix=./sftp- sftp-corpus sftp-seeds
+```
+
+`-print_funcs=0`: on this machine libFuzzer stalled for seconds printing each new function (its
+symbolizer), so the target ran ten inputs a second instead of 28,000.
 
 `ntp-seeds` holds the input layout (8 bytes cookie, 8 bytes T1, little-endian, then the packet):
 a good reply and a kiss-o'-death are enough for it to find the rest.

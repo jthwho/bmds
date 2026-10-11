@@ -25,10 +25,16 @@ namespace {
                 return Shell::ExitFailure;
         }
 
+        // A value as shown: a secret's says only whether it is set.
+        const char *shownValue(const SysConf::Info &info) {
+                if (info.param->type == Config::Type::Secret && info.value.isEmpty()) return "(not set)";
+                return info.value.cStr();
+        }
+
         void printLine(void *arg, const SysConf::Info &info) {
                 auto &ctx = *static_cast<CommandContext *>(arg);
                 ctx.printf("%s %s %s %s\n", info.param->key, Config::typeName(info.param->type), info.stateName(),
-                           info.value.cStr());
+                           shownValue(info));
                 return;
         }
 
@@ -39,7 +45,7 @@ namespace {
                 const Config::Param &p = *info.param;
                 ctx.printf("key: %s\n", p.key);
                 ctx.printf("type: %s\n", Config::typeName(p.type));
-                ctx.printf("value: %s\n", info.value.cStr());
+                ctx.printf("value: %s\n", shownValue(info));
                 ctx.printf("default: %s\n", p.defaultValue);
                 ctx.printf("saved: %s\n", info.hasSaved ? info.saved.cStr() : "(none)");
                 ctx.printf("state: %s\n", info.stateName());
@@ -51,6 +57,7 @@ namespace {
                                 ctx.printf("limits: %s\n", p.choices != nullptr ? p.choices : "");
                                 break;
                         case Config::Type::String:
+                        case Config::Type::Secret:
                         case Config::Type::Path:
                         case Config::Type::Paths:
                                 ctx.printf("limits: at most %lu bytes\n",
@@ -70,10 +77,10 @@ int SysConfCommand::run(CommandContext &ctx) {
         const char *verb = args[1];
         const char *key = args.size() > 2 ? args[2] : nullptr;
         if (std::strcmp(verb, "get") == 0 && args.size() == 3) {
-                String      value;
-                const Error err = SysConf::get(key, value);
+                SysConf::Info i;
+                const Error   err = SysConf::info(key, i);
                 if (err.isError()) return fail(ctx, key, err);
-                ctx.printf("%s\n", value.cStr());
+                ctx.printf("%s\n", shownValue(i));
                 return Shell::ExitSuccess;
         }
         if (std::strcmp(verb, "set") == 0 && args.size() == 4) {

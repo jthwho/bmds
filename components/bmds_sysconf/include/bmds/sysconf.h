@@ -115,8 +115,18 @@ namespace SysConf {
         /** @brief Returns @p id's key ("" if none); valid until reboot. */
         StringView keyOf(Id id);
 
-        /** @brief Sets @p out to @p key's current value. @return `Ok`, `NotExist`, `NoMem`. */
+        /**
+         * @brief Sets @p out to @p key's current value (a `Secret`'s: `Config::SecretSet`
+         *        or "", never the value). @return `Ok`, `NotExist`, `NoMem`.
+         */
         Error get(StringView key, String &out);
+
+        /**
+         * @brief Sets @p out to @p key's current value even if it is a `Secret`: the
+         *        kernel's own use (checking a password). Never shown or handed on.
+         * @return `Ok`, `NotExist`, `NoMem`.
+         */
+        Error getSecret(StringView key, String &out);
 
         /**
          * @brief Writes the system's host name into @p out: `system/hostname`, or

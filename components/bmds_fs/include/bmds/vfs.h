@@ -130,7 +130,9 @@ class Directory {
  *                empty file, run by the loader; /bin is read-only (ReadOnly)
  * /dev/null      discards writes, reads end at once
  * /dev/zero      reads zeros; /dev/urandom, /dev/random read random bytes
- * /dev/console   the caller's terminal (Context::terminal)
+ * /dev/console   the caller's terminal (Context::terminal); /dev/tty the same
+ * /dev/NAME/N    a directory of numbered devices another component provides
+ *                (addDeviceDirectory(): /dev/pts/N, the pseudo-terminals)
  * /etc/NAME      a file built from the settings when opened (addEtcFile()), read-only
  * /share/zoneinfo  the time zone database (setZoneDatabase()), read-only:
  *                one TZif file per zone name (devplan/time.md §9)
@@ -375,6 +377,39 @@ namespace Vfs {
          * @return `Ok`, `Exists` (a node of that name), `Full`, or `Invalid`.
          */
         Error addDeviceFile(const DeviceFile &file);
+
+        /**
+         * @brief A directory in `/dev` of numbered devices that another component
+         *        provides (`/dev/pts/N`, `devplan/network.md` §24): its entries are
+         *        named `0` to `count - 1`, listed while present.
+         */
+        struct DeviceDirectory {
+                        const char *name = nullptr; ///< Its name in `/dev`.
+                        size_t      count = 0;      ///< Entries at most.
+                        /** @brief Returns true while entry @p index exists. Must not wait. */
+                        bool (*present)(void *arg, size_t index) = nullptr;
+                        /**
+                         * @brief Opens entry @p index with @p flags (`OpenFlag` bits).
+                         *        Called without the VFS's lock.
+                         */
+                        Result<FileHandle::Ptr> (*open)(void *arg, size_t index, uint8_t flags) = nullptr;
+                        void *arg = nullptr; ///< Given to all three.
+                        /**
+                         * @brief Returns entry @p index's identity (`FileInfo::id`): its
+                         *        handles' (the stream's address when they don't set one).
+                         *        Must not wait. Null: the VFS gives each entry one.
+                         */
+                        uint64_t (*identity)(void *arg, size_t index) = nullptr;
+        };
+
+        /** @brief The most directories `addDeviceDirectory()` takes. */
+        inline constexpr size_t MaxDeviceDirectories = 2;
+
+        /**
+         * @brief Adds @p directory to `/dev` (its name and calls kept: static), for good.
+         * @return `Ok`, `Exists` (a node of that name), `Full`, or `Invalid`.
+         */
+        Error addDeviceDirectory(const DeviceDirectory &directory);
 
         /** @brief Where the files built from the settings are (`devplan/network.md` §8, §18). */
         inline constexpr StringView EtcPath("/etc");

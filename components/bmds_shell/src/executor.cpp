@@ -169,6 +169,7 @@ Result<ShellState> ShellState::clone() const {
         copy.lastStatus = lastStatus;
         copy.shellPid = shellPid;
         copy.lastJobPid = lastJobPid;
+        copy.umask = umask;
         if (err.isOk()) err = copy.cwd.assign(cwd.view());
         return Result<ShellState>(std::move(copy), err);
 }
@@ -1234,6 +1235,11 @@ int Executor::runSimple(const SimpleNode *n) {
 int Executor::runCommand(List<String> &args, const Redirection *redirects) {
         FdTable fds = *_fds;
         if (redirects != nullptr && applyRedirects(redirects, fds).isError()) return 1;
+        // `exec` with only redirections: they are the shell's from now on (POSIX).
+        if (args.size() == 1 && args[0].view() == "exec") {
+                *_fds = fds;
+                return 0;
+        }
         FdTable *saved = _fds;
         _fds = &fds;
         const int status = invoke(args, true);

@@ -186,6 +186,7 @@ class ShellState {
                 String              cwd; ///< Current directory (absolute, normalized); empty means `/`.
                 int32_t             shellPid = 0;   ///< `$$`: the shell's process (0: none, `$$` is 1).
                 int32_t             lastJobPid = 0; ///< `$!` (0: unset).
+                uint16_t            umask = 022;    ///< `umask`'s (kept and shown: FAT has no modes).
                 JobTable            jobs;           ///< Not copied by `clone()`.
 
                 ShellState() = default;

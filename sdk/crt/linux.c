@@ -39,6 +39,7 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
 #include <sys/times.h>
@@ -206,7 +207,11 @@ static volatile int tables_lock[1];
 typedef struct {
                 uint32_t regs[26];
                 tables_t tables;
+                char   **environ; /* the parent's environment, put back when it goes on */
 } vfork_saved_t;
+
+/* musl's environment (environ is its public name). */
+extern char **__environ;
 
 _Thread_local int                   __bmds_vfork_depth;
 static _Thread_local vfork_saved_t *vfork_saved[VFORK_DEPTH];
@@ -471,6 +476,8 @@ static long do_open(long dirfd, const char *path, long flags) {
         /* open(".", O_RDONLY), for fchdir(), is a directory too. */
         if (fd == -BMDS_EISDIR && (flags & O_ACCMODE) == O_RDONLY) return open_dir(p);
         set_nonblock(fd, (flags & O_NONBLOCK) != 0);
+        /* A session leader without a terminal opening one takes it (the kernel decides). */
+        if (fd >= 0 && !(flags & O_NOCTTY) && bmds_isatty(fd) == 1) (void)bmds_term_ctl(fd, BMDS_TERM_CONTROL, 0);
         return (long)(fd);
 }
 
@@ -609,10 +616,66 @@ static long do_statx(long dirfd, const char *path, long flags, struct statx *out
         return 0;
 }
 
+/* /proc/self/fd/N, as musl's ttyname() reads it: a terminal's name (/dev/pts/N, a pty's
+ * program end; else /dev/console, the caller's terminal). Other descriptors have none here. */
+static int32_t fd_link(const char *path, char *target, size_t size) {
+        static const char prefix[] = "/proc/self/fd/";
+        if (strncmp(path, prefix, sizeof(prefix) - 1) != 0) return -EINVAL;
+        const char *digits = path + sizeof(prefix) - 1;
+        long        fd = 0;
+        if (*digits == '\0') return -ENOENT;
+        for (const char *d = digits; *d != '\0'; ++d) {
+                if (*d < '0' || *d > '9' || fd > 1000000) return -ENOENT;
+                fd = fd * 10 + (*d - '0');
+        }
+        const int32_t pts = bmds_term_ctl((int32_t)fd, BMDS_TERM_PTS_NUMBER, 0);
+        const char   *name = pts >= 0 ? "/dev/pts/" : bmds_isatty((int32_t)fd) == 1 ? "/dev/console" : NULL;
+        if (name == NULL) return -ENOENT;
+        char   number[12];
+        size_t used = 0;
+        if (pts >= 0) {
+                char     reversed[12];
+                size_t   k = 0;
+                uint32_t v = (uint32_t)pts;
+                do {
+                        reversed[k++] = (char)('0' + v % 10);
+                        v /= 10;
+                } while (v != 0);
+                while (k > 0) number[used++] = reversed[--k];
+        }
+        const size_t length = strlen(name) + used;
+        if (length >= size) return -ENAMETOOLONG;
+        memcpy(target, name, strlen(name));
+        memcpy(target + strlen(name), number, used);
+        target[length] = '\0';
+        return (int32_t)length;
+}
+
+/* statfs through fs_info: FAT's and littlefs' sizes in their allocation units. */
+static long do_statfs(const char *path, unsigned long size, struct statfs *out) {
+        if (size < sizeof(struct statfs)) return -EINVAL;
+        bmds_fs_info_t fs = {.size = sizeof(fs)};
+        const int32_t  r = bmds_fs_info(path, &fs);
+        if (r < 0) return (long)(r);
+        const unsigned long unit = fs.block_bytes != 0 ? fs.block_bytes : 512;
+        memset(out, 0, sizeof(*out));
+        out->f_type = strncmp(fs.type, "FAT", 3) == 0 ? 0x4d44     /* MSDOS_SUPER_MAGIC */
+                      : strcmp(fs.type, "exFAT") == 0 ? 0x2011bab0 /* EXFAT_SUPER_MAGIC */
+                                                      : 0;
+        out->f_bsize = unit;
+        out->f_frsize = unit;
+        out->f_blocks = fs.total_bytes / unit;
+        out->f_bfree = fs.free_bytes / unit;
+        out->f_bavail = fs.free_bytes / unit;
+        out->f_namelen = 255; /* FAT's long names, in characters */
+        return 0;
+}
+
 static long do_readlink(long dirfd, const char *path, char *buf, size_t size) {
         AT_PATH(dirfd, path);
-        char          target[BMDS_PATH_MAX + 1];
-        const int32_t n = bmds_readlink(p, target, sizeof(target));
+        char    target[BMDS_PATH_MAX + 1];
+        int32_t n = fd_link(p, target, sizeof(target));
+        if (n == -EINVAL) n = bmds_readlink(p, target, sizeof(target));
         if (n < 0) return (long)(n);
         /* POSIX: no NUL, as much as fits. */
         const size_t len = (size_t)n < size ? (size_t)n : size;
@@ -807,10 +870,24 @@ static long do_ioctl(long fd, unsigned long request, void *arg) {
                         *(pid_t *)arg = (pid_t)(bmds_proc_group(BMDS_GROUP_SESSION, 0, 0));
                         return 0;
                 }
+                case TIOCSWINSZ: {
+                        const struct winsize *w = arg;
+                        return (long)(bmds_term_ctl((int32_t)fd, BMDS_TERM_SET_SIZE,
+                                                    (uint32_t)w->ws_col | (uint32_t)w->ws_row << 16));
+                }
+                /* Pseudo-terminals (network.md §24): musl's ptsname, unlockpt, openpty. */
+                case TIOCGPTN: {
+                        const int32_t n = bmds_term_ctl((int32_t)fd, BMDS_TERM_PTY_NUMBER, 0);
+                        if (n < 0) return (long)(n);
+                        *(unsigned int *)arg = (unsigned int)n;
+                        return 0;
+                }
+                case TIOCSPTLCK: return (long)(bmds_term_ctl((int32_t)fd, BMDS_TERM_PTY_UNLOCK, 0));
+                case TIOCSCTTY: return (long)(bmds_term_ctl((int32_t)fd, BMDS_TERM_CONTROL, 0));
+                case TIOCNOTTY: return (long)(bmds_term_ctl((int32_t)fd, BMDS_TERM_RELEASE, 0));
                 case TCFLSH:
                 case TCXONC:
-                case TCSBRK:
-                case TIOCSCTTY: return bmds_isatty((int32_t)fd) == 1 ? 0 : -ENOTTY;
+                case TCSBRK: return bmds_isatty((int32_t)fd) == 1 ? 0 : -ENOTTY;
                 case FIONBIO:
                         if (arg == NULL) return -EFAULT;
                         set_nonblock(fd, *(const int *)arg != 0);
@@ -1301,6 +1378,7 @@ uint32_t *__bmds_vfork_prepare(void) {
         __lock(tables_lock);
         saved->tables = *tables();
         __unlock(tables_lock);
+        saved->environ = __environ;
         return saved->regs;
 }
 
@@ -1317,6 +1395,10 @@ static _Noreturn void vfork_return(long pid) {
         vfork_saved_t *saved = vfork_saved[--__bmds_vfork_depth];
         uint32_t       regs[26]; /* above sp until __bmds_vfork_resume has read them */
         memcpy(regs, saved->regs, sizeof(regs));
+        /* The child's clearenv() and setenv() before its exec changed the environment in
+         * the memory it shares with the parent: the parent's comes back (musl's clearenv
+         * only drops the pointer; the array it had is intact). */
+        __environ = saved->environ;
         vfork_saved[__bmds_vfork_depth] = NULL;
         bmds_mem_free(saved);
         __bmds_vfork_resume(pid, regs);
@@ -1722,6 +1804,7 @@ static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 case SYS_pipe2: return do_pipe2((int *)a, b);
                 case SYS_ioctl: return do_ioctl(a, (unsigned long)b, (void *)c);
                 case SYS_ftruncate64: return do_ftruncate(a, (int64_t)((uint64_t)(uint32_t)c << 32 | (uint32_t)b));
+                case SYS_statfs64: return do_statfs((const char *)a, (unsigned long)b, (struct statfs *)c);
                 case SYS_truncate64: return do_truncate((const char *)a, (int64_t)((uint64_t)(uint32_t)c << 32 | (uint32_t)b));
                 case SYS_fsync:
                 case SYS_fdatasync:
@@ -1838,7 +1921,8 @@ static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 case SYS_setreuid:
                 case SYS_setregid:
                 case SYS_setresuid:
-                case SYS_setresgid: return 0;
+                case SYS_setresgid:
+                case SYS_setgroups: return 0; /* root may: initgroups() after /etc/group */
                 case SYS_uname: return do_uname((struct utsname *)a);
                 case SYS_sysinfo: return do_sysinfo((struct sysinfo *)a);
                 case SYS_prlimit64: return do_prlimit(b, (struct rlimit *)d);

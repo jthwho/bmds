@@ -23,6 +23,7 @@
 #include <bmds/midi.h>
 #include <bmds/ramdisk.h>
 #include <bmds/romdisk.h>
+#include <bmds/sshservice.h>
 #include <bmds/storage.h>
 #include <bmds/synthfile.h>
 #include <bmds/sysconf.h>
@@ -57,6 +58,11 @@ namespace {
                 return loader.start(request).error();
         }
 
+        // The SSH server, while net/ssh/server says so (devplan/network.md §24): programs run by the loader.
+        bmds::Error startSsh() {
+                return bmds::SshService::init(loader);
+        }
+
         constexpr bmds::Boot::Stage SystemStages[] = {
                 {"console", bmds::UsbSerialConsole::init},
                 {"i2c", bmds::I2cBus::init},
@@ -76,6 +82,7 @@ namespace {
                 {"usb", bmds::UsbHost::init},
                 {"net", bmds::EthernetDevice::init}, // eth0 (devplan/network.md)
                 {"ip", bmds::NetStack::init},        // lwIP, lo, and eth0's addresses from sysconf
+                {"ssh", startSsh},                   // dropbear from the card while net/ssh/server is on
                 {"shell", startSerialShell},
         };
 

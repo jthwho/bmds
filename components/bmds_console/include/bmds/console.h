@@ -301,6 +301,20 @@ class Console : public Stream {
                 /** @brief Takes the set of signals sent and not yet delivered (the hook's deliverer). */
                 uint32_t takeSignals() { return _signalSet.exchange(0); }
 
+                /**
+                 * @brief A process takes this as its terminal (`removeUser()` when it
+                 *        lets go or ends). A pseudo-terminal's program end counts its
+                 *        users, handles and processes alike, to know when it is done;
+                 *        other consoles are permanent and ignore it.
+                 */
+                virtual void addUser() { return; }
+
+                /** @brief A process lets go of this as its terminal (see `addUser()`). */
+                virtual void removeUser() { return; }
+
+                /** @brief Returns the pseudo-terminal pair this is the program end of (`/dev/pts/N`), or -1. */
+                virtual int ptyNumber() const { return -1; }
+
                 /** @brief Returns the session this is the controlling terminal of (0: none). */
                 int32_t session() const { return _session.load(); }
 

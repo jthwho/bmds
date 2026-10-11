@@ -129,6 +129,8 @@ class Loader final : public ProgramLauncher {
                 /** @copydoc ProgramLauncher::start */
                 Result<int32_t> start(const Request &request) override;
 
+                Error sendSignal(int32_t pid, int sig) override { return signal(pid, sig); }
+
         private:
                 Result<int32_t> begin(const Request &request, Semaphore &ended, Console::TermMode &savedMode,
                                       int32_t &parent);

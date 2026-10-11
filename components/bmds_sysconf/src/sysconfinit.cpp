@@ -15,6 +15,7 @@
 #include <bmds/inireader.h>
 #include <bmds/log.h>
 #include <bmds/staticobject.h>
+#include <bmds/password.h>
 #include <bmds/sysconf.h>
 #include <bmds/vfs.h>
 
@@ -116,8 +117,10 @@ Error SysConf::init() {
                          unsigned(report.rejected));
         bmdsInfo("SysConf: %u parameters; %u saved values kept for keys not declared", unsigned(report.parameters),
                  unsigned(report.orphans - report.rejected));
-        const Error err = Home::start();
+        Error err = Home::start();
         if (err.isError()) bmdsWarn("SysConf: /home: %s", err.desc());
+        err = Password::init();
+        if (err.isError()) bmdsWarn("SysConf: /etc/passwd: %s", err.desc());
         applyClock(nullptr);
         clockWatcher.create();
         (void)clockWatcher->start("clock", applyClock, nullptr);

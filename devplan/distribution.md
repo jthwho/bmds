@@ -54,8 +54,10 @@ The builder uses Python's standard library only (3.11 or newer, for `tomllib`).
 | Package | Version | What | Notes |
 |---|---|---|---|
 | `busybox` | 1.37.0 | Unix tools: coreutils, `sed`, `awk`, `vi`, `less`, `diff`, `find`, `grep`, `tar`, compressors, `hush` | `CONFIG_NOMMU`; applets that need Linux interfaces BMDS lacks are off (§6). One binary, a link per applet (119). Patch: `timeout`'s no-MMU watcher re-execs with `-p` before the duration (upstream's never saw it, so nothing was ever timed out). Patch: `vi`'s registers `"+` and `"*` are `/dev/clip0` and `/dev/clip0p`, as Vim's are the clipboard and the primary selection (ordinary registers where those files don't exist; `clipboard.md` C12). `less` keeps upstream's line limit (`FEATURE_LESS_MAXLINES`; the config had 0, which showed one line). The BMDS shell's built-ins (`ls`, `cat`, `echo`...) still come first; `busybox ls` or the full path reaches BusyBox's. |
+| `dropbear` | 2025.88 | SSH: the server, the client (`ssh`, `dbclient`), `scp`, `dropbearkey` | One program (`dropbearmulti`) with links. Built into `/rom` by the firmware's build (`network.md` §24a) as well as here. Patch: the server's accept loop `vfork`s and execs itself (re-exec mode) instead of forking; patch: sessions get no fixed `PATH`. Passwords from `/etc/shadow`. |
+| `sftp-server` | 1 | Our SFTP server (`programs/sftp-server`), Dropbear's `sftp` subsystem | In `/rom` too; fuzzed (`tests/fuzz`). |
 
-Candidates, roughly in order: a scripting language (Lua or MicroPython), `zlib`/`xz` as libraries, `make`, `sqlite`, TinyCC (the first step to self-hosting), games; `dropbear` with networking.
+Candidates, roughly in order: a scripting language (Lua or MicroPython), `zlib`/`xz` as libraries, `make`, `sqlite`, TinyCC (the first step to self-hosting), games.
 
 ## 6. BusyBox's configuration
 

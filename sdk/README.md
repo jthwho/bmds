@@ -158,11 +158,21 @@ on BMDS's table; programs never see that layer. What differs from Linux:
   `TIOCGSID`). An interactive shell runs each foreground pipeline as a
   group with the terminal's foreground; it goes back to the shell when the
   group ends.
+- **Pseudo-terminals** (`devplan/network.md` §24): `posix_openpt`, `grantpt`, `unlockpt`,
+  `ptsname`, `openpty` (`/dev/ptmx`, `/dev/pts/N`), `TIOCSWINSZ`; a session leader takes one as
+  its terminal with `TIOCSCTTY` or by opening it without `O_NOCTTY`, and `TIOCNOTTY` lets go.
+  `/dev/tty` is the caller's terminal. `ttyname` works for terminals; termios on a terminal that
+  isn't the caller's own sets and reports its modes, and its line input as a new terminal's.
+- **Users:** one, `root` (uid 0): `/etc/passwd`, `/etc/group` and `/etc/shadow` (the password's
+  SHA-512 crypt hash, which `crypt()` checks; set with the shell's `passwd`). `setuid`,
+  `setgid` and `setgroups` to root succeed.
+- **Filesystems:** `statfs`/`statvfs` give a mounted filesystem's size, free space and
+  allocation unit; `fstatfs` is `ENOSYS`.
 - **Processes:** no `fork` (`ENOSYS`: no per-process address spaces).
   `vfork` + `exec`, as on uClinux: the child runs in the parent's memory,
   on its stack, until it execs or exits (`_exit`), while the parent waits;
-  what it changes in memory the parent sees, its descriptors and directory
-  are its own.
+  what it changes in memory the parent sees, but for its descriptors,
+  directory, signal handlers and environment (`environ`), which are its own.
   `posix_spawn` (with file actions), `waitpid`/`wait4`/`waitid`, `pipe`,
   `O_CLOEXEC`/`FD_CLOEXEC`, `getpid`/`getppid` work (`wait4`'s resource
   usage is zero: CPU time isn't counted). `exec` runs programs,

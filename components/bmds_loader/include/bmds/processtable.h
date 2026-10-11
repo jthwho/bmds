@@ -185,11 +185,11 @@ class ProcessTable {
                 bool isEnded(int32_t pid);
 
                 /**
-                 * @brief Makes @p pid an orphan: no parent, nothing released when it
-                 *        ends (for a parent that stops waiting before it ends). A
-                 *        zombie is freed.
+                 * @brief Makes @p pid an orphan: no parent, and only @p notify (may be
+                 *        null) released when it ends (for a parent that stops waiting
+                 *        before it ends). A zombie is freed, @p notify released.
                  */
-                void detach(int32_t pid);
+                void detach(int32_t pid, Semaphore *notify = nullptr);
 
                 /** @brief What `withProcess()` found. */
                 enum class Found : uint8_t {

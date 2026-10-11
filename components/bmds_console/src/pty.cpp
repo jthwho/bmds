@@ -48,6 +48,80 @@ Result<Pty *> Pty::open(MemSpace space) {
         return makeError<Pty *>(Error::Full);
 }
 
+Result<Pty *> Pty::openCounted(MemSpace space) {
+        Result<Pty *> opened = open(space);
+        if (opened.isError()) return opened;
+        Mutex::Locker lock(opened.value()->_countLock, WaitForever);
+        opened.value()->_counted = true;
+        return opened;
+}
+
+Result<FileHandle::Ptr> Pty::openProgramEnd(uint8_t number, uint8_t mode) {
+        if (number >= MaxPtys || !ptys[number].isCreated()) return makeError<FileHandle::Ptr>(Error::NotExist);
+        Pty &pty = *ptys[number];
+        {
+                // Held while the handle is opened, so the pair can't finish under it.
+                Mutex::Locker lock(pty._countLock, WaitForever);
+                if (!pty._inUse.load(std::memory_order_acquire) || !pty._counted || pty._done)
+                        return makeError<FileHandle::Ptr>(Error::NotExist);
+                ++pty._programUsers;
+        }
+        Result<FileHandle::Ptr> handle = FileHandle::open(pty._console, mode);
+        pty.programUsers(-1);
+        return handle;
+}
+
+bool Pty::isCountedOpen(uint8_t number) {
+        if (number >= MaxPtys || !ptys[number].isCreated()) return false;
+        const Pty    &pty = *ptys[number];
+        Mutex::Locker lock(pty._countLock, WaitForever);
+        return pty._inUse.load(std::memory_order_acquire) && pty._counted && !pty._done;
+}
+
+const PtyConsole *Pty::programEnd(uint8_t number) {
+        return number < MaxPtys && ptys[number].isCreated() ? &ptys[number]->_console : nullptr;
+}
+
+void Pty::emulatorUsers(int delta) {
+        bool last = false, done = false;
+        {
+                Mutex::Locker lock(_countLock, WaitForever);
+                if (!_counted) return;
+                _emulatorUsers = static_cast<uint16_t>(_emulatorUsers + delta);
+                last = delta < 0 && _emulatorUsers == 0;
+                done = last && _programUsers == 0 && !_done;
+                if (done) _done = true;
+        }
+        if (last) hangUp();
+        if (done) release();
+        return;
+}
+
+void Pty::programUsers(int delta) {
+        bool last = false, done = false;
+        {
+                Mutex::Locker lock(_countLock, WaitForever);
+                if (!_counted) return;
+                _programUsers = static_cast<uint16_t>(_programUsers + delta);
+                last = delta < 0 && _programUsers == 0;
+                done = last && _emulatorUsers == 0 && !_done;
+                if (done) _done = true;
+        }
+        if (last) programEnded();
+        if (done) release();
+        return;
+}
+
+void Pty::handleOpened(uint8_t) {
+        emulatorUsers(1);
+        return;
+}
+
+void Pty::handleClosed(uint8_t) {
+        emulatorUsers(-1);
+        return;
+}
+
 // Fresh rings and state, the console's modes and size as a new terminal's.
 Error Pty::reset(MemSpace space) {
         constexpr size_t RingBytes = (sizeof(ByteRing) + 7) & ~size_t(7);
@@ -58,6 +132,13 @@ Error Pty::reset(MemSpace space) {
         _input = new (block + RingBytes) ByteRing(WritableByteSpan(block + 2 * RingBytes + OutputBytes, InputBytes));
         _hungUp.store(false, std::memory_order_relaxed);
         _ended.store(false, std::memory_order_relaxed);
+        {
+                Mutex::Locker lock(_countLock, WaitForever);
+                _counted = false;
+                _done = false;
+                _emulatorUsers = 0;
+                _programUsers = 0;
+        }
         _console._flush.store(false, std::memory_order_relaxed);
         // Left released by the last pair: drained.
         (void)_outputReady.tryAcquire();
@@ -108,9 +189,22 @@ Result<size_t> Pty::read(WritableByteSpan buf, unsigned int timeoutMs) {
         }
 }
 
-Result<size_t> Pty::write(ByteSpan data, unsigned int) {
-        if (_ended.load(std::memory_order_acquire)) return makeError<size_t>(Error::BrokenPipe);
-        return makeResult(_console.push(data));
+Result<size_t> Pty::write(ByteSpan data, unsigned int timeoutMs) {
+        if (!_counted) {
+                if (_ended.load(std::memory_order_acquire)) return makeError<size_t>(Error::BrokenPipe);
+                return makeResult(_console.push(data));
+        }
+        // A descriptor's: what fits, waiting only while nothing does (a write that waited for
+        // all of it could wait on a program waiting for its output to be read).
+        if (data.isEmpty()) return makeResult(size_t(0));
+        const Deadline deadline(timeoutMs);
+        for (;;) {
+                if (_ended.load(std::memory_order_acquire)) return makeError<size_t>(Error::BrokenPipe);
+                const size_t n = _console.push(data);
+                if (n > 0) return makeResult(n);
+                const Error err = Interrupt::waitCurrent(_inputSpace, deadline);
+                if (err.isError()) return makeError<size_t>(err);
+        }
 }
 
 Result<size_t> Pty::input(ByteSpan data, unsigned int timeoutMs) {
@@ -127,7 +221,8 @@ Result<size_t> Pty::input(ByteSpan data, unsigned int timeoutMs) {
 
 uint8_t Pty::readiness() {
         if (_ended.load(std::memory_order_acquire)) return Readable | HungUp;
-        return static_cast<uint8_t>(Writable | (!_output->isEmpty() ? Readable : 0));
+        const bool writable = !_counted || _input->freeSpace() > 0;
+        return static_cast<uint8_t>((writable ? Writable : 0) | (!_output->isEmpty() ? Readable : 0));
 }
 
 void Pty::hangUp() {
@@ -214,6 +309,30 @@ size_t PtyConsole::push(ByteSpan data) {
         return taken;
 }
 
+void PtyConsole::handleOpened(uint8_t) {
+        _pty.programUsers(1);
+        return;
+}
+
+void PtyConsole::handleClosed(uint8_t) {
+        _pty.programUsers(-1);
+        return;
+}
+
+int PtyConsole::ptyNumber() const {
+        return _pty.number();
+}
+
+void PtyConsole::addUser() {
+        _pty.programUsers(1);
+        return;
+}
+
+void PtyConsole::removeUser() {
+        _pty.programUsers(-1);
+        return;
+}
+
 bool PtyConsole::hasInput() const {
         return !_pty._input->isEmpty() || _pty._hungUp.load(std::memory_order_acquire);
 }
@@ -221,9 +340,11 @@ bool PtyConsole::hasInput() const {
 Result<size_t> PtyConsole::tryReadInput(WritableByteSpan buf) {
         if (_flush.exchange(false, std::memory_order_acquire))
                 _pty._input->discardTo(_flushTo.load(std::memory_order_relaxed));
+        const bool   full = _pty._input->freeSpace() == 0;
         const size_t n = _pty._input->pop(buf);
         if (n > 0) {
                 _pty._inputSpace.release(); // room for a paste waiting
+                if (full) _pty._outputWaiters.notify(); // a counted pair's emulator end is writable again
                 return makeResult(n);
         }
         if (_pty._hungUp.load(std::memory_order_acquire)) return makeError<size_t>(Error::EndOfFile);

@@ -268,16 +268,17 @@ bool ProcessTable::isEnded(int32_t pid) {
         return e == nullptr || e->ended;
 }
 
-void ProcessTable::detach(int32_t pid) {
+void ProcessTable::detach(int32_t pid, Semaphore *notify) {
         Mutex::Locker locker(_lock, WaitForever);
         Entry        *e = find(pid);
         if (e == nullptr) return;
         if (e->ended) {
                 free(*e);
+                if (notify != nullptr) notify->release();
                 return;
         }
         e->parent = 0;
-        e->notify = nullptr;
+        e->notify = notify;
         return;
 }
 

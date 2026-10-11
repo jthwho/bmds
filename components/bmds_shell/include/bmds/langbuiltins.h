@@ -37,6 +37,8 @@ namespace LangBuiltins {
         int read(CommandContext &ctx);        ///< `read [-r] [-p prompt] [name]...`
         int type(CommandContext &ctx);        ///< `type [-t] name...`
         int command(CommandContext &ctx);     ///< `command [-vV] name [arg]...`
+        int exec(CommandContext &ctx);        ///< `exec [command [arg]...]`
+        int umask(CommandContext &ctx);       ///< `umask [-S] [mode]`
         int env(CommandContext &ctx);         ///< `env [name=value]... [command [arg]...]`
         int term(CommandContext &ctx);        ///< `term [color [depth] | size [COLSxROWS]]`
         int clear(CommandContext &ctx);       ///< `clear`: clears the screen and its scrollback

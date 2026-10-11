@@ -31,6 +31,7 @@ if(COMMAND idf_component_register)
                                     src/clockinit.cpp
                                     src/esperr_check.cpp
                                     src/log.cpp
+                                    src/logstream.cpp
                                     src/memory.cpp
                                     src/mutex.cpp
                                     src/platform.cpp

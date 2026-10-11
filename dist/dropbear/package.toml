@@ -1,0 +1,10 @@
+# Dropbear: the SSH server, client and scp, as one program with links (devplan/network.md §24).
+name = "dropbear"
+version = "2025.88"
+description = "SSH: the server (dropbear, started by the kernel when net/ssh/server is on), the client (ssh, dbclient), scp, dropbearkey"
+license = "MIT"
+source = "https://matt.ucc.asn.au/dropbear/releases/dropbear-2025.88.tar.bz2"
+sha256 = "783f50ea27b17c16da89578fafdb6decfa44bb8f6590e5698a4e4d3672dc53d4"
+license_files = ["LICENSE"]
+# Bytes of stack the program asks for (key exchange and signatures recurse into libtommath).
+stack = 65536

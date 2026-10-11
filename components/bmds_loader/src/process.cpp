@@ -124,10 +124,29 @@ namespace {
 
 } // namespace
 
-Process::Process(const FdTable &fds, Console *console) : _fds(fds), _console(console) {}
+Process::Process(const FdTable &fds, Console *console) : _fds(fds), _console(console) {
+        if (console != nullptr) console->addUser();
+}
 
 Process::~Process() {
         release();
+        if (Console *c = console(); c != nullptr) c->removeUser();
+}
+
+void Process::setConsole(Console *console) {
+        // The console's input is taken under the turn: nobody reads the old one meanwhile.
+        (void)_consoleTurn.acquire(WaitForever);
+        Console *const old = _console.exchange(console, std::memory_order_acq_rel);
+        if (old != console && _line != nullptr) {
+                _line->~LineInput();
+                Memory::free(_line);
+                _line = nullptr;
+        }
+        _consoleTurn.release();
+        if (old == console) return;
+        if (console != nullptr) console->addUser();
+        if (old != nullptr) old->removeUser();
+        return;
 }
 
 Process *Process::create(const FdTable &fds, Console *console) {
@@ -140,7 +159,7 @@ Process *Process::createChild(const Signals::Thread &thread) {
         Process *child = nullptr;
         {
                 Mutex::Locker locker(_lock, WaitForever);
-                child = create(_fds, _console);
+                child = create(_fds, console());
         }
         if (child == nullptr) return nullptr;
         Error err;
@@ -221,11 +240,12 @@ int Process::openDirectories() const {
 }
 
 Vfs::Context Process::vfs() const {
-        return Vfs::Context{cwd(), _console};
+        return Vfs::Context{cwd(), console()};
 }
 
 bool Process::isConsole(const FileHandle *h) const {
-        return _console != nullptr && h != nullptr && &h->stream() == static_cast<Stream *>(_console);
+        Console *const c = console();
+        return c != nullptr && h != nullptr && &h->stream() == static_cast<Stream *>(c);
 }
 
 FileHandle::Ptr Process::handleOf(int32_t fd) const {
@@ -379,7 +399,7 @@ int32_t Process::readConsole(void *buf, uint32_t size) {
                 }
                 if (!_lineInput) {
                         // Nothing held: straight into the program's buffer.
-                        auto [n, err] = _console->read(WritableByteSpan(out, size), WaitForever);
+                        auto [n, err] = console()->read(WritableByteSpan(out, size), WaitForever);
                         if (err == Error::EndOfFile) return 0;
                         if (err.isError()) return errnoFor(err);
                         return rawRead(out, static_cast<int32_t>(n));
@@ -396,14 +416,15 @@ int32_t Process::pumpConsole(bool wait) {
         if (_line == nullptr) {
                 void *memory = Memory::alloc(MemSpace::Psram, sizeof(LineInput));
                 if (memory == nullptr) return -BMDS_ENOMEM;
-                _line = new (memory) LineInput(*_console);
+                _line = new (memory) LineInput(*console());
         }
         LineInput &l = *_line;
         if (l.linePos < l.lineLength || l.ended) return 1;
         for (;;) {
                 if (l.aheadPos == l.aheadLength) {
                         const WritableByteSpan into(l.ahead, sizeof(l.ahead));
-                        auto [n, err] = wait ? _console->read(into, WaitForever) : _console->tryRead(into);
+                        Console               &c = *console();
+                        auto [n, err] = wait ? c.read(into, WaitForever) : c.tryRead(into);
                         if (err == Error::WouldBlock) return 0;
                         if (err == Error::EndOfFile) {
                                 l.ended = true;
@@ -497,7 +518,7 @@ int32_t Process::rawRead(uint8_t *out, int32_t n) {
                         echo[k++] = b;
                 }
                 if (k >= sizeof(echo) - 1 || i == n - 1) {
-                        (void)_console->write(ByteSpan(echo, k), WaitForever);
+                        (void)console()->write(ByteSpan(echo, k), WaitForever);
                         k = 0;
                 }
         }
@@ -825,7 +846,8 @@ namespace {
                       BMDS_SYSCONF_TYPE_COLOR == uint32_t(Config::Type::Color) &&
                       BMDS_SYSCONF_TYPE_ENUM == uint32_t(Config::Type::Enum) &&
                       BMDS_SYSCONF_TYPE_PATH == uint32_t(Config::Type::Path) &&
-                      BMDS_SYSCONF_TYPE_PATHS == uint32_t(Config::Type::Paths));
+                      BMDS_SYSCONF_TYPE_PATHS == uint32_t(Config::Type::Paths) &&
+                      BMDS_SYSCONF_TYPE_SECRET == uint32_t(Config::Type::Secret));
         static_assert(BMDS_SYSCONF_OVERFLOW == SysConf::OverflowRecord);
 
         // A program's key or prefix: NUL-ended within the longest key.
@@ -925,7 +947,7 @@ int32_t Process::sysconfNext(const char *prefix, int32_t after) {
 
 int32_t Process::sysconfDeclare(const bmds_sysconf_param_t *param) {
         if (param == nullptr) return -BMDS_EFAULT;
-        if (param->size < sizeof(bmds_sysconf_param_t) || param->type > BMDS_SYSCONF_TYPE_PATHS) return -BMDS_EINVAL;
+        if (param->size < sizeof(bmds_sysconf_param_t) || param->type > BMDS_SYSCONF_TYPE_SECRET) return -BMDS_EINVAL;
         StringView key;
         if (int32_t r = keyArg(param->key, key); r < 0) return r == -BMDS_ENOENT ? -BMDS_EINVAL : r;
         // The texts' lengths bounded before the registry copies them.
@@ -1162,16 +1184,21 @@ int32_t Process::interrupted() {
 int32_t Process::termGet(int32_t fd, bmds_term_t *term) {
         const FileHandle::Ptr h = handleOf(fd);
         if (!h) return -BMDS_EBADF;
-        if (!isConsole(h.get())) return -BMDS_ENOTTY;
-        const Console::TermMode mode = _console->mode();
-        const Console::Size     cells = _console->size();
+        if (!h->stream().isTerminal()) return -BMDS_ENOTTY;
+        // Another terminal than its own (a pty's program end before it is a session's): its
+        // modes, and the line input's as a new terminal's (they are its users' own).
+        const bool              own = isConsole(h.get());
+        Console                &c = static_cast<Console &>(h->stream()); // every terminal is a Console
+        const Console::TermMode mode = c.mode();
+        const Console::Size     cells = c.size();
         bmds_term_t             t = {};
         t.flags = (mode.signals ? BMDS_TERM_SIGNALS : 0) | (mode.nlToCrNl ? BMDS_TERM_ONLCR : 0) |
                   (mode.colors ? BMDS_TERM_COLORS : 0) | (mode.logs ? BMDS_TERM_LOGS : 0) |
-                  (_lineInput ? BMDS_TERM_LINE : 0) | (_echo ? BMDS_TERM_ECHO : 0) | (_crToNl ? BMDS_TERM_ICRNL : 0);
+                  (!own || _lineInput ? BMDS_TERM_LINE : 0) | (!own || _echo ? BMDS_TERM_ECHO : 0) |
+                  (!own || _crToNl ? BMDS_TERM_ICRNL : 0);
         t.columns = cells.columns;
         t.rows = cells.rows;
-        t.colors = colorCount(_console->colorDepth());
+        t.colors = colorCount(c.colorDepth());
         return copyOut(t, term);
 }
 
@@ -1179,21 +1206,23 @@ int32_t Process::terminalOf(int32_t fd, Console *&out) const {
         const FileHandle::Ptr h = handleOf(fd);
         if (!h) return -BMDS_EBADF;
         if (!isConsole(h.get())) return -BMDS_ENOTTY;
-        out = _console;
+        out = console();
         return 0;
 }
 
 int32_t Process::termSet(int32_t fd, uint32_t flags) {
         const FileHandle::Ptr h = handleOf(fd);
         if (!h) return -BMDS_EBADF;
-        if (!isConsole(h.get())) return -BMDS_ENOTTY;
+        if (!h->stream().isTerminal()) return -BMDS_ENOTTY;
         if ((flags & ~KnownTermFlags) != 0) return -BMDS_EINVAL;
         Console::TermMode mode;
         mode.signals = (flags & BMDS_TERM_SIGNALS) != 0;
         mode.nlToCrNl = (flags & BMDS_TERM_ONLCR) != 0;
         mode.colors = (flags & BMDS_TERM_COLORS) != 0;
         mode.logs = (flags & BMDS_TERM_LOGS) != 0;
-        _console->setMode(mode);
+        static_cast<Console &>(h->stream()).setMode(mode);
+        // The line input is its users' own: another terminal's is theirs to set.
+        if (!isConsole(h.get())) return 0;
         _lineInput = (flags & BMDS_TERM_LINE) != 0;
         _echo = (flags & BMDS_TERM_ECHO) != 0;
         _crToNl = (flags & BMDS_TERM_ICRNL) != 0;
@@ -1221,6 +1250,23 @@ int32_t Process::setMtime(const char *path, int64_t ns) {
         if (int32_t r = this->path(path, p); r < 0) return r;
         Mutex::Locker locker(_pathLock, WaitForever);
         return fsErrno(Vfs::setModified(p, Timestamp{ns}, vfs()));
+}
+
+int32_t Process::fsInfo(const char *path, bmds_fs_info_t *info) {
+        StringView p;
+        if (int32_t r = this->path(path, p); r < 0) return r;
+        Result<FsInfo> fs = makeError<FsInfo>(Error::NotExist);
+        {
+                Mutex::Locker locker(_pathLock, WaitForever);
+                fs = Vfs::statfs(p, vfs());
+        }
+        if (fs.isError()) return fs.error() == Error::NotSupported ? -BMDS_ENOSYS : fsErrno(fs.error());
+        bmds_fs_info_t out = {};
+        out.block_bytes = fs.value().clusterBytes;
+        out.total_bytes = fs.value().totalBytes;
+        out.free_bytes = fs.value().freeBytes;
+        (void)copyText(StringView(fs.value().type), out.type, sizeof(out.type));
+        return copyOut(out, info);
 }
 
 int32_t Process::ftruncate(int32_t fd, int64_t size) {

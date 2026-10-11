@@ -44,7 +44,7 @@ namespace {
 
         // A new shell's PATH (devplan/sysconf.md §8): where commands that aren't built-ins are
         // looked for (name, name.elf, name.sh). Shells running keep theirs.
-        constexpr const char DefaultPath[] = "/bin:/sd0/p0/bin";
+        constexpr const char DefaultPath[] = "/bin:/rom/bin:/sd0/p0/bin";
 
         BMDS_SYSCONF(shellPath, "shell/path", Config::Type::String, DefaultPath,
                      "A new shell's PATH: directories separated by :", 0, 1024, nullptr, nullptr)
@@ -60,6 +60,7 @@ void Shell::prepareInteractive(bool login) {
                 const Variables::Entry *e = vars.find(name);
                 return e != nullptr && (e->flags & Variables::Exported) != 0;
         };
+        prepareProgram();
         (void)vars.set("BMDS_VERSION", System::info().bmdsVersion);
         // The chip's serial number, for programs; the host name as bash keeps it (devplan/notifications.md §2).
         (void)vars.set("BMDS_SERIAL", System::serial());
@@ -69,6 +70,18 @@ void Shell::prepareInteractive(bool login) {
                 (void)SysConf::hostname(name);
                 (void)vars.set("HOSTNAME", name);
         }
+        // A colored prompt with the directory; the console fits the color to its terminal.
+        if (!inherited("PS1")) (void)vars.set("PS1", "\\[\\e[1;32m\\]\\h\\[\\e[0m\\]:\\[\\e[1;34m\\]\\w\\[\\e[0m\\]> ");
+        return;
+}
+
+// Any new shell, interactive or not (`sh -c` over SSH): HOME and PATH unless inherited.
+void Shell::prepareProgram() {
+        Variables &vars = _state.vars;
+        const auto inherited = [&](StringView name) {
+                const Variables::Entry *e = vars.find(name);
+                return e != nullptr && (e->flags & Variables::Exported) != 0;
+        };
         // HOME is /home, the link to the user's home (devplan/sysconf.md §7), unless inherited.
         if (!inherited("HOME")) {
                 (void)vars.set("HOME", "/home");
@@ -81,8 +94,6 @@ void Shell::prepareInteractive(bool login) {
                 (void)vars.set("PATH", path.view());
                 (void)vars.addFlags("PATH", Variables::Exported);
         }
-        // A colored prompt with the directory; the console fits the color to its terminal.
-        if (!inherited("PS1")) (void)vars.set("PS1", "\\[\\e[1;32m\\]\\h\\[\\e[0m\\]:\\[\\e[1;34m\\]\\w\\[\\e[0m\\]> ");
         return;
 }
 

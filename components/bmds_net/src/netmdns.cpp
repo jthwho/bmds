@@ -33,6 +33,8 @@ namespace {
 
         struct Responder {
                         bool              added = false;
+                        s8_t              sshSlot = -1; // _ssh._tcp's service slot, or -1
+                        uint16_t          sshPort = 0;  // the port it advertises
                         unsigned int      suffix = 0; // 0: the host name as it is
                         std::atomic<bool> conflict{false};
                         char              name[NetMdns::MaxName + 1] = {};
@@ -42,7 +44,8 @@ namespace {
                         SysConf::Id       enabledId = {};
                         SysConf::Watcher  watcher;
                         SysConf::Watcher  hostnameWatcher;
-                        std::atomic<bool> pending{true};
+                        std::atomic<bool>     pending{true};
+                        std::atomic<uint16_t> sshPort{0}; // _ssh._tcp's port (0: none)
                         // Under the core lock:
                         Responder responders[NetInterface::MaxInterfaces];
         };
@@ -102,6 +105,7 @@ namespace {
                         if (!on) {
                                 if (r.added) (void)mdns_resp_remove_netif(&ni.netif());
                                 r.added = false;
+                                r.sshSlot = -1;
                                 continue;
                         }
                         const bool conflict = r.conflict.exchange(false);
@@ -126,7 +130,19 @@ namespace {
                         } else if (conflict || std::strcmp(want, r.name) != 0) {
                                 std::memcpy(r.name, want, sizeof(r.name));
                                 (void)mdns_resp_rename_netif(&ni.netif(), r.name);
+                                if (r.sshSlot >= 0)
+                                        (void)mdns_resp_rename_service(&ni.netif(), u8_t(r.sshSlot), r.name);
                         }
+                        // The SSH server's service, named as the host.
+                        const uint16_t port = state->sshPort.load();
+                        if (!r.added || (r.sshSlot >= 0 && r.sshPort == port)) continue;
+                        if (r.sshSlot >= 0) (void)mdns_resp_del_service(&ni.netif(), u8_t(r.sshSlot));
+                        r.sshSlot = -1;
+                        if (port == 0) continue;
+                        r.sshSlot = mdns_resp_add_service(&ni.netif(), r.name, "_ssh", DNSSD_PROTO_TCP, port, nullptr,
+                                                          nullptr);
+                        r.sshPort = port;
+                        if (r.sshSlot < 0) bmdsWarn("%s: mDNS: _ssh._tcp not advertised", ni.name());
                 }
                 return;
         }
@@ -169,6 +185,14 @@ bool NetMdns::name(size_t position, char (&out)[MaxName + 1]) {
         if (!started || position >= NetInterface::count() || !state->responders[position].added) return false;
         std::memcpy(out, state->responders[position].name, sizeof(out));
         return true;
+}
+
+void NetMdns::setSshPort(uint16_t port) {
+        if (!started) return;
+        state->sshPort.store(port);
+        state->pending.store(true);
+        NetStack::wake();
+        return;
 }
 
 bool NetMdns::isOwnName(StringView name) {

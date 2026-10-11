@@ -8,6 +8,7 @@ set(BMDS_CONSOLE_PURE_SRCS
         src/colorfilter.cpp
         src/console.cpp
         src/lineeditor.cpp
+        src/nullconsole.cpp
         src/pty.cpp
         src/screenconsole.cpp
         src/terminalscreen.cpp)

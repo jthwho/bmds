@@ -13,6 +13,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <bmds/config.h>
 #include <bmds/error.h>
 #include <bmds/stringview.h>
@@ -43,6 +44,12 @@ namespace NetMdns {
 
         /** @brief Returns true if @p name is one of ours with `.local` (core lock held). */
         bool isOwnName(StringView name);
+
+        /**
+         * @brief Advertises `_ssh._tcp` on @p port (0: not), on every interface the
+         *        responder runs on (the SSH server's, devplan/network.md §24). Any task.
+         */
+        void setSshPort(uint16_t port);
 
 } // namespace NetMdns
 

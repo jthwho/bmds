@@ -1,0 +1,19 @@
+DROPBEAR_NO_DEFAULT_PATH: sessions get no fixed PATH; the BMDS shell takes it from the
+shell/path setting.
+
+--- a/src/svr-chansession.c
++++ b/src/svr-chansession.c
+@@ -1011,11 +1011,13 @@
+ 	addnewvar("LOGNAME", ses.authstate.pw_name);
+ 	addnewvar("HOME", ses.authstate.pw_dir);
+ 	addnewvar("SHELL", get_user_shell());
++#if !DROPBEAR_NO_DEFAULT_PATH
+ 	if (getuid() == 0) {
+ 		addnewvar("PATH", DEFAULT_ROOT_PATH);
+ 	} else {
+ 		addnewvar("PATH", DEFAULT_PATH);
+ 	}
++#endif
+ 	if (cp != NULL) {
+ 		addnewvar("LANG", cp);
+ 		m_free(cp);

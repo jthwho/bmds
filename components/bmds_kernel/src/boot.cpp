@@ -39,7 +39,7 @@ namespace {
         constinit StaticObject<Semaphore> bootDone;
 
         // Most stages a boot can have (kernel + system); sizes the timing array.
-        constexpr size_t MaxStages = 24;
+        constexpr size_t MaxStages = 32;
 
         Error initMemory() {
                 // Every MemSpace the board maps must have backing memory; a

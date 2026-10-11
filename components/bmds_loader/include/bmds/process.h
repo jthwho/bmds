@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
@@ -112,8 +113,16 @@ class Process {
                 /** @brief Released when one of its children ends (its waits). */
                 Semaphore &childEvent() { return _childEvent; }
 
-                /** @brief Returns its console (may be null). */
-                Console *console() const { return _console; }
+                /** @brief Returns its console: its controlling terminal (may be null). */
+                Console *console() const { return _console.load(std::memory_order_acquire); }
+
+                /**
+                 * @brief Makes @p console (may be null) its terminal (`TIOCSCTTY`,
+                 *        `TIOCNOTTY`): the console counts it as a user, the old one
+                 *        no longer does, and input the old one's line editor held is
+                 *        dropped. Its fds are unchanged.
+                 */
+                void setConsole(Console *console);
 
                 /** @brief Returns its signals (whose interrupt its blocking calls wake on). */
                 Signals &signals() { return _signals; }
@@ -192,6 +201,7 @@ class Process {
                 int32_t terminalOf(int32_t fd, Console *&out) const;
                 int32_t memInfo(uint32_t flags, bmds_mem_info_t *info);
                 int32_t setMtime(const char *path, int64_t ns);
+                int32_t fsInfo(const char *path, bmds_fs_info_t *info);
                 int32_t ftruncate(int32_t fd, int64_t size);
                 int32_t symlink(const char *target, const char *path);
                 int32_t readlink(const char *path, char *buf, uint32_t size);
@@ -257,7 +267,7 @@ class Process {
                 Semaphore     _consoleTurn{1, 1}; // the console's input (_line and the modes' use of it)
 
                 FdTable    _fds;
-                Console   *_console;
+                std::atomic<Console *> _console;
                 Signals    _signals;
                 String     _cwd;
                 LineInput *_line = nullptr;

@@ -120,6 +120,15 @@ _Static_assert(BMDS_SYS_SETSOCKOPT == 104 && BMDS_SYS_GETSOCKOPT == 105 && BMDS_
                "ABI: slots SETSOCKOPT, GETSOCKOPT, SHUTDOWN, NET_INFO");
 _Static_assert(BMDS_SYS_PROC_TIMER == 108, "ABI: slot PROC_TIMER");
 _Static_assert(BMDS_SYS_NET_WATCH == 109, "ABI: slot NET_WATCH");
+_Static_assert(BMDS_SYS_TERM_CTL == 110, "ABI: slot TERM_CTL");
+_Static_assert(BMDS_SYS_FS_INFO == 111, "ABI: slot FS_INFO");
+_Static_assert(offsetof(bmds_fs_info_t, size) == 0 && offsetof(bmds_fs_info_t, block_bytes) == 4 &&
+                       offsetof(bmds_fs_info_t, total_bytes) == 8 && offsetof(bmds_fs_info_t, free_bytes) == 16 &&
+                       offsetof(bmds_fs_info_t, type) == 24 && sizeof(bmds_fs_info_t) == 40,
+               "ABI: bmds_fs_info_t");
+_Static_assert(BMDS_TERM_PTY_NUMBER == 0 && BMDS_TERM_PTY_UNLOCK == 1 && BMDS_TERM_SET_SIZE == 2 &&
+                       BMDS_TERM_CONTROL == 3 && BMDS_TERM_RELEASE == 4 && BMDS_TERM_PTS_NUMBER == 5,
+               "ABI: term_ctl operations");
 _Static_assert(BMDS_TIMER_REAL == 0, "ABI: timers (Linux's ITIMER_REAL)");
 _Static_assert(offsetof(bmds_timer_t, size) == 0 && offsetof(bmds_timer_t, reserved) == 4 &&
                        offsetof(bmds_timer_t, value_us) == 8 && offsetof(bmds_timer_t, interval_us) == 16 &&
@@ -184,7 +193,7 @@ _Static_assert(BMDS_NOTIFY_ACTIVATED == 1 && BMDS_NOTIFY_DISMISSED == 2 && BMDS_
 _Static_assert(BMDS_SYSCONF_KEY_MAX == 63 && BMDS_SYSCONF_VALUE_MAX == 1024, "ABI: sysconf lengths");
 _Static_assert(BMDS_SYSCONF_TYPE_BOOL == 0 && BMDS_SYSCONF_TYPE_INT == 1 && BMDS_SYSCONF_TYPE_STRING == 2 &&
                        BMDS_SYSCONF_TYPE_COLOR == 3 && BMDS_SYSCONF_TYPE_ENUM == 4 && BMDS_SYSCONF_TYPE_PATH == 5 &&
-                       BMDS_SYSCONF_TYPE_PATHS == 6,
+                       BMDS_SYSCONF_TYPE_PATHS == 6 && BMDS_SYSCONF_TYPE_SECRET == 7,
                "ABI: sysconf types");
 _Static_assert(BMDS_SYSCONF_FIELD_VALUE == 0 && BMDS_SYSCONF_FIELD_DEFAULT == 1 && BMDS_SYSCONF_FIELD_SAVED == 2 &&
                        BMDS_SYSCONF_FIELD_KEY == 3 && BMDS_SYSCONF_FIELD_HELP == 4 && BMDS_SYSCONF_FIELD_CHOICES == 5,

@@ -267,7 +267,7 @@ TEST_CASE("Vfs: devices, partitions and mounts") {
         CHECK(list("/") == std::vector<std::string>{"bin/", "dev/", "etc/", "ram0/", "share/"});
         CHECK(list("/ram0") == std::vector<std::string>{"p0/"});
         CHECK(list("/dev") == std::vector<std::string>{"clip0", "clip0p", "console", "null", "ram0", "ram0p0", "random",
-                                                       "urandom", "zero"});
+                                                       "tty", "urandom", "zero"});
         CHECK(Vfs::stat("/ram0", Root).value().isDirectory());
         CHECK(Vfs::stat("/dev/ram0", Root).value().type == FileType::Device);
         CHECK(Vfs::stat("/dev/ram0", Root).value().size == 64u * 1024 * 1024);
@@ -350,7 +350,7 @@ TEST_CASE("Vfs: devices, partitions and mounts") {
                 CHECK(mountList().empty());
                 CHECK(Vfs::stat("/ram0/p0/kept.txt", Root).error() == Error::NotExist);
                 CHECK(list("/dev") == std::vector<std::string>{"clip0", "clip0p", "console", "null", "ram0", "random",
-                                                               "urandom", "zero"});
+                                                               "tty", "urandom", "zero"});
                 CHECK(bmds::BlockDevices::find("ram0p0") == nullptr);
                 // Back in.
                 disk().device.setPresent(true);
@@ -972,8 +972,12 @@ TEST_CASE("Vfs: /dev/null, /dev/zero, /dev/urandom and /dev/console") {
                 const Vfs::Context withTerminal{"/", &terminal};
                 FileHandle::Ptr    console = open("/dev/console", Vfs::Write, withTerminal);
                 CHECK(console->write(bmds::StringView("hi"), WaitForever).error().isOk());
+                // /dev/tty is the same: the caller's terminal.
+                FileHandle::Ptr tty = open("/dev/tty", Vfs::Write, withTerminal);
+                CHECK(tty->write(bmds::StringView("!"), WaitForever).error().isOk());
         }
-        CHECK(terminal.contents() == "hi");
+        CHECK(terminal.contents() == "hi!");
+        CHECK(Vfs::open("/dev/tty", Vfs::Write, Root).error() == Error::NotExist);
 }
 
 TEST_CASE("Vfs: time stamps") {
@@ -1415,4 +1419,51 @@ TEST_CASE("Vfs: /etc, built from the settings when opened") {
         CHECK(Vfs::mkdir("/etc/sub", Root) == Error::ReadOnly);
         CHECK(Vfs::mount("/etc", disk().device) == Error::Invalid);
         CHECK(Vfs::openDirectory("/etc/hosts", Root).error() == Error::NotDir);
+}
+
+namespace {
+
+        // A directory of numbered devices (as /dev/pts): entries 1 and 3 exist.
+        bool numberedPresent(void *, size_t index) {
+                return index == 1 || index == 3;
+        }
+
+        size_t numberedOpened = 99;
+
+        bmds::Result<FileHandle::Ptr> numberedOpen(void *, size_t index, uint8_t) {
+                numberedOpened = index;
+                return bmds::makeError<FileHandle::Ptr>(Error::Busy);
+        }
+
+} // namespace
+
+TEST_CASE("Vfs: an added /dev directory of numbered devices") {
+        fresh();
+        static const Vfs::DeviceDirectory Numbered{"numbered", 4, numberedPresent, numberedOpen, nullptr};
+        static bool                       added = false;
+        if (!added) {
+                REQUIRE(Vfs::addDeviceDirectory(Numbered) == Error::Ok);
+                added = true;
+        }
+        CHECK(Vfs::addDeviceDirectory(Numbered) == Error::Exists);
+        CHECK(Vfs::addDeviceDirectory(Vfs::DeviceDirectory{"null", 1, nullptr, numberedOpen, nullptr}) ==
+              Error::Exists);
+        CHECK(Vfs::addDeviceDirectory(Vfs::DeviceDirectory{"a/b", 1, nullptr, numberedOpen, nullptr}) ==
+              Error::Invalid);
+        const std::vector<std::string> dev = list("/dev");
+        CHECK(std::find(dev.begin(), dev.end(), "numbered/") != dev.end());
+        CHECK(Vfs::stat("/dev/numbered", Root).value().isDirectory());
+        CHECK(list("/dev/numbered") == std::vector<std::string>{"1", "3"});
+        CHECK(Vfs::stat("/dev/numbered/1", Root).value().type == FileType::Device);
+        CHECK(Vfs::stat("/dev/numbered/2", Root).error() == Error::NotExist);  // not present
+        CHECK(Vfs::stat("/dev/numbered/4", Root).error() == Error::NotExist);  // beyond its count
+        CHECK(Vfs::stat("/dev/numbered/01", Root).error() == Error::NotExist); // not its name
+        CHECK(Vfs::stat("/dev/numbered/3/x", Root).error() == Error::NotExist);
+        CHECK(Vfs::open("/dev/numbered/3", Vfs::Read, Root).error() == Error::Busy);
+        CHECK(numberedOpened == 3);
+        CHECK(Vfs::open("/dev/numbered/../numbered/1", Vfs::Read, Root).error() == Error::Busy);
+        CHECK(numberedOpened == 1);
+        CHECK(Vfs::open("/dev/numbered/2", Vfs::Read, Root).error() == Error::NotExist);
+        CHECK(Vfs::open("/dev/numbered", Vfs::Read, Root).error() == Error::IsDir);
+        CHECK(Vfs::remove("/dev/numbered/1", Root) == Error::PermissionDenied);
 }

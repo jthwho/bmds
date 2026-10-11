@@ -23,6 +23,8 @@
 #include <bmds/process.h>
 #include <bmds/sys.h>
 #include <bmds/configtypes.h>
+#include <bmds/password.h>
+#include <bmds/shacrypt.h>
 #include <bmds/ramflashdevice.h>
 #include <bmds/sysconf.h>
 #include <bmds/vfs.h>
@@ -531,7 +533,7 @@ TEST_CASE("SysConf: the SDK's calls (sysconf_*)") {
         CHECK(info.flags == (BMDS_SYSCONF_IS_DEFAULT | BMDS_SYSCONF_RUNTIME));
         param.type = BMDS_SYSCONF_TYPE_BOOL;
         CHECK(p.sysconfDeclare(&param) == -BMDS_EEXIST);
-        param.type = 7;
+        param.type = 8;
         CHECK(p.sysconfDeclare(&param) == -BMDS_EINVAL);
         param.type = BMDS_SYSCONF_TYPE_INT;
         param.key = "Game";
@@ -589,4 +591,45 @@ TEST_CASE("SysConf: the SDK's calls (sysconf_*)") {
         CHECK(records[0] == BMDS_SYSCONF_OVERFLOW);
         CHECK(p.close(fd) == 0);
         CHECK(SysConf::set("panel/edge", "top").isOk()); // the watch is gone
+}
+
+TEST_CASE("SysConf: a secret is never shown; the password, hashed, in /etc/shadow") {
+        namespace Password = bmds::Password;
+        Flash f("/cfg");
+        REQUIRE(SysConf::initForHost(Params, "/cfg/sysconf").isOk());
+        REQUIRE(SysConf::declareKernel(Password::declaration()).isOk());
+        CHECK(std::string(Config::typeName(Config::Type::Secret)) == "secret");
+        CHECK(get("system/password") == "");
+        CHECK_FALSE(Password::isSet());
+        // Only a hash goes in.
+        CHECK(SysConf::set("system/password", "plain text") == Error::Invalid);
+        REQUIRE(Password::set("open sesame").isOk());
+        CHECK(Password::isSet());
+        // Readers see that it is set, never the hash.
+        CHECK(get("system/password") == "(set)");
+        SysConf::Info info;
+        REQUIRE(SysConf::info("system/password", info).isOk());
+        CHECK(std::string(info.value.cStr()) == "(set)");
+        CHECK(std::string(info.saved.cStr()) == "(set)");
+        CHECK(info.hasSaved);
+        listed.clear();
+        REQUIRE(SysConf::list("system", collect, nullptr).isOk());
+        CHECK(listed == std::vector<std::string>{"system/password saved (set)"});
+        // The kernel's own read, and the store, hold the hash.
+        String hash;
+        REQUIRE(SysConf::getSecret("system/password", hash).isOk());
+        CHECK(bmds::ShaCrypt::isHash(hash.view()));
+        CHECK(hash.view().startsWith("$6$rounds=2000$"));
+        CHECK(readFile("/cfg/sysconf").find(std::string("system/password=") + hash.cStr()) != std::string::npos);
+        // /etc/shadow's line has it, for crypt() in programs.
+        String shadow;
+        REQUIRE(Password::shadowFile(shadow).isOk());
+        CHECK(std::string(shadow.cStr()) == std::string("root:") + hash.cStr() + ":::::::\n");
+        // Cleared.
+        REQUIRE(Password::set("").isOk());
+        CHECK_FALSE(Password::isSet());
+        CHECK(get("system/password") == "");
+        shadow.clear();
+        REQUIRE(Password::shadowFile(shadow).isOk());
+        CHECK(std::string(shadow.cStr()) == "root:!:::::::\n"); // no password: logins refused
 }

@@ -10,10 +10,13 @@
  */
 
 #include <cstdio>
+#include <cstring>
 #include <esp_heap_caps.h>
 #include <bmds/console.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
+#include <bmds/password.h>
+#include <bmds/shacrypt.h>
 #include <bmds/shell.h>
 #include <bmds/sysconf.h>
 #include <bmds/system.h>
@@ -67,6 +70,86 @@ namespace {
                 char name[HostName::MaxBytes + 1];
                 (void)SysConf::hostname(name);
                 ctx.printf("%s\n", name);
+                return Shell::ExitSuccess;
+        }
+
+        // A line of input for passwd, unseen: what is typed on a terminal isn't echoed (Backspace and
+        // Ctrl-U edit it); from a pipe, the next line. False at the end of input or on Ctrl-C.
+        bool readUnseen(CommandContext &ctx, char (&line)[ShaCrypt::MaxPassword + 1], size_t &length) {
+                length = 0;
+                for (;;) {
+                        uint8_t    c = 0;
+                        const auto r = ctx.read(WritableByteSpan(&c, 1));
+                        if (r.isError() || r.value() == 0) return false;
+                        if (c == '\r' || c == '\n') break;
+                        if (c == 0x7f || c == 0x08) {
+                                if (length > 0) --length;
+                        } else if (c == 0x15) { // Ctrl-U
+                                length = 0;
+                        } else if (c == 0x04 && length == 0) { // Ctrl-D
+                                return false;
+                        } else if (length < ShaCrypt::MaxPassword) {
+                                line[length++] = static_cast<char>(c);
+                        }
+                }
+                line[length] = '\0';
+                return true;
+        }
+
+        // The user's password (devplan/network.md §24): asked twice, unseen, hashed and kept in
+        // system/password; -d removes it (password logins are then refused).
+        int runPasswd(CommandContext &ctx) {
+                const Args args = ctx.args();
+                if (args.size() == 2 && std::strcmp(args[1], "-d") == 0) {
+                        const Error err = Password::set(StringView());
+                        if (err.isError()) {
+                                ctx.eprintf("passwd: can't remove it: %s\n", err.desc());
+                                return Shell::ExitFailure;
+                        }
+                        ctx.eprintf("passwd: no password now; password logins are refused\n");
+                        return Shell::ExitSuccess;
+                }
+                if (args.size() != 1) return ctx.usage();
+                const FileHandle *in = ctx.fds().handle(FdTable::Stdin);
+                const bool        terminal = in != nullptr && in->stream().isTerminal();
+                char              first[ShaCrypt::MaxPassword + 1];
+                char              second[ShaCrypt::MaxPassword + 1];
+                size_t            n1 = 0, n2 = 0;
+                auto              wipe = [&] {
+                        volatile char *a = first, *b = second;
+                        for (size_t i = 0; i < sizeof(first); ++i) {
+                                a[i] = 0;
+                                b[i] = 0;
+                        }
+                };
+                if (terminal) ctx.eprint("New password: ");
+                bool ok = readUnseen(ctx, first, n1);
+                if (terminal) ctx.eprint("\n");
+                if (ok && terminal) ctx.eprint("Retype new password: ");
+                ok = ok && readUnseen(ctx, second, n2);
+                if (terminal && ok) ctx.eprint("\n");
+                if (!ok) {
+                        wipe();
+                        ctx.eprintf("passwd: unchanged\n");
+                        return Shell::ExitFailure;
+                }
+                if (n1 != n2 || std::memcmp(first, second, n1) != 0) {
+                        wipe();
+                        ctx.eprintf("passwd: they don't match; unchanged\n");
+                        return Shell::ExitFailure;
+                }
+                if (n1 == 0) {
+                        wipe();
+                        ctx.eprintf("passwd: empty; unchanged (passwd -d removes it)\n");
+                        return Shell::ExitFailure;
+                }
+                const Error err = Password::set(StringView(first, n1));
+                wipe();
+                if (err.isError()) {
+                        ctx.eprintf("passwd: can't set it: %s\n", err.desc());
+                        return Shell::ExitFailure;
+                }
+                ctx.eprintf("passwd: set\n");
                 return Shell::ExitSuccess;
         }
 
@@ -378,6 +461,8 @@ namespace {
 } // namespace
 
 BMDS_SHELL_COMMAND(help, Shell::runHelp, "[command]", "List commands, or show one command's usage")
+BMDS_SHELL_COMMAND(passwd, runPasswd, "[-d]",
+                   "Set the password (asked twice, not shown; kept as a hash in system/password), or remove it")
 BMDS_SHELL_COMMAND(hostname, runHostname, "[NAME]",
                    "Show the system's name, or set and keep it ('' for the default, bmds- and the serial's end)")
 BMDS_SHELL_COMMAND(log, runLog, "[show]",

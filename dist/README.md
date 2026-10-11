@@ -10,6 +10,10 @@ tools/bmds-dist build [package...]  # into build-dist/rootfs
 tools/bmds-dist install             # over the serial cable, into /sd0/p0
 ```
 
+`--out DIR` builds into DIR instead of `build-dist`; `--nested` is for running inside another
+build (the firmware's, which puts `dropbear` and `sftp-server` in `/rom`): no `build` wrapper,
+whose lock the outer build holds, and one job at a time.
+
 ## Adding a package
 
 Make `dist/<name>/` with:

@@ -39,6 +39,7 @@ The user's requirements:
 | `enum` | one of the declared words | |
 | `path` | an absolute path | normalized; an optional check (below) |
 | `paths` | absolute paths separated by `;` | each one as `path` |
+| `secret` | a string never shown: readers get `(set)` or nothing (2026-10-11, `network.md` §24) | its declaration's check (`system/password`: SHA-512 crypt or empty) |
 
 - **A declaration** (rodata, no constructor) holds the key, type, default (canonical text), a
   one-line description, the limits (`int` minimum and maximum, `string` length, `enum` words), and

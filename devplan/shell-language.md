@@ -116,7 +116,7 @@ Modeled on bash. Anything not listed is out of scope until someone needs it.
 | Compound | `if/then/elif/else/fi`, `while`, `until`, `for x in …; do`, `for ((i=0;i<n;i++))`, `case … in pat\|pat) …;; esac` with glob patterns, `break [n]`, `continue [n]` | `select`, `;&`/`;;&` fallthrough |
 | Functions | `name() { …; }`, `function name { …; }`, positional parameters, `local`, `return [n]`, recursion (depth-limited) | |
 | Tests | `test` / `[ … ]`: `-z -n = != -eq -ne -lt -le -gt -ge ! -a -o`, `( )`; file tests `-e -f -d -c -s -r -w -x -nt -ot -ef` (Phase 2) | `[[ … ]]` with `=~` regex (later; regex is costly) |
-| Built-ins (language) | `echo` (`-n -e`), `printf` (`%s %d %i %u %x %o %c %%`, widths), `read` (`-r -p`, IFS splitting), `true`, `false`, `:`, `exit`, `return`, `set` (`-e -u -x -C`, `--`, positional), `shift`, `export`, `unset`, `local`, `readonly`, `eval`, `source`/`.`, `sh` (Phase 2), `type`, `command` | `trap`, `getopts` (later), `alias`, `history` expansion (`!!`) |
+| Built-ins (language) | `echo` (`-n -e`), `printf` (`%s %d %i %u %x %o %c %%`, widths), `read` (`-r -p`, IFS splitting), `true`, `false`, `:`, `exit`, `return`, `set` (`-e -u -x -C`, `--`, positional), `shift`, `export`, `unset`, `local`, `readonly`, `eval`, `source`/`.`, `sh` (Phase 2), `type`, `command`, `exec` (runs the command, then the shell leaves; alone, its redirections stay), `umask` (kept and shown) | `trap`, `getopts` (later), `alias`, `history` expansion (`!!`) |
 | Interactive | `PS1`/`PS2` with prompt escapes (`\w \h \$ \e \[ \] \n`) and colors, Tab completion of commands, variables and (Phase 2) paths | |
 | Startup | `/sd0/p0/autoexec.sh` when present (a nod to DOS), Phase 2 | |
 

@@ -9,6 +9,7 @@
 # may hold only them.
 
 set(BMDS_SYSCONF_SRCS
+        src/password.cpp
         src/sysconf.cpp
         src/sysconfhome.cpp
         src/sysconfwatch.cpp)

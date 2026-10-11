@@ -540,6 +540,70 @@ int LangBuiltins::command(CommandContext &ctx) {
         return ctx.executor().invoke(words, false);
 }
 
+// The command in place of the shell: run, then the shell leaves with its status (as exec,
+// which a shell that is kernel code can't do itself: ssh-copy-id's `exec sh -c '...'`). Alone,
+// its redirections are the shell's from then on (the executor's).
+int LangBuiltins::exec(CommandContext &ctx) {
+        const Args args = ctx.args();
+        const Args rest = args.mid(args.size() > 1 && StringView(args[1]) == "--" ? 2 : 1);
+        if (rest.isEmpty()) return Shell::ExitSuccess;
+        List<String> words;
+        Error        err = words.reserve(rest.size());
+        for (size_t i = 0; err.isOk() && i < rest.size(); ++i) {
+                auto [w, werr] = String::fromView(rest[i]);
+                err = werr.isOk() ? words.append(std::move(w)) : werr;
+        }
+        if (err.isError()) {
+                ctx.eprint("exec: out of memory\n");
+                return Shell::ExitFailure;
+        }
+        Executor &ex = ctx.executor();
+        const int status = ex.invoke(words, true);
+        if (ex.flow() != Flow::Interrupt) ex.setFlow(Flow::Exit);
+        return status;
+}
+
+// The file mode creation mask: kept and shown (FAT has no modes; programs keep their own).
+int LangBuiltins::umask(CommandContext &ctx) {
+        const Args args = ctx.args();
+        uint16_t  &mask = ctx.executor().state().umask;
+        const bool symbolic = args.size() > 1 && StringView(args[1]) == "-S";
+        const Args rest = args.mid(symbolic ? 2 : 1);
+        if (rest.isEmpty()) {
+                if (!symbolic) {
+                        ctx.printf("%04o\n", static_cast<unsigned>(mask));
+                        return Shell::ExitSuccess;
+                }
+                char  text[32];
+                char *p = text;
+                for (int who = 0; who < 3; ++who) {
+                        const unsigned allowed = ~mask >> (6 - 3 * who) & 7u;
+                        *p++ = "ugo"[who];
+                        *p++ = '=';
+                        if (allowed & 4u) *p++ = 'r';
+                        if (allowed & 2u) *p++ = 'w';
+                        if (allowed & 1u) *p++ = 'x';
+                        if (who < 2) *p++ = ',';
+                }
+                *p = '\0';
+                ctx.printf("%s\n", text);
+                return Shell::ExitSuccess;
+        }
+        if (rest.size() > 1) return ctx.usage();
+        unsigned    value = 0;
+        const char *c = rest[0];
+        if (*c == '\0') return ctx.usage();
+        for (; *c != '\0'; ++c) {
+                if (*c < '0' || *c > '7' || value > 0777) {
+                        ctx.eprintf("umask: %s: an octal mode (symbolic modes aren't taken)\n", rest[0]);
+                        return Shell::ExitFailure;
+                }
+                value = value * 8 + unsigned(*c - '0');
+        }
+        mask = static_cast<uint16_t>(value & 0777u);
+        return Shell::ExitSuccess;
+}
+
 int LangBuiltins::env(CommandContext &ctx) {
         const Args args = ctx.args();
         Variables &vars = ctx.executor().state().vars;
@@ -940,6 +1004,8 @@ BMDS_SHELL_BUILTIN_AS(continueCmd, "continue", LangBuiltins::continueCmd, "[n]",
 BMDS_SHELL_COMMAND(env, LangBuiltins::env, "[name=value]... [command [arg]...]",
                    "Run a command with variables set and exported, or list the environment")
 BMDS_SHELL_BUILTIN(eval, LangBuiltins::eval, "[word]...", "Run the words as a command")
+BMDS_SHELL_BUILTIN(exec, LangBuiltins::exec, "[command [arg]...]",
+                   "Run a command in place of the shell (which then leaves), or keep its redirections")
 BMDS_SHELL_BUILTIN_AS(exitCmd, "exit", LangBuiltins::exitCmd, "[n]", "Leave the shell (at the prompt: the input)")
 BMDS_SHELL_BUILTIN_AS(exportCmd, "export", LangBuiltins::exportCmd, "[-p] [name[=value]]...",
                       "Mark variables for export to programs, or list them")
@@ -956,6 +1022,7 @@ BMDS_SHELL_BUILTIN(source, LangBuiltins::source, "file [arg]...", "Run a script 
 BMDS_SHELL_COMMAND(test, LangBuiltins::test, "expr", "Evaluate a conditional expression")
 BMDS_SHELL_BUILTIN(type, LangBuiltins::type, "[-t] name...", "Say whether names are keywords, functions or built-ins")
 BMDS_SHELL_COMMAND_AS(trueCmd, "true", LangBuiltins::colon, "", "Do nothing, successfully")
+BMDS_SHELL_BUILTIN(umask, LangBuiltins::umask, "[-S] [mode]", "Show or set the file mode creation mask")
 BMDS_SHELL_BUILTIN(unset, LangBuiltins::unset, "[-fv] name...", "Remove variables or functions")
 
 BMDS_NAMESPACE_END

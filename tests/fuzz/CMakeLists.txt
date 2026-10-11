@@ -65,3 +65,11 @@ target_include_directories(ntp_fuzz PRIVATE ${NET}/include)
 target_compile_options(ntp_fuzz PRIVATE -fno-exceptions -fno-rtti)
 target_link_libraries(ntp_fuzz PRIVATE bmds_core)
 target_link_options(ntp_fuzz PRIVATE -fsanitize=fuzzer)
+
+# Our SFTP server's protocol core (devplan/network.md §24): programs/sftp-server's sftp.c (C)
+# with made-up file calls.
+set(SFTP ${BMDS_ROOT}/programs/sftp-server)
+add_executable(sftp_fuzz sftp.cpp ${SFTP}/sftp.c)
+target_include_directories(sftp_fuzz PRIVATE ${SFTP})
+target_compile_options(sftp_fuzz PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti>)
+target_link_options(sftp_fuzz PRIVATE -fsanitize=fuzzer)

@@ -237,7 +237,8 @@ Plan: [`input.md`](input.md).
     discipline, a poll from 64 s to 1024 s), `ntp`, `net.ntp` counters; lwIP's mDNS responder
     for `${HOSTNAME}.local` with conflicts and live renames; a hostname change renews DHCP;
     the parser fuzzed, §22-23.
-  - [ ] 5. SSH: Dropbear, passwords in sysconf, our own `sftp-server`.
+  - [x] 5. SSH: Dropbear, passwords in sysconf, our own `sftp-server` (`network.md` §24-25): in `/rom`, the
+    server a kernel service (`net/ssh/server`); a file manager's `sftp://` still to try.
   - [ ] 5a. The crypto engines (AES, SHA, MPI, ECC) behind SSH, measured.
   - [ ] 6. Real time: fast path, priority queue, timestamps, `netlat`.
   - [ ] 7. PTP, master and slave (BMCA): two boards alone elect a grandmaster.

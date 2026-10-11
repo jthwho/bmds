@@ -30,6 +30,7 @@ DIST = os.path.join(ROOT, "dist")
 OUT = os.path.join(ROOT, "build-dist")
 CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "bmds-dist", "sources")
 ROOTFS = os.path.join(OUT, "rootfs")
+NESTED = False
 
 
 def die(message):
@@ -62,12 +63,21 @@ def run(command, **kwargs):
         die("failed (%d): %s" % (result.returncode, " ".join(command)))
 
 
+def wrapper():
+    """The `build` wrapper, unless run inside another build (--nested): the wrapper lets one
+    build of a project run at a time, so a nested one would wait for the outer one forever."""
+    return None if NESTED else shutil.which("build")
+
+
 def make_tool():
-    """The `build` wrapper when there is one (it paces parallel jobs), else make -jN."""
+    """The `build` wrapper when there is one (it paces parallel jobs), else make -jN; nested,
+    plain make: one job beside the outer build's."""
     if os.environ.get("BMDS_MAKE"):
         return os.environ["BMDS_MAKE"]
-    wrapper = shutil.which("build")
-    return wrapper if wrapper else "make -j%d" % (os.cpu_count() or 2)
+    if NESTED:
+        return "make"
+    found = wrapper()
+    return found if found else "make -j%d" % (os.cpu_count() or 2)
 
 
 def find_tool(name):
@@ -84,11 +94,11 @@ def build_sdk():
         run(["cmake", "-S", os.path.join(ROOT, "sdk", "examples"), "-B", sdk, "-G", "Ninja",
              "-DCMAKE_TOOLCHAIN_FILE=" + os.path.join(ROOT, "sdk", "cmake", "bmds-toolchain.cmake"),
              "-DCMAKE_BUILD_TYPE=MinSizeRel"])
-    wrapper = shutil.which("build")
-    if wrapper:
-        run([wrapper, "bmds_libs"], cwd=sdk)
+    found = wrapper()
+    if found:
+        run([found, "bmds_libs"], cwd=sdk)
     else:
-        run(["cmake", "--build", sdk, "--target", "bmds_libs"])
+        run(["cmake", "--build", sdk, "--target", "bmds_libs"] + (["-j", "1"] if NESTED else []))
     return os.path.join(sdk, "bmds-cc")
 
 
@@ -99,7 +109,9 @@ def fetch(recipe):
     if not os.path.isfile(path):
         os.makedirs(CACHE, exist_ok=True)
         print("fetching " + url, flush=True)
-        with urllib.request.urlopen(url) as response, open(path + ".part", "wb") as f:
+        # Some servers refuse Python's own User-Agent (matt.ucc.asn.au's: 403).
+        request = urllib.request.Request(url, headers={"User-Agent": "bmds-dist"})
+        with urllib.request.urlopen(request) as response, open(path + ".part", "wb") as f:
             shutil.copyfileobj(response, f)
         os.replace(path + ".part", path)
     digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
@@ -265,6 +277,9 @@ def command_install(opts):
 
 def main():
     parser = argparse.ArgumentParser(description="Build and install the BMDS distribution (dist/).")
+    parser.add_argument("--out", help="the build directory (default: build-dist); the tree is its rootfs/")
+    parser.add_argument("--nested", action="store_true",
+                        help="inside another build (the firmware's ROM): no build wrapper, one job at a time")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("list", help="the packages")
     b = sub.add_parser("build", help="build packages (all by default) into build-dist/rootfs")
@@ -273,6 +288,11 @@ def main():
     i.add_argument("-p", "--port", help="serial port (default: $ESPPORT, /dev/esp-*, /dev/ttyACM0)")
     i.add_argument("--root", default="/sd0/p0", help="where the tree goes (default: /sd0/p0)")
     opts = parser.parse_args()
+    global OUT, ROOTFS, NESTED
+    if opts.out:
+        OUT = os.path.abspath(opts.out)
+        ROOTFS = os.path.join(OUT, "rootfs")
+    NESTED = opts.nested
     return {"list": command_list, "build": command_build, "install": command_install}[opts.command](opts)
 
 

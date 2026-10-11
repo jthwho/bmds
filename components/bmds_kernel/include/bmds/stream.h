@@ -22,6 +22,7 @@ class AudioFile;
 class DecodedFile;
 class FileHandle;
 class MidiFile;
+class Pty;
 class Socket;
 class SynthFile;
 class WaitList;
@@ -176,9 +177,25 @@ class Stream {
                  */
                 virtual Socket *socket() { return nullptr; }
 
+                /** @brief Returns the pseudo-terminal this is the emulator end of, or null. */
+                virtual Pty *pty() { return nullptr; }
+
                 /** @brief Writes @p text (see `write(ByteSpan, unsigned int)`). */
                 Result<size_t> write(StringView text, unsigned int timeoutMs) {
                         return write(ByteSpan(reinterpret_cast<const uint8_t *>(text.data()), text.size()), timeoutMs);
+                }
+
+                /**
+                 * @brief Called by FileHandle when a handle is opened on this stream
+                 *        with @p mode (each `FileHandle::open()`; a `dup` shares the
+                 *        handle and calls nothing). A pseudo-terminal counts its
+                 *        ends' users here; most streams ignore it. Only FileHandle
+                 *        calls this.
+                 * @param mode The handle's `FileHandle::Mode` bits.
+                 */
+                virtual void handleOpened(uint8_t mode) {
+                        (void)mode;
+                        return;
                 }
 
                 /**
