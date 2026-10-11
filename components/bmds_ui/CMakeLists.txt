@@ -35,6 +35,7 @@ if(COMMAND idf_component_register)
                                     src/menupainter.cpp
                                     src/painter.cpp
                                     src/png.cpp
+                                    src/screenshot.cpp
                                     src/screenshotcommand.cpp
                                     src/wincommand.cpp
                                     src/windowmanager.cpp

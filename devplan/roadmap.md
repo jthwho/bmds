@@ -115,15 +115,22 @@ Plan: [`input.md`](input.md).
 - [x] HID mouse: the pointer (drawn last each round), click to raise, title-bar drags, the close box.
 - [ ] Input event model for the kernel and the SDK.
 - [ ] Keyboard + HDMI console = a full local shell.
-- [ ] Notifications, screenshots and the system's name (`notifications.md`, planned 2026-10-10):
+- [x] Notifications, screenshots and the system's name (`notifications.md`, planned 2026-10-10):
   a host name (`system/hostname`, by default `bmds-` and the serial's last six, in the prompt) and
   the board's serial;
   notifications for every program (balloons by the tray, a centre of the last 64, targets and
-  events, a sound by urgency); Print Screen saving to `~/Images/Screenshots/`.
+  events, a sound by urgency); Print Screen saving where `screenshot/path` says (a text template,
+  `templates.md`).
   Step 1 done 2026-10-10: the serial (the board's reader), `system/hostname` (`bmds-e2e222`),
   `hostname`, the prompt, `system_info`. Steps 2-6 done 2026-10-10: the kernel's notifications,
   `notify`, the calls (slots 89-91), balloons by the tray and the centre in the panel, the
   toolkit's `Notifier` and `TrayIcon::showMessage()`, the media player's "Now playing".
+  Step 7 done 2026-10-10: Print Screen (the file where `screenshot/path` says, then a
+  notification showing it in its folder).
+- [ ] Text templates (`templates.md`, planned 2026-10-10): `${NAME}` and `${NAME:ARG}` (`HOME`,
+  `HOSTNAME`, `SERIAL`, `DATE`, `TIME`) expanded alike by the OS and programs (slot 92); paths
+  become settings with defaults, templates where they name by the date or host. The scheme,
+  `bmds_expand` and `screenshot/path` done 2026-10-10; the paths left in the code to go (§6).
 - [ ] Special keys and global hotkeys (`hotkeys.md`, planned 2026-10-08): media keys decoded,
   named actions and bindings in the kernel, the window manager's keys moved onto them; user
   bindings later.

@@ -165,8 +165,10 @@ screenshot), Do Not Disturb schedules, per-application rules.
   window manager's last whole round) and PNG writing, shared; the command keeps its output.
 - **Print Screen** (HID 0x46) is the panel's (`grabKey`, as the Windows keys): the screen is
   captured at once (the copy, about 10 ms) and written by a thread of the panel's (the PNG takes
-  longer), to `$HOME/Images/Screenshots/<host>_<YYYY-MM-DD>_<HH-MM-SS>.png` in local time (no `:`:
-  FAT), the directories made, `_2` and on for a second in the same second.
+  longer), to the setting `screenshot/path`, a text template (`templates.md`), by default
+  `${HOME}/Images/Screenshots/${HOSTNAME}_${DATE}_${TIME}.png` (local time, no `:`: FAT), the
+  directories made, `_2` and on before the extension for a second in the same second.
+  `screenshot` without a path saves there too.
 - **Then a notification:** "Screenshot saved", the file's name, its target to show the file in
   its folder; a failure says why (critical).
 
@@ -205,7 +207,14 @@ screenshot), Do Not Disturb schedules, per-application rules.
    centre listing both; the player hidden, Next from its tray menu: "Media Player · t.ogg" with
    its three buttons; Pause paused it (the time held at 0:12), staying 12 s under the pointer; a
    click on the body showed the player.
-7. **Screenshots:** `Screenshot::save()`, Print Screen, its notification.
+7. **Screenshots** (done 2026-10-10): text templates (`templates.md`), `screenshot/path`,
+   `Screenshot::save()`, Print Screen (`ScreenshotTaker`, a thread of the panel's), its
+   notification. A Print Screen while one is still being written is ignored. Seen on the board
+   (its clock not yet set: 1955): `screenshot` twice in a second gave `..._06-15-32.png` and
+   `..._06-15-32_2.png` (8.8 KB, about 580 ms); Print Screen's balloon "Screenshot saved" with
+   the file's name, a click opening `/home/Images/Screenshots` with the file selected; a bad
+   template refused by `sysconf set`; `/rom/...` gave the critical "Screenshot not saved /
+   /rom/x_0617.png: Read-only"; `progtest expand` passes.
 
 ## 6. ABI impact
 
@@ -215,7 +224,7 @@ screenshot), Do Not Disturb schedules, per-application rules.
   `panel/tray/notifications`.
 - **Shell:** `hostname`, `notify` (their output frozen); `version` gains a line; `HOSTNAME` and
   `BMDS_SERIAL`; the default prompt shows the host name.
-- **Files:** `~/Images/Screenshots/` and its names.
+- **Setting:** `screenshot/path` (a template, `templates.md`), and `screenshot`'s path optional.
 - **`uname()`'s `nodename`** is the host name (it was `bmds`).
 
 ## 7. Budget
@@ -241,6 +250,8 @@ screenshot), Do Not Disturb schedules, per-application rules.
 - **History:** the last 64, in a centre.
 - **Sound:** by urgency, a setting.
 - **Placement:** by the tray, stacked.
-- **Screenshots** in `Images/Screenshots/${HOSTNAME}_${DATE}_${TIME}.png` under the home.
+- **Screenshots** in `Images/Screenshots/${HOSTNAME}_${DATE}_${TIME}.png` under the home; then
+  (the same day) the place a setting, its name a template in one scheme for the OS and programs,
+  and no paths in the code (`templates.md`).
 - **The host name** in the system configuration, by default `bmds-<serial>` (its last six, the
   user decided after step 1), in the prompt; the serial read as each board says.

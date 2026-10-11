@@ -193,6 +193,9 @@ command of its own in `bmds_ui` (it needs the window manager, which `bmds_driver
 - **CRC-32 from the ROM** (`esp_rom_crc32_le`), Adler-32 from the compressor
   (`TDEFL_WRITE_ZLIB_HEADER`). Output goes through a buffer in internal RAM to the file, one IDAT
   chunk per buffer.
+- **Later** (2026-10-10): the path is optional, by default `screenshot/path`, a text template
+  (`templates.md`); the capture and writing are `Screenshot::save()`, Print Screen's too
+  (`notifications.md` §4).
 - **As built** (2026-10-05): `screenshot [-0..-9] PATH` (`bmds_ui`, `Png::write()`), the
   compressor's state in internal RAM when it fits (it did), PSRAM otherwise. A 1280×720 desktop
   with a full terminal and a test window:

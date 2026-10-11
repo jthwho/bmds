@@ -126,6 +126,14 @@ namespace SysConf {
          */
         size_t hostname(char (&out)[HostName::MaxBytes + 1]);
 
+        /**
+         * @brief Sets @p out to the text template @p text (`TextTemplate`,
+         *        `devplan/templates.md`) expanded with the system's values: `/home`,
+         *        the host name, the serial number, the local time now (target only).
+         * @return `Ok`, `Invalid` (not a template), `NoMem`.
+         */
+        Error expand(StringView text, String &out);
+
         /** @brief Sets @p out to @p id's current value. @return `Ok`, `NotExist`, `NoMem`. */
         Error get(Id id, String &out);
 

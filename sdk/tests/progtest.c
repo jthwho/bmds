@@ -2155,6 +2155,34 @@ static int system_test(void) {
         return 0;
 }
 
+/* Text templates (devplan/templates.md): bmds_expand agreeing with system_info, the date's
+   format, $$, a cut expansion, the errors. */
+static int expand_test(void) {
+        CHECK(bmds_sys_has(BMDS_SYS_EXPAND));
+        bmds_system_info_t si;
+        memset(&si, 0, sizeof(si));
+        si.size = sizeof(si);
+        CHECK(bmds_system_info(&si) == 0);
+        char    out[256];
+        char    want[256];
+        int32_t n = bmds_expand("${HOME}/${HOSTNAME}/${SERIAL} $$", out, sizeof(out));
+        snprintf(want, sizeof(want), "/home/%s/%s $", si.hostname, si.serial);
+        CHECK(n == (int32_t)strlen(want) && strcmp(out, want) == 0);
+        n = bmds_expand("${HOSTNAME}_${DATE}_${TIME}.png", out, sizeof(out));
+        printf("expand: %s\n", out);
+        CHECK(n == (int32_t)(strlen(si.hostname) + 24) && out[strlen(si.hostname) + 5] == '-');
+        CHECK(bmds_expand("${DATE:%Y}", out, sizeof(out)) == 4 && out[0] >= '0' && out[0] <= '9'); /* the clock may be unset */
+        /* Cut: the whole length returned, what fits written. */
+        CHECK(bmds_expand("${HOME}", out, 3) == 5 && strcmp(out, "/h") == 0);
+        CHECK(bmds_expand("${HOME}", NULL, 0) == 5);
+        CHECK(bmds_expand("$HOME", out, sizeof(out)) == -BMDS_EINVAL);
+        CHECK(bmds_expand("${NOPE}", out, sizeof(out)) == -BMDS_EINVAL);
+        CHECK(bmds_expand("${HOME", out, sizeof(out)) == -BMDS_EINVAL);
+        CHECK(bmds_expand(NULL, out, sizeof(out)) == -BMDS_EFAULT);
+        printf("expand: all passed\n");
+        return 0;
+}
+
 /* Notifications (devplan/notifications.md §3.3): an events fd, posting with and without it,
    replacing one's own, closing, the errors; with SERVED, the panel's balloon expiring is read. */
 static int notify_test(int served) {
@@ -2239,8 +2267,8 @@ int main(int argc, char **argv) {
                         "spin|calls|posix|abort|spawn|scripts|signals|catch|ignore|fd|ppid|exec|orphan|tree|poll|"
                         "threads|"
                         "threadspin|filetype|audio|decode|rt|midi|synth|synthload|mididecode|hog|stats|tasks|"
-                        "procs "
-                        "[arg]\n");
+                        "procs|"
+                        "system|notify|expand [arg]\n");
                 return 2;
         }
         const char *what = argv[1];
@@ -2260,6 +2288,7 @@ int main(int argc, char **argv) {
         if (strcmp(what, "procs") == 0) return procs(arg);
         if (strcmp(what, "rusage") == 0) return rusage_test(arg);
         if (strcmp(what, "system") == 0) return system_test();
+        if (strcmp(what, "expand") == 0) return expand_test();
         if (strcmp(what, "notify") == 0) return notify_test(argc > 2 && strcmp(arg, "served") == 0);
         if (strcmp(what, "procexec") == 0) return proc_exec(arg);
         if (strcmp(what, "proccheck") == 0) return proc_check(arg);

@@ -37,6 +37,7 @@
 #include <bmds/guiclipboard.h>
 #include <bmds/guiwindow.h>
 #include <bmds/inireader.h>
+#include <bmds/inputevent.h>
 #include <bmds/lineedit.h>
 #include <bmds/memory.h>
 #include <bmds/menu.h>
@@ -59,6 +60,7 @@
 #include "cpumeter.h"
 #include "notificationserver.h"
 #include "panelitems.h"
+#include "screenshottaker.h"
 #include "volumecontrol.h"
 
 BMDS_NAMESPACE_BEGIN
@@ -332,6 +334,7 @@ namespace {
                         static void triggered(void *arg, int item);
                         static void dismissed(void *arg, Menu &menu);
                         static void launcherKey(void *arg);
+                        static void  printScreenKey(void *arg);
                         static void desktopMenu(void *arg, uint16_t x, uint16_t y);
                         static void  desktopOpened(void *arg, size_t item);
                         static void desktopMoved(void *arg);
@@ -415,6 +418,7 @@ namespace {
                         CpuMeter *_cpuMeter = nullptr;  // panel/tray/cpu: its icon in the tray (PSRAM)
                         Menu     *_panelMenu = nullptr; // the panel's own (devplan/gui.md §4t)
                         NotificationServer            *_notify = nullptr;    // balloons and the centre (PSRAM)
+                        ScreenshotTaker                _screenshots{_app};   // Print Screen
                         Menu                          *_menu = nullptr;
                         Menu                          *_iconMenu = nullptr;    // an icon's: Open, Cut, Copy, Delete
                         Menu    *_desktopMenu = nullptr; // the desktop's: Applications, New, Paste
@@ -708,6 +712,12 @@ namespace {
                         button.setChecked(true);
                         if (which == 0) self->_menu->highlightFirst();
                 }
+                return;
+        }
+
+        // Print Screen: the screen saved where screenshot/path says.
+        void PanelApp::printScreenKey(void *arg) {
+                static_cast<PanelApp *>(arg)->_screenshots.take();
                 return;
         }
 
@@ -1710,6 +1720,9 @@ namespace {
                                 if (_app.grabKey(key, 0, launcherKey, this).isError())
                                         say("panel: the Windows key is taken: no launcher on it\n");
                 }
+                // Print Screen saves the screen (devplan/notifications.md §4).
+                if (err.isOk() && _app.grabKey(HidKey::PrintScreen, 0, printScreenKey, this).isError())
+                        say("panel: Print Screen is taken: no screenshots on it\n");
                 if (err.isOk()) windowsChanged(this);
                 // The desktop's icons, in the work area the panel left. Its directories are watched:
                 // changes from elsewhere read it again, and a card mounted later (devplan/filebrowser.md §4i).

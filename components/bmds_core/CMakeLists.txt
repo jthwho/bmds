@@ -29,6 +29,7 @@ set(BMDS_CORE_SRCS
         src/mimeapps.cpp
         src/notificationlog.cpp
         src/hostname.cpp
+        src/texttemplate.cpp
         src/inflate.cpp
         src/inireader.cpp
         src/string.cpp

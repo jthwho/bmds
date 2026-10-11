@@ -20,7 +20,8 @@ if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_PANEL_PURE_SRCS}
                                     src/cpumeter.cpp src/desktopwindow.cpp src/filejobs.cpp src/filescommand.cpp
                                     src/folderactions.cpp src/folderwindow.cpp src/panelapp.cpp
-                                    src/panelentries.cpp src/notifyarea.cpp src/notificationserver.cpp src/volumecontrol.cpp
+                                    src/panelentries.cpp src/notifyarea.cpp src/notificationserver.cpp src/screenshottaker.cpp
+                                    src/volumecontrol.cpp
                                PRIV_REQUIRES bmds_audio bmds_clipboard bmds_core bmds_files bmds_fs bmds_gui bmds_input bmds_kernel
                                              bmds_shell bmds_sysconf bmds_ui
                                WHOLE_ARCHIVE)

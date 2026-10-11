@@ -163,6 +163,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_NOTIFY_OPEN 89u      /**< `int32_t notify_open(uint32_t flags)`: an fd of events. */
 #define BMDS_SYS_NOTIFY_SEND 90u      /**< `int32_t notify_send(int32_t fd, const bmds_notification_t *n)`: its id. */
 #define BMDS_SYS_NOTIFY_CLOSE 91u     /**< `int32_t notify_close(uint32_t id)`. */
+#define BMDS_SYS_EXPAND 92u           /**< `int32_t expand(const char *text, char *out, uint32_t size)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -1108,6 +1109,7 @@ typedef int32_t (*bmds_sys_system_info_fn)(bmds_system_info_t *info);
 typedef int32_t (*bmds_sys_notify_open_fn)(uint32_t flags);
 typedef int32_t (*bmds_sys_notify_send_fn)(int32_t fd, const bmds_notification_t *n);
 typedef int32_t (*bmds_sys_notify_close_fn)(uint32_t id);
+typedef int32_t (*bmds_sys_expand_fn)(const char *text, char *out, uint32_t size);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -2013,6 +2015,19 @@ static inline int32_t bmds_notify_send(int32_t fd, const bmds_notification_t *n)
  */
 static inline int32_t bmds_notify_close(uint32_t id) {
         return ((bmds_sys_notify_close_fn)bmds_sys->slot[BMDS_SYS_NOTIFY_CLOSE])(id);
+}
+
+/**
+ * @brief Expands the text template @p text (devplan/templates.md) into @p out, @p size bytes
+ *        (NUL-terminated if @p size isn't 0): `${HOME}`, `${HOSTNAME}`, `${SERIAL}`,
+ *        `${DATE}` and `${TIME}` (local; `${DATE:FORMAT}` as `strftime`), `$$` a `$`; any other
+ *        `$` is an error. The system's settings that are templates are expanded the same way.
+ *        (Slot 92, appended 2026-10-10: check `bmds_sys_has()`.)
+ * @return The expansion's length (as `snprintf`: @p size or more means it was cut), or
+ *         `-BMDS_EINVAL` (not a template), `-BMDS_EFAULT`, `-BMDS_ENOMEM`.
+ */
+static inline int32_t bmds_expand(const char *text, char *out, uint32_t size) {
+        return ((bmds_sys_expand_fn)bmds_sys->slot[BMDS_SYS_EXPAND])(text, out, size);
 }
 
 #ifdef __cplusplus

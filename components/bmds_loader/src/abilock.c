@@ -107,6 +107,7 @@ _Static_assert(BMDS_SYS_TASK_LIST == 86 && BMDS_SYS_PROC_INFO == 87, "ABI: slots
 _Static_assert(BMDS_SYS_SYSTEM_INFO == 88, "ABI: slot SYSTEM_INFO");
 _Static_assert(BMDS_SYS_NOTIFY_OPEN == 89 && BMDS_SYS_NOTIFY_SEND == 90 && BMDS_SYS_NOTIFY_CLOSE == 91,
                "ABI: slots NOTIFY_OPEN, NOTIFY_SEND, NOTIFY_CLOSE");
+_Static_assert(BMDS_SYS_EXPAND == 92, "ABI: slot EXPAND");
 _Static_assert(BMDS_NOTIFY_LOW == 0 && BMDS_NOTIFY_NORMAL == 1 && BMDS_NOTIFY_CRITICAL == 2, "ABI: notify urgency");
 _Static_assert(BMDS_NOTIFY_SILENT == 0x1 && BMDS_NOTIFY_TRANSIENT == 0x2, "ABI: notify flags");
 _Static_assert(BMDS_NOTIFY_TARGET_NONE == 0 && BMDS_NOTIFY_TARGET_OPEN == 1 && BMDS_NOTIFY_TARGET_SHOW == 2 &&

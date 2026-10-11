@@ -11,11 +11,13 @@
  */
 
 #include <cstdint>
+#include <cstring>
 #include <bmds/errno.h>
 #include <bmds/sys.h>
 #include <bmds/deadline.h>
 #include <bmds/futex.h>
 #include <bmds/interrupt.h>
+#include <bmds/process.h>
 #include <bmds/processtable.h>
 #include <bmds/random.h>
 #include <bmds/sysconf.h>
@@ -439,6 +441,18 @@ int32_t bmds_k_system_info(bmds_system_info_t *info) {
         copy(s.board, sizeof(s.board), k.boardName);
         copy(s.version, sizeof(s.version), k.bmdsVersion);
         return bmds::detail::copyOut(s, info);
+}
+
+int32_t bmds_k_expand(const char *text, char *out, uint32_t size) {
+        KernelCall call;
+        if (text == nullptr || (out == nullptr && size != 0)) return -BMDS_EFAULT;
+        const size_t n = strnlen(text, BMDS_SYSCONF_VALUE_MAX + 1);
+        if (n > BMDS_SYSCONF_VALUE_MAX) return -BMDS_EINVAL;
+        bmds::String      expanded(bmds::MemSpace::Psram);
+        const bmds::Error err = bmds::SysConf::expand(bmds::StringView(text, n), expanded);
+        if (err.isError()) return bmds::Process::errnoFor(err);
+        bmds::detail::copyText(expanded.view(), out, size);
+        return static_cast<int32_t>(expanded.size());
 }
 
 } // extern "C"

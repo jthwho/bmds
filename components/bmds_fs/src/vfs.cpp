@@ -110,7 +110,7 @@ namespace {
 
         // The link to the user's home (setHome()): its target, and where it leads while the
         // target's filesystem isn't mounted; Psram, under the storage lock. Null: no /home.
-        constexpr StringView      HomePath("/home");
+        using Vfs::HomePath;
         constinit char           *homeTarget = nullptr;
         constinit char           *homeFallback = nullptr;
         constinit uint8_t         homeShown = 0; // what was last reported: 0 nothing, 1 the target, 2 the fallback

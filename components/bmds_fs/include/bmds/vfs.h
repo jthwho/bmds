@@ -242,6 +242,9 @@ namespace Vfs {
          */
         Error unmount(StringView path);
 
+        /** @brief The link to the user's home (`setHome()`): where every program finds it. */
+        inline constexpr StringView HomePath("/home");
+
         /**
          * @brief Makes `/home` a link to @p target, or to @p fallback while no
          *        filesystem is mounted where @p target is (a card pulled); an empty
