@@ -31,3 +31,8 @@
 /  1: + 32-bit barrel shifter. Suitable for 32-bit MCUs.
 /  2: + Table conversion for huffman decoding (wants 6 << HUFF_BIT bytes of RAM)
 */
+
+#define JD_MCU_OUTPUT bmds_softjpeg_mcu_output
+/* BMDS: each MCU goes to components/bmds_core/src/softjpeg.cpp (patches/bmds-mcu-output.diff):
+/  averaged in YCbCr when descaling, written straight into its picture, PIE where it pays.
+*/

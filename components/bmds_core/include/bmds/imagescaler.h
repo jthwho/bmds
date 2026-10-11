@@ -13,6 +13,7 @@
 #include <bmds/error.h>
 #include <bmds/image.h>
 #include <bmds/memspace.h>
+#include <bmds/simd.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -45,11 +46,13 @@ namespace ImageScaler {
 
         /**
          * @brief Scales @p in to fill @p out (both one format: `Bgr24`, `Rgb24`,
-         *        `Bgra32` or `Gray8`), working memory (a few rows) from @p space.
+         *        `Bgra32` or `Gray8`), working memory (the taps) from @p space, a row of
+         *        16-bit sums from internal RAM if there is room. @p kernel: the PIE
+         *        unit's down pass, or its scalar twin (the same bytes).
          * @return `Ok`, `Invalid` (formats differ; an empty buffer), `NotSupported`
          *         (`Rgb565`), `NoMem`.
          */
-        Error scale(const ImageBuffer &in, const ImageBuffer &out, MemSpace space);
+        Error scale(const ImageBuffer &in, const ImageBuffer &out, MemSpace space, Simd::Kernel kernel = Simd::best());
 
         /**
          * @brief Returns the size @p width × @p height has after EXIF orientation

@@ -25,6 +25,10 @@
 /----------------------------------------------------------------------------*/
 
 #include "tjpgd.h"
+#ifdef JD_MCU_OUTPUT
+/* BMDS: the MCU output replaced (tjpgdcnf.h): averaged in YCbCr when descaling, written straight into its picture. */
+JRESULT JD_MCU_OUTPUT (JDEC* jd, int (*outfunc)(JDEC*, void*, JRECT*), unsigned int x, unsigned int y);
+#endif
 
 
 #if JD_FASTDECODE == 2
@@ -1144,7 +1148,11 @@ JRESULT jd_decomp (
 			}
 			rc = mcu_load(jd);					/* Load an MCU (decompress huffman coded stream, dequantize and apply IDCT) */
 			if (rc != JDR_OK) return rc;
+#ifdef JD_MCU_OUTPUT
+			rc = JD_MCU_OUTPUT(jd, outfunc, x, y);	/* BMDS: the MCU straight into its picture (tjpgdcnf.h) */
+#else
 			rc = mcu_output(jd, outfunc, x, y);	/* Output the MCU (YCbCr to RGB, scaling and output) */
+#endif
 			if (rc != JDR_OK) return rc;
 		}
 	}

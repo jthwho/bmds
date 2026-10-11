@@ -207,9 +207,11 @@ namespace {
         // background in q2-q3 and the colors' difference in q4-q5: each row's
         // byte broadcast, compared into a mask of its pixels' bytes, blended
         // (bg ^ (mask & diff)) and stored as three 64-bit halves.
+        //
+        // A branch loop, not the hardware loop (`esp.lp.setup`): on this chip's revision a hardware loop
+        // preempted part-way can resume wrong (ESP-IDF's HWLOOP_STATE_BUG; devplan/simd.md §1).
         template <unsigned Step> void pieColumn(const uint8_t *rows, unsigned height, uint8_t *out, size_t step) {
-                asm volatile("esp.lp.setup 0, %[n], 1f\n"
-                             "esp.vldbc.8.ip q6, %[g], %[gs]\n"
+                asm volatile("1: esp.vldbc.8.ip q6, %[g], %[gs]\n"
                              "esp.andq q7, q6, q0\n" // bytes 0-15: their pixel's bit
                              "esp.vcmp.eq.u8 q7, q7, q0\n"
                              "esp.andq q6, q6, q1\n" // bytes 16-23
@@ -220,9 +222,11 @@ namespace {
                              "esp.xorq q6, q6, q3\n"
                              "esp.vst.l.64.ip q7, %[o], 8\n"
                              "esp.vst.h.64.ip q7, %[o], 8\n"
-                             "1: esp.vst.l.64.xp q6, %[o], %[s]\n"
-                             : [g] "+cr"(rows), [o] "+cr"(out)
-                             : [n] "r"(height), [s] "cr"(step), [gs] "i"(Step)
+                             "addi %[n], %[n], -1\n"
+                             "esp.vst.l.64.xp q6, %[o], %[s]\n"
+                             "bnez %[n], 1b\n"
+                             : [g] "+cr"(rows), [o] "+cr"(out), [n] "+r"(height)
+                             : [s] "cr"(step), [gs] "i"(Step)
                              : "memory");
                 return;
         }

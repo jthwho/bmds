@@ -10,6 +10,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
 idf_component_register(SRCS src/images.cpp
                             src/imagecommand.cpp
+                            src/simdcommand.cpp
                        INCLUDE_DIRS include
                        REQUIRES bmds_core bmds_fs bmds_kernel
                        PRIV_REQUIRES bmds_drivers bmds_shell bmds_sysconf bmds_ui

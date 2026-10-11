@@ -264,6 +264,8 @@ service for now.
   instead: ESP-IDF's `dma2d_configure_color_space_conversion` is wrapped by the link
   (`-Wl,--wrap`) and, only while the codec decodes, rewrites RX channel 0's (the only one that
   converts colour). A smooth 4:2:0 picture then matches libjpeg within 4 (mean 0.5).
+- **The colour range is a choice** (2026-10-10, the user's): `JpegCodec::Decode::limitedRange` keeps
+  ESP-IDF's video range (Y 16-235) for MJPEG and video later; JPEG files take full range.
 - **The PPA can't convert JPEG colour on this chip:** its full-range YUV input takes no 4:2:2
   (this revision: "unsupported color mode") and its 4:2:0 writes the picture but never ends.
   Its scale factors are 16ths, so it can't scale to an exact size either: the PPA isn't used.
@@ -293,8 +295,10 @@ service for now.
   converted: the codec's "RGB888" reads B, G, R, its "RGB565" byte order is unchecked),
   `Images::encode()`, `image_encode`, `image convert OUT.jpg`, and screenshots as JPEG when the
   name ends in `.jpg` (1280 × 720 in 120 ms, against 540 for PNG).
-- **To do, measured:** the scaler and TJpgDec with the PIE (SIMD) unit; the ROM's tinfl for PNG
-  on the board; big photos with restart markers in strips by the codec.
+- **SIMD and speed-ups since** (`simd.md` §3a): scaling 1080p to 720p 291 ms, a 12 MP photo at 1/4
+  3.86 s, PNG decode 283 ms, turning a 1080p picture 277 ms. **The encoder's cache bug** (random
+  corrupt streams) fixed there.
+- **To do, measured:** big photos with restart markers in strips by the codec.
 
 ## 10. Open questions
 
@@ -302,8 +306,10 @@ service for now.
   public domain, but holds every coefficient), and up to what size. Web pictures are often
   progressive; cameras' aren't.
 - **GIF** (first frame, then animation), **WebP**: when asked for.
-- **The PPA** for the window manager too (scaled thumbnails, window effects): a subsystem of its
-  own if it pays.
+- **The PPA, to explore further** (the user's, 2026-10-10: not written off): why its 4:2:0 input
+  never ends (a descriptor or burst setting of ours or ESP-IDF's?), what a newer chip revision
+  changes (4:2:2), its blending and fills for the window manager, rotation for EXIF and video, and
+  scaling where 16ths suffice (thumbnails, video). A subsystem of its own if it pays.
 
 ## 11. Decisions (the user, 2026-10-10)
 

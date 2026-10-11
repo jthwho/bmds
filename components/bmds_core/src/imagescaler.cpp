@@ -8,9 +8,10 @@
  * Pictures resized, turned and mirrored (devplan/images.md §3e). Each axis has a table of taps:
  * for every output pixel, the input pixels it takes and their weights (summing to One). Down,
  * the input it covers, each by how much; up, the two nearest, bilinear. Rows are filtered across
- * once each into a ring of as many rows as an output row takes, then down.
+ * Each output row is its input rows summed (down: a vector's work, PIE's), then filtered across.
  */
 
+#include <cstddef>
 #include <cstring>
 #include <bmds/imagescaler.h>
 #include <bmds/memory.h>
@@ -19,8 +20,7 @@ BMDS_NAMESPACE_BEGIN
 
 namespace {
 
-        constexpr uint32_t One = 4096;      // a weight of 1, 12 bits
-        constexpr unsigned AcrossShift = 8; // filtered across: value × 16 (12 bits) in a uint16
+        constexpr uint32_t One = 4096; // a weight of 1, 12 bits
 
         // An axis's taps: output i takes `count[i]` inputs from `first[i]`, weights from `at[i]`.
         struct Taps {
@@ -84,30 +84,172 @@ namespace {
                 return;
         }
 
-        // A row filtered across into @p r (value × 16 a channel), @p ch channels a pixel. @hotpath
-        template <unsigned Ch> void acrossFixed(const uint8_t *src, const Taps &t, uint32_t width, uint16_t *r) {
-                constexpr uint32_t Round = 1u << (AcrossShift - 1);
-                for (uint32_t x = 0; x < width; ++x, r += Ch) {
-                        const uint16_t *w = t.weight + t.at[x];
-                        const uint8_t  *s = src + size_t(t.first[x]) * Ch;
-                        const uint32_t  n = t.count[x];
-                        uint32_t        sum[Ch] = {};
-                        for (uint32_t k = 0; k < n; ++k, s += Ch) {
-                                const uint32_t wk = w[k];
-                                for (unsigned c = 0; c < Ch; ++c) sum[c] += s[c] * wk;
-                        }
-                        for (unsigned c = 0; c < Ch; ++c) r[c] = uint16_t((sum[c] + Round) >> AcrossShift);
+        constexpr unsigned DownShift = 8;     // down: value × One >> 8 = value × 16 (12 bits) in a uint16
+        constexpr unsigned AcrossShift2 = 16; // across: (value × 16) × One >> 16 = value
+
+        // Down, scalar: @p n values of an output row = Σ row k (@p row0 + k × @p stride) × w[k], rounded,
+        // >> DownShift.
+        void downScalar(const uint8_t *row0, size_t stride, const uint16_t *w, uint32_t taps, uint16_t *mid,
+                        size_t from, size_t n) {
+                for (size_t i = from; i < n; ++i) {
+                        uint32_t       sum = 1u << (DownShift - 1);
+                        const uint8_t *p = row0 + i;
+                        for (uint32_t k = 0; k < taps; ++k, p += stride) sum += uint32_t(*p) * w[k];
+                        mid[i] = uint16_t(sum >> DownShift);
                 }
                 return;
         }
 
-        void acrossRow(const uint8_t *src, const Taps &t, uint32_t width, unsigned ch, uint16_t *r) {
+#if BMDS_HAS_PIE
+        // Down, PIE: 16 values a step, 8 at a time in QACC: a hardware loop over the taps (the 16 bytes
+        // of each row widened to u16, × the tap's weight broadcast, accumulated in 64 bits), the rounding
+        // added first as 128 × 1, shifted out (saturated to u16: never reached). The rest scalar.
+        // Expects CFG's misaligned loads on and q6 all 128, q7 all ones; `mid` 16-byte aligned.
+        void downPie(const uint8_t *row0, size_t stride, const uint16_t *w, uint32_t taps, uint16_t *mid, size_t n) {
+                const size_t   whole = n & ~size_t(15);
+                const uint32_t sh = DownShift;
+                for (size_t i = 0; i < whole; i += 16) {
+                        const uint8_t  *s0 = row0 + i, *s1 = row0 + i;
+                        const uint16_t *w0 = w, *w1 = w;
+                        uint16_t       *d = mid + i;
+                        uint32_t        c0 = taps, c1 = taps;
+                        asm volatile("esp.zero.qacc\n"
+                                     "esp.vmulas.u16.qacc q6, q7\n"
+                                     "1: esp.vldext.u8.xp q0, q1, %[s0], %[st]\n"
+                                     "esp.vldbc.16.ip q2, %[w0], 2\n"
+                                     "addi %[c0], %[c0], -1\n"
+                                     "esp.vmulas.u16.qacc q0, q2\n"
+                                     "bnez %[c0], 1b\n"
+                                     "esp.srcmb.u16.qacc q3, %[sh], 1\n"
+                                     "esp.vst.128.ip q3, %[d], 16\n"
+                                     "esp.zero.qacc\n"
+                                     "esp.vmulas.u16.qacc q6, q7\n"
+                                     "2: esp.vldext.u8.xp q0, q1, %[s1], %[st]\n"
+                                     "esp.vldbc.16.ip q2, %[w1], 2\n"
+                                     "addi %[c1], %[c1], -1\n"
+                                     "esp.vmulas.u16.qacc q1, q2\n"
+                                     "bnez %[c1], 2b\n"
+                                     "esp.srcmb.u16.qacc q3, %[sh], 1\n"
+                                     "esp.vst.128.ip q3, %[d], 16\n"
+                                     : [s0] "+cr"(s0), [s1] "+cr"(s1), [w0] "+cr"(w0), [w1] "+cr"(w1), [d] "+cr"(d),
+                                       [c0] "+r"(c0), [c1] "+r"(c1)
+                                     : [st] "cr"(stride), [sh] "cr"(sh)
+                                     : "memory");
+                }
+                downScalar(row0, stride, w, taps, mid, whole, n);
+                return;
+        }
+#endif
+
+        // Across, scalar: a row of `mid` (value × 16 a channel) to 8 bits, @p Ch channels a pixel.
+        template <unsigned Ch> void acrossFixed(const uint16_t *mid, const Taps &t, uint32_t width, uint8_t *out) {
+                constexpr uint32_t Round = 1u << (AcrossShift2 - 1);
+                for (uint32_t x = 0; x < width; ++x, out += Ch) {
+                        const uint16_t *w = t.weight + t.at[x];
+                        const uint16_t *s = mid + size_t(t.first[x]) * Ch;
+                        const uint32_t  n = t.count[x];
+                        uint32_t        sum[Ch];
+                        for (unsigned c = 0; c < Ch; ++c) sum[c] = Round;
+                        for (uint32_t k = 0; k < n; ++k, s += Ch) {
+                                const uint32_t wk = w[k];
+                                for (unsigned c = 0; c < Ch; ++c) sum[c] += s[c] * wk;
+                        }
+                        for (unsigned c = 0; c < Ch; ++c) {
+                                const uint32_t v = sum[c] >> AcrossShift2;
+                                out[c] = uint8_t(v > 255 ? 255 : v);
+                        }
+                }
+                return;
+        }
+
+#if BMDS_HAS_PIE
+        // Across, PIE: a pixel at a time, its channels in lanes 0 to Ch-1 (an unaligned load at each tap,
+        // × the tap's weight broadcast, accumulated in QACC; the rounding added as 0x8000 × 1; shifted
+        // out by 16). The lanes past Ch are ignored. Reads up to 16 bytes past the row (padded). Expects
+        // CFG's misaligned loads on and q7 all ones, q5 all 0x8000.
+        template <unsigned Ch> void acrossPie(const uint16_t *mid, const Taps &t, uint32_t width, uint8_t *out) {
+                const uint32_t sh = AcrossShift2;
+                const uint32_t step = Ch * 2;
+                for (uint32_t x = 0; x < width; ++x, out += Ch) {
+                        const uint16_t *w = t.weight + t.at[x];
+                        const uint16_t *src = mid + size_t(t.first[x]) * Ch;
+                        uint32_t        v0, v1 = 0, v2 = 0, v3 = 0;
+                        uint32_t        n = t.count[x];
+                        asm volatile("esp.zero.qacc\n"
+                                     "esp.vmulas.u16.qacc q5, q7\n"
+                                     "1: esp.vld.128.xp q0, %[s], %[step]\n"
+                                     "esp.vldbc.16.ip q2, %[w], 2\n"
+                                     "addi %[n], %[n], -1\n"
+                                     "esp.vmulas.u16.qacc q0, q2\n"
+                                     "bnez %[n], 1b\n"
+                                     "esp.srcmb.u16.qacc q3, %[sh], 1\n"
+                                     "esp.movi.16.a q3, %[v0], 0\n"
+                                     : [s] "+cr"(src), [w] "+cr"(w), [v0] "=&cr"(v0), [n] "+r"(n)
+                                     : [step] "cr"(step), [sh] "cr"(sh)
+                                     : "memory");
+                        if constexpr (Ch >= 3) {
+                                asm volatile("esp.movi.16.a q3, %0, 1\n"
+                                             "esp.movi.16.a q3, %1, 2\n"
+                                             : "=cr"(v1), "=cr"(v2));
+                        }
+                        if constexpr (Ch == 4) asm volatile("esp.movi.16.a q3, %0, 3\n" : "=cr"(v3));
+                        out[0] = uint8_t(v0 > 255 ? 255 : v0);
+                        if constexpr (Ch >= 3) {
+                                out[1] = uint8_t(v1 > 255 ? 255 : v1);
+                                out[2] = uint8_t(v2 > 255 ? 255 : v2);
+                        }
+                        if constexpr (Ch == 4) out[3] = uint8_t(v3 > 255 ? 255 : v3);
+                }
+                return;
+        }
+
+        void downPieSetUp(const uint8_t *row0, size_t stride, const uint16_t *w, uint32_t taps, uint16_t *mid,
+                          size_t n) {
+                static const uint16_t Round[8] __attribute__((aligned(16))) = {128, 128, 128, 128, 128, 128, 128, 128};
+                static const uint16_t Ones[8] __attribute__((aligned(16))) = {1, 1, 1, 1, 1, 1, 1, 1};
+                const uint16_t       *rp = Round, *op = Ones;
+                uint32_t              cfg;
+                asm volatile("esp.movx.r.cfg %0" : "=cr"(cfg));
+                asm volatile("esp.movx.w.cfg %0" ::"cr"(cfg | 2u)); // misaligned loads by the hardware
+                asm volatile("esp.vld.128.ip q6, %0, 0\n"
+                             "esp.vld.128.ip q7, %1, 0\n" ::"cr"(rp),
+                             "cr"(op)
+                             : "memory");
+                downPie(row0, stride, w, taps, mid, n);
+                asm volatile("esp.movx.w.cfg %0" ::"cr"(cfg));
+                return;
+        }
+
+        void acrossRowPie(const uint16_t *mid, const Taps &t, uint32_t width, unsigned ch, uint8_t *out) {
+                static const uint16_t Half[8]
+                        __attribute__((aligned(16))) = {0x8000, 0x8000, 0x8000, 0x8000, 0x8000, 0x8000, 0x8000, 0x8000};
+                static const uint16_t Ones[8] __attribute__((aligned(16))) = {1, 1, 1, 1, 1, 1, 1, 1};
+                const uint16_t       *hp = Half, *op = Ones;
+                uint32_t              cfg;
+                asm volatile("esp.movx.r.cfg %0" : "=cr"(cfg));
+                asm volatile("esp.movx.w.cfg %0" ::"cr"(cfg | 2u));
+                asm volatile("esp.vld.128.ip q5, %0, 0\n"
+                             "esp.vld.128.ip q7, %1, 0\n" ::"cr"(hp),
+                             "cr"(op)
+                             : "memory");
                 if (ch == 3)
-                        acrossFixed<3>(src, t, width, r);
+                        acrossPie<3>(mid, t, width, out);
                 else if (ch == 4)
-                        acrossFixed<4>(src, t, width, r);
+                        acrossPie<4>(mid, t, width, out);
                 else
-                        acrossFixed<1>(src, t, width, r);
+                        acrossPie<1>(mid, t, width, out);
+                asm volatile("esp.movx.w.cfg %0" ::"cr"(cfg));
+                return;
+        }
+#endif
+
+        void acrossRow(const uint16_t *mid, const Taps &t, uint32_t width, unsigned ch, uint8_t *out) {
+                if (ch == 3)
+                        acrossFixed<3>(mid, t, width, out);
+                else if (ch == 4)
+                        acrossFixed<4>(mid, t, width, out);
+                else
+                        acrossFixed<1>(mid, t, width, out);
                 return;
         }
 
@@ -135,7 +277,7 @@ ImageScaler::Size ImageScaler::fit(uint32_t width, uint32_t height, uint32_t box
         return s;
 }
 
-Error ImageScaler::scale(const ImageBuffer &in, const ImageBuffer &out, MemSpace space) {
+Error ImageScaler::scale(const ImageBuffer &in, const ImageBuffer &out, MemSpace space, Simd::Kernel kernel) {
         if (!in.isValid() || !out.isValid() || in.format != out.format) return Error::Invalid;
         if (in.format == PixelFormat::Rgb565) return Error::NotSupported;
         const unsigned ch = channelsOf(in.format);
@@ -144,15 +286,20 @@ Error ImageScaler::scale(const ImageBuffer &in, const ImageBuffer &out, MemSpace
                 for (uint32_t y = 0; y < in.height; ++y) std::memcpy(out.row(y), in.row(y), size_t(in.width) * bpp);
                 return Error();
         }
-        // One allocation: both axes' taps, then the ring of rows filtered across.
+        // Down first (whole input rows, a vector's work), then across (only the output's rows). The taps
+        // and the row pointers in @p space; the middle row (16-byte aligned) in internal RAM if there's room.
         const size_t wx = weightCount(in.width, out.width), wy = weightCount(in.height, out.height);
-        const size_t tapBytes = (size_t(out.width) + out.height) * (4 + 2 + 4) + (wx + wy) * 2;
-        // The ring's rows: as many as an output row takes at most (known after the taps; bounded here).
-        const uint32_t ringMax = out.height >= in.height ? 2 : (in.height + out.height - 1) / out.height + 1;
-        const size_t   rowValues = size_t(out.width) * ch;
-        const size_t   ringBytes = size_t(ringMax) * rowValues * 2 + size_t(ringMax) * 4 + rowValues * 4;
-        auto          *mem = static_cast<uint8_t *>(Memory::alloc(space, tapBytes + ringBytes + 16));
-        if (mem == nullptr) return Error::NoMem;
+        const size_t tapBytes = (size_t(out.width) + out.height) * (4 + 2 + 4) + (wx + wy) * 2 + 64;
+        const size_t midValues = size_t(in.width) * ch;
+        const size_t midBytes = ((midValues * 2 + 15) & ~size_t(15)) + 16; // + 16: the vector loads read past
+        auto        *mem = static_cast<uint8_t *>(Memory::alloc(space, tapBytes));
+        void        *midMem = Memory::allocAligned(MemSpace::Internal, midBytes, 16);
+        if (midMem == nullptr) midMem = Memory::allocAligned(space, midBytes, 16);
+        if (mem == nullptr || midMem == nullptr) {
+                Memory::free(mem);
+                Memory::free(midMem);
+                return Error::NoMem;
+        }
         uint8_t   *p = mem;
         const auto take = [&p](size_t bytes, size_t align) {
                 p = reinterpret_cast<uint8_t *>((reinterpret_cast<uintptr_t>(p) + align - 1) & ~uintptr_t(align - 1));
@@ -165,43 +312,33 @@ Error ImageScaler::scale(const ImageBuffer &in, const ImageBuffer &out, MemSpace
         tx.at = reinterpret_cast<uint32_t *>(take(out.width * 4u, 4));
         ty.first = reinterpret_cast<uint32_t *>(take(out.height * 4u, 4));
         ty.at = reinterpret_cast<uint32_t *>(take(out.height * 4u, 4));
-        auto *acc = reinterpret_cast<uint32_t *>(take(rowValues * 4, 4));
-        auto *ringRow = reinterpret_cast<int32_t *>(take(ringMax * 4u, 4)); // which input row each slot holds
         tx.count = reinterpret_cast<uint16_t *>(take(out.width * 2u, 2));
         ty.count = reinterpret_cast<uint16_t *>(take(out.height * 2u, 2));
         tx.weight = reinterpret_cast<uint16_t *>(take(wx * 2, 2));
         ty.weight = reinterpret_cast<uint16_t *>(take(wy * 2, 2));
-        auto *ring = reinterpret_cast<uint16_t *>(take(size_t(ringMax) * rowValues * 2, 2));
+        auto *mid = static_cast<uint16_t *>(midMem);
         makeTaps(in.width, out.width, tx);
         makeTaps(in.height, out.height, ty);
-        for (uint32_t i = 0; i < ringMax; ++i) ringRow[i] = -1;
-        // Input row @p j filtered across, from the ring or made there.
-        const auto across = [&](uint32_t j) -> const uint16_t * {
-                const uint32_t slot = j % ringMax;
-                uint16_t      *r = ring + size_t(slot) * rowValues;
-                if (ringRow[slot] == int32_t(j)) return r;
-                acrossRow(in.row(j), tx, out.width, ch, r);
-                ringRow[slot] = int32_t(j);
-                return r;
-        };
-        // Each output row: its input rows' weighted sum, back to 8 bits (acc: value × 16 × One).
-        constexpr unsigned Shift = 12 + 4;
+        const Simd::Kernel k = Simd::usable(kernel);
         for (uint32_t y = 0; y < out.height; ++y) {
+                const uint32_t  taps = ty.count[y];
+                const uint8_t  *row0 = in.row(ty.first[y]);
                 const uint16_t *w = ty.weight + ty.at[y];
-                const uint16_t *r0 = across(ty.first[y]);
-                const uint32_t  w0 = w[0];
-                for (size_t i = 0; i < rowValues; ++i) acc[i] = r0[i] * w0;
-                for (uint32_t k = 1; k < ty.count[y]; ++k) {
-                        const uint16_t *r = across(ty.first[y] + k);
-                        const uint32_t  wk = w[k];
-                        for (size_t i = 0; i < rowValues; ++i) acc[i] += r[i] * wk;
-                }
-                uint8_t *dst = out.row(y); // a byte a channel: bytes a pixel == channels here
-                for (size_t i = 0; i < rowValues; ++i) {
-                        const uint32_t v = (acc[i] + (1u << (Shift - 1))) >> Shift;
-                        dst[i] = uint8_t(v > 255 ? 255 : v);
-                }
+#if BMDS_HAS_PIE
+                if (k == Simd::Kernel::Pie)
+                        downPieSetUp(row0, in.stride, w, taps, mid, midValues);
+                else
+#endif
+                        downScalar(row0, in.stride, w, taps, mid, 0, midValues);
+#if BMDS_HAS_PIE
+                if (k == Simd::Kernel::Pie)
+                        acrossRowPie(mid, tx, out.width, ch, out.row(y));
+                else
+#endif
+                        acrossRow(mid, tx, out.width, ch, out.row(y));
         }
+        (void)k;
+        Memory::free(midMem);
         Memory::free(mem);
         return Error();
 }
@@ -210,31 +347,68 @@ ImageScaler::Size ImageScaler::oriented(uint32_t width, uint32_t height, uint8_t
         return orientation >= 5 && orientation <= 8 ? Size{height, width} : Size{width, height};
 }
 
+namespace {
+
+        // Copies a tile's rows: output pixel x of row y from @p src + y × dy + x × dx (bytes; either may
+        // be negative), @p Bpp bytes a pixel.
+        template <unsigned Bpp>
+        void orientTile(const uint8_t *src, ptrdiff_t dx, ptrdiff_t dy, uint8_t *dst, size_t dstStride, uint32_t w,
+                        uint32_t h) {
+                for (uint32_t y = 0; y < h; ++y, src += dy, dst += dstStride) {
+                        const uint8_t *p = src;
+                        uint8_t       *d = dst;
+                        for (uint32_t x = 0; x < w; ++x, p += dx, d += Bpp) {
+                                if constexpr (Bpp == 4) {
+                                        uint32_t v;
+                                        std::memcpy(&v, p, 4);
+                                        std::memcpy(d, &v, 4);
+                                } else {
+                                        for (unsigned c = 0; c < Bpp; ++c) d[c] = p[c];
+                                }
+                        }
+                }
+                return;
+        }
+
+} // namespace
+
+// Each orientation is a start and two steps in the source: output (x, y) is source start + x × dx + y × dy.
+// The output goes in 32 × 32 tiles, so a quarter turn's column of source reads stays in the cache.
 Error ImageScaler::orient(const ImageBuffer &in, const ImageBuffer &out, uint8_t orientation) {
         const Size s = oriented(in.width, in.height, orientation);
         if (!in.isValid() || !out.isValid() || in.format != out.format || out.width != s.width ||
             out.height != s.height)
                 return Error::Invalid;
-        const unsigned bpp = bytesPerPixel(in.format);
-        const uint32_t w = in.width, h = in.height;
-        // Output (x, y) takes input (sx, sy): EXIF's eight, each undone.
-        for (uint32_t y = 0; y < out.height; ++y) {
-                uint8_t *dst = out.row(y);
-                for (uint32_t x = 0; x < out.width; ++x) {
-                        uint32_t sx = x, sy = y;
-                        switch (orientation) {
-                                case 2: sx = w - 1 - x; break;                 // mirrored across
-                                case 3: sx = w - 1 - x, sy = h - 1 - y; break; // turned half
-                                case 4: sy = h - 1 - y; break;                 // mirrored down
-                                case 5: sx = y, sy = x; break;                 // transposed
-                                case 6: sx = y, sy = h - 1 - x; break;         // turned a quarter right
-                                case 7: sx = w - 1 - y, sy = h - 1 - x; break; // transversed
-                                case 8: sx = w - 1 - y, sy = x; break;         // turned a quarter left
-                                default: break;
-                        }
-                        std::memcpy(dst + size_t(x) * bpp, in.row(sy) + size_t(sx) * bpp, bpp);
-                }
+        const ptrdiff_t bpp = ptrdiff_t(bytesPerPixel(in.format));
+        const ptrdiff_t st = ptrdiff_t(in.stride);
+        const uint8_t  *first = in.row(0), *lastRow = in.row(in.height - 1);
+        const ptrdiff_t lastCol = ptrdiff_t(in.width - 1) * bpp;
+        const uint8_t  *start = first;
+        ptrdiff_t       dx = bpp, dy = st;
+        switch (orientation) {
+                case 2: start = first + lastCol, dx = -bpp, dy = st; break;    // mirrored across
+                case 3: start = lastRow + lastCol, dx = -bpp, dy = -st; break; // turned half
+                case 4: start = lastRow, dx = bpp, dy = -st; break;            // mirrored down
+                case 5: start = first, dx = st, dy = bpp; break;               // transposed
+                case 6: start = lastRow, dx = -st, dy = bpp; break;            // turned a quarter right
+                case 7: start = lastRow + lastCol, dx = -st, dy = -bpp; break; // transversed
+                case 8: start = first + lastCol, dx = st, dy = -bpp; break;    // turned a quarter left
+                default: break;
         }
+        constexpr uint32_t Tile = 32;
+        for (uint32_t ty = 0; ty < out.height; ty += Tile)
+                for (uint32_t tx = 0; tx < out.width; tx += Tile) {
+                        const uint32_t w = out.width - tx < Tile ? out.width - tx : Tile;
+                        const uint32_t h = out.height - ty < Tile ? out.height - ty : Tile;
+                        const uint8_t *src = start + ptrdiff_t(ty) * dy + ptrdiff_t(tx) * dx;
+                        uint8_t       *dst = out.row(ty) + size_t(tx) * size_t(bpp);
+                        switch (bpp) {
+                                case 3: orientTile<3>(src, dx, dy, dst, out.stride, w, h); break;
+                                case 4: orientTile<4>(src, dx, dy, dst, out.stride, w, h); break;
+                                case 2: orientTile<2>(src, dx, dy, dst, out.stride, w, h); break;
+                                default: orientTile<1>(src, dx, dy, dst, out.stride, w, h); break;
+                        }
+                }
         return Error();
 }
 

@@ -12,7 +12,9 @@
 #include <esp_rom_crc.h>
 #include <miniz.h>
 #include <bmds/memory.h>
+#include <bmds/image.h>
 #include <bmds/png.h>
+#include <bmds/pngfilter.h>
 #include <bmds/system.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -86,60 +88,24 @@ namespace {
                 return w->err.isOk() ? MZ_TRUE : MZ_FALSE;
         }
 
-        uint32_t magnitude(uint8_t v) {
-                const int s = static_cast<int8_t>(v);
-                return static_cast<uint32_t>(s < 0 ? -s : s);
-        }
-
-        // B, G, R to R, G, B, a row.
-        void toRgb(const uint8_t *src, uint8_t *dst, size_t bytes) {
-                for (size_t i = 0; i < bytes; i += 3) {
-                        const uint8_t b = src[i], g = src[i + 1], r = src[i + 2];
-                        dst[i] = r;
-                        dst[i + 1] = g;
-                        dst[i + 2] = b;
-                }
-                return;
-        }
-
-        // Filters @p cur (after @p prev) into @p out: a filter byte, then the
-        // row. None, Sub or Up, by the smallest sum of absolute values,
-        // scored in a pass that only reads; a row like the last one (the
-        // common case on a desktop) is Up's zeros at once.
-        void filterRow(const uint8_t *cur, const uint8_t *prev, size_t bytes, uint8_t *out) {
-                uint8_t *row = out + 1;
-                if (std::memcmp(cur, prev, bytes) == 0) {
-                        out[0] = 2;
-                        std::memset(row, 0, bytes);
-                        return;
-                }
-                uint32_t none = 0, sub = 0, up = 0;
-                for (size_t i = 0; i < 3; ++i) {
-                        none += magnitude(cur[i]);
-                        sub += magnitude(cur[i]);
-                        up += magnitude(static_cast<uint8_t>(cur[i] - prev[i]));
-                }
-                for (size_t i = 3; i < bytes; ++i) {
-                        const uint8_t c = cur[i];
-                        none += magnitude(c);
-                        sub += magnitude(static_cast<uint8_t>(c - cur[i - 3]));
-                        up += magnitude(static_cast<uint8_t>(c - prev[i]));
-                }
-                if (up <= sub && up <= none) {
-                        out[0] = 2;
-                        for (size_t i = 0; i < bytes; ++i) row[i] = static_cast<uint8_t>(cur[i] - prev[i]);
-                } else if (sub < none) {
-                        out[0] = 1;
-                        std::memcpy(row, cur, 3);
-                        for (size_t i = 3; i < bytes; ++i) row[i] = static_cast<uint8_t>(cur[i] - cur[i - 3]);
-                } else {
-                        out[0] = 0;
-                        std::memcpy(row, cur, bytes);
-                }
-                return;
-        }
-
 } // namespace
+
+// The ROM's inflate for bmds_core's Inflate::zlib (its weak hook): much faster than the portable one.
+// Its state (about 11 KB) in internal RAM for the call, else PSRAM.
+extern "C" int bmds_inflate_fast(const uint8_t *in, size_t inBytes, uint8_t *out, size_t outBytes, size_t *written) {
+        auto *d = static_cast<tinfl_decompressor *>(Memory::alloc(MemSpace::Internal, sizeof(tinfl_decompressor)));
+        if (d == nullptr)
+                d = static_cast<tinfl_decompressor *>(Memory::alloc(MemSpace::Psram, sizeof(tinfl_decompressor)));
+        if (d == nullptr) return -1;
+        tinfl_init(d);
+        size_t             inLen = inBytes, outLen = outBytes;
+        const tinfl_status r = tinfl_decompress(
+                d, in, &inLen, out, out, &outLen,
+                TINFL_FLAG_PARSE_ZLIB_HEADER | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF | TINFL_FLAG_COMPUTE_ADLER32);
+        Memory::free(d);
+        *written = outLen;
+        return r == TINFL_STATUS_DONE ? 0 : r == TINFL_STATUS_HAS_MORE_OUTPUT ? 2 : -1;
+}
 
 Error Png::write(const uint8_t *bgr, uint16_t width, uint16_t height, size_t stride, int level, Sink sink, void *arg,
                  Stats *stats) {
@@ -156,15 +122,19 @@ Error Png::write(const uint8_t *bgr, uint16_t width, uint16_t height, size_t str
                 internalState = false;
                 d = static_cast<tdefl_compressor *>(Memory::alloc(MemSpace::Psram, sizeof(tdefl_compressor)));
         }
-        // Rows: the last and this one (RGB), and this one filtered.
-        auto *rows = static_cast<uint8_t *>(Memory::alloc(MemSpace::Internal, 2 * rowBytes + lineBytes + OutBytes));
+        // Rows: 16 zero bytes (Sub's left of the first pixel), the last and this one (RGB), and this
+        // one filtered.
+        constexpr size_t Lead = 16;
+        auto            *rows =
+                static_cast<uint8_t *>(Memory::alloc(MemSpace::Internal, 2 * (Lead + rowBytes) + lineBytes + OutBytes));
         if (d == nullptr || rows == nullptr) {
                 Memory::free(d);
                 Memory::free(rows);
                 return Error::NoMem;
         }
-        uint8_t *prev = rows;
-        uint8_t *cur = prev + rowBytes;
+        std::memset(rows, 0, 2 * (Lead + rowBytes));
+        uint8_t *prev = rows + Lead;
+        uint8_t *cur = prev + rowBytes + Lead; // each with its lead of zeros, through the swaps
         uint8_t *filtered = cur + rowBytes;
         Writer   w;
         w.sink = sink;
@@ -187,9 +157,9 @@ Error Png::write(const uint8_t *bgr, uint16_t width, uint16_t height, size_t str
         if (tdefl_init(d, put, &w, flags) != TDEFL_STATUS_OKAY) w.err = Error::LibraryFailure;
         for (uint16_t y = 0; y < height && w.err.isOk(); ++y) {
                 const uint64_t t0 = System::uptimeUs();
-                toRgb(bgr + size_t(y) * stride, cur, rowBytes);
+                Pixels::swap24(bgr + size_t(y) * stride, cur, width); // B, G, R to R, G, B
                 readUs += System::uptimeUs() - t0;
-                filterRow(cur, prev, rowBytes, filtered);
+                PngFilter::row(cur, prev, rowBytes, filtered);
                 const uint64_t t1 = System::uptimeUs();
                 if (tdefl_compress_buffer(d, filtered, lineBytes, TDEFL_NO_FLUSH) != TDEFL_STATUS_OKAY && w.err.isOk())
                         w.err = Error::LibraryFailure;

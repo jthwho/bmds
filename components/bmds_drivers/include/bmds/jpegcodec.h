@@ -40,7 +40,7 @@ BMDS_NAMESPACE_BEGIN
  * **Colour.** JFIF's YCbCr is full range; ESP-IDF sets the 2D-DMA's YUV-to-RGB
  * to video's limited range, which stretches a JPEG's colours. The codec's
  * decodes load full-range coefficients instead (ESP-IDF's set-up is wrapped by
- * the link). The PPA can't stand in: its full-range conversion takes neither
+ * the link), unless `Decode::limitedRange` asks for video's (ESP-IDF's own). The PPA can't stand in: its full-range conversion takes neither
  * 4:2:2 (this chip's revision) nor 4:2:0 (it never ends).
  *
  * @par Thread Safety
@@ -62,6 +62,9 @@ class JpegCodec {
                                 PixelFormat format = PixelFormat::
                                         Bgr24; ///< Any; `Bgr24`, `Rgb24`, `Rgb565` (and `Gray8` of a grey JPEG) are the codec's own.
                                 bool bt709 = false; ///< BT.709's YCbCr; else BT.601 (JFIF's).
+                                /** Video's limited range (Y 16-235, Cb and Cr 16-240: MJPEG from a camera, video);
+                                    else JFIF's full range (JPEG files). */
+                                bool limitedRange = false;
                 };
 
                 /** @brief How to encode. */

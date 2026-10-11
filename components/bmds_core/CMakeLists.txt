@@ -35,6 +35,7 @@ set(BMDS_CORE_SRCS
         src/imagescaler.cpp
         src/jpegheader.cpp
         src/pixels.cpp
+        src/pngfilter.cpp
         src/softjpeg.cpp
         src/tjpgd.c
         src/inflate.cpp
@@ -79,8 +80,8 @@ add_custom_command(OUTPUT ${BMDS_ICONID}
                    DEPENDS ${BMDS_MKROM} ${BMDS_ICONS_LIST}
                    VERBATIM)
 target_sources(${BMDS_CORE_TARGET} PRIVATE ${BMDS_ICONID})
-# The decoders' inner loops at -O2 (the build's -Os leaves them slower); TJpgDec's own code shadows variables.
-set_source_files_properties(src/tjpgd.c PROPERTIES COMPILE_OPTIONS "-O2;-Wno-shadow")
-set_source_files_properties(src/imagescaler.cpp src/pixels.cpp src/pngdecoder.cpp src/softjpeg.cpp
+# The decoders' inner loops at -O2 (the build's -Os leaves them slower); TJpgDec's own code shadows variables; its mcu_output is replaced (softjpeg.cpp).
+set_source_files_properties(src/tjpgd.c PROPERTIES COMPILE_OPTIONS "-O2;-Wno-shadow;-Wno-unused-function")
+set_source_files_properties(src/imagescaler.cpp src/inflate.cpp src/pixels.cpp src/pngdecoder.cpp src/pngfilter.cpp src/softjpeg.cpp
                             PROPERTIES COMPILE_OPTIONS -O2)
 target_include_directories(${BMDS_CORE_TARGET} PUBLIC ${BMDS_ICONID_DIR})

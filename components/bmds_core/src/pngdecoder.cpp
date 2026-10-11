@@ -107,24 +107,46 @@ namespace {
                 return uint8_t(pb <= pc ? b : c);
         }
 
-        // Undoes each row's filter in place: @p raw is (1 + @p stride) bytes a row.
+        // Undoes each row's filter in place: @p raw is (1 + @p stride) bytes a row. A loop for each filter,
+        // the first pixel's bytes (no left neighbour) apart.
         Error unfilter(uint8_t *raw, uint32_t rows, size_t stride, unsigned bpp) {
                 const uint8_t *prev = nullptr;
+                const size_t   lead = bpp < stride ? bpp : stride;
                 for (uint32_t y = 0; y < rows; ++y) {
                         const uint8_t filter = raw[0];
                         uint8_t      *row = raw + 1;
-                        for (size_t x = 0; x < stride; ++x) {
-                                const int a = x >= bpp ? row[x - bpp] : 0;
-                                const int b = prev != nullptr ? prev[x] : 0;
-                                const int c = prev != nullptr && x >= bpp ? prev[x - bpp] : 0;
-                                switch (filter) {
-                                        case 0: break;
-                                        case 1: row[x] = uint8_t(row[x] + a); break;
-                                        case 2: row[x] = uint8_t(row[x] + b); break;
-                                        case 3: row[x] = uint8_t(row[x] + ((a + b) >> 1)); break;
-                                        case 4: row[x] = uint8_t(row[x] + paeth(a, b, c)); break;
-                                        default: return Error::CorruptData;
-                                }
+                        switch (filter) {
+                                case 0: break;
+                                case 1:
+                                        for (size_t x = bpp; x < stride; ++x) row[x] = uint8_t(row[x] + row[x - bpp]);
+                                        break;
+                                case 2:
+                                        if (prev != nullptr)
+                                                for (size_t x = 0; x < stride; ++x) row[x] = uint8_t(row[x] + prev[x]);
+                                        break;
+                                case 3:
+                                        if (prev == nullptr) {
+                                                for (size_t x = bpp; x < stride; ++x)
+                                                        row[x] = uint8_t(row[x] + (row[x - bpp] >> 1));
+                                        } else {
+                                                for (size_t x = 0; x < lead; ++x)
+                                                        row[x] = uint8_t(row[x] + (prev[x] >> 1));
+                                                for (size_t x = bpp; x < stride; ++x)
+                                                        row[x] = uint8_t(row[x] + ((row[x - bpp] + prev[x]) >> 1));
+                                        }
+                                        break;
+                                case 4:
+                                        if (prev == nullptr) { // Paeth with no row above: Sub
+                                                for (size_t x = bpp; x < stride; ++x)
+                                                        row[x] = uint8_t(row[x] + row[x - bpp]);
+                                        } else {
+                                                for (size_t x = 0; x < lead; ++x) row[x] = uint8_t(row[x] + prev[x]);
+                                                for (size_t x = bpp; x < stride; ++x)
+                                                        row[x] = uint8_t(row[x] +
+                                                                         paeth(row[x - bpp], prev[x], prev[x - bpp]));
+                                        }
+                                        break;
+                                default: return Error::CorruptData;
                         }
                         prev = row;
                         raw += 1 + stride;
@@ -134,12 +156,30 @@ namespace {
 
 } // namespace
 
+namespace {
+
+        // CRC-32's table (rodata, made at compile time): a byte at a time.
+        struct CrcTable {
+                        uint32_t v[256];
+        };
+
+        constexpr CrcTable makeCrcTable() {
+                CrcTable t{};
+                for (uint32_t i = 0; i < 256; ++i) {
+                        uint32_t c = i;
+                        for (int k = 0; k < 8; ++k) c = (c >> 1) ^ (0xedb88320u & (0u - (c & 1u)));
+                        t.v[i] = c;
+                }
+                return t;
+        }
+
+        constexpr CrcTable Crc = makeCrcTable();
+
+} // namespace
+
 uint32_t Png::crc32(ByteSpan data, uint32_t crc) {
         crc = ~crc;
-        for (const uint8_t byte : data) {
-                crc ^= byte;
-                for (int k = 0; k < 8; ++k) crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1u)));
-        }
+        for (const uint8_t byte : data) crc = Crc.v[(crc ^ byte) & 0xff] ^ (crc >> 8);
         return ~crc;
 }
 
@@ -385,6 +425,15 @@ Error Png::decode(ByteSpan file, const ImageBuffer &out, uint32_t background, Me
         }
         for (uint32_t y = 0; err.isOk() && y < h.height; ++y) {
                 const uint8_t *row = h.interlaced ? flat + size_t(y) * stride : raw + y * (1 + stride) + 1;
+                // 8-bit RGB into B, G, R or R, G, B: straight, no 0xAARRGGBB between.
+                if (h.depth == 8 && h.type == Rgb && !s.keyed && out.format == PixelFormat::Bgr24) {
+                        Pixels::swap24(row, out.row(y), h.width);
+                        continue;
+                }
+                if (h.depth == 8 && h.type == Rgb && !s.keyed && out.format == PixelFormat::Rgb24) {
+                        std::memcpy(out.row(y), row, size_t(h.width) * 3);
+                        continue;
+                }
                 err = toArgb(s, row, argb);
                 if (err.isOk()) Pixels::fromArgb(argb, h.width, out.row(y), out.format, background);
         }

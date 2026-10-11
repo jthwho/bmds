@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
+#include <bmds/simd.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -124,6 +125,14 @@ namespace Pixels {
 
         /** @brief Reads @p count pixels of @p format at @p in as 0xAARRGGBB (opaque formats: alpha 0xff). @hotpath */
         void toArgb(const uint8_t *in, size_t count, uint32_t *out, PixelFormat format);
+
+        /**
+         * @brief Writes @p count 3-byte pixels @p in to @p out with their first and third
+         *        bytes swapped (R, G, B to B, G, R and back); @p in and @p out may be the
+         *        same. PIE: 16 pixels a step.
+         * @hotpath
+         */
+        void swap24(const uint8_t *in, uint8_t *out, size_t count, Simd::Kernel kernel = Simd::best());
 
         /** @brief Returns @p argb's luma (BT.601), 0-255. */
         constexpr uint8_t luma(uint32_t argb) {

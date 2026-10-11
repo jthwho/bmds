@@ -225,12 +225,23 @@ Result<size_t> Inflate::raw(ByteSpan in, WritableByteSpan out) {
         return run(r, out);
 }
 
+// A faster inflate the firmware may link in (bmds_ui's, the ROM's miniz `tinfl`): a zlib stream into
+// @p out, its Adler-32 checked; 0 done, 2 out of room, else broken. Weak: absent on the host.
+extern "C" __attribute__((weak)) int bmds_inflate_fast(const uint8_t *in, size_t inBytes, uint8_t *out, size_t outBytes,
+                                                       size_t *written);
+
 Result<size_t> Inflate::zlib(ByteSpan in, WritableByteSpan out) {
         if (in.size() < 6) return makeError<size_t>(Error::CorruptData);
         const uint8_t cmf = in[0];
         const uint8_t flg = in[1];
         if ((uint32_t(cmf) << 8 | flg) % 31 != 0) return makeError<size_t>(Error::CorruptData);
         if ((cmf & 0x0f) != 8 || (cmf >> 4) > 7 || (flg & 0x20) != 0) return makeError<size_t>(Error::NotSupported);
+        if (bmds_inflate_fast != nullptr) {
+                size_t    n = 0;
+                const int r = bmds_inflate_fast(in.data(), in.size(), out.data(), out.size(), &n);
+                if (r == 0) return makeResult(n);
+                return makeError<size_t>(r == 2 ? Error::BufferTooSmall : Error::CorruptData);
+        }
         Reader r{in.data() + 2, in.size() - 2};
         auto [n, err] = run(r, out);
         if (err.isError()) return makeError<size_t>(err);

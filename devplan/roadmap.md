@@ -137,6 +137,12 @@ Plan: [`input.md`](input.md).
   into the 2D-DMA) and TJpgDec for photos too big for memory; `image`; screenshots as JPEG;
   `/bin/imageview` (fit, zoom, pan, turn, the folder a key away, opened from the file browser).
   To do: SIMD for the scaler and TJpgDec, progressive JPEG.
+- [ ] SIMD (`simd.md`, planned 2026-10-10): the P4's PIE unit on every integer hot path it fits,
+  each with a scalar twin it matches byte for byte; `simd bench` and `simd test`. Done 2026-10-10:
+  the scaler (730 to 291 ms for 1080p to 720p), PNG's write filter (8.8×), the RGB swap, TJpgDec's
+  output (YCbCr averaged before converting; PIE conversion), plus non-SIMD: orient (5.5×), PNG
+  decode (2×); the glyph renderer off the hardware loop (a silicon bug); the JPEG encoder's cache
+  bug. Next: TJpgDec's IDCT (or a reduced one), streaming PNG inflate, a blend kernel.
 - [ ] Special keys and global hotkeys (`hotkeys.md`, planned 2026-10-08): media keys decoded,
   named actions and bindings in the kernel, the window manager's keys moved onto them; user
   bindings later.

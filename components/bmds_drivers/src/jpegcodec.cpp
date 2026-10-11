@@ -12,6 +12,7 @@
 #include <cstring>
 #include <driver/jpeg_decode.h>
 #include <driver/jpeg_encode.h>
+#include <esp_cache.h>
 #include <esp_private/dma2d.h>
 #include <soc/dma2d_struct.h>
 #include <atomic>
@@ -269,7 +270,10 @@ Error JpegCodec::decodeLocked(ByteSpan jpeg, const JpegHeader &h, const ImageBuf
         if (to == nullptr) return Error::NoMem;
         jpeg_decode_cfg_t cfg = {};
         decodeConfig(native, how.bt709, cfg);
-        fullRange.store(how.bt709 ? 2 : 1, std::memory_order_release);
+        fullRange.store(how.limitedRange ? 0
+                        : how.bt709      ? 2
+                                         : 1,
+                        std::memory_order_release); // 0: ESP-IDF's limited range
         uint32_t        written = 0;
         const esp_err_t r = jpeg_decoder_process(static_cast<jpeg_decoder_handle_t>(_decoder), &cfg, jpeg.data(),
                                                  uint32_t(jpeg.size()), to, uint32_t(l.bytes), &written);
@@ -306,10 +310,10 @@ Error JpegCodec::encodeLocked(const ImageBuffer &in, const Encode &how, Sink sin
         // The codec's input: grey for grey, else B, G, R (its "RGB888" reads those, as a screenshot
         // shows; its "RGB565" is big-endian by name, unchecked: converted from too).
         const PixelFormat native = grey ? PixelFormat::Gray8 : PixelFormat::Bgr24;
-        const size_t   stride = size_t(in.width) * bytesPerPixel(native);
-        const bool     direct = native == in.format && in.stride == stride; // the input has no alignment rule
-        const uint8_t *from = in.pixels;
-        uint8_t       *bounce = nullptr;
+        const size_t      stride = size_t(in.width) * bytesPerPixel(native);
+        const bool        direct = native == in.format && in.stride == stride; // the input has no alignment rule
+        const uint8_t    *from = in.pixels;
+        uint8_t          *bounce = nullptr;
         if (!direct) {
                 bounce = static_cast<uint8_t *>(Memory::alloc(MemSpace::PsramDma, alignUp(stride * in.height)));
                 if (bounce == nullptr) return Error::NoMem;
@@ -322,33 +326,47 @@ Error JpegCodec::encodeLocked(const ImageBuffer &in, const Encode &how, Sink sin
                 convert(in, to, in.width, in.height);
                 from = bounce;
         }
-        // The stream's room: a picture's worth at the top qualities, half of it below.
-        const size_t raw = size_t(in.width) * in.height * (grey ? 1 : 3);
-        const size_t room = alignUp((how.quality > 90 ? raw : raw / 2) + 16 * 1024);
-        auto        *stream = static_cast<uint8_t *>(Memory::alloc(MemSpace::PsramDma, room));
-        if (stream == nullptr) {
-                Memory::free(bounce);
-                return Error::NoMem;
-        }
         jpeg_encode_cfg_t cfg = {};
         cfg.width = in.width;
         cfg.height = in.height;
         cfg.image_quality = how.quality;
-        switch (native) {
-                case PixelFormat::Gray8: cfg.src_type = JPEG_ENCODE_IN_FORMAT_GRAY; break;
-                default: cfg.src_type = JPEG_ENCODE_IN_FORMAT_RGB888; break;
-        }
+        cfg.src_type = native == PixelFormat::Gray8 ? JPEG_ENCODE_IN_FORMAT_GRAY : JPEG_ENCODE_IN_FORMAT_RGB888;
         switch (how.sampling) {
                 case JpegHeader::Sampling::Gray: cfg.sub_sample = JPEG_DOWN_SAMPLING_GRAY; break;
                 case JpegHeader::Sampling::Yuv444: cfg.sub_sample = JPEG_DOWN_SAMPLING_YUV444; break;
                 case JpegHeader::Sampling::Yuv422: cfg.sub_sample = JPEG_DOWN_SAMPLING_YUV422; break;
                 default: cfg.sub_sample = JPEG_DOWN_SAMPLING_YUV420; break;
         }
-        uint32_t        written = 0;
-        const esp_err_t r = jpeg_encoder_process(static_cast<jpeg_encoder_handle_t>(_encoder), &cfg, from,
-                                                 uint32_t(stride * in.height), stream, uint32_t(room), &written);
-        err = r == ESP_OK ? Error() : r == ESP_ERR_TIMEOUT ? Error(Error::Timeout) : Error(Error::IoError);
+        // The stream's room: half a picture's worth (a picture's at the top qualities), and twice that
+        // again while the stream comes near filling it: the codec stops at the room and says nothing,
+        // so a stream within RoomMargin of it may be cut (noisy pictures exceed half their size).
+        constexpr size_t RoomMargin = 4096;
+        const size_t     raw = size_t(in.width) * in.height * (grey ? 1 : 3);
+        size_t           room = alignUp((how.quality > 90 ? raw : raw / 2) + 16 * 1024);
+        uint8_t         *stream = nullptr;
+        uint32_t         written = 0;
+        esp_err_t        r = ESP_OK;
+        for (;;) {
+                stream = static_cast<uint8_t *>(Memory::alloc(MemSpace::PsramDma, room));
+                if (stream == nullptr) {
+                        err = Error::NoMem;
+                        break;
+                }
+                // No dirty cache lines over the stream: one evicted while the DMA writes would land
+                // stale bytes on it (ESP-IDF invalidates only after; a buffer just allocated may hold
+                // another's dirty lines).
+                (void)esp_cache_msync(stream, room, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                written = 0;
+                r = jpeg_encoder_process(static_cast<jpeg_encoder_handle_t>(_encoder), &cfg, from,
+                                         uint32_t(stride * in.height), stream, uint32_t(room), &written);
+                err = r == ESP_OK ? Error() : r == ESP_ERR_TIMEOUT ? Error(Error::Timeout) : Error(Error::IoError);
+                if (err.isError() || written + RoomMargin < room || room >= 2 * raw + 16 * 1024) break;
+                Memory::free(stream);
+                stream = nullptr;
+                room = alignUp(room * 2);
+        }
         Memory::free(bounce);
+        if (err.isOk() && written + RoomMargin >= room) err = Error::NoSpace; // still at the room: cut
         if (err.isOk()) err = sink(arg, ByteSpan(stream, written));
         Memory::free(stream);
         count(false, !direct, r == ESP_OK ? Error() : err, uint64_t(in.width) * in.height, start);

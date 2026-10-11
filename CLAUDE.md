@@ -13,6 +13,7 @@ Read before working:
 - `docs/ABI.md` — the userspace ABI policy.
 - `docs/ARCHITECTURE.md` — layering, components, open questions.
 - `docs/HARDWARE.md` — board facts (verify TBD items against the schematic).
+- `docs/platforms/esp32p4.md` — the chip's tricks and pitfalls (PIE, caches and DMA, the accelerators, ESP-IDF quirks). Read before low-level work.
 - `devplan/roadmap.md` — current phase and progress; `devplan/<subsystem>.md` for subsystem designs.
 
 ## Prime Directives
@@ -54,6 +55,7 @@ cmake -S tests/host -B build-host -G Ninja; cd build-host && build && ctest --ou
 - Keep `devplan/roadmap.md` checkboxes current as work lands.
 - When a TBD hardware fact is confirmed from the schematic, update `docs/HARDWARE.md` and the board definition together.
 - Builds must be warning-free. Host tests must pass and stay quiet.
+- When something about the platform costs a debugging session or a measurement surprises, add it to `docs/platforms/<platform>.md` (what is true, how it was found, where it is used).
 
 ## Commits
 

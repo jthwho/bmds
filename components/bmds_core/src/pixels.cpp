@@ -29,6 +29,44 @@ namespace {
 
 } // namespace
 
+void Pixels::swap24(const uint8_t *in, uint8_t *out, size_t count, Simd::Kernel kernel) {
+        size_t done = 0;
+#if BMDS_HAS_PIE
+        if (Simd::usable(kernel) == Simd::Kernel::Pie && count >= 16) {
+                // 16 pixels a step: their 48 bytes split into three planes (vunzipt) and woven back in the
+                // other order (vzipt). Misaligned loads and stores by the hardware (CFG).
+                uint32_t       cfg;
+                const size_t   steps = count / 16;
+                const uint8_t *src = in;
+                uint8_t       *dst = out;
+                asm volatile("esp.movx.r.cfg %0" : "=cr"(cfg));
+                asm volatile("esp.movx.w.cfg %0" ::"cr"(cfg | 3u));
+                for (size_t i = 0; i < steps; ++i)
+                        asm volatile("esp.vld.128.ip q0, %0, 16\n"
+                                     "esp.vld.128.ip q1, %0, 16\n"
+                                     "esp.vld.128.ip q2, %0, 16\n"
+                                     "esp.vunzipt.8 q0, q1, q2\n"
+                                     "esp.vzipt.8 q2, q1, q0\n"
+                                     "esp.vst.128.ip q2, %1, 16\n"
+                                     "esp.vst.128.ip q1, %1, 16\n"
+                                     "esp.vst.128.ip q0, %1, 16\n"
+                                     : "+cr"(src), "+cr"(dst)
+                                     :
+                                     : "memory");
+                asm volatile("esp.movx.w.cfg %0" ::"cr"(cfg));
+                done = steps * 16;
+        }
+#endif
+        (void)kernel;
+        for (size_t i = done; i < count; ++i) {
+                const uint8_t a = in[3 * i], b = in[3 * i + 1], c = in[3 * i + 2];
+                out[3 * i] = c;
+                out[3 * i + 1] = b;
+                out[3 * i + 2] = a;
+        }
+        return;
+}
+
 void Pixels::fromArgb(const uint32_t *in, size_t count, uint8_t *out, PixelFormat format, uint32_t background) {
         switch (format) {
                 case PixelFormat::Bgr24:

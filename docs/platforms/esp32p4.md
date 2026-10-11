@@ -1,0 +1,125 @@
+# ESP32-P4: tricks and pitfalls
+
+What working on the ESP32-P4 (its cores, its accelerators, its toolchain and ESP-IDF) has taught,
+kept so it isn't learned twice. **Read before low-level work on this chip**: vector kernels, DMA,
+caches, the accelerators, ESP-IDF's drivers. Board facts (pins, wiring, the board's own gotchas)
+are `docs/HARDWARE.md`'s; designs and measurements in full are in the devplans cited.
+
+Each entry says what is true, how it was found, and where it is used. **Add to it** when something
+costs a debugging session or a measurement surprises; correct it when a newer chip revision or
+ESP-IDF changes the answer. Our silicon is **v1.3** (`docs/HARDWARE.md`); several entries are about
+revisions before 3.
+
+## 1. The PIE vector unit (`devplan/simd.md`)
+
+**The documentation is for a newer revision.** The TRM's chapter 4 describes `Xespv2p2` (revision
+3); this chip and the toolchain are `xespv2p1`. Instructions differ in operands (v2p2 adds `sat`
+and `rm`), some exist only in one, and semantics differ (below). The TRM is the reference for what
+an instruction means, the assembler for whether it exists here (an "illegal operands" error), and
+the board for what it does: **check every kernel on the board** (`simd test`).
+
+- **Only x8-x15 and x24-x31 are PIE's address registers.** In inline assembly use the `"cr"`
+  constraint (x8-x15), never `"r"`: GCC picks any register and the assembler refuses it.
+- **Misaligned access is a CFG setting.** By default a 128-bit access silently clears its low 4
+  address bits. `esp.movx.r.cfg`/`esp.movx.w.cfg`: bit 1 makes loads misaligned-safe, bit 0 stores
+  (as ESP-DSP sets them). Set them around a kernel and restore them; both are verified by tests
+  with random offsets.
+- **`esp.vsub.u8` (and `vadd`) saturate** on v2p1, they don't wrap. `esp.vssubs.u8` is vector by
+  scalar register, not vector by vector. Wrapping byte arithmetic: `|a − b|` as
+  `vmax − vmin` (exact), then a `vcmp` mask to choose `d` or `256 − d` (`~d + 1`, safe for d ≥ 1).
+  PNG's filters do this (`pngfilter.cpp`).
+- **`esp.srcmb.*.qacc` floors** (no rounding mode on v2p1). Round by adding the half as one more
+  multiply-accumulate before shifting out: a vector of 128 (or 0x8000, or 512) times a vector of
+  ones. The scalar twin adds the same half.
+- **`esp.vmul.u16` shifts by SAR**, so `(t × 257) >> 16` divides by 255 exactly in one
+  instruction: `((t + 128) × 257) >> 16 == (t + 127) / 255` for every t in 0-65025
+  (checked exhaustively).
+- **Three-plane shuffles exist:** `esp.vunzipt.8 qa, qb, qc` splits 48 bytes (16 RGB pixels) into
+  three planes; `esp.vzipt.8` weaves them back in any order. With `vunzip.8` (two planes) these
+  are the only byte shuffles: there is no general permute.
+- **Widening and narrowing:** `esp.vldext.u8.ip qa, qb, ptr, imm` loads 16 bytes as two vectors
+  of 8 u16. Narrow u16 lanes (0-255) to bytes with `esp.vunzip.8 q, qz` against a zero register;
+  the zero register stays zero (its odd bytes are the lanes' high bytes, all zero).
+- **`esp.vsat.s16 q, q, lo, hi`** clamps to `[lo, hi]` as you'd hope; its TRM pseudo-code reads as
+  if it didn't.
+- **Accumulators:** QACC (two 256-bit halves) holds 8 lanes of 64 bits for 16-bit MACs or 16 of 32
+  for 8-bit ones; XACC is one 40-bit sum of all lanes (`esp.vmulas.u8.xacc` with a vector of ones
+  sums 16 bytes). There is one QACC: a kernel needing two accumulations runs them one after the
+  other.
+- **No floating-point vectors.** Audio and the float decoders aren't PIE's.
+- **Registers live between asm statements**, as GCC doesn't know they exist: constants can be
+  loaded once and used by later statements, if no PIE-using function is called between.
+- **Lazy save, per task:** FreeRTOS saves PIE's registers the first time a task uses PIE (a trap);
+  **never use PIE in an interrupt handler** (it aborts).
+
+## 2. The hardware loop: don't
+
+**`esp.lp.setup` (Xesploop) isn't safe on revisions before 3.** A hardware loop preempted part-way
+can resume wrong: ESP-IDF's `SOC_CPU_HAS_HWLOOP_STATE_BUG` and its context-switch workaround. The
+scaler's first version failed `simd test` at random cases (2026-10-10); with a branch loop
+(`addi` and `bnez`, one more instruction a pass) every run passed, and it was no slower. The glyph
+renderer had used it since it was written: the same latent bug, fixed then. **Use branch loops**
+until silicon v3; then test again.
+
+## 3. Caches and DMA
+
+- **Before a DMA reads memory the CPU wrote: write the cache back** (`esp_cache_msync`,
+  `ESP_CACHE_MSYNC_FLAG_DIR_C2M`). **Before a DMA writes memory: make sure no dirty line covers
+  it**, then invalidate after. A buffer just allocated may hold another's dirty lines; one evicted
+  while the DMA writes lands stale bytes in the middle of the result. This corrupted JPEG encodes
+  at random (2026-10-10): ESP-IDF's JPEG encoder invalidates its output only after the DMA. Our
+  `JpegCodec::encode()` writes the buffer back before (`devplan/simd.md` §3a).
+- **A cache operation runs with interrupts off:** sync large buffers in pieces (64 KB in the
+  display and screenshot code).
+- **The CPU's PSRAM traffic can't be ranked below the 2D-DMA's** (the caches bypass the
+  interconnect): drawing is in internal RAM and copied by DMA (`devplan/display.md` V9).
+- **PSRAM is slow for the CPU in bulk:** about 70 MB/s for a copy-like loop at 80 MHz PSRAM (a 1080p
+  RGB swap, 12 MB of traffic: 223 ms scalar, 180 ms with PIE, which does 16 pixels a step). A kernel
+  that reads and writes PSRAM is memory-bound long before it is compute-bound: measure the scalar
+  and PIE times before tuning instructions. Column-order access thrashes the cache (turning a
+  picture: 1525 ms by rows, 277 ms in 32 × 32 tiles).
+
+## 4. The accelerators (`devplan/images.md`)
+
+- **JPEG decoding is baseline only**, and it writes whole pictures with each side rounded up to
+  the MCU (8 or 16, by the sampling: not always 16). ESP-IDF refuses pictures whose width × height
+  isn't a multiple of 8. Output buffers must be cache-line aligned in address and size.
+- **ESP-IDF's YUV-to-RGB in the 2D-DMA is video's limited range** (Y 16-235), which stretches a
+  JPEG's full-range colours. Only RX channel 0 converts colour. BMDS loads full-range coefficients
+  by wrapping `dma2d_configure_color_space_conversion` at link time (`-Wl,--wrap`); `Decode::
+  limitedRange` keeps ESP-IDF's for video.
+- **The JPEG encoder stops at its output buffer's end and reports success**: a stream that fills
+  the buffer may be cut. Give it room, and treat a stream near the end as cut.
+- **The PPA** (to explore further): its scale factors are 16ths (no exact sizes); its full-range
+  YUV input refuses 4:2:2 on this revision and never completes on 4:2:0 (it writes the picture,
+  then no done interrupt). Its blocking mode then waits forever: use non-blocking mode with a done
+  callback and a timeout.
+- **2D-DMA:** 3 TX and 2 RX channels on this revision; TX 0-2 convert colours
+  (`devplan/display.md`).
+
+## 5. ESP-IDF
+
+- **Wrapping a driver function** is legitimate and cheap: `target_link_libraries(lib INTERFACE
+  "-Wl,--wrap=fn")`, then `__wrap_fn` calls `__real_fn` and adjusts (`jpegcodec.cpp`).
+- **Read the driver before trusting it with a DMA:** what it syncs, when, and what it reports at
+  a buffer's end (the JPEG encoder above, the USB-Serial/JTAG FIFO in `docs/HARDWARE.md`).
+- **Revision macros:** some of ESP-IDF's workarounds depend on `CONFIG_ESP32P4_SELECTS_REV_LESS_V3`
+  and on chip-revision macros; check which branch a workaround is in before relying on it.
+
+## 6. The ROM
+
+- **Has:** miniz's `tdefl` (PNG writing) and `tinfl` (inflate: PNG decoding, through
+  `bmds_inflate_fast`, a weak hook so `bmds_core` stays free of ESP-IDF), CRC-32
+  (`esp_rom_crc32_le`). **Hasn't:** TJpgDec (other ESP32 chips' ROMs do; vendored in
+  `thirdparty/tjpgd`).
+- **Using a ROM function from a pure component:** declare a weak `extern "C"` hook in the pure
+  code, defined by a target component; the host build falls back to the portable code.
+
+## 7. Measuring
+
+- **Cycles:** `csrr rd, mcycle` around a section (360 MHz on this silicon). Remove the
+  instrumentation after.
+- **`simd bench`** times each vector kernel against its scalar twin; **`simd test`** checks them
+  byte for byte on random input (sizes, offsets, formats). A kernel goes in with both.
+- **Compare against an exact reference, not a library's idea of it:** Pillow's "box" filter isn't
+  an area average (`devplan/images.md`).

@@ -14,6 +14,7 @@
 #include <bmds/error.h>
 #include <bmds/image.h>
 #include <bmds/memspace.h>
+#include <bmds/simd.h>
 #include <bmds/span.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -47,7 +48,8 @@ namespace SoftJpeg {
          * @return `Ok`, `CorruptData`, `NotSupported` (progressive, 12-bit...),
          *         `BufferTooSmall`, `NoMem`, `Invalid` (@p shift).
          */
-        Error decode(ByteSpan file, const ImageBuffer &out, unsigned shift, MemSpace work);
+        Error decode(ByteSpan file, const ImageBuffer &out, unsigned shift, MemSpace work,
+                     Simd::Kernel kernel = Simd::best());
 
 } // namespace SoftJpeg
 
