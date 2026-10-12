@@ -20,6 +20,7 @@
 #include <esp_cache.h>
 #include <esp_intr_alloc.h>
 #include <esp_mac.h>
+#include <esp_memory_utils.h>
 #include <esp_rom_gpio.h>
 #include <esp_rom_sys.h>
 #include <esp_private/esp_clk.h>
@@ -31,6 +32,7 @@
 #include <hal/emac_ll.h>
 #include <soc/emac_periph.h>
 #include <soc/emac_reg.h>
+#include <soc/ext_mem_defs.h>
 #include <soc/interrupts.h>
 #include <bmds/board.h>
 #include <bmds/clock.h>
@@ -60,6 +62,7 @@ namespace {
         constexpr uint32_t     MdioTimeoutUs = 2000;
         constexpr uint32_t     PtpTimeoutUs = 100;
         constexpr size_t       FcsBytes = 4;
+        constexpr size_t       RxRefillEvery = 4; // empty descriptors that make receive() refill
 
         // The 1588 clock: the crystal (25 ns) with digital rollover (the sub-second counter
         // counts nanoseconds), stepped 40 ns at a time by the fine method: the addend's carry
@@ -78,9 +81,21 @@ namespace {
         constexpr uint32_t TxTimestampStatus = 1u << 17;
         constexpr uint32_t TxErrorSummary = 1u << 15;
 
+        // RDES4's payload types the MAC checks.
+        constexpr uint32_t RxPayloadUdp = 1;
+        constexpr uint32_t RxPayloadTcp = 2;
+        constexpr uint32_t RxPayloadIcmp = 3;
+
         // Without a reason to (a stamp, a ring half full), a frame asks for the sent interrupt only
         // this often, so the counters of sent frames trail by fewer when traffic stops.
         constexpr uint32_t TxInterruptEvery = 8;
+
+        // True if the EMAC's DMA can send @p bytes at @p p in place: internal DMA memory. From
+        // PSRAM, every frame longer than its 256-byte transmit FIFO underflowed, aligned or not
+        // (devplan/network.md §29).
+        bool dmaReaches(const uint8_t *p, size_t bytes) {
+                return esp_ptr_dma_capable(p) && esp_ptr_dma_capable(p + bytes - 1);
+        }
 
         // DMA status bits the task acts on.
         constexpr uint32_t DmaInterrupts = EMAC_LL_INTR_TRANSMIT_ENABLE | EMAC_LL_INTR_RECEIVE_ENABLE |
@@ -135,14 +150,21 @@ namespace {
                 return;
         }
 
-        // A descriptor is one 64-byte line of its own (DescBytes), so it is synced alone.
-        void writeBackDesc(const void *d) {
-                (void)esp_cache_msync(const_cast<void *>(d), DescBytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-                return;
+        // The CPU reaches the descriptors through internal RAM's uncached view (address +
+        // SOC_NON_CACHEABLE_OFFSET, as ESP-IDF's GDMA lists do): no cache operation for them, each
+        // of which cost 4-5 µs with interrupts masked (devplan/network.md §30). The DMA is given the
+        // ordinary addresses. Nothing may touch them through the cache after start().
+        template <typename T> T *uncached(T *p) {
+                return reinterpret_cast<T *>(reinterpret_cast<uintptr_t>(p) + SOC_NON_CACHEABLE_OFFSET);
         }
 
-        void invalidateDesc(const void *d) {
-                (void)esp_cache_msync(const_cast<void *>(d), DescBytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+        template <typename T> uint32_t busAddress(T *uncachedPointer) {
+                return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(uncachedPointer) - SOC_NON_CACHEABLE_OFFSET);
+        }
+
+        // Orders the CPU's writes to descriptors (the owner bit last) and the DMA's poll demand.
+        inline void fence() {
+                asm volatile("fence" ::: "memory");
                 return;
         }
 
@@ -232,11 +254,11 @@ Error EthernetDevice::start() {
         _memory = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, total, CacheLine));
         if (_memory == nullptr) return Error::NoMem;
         std::memset(_memory, 0, total);
-        _rxDesc = _memory;
-        _txDesc = _memory + RxDescriptors * DescBytes;
         _rxPool = _memory + descBytes;
         _txPool = _rxPool + RxBuffers * BufferBytes;
-        writeBack(_memory, total, true);
+        writeBack(_memory, total, true); // the descriptors' lines clean before the uncached view
+        _rxDesc = uncached(_memory);
+        _txDesc = uncached(_memory + RxDescriptors * DescBytes);
 
         // The MAC's bus clock and register reset, the pins, the RMII clock from the PHY.
         Error err = Error::Ok;
@@ -284,20 +306,18 @@ Error EthernetDevice::start() {
         auto *tx = static_cast<TxDesc *>(_txDesc);
         for (size_t i = 0; i < RxBuffers; ++i) _rxFree[i] = static_cast<uint8_t>(RxBuffers - 1 - i);
         _rxFreeCount = RxBuffers;
-        for (size_t i = 0; i < RxDescriptors; ++i) {
-                rx[i].Buffer2NextDescAddr = reinterpret_cast<uint32_t>(&rx[(i + 1) % RxDescriptors]);
-                writeBackDesc(&rx[i]);
-        }
+        for (size_t i = 0; i < RxDescriptors; ++i) rx[i].Buffer2NextDescAddr = busAddress(&rx[(i + 1) % RxDescriptors]);
         _rxEmpty.store(RxDescriptors, std::memory_order_relaxed);
         refill();
         for (size_t i = 0; i < TxDescriptors; ++i) {
                 tx[i].TDES0.Value = TxChained;
-                tx[i].Buffer1Addr = reinterpret_cast<uint32_t>(_txPool + i * BufferBytes);
-                tx[i].Buffer2NextDescAddr = reinterpret_cast<uint32_t>(&tx[(i + 1) % TxDescriptors]);
-                writeBackDesc(&tx[i]);
+                tx[i].Buffer2NextDescAddr = busAddress(&tx[(i + 1) % TxDescriptors]);
+                _txBufFree[i] = static_cast<uint8_t>(i);
         }
-        emac_ll_set_rx_desc_addr(&EMAC_DMA, reinterpret_cast<uint32_t>(rx));
-        emac_ll_set_tx_desc_addr(&EMAC_DMA, reinterpret_cast<uint32_t>(tx));
+        _txBufFreeCount = TxDescriptors;
+        fence();
+        emac_ll_set_rx_desc_addr(&EMAC_DMA, busAddress(rx));
+        emac_ll_set_tx_desc_addr(&EMAC_DMA, busAddress(tx));
 
         intr_handle_t handle = nullptr;
         err = espError(esp_intr_alloc(ETS_ETH_MAC_INTR_SOURCE, ESP_INTR_FLAG_LOWMED, &Isr::handle, this, &handle));
@@ -532,9 +552,11 @@ void EthernetDevice::run() {
                         _counters.rxMissed += missed & 0xffff;
                         _counters.rxOverflow += (missed >> 17) & 0x7ff;
                 }
+                // Sent frames first: lwIP won't retransmit a segment the driver holds, so an ACK
+                // finds every frame sent before it released.
+                reclaim();
                 receive();
                 refill();
-                reclaim();
                 if (_phyRestart.exchange(false)) {
                         _phyWasReset = resetPhy().isOk();
                         _phyStarted = false;
@@ -552,8 +574,8 @@ void EthernetDevice::receive() {
         auto *rx = static_cast<RxDesc *>(_rxDesc);
         while (_rxEmpty.load(std::memory_order_relaxed) < RxDescriptors) {
                 RxDesc &d = rx[_rxNext];
-                invalidateDesc(&d);
                 if (d.RDES0.Own == EMAC_LL_DMADESC_OWNER_DMA) break;
+                fence(); // the rest of the descriptor read after its owner
                 const uint8_t slot = _rxSlot[_rxNext];
                 const bool    whole = d.RDES0.FirstDescriptor && d.RDES0.LastDescriptor;
                 const size_t  frameBytes = d.RDES0.FrameLength;
@@ -567,6 +589,15 @@ void EthernetDevice::receive() {
                         f.data = _rxPool + slot * BufferBytes;
                         f.length = static_cast<uint16_t>(frameBytes - FcsBytes);
                         invalidate(f.data, f.length);
+                        // The MAC checks the IPv4 header and a TCP/UDP/ICMP payload as the frame
+                        // passes; one it found bad has the error summary set (dropped above).
+                        if (d.RDES0.ExtendStatusAvailable) {
+                                const auto    &x = d.ExtendedStatus;
+                                const uint32_t type = x.IPPayloadType;
+                                f.checksummed = x.IPv4PacketReceived && !x.IPChecksumBypass && !x.IPHeadErr &&
+                                                !x.IPPayloadErr &&
+                                                (type == RxPayloadUdp || type == RxPayloadTcp || type == RxPayloadIcmp);
+                        }
                         if (d.RDES0.TSAvailIPChecksumErrGiantFrame) {
                                 f.stamped = true;
                                 f.stamp.seconds = d.TimeStampHigh;
@@ -574,13 +605,34 @@ void EthernetDevice::receive() {
                         }
                 }
                 _rxNext = (_rxNext + 1) % RxDescriptors;
-                _rxEmpty.fetch_add(1, std::memory_order_relaxed);
+                // Refilled as it goes: taking a backlog first left the ring draining meanwhile, and
+                // a frame the DMA finds no descriptor for is lost, whatever it carries.
+                if (_rxEmpty.fetch_add(1, std::memory_order_relaxed) + 1 >= RxRefillEvery) refill();
                 if (f.length == 0) {
                         release(f);
                         continue;
                 }
-                Receiver to;
-                void    *arg;
+                // Bulk holds at most its share of the spare buffers (devplan/network.md §30): past
+                // it the frame is dropped now, so the ring refills and the reserve stays whole.
+                // (The classifier will send real-time frames to their flows before this.)
+                const size_t bulkShare = RxBuffers - RxDescriptors - _rxReserve.load(std::memory_order_relaxed);
+                Receiver     to;
+                void        *arg;
+                bool         drop = false;
+                {
+                        SpinLock::Locker lock(_stateLock);
+                        if (_counters.rxHeld >= bulkShare) {
+                                ++_counters.rxFrames;
+                                _counters.rxBytes += f.length;
+                                ++_counters.rxBulkDropped;
+                                drop = true;
+                        }
+                }
+                if (drop) {
+                        f.length = 0; // not held: release() leaves rxHeld be
+                        release(f);
+                        continue;
+                }
                 {
                         SpinLock::Locker lock(_stateLock);
                         to = _receiver;
@@ -588,6 +640,7 @@ void EthernetDevice::receive() {
                         _inReceiver = to != nullptr; // setReceiver() waits for the call to end
                         ++_counters.rxFrames;
                         _counters.rxBytes += f.length;
+                        if (f.checksummed) ++_counters.rxChecksummed;
                         ++_counters.rxHeld;
                         if (_counters.rxHeld > _counters.rxHeldMax) _counters.rxHeldMax = _counters.rxHeld;
                         if (to == nullptr) ++_counters.rxUnclaimed;
@@ -640,13 +693,16 @@ void EthernetDevice::refill() {
                 d.TimeStampLow = 0;
                 d.TimeStampHigh = 0;
                 d.RDES0.Value = 0;
+                fence();
                 d.RDES0.Own = EMAC_LL_DMADESC_OWNER_DMA;
-                writeBackDesc(&d);
                 _rxRefill = (_rxRefill + 1) % RxDescriptors;
                 _rxEmpty.fetch_sub(1, std::memory_order_relaxed);
                 gave = true;
         }
-        if (gave) emac_ll_receive_poll_demand(&EMAC_DMA, 0);
+        if (gave) {
+                fence();
+                emac_ll_receive_poll_demand(&EMAC_DMA, 0);
+        }
         return;
 }
 
@@ -657,88 +713,202 @@ Result<uint32_t> EthernetDevice::transmit(Span<const uint8_t> frame, uint32_t fl
 
 Result<uint32_t> EthernetDevice::transmit(Span<const Span<const uint8_t>> pieces, uint32_t flags,
                                           unsigned int timeoutMs) {
+        return send(pieces, flags, nullptr, timeoutMs);
+}
+
+Result<uint32_t> EthernetDevice::transmitInPlace(Span<const Span<const uint8_t>> pieces, uint32_t flags, void *token,
+                                                 unsigned int timeoutMs) {
+        if (token == nullptr) return makeError<uint32_t>(Error::Invalid);
+        return send(pieces, flags, token, timeoutMs);
+}
+
+void EthernetDevice::setTxDone(TxDone done, void *arg) {
+        SpinLock::Locker lock(_txLock);
+        _txDone = done;
+        _txDoneArg = arg;
+        return;
+}
+
+Result<uint32_t> EthernetDevice::send(Span<const Span<const uint8_t>> pieces, uint32_t flags, void *token,
+                                      unsigned int timeoutMs) {
         size_t bytes = 0;
         for (const Span<const uint8_t> &p : pieces) bytes += p.size();
         if (bytes < Ethernet::HeaderBytes || bytes > Ethernet::MaxFrameBytes)
                 return makeError<uint32_t>(Error::Invalid);
-        if ((flags & ~static_cast<uint32_t>(TxStamp)) != 0) return makeError<uint32_t>(Error::Invalid);
+        if ((flags & ~static_cast<uint32_t>(TxStamp | TxRealTime)) != 0) return makeError<uint32_t>(Error::Invalid);
         if (!link().up) return makeError<uint32_t>(Error::NotReady);
-        // The sender takes back the sent descriptors itself, so a frame asks for an interrupt (which
-        // wakes the task to do it) only when a sender may come to wait for room or a stamp: an
-        // interrupt and two semaphore operations a frame were most of the task's 72 µs a frame
-        // (devplan/network.md §28).
-        const Deadline deadline(timeoutMs);
-        Mutex::Locker  lock(_txLock, WaitForever);
-        if (reclaimLocked()) _txStampWaiters.notify();
-        while (_txQueued == TxDescriptors) {
-                {
-                        SpinLock::Locker state(_stateLock);
-                        ++_counters.txFull;
-                }
-                _txWaiting = true;
-                _txLock.unlock();
-                const Error err = _txSpace.acquire(deadline);
-                (void)_txLock.lock(WaitForever);
-                if (reclaimLocked()) _txStampWaiters.notify();
-                if (err.isError() && _txQueued == TxDescriptors) {
-                        _txWaiting = false;
-                        return makeError<uint32_t>(err);
-                }
-        }
-        _txWaiting = false;
-        const size_t  i = _txHead;
-        auto         &d = static_cast<TxDesc *>(_txDesc)[i];
-        uint8_t      *buffer = _txPool + i * BufferBytes;
-        size_t        at = 0;
-        for (const Span<const uint8_t> &p : pieces) {
-                std::memcpy(buffer + at, p.data(), p.size());
-                at += p.size();
-        }
-        writeBack(buffer, bytes, false);
         const bool stamp = (flags & TxStamp) != 0;
-        TxSlot    &s = _txSlots[i];
-        s.ticket = ++_txTicket;
-        s.length = static_cast<uint16_t>(bytes);
-        s.wantsStamp = stamp;
-        s.done = false;
-        s.stamped = false;
-        d.TDES1.Value = 0;
-        d.TDES1.TransmitBuffer1Size = static_cast<uint32_t>(bytes);
-        d.TimeStampLow = 0;
-        d.TimeStampHigh = 0;
-        const bool interrupt = stamp || _txQueued + 1 >= TxDescriptors / 2 || (_txTicket % TxInterruptEvery) == 0;
-        d.TDES0.Value =
-                TxOwn | (interrupt ? TxInterrupt : 0) | TxLast | TxFirst | TxChained | (stamp ? TxTimestampEnable : 0);
-        writeBackDesc(&d);
+        const bool bulk = (flags & TxRealTime) == 0;
+        // In place: a descriptor a piece, each read where it is. A stamp is written back to a
+        // frame's last descriptor, so stamped frames keep to one (a copy).
+        bool inPlace = token != nullptr && _txDone != nullptr && !stamp && pieces.size() <= MaxInPlacePieces &&
+                       (!bulk || pieces.size() <= _bulkTxLimit.load(std::memory_order_relaxed));
+        for (size_t k = 0; inPlace && k < pieces.size(); ++k)
+                inPlace = !pieces[k].isEmpty() && dmaReaches(pieces[k].data(), pieces[k].size());
+        const size_t   count = inPlace ? pieces.size() : 1;
+        const Deadline deadline(timeoutMs);
+
+        // The slow work is done before the transmit lock, a spinlock held only to claim and hand over
+        // descriptors and to reclaim: a real-time sender never waits behind a bulk sender's copy or
+        // cache operations (a mutex here let a flood keep one off for 2.6 ms: devplan/network.md §30).
+        // The sender takes back the sent descriptors itself, so a frame asks for an interrupt only
+        // when a sender may come to wait for room or a stamp (§28).
+        Reclaimed reclaimed;
+        int       buffer = -1;
+        if (inPlace) {
+                for (const Span<const uint8_t> &p : pieces) writeBack(p.data(), p.size(), false);
+        } else {
+                const Error err = waitForTx(deadline, bulk, 0, true, reclaimed);
+                if (err.isError()) return makeError<uint32_t>(err);
+                buffer = _txBufFree[--_txBufFreeCount];
+                _txLock.unlock();
+                finish(reclaimed);
+                uint8_t *to = _txPool + buffer * BufferBytes;
+                size_t   at = 0;
+                for (const Span<const uint8_t> &p : pieces) {
+                        std::memcpy(to + at, p.data(), p.size());
+                        at += p.size();
+                }
+                writeBack(to, bytes, false);
+        }
+        const Error err = waitForTx(deadline, bulk, count, false, reclaimed);
+        if (err.isError()) {
+                if (buffer >= 0) {
+                        SpinLock::Locker lock(_txLock);
+                        _txBufFree[_txBufFreeCount++] = static_cast<uint8_t>(buffer);
+                }
+                finish(reclaimed);
+                return makeError<uint32_t>(err);
+        }
+        // The transmit lock is held.
+        auto          *tx = static_cast<TxDesc *>(_txDesc);
+        const size_t   first = _txHead;
+        const uint32_t ticket = ++_txTicket;
+        const size_t   limit = _bulkTxLimit.load(std::memory_order_relaxed);
+        const bool     interrupt = stamp || _txQueued + count >= TxDescriptors / 2 ||
+                               (bulk && _txBulkQueued + count >= (limit + 1) / 2) || (ticket % TxInterruptEvery) == 0;
+        // The descriptors after the first are handed over before it: the DMA must not start on
+        // part of a frame.
+        for (size_t k = count; k-- > 0;) {
+                const size_t i = (first + k) % TxDescriptors;
+                TxDesc      &d = tx[i];
+                TxSlot      &s = _txSlots[i];
+                const bool   last = k == count - 1;
+                s.ticket = last ? ticket : 0;
+                s.length = last ? static_cast<uint16_t>(bytes) : 0;
+                s.token = last && inPlace ? token : nullptr;
+                s.buffer = static_cast<int8_t>(last ? buffer : -1);
+                s.bulk = bulk;
+                s.wantsStamp = last && stamp;
+                s.done = false;
+                s.stamped = false;
+                const uint8_t *data = inPlace ? pieces[k].data() : _txPool + buffer * BufferBytes;
+                d.Buffer1Addr = reinterpret_cast<uint32_t>(data);
+                d.TDES1.Value = 0;
+                d.TDES1.TransmitBuffer1Size = static_cast<uint32_t>(inPlace ? pieces[k].size() : bytes);
+                d.TimeStampLow = 0;
+                d.TimeStampHigh = 0;
+                uint32_t control = TxOwn | TxChained;
+                if (k == 0) control |= TxFirst | (stamp ? TxTimestampEnable : 0);
+                if (last) control |= TxLast | (interrupt ? TxInterrupt : 0);
+                fence();
+                d.TDES0.Value = control;
+        }
+        fence();
         emac_ll_transmit_poll_demand(&EMAC_DMA, 0);
-        _txHead = (i + 1) % TxDescriptors;
-        ++_txQueued;
+        _txHead = (first + count) % TxDescriptors;
+        _txQueued += count;
+        if (bulk) _txBulkQueued += count;
+        const bool wake = _txWaiters > 0; // one wake for all the waiters: pass it on (each looks again)
         {
                 SpinLock::Locker state(_stateLock);
                 if (_txQueued > _counters.txQueuedMax) _counters.txQueuedMax = static_cast<uint32_t>(_txQueued);
+                if (inPlace) ++_counters.txInPlace;
+                if (!bulk) ++_counters.txRealTime;
         }
-        return makeResult(s.ticket);
+        _txLock.unlock();
+        if (wake) _txSpace.release();
+        finish(reclaimed);
+        // A frame given in place but copied is done now.
+        if (token != nullptr && !inPlace && _txDone != nullptr) _txDone(_txDoneArg, token);
+        return makeResult(ticket);
 }
 
-void EthernetDevice::reclaim() {
-        bool stamped;
-        {
-                Mutex::Locker lock(_txLock, WaitForever);
-                stamped = reclaimLocked();
-                if (_txWaiting) _txSpace.release();
+Error EthernetDevice::waitForTx(const Deadline &deadline, bool bulk, size_t descriptors, bool buffer,
+                                Reclaimed &reclaimed) {
+        // A bulk frame also waits for bulk's room: what it may hold bounds how long a real-time
+        // frame waits behind it (devplan/network.md §30).
+        const auto full = [&] {
+                if (buffer) return _txBufFreeCount == 0;
+                return TxDescriptors - _txQueued < descriptors ||
+                       (bulk && _txBulkQueued + descriptors > _bulkTxLimit.load(std::memory_order_relaxed));
+        };
+        _txLock.lock();
+        reclaimLocked(reclaimed);
+        while (full()) {
+                {
+                        SpinLock::Locker state(_stateLock);
+                        if (bulk)
+                                ++_counters.txFull;
+                        else
+                                ++_counters.txRealTimeWaited;
+                }
+                ++_txWaiters;
+                _txLock.unlock();
+                finish(reclaimed);
+                const Error err = _txSpace.acquire(deadline);
+                _txLock.lock();
+                --_txWaiters;
+                reclaimLocked(reclaimed);
+                if (err.isError() && full()) {
+                        const bool wake = _txWaiters > 0; // the wake may have been meant for another
+                        _txLock.unlock();
+                        if (wake) _txSpace.release();
+                        return err;
+                }
         }
-        if (stamped) _txStampWaiters.notify();
+        return Error::Ok;
+}
+
+void EthernetDevice::setBulkTxLimit(size_t descriptors) {
+        if (descriptors < 1) descriptors = 1;
+        if (descriptors > TxDescriptors) descriptors = TxDescriptors;
+        bool wake;
+        {
+                SpinLock::Locker lock(_txLock);
+                _bulkTxLimit.store(descriptors, std::memory_order_relaxed);
+                wake = _txWaiters > 0; // a raised limit may let a waiting sender go
+        }
+        if (wake) _txSpace.release();
         return;
 }
 
-bool EthernetDevice::reclaimLocked() {
-        bool  stamped = false;
+void EthernetDevice::setRxReserve(size_t buffers) {
+        constexpr size_t Most = RxBuffers - RxDescriptors - 1; // bulk keeps one at least
+        _rxReserve.store(buffers < Most ? buffers : Most, std::memory_order_relaxed);
+        return;
+}
+
+void EthernetDevice::reclaim() {
+        Reclaimed reclaimed;
+        bool      wake;
+        {
+                SpinLock::Locker lock(_txLock);
+                reclaimLocked(reclaimed);
+                wake = _txWaiters > 0;
+        }
+        if (wake) _txSpace.release();
+        finish(reclaimed);
+        return;
+}
+
+void EthernetDevice::reclaimLocked(Reclaimed &r) {
         auto *tx = static_cast<TxDesc *>(_txDesc);
         while (_txQueued > 0) {
-                TxDesc &d = tx[_txTail];
-                invalidateDesc(&d);
+                TxDesc        &d = tx[_txTail];
                 const uint32_t status = d.TDES0.Value;
                 if (status & TxOwn) break;
+                fence(); // the stamp read after the owner
                 TxSlot &s = _txSlots[_txTail];
                 if (s.wantsStamp && (status & TxTimestampStatus)) {
                         s.stamp.seconds = d.TimeStampHigh;
@@ -746,8 +916,8 @@ bool EthernetDevice::reclaimLocked() {
                         s.stamped = true;
                 }
                 s.done = true;
-                stamped |= s.wantsStamp;
-                {
+                r.stamped |= s.wantsStamp;
+                if (s.length != 0) { // a frame's last descriptor, with its status
                         SpinLock::Locker state(_stateLock);
                         if (status & TxErrorSummary)
                                 ++_counters.txErrors;
@@ -756,10 +926,29 @@ bool EthernetDevice::reclaimLocked() {
                                 _counters.txBytes += s.length;
                         }
                 }
+                if (s.token != nullptr) {
+                        r.tokens[r.count++] = s.token;
+                        s.token = nullptr;
+                }
+                if (s.buffer >= 0) {
+                        _txBufFree[_txBufFreeCount++] = static_cast<uint8_t>(s.buffer);
+                        s.buffer = -1;
+                }
+                if (s.bulk) {
+                        --_txBulkQueued;
+                        s.bulk = false;
+                }
                 _txTail = (_txTail + 1) % TxDescriptors;
                 --_txQueued;
         }
-        return stamped;
+        return;
+}
+
+void EthernetDevice::finish(Reclaimed &r) {
+        for (size_t i = 0; i < r.count; ++i) _txDone(_txDoneArg, r.tokens[i]);
+        if (r.stamped) _txStampWaiters.notify();
+        r = Reclaimed{};
+        return;
 }
 
 Result<PtpTime> EthernetDevice::waitTxStamp(uint32_t ticket, unsigned int timeoutMs) {
@@ -768,8 +957,8 @@ Result<PtpTime> EthernetDevice::waitTxStamp(uint32_t ticket, unsigned int timeou
         WaitList::Entry entry(_txStampWaiters, woken);
         for (;;) {
                 {
-                        Mutex::Locker lock(_txLock, WaitForever);
-                        const TxSlot *found = nullptr;
+                        SpinLock::Locker lock(_txLock);
+                        const TxSlot    *found = nullptr;
                         for (const TxSlot &s : _txSlots)
                                 if (s.ticket == ticket) found = &s;
                         if (found == nullptr || !found->wantsStamp) return makeError<PtpTime>(Error::NotExist);
@@ -882,10 +1071,8 @@ EthernetDevice::Registers EthernetDevice::registers() {
                 r.rxFree = static_cast<uint32_t>(_rxFreeCount);
         }
         auto *rx = static_cast<RxDesc *>(_rxDesc);
-        for (size_t i = 0; i < RxDescriptors; ++i) {
-                invalidateDesc(&rx[i]);
+        for (size_t i = 0; i < RxDescriptors; ++i)
                 if (rx[i].RDES0.Own == EMAC_LL_DMADESC_OWNER_DMA) ++r.rxOwnedByDma;
-        }
         return r;
 }
 

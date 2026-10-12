@@ -15,6 +15,9 @@
 #pragma once
 
 #include <stddef.h>
+#ifdef ESP_PLATFORM
+#include <sdkconfig.h> // CONFIG_BMDS_NET_HEAP_KB
+#endif
 
 #ifdef __cplusplus
 extern "C" {

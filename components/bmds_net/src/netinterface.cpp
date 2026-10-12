@@ -83,6 +83,7 @@ Error NetInterface::create(EthernetDevice &device) {
         if (interfaceCount == 0) netif_set_default(&n._netif);
         ++interfaceCount;
         device.setLinkHandler(&NetInterface::linkChanged, &n);
+        device.setTxDone(&NetInterface::txDone, &n);
         device.setReceiver(&NetInterface::received, &n);
         NetStack::wake(); // the settings and the link, applied by the task
         return Error::Ok;
@@ -178,6 +179,14 @@ err_t NetInterface::netifInit(struct netif *netif) {
         netif->linkoutput = &NetInterface::linkOutput;
         netif->hostname = n._hostname;
         netif_set_igmp_mac_filter(netif, &NetInterface::igmpFilter);
+        // The MAC checks received IPv4 headers and TCP/UDP/ICMP payloads, so lwIP checks only
+        // what it didn't (`input()`); frames looped back on this interface never left memory and
+        // aren't checked. lwIP makes the checksums it sends: the MAC's insertion works only for
+        // frames that fit its 256-byte transmit FIFO (devplan/network.md §29).
+        if (n._device.features().rxChecksum)
+                n._checksums = NETIF_CHECKSUM_GEN_IP | NETIF_CHECKSUM_GEN_UDP | NETIF_CHECKSUM_GEN_TCP |
+                               NETIF_CHECKSUM_GEN_ICMP | NETIF_CHECKSUM_CHECK_IP;
+        NETIF_SET_CHECKSUM_CTRL(netif, n._checksums);
         return ERR_OK;
 }
 
@@ -204,8 +213,12 @@ void NetInterface::received(void *arg, EthernetDevice &device, const EthernetDev
 void NetInterface::poll() {
         if (_settingsPending.exchange(false)) applySettings();
         if (_linkPending.exchange(false)) applyLink();
+        freeSent();
         for (;;) {
                 EthernetDevice::RxFrame f;
+                // Sent frames freed as it goes too: a flood keeps this loop going, and its
+                // replies are sent in place.
+                if (_txFreeCount.load(std::memory_order_relaxed) != 0) freeSent();
                 {
                         SpinLock::Locker lock(_rxLock);
                         if (_rxCount == 0) break;
@@ -242,7 +255,13 @@ void NetInterface::input(const EthernetDevice::RxFrame &frame) {
                                         EthernetDevice::BufferBytes);
                 _held.fetch_add(1, std::memory_order_relaxed);
         }
+        // A payload the MAC didn't check (a fragment, one it bypassed or found bad) is checked
+        // by lwIP; a reassembled datagram goes up in its last fragment's call.
+        constexpr u16_t Payloads = NETIF_CHECKSUM_CHECK_UDP | NETIF_CHECKSUM_CHECK_TCP | NETIF_CHECKSUM_CHECK_ICMP;
+        if (!frame.checksummed && (_checksums & Payloads) != Payloads)
+                NETIF_SET_CHECKSUM_CTRL(&_netif, _checksums | Payloads);
         if (_netif.input(p, &_netif) != ERR_OK) pbuf_free(p);
+        NETIF_SET_CHECKSUM_CTRL(&_netif, _checksums);
         return;
 }
 
@@ -267,13 +286,57 @@ err_t NetInterface::linkOutput(struct netif *netif, struct pbuf *p) {
                 }
                 pieces[count++] = Span<const uint8_t>(static_cast<const uint8_t *>(q->payload), q->len);
         }
-        auto [ticket, err] = n._device.transmit(Span<const Span<const uint8_t>>(pieces, count), 0, TxTimeoutMs);
-        (void)ticket;
+        // The DMA reads lwIP's buffers, held (a reference) until the device is done with them;
+        // lwIP doesn't touch a TCP segment it sees held (tcp_output_segment_busy()).
+        Result<uint32_t> sent = makeError<uint32_t>(Error::Invalid);
+        const auto       frame = Span<const Span<const uint8_t>>(pieces, count);
+        if (n._inPlace < MaxInPlace) {
+                pbuf_ref(p);
+                ++n._inPlace;
+                sent = n._device.transmitInPlace(frame, 0, p, TxTimeoutMs);
+                if (sent.error().isError()) {
+                        --n._inPlace;
+                        pbuf_free(p);
+                }
+        } else {
+                sent = n._device.transmit(frame, 0, TxTimeoutMs);
+        }
+        const Error err = sent.error();
         if (err.isError()) {
                 ++n._counters.txDropped;
                 return err == Error::NotReady ? ERR_IF : ERR_MEM;
         }
         return ERR_OK;
+}
+
+void NetInterface::txDone(void *arg, void *token) {
+        auto &n = *static_cast<NetInterface *>(arg);
+        auto *p = static_cast<struct pbuf *>(token);
+        if (NetStack::isLocked()) { // a sender: lwIP's own
+                --n._inPlace;
+                pbuf_free(p);
+                return;
+        }
+        {
+                SpinLock::Locker lock(n._txFreeLock);
+                n._txFree[n._txFreeCount.fetch_add(1, std::memory_order_relaxed)] = p;
+        }
+        NetStack::wake();
+        return;
+}
+
+void NetInterface::freeSent() {
+        struct pbuf *done[MaxInPlace];
+        size_t       count;
+        {
+                SpinLock::Locker lock(_txFreeLock);
+                count = _txFreeCount.load(std::memory_order_relaxed);
+                std::memcpy(done, _txFree, count * sizeof(done[0]));
+                _txFreeCount.store(0, std::memory_order_relaxed);
+        }
+        _inPlace -= count;
+        for (size_t i = 0; i < count; ++i) pbuf_free(done[i]);
+        return;
 }
 
 // --- The link, the settings, the groups -----------------------------------------------------

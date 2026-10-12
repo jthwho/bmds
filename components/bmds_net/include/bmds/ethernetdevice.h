@@ -56,7 +56,8 @@ struct PtpTime {
  * Received frames go to one receiver (the IP stack, later the real-time
  * classifier) without a copy: the receiver gets the DMA buffer itself and
  * gives it back with `release()`, at once or later and from any task.
- * Sending copies the frame into a transmit buffer.
+ * Sending copies the frame into a transmit buffer, or has the DMA read it
+ * where it is (`transmitInPlace()`: internal RAM only, devplan/network.md §29).
  *
  * The device's task (`eth0`, priority `CONFIG_BMDS_NET_PRIORITY`) takes the
  * frames the DMA has written, reclaims sent ones, and checks the link once a
@@ -74,10 +75,13 @@ class EthernetDevice {
                 /** @brief Receive descriptors in the DMA's ring. */
                 static constexpr size_t RxDescriptors = 16;
 
-                /** @brief Receive buffers: the ring's, and spares for frames receivers hold. */
-                static constexpr size_t RxBuffers = 24;
+                /**
+                 * @brief Receive buffers: the ring's, and spares for frames receivers hold (bulk's,
+                 *        and the real-time reserve: devplan/network.md §30).
+                 */
+                static constexpr size_t RxBuffers = 32;
 
-                /** @brief Transmit descriptors (each with its buffer). */
+                /** @brief Transmit descriptors (each with a buffer for copies). */
                 static constexpr size_t TxDescriptors = 16;
 
                 /** @brief A buffer: a whole frame, in whole cache lines (128 bytes). */
@@ -85,8 +89,15 @@ class EthernetDevice {
 
                 /** @brief Transmit flags. */
                 enum TxFlag : uint32_t {
-                        TxStamp = 1u << 0, ///< Record the departure time (`waitTxStamp()`).
+                        TxStamp = 1u << 0,    ///< Record the departure time (`waitTxStamp()`).
+                        TxRealTime = 1u << 1, ///< Not bulk: never waits behind the bulk limit.
                 };
+
+                /** @brief The bulk transmit limit while real-time flows of 1 ms packets or longer run. */
+                static constexpr size_t RealTimeBulkTxLimit = 2;
+
+                /** @brief The receive buffers kept for real-time receivers while flows run. */
+                static constexpr size_t RealTimeRxReserve = 8;
 
                 /** @brief The link as the PHY reports it. */
                 struct Link {
@@ -132,7 +143,12 @@ class EthernetDevice {
                                 uint32_t linkChanges = 0;
                                 uint32_t rxHeld = 0;      ///< Buffers receivers hold now.
                                 uint32_t rxHeldMax = 0;   ///< The most they have held at once.
-                                uint32_t txQueuedMax = 0; ///< The most frames queued in the ring at once.
+                                uint32_t txQueuedMax = 0; ///< The most descriptors queued in the ring at once.
+                                uint64_t rxChecksummed = 0;    ///< Frames whose checksums the MAC checked.
+                                uint64_t txInPlace = 0;        ///< Frames the DMA read in place (`transmitInPlace()`).
+                                uint64_t txRealTime = 0;       ///< Frames sent with `TxRealTime`.
+                                uint32_t txRealTimeWaited = 0; ///< Of those, ones that found the ring full.
+                                uint32_t rxBulkDropped = 0;    ///< Frames dropped as bulk held its share of buffers.
                 };
 
                 /** @brief Registers as read, for diagnosis (`net regs`). */
@@ -159,7 +175,8 @@ class EthernetDevice {
                                 uint16_t length = 0; ///< Without the FCS.
                                 uint8_t  buffer = 0; ///< The pool slot (for `release()`).
                                 bool     stamped = false;
-                                PtpTime  stamp; ///< The hardware arrival time, if `stamped`.
+                                bool checksummed = false; ///< The MAC found its IPv4 and TCP/UDP/ICMP checksums good.
+                                PtpTime stamp;            ///< The hardware arrival time, if `stamped`.
                 };
 
                 /**
@@ -167,6 +184,17 @@ class EthernetDevice {
                  *        must call `release()` for the frame once (now or later).
                  */
                 using Receiver = void (*)(void *arg, EthernetDevice &device, const RxFrame &frame);
+
+                /**
+                 * @brief Told that the DMA has finished with a frame sent in place
+                 *        (`transmitInPlace()`): its buffers are the caller's again. Runs in a sender
+                 *        or on the device's task, without the driver's locks; must not block or
+                 *        send.
+                 */
+                using TxDone = void (*)(void *arg, void *token);
+
+                /** @brief The most pieces a frame sent in place may have. */
+                static constexpr size_t MaxInPlacePieces = 4;
 
                 /** @brief Told of a link change (`link()`), on the device's task; must not block. */
                 using LinkHandler = void (*)(void *arg, EthernetDevice &device);
@@ -270,6 +298,43 @@ class EthernetDevice {
                                           unsigned int timeoutMs);
 
                 /**
+                 * @brief As `transmit()`, but the DMA reads the pieces where they are: they must stay
+                 *        unchanged until the driver passes @p token to the `setTxDone()` function.
+                 *        A frame that can't be sent so is copied, and done at once: a piece outside
+                 *        internal DMA memory (the EMAC underflows reading PSRAM: its transmit FIFO
+                 *        is 256 bytes), more than `MaxInPlacePieces`, `TxStamp`.
+                 * @return As `transmit()`. On an error the frame isn't sent and @p token isn't passed.
+                 * @blocking
+                 */
+                Result<uint32_t> transmitInPlace(Span<const Span<const uint8_t>> pieces, uint32_t flags, void *token,
+                                                 unsigned int timeoutMs);
+
+                /** @brief Sets who is told when frames sent in place are done (before sending any). */
+                void setTxDone(TxDone done, void *arg);
+
+                /**
+                 * @brief Sets how many transmit descriptors bulk frames (those without
+                 *        `TxRealTime`) may hold at once, 1 to `TxDescriptors` (the default): fewer
+                 *        bounds how long a real-time frame waits behind them, at bulk's
+                 *        throughput's cost. Frames already queued stay. Any task. @nonblocking
+                 */
+                void setBulkTxLimit(size_t descriptors);
+
+                /** @brief Returns the bulk transmit limit. */
+                size_t bulkTxLimit() const { return _bulkTxLimit.load(std::memory_order_relaxed); }
+
+                /**
+                 * @brief Keeps @p buffers receive buffers (up to `RxBuffers - RxDescriptors`) from
+                 *        bulk frames, for real-time receivers: bulk frames past their share are
+                 *        dropped at once (`rxBulkDropped`), so the ring always refills. 0 (the
+                 *        default) gives bulk every spare. Any task. @nonblocking
+                 */
+                void setRxReserve(size_t buffers);
+
+                /** @brief Returns the receive reserve. */
+                size_t rxReserve() const { return _rxReserve.load(std::memory_order_relaxed); }
+
+                /**
                  * @brief Waits for the departure time of a frame sent with `TxStamp`.
                  * @return The time; `NotExist` if the frame wasn't stamped or its stamp is no
                  *         longer kept, `Timeout`.
@@ -309,7 +374,10 @@ class EthernetDevice {
 
                 struct TxSlot {
                                 uint32_t ticket = 0;
-                                uint16_t length = 0;
+                                uint16_t length = 0; // the frame's, in its last descriptor's slot (0 in the others)
+                                void    *token = nullptr; // a frame sent in place, in its last descriptor's slot
+                                int8_t   buffer = -1;     // a copied frame's buffer, in its last descriptor's slot
+                                bool     bulk = false;    // counted in _txBulkQueued
                                 bool     wantsStamp = false;
                                 bool     done = false; // sent (or failed): the descriptor is back
                                 bool     stamped = false;
@@ -327,7 +395,21 @@ class EthernetDevice {
                 void        receive();
                 void        refill();
                 void        reclaim();
-                bool        reclaimLocked(); // _txLock held; true if a stamped frame came back
+                // What a reclaim found, passed on once the transmit lock is let go.
+                struct Reclaimed {
+                                void  *tokens[TxDescriptors] = {};
+                                size_t count = 0;
+                                bool   stamped = false;
+                };
+
+                Result<uint32_t> send(Span<const Span<const uint8_t>> pieces, uint32_t flags, void *token,
+                                      unsigned int timeoutMs);
+                // Takes the transmit lock and waits (letting it go) for a copy buffer, or for
+                // @p descriptors; returns with it held, or with an error without it.
+                Error       waitForTx(const Deadline &deadline, bool bulk, size_t descriptors, bool buffer,
+                                      Reclaimed &reclaimed);
+                void        reclaimLocked(Reclaimed &reclaimed); // _txLock held
+                void        finish(Reclaimed &reclaimed);        // _txLock not held
                 void        checkLink();
                 void        applyLink(const Link &link);
                 void        startTraffic();
@@ -357,17 +439,24 @@ class EthernetDevice {
                 uint8_t             _rxSlot[RxDescriptors] = {};
                 uint8_t             _rxFree[RxBuffers] = {};
                 size_t              _rxFreeCount = 0;
+                std::atomic<size_t> _rxReserve{0};
                 SpinLock            _rxFreeLock;
 
                 // Transmit: the next descriptor to fill and the next to reclaim.
-                Mutex         _txLock;
+                SpinLock            _txLock;            // the ring: held for a few µs, never across a wait or a copy
                 Semaphore     _txSpace;           // released when room frees for a waiting sender
-                bool          _txWaiting = false; // under _txLock
+                uint32_t            _txWaiters = 0;     // senders waiting for room, under _txLock
                 size_t        _txHead = 0;
                 size_t        _txTail = 0;
                 size_t        _txQueued = 0;
+                size_t              _txBulkQueued = 0;           // bulk frames' descriptors in the ring
+                std::atomic<size_t> _bulkTxLimit{TxDescriptors}; // set under _txLock
                 uint32_t      _txTicket = 0;
                 TxSlot        _txSlots[TxDescriptors];
+                uint8_t             _txBufFree[TxDescriptors] = {}; // copy buffers free (a stack), under _txLock
+                size_t              _txBufFreeCount = 0;
+                TxDone              _txDone = nullptr; // with its argument: set before frames are sent in place
+                void               *_txDoneArg = nullptr;
                 WaitListOf<4> _txStampWaiters;
 
                 Receiver          _receiver = nullptr; // with its argument, under _stateLock

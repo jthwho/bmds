@@ -253,7 +253,13 @@ Plan: [`input.md`](input.md).
     Then the TCP path (§28): 16-segment buffers, writers woken at half room, the EMAC's sent
     interrupt only now and then: SSH downloads 2.2 to 3.2 MB/s, uploads 1.7 to 2.3, raw TCP up
     2.9 to 4.6. The sampling profiler (`prof`, `tools/bmds-prof`, `sysmon.md` §9) found it.
-  - [ ] 6. Real time: fast path, priority queue, timestamps, `netlat`.
+    Then (§29): lwIP's heap in internal RAM and frames sent from it in place (the EMAC can't send
+    from PSRAM), received checksums checked by the MAC (it can't insert them past 256 bytes), AES
+    by DMA from 1 KB: SSH AES-CTR's CPU per MB down 334 to 297, up 308 to 270.
+  - [ ] 6. Real time: fast path, priority queue, timestamps, `netlat`. Design `network.md` §30: a
+    real-time flow always sends and receives, however much TCP takes. Piece 1 built (§30a): the
+    driver's bulk limits and receive reserve, a spinlock-only transmit path on uncached
+    descriptors.
   - [ ] 7. PTP, master and slave (BMCA): two boards alone elect a grandmaster.
 
 ## Phase 8 — Self-Hosting

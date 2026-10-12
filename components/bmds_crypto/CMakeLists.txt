@@ -7,6 +7,6 @@ if(COMMAND idf_component_register)
         idf_component_register(SRCS src/crypto.cpp
                                INCLUDE_DIRS include
                                REQUIRES bmds_core
-                               PRIV_REQUIRES esp_security hal soc)
+                               PRIV_REQUIRES esp_security esp_hw_support esp_mm hal soc bmds_kernel)
         bmds_target_options(${COMPONENT_LIB})
 endif()

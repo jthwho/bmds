@@ -129,6 +129,23 @@ until silicon v3; then test again.
   sets "pass all multicast" (frame filter bit 4) and IP drops what nobody joined.
 - **The receive FIFO is 256 bytes**, too small for store-and-forward (ESP-IDF turns it off):
   frames pass through as they come, and a bad one arrives with its error in the descriptor.
+- **The transmit FIFO is about 256 bytes too, so checksum insertion works only for small frames.**
+  With store-and-forward on and TDES0's CIC at 3, TCP segments arrived with good checksums up to
+  264-byte frames and bad ones beyond (counted by the PC's `InCsumErrors` in `/proc/net/snmp`,
+  bisected by payload size, 2026-10-11); the descriptor reported no error. Receive checking
+  works at every size: in the MAC's loopback (`gmacconfig.loopback`; RMII's clock comes from the
+  PHY, so it works without the line) good UDP frames up to 1400 bytes came back checked in RDES4,
+  bad ones with RDES0's error summary set, and a UDP checksum of 0 passed (`devplan/network.md`
+  §29).
+- **Descriptors through the uncached view:** internal RAM is also mapped uncached at its address
+  + `SOC_NON_CACHEABLE_OFFSET` (0x40000000; ESP-IDF's GDMA lists use it). The EMAC driver reads
+  and writes its descriptors there (the DMA gets the ordinary address), so no descriptor needs
+  `esp_cache_msync` (4-5 µs each, interrupts masked); a `fence` orders the owner bit. The lines
+  must be written back and invalidated once before, and never touched through the cache after.
+- **The EMAC's DMA can't send from PSRAM.** Frames read from PSRAM underflowed (TDES0 bit 1) once
+  longer than the FIFO, every one, aligned or not; the same frames from internal RAM (even at a
+  2-byte offset) never did. Transmit buffers, and anything sent in place, must be internal
+  (lwIP's heap is, for that: `devplan/network.md` §29).
 - **Descriptors are 64 bytes**, one L1 line each, so each is synced alone; the timestamps are in
   words 6 and 7 (digital rollover: seconds and nanoseconds).
 - **ESP-IDF's `emac_hal.c` is built only with its Ethernet driver**; BMDS uses `hal/emac_ll.h`
@@ -138,12 +155,19 @@ until silicon v3; then test again.
 
 ## 4b. The crypto engines (`devplan/network.md` §26-27)
 
-- **Register mode beats ESP-IDF's DMA for SSH's sizes.** The CPU writing each block to the
-  engine and reading it back: AES-128 about 15.7 MB/s at any size, SHA-256 and SHA-512 41-44
-  MB/s even for one 64-byte block, from PSRAM. ESP-IDF's mbedtls port (DMA): AES 4.1 MB/s at
-  64 bytes, 28 MB/s at 16 KB (66 MB/s from internal RAM); SHA 2.3 and 41 MB/s. Its DMA path also
-  allocates descriptors and alignment buffers on every call (`esp_aes_dma_core.c`), and its
-  AES-GCM managed only 4 MB/s. Measured with a temporary shell command; used by `bmds_crypto`.
+- **Register mode beats ESP-IDF's DMA for SSH's sizes** (our own beats both from 1 KB, below).
+  The CPU writing each block to the engine and reading it back: AES-128 about 15.7 MB/s at any
+  size, SHA-256 and SHA-512 41-44 MB/s even for one 64-byte block, from PSRAM. ESP-IDF's
+  mbedtls port (DMA): AES 4.1 MB/s at 64 bytes, 28 MB/s at 16 KB (66 MB/s from internal RAM);
+  SHA 2.3 and 41 MB/s. Its DMA path also allocates descriptors and alignment buffers on every call
+  (`esp_aes_dma_core.c`), and its AES-GCM managed only 4 MB/s. Measured with a temporary shell
+  command; used by `bmds_crypto`.
+- **AES by DMA: the cost is the cache operations, not the engine.** Our own AXI-GDMA pair (an
+  end-of-frame interrupt wakes the task) reached 25.6 MB/s at 4 KB and 32.8 at 16 KB from PSRAM;
+  at 1 KB the fixed cost (about 30 µs: each `esp_cache_msync` 4-5 µs however short, plus
+  `gdma_reset`/`gdma_start` and the wake) makes it register mode's equal, so `bmds_crypto` uses DMA
+  from 1 KB. `AES_INC_SEL` 1 is the 128-bit counter increment (ESP-IDF sets 0, INC32); checked
+  against register mode with counters carrying past 32 and 64 bits.
 - **The SHA engine's chaining value is the digest's bytes:** its `H` registers hold the words
   big-endian, as the digest is written (ESP-IDF `memcpy`s the state out as the hash). Writing
   a value there and continuing (`sha_ll_write_digest`, `sha_ll_continue_block`) resumes any
@@ -170,6 +194,12 @@ until silicon v3; then test again.
   with the network task on one core and the sender on the other, the time inside FreeRTOS's queue
   operations (interrupts masked, spinning on the kernel's lock) was 40% of BusyBox `nc`'s samples.
   Fewer wakes and fewer lock handoffs per byte paid more than faster code.
+- **A contended mutex gives no bound on a high-priority waiter's wait:** a released FreeRTOS
+  mutex goes to whoever takes it next, and a task already running on the other core usually
+  wins. Under a UDP flood, with the network task and `eth0` each taking the EMAC driver's transmit
+  mutex a frame, a priority-20 sender waited up to 2.6 ms though no holder kept it over 127 µs
+  (`devplan/network.md` §30a). What a real-time task shares with bulk work must be a short
+  spinlock, with the slow work outside it.
 - **Seeing it:** the profiler samples at the tick, which can't interrupt a critical section, so
   time inside one is charged to `vPortExitCriticalMultiCore` with the caller (`xQueueGenericSend`:
   a give or unlock; `xQueueSemaphoreTake`: a take or lock) as its return address.

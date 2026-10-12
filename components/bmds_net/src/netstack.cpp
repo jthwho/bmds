@@ -135,9 +135,9 @@ namespace {
 } // namespace
 
 Error NetStack::init() {
-        // lwIP's heap, and the pools carved from it, in PSRAM (lwipopts.h).
+        // lwIP's heap, and the pools carved from it, in internal DMA memory (lwipopts.h).
         bmds_lwip_heap = static_cast<unsigned char *>(
-                Memory::allocAligned(MemSpace::Psram, MEM_SIZE + 2 * MEM_ALIGNMENT, MEM_ALIGNMENT));
+                Memory::allocAligned(MemSpace::InternalDma, MEM_SIZE + 2 * MEM_ALIGNMENT, MEM_ALIGNMENT));
         if (bmds_lwip_heap == nullptr) return Error::NoMem;
         stack.create();
         Error err = Error::Ok;
@@ -146,7 +146,12 @@ Error NetStack::init() {
                 lwip_init();
                 // lwIP leaves the loopback's MTU 0, its "no limit"; programs read it, so the
                 // largest IPv4 packet instead (TCP's MSS is the smaller of it and TCP_MSS).
-                if (struct netif *lo = netif_find("lo0"); lo != nullptr) lo->mtu = 0xffff;
+                // Its packets never leave memory: TCP/UDP/ICMP checksums are neither made nor checked
+                // (devplan/network.md §29).
+                if (struct netif *lo = netif_find("lo0"); lo != nullptr) {
+                        lo->mtu = 0xffff;
+                        NETIF_SET_CHECKSUM_CTRL(lo, NETIF_CHECKSUM_GEN_IP | NETIF_CHECKSUM_CHECK_IP);
+                }
                 for (size_t i = 0; i < EthernetDevice::count() && err.isOk(); ++i) {
                         auto [device, e] = EthernetDevice::device(i);
                         err = e.isOk() ? NetInterface::create(*device) : e;

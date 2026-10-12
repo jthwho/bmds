@@ -66,7 +66,7 @@
  *                         their lines in `log show`, tagged progtest[PID] and progtest-raw
  *   progtest crypto       the AES and SHA engines (slot 112, network.md §26): FIPS 197's, SP
  *                         800-38A's and FIPS 180's vectors, chained calls, in place, the errors,
- *                         and each one's speed
+ *                         long (DMA) calls against one-block ones, and each one's speed
  *   progtest net          sockets through musl on loopback: TCP (blocking and not, half closes,
  *                         resets, timeouts, poll), UDP (cut datagrams), raw ICMP, the interface
  *                         ioctls, net_info and net_watch, the errors
@@ -2732,18 +2732,60 @@ static int cryptos(void) {
         CHECK(crypto_op(BMDS_CRYPTO_SHA256, NULL, 0, state, in, NULL, 32) == -BMDS_EINVAL);
         CHECK(crypto_op(99, key, 16, state, in, out, 16) == -BMDS_ENOTSUP);
         CHECK(bmds_crypto(NULL) == -BMDS_EFAULT);
-        // Speed: 16 KB (SSH's packets are up to 32 KB) and 64 bytes, from the heap (PSRAM).
+        // Long calls go by DMA (network.md §29): each must equal the same bytes in one-block calls
+        // (register mode), at sizes past a run (27 KB), misaligned, in place, the counter carrying
+        // past 32 and 64 bits; the state left must match too.
+        enum {
+                Most = 60000 + 64
+        };
+        uint8_t *src = malloc(Most), *dst = malloc(Most), *ref = malloc(Most);
+        CHECK(src != NULL && dst != NULL && ref != NULL);
+        for (uint32_t i = 0; i < Most; ++i) src[i] = (uint8_t)(i * 131 + (i >> 8));
+        static const uint32_t modes[] = {BMDS_CRYPTO_AES_CTR, BMDS_CRYPTO_AES_CBC_ENCRYPT, BMDS_CRYPTO_AES_CBC_DECRYPT,
+                                         BMDS_CRYPTO_AES_ECB_ENCRYPT, BMDS_CRYPTO_AES_ECB_DECRYPT};
+        static const uint32_t lengths[] = {1024, 1040, 4096, 16384, 27776, 27792, 60000};
+        static const char *const starts[] = {"000102030405060708090a0b0c0d0e0f", "0001020304050607ffffffffffffff00",
+                                             "00010203ffffffffffffffffffffff80", "fffffffffffffffffffffffffffffff0"};
+        for (size_t m = 0; m < sizeof(modes) / sizeof(modes[0]); ++m) {
+                const int ecb = modes[m] == BMDS_CRYPTO_AES_ECB_ENCRYPT || modes[m] == BMDS_CRYPTO_AES_ECB_DECRYPT;
+                for (size_t l = 0; l < sizeof(lengths) / sizeof(lengths[0]); ++l) {
+                        const uint32_t len = lengths[l];
+                        const size_t   start = modes[m] == BMDS_CRYPTO_AES_CTR ? l % 4 : 0;
+                        const uint32_t in_off = (uint32_t)(l % 3) * 4, out_off = (uint32_t)(l % 4) * 20;
+                        const int      in_place = l % 2 == 1;
+                        uint8_t        s1[16], s2[16];
+                        unhex(starts[start], s1);
+                        memcpy(s2, s1, 16);
+                        for (uint32_t at = 0; at < len; at += 16)
+                                CHECK(crypto_op(modes[m], key, 32, ecb ? NULL : s1, src + in_off + at, ref + at, 16) ==
+                                      0);
+                        uint8_t *out = dst + out_off;
+                        if (in_place) memcpy(out, src + in_off, len);
+                        CHECK(crypto_op(modes[m], key, 32, ecb ? NULL : s2, in_place ? out : src + in_off, out, len) ==
+                              0);
+                        if (memcmp(out, ref, len) != 0 || (!ecb && memcmp(s1, s2, 16) != 0)) {
+                                printf("crypto: mode %u, %u bytes: DMA differs\n", (unsigned)modes[m], (unsigned)len);
+                                return 1;
+                        }
+                }
+        }
+        free(src);
+        free(dst);
+        free(ref);
+        // Speed, from the heap (PSRAM): SSH's packets are up to 32 KB.
         uint8_t *big = malloc(16384);
         CHECK(big != NULL);
         memset(big, 0x5a, 16384);
+        static const uint32_t sizes[] = {64, 512, 1024, 4096, 16384};
         static const struct {
                         const char *name;
                         uint32_t    algorithm;
         } speeds[] = {
                 {"aes128-ctr", BMDS_CRYPTO_AES_CTR}, {"sha256", BMDS_CRYPTO_SHA256}, {"sha512", BMDS_CRYPTO_SHA512}};
         for (size_t i = 0; i < sizeof(speeds) / sizeof(speeds[0]); ++i) {
-                for (uint32_t size = 64; size <= 16384; size *= 256) {
-                        const uint32_t  n = size == 64 ? 20000 : 100;
+                for (size_t z = 0; z < sizeof(sizes) / sizeof(sizes[0]); ++z) {
+                        const uint32_t  size = sizes[z];
+                        const uint32_t  n = 2000000 / size < 20000 ? 2000000 / size : 20000;
                         const uint32_t  len = speeds[i].algorithm == BMDS_CRYPTO_SHA512 && size == 64 ? 128 : size;
                         struct timespec t0, t1;
                         clock_gettime(CLOCK_MONOTONIC, &t0);

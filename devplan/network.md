@@ -1478,3 +1478,188 @@ board's busy time (`stats`' `cpu.core*.busy_us` before and after: `top`'s one lo
   417-491 ms/MB against 4 KB's 349; they stay 4 KB.
 - **Next, if wanted:** DMA for AES (the CPU free while it runs; ESP-IDF's DMA measured 28 MB/s),
   checksum offload (`lwip_standard_chksum`, 1.3% of the download's samples), zero-copy transmit.
+
+## 29. Checksum offload, transmit in place, AES by DMA (2026-10-11)
+
+§28's three leftovers, the user's ask. Measured as §28 was (16 MB over this PC's Wi-Fi, MB/s and
+the board's CPU-ms per MB from `stats`).
+
+- **Checksums: the MAC checks received ones; it can't insert them in full-size frames.**
+  - Receiving: the MAC (type 2 offload, already on) checks IPv4 headers and TCP/UDP/ICMP payloads
+    as frames pass and reports in RDES4 (header error, payload error, bypassed, payload type).
+    Tested in the MAC's loopback (a temporary `net csumtest`, UDP to our own address at 100 to
+    1400 bytes): good frames reported checked at every size; bad ones arrive with the error
+    summary set, which the driver already dropped; checksum 0 (UDP's "none") passes. So
+    `RxFrame::checksummed`, and the netif turns lwIP's TCP/UDP/ICMP checks on only for a frame the
+    MAC didn't check (set before `netif->input`, put back after): a fragment or a bypassed frame is
+    checked by lwIP, a reassembled datagram by its last fragment's flags, and frames looped back on
+    `eth0` (never on the wire) not at all. `lo` neither makes nor checks them.
+  - Sending: TDES0's CIC field (3: IP header and payload, pseudo-header too) needs the whole frame
+    in the transmit FIFO, which is **about 256 bytes**, like the receive FIFO: with
+    store-and-forward on, TCP segments up to 210 bytes of payload (264-byte frames) arrived with
+    good checksums, 211 and up with bad ones (the PC's `InCsumErrors`), and the MAC reported no
+    error. lwIP keeps making them (only ACK-sized frames would gain).
+- **Transmitting in place, from internal RAM.** The EMAC can't send from PSRAM: read in place from
+  lwIP's PSRAM heap, every frame over 256 bytes underflowed (TDES0 bit 1), aligned or not (copied
+  to an aligned PSRAM buffer, most frames vanished); from internal RAM, even 2-byte aligned, none
+  did. So (the user's call) **lwIP's heap is internal DMA memory**, 96 KB from boot
+  (`CONFIG_BMDS_NET_HEAP_KB`; peaks seen: 28 KB for a bulk transfer either way, 52 KB over SSH and
+  `progtest net` together; when full, senders wait and frames are dropped and retransmitted), out of
+  reach of the display's PSRAM traffic too.
+  - `EthernetDevice::transmitInPlace(pieces, flags, token, timeout)` and `setTxDone(fn, arg)`: a
+    descriptor a piece (up to 4), the first handed over last; the caller's buffers held until the
+    reclaim (in the sender or `eth0`) passes `token` to `fn`. A piece outside internal DMA memory,
+    a stamp, or more pieces fall back to the copy, done at once.
+  - The netif `pbuf_ref()`s the frame and frees it in the done call: at once when the core lock is
+    held (a sender), else queued for the network task, which frees them before taking received
+    frames. lwIP doesn't retransmit a segment the driver holds (`tcp_output_segment_busy`), so
+    `eth0` reclaims before it takes received frames: an ACK finds every frame sent before it
+    released. Frames held across a link down go out when it comes back.
+  - TCP down 3.36 (233) to 3.8 (220), up 4.55 (211) to 4.25 (212): the Wi-Fi's noise is as large.
+- **AES by DMA** (`bmds_crypto`), for calls of 1 KB or more with word-aligned buffers the DMA
+  reaches (internal or PSRAM); register mode below.
+  - Our own AXI-GDMA channel pair connected to the engine at the first DMA call and kept (ESP-IDF's
+    mbedtls DMA, unused by BMDS, can't connect after), with 7 + 9 descriptors and two 128-byte
+    bounce lines in one internal block. A run is up to 7 × 3968 bytes; the output's whole lines are
+    written in place, its partial lines at the ends through the bounce lines; the engine in DMA
+    block mode (ECB, CBC, CTR with `AES_INC_SEL` 1, the 128-bit increment); the task sleeps until
+    the receive channel's end-of-frame interrupt. The IV or counter is carried from run to run in
+    software, not read back.
+  - A cache operation costs 4-5 µs however short: merging them (descriptors with bounce lines, in
+    place data once) and resetting the channels only after a timeout took a 1 KB call from 11.9 to
+    13.6 MB/s (register mode's speed); 4 KB 25.6, 16 KB 32.8 MB/s (register mode 15.5).
+  - `progtest crypto` checks long calls against the same bytes in one-block calls (register mode):
+    each mode, 1 KB to 60000 bytes (past a run), misaligned, in place, counters carrying past 32 and
+    64 bits.
+  - SSH AES-128-CTR down 3.15-3.26 MB/s at 297 ms/MB (334 before it, 349 in §28), up 2.23-2.25 at
+    268-275 (308, 305). ChaCha20-Poly1305, which uses no engine, is unchanged (407 / 418).
+- **On the wire** (sartre, wired at 10 Gbit/s; this PC is on Wi-Fi, which capped the numbers
+  above): the driver saturates the link. A raw UDP blast through `transmit()` (a temporary command)
+  sent 8130 full frames a second (line rate 8127) and 21560 554-byte frames (99.7%), all received
+  intact; minimum frames reached 47000 a second of 96000 (the per-frame cost, about 21 µs). A UDP
+  flood into the board was taken at 7300-8150 frames a second, losing about 0.01% (missed by the
+  MAC with the ring momentarily empty). Raw TCP over `nc`: 4.83 MB/s out, 5.93 in, CPU-bound
+  (about 1.3 s busy a second: `dd`, the pipe, `nc`, lwIP), the ring never more than 2 deep.
+- **Deferred (the user: premature):** `eth0` costs about 55 µs a received frame, three quarters of
+  it cache operations (about five `esp_cache_msync` a frame, each with interrupts masked) and
+  semaphores (a wake a frame). If small-frame rates come to matter: the receive interrupt watchdog
+  (RIWT) to take several frames a wake, descriptors in uncached memory if the chip has an uncached
+  view of internal RAM, one network-task wake a batch.
+
+## 30. Step 6's design: real time, and a guarantee for it (2026-10-11)
+
+§5 and §7 stand (the classifier, flows, fast-path sockets, `SO_TIMESTAMPING`, `netlat`); this adds
+the user's requirement: **a real-time flow can always send and receive its packets, however much
+TCP has taken.** Today it can't: frames queued for lwIP can hold every receive buffer, so the ring
+empties and the MAC drops everything (the flood's misses, §29), and bulk frames can fill all 16
+transmit descriptors.
+
+- **What "always" means:** with the link up and each flow within its own budget, no amount of
+  other traffic can take a real-time frame's descriptor, buffer, memory or CPU. The limit is
+  `eth0`'s own speed: at full-size frames it keeps up with the line (§29); a flood of small frames
+  (up to 148000 a second) outruns its per-frame cost, and then the MAC misses frames of every kind.
+  The deferred optimizations of §29 are the answer if that matters.
+- **The partitions follow real-time use** (the user: throughput may drop while real-time traffic
+  runs). With no real-time flow, bulk has the whole transmit ring and every spare receive buffer,
+  as now. While any flow is registered, bulk is held to *k* transmit descriptors and 8 receive
+  buffers. The driver has the mechanism (`setBulkTxLimit()`, `setRxReserve()`); the flows layer
+  sets it as flows come and go.
+- **What AES67 allows** (from memory of AES67-2018; to check against the standard): no sender
+  jitter figure as such. A receiver keeps at least 3 packet times of buffer (20, or 20 ms, is
+  recommended) and plays at a fixed link offset, so the sender's lateness plus the network's delay
+  variation must fit in what the far end's link offset leaves. 1 ms packets are the required
+  packet time; 125, 250 and 333 µs and 4 ms are options. At 1 ms, a few hundred µs is comfortable;
+  at 125 µs even one full bulk frame ahead (123 µs at 100 Mbit/s, the wire's floor) is a packet
+  time.
+- **Receive: the buffers partitioned.**
+  - The pool grows from 24 to 32 buffers (+12 KB internal): 16 keep the ring full; the other 16
+    are bulk's with no real-time flow, else 8 bulk's and 8 a real-time reserve.
+  - The classifier (§5.1) runs in `eth0` before anything is queued. A real-time frame goes to its
+    flow (a per-flow cap, so one flow can't take the reserve). A bulk frame goes to lwIP only while
+    bulk holds fewer than its 8 (frames queued for the network task plus those lwIP holds; lwIP's
+    copy threshold, `MaxHeld`, stays within it); past that `eth0` drops it at once (counted), so its
+    buffer goes straight back and the ring always refills. TCP recovers from the drop.
+  - Real-time flows never touch lwIP's heap or the network task: a full heap costs them nothing.
+  - Multicast: flows' groups get the MAC's 8 exact filters first; past that "pass all multicast"
+    (more frames for `eth0` to drop, nothing lost).
+- **Transmit: the descriptors partitioned.**
+  - Bulk (lwIP's frames, and any without `TxRealTime`) may hold at most *k* descriptors: all 16 with
+    no real-time flow, 2 with flows of 1 ms packets or longer (about 250 µs of full frames ahead
+    of a real-time one, plus the frame on the wire), 1 with a shorter packet time. The rest are
+    real-time's. lwIP's sender waits for bulk room (it holds the core lock, which only bulk paths
+    need); a bulk frame asks for the sent interrupt once bulk is at half its *k*, so the wait is
+    woken (with *k* at 1 or 2, every bulk frame: the throughput cost the user accepted).
+  - **The jitter budget:** `netlat`'s send jitter under load at 1 ms packets under 300 µs: the bulk
+    ahead, the frame on the wire, the sender's wake (a timer interrupt waking a high-priority task,
+    tens of µs).
+  - A real-time frame is copied into its descriptor's internal buffer (or sent in place from
+    internal memory): never lwIP's heap. The transmit lock is a mutex with priority inheritance,
+    and bulk holds it for one copy and a cache operation at most.
+  - Unicast destinations: the flow's MAC comes from lwIP's ARP table when it connects, and the flow
+    refreshes it itself while in use, with a frame of its own (`Arp::writeFrame`) on the real-time
+    path, so a full lwIP heap can't stop it. Multicast's MAC comes from the group.
+- **CPU:** `eth0` runs at priority 21, above audio; it wakes a flow's consumer directly. The network
+  task (6) and the TCP senders can't delay a real-time frame.
+- **The pieces, in order:**
+  1. The driver's partitions and counters (bulk dropped, real-time sent and received, the deepest
+     real-time wait).
+  2. The classifier and `NetFlow` (kernel API): match on EtherType (PTP's 0x88F7) or UDP destination
+     port and address (a group); a ring of frames per flow, its wake, its send; hardware stamps
+     both ways.
+  3. Fast-path sockets (`SO_BMDS_FASTPATH`), `SO_PRIORITY`/DSCP for the queue, `SO_TIMESTAMPING`
+     (receive stamps in `recvmsg`'s control messages, send stamps through `MSG_ERRQUEUE`, as
+     Linux and linuxptp expect). These are ABI: frozen once shipped.
+  4. `netlat` and a Python reflector (§11).
+- **Done when** (the test of the guarantee): `netlat` sends AES67-sized packets every 1 ms both
+  ways between the board and sartre, while sartre pulls TCP from the board, pushes TCP into it and
+  floods it with full-size UDP at line rate: **no real-time packet lost**, the bulk drops counted,
+  the histograms (send jitter, delivery latency, round trip) recorded here with and without load.
+
+### 30a. As built: piece 1, the driver's partitions (2026-10-11)
+
+- **The mechanism:** `EthernetDevice::setBulkTxLimit()` and `setRxReserve()`, `TxRealTime`, 32
+  receive buffers; counters for real-time sent and waited and bulk frames dropped (`net`: "real
+  time: …").
+  Nothing sets them yet: the flows layer (piece 2) will. Tested with temporary commands (a bulk
+  blast and a real-time sender of 342-byte frames every 1 ms, stamped), against sartre.
+- **Two bugs the tests found:**
+  - A second sender waiting for transmit room lost its wake (one `_txWaiting` flag for any number
+    of waiters): it slept to its timeout, and the blast fell from 8130 frames a second to 2300. Now
+    a count, and a woken sender passes the wake on.
+  - The queue of in-place frames to free (§29) overflowed under a flood and corrupted memory (a
+    store fault in `NetInterface::txDone`): a reclaimed descriptor carries the next frame, so the
+    descriptors don't bound it. Now the frames out in place are counted, and copied past the
+    queue's size; the network task frees them as it goes.
+- **The transmit lock was the real-time sender's worst wait:** under a UDP flood (the network task
+  sending an ICMP reply a frame, `eth0` reclaiming), the FreeRTOS mutex was held at most 127 µs at
+  a time, yet a real-time sender waited up to 2.6 ms for it: a released mutex goes to whoever takes
+  it first, and the bulk paths on the other core kept taking it. Now:
+  - the CPU reaches the descriptors through internal RAM's uncached view (+0x40000000), so no
+    descriptor needs a cache operation (several a frame, each 4-5 µs with interrupts masked);
+  - copy buffers are a pool of their own, so a frame is copied and written back before the lock;
+  - the lock is a spinlock held only to claim and hand over descriptors and to reclaim; the done
+    calls, stamp wakes and semaphore releases come after it.
+
+  The real-time sender's wait to get into the ring fell to 313 µs at most, which is `eth0`
+  preempting it (the test ran at 20, `eth0` at 21). Raw TCP also gained: 4.83 to 5.43 MB/s out
+  (281 to 259 ms/MB), 5.93 to 6.23 in (211 to 195).
+- **Measured** (real-time frames every 1 ms; sartre wired):
+
+  | Load | *k* | Real-time lost | Wait, mean / worst | Bulk |
+  |---|---|---|---|---|
+  | Bulk blast (full frames) | 16 | almost all | - | 8052/s |
+  | Bulk blast | 2 | 0 of 5000 | 139 µs / 300 µs (one 1.2 ms) | 7929/s |
+  | Bulk blast | 1 | 0 of 5000 | 75 µs / under 700 µs | 7203/s |
+  | UDP flood in, reserve 8 | 2 | 0 of 30003 | 20 µs / 313 µs | - |
+
+  The one long wait at *k* 2 is the first frame after the limit drops: the 16 bulk frames already
+  in the ring drain first (under 2 ms, once, when the first flow registers).
+- **Not yet explained:** under a line-rate UDP flood the MAC misses about 3 frames in 65000, with
+  the ring found full again after (`eth0` didn't run for 2 ms or more, once or twice a run; not at
+  the flood's start). Buffers aren't the cause (the reserve keeps the ring refillable); a real-time
+  frame among them would be lost too. `netlat`'s loss counts will show whether it touches
+  real-time traffic in practice; more receive descriptors (32: 4 ms) are the cheap remedy.
+- **The stamps:** a stamp is kept in its descriptor's slot until the slot is reused, 16 frames
+  later; under bulk churn a slow reader loses it (`waitTxStamp()` returns `NotExist`). PTP's and
+  `netlat`'s stamps must be delivered to the flow when reclaimed (piece 2), not looked up.
+

@@ -206,6 +206,12 @@ namespace {
                 ctx.printf("  buffers held %" PRIu32 " (most %" PRIu32 "), %" PRIu32 " interrupts, %" PRIu32
                            " link changes\n",
                            c.rxHeld, c.rxHeldMax, c.interrupts, c.linkChanges);
+                ctx.printf("  %" PRIu64 " received frames checksummed by the MAC, %" PRIu64 " sent in place\n",
+                           c.rxChecksummed, c.txInPlace);
+                ctx.printf("  real time: %" PRIu64 " sent, %" PRIu32 " waited; bulk: %u of %u tx descriptors, %u rx "
+                           "buffers kept back, %" PRIu32 " frames dropped\n",
+                           c.txRealTime, c.txRealTimeWaited, unsigned(d.bulkTxLimit()),
+                           unsigned(EthernetDevice::TxDescriptors), unsigned(d.rxReserve()), c.rxBulkDropped);
                 const PtpTime t = d.ptpTime();
                 if (Clock::isSet())
                         ctx.printf("  1588 clock %" PRIu64 ".%09" PRIu32 " (%+" PRId64 " us from the system clock)\n",

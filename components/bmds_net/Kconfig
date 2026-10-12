@@ -18,4 +18,15 @@ menu "BMDS network"
             runs lwIP's timers. Above the window manager, so the network keeps up while the
             screen is busy; below audio, which bulk traffic must never hold up.
 
+    config BMDS_NET_HEAP_KB
+        int "IP stack heap (KB of internal RAM)"
+        default 96
+        range 32 256
+        help
+            lwIP's heap, one block of internal DMA memory from boot (devplan/network.md §29):
+            its pbufs, segments and control blocks. The Ethernet DMA sends frames from it in
+            place (it can't send from PSRAM). A connection moving data at full speed both ways
+            holds up to about 50 KB (a bulk transfer one way measured 28 KB); with less room
+            senders wait and received frames are dropped and retransmitted.
+
 endmenu

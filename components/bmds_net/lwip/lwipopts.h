@@ -27,12 +27,17 @@
 #define LWIP_NETIF_LOOPBACK_MULTITHREADING 1 // netif_poll scheduled on the task (lwipport.h)
 #define LWIP_RAND() bmds_lwip_rand()
 
-// --- Memory: lwIP's heap is one PSRAM block from boot; the pools come out of it -----------
+// --- Memory: lwIP's heap is one block of internal DMA memory from boot (the Ethernet DMA sends
+// from it in place: devplan/network.md §29); the pools come out of it --------------------------
 
 #define MEM_LIBC_MALLOC 0
 #define MEMP_MEM_MALLOC 1
 #define MEM_ALIGNMENT 4
-#define MEM_SIZE (256 * 1024)
+#ifdef CONFIG_BMDS_NET_HEAP_KB
+#define MEM_SIZE (CONFIG_BMDS_NET_HEAP_KB * 1024)
+#else
+#define MEM_SIZE (96 * 1024) // the host tests
+#endif
 #define LWIP_RAM_HEAP_POINTER bmds_lwip_heap
 // With MEMP_MEM_MALLOC these bound nothing (the heap does): lwIP checks them against each other.
 #define MEMP_NUM_PBUF 32

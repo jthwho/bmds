@@ -32,8 +32,10 @@ BMDS_NAMESPACE_BEGIN
  *
  * Received frames are queued by the device's task and given to lwIP by the
  * network task (`poll()`), in the driver's buffers while lwIP holds few of
- * them, copied when it holds many. Sending gathers lwIP's buffers into one
- * of the driver's. The settings (`net/eth0/...`) are declared when the
+ * them, copied when it holds many. Sent frames are read by the DMA from
+ * lwIP's buffers (its heap is internal RAM), held until it is done
+ * (`transmitInPlace()`); the MAC checks received checksums
+ * (devplan/network.md §29). The settings (`net/eth0/...`) are declared when the
  * interface is made and watched: a change applies at once.
  *
  * @par Thread Safety
@@ -146,10 +148,12 @@ class NetInterface {
                                         enum netif_mac_filter_action action);
                 static void  statusChanged(struct netif *netif);
                 static void  freeRx(struct pbuf *p);
+                static void  txDone(void *arg, void *token);
 
                 Error declareSettings();
                 void  poll();
                 void  input(const EthernetDevice::RxFrame &frame);
+                void  freeSent();
                 void  applySettings();
                 void  apply(Mode was);
                 void  applyLink();
@@ -169,6 +173,17 @@ class NetInterface {
                 size_t                  _rxCount = 0;
                 RxPbuf                  _rxPbufs[EthernetDevice::RxBuffers];
                 std::atomic<uint32_t>   _held{0};
+
+                // Frames sent in place that the device's task found done: their pbufs, freed by
+                // the network task. A descriptor is free again once reclaimed, so what bounds the
+                // queue is `_inPlace`: frames out in place, not yet freed (under the core lock);
+                // at the queue's size, frames are copied instead.
+                static constexpr size_t MaxInPlace = 2 * EthernetDevice::TxDescriptors;
+                SpinLock                _txFreeLock;
+                struct pbuf            *_txFree[MaxInPlace] = {};
+                std::atomic<size_t>     _txFreeCount{0};
+                size_t                  _inPlace = 0;
+                u16_t                   _checksums = NETIF_CHECKSUM_ENABLE_ALL; // lwIP's share, between frames
 
                 std::atomic<bool> _linkPending{true};
                 std::atomic<bool> _settingsPending{true};
