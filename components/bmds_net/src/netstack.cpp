@@ -13,6 +13,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <lwip/init.h>
+#include <lwip/priv/tcp_priv.h>
 #include <lwip/sys.h>
 #include <lwip/timeouts.h>
 #include <bmds/assert.h>
@@ -60,6 +61,7 @@ namespace {
                         SpinLock                  callLock;
                         Call                      calls[MaxCalls];
                         size_t                    callCount = 0;
+                        bool                      ackTimerSet = false;
         };
 
         constinit StaticObject<Stack> stack;
@@ -80,6 +82,36 @@ namespace {
                 }
         }
 
+        // A delayed ACK goes out within this, as Linux's least, not at lwIP's next fast timer
+        // (every 250 ms): a peer with Nagle on (OpenSSH without a terminal) holds its next small
+        // segment until our ACK, so each such exchange stalled up to 250 ms (network.md §27).
+        constexpr uint32_t DelayedAckMs = 40;
+
+        // What lwIP's fast timer does for a delayed ACK, for every connection owing one.
+        void sendDelayedAcks(void *) {
+                stack->ackTimerSet = false;
+                for (struct tcp_pcb *pcb = tcp_active_pcbs; pcb != nullptr; pcb = pcb->next) {
+                        if ((pcb->flags & TF_ACK_DELAY) == 0) continue;
+                        tcp_ack_now(pcb);
+                        (void)tcp_output(pcb);
+                        tcp_clear_flags(pcb, TF_ACK_DELAY | TF_ACK_NOW);
+                }
+                return;
+        }
+
+        // Starts the delayed ACKs' timer when a connection owes one (an answer sent meanwhile
+        // carries the ACK and clears the flag).
+        void scheduleDelayedAcks() {
+                if (stack->ackTimerSet) return;
+                for (struct tcp_pcb *pcb = tcp_active_pcbs; pcb != nullptr; pcb = pcb->next) {
+                        if ((pcb->flags & TF_ACK_DELAY) == 0) continue;
+                        sys_timeout(DelayedAckMs, &sendDelayedAcks, nullptr);
+                        stack->ackTimerSet = true;
+                        return;
+                }
+                return;
+        }
+
         void run(void *) {
                 for (;;) {
                         uint32_t sleepMs;
@@ -91,6 +123,7 @@ namespace {
                                 NetMdns::poll();
                                 runCalls();
                                 sys_check_timeouts();
+                                scheduleDelayedAcks();
                                 NetStatus::publish(); // after all of it: one change told for several
                                 sleepMs = sys_timeouts_sleeptime();
                         }

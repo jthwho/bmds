@@ -23,6 +23,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_LOADER_PURE_SRCS}
                                     src/audiocalls.cpp
+                                    src/cryptocalls.cpp
                                     src/imagecalls.cpp
                                     src/loader.cpp
                                     src/midicalls.cpp
@@ -34,7 +35,7 @@ if(COMMAND idf_component_register)
                                     src/systable.c
                                INCLUDE_DIRS include ${BMDS_SDK_INCLUDE}
                                REQUIRES bmds_core bmds_kernel bmds_console bmds_fs bmds_sysconf
-                               PRIV_REQUIRES bmds_audio bmds_drivers bmds_images bmds_midi bmds_net bmds_stats bmds_synth bmds_shell esp_hw_support esp_mm
+                               PRIV_REQUIRES bmds_audio bmds_crypto bmds_drivers bmds_images bmds_midi bmds_net bmds_stats bmds_synth bmds_shell esp_hw_support esp_mm
                                              freertos
                                # proccommand.cpp's commands are found through their linker
                                # section, not by symbol.

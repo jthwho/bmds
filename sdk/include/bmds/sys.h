@@ -184,6 +184,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_NET_WATCH 109u /**< `int32_t net_watch(uint32_t flags)`: a new fd. */
 #define BMDS_SYS_TERM_CTL 110u  /**< `int32_t term_ctl(int32_t fd, uint32_t op, uint32_t arg)`. */
 #define BMDS_SYS_FS_INFO 111u   /**< `int32_t fs_info(const char *path, bmds_fs_info_t *info)`. */
+#define BMDS_SYS_CRYPTO 112u    /**< `int32_t crypto(const bmds_crypto_op_t *op)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -1282,6 +1283,35 @@ typedef struct bmds_fs_info_t {
                 char     type[16];    /**< "FAT12", "FAT16", "FAT32", "exFAT", "littlefs". */
 } bmds_fs_info_t;
 
+/** @brief `crypto`'s algorithms (appended 2026-10-11, slot 112; devplan/network.md §26). */
+#define BMDS_CRYPTO_AES_ECB_ENCRYPT 1u /**< AES, each block alone. */
+#define BMDS_CRYPTO_AES_ECB_DECRYPT 2u /**< AES, each block alone, deciphered. */
+#define BMDS_CRYPTO_AES_CBC_ENCRYPT 3u /**< AES-CBC; `state`: the IV, then the last block out. */
+#define BMDS_CRYPTO_AES_CBC_DECRYPT 4u /**< AES-CBC deciphered; `state`: the IV, then the last block in. */
+#define BMDS_CRYPTO_AES_CTR 5u         /**< AES-CTR; `state`: a 128-bit big-endian counter. */
+#define BMDS_CRYPTO_SHA1 16u           /**< SHA-1's compression of whole 64-byte blocks. */
+#define BMDS_CRYPTO_SHA256 17u         /**< SHA-256's (so SHA-224's) of whole 64-byte blocks. */
+#define BMDS_CRYPTO_SHA512 18u         /**< SHA-512's (so SHA-384's) of whole 128-byte blocks. */
+
+/**
+ * @brief One `crypto` call (appended 2026-10-11, slot 112): the chip's AES or SHA engine over
+ *        whole blocks. Every call carries its key and state; the kernel keeps neither. The
+ *        caller sets `size`.
+ */
+typedef struct bmds_crypto_op_t {
+                uint32_t    size;      /**< Set by the caller: `sizeof(bmds_crypto_op_t)`. */
+                uint32_t    algorithm; /**< A `BMDS_CRYPTO_...` algorithm. */
+                const void *key;       /**< AES: the key. SHA: unused. */
+                uint32_t    key_bytes; /**< AES: 16 or 32 (the engine has no AES-192). */
+                void       *state;     /**< AES-CBC: the IV; AES-CTR: the first block's counter;
+                                            SHA: the chaining value as the digest is written (20, 32
+                                            or 64 bytes, the words big-endian). Replaced by the
+                                            value for the next call; AES-ECB: unused. */
+                const void *in;        /**< The input: `length` bytes. */
+                void       *out;       /**< AES: the output, `length` bytes (may be `in`). SHA: unused. */
+                uint32_t    length;    /**< Bytes: a multiple of the block (16; SHA 64, SHA-512 128). */
+} bmds_crypto_op_t;
+
 /** @brief `proc_timer`'s timers. */
 #define BMDS_TIMER_REAL 0u /**< Real time, raising `SIGALRM` (Linux's `ITIMER_REAL`). */
 
@@ -1402,6 +1432,7 @@ typedef int32_t (*bmds_sys_proc_timer_fn)(uint32_t which, const bmds_timer_t *se
 typedef int32_t (*bmds_sys_net_watch_fn)(uint32_t flags);
 typedef int32_t (*bmds_sys_term_ctl_fn)(int32_t fd, uint32_t op, uint32_t arg);
 typedef int32_t (*bmds_sys_fs_info_fn)(const char *path, bmds_fs_info_t *info);
+typedef int32_t (*bmds_sys_crypto_fn)(const bmds_crypto_op_t *op);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -2536,6 +2567,19 @@ static inline int32_t bmds_term_ctl(int32_t fd, uint32_t op, uint32_t arg) {
  */
 static inline int32_t bmds_fs_info(const char *path, bmds_fs_info_t *info) {
         return ((bmds_sys_fs_info_fn)bmds_sys->slot[BMDS_SYS_FS_INFO])(path, info);
+}
+
+/**
+ * @brief Runs AES or a SHA's compression over whole blocks on the chip's engines: about five
+ *        times software's speed for AES-CTR and nine for SHA-256 on 16 KB; a call costs about
+ *        13 µs, so give it whole packets, not single blocks (devplan/network.md §26-27).
+ *        Padding, HMAC and the modes' partial blocks stay the caller's. Check
+ *        `bmds_sys_has(BMDS_SYS_CRYPTO)` first; a kernel without the slot has no engines to offer.
+ * @return 0, or `-BMDS_EINVAL` (a wrong length, key size or missing pointer), `-BMDS_ENOTSUP`
+ *         (an algorithm this kernel doesn't have), `-BMDS_EFAULT`.
+ */
+static inline int32_t bmds_crypto(const bmds_crypto_op_t *op) {
+        return ((bmds_sys_crypto_fn)bmds_sys->slot[BMDS_SYS_CRYPTO])(op);
 }
 
 #ifdef __cplusplus

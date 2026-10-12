@@ -126,6 +126,20 @@ _Static_assert(offsetof(bmds_fs_info_t, size) == 0 && offsetof(bmds_fs_info_t, b
                        offsetof(bmds_fs_info_t, total_bytes) == 8 && offsetof(bmds_fs_info_t, free_bytes) == 16 &&
                        offsetof(bmds_fs_info_t, type) == 24 && sizeof(bmds_fs_info_t) == 40,
                "ABI: bmds_fs_info_t");
+_Static_assert(BMDS_SYS_CRYPTO == 112, "ABI: slot CRYPTO");
+_Static_assert(BMDS_CRYPTO_AES_ECB_ENCRYPT == 1 && BMDS_CRYPTO_AES_ECB_DECRYPT == 2 &&
+                       BMDS_CRYPTO_AES_CBC_ENCRYPT == 3 && BMDS_CRYPTO_AES_CBC_DECRYPT == 4 &&
+                       BMDS_CRYPTO_AES_CTR == 5 && BMDS_CRYPTO_SHA1 == 16 && BMDS_CRYPTO_SHA256 == 17 &&
+                       BMDS_CRYPTO_SHA512 == 18,
+               "ABI: crypto's algorithms");
+#if UINTPTR_MAX == 0xffffffffu // (pointers inside)
+_Static_assert(offsetof(bmds_crypto_op_t, size) == 0 && offsetof(bmds_crypto_op_t, algorithm) == 4 &&
+                       offsetof(bmds_crypto_op_t, key) == 8 && offsetof(bmds_crypto_op_t, key_bytes) == 12 &&
+                       offsetof(bmds_crypto_op_t, state) == 16 && offsetof(bmds_crypto_op_t, in) == 20 &&
+                       offsetof(bmds_crypto_op_t, out) == 24 && offsetof(bmds_crypto_op_t, length) == 28 &&
+                       sizeof(bmds_crypto_op_t) == 32,
+               "ABI: bmds_crypto_op_t");
+#endif
 _Static_assert(BMDS_TERM_PTY_NUMBER == 0 && BMDS_TERM_PTY_UNLOCK == 1 && BMDS_TERM_SET_SIZE == 2 &&
                        BMDS_TERM_CONTROL == 3 && BMDS_TERM_RELEASE == 4 && BMDS_TERM_PTS_NUMBER == 5,
                "ABI: term_ctl operations");

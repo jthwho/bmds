@@ -1,0 +1,418 @@
+libtomcrypt on the chip's AES and SHA engines through BMDS's crypto call (slot 112;
+devplan/network.md §26), on with BMDS_CRYPTO_ENGINES: SHA-1, SHA-256 and SHA-512 send all of a
+process call's whole blocks in one call, and AES gains accel_ctr_encrypt (keeping the raw key for
+it). libtomcrypt's own code is the fallback on a kernel without the call. The client lists
+aes128-ctr and aes256-ctr first.
+
+--- a/libtomcrypt/src/headers/tomcrypt.h
++++ b/libtomcrypt/src/headers/tomcrypt.h
+@@ -92,6 +92,7 @@
+ #include <tomcrypt_misc.h>
+ #include <tomcrypt_argchk.h>
+ #include <tomcrypt_pkcs.h>
++#include <tomcrypt_bmds.h>
+ 
+ #ifdef __cplusplus
+    }
+--- a/libtomcrypt/src/headers/tomcrypt_cipher.h
++++ b/libtomcrypt/src/headers/tomcrypt_cipher.h
+@@ -43,6 +43,10 @@
+ struct rijndael_key {
+    ulong32 eK[60], dK[60];
+    int Nr;
++#if BMDS_CRYPTO_ENGINES
++   unsigned char raw[32]; /* BMDS: the key as given, for the engine (16 or 32 bytes) */
++   int rawlen;            /* its length; 0 for AES-192, which the engine hasn't */
++#endif
+ };
+ #endif
+ 
+--- a/libtomcrypt/src/ciphers/aes/aes.c
++++ b/libtomcrypt/src/ciphers/aes/aes.c
+@@ -34,6 +34,14 @@
+ 
+ #ifndef ENCRYPT_ONLY
+ 
++#if BMDS_CRYPTO_ENGINES
++static int bmds_aes_ctr(const unsigned char *pt, unsigned char *ct, unsigned long blocks,
++                        unsigned char *IV, int mode, symmetric_key *skey);
++#define ACCEL_CTR bmds_aes_ctr
++#else
++#define ACCEL_CTR NULL
++#endif
++
+ #define SETUP    rijndael_setup
+ #define ECB_ENC  rijndael_ecb_encrypt
+ #define ECB_DEC  rijndael_ecb_decrypt
+@@ -58,7 +66,7 @@
+     6,
+     16, 32, 16, 10,
+     SETUP, ECB_ENC, ECB_DEC, ECB_TEST, ECB_DONE, ECB_KS,
+-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
++    NULL, NULL, NULL, NULL, ACCEL_CTR, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+ };
+ 
+ #else
+@@ -138,6 +146,10 @@
+     }
+ 
+     skey->rijndael.Nr = 10 + ((keylen/8)-2)*2;
++#if BMDS_CRYPTO_ENGINES
++    skey->rijndael.rawlen = keylen == 24 ? 0 : keylen;
++    XMEMCPY(skey->rijndael.raw, key, (size_t)skey->rijndael.rawlen);
++#endif
+ 
+     /* setup the forward key */
+     i                 = 0;
+@@ -737,6 +749,45 @@
+    }
+ }
+ 
++#if BMDS_CRYPTO_ENGINES && !defined(ENCRYPT_ONLY)
++/* BMDS: ctr_encrypt's whole blocks on the chip's AES engine. libtomcrypt's counter is the last
++   block's (each block increments, then enciphers it), the engine's the next block's. Without the
++   engine, for an AES-192 key or a little-endian counter, block by block in software. Counters
++   are taken as the whole block wide (SSH's are: the descriptor isn't told the width). */
++static int bmds_aes_ctr(const unsigned char *pt, unsigned char *ct, unsigned long blocks,
++                        unsigned char *IV, int mode, symmetric_key *skey)
++{
++   unsigned char pad[16];
++   unsigned long b;
++   int x, err;
++
++   if (mode == CTR_COUNTER_BIG_ENDIAN && skey->rijndael.rawlen != 0 && bmds_engine_present()) {
++      for (x = 15; x >= 0 && ++IV[x] == 0; x--) {}
++      if (bmds_engine_run(BMDS_CRYPTO_AES_CTR, skey->rijndael.raw, (unsigned long)skey->rijndael.rawlen,
++                          IV, pt, ct, blocks * 16) == 0) {
++         for (x = 15; x >= 0 && IV[x]-- == 0; x--) {}
++         return CRYPT_OK;
++      }
++      for (x = 15; x >= 0 && IV[x]-- == 0; x--) {}
++   }
++   for (b = 0; b < blocks; b++, pt += 16, ct += 16) {
++      if (mode == CTR_COUNTER_LITTLE_ENDIAN) {
++         for (x = 0; x < 16 && ++IV[x] == 0; x++) {}
++      } else {
++         for (x = 15; x >= 0 && ++IV[x] == 0; x--) {}
++      }
++      if ((err = rijndael_ecb_encrypt(IV, pad, skey)) != CRYPT_OK) {
++         return err;
++      }
++      for (x = 0; x < 16; x++) {
++         ct[x] = pt[x] ^ pad[x];
++      }
++   }
++   zeromem(pad, sizeof(pad));
++   return CRYPT_OK;
++}
++#endif
++
+ #endif
+ 
+ 
+--- a/libtomcrypt/src/hashes/sha1.c
++++ b/libtomcrypt/src/hashes/sha1.c
+@@ -155,6 +155,36 @@
+ }
+ #endif
+ 
++#if BMDS_CRYPTO_ENGINES
++/* BMDS: whole blocks on the chip's engine (tomcrypt_bmds.h), in software without it. */
++static int sha1_blocks(hash_state * md, const unsigned char *in, unsigned long len)
++{
++    unsigned char state[20];
++    int i, err;
++
++    if (bmds_engine_present()) {
++        for (i = 0; i < 5; i++) {
++            STORE32H(md->sha1.state[i], state + 4 * i);
++        }
++        if (bmds_engine_run(BMDS_CRYPTO_SHA1, NULL, 0, state, in, NULL, len) == 0) {
++            for (i = 0; i < 5; i++) {
++                LOAD32H(md->sha1.state[i], state + 4 * i);
++            }
++            return CRYPT_OK;
++        }
++    }
++    for (; len >= 64; in += 64, len -= 64) {
++        if ((err = sha1_compress(md, (unsigned char *)in)) != CRYPT_OK) {
++            return err;
++        }
++    }
++    return CRYPT_OK;
++}
++#define sha1_last(md, buf) sha1_blocks(md, buf, 64)
++#else
++#define sha1_last(md, buf) sha1_compress(md, buf)
++#endif
++
+ /**
+    Initialize the hash state
+    @param md   The hash state you wish to initialize
+@@ -180,7 +210,11 @@
+    @param inlen  The length of the data (octets)
+    @return CRYPT_OK if successful
+ */
++#if BMDS_CRYPTO_ENGINES
++HASH_PROCESS_BLOCKS(sha1_process, sha1_blocks, sha1, 64)
++#else
+ HASH_PROCESS(sha1_process, sha1_compress, sha1, 64)
++#endif
+ 
+ /**
+    Terminate the hash to get the digest
+@@ -213,7 +247,7 @@
+         while (md->sha1.curlen < 64) {
+             md->sha1.buf[md->sha1.curlen++] = (unsigned char)0;
+         }
+-        sha1_compress(md, md->sha1.buf);
++        sha1_last(md, md->sha1.buf);
+         md->sha1.curlen = 0;
+     }
+ 
+@@ -224,7 +258,7 @@
+ 
+     /* store length */
+     STORE64H(md->sha1.length, md->sha1.buf+56);
+-    sha1_compress(md, md->sha1.buf);
++    sha1_last(md, md->sha1.buf);
+ 
+     /* copy output */
+     for (i = 0; i < 5; i++) {
+--- a/libtomcrypt/src/hashes/sha2/sha256.c
++++ b/libtomcrypt/src/hashes/sha2/sha256.c
+@@ -196,6 +196,36 @@
+ }
+ #endif
+ 
++#if BMDS_CRYPTO_ENGINES
++/* BMDS: whole blocks on the chip's engine (tomcrypt_bmds.h), in software without it. */
++static int sha256_blocks(hash_state * md, const unsigned char *in, unsigned long len)
++{
++    unsigned char state[32];
++    int i, err;
++
++    if (bmds_engine_present()) {
++        for (i = 0; i < 8; i++) {
++            STORE32H(md->sha256.state[i], state + 4 * i);
++        }
++        if (bmds_engine_run(BMDS_CRYPTO_SHA256, NULL, 0, state, in, NULL, len) == 0) {
++            for (i = 0; i < 8; i++) {
++                LOAD32H(md->sha256.state[i], state + 4 * i);
++            }
++            return CRYPT_OK;
++        }
++    }
++    for (; len >= 64; in += 64, len -= 64) {
++        if ((err = sha256_compress(md, (unsigned char *)in)) != CRYPT_OK) {
++            return err;
++        }
++    }
++    return CRYPT_OK;
++}
++#define sha256_last(md, buf) sha256_blocks(md, buf, 64)
++#else
++#define sha256_last(md, buf) sha256_compress(md, buf)
++#endif
++
+ /**
+    Initialize the hash state
+    @param md   The hash state you wish to initialize
+@@ -225,7 +255,11 @@
+    @param inlen  The length of the data (octets)
+    @return CRYPT_OK if successful
+ */
++#if BMDS_CRYPTO_ENGINES
++HASH_PROCESS_BLOCKS(sha256_process, sha256_blocks, sha256, 64)
++#else
+ HASH_PROCESS(sha256_process, sha256_compress, sha256, 64)
++#endif
+ 
+ /**
+    Terminate the hash to get the digest
+@@ -259,7 +293,7 @@
+         while (md->sha256.curlen < 64) {
+             md->sha256.buf[md->sha256.curlen++] = (unsigned char)0;
+         }
+-        sha256_compress(md, md->sha256.buf);
++        sha256_last(md, md->sha256.buf);
+         md->sha256.curlen = 0;
+     }
+ 
+@@ -270,7 +304,7 @@
+ 
+     /* store length */
+     STORE64H(md->sha256.length, md->sha256.buf+56);
+-    sha256_compress(md, md->sha256.buf);
++    sha256_last(md, md->sha256.buf);
+ 
+     /* copy output */
+     for (i = 0; i < 8; i++) {
+--- a/libtomcrypt/src/hashes/sha2/sha512.c
++++ b/libtomcrypt/src/hashes/sha2/sha512.c
+@@ -165,6 +165,36 @@
+ }
+ #endif
+ 
++#if BMDS_CRYPTO_ENGINES
++/* BMDS: whole blocks on the chip's engine (tomcrypt_bmds.h), in software without it. */
++static int sha512_blocks(hash_state * md, const unsigned char *in, unsigned long len)
++{
++    unsigned char state[64];
++    int i, err;
++
++    if (bmds_engine_present()) {
++        for (i = 0; i < 8; i++) {
++            STORE64H(md->sha512.state[i], state + 8 * i);
++        }
++        if (bmds_engine_run(BMDS_CRYPTO_SHA512, NULL, 0, state, in, NULL, len) == 0) {
++            for (i = 0; i < 8; i++) {
++                LOAD64H(md->sha512.state[i], state + 8 * i);
++            }
++            return CRYPT_OK;
++        }
++    }
++    for (; len >= 128; in += 128, len -= 128) {
++        if ((err = sha512_compress(md, (unsigned char *)in)) != CRYPT_OK) {
++            return err;
++        }
++    }
++    return CRYPT_OK;
++}
++#define sha512_last(md, buf) sha512_blocks(md, buf, 128)
++#else
++#define sha512_last(md, buf) sha512_compress(md, buf)
++#endif
++
+ /**
+    Initialize the hash state
+    @param md   The hash state you wish to initialize
+@@ -193,7 +223,11 @@
+    @param inlen  The length of the data (octets)
+    @return CRYPT_OK if successful
+ */
++#if BMDS_CRYPTO_ENGINES
++HASH_PROCESS_BLOCKS(sha512_process, sha512_blocks, sha512, 128)
++#else
+ HASH_PROCESS(sha512_process, sha512_compress, sha512, 128)
++#endif
+ 
+ /**
+    Terminate the hash to get the digest
+@@ -226,7 +260,7 @@
+         while (md->sha512.curlen < 128) {
+             md->sha512.buf[md->sha512.curlen++] = (unsigned char)0;
+         }
+-        sha512_compress(md, md->sha512.buf);
++        sha512_last(md, md->sha512.buf);
+         md->sha512.curlen = 0;
+     }
+ 
+@@ -240,7 +274,7 @@
+ 
+     /* store length */
+     STORE64H(md->sha512.length, md->sha512.buf+120);
+-    sha512_compress(md, md->sha512.buf);
++    sha512_last(md, md->sha512.buf);
+ 
+     /* copy output */
+     for (i = 0; i < 8; i++) {
+--- a/src/common-algo.c
++++ b/src/common-algo.c
+@@ -126,6 +126,16 @@
+  * that is also supported by the server will get used. */
+ 
+ algo_type sshciphers[] = {
++#if BMDS_CRYPTO_ENGINES && DROPBEAR_ENABLE_CTR_MODE
++/* BMDS: AES-CTR first, on the chip's engine (libtomcrypt's patch): the client's choice. It
++ * took a fifth to a third less CPU per byte than ChaCha20-Poly1305 (devplan/network.md §27). */
++#if DROPBEAR_AES128
++	{"aes128-ctr", 0, &dropbear_aes128, 1, &dropbear_mode_ctr},
++#endif
++#if DROPBEAR_AES256
++	{"aes256-ctr", 0, &dropbear_aes256, 1, &dropbear_mode_ctr},
++#endif
++#endif
+ #if DROPBEAR_CHACHA20POLY1305
+ 	{"chacha20-poly1305@openssh.com", 0, &dropbear_chachapoly, 1, &dropbear_mode_chachapoly},
+ #endif
+@@ -139,7 +149,7 @@
+ #endif
+ #endif /* DROPBEAR_ENABLE_GCM_MODE */
+ 
+-#if DROPBEAR_ENABLE_CTR_MODE
++#if DROPBEAR_ENABLE_CTR_MODE && !BMDS_CRYPTO_ENGINES
+ #if DROPBEAR_AES256
+ 	{"aes256-ctr", 0, &dropbear_aes256, 1, &dropbear_mode_ctr},
+ #endif
+--- /dev/null
++++ b/libtomcrypt/src/headers/tomcrypt_bmds.h
+@@ -0,0 +1,68 @@
++/* BMDS: the chip's AES and SHA engines through the kernel's crypto call (slot 112; BMDS's
++ * devplan/network.md §26). libtomcrypt's own code stays the fallback on a kernel without it.
++ * On by BMDS_CRYPTO_ENGINES (dist/dropbear/localoptions.h). */
++#ifndef TOMCRYPT_BMDS_H_
++#define TOMCRYPT_BMDS_H_
++
++#if BMDS_CRYPTO_ENGINES
++#include <bmds/sys.h>
++
++/* Nonzero if this kernel has the engines. */
++static inline int bmds_engine_present(void)
++{
++   return bmds_sys_has(BMDS_SYS_CRYPTO);
++}
++
++/* One call to the engines: 0, or a negative BMDS error. */
++static inline int bmds_engine_run(uint32_t algorithm, const unsigned char *key, unsigned long keylen,
++                                  unsigned char *state, const unsigned char *in, unsigned char *out,
++                                  unsigned long len)
++{
++   const bmds_crypto_op_t op = { sizeof(op), algorithm, key, (uint32_t)keylen, state, in, out, (uint32_t)len };
++   return bmds_crypto(&op);
++}
++
++/* HASH_PROCESS, but whole blocks go to blocks_name together (one call to the engine for all of
++ * a packet's), and a filled buffer too. */
++#define HASH_PROCESS_BLOCKS(func_name, blocks_name, state_var, block_size)                  \
++int func_name (hash_state * md, const unsigned char *in, unsigned long inlen)               \
++{                                                                                           \
++    unsigned long n;                                                                        \
++    int           err;                                                                      \
++    LTC_ARGCHK(md != NULL);                                                                 \
++    LTC_ARGCHK(in != NULL);                                                                 \
++    if (md-> state_var .curlen > sizeof(md-> state_var .buf)) {                             \
++       return CRYPT_INVALID_ARG;                                                            \
++    }                                                                                       \
++    if ((md-> state_var .length + inlen) < md-> state_var .length) {                        \
++      return CRYPT_HASH_OVERFLOW;                                                           \
++    }                                                                                       \
++    while (inlen > 0) {                                                                     \
++        if (md-> state_var .curlen == 0 && inlen >= block_size) {                           \
++           n = inlen - inlen % block_size;                                                  \
++           if ((err = blocks_name (md, in, n)) != CRYPT_OK) {                               \
++              return err;                                                                   \
++           }                                                                                \
++           md-> state_var .length += n * 8;                                                 \
++           in             += n;                                                             \
++           inlen          -= n;                                                             \
++        } else {                                                                            \
++           n = MIN(inlen, (block_size - md-> state_var .curlen));                           \
++           XMEMCPY(md-> state_var .buf + md-> state_var.curlen, in, (size_t)n);             \
++           md-> state_var .curlen += n;                                                     \
++           in             += n;                                                             \
++           inlen          -= n;                                                             \
++           if (md-> state_var .curlen == block_size) {                                      \
++              if ((err = blocks_name (md, md-> state_var .buf, block_size)) != CRYPT_OK) {  \
++                 return err;                                                                \
++              }                                                                             \
++              md-> state_var .length += 8*block_size;                                       \
++              md-> state_var .curlen = 0;                                                   \
++           }                                                                                \
++       }                                                                                    \
++    }                                                                                       \
++    return CRYPT_OK;                                                                        \
++}
++#endif /* BMDS_CRYPTO_ENGINES */
++
++#endif /* TOMCRYPT_BMDS_H_ */

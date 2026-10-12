@@ -246,7 +246,10 @@ Plan: [`input.md`](input.md).
     the parser fuzzed, §22-23.
   - [x] 5. SSH: Dropbear, passwords in sysconf, our own `sftp-server` (`network.md` §24-25): in `/rom`, the
     server a kernel service (`net/ssh/server`); a file manager's `sftp://` still to try.
-  - [ ] 5a. The crypto engines (AES, SHA, MPI, ECC) behind SSH, measured.
+  - [x] 5a. Crypto, measured (`network.md` §26-27): delayed ACKs within 40 ms (a 0.2 s stall
+    per login); Dropbear's X25519 and Ed25519 on Monocypher (11-37 times TweetNaCl's); the AES
+    and SHA engines in register mode (`bmds_crypto`, slot 112 `crypto`) under libtomcrypt, the
+    board's client preferring AES-CTR. A login 1.03 s to 0.2 s; MPI and ECC not worth it.
   - [ ] 6. Real time: fast path, priority queue, timestamps, `netlat`.
   - [ ] 7. PTP, master and slave (BMCA): two boards alone elect a grandmaster.
 

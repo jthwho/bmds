@@ -64,6 +64,9 @@
  *   progtest ctty         print what a pty's child sees of its terminal (for pty)
  *   progtest syslog       syslog() and a hand-made AF_UNIX socket to /dev/log (logging.md §3.3):
  *                         their lines in `log show`, tagged progtest[PID] and progtest-raw
+ *   progtest crypto       the AES and SHA engines (slot 112, network.md §26): FIPS 197's, SP
+ *                         800-38A's and FIPS 180's vectors, chained calls, in place, the errors,
+ *                         and each one's speed
  *   progtest net          sockets through musl on loopback: TCP (blocking and not, half closes,
  *                         resets, timeouts, poll), UDP (cut datagrams), raw ICMP, the interface
  *                         ioctls, net_info and net_watch, the errors
@@ -2648,6 +2651,115 @@ static size_t read_all(int fd, char *out, size_t size) {
         return got;
 }
 
+// Hex to bytes (the vectors below).
+static void unhex(const char *hex, uint8_t *out) {
+        for (size_t i = 0; hex[2 * i] != '\0'; ++i) {
+                unsigned v;
+                sscanf(hex + 2 * i, "%2x", &v);
+                out[i] = (uint8_t)v;
+        }
+        return;
+}
+
+static int32_t crypto_op(uint32_t algorithm, const uint8_t *key, uint32_t key_bytes, void *state, const void *in,
+                         void *out, uint32_t length) {
+        const bmds_crypto_op_t op = {.size = sizeof(op),
+                                     .algorithm = algorithm,
+                                     .key = key,
+                                     .key_bytes = key_bytes,
+                                     .state = state,
+                                     .in = in,
+                                     .out = out,
+                                     .length = length};
+        return bmds_crypto(&op);
+}
+
+// The engines through slot 112: published vectors, state carried across calls, then the speed.
+static int cryptos(void) {
+        uint8_t key[32], in[64], out[64], want[64], state[64];
+        CHECK(bmds_sys_has(BMDS_SYS_CRYPTO));
+        // FIPS 197 C.1 and C.3: one block each way.
+        unhex("000102030405060708090a0b0c0d0e0f", key);
+        unhex("00112233445566778899aabbccddeeff", in);
+        unhex("69c4e0d86a7b0430d8cdb78070b4c55a", want);
+        CHECK(crypto_op(BMDS_CRYPTO_AES_ECB_ENCRYPT, key, 16, NULL, in, out, 16) == 0 && memcmp(out, want, 16) == 0);
+        CHECK(crypto_op(BMDS_CRYPTO_AES_ECB_DECRYPT, key, 16, NULL, out, out, 16) == 0 && memcmp(out, in, 16) == 0);
+        unhex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", key);
+        unhex("8ea2b7ca516745bfeafc49904b496089", want);
+        CHECK(crypto_op(BMDS_CRYPTO_AES_ECB_ENCRYPT, key, 32, NULL, in, out, 16) == 0 && memcmp(out, want, 16) == 0);
+        // SP 800-38A F.2.1 (CBC) and F.5.1 (CTR), two blocks, the second call going on from the first.
+        unhex("2b7e151628aed2a6abf7158809cf4f3c", key);
+        unhex("6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e51", in);
+        unhex("7649abac8119b246cee98e9b12e9197d5086cb9b507219ee95db113a917678b2", want);
+        unhex("000102030405060708090a0b0c0d0e0f", state);
+        CHECK(crypto_op(BMDS_CRYPTO_AES_CBC_ENCRYPT, key, 16, state, in, out, 16) == 0);
+        CHECK(crypto_op(BMDS_CRYPTO_AES_CBC_ENCRYPT, key, 16, state, in + 16, out + 16, 16) == 0);
+        CHECK(memcmp(out, want, 32) == 0 && memcmp(state, want + 16, 16) == 0);
+        unhex("000102030405060708090a0b0c0d0e0f", state);
+        CHECK(crypto_op(BMDS_CRYPTO_AES_CBC_DECRYPT, key, 16, state, out, out, 32) == 0 && memcmp(out, in, 32) == 0);
+        unhex("874d6191b620e3261bef6864990db6ce9806f66b7970fdff8617187bb9fffdff", want);
+        unhex("f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", state);
+        CHECK(crypto_op(BMDS_CRYPTO_AES_CTR, key, 16, state, in, out, 16) == 0);
+        CHECK(crypto_op(BMDS_CRYPTO_AES_CTR, key, 16, state, in + 16, out + 16, 16) == 0);
+        CHECK(memcmp(out, want, 32) == 0);
+        unhex("f0f1f2f3f4f5f6f7f8f9fafbfcfdff01", want);
+        CHECK(memcmp(state, want, 16) == 0);
+        // FIPS 180 "abc": one padded block from each initial value (the words big-endian).
+        memset(in, 0, sizeof(in));
+        memcpy(in, "abc\x80", 4);
+        in[63] = 24;
+        unhex("67452301efcdab8998badcfe10325476c3d2e1f0", state);
+        unhex("a9993e364706816aba3e25717850c26c9cd0d89d", want);
+        CHECK(crypto_op(BMDS_CRYPTO_SHA1, NULL, 0, state, in, NULL, 64) == 0 && memcmp(state, want, 20) == 0);
+        unhex("6a09e667bb67ae853c6ef372a54ff53a510e527f9b05688c1f83d9ab5be0cd19", state);
+        unhex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", want);
+        CHECK(crypto_op(BMDS_CRYPTO_SHA256, NULL, 0, state, in, NULL, 64) == 0 && memcmp(state, want, 32) == 0);
+        static uint8_t block512[128 + 1];
+        memcpy(block512 + 1, "abc\x80", 4); // unaligned on purpose
+        block512[128] = 24;
+        unhex("6a09e667f3bcc908bb67ae8584caa73b3c6ef372fe94f82ba54ff53a5f1d36f1"
+              "510e527fade682d19b05688c2b3e6c1f1f83d9abfb41bd6b5be0cd19137e2179",
+              state);
+        unhex("ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a"
+              "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f",
+              want);
+        CHECK(crypto_op(BMDS_CRYPTO_SHA512, NULL, 0, state, block512 + 1, NULL, 128) == 0 &&
+              memcmp(state, want, 64) == 0);
+        // Errors.
+        CHECK(crypto_op(BMDS_CRYPTO_AES_CTR, key, 16, state, in, out, 15) == -BMDS_EINVAL);
+        CHECK(crypto_op(BMDS_CRYPTO_AES_ECB_ENCRYPT, key, 24, NULL, in, out, 16) == -BMDS_EINVAL);
+        CHECK(crypto_op(BMDS_CRYPTO_AES_CBC_ENCRYPT, key, 16, NULL, in, out, 16) == -BMDS_EINVAL);
+        CHECK(crypto_op(BMDS_CRYPTO_SHA256, NULL, 0, state, in, NULL, 32) == -BMDS_EINVAL);
+        CHECK(crypto_op(99, key, 16, state, in, out, 16) == -BMDS_ENOTSUP);
+        CHECK(bmds_crypto(NULL) == -BMDS_EFAULT);
+        // Speed: 16 KB (SSH's packets are up to 32 KB) and 64 bytes, from the heap (PSRAM).
+        uint8_t *big = malloc(16384);
+        CHECK(big != NULL);
+        memset(big, 0x5a, 16384);
+        static const struct {
+                        const char *name;
+                        uint32_t    algorithm;
+        } speeds[] = {
+                {"aes128-ctr", BMDS_CRYPTO_AES_CTR}, {"sha256", BMDS_CRYPTO_SHA256}, {"sha512", BMDS_CRYPTO_SHA512}};
+        for (size_t i = 0; i < sizeof(speeds) / sizeof(speeds[0]); ++i) {
+                for (uint32_t size = 64; size <= 16384; size *= 256) {
+                        const uint32_t  n = size == 64 ? 20000 : 100;
+                        const uint32_t  len = speeds[i].algorithm == BMDS_CRYPTO_SHA512 && size == 64 ? 128 : size;
+                        struct timespec t0, t1;
+                        clock_gettime(CLOCK_MONOTONIC, &t0);
+                        for (uint32_t k = 0; k < n; ++k)
+                                CHECK(crypto_op(speeds[i].algorithm, key, 16, state, big, big, len) == 0);
+                        clock_gettime(CLOCK_MONOTONIC, &t1);
+                        const double s = (double)(t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+                        printf("crypto: %-10s %5u bytes %6.1f MB/s\n", speeds[i].name, (unsigned)len,
+                               (double)len * n / s / 1e6);
+                }
+        }
+        free(big);
+        printf("crypto: ok\n");
+        return 0;
+}
+
 // syslog() (musl's: an AF_UNIX datagram socket to /dev/log), then such a socket by hand.
 static int syslogs(void) {
         openlog("progtest", LOG_PID, LOG_USER);
@@ -3101,6 +3213,7 @@ int main(int argc, char **argv) {
         if (strcmp(what, "pty") == 0) return ptys(arg);
         if (strcmp(what, "ctty") == 0) return controlling();
         if (strcmp(what, "syslog") == 0) return syslogs();
+        if (strcmp(what, "crypto") == 0) return cryptos();
         if (strcmp(what, "timerleft") == 0) {
                 // 0: nothing armed; otherwise more than that many seconds left.
                 const int64_t left = timer_left_us();

@@ -349,7 +349,7 @@ into a heap buffer, offers no queue choice, and hides the descriptors that carry
     listings print `(set)` or `(not set)` instead of the value, and only a hash goes in. Programs
     check a password through a call (`bmds_password_check`), not by reading the hash.
   - Host keys are generated on first start into `net/ssh/host-keys` (Ed25519, and ECDSA P-256 if
-    §9.3 makes it worth having).
+    §9.3 makes it worth having: it doesn't, §26).
   - Failed logins are logged and slowed down (a delay that grows per source address).
 
 ### 9.2 A network file system: SFTP
@@ -393,6 +393,7 @@ The P4's engines (ESP-IDF's `soc_caps.h`):
   means the server offering AES-GCM ahead of (or instead of) ChaCha20, and P-256 beside
   Curve25519. **Measure first:** software against hardware for SSH's packet sizes (a small packet
   can lose to the engine's setup), then choose the server's offer.
+  Measured in §26-27: 25519 needed a faster implementation, not an engine; the offer stays.
 - **A kernel crypto service** (`bmds_crypto`): it owns the engines, one user at a time each, and
   offers hash, cipher, AEAD, big-number and P-256 operations. Programs reach it through SDK calls
   (appended slots, operating on handles); a system call is a function call on BMDS, so the cost
@@ -511,7 +512,7 @@ The P4's engines (ESP-IDF's `soc_caps.h`):
 | 3a | **The tray's network icon** (§17). **Done** (§20). `NetStatus` (public kernel API, change-driven), the SDK's calls for it; `NetworkStatus` in the panel's tray; `panel/tray/network`. | Unplugging and replugging the cable, DHCP and static changes and `enabled` off show in the icon and the tooltip at once, with no timer running |
 | 4 | **NTP and mDNS.** The kernel NTP client disciplining the clock; `ntp`; `${HOSTNAME}.local`. | The clock within a few ms of the pool after a boot; `ping bmds-….local` from a PC |
 | 5 | **SSH.** Dropbear (server, client, scp) as SDK programs; the `secret` setting type, `system/password` and `passwd`; host keys; authorized keys; the server's on/off setting; our `sftp-server`. | `ssh` with a key and with a password, `scp`, `sftp`, `sshfs` and a file manager's `sftp://` from Linux; `ssh`/`scp` from the board to Linux |
-| 5a | **Crypto.** `bmds_crypto` over the engines; SDK calls; Dropbear's hardware descriptors; software-against-hardware measurements decide the server's algorithm offer. | Transfer speed and login time measured both ways, recorded here |
+| 5a | **Crypto.** `bmds_crypto` over the engines; SDK calls; Dropbear's hardware descriptors; software-against-hardware measurements decide the server's algorithm offer (§26). | Transfer speed and login time measured both ways, recorded here |
 | 6 | **Real time.** The classifier and flows; fast-path sockets; the real-time transmit queue (the bounded ring); hardware timestamps through `SO_TIMESTAMPING`; `netlat`. | `netlat` histograms with and without bulk load, recorded here |
 | 7 | **PTP.** The service in both roles, the profiles, BMCA and failover, `ptpclock0` discipline, PPS out; the system clock follows. | Both boards locked to the user's grandmaster; with it off, the two boards alone elect a master and lock; unplugging the master hands over without a jump; interoperates with linuxptp `ptp4l` both ways; PPS offsets on a scope recorded |
 | 8 | AES67 | `audio.md` step 10 |
@@ -1317,3 +1318,122 @@ As §24 and §24a designed; what changed on the way, and what was found:
   bash. `ssh-copy-id` then added two keys in turn from this PC, one a line, and they logged in.
 - **Not yet:** a file manager's `sftp://` (GNOME Files) was not tried from here (it needs the
   desktop's keyring or agent); `fstatfs`; `AF_UNIX` for agent forwarding.
+
+## 26. Step 5a's design: crypto (2026-10-11)
+
+Measured first, as §9.3 asked: an SSH login from this PC (OpenSSH 9.6, Wi-Fi), the server traced
+(Dropbear built with `DEBUG_TRACE`), and each algorithm timed on the board, in software (a program
+linked with Dropbear's own objects, `-Os` as built) and on the engines (a temporary shell command).
+
+| Work | Software | Engine |
+|---|---|---|
+| X25519 (Dropbear's `curve25519.c`, TweetNaCl's) | 75 ms | none |
+| Ed25519 sign / verify (the same) | 126 / 252 ms | none |
+| X25519; Ed25519 sign / verify (Monocypher 4.0.2, `-O2`) | 6.7 ms; 3.4 / 9.7 ms | none |
+| P-256 point multiplication | 105 ms (libtomcrypt) | 4.5 ms |
+| RSA-2048: private exponent / public (65537) | (not measured) | 179 / 16 ms |
+| ChaCha20 / Poly1305, 16 KB | 8.4 / 11.7 MB/s | none |
+| AES-128-CTR, 64 B / 16 KB | 2.6 / 2.6 MB/s | registers: 15.5 / 15.7 MB/s; ESP-IDF's DMA: 4.1 / 28 MB/s |
+| HMAC-SHA-256, 64 B / 16 KB | 0.6 / 3.7 MB/s | SHA-256 registers: 25 / 43 MB/s; ESP-IDF's DMA: 2.3 / 41 MB/s |
+| SHA-512, 64 B / 16 KB | 1.4 / 3.0 MB/s | registers: 44 / 44 MB/s |
+| AES-128-GCM, 16 KB | (Dropbear's is off) | ESP-IDF's: 4.1 MB/s |
+
+- **A login took 1.03 s** (curve25519, an Ed25519 user key, `ssh bmds0 true`). The server's
+  share: X25519 145 ms, the host key's signature 124 ms, the user's signature checked 242 ms,
+  and **0.2 s idle**: lwIP's delayed ACK waits for its fast timer (every 250 ms), and OpenSSH
+  without a terminal keeps Nagle on, so its second small segment waited for that ACK. Not crypto,
+  but the biggest single cost; fixed first (§27).
+- **25519 needs no engine, just a better implementation.** TweetNaCl is written for size;
+  Monocypher (BSD-2 or CC0, audited, 2 files) is 11 to 37 times faster here and agrees bit for
+  bit. The engines' P-256 (4.5 ms) is no faster than Monocypher's X25519 (6.7 ms), and clients
+  prefer 25519 and mostly hold Ed25519 keys, so the ECC engine isn't worth taking clients there.
+- **Bulk: AES-CTR with HMAC-SHA-256 on the engines** comes to about 11.5 MB/s of one core,
+  against ChaCha20-Poly1305's 4.9 MB/s in software (the wire is 12.5 MB/s).
+- **Register mode, not DMA:** the CPU writes each block to the engine and reads it back. It is
+  as fast as ESP-IDF's DMA for SHA at every size and for AES up to about 1 KB, and it needs no
+  descriptors, no cache maintenance and no allocation. ESP-IDF's DMA path allocates descriptors
+  and alignment buffers on each call (`esp_aes_dma_core.c`), which a hot path mustn't, and its GCM
+  is slow (4 MB/s). DMA can come later for AES if transfers on the wire want it.
+- **MPI and RSA:** nothing uses RSA (the host key is Ed25519; RSA user keys need only the public
+  operation, cheap in software). Left.
+
+**The design:**
+
+1. **Delayed ACKs within 40 ms** (Linux's least): the network task starts a one-shot lwIP timeout
+   when a connection owes one, and sends what the fast timer would have sent (no new timer
+   running otherwise).
+2. **Monocypher for 25519** (`thirdparty/monocypher`): Dropbear's `curve25519.c` becomes four
+   wrappers over it (patch 0003), compiled `-O2`. Logins, the client and `dropbearkey` all gain.
+3. **`Crypto` (`bmds_crypto`, kernel):** the AES and SHA engines in register mode on ESP-IDF's
+   HAL (`aes_hal`, `sha_hal`) and `esp_security`'s clocks and locks, not mbedtls. Stateless: every
+   call carries its key and its state, so the kernel keeps no secrets and no handles:
+   - AES-128 and AES-256 (the engine has no AES-192): ECB, CBC and CTR (a 128-bit big-endian
+     counter, as SSH's and NIST's), lengths a multiple of 16.
+   - SHA-1, SHA-256 and SHA-512 compression of whole blocks from a chaining value the caller
+     gives and gets back (the engine's resume), so SHA-224 and SHA-384 come with them (their
+     initial values are the caller's) and padding stays the caller's.
+   - One lock for both engines (they share the crypto DMA in ESP-IDF's locks); a call holds it for
+     its blocks only (a 32 KB SSH packet: about 2 ms).
+4. **Slot 112, `crypto(op)`**, with `bmds_crypto_op_t` (`size` first): the algorithm, key, state,
+   input, output, length. `-BMDS_EINVAL` for a wrong length or key size, `-BMDS_ENOTSUP` for an
+   algorithm this kernel doesn't have. A `progtest crypto` case checks NIST's and FIPS 180's
+   vectors through the SDK.
+5. **Dropbear's libtomcrypt on the slot** (patch 0004): SHA-1, SHA-256 and SHA-512 compress
+   their whole blocks in one call; AES's descriptor gains `accel_ctr_encrypt` (and keeps the raw
+   key for it). Software stays the fallback on a kernel without the slot.
+6. **Then measured** (as §12 asks): login time, and transfers both ways with ChaCha20-Poly1305
+   against AES-CTR with HMAC-SHA-256, speed and CPU. The server's offer follows: OpenSSH takes
+   the first of its own list that the server offers, and it lists ChaCha20 first, so the engines
+   only serve OpenSSH if the server leaves ChaCha20 out (`dropbear -c`). The board's own
+   client (`dbclient`, `scp`) chooses for itself.
+
+- **ABI:** slot 112 and `bmds_crypto_op_t` with its algorithm numbers.
+- **Not doing:** GCM on the engine (ESP-IDF's is slow; CTR and HMAC are what Dropbear offers
+  besides ChaCha20), P-256 and RSA (above), the HMAC engine and the digital signature peripheral
+  (keys in eFuses: a later step, if a stolen card shouldn't mean a stolen host key).
+
+## 27. As built: step 5a, crypto (2026-10-11)
+
+As §26 designed; measured from this PC (Wi-Fi, OpenSSH 9.6):
+
+- **Delayed ACKs** (`netstack.cpp`): after each round of the network task, a connection owing an
+  ACK starts a one-shot lwIP timeout of 40 ms (`scheduleDelayedAcks`), which sends what lwIP's fast
+  timer would (`sendDelayedAcks`); an answer sent meanwhile carries the ACK. The pause after the
+  key exchange went from 0.21 s to 0.046 s, and a login (curve25519) from 1.03 to 0.80 s.
+- **Monocypher** 4.0.2 (`thirdparty/monocypher`, built by `dist/dropbear/build.sh` at `-O2`;
+  patch 0003): Dropbear's four 25519 functions wrap it. A login (curve25519) 0.80 s to 0.20 s;
+  the server's crypto in it is now about 27 ms (two X25519, a signature, a check). OpenSSH's
+  default, sntrup761x25519, takes 0.55-0.8 s, of which the PC making its own sntrup761 key is
+  0.2-0.4 s. Dropbear grew 18.7 KB.
+- **`Crypto`** (`bmds_crypto`): register mode on ESP-IDF's `aes_ll`/`sha_ll`, ESP-IDF's lock, the
+  clock left on after first use (`docs/platforms/esp32p4.md` §4b: the lock and the clock were
+  most of a small call's cost). **Slot 112, `crypto`**, `bmds_crypto_op_t`; `progtest crypto`
+  passes FIPS 197's AES-128 and AES-256, SP 800-38A's CBC and CTR (two calls chained, in place)
+  and FIPS 180's SHA-1, SHA-256 and SHA-512 (from an unaligned block) vectors, and the errors.
+  Through the call, 16 KB: AES-CTR 12.4-12.9 MB/s, SHA-256 34-35, SHA-512 38-39; 64 bytes: 3.4-4.0
+  and 3.8-4.7 (about 13 µs a call).
+- **Patch 0004:** libtomcrypt's SHA-1, SHA-256 and SHA-512 send each `process` call's whole
+  blocks in one `crypto` call (`HASH_PROCESS_BLOCKS`); AES keeps its raw key and gains
+  `accel_ctr_encrypt`; software stays the fallback. 8 MB went up intact (checked by `sha256sum`
+  on the board) with `aes128-ctr`, `aes256-ctr` and ChaCha20-Poly1305, and 4 MB down with
+  `aes128-ctr`.
+- **Transfers,** 8 MB to `/dev/null` and from `/dev/zero`, the session's CPU from `top`:
+
+  | Cipher | Before (software) up / down | Engines up / down |
+  |---|---|---|
+  | ChaCha20-Poly1305 | 1.34 MB/s (43%) / 2.03 MB/s (87%) | 1.37 MB/s (44%) / 1.69-1.92 MB/s (86-89%) |
+  | AES-128-CTR, HMAC-SHA-256 | 0.87 MB/s (66%) / 1.06 MB/s (92%) | 1.63 MB/s (35-37%) / 1.91-2.11 MB/s (76-83%) |
+
+  Uploads are the Wi-Fi's speed; downloads are CPU-bound. Per MB/s, AES-CTR on the engines took
+  21-22% of a core up and 36-43% down, ChaCha20 32% and 44-53%: a fifth to a third less.
+- **The server's offer stays Dropbear's** (OpenSSH keeps choosing ChaCha20): besides the crypto,
+  Dropbear's own work costs about 12% of a core per MB/s up and 25% down, so the engines gain
+  about a tenth on downloads, not enough to drop the algorithm clients prefer. A PC that wants
+  them says `Ciphers aes128-ctr` for the board in its `~/.ssh/config`. **The board's client**
+  (`dbclient`, `ssh`, `scp`) lists `aes128-ctr` and `aes256-ctr` first (patch 0004), so it uses
+  the engines; tried over loopback with a key made for the test.
+- **Size:** the firmware 1 737 520 to 1 739 280 bytes; Dropbear 743 768 to 763 604.
+- **Not yet:** a wired peer's numbers (the downloads' CPU suggests 2.3-2.8 MB/s at most from
+  Dropbear as it is: its download path costs twice its upload's besides the crypto, worth a look);
+  DMA for AES; the HMAC, DS and key manager engines (a host key in eFuses). Found on the way: the
+  shell's `head` reading `/dev/zero` (a line with no end) fails with `Out of memory`.

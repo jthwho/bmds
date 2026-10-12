@@ -201,7 +201,10 @@ BMDS's own calls (`bmds/sys.h`) still work next to musl, on the same
 descriptors, and do what POSIX has no call for: the terminal's modes
 (`bmds_term_get`, `bmds_term_set`: raw keys, Ctrl-C as a key, log lines
 off; the shell gets its modes back when the program ends), memory
-(`bmds_mem_info`, `bmds_mem_alloc` with `BMDS_MEM_FAST`/`BMDS_MEM_DMA`).
+(`bmds_mem_info`, `bmds_mem_alloc` with `BMDS_MEM_FAST`/`BMDS_MEM_DMA`),
+the chip's AES and SHA engines (`bmds_crypto`: AES-ECB, -CBC and -CTR,
+SHA-1, -256 and -512 blocks, about 13 and 35 MB/s; check
+`bmds_sys_has(BMDS_SYS_CRYPTO)`; `devplan/network.md` §26).
 Their structs start with `size`; initialize them as
 `bmds_term_t t = {.size = sizeof(t)};`. Their errors are `BMDS_E...`
 values, the same numbers as `errno`'s (Linux's).

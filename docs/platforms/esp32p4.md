@@ -111,6 +111,33 @@ until silicon v3; then test again.
 - **2D-DMA:** 3 TX and 2 RX channels on this revision; TX 0-2 convert colours
   (`devplan/display.md`).
 
+## 4b. The crypto engines (`devplan/network.md` §26-27)
+
+- **Register mode beats ESP-IDF's DMA for SSH's sizes.** The CPU writing each block to the
+  engine and reading it back: AES-128 about 15.7 MB/s at any size, SHA-256 and SHA-512 41-44
+  MB/s even for one 64-byte block, from PSRAM. ESP-IDF's mbedtls port (DMA): AES 4.1 MB/s at
+  64 bytes, 28 MB/s at 16 KB (66 MB/s from internal RAM); SHA 2.3 and 41 MB/s. Its DMA path also
+  allocates descriptors and alignment buffers on every call (`esp_aes_dma_core.c`), and its
+  AES-GCM managed only 4 MB/s. Measured with a temporary shell command; used by `bmds_crypto`.
+- **The SHA engine's chaining value is the digest's bytes:** its `H` registers hold the words
+  big-endian, as the digest is written (ESP-IDF `memcpy`s the state out as the hash). Writing
+  a value there and continuing (`sha_ll_write_digest`, `sha_ll_continue_block`) resumes any
+  message from any state, the first block included.
+- **`sha_hal_hash_block` doesn't wait for the engine:** wait for `sha_ll_busy()` to clear before
+  writing the next block's text (ESP-IDF's block loop relies on reading the digest, which waits).
+- **The fixed costs are the lock and the clock, not the engine:** ESP-IDF's
+  `esp_crypto_sha_aes_lock` took 4.9 µs to take and give, a BMDS `Mutex` 4.3 µs; switching an
+  engine's clock on (which resets it) and off 3.8 µs; reading its enable bit 0.09 µs. A
+  64-byte SHA-256 call cost 12.6 µs; leaving the clock on after the first use made it 9 µs
+  (`HP_SYS_CLKRST.peri_clk_ctrl25` is checked each call, since ESP-IDF's users switch it off).
+  Through the system call it is about 13 µs, so callers give it whole packets.
+- **The ECC engine's P-256 point multiplication: 4.5 ms** (libtomcrypt's software: 105 ms);
+  **the MPI engine's 2048-bit modular exponentiation: 179 ms** (65537: 16 ms). Not used:
+  Monocypher's X25519 takes 6.7 ms in software, and clients prefer 25519.
+- **No engine helps 25519,** but the implementation matters more than the chip: TweetNaCl's
+  X25519 took 75 ms and an Ed25519 signature check 252 ms, Monocypher's 6.7 and 9.7 ms
+  (both as built: TweetNaCl `-Os` in Dropbear, Monocypher `-O2`).
+
 ## 4a. The Ethernet MAC (`devplan/network.md`)
 
 - **One DMA channel each way, no AV queues.** The DMA feature register (`EMAC_HWFEATURE_REG`)

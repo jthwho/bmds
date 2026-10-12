@@ -30,3 +30,7 @@
 
 /* scp runs the client by name, found on PATH (execvp), not a fixed path. */
 #define DROPBEAR_PATH_SSH_PROGRAM "dbclient"
+
+/* libtomcrypt's AES-CTR and SHAs on the chip's engines through the kernel's crypto call, software
+ * on a kernel without it (patch 0004, devplan/network.md §26). */
+#define BMDS_CRYPTO_ENGINES 1

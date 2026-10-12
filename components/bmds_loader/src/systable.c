@@ -129,8 +129,9 @@ int32_t bmds_k_proc_timer(uint32_t which, const bmds_timer_t *set, bmds_timer_t 
 int32_t bmds_k_net_watch(uint32_t flags);
 int32_t bmds_k_term_ctl(int32_t fd, uint32_t op, uint32_t arg);
 int32_t bmds_k_fs_info(const char *path, bmds_fs_info_t *info);
+int32_t bmds_k_crypto(const bmds_crypto_op_t *op);
 
-#define SLOTS 112
+#define SLOTS 113
 
 /* bmds_sys_t with its slots spelled out (same layout; checked below). */
 static const struct {
@@ -257,10 +258,11 @@ static const struct {
                 [BMDS_SYS_NET_WATCH] = (bmds_sys_fn_t)bmds_k_net_watch,
                 [BMDS_SYS_TERM_CTL] = (bmds_sys_fn_t)bmds_k_term_ctl,
                 [BMDS_SYS_FS_INFO] = (bmds_sys_fn_t)bmds_k_fs_info,
+                [BMDS_SYS_CRYPTO] = (bmds_sys_fn_t)bmds_k_crypto,
         },
 };
 
-_Static_assert(SLOTS == BMDS_SYS_FS_INFO + 1, "every slot is in the table");
+_Static_assert(SLOTS == BMDS_SYS_CRYPTO + 1, "every slot is in the table");
 _Static_assert(sizeof(table) == 16 + SLOTS * sizeof(bmds_sys_fn_t), "table layout");
 
 const bmds_sys_t *bmds_k_sys_table(void) {
