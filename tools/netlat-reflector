@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+# @file      netlat-reflector
+# @copyright Jason Howard. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+# See LICENSE file in the project root folder for license information.
+#
+# The peer netlat measures against (devplan/network.md §11, §30i): sends each UDP datagram back
+# to where it came from, marked with a DSCP (EF by default, as AES67 marks its clock), and for
+# netlat -l takes TCP into a sink on port + 1 and sends TCP from a source on port + 2.
+#
+#   tools/netlat-reflector [--port 5004] [--dscp 46] [--seconds 0]
+#
+# Run it on a wired machine (a Wi-Fi peer adds its own delays). Python's standard library only.
+
+import argparse
+import socket
+import sys
+import threading
+import time
+
+
+def reflect(port, dscp, stop, counts):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
+        s.setsockopt(socket.IPPROTO_IP, socket.IP_TOS, dscp << 2)
+        s.bind(("", port))
+        s.settimeout(0.5)
+        while not stop.is_set():
+                try:
+                        data, peer = s.recvfrom(2048)
+                except socket.timeout:
+                        continue
+                s.sendto(data, peer)
+                counts["reflected"] += 1
+        s.close()
+
+
+def tcp(port, sending, stop, counts):
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("", port))
+        listener.listen(4)
+        listener.settimeout(0.5)
+        block = bytes(65536)
+        while not stop.is_set():
+                try:
+                        c, _ = listener.accept()
+                except socket.timeout:
+                        continue
+                c.settimeout(0.5)
+                key = "tcp_sent" if sending else "tcp_received"
+                while not stop.is_set():
+                        try:
+                                n = c.send(block) if sending else len(c.recv(65536))
+                        except socket.timeout:
+                                continue
+                        except OSError:
+                                break
+                        if n == 0:
+                                break
+                        counts[key] += n
+                c.close()
+        listener.close()
+
+
+def main():
+        p = argparse.ArgumentParser(description="netlat's peer: UDP reflected, TCP sink and source")
+        p.add_argument("--port", type=int, default=5004, help="UDP (and TCP on port + 1, + 2)")
+        p.add_argument("--dscp", type=int, default=46, help="the reflections' DSCP (0-63; 46 EF)")
+        p.add_argument("--seconds", type=float, default=0, help="how long (0: until interrupted)")
+        a = p.parse_args()
+        stop = threading.Event()
+        counts = {"reflected": 0, "tcp_sent": 0, "tcp_received": 0}
+        threads = [threading.Thread(target=reflect, args=(a.port, a.dscp, stop, counts)),
+                   threading.Thread(target=tcp, args=(a.port + 1, False, stop, counts)),
+                   threading.Thread(target=tcp, args=(a.port + 2, True, stop, counts))]
+        for t in threads:
+                t.start()
+        try:
+                end = time.time() + a.seconds if a.seconds > 0 else None
+                while end is None or time.time() < end:
+                        time.sleep(0.5)
+        except KeyboardInterrupt:
+                pass
+        stop.set()
+        for t in threads:
+                t.join()
+        print("reflected %d datagrams; TCP %d bytes in, %d out" %
+              (counts["reflected"], counts["tcp_received"], counts["tcp_sent"]))
+        return 0
+
+
+if __name__ == "__main__":
+        sys.exit(main())

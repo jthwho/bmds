@@ -429,6 +429,65 @@ task's work, freeing the stacks of tasks that ended by deleting themselves, and 
 core it runs on only, unless two keep both busy. The task watchdog stays on (nothing subscribes
 to it yet); the interrupt watchdog (interrupts held off, a stuck ISR: 300 ms) is unchanged.
 
+### 3.12 Real-time threads (2026-10-12)
+
+`netlat` (network.md §30i) showed what programs lack for real-time work: every program thread
+runs at its starter's priority (the shell's, 2), beside everything else the shell starts, and a
+sleep ends on the 1 kHz tick. The user approved (2026-10-12) Linux's scheduling calls, a band of
+kernel priorities for them under the drivers', and a precise sleep for real-time threads.
+
+**What programs get** (musl, as on Linux): `pthread_setschedparam`, `pthread_getschedparam`,
+`pthread_setschedprio`, `pthread_attr_setschedpolicy`/`setschedparam`/`setinheritsched`,
+`sched_setscheduler`, `sched_getscheduler`, `sched_setparam`, `sched_getparam` (the calling
+thread for pid 0, as glibc: musl's are `ENOSYS` stubs, patched), `sched_get_priority_min`/`max`,
+`sched_rr_get_interval`, `sched_yield` (which yielded nothing before), `sched_getaffinity` and
+`sched_getcpu` (`nproc` was 1). Policies `SCHED_OTHER`, `SCHED_BATCH`, `SCHED_IDLE` (all the
+normal priority) and `SCHED_FIFO`, `SCHED_RR` at 1-99, with `SCHED_RESET_ON_FORK`.
+
+**One system call, appended:** `sched(uint32_t op, int32_t tid, bmds_sched_t *param)` (113):
+`BMDS_SCHED_GET` fills `param` (policy, priority, the cores it may run on, the core it is on, the
+kernel priority it runs at, how often it was throttled); `BMDS_SCHED_SET` sets the policy and
+priority; `BMDS_SCHED_YIELD`. `tid` 0 is the caller; otherwise any program thread (a pid is its
+process's first thread). `bmds_sched_t` starts with `size`.
+
+**Kernel priorities.** `SCHED_FIFO` and `SCHED_RR` 1-99 map evenly onto
+`CONFIG_BMDS_PROGRAM_RT_PRIORITY_LOW`..`_HIGH` (7-18): above the IP stack (6), the window
+manager (5), input (4), storage (3) and the shells (2); below the real-time audio clients (19),
+the audio device (20), `eth0` (21), `esp_timer` (22) and scan-out (23). So a real-time program
+outranks bulk traffic and the desktop, never a driver. A thread's normal priority is its
+starter's, as now. A new thread inherits its creator's policy and priority, a process its
+starter's (POSIX's default), unless `SCHED_RESET_ON_FORK`. FreeRTOS time-slices equal
+priorities on each tick, so `SCHED_FIFO` acts as `SCHED_RR` between threads of one priority;
+`sched_rr_get_interval` says 1 ms. A thread an audio device raised (`audio_cycle`) is forgotten
+there when its policy changes and raised again at its next cycle.
+
+**Throttling, as Linux's** (`sched_rt_runtime_us` 950000 of 1000000): real-time threads may
+take 95 % of each second; past it they run at their normal priority for the rest of the second,
+so a runaway loop leaves the shell, the desktop and Ctrl-C 50 ms a second. A timer (`esp_timer`,
+every 50 ms) adds up their CPU time only while a program thread is real-time. The budget is one
+core's: two real-time threads on the two cores, each half busy, also count as 95 %. Each
+throttle counts in the thread's `throttled`.
+
+**Precise sleep.** A real-time thread's sleep (`nanosleep`, `clock_nanosleep`, `usleep`) wakes
+from a hardware timer (a GPTimer at 1 MHz) instead of the tick: sleepers on the kernel's own
+stack in one ordered list, the timer's alarm set for the first; its interrupt releases the
+sleeper's semaphore (a signal still interrupts the sleep). The tick's wait stays behind it as
+a fallback. The interrupt isn't cache-safe, so a flash write holds it off (as every other one
+that isn't). Other threads' sleeps, and every other timeout, stay on the tick.
+
+**Affinity.** ESP-IDF's FreeRTOS fixes a task's core when it is created, so
+`sched_setaffinity` succeeds only with a mask that keeps both cores (`EINVAL` otherwise);
+`sched_getaffinity` reports both.
+
+**Costs.** Per program thread: 12 bytes more in its record. The timer: one GPTimer (its driver
+3.7 KB of flash, 156 bytes of IRAM), its interrupt, taken at a thread's first real-time policy;
+the budget's: a 16-entry table and an `esp_timer`. No polling while no thread is real-time.
+
+**Tests.** Host: the priority mapping and the budget (`tests/host/realtime.cpp`). Board:
+`progtest sched` (policies set and read back on itself and another thread, inheritance,
+`SCHED_RESET_ON_FORK`, a busy real-time thread throttled while the shell still answers, the
+precise sleep's lateness), then `netlat -r` repeating the done-when test (network.md §30).
+
 ## 4. ABI impact
 
 ABI 1 has not shipped, but these are recorded as `ABI:` lines because they change behavior:
@@ -444,6 +503,9 @@ ABI 1 has not shipped, but these are recorded as `ABI:` lines because they chang
 - Step 5: slots 53-57 (`thread_start`, `thread_exit`, `futex`, `thread_kill`, `thread_clear`),
   `bmds_thread_t`, `BMDS_PROC_THREAD`; the signal mask is per thread (one thread: unchanged);
   `SYS_exit` from musl ends the thread (it ended the program, the same while there is one).
+- Real-time threads (§3.12): slot 113 (`sched`), `bmds_sched_t`, `BMDS_SCHED_*`; musl's
+  `sched_setscheduler` family works (it was `ENOSYS`), `sched_yield` yields; `sleep` (24) is
+  precise for a real-time thread (it was always rounded up to the tick).
 
 ## 5. Costs
 
@@ -692,3 +754,24 @@ ABI 1 has not shipped, but these are recorded as `ABI:` lines because they chang
   - Not done: asynchronous cancellation, `sigwait`, scheduling attributes, `sched_yield` (a
     no-op). Not tried on the board: `exec` from a thread after the first one ended, a kill while
     a thread runs a vfork child.
+- **Real-time threads** (§3.12, 2026-10-12):
+  - `sched` (slot 113): `RealTimeThreads` (the loader) keeps each thread's policy, priority,
+    `SCHED_RESET_ON_FORK` and normal priority in its record, counts real-time threads (at most
+    16) once they run, and puts their tasks at `RealTimeBudget::kernelPriority()` (portable,
+    host-tested with the budget). A thread or process inherits at its start; an exec in place
+    keeps all of it. Another thread is looked up under the process table's and its process's
+    locks, so its task is there; one not yet running is only recorded.
+  - `WakeTimer` (`bmds_kernel`): a GPTimer at 1 MHz, sleepers in a list on their stacks, the
+    alarm releasing their semaphores from its interrupt; a sleep within 20 µs is spun out; the
+    tick's wait stays behind. Taken at the first real-time policy. The host's sleeps on the tick.
+  - The SDK: `linux.c`'s `sched_*`, `sched_getaffinity` (`nproc` 2, was 1), `getcpu`,
+    `sched_yield`; musl's four `ENOSYS` stubs make their calls (`sdk/libc/patches/bmds.diff`).
+  - On the board, `progtest sched` passes: the calls and their errors, FIFO 50 at kernel
+    priority 12, inheritance, `SCHED_RESET_ON_FORK`, explicit thread attributes; 1 ms sleeps 29-32
+    µs late at the median, 63-207 µs at worst (the tick's 283-362 and 683-1233); two busy
+    `SCHED_FIFO` threads throttled twice in 2.5 s, the normal-priority thread beside them waiting
+    at most 456 ms. `progtest threads`, `timers`, `poll`, `rtnet`, `spawn` and `signals` still
+    pass. `netlat -r`: network.md §30j. The image grew 11,168 bytes.
+  - Found: `progtest rt` (audio) fails now and then with late periods, more often on the last
+    commit's firmware (5 of 5 there, 2 of 5 here): not this change; not yet looked into. `progtest signals`
+    run by `ssh` without `setsid` ends the session (it signals its own process group).

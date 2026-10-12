@@ -23,6 +23,7 @@
 
 #include <lwip/inet_chksum.h>
 #include <lwip/opt.h>
+#include <bmds/clock.h>
 #include <bmds/interrupt.h>
 #include <bmds/socket.h>
 
@@ -440,6 +441,63 @@ TEST_CASE("Socket: raw ICMP echo, with the IP header") {
                 CHECK(buf[ihl + 4] == 0x12);
                 CHECK(buf[ihl + 5] == 0x34);
                 CHECK(got.from.ipv4 == ip("10.0.0.2"));
+        }
+        pump();
+        CHECK(heapUsed() == used);
+}
+
+TEST_CASE("Socket: real-time options, receive stamps, the error queue") {
+        setUp();
+        const size_t used = heapUsed();
+        {
+                NetThread net;
+                Sock      u = make(Socket::Type::Datagram);
+                // Priority: its own, and IP_TOS's as Linux gives it (EF 4, low delay 6).
+                CHECK(u->setOption(Option::Priority, -1) == Error::Invalid);
+                REQUIRE(u->setOption(Option::Priority, 7).isOk());
+                CHECK(u->option(Option::Priority).value() == 7);
+                REQUIRE(u->setOption(Option::Tos, 0xb8).isOk());
+                CHECK(u->option(Option::Priority).value() == 4);
+                REQUIRE(u->setOption(Option::Tos, 0x10).isOk());
+                CHECK(u->option(Option::Priority).value() == 6);
+
+                // Timestamping: Linux's flags only; a stream socket has none.
+                CHECK(u->setOption(Option::Timestamping, 1 << 30) == Error::Invalid);
+                Sock t = make(Socket::Type::Stream);
+                CHECK(t->setOption(Option::Timestamping, Socket::TimestampRxSoftware) == Error::NotSupported);
+                const int32_t flags = Socket::TimestampRxSoftware | Socket::TimestampSoftware |
+                                      Socket::TimestampTxSoftware | Socket::TimestampOptTsOnly;
+                REQUIRE(u->setOption(Option::Timestamping, flags).isOk());
+                CHECK(u->option(Option::Timestamping).value() == flags);
+                REQUIRE(u->setOption(Option::TimestampNs, 1).isOk());
+                REQUIRE(u->setOption(Option::TimestampsNew, 1).isOk());
+                const Socket::StampOptions o = u->stampOptions();
+                CHECK((o.timestamping == uint32_t(flags) && o.ns && !o.us && o.wide));
+
+                // A datagram's arrival on the system clock (no Ethernet here: no hardware).
+                REQUIRE(u->bind({ip("10.0.0.2"), 9200}).isOk());
+                Sock s = make(Socket::Type::Datagram);
+                onA(s);
+                const SocketAddress to = {ip("10.0.0.2"), 9200};
+                const int64_t       before = bmds::Clock::now().ns;
+                CHECK(send(*s, "stamped", &to).value() == 7);
+                char buf[64];
+                auto [r, err] = receive(*u, buf, sizeof(buf));
+                REQUIRE(err.isOk());
+                CHECK(r.hardwareNs == 0);
+                CHECK(r.softwareNs >= before);
+                CHECK(r.softwareNs <= bmds::Clock::now().ns);
+
+                // The error queue: nothing waits, nothing is said; no fast path without a driver.
+                bmds::WritableByteSpan piece(reinterpret_cast<uint8_t *>(buf), sizeof(buf));
+                CHECK(u->receiveTxReport(bmds::Span<const bmds::WritableByteSpan>(&piece, 1)).error() ==
+                      Error::WouldBlock);
+                CHECK((u->readiness() & (bmds::Stream::ErrorQueue | bmds::Stream::Urgent)) == 0);
+                CHECK(u->setFastPath({true, 1000, 4}) == Error::NotSupported);
+                CHECK(t->setFastPath({true, 1000, 4}) == Error::NotSupported);
+                CHECK(u->setFastPath({true, 1000, 9}) == Error::Invalid);
+                CHECK(!u->fastPath().on);
+                REQUIRE(u->setOption(Option::Timestamping, 0).isOk());
         }
         pump();
         CHECK(heapUsed() == used);

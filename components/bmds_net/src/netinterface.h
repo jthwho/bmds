@@ -20,6 +20,7 @@
 #include <bmds/error.h>
 #include <bmds/ethernetdevice.h>
 #include <bmds/hostname.h>
+#include <bmds/icmpratelimit.h>
 #include <bmds/multicastfilter.h>
 #include <bmds/spinlock.h>
 #include <bmds/stringview.h>
@@ -41,7 +42,7 @@ BMDS_NAMESPACE_BEGIN
  * @par Thread Safety
  * Everything but the device's callbacks runs under the core lock.
  */
-class NetInterface {
+class NetInterface final : public TxStampSink {
         public:
                 /** @brief Interfaces the system can have (one per Ethernet device). */
                 static constexpr size_t MaxInterfaces = EthernetDevice::MaxDevices;
@@ -106,6 +107,12 @@ class NetInterface {
                 /** @brief Returns the counters. */
                 const Counters &counters() const { return _counters; }
 
+                /** @brief Returns the IPv4 address (host order; 0: none). Any task. @nonblocking */
+                uint32_t ipv4() const { return _ipv4.load(std::memory_order_relaxed); }
+
+                /** @brief Returns the ICMP errors held back by Linux's limits (core lock held). */
+                uint32_t icmpLimited() const { return _icmpLimit.limited(); }
+
                 /** @brief Returns the received buffers lwIP holds now. */
                 uint32_t held() const { return _held.load(std::memory_order_relaxed); }
 
@@ -144,6 +151,8 @@ class NetInterface {
                 static void  settingsChanged(void *arg);
                 static err_t netifInit(struct netif *netif);
                 static err_t linkOutput(struct netif *netif, struct pbuf *p);
+                // A socket's datagram stamped (TxStampSink): to the socket its cookie names.
+                void         stamped(uint32_t cookie, uint32_t ticket, const PtpTime &time) override;
                 static err_t igmpFilter(struct netif *netif, const ip4_addr_t *group,
                                         enum netif_mac_filter_action action);
                 static void  statusChanged(struct netif *netif);
@@ -164,6 +173,7 @@ class NetInterface {
                 Mode            _mode = Mode::Off;
                 MulticastFilter _groups;
                 Counters        _counters;
+                IcmpRateLimit   _icmpLimit; // lwIP's ICMP errors (§30g)
 
                 // Frames the device's task has queued for the network task: each holds one of
                 // the device's buffers, so the queue can't hold more than there are.
@@ -185,6 +195,7 @@ class NetInterface {
                 size_t                  _inPlace = 0;
                 u16_t                   _checksums = NETIF_CHECKSUM_ENABLE_ALL; // lwIP's share, between frames
 
+                std::atomic<uint32_t> _ipv4{0}; // lwIP's, for real-time flows (outside the core lock)
                 std::atomic<bool> _linkPending{true};
                 std::atomic<bool> _settingsPending{true};
                 SysConf::Watcher  _watcher;

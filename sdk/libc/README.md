@@ -24,6 +24,10 @@ musl, <https://musl.libc.org/>, the C library BMDS programs link statically
     only the TLS, thread data and start arguments (the kernel allocates the
     stack) and passes the stack size to `__clone` as an eighth argument;
     `src/internal/pthread_impl.h`: a 32 KB default stack, no guard pages.
+  - Scheduling (devplan/processes.md §3.12): `src/sched/sched_setscheduler.c`,
+    `sched_getscheduler.c`, `sched_setparam.c` and `sched_getparam.c` make
+    their system calls (the thread's, pid 0 the caller's, as glibc does)
+    instead of returning `ENOSYS`.
 - **Not built:** `src/process/vfork.c` (generic: `fork`),
   `src/thread/clone.c` (`ENOSYS`) and `src/thread/__unmapself.c`; the SDK's
   `crt/vfork.S` has `vfork` and `__clone` (`CLONE_VM|CLONE_VFORK` for

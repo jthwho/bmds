@@ -1,0 +1,8 @@
+# netlat (programs/netlat): real-time network latency against tools/netlat-reflector, with
+# hardware stamps both ways (devplan/network.md §11, §30i).
+name = "netlat"
+version = "1"
+description = "Real-time network latency: the sender's wake, departure, round trip and delivery"
+license = "MIT"
+source_tree = "programs/netlat"
+license_files = ["../../LICENSE"]

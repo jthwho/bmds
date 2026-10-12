@@ -10,4 +10,23 @@ menu "BMDS loader"
             (devplan/programs.md section 14.1). Least recently used programs
             go first; all of them when memory runs short. 0 keeps none.
 
+    config BMDS_PROGRAM_RT_PRIORITY_LOW
+        int "Lowest kernel priority of real-time program threads"
+        default 7
+        range 3 24
+        help
+            Program threads with SCHED_FIFO or SCHED_RR, 1-99, run at kernel
+            priorities spread evenly from this one to
+            BMDS_PROGRAM_RT_PRIORITY_HIGH (devplan/processes.md section 3.12):
+            above the IP stack (BMDS_NET_STACK_PRIORITY) and the desktop,
+            below the drivers.
+
+    config BMDS_PROGRAM_RT_PRIORITY_HIGH
+        int "Highest kernel priority of real-time program threads"
+        default 18
+        range BMDS_PROGRAM_RT_PRIORITY_LOW 24
+        help
+            Priority 99's. Keep it below the real-time audio clients
+            (BMDS_AUDIO_CLIENT_PRIORITY) and the device tasks.
+
 endmenu

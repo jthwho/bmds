@@ -28,6 +28,8 @@
 
 BMDS_NAMESPACE_BEGIN
 
+class SocketFastPath;
+
 /** @brief An IPv4 address and port (IPv6 joins it later). */
 struct SocketAddress {
                 uint32_t ipv4 = 0; ///< The address in network order (0: any).
@@ -54,6 +56,12 @@ struct SocketAddress {
  * The socket is freed when its last handle closes: a TCP connection with
  * unread data (or `Linger` 0) is reset, otherwise closed, lwIP finishing
  * the close on its own.
+ *
+ * Real time (devplan/network.md §30f): a UDP socket stamps what it receives
+ * and sends (`Option::Timestamping`, Linux's flags; send stamps wait in an
+ * error queue, `receiveTxReport()`), sends ahead of bulk with a priority of
+ * 6 or more (or DSCP EF or CS6), and as a fast path (`setFastPath()`) is a
+ * `NetFlow`: its datagrams pass lwIP by both ways.
  *
  * @par Thread Safety
  * Thread-safe. Readers are served one at a time, as are writers.
@@ -95,7 +103,33 @@ class Socket final : public Stream {
                         MulticastLoop,    ///< Multicast sent is received here too (bool; on by default).
                         Listening,        ///< Read only: listening for connections (bool).
                         MaxSegment,       ///< Read only: TCP's segment size (bytes).
+                        Priority,         ///< The sender's priority (0 and up; `Tos` sets it too, as Linux).
+                        SelectErrorQueue, ///< A waiting error queue makes the socket `Urgent` too (bool).
+                        Timestamping,     ///< `Timestamp...` flags (Linux's `SOF_TIMESTAMPING_*`).
+                        TimestampUs,      ///< Receive times reported in microseconds (`SO_TIMESTAMP`; bool).
+                        TimestampNs,      ///< Receive times reported in nanoseconds (`SO_TIMESTAMPNS`; bool).
+                        TimestampsNew,    ///< The 64-bit layouts were asked for (the `_NEW` options; bool).
                 };
+
+                /** @brief `Option::Timestamping` flags: Linux's `SOF_TIMESTAMPING_*`. */
+                enum Timestamp : uint32_t {
+                        TimestampTxHardware = 1u << 0,   ///< Stamp sent datagrams in hardware.
+                        TimestampTxSoftware = 1u << 1,   ///< Stamp sent datagrams in software.
+                        TimestampRxHardware = 1u << 2,   ///< Stamp received datagrams in hardware.
+                        TimestampRxSoftware = 1u << 3,   ///< Stamp received datagrams in software.
+                        TimestampSoftware = 1u << 4,     ///< Report software stamps.
+                        TimestampRawHardware = 1u << 6,  ///< Report hardware stamps.
+                        TimestampOptId = 1u << 7,        ///< Number sent datagrams (the reports' `id`).
+                        TimestampOptCmsg = 1u << 10,     ///< Reports carry the sender's address.
+                        TimestampOptTsOnly = 1u << 11,   ///< Reports carry no frame.
+                        TimestampKnown = (1u << 18) - 1, ///< Linux's flags to 6.10's; others are invalid.
+                };
+
+                /** @brief A pbuf's stamp cookie with this: a software stamp, taken as the frame goes. */
+                static constexpr uint32_t CookieSoftware = 1u << 31;
+
+                /** @brief Send stamps kept until read (the oldest goes past it). */
+                static constexpr size_t MaxTxReports = 8;
 
                 /** @brief Datagrams a UDP or raw socket keeps. */
                 static constexpr size_t MaxDatagrams = 16;
@@ -178,6 +212,33 @@ class Socket final : public Stream {
                                 size_t        bytes = 0;  ///< Bytes copied.
                                 size_t        length = 0; ///< A datagram's whole length (more than `bytes`: cut).
                                 SocketAddress from;       ///< A datagram's source; TCP: the peer.
+                                int64_t       hardwareNs = 0; ///< A datagram's arrival on the 1588 clock (0: none).
+                                int64_t       softwareNs = 0; ///< A datagram's arrival on the system clock (0: none).
+                };
+
+                /** @brief A sent datagram's stamp from the error queue (`receiveTxReport()`). */
+                struct TxReport {
+                                size_t   bytes = 0;      ///< Bytes of the frame copied.
+                                size_t   length = 0;     ///< The frame's (0 with `TimestampOptTsOnly`).
+                                uint32_t id = 0;         ///< The datagram's number (`TimestampOptId`).
+                                uint32_t source = 0;     ///< The socket's address then (network order).
+                                int64_t  hardwareNs = 0; ///< Its departure on the 1588 clock (0: none).
+                                int64_t  softwareNs = 0; ///< Its departure on the system clock (0: none).
+                };
+
+                /** @brief How received datagrams' stamps are reported (`stampOptions()`). */
+                struct StampOptions {
+                                uint32_t timestamping = 0; ///< `Option::Timestamping`.
+                                bool     us = false;       ///< `Option::TimestampUs`.
+                                bool     ns = false;       ///< `Option::TimestampNs`.
+                                bool     wide = false;     ///< `Option::TimestampsNew`.
+                };
+
+                /** @brief A fast path's settings (`setFastPath()`). */
+                struct FastPath {
+                                bool     on = false;
+                                uint32_t packetUs = 1000; ///< The shortest time between its packets.
+                                uint8_t  depth = 4;       ///< Packets it holds (1-8; all flows' together at most 8).
                 };
 
                 /**
@@ -236,6 +297,50 @@ class Socket final : public Stream {
                  */
                 Error bindToDevice(StringView name);
 
+                /**
+                 * @brief Makes a UDP socket a fast path, or not (devplan/network.md §30f): a
+                 *        `NetFlow` on the bound port (an unbound socket is bound to an ephemeral
+                 *        one), on its device's interface (else its address's, else the first
+                 *        Ethernet one). What the flow can't send (larger than a frame, or to an
+                 *        address ARP hasn't answered) goes through lwIP.
+                 * @return `Ok`, `NotSupported` (not UDP, or no fast path here), `Invalid`
+                 *         (`depth`), `Full` (flows or their buffers taken), `AddressInUse`
+                 *         (another flow has the port), `NotExist` (no Ethernet interface).
+                 */
+                Error setFastPath(const FastPath &fastPath);
+
+                /** @brief Returns the fast path's settings. */
+                FastPath fastPath();
+
+                /** @brief Returns the stamp options, without the core lock. @nonblocking */
+                StampOptions stampOptions() const {
+                        return {_timestamping.load(std::memory_order_relaxed),
+                                _timestampUs.load(std::memory_order_relaxed),
+                                _timestampNs.load(std::memory_order_relaxed),
+                                _timestampsNew.load(std::memory_order_relaxed)};
+                }
+
+                /**
+                 * @brief Takes the oldest send stamp waiting, copying its frame into @p pieces.
+                 *        Never waits (Linux's error queue doesn't).
+                 * @return The report, or `WouldBlock`.
+                 * @nonblocking
+                 */
+                Result<TxReport> receiveTxReport(Span<const WritableByteSpan> pieces);
+
+                /**
+                 * @brief lwIP's interface: datagram @p id with stamp @p cookie (its pbuf's) is
+                 *        being sent as @p frame. Core lock held. @nonblocking
+                 */
+                static void recordSent(uint32_t cookie, uint32_t id, Span<const Span<const uint8_t>> frame);
+
+                /**
+                 * @brief A datagram with stamp @p cookie left at @p hardwareNs (1588 clock) or
+                 *        @p softwareNs (system clock; 0 for none). Any task, no locks held.
+                 * @nonblocking
+                 */
+                static void stampSent(uint32_t cookie, int64_t hardwareNs, int64_t softwareNs);
+
                 /** @brief Datagrams dropped because the queue was full. */
                 uint32_t dropped() const { return _dropped; }
 
@@ -255,6 +360,27 @@ class Socket final : public Stream {
                                 void    *pbuf = nullptr; // lwIP's pbuf
                                 uint32_t ipv4 = 0;
                                 uint16_t port = 0;
+                                int64_t  hardwareNs = 0;
+                                int64_t  softwareNs = 0;
+                };
+
+                // A sent datagram waiting for its stamp, then to be read (the error queue).
+                struct TxRecord {
+                                enum State : uint8_t {
+                                        Free,
+                                        Writing,
+                                        Sent,
+                                        Stamped
+                                };
+                                State    state = Free;
+                                bool     viaFlow = false; // keyed by the flow's ticket, else by its cookie's number
+                                uint16_t length = 0;      // of the frame kept
+                                uint32_t key = 0;
+                                uint32_t id = 0;
+                                uint32_t sequence = 0; // the order they were sent in
+                                uint32_t source = 0;
+                                int64_t  hardwareNs = 0;
+                                int64_t  softwareNs = 0;
                 };
 
                 struct Group {
@@ -287,7 +413,27 @@ class Socket final : public Stream {
                 bool             isWritable() const;
                 Result<size_t>   sendTcp(Span<const ByteSpan> pieces, uint32_t flags, const Deadline &deadline);
                 Result<size_t>   sendDatagram(Span<const ByteSpan> pieces, const SocketAddress *to);
+                Result<size_t>   sendFast(Span<const ByteSpan> pieces, const SocketAddress *to, uint32_t flags,
+                                          const Deadline &deadline, bool &sent);
+                Error            bindLocked(const SocketAddress &address);
                 Result<Received> receiveLocked(Span<const WritableByteSpan> pieces, uint32_t flags, size_t skip);
+                Error            openFastPath(); // core lock not held; _fastPath on, bound
+                void             closeFastPath();
+                Error            setTimestamping(uint32_t flags);
+                void             forgetStamps();
+                uint32_t         cookieFor(); // _writeLock held: the next datagram's, and its number taken
+                bool             sendsPriority() const;
+                bool             hasReport();
+                void             drainFlowStamps();
+                // The error queue's records (_stampLock held).
+                TxRecord       *reserveRecord();
+                TxRecord       *findRecord(bool viaFlow, uint32_t key);
+                uint8_t        *frameOf(const TxRecord &r);
+                static void     flowTold(void *arg);
+                void            keepSent(uint32_t cookie, uint32_t id, Span<const Span<const uint8_t>> frame);
+                void            stamped(bool viaFlow, uint32_t key, int64_t hardwareNs, int64_t softwareNs);
+                SocketFastPath *takeFast(); // counted in _fastUsers while held; null: none
+                void            giveFast();
 
                 const Type    _type;
                 const uint8_t _protocol;
@@ -329,6 +475,28 @@ class Socket final : public Stream {
                 int32_t  _linger = -1;
                 int32_t  _receiveBuffer = DefaultReceiveBuffer;
                 uint32_t _multicastInterface = 0;
+
+                // Real time (§30f).
+                int32_t                       _priority = 0;
+                bool                          _selectErrorQueue = false;
+                std::atomic<bool>             _timestampUs{false}; // atomics: a reader looks without the core lock
+                std::atomic<bool>             _timestampNs{false};
+                std::atomic<bool>             _timestampsNew{false};
+                std::atomic<uint32_t>         _timestamping{0};
+                uint16_t                      _stampOwner = 0; // the stamp registry's token (0: none)
+                FastPath                      _fastPathConfig;
+                std::atomic<SocketFastPath *> _fast{nullptr}; // open: the flow
+                std::atomic<uint32_t>         _fastUsers{0};  // calls in it (closing waits for them)
+
+                // The error queue: records and (unless TimestampOptTsOnly) their frames, in PSRAM.
+                Mutex                 _stampLock; // held for a few lines: never across a copy or a wait
+                TxRecord              _txRecords[MaxTxReports];
+                uint8_t              *_txFrames = nullptr;
+                uint32_t              _txSequence = 0;
+                uint32_t              _txId = 0;           // TimestampOptId's count
+                uint32_t              _txLost = 0;         // reports dropped (the oldest, the queue full)
+                uint32_t              _lastFlowTicket = 0; // the newest flow ticket written down (_stampLock)
+                std::atomic<uint32_t> _reportReaders{0};   // copying frames out (forgetStamps() waits)
 
                 std::atomic<int32_t> _receiveTimeoutMs{0};
                 std::atomic<int32_t> _sendTimeoutMs{0};

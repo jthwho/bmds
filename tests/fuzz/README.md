@@ -9,6 +9,9 @@ the host tests: they run for as long as one lets them.
   (`devplan/audio.md` §22), played by the synth on `tests/host/synth/sine.sf2`.
 - **`ntp_fuzz`:** NTP's parser (`devplan/network.md` §22) with an arbitrary cookie and T1, and
   what parses through the sample, a clock filter and the discipline; no fault, no overflow.
+- **`netclassifier_fuzz`:** the real-time classifier (`devplan/network.md` §30d), which reads every
+  frame `eth0` takes while a flow is open: rules and a frame from the input; a match inside the
+  frame, and a UDP match written again with the classifier's headers matching the same rule.
 - **`sftp_fuzz`:** our SFTP server's protocol core (`programs/sftp-server/sftp.c`,
   `devplan/network.md` §24) after an INIT, requests in sequence, the file calls made up (files,
   directories, links, errors, names as long as names get); every reply whole and fitting, every
@@ -37,6 +40,10 @@ tests/fuzz/make-midi-seeds.py /mnt/data/tmp/midi        # a MIDI file: notes, ch
 
 ```sh
 ./ntp_fuzz -max_len=256 -max_total_time=600 -artifact_prefix=./ntp- ntp-corpus ntp-seeds
+```
+
+```sh
+./netclassifier_fuzz -max_len=1600 -max_total_time=600 -artifact_prefix=./nc- nc-corpus
 ```
 
 ```sh

@@ -12,6 +12,7 @@
  */
 
 #include <cinttypes>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <lwip/dhcp.h>
@@ -21,6 +22,7 @@
 #include <bmds/clock.h>
 #include <bmds/command.h>
 #include <bmds/ethernetdevice.h>
+#include <bmds/netflow.h>
 #include <bmds/netstack.h>
 #include <bmds/semaphore.h>
 #include <bmds/shell.h>
@@ -179,6 +181,39 @@ namespace {
                 return;
         }
 
+        void showFlows(CommandContext &ctx, EthernetDevice &d) {
+                NetFlow::Info flows[NetFlow::MaxFlows];
+                const size_t  n = NetFlow::list(d, Span<NetFlow::Info>(flows, NetFlow::MaxFlows));
+                for (size_t i = 0; i < n; ++i) {
+                        const NetFlow::Info &f = flows[i];
+                        char                 what[64];
+                        if (f.config.kind == NetClassifier::Kind::Udp) {
+                                char at[Ipv4::TextBytes + 1] = "*";
+                                if (f.config.address != 0) Ipv4::format(f.config.address, at);
+                                std::snprintf(what, sizeof(what), "udp %s:%u", at, f.config.port);
+                        } else {
+                                std::snprintf(what, sizeof(what), "type %04x", f.config.etherType);
+                        }
+                        char to[48] = "";
+                        if (f.destinationIp != 0) {
+                                char ip[Ipv4::TextBytes + 1];
+                                Ipv4::format(f.destinationIp, ip);
+                                std::snprintf(to, sizeof(to), " to %s:%u", ip, f.destinationPort);
+                        } else if (!f.destinationMac.isZero()) {
+                                char mac[MacAddress::TextBytes + 1];
+                                f.destinationMac.toString(mac);
+                                std::snprintf(to, sizeof(to), " to %s", mac);
+                        }
+                        const NetFlow::Counters &k = f.counters;
+                        ctx.printf("  flow %s%s, %" PRIu32 " us, depth %u: rx %" PRIu64 " (%" PRIu32
+                                   " dropped, %u queued), tx %" PRIu64 " (%" PRIu32 " errors), %" PRIu32
+                                   " stamps (%" PRIu32 " lost)\n",
+                                   what, to, f.config.packetUs, unsigned(f.config.depth), k.rxPackets, k.rxDropped,
+                                   unsigned(f.queued), k.txPackets, k.txErrors, k.txStamps, k.txStampsLost);
+                }
+                return;
+        }
+
         void showDevice(CommandContext &ctx, EthernetDevice &d) {
                 char mac[MacAddress::TextBytes + 1];
                 d.address().toString(mac);
@@ -213,6 +248,9 @@ namespace {
                            c.txRealTime, c.txRealTimeWaited, unsigned(d.bulkTxLimit()),
                            unsigned(EthernetDevice::TxDescriptors), unsigned(d.rxReserve()), c.rxBulkDropped);
                 ctx.printf("  %" PRIu32 " receive path resets (wedged)\n", c.rxRestarts);
+                ctx.printf("  real time: %" PRIu64 " received, %" PRIu32 " dropped (a flow full)\n", c.rxRealTime,
+                           c.rxRealTimeDropped);
+                showFlows(ctx, d);
                 const PtpTime t = d.ptpTime();
                 if (Clock::isSet())
                         ctx.printf("  1588 clock %" PRIu64 ".%09" PRIu32 " (%+" PRId64 " us from the system clock)\n",

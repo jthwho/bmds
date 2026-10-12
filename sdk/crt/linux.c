@@ -948,17 +948,18 @@ static long do_poll(struct pollfd *fds, unsigned long n, const void *timeout, co
         for (unsigned long i = 0; i < n; ++i) {
                 const short    e = fds[i].events;
                 const uint32_t got = k[i].revents;
-                fds[i].revents = (short)(((got & BMDS_POLL_IN) ? e & (POLLIN | POLLRDNORM) : 0) |
-                                         ((got & BMDS_POLL_OUT) ? e & (POLLOUT | POLLWRNORM) : 0) |
-                                         ((got & BMDS_POLL_ERR) ? POLLERR : 0) | ((got & BMDS_POLL_HUP) ? POLLHUP : 0) |
-                                         ((got & BMDS_POLL_NVAL) ? POLLNVAL : 0));
+                fds[i].revents =
+                        (short)(((got & BMDS_POLL_IN) ? e & (POLLIN | POLLRDNORM) : 0) |
+                                ((got & BMDS_POLL_OUT) ? e & (POLLOUT | POLLWRNORM) : 0) |
+                                ((got & BMDS_POLL_PRI) ? e & POLLPRI : 0) | ((got & BMDS_POLL_ERR) ? POLLERR : 0) |
+                                ((got & BMDS_POLL_HUP) ? POLLHUP : 0) | ((got & BMDS_POLL_NVAL) ? POLLNVAL : 0));
         }
         return r;
 }
 
 /* select's sets as poll entries: readable includes hung up and broken,
- * writable broken, as on Linux; nothing is ever exceptional. An fd in a set
- * that isn't open is EBADF. */
+ * writable broken, as on Linux; exceptional is POLLPRI (a socket's error
+ * queue with SO_SELECT_ERR_QUEUE). An fd in a set that isn't open is EBADF. */
 static long do_select(long n, fd_set *rd, fd_set *wr, fd_set *ex, const void *timeout, const long *data) {
         if (n < 0) return -EINVAL;
         if (n > FD_SETSIZE) n = FD_SETSIZE;
@@ -999,7 +1000,13 @@ static long do_select(long n, fd_set *rd, fd_set *wr, fd_set *ex, const void *ti
                                 FD_CLR(fd, wr);
                         }
                 }
-                if (ex != NULL) FD_CLR(fd, ex);
+                if (ex != NULL && FD_ISSET(fd, ex)) {
+                        if (got & BMDS_POLL_PRI) {
+                                ++ready;
+                        } else {
+                                FD_CLR(fd, ex);
+                        }
+                }
         }
         return ready;
 }
@@ -1494,6 +1501,104 @@ static long do_tkill(long tid, long sig) {
 
 static long do_gettid(void) {
         return bmds_sys_has(BMDS_SYS_THREAD_START) ? (long)(bmds_proc_id(BMDS_PROC_THREAD)) : self();
+}
+
+/* Scheduling (devplan/processes.md §3.12): the kernel's `sched`, per thread as Linux's (pid 0:
+ * the caller). Without the slot: no policies, as before. */
+static long sched_get(long tid, bmds_sched_t *out) {
+        if (!bmds_sys_has(BMDS_SYS_SCHED)) return -ENOSYS;
+        if (tid < 0) return -EINVAL;
+        out->size = sizeof(*out);
+        return (long)(bmds_sched(BMDS_SCHED_GET, (int32_t)tid, out));
+}
+
+static long do_sched_set(long tid, long policy, const struct sched_param *param) {
+        if (!bmds_sys_has(BMDS_SYS_SCHED)) return -ENOSYS;
+        if (tid < 0 || param == NULL) return -EINVAL;
+        bmds_sched_t s = {.size = sizeof(s), .policy = (uint32_t)policy, .priority = (uint32_t)param->sched_priority};
+        if (param->sched_priority < 0) return -EINVAL;
+        return (long)(bmds_sched(BMDS_SCHED_SET, (int32_t)tid, &s));
+}
+
+static long do_sched_setparam(long tid, const struct sched_param *param) {
+        bmds_sched_t s;
+        const long   r = sched_get(tid, &s);
+        return r < 0 ? r : do_sched_set(tid, (long)s.policy, param);
+}
+
+static long do_sched_getscheduler(long tid) {
+        bmds_sched_t s;
+        const long   r = sched_get(tid, &s);
+        return r < 0 ? r : (long)s.policy;
+}
+
+static long do_sched_getparam(long tid, struct sched_param *param) {
+        bmds_sched_t s;
+        if (param == NULL) return -EINVAL;
+        const long r = sched_get(tid, &s);
+        if (r == 0) param->sched_priority = (int)s.priority;
+        return r;
+}
+
+static long do_sched_priority(long policy, int max) {
+        switch (policy) {
+                case SCHED_FIFO:
+                case SCHED_RR: return max ? BMDS_SCHED_PRIORITY_MAX : BMDS_SCHED_PRIORITY_MIN;
+                case SCHED_OTHER:
+                case SCHED_BATCH:
+                case SCHED_IDLE: return 0;
+                default: return -EINVAL;
+        }
+}
+
+/* Threads of one priority take turns each tick, whatever their policy. */
+static long do_sched_rr_interval(long tid, void *ts) {
+        bmds_sched_t s;
+        const long   r = sched_get(tid, &s);
+        if (r == 0) ts_write(ts, 1000000);
+        return r;
+}
+
+/* The cores, a bit each in the first word (Linux's length: one long). */
+static long do_sched_getaffinity(long tid, unsigned long size, void *mask) {
+        bmds_sched_t s;
+        if (size < sizeof(unsigned long) || (size % sizeof(unsigned long)) != 0) return -EINVAL;
+        long r = sched_get(tid, &s);
+        if (r == -ENOSYS) {
+                s.cores = 1; /* the kernel says nothing: one */
+                r = 0;
+        }
+        if (r < 0) return r;
+        *(unsigned long *)mask = s.cores;
+        return sizeof(unsigned long);
+}
+
+/* A task's cores are fixed when it starts (every core, for a program's): only a mask that
+ * keeps them all succeeds. */
+static long do_sched_setaffinity(long tid, unsigned long size, const void *mask) {
+        bmds_sched_t s;
+        if (size < sizeof(unsigned long)) return -EINVAL;
+        const long r = sched_get(tid, &s);
+        if (r < 0) return r;
+        return (*(const unsigned long *)mask & s.cores) == s.cores ? 0 : -EINVAL;
+}
+
+static long do_getcpu(unsigned *cpu, unsigned *node) {
+        bmds_sched_t s;
+        long         r = sched_get(0, &s);
+        if (r == -ENOSYS) {
+                s.core = 0;
+                r = 0;
+        }
+        if (r < 0) return r;
+        if (cpu != NULL) *cpu = (unsigned)s.core;
+        if (node != NULL) *node = 0;
+        return 0;
+}
+
+static long do_sched_yield(void) {
+        if (bmds_sys_has(BMDS_SYS_SCHED)) (void)bmds_sched(BMDS_SCHED_YIELD, 0, NULL);
+        return 0;
 }
 
 /* musl calls it once tp is set up (__init_tp): the first thread's hint word is there now. */
@@ -1997,7 +2102,17 @@ static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
                         const int32_t r = bmds_random((void *)a, (uint32_t)b);
                         return r < 0 ? (long)(r) : b;
                 }
-                case SYS_sched_yield: return 0;
+                case SYS_sched_yield: return do_sched_yield();
+                case SYS_sched_setscheduler: return do_sched_set(a, b, (const struct sched_param *)c);
+                case SYS_sched_getscheduler: return do_sched_getscheduler(a);
+                case SYS_sched_setparam: return do_sched_setparam(a, (const struct sched_param *)b);
+                case SYS_sched_getparam: return do_sched_getparam(a, (struct sched_param *)b);
+                case SYS_sched_get_priority_max: return do_sched_priority(a, 1);
+                case SYS_sched_get_priority_min: return do_sched_priority(a, 0);
+                case SYS_sched_rr_get_interval_time64: return do_sched_rr_interval(a, (void *)b);
+                case SYS_sched_getaffinity: return do_sched_getaffinity(a, (unsigned long)b, (void *)c);
+                case SYS_sched_setaffinity: return do_sched_setaffinity(a, (unsigned long)b, (const void *)c);
+                case SYS_getcpu: return do_getcpu((unsigned *)a, (unsigned *)b);
                 case SYS_futex: return do_futex((volatile int *)a, b, c, (const void *)d, (volatile int *)e, f);
 
                 /* Signals */

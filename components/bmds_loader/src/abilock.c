@@ -140,6 +140,18 @@ _Static_assert(offsetof(bmds_crypto_op_t, size) == 0 && offsetof(bmds_crypto_op_
                        sizeof(bmds_crypto_op_t) == 32,
                "ABI: bmds_crypto_op_t");
 #endif
+_Static_assert(BMDS_SYS_SCHED == 113, "ABI: slot SCHED");
+_Static_assert(BMDS_SCHED_OTHER == 0 && BMDS_SCHED_FIFO == 1 && BMDS_SCHED_RR == 2 && BMDS_SCHED_BATCH == 3 &&
+                       BMDS_SCHED_IDLE == 5 && BMDS_SCHED_RESET_ON_FORK == 0x40000000u,
+               "ABI: scheduling policies (Linux's)");
+_Static_assert(BMDS_SCHED_PRIORITY_MIN == 1 && BMDS_SCHED_PRIORITY_MAX == 99, "ABI: real-time priorities");
+_Static_assert(BMDS_SCHED_GET == 0 && BMDS_SCHED_SET == 1 && BMDS_SCHED_YIELD == 2, "ABI: sched operations");
+_Static_assert(offsetof(bmds_sched_t, size) == 0 && offsetof(bmds_sched_t, policy) == 4 &&
+                       offsetof(bmds_sched_t, priority) == 8 && offsetof(bmds_sched_t, cores) == 12 &&
+                       offsetof(bmds_sched_t, core) == 16 && offsetof(bmds_sched_t, kernel_priority) == 20 &&
+                       offsetof(bmds_sched_t, throttled) == 24 && offsetof(bmds_sched_t, flags) == 28 &&
+                       sizeof(bmds_sched_t) == 32,
+               "ABI: bmds_sched_t");
 _Static_assert(BMDS_TERM_PTY_NUMBER == 0 && BMDS_TERM_PTY_UNLOCK == 1 && BMDS_TERM_SET_SIZE == 2 &&
                        BMDS_TERM_CONTROL == 3 && BMDS_TERM_RELEASE == 4 && BMDS_TERM_PTS_NUMBER == 5,
                "ABI: term_ctl operations");
@@ -156,6 +168,11 @@ _Static_assert(BMDS_MSG_PEEK == 0x2 && BMDS_MSG_CTRUNC == 0x8 && BMDS_MSG_TRUNC 
                "ABI: message flags (Linux's)");
 _Static_assert(BMDS_SHUT_RD == 0 && BMDS_SHUT_WR == 1 && BMDS_SHUT_RDWR == 2, "ABI: shutdown sides");
 _Static_assert(BMDS_SOCK_NAME_LOCAL == 0 && BMDS_SOCK_NAME_PEER == 1, "ABI: sock_name");
+_Static_assert(BMDS_MSG_ERRQUEUE == 0x2000, "ABI: MSG_ERRQUEUE (Linux's)");
+_Static_assert(BMDS_SOL_BMDS == 0x424d4453 && BMDS_SO_FASTPATH == 1, "ABI: BMDS_SOL_BMDS, BMDS_SO_FASTPATH");
+_Static_assert(offsetof(bmds_fastpath_t, packet_us) == 4 && offsetof(bmds_fastpath_t, depth) == 8 &&
+                       sizeof(bmds_fastpath_t) == 12,
+               "ABI: bmds_fastpath_t");
 _Static_assert(BMDS_IOV_MAX == 64, "ABI: BMDS_IOV_MAX");
 _Static_assert(BMDS_NET_UP == 0x1 && BMDS_NET_LINK == 0x2 && BMDS_NET_FULL_DUPLEX == 0x4 && BMDS_NET_LOOPBACK == 0x8 &&
                        BMDS_NET_BROADCAST == 0x10 && BMDS_NET_MULTICAST == 0x20,

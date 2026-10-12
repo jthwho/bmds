@@ -1734,3 +1734,302 @@ The user asked for all of §30b's follow-ups:
   audio engine (priority 20, unpinned) is `audio.md`'s to decide; core 1 suits it the same way.
   Raw TCP after: 4.7-4.9 MB/s out, 5.9-6.1 in.
 
+
+### 30d. Piece 2's design: the classifier and `NetFlow` (2026-10-12)
+
+- **`NetFlow`** (`bmds/netflow.h`, kernel API, not ABI): a real-time flow on one Ethernet device,
+  an object its owner keeps (PTP's service, AES67's streams, piece 3's sockets): nothing is
+  allocated. `open(device, config)` registers it, `close()` takes it out.
+  - **What it receives:** frames of an EtherType (PTP's 0x88F7, with a group to receive, such as
+    01:1B:19:00:00:00), or UDP datagrams to a port at an address: a group (joined through IGMP,
+    so the switch forwards it), or 0 for any address that reaches the interface. IPv4 only (§6);
+    fragments, and datagrams with a bad checksum, go on to lwIP as before.
+  - **Depth:** the frames a flow may hold, queued and taken together (1 to 8). All the open flows'
+    depths together are at most the receive reserve (8): `open()` fails with `Full` past it, so a
+    flow within its depth can't be starved by another. A frame past its flow's depth is dropped
+    and counted on the flow (the consumer fell behind), never queued for lwIP.
+  - **Packet time** (the shortest time between its packets, either way) sets the bulk limit while
+    it is open (below).
+  - `receive(timeoutMs)` and `tryReceive()` give a `Packet`: the frame (its buffer, no copy), its
+    hardware arrival time, the payload's offset and length, and the sender's address and port;
+    `release()` gives the buffer back. Waiters are a `WaitList` (piece 3's `poll` joins it).
+  - **Sending:** `connect(address, port, timeoutMs)` (UDP) or `setDestination(mac)` (EtherType)
+    fixes where its packets go; `send(payload, flags, timeoutMs)` puts the flow's prebuilt
+    Ethernet, IPv4 and UDP headers (checksums in software: the MAC can't insert them past 264
+    bytes, §29) before the payload and sends it with `TxRealTime`: copied into a driver buffer in
+    the sender's task, never through lwIP or its heap. Fragmenting is refused (`Invalid`). The
+    source address is the interface's at the time of sending.
+- **The classifier** (`bmds/netclassifier.h`, portable: host-tested and fuzzed) runs in `eth0`'s
+  `receive()` for each frame while any flow is open, before the bulk share is checked: the
+  EtherType (after one VLAN tag), then IPv4's header (version, length, no fragment), then UDP's
+  destination port and address. Frames the MAC didn't checksum (`RxFrame::checksummed`) are
+  checked in software. A match goes to its flow's ring (a spinlock, then the flow's waiters
+  woken, outside it); its buffer doesn't count in bulk's share.
+- **Destinations without lwIP:** a unicast destination's MAC (or its gateway's, off the subnet)
+  comes from lwIP's ARP table at `connect()`; if lwIP has none, the flow sends its own ARP
+  request. The classifier snoops every ARP frame (and still passes it on) for the senders flows
+  are sending to, and keeps their MACs current; each flow asks again every 30 s while it sends.
+  A full lwIP heap or bulk's drops can't stop a flow sending. A group's MAC is its own (RFC 1112).
+- **The automatic limits:** while any flow is open, bulk holds at most 2 transmit descriptors (1 if
+  a flow's packet time is under 1 ms) and the receive reserve is 8; the last flow closing gives
+  bulk the 16 and 0 again. The driver does it as flows come and go.
+- **Departure stamps go to the flow:** a stamped frame's descriptor names its flow; reclaiming it
+  hands the stamp (with the ticket `send()` returned) to the flow's queue of 8 after the transmit
+  lock, and wakes its waiters (`receiveTxStamp()`; piece 3's `MSG_ERRQUEUE`). None can be
+  overwritten by later frames (§30a); a full queue drops its oldest (counted).
+- **Closing** clears the flow from the classifier and the transmit ring's descriptors and waits
+  for a delivery in progress (deliveries don't block), as `setReceiver()` does; queued frames are
+  released.
+- **Group filters:** an EtherType flow's group joins the MAC's address filters with the stack's
+  groups; more than 15 together pass all multicast (more for `eth0` to drop, nothing lost).
+- **The cores:** a flow's sender runs on core 1 (§30c); the receiver's wake comes from `eth0`
+  (core 0, priority 21).
+- **Shown:** `net` lists open flows (what they match, packets in and out, dropped, stamps); `stats`
+  gains `net.ethN.rx_realtime` and `rx_realtime_dropped` (a warning).
+- **Tested** by a temporary kernel command: a flow sends AES67-sized packets every 1 ms from core 1
+  to a Python UDP reflector on sartre, another flow takes them back; the round trip and the send
+  jitter from the hardware stamps, and the losses, while `bmds-netstress` loads the link. Piece 4's
+  `netlat` repeats it through sockets.
+
+### 30e. As built: piece 2, the classifier and flows (2026-10-12)
+
+- **As designed (§30d):** `NetClassifier` (portable: 8 host test cases, `netclassifier_fuzz`: 54
+  million inputs, seeded with a UDP and a PTP frame, no fault) and `NetFlow` in `bmds_net`. The
+  driver keeps the flows' rules and classifies in `receive()` before the bulk share; a flow's
+  buffers are a bitmask, so `release()` doesn't count them as bulk's. `NetFlow::list()` feeds
+  `net`'s flow lines. `NetInterface` keeps its address in an atomic for senders outside the core
+  lock. The image grew 4 KB.
+- **Two bugs found reading it over:** the snooped ARP answer woke `connect()` inside the driver's
+  flow spinlock (a semaphore can't be given in a critical section): now after it. A reclaim stops
+  once it holds 4 flows' stamps (they're handed over after the lock); a sender waiting for room
+  then slept though there were descriptors to reclaim: it now hands them over and reclaims again
+  first.
+- **Tested** with a temporary command (`rttest`, not kept: piece 4's `netlat` does it through
+  sockets): a flow on core 1 (priority 20) sends 342-byte frames every 1 ms, stamped, to a Python
+  reflector on sartre; a reader task (core 1, priority 19) takes them back. Departure is the
+  hardware stamp less the 1588 time read just before `send()`; delivery is the reader's 1588 time
+  less the hardware arrival stamp. Sartre's reflections marked EF (DSCP 46).
+
+  | Load (from sartre) | Lost | Departure, mean / max | Delivery, mean / max | Round trip, max |
+  |---|---|---|---|---|
+  | None (10 s) | 0 of 10000 | 22 / 92 µs | 66 / 266 µs | 1.4 ms |
+  | TCP both ways (50 s) | 0 of 50000 | 28 / 212 µs | 84 / 1966 µs * | 2.6 ms |
+  | Flood paced at 95 Mbit/s (35 s) | 0 of 35000 | 24 / 202 µs | 91 / 1847 µs * | 3.6 ms |
+  | TCP both ways and a 90 Mbit/s flood (60 s) | 0 of 60000 | 28 / 217 µs | 61 / 541 µs | 2.5 ms |
+
+  \* The reader was then the shell's task; at priority 19 on core 1 the worst fell to 541 µs. The
+  departure budget (§30: under 300 µs at 1 ms packets) holds in every case. The board lost
+  nothing in any run: `rx_realtime_dropped`, `tx_realtime_waited`, `rx_missed` and `rx_overflow`
+  stayed 0, while 38-80 bulk frames were dropped by the partition. A multicast flow (239.69.1.1,
+  joined through IGMP, the group in the MAC's exact filters while open) and a `connect()` that had
+  to ask ARP itself after a reboot also worked; to an address nobody has it gave
+  `HostUnreachable` after its timeout.
+- **An unpaced flood is lost in the switch, with the real-time packets queued behind it.** Sartre
+  sends at 10 Gbit/s into the board's 100 Mbit/s port: the switch drops about 95% of the flood, and
+  85-99% of the reflections sent while it runs (none outside it); the board received and delivered
+  every one that reached it. Marking them EF cut the switch's queueing from 18 ms to 2 ms but not
+  the drops (its buffer for the port is full). Nothing at the board can help: an AES67 network
+  needs QoS in its switches (strict priority for EF, and policing), which this one doesn't give.
+  So the done-when test (§30) floods at a paced rate (`bmds-netstress --flood-mbps`), and "no
+  real-time packet lost" is counted at the board; it holds.
+- **The cost to bulk while a flow is open** (*k* 2): raw TCP out 4.1-4.3 MB/s (4.9 without), in
+  5.2-5.5 (6.0). With a flood running too, out fell to 1.7 MB/s: lwIP answers every datagram to a
+  closed port with an ICMP port unreachable (no rate limit), about 7000 small frames a second in
+  bulk's 2 descriptors. A follow-up: rate-limit ICMP errors as Linux does (and it closes an
+  amplifier).
+- **Next:** piece 3, the socket ABI (`SO_BMDS_FASTPATH` over `NetFlow`, `SO_PRIORITY`/DSCP,
+  `SO_TIMESTAMPING` with `MSG_ERRQUEUE`), designed and brought to the user before it is built.
+
+### 30f. Piece 3's design: the socket ABI (2026-10-12, for the user's review)
+
+Frozen once shipped. Linux's option numbers, layouts and behaviour, checked against Linux 6.8 on
+sartre (software stamps: the same paths as hardware ones), except one BMDS option.
+
+- **`SO_BMDS_FASTPATH`** makes a UDP socket a `NetFlow` (§30d): its datagrams bypass lwIP both
+  ways.
+  - `setsockopt(fd, BMDS_SOL_BMDS, BMDS_SO_FASTPATH, &v, len)`: a level of BMDS's own
+    (`0x424d4453`, "BMDS"), so no Linux number can collide. `v` is an `int` (0 off; otherwise on,
+    a 1 ms packet time and a depth of 4) or a `bmds_fastpath_t` (`size`, `packet_us`, `depth`
+    1-8); `getsockopt` gives the same back. UDP only (`ENOPROTOOPT`).
+  - The flow opens once the socket is on and bound (either order; an unbound socket gets its
+    ephemeral port then), on `SO_BINDTODEVICE`'s interface, else the bound address's, else the
+    first Ethernet one. It matches the bound port and address (any, one of ours, or a group:
+    joined with `IP_ADD_MEMBERSHIP` as now). `connect()` also narrows it to the peer's address and
+    port, as Linux's connected UDP does: the classifier's rule gains a source (0 for any).
+    `ENOBUFS` when the 8 flows or the 8-buffer reserve are taken, `EADDRINUSE` when another flow
+    has the port, `ENODEV` without Ethernet. Off, or closing, closes the flow.
+  - **Receiving** takes the flow's packets first, then lwIP's queue (fragments, which the
+    classifier leaves to lwIP), copies into the iovecs and releases the buffer at once.
+    `MSG_PEEK`, `MSG_TRUNC`, `msg_name` and the timeouts as for any UDP socket. The depth, not
+    `SO_RCVBUF`, bounds the flow.
+  - **Sending:** to the connected peer, a group, or any address in lwIP's ARP table (looked up,
+    never waited for), the flow builds the headers and sends with `TxRealTime` in the caller's
+    task. What it can't send that way, a datagram larger than one frame or one to an address
+    ARP hasn't answered yet, goes through lwIP as before, so a program sees no difference but
+    speed. `connect()` doesn't wait for ARP (Linux's doesn't): it asks, and sends go through
+    lwIP until the answer comes. A group sent this way isn't looped back to local sockets.
+  - `net`'s flow lines show socket flows like any other.
+- **Priority:** `SO_PRIORITY` (any value: there is no privilege to check) and `IP_TOS` as Linux
+  has them, `IP_TOS` setting the priority from the TOS bits as Linux does (EF gives 4,
+  `IPTOS_LOWDELAY` 6). A plain UDP socket with priority 6 or more, or DSCP EF (46) or CS6 (48),
+  sends with a new driver class, `TxPriority`: ahead of bulk's limit, but at most 2 descriptors
+  of its own, so it can't take the flows' (§30's guarantee stands). It still goes through lwIP's
+  core lock, which TCP holds, so real time means the fast path; priority is for the rest (NTP,
+  mDNS answers). A fast-path socket is real time whatever its priority; the DSCP goes in its
+  headers.
+- **`SO_TIMESTAMPING`** (37, and 65 as musl's 32-bit headers have it: 64-bit times in the
+  control message; 37 gives 32-bit ones), on every UDP socket, fast path or not:
+  - Linux's flags (others `EINVAL`, as Linux): `RX_HARDWARE`, `TX_HARDWARE`, `RX_SOFTWARE`,
+    `TX_SOFTWARE`, `SOFTWARE`, `RAW_HARDWARE`, `OPT_ID`, `OPT_TSONLY`, `OPT_CMSG`; accepted and
+    not acted on: `TX_SCHED`, `TX_ACK` (TCP's), `OPT_STATS`, `OPT_PKTINFO`, `OPT_TX_SWHW`,
+    `BIND_PHC` (there is one clock). The value is an `int` or Linux's `struct so_timestamping`;
+    `getsockopt` gives the struct.
+  - The hardware clock is the EMAC's 1588 clock (every frame is stamped, §4); it starts from the
+    system clock at boot and step 7's PTP disciplines it. Software stamps are the system clock
+    at `eth0`'s receive and at the descriptor's write.
+  - **Received:** each datagram carries `SCM_TIMESTAMPING` (3 timespecs: software, 0, hardware).
+    Through lwIP, the stamps ride in the pbuf (`LWIP_PBUF_CUSTOM_DATA`: 16 bytes more per pbuf,
+    for both stamps and the transmit ticket below; 48 pool pbufs, the custom ones, the heap's).
+  - **Sent:** each datagram sent while a transmit flag is on is stamped. The stamp goes to the
+    socket's error queue (8; full, the oldest is dropped), read with `recvmsg(MSG_ERRQUEUE)` as on
+    Linux (seen on sartre): the frame as sent, from its Ethernet header (nothing with
+    `OPT_TSONLY`); `msg_flags` `MSG_ERRQUEUE`; no `msg_name`; `SCM_TIMESTAMPING`; and
+    `SOL_IP`/`IP_RECVERR` with a `sock_extended_err` (`ENOMSG`, origin 4 timestamping, info 0
+    `SCM_TSTAMP_SND`, data the `OPT_ID` count from 0) and an offender address (`AF_UNSPEC`; ours
+    with `OPT_CMSG`). An empty queue answers `EAGAIN` at once, even blocking (Linux's). The
+    frames are kept in PSRAM: 12 KB a socket, allocated when transmit stamps are turned on (none
+    with `OPT_TSONLY`).
+  - A plain socket's datagram carries a ticket in its pbuf (a registry slot and a generation), so
+    the driver hands the stamp to the socket at reclaim, and a datagram that outlives its socket
+    (in ARP's queue) finds nobody. Fragmented datagrams aren't stamped.
+  - **`poll`:** a waiting error queue gives `POLLERR`, and with `SO_SELECT_ERR_QUEUE` (45)
+    `POLLPRI` too (seen on sartre), as linuxptp waits for it. `BMDS_POLL_PRI`'s "never reported"
+    becomes this. `Stream::Ready` gains `Error` and `Priority`.
+  - `SO_TIMESTAMP` and `SO_TIMESTAMPNS` (29/63, 35/64: the software receive time) come along:
+    the same stamps, a POSIX gap closed.
+  - The interface `ioctl`s linuxptp checks (`SIOCSHWTSTAMP`, `SIOCGHWTSTAMP`, `ETHTOOL_GET_TS_INFO`)
+    and `/dev/ptp0` are step 7's, with the clock they describe.
+- **`sys.h` appends:** `BMDS_SOL_BMDS`, `BMDS_SO_FASTPATH`, `bmds_fastpath_t`, `BMDS_MSG_ERRQUEUE`
+  (0x2000); the lock test checks them. Everything else is Linux's numbers from musl's headers.
+- **Tested** by an `sdk/tests` program (options, errors, control message layouts, the error queue
+  and `poll`, over `lo` and `eth0`, fast path and not), then piece 4's `netlat` against sartre.
+
+### 30g. ICMP errors limited as Linux limits them (2026-10-12)
+
+§30e's follow-up. `IcmpRateLimit` (portable, 4 host test cases) holds back lwIP's ICMP errors in
+`NetInterface::linkOutput()` (under the core lock), with Linux's defaults: destination
+unreachable, source quench, time exceeded and parameter problem (`icmp_ratemask`; not
+"fragmentation needed") at most one a second to a destination with a burst of 6
+(`icmp_ratelimit`, 16 destinations remembered), and 1000 a second in all with a burst of 50
+(`icmp_msgs_per_sec`, `icmp_msgs_burst`). lwIP is vendored unchanged, so the frame is read as it
+leaves. Counted in `net.ethN.tx_icmp_limited`. Image: +0.9 KB. Not yet measured on the board
+(flashing waits for the user): expected, a flood to a closed port gets 1 answer a second, not
+7000, and TCP out under the flood returns from 1.7 MB/s towards the 4.2 of a flow alone.
+
+### 30h. As built: piece 3, the socket ABI (2026-10-12)
+
+- **As designed (§30f), the user's yes.** `SocketFastPath` (`src/socketfastpath.h`) is how the
+  portable `Socket` holds a `NetFlow`: the firmware's wraps one (`Internal` memory, opened at
+  `setsockopt` or `bind`); the host tests' answers `NotSupported`. `NetFlow` gained what a socket
+  needs: a listener (the socket's readers and pollers), `tryConnect()` (ARP asked, not waited
+  for), `filterSource()` (the classifier's rule gained a source address and port), a destination
+  per send (`macFor()` from lwIP's table), payloads in pieces (`writeUdpHeaders()` sums them, odd
+  offsets byte-swapped: host-tested against the whole), `IP_MULTICAST_TTL` for groups. The driver's
+  stamp receiver is now `TxStampSink` (a flow, or `NetInterface` for lwIP's datagrams, with a
+  cookie), and `TxPriority` has its own limit (2 with flows, else 16).
+- **lwIP's datagrams:** each pbuf carries the arrival stamps and a send class, cookie and number
+  (`LWIP_PBUF_CUSTOM_DATA`, 21 bytes); `NetInterface` stamps arrivals and, for a marked datagram,
+  records its frame with its socket and sends it stamped (a copy, not in place). Sockets are found
+  by a lock-free registry of 16 (a slot and a 7-bit generation in the cookie), so a datagram that
+  outlives its socket finds nobody. A socket's error queue is 8 records under a `Mutex` held for a
+  few lines (`SpinLock` isn't in the host build; copies happen outside it), with the frames in
+  PSRAM.
+- **Not as Linux:** send stamps come from frames that leave by Ethernet: a datagram to the
+  loopback gets none (Linux stamps it in software).
+- **Tested:**
+  - host: a real-time socket case (priorities, flags, receive stamps, the error queue's
+    `WouldBlock`, `setFastPath` errors); the classifier's source rules and split payloads;
+    `netclassifier_fuzz` seeded again and run 19 million times (rules with sources; the headers
+    from split payloads must equal the whole's), no fault;
+  - board: `progtest rtnet` (new) passes alone (options, `SO_TIMESTAMPNS` and `SO_TIMESTAMPING`
+    on loopback, `MSG_CTRUNC`, the empty error queue at once, the fast path's errors) and against
+    the reflector on sartre: four datagrams each through the fast path and through lwIP, with and
+    without `OPT_TSONLY`, each with its error-queue report (the frame from its Ethernet header,
+    `IP_RECVERR` with the `OPT_ID` count, `POLLPRI` and `POLLERR`) and the reflection's hardware
+    arrival. Round trip, hardware stamp to hardware stamp: 81-158 µs both ways (the first of each
+    socket the slowest). `net` showed the fast path used (9 real-time frames sent, 8 received)
+    and the limits restored after.
+- **Not measured yet:** `TxPriority` under load (piece 4's `netlat --load`).
+- **Image:** +13.6 KB (1,766,928 bytes).
+
+### 30i. As built: piece 4, `netlat` (2026-10-12)
+
+- **`netlat`** (`programs/netlat`, the card's `netlat` package; public interfaces only): sends
+  datagrams (300 bytes: AES67's 1 ms of 48 kHz stereo L24 and RTP's header) every interval to
+  `tools/netlat-reflector` on a wired peer, through the fast path (`-n`: lwIP), stamped in hardware
+  both ways (`SO_TIMESTAMPING` with `OPT_ID` and `OPT_TSONLY`, the error queue read with
+  `POLLPRI`); `-l` loads the link with TCP both ways through the reflector meanwhile. It reports
+  loss, reordering and, each as min, mean, 50, 99, 99.9 % and max:
+  - **the sender's wake** against its deadline (`CLOCK_MONOTONIC`);
+  - **the departure off the grid:** hardware departures against the even grid that fits them best
+    (least squares on the sequence: the two clocks run at their own rates), less the least;
+  - **the round trip,** hardware departure to the reflection's hardware arrival;
+  - **driver to program:** the driver's software stamp to the reflection in the program's hands
+    (`CLOCK_REALTIME` both).
+
+  A program can't read the 1588 clock yet (step 7's `/dev/ptp0`), so the departure against the
+  sender's own intent, and the arrival to the driver, aren't measured on one clock.
+- **`tools/netlat-reflector`:** UDP back to its sender marked EF; a TCP sink on port + 1 and a
+  source on port + 2 for `-l`.
+- **A bug found by the first loaded run:** a stamp arriving while a send was in flight was given
+  to it, even when it was an older datagram's whose record the full error queue had dropped (the
+  departures came out milliseconds early). Only a ticket newer than every one written down is now
+  the one in flight.
+- **Measured** (sartre reflecting; 1 ms, 300 bytes, fast path; the program's threads at the
+  priority every program has):
+
+  | Load | Lost | Wake late, 50 % / max | Departure off grid, 50 % / max | Round trip, 50 % / max | Driver to program, 50 % / max |
+  |---|---|---|---|---|---|
+  | None (10 s) | 0 of 10000 | 501 / 1523 µs | 472 / 1604 µs | 100 / 2010 µs | 123 / 1518 µs |
+  | 90 Mbit/s flood (30 s) | 10 of 30000 | 215 / 3756 µs | 254 / 3801 µs | 259 / 2096 µs | 178 / 4807 µs |
+  | Flood and TCP both ways (`-l`, 30 s) | 5953 of 30000 | 282 / 5086 µs | 351 / 5708 µs | 290 / 3137 µs | 404 / 22581 µs |
+
+- **What it shows:**
+  - **The kernel holds:** in every run `rx_missed`, `rx_overflow` and `tx_realtime_waited` stayed
+    0. Every lost datagram was dropped at its flow (`rx_realtime_dropped`): the program, not the
+    path, fell more than its depth (4 ms) behind.
+  - **A program's sleep follows the 1 kHz tick:** `clock_nanosleep` rounds up to it, so a 1 ms
+    pace wakes anywhere in the next tick (half a millisecond late on average), and the departures
+    follow the wake. §5.2's pacing (never from the tick) isn't open to programs.
+  - **A program's threads can't be given a priority:** the receiver runs at the priority of
+    everything else the shell starts, with `-l`'s TCP threads beside it, and under load waits up
+    to 22 ms; the error queue (8) overflows too (28520 of 30000 stamps read). The kernel's own
+    test thread (§30e), at priority 19 on core 1, lost nothing under the same load.
+- **Next (ABI, for the user):** thread priorities for programs (`sched_setscheduler`,
+  `pthread_setschedparam` with `SCHED_FIFO`, mapped under the drivers' tasks) and a sleep finer
+  than the tick for real-time threads; with them `netlat` repeats the done-when test (§30).
+  Done in §30j.
+
+### 30j. Real-time program threads: `netlat -r` (2026-10-12)
+
+Programs got Linux's scheduling calls, a band of kernel priorities (7-18) between the IP stack
+and the drivers, Linux's 95 % budget, and a sleep that wakes from a hardware timer for real-time
+threads (processes.md §3.12, slot 113). `netlat -r PRIO` runs its sender and receiver
+`SCHED_FIFO` at PRIO; the TCP load (`-l`) stays at the normal priority.
+
+- **Measured** (sartre reflecting; 1 ms, 300 bytes, fast path, `-r 50`: kernel priority 12):
+
+  | Load | Lost | Wake late, 50 % / max | Departure off grid, 50 % / max | Round trip, 50 % / max | Driver to program, 50 % / max |
+  |---|---|---|---|---|---|
+  | None (10 s) | 0 of 10000 | 57 / 195 µs | 29 / 317 µs | 96 / 368 µs | 127 / 706 µs |
+  | 90 Mbit/s flood (30 s) | 0 of 30000 | 33 / 974 µs | 46 / 1777 µs | 283 / 1785 µs | 111 / 2065 µs |
+  | Flood and TCP both ways (`-l`, 30 s) | 1 of 30000 | 37 / 1962 µs | 47 / 2798 µs | 292 / 6073 µs | 129 / 3408 µs |
+
+  Against §30i's: the wake's median from about 500 µs to under 60, and the losses under the
+  full load from 5953 to 1 (every send stamp read: 30000 of 30000, from 28520). No frame was
+  missed or waited for (`rx_missed`, `rx_overflow`, `tx_realtime_waited` 0); the one lost was
+  dropped at the flow. The budget never throttled (the threads sleep most of each period).
+- **What is left:** the tails. Under the full load the receiver's 99th percentile from the driver
+  is 1.6 ms and the worst 3.4 ms, though it outranks everything but the drivers; a few wakes and
+  departures run a millisecond or two late. Not yet analysed: what holds the receiver (a lock a
+  normal-priority thread holds, such as the IP stack's while TCP runs, is the first suspect).

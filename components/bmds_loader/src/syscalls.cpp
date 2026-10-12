@@ -156,6 +156,9 @@ int32_t bmds_k_clock_get(uint32_t clock, int64_t *ns) {
 
 int32_t bmds_k_sleep(int64_t ns) {
         KernelCall call;
+        // A real-time thread's ends at its time (devplan/processes.md §3.12).
+        const uint8_t policy = call.thread().policy;
+        if (policy == BMDS_SCHED_FIFO || policy == BMDS_SCHED_RR) return call->sleepPrecise(ns);
         return call->sleep(ns);
 }
 
@@ -427,6 +430,11 @@ int32_t bmds_k_futex(volatile int32_t *word, uint32_t op, int32_t value, int64_t
 int32_t bmds_k_thread_kill(int32_t tid, int32_t sig, uint32_t flags) {
         KernelCall call;
         return call.thread().killThread(tid, sig, flags);
+}
+
+int32_t bmds_k_sched(uint32_t op, int32_t tid, bmds_sched_t *param) {
+        KernelCall call;
+        return call.thread().sched(op, tid, param);
 }
 
 int32_t bmds_k_thread_clear(volatile int32_t *word) {

@@ -185,6 +185,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_TERM_CTL 110u  /**< `int32_t term_ctl(int32_t fd, uint32_t op, uint32_t arg)`. */
 #define BMDS_SYS_FS_INFO 111u   /**< `int32_t fs_info(const char *path, bmds_fs_info_t *info)`. */
 #define BMDS_SYS_CRYPTO 112u    /**< `int32_t crypto(const bmds_crypto_op_t *op)`. */
+#define BMDS_SYS_SCHED 113u     /**< `int32_t sched(uint32_t op, int32_t tid, bmds_sched_t *param)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -359,9 +360,9 @@ typedef struct bmds_siginfo_t {
 
 /** @brief `bmds_pollfd_t` events (Linux's values). */
 #define BMDS_POLL_IN 0x01u   /**< A read wouldn't wait (data, or the end of input). */
-#define BMDS_POLL_PRI 0x02u  /**< Urgent data (never reported). */
+#define BMDS_POLL_PRI 0x02u  /**< Urgent data: a socket's error queue with `SO_SELECT_ERR_QUEUE`. */
 #define BMDS_POLL_OUT 0x04u  /**< A write wouldn't wait. */
-#define BMDS_POLL_ERR 0x08u  /**< Writes fail: a pipe without a reader (reported unasked). */
+#define BMDS_POLL_ERR 0x08u  /**< Writes fail (a pipe without a reader), or an error queue waits (reported unasked). */
 #define BMDS_POLL_HUP 0x10u  /**< The other end is gone: a pipe without a writer (reported unasked). */
 #define BMDS_POLL_NVAL 0x20u /**< The fd isn't open (reported unasked). */
 
@@ -372,7 +373,7 @@ typedef struct bmds_siginfo_t {
 typedef struct bmds_pollfd_t {
                 uint32_t size;    /**< Set by the caller: `sizeof(bmds_pollfd_t)`. */
                 int32_t  fd;      /**< The descriptor; a negative one is skipped (`revents` 0). */
-                uint32_t events;  /**< `BMDS_POLL_IN` and/or `BMDS_POLL_OUT`. */
+                uint32_t events;  /**< `BMDS_POLL_IN`, `BMDS_POLL_OUT`, `BMDS_POLL_PRI`. */
                 uint32_t revents; /**< Set by the kernel: the events that are true, with ERR, HUP, NVAL. */
 } bmds_pollfd_t;
 
@@ -1177,6 +1178,34 @@ typedef struct bmds_thread_t {
 #define BMDS_MSG_WAITALL 0x100u   /**< TCP: wait until the buffers are full. */
 #define BMDS_MSG_NOSIGNAL 0x4000u /**< No `SIGPIPE` when the connection is gone (`-BMDS_EPIPE` still). */
 #define BMDS_MSG_MORE 0x8000u     /**< TCP: more follows; don't push yet. */
+#define BMDS_MSG_ERRQUEUE 0x2000u /**< Receive from the error queue (send stamps); out: it was. */
+
+/**
+ * @brief BMDS's own socket option level (`setsockopt`, `getsockopt`): "BMDS", so no Linux
+ *        level can be the same.
+ */
+#define BMDS_SOL_BMDS 0x424d4453
+
+/**
+ * @brief `BMDS_SOL_BMDS` option: a UDP socket's fast path (devplan/network.md §30f). Its
+ *        datagrams bypass the IP stack both ways, ahead of bulk traffic; what the fast path
+ *        can't send (larger than a frame, or to an address ARP hasn't answered yet) goes the usual
+ *        way. The value is an `int` (0 off; otherwise on, with a 1 ms packet time and a depth of 4)
+ *        or a `bmds_fastpath_t`. `-BMDS_ENOBUFS` when the real-time flows or their buffers are
+ *        taken, `-BMDS_EADDRINUSE` when another fast path has the port, `-BMDS_ENODEV` without
+ *        Ethernet, `-BMDS_ENOPROTOOPT` for a socket that isn't UDP.
+ */
+#define BMDS_SO_FASTPATH 1
+
+/**
+ * @brief `BMDS_SO_FASTPATH`'s value in full: set, the fast path on with these; read, its
+ *        settings (`depth` 0: off).
+ */
+typedef struct bmds_fastpath_t {
+                uint32_t size;      /**< Set by the caller: `sizeof(bmds_fastpath_t)`. */
+                uint32_t packet_us; /**< The shortest time between its packets either way (µs). */
+                uint32_t depth;     /**< Datagrams it holds unread, 1-8 (all fast paths' together at most 8). */
+} bmds_fastpath_t;
 
 /** @brief `shutdown` sides. */
 #define BMDS_SHUT_RD 0u   /**< Receiving: reads end. */
@@ -1312,6 +1341,40 @@ typedef struct bmds_crypto_op_t {
                 uint32_t    length;    /**< Bytes: a multiple of the block (16; SHA 64, SHA-512 128). */
 } bmds_crypto_op_t;
 
+/** @brief Scheduling policies (`sched`, appended 2026-10-12, slot 113; Linux's numbers). */
+#define BMDS_SCHED_OTHER 0u /**< The normal priority, time-shared. */
+#define BMDS_SCHED_FIFO 1u  /**< Real time at `priority` 1-99. */
+#define BMDS_SCHED_RR 2u    /**< Real time at `priority` 1-99, round robin (as `FIFO`: see `sched`). */
+#define BMDS_SCHED_BATCH 3u /**< As `OTHER`. */
+#define BMDS_SCHED_IDLE 5u  /**< As `OTHER`. */
+/** @brief Or'ed into a policy: threads and processes it starts begin as `OTHER`. */
+#define BMDS_SCHED_RESET_ON_FORK 0x40000000u
+
+/** @brief Real-time priorities (`FIFO`, `RR`); 0 for the others. */
+#define BMDS_SCHED_PRIORITY_MIN 1u
+#define BMDS_SCHED_PRIORITY_MAX 99u
+
+/** @brief `sched` operations. */
+#define BMDS_SCHED_GET 0u   /**< Fills `param` in. */
+#define BMDS_SCHED_SET 1u   /**< Sets `policy` (with `BMDS_SCHED_RESET_ON_FORK`) and `priority`. */
+#define BMDS_SCHED_YIELD 2u /**< Lets threads of its priority run (`tid` 0, `param` NULL). */
+
+/**
+ * @brief A thread's scheduling (`sched`, appended 2026-10-12, slot 113). The caller sets
+ *        `size`; `BMDS_SCHED_SET` reads `policy` and `priority`, `BMDS_SCHED_GET` fills the
+ *        fields that fit in it.
+ */
+typedef struct bmds_sched_t {
+                uint32_t size;            /**< Set by the caller: `sizeof(bmds_sched_t)`. */
+                uint32_t policy;          /**< `BMDS_SCHED_...`, with `BMDS_SCHED_RESET_ON_FORK`. */
+                uint32_t priority;        /**< 1-99 for `FIFO` and `RR`, else 0. */
+                uint32_t cores;           /**< The cores it may run on, a bit each. */
+                int32_t  core;            /**< The core it runs on (or last ran on). */
+                uint32_t kernel_priority; /**< The kernel priority it runs at now. */
+                uint32_t throttled;       /**< Times its real-time priority was held back (95 %), in all. */
+                uint32_t flags;           /**< 0. */
+} bmds_sched_t;
+
 /** @brief `proc_timer`'s timers. */
 #define BMDS_TIMER_REAL 0u /**< Real time, raising `SIGALRM` (Linux's `ITIMER_REAL`). */
 
@@ -1433,6 +1496,7 @@ typedef int32_t (*bmds_sys_net_watch_fn)(uint32_t flags);
 typedef int32_t (*bmds_sys_term_ctl_fn)(int32_t fd, uint32_t op, uint32_t arg);
 typedef int32_t (*bmds_sys_fs_info_fn)(const char *path, bmds_fs_info_t *info);
 typedef int32_t (*bmds_sys_crypto_fn)(const bmds_crypto_op_t *op);
+typedef int32_t (*bmds_sys_sched_fn)(uint32_t op, int32_t tid, bmds_sched_t *param);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -1593,7 +1657,9 @@ static inline int32_t bmds_clock_get(uint32_t clock, int64_t *ns) {
 }
 
 /**
- * @brief Sleeps at least @p ns nanoseconds (rounded up to the kernel's tick).
+ * @brief Sleeps at least @p ns nanoseconds: rounded up to the kernel's tick (1 ms), but a
+ *        thread with a real-time policy (`sched`, from 2026-10-12) wakes from a hardware timer,
+ *        tens of microseconds after the time.
  * @return 0, or `BMDS_EINTR` (a signal is due).
  */
 static inline int32_t bmds_sleep(int64_t ns) {
@@ -2467,7 +2533,12 @@ static inline int32_t bmds_sendmsg(int32_t fd, const bmds_msghdr_t *msg, uint32_
 /**
  * @brief Receives on socket @p fd into @p msg's pieces: what TCP has (at least a byte), or
  *        one datagram (cut to fit: `BMDS_MSG_TRUNC` in `flags`), its source in `name`.
- *        @p flags `BMDS_MSG_DONTWAIT`, `BMDS_MSG_PEEK`, `BMDS_MSG_WAITALL`, `BMDS_MSG_TRUNC`.
+ *        @p flags `BMDS_MSG_DONTWAIT`, `BMDS_MSG_PEEK`, `BMDS_MSG_WAITALL`, `BMDS_MSG_TRUNC`,
+ *        `BMDS_MSG_ERRQUEUE`. A datagram's control messages are Linux's: `SCM_TIMESTAMPING`,
+ *        `SCM_TIMESTAMP`, `SCM_TIMESTAMPNS` as the socket asked (`BMDS_MSG_CTRUNC` when they
+ *        don't fit). `BMDS_MSG_ERRQUEUE` takes a send stamp, as Linux gives it: the frame as
+ *        sent (none with `SOF_TIMESTAMPING_OPT_TSONLY`), `SCM_TIMESTAMPING`, and `IP_RECVERR`
+ *        (`ENOMSG`, origin `SO_EE_ORIGIN_TIMESTAMPING`); it never waits.
  * @return The bytes received (with `BMDS_MSG_TRUNC`, a datagram's whole length), 0 at the end
  *         (the peer finished), or `-BMDS_EAGAIN`, `-BMDS_ECONNRESET`, `-BMDS_ENOTCONN`,
  *         `-BMDS_EINTR`.
@@ -2481,9 +2552,12 @@ static inline int32_t bmds_recvmsg(int32_t fd, bmds_msghdr_t *msg, uint32_t flag
  *        `SO_KEEPALIVE`, `SO_RCVBUF`, `SO_SNDBUF`, `SO_RCVTIMEO`, `SO_SNDTIMEO` (both layouts),
  *        `SO_BROADCAST`, `SO_LINGER`, `SO_BINDTODEVICE`, `TCP_NODELAY`, `TCP_KEEPIDLE`,
  *        `TCP_KEEPINTVL`, `TCP_KEEPCNT`, `IP_TTL`, `IP_TOS`, `IP_ADD_MEMBERSHIP`,
- *        `IP_DROP_MEMBERSHIP`, `IP_MULTICAST_IF`, `IP_MULTICAST_TTL`, `IP_MULTICAST_LOOP`.
+ *        `IP_DROP_MEMBERSHIP`, `IP_MULTICAST_IF`, `IP_MULTICAST_TTL`, `IP_MULTICAST_LOOP`,
+ *        `SO_PRIORITY`, `SO_TIMESTAMPING`, `SO_TIMESTAMP`, `SO_TIMESTAMPNS` (old and new numbers),
+ *        `SO_SELECT_ERR_QUEUE`; and `BMDS_SOL_BMDS`'s `BMDS_SO_FASTPATH`. Priority 6 or more,
+ *        or DSCP EF or CS6, sends a UDP socket's datagrams ahead of bulk (devplan/network.md §30f).
  * @return 0, or `-BMDS_ENOPROTOOPT` (another), `-BMDS_EINVAL`, `-BMDS_EADDRINUSE` (joined),
- *         `-BMDS_EADDRNOTAVAIL`, `-BMDS_ENOBUFS` (groups), `-BMDS_ENODEV`.
+ *         `-BMDS_EADDRNOTAVAIL`, `-BMDS_ENOBUFS` (groups), `-BMDS_ENODEV`, `-BMDS_ENOMEM`.
  */
 static inline int32_t bmds_setsockopt(int32_t fd, int32_t level, int32_t name, const void *value, uint32_t length) {
         return ((bmds_sys_setsockopt_fn)bmds_sys->slot[BMDS_SYS_SETSOCKOPT])(fd, level, name, value, length);
@@ -2580,6 +2654,22 @@ static inline int32_t bmds_fs_info(const char *path, bmds_fs_info_t *info) {
  */
 static inline int32_t bmds_crypto(const bmds_crypto_op_t *op) {
         return ((bmds_sys_crypto_fn)bmds_sys->slot[BMDS_SYS_CRYPTO])(op);
+}
+
+/**
+ * @brief Gets or sets thread @p tid's scheduling (0: the caller's; a pid: its process's first
+ *        thread), or yields (devplan/processes.md §3.12). `BMDS_SCHED_FIFO` and `BMDS_SCHED_RR`
+ *        1-99 map evenly onto a band of kernel priorities above the shells, the desktop and the
+ *        IP stack and below the drivers; threads of one priority share it a tick at a time
+ *        (`FIFO` acts as `RR`). Real-time threads may take 95 % of each second, then run at
+ *        their normal priority for the rest of it (`throttled` counts it). A new thread and a
+ *        started process inherit the policy, unless `BMDS_SCHED_RESET_ON_FORK`. Check
+ *        `bmds_sys_has(BMDS_SYS_SCHED)` first.
+ * @return 0, or `-BMDS_EINVAL` (an op, policy, priority, `size` or flags), `-BMDS_ESRCH` (no
+ *         such thread), `-BMDS_EFAULT`.
+ */
+static inline int32_t bmds_sched(uint32_t op, int32_t tid, bmds_sched_t *param) {
+        return ((bmds_sys_sched_fn)bmds_sys->slot[BMDS_SYS_SCHED])(op, tid, param);
 }
 
 #ifdef __cplusplus

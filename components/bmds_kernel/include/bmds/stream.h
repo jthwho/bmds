@@ -123,6 +123,8 @@ class Stream {
                         Writable = 1u << 1, ///< A write wouldn't wait (for at least one byte).
                         HungUp = 1u << 2,   ///< The other end is gone: reads end (a pipe's writer closed).
                         Broken = 1u << 3,   ///< Nobody will read: writes fail (a pipe's reader closed).
+                        ErrorQueue = 1u << 4, ///< Something waits in an error queue (a socket's send stamps).
+                        Urgent = 1u << 5,     ///< Urgent data (a socket's error queue, if asked: `POLLPRI`).
                 };
 
                 /**

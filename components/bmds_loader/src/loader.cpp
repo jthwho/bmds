@@ -44,6 +44,7 @@
 #include <bmds/sys.h>
 #include <bmds/tasklist.h>
 #include <bmds/vfs.h>
+#include "realtimethreads.h"
 #include "running.h"
 #include "structcopy.h"
 
@@ -376,6 +377,7 @@ namespace {
         void enterTask(ProgramThread &thread) {
                 TaskOwner::setCurrent(&thread);
                 Interrupt::setCurrent(&thread.signals->interrupt);
+                RealTimeThreads::started(thread);
                 return;
         }
 
@@ -486,8 +488,9 @@ namespace {
                                : MemSpace::Psram;
         }
 
-        // Starts @p run's first task, named after @p path's last component.
-        Error startRunning(Running &run, StringView path, size_t stackBytes) {
+        // Starts @p run's first task, named after @p path's last component; @p exec: it goes on
+        // from the calling thread (an exec in place), whose scheduling it keeps.
+        Error startRunning(Running &run, StringView path, size_t stackBytes, bool exec) {
                 Task::Config config;
                 const size_t slash = path.lastIndexOf('/');
                 char         name[configMAX_TASK_NAME_LEN];
@@ -496,9 +499,13 @@ namespace {
                 config.name = name;
                 config.stackBytes = stackBytes;
                 config.stackSpace = stackSpaceFor(config.stackBytes, run.builtin != nullptr);
-                // Its starter's priority; the shells' for one the kernel starts (pid 1).
-                config.priority =
-                        Running::ofCurrentTask() != nullptr ? uxTaskPriorityGet(nullptr) : CONFIG_BMDS_SHELL_PRIORITY;
+                // Its starter's priority; the shells' for one the kernel starts (pid 1). A program
+                // thread's normal one, and its policy (devplan/processes.md §3.12).
+                const ProgramThread *starter = ProgramThread::ofCurrentTask();
+                const unsigned       normal = starter != nullptr                    ? starter->normalPriority
+                                              : Running::ofCurrentTask() != nullptr ? uxTaskPriorityGet(nullptr)
+                                                                                    : CONFIG_BMDS_SHELL_PRIORITY;
+                config.priority = RealTimeThreads::inherit(run.main, starter, normal, exec);
                 const Error err = run.main.task.start(config, run.builtin != nullptr ? builtinMain : programMain, &run);
                 if (err.isOk())
                         bmdsDebug("Loader: %s (pid %d) at %p, stack %u in %s", name, static_cast<int>(run.pid),
@@ -510,6 +517,7 @@ namespace {
         void reap(ProgramThread &thread) {
                 // An audio device may change a raised thread's priority until it forgets it.
                 if (thread.realtime) AudioDevice::forgetTask(thread.task.handle());
+                RealTimeThreads::forget(thread);
                 (void)thread.task.stop();
                 Running &run = *thread.run;
                 bool     last = false;
@@ -1197,7 +1205,7 @@ int32_t ProgramThread::exec(const char *path, char *const *argv, char *const *en
         }
         if (replacement != nullptr) {
                 processes->setRuntime(targetPid, replacement);
-                err = startRunning(*replacement, p, loaded.stackBytes);
+                err = startRunning(*replacement, p, loaded.stackBytes, depth == 0);
                 if (err.isError()) {
                         processes->setRuntime(targetPid, nullptr);
                         destroyRunning(replacement);
@@ -1370,7 +1378,7 @@ int32_t ProgramThread::startThread(const bmds_thread_t *spec) {
         config.name = pcTaskGetName(nullptr); // the program's name, as its first task's
         config.stackBytes = stackBytes;
         config.stackSpace = stackSpaceFor(stackBytes, false);
-        config.priority = uxTaskPriorityGet(nullptr);
+        config.priority = RealTimeThreads::inherit(*t, this, normalPriority, false);
         const Error err = t->task.start(config, threadMain, t);
         if (err.isError()) {
                 {
@@ -1414,6 +1422,42 @@ int32_t ProgramThread::killThread(int32_t target, int32_t sig, uint32_t flags) {
 int32_t ProgramThread::setClear(volatile int32_t *word) {
         clear = word;
         return depth > 0 ? currentPid : tid;
+}
+
+int32_t ProgramThread::sched(uint32_t op, int32_t target, bmds_sched_t *param) {
+        if (op == BMDS_SCHED_YIELD) {
+                if (target != 0 || param != nullptr) return -BMDS_EINVAL;
+                taskYIELD();
+                return 0;
+        }
+        if (op != BMDS_SCHED_GET && op != BMDS_SCHED_SET) return -BMDS_EINVAL;
+        bmds_sched_t p;
+        if (const int32_t r = detail::copyIn(param, p); r < 0) return r;
+        if (op == BMDS_SCHED_SET && p.flags != 0) return -BMDS_EINVAL;
+        auto act = [&](ProgramThread &t) {
+                if (op == BMDS_SCHED_SET) return RealTimeThreads::set(t, p.policy, p.priority);
+                RealTimeThreads::get(t, &t == this, p);
+                return detail::copyOut(p, param);
+        };
+        const int32_t self = depth > 0 ? currentPid : tid;
+        if (target == 0 || target == self) return act(*this);
+        if (target < 0) return -BMDS_ESRCH;
+        // Any program thread (a vfork child: the thread it runs on), its lists locked while
+        // it is acted on: one listed has not ended, so its task is there.
+        int32_t r = -BMDS_ESRCH;
+        processes->forEachRunning([&](int32_t, void *runtime) {
+                if (r != -BMDS_ESRCH || runtime == nullptr) return;
+                Running      &other = *static_cast<Running *>(runtime);
+                Mutex::Locker threads(other.threadsLock, WaitForever);
+                auto          matches = [&](ProgramThread &t) {
+                        return t.tid == target || (t.depth > 0 && t.currentPid == target);
+                };
+                ProgramThread *to = !other.main.ended && matches(other.main) ? &other.main : nullptr;
+                for (ProgramThread *t = other.others; to == nullptr && t != nullptr; t = t->next)
+                        if (matches(*t)) to = t;
+                if (to != nullptr) r = act(*to);
+        });
+        return r;
 }
 
 namespace {
@@ -1869,6 +1913,7 @@ Error Loader::init() {
         }
         Profiler::setLocator(&locateProgram);
         Error err = processes->init();
+        if (err.isOk()) err = RealTimeThreads::init();
         if (err.isOk() && signalQueue == nullptr) {
                 signalQueue = xQueueCreate(SignalQueueLength, sizeof(Console *));
                 if (signalQueue == nullptr) err = Error::NoMem;
@@ -2221,7 +2266,7 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
         run->pid = run->main.currentPid = run->main.tid = pid;
         // The program may change the terminal's modes: the shell gets its own back.
         savedMode = request.console != nullptr ? request.console->mode() : Console::TermMode();
-        err = startRunning(*run, request.path, image.stackBytes);
+        err = startRunning(*run, request.path, image.stackBytes, false);
         if (err.isError()) {
                 report(request, "cannot start: %s", errorText(err));
                 processes->setRuntime(pid, nullptr);

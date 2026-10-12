@@ -193,6 +193,8 @@ class Process {
                 int32_t dup2(int32_t fd, int32_t to);
                 int32_t clockGet(uint32_t clock, int64_t *ns);
                 int32_t sleep(int64_t ns);
+                /** @brief `sleep()` for a real-time thread: woken by `WakeTimer`, not the tick. */
+                int32_t sleepPrecise(int64_t ns);
                 int32_t interrupted();
                 int32_t termGet(int32_t fd, bmds_term_t *term);
                 int32_t termSet(int32_t fd, uint32_t flags);

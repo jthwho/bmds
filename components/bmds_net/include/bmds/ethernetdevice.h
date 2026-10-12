@@ -18,6 +18,7 @@
 #include <bmds/error.h>
 #include <bmds/ethernet.h>
 #include <bmds/mutex.h>
+#include <bmds/netclassifier.h>
 #include <bmds/result.h>
 #include <bmds/semaphore.h>
 #include <bmds/span.h>
@@ -26,6 +27,8 @@
 #include <bmds/waitlist.h>
 
 BMDS_NAMESPACE_BEGIN
+
+class NetFlow;
 
 /**
  * @brief A time on a 1588 clock: seconds and nanoseconds.
@@ -47,6 +50,22 @@ struct PtpTime {
                         if (ns < 0) ns = 0;
                         return {static_cast<uint64_t>(ns / 1'000'000'000), static_cast<uint32_t>(ns % 1'000'000'000)};
                 }
+};
+
+/**
+ * @brief Who a stamped frame's departure time goes to (`EthernetDevice::transmitStamped()`).
+ *
+ * @par Thread Safety
+ * `stamped()` is called from whichever task reclaims the frame (a sender's or the device's), not
+ * with the driver's locks held; it must not block.
+ */
+class TxStampSink {
+        public:
+                /** @brief Frame @p ticket, sent with @p cookie, left at @p time. @nonblocking */
+                virtual void stamped(uint32_t cookie, uint32_t ticket, const PtpTime &time) = 0;
+
+        protected:
+                ~TxStampSink() = default;
 };
 
 /**
@@ -91,13 +110,20 @@ class EthernetDevice {
                 enum TxFlag : uint32_t {
                         TxStamp = 1u << 0,    ///< Record the departure time (`waitTxStamp()`).
                         TxRealTime = 1u << 1, ///< Not bulk: never waits behind the bulk limit.
+                        TxPriority = 1u << 2, ///< Not bulk, not a flow's: within `priorityTxLimit()`.
                 };
 
                 /** @brief The bulk transmit limit while real-time flows of 1 ms packets or longer run. */
                 static constexpr size_t RealTimeBulkTxLimit = 2;
 
+                /** @brief The descriptors `TxPriority` frames may hold while real-time flows run. */
+                static constexpr size_t RealTimePriorityTxLimit = 2;
+
                 /** @brief The receive buffers kept for real-time receivers while flows run. */
                 static constexpr size_t RealTimeRxReserve = 8;
+
+                /** @brief Real-time flows (`NetFlow`) a device takes at once. */
+                static constexpr size_t MaxFlows = 8;
 
                 /** @brief The link as the PHY reports it. */
                 struct Link {
@@ -150,6 +176,8 @@ class EthernetDevice {
                                 uint32_t txRealTimeWaited = 0; ///< Of those, ones that found the ring full.
                                 uint32_t rxBulkDropped = 0;    ///< Frames dropped as bulk held its share of buffers.
                                 uint32_t rxRestarts = 0;       ///< Times the receive path wedged and the MAC was reset.
+                                uint64_t rxRealTime = 0;       ///< Frames given to real-time flows.
+                                uint32_t rxRealTimeDropped = 0; ///< Of those for flows, ones past a flow's depth.
                 };
 
                 /** @brief Registers as read, for diagnosis (`net regs`). */
@@ -316,6 +344,21 @@ class EthernetDevice {
                 Result<uint32_t> transmitInPlace(Span<const Span<const uint8_t>> pieces, uint32_t flags, void *token,
                                                  unsigned int timeoutMs);
 
+                /**
+                 * @brief As `transmit()` with `TxStamp`: the departure time goes to @p sink with
+                 *        @p cookie, after the frame is reclaimed. @p sink stays valid until
+                 *        `forgetStampSink()`.
+                 * @blocking
+                 */
+                Result<uint32_t> transmitStamped(Span<const Span<const uint8_t>> pieces, uint32_t flags,
+                                                 TxStampSink &sink, uint32_t cookie, unsigned int timeoutMs);
+
+                /**
+                 * @brief Stamps of frames queued for @p sink go nowhere from now on; waits for one
+                 *        being handed over. Not with the transmit path's locks held. @blocking Briefly.
+                 */
+                void forgetStampSink(TxStampSink &sink);
+
                 /** @brief Sets who is told when frames sent in place are done (before sending any). */
                 void setTxDone(TxDone done, void *arg);
 
@@ -329,6 +372,13 @@ class EthernetDevice {
 
                 /** @brief Returns the bulk transmit limit. */
                 size_t bulkTxLimit() const { return _bulkTxLimit.load(std::memory_order_relaxed); }
+
+                /**
+                 * @brief Returns how many descriptors `TxPriority` frames may hold at once: all of
+                 *        them without real-time flows, `RealTimePriorityTxLimit` with, so they
+                 *        can't take the flows'. @nonblocking
+                 */
+                size_t priorityTxLimit() const { return _priorityTxLimit.load(std::memory_order_relaxed); }
 
                 /**
                  * @brief Keeps @p buffers receive buffers (up to `RxBuffers - RxDescriptors`) from
@@ -377,6 +427,7 @@ class EthernetDevice {
                 Error writePhy(uint8_t reg, uint16_t value);
 
         private:
+                friend class NetFlow;
                 struct Isr;
 
                 struct TxSlot {
@@ -384,7 +435,10 @@ class EthernetDevice {
                                 uint16_t length = 0; // the frame's, in its last descriptor's slot (0 in the others)
                                 void    *token = nullptr; // a frame sent in place, in its last descriptor's slot
                                 int8_t   buffer = -1;     // a copied frame's buffer, in its last descriptor's slot
-                                bool     bulk = false;    // counted in _txBulkQueued
+                                bool         bulk = false;    // counted in _txBulkQueued
+                                bool         priority = false; // counted in _txPriorityQueued
+                                TxStampSink *sink = nullptr;   // whose stamp it is, in its last descriptor's slot
+                                uint32_t     cookie = 0;
                                 bool     wantsStamp = false;
                                 bool     done = false; // sent (or failed): the descriptor is back
                                 bool     stamped = false;
@@ -406,17 +460,38 @@ class EthernetDevice {
                 void        refill();
                 void        reclaim();
                 // What a reclaim found, passed on once the transmit lock is let go.
+                static constexpr size_t MaxReclaimStamps = 4; // sinks' stamps a reclaim hands over
+                struct FlowStamp {
+                                TxStampSink *sink;
+                                uint32_t     cookie;
+                                uint32_t     ticket;
+                                PtpTime      time;
+                };
                 struct Reclaimed {
-                                void  *tokens[TxDescriptors] = {};
-                                size_t count = 0;
-                                bool   stamped = false;
+                                void     *tokens[TxDescriptors] = {};
+                                size_t    count = 0;
+                                bool      stamped = false;
+                                FlowStamp stamps[MaxReclaimStamps] = {};
+                                size_t    stampCount = 0; // each counted in _flowCalls until handed over
                 };
 
                 Result<uint32_t> send(Span<const Span<const uint8_t>> pieces, uint32_t flags, void *token,
-                                      unsigned int timeoutMs);
+                                      unsigned int timeoutMs, TxStampSink *sink = nullptr, uint32_t cookie = 0);
+                // The flows (NetFlow's): registered with their rules; the limits follow them.
+                Error addFlow(NetFlow &flow, const NetClassifier::Rule &rule, const MacAddress &group);
+                void  removeFlow(NetFlow &flow);
+                void  setFlowRule(NetFlow &flow, const NetClassifier::Rule &rule); // narrowed (connect)
+                void  applyFlowLimits();                                           // _flowSetLock held
+                bool  classify(const RxFrame &frame);
+                void  mergeFilters(); // _filterLock held
                 // Takes the transmit lock and waits (letting it go) for a copy buffer, or for
                 // @p descriptors; returns with it held, or with an error without it.
-                Error       waitForTx(const Deadline &deadline, bool bulk, size_t descriptors, bool buffer,
+                enum class TxClass : uint8_t {
+                        Bulk,
+                        Priority,
+                        RealTime
+                };
+                Error       waitForTx(const Deadline &deadline, TxClass cls, size_t descriptors, bool buffer,
                                       Reclaimed &reclaimed);
                 void        reclaimLocked(Reclaimed &reclaimed); // _txLock held
                 void        finish(Reclaimed &reclaimed);        // _txLock not held
@@ -461,6 +536,8 @@ class EthernetDevice {
                 size_t        _txQueued = 0;
                 size_t              _txBulkQueued = 0;           // bulk frames' descriptors in the ring
                 std::atomic<size_t> _bulkTxLimit{TxDescriptors}; // set under _txLock
+                size_t              _txPriorityQueued = 0;       // TxPriority frames' descriptors
+                std::atomic<size_t> _priorityTxLimit{TxDescriptors}; // set under _txLock
                 uint32_t      _txTicket = 0;
                 TxSlot        _txSlots[TxDescriptors];
                 uint8_t             _txBufFree[TxDescriptors] = {}; // copy buffers free (a stack), under _txLock
@@ -491,8 +568,23 @@ class EthernetDevice {
                 std::atomic<uint32_t> _pendingStatus{0}; // DMA status bits the ISR saw
                 uint64_t              _rxProgressUs = 0; // last time the receive FIFO wasn't stuck full
                 uint32_t              _ptpAddend = 0;    // the 1588 clock's addend, restored after a reset
-                MacAddress            _filterGroups[MaxFilters]; // under _filterLock
+                MacAddress            _filterGroups[MaxFilters]; // under _filterLock: what the filters hold
                 size_t                _filterGroupCount = 0;
+                MacAddress            _stackGroups[MaxFilters]; // under _filterLock: setMulticast()'s
+                size_t                _stackGroupCount = 0;
+                bool                  _stackAllMulticast = false; // more than the filters
+                MacAddress            _flowGroups[MaxFlows];      // under _filterLock: the flows'
+                size_t                _flowGroupCount = 0;
+
+                // The flows: their rules in the same order (classified under _flowLock, a spinlock);
+                // add and remove under _flowSetLock too.
+                Mutex                 _flowSetLock;
+                SpinLock              _flowLock;
+                NetFlow              *_flows[MaxFlows] = {};
+                NetClassifier::Rule   _rules[MaxFlows];
+                std::atomic<size_t>   _flowCount{0};
+                std::atomic<uint32_t> _flowCalls{0};     // deliveries and stamps in progress (outside the locks)
+                std::atomic<uint32_t> _rxFlowBuffers{0}; // pool slots flows hold (bits): not bulk's
                 SpinLock              _intrLock; // the DMA's interrupt enables (ISR and task)
 };
 

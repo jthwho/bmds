@@ -49,10 +49,18 @@ namespace {
                 SoLinger = 13,
                 SoRcvTimeoOld = 20,
                 SoSndTimeoOld = 21,
+                SoPriority = 12,
                 SoBindToDevice = 25,
+                SoTimestampOld = 29,
                 SoAcceptConn = 30,
+                SoTimestampNsOld = 35,
+                SoTimestampingOld = 37,
                 SoProtocol = 38,
                 SoDomain = 39,
+                SoSelectErrQueue = 45,
+                SoTimestampNew = 63,
+                SoTimestampNsNew = 64,
+                SoTimestampingNew = 65,
                 SoRcvTimeoNew = 66,
                 SoSndTimeoNew = 67,
         };
@@ -60,6 +68,7 @@ namespace {
         enum : int32_t {
                 IpTos = 1,
                 IpTtl = 2,
+                IpRecvErr = 11,
                 IpMulticastIf = 32,
                 IpMulticastTtl = 33,
                 IpMulticastLoop = 34,
@@ -76,8 +85,81 @@ namespace {
         };
 
         constexpr uint32_t MsgOob = 0x1;
-        constexpr uint32_t MsgErrQueue = 0x2000;
         constexpr uint32_t IfNameBytes = 16; // IFNAMSIZ
+
+        // An error queue's send stamp (Linux's sock_extended_err): ENOMSG, from timestamping,
+        // SCM_TSTAMP_SND.
+        constexpr uint32_t Enomsg = 42;
+        constexpr uint8_t  OriginTimestamping = 4;
+
+        // Control messages out (Linux's cmsghdr: length, level, type; 4-byte alignment on
+        // 32 bits). One that doesn't fit is left out and MSG_CTRUNC said.
+        class ControlOut {
+                public:
+                        ControlOut(void *buffer, uint32_t room)
+                            : _at(static_cast<uint8_t *>(buffer)), _room(buffer != nullptr ? room : 0) {}
+
+                        void put(int32_t level, int32_t type, const void *data, uint32_t bytes) {
+                                constexpr uint32_t Header = 3 * sizeof(uint32_t);
+                                const uint32_t     length = Header + bytes;
+                                if (_used + length > _room) {
+                                        _cut = true;
+                                        return;
+                                }
+                                const uint32_t header[3] = {length, static_cast<uint32_t>(level),
+                                                            static_cast<uint32_t>(type)};
+                                std::memcpy(_at + _used, header, Header);
+                                std::memcpy(_at + _used + Header, data, bytes);
+                                const uint32_t space = (length + 3) & ~3u;
+                                _used = _used + space < _room ? _used + space : _room;
+                                return;
+                        }
+
+                        // Times: Linux's 64-bit layouts (the _NEW options), or 32-bit.
+                        void putTimes(int32_t type, const int64_t *ns, size_t count, bool wide, bool micro) {
+                                uint8_t  out[3 * 2 * sizeof(int64_t)] = {};
+                                uint32_t n = 0;
+                                for (size_t i = 0; i < count; ++i) {
+                                        const int64_t sec = ns[i] / 1'000'000'000;
+                                        const int64_t sub = (ns[i] % 1'000'000'000) / (micro ? 1000 : 1);
+                                        if (wide) {
+                                                const int64_t v[2] = {sec, sub};
+                                                std::memcpy(out + n, v, sizeof(v));
+                                                n += sizeof(v);
+                                        } else {
+                                                const int32_t v[2] = {static_cast<int32_t>(sec),
+                                                                      static_cast<int32_t>(sub)};
+                                                std::memcpy(out + n, v, sizeof(v));
+                                                n += sizeof(v);
+                                        }
+                                }
+                                put(SolSocket, type, out, n);
+                                return;
+                        }
+
+                        uint32_t used() const { return _used; }
+                        bool     cut() const { return _cut; }
+
+                private:
+                        uint8_t *_at;
+                        uint32_t _room;
+                        uint32_t _used = 0;
+                        bool     _cut = false;
+        };
+
+        // SCM_TIMESTAMPING: [software, 0, hardware], each as the flags report it; none if neither.
+        void putTimestamping(ControlOut &c, const Socket::StampOptions &o, bool sent, int64_t softwareNs,
+                             int64_t hardwareNs) {
+                const uint32_t f = o.timestamping;
+                const bool     software = (f & Socket::TimestampSoftware) != 0 &&
+                                      (f & (sent ? Socket::TimestampTxSoftware : Socket::TimestampRxSoftware)) != 0;
+                const bool hardware = (f & Socket::TimestampRawHardware) != 0 &&
+                                      (f & (sent ? Socket::TimestampTxHardware : Socket::TimestampRxHardware)) != 0;
+                const int64_t ts[3] = {software ? softwareNs : 0, 0, hardware ? hardwareNs : 0};
+                if (ts[0] == 0 && ts[2] == 0) return;
+                c.putTimes(o.wide ? SoTimestampingNew : SoTimestampingOld, ts, 3, o.wide, false);
+                return;
+        }
 
         uint16_t swap16(uint16_t v) {
                 return static_cast<uint16_t>((v >> 8) | (v << 8));
@@ -239,6 +321,15 @@ namespace {
                 return intOut(v, value, length);
         }
 
+        int32_t fastPathErrno(Error err) {
+                switch (err.code()) {
+                        case Error::NotSupported: return -BMDS_ENOPROTOOPT;
+                        case Error::Full: return -BMDS_ENOBUFS;
+                        case Error::NotExist: return -BMDS_ENODEV;
+                        default: return errnoOf(err);
+                }
+        }
+
         // The pieces of @p m (at most BMDS_IOV_MAX), their total held to what a result can say.
         template <typename Piece, typename Base>
         int32_t piecesOf(const bmds_msghdr_t &m, Piece (&pieces)[BMDS_IOV_MAX], size_t &count) {
@@ -374,10 +465,36 @@ int32_t bmds_k_recvmsg(int32_t fd, bmds_msghdr_t *msg, uint32_t flags) {
         if (const int32_t r = bmds::detail::copyIn(msg, m); r < 0) return r;
         if (const int32_t r = find(call, fd, t); r < 0) return r;
         if (flags & MsgOob) return -BMDS_EINVAL;
-        if (flags & MsgErrQueue) return -BMDS_EAGAIN; // no error queue
         WritableByteSpan pieces[BMDS_IOV_MAX];
         size_t           count = 0;
         if (const int32_t r = piecesOf<WritableByteSpan, uint8_t>(m, pieces, count); r < 0) return r;
+        const Socket::StampOptions stamps = t.socket->stampOptions();
+        ControlOut                 control(m.control, m.control_length);
+        if (flags & BMDS_MSG_ERRQUEUE) { // a send stamp, as Linux gives it (devplan/network.md §30f)
+                auto [report, err] = t.socket->receiveTxReport(Span<const WritableByteSpan>(pieces, count));
+                if (err.isError()) return err == Error::WouldBlock ? -BMDS_EAGAIN : errnoOf(err);
+                putTimestamping(control, stamps, true, report.softwareNs, report.hardwareNs);
+                const bool     cmsg = (stamps.timestamping & Socket::TimestampOptCmsg) != 0;
+                uint8_t        error[16 + sizeof(bmds_sockaddr_in_t)] = {};
+                const uint32_t info[4] = {Enomsg, OriginTimestamping, 0,
+                                          (stamps.timestamping & Socket::TimestampOptId) ? report.id : 0u};
+                std::memcpy(error, &info[0], 4);
+                error[4] = static_cast<uint8_t>(info[1]);
+                std::memcpy(error + 12, &info[3], 4);
+                if (cmsg && report.source != 0) {
+                        bmds_sockaddr_in_t offender = {};
+                        offender.family = BMDS_AF_INET;
+                        offender.addr = report.source;
+                        std::memcpy(error + 16, &offender, sizeof(offender));
+                }
+                control.put(IpprotoIp, IpRecvErr, error, sizeof(error));
+                m.name_length = 0;
+                m.control_length = control.used();
+                m.flags = BMDS_MSG_ERRQUEUE | (report.length > report.bytes ? BMDS_MSG_TRUNC : 0) |
+                          (control.cut() ? BMDS_MSG_CTRUNC : 0);
+                if (const int32_t r = bmds::detail::copyOut(m, msg); r < 0) return r;
+                return static_cast<int32_t>((flags & BMDS_MSG_TRUNC) ? report.length : report.bytes);
+        }
         uint32_t f = 0;
         if (flags & BMDS_MSG_DONTWAIT) f |= Socket::DontWait;
         if (flags & BMDS_MSG_PEEK) f |= Socket::Peek;
@@ -394,8 +511,16 @@ int32_t bmds_k_recvmsg(int32_t fd, bmds_msghdr_t *msg, uint32_t flags) {
         } else {
                 m.name_length = 0;
         }
-        m.control_length = 0;
-        m.flags = got.length > got.bytes ? BMDS_MSG_TRUNC : 0;
+        if (datagram && err.isOk()) {
+                if ((stamps.us || stamps.ns) && got.softwareNs != 0) {
+                        const int32_t type = stamps.us ? (stamps.wide ? SoTimestampNew : SoTimestampOld)
+                                                       : (stamps.wide ? SoTimestampNsNew : SoTimestampNsOld);
+                        control.putTimes(type, &got.softwareNs, 1, stamps.wide, stamps.us);
+                }
+                putTimestamping(control, stamps, false, got.softwareNs, got.hardwareNs);
+        }
+        m.control_length = control.used();
+        m.flags = (got.length > got.bytes ? BMDS_MSG_TRUNC : 0) | (control.cut() ? BMDS_MSG_CTRUNC : 0);
         if (const int32_t r = bmds::detail::copyOut(m, msg); r < 0) return r;
         const size_t n = datagram && (flags & BMDS_MSG_TRUNC) ? got.length : got.bytes;
         return static_cast<int32_t>(n);
@@ -431,6 +556,35 @@ int32_t bmds_k_setsockopt(int32_t fd, int32_t level, int32_t name, const void *v
                                 std::memcpy(l, value, sizeof(l));
                                 return optionErrno(s.setOption(Option::Linger, l[0] != 0 ? (l[1] < 0 ? 0 : l[1]) : -1));
                         }
+                        case SoPriority: return setOption(s, Option::Priority, value, length);
+                        case SoSelectErrQueue: return setOption(s, Option::SelectErrorQueue, value, length);
+                        case SoTimestampOld:
+                        case SoTimestampNew:
+                        case SoTimestampNsOld:
+                        case SoTimestampNsNew: {
+                                const bool us = name == SoTimestampOld || name == SoTimestampNew;
+                                if (const int32_t r =
+                                            setOption(s, us ? Option::TimestampUs : Option::TimestampNs, value, length);
+                                    r < 0)
+                                        return r;
+                                (void)s.setOption(Option::TimestampsNew,
+                                                  name == SoTimestampNew || name == SoTimestampNsNew);
+                                return 0;
+                        }
+                        case SoTimestampingOld:
+                        case SoTimestampingNew: {
+                                // An int, or struct so_timestamping {flags, bind_phc}: one clock, index 0.
+                                int32_t v[2] = {};
+                                if (value == nullptr) return -BMDS_EFAULT;
+                                if (length < sizeof(int32_t)) return -BMDS_EINVAL;
+                                std::memcpy(v, value, length >= sizeof(v) ? sizeof(v) : sizeof(int32_t));
+                                if ((v[0] & (1 << 15)) != 0 && v[1] != 0)
+                                        return -BMDS_EINVAL; // SOF_TIMESTAMPING_BIND_PHC
+                                const Error err = s.setOption(Option::Timestamping, v[0]);
+                                if (err.isError()) return err == Error::Full ? -BMDS_ENOBUFS : optionErrno(err);
+                                (void)s.setOption(Option::TimestampsNew, name == SoTimestampingNew);
+                                return 0;
+                        }
                         case SoBindToDevice: {
                                 if (value == nullptr && length > 0) return -BMDS_EFAULT;
                                 const uint32_t n = length < IfNameBytes ? length : IfNameBytes;
@@ -440,6 +594,26 @@ int32_t bmds_k_setsockopt(int32_t fd, int32_t level, int32_t name, const void *v
                         }
                         default: return -BMDS_ENOPROTOOPT;
                 }
+        }
+        if (level == BMDS_SOL_BMDS) {
+                if (name != BMDS_SO_FASTPATH) return -BMDS_ENOPROTOOPT;
+                if (value == nullptr) return -BMDS_EFAULT;
+                Socket::FastPath f;
+                if (length >= sizeof(bmds_fastpath_t)) {
+                        bmds_fastpath_t in;
+                        if (const int32_t r = bmds::detail::copyIn(static_cast<const bmds_fastpath_t *>(value), in);
+                            r < 0)
+                                return r;
+                        if (in.depth < 1 || in.depth > 8 || in.packet_us == 0) return -BMDS_EINVAL;
+                        f.on = true;
+                        f.packetUs = in.packet_us;
+                        f.depth = static_cast<uint8_t>(in.depth);
+                } else {
+                        int32_t v;
+                        if (const int32_t r = intIn(value, length, v); r < 0) return r;
+                        f.on = v != 0;
+                }
+                return fastPathErrno(s.setFastPath(f));
         }
         if (level == IpprotoIp) {
                 switch (name) {
@@ -508,6 +682,24 @@ int32_t bmds_k_getsockopt(int32_t fd, int32_t level, int32_t name, void *value, 
                         }
                         case SoDomain: return intOut(BMDS_AF_INET, value, length);
                         case SoProtocol: return intOut(s.protocol(), value, length);
+                        case SoPriority: return getOption(s, Option::Priority, value, length);
+                        case SoSelectErrQueue: return getOption(s, Option::SelectErrorQueue, value, length);
+                        case SoTimestampOld:
+                        case SoTimestampNew: return getOption(s, Option::TimestampUs, value, length);
+                        case SoTimestampNsOld:
+                        case SoTimestampNsNew: return getOption(s, Option::TimestampNs, value, length);
+                        case SoTimestampingOld:
+                        case SoTimestampingNew: {
+                                // struct so_timestamping, as much as fits (Linux's way).
+                                auto [flags, err] = s.option(Option::Timestamping);
+                                if (err.isError()) return optionErrno(err);
+                                if (value == nullptr || length == nullptr) return -BMDS_EFAULT;
+                                const int32_t  out[2] = {flags, 0};
+                                const uint32_t n = *length < sizeof(out) ? *length : sizeof(out);
+                                std::memcpy(value, out, n);
+                                *length = n;
+                                return 0;
+                        }
                         case SoRcvTimeoOld:
                         case SoRcvTimeoNew:
                         case SoSndTimeoOld:
@@ -529,6 +721,23 @@ int32_t bmds_k_getsockopt(int32_t fd, int32_t level, int32_t name, void *value, 
                         }
                         default: return -BMDS_ENOPROTOOPT;
                 }
+        }
+        if (level == BMDS_SOL_BMDS) {
+                if (name != BMDS_SO_FASTPATH) return -BMDS_ENOPROTOOPT;
+                if (s.type() != Socket::Type::Datagram) return -BMDS_ENOPROTOOPT;
+                if (value == nullptr || length == nullptr) return -BMDS_EFAULT;
+                const Socket::FastPath f = s.fastPath();
+                if (*length >= sizeof(bmds_fastpath_t)) {
+                        bmds_fastpath_t out = {};
+                        out.size = sizeof(out);
+                        out.packet_us = f.on ? f.packetUs : 0;
+                        out.depth = f.on ? f.depth : 0;
+                        if (const int32_t r = bmds::detail::copyOut(out, static_cast<bmds_fastpath_t *>(value)); r < 0)
+                                return r;
+                        *length = sizeof(out);
+                        return 0;
+                }
+                return intOut(f.on ? 1 : 0, value, length);
         }
         if (level == IpprotoIp) {
                 switch (name) {

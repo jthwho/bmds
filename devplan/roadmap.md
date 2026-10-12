@@ -76,6 +76,7 @@ Plans: [`storage.md`](storage.md), [`time.md`](time.md). Complete; verified on h
   - [x] 3: `&` and the job table: `jobs`, `wait`, `kill %N`, `disown`, `$!`; background subshells are processes.
   - [x] 4: stopping and continuing: Ctrl-Z, `fg`, `bg`, `SIGTTIN`, `WUNTRACED`.
   - [x] 5: program threads: pthreads through musl (slots 53-57: thread start/exit/kill/clear, futex), signals per thread.
+  - [x] 6: real-time threads (§3.12): `SCHED_FIFO`/`SCHED_RR` per thread (slot 113, `sched`), a band of kernel priorities under the drivers, Linux's 95 % budget, precise sleeps for them on a GPTimer; `sched_yield`, `sched_getaffinity`, `sched_getcpu`.
 - [ ] Shared program images and an image cache (`programs.md` §14): `exec` from memory, code pages shared between instances through the MMU.
   - [x] MMU spike (aliases, caches, DMA) and design.
   - [x] (a) The image cache with plain copies (`programs.md` §14.1): `exec` from memory, without the card.
@@ -262,7 +263,18 @@ Plan: [`input.md`](input.md).
     descriptors. Then (§30b) no frame lost under line-rate floods: receive interrupts masked while
     draining, and no flushing on an empty ring (it wedged the MAC's receive path for good).
     Hardening (§30c): a receive watchdog that resets the MAC, `tools/bmds-netstress`, the loss
-    counters in `stats`, `eth0` on core 0 and real-time senders on core 1.
+    counters in `stats`, `eth0` on core 0 and real-time senders on core 1. Piece 2 (§30d-e): the
+    classifier (host-tested, fuzzed) and `NetFlow` (UDP or EtherType; its own ring, depth and wake;
+    headers built without lwIP, ARP snooped; departure stamps handed to the flow; the bulk limits
+    set as flows open and close): 0 of 60000 real-time packets lost under TCP both ways and a
+    90 Mbit/s flood, departure at most 217 µs. ICMP errors limited as Linux does (§30g). Piece 3
+    (§30f, §30h): `BMDS_SO_FASTPATH`, `SO_PRIORITY`, `SO_TIMESTAMPING` with the error queue, on
+    the board (`progtest rtnet`). Piece 4 (§30i): `netlat` and `tools/netlat-reflector`: the
+    kernel path loses nothing under load, but a program can neither pace finer than the 1 kHz
+    tick nor raise its threads' priority, so its receiver falls behind. Then (§30j,
+    `processes.md` §3.12) real-time program threads: `SCHED_FIFO`/`RR` (slot 113) in a band
+    under the drivers with Linux's 95 % budget, sleeps on a hardware timer (about 30 µs late):
+    `netlat -r` lost 1 of 30000 under the full load (5953 before), its wake 37 µs at the median.
   - [ ] 7. PTP, master and slave (BMCA): two boards alone elect a grandmaster.
 
 ## Phase 8 — Self-Hosting

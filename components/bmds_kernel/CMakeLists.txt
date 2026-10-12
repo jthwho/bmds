@@ -40,15 +40,16 @@ if(COMMAND idf_component_register)
                                     src/task.cpp
                                     src/tasklist.cpp
                                     src/thread.cpp
+                                    src/waketimer.cpp
                                INCLUDE_DIRS include
                                REQUIRES bmds_core bmds_board freertos
-                               PRIV_REQUIRES bootloader_support esp_app_format esp_hw_support esp_psram esp_system esp_timer heap log
+                               PRIV_REQUIRES bootloader_support esp_app_format esp_driver_gptimer esp_hw_support esp_psram esp_system esp_timer heap log
                                LDFRAGMENTS linker.lf)
         bmds_target_options(${COMPONENT_LIB})
 else()
         find_package(Threads REQUIRED)
         # No clockinit.cpp: on the host nothing survives a "reset".
-        add_library(bmds_kernel STATIC ${BMDS_KERNEL_PORTABLE_SRCS} src/host/platform.cpp)
+        add_library(bmds_kernel STATIC ${BMDS_KERNEL_PORTABLE_SRCS} src/host/platform.cpp src/host/waketimer.cpp)
         target_include_directories(bmds_kernel PUBLIC include)
         target_link_libraries(bmds_kernel PUBLIC bmds_core Threads::Threads)
         bmds_target_options(bmds_kernel)

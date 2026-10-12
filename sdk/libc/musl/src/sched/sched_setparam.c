@@ -4,5 +4,6 @@
 
 int sched_setparam(pid_t pid, const struct sched_param *param)
 {
-	return __syscall_ret(-ENOSYS);
+	/* BMDS: the thread's, as glibc's (devplan/processes.md §3.12). */
+	return syscall(SYS_sched_setparam, pid, param);
 }

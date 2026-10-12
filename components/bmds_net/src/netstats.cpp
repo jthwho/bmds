@@ -108,6 +108,15 @@ namespace {
                  {Rule::Zero, Health::Warning},
                  "",
                  "Times the MAC's receive path wedged and was reset"},
+                {"rx_realtime", Unit::Count, Kind::Total, 0, {}, "", "Frames given to real-time flows"},
+                {"rx_realtime_dropped",
+                 Unit::Count,
+                 Kind::Total,
+                 0,
+                 {Rule::Zero, Health::Warning},
+                 "",
+                 "Real-time frames dropped: their flow held all it may (its reader fell behind)"},
+                {"tx_icmp_limited", Unit::Count, Kind::Total, 0, {}, "", "ICMP errors not sent: Linux's rate limits"},
         };
 
         constexpr size_t InterfaceCount = sizeof(InterfaceStats) / sizeof(InterfaceStats[0]);
@@ -237,6 +246,9 @@ namespace {
                 v[19] = int64_t(c.txRealTime);
                 v[20] = c.txRealTimeWaited;
                 v[21] = c.rxRestarts;
+                v[22] = int64_t(c.rxRealTime);
+                v[23] = c.rxRealTimeDropped;
+                v[24] = ni->icmpLimited();
                 return;
         }
 

@@ -18,12 +18,17 @@
 #include <lwip/raw.h>
 #include <lwip/tcp.h>
 #include <lwip/udp.h>
+#include <cstring>
+#include <bmds/clock.h>
 #include <bmds/interrupt.h>
 #include <bmds/memory.h>
 #include <bmds/netstack.h>
 #include <bmds/socket.h>
+#include <bmds/thread.h>
 
 #include "lwipport.h"
+#include "pbufmarks.h"
+#include "socketfastpath.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -137,8 +142,88 @@ namespace {
         struct pbuf *keepable(struct pbuf *p) {
                 if ((p->flags & PBUF_FLAG_IS_CUSTOM) == 0) return p;
                 struct pbuf *copy = pbuf_clone(PBUF_RAW, PBUF_RAM, p);
+                if (copy != nullptr) PbufMarks::copyArrival(copy, p);
                 pbuf_free(p);
                 return copy;
+        }
+
+        // --- Send stamps of datagrams through lwIP (devplan/network.md §30f) -----------------
+        //
+        // A datagram to be stamped carries a cookie in its pbuf: the registry slot of its socket
+        // with the slot's generation, and the datagram's number. The interface records the frame
+        // with the socket as it goes and hands the stamp over later; a datagram that outlives its
+        // socket (in ARP's queue) finds another generation, or nobody.
+
+        constexpr size_t   StampOwners = 16;
+        constexpr unsigned CookieOwnerShift = 20;
+        constexpr uint32_t CookieNumberMask = (1u << CookieOwnerShift) - 1;
+        constexpr uint32_t OwnerSlotMask = 0xf; // the token: slot, then a 7-bit generation (never 0)
+
+        // A slot is claimed, then its generation set, then its socket published; taking one
+        // counts the call first, then reads the socket, then the generation (lock-free: the driver's
+        // task hands stamps over and must not wait on a socket's sender).
+        struct StampOwner {
+                        std::atomic<bool>     claimed{false};
+                        std::atomic<uint8_t>  generation{0};
+                        std::atomic<Socket *> socket{nullptr};
+        };
+
+        constinit StampOwner            stampOwners[StampOwners];
+        constinit std::atomic<uint32_t> stampCalls{0}; // records and stamps being handed to sockets
+
+        // The socket a cookie's token names, counted in stampCalls (giveOwner() when done).
+        Socket *takeOwner(uint32_t cookie) {
+                const uint32_t token = (cookie >> CookieOwnerShift) & 0x7ff;
+                const uint32_t generation = token >> 4;
+                if (generation == 0) return nullptr;
+                const StampOwner &o = stampOwners[token & OwnerSlotMask];
+                stampCalls.fetch_add(1, std::memory_order_acq_rel);
+                Socket *s = o.socket.load(std::memory_order_acquire);
+                if (s == nullptr || o.generation.load(std::memory_order_acquire) != generation) {
+                        stampCalls.fetch_sub(1, std::memory_order_release);
+                        return nullptr;
+                }
+                return s;
+        }
+
+        void giveOwner() {
+                stampCalls.fetch_sub(1, std::memory_order_release);
+                return;
+        }
+
+        uint16_t addStampOwner(Socket *socket) {
+                for (size_t i = 0; i < StampOwners; ++i) {
+                        StampOwner &o = stampOwners[i];
+                        bool        free = false;
+                        if (!o.claimed.compare_exchange_strong(free, true, std::memory_order_acq_rel)) continue;
+                        const auto generation = static_cast<uint8_t>(o.generation.load() % 127 + 1);
+                        o.generation.store(generation, std::memory_order_release);
+                        o.socket.store(socket, std::memory_order_release);
+                        return static_cast<uint16_t>(i | (generation << 4));
+                }
+                return 0;
+        }
+
+        void removeStampOwner(uint16_t token) {
+                StampOwner &o = stampOwners[token & OwnerSlotMask];
+                o.socket.store(nullptr, std::memory_order_release);
+                while (stampCalls.load(std::memory_order_acquire) != 0) Thread::sleep(1); // one being handed over
+                o.claimed.store(false, std::memory_order_release);
+                return;
+        }
+
+        // Linux's rt_tos2priority(): the priority IP_TOS gives (TC_PRIO_*).
+        int32_t priorityOfTos(uint8_t tos) {
+                constexpr uint8_t Priorities[16] = {0, 1, 0, 0, 2, 2, 2, 2, 6, 6, 6, 6, 4, 4, 4, 4};
+                return Priorities[(tos & 0x1e) >> 1];
+        }
+
+        // An Ethernet frame's IPv4 source (network order), or 0.
+        uint32_t sourceOf(Span<const uint8_t> headers) {
+                if (headers.size() < 30 || headers[12] != 0x08 || headers[13] != 0x00) return 0;
+                uint32_t a;
+                std::memcpy(&a, headers.data() + 26, sizeof(a));
+                return a;
         }
 
 } // namespace
@@ -394,6 +479,8 @@ void Socket::dropReceived() {
 
 void Socket::handleClosed(uint8_t mode) {
         (void)mode; // opened read and write: the one handle's last reference
+        closeFastPath();
+        forgetStamps();
         {
                 NetStack::Locker lock;
                 closePcb();
@@ -417,6 +504,9 @@ void Socket::queue(void *pbuf, uint32_t from, uint16_t port) {
                 pbuf_free(p);
                 return;
         }
+        const int64_t hardwareNs = PbufMarks::hardwareNs(p);
+        int64_t       softwareNs = PbufMarks::softwareNs(p);
+        if (softwareNs == 0) softwareNs = Clock::now().ns; // not from Ethernet (the loopback)
         p = keepable(p);
         if (p == nullptr) {
                 ++_dropped;
@@ -426,6 +516,8 @@ void Socket::queue(void *pbuf, uint32_t from, uint16_t port) {
         d.pbuf = p;
         d.ipv4 = from;
         d.port = port;
+        d.hardwareNs = hardwareNs;
+        d.softwareNs = softwareNs;
         ++_datagramCount;
         _datagramBytes += p->tot_len;
         _readable.release();
@@ -502,8 +594,9 @@ void Socket::applyOptions() {
 }
 
 Error Socket::setOption(Option option, int32_t value) {
-        const bool       tcp = _type == Type::Stream;
-        const bool       on = value != 0;
+        const bool tcp = _type == Type::Stream;
+        const bool on = value != 0;
+        if (option == Option::Timestamping) return setTimestamping(static_cast<uint32_t>(value));
         NetStack::Locker lock;
         switch (option) {
                 case Option::ReuseAddress: _reuseAddress = on; break;
@@ -551,8 +644,26 @@ Error Socket::setOption(Option option, int32_t value) {
                         break;
                 case Option::Tos:
                         if (value < 0 || value > 255) return Error::Invalid;
+                        if (_tos != value) _priority = priorityOfTos(static_cast<uint8_t>(value)); // Linux's
                         _tos = static_cast<uint8_t>(value);
                         break;
+                case Option::Priority:
+                        if (value < 0) return Error::Invalid;
+                        _priority = value;
+                        break;
+                case Option::SelectErrorQueue: _selectErrorQueue = on; break;
+                case Option::TimestampUs:
+                        if (tcp) return Error::NotSupported;
+                        _timestampUs = on;
+                        if (on) _timestampNs = false;
+                        break;
+                case Option::TimestampNs:
+                        if (tcp) return Error::NotSupported;
+                        _timestampNs = on;
+                        if (on) _timestampUs = false;
+                        break;
+                case Option::TimestampsNew: _timestampsNew = on; break;
+                case Option::Timestamping: return Error::Invalid; // above
                 case Option::MulticastTtl:
                         if (tcp) return Error::NotSupported;
                         if (value < 0 || value > 255) return Error::Invalid;
@@ -566,6 +677,9 @@ Error Socket::setOption(Option option, int32_t value) {
                 case Option::MaxSegment: return Error::Invalid;
         }
         applyOptions();
+        SocketFastPath *fast = takeFast();
+        if (fast != nullptr) fast->setIpFields(_ttl, _multicastTtl, _tos);
+        giveFast();
         return Error::Ok;
 }
 
@@ -597,6 +711,12 @@ Result<int32_t> Socket::option(Option option) {
                 case Option::MaxSegment:
                         if (!tcp) return makeError<int32_t>(Error::NotSupported);
                         return makeResult<int32_t>(TCP_MSS);
+                case Option::Priority: return makeResult(_priority);
+                case Option::SelectErrorQueue: return makeResult<int32_t>(_selectErrorQueue);
+                case Option::Timestamping: return makeResult(static_cast<int32_t>(_timestamping));
+                case Option::TimestampUs: return makeResult<int32_t>(_timestampUs);
+                case Option::TimestampNs: return makeResult<int32_t>(_timestampNs);
+                case Option::TimestampsNew: return makeResult<int32_t>(_timestampsNew);
         }
         return makeError<int32_t>(Error::NotSupported);
 }
@@ -673,9 +793,341 @@ Error Socket::bindToDevice(StringView name) {
         return Error::Ok;
 }
 
+// --- Real time (devplan/network.md §30f) ----------------------------------------------------
+
+namespace {
+
+        // A frame kept for the error queue (a whole Ethernet frame, in a buffer's room).
+        constexpr size_t MaxFrameBytes = 1536;
+
+        constexpr uint32_t TxFlags = Socket::TimestampTxHardware | Socket::TimestampTxSoftware;
+
+        unsigned int msLeft(const Deadline &deadline) {
+                if (deadline.isForever()) return WaitForever;
+                const int64_t us = deadline.remainingUs();
+                return us <= 1000 ? 1u : static_cast<unsigned int>((us + 999) / 1000);
+        }
+
+} // namespace
+
+SocketFastPath *Socket::takeFast() {
+        _fastUsers.fetch_add(1, std::memory_order_acquire);
+        return _fast.load(std::memory_order_acquire);
+}
+
+void Socket::giveFast() {
+        _fastUsers.fetch_sub(1, std::memory_order_release);
+        return;
+}
+
+void Socket::flowTold(void *arg) {
+        auto &s = *static_cast<Socket *>(arg);
+        s._readable.release();
+        s._pollers.notify();
+        return;
+}
+
+Error Socket::setFastPath(const FastPath &fastPath) {
+        if (_type != Type::Datagram) return Error::NotSupported;
+        if (fastPath.on && (fastPath.depth < 1 || fastPath.depth > 8 || fastPath.packetUs == 0)) return Error::Invalid;
+        closeFastPath();
+        {
+                NetStack::Locker lock;
+                _fastPathConfig = fastPath;
+        }
+        if (!fastPath.on) return Error::Ok;
+        const Error err = openFastPath();
+        if (err.isError()) {
+                NetStack::Locker lock;
+                _fastPathConfig.on = false;
+        }
+        return err;
+}
+
+Socket::FastPath Socket::fastPath() {
+        NetStack::QuietLocker lock;
+        return _fastPathConfig;
+}
+
+Error Socket::openFastPath() {
+        SocketFastPath::Config c;
+        SocketAddress          peer;
+        bool                   connected;
+        {
+                NetStack::Locker lock;
+                auto            *pcb = static_cast<struct udp_pcb *>(_pcb);
+                if (pcb == nullptr) return Error::NoMem;
+                if (pcb->local_port == 0) { // its ephemeral port, now
+                        const err_t err = udp_bind(pcb, IP4_ADDR_ANY, 0);
+                        if (err != ERR_OK) return errorOf(err);
+                }
+                c.address = ip_addr_get_ip4_u32(&pcb->local_ip);
+                c.port = pcb->local_port;
+                c.netifIndex = pcb->netif_idx;
+                c.packetUs = _fastPathConfig.packetUs;
+                c.depth = _fastPathConfig.depth;
+                c.ttl = _ttl;
+                c.multicastTtl = _multicastTtl;
+                c.tos = _tos;
+                c.listener = &Socket::flowTold;
+                c.listenerArg = this;
+                connected = _connected;
+                peer.ipv4 = ip_addr_get_ip4_u32(&pcb->remote_ip);
+                peer.port = pcb->remote_port;
+        }
+        auto [fast, err] = SocketFastPath::open(c);
+        if (err.isError()) return err;
+        if (connected) fast->connect(peer);
+        _fast.store(fast, std::memory_order_release);
+        _readable.release(); // a reader waiting looks at it
+        return Error::Ok;
+}
+
+void Socket::closeFastPath() {
+        SocketFastPath *fast = _fast.exchange(nullptr, std::memory_order_acq_rel);
+        if (fast == nullptr) return;
+        while (_fastUsers.load(std::memory_order_acquire) != 0) Thread::sleep(1); // a call in it
+        fast->close();
+        // Its send stamps went with it.
+        Mutex::Locker lock(_stampLock, WaitForever);
+        for (TxRecord &r : _txRecords) {
+                if (r.viaFlow && r.state != TxRecord::Free) r = TxRecord{};
+        }
+        return;
+}
+
+Error Socket::setTimestamping(uint32_t flags) {
+        if ((flags & ~static_cast<uint32_t>(TimestampKnown)) != 0) return Error::Invalid;
+        if (_type == Type::Stream) return Error::NotSupported;
+        // No send meanwhile: a sender keeps the frames and the count.
+        (void)_writeLock.lock(Deadline(WaitForever));
+        forgetStamps();
+        Error    err;
+        uint8_t *frames = nullptr;
+        if ((flags & TxFlags) != 0 && (flags & TimestampOptTsOnly) == 0) {
+                frames = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, MaxTxReports * MaxFrameBytes));
+                if (frames == nullptr) err = Error::NoMem;
+        }
+        const uint16_t owner = err.isOk() && (flags & TxFlags) != 0 ? addStampOwner(this) : 0;
+        if (err.isOk() && (flags & TxFlags) != 0 && owner == 0) err = Error::Full;
+        if (err.isError()) {
+                Memory::free(frames);
+                flags = 0;
+        }
+        {
+                NetStack::Locker lock;
+                if ((flags & TimestampOptId) != 0 && (_timestamping & TimestampOptId) == 0) _txId = 0; // Linux's
+                _timestamping = flags;
+                _stampOwner = owner;
+        }
+        {
+                Mutex::Locker lock(_stampLock, WaitForever);
+                _txFrames = frames;
+        }
+        _writeLock.unlock();
+        return err;
+}
+
+void Socket::forgetStamps() {
+        uint16_t owner;
+        {
+                NetStack::Locker lock;
+                owner = _stampOwner;
+                _stampOwner = 0;
+        }
+        if (owner != 0) removeStampOwner(owner);
+        uint8_t *frames;
+        {
+                Mutex::Locker lock(_stampLock, WaitForever);
+                frames = _txFrames;
+                _txFrames = nullptr;
+                for (TxRecord &r : _txRecords) r = TxRecord{};
+        }
+        while (_reportReaders.load(std::memory_order_acquire) != 0) Thread::sleep(1); // copying from them
+        Memory::free(frames);
+        return;
+}
+
+uint32_t Socket::cookieFor() {
+        if ((_timestamping & TxFlags) == 0 || _stampOwner == 0) return 0;
+        uint32_t c = (static_cast<uint32_t>(_stampOwner) << CookieOwnerShift) | (_txId & CookieNumberMask);
+        if ((_timestamping & TimestampTxHardware) == 0) c |= CookieSoftware; // Linux's: hardware wins
+        return c;
+}
+
+bool Socket::sendsPriority() const {
+        const uint8_t dscp = _tos >> 2;
+        return _priority >= 6 || dscp == 46 || dscp == 48; // EF, CS6
+}
+
+Socket::TxRecord *Socket::reserveRecord() {
+        TxRecord *victim = nullptr;
+        for (TxRecord &r : _txRecords) {
+                if (r.state == TxRecord::Free) {
+                        victim = &r;
+                        break;
+                }
+                if (r.state != TxRecord::Writing && (victim == nullptr || r.sequence < victim->sequence)) victim = &r;
+        }
+        if (victim == nullptr) return nullptr;
+        if (victim->state != TxRecord::Free) ++_txLost; // the oldest goes
+        *victim = TxRecord{};
+        victim->state = TxRecord::Writing;
+        victim->sequence = ++_txSequence;
+        return victim;
+}
+
+Socket::TxRecord *Socket::findRecord(bool viaFlow, uint32_t key) {
+        for (TxRecord &r : _txRecords) {
+                if (r.state == TxRecord::Sent && r.viaFlow == viaFlow && r.key == key) return &r;
+        }
+        return nullptr;
+}
+
+uint8_t *Socket::frameOf(const TxRecord &r) {
+        return _txFrames != nullptr ? _txFrames + static_cast<size_t>(&r - _txRecords) * MaxFrameBytes : nullptr;
+}
+
+void Socket::recordSent(uint32_t cookie, uint32_t id, Span<const Span<const uint8_t>> frame) {
+        Socket *s = takeOwner(cookie);
+        if (s == nullptr) return;
+        s->keepSent(cookie, id, frame);
+        giveOwner();
+        return;
+}
+
+void Socket::keepSent(uint32_t cookie, uint32_t id, Span<const Span<const uint8_t>> frame) {
+        const uint32_t key = cookie & CookieNumberMask;
+        TxRecord      *r;
+        uint8_t       *to;
+        {
+                Mutex::Locker lock(_stampLock, WaitForever);
+                r = reserveRecord();
+                if (r == nullptr) return;
+                r->key = key;
+                r->id = id;
+                to = frameOf(*r);
+        }
+        // Copied outside the lock: the record is Writing, so nobody takes or reuses it.
+        size_t n = 0;
+        for (const Span<const uint8_t> &piece : frame) {
+                const size_t take = piece.size() < MaxFrameBytes - n ? piece.size() : MaxFrameBytes - n;
+                if (to != nullptr) std::memcpy(to + n, piece.data(), take);
+                n += take;
+        }
+        const uint32_t source = frame.isEmpty() ? 0 : sourceOf(frame[0]);
+        Mutex::Locker  lock(_stampLock, WaitForever);
+        r->length = static_cast<uint16_t>(n);
+        r->source = source;
+        r->state = TxRecord::Sent;
+        return;
+}
+
+void Socket::stampSent(uint32_t cookie, int64_t hardwareNs, int64_t softwareNs) {
+        Socket *s = takeOwner(cookie);
+        if (s == nullptr) return;
+        s->stamped(false, cookie & CookieNumberMask, hardwareNs, softwareNs);
+        giveOwner();
+        return;
+}
+
+void Socket::stamped(bool viaFlow, uint32_t key, int64_t hardwareNs, int64_t softwareNs) {
+        {
+                Mutex::Locker lock(_stampLock, WaitForever);
+                TxRecord     *r = findRecord(viaFlow, key);
+                if (r == nullptr) return; // dropped meanwhile
+                r->hardwareNs = hardwareNs;
+                r->softwareNs = softwareNs;
+                r->state = TxRecord::Stamped;
+        }
+        _pollers.notify();
+        return;
+}
+
+void Socket::drainFlowStamps() {
+        SocketFastPath *fast = takeFast();
+        uint32_t        ticket;
+        int64_t         ns;
+        while (fast != nullptr && fast->takeStamp(ticket, ns)) {
+                Mutex::Locker lock(_stampLock, WaitForever);
+                if (TxRecord *r = findRecord(true, ticket); r != nullptr) {
+                        r->hardwareNs = ns;
+                        r->state = TxRecord::Stamped;
+                        continue;
+                }
+                // The stamp came before its sender wrote the ticket down (its send hadn't returned):
+                // only a ticket after every one written down can be the one in flight. Older ones
+                // are stamps of records the queue already dropped.
+                if (static_cast<int32_t>(ticket - _lastFlowTicket) <= 0) continue;
+                for (TxRecord &r : _txRecords) {
+                        if (r.state == TxRecord::Writing && r.viaFlow && r.key == 0) r.hardwareNs = ns;
+                }
+        }
+        giveFast();
+        return;
+}
+
+bool Socket::hasReport() {
+        drainFlowStamps();
+        Mutex::Locker lock(_stampLock, WaitForever);
+        for (const TxRecord &r : _txRecords) {
+                if (r.state == TxRecord::Stamped) return true;
+        }
+        return false;
+}
+
+Result<Socket::TxReport> Socket::receiveTxReport(Span<const WritableByteSpan> pieces) {
+        drainFlowStamps();
+        TxRecord      *r = nullptr;
+        const uint8_t *frame;
+        TxReport       report;
+        _reportReaders.fetch_add(1, std::memory_order_acquire); // the frames stay meanwhile
+        {
+                Mutex::Locker lock(_stampLock, WaitForever);
+                for (TxRecord &k : _txRecords) {
+                        if (k.state == TxRecord::Stamped && (r == nullptr || k.sequence < r->sequence)) r = &k;
+                }
+                if (r == nullptr) {
+                        _reportReaders.fetch_sub(1, std::memory_order_release);
+                        return makeError<TxReport>(Error::WouldBlock);
+                }
+                r->state = TxRecord::Writing; // being read: nobody reuses it
+                frame = frameOf(*r);
+                report.length = frame != nullptr ? r->length : 0;
+                report.id = r->id;
+                report.source = r->source;
+                report.hardwareNs = r->hardwareNs;
+                report.softwareNs = r->softwareNs;
+        }
+        for (const WritableByteSpan &piece : pieces) {
+                if (report.bytes == report.length) break;
+                size_t n = report.length - report.bytes;
+                if (n > piece.size()) n = piece.size();
+                std::memcpy(piece.data(), frame + report.bytes, n);
+                report.bytes += n;
+        }
+        {
+                Mutex::Locker lock(_stampLock, WaitForever);
+                if (r->state == TxRecord::Writing && r->sequence != 0) *r = TxRecord{};
+        }
+        _reportReaders.fetch_sub(1, std::memory_order_release);
+        return makeResult(report);
+}
+
 // --- Addresses ------------------------------------------------------------------------------
 
 Error Socket::bind(const SocketAddress &address) {
+        const Error err = bindLocked(address);
+        if (err.isError() || _type != Type::Datagram || _fast.load(std::memory_order_acquire) != nullptr) return err;
+        bool fastPath;
+        {
+                NetStack::QuietLocker lock;
+                fastPath = _fastPathConfig.on;
+        }
+        return fastPath ? openFastPath() : err; // asked for before it was bound
+}
+
+Error Socket::bindLocked(const SocketAddress &address) {
         NetStack::Locker lock;
         if (_pcb == nullptr) return _gone ? Error::Invalid : Error::NoMem;
         if (!isBindable(address.ipv4, _type != Type::Stream)) return Error::AddressNotAvailable;
@@ -811,22 +1263,31 @@ Result<FileHandle::Ptr> Socket::accept(SocketAddress *peer, uint32_t flags) {
 Error Socket::connect(const SocketAddress &address, uint32_t flags) {
         const ip_addr_t ip = ipOf(address.ipv4);
         if (_type != Type::Stream) {
-                NetStack::Locker lock;
-                if (_pcb == nullptr) return Error::NoMem;
-                if (address.ipv4 == 0 && address.port == 0) {
-                        if (_type == Type::Datagram) {
-                                udp_disconnect(static_cast<struct udp_pcb *>(_pcb));
+                Error err;
+                {
+                        NetStack::Locker lock;
+                        if (_pcb == nullptr) return Error::NoMem;
+                        if (address.ipv4 == 0 && address.port == 0) {
+                                if (_type == Type::Datagram) {
+                                        udp_disconnect(static_cast<struct udp_pcb *>(_pcb));
+                                } else {
+                                        raw_disconnect(static_cast<struct raw_pcb *>(_pcb));
+                                }
+                                _connected = false;
                         } else {
-                                raw_disconnect(static_cast<struct raw_pcb *>(_pcb));
+                                const err_t e =
+                                        _type == Type::Datagram
+                                                ? udp_connect(static_cast<struct udp_pcb *>(_pcb), &ip, address.port)
+                                                : raw_connect(static_cast<struct raw_pcb *>(_pcb), &ip);
+                                if (e == ERR_OK) _connected = true;
+                                err = errorOf(e);
                         }
-                        _connected = false;
-                        return Error::Ok;
                 }
-                const err_t err = _type == Type::Datagram
-                                          ? udp_connect(static_cast<struct udp_pcb *>(_pcb), &ip, address.port)
-                                          : raw_connect(static_cast<struct raw_pcb *>(_pcb), &ip);
-                if (err == ERR_OK) _connected = true;
-                return errorOf(err);
+                // The flow sends there and hears only from there too (its ARP asked, not waited for).
+                SocketFastPath *fast = takeFast();
+                if (fast != nullptr && err.isOk()) fast->connect(address);
+                giveFast();
+                return err;
         }
         const Deadline deadline(timeoutOf(_sendTimeoutMs, WaitForever));
         {
@@ -898,11 +1359,74 @@ Result<size_t> Socket::sendWithin(Span<const ByteSpan> pieces, const SocketAddre
         if (_type == Type::Stream) {
                 r = sendTcp(pieces, flags, deadline);
         } else {
-                NetStack::Locker lock;
-                r = sendDatagram(pieces, to);
+                bool sent = false;
+                if (_type == Type::Datagram) r = sendFast(pieces, to, flags, deadline, sent);
+                if (!sent) {
+                        NetStack::Locker lock;
+                        r = sendDatagram(pieces, to);
+                }
         }
         _writeLock.unlock();
         return r;
+}
+
+Result<size_t> Socket::sendFast(Span<const ByteSpan> pieces, const SocketAddress *to, uint32_t flags,
+                                const Deadline &deadline, bool &sent) {
+        sent = false;
+        SocketFastPath *fast = takeFast();
+        if (fast == nullptr || _sendShut) {
+                giveFast();
+                return makeError<size_t>(Error::NotSupported);
+        }
+        // A stamp's record is kept before sending: the stamp may come before send() returns.
+        const uint32_t stamping = _timestamping;
+        TxRecord      *record = nullptr;
+        if ((stamping & TxFlags) != 0 && _stampOwner != 0) {
+                Mutex::Locker lock(_stampLock, WaitForever);
+                record = reserveRecord();
+                if (record != nullptr) {
+                        record->viaFlow = true;
+                        record->id = _txId;
+                }
+        }
+        uint8_t    headers[64];
+        const auto timeoutMs = (flags & DontWait) ? 1u : msLeft(deadline);
+        const bool hardware = (stamping & TimestampTxHardware) != 0;
+        auto [done, err] = fast->send(pieces, to, record != nullptr && hardware, headers, timeoutMs);
+        const size_t total = totalOf(pieces);
+        if (record != nullptr && err.isOk()) {
+                uint8_t *frame;
+                {
+                        Mutex::Locker lock(_stampLock, WaitForever);
+                        frame = frameOf(*record);
+                }
+                size_t n = done.headerBytes;
+                if (frame != nullptr) {
+                        std::memcpy(frame, headers, n);
+                        for (const ByteSpan &p : pieces) {
+                                std::memcpy(frame + n, p.data(), p.size());
+                                n += p.size();
+                        }
+                }
+                const int64_t now = hardware ? 0 : Clock::now().ns;
+                Mutex::Locker lock(_stampLock, WaitForever);
+                record->key = done.ticket;
+                _lastFlowTicket = done.ticket;
+                record->length = static_cast<uint16_t>(n);
+                record->source = sourceOf(Span<const uint8_t>(headers, done.headerBytes));
+                record->softwareNs = now;
+                record->state = !hardware || record->hardwareNs != 0 ? TxRecord::Stamped : TxRecord::Sent;
+        } else if (record != nullptr) {
+                Mutex::Locker lock(_stampLock, WaitForever);
+                *record = TxRecord{};
+        }
+        giveFast();
+        if (err == Error::NotSupported) return makeError<size_t>(err); // lwIP sends it
+        sent = true;
+        if (record != nullptr && err.isOk()) ++_txId; // a datagram sent takes a number
+        if (!hardware && record != nullptr) _pollers.notify();
+        if (err.isError()) return makeError<size_t>(err == Error::Timeout ? Error::WouldBlock : err);
+        return makeResult(total);
 }
 
 Result<size_t> Socket::sendTcp(Span<const ByteSpan> pieces, uint32_t flags, const Deadline &deadline) {
@@ -977,6 +1501,11 @@ Result<size_t> Socket::sendDatagram(Span<const ByteSpan> pieces, const SocketAdd
                 (void)pbuf_take_at(p, piece.data(), static_cast<u16_t>(piece.size()), static_cast<u16_t>(at));
                 at += piece.size();
         }
+        // The interface reads these as the frame leaves (§30f).
+        p->bmds_tx_class = sendsPriority() ? PbufMarks::Priority : PbufMarks::Bulk;
+        p->bmds_tx_cookie = cookieFor();
+        p->bmds_tx_id = _txId;
+        if (p->bmds_tx_cookie != 0) ++_txId;
         err_t err;
         if (to != nullptr) {
                 const ip_addr_t ip = ipOf(to->ipv4);
@@ -1007,6 +1536,22 @@ Result<Socket::Received> Socket::receiveWithin(Span<const WritableByteSpan> piec
         Result<Received> r;
         for (;;) {
                 Error err;
+                // A fast path's datagrams first: no core lock (TCP holds it).
+                if (_type == Type::Datagram) {
+                        SocketFastPath                *fast = takeFast();
+                        Result<SocketFastPath::Packet> pk = makeError<SocketFastPath::Packet>(Error::WouldBlock);
+                        if (fast != nullptr) pk = fast->receive(pieces, (flags & Peek) != 0);
+                        giveFast();
+                        if (pk.isOk()) {
+                                got.bytes = pk.value().bytes;
+                                got.length = pk.value().length;
+                                got.from = pk.value().from;
+                                got.hardwareNs = pk.value().hardwareNs;
+                                got.softwareNs = pk.value().softwareNs;
+                                r = makeResult(got);
+                                break;
+                        }
+                }
                 {
                         NetStack::Locker lock;
                         auto [part, perr] = receiveLocked(pieces, flags, got.bytes);
@@ -1015,6 +1560,8 @@ Result<Socket::Received> Socket::receiveWithin(Span<const WritableByteSpan> piec
                                 got.bytes += part.bytes;
                                 got.length = _type == Type::Stream ? got.bytes : part.length;
                                 got.from = part.from;
+                                got.hardwareNs = part.hardwareNs;
+                                got.softwareNs = part.softwareNs;
                         }
                 }
                 if (err.isOk() && (!all || got.bytes == room)) {
@@ -1092,6 +1639,8 @@ Result<Socket::Received> Socket::receiveLocked(Span<const WritableByteSpan> piec
         r.length = length;
         r.from.ipv4 = d.ipv4;
         r.from.port = d.port;
+        r.hardwareNs = d.hardwareNs;
+        r.softwareNs = d.softwareNs;
         if ((flags & Peek) == 0) {
                 pbuf_free(p);
                 d.pbuf = nullptr;
@@ -1142,6 +1691,10 @@ uint8_t Socket::readiness() {
                 if (_gone) ready |= Readable | Writable | HungUp | Broken;
                 if (_peerFinished && _sendShut) ready |= HungUp;
         }
+        SocketFastPath *fast = takeFast();
+        if (fast != nullptr && fast->readable()) ready |= Readable;
+        giveFast();
+        if ((_timestamping & TxFlags) != 0 && hasReport()) ready |= ErrorQueue | (_selectErrorQueue ? Urgent : 0);
         return ready;
 }
 

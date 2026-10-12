@@ -21,6 +21,7 @@
 #include <bmds/sysconf.h>
 #include <bmds/sys.h>
 #include <bmds/waitlist.h>
+#include <bmds/waketimer.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -600,6 +601,9 @@ int32_t Process::poll(bmds_pollfd_t *fds, uint32_t count, int32_t timeoutMs) {
                                 e.revents = events & e.events;
                                 if (h->canRead() && (ready & Stream::HungUp)) e.revents |= BMDS_POLL_HUP;
                                 if (h->canWrite() && (ready & Stream::Broken)) e.revents |= BMDS_POLL_ERR;
+                                // A socket's error queue (send stamps: devplan/network.md §30f).
+                                if (ready & Stream::ErrorQueue) e.revents |= BMDS_POLL_ERR;
+                                if (ready & Stream::Urgent) e.revents |= e.events & BMDS_POLL_PRI;
                         }
                         if (e.revents != 0) ++result;
                 }
@@ -1175,6 +1179,14 @@ int32_t Process::sleep(int64_t ns) {
                 const Error   err = interrupt.sleep(static_cast<unsigned>(ms < MaxMs ? ms : MaxMs));
                 if (err.isError()) return errnoFor(err);
         }
+}
+
+int32_t Process::sleepPrecise(int64_t ns) {
+        Interrupt *own = Interrupt::current();
+        Interrupt &interrupt = own != nullptr ? *own : _signals.interrupt();
+        if (ns <= 0) return interrupt.isRaised() ? -BMDS_EINTR : 0;
+        const Error err = WakeTimer::sleepUntil(Clock::monotonicNs() + ns, &interrupt);
+        return err.isError() ? errnoFor(err) : 0;
 }
 
 int32_t Process::interrupted() {

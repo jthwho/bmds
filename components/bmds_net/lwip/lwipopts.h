@@ -53,6 +53,23 @@
 #define PBUF_POOL_BUFSIZE 1536
 #define LWIP_SUPPORT_CUSTOM_PBUF 1
 #define PBUF_POOL_FREE_OOSEQ 0 // nothing receives into the pool (received frames are custom pbufs)
+// Stamps and a sender's marks ride in each pbuf (devplan/network.md §30f): the arrival times
+// (hardware, system; nanoseconds in two words: MEM_ALIGNMENT is 4), and a datagram's transmit
+// class, stamp cookie and number. bmds_net's src/pbufmarks.h reads and writes them.
+#define LWIP_PBUF_CUSTOM_DATA                                                                                          \
+        u32_t bmds_rx_hw[2];                                                                                           \
+        u32_t bmds_rx_sw[2];                                                                                           \
+        u32_t bmds_tx_cookie;                                                                                          \
+        u32_t bmds_tx_id;                                                                                              \
+        u8_t  bmds_tx_class;
+#define LWIP_PBUF_CUSTOM_DATA_INIT(p)                                                                                  \
+        do {                                                                                                           \
+                (p)->bmds_rx_hw[0] = (p)->bmds_rx_hw[1] = 0;                                                           \
+                (p)->bmds_rx_sw[0] = (p)->bmds_rx_sw[1] = 0;                                                           \
+                (p)->bmds_tx_cookie = 0;                                                                               \
+                (p)->bmds_tx_id = 0;                                                                                   \
+                (p)->bmds_tx_class = 0;                                                                                \
+        } while (0)
 
 // --- Interfaces -----------------------------------------------------------------------------
 

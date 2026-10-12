@@ -72,6 +72,15 @@
  *                         ioctls, net_info and net_watch, the errors
  *   progtest netwatch [N] print the interfaces, then again after each of N changes (net_watch;
  *                         default 1)
+ *   progtest sched SELF   scheduling (processes.md §3.12): policies set and read back on the
+ *                         caller and on another thread, the errors, inheritance by threads and
+ *                         processes, SCHED_RESET_ON_FORK, affinity and nproc, a real-time sleep's
+ *                         lateness against the tick's, two busy real-time threads throttled
+ *   progtest schedof      exit with the caller's policy (for sched)
+ *   progtest rtnet [PEER] real-time sockets (network.md §30f): SO_PRIORITY and IP_TOS, the
+ *                         timestamp options and their control messages on loopback, the error
+ *                         queue's errors, BMDS_SO_FASTPATH's; with PEER (a UDP reflector on port
+ *                         5004), hardware send and receive stamps through the fast path and not
  */
 
 #define _GNU_SOURCE /* gettid() */
@@ -2603,7 +2612,420 @@ static int net_test(void) {
         return 0;
 }
 
+/* Real-time sockets (network.md §30f). Linux's numbers: musl has no <linux/net_tstamp.h>. */
+#define RT_TX_HARDWARE (1 << 0)
+#define RT_TX_SOFTWARE (1 << 1)
+#define RT_RX_HARDWARE (1 << 2)
+#define RT_RX_SOFTWARE (1 << 3)
+#define RT_SOFTWARE (1 << 4)
+#define RT_RAW_HARDWARE (1 << 6)
+#define RT_OPT_ID (1 << 7)
+#define RT_OPT_CMSG (1 << 10)
+#define RT_OPT_TSONLY (1 << 11)
+
+struct rt_time {
+                int64_t sec, nsec;
+};
+
+struct rt_err {
+                uint32_t ee_errno;
+                uint8_t  ee_origin, ee_type, ee_code, ee_pad;
+                uint32_t ee_info, ee_data;
+};
+
+/* What recvmsg's control messages said. */
+struct rt_got {
+                struct rt_time ts[3];
+                int            stamped, timestampns, recverr;
+                struct rt_err  err;
+                struct rt_time ns;
+};
+
+static void rt_control(struct msghdr *m, struct rt_got *g) {
+        memset(g, 0, sizeof(*g));
+        for (struct cmsghdr *c = CMSG_FIRSTHDR(m); c != NULL; c = CMSG_NXTHDR(m, c)) {
+                if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SO_TIMESTAMPING &&
+                    c->cmsg_len == CMSG_LEN(sizeof(g->ts))) {
+                        memcpy(g->ts, CMSG_DATA(c), sizeof(g->ts));
+                        g->stamped = 1;
+                }
+                if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SO_TIMESTAMPNS &&
+                    c->cmsg_len == CMSG_LEN(sizeof(g->ns))) {
+                        memcpy(&g->ns, CMSG_DATA(c), sizeof(g->ns));
+                        g->timestampns = 1;
+                }
+                if (c->cmsg_level == IPPROTO_IP && c->cmsg_type == IP_RECVERR &&
+                    c->cmsg_len >= CMSG_LEN(sizeof(g->err))) {
+                        memcpy(&g->err, CMSG_DATA(c), sizeof(g->err));
+                        g->recverr = 1;
+                }
+        }
+        return;
+}
+
+static int64_t rt_ns(const struct rt_time *t) {
+        return t->sec * 1000000000LL + t->nsec;
+}
+
+static int64_t realtime_ns(void) {
+        struct timespec t;
+        clock_gettime(CLOCK_REALTIME, &t);
+        return (int64_t)t.tv_sec * 1000000000LL + t.tv_nsec;
+}
+
+/* Sends to the reflector at @p peer from @p fd, stamped; checks the error queue's report (number
+ * @p id, the frame unless @p tsonly) and the reflection's receive stamp. */
+static int rt_round(int fd, const struct sockaddr_in *peer, uint32_t id, int tsonly, const char *what) {
+        char          out[200], buf[1600], control[256];
+        struct rt_got g;
+        memset(out, 0, sizeof(out));
+        snprintf(out, sizeof(out), "progtest %s %u", what, (unsigned)id);
+        CHECK(sendto(fd, out, sizeof(out), 0, (const struct sockaddr *)peer, sizeof(*peer)) == sizeof(out));
+        struct pollfd pe = {.fd = fd, .events = POLLPRI};
+        CHECK(poll(&pe, 1, 1000) == 1 && (pe.revents & POLLPRI) && (pe.revents & POLLERR));
+        struct iovec  iov = {buf, sizeof(buf)};
+        struct msghdr m = {.msg_iov = &iov, .msg_iovlen = 1, .msg_control = control, .msg_controllen = sizeof(control)};
+        const ssize_t n = recvmsg(fd, &m, MSG_ERRQUEUE);
+        CHECK(n == (tsonly ? 0 : 42 + (ssize_t)sizeof(out)));
+        CHECK((m.msg_flags & MSG_ERRQUEUE) && m.msg_namelen == 0);
+        if (!tsonly) CHECK(buf[12] == 0x08 && buf[13] == 0x00 && memcmp(buf + 42, out, sizeof(out)) == 0);
+        rt_control(&m, &g);
+        CHECK(g.stamped && g.recverr && rt_ns(&g.ts[2]) != 0 && rt_ns(&g.ts[0]) == 0);
+        CHECK(g.err.ee_errno == ENOMSG && g.err.ee_origin == 4 && g.err.ee_info == 0 && g.err.ee_data == id);
+        const int64_t sent = rt_ns(&g.ts[2]);
+        CHECK(recvmsg(fd, &m, MSG_ERRQUEUE) < 0 && errno == EAGAIN);
+        /* The reflection, with its hardware arrival. */
+        struct pollfd pi = {.fd = fd, .events = POLLIN};
+        CHECK(poll(&pi, 1, 1000) == 1);
+        iov.iov_len = sizeof(buf);
+        m.msg_controllen = sizeof(control);
+        CHECK(recvmsg(fd, &m, 0) == sizeof(out) && memcmp(buf, out, sizeof(out)) == 0);
+        rt_control(&m, &g);
+        CHECK(g.stamped && rt_ns(&g.ts[2]) > sent && rt_ns(&g.ts[0]) != 0);
+        printf("rtnet: %s %u: round trip %lld us (hardware stamps)\n", what, (unsigned)id,
+               (long long)((rt_ns(&g.ts[2]) - sent) / 1000));
+        return 0;
+}
+
+static int rt_net_test(const char *peerName) {
+        char buf[256], control[256];
+
+        /* Priority: set, and from IP_TOS as Linux (EF 4, low delay 6). */
+        const int u = socket(AF_INET, SOCK_DGRAM, 0);
+        CHECK(u >= 0);
+        int       v = 6;
+        socklen_t vl = sizeof(v);
+        CHECK(setsockopt(u, SOL_SOCKET, SO_PRIORITY, &v, sizeof(v)) == 0);
+        CHECK(getsockopt(u, SOL_SOCKET, SO_PRIORITY, &v, &vl) == 0 && v == 6);
+        v = 0xb8;
+        CHECK(setsockopt(u, IPPROTO_IP, IP_TOS, &v, sizeof(v)) == 0);
+        CHECK(getsockopt(u, SOL_SOCKET, SO_PRIORITY, &v, &vl) == 0 && v == 4);
+        v = 0x10;
+        CHECK(setsockopt(u, IPPROTO_IP, IP_TOS, &v, sizeof(v)) == 0);
+        CHECK(getsockopt(u, SOL_SOCKET, SO_PRIORITY, &v, &vl) == 0 && v == 6);
+
+        /* SO_TIMESTAMPING: Linux's flags only; read back as struct so_timestamping. */
+        v = 1 << 30;
+        CHECK(setsockopt(u, SOL_SOCKET, SO_TIMESTAMPING, &v, sizeof(v)) < 0 && errno == EINVAL);
+        v = RT_RX_SOFTWARE | RT_SOFTWARE | RT_RX_HARDWARE | RT_RAW_HARDWARE;
+        CHECK(setsockopt(u, SOL_SOCKET, SO_TIMESTAMPING, &v, sizeof(v)) == 0);
+        int ts[2] = {-1, -1};
+        vl = sizeof(ts);
+        CHECK(getsockopt(u, SOL_SOCKET, SO_TIMESTAMPING, ts, &vl) == 0 && vl == sizeof(ts) && ts[0] == v && ts[1] == 0);
+        v = 1;
+        CHECK(setsockopt(u, SOL_SOCKET, SO_TIMESTAMPNS, &v, sizeof(v)) == 0);
+
+        /* Received on loopback: the system's time in both (no hardware: lo isn't Ethernet). */
+        struct sockaddr_in ua = loopback(0);
+        socklen_t          al = sizeof(ua);
+        CHECK(bind(u, (struct sockaddr *)&ua, sizeof(ua)) == 0 && getsockname(u, (struct sockaddr *)&ua, &al) == 0);
+        const int     us = socket(AF_INET, SOCK_DGRAM, 0);
+        const int64_t before = realtime_ns();
+        CHECK(sendto(us, "stamped", 7, 0, (struct sockaddr *)&ua, sizeof(ua)) == 7);
+        struct iovec  iov = {buf, sizeof(buf)};
+        struct msghdr m = {.msg_iov = &iov, .msg_iovlen = 1, .msg_control = control, .msg_controllen = sizeof(control)};
+        CHECK(recvmsg(u, &m, 0) == 7 && (m.msg_flags & MSG_CTRUNC) == 0);
+        struct rt_got g;
+        rt_control(&m, &g);
+        CHECK(g.stamped && g.timestampns && rt_ns(&g.ts[2]) == 0 && rt_ns(&g.ts[0]) == rt_ns(&g.ns));
+        CHECK(rt_ns(&g.ns) >= before - 1000000 && rt_ns(&g.ns) <= realtime_ns() + 1000000);
+        /* Too little room: cut, said. */
+        CHECK(sendto(us, "stamped", 7, 0, (struct sockaddr *)&ua, sizeof(ua)) == 7);
+        m.msg_controllen = CMSG_SPACE(sizeof(struct rt_time));
+        CHECK(recvmsg(u, &m, 0) == 7 && (m.msg_flags & MSG_CTRUNC));
+
+        /* The error queue: empty answers EAGAIN at once, waiting or not. */
+        const int64_t t0 = ms_now();
+        m.msg_controllen = sizeof(control);
+        CHECK(recvmsg(u, &m, MSG_ERRQUEUE) < 0 && errno == EAGAIN && ms_now() - t0 < 50);
+        struct pollfd pu = {.fd = u, .events = POLLPRI};
+        CHECK(poll(&pu, 1, 0) == 0);
+        close(us);
+
+        /* The fast path: UDP only; not on loopback; read back as an int or the struct. */
+        const int t = socket(AF_INET, SOCK_STREAM, 0);
+        v = 1;
+        CHECK(setsockopt(t, BMDS_SOL_BMDS, BMDS_SO_FASTPATH, &v, sizeof(v)) < 0 && errno == ENOPROTOOPT);
+        close(t);
+        CHECK(setsockopt(u, BMDS_SOL_BMDS, BMDS_SO_FASTPATH, &v, sizeof(v)) < 0 && errno == ENODEV);
+        close(u);
+        const int       f = socket(AF_INET, SOCK_DGRAM, 0);
+        bmds_fastpath_t fp = {.size = sizeof(fp), .packet_us = 1000, .depth = 9};
+        CHECK(setsockopt(f, BMDS_SOL_BMDS, BMDS_SO_FASTPATH, &fp, sizeof(fp)) < 0 && errno == EINVAL);
+        fp.depth = 2;
+        CHECK(setsockopt(f, BMDS_SOL_BMDS, BMDS_SO_FASTPATH, &fp, sizeof(fp)) == 0);
+        struct sockaddr_in fa;
+        al = sizeof(fa);
+        CHECK(getsockname(f, (struct sockaddr *)&fa, &al) == 0 && fa.sin_port != 0); /* bound for it */
+        bmds_fastpath_t back = {.size = sizeof(back)};
+        vl = sizeof(back);
+        CHECK(getsockopt(f, BMDS_SOL_BMDS, BMDS_SO_FASTPATH, &back, &vl) == 0 && back.depth == 2 &&
+              back.packet_us == 1000);
+        vl = sizeof(v);
+        CHECK(getsockopt(f, BMDS_SOL_BMDS, BMDS_SO_FASTPATH, &v, &vl) == 0 && v == 1);
+        /* Another on the same port: taken. */
+        const int f2 = socket(AF_INET, SOCK_DGRAM, 0);
+        v = 1;
+        CHECK(setsockopt(f2, SOL_SOCKET, SO_REUSEADDR, &v, sizeof(v)) == 0);
+        CHECK(setsockopt(f, SOL_SOCKET, SO_REUSEADDR, &v, sizeof(v)) == 0);
+        if (bind(f2, (struct sockaddr *)&fa, sizeof(fa)) == 0)
+                CHECK(setsockopt(f2, BMDS_SOL_BMDS, BMDS_SO_FASTPATH, &v, sizeof(v)) < 0 && errno == EADDRINUSE);
+        close(f2);
+        v = 0;
+        CHECK(setsockopt(f, BMDS_SOL_BMDS, BMDS_SO_FASTPATH, &v, sizeof(v)) == 0);
+        vl = sizeof(v);
+        CHECK(getsockopt(f, BMDS_SOL_BMDS, BMDS_SO_FASTPATH, &v, &vl) == 0 && v == 0);
+        close(f);
+
+        if (peerName == NULL) {
+                printf("rtnet: all passed (no peer: no stamps sent)\n");
+                return 0;
+        }
+
+        /* Against the reflector: the fast path, then lwIP, each stamped both ways. */
+        struct sockaddr_in peer;
+        memset(&peer, 0, sizeof(peer));
+        peer.sin_family = AF_INET;
+        peer.sin_port = htons(5004);
+        CHECK(inet_aton(peerName, &peer.sin_addr) != 0);
+        for (int fast = 1; fast >= 0; --fast) {
+                for (int tsonly = 0; tsonly <= 1; ++tsonly) {
+                        const int s = socket(AF_INET, SOCK_DGRAM, 0);
+                        CHECK(s >= 0);
+                        v = 1;
+                        CHECK(setsockopt(s, SOL_SOCKET, SO_SELECT_ERR_QUEUE, &v, sizeof(v)) == 0);
+                        v = RT_TX_HARDWARE | RT_RX_HARDWARE | RT_RX_SOFTWARE | RT_SOFTWARE | RT_RAW_HARDWARE |
+                            RT_OPT_ID | (tsonly ? RT_OPT_TSONLY : 0);
+                        CHECK(setsockopt(s, SOL_SOCKET, SO_TIMESTAMPING, &v, sizeof(v)) == 0);
+                        v = 1;
+                        if (fast) CHECK(setsockopt(s, BMDS_SOL_BMDS, BMDS_SO_FASTPATH, &v, sizeof(v)) == 0);
+                        CHECK(connect(s, (struct sockaddr *)&peer, sizeof(peer)) == 0);
+                        /* The first may go through lwIP while the flow's ARP is answered. */
+                        for (uint32_t id = 0; id < 4; ++id) {
+                                if (rt_round(s, &peer, id, tsonly, fast ? "fast" : "lwip") != 0) return 1;
+                        }
+                        close(s);
+                }
+        }
+        printf("rtnet: all passed\n");
+        return 0;
+}
+
 /* Interval timers (devplan/programs.md §18): alarm, setitimer, getitimer. */
+/* --- Scheduling (processes.md §3.12) ---------------------------------- */
+
+static bmds_sched_t sched_of(pid_t tid) {
+        bmds_sched_t s = {.size = sizeof(s)};
+        if (bmds_sched(BMDS_SCHED_GET, (int32_t)tid, &s) != 0) s.policy = 99;
+        return s;
+}
+
+static volatile int   sched_go;
+static volatile pid_t sched_tid;
+
+static void *sched_child(void *arg) {
+        (void)arg;
+        sched_tid = gettid();
+        while (!sched_go) usleep(1000);
+        return (void *)(intptr_t)sched_getscheduler(0);
+}
+
+/* Lateness of @p n clock_nanosleep()s to an absolute time @p period_us apart: median and max (µs). */
+static void sleep_lateness(int n, int period_us, int64_t *median, int64_t *max) {
+        static int64_t  late[1000];
+        struct timespec t;
+        clock_gettime(CLOCK_MONOTONIC, &t);
+        if (n > 1000) n = 1000;
+        for (int i = 0; i < n; ++i) {
+                t.tv_nsec += period_us * 1000L;
+                while (t.tv_nsec >= 1000000000L) {
+                        t.tv_nsec -= 1000000000L;
+                        ++t.tv_sec;
+                }
+                clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t, NULL);
+                struct timespec now;
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                late[i] = ((int64_t)(now.tv_sec - t.tv_sec) * 1000000000 + (now.tv_nsec - t.tv_nsec)) / 1000;
+        }
+        for (int i = 1; i < n; ++i) /* insertion sort: n is small */
+                for (int j = i; j > 0 && late[j - 1] > late[j]; --j) {
+                        const int64_t x = late[j];
+                        late[j] = late[j - 1];
+                        late[j - 1] = x;
+                }
+        *median = late[n / 2];
+        *max = late[n - 1];
+}
+
+static volatile int64_t spin_until_ms;
+
+static void *spin_rt(void *arg) {
+        *(volatile pid_t *)arg = gettid();
+        while (now_ms() < spin_until_ms) {}
+        return NULL;
+}
+
+static int sched_test(const char *self) {
+        CHECK(bmds_sys_has(BMDS_SYS_SCHED));
+        /* What every thread starts with. */
+        const bmds_sched_t first = sched_of(0);
+        CHECK(first.policy == BMDS_SCHED_OTHER && first.priority == 0);
+        CHECK(sched_getscheduler(0) == SCHED_OTHER);
+        struct sched_param sp = {.sched_priority = 7};
+        CHECK(sched_getparam(0, &sp) == 0 && sp.sched_priority == 0);
+        CHECK(sched_get_priority_min(SCHED_FIFO) == 1 && sched_get_priority_max(SCHED_RR) == 99);
+        CHECK(sched_get_priority_min(SCHED_OTHER) == 0 && sched_get_priority_max(SCHED_OTHER) == 0);
+        CHECK(sched_get_priority_max(42) == -1 && errno == EINVAL);
+        struct timespec slice;
+        CHECK(sched_rr_get_interval(0, &slice) == 0 && slice.tv_sec == 0 && slice.tv_nsec == 1000000);
+        CHECK(sched_yield() == 0);
+        /* Cores: both, fixed. */
+        cpu_set_t cpus;
+        CPU_ZERO(&cpus);
+        CHECK(sched_getaffinity(0, sizeof(cpus), &cpus) == 0 && CPU_COUNT(&cpus) == 2);
+        CHECK(sysconf(_SC_NPROCESSORS_ONLN) == 2);
+        CHECK(sched_setaffinity(0, sizeof(cpus), &cpus) == 0);
+        cpu_set_t one;
+        CPU_ZERO(&one);
+        CPU_SET(1, &one);
+        CHECK(sched_setaffinity(0, sizeof(one), &one) == -1 && errno == EINVAL);
+        const int cpu = sched_getcpu();
+        CHECK(cpu == 0 || cpu == 1);
+        /* The errors. */
+        sp.sched_priority = 0;
+        CHECK(sched_setscheduler(0, SCHED_FIFO, &sp) == -1 && errno == EINVAL);
+        sp.sched_priority = 100;
+        CHECK(sched_setscheduler(0, SCHED_RR, &sp) == -1 && errno == EINVAL);
+        sp.sched_priority = 5;
+        CHECK(sched_setscheduler(0, SCHED_OTHER, &sp) == -1 && errno == EINVAL);
+        sp.sched_priority = 0;
+        CHECK(sched_setscheduler(0, 4, &sp) == -1 && errno == EINVAL);
+        CHECK(sched_setscheduler(0, SCHED_OTHER, NULL) == -1 && errno == EINVAL);
+        CHECK(sched_getscheduler(30000) == -1 && errno == ESRCH);
+        CHECK(sched_getscheduler(-1) == -1 && errno == EINVAL);
+        bmds_sched_t bad = {.size = sizeof(bad), .flags = 1};
+        CHECK(bmds_sched(BMDS_SCHED_SET, 0, &bad) == -BMDS_EINVAL);
+        CHECK(bmds_sched(7, 0, &bad) == -BMDS_EINVAL);
+        CHECK(bmds_sched(BMDS_SCHED_YIELD, 0, &bad) == -BMDS_EINVAL);
+        CHECK(bmds_sched(BMDS_SCHED_GET, 0, NULL) == -BMDS_EFAULT);
+        CHECK(sched_getscheduler(0) == SCHED_OTHER); /* nothing changed */
+        /* The tick's sleeps, for comparison. */
+        int64_t tick_median, tick_max;
+        sleep_lateness(200, 1000, &tick_median, &tick_max);
+        /* Real time: FIFO 50, read back by both calls; the kernel priority in the band. */
+        sp.sched_priority = 50;
+        CHECK(sched_setscheduler(0, SCHED_FIFO, &sp) == 0);
+        CHECK(sched_getscheduler(0) == SCHED_FIFO);
+        CHECK(sched_getparam(0, &sp) == 0 && sp.sched_priority == 50);
+        bmds_sched_t s = sched_of(0);
+        CHECK(s.policy == BMDS_SCHED_FIFO && s.priority == 50 && s.cores == 3 && (s.core == 0 || s.core == 1));
+        CHECK(s.kernel_priority > first.kernel_priority && s.kernel_priority < 19);
+        printf("sched: OTHER at kernel priority %u, FIFO 50 at %u\n", (unsigned)first.kernel_priority,
+               (unsigned)s.kernel_priority);
+        sp.sched_priority = 99;
+        CHECK(sched_setparam(0, &sp) == 0 && sched_getscheduler(0) == SCHED_FIFO);
+        CHECK(sched_of(0).kernel_priority > s.kernel_priority);
+        sp.sched_priority = 50;
+        CHECK(sched_setparam(0, &sp) == 0);
+        /* A real-time sleep ends at its time. */
+        int64_t rt_median, rt_max;
+        sleep_lateness(1000, 1000, &rt_median, &rt_max);
+        printf("sched: 1 ms sleeps late by median %lld us, max %lld (the tick's: %lld, %lld)\n", (long long)rt_median,
+               (long long)rt_max, (long long)tick_median, (long long)tick_max);
+        CHECK(rt_median < 100 && tick_median >= 100);
+        /* A thread inherits; set and read back from here; another thread's explicit policy. */
+        pthread_t t;
+        sched_go = 0;
+        sched_tid = 0;
+        CHECK(pthread_create(&t, NULL, sched_child, NULL) == 0);
+        while (sched_tid == 0) usleep(1000);
+        int                policy = -1;
+        struct sched_param tp = {0};
+        CHECK(pthread_getschedparam(t, &policy, &tp) == 0 && policy == SCHED_FIFO && tp.sched_priority == 50);
+        tp.sched_priority = 10;
+        CHECK(pthread_setschedparam(t, SCHED_RR, &tp) == 0);
+        CHECK(sched_of(sched_tid).policy == BMDS_SCHED_RR && sched_of(sched_tid).priority == 10);
+        CHECK(sched_of(sched_tid).core == -1);
+        CHECK(pthread_setschedprio(t, 20) == 0 && sched_of(sched_tid).priority == 20);
+        tp.sched_priority = 0;
+        CHECK(pthread_setschedparam(t, SCHED_OTHER, &tp) == 0);
+        sched_go = 1;
+        void *r = NULL;
+        CHECK(pthread_join(t, &r) == 0 && (intptr_t)r == SCHED_OTHER);
+        pthread_attr_t a;
+        CHECK(pthread_attr_init(&a) == 0 && pthread_attr_setinheritsched(&a, PTHREAD_EXPLICIT_SCHED) == 0);
+        tp.sched_priority = 30;
+        CHECK(pthread_attr_setschedpolicy(&a, SCHED_RR) == 0 && pthread_attr_setschedparam(&a, &tp) == 0);
+        sched_go = 1;
+        CHECK(pthread_create(&t, &a, sched_child, NULL) == 0 && pthread_join(t, &r) == 0 && (intptr_t)r == SCHED_RR);
+        pthread_attr_destroy(&a);
+        /* A process inherits, unless SCHED_RESET_ON_FORK; that flag reads back. */
+        CHECK(status_of(start(self, NULL, NULL, "schedof", NULL)) == SCHED_FIFO);
+        sp.sched_priority = 50;
+        CHECK(sched_setscheduler(0, SCHED_FIFO | SCHED_RESET_ON_FORK, &sp) == 0);
+        CHECK(sched_getscheduler(0) == (SCHED_FIFO | SCHED_RESET_ON_FORK));
+        CHECK(status_of(start(self, NULL, NULL, "schedof", NULL)) == SCHED_OTHER);
+        sched_go = 0;
+        sched_tid = 0;
+        CHECK(pthread_create(&t, NULL, sched_child, NULL) == 0);
+        while (sched_tid == 0) usleep(1000);
+        CHECK(sched_of(sched_tid).policy == BMDS_SCHED_OTHER);
+        sched_go = 1;
+        CHECK(pthread_join(t, &r) == 0);
+        /* Two busy real-time threads (both cores): held back for the rest of each second once
+         * they have had 95 % of one, so this thread (normal priority again) still runs. */
+        sp.sched_priority = 0;
+        CHECK(sched_setscheduler(0, SCHED_OTHER, &sp) == 0);
+        CHECK(sched_of(0).kernel_priority == first.kernel_priority);
+        pthread_t      spinners[2];
+        volatile pid_t ids[2] = {0, 0};
+        CHECK(pthread_attr_init(&a) == 0 && pthread_attr_setinheritsched(&a, PTHREAD_EXPLICIT_SCHED) == 0);
+        tp.sched_priority = 1;
+        CHECK(pthread_attr_setschedpolicy(&a, SCHED_FIFO) == 0 && pthread_attr_setschedparam(&a, &tp) == 0);
+        spin_until_ms = now_ms() + 2500;
+        for (int i = 0; i < 2; ++i) CHECK(pthread_create(&spinners[i], &a, spin_rt, (void *)&ids[i]) == 0);
+        pthread_attr_destroy(&a);
+        int      wakes = 0;
+        int64_t  last = now_ms(), longest = 0;
+        uint32_t throttled = 0; /* read while the thread is there */
+        while (now_ms() < spin_until_ms - 100) {
+                usleep(5000);
+                const int64_t n = now_ms();
+                if (n - last > longest) longest = n - last;
+                last = n;
+                ++wakes;
+                const bmds_sched_t spinner = sched_of(ids[0]);
+                if (spinner.policy == BMDS_SCHED_FIFO && spinner.throttled > throttled) throttled = spinner.throttled;
+        }
+        for (int i = 0; i < 2; ++i) CHECK(pthread_join(spinners[i], NULL) == 0);
+        printf("sched: beside two busy real-time threads for 2.5 s: woke %d times, the longest gap %lld ms; "
+               "throttled %u times\n",
+               wakes, (long long)longest, (unsigned)throttled);
+        CHECK(throttled >= 2 && wakes >= 10);
+        printf("sched: all passed\n");
+        return 0;
+}
+
 static int64_t timer_left_us(void) {
         struct itimerval it;
         if (getitimer(ITIMER_REAL, &it) != 0) return -1;
@@ -3122,7 +3544,7 @@ int main(int argc, char **argv) {
                         "threads|"
                         "threadspin|filetype|audio|decode|rt|midi|synth|synthload|mididecode|hog|stats|tasks|"
                         "procs|"
-                        "system|notify|expand|image|net|netwatch [arg]\n");
+                        "system|notify|expand|image|net|netwatch|rtnet|sched [arg]\n");
                 return 2;
         }
         const char *what = argv[1];
@@ -3147,6 +3569,9 @@ int main(int argc, char **argv) {
         if (strcmp(what, "notify") == 0) return notify_test(argc > 2 && strcmp(arg, "served") == 0);
         if (strcmp(what, "net") == 0) return net_test();
         if (strcmp(what, "netwatch") == 0) return net_watch_test(argc > 2 ? atoi(arg) : 1);
+        if (strcmp(what, "rtnet") == 0) return rt_net_test(argc > 2 ? arg : NULL);
+        if (strcmp(what, "sched") == 0) return sched_test(arg);
+        if (strcmp(what, "schedof") == 0) return sched_getscheduler(0) & 0xff;
         if (strcmp(what, "procexec") == 0) return proc_exec(arg);
         if (strcmp(what, "proccheck") == 0) return proc_check(arg);
         if (strcmp(what, "burn") == 0) {

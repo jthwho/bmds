@@ -76,6 +76,9 @@ add_executable(bmds_host_tests
         mplayer.cpp
         sysmon.cpp
         cpumeter.cpp
+        netclassifier.cpp
+        icmpratelimit.cpp
+        realtime.cpp
         networkview.cpp
         ntp.cpp
         shacrypt.cpp

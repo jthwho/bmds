@@ -189,6 +189,13 @@ on BMDS's table; programs never see that layer. What differs from Linux:
   readable after it changes (`devplan/network.md` §20).
 - **Timers** (`devplan/programs.md` §18): `alarm`, `ualarm`, `setitimer` and `getitimer` with
   `ITIMER_REAL` (`SIGALRM`, never early). `ITIMER_VIRTUAL`/`ITIMER_PROF` are `EINVAL`.
+- **Scheduling** (`devplan/processes.md` §3.12): `pthread_setschedparam` and the
+  `sched_setscheduler` family per thread, as Linux's, with `SCHED_FIFO` and `SCHED_RR` at 1-99
+  (above the shells, the desktop and the IP stack, below the drivers; `FIFO` takes turns with
+  its own priority as `RR` does), inherited by threads and processes unless
+  `SCHED_RESET_ON_FORK`. Real-time threads get 95 % of each second, as Linux's default. Their
+  sleeps wake from a hardware timer, about 30 µs after the time (others' on the 1 ms tick).
+  `sched_getaffinity` gives both cores; `sched_setaffinity` can't move a thread (`EINVAL`).
 - **Not yet:** threads, POSIX timers (`timer_create`),
   `sigaltstack`, `sigwaitinfo`, realtime signals, the sender's pid in
   `siginfo`.

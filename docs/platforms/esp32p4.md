@@ -224,6 +224,17 @@ until silicon v3; then test again.
   `xPortInterruptedFromISRContext()` is the nesting depth (above 1: the tick interrupted a handler).
 - **The EMAC's sent interrupt on every frame** woke the driver's task 72 µs a frame; asking for it
   only now and then (a descriptor's IC bit) and reclaiming in the sender removed most of that.
+- **A task's core is fixed at its creation:** ESP-IDF's FreeRTOS has no `vTaskCoreAffinitySet()`
+  (only the Amazon SMP kernel does, with `configUSE_CORE_AFFINITY`), so a thread can't be moved
+  after it starts; `sched_setaffinity` refuses (`devplan/processes.md` §3.12).
+- **Sleeping to a time finer than the tick:** a GPTimer's alarm releasing a semaphore from its
+  interrupt woke a priority-12 program thread 29-32 µs after its time at the median, 63-155 µs at
+  worst, against the tick's 360 µs and 680-900 µs (`progtest sched`, 1 ms periods). Its
+  interrupt isn't cache-safe (`CONFIG_GPTIMER_ISR_CACHE_SAFE` off), so it is held off during a
+  flash write and may touch memory in PSRAM (`waketimer.cpp`).
+- **Opening the console's USB serial port resets the chip,** even with DTR and RTS held low
+  before the open (pyserial): the boot log shows `rst:0x17 (CHIP_USB_UART_RESET)`. Capturing a
+  panic means having the port open before it happens.
 
 ## 5. ESP-IDF
 

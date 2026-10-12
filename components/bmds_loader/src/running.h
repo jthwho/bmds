@@ -103,6 +103,13 @@ struct ProgramThread final : ProcessOwner {
                 bool                  suspendedForStop = false; // under the process table's lock
                 bool                  ended = false;            // under the Running's threadsLock
                 bool realtime = false; // raised by an audio device (audio_cycle): forgotten there before its task goes
+                // Its scheduling (sched; devplan/processes.md §3.12), under the real-time lock:
+                uint8_t  policy = BMDS_SCHED_OTHER;
+                uint8_t  rtPriority = 0;      // 1-99 with FIFO or RR
+                bool     resetOnFork = false; // what it starts begins as OTHER
+                uint8_t  normalPriority = 0;  // its kernel priority without a real-time policy
+                uint32_t throttled = 0;       // times held back by the real-time budget
+                bool     begun = false;       // it has run: its task exists, a real-time one is counted
 
                 /** @brief The calling task's record (a program thread's: system calls only). */
                 static ProgramThread &self() { return *ProcessOwner::current()->thread; }
@@ -165,6 +172,7 @@ struct ProgramThread final : ProcessOwner {
                 [[noreturn]] void exitThread(int32_t status, void *release);
                 int32_t           killThread(int32_t target, int32_t sig, uint32_t flags);
                 int32_t           setClear(volatile int32_t *word);
+                int32_t           sched(uint32_t op, int32_t target, bmds_sched_t *param);
 
         private:
                 int32_t endChild(int32_t waitStatus);

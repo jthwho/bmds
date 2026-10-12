@@ -16,13 +16,17 @@
 #include <lwip/ip4_addr.h>
 #include <netif/ethernet.h>
 #include <bmds/log.h>
+#include <bmds/clock.h>
 #include <bmds/netstack.h>
+#include <bmds/socket.h>
 #include <bmds/staticobject.h>
 #include <bmds/string.h>
+#include <bmds/system.h>
 
 #include "netchanges.h"
 #include "netinterface.h"
 #include "netnames.h"
+#include "pbufmarks.h"
 #include "ntpclient.h"
 
 BMDS_NAMESPACE_BEGIN
@@ -245,6 +249,7 @@ void NetInterface::input(const EthernetDevice::RxFrame &frame) {
                 // lwIP is holding buffers (TCP's queues): copy, so the ring keeps its own.
                 p = pbuf_alloc(PBUF_RAW, frame.length, PBUF_RAM);
                 if (p != nullptr) (void)pbuf_take(p, frame.data, frame.length);
+                if (p != nullptr) PbufMarks::setArrival(p, frame.stamped ? frame.stamp.toNs() : 0, Clock::now().ns);
                 _device.release(frame);
                 if (p == nullptr) {
                         ++_counters.rxDropped;
@@ -256,6 +261,7 @@ void NetInterface::input(const EthernetDevice::RxFrame &frame) {
                 r.frame = frame;
                 p = pbuf_alloced_custom(PBUF_RAW, frame.length, PBUF_REF, &r.custom, frame.data,
                                         EthernetDevice::BufferBytes);
+                PbufMarks::setArrival(p, frame.stamped ? frame.stamp.toNs() : 0, Clock::now().ns);
                 _held.fetch_add(1, std::memory_order_relaxed);
         }
         // A payload the MAC didn't check (a fragment, one it bypassed or found bad) is checked
@@ -289,6 +295,26 @@ err_t NetInterface::linkOutput(struct netif *netif, struct pbuf *p) {
                 }
                 pieces[count++] = Span<const uint8_t>(static_cast<const uint8_t *>(q->payload), q->len);
         }
+        // lwIP answers every datagram to a closed port; Linux's limits hold it back (§30g).
+        if (count != 0 && !n._icmpLimit.allow(pieces[0], static_cast<int64_t>(System::uptimeUs()))) return ERR_OK;
+        // A socket's marks (§30f): its class, and a stamp it asked for. A fragment's pbufs are
+        // lwIP's own and carry none.
+        const uint32_t flags = p->bmds_tx_class == PbufMarks::Priority ? uint32_t(EthernetDevice::TxPriority) : 0u;
+        const uint32_t cookie = p->bmds_tx_cookie;
+        if (cookie != 0) {
+                const auto frame = Span<const Span<const uint8_t>>(pieces, count);
+                Socket::recordSent(cookie, p->bmds_tx_id, frame);
+                if (cookie & Socket::CookieSoftware) {
+                        Socket::stampSent(cookie, 0, Clock::now().ns);
+                } else {
+                        const Error err = n._device.transmitStamped(frame, flags, n, cookie, TxTimeoutMs).error();
+                        if (err.isError()) {
+                                ++n._counters.txDropped;
+                                return err == Error::NotReady ? ERR_IF : ERR_MEM;
+                        }
+                        return ERR_OK;
+                }
+        }
         // The DMA reads lwIP's buffers, held (a reference) until the device is done with them;
         // lwIP doesn't touch a TCP segment it sees held (tcp_output_segment_busy()).
         Result<uint32_t> sent = makeError<uint32_t>(Error::Invalid);
@@ -296,13 +322,13 @@ err_t NetInterface::linkOutput(struct netif *netif, struct pbuf *p) {
         if (n._inPlace < MaxInPlace) {
                 pbuf_ref(p);
                 ++n._inPlace;
-                sent = n._device.transmitInPlace(frame, 0, p, TxTimeoutMs);
+                sent = n._device.transmitInPlace(frame, flags, p, TxTimeoutMs);
                 if (sent.error().isError()) {
                         --n._inPlace;
                         pbuf_free(p);
                 }
         } else {
-                sent = n._device.transmit(frame, 0, TxTimeoutMs);
+                sent = n._device.transmit(frame, flags, TxTimeoutMs);
         }
         const Error err = sent.error();
         if (err.isError()) {
@@ -310,6 +336,12 @@ err_t NetInterface::linkOutput(struct netif *netif, struct pbuf *p) {
                 return err == Error::NotReady ? ERR_IF : ERR_MEM;
         }
         return ERR_OK;
+}
+
+void NetInterface::stamped(uint32_t cookie, uint32_t ticket, const PtpTime &time) {
+        (void)ticket;
+        Socket::stampSent(cookie, time.toNs(), 0);
+        return;
 }
 
 void NetInterface::txDone(void *arg, void *token) {
@@ -454,6 +486,7 @@ void NetInterface::apply(Mode was) {
 
 void NetInterface::statusChanged(struct netif *netif) {
         auto &n = *static_cast<NetInterface *>(netif->state);
+        n._ipv4.store(fromLwip(netif_ip4_addr(netif)), std::memory_order_relaxed);
         if (!n._applying) n.logAddress();
         NetStatus::noteChange();
         // A lease lost takes its servers with it.

@@ -327,3 +327,47 @@ diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/thread/pthread_create.
  
  	/* All clone failures translate to EAGAIN. If explicit scheduling
  	 * was requested, attempt it before unlocking the thread list so
+diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/sched/sched_getparam.c musl/src/sched/sched_getparam.c
+--- /home/jth/.cache/bmds-scratch/musl-pristine/src/sched/sched_getparam.c	2026-10-12 13:03:19.257915614 -0700
++++ musl/src/sched/sched_getparam.c	2026-10-12 13:03:26.334488837 -0700
+@@ -4,5 +4,6 @@
+ 
+ int sched_getparam(pid_t pid, struct sched_param *param)
+ {
+-	return __syscall_ret(-ENOSYS);
++	/* BMDS: the thread's, as glibc's (devplan/processes.md §3.12). */
++	return syscall(SYS_sched_getparam, pid, param);
+ }
+diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/sched/sched_getscheduler.c musl/src/sched/sched_getscheduler.c
+--- /home/jth/.cache/bmds-scratch/musl-pristine/src/sched/sched_getscheduler.c	2026-10-12 13:03:19.257915614 -0700
++++ musl/src/sched/sched_getscheduler.c	2026-10-12 13:03:26.334569093 -0700
+@@ -4,5 +4,6 @@
+ 
+ int sched_getscheduler(pid_t pid)
+ {
+-	return __syscall_ret(-ENOSYS);
++	/* BMDS: the thread's, as glibc's (devplan/processes.md §3.12). */
++	return syscall(SYS_sched_getscheduler, pid);
+ }
+diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/sched/sched_setparam.c musl/src/sched/sched_setparam.c
+--- /home/jth/.cache/bmds-scratch/musl-pristine/src/sched/sched_setparam.c	2026-10-12 13:03:19.257915614 -0700
++++ musl/src/sched/sched_setparam.c	2026-10-12 13:03:26.334728088 -0700
+@@ -4,5 +4,6 @@
+ 
+ int sched_setparam(pid_t pid, const struct sched_param *param)
+ {
+-	return __syscall_ret(-ENOSYS);
++	/* BMDS: the thread's, as glibc's (devplan/processes.md §3.12). */
++	return syscall(SYS_sched_setparam, pid, param);
+ }
+diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/sched/sched_setscheduler.c musl/src/sched/sched_setscheduler.c
+--- /home/jth/.cache/bmds-scratch/musl-pristine/src/sched/sched_setscheduler.c	2026-10-12 13:03:19.257915614 -0700
++++ musl/src/sched/sched_setscheduler.c	2026-10-12 13:03:26.334826829 -0700
+@@ -4,5 +4,6 @@
+ 
+ int sched_setscheduler(pid_t pid, int sched, const struct sched_param *param)
+ {
+-	return __syscall_ret(-ENOSYS);
++	/* BMDS: the thread's, as glibc's (devplan/processes.md §3.12). */
++	return syscall(SYS_sched_setscheduler, pid, sched, param);
+ }

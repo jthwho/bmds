@@ -2,9 +2,10 @@
 # thirdparty/lwip) with its port and interfaces, NTP and mDNS, and the `net`, `ping` and `ntp`
 # commands.
 #
-# Ethernet framing, ARP, IPv4 text, the multicast filter, NTP's arithmetic and the sockets are
-# portable: also built as a plain CMake library for the host tests (tests/host), with lwIP itself
-# as bmds_lwip (the same lwipopts.h; the host tests define the port's functions and NetStack's).
+# Ethernet framing, ARP, IPv4 text, the multicast filter, the real-time classifier, ICMP's rate
+# limits, NTP's arithmetic and the sockets are portable: also built as a plain CMake library for
+# the host tests (tests/host), with lwIP itself as bmds_lwip (the same lwipopts.h; the host tests
+# define the port's functions and NetStack's).
 #
 # WHOLE_ARCHIVE: nothing references the commands by symbol -- they are found through the linker
 # section.
@@ -13,7 +14,9 @@ set(BMDS_LWIP_DIR ${CMAKE_CURRENT_LIST_DIR}/../../thirdparty/lwip/src)
 
 set(BMDS_NET_PORTABLE_SRCS
         src/ethernet.cpp
+        src/icmpratelimit.cpp
         src/multicastfilter.cpp
+        src/netclassifier.cpp
         src/ntp.cpp)
 
 # lwIP: the core, IPv4, DNS and mDNS's responder (IPv6 is vendored for later, not built yet).
@@ -55,6 +58,7 @@ if(COMMAND idf_component_register)
                                     ${BMDS_LWIP_SRCS}
                                     src/ethernetdevice.cpp
                                     src/netcommand.cpp
+                                    src/netflow.cpp
                                     src/netinterface.cpp
                                     src/netmdns.cpp
                                     src/netnames.cpp
@@ -65,6 +69,7 @@ if(COMMAND idf_component_register)
                                     src/ntpcommand.cpp
                                     src/pingcommand.cpp
                                     src/socket.cpp
+                                    src/socketfastpath.cpp
                                     src/sshservice.cpp
                                INCLUDE_DIRS include
                                PRIV_INCLUDE_DIRS ${BMDS_LWIP_INCLUDES}
@@ -78,7 +83,7 @@ else()
         target_include_directories(bmds_lwip PUBLIC ${BMDS_LWIP_INCLUDES})
         bmds_target_options(bmds_lwip)
 
-        add_library(bmds_net STATIC ${BMDS_NET_PORTABLE_SRCS} src/socket.cpp)
+        add_library(bmds_net STATIC ${BMDS_NET_PORTABLE_SRCS} src/socket.cpp src/socketfastpathnone.cpp)
         target_include_directories(bmds_net PUBLIC include PRIVATE ${BMDS_LWIP_INCLUDES})
         target_link_libraries(bmds_net PUBLIC bmds_core bmds_kernel bmds_lwip)
         bmds_target_options(bmds_net)

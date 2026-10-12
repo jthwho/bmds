@@ -14,6 +14,7 @@ set(BMDS_LOADER_PURE_SRCS
         src/imagecache.cpp
         src/process.cpp
         src/processtable.cpp
+        src/realtimebudget.cpp
         src/programicons.cpp
         src/programimage.cpp
         src/signals.cpp)
@@ -30,12 +31,14 @@ if(COMMAND idf_component_register)
                                     src/netcalls.cpp
                                     src/notifycalls.cpp
                                     src/proccommand.cpp
+                                    src/realtimethreads.cpp
                                     src/statscalls.cpp
                                     src/syscalls.cpp
                                     src/systable.c
                                INCLUDE_DIRS include ${BMDS_SDK_INCLUDE}
                                REQUIRES bmds_core bmds_kernel bmds_console bmds_fs bmds_sysconf
                                PRIV_REQUIRES bmds_audio bmds_crypto bmds_drivers bmds_images bmds_midi bmds_net bmds_stats bmds_synth bmds_shell esp_hw_support esp_mm
+                                             esp_timer
                                              freertos
                                # proccommand.cpp's commands are found through their linker
                                # section, not by symbol.

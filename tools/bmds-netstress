@@ -11,6 +11,7 @@
 # net.ethN.*) must not have moved and the MAC's receive path must not be wedged (`net regs`).
 #
 #   tools/bmds-netstress --board root@bmds0 --peer user@host [--tests tcp,flood,link,reboot]
+#                        [--flood-mbps 95]
 #
 # Run from any machine that reaches both over ssh (keys, no prompts). The peer must be wired to
 # the board's switch (a Wi-Fi peer can't load the link) and have python3 and nc (OpenBSD's).
@@ -24,22 +25,32 @@ import time
 
 SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
 
-# What the peer runs to flood: full-size UDP datagrams, unpaced (the switch paces them to the
-# board's line rate), to a port nobody listens on.
+# What the peer runs to flood: full-size UDP datagrams to a port nobody listens on, unpaced (the
+# switch drops what the board's port can't take, and anything else queued for it with them) or at
+# a rate in Mbit/s on the wire (preamble and gap included: 100 is the line, 8127 frames a second).
 FLOOD = r"""
 import socket, sys, time
-host, port, secs = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
+host, port, secs, mbps = sys.argv[1], int(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 << 20)
 data = b"\0" * 1472
+rate = mbps * 1e6 / ((1472 + 8 + 20 + 14 + 4 + 8 + 12) * 8)
 n = 0
-end = time.time() + secs
-while time.time() < end:
-    try:
-        s.sendto(data, (host, port))
+start = time.time()
+end = start + secs
+while True:
+    now = time.time()
+    if now >= end:
+        break
+    due = int((now - start) * rate) if rate > 0 else n + 64
+    while n < due:
+        try:
+            s.sendto(data, (host, port))
+        except OSError:
+            pass
         n += 1
-    except OSError:
-        pass
+    if rate > 0:
+        time.sleep(0.0005)
 print(n)
 """
 
@@ -108,8 +119,8 @@ class Checker:
         return moved
 
     def flood(self, seconds):
-        p = subprocess.Popen(SSH + [self.args.peer, "python3 - %s %d %g" % (self.args.board_ip, self.args.port,
-                                                                            seconds)],
+        p = subprocess.Popen(SSH + [self.args.peer, "python3 - %s %d %g %g" % (self.args.board_ip, self.args.port,
+                                                                               seconds, self.args.flood_mbps)],
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         p.stdin.write(FLOOD)
         p.stdin.close()
@@ -209,6 +220,8 @@ def main():
     parser.add_argument("--mb", type=int, default=64, help="megabytes each TCP way (64)")
     parser.add_argument("--seconds", type=float, default=10, help="a flood's length (10)")
     parser.add_argument("--port", type=int, default=5003, help="the flood's UDP port (nobody listening)")
+    parser.add_argument("--flood-mbps", type=float, default=0,
+                        help="the flood's rate on the wire in Mbit/s (0, the default: as fast as the peer sends)")
     parser.add_argument("--tcp-port", type=int, default=5001)
     args = parser.parse_args()
     if not wait_for(args.board, 90):

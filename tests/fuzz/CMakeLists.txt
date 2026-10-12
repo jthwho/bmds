@@ -66,6 +66,14 @@ target_compile_options(ntp_fuzz PRIVATE -fno-exceptions -fno-rtti)
 target_link_libraries(ntp_fuzz PRIVATE bmds_core)
 target_link_options(ntp_fuzz PRIVATE -fsanitize=fuzzer)
 
+# The real-time classifier (devplan/network.md §30d): bmds_net's portable netclassifier.cpp and
+# the framing it reads with.
+add_executable(netclassifier_fuzz netclassifier.cpp ${NET}/src/netclassifier.cpp ${NET}/src/ethernet.cpp)
+target_include_directories(netclassifier_fuzz PRIVATE ${NET}/include)
+target_compile_options(netclassifier_fuzz PRIVATE -fno-exceptions -fno-rtti)
+target_link_libraries(netclassifier_fuzz PRIVATE bmds_core)
+target_link_options(netclassifier_fuzz PRIVATE -fsanitize=fuzzer)
+
 # Our SFTP server's protocol core (devplan/network.md §24): programs/sftp-server's sftp.c (C)
 # with made-up file calls.
 set(SFTP ${BMDS_ROOT}/programs/sftp-server)
