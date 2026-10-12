@@ -20,6 +20,7 @@
 #include <bmds/i2cbus.h>
 #include <bmds/input.h>
 #include <bmds/loader.h>
+#include <bmds/logfiles.h>
 #include <bmds/midi.h>
 #include <bmds/ramdisk.h>
 #include <bmds/romdisk.h>
@@ -70,6 +71,7 @@ namespace {
                 {"boot", bmds::BootDisk::init},       // /boot: the profile and autoexec.sh
                 {"rom", bmds::RomDisk::init},         // /rom: the files that come with the firmware
                 {"sysconf", bmds::SysConf::init},     // the system configuration, saved on /boot; /home
+                {"logs", bmds::LogFiles::init},       // /dev/log; the log's files in log/dir once it mounts
                 {"sysmon", bmds::Sysmon::init},       // the tasks' CPU time, the system's counters
                 {"audio", bmds::AudioDevice::init},   // dsp0: made, not started; follows audio/dsp0/...
                 {"midi", bmds::Midi::init},           // the router, /dev/midi*; before USB's MIDI devices

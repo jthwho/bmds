@@ -62,6 +62,8 @@
  *                         program end its terminal (setsid, TIOCSCTTY) and the size it sees, the
  *                         end of output once it exits, /dev/pts/N gone after
  *   progtest ctty         print what a pty's child sees of its terminal (for pty)
+ *   progtest syslog       syslog() and a hand-made AF_UNIX socket to /dev/log (logging.md §3.3):
+ *                         their lines in `log show`, tagged progtest[PID] and progtest-raw
  *   progtest net          sockets through musl on loopback: TCP (blocking and not, half closes,
  *                         resets, timeouts, poll), UDP (cut datagrams), raw ICMP, the interface
  *                         ioctls, net_info and net_watch, the errors
@@ -80,6 +82,7 @@
 #include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <syslog.h>
 #include <string.h>
 #include <poll.h>
 #include <pthread.h>
@@ -96,6 +99,7 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/sysinfo.h>
+#include <sys/un.h>
 #include <sys/times.h>
 #include <sys/utsname.h>
 #include <sys/time.h>
@@ -2644,6 +2648,28 @@ static size_t read_all(int fd, char *out, size_t size) {
         return got;
 }
 
+// syslog() (musl's: an AF_UNIX datagram socket to /dev/log), then such a socket by hand.
+static int syslogs(void) {
+        openlog("progtest", LOG_PID, LOG_USER);
+        syslog(LOG_WARNING, "a warning, %d", 42);
+        syslog(LOG_INFO, "info, two\nlines");
+        syslog(LOG_DEBUG, "debug (shown with log/level debug)");
+        closelog();
+        const int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        CHECK(fd >= 0);
+        struct sockaddr_un to = {.sun_family = AF_UNIX, .sun_path = "/dev/log"};
+        CHECK(connect(fd, (struct sockaddr *)&to, sizeof(to)) == 0);
+        static const char message[] = "<11>progtest-raw: an error, sent by hand";
+        CHECK(send(fd, message, sizeof(message) - 1, 0) == (ssize_t)(sizeof(message) - 1));
+        CHECK(sendto(fd, "<14>plain text", 14, 0, NULL, 0) == 14);
+        struct sockaddr_un elsewhere = {.sun_family = AF_UNIX, .sun_path = "/tmp/nowhere"};
+        CHECK(connect(fd, (struct sockaddr *)&elsewhere, sizeof(elsewhere)) < 0 && errno == ENOENT);
+        CHECK(close(fd) == 0);
+        CHECK(socket(AF_UNIX, SOCK_STREAM, 0) < 0 && errno == EAFNOSUPPORT);
+        printf("syslog: ok\n");
+        return 0;
+}
+
 static int ptys(const char *self) {
         int            m = -1, s = -1;
         char           name[32];
@@ -3074,6 +3100,7 @@ int main(int argc, char **argv) {
         if (strcmp(what, "timers") == 0) return timers(arg);
         if (strcmp(what, "pty") == 0) return ptys(arg);
         if (strcmp(what, "ctty") == 0) return controlling();
+        if (strcmp(what, "syslog") == 0) return syslogs();
         if (strcmp(what, "timerleft") == 0) {
                 // 0: nothing armed; otherwise more than that many seconds left.
                 const int64_t left = timer_left_us();

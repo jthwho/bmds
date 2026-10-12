@@ -14,6 +14,7 @@
 #include <esp_heap_caps.h>
 #include <bmds/console.h>
 #include <bmds/log.h>
+#include <bmds/logtext.h>
 #include <bmds/memory.h>
 #include <bmds/password.h>
 #include <bmds/shacrypt.h>
@@ -414,6 +415,82 @@ namespace {
                 return ctx.usage();
         }
 
+        // logger [-s] [-p PRI] [-t TAG] [MESSAGE...] (devplan/logging.md §4): the message, or each
+        // line of the standard input, into the system log.
+        int runLogger(CommandContext &ctx) {
+                const Args args = ctx.args();
+                uint8_t    severity = LogText::DefaultSeverity;
+                StringView tag("root"); // the user's name, as BusyBox's and util-linux's logger
+                bool       alsoStderr = false;
+                size_t     i = 1;
+                for (; i < args.size() && args[i][0] == '-' && args[i][1] != '\0'; ++i) {
+                        const StringView opt = args[i];
+                        if (opt == "--") {
+                                ++i;
+                                break;
+                        }
+                        if (opt == "-s") {
+                                alsoStderr = true;
+                        } else if ((opt == "-p" || opt == "-t") && i + 1 < args.size()) {
+                                const StringView value = args[++i];
+                                if (opt == "-t") {
+                                        tag = value;
+                                } else if (!LogText::parsePriority(value, severity)) {
+                                        ctx.eprintf("logger: unknown priority '%s'\n", args[i]);
+                                        return Shell::ExitUsage;
+                                }
+                        } else {
+                                return ctx.usage();
+                        }
+                }
+                const LogLevel level = Log::levelOfSeverity(severity);
+                auto           log = [&](StringView text) {
+                        Log::writeText(level, tag, text);
+                        if (alsoStderr) {
+                                ctx.eprintf("%.*s: ", int(tag.size()), tag.data());
+                                ctx.eprint(text);
+                                ctx.eprint("\n");
+                        }
+                };
+                if (i < args.size()) {
+                        char   message[CONFIG_BMDS_LOG_LINE_MAX];
+                        size_t len = 0;
+                        for (; i < args.size(); ++i) {
+                                const StringView word = args[i];
+                                if (len > 0 && len < sizeof(message)) message[len++] = ' ';
+                                const size_t n =
+                                        word.size() < sizeof(message) - len ? word.size() : sizeof(message) - len;
+                                std::memcpy(message + len, word.data(), n);
+                                len += n;
+                        }
+                        log(StringView(message, len));
+                        return Shell::ExitSuccess;
+                }
+                // The standard input's lines; one longer than the buffer is logged in pieces.
+                char   line[CONFIG_BMDS_LOG_LINE_MAX];
+                size_t used = 0;
+                for (;;) {
+                        char                 buf[128];
+                        const Result<size_t> got =
+                                ctx.read(WritableByteSpan(reinterpret_cast<uint8_t *>(buf), sizeof(buf)));
+                        if (got.isError() && got.error() != Error::EndOfFile) {
+                                if (used > 0) log(StringView(line, used));
+                                return got.error() == Error::Interrupted ? Shell::ExitInterrupted : Shell::ExitFailure;
+                        }
+                        if (got.isError() || got.value() == 0) break;
+                        for (size_t k = 0; k < got.value(); ++k) {
+                                if (buf[k] == '\n' || used == sizeof(line)) {
+                                        log(StringView(line, used));
+                                        used = 0;
+                                        if (buf[k] == '\n') continue;
+                                }
+                                line[used++] = buf[k];
+                        }
+                }
+                if (used > 0) log(StringView(line, used));
+                return Shell::ExitSuccess;
+        }
+
         // Parses "N" or "N.FFF" seconds into milliseconds (fraction to 1 ms).
         bool parseSeconds(StringView text, unsigned int &ms) {
                 constexpr uint64_t MaxMs = 7 * 24 * 3600 * 1000ull;
@@ -465,6 +542,9 @@ BMDS_SHELL_COMMAND(passwd, runPasswd, "[-d]",
                    "Set the password (asked twice, not shown; kept as a hash in system/password), or remove it")
 BMDS_SHELL_COMMAND(hostname, runHostname, "[NAME]",
                    "Show the system's name, or set and keep it ('' for the default, bmds- and the serial's end)")
+BMDS_SHELL_COMMAND(logger, runLogger, "[-s] [-p PRI] [-t TAG] [MESSAGE...]",
+                   "Write the message, or each line of standard input, to the system log (PRI: a number or "
+                   "FACILITY.LEVEL, as user.notice; TAG: root; -s: to standard error too)")
 BMDS_SHELL_COMMAND(log, runLog, "[show]",
                    "Show the log level and debug modules (sysconf's log/level and log/debug set them); "
                    "show the log history")

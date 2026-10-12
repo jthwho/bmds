@@ -60,7 +60,8 @@ namespace {
 
         // log/level: the least a line must be to be written.
         BMDS_SYSCONF(logLevel, "log/level", Config::Type::Enum, "info",
-                     "The least a log line must be to be written (info, warn, err)", 0, 0, "info|warn|err", nullptr)
+                     "The least a log line must be to be written (info, warn, err; debug: programs' debug lines too)",
+                     0, 0, "info|warn|err|debug", nullptr)
 
         // log/debug: each item a debug module (`log` lists them), or all.
         Error checkDebug(StringView value) {
@@ -80,9 +81,10 @@ namespace {
         void applyLog(void *) {
                 String value;
                 if (SysConf::get("log/level", value).isOk())
-                        Log::setLevel(value.view() == "err"    ? LogLevel::Err
-                                      : value.view() == "warn" ? LogLevel::Warn
-                                                               : LogLevel::Info);
+                        Log::setLevel(value.view() == "err"     ? LogLevel::Err
+                                      : value.view() == "warn"  ? LogLevel::Warn
+                                      : value.view() == "debug" ? LogLevel::Debug
+                                                                : LogLevel::Info);
                 if (SysConf::get("log/debug", value).isError()) return;
                 for (const DebugModule &m : Log::debugModules()) m.setEnabled(false);
                 StringView list = value.view();

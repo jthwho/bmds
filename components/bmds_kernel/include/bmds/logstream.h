@@ -47,4 +47,24 @@ class LogStream final : public Stream {
                 size_t      _used = 0;
 };
 
+/**
+ * @brief `/dev/log` (devplan/logging.md §3.3): each write is one syslog
+ *        message (RFC 3164, as musl's `syslog()` sends it): its `<PRI>` gives
+ *        the level, its timestamp is dropped, its `ident[pid]:` is the lines'
+ *        tag. Reads end at once.
+ *
+ * @par Thread Safety
+ * Thread-safe; stateless (the log's lock keeps each line whole).
+ */
+class SyslogStream final : public Stream {
+        public:
+                /** @brief The one every open of `/dev/log` shares. */
+                static SyslogStream &instance();
+
+                Result<size_t> read(WritableByteSpan buf, unsigned int timeoutMs) override;
+                Result<size_t> write(ByteSpan data, unsigned int timeoutMs) override;
+
+                using Stream::write;
+};
+
 BMDS_NAMESPACE_END

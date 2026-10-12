@@ -16,7 +16,8 @@
  * per descriptor, signals delivered between calls (programs.md §15), no fork()
  * (vfork, and posix_spawn on it: programs.md §13), only the real-time interval
  * timer (alarm, setitimer: programs.md §18). Sockets are IPv4 (network.md §18):
- * no AF_UNIX, AF_INET6 or netlink (getifaddrs, if_nameindex fail).
+ * no AF_INET6 or netlink (getifaddrs, if_nameindex fail), and AF_UNIX only as
+ * the datagram socket syslog() sends to /dev/log on (logging.md §3.3).
  */
 
 #define _GNU_SOURCE
@@ -44,6 +45,7 @@
 #include <sys/sysinfo.h>
 #include <sys/times.h>
 #include <sys/uio.h>
+#include <sys/un.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -481,10 +483,13 @@ static long do_open(long dirfd, const char *path, long flags) {
         return (long)(fd);
 }
 
+static void forget_log_socket(long fd);
+
 static long do_close(long fd) {
         const int i = dir_index(fd);
         if (i >= 0) return close_dir(i);
         set_nonblock(fd, 0);
+        forget_log_socket(fd);
         __bmds_oss_closed(fd);
         return (long)(bmds_close((int32_t)fd));
 }
@@ -1588,7 +1593,63 @@ static uint32_t msg_flags(long fd, long flags) {
         return (uint32_t)flags | (is_nonblock(fd) ? BMDS_MSG_DONTWAIT : 0);
 }
 
+/* syslog's socket (logging.md §3.3): musl's syslog() sends each message as a datagram on an
+ * AF_UNIX socket connected to /dev/log. There are no AF_UNIX sockets, so that socket is /dev/log
+ * opened for writing, and what is sent on it is written to it, a message a write. Its
+ * descriptors are kept here (as fd + 1; 0 is a free slot) until they are closed. */
+#define LOG_SOCKETS 4
+static int32_t    log_sockets[LOG_SOCKETS];
+static const char log_path[] = "/dev/log";
+
+static int is_log_socket(long fd) {
+        for (int i = 0; i < LOG_SOCKETS; ++i)
+                if (log_sockets[i] == fd + 1) return 1;
+        return 0;
+}
+
+static void forget_log_socket(long fd) {
+        for (int i = 0; i < LOG_SOCKETS; ++i)
+                if (log_sockets[i] == fd + 1) log_sockets[i] = 0;
+        return;
+}
+
+static long log_socket(long type) {
+        if ((type & 0xf) != SOCK_DGRAM) return -EAFNOSUPPORT;
+        int slot = 0;
+        while (slot < LOG_SOCKETS && log_sockets[slot] != 0) ++slot;
+        if (slot == LOG_SOCKETS) return -ENFILE;
+        const int32_t fd = bmds_open(log_path, BMDS_O_WRITE | ((type & SOCK_CLOEXEC) ? BMDS_O_CLOEXEC : 0));
+        if (fd < 0) return fd == -BMDS_ENOENT ? -EAFNOSUPPORT : (long)(fd);
+        set_nonblock(fd, (type & SOCK_NONBLOCK) != 0);
+        log_sockets[slot] = fd + 1;
+        return (long)(fd);
+}
+
+/* connect() on syslog's socket: /dev/log is the only address there is. */
+static long log_connect(const void *addr, socklen_t length) {
+        const size_t path_at = offsetof(struct sockaddr_un, sun_path);
+        if (addr == NULL) return -EFAULT;
+        if (length < path_at || ((const struct sockaddr *)addr)->sa_family != AF_UNIX) return -EAFNOSUPPORT;
+        const char  *path = (const char *)addr + path_at;
+        const size_t n = strnlen(path, length - path_at);
+        return n == sizeof(log_path) - 1 && memcmp(path, log_path, n) == 0 ? 0 : -ENOENT;
+}
+
+/* A message sent on syslog's socket: its pieces in one write (at most 2048 bytes, as a datagram
+ * /dev/log takes; musl's are at most 1024). */
+static long log_send(long fd, const struct iovec *v, size_t count) {
+        char   message[2048];
+        size_t used = 0;
+        for (size_t i = 0; i < count; ++i) {
+                if (v[i].iov_len > sizeof(message) - used) return -EMSGSIZE;
+                memcpy(message + used, v[i].iov_base, v[i].iov_len);
+                used += v[i].iov_len;
+        }
+        return (long)(bmds_write((int32_t)fd, message, (uint32_t)used));
+}
+
 static long do_socket(long domain, long type, long protocol) {
+        if (domain == AF_UNIX) return log_socket(type);
         if (domain != AF_INET || !have_sockets()) return -EAFNOSUPPORT;
         if (type & ~(0xf | SOCK_NONBLOCK | SOCK_CLOEXEC)) return -EINVAL;
         const int32_t fd = bmds_socket(AF_INET, (uint32_t)(type & 0xf), (uint32_t)protocol,
@@ -1619,8 +1680,9 @@ static void to_kernel(const struct msghdr *m, bmds_msghdr_t *k) {
 }
 
 static long do_sendmsg(long fd, const struct msghdr *m, long flags) {
-        if (!have_sockets()) return -ENOTSOCK;
         if (m == NULL) return -EFAULT;
+        if (is_log_socket(fd)) return log_send(fd, m->msg_iov, (size_t)m->msg_iovlen);
+        if (!have_sockets()) return -ENOTSOCK;
         bmds_msghdr_t k;
         to_kernel(m, &k);
         return (long)(bmds_sendmsg((int32_t)fd, &k, msg_flags(fd, flags)));
@@ -1641,6 +1703,10 @@ static long do_recvmsg(long fd, struct msghdr *m, long flags) {
 }
 
 static long do_sendto(long fd, const void *buf, size_t size, long flags, const void *addr, socklen_t length) {
+        if (is_log_socket(fd)) {
+                const struct iovec piece = {(void *)buf, size};
+                return log_send(fd, &piece, 1);
+        }
         if (!have_sockets()) return -ENOTSOCK;
         const bmds_iovec_t piece = {(void *)buf, (uint32_t)size};
         bmds_msghdr_t      k = {.size = sizeof(k),
@@ -1796,6 +1862,7 @@ static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 }
                 case SYS_dup3: {
                         if (a == b || (c & ~O_CLOEXEC)) return -EINVAL;
+                        forget_log_socket(b);
                         const int32_t r = bmds_dup2((int32_t)a, (int32_t)b);
                         set_nonblock(r, 0);
                         if (r >= 0 && (c & O_CLOEXEC)) (void)bmds_fd_flags(r, BMDS_FD_CLOEXEC);
@@ -1958,6 +2025,7 @@ static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 case SYS_accept: return do_accept(a, (void *)b, (socklen_t *)c, 0);
                 case SYS_accept4: return do_accept(a, (void *)b, (socklen_t *)c, d);
                 case SYS_connect:
+                        if (is_log_socket(a)) return log_connect((const void *)b, (socklen_t)c);
                         if (!have_sockets()) return -ENOTSOCK;
                         return (long)(bmds_connect((int32_t)a, (const void *)b, (uint32_t)c, dont_wait(a)));
                 case SYS_getsockname:

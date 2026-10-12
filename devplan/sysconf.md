@@ -583,10 +583,12 @@ the canonical text forms (§2), at most `BMDS_SYSCONF_VALUE_MAX` (1024) bytes; k
     `autoexec.sh` used).
   - Both are read by `display start`. A change takes effect at the next `display start`, since a
     running desktop owns the display.
-  - `log/level` (`enum` `info|warn|err`, default `info`).
+  - `log/level` (`enum` `info|warn|err`, default `info`; `debug` appended 2026-10-11, `logging.md`).
   - `log/debug` (`string`): debug modules, `;` between, or `all`. Each name must be a module
     `log` lists. Both are applied at once and at boot, so a saved `log/debug` debugs from the
     `sysconf` stage on.
+  - Later (2026-10-11, `logging.md` §3.5): `log/dir` (`path`, default `/sd0/p0/logs`, empty: no
+    files), `log/file-bytes` (`int`, 1 MB) and `log/files` (`int`, 4), the log's files.
 - **Not moved,** and why:
   - `term color|size`: the terminal session's, not the system's.
   - The serial console's color depth: a build setting (`CONFIG_BMDS_USJ_COLOR_*`) for a console

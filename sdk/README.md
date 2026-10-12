@@ -182,7 +182,9 @@ on BMDS's table; programs never see that layer. What differs from Linux:
   blocking or not (`O_NONBLOCK`, `MSG_DONTWAIT`), `poll`/`select`, `SO_RCVTIMEO`, multicast
   (`IP_ADD_MEMBERSHIP`), the interface `ioctl`s (`SIOCGIFCONF`, `SIOCGIFADDR`, ...), and
   `getaddrinfo` through `/etc/resolv.conf` and `/etc/hosts` (built from the settings). No
-  `AF_UNIX`, `AF_INET6` or netlink yet: `socketpair`, `getifaddrs` and `if_nametoindex` fail.
+  `AF_INET6` or netlink yet: `socketpair`, `getifaddrs` and `if_nametoindex` fail. `AF_UNIX` is
+  only the datagram socket `syslog()` sends to `/dev/log` on: musl's `syslog()` works, its lines
+  in the system log (`devplan/logging.md`).
   The interfaces' state is `bmds_net_info`, and `bmds_net_watch` gives a descriptor that is
   readable after it changes (`devplan/network.md` §20).
 - **Timers** (`devplan/programs.md` §18): `alarm`, `ualarm`, `setitimer` and `getitimer` with

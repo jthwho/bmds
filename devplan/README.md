@@ -26,6 +26,7 @@ Design notes and implementation plans for BMDS subsystems. Write a plan here **b
 - [`audio.md`](audio.md) — Phase 7: audio devices (ES8311 on I²S), the mixing engine, OSS `/dev/dsp` and native audio fds, real-time clients, decoders, MIDI and the synth.
 - [`mediaplayer.md`](mediaplayer.md) — the media player: audio and MIDI files in a GUI window, a playlist; video later (planned).
 - [`network.md`](network.md) — Phase 7: Ethernet and the IPv4 stack (vendored lwIP), BSD sockets, a real-time fast path for PTP and AES67, NTP, SSH.
+- [`logging.md`](logging.md) — one log for the whole system: `syslog()` through `/dev/log`, `logger`, rotated files on the card.
 
 ## Plan Document Template
 

@@ -79,6 +79,7 @@ add_executable(bmds_host_tests
         networkview.cpp
         ntp.cpp
         shacrypt.cpp
+        logtext.cpp
         topview.cpp
         hostname.cpp
         texttemplate.cpp

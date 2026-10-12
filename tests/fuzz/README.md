@@ -13,6 +13,9 @@ the host tests: they run for as long as one lets them.
   `devplan/network.md` §24) after an INIT, requests in sequence, the file calls made up (files,
   directories, links, errors, names as long as names get); every reply whole and fitting, every
   handle closed at the end, no fault, no leak.
+- **`syslog_fuzz`:** the system log's text forms (`devplan/logging.md`): a message as any program
+  may write it to `/dev/log`, its priority, timestamp and tag taken off and its lines cleaned as
+  the kernel does, and the input read as a stamped log line; every view inside the input.
 - **`soundfont_fuzz`:** SoundFonts (§22): load, play notes on every preset, the drums and across
   the keyboard with controllers and bends, render; every sample finite, no leak.
 
@@ -40,6 +43,11 @@ tests/fuzz/make-midi-seeds.py /mnt/data/tmp/midi        # a MIDI file: notes, ch
 tests/fuzz/make-sftp-seeds.py sftp-seeds
 ./sftp_fuzz -max_len=8192 -max_total_time=600 -rss_limit_mb=1024 -print_funcs=0 \
         -artifact_prefix=./sftp- sftp-corpus sftp-seeds
+```
+
+```sh
+./syslog_fuzz -max_len=1024 -max_total_time=300 -rss_limit_mb=1024 -print_funcs=0 \
+        -artifact_prefix=./syslog- syslog-corpus
 ```
 
 `-print_funcs=0`: on this machine libFuzzer stalled for seconds printing each new function (its

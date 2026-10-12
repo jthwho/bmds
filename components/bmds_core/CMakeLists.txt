@@ -42,6 +42,7 @@ set(BMDS_CORE_SRCS
         src/tjpgd.c
         src/inflate.cpp
         src/inireader.cpp
+        src/logtext.cpp
         src/string.cpp
         src/timezone.cpp
         src/topview.cpp

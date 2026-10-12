@@ -12,6 +12,7 @@
 #include <esp_log_write.h>
 #include <sdkconfig.h>
 #include <bmds/log.h>
+#include <bmds/logtext.h>
 #include <bmds/memory.h>
 #include <bmds/mutex.h>
 #include <bmds/staticobject.h>
@@ -43,6 +44,7 @@ namespace {
 
         constinit StaticObject<LogState> state;
         constinit Log::Sink              sink = nullptr;
+        constinit WaitListOf<4>          readers; // released after each line (Log::waiters)
 
         constexpr char levelChar(LogLevel level) {
                 switch (level) {
@@ -85,12 +87,21 @@ namespace {
                 Mutex::Locker lock(s.mutex, LockTimeoutMs);
                 if (!lock.isLocked()) return;
                 appendHistory(s, text, len);
+                readers.notify();
                 if (sink != nullptr) {
                         sink(text, len);
                 } else {
                         std::fwrite(text, 1, len, stdout);
                 }
                 return;
+        }
+
+        // `[  sec.mmm] L `, milliseconds since reset (the same clock as ESP-IDF's own log lines).
+        size_t stamp(char *buf, size_t cap, LogLevel level) {
+                const uint32_t ms = esp_log_timestamp();
+                return written(std::snprintf(buf, cap, "[%5lu.%03u] %c ", static_cast<unsigned long>(ms / 1000),
+                                             static_cast<unsigned>(ms % 1000), levelChar(level)),
+                               cap);
         }
 
         // ESP-IDF log output (esp_log_set_vprintf). With CONFIG_LOG_VERSION_1 each
@@ -144,11 +155,7 @@ void Log::writeV(LogLevel level, const char *module, const char *file, int line,
         // Reserve one byte so the line can always be terminated with '\n'.
         constexpr size_t Cap = sizeof(buf) - 1;
 
-        // Milliseconds since reset, the same clock as ESP-IDF's own log lines.
-        const uint32_t ms = esp_log_timestamp();
-        len += written(std::snprintf(buf, Cap, "[%5lu.%03u] %c ", static_cast<unsigned long>(ms / 1000),
-                                     static_cast<unsigned>(ms % 1000), levelChar(level)),
-                       Cap);
+        len += stamp(buf, Cap, level);
         if (module != nullptr) len += written(std::snprintf(buf + len, Cap - len, "%s: ", module), Cap - len);
         len += written(std::vsnprintf(buf + len, Cap - len, fmt, args), Cap - len);
         if (level >= LogLevel::Warn && file != nullptr) {
@@ -162,6 +169,74 @@ void Log::writeV(LogLevel level, const char *module, const char *file, int line,
 void Log::writeRaw(const char *text, size_t lengthBytes) {
         output(text, lengthBytes);
         return;
+}
+
+void Log::writeText(LogLevel level, StringView tag, StringView text) {
+        if (level < _level) return;
+        StringView rest = text;
+        do {
+                const StringView line = LogText::nextLine(rest);
+                char             buf[CONFIG_BMDS_LOG_LINE_MAX];
+                constexpr size_t Cap = sizeof(buf) - 1; // room for the '\n'
+                size_t           len = stamp(buf, Cap, level);
+                if (!tag.isEmpty() && len + 2 < Cap) {
+                        len += LogText::cleanLine(tag, buf + len, Cap - len - 2);
+                        buf[len++] = ':';
+                        buf[len++] = ' ';
+                }
+                len += LogText::cleanLine(line, buf + len, Cap - len);
+                buf[len++] = '\n';
+                output(buf, len);
+        } while (!rest.isEmpty());
+        return;
+}
+
+uint64_t Log::position() {
+        if (!state.isCreated()) return 0;
+        Mutex::Locker lock(state->mutex, LockTimeoutMs);
+        return state->head;
+}
+
+size_t Log::read(uint64_t &position, Span<char> dst, uint64_t &lostBytes) {
+        lostBytes = 0;
+        if (!state.isCreated() || dst.isEmpty()) return 0;
+        LogState     &s = *state;
+        Mutex::Locker lock(s.mutex, LockTimeoutMs);
+        if (!lock.isLocked() || s.capacity == 0 || position >= s.head) return 0;
+
+        // The oldest byte held; when that is past @p position, the copy starts at the
+        // first line that begins after it (the one it is in may have lost its start).
+        const uint64_t oldest = s.head > s.capacity ? s.head - s.capacity : 0;
+        uint64_t       from = position;
+        if (from < oldest) {
+                from = oldest;
+                if (oldest > 0) {
+                        while (from < s.head && s.history[(from - 1) % s.capacity] != '\n') ++from;
+                }
+                lostBytes = from - position;
+                if (from >= s.head) {
+                        position = from;
+                        return 0;
+                }
+        }
+        const uint64_t avail = s.head - from;
+        size_t         len = static_cast<size_t>(avail < dst.size() ? avail : dst.size());
+        const size_t   offset = static_cast<size_t>(from % s.capacity);
+        const size_t   first = len < s.capacity - offset ? len : s.capacity - offset;
+        std::memcpy(dst.data(), s.history + offset, first);
+        std::memcpy(dst.data() + first, s.history, len - first);
+        // Complete lines only, unless one line is longer than @p dst.
+        if (dst[len - 1] != '\n') {
+                size_t end = len;
+                while (end > 0 && dst[end - 1] != '\n') --end;
+                if (end > 0) len = end;
+        }
+        position = from + len;
+        return len;
+}
+
+WaitList &Log::waiters() {
+        return readers;
 }
 
 size_t Log::copyHistory(Span<char> dst) {

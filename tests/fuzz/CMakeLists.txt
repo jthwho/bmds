@@ -73,3 +73,10 @@ add_executable(sftp_fuzz sftp.cpp ${SFTP}/sftp.c)
 target_include_directories(sftp_fuzz PRIVATE ${SFTP})
 target_compile_options(sftp_fuzz PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti>)
 target_link_options(sftp_fuzz PRIVATE -fsanitize=fuzzer)
+
+# The system log's text forms (devplan/logging.md): syslog messages as programs write them to
+# /dev/log, from bmds_core's logtext.cpp.
+add_executable(syslog_fuzz syslog.cpp)
+target_compile_options(syslog_fuzz PRIVATE -fno-exceptions -fno-rtti)
+target_link_libraries(syslog_fuzz PRIVATE bmds_core)
+target_link_options(syslog_fuzz PRIVATE -fsanitize=fuzzer)

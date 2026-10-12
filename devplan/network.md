@@ -1131,7 +1131,8 @@ What Dropbear 2025.88 and BMDS each need, found by reading both before porting:
   - Built as one program (`dropbearmulti`) with links: `dropbear`, `dbclient`, `ssh` (to
     `dbclient`), `dropbearkey`, `dropbearconvert`, `scp`. One image in the loader's cache serves
     the server, its sessions and the client.
-  - `localoptions.h`: no utmp, wtmp, lastlog, shadow, syslog (it logs to stderr with `-E`),
+  - `localoptions.h`: no utmp, wtmp, lastlog, shadow, syslog (it logs to stderr with `-E`;
+    syslog came later, `logging.md`),
     multi-user changes (`DROPBEAR_SVR_MULTIUSER` 0: every process is root); `SFTPSERVER_PATH`
     is `sftp-server`, found on `PATH` by the shell, not a fixed path.
 - **Programs need pseudo-terminals** (pty.md §6 left them for "when the program ABI needs them";
@@ -1284,7 +1285,8 @@ As §24 and §24a designed; what changed on the way, and what was found:
   `/etc/shadow`.
 - **`SshService`** (`bmds_net`): as §24, with `ProgramLauncher::sendSignal()` and
   `Request::ended`, and `LogStream`. Dropbear without syslog has no `-E` (it logs to stderr
-  always). `Boot`'s most stages went from 24 to 32: the new stage was the 25th, and the assert
+  always). Since `logging.md` it is built with syslog: its lines reach the log through
+  `/dev/log`, tagged `dropbear[PID]`; `LogStream` keeps what else it writes. `Boot`'s most stages went from 24 to 32: the new stage was the 25th, and the assert
   stopped every boot.
 - **Dropbear 2025.88** (`dist/dropbear`): `localoptions.h` and two patches (§24a). `scp` runs
   `dbclient` by name (`DROPBEAR_PATH_SSH_PROGRAM`).

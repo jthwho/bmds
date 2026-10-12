@@ -20,7 +20,10 @@
  *
  * Every line is kept in a history ring (`CONFIG_BMDS_LOG_HISTORY_BYTES`, in
  * PSRAM) and handed to the sink, normally the serial console. ESP-IDF's own
- * `ESP_LOG*` output is redirected through the same path.
+ * `ESP_LOG*` output is redirected through the same path. It is the one log of
+ * the whole system (devplan/logging.md): programs reach it through `syslog()`
+ * and `/dev/log`, built-in programs and services through `writeText()`, and
+ * the log files read it with `read()`.
  */
 
 #pragma once
@@ -32,6 +35,7 @@
 #include <bmds/error.h>
 #include <bmds/span.h>
 #include <bmds/stringview.h>
+#include <bmds/waitlist.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -128,6 +132,49 @@ class Log {
                  * redirected ESP-IDF log lines.
                  */
                 static void writeRaw(const char *text, size_t lengthBytes);
+
+                /**
+                 * @brief Writes @p text as log lines (one per `\n`), each tagged
+                 *        @p tag (`tag: text`; none if empty), control characters
+                 *        shown as `?`. Lines below `level()` are dropped.
+                 *
+                 * The way built-in programs and services log, and what `/dev/log`
+                 * and `LogStream` end in. Lines longer than `CONFIG_BMDS_LOG_LINE_MAX`
+                 * are truncated. Formats on the caller's stack; no allocation.
+                 * @blocking Bounded, as `write()`.
+                 */
+                static void writeText(LogLevel level, StringView tag, StringView text);
+
+                /** @brief syslog's severity @p severity (0 emerg to 7 debug) as a level. */
+                static constexpr LogLevel levelOfSeverity(uint8_t severity) {
+                        return severity <= 3   ? LogLevel::Err
+                               : severity == 4 ? LogLevel::Warn
+                               : severity >= 7 ? LogLevel::Debug
+                                               : LogLevel::Info;
+                }
+
+                /**
+                 * @brief Returns the position after the last line written: a count of
+                 *        every byte ever written, for `read()`.
+                 */
+                static uint64_t position();
+
+                /**
+                 * @brief Copies complete lines written since @p position into @p dst,
+                 *        and advances @p position past them.
+                 *
+                 * When the history no longer holds everything since @p position (it
+                 * wrapped), the copy starts at the first complete line it holds and
+                 * @p lostBytes says how much was skipped.
+                 * @param position Where to start; advanced.
+                 * @param dst Destination; a line longer than it is copied in pieces.
+                 * @param lostBytes Set to the bytes skipped (0 if none).
+                 * @return The bytes copied (0: nothing new, or no history).
+                 */
+                static size_t read(uint64_t &position, Span<char> dst, uint64_t &lostBytes);
+
+                /** @brief Released after each line is added, for `read()`'s callers. */
+                static WaitList &waiters();
 
                 /**
                  * @brief Copies the log history, oldest first.

@@ -164,6 +164,13 @@ Plan: [`input.md`](input.md).
   Step 6 done 2026-10-10: `top` (`-d`, `-n`, `-T`), `tasks` from the kernel's task list with a
   `cpu_ms` column, and `getrusage()`, `times()`, the CPU clocks and `sysinfo()` from the process's
   own time.
+- [ ] System logging (`logging.md`, planned 2026-10-11, the user's request): one log for the
+  kernel, built-in programs, programs (`syslog()` through `/dev/log`), scripts (`logger`) and
+  services; kept in the history, on the console, and in rotated files in `log/dir`
+  (`/sd0/p0/logs`), the boot's lines from before the card included. Steps 1-4 done 2026-10-11:
+  `LogText` (host-tested, fuzzed), `Log::writeText`/`read`/`waiters`, `/dev/log`, musl's
+  `syslog()` through `linux.c`, Dropbear with syslog, `LogFiles` with rotation, `logger`. Next: a
+  log tab in the System Monitor.
 
 ## Phase 6 — Graphics
 

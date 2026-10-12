@@ -3,9 +3,10 @@
 
 cp "$PKGDIR/localoptions.h" "$BUILD/localoptions.h"
 cd "$BUILD"
-# musl has a fork() that fails: Dropbear must take its no-fork paths.
+# musl has a fork() that fails: Dropbear must take its no-fork paths. Its log goes to syslog(),
+# so /dev/log and the system log (devplan/logging.md).
 ac_cv_func_fork=no "$SRC/configure" --host=riscv32-unknown-elf CC="$CC" AR="$AR" RANLIB="$AR s" \
-        --enable-static --enable-bundled-libtom --disable-harden --disable-zlib --disable-syslog \
+        --enable-static --enable-bundled-libtom --disable-harden --disable-zlib \
         --disable-lastlog --disable-utmp --disable-utmpx --disable-wtmp --disable-wtmpx \
         --disable-loginfunc --disable-pututline --disable-pututxline > configure.log
 $BMDS_MAKE PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp" MULTI=1 RANLIB="$AR s"

@@ -25,10 +25,11 @@ menu "BMDS kernel"
 
     config BMDS_LOG_HISTORY_BYTES
         int "Log history size (bytes, PSRAM)"
-        default 8192
+        default 65536
         range 0 1048576
         help
-            Size of the ring that keeps recent log text for 'log show'.
+            Size of the ring that keeps recent log text for 'log show' and for the log files
+            (devplan/logging.md: the lines from before the card mounts).
             Allocated from PSRAM at boot. 0 disables the history.
 
     config BMDS_PIPE_BYTES
