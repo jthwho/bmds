@@ -667,7 +667,7 @@ Error TmpVolume::remove(StringView path) {
         return Error::Ok;
 }
 
-Error TmpVolume::rename(StringView from, StringView to, bool &noPath) {
+Error TmpVolume::rename(StringView from, StringView to, Vfs::RenameMode mode, bool &noPath) {
         auto [n, err] = find(from, noPath);
         if (err.isError()) return err;
         if (n == _root) return Error::Busy;
@@ -675,12 +675,18 @@ Error TmpVolume::rename(StringView from, StringView to, bool &noPath) {
         StringView name;
         err = findParent(to, parent, name, noPath);
         if (err.isError()) return err;
-        // As on the other volumes: an existing name isn't replaced.
-        for (const Node *c = parent->child; c != nullptr; c = c->next)
-                if (c->nameView() == name) return c == n ? Error::Ok : Error::Exists;
         // Not into itself.
         for (const Node *up = parent; up != nullptr; up = up->parent)
                 if (up == n) return Error::Invalid;
+        Node *taken = parent->child;
+        while (taken != nullptr && taken->nameView() != name) taken = taken->next;
+        if (taken == n) return Error::Ok;
+        if (taken != nullptr) {
+                if (mode == Vfs::RenameMode::NoReplace) return Error::Exists;
+                if (n->type == FileType::Directory && taken->type != FileType::Directory) return Error::NotDir;
+                if (n->type != FileType::Directory && taken->type == FileType::Directory) return Error::IsDir;
+                if (taken->child != nullptr) return Error::NotEmpty;
+        }
         if (name.isEmpty() || name.size() > MaxName || name.contains('\0') || name == "." || name == "..")
                 return Error::Invalid;
         // The new name first: nothing has moved if there is no room for it.
@@ -689,6 +695,8 @@ Error TmpVolume::rename(StringView from, StringView to, bool &noPath) {
                 newName = static_cast<char *>(take(name.size()));
                 if (newName == nullptr) return Error::NoSpace;
         }
+        // What had the name goes (kept while open, as a remove).
+        if (taken != nullptr) unlink(*taken);
         // Out of its directory (cursors moved past it), into the new one at the end.
         Node *old = n->parent;
         for (DirCursor *c = _cursors; c != nullptr; c = c->nextCursor)

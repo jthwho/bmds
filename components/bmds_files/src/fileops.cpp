@@ -355,7 +355,7 @@ namespace FileOps {
                                 if (err.isError()) return err;
                         }
                 }
-                err = Vfs::rename(source.view(), to.view(), context);
+                err = Vfs::rename(source.view(), to.view(), Vfs::RenameMode::NoReplace, context);
                 if (err.isOk()) {
                         progress.began(source.view(), 0);
                         if (made != nullptr) (void)made->assign(to.view());
@@ -391,7 +391,7 @@ namespace FileOps {
                 if (join(parentOf(source.view()), name, to).isError()) return Error::NoMem;
                 if (made != nullptr) (void)made->assign(to.view());
                 if (to.view() == source.view()) return Error::Ok;
-                Error err = Vfs::rename(source.view(), to.view(), context);
+                Error err = Vfs::rename(source.view(), to.view(), Vfs::RenameMode::NoReplace, context);
                 if (err != Error::Exists) return err;
                 // Only its case changed (FAT finds the old name under the new): by a free name between.
                 auto [a, aerr] = Vfs::lstat(source.view(), context);
@@ -399,8 +399,8 @@ namespace FileOps {
                 if (aerr.isError() || berr.isError() || a.id != b.id) return Error::Exists;
                 String between;
                 if (join(parentOf(source.view()), ".rename-tmp", between).isError()) return Error::NoMem;
-                err = Vfs::rename(source.view(), between.view(), context);
-                if (err.isOk()) err = Vfs::rename(between.view(), to.view(), context);
+                err = Vfs::rename(source.view(), between.view(), Vfs::RenameMode::NoReplace, context);
+                if (err.isOk()) err = Vfs::rename(between.view(), to.view(), Vfs::RenameMode::NoReplace, context);
                 return err;
         }
 

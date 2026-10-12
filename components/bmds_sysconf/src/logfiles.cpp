@@ -137,7 +137,7 @@ namespace LogFiles {
                                         continue;
                                 }
                                 if (filePath(s, k + 1, to).isError()) return;
-                                (void)Vfs::rename(from.view(), to.view(), root);
+                                (void)Vfs::rename(from.view(), to.view(), Vfs::RenameMode::Replace, root);
                         }
                         return;
                 }

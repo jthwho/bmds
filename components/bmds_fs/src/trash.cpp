@@ -179,7 +179,7 @@ Error Trash::move(StringView path, const Vfs::Context &context, String *name) {
         if (ferr.isError()) return ferr;
         err = writeNew(infoPath.view(), body);
         if (err.isError()) return err;
-        err = Vfs::rename(p, target.view(), Root);
+        err = Vfs::rename(p, target.view(), Vfs::RenameMode::NoReplace, Root);
         if (err.isError()) {
                 (void)Vfs::remove(infoPath.view(), Root);
                 return err;
@@ -243,7 +243,7 @@ Error Trash::restore(StringView mount, StringView name, const Vfs::Context &cont
         err = TrashInfo::parse(text.view(), Span<char>(path, sizeof(path)), date);
         if (err.isError()) return err;
         if (exists(StringView(path))) return Error::Exists;
-        err = Vfs::rename(filePath.view(), StringView(path), Root);
+        err = Vfs::rename(filePath.view(), StringView(path), Vfs::RenameMode::NoReplace, Root);
         if (err.isError()) return err;
         (void)Vfs::remove(infoPath.view(), Root);
         return Error::Ok;

@@ -27,9 +27,9 @@ BMDS_NAMESPACE_BEGIN
  * past it writes fail with `NoSpace`.
  *
  * A file removed while open loses its name at once and its data with its
- * last handle. A rename doesn't replace an existing name (`Exists`), as on
- * the other volumes. Files and directories still open when it is unmounted
- * go stale (`NoMedia`, a generation number tells them).
+ * last handle, also when a rename replaces it. Files and directories still
+ * open when it is unmounted go stale (`NoMedia`, a generation number tells
+ * them).
  *
  * A static pool of `MaxVolumes`; everything expects the storage lock.
  */
@@ -95,7 +95,7 @@ class TmpVolume final : public Volume {
                 Error                   mkdir(StringView path, bool &noPath) override;
                 Error                   rmdir(StringView path) override;
                 Error                   remove(StringView path) override;
-                Error                   rename(StringView from, StringView to, bool &noPath) override;
+                Error rename(StringView from, StringView to, Vfs::RenameMode mode, bool &noPath) override;
                 Error                   setModified(StringView path, Timestamp time) override;
                 Error                   writeLink(StringView path, ByteSpan contents, bool &noPath) override;
                 Result<Cursor *>        openDirectory(StringView path, bool &noPath) override;

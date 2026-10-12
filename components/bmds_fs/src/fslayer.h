@@ -125,8 +125,11 @@ class Volume {
                 /** @brief Removes file @p path, a file (`Busy` if open). */
                 virtual Error remove(StringView path) = 0;
 
-                /** @brief Renames @p from to @p to (`Exists` if @p to is there; `Busy` if open). */
-                virtual Error rename(StringView from, StringView to, bool &noPath) = 0;
+                /**
+                 * @brief Renames @p from to @p to; a name taken is replaced or refused
+                 *        (`Exists`) as @p mode says (`Vfs::rename()`). `Busy` if open.
+                 */
+                virtual Error rename(StringView from, StringView to, Vfs::RenameMode mode, bool &noPath) = 0;
 
                 /** @brief Sets @p path's modification time. */
                 virtual Error setModified(StringView path, Timestamp time) = 0;

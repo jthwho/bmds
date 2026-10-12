@@ -226,3 +226,29 @@ measured reasons.
   netstress TCP test: 4.95 to 4.99 MB/s out, 5.86 to 5.92 MB/s in over three runs (one first run
   at 4.67 out), lwIP's heap peaking at 27 KB with no failures; the flood lost nothing. The window
   moves drew in 19.2 and 19.7 ms a round. The net task used 2.3 KB of its 4 KB.
+
+## 10. Who holds internal RAM: an optional count (proposal, 2026-10-12)
+
+**Why.** §9's inventory took reading the code and the map file: the board reports only totals.
+The user wants a count by owner compiled in when needed and costing nothing otherwise.
+
+**ESP-IDF's heap tracing doesn't fit.** `HEAP_TRACING_STANDALONE` records live allocations, but
+on RISC-V its callers need `ESP_SYSTEM_USE_FRAME_POINTER` (the stack depth is fixed at 0
+without it), which changes the code generated everywhere, so the build being measured would no
+longer be the one that ships.
+
+**Proposed: `CONFIG_BMDS_MEMORY_OWNERS`** (default off; off, not a byte of code or data).
+- `Memory::alloc()`, `allocAligned()` and `free()` record each live block of an internal space
+  (`Internal`, `InternalDma`, `Fast`): its address, size and caller
+  (`__builtin_return_address(0)`, which needs no frame pointer). They go in a hash table in PSRAM
+  (4,096 entries of 12 bytes, 48 KB), under a lock of its own.
+- Every BMDS allocation goes through `Memory` and names a space, so all of them are counted:
+  task stacks and TCBs, the lwIP heap, the EMAC buffers, the window manager's strip, programs'
+  stacks. ESP-IDF's own (its tasks, the I2S DMA buffers, driver objects) are one remainder line:
+  the space's used bytes minus what was counted.
+- `mem owners` prints the counted blocks grouped by caller (address, blocks, bytes), largest
+  first, then the remainder. The firmware has no symbol table, so the addresses are named on the
+  PC: `tools/bmds-memowners` runs `mem owners` over ssh and names each caller with `addr2line` on
+  `build/bmds.elf` (function, file:line).
+- Cost when on: about 2 KB of code, 48 KB of PSRAM, a hash insert or remove per internal
+  allocation (not on any hot path: they are allocated at start).

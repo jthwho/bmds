@@ -567,12 +567,24 @@ namespace Vfs {
         /** @brief Removes a file (`IsDir` for a directory; `Busy` if open). */
         Error remove(StringView path, const Context &context);
 
+        /** @brief What `rename()` does with a name that is taken. */
+        enum class RenameMode : uint8_t {
+                Replace,   ///< As POSIX `rename()`: a file replaces a file, a directory an empty one.
+                NoReplace, ///< Refuses it (`Exists`), as Linux's `RENAME_NOREPLACE`.
+        };
+
         /**
          * @brief Renames or moves @p from to @p to, within one filesystem.
-         * @return `Ok`, `Exists` (@p to exists), `NotSupported` (across
-         *         filesystems), `NotExist`, `Busy`, ...
+         *
+         * With `Replace`, what @p to names goes, unless it is @p from itself (a
+         * case change on FAT renames it). A file open there: removed while open
+         * on a tmpfs, `Busy` elsewhere.
+         * @return `Ok`, `Exists` (`NoReplace`, @p to exists), `IsDir` (a file
+         *         onto a directory), `NotDir` (a directory onto a file),
+         *         `NotEmpty`, `NotSupported` (across filesystems), `NotExist`,
+         *         `Busy`, ...
          */
-        Error rename(StringView from, StringView to, const Context &context);
+        Error rename(StringView from, StringView to, RenameMode mode, const Context &context);
 
         /** @brief Sets the modification time of a file or directory. */
         Error setModified(StringView path, Timestamp time, const Context &context);

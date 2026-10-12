@@ -25,6 +25,7 @@
 #include <bmds/ramflashdevice.h>
 #include <bmds/vfs.h>
 #include "hostmemory.h"
+#include "renamechecks.h"
 
 using bmds::ByteSpan;
 using bmds::Error;
@@ -174,10 +175,10 @@ TEST_CASE("littlefs in the VFS: files and directories") {
         CHECK(Vfs::remove(f.at("/dir"), Root) == Error::IsDir);
         CHECK(Vfs::rmdir(f.at("/a.txt"), Root) == Error::NotDir);
         // Renames don't replace (as on FAT), and move between directories.
-        CHECK(Vfs::rename(f.at("/a.txt"), f.at("/big"), Root) == Error::Exists);
-        CHECK(Vfs::rename(f.at("/a.txt"), f.at("/dir/sub/a"), Root).isOk());
+        CHECK(Vfs::rename(f.at("/a.txt"), f.at("/big"), Vfs::RenameMode::NoReplace, Root) == Error::Exists);
+        CHECK(Vfs::rename(f.at("/a.txt"), f.at("/dir/sub/a"), Vfs::RenameMode::NoReplace, Root).isOk());
         CHECK(get(f.at("/dir/sub/a")) == "hello world");
-        CHECK(Vfs::rename(f.at("/gone"), f.at("/x"), Root) == Error::NotExist);
+        CHECK(Vfs::rename(f.at("/gone"), f.at("/x"), Vfs::RenameMode::NoReplace, Root) == Error::NotExist);
         CHECK(Vfs::remove(f.at("/dir/sub/a"), Root).isOk());
         CHECK(Vfs::rmdir(f.at("/dir/sub"), Root).isOk());
         CHECK(Vfs::remove(f.at("/dir/b"), Root).isOk());
@@ -215,7 +216,7 @@ TEST_CASE("littlefs in the VFS: holes, truncation, and Busy as on FAT") {
                 CHECK(Vfs::open(f.at("/h.bin"), Vfs::Read, Root).error() == Error::Busy);
                 CHECK(Vfs::open(f.at("/h.bin"), Vfs::Write, Root).error() == Error::Busy);
                 CHECK(Vfs::remove(f.at("/h.bin"), Root) == Error::Busy);
-                CHECK(Vfs::rename(f.at("/h.bin"), f.at("/i.bin"), Root) == Error::Busy);
+                CHECK(Vfs::rename(f.at("/h.bin"), f.at("/i.bin"), Vfs::RenameMode::NoReplace, Root) == Error::Busy);
         }
         CHECK(get(f.at("/h.bin")) == std::string("ab") + std::string(8, '\0'));
         put(f.at("/g.bin"), "x");
@@ -306,7 +307,7 @@ TEST_CASE("littlefs in the VFS: directory watches") {
         CHECK(watch.takeChanges() == bmds::DirectoryWatch::Contents);
         CHECK(get(f.at("/dir/file")) == "x");
         CHECK(watch.takeChanges() == 0);
-        CHECK(Vfs::rename(f.at("/dir/file"), f.at("/moved"), Root).isOk());
+        CHECK(Vfs::rename(f.at("/dir/file"), f.at("/moved"), Vfs::RenameMode::NoReplace, Root).isOk());
         CHECK(watch.takeChanges() == bmds::DirectoryWatch::Entries);
 }
 
@@ -452,7 +453,7 @@ TEST_CASE("littlefs through the write queue: reads see it, a cut keeps every fil
                         // Replaced by renaming a new file over it.
                         put(f.at("/tmp"), versionOf(file, v, size));
                         (void)Vfs::remove(name, Root);
-                        REQUIRE(Vfs::rename(f.at("/tmp"), name, Root).isOk());
+                        REQUIRE(Vfs::rename(f.at("/tmp"), name, Vfs::RenameMode::NoReplace, Root).isOk());
                 } else {
                         put(name, versionOf(file, v, size));
                 }
@@ -494,4 +495,9 @@ TEST_CASE("littlefs through the write queue: reads see it, a cut keeps every fil
                 CHECK(h->stream().flush(WaitForever).isOk());
                 CHECK(f.device.queued() == 0);
         }
+}
+
+TEST_CASE("littlefs in the VFS: renames onto a taken name") {
+        Flash f("/lfs");
+        RenameChecks::run("/lfs/r", false);
 }

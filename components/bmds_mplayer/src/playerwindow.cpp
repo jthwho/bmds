@@ -1568,11 +1568,8 @@ Error PlayerWindow::writeFile(StringView path, StringView cwd, StringView text) 
                         file->write(ByteSpan(reinterpret_cast<const uint8_t *>(text.data()), text.size()), WaitForever);
                 err = werr.isError() ? werr : n != text.size() ? Error(Error::IoError) : Error();
         }
-        if (err.isOk()) {
-                err = Vfs::remove(path, context);
-                if (err == Error::NotExist) err = Error::Ok;
-        }
-        if (err.isOk()) err = Vfs::rename(temporary.view(), path, context);
+        // Over the old file in one step: it is never missing.
+        if (err.isOk()) err = Vfs::rename(temporary.view(), path, Vfs::RenameMode::Replace, context);
         if (err.isError()) (void)Vfs::remove(temporary.view(), context);
         return err;
 }

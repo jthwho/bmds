@@ -64,7 +64,7 @@ class RomVolume final : public Volume {
                 Error                   mkdir(StringView path, bool &noPath) override;
                 Error                   rmdir(StringView path) override;
                 Error                   remove(StringView path) override;
-                Error                   rename(StringView from, StringView to, bool &noPath) override;
+                Error rename(StringView from, StringView to, Vfs::RenameMode mode, bool &noPath) override;
                 Error                   setModified(StringView path, Timestamp time) override;
                 Error                   writeLink(StringView path, ByteSpan contents, bool &noPath) override;
                 Result<Cursor *>        openDirectory(StringView path, bool &noPath) override;

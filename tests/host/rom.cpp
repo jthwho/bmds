@@ -281,7 +281,7 @@ TEST_CASE("rom: mounted: read-only files, directories, a link, Vfs::map()") {
         CHECK(Vfs::mkdir("/rom/newdir", Root) == Error::ReadOnly);
         CHECK(Vfs::mkdir("/rom/docs", Root) == Error::Exists);
         CHECK(Vfs::remove("/rom/hello.txt", Root) == Error::ReadOnly);
-        CHECK(Vfs::rename("/rom/a.txt", "/rom/c.txt", Root) == Error::ReadOnly);
+        CHECK(Vfs::rename("/rom/a.txt", "/rom/c.txt", Vfs::RenameMode::NoReplace, Root) == Error::ReadOnly);
         CHECK(Vfs::symlink("/rom/x", "/rom/new-link", Root) == Error::ReadOnly);
 
         // A directory, in the image's order.

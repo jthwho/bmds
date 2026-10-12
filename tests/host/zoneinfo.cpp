@@ -410,7 +410,7 @@ TEST_CASE("Vfs: /share/zoneinfo shows the time zone database, read-only") {
         CHECK(Vfs::open("/share/zoneinfo/New", Vfs::Write | Vfs::Create, Root).error() == Error::ReadOnly);
         CHECK(Vfs::remove("/share/zoneinfo/Japan", Root) == Error::ReadOnly);
         CHECK(Vfs::mkdir("/share/zoneinfo/Mars", Root) == Error::ReadOnly);
-        CHECK(Vfs::rename("/share/zoneinfo/Japan", "/tz0/p0/x", Root) == Error::ReadOnly);
+        CHECK(Vfs::rename("/share/zoneinfo/Japan", "/tz0/p0/x", Vfs::RenameMode::NoReplace, Root) == Error::ReadOnly);
         CHECK(Vfs::mount("/share/zoneinfo", zoneDisk().device) == Error::Invalid);
         CHECK(Vfs::mount("/share/zoneinfo/x", zoneDisk().device) == Error::Invalid);
         CHECK(HostMemory::liveAllocations() == f.live);

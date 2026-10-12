@@ -603,17 +603,25 @@ Error LittleFsVolume::remove(StringView path) {
         return toError(lfs_remove(&_lfs, p.cStr()));
 }
 
-Error LittleFsVolume::rename(StringView from, StringView to, bool &noPath) {
+Error LittleFsVolume::rename(StringView from, StringView to, Vfs::RenameMode mode, bool &noPath) {
         noPath = false;
         String fromPath;
         String toPath;
         Error  err = cPath(from, fromPath);
         if (err.isOk()) err = cPath(to, toPath);
         if (err.isError()) return err;
+        if (fromPath.view() == toPath.view()) return Error::Ok;
         if (isOpen(keyOf(fromPath.view())) || isOpen(keyOf(toPath.view()))) return Error::Busy;
-        // As on FAT: an existing name isn't replaced.
-        lfs_info info;
-        if (lfs_stat(&_lfs, toPath.cStr(), &info) == 0) return Error::Exists;
+        // A name taken: refused, or replaced by littlefs (a directory only an empty one), which
+        // reports a file onto a directory, but not a directory onto a file, the way it means.
+        lfs_info target;
+        if (lfs_stat(&_lfs, toPath.cStr(), &target) == 0) {
+                if (mode == Vfs::RenameMode::NoReplace) return Error::Exists;
+                lfs_info source;
+                if (lfs_stat(&_lfs, fromPath.cStr(), &source) == 0 && source.type == LFS_TYPE_DIR &&
+                    target.type != LFS_TYPE_DIR)
+                        return Error::NotDir;
+        }
         const int r = lfs_rename(&_lfs, fromPath.cStr(), toPath.cStr());
         if (r == LFS_ERR_NOENT || r == LFS_ERR_NOTDIR) {
                 bool fromBlocked = false;

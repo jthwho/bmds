@@ -746,13 +746,8 @@ int FileCommands::mv(CommandContext &ctx) {
                         status = Shell::ExitFailure;
                         continue;
                 }
-                Error err = Vfs::rename(from, to.view(), ctx.vfs());
-                if (err == Error::Exists) {
-                        // mv replaces a file (not a directory) in the way.
-                        auto [target, targetErr] = Vfs::stat(to.view(), ctx.vfs());
-                        if (targetErr.isOk() && !target.isDirectory()) err = Vfs::remove(to.view(), ctx.vfs());
-                        if (err.isOk()) err = Vfs::rename(from, to.view(), ctx.vfs());
-                }
+                // A file in the way is replaced, as POSIX's rename() does.
+                Error err = Vfs::rename(from, to.view(), Vfs::RenameMode::Replace, ctx.vfs());
                 if (err == Error::NotSupported) {
                         // Across filesystems: copy, then remove the original.
                         auto *buf = static_cast<uint8_t *>(Memory::alloc(MemSpace::PsramDma, CopyBufferBytes));

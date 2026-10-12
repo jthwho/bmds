@@ -31,6 +31,7 @@
 #include <bmds/semaphore.h>
 #include "fakeconsole.h"
 #include "hostmemory.h"
+#include "renamechecks.h"
 
 using bmds::ByteSpan;
 using bmds::Error;
@@ -419,8 +420,8 @@ TEST_CASE("Vfs: /bin lists the programs built in, read-only") {
         CHECK(Vfs::mkdir("/bin/dir", Root) == Error::ReadOnly);
         CHECK(Vfs::remove("/bin/sh", Root) == Error::ReadOnly);
         CHECK(Vfs::rmdir("/bin", Root) == Error::ReadOnly);
-        CHECK(Vfs::rename("/bin/sh", "/bin/zsh", Root) == Error::ReadOnly);
-        CHECK(Vfs::rename("/ram0/p0", "/bin/x", Root) == Error::ReadOnly);
+        CHECK(Vfs::rename("/bin/sh", "/bin/zsh", Vfs::RenameMode::NoReplace, Root) == Error::ReadOnly);
+        CHECK(Vfs::rename("/ram0/p0", "/bin/x", Vfs::RenameMode::NoReplace, Root) == Error::ReadOnly);
         CHECK(Vfs::symlink("/bin/sh", "/bin/link", Root) == Error::ReadOnly);
         CHECK(Vfs::openDirectory("/bin/sh", Root).error() == Error::NotDir);
         bmds::BlockDevice *p0 = bmds::BlockDevices::find("ram0p0");
@@ -535,16 +536,20 @@ TEST_CASE("Vfs: directories and names") {
         }
 
         SUBCASE("rename and move") {
-                CHECK(Vfs::rename("/ram0/p0/docs/a.txt", "/ram0/p0/docs/b.txt", Root).isOk());
-                CHECK(Vfs::rename("b.txt", "deeper/c.txt", inDocs).isOk());
+                CHECK(Vfs::rename("/ram0/p0/docs/a.txt", "/ram0/p0/docs/b.txt", Vfs::RenameMode::NoReplace, Root)
+                              .isOk());
+                CHECK(Vfs::rename("b.txt", "deeper/c.txt", Vfs::RenameMode::NoReplace, inDocs).isOk());
                 CHECK(get("/ram0/p0/docs/deeper/c.txt") == "A");
                 CHECK(Vfs::stat("/ram0/p0/docs/a.txt", Root).error() == Error::NotExist);
                 put("/ram0/p0/docs/d.txt", "D");
-                CHECK(Vfs::rename("/ram0/p0/docs/d.txt", "/ram0/p0/docs/deeper/c.txt", Root) == Error::Exists);
-                CHECK(Vfs::rename("/ram0/p0/docs", "/ram0/p0/papers", Root).isOk());
+                CHECK(Vfs::rename("/ram0/p0/docs/d.txt", "/ram0/p0/docs/deeper/c.txt", Vfs::RenameMode::NoReplace,
+                                  Root) == Error::Exists);
+                CHECK(Vfs::rename("/ram0/p0/docs", "/ram0/p0/papers", Vfs::RenameMode::NoReplace, Root).isOk());
                 CHECK(get("/ram0/p0/papers/deeper/c.txt") == "A");
-                CHECK(Vfs::rename("/ram0/p0/papers/d.txt", "/dev/d.txt", Root) == Error::NotSupported);
-                CHECK(Vfs::rename("/ram0/p0/papers/d.txt", "/elsewhere/d.txt", Root) == Error::NotSupported);
+                CHECK(Vfs::rename("/ram0/p0/papers/d.txt", "/dev/d.txt", Vfs::RenameMode::NoReplace, Root) ==
+                      Error::NotSupported);
+                CHECK(Vfs::rename("/ram0/p0/papers/d.txt", "/elsewhere/d.txt", Vfs::RenameMode::NoReplace, Root) ==
+                      Error::NotSupported);
         }
 
         SUBCASE("remove and rmdir") {
@@ -711,7 +716,7 @@ TEST_CASE("Vfs: the change hook") {
         CHECK(changes[0] == told);
         changes.clear();
         CHECK(Vfs::setModified("/ram0/p0/link", bmds::Timestamp::fromSeconds(1700000000), Root).isOk());
-        CHECK(Vfs::rename("/ram0/p0/prog", "/ram0/p0/moved", Root).isOk());
+        CHECK(Vfs::rename("/ram0/p0/prog", "/ram0/p0/moved", Vfs::RenameMode::NoReplace, Root).isOk());
         const FileInfo moved = Vfs::stat("/ram0/p0/moved", Root).value();
         CHECK(Vfs::remove("/ram0/p0/moved", Root).isOk());
         REQUIRE(changes.size() == 3);
@@ -795,13 +800,13 @@ TEST_CASE("Vfs: directory watches") {
         CHECK(dir.take() == Change::Entries);
         CHECK(Vfs::symlink("old", "/ram0/p0/dir/ln", Root).isOk());
         CHECK(dir.take() == Change::Entries);
-        CHECK(Vfs::rename("/ram0/p0/dir/old", "/ram0/p0/other/old", Root).isOk());
+        CHECK(Vfs::rename("/ram0/p0/dir/old", "/ram0/p0/other/old", Vfs::RenameMode::NoReplace, Root).isOk());
         CHECK(dir.take() == Change::Entries);
         CHECK(other.take() == Change::Entries);
         CHECK(root.take() == 0);
         // A watched folder renamed or removed is told itself, as its folder is.
         CHECK(sub.watch.watch("/ram0/p0/dir/sub", Root).isOk());
-        CHECK(Vfs::rename("/ram0/p0/dir/sub", "/ram0/p0/dir/sub2", Root).isOk());
+        CHECK(Vfs::rename("/ram0/p0/dir/sub", "/ram0/p0/dir/sub2", Vfs::RenameMode::NoReplace, Root).isOk());
         CHECK(sub.take() == Change::Entries);
         CHECK(dir.take() == Change::Entries);
         CHECK(sub.watch.watch("/ram0/p0/dir/sub2", Root).isOk());
@@ -917,7 +922,7 @@ TEST_CASE("Vfs: symbolic links") {
 
                 // The link itself: removed, renamed; rmdir refuses it.
                 CHECK(Vfs::rmdir("/ram0/p0/d", Root) == Error::NotDir);
-                CHECK(Vfs::rename("/ram0/p0/d", "/ram0/p0/e", Root).isOk());
+                CHECK(Vfs::rename("/ram0/p0/d", "/ram0/p0/e", Vfs::RenameMode::NoReplace, Root).isOk());
                 CHECK(Vfs::readLink("/ram0/p0/e", Root).value() == "/ram0/p0/data");
                 CHECK(Vfs::remove("/ram0/p0/e", Root).isOk());
                 CHECK(Vfs::stat("/ram0/p0/data/notes.txt", Root).isOk());
@@ -1466,4 +1471,9 @@ TEST_CASE("Vfs: an added /dev directory of numbered devices") {
         CHECK(Vfs::open("/dev/numbered/2", Vfs::Read, Root).error() == Error::NotExist);
         CHECK(Vfs::open("/dev/numbered", Vfs::Read, Root).error() == Error::IsDir);
         CHECK(Vfs::remove("/dev/numbered/1", Root) == Error::PermissionDenied);
+}
+
+TEST_CASE("VFS: renames onto a taken name on FAT (POSIX's replace, and NoReplace)") {
+        fresh();
+        RenameChecks::run("/ram0/p0/r", false);
 }

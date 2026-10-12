@@ -1059,7 +1059,7 @@ int32_t Process::rename(const char *from, const char *to) {
         // The VFS's NotSupported: not within one filesystem. EXDEV, so a
         // `mv` knows to copy instead.
         Mutex::Locker locker(_pathLock, WaitForever);
-        const Error   err = Vfs::rename(f, t, vfs());
+        const Error   err = Vfs::rename(f, t, Vfs::RenameMode::Replace, vfs());
         return err == Error::NotSupported ? -BMDS_EXDEV : fsErrno(err);
 }
 

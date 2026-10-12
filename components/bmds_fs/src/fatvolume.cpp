@@ -288,14 +288,54 @@ Error FatVolume::remove(StringView path) {
         return err;
 }
 
-Error FatVolume::rename(StringView from, StringView to, bool &noPath) {
+Error FatVolume::rename(StringView from, StringView to, Vfs::RenameMode mode, bool &noPath) {
         String fromFat;
         String toFat;
         Error  err = fatPath(from, fromFat);
         if (err.isOk()) err = fatPath(to, toFat);
         if (err.isError()) return err;
-        const FRESULT result = f_rename(fromFat.cStr(), toFat.cStr());
+        FRESULT result = f_rename(fromFat.cStr(), toFat.cStr());
         noPath = result == FR_NO_PATH;
+        if (result != FR_EXIST || mode == Vfs::RenameMode::NoReplace) return Fat::toError(result, *this);
+        // The name is taken, perhaps by the file itself under another case (FAT folds case). The
+        // file goes aside first: if the name is then free it was its own, else what has it goes.
+        auto *info = static_cast<FILINFO *>(Memory::alloc(MemSpace::Psram, sizeof(FILINFO)));
+        if (info == nullptr) return Error::NoMem;
+        result = f_stat(fromFat.cStr(), info);
+        const bool fromDir = result == FR_OK && (info->fattrib & AM_DIR) != 0;
+        // Aside: a free name in its directory (one left by a cut-off rename is passed over).
+        String aside;
+        for (char k = '0'; result == FR_OK && k <= '9'; ++k) {
+                aside.clear();
+                const size_t slash = fromFat.view().lastIndexOf('/');
+                err = aside.append(fromFat.view().left(slash + 1));
+                if (err.isOk()) err = aside.append(".bmds-rename-");
+                if (err.isOk()) err = aside.append(k);
+                if (err.isError()) result = FR_NOT_ENOUGH_CORE;
+                if (result == FR_OK) result = f_rename(fromFat.cStr(), aside.cStr());
+                if (result != FR_EXIST) break;
+                result = k == '9' ? FR_DENIED : FR_OK; // all ten taken
+        }
+        if (result != FR_OK) {
+                Memory::free(info);
+                return Fat::toError(result, *this);
+        }
+        bool mismatch = false; // a file and a directory
+        result = f_stat(toFat.cStr(), info);
+        if (result == FR_OK) {
+                mismatch = fromDir != ((info->fattrib & AM_DIR) != 0);
+                if (!mismatch) result = f_unlink(toFat.cStr());
+        } else if (result == FR_NO_FILE) {
+                result = FR_OK; // the file's own name
+        }
+        Memory::free(info);
+        if (result == FR_OK && !mismatch) result = f_rename(aside.cStr(), toFat.cStr());
+        if (result == FR_OK && !mismatch) return Error::Ok;
+        // Put back as it was.
+        (void)f_rename(aside.cStr(), fromFat.cStr());
+        if (mismatch) return fromDir ? Error::NotDir : Error::IsDir;
+        // FatFs denies removing a directory that isn't empty.
+        if (result == FR_DENIED && fromDir) return Error::NotEmpty;
         return Fat::toError(result, *this);
 }
 

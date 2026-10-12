@@ -22,6 +22,7 @@
 #include <bmds/directorywatch.h>
 #include <bmds/vfs.h>
 #include "hostmemory.h"
+#include "renamechecks.h"
 
 using bmds::ByteSpan;
 using bmds::Error;
@@ -170,18 +171,19 @@ TEST_CASE("tmpfs: files and directories") {
                 CHECK(Vfs::remove(t.at("/dir"), Root) == Error::IsDir);
                 CHECK(Vfs::rmdir(t.at("/a.txt"), Root) == Error::NotDir);
                 // Renames don't replace (as on FAT), move between directories, never into themselves.
-                CHECK(Vfs::rename(t.at("/a.txt"), t.at("/big"), Root) == Error::Exists);
-                CHECK(Vfs::rename(t.at("/a.txt"), t.at("/dir/sub/a"), Root).isOk());
+                CHECK(Vfs::rename(t.at("/a.txt"), t.at("/big"), Vfs::RenameMode::NoReplace, Root) == Error::Exists);
+                CHECK(Vfs::rename(t.at("/a.txt"), t.at("/dir/sub/a"), Vfs::RenameMode::NoReplace, Root).isOk());
                 CHECK(get(t.at("/dir/sub/a")) == "hello world");
-                CHECK(Vfs::rename(t.at("/dir"), t.at("/dir/sub/dir"), Root) == Error::Invalid);
-                CHECK(Vfs::rename(t.at("/gone"), t.at("/x"), Root) == Error::NotExist);
+                CHECK(Vfs::rename(t.at("/dir"), t.at("/dir/sub/dir"), Vfs::RenameMode::NoReplace, Root) ==
+                      Error::Invalid);
+                CHECK(Vfs::rename(t.at("/gone"), t.at("/x"), Vfs::RenameMode::NoReplace, Root) == Error::NotExist);
                 // Long names (past the node's own room), and back.
                 const std::string longName = "/" + std::string(200, 'L');
-                CHECK(Vfs::rename(t.at("/dir/sub/a"), t.at(longName), Root).isOk());
+                CHECK(Vfs::rename(t.at("/dir/sub/a"), t.at(longName), Vfs::RenameMode::NoReplace, Root).isOk());
                 CHECK(get(t.at(longName)) == "hello world");
                 CHECK(Vfs::open(t.at("/" + std::string(256, 'x')), Vfs::Write | Vfs::Create, Root).error() ==
                       Error::Invalid);
-                CHECK(Vfs::rename(t.at(longName), t.at("/short"), Root).isOk());
+                CHECK(Vfs::rename(t.at(longName), t.at("/short"), Vfs::RenameMode::NoReplace, Root).isOk());
                 CHECK(Vfs::remove(t.at("/short"), Root).isOk());
                 CHECK(Vfs::rmdir(t.at("/dir/sub"), Root).isOk());
                 CHECK(Vfs::remove(t.at("/dir/b"), Root).isOk());
@@ -365,7 +367,7 @@ TEST_CASE("tmpfs: links, times, identity and watches") {
         CHECK(watch.watch(t.at("/data"), Root).isOk());
         put(t.at("/data/file"), "x");
         CHECK(watch.takeChanges() == bmds::DirectoryWatch::Contents);
-        CHECK(Vfs::rename(t.at("/data/file"), t.at("/moved"), Root).isOk());
+        CHECK(Vfs::rename(t.at("/data/file"), t.at("/moved"), Vfs::RenameMode::NoReplace, Root).isOk());
         CHECK(watch.takeChanges() == bmds::DirectoryWatch::Entries);
 }
 
@@ -447,4 +449,40 @@ TEST_CASE("tmpfs: random writes match a model") {
         }
         h.reset();
         CHECK(get(t.at("/r")) == model);
+}
+
+TEST_CASE("tmpfs: renames onto a taken name, an open file there removed") {
+        Tmp            t;
+        const uint64_t empty = freeBytes();
+        RenameChecks::run("/t/r", true);
+        CHECK(freeBytes() == empty);
+}
+
+TEST_CASE("tmpfs: progtest posix's sequence in a directory leaves its parent alone") {
+        Tmp t;
+        put(t.at("/prog"), "P");
+        CHECK(Vfs::mkdir(t.at("/pt"), Root).isOk());
+        const std::string d = "/t/pt";
+        put(d + "/pt-posix.txt", "abcdef");
+        CHECK(Vfs::symlink("pt-posix.txt", Tmp::at("/pt/pt-link"), Root).isOk());
+        CHECK(Vfs::symlink("pt-loop", Tmp::at("/pt/pt-loop"), Root).isOk());
+        CHECK(Vfs::remove(Tmp::at("/pt/pt-link"), Root).isOk());
+        CHECK(Vfs::remove(Tmp::at("/pt/pt-loop"), Root).isOk());
+        put(d + "/pt-new", "new");
+        CHECK(RenameChecks::rename(d + "/pt-new", d + "/pt-posix.txt").isOk());
+        CHECK(RenameChecks::rename(d + "/pt-posix.txt", d + "/pt-posix.txt").isOk());
+        CHECK(Vfs::mkdir(Tmp::at("/pt/pt-dir"), Root).isOk());
+        CHECK(Vfs::mkdir(Tmp::at("/pt/pt-empty"), Root).isOk());
+        CHECK(RenameChecks::rename(d + "/pt-posix.txt", d + "/pt-dir") == Error::IsDir);
+        CHECK(RenameChecks::rename(d + "/pt-dir", d + "/pt-posix.txt") == Error::NotDir);
+        CHECK(RenameChecks::rename(d + "/pt-dir", d + "/pt-empty").isOk());
+        CHECK(Vfs::mkdir(Tmp::at("/pt/pt-dir"), Root).isOk());
+        CHECK(RenameChecks::rename(d + "/pt-posix.txt", d + "/pt-empty/f").isOk());
+        CHECK(RenameChecks::rename(d + "/pt-dir", d + "/pt-empty") == Error::NotEmpty);
+        CHECK(RenameChecks::rename(d + "/pt-empty/f", d + "/pt-posix.txt").isOk());
+        CHECK(Vfs::rmdir(Tmp::at("/pt/pt-empty"), Root).isOk());
+        CHECK(Vfs::rmdir(Tmp::at("/pt/pt-dir"), Root).isOk());
+        CHECK(Vfs::remove(Tmp::at("/pt/pt-posix.txt"), Root).isOk());
+        CHECK(list(t.at("/pt")).empty());
+        CHECK(list(t.at("")) == std::vector<std::string>{"prog", "pt/"});
 }

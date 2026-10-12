@@ -1740,7 +1740,7 @@ Error Vfs::remove(StringView path, const Context &context) {
         return err;
 }
 
-Error Vfs::rename(StringView from, StringView to, const Context &context) {
+Error Vfs::rename(StringView from, StringView to, RenameMode mode, const Context &context) {
         Mutex::Locker lock(Fs::lock(), WaitForever);
         String        fromStorage;
         String        toStorage;
@@ -1761,10 +1761,12 @@ Error Vfs::rename(StringView from, StringView to, const Context &context) {
                 if (err.isError()) return err;
                 if (fromNode.volume != toNode.volume) return Error::NotSupported;
                 bool        noPath = false;
-                const Error renamed = fromNode.volume->rename(fromNode.rest, toNode.rest, noPath);
+                const Error renamed = fromNode.volume->rename(fromNode.rest, toNode.rest, mode, noPath);
                 if (noPath && (followPathLocked(fromStorage, false) || followPathLocked(toStorage, false))) continue;
                 if (renamed.isOk()) {
                         Fs::changedLocked(fromNode.mount, pathId(fromStorage.view()));
+                        // A file replaced there: its name holds another now.
+                        if (mode == RenameMode::Replace) Fs::changedLocked(toNode.mount, pathId(toStorage.view()));
                         Fs::tellEntryLocked(fromStorage.view(), DirectoryWatch::Entries, true);
                         Fs::tellEntryLocked(toStorage.view(), DirectoryWatch::Entries, false);
                 }

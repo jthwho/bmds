@@ -248,9 +248,10 @@ Error RomVolume::remove(StringView path) {
         return Error::ReadOnly;
 }
 
-Error RomVolume::rename(StringView from, StringView to, bool &noPath) {
+Error RomVolume::rename(StringView from, StringView to, Vfs::RenameMode mode, bool &noPath) {
         (void)from;
         (void)to;
+        (void)mode;
         noPath = false;
         return Error::ReadOnly;
 }

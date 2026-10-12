@@ -1070,3 +1070,44 @@ root node; the RAM disk cost 34 KB empty.
   `stat("PT-POSIX.TXT")` to find it, FAT's case folding, which a tmpfs (like littlefs) doesn't do.
   The old programs run on the filesystem they were written against; the case that prints its
   directory now says `/sd0`. All 22 pass.
+
+## 16. `rename()` replaces, as POSIX says (2026-10-12; a POSIX gap, built)
+
+**Why.** `rename()` onto a taken name failed with `EEXIST` on every volume, so a program writing
+a temporary file and renaming it over the real one (the usual safe save) failed, and `mv` had to
+remove the target first (not atomic, and a window with no file).
+
+**What changed:**
+- `Vfs::rename(from, to, mode, context)`: `RenameMode::Replace` (POSIX: a file replaces a file, a
+  directory an empty directory; `IsDir`, `NotDir`, `NotEmpty` otherwise; onto itself nothing
+  happens) or `RenameMode::NoReplace` (Linux's `RENAME_NOREPLACE`: `Exists`). No default: each
+  caller says which.
+  - `Replace`: the `rename` system call, the shell's `mv`, log rotation, the media player's
+    settings save (no longer removing the old file first).
+  - `NoReplace`: the file browser's operations (its rename relies on `Exists` to ask) and the
+    trash.
+- **littlefs** replaces in its own atomic rename; a directory onto a file is checked first (its
+  error for that is the one for a missing path).
+- **tmpfs** replaces in place; a file open there is removed as an open file is (kept until its
+  last handle closes).
+- **FAT** can't replace in one step, and a name taken may be the file's own under another case.
+  So the file goes aside (`.bmds-rename-N` in its directory), and then: if the name is free it was
+  its own (a case change), else what has it is removed (`Busy` if open, `NotEmpty`); then the file
+  takes the name. A failure puts it back. A power cut in between leaves the file under the aside
+  name; the next replacing rename there passes that name over.
+- The change hook is told about the replaced name too.
+
+**Testing:** host `renamechecks.h`, the same checks on FAT, littlefs and tmpfs (replace, onto
+itself, a case change, file onto directory and back, onto an empty and a full directory, an open
+file in the way, `NoReplace`); `progtest posix` checks it through the system call. That test's
+case-folding check now holds only where the filesystem folds case, so it passes on `/tmp` and
+`/boot` as on the card.
+
+**ABI impact:** `rename()` semantics: `EEXIST` becomes success (the target replaced), `EISDIR`,
+`ENOTDIR` or `ENOTEMPTY`, as Linux. No slot changes.
+
+**On the board:** `progtest posix` passes on `/tmp`, `/boot` and the card; `mv` replaces a file
+and changes a name's case on the card and on `/tmp`; the compatibility corpus passes. Once, the
+board restarted about 12 s after a flash, just as the first `progtest posix` run ended; three
+reboots with the same runs at the same moment didn't do it again. The boot log didn't say why,
+so it now does (`Reset: panic`, `task watchdog`, `USB`, ...).

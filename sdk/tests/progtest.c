@@ -300,10 +300,15 @@ static int posix(const char *dir) {
         CHECK(write(fd, "Z", 1) == 1 && fstat(fd, &a) == 0 && a.st_size == 101);
         CHECK(pread(fd, buf, 4, 96) == 4 && memcmp(buf, "\0\0\0\0", 4) == 0);
         CHECK(ftruncate(fd, -1) == -1 && errno == EINVAL);
-        // One file, one id: by name (any case), by fd, in its directory.
+        // One file, one id: by name, by fd, in its directory; under another case too where the
+        // filesystem folds case (FAT), else that is another name (tmpfs, littlefs).
         CHECK(stat(path, &a) == 0 && fstat(fd, &b) == 0);
         CHECK(a.st_ino == b.st_ino && a.st_dev == b.st_dev && a.st_ino != 0);
-        CHECK(stat("PT-POSIX.TXT", &b) == 0 && a.st_ino == b.st_ino);
+        if (stat("PT-POSIX.TXT", &b) == 0) {
+                CHECK(a.st_ino == b.st_ino);
+        } else {
+                CHECK(errno == ENOENT);
+        }
         CHECK(stat(".", &b) == 0 && a.st_ino != b.st_ino && S_ISDIR(b.st_mode));
         DIR           *dp = opendir(".");
         struct dirent *e;
@@ -324,6 +329,19 @@ static int posix(const char *dir) {
         CHECK(symlink("pt-loop", "pt-loop") == 0 && open("pt-loop", O_RDONLY) == -1 && errno == ELOOP);
         CHECK(open("pt-link", O_RDONLY | O_NOFOLLOW) == -1 && errno == ELOOP);
         CHECK(unlink("pt-link") == 0 && unlink("pt-loop") == 0 && stat(path, &b) == 0);
+        // rename() replaces: a file a file, a directory an empty one; never one with the other.
+        int nf = open("pt-new", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        CHECK(nf >= 0 && write(nf, "new", 3) == 3 && close(nf) == 0);
+        CHECK(rename("pt-new", path) == 0 && stat(path, &a) == 0 && a.st_size == 3);
+        CHECK(stat("pt-new", &b) == -1 && errno == ENOENT);
+        CHECK(rename(path, path) == 0 && stat(path, &a) == 0 && a.st_size == 3);
+        CHECK(mkdir("pt-dir", 0755) == 0 && mkdir("pt-empty", 0755) == 0);
+        CHECK(rename(path, "pt-dir") == -1 && errno == EISDIR);
+        CHECK(rename("pt-dir", path) == -1 && errno == ENOTDIR);
+        CHECK(rename("pt-dir", "pt-empty") == 0 && stat("pt-dir", &b) == -1 && errno == ENOENT);
+        CHECK(mkdir("pt-dir", 0755) == 0 && rename(path, "pt-empty/f") == 0);
+        CHECK(rename("pt-dir", "pt-empty") == -1 && errno == ENOTEMPTY);
+        CHECK(rename("pt-empty/f", path) == 0 && rmdir("pt-empty") == 0 && rmdir("pt-dir") == 0);
         CHECK(unlink(path) == 0);
         // termios on the console: raw and back (a pipe or file: ENOTTY).
         struct termios t, raw;
