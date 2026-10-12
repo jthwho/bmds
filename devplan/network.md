@@ -1502,8 +1502,8 @@ the board's CPU-ms per MB from `stats`).
 - **Transmitting in place, from internal RAM.** The EMAC can't send from PSRAM: read in place from
   lwIP's PSRAM heap, every frame over 256 bytes underflowed (TDES0 bit 1), aligned or not (copied
   to an aligned PSRAM buffer, most frames vanished); from internal RAM, even 2-byte aligned, none
-  did. So (the user's call) **lwIP's heap is internal DMA memory**, 96 KB from boot
-  (`CONFIG_BMDS_NET_HEAP_KB`; peaks seen: 28 KB for a bulk transfer either way, 52 KB over SSH and
+  did. So (the user's call) **lwIP's heap is internal DMA memory**, 96 KB from boot (64 KB
+  since 2026-10-12, `foundation.md` §9) (`CONFIG_BMDS_NET_HEAP_KB`; peaks seen: 28 KB for a bulk transfer either way, 52 KB over SSH and
   `progtest net` together; when full, senders wait and frames are dropped and retransmitted), out of
   reach of the display's PSRAM traffic too.
   - `EthernetDevice::transmitInPlace(pieces, flags, token, timeout)` and `setTxDone(fn, arg)`: a

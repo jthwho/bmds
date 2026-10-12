@@ -232,9 +232,11 @@ until silicon v3; then test again.
   worst, against the tick's 360 µs and 680-900 µs (`progtest sched`, 1 ms periods). Its
   interrupt isn't cache-safe (`CONFIG_GPTIMER_ISR_CACHE_SAFE` off), so it is held off during a
   flash write and may touch memory in PSRAM (`waketimer.cpp`).
-- **Opening the console's USB serial port resets the chip,** even with DTR and RTS held low
-  before the open (pyserial): the boot log shows `rst:0x17 (CHIP_USB_UART_RESET)`. Capturing a
-  panic means having the port open before it happens.
+- **Opening the console's USB serial port with DTR and RTS set low first reset the chip**
+  (pyserial, 2026-10-11): the boot log showed `rst:0x17 (CHIP_USB_UART_RESET)`. Opening it with
+  pyserial's defaults doesn't: `tools/bmdsboard.py` (`bmds-run`, `bmds-compat`) left the uptime
+  running (2026-10-12). Which line change USB-Serial/JTAG takes for its reset wasn't pinned down.
+  Capturing a panic still means having the port open before it happens.
 
 ## 5. ESP-IDF
 

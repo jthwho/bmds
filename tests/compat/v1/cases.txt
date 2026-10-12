@@ -1,7 +1,8 @@
 # The compatibility corpus, ABI 1 (static musl): run with tools/bmds-compat.
 # Each case: "=== command" (run in this corpus's directory on the board's
-# RAM disk), the output the console shows, "--- status". The programs here
-# are kept exactly as built; never rebuild or replace them.
+# card, /sd0/p0: FAT, as the programs were written against), the output the
+# console shows, "--- status". The programs here are kept exactly as built;
+# never rebuild or replace them.
 
 === ./hello.elf one 'two words'
 Hello from a BMDS program!
@@ -47,10 +48,10 @@ slept: ok
 33
 --- 0
 
-=== ./progtest.elf cwd /ram0; pwd
-cwd: /ram0/p0/compat
-cwd: /ram0
-/ram0/p0/compat
+=== ./progtest.elf cwd /sd0; pwd
+cwd: /sd0/p0/compat
+cwd: /sd0
+/sd0/p0/compat
 --- 0
 
 === ./progtest.elf leak 100

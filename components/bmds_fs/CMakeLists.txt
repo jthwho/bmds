@@ -27,6 +27,7 @@ set(BMDS_FS_SRCS
         src/ramflashdevice.cpp
         src/romvolume.cpp
         src/sectorcache.cpp
+        src/tmpvolume.cpp
         src/trash.cpp
         src/vfs.cpp
         src/zoneinfo.cpp

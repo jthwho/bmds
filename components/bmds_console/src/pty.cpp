@@ -8,13 +8,13 @@
  * Pseudo-terminals (devplan/pty.md).
  */
 
+#include <atomic>
 #include <cstdio>
 #include <new>
 #include <bmds/deadline.h>
 #include <bmds/interrupt.h>
 #include <bmds/memory.h>
 #include <bmds/pty.h>
-#include <bmds/staticobject.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -22,7 +22,13 @@ namespace {
 
         constexpr size_t  Chunk = 64; // output converted (CR LF) and pushed at a time
 
-        constinit StaticObject<Pty> ptys[Pty::MaxPtys];
+        // Made in Psram as first needed (about 950 bytes each), kept for good: never freed, so a
+        // pointer read once stays good.
+        constinit std::atomic<Pty *> ptys[Pty::MaxPtys] = {};
+
+        Pty *ptyAt(size_t number) {
+                return number < Pty::MaxPtys ? ptys[number].load(std::memory_order_acquire) : nullptr;
+        }
 
 } // namespace
 
@@ -34,8 +40,19 @@ Pty::Pty(uint8_t number) : _number(number) {
 
 Result<Pty *> Pty::open(MemSpace space) {
         for (size_t i = 0; i < MaxPtys; ++i) {
-                if (!ptys[i].isCreated()) ptys[i].create(static_cast<uint8_t>(i));
-                Pty &pty = *ptys[i];
+                Pty *made = ptys[i].load(std::memory_order_acquire);
+                if (made == nullptr) {
+                        void *mem = Memory::alloc(MemSpace::Psram, sizeof(Pty));
+                        if (mem == nullptr) return makeError<Pty *>(Error::NoMem);
+                        Pty *fresh = ::new (mem) Pty(static_cast<uint8_t>(i));
+                        if (ptys[i].compare_exchange_strong(made, fresh, std::memory_order_acq_rel)) {
+                                made = fresh;
+                        } else {
+                                fresh->~Pty(); // another open made it first
+                                Memory::free(mem);
+                        }
+                }
+                Pty &pty = *made;
                 bool free = false;
                 if (!pty._inUse.compare_exchange_strong(free, true, std::memory_order_acq_rel)) continue;
                 const Error err = pty.reset(space);
@@ -57,8 +74,9 @@ Result<Pty *> Pty::openCounted(MemSpace space) {
 }
 
 Result<FileHandle::Ptr> Pty::openProgramEnd(uint8_t number, uint8_t mode) {
-        if (number >= MaxPtys || !ptys[number].isCreated()) return makeError<FileHandle::Ptr>(Error::NotExist);
-        Pty &pty = *ptys[number];
+        Pty *found = ptyAt(number);
+        if (found == nullptr) return makeError<FileHandle::Ptr>(Error::NotExist);
+        Pty &pty = *found;
         {
                 // Held while the handle is opened, so the pair can't finish under it.
                 Mutex::Locker lock(pty._countLock, WaitForever);
@@ -72,14 +90,16 @@ Result<FileHandle::Ptr> Pty::openProgramEnd(uint8_t number, uint8_t mode) {
 }
 
 bool Pty::isCountedOpen(uint8_t number) {
-        if (number >= MaxPtys || !ptys[number].isCreated()) return false;
-        const Pty    &pty = *ptys[number];
+        const Pty *found = ptyAt(number);
+        if (found == nullptr) return false;
+        const Pty    &pty = *found;
         Mutex::Locker lock(pty._countLock, WaitForever);
         return pty._inUse.load(std::memory_order_acquire) && pty._counted && !pty._done;
 }
 
 const PtyConsole *Pty::programEnd(uint8_t number) {
-        return number < MaxPtys && ptys[number].isCreated() ? &ptys[number]->_console : nullptr;
+        Pty *found = ptyAt(number);
+        return found != nullptr ? &found->_console : nullptr;
 }
 
 void Pty::emulatorUsers(int delta) {

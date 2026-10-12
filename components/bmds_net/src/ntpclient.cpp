@@ -27,7 +27,7 @@
 #include <bmds/netstack.h>
 #include <bmds/ntp.h>
 #include <bmds/random.h>
-#include <bmds/staticobject.h>
+#include <bmds/psramobject.h>
 #include <bmds/stats.h>
 #include <bmds/string.h>
 #include <bmds/sysconf.h>
@@ -129,7 +129,7 @@ namespace {
 
         Client::Client() : group(Counters, sizeof(Counters) / sizeof(Counters[0]), readCounters, nullptr) {}
 
-        constinit StaticObject<Client> client;
+        constinit PsramObject<Client>  client;
         constinit bool                 started = false;
 
         void tick(void *);
@@ -419,7 +419,7 @@ namespace {
 } // namespace
 
 Error NtpClient::init() {
-        client.create();
+        if (client.create() == nullptr) return Error::NoMem;
         static constexpr struct {
                         const char   *key;
                         Config::Type  type;

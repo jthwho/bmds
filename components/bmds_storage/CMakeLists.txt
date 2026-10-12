@@ -1,5 +1,5 @@
 # bmds_storage — the SD card driver and the storage service (card detect,
-# hot-plug), the `sd` command, the RAM disk, and /boot on the flash. Target-only.
+# hot-plug), the `sd` command, /tmp, and /boot on the flash. Target-only.
 #
 # /boot's default files are the repository's boot/ directory, embedded by
 # tools/embedfiles.py (devplan/gui.md G14). /rom's image is built from rom/ by
@@ -14,15 +14,15 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 idf_component_register(SRCS src/bootdisk.cpp
                             src/flashpartition.cpp
                             src/fsbench.cpp
-                            src/ramdisk.cpp
                             src/romcommand.cpp
                             src/romdisk.cpp
                             src/sdcard.cpp
                             src/sdcommand.cpp
                             src/storage.cpp
+                            src/tmpfs.cpp
                        INCLUDE_DIRS include
                        REQUIRES bmds_core bmds_kernel bmds_fs
-                       PRIV_REQUIRES app_update bmds_board bmds_shell esp_driver_gpio esp_driver_sdmmc esp_hw_support esp_system
+                       PRIV_REQUIRES app_update bmds_board bmds_shell bmds_sysconf esp_driver_gpio esp_driver_sdmmc esp_hw_support esp_system
                                      esp_mm esp_partition sdmmc
                        WHOLE_ARCHIVE)
 bmds_target_options(${COMPONENT_LIB})

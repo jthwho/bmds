@@ -1678,18 +1678,18 @@ static int synth(const char *font) {
         bad.flags = 0x100;
         CHECK(bmds_audio_synth(&bad) == -BMDS_EINVAL);
         bad = c;
-        bad.font = "/ram0/p0/no-such.sf2";
+        bad.font = "/tmp/no-such.sf2";
         CHECK(bmds_audio_synth(&bad) == -BMDS_ENOENT);
         /* A damaged font. */
-        const int junk = open("/ram0/p0/junk.sf2", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        const int junk = open("/tmp/junk.sf2", O_WRONLY | O_CREAT | O_TRUNC, 0644);
         CHECK(junk >= 0);
         static char garbage[4096];
         memset(garbage, 0x5a, sizeof(garbage));
         memcpy(garbage, "RIFF\x00\x10\x00\x00sfbk", 12);
         CHECK(write(junk, garbage, sizeof(garbage)) == (ssize_t)sizeof(garbage) && close(junk) == 0);
-        bad.font = "/ram0/p0/junk.sf2";
+        bad.font = "/tmp/junk.sf2";
         CHECK(bmds_audio_synth(&bad) == -BMDS_EIO);
-        CHECK(unlink("/ram0/p0/junk.sf2") == 0);
+        CHECK(unlink("/tmp/junk.sf2") == 0);
 
         const int fd = bmds_audio_synth(&c);
         CHECK(fd >= 0);
@@ -2233,7 +2233,7 @@ static int image_test(const char *file) {
                         p[1] = (uint8_t)(y * 5);
                         p[2] = (uint8_t)(255 - x * 2 - y);
                 }
-        static const char *const names[] = {"/ram0/p0/progtest.png", "/ram0/p0/progtest.jpg"};
+        static const char *const names[] = {"/tmp/progtest.png", "/tmp/progtest.jpg"};
         for (int k = 0; k < 2; ++k) {
                 const int fd = open(names[k], O_WRONLY | O_CREAT | O_TRUNC, 0644);
                 CHECK(fd >= 0);

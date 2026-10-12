@@ -5,7 +5,7 @@
 # SPDX-License-Identifier: MIT
 # See LICENSE file in the project root folder for license information.
 #
-# Push-and-run: sends a program to the board's RAM disk with YMODEM and runs
+# Push-and-run: sends a program to the board's /tmp with YMODEM and runs
 # it there, with its output here, and exits with its status. No reflash and
 # no card needed. Keys typed on a terminal go to the program (Ctrl-C too);
 # Ctrl-] stops it and leaves. Needs pyserial (run inside ESP-IDF's
@@ -27,7 +27,7 @@ def main():
         epilog="The exit status is the program's (255 if the board couldn't be reached).",
     )
     parser.add_argument("-p", "--port", help="serial port (default: $ESPPORT, /dev/esp-*, /dev/ttyACM0)")
-    parser.add_argument("-d", "--dir", default="/ram0/p0", help="directory on the board (default: /ram0/p0)")
+    parser.add_argument("-d", "--dir", default="/tmp", help="directory on the board (default: /tmp)")
     parser.add_argument("-n", "--no-run", action="store_true", help="only send the files")
     parser.add_argument("-f", "--file", action="append", default=[], metavar="FILE",
                         help="send another file along (data, scripts); repeatable")

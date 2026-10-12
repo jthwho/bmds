@@ -23,7 +23,7 @@
 #include <bmds/lt8912b.h>
 #include <bmds/memory.h>
 #include <bmds/shell.h>
-#include <bmds/staticobject.h>
+#include <bmds/psramobject.h>
 #include <bmds/sysconf.h>
 #include <bmds/system.h>
 #include <bmds/task.h>
@@ -665,10 +665,10 @@ namespace {
                         Task              _task;
         };
 
-        constinit StaticObject<AnimTest> animObject;
+        constinit PsramObject<AnimTest> animObject; // the test's, made when first run
 
+        // The test, once made (`display anim start`).
         AnimTest &anim() {
-                if (!animObject.isCreated()) animObject.create();
                 return *animObject;
         }
 
@@ -695,7 +695,11 @@ namespace {
                 if (args.size() >= 3 && std::strcmp(args[2], "start") == 0) {
                         Display *d = running(ctx);
                         if (d == nullptr || isClaimed(ctx)) return Shell::ExitFailure;
-                        const int   n = args.size() > 3 ? std::atoi(args[3]) : 8;
+                        const int n = args.size() > 3 ? std::atoi(args[3]) : 8;
+                        if (!animObject.isCreated() && animObject.create() == nullptr) {
+                                ctx.eprintf("display: anim: %s\n", Error(Error::NoMem).desc());
+                                return Shell::ExitFailure;
+                        }
                         const Error err = anim().start(d->surface(), n);
                         if (err.isError()) {
                                 ctx.eprintf("display: anim: %s\n", err.desc());

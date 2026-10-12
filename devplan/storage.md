@@ -422,7 +422,7 @@ Step 2b measured: the image grew by 10.9 KB (331.7 → 342.7 KB); the linker sti
 - ~~**A sector cache for directories and the FAT.**~~ Done in Phase 3 (§3): 64 sectors, write-through. `ls -l` of BusyBox's `bin` 2.36 → 0.30 s, BusyBox's own `ls -l` 4.22 → 0.75 s.
 - Commands ignore write errors, so `echo x > f` on a full or pulled card succeeds silently. GNU tools report `write error: No space left on device` and fail; `CommandContext::print()`/`write()` should remember the first error and the built-ins return 1.
 - The removal of a card is noticed only after the write in flight times out (about 4 s): shorter IDF timeouts, or the card-detect interrupt failing transfers early, would shorten it.
-- ~~A `/ram` RAM disk on `RamBlockDevice` for scratch files and tests on the board.~~ Done in Phase 3 step 6: `ram0` at `/ram0/p0`, sparse (`programs.md` §6).
+- ~~A `/ram` RAM disk on `RamBlockDevice` for scratch files and tests on the board.~~ Done in Phase 3 step 6: `ram0` at `/ram0/p0`, sparse (`programs.md` §6); replaced by `/tmp`, a tmpfs (§15).
 
 ## 13. `/boot`: a persistent partition on the flash (design, 2026-10-05; built)
 
@@ -992,3 +992,81 @@ littlefs is now simply formatted; see the as-built notes)*
 **Testing:**
 - **Host** (`RamBlockDevice`): raw reads and writes through the VFS at odd offsets; writes refused inside mounted partitions and allowed in the table's sectors; the re-read on close (a new partition registered and mounted, a mounted one kept); logical partitions read.
 - **Board** (a scratch card): `fdisk` adds a second partition; `mkfs /dev/sd0p1`; it mounts at `/sd0/p1`; a GPT card is listed.
+
+## 15. `/tmp`: a filesystem in RAM (design, 2026-10-12; agreed: `/tmp` fixed, no path setting)
+
+**Why.** The RAM disk (`programs.md` §6) is a sparse `RamBlockDevice` that boot formats with
+FatFs (FAT16 at 16 MB) and mounts at `/ram0/p0`. That buys FAT's limits for nothing:
+case-folded 8.3/LFN names, cluster tables and the sector cache for metadata, a copy through
+the block layer on every read, and a path no program expects. musl hard-codes `/tmp`
+(`P_tmpdir`, `tmpfile()`, `tmpnam()`), so programs built today already look there.
+
+**What replaces it: `TmpVolume`** (`bmds_fs`, portable, host-tested), a `Volume` (§13d's
+interface) with no block device: the tree and the file data live in `Psram`.
+- **Nodes:** one allocation each (about 64 bytes): parent, first child, next sibling, type,
+  attributes, modification time, size, and the name (inline up to 23 bytes, else allocated).
+  Names are POSIX: any bytes but `/` and NUL, case kept and significant (as littlefs's).
+  Directories are linked lists: lookups are linear, as FAT's are.
+- **File data:** a file up to 4 KB is one block sized to its contents (rounded up to 64 bytes,
+  grown as it is written). Past that, 4 KB pages through a page table that doubles as it
+  grows; a page never written is a hole that reads as zeros (`lseek` past the end, `truncate`
+  up) and costs nothing. `map()` isn't offered: a file's block moves as it grows.
+- **The limit:** the bytes taken by nodes, names, tables and pages count against the size the
+  mount was given; past it, or when PSRAM runs out, writes fail with `NoSpace`. `statfs` reports
+  the limit and what is left of it (`df`).
+- **A POSIX gap closed on the way:** an open file can be removed (its name goes at once, its data
+  with its last handle, as on Linux). Rename still refuses an existing name (`Exists`), as every
+  volume does: the file browser's rename relies on it, so replacing (POSIX `rename()`) is the VFS's
+  change to make for all volumes, not this one's.
+- **Symbolic links:** stored as the VFS's emulated links (§4) for now, a System file holding the
+  target, so nothing above the volume changes.
+- **Unmounting** frees everything; files still open fail with `NoMedia` as on a pulled card.
+- Pool: two volumes.
+
+**Mounting.**
+- `Vfs::mountTmpfs(path, limitBytes)` and `Vfs::setTmpfsLimit()`; `listMounts()` shows device
+  `tmpfs`, type `tmpfs`. The VFS's few uses of a mount's block device (`overlaps`,
+  `unmountDevice`, the device name) skip a mount without one.
+- Boot stage `tmp` (`TmpFs::init`, replacing `ramdisk`, after `sysconf`) mounts it at
+  `Vfs::TmpPath`, `/tmp` (the user: always `/tmp`, no setting). `tmp/size` (int, bytes, default
+  16777216; 0 at boot for none) is its limit; a change applies at once and keeps what is held.
+
+**What goes:** `RamDisk`, `CONFIG_BMDS_RAMDISK_MB`, `/dev/ram0`, `/dev/ram0p0` and `/ram0/p0`.
+`RamBlockDevice` stays (the host tests' disks).
+
+**Users of `/ram0/p0` today:**
+- `tools/bmds-run`'s default directory becomes `/tmp`.
+- `progtest`'s synth and image modes write their scratch files to `/tmp`.
+- The compatibility corpus runs on the card, `/sd0/p0/compat` (see the as-built note); the one
+  case that printed its directory (`cwd /ram0`) now says `/sd0` (the user: BMDS isn't released,
+  so no compatibility to keep for board paths; its programs are unchanged).
+
+**ABI impact:**
+- Shell output: `mount` and `df` show `tmpfs on /tmp type tmpfs` instead of the `ram0p0` line;
+  `ls /` and `ls /dev` lose `ram0`.
+- New setting `tmp/size`; `CONFIG_BMDS_RAMDISK_MB` is gone.
+- Paths: `/ram0/p0` is gone (programs never had it from the SDK; the tools and tests above move).
+
+**Testing:**
+- Host: the VFS suite's file, directory, rename, link, watch and limit cases against a tmpfs
+  mount as well as FAT; holes; remove while open; unmount with open files; the limit (`NoSpace`
+  at the edge, space back after a remove); memory returned to zero after the tree is removed.
+- Board: `progtest` (files, synth, image), `bmds-run` and `bmds-compat`; `cp -r`, `du` and `rm -r`
+  of `16x16` against the FAT RAM disk's times (§3's table); `mem` before and after.
+
+**Cost:** about 3–5 KB of code (estimate); FatFs stays for the card. An empty `/tmp` costs its
+root node; the RAM disk cost 34 KB empty.
+
+**As built (2026-10-12):** as designed above. `listMounts()` gives a tmpfs no device name, and
+`mount` and `df` name it `tmpfs`, as Linux does (`tmpfs on /tmp type tmpfs`).
+- **Measured on the board,** the same 371 icons as §3's table (`cp -r` from the card, then
+  within `/tmp`, `du -s`, `rm -r`): 1.19 s (the FAT RAM disk: 1.4 to 1.9 s), 0.29 s (1.53 s),
+  0.07 s (0.27 s), 0.10 s (0.97 s). Two copies took 344 KB of the limit, all of it back after the
+  removes. `tmp/size` lowered to 1 MB at run time stopped a `dd` at 280 KB; reverted.
+- `progtest` (`image`, `synth`, `threads`, `timers`, `poll`, `spawn`, `sched`, `rusage`) runs from
+  `/tmp` and passes; `bmds-run` pushes and runs there.
+- **The compatibility corpus runs on the card** (`/sd0/p0/compat`; the user's choice): on `/tmp`
+  2 of its cases failed, as v1's `progtest posix` opens `pt-posix.txt` and expects
+  `stat("PT-POSIX.TXT")` to find it, FAT's case folding, which a tmpfs (like littlefs) doesn't do.
+  The old programs run on the filesystem they were written against; the case that prints its
+  directory now says `/sd0`. All 22 pass.

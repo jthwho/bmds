@@ -36,7 +36,7 @@ ROM; the device may be reformatted. It comes before `mediaplayer.md` step 3.
   (`BMDS_PROGRAM_ICONS`).
 - **The VFS:** filesystems are `Volume`s (`bmds_fs/src/fslayer.h`) mounted by
   `Vfs::mount(path, BlockDevice&)` after `identify` recognizes them; at most `MaxMounts` = 4,
-  and `/boot`, `/sd0/p0` and `/ram0/p0` use three. `/bin` and `/share/zoneinfo` are virtual.
+  and `/boot`, `/sd0/p0` and `/ram0/p0` use three (`/tmp`, a tmpfs, replaced `/ram0/p0`: storage.md §15). `/bin` and `/share/zoneinfo` are virtual.
 - **Icons:** `IconTheme` reads PNGs (16 and 32 pixels) from `/boot/icons`, then the card's
   theme (`/sd0/p0/share/icons/THEME`), its parent, `flat-color`, `hicolor`; it decodes each into
   PSRAM and keeps up to 64 KB of them. The themes in the repository: flat-color (2.6 MB of PNGs,

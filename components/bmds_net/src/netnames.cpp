@@ -21,7 +21,7 @@
 #include <bmds/log.h>
 #include <bmds/netstack.h>
 #include <bmds/semaphore.h>
-#include <bmds/staticobject.h>
+#include <bmds/psramobject.h>
 #include <bmds/string.h>
 #include <bmds/sysconf.h>
 #include <bmds/vfs.h>
@@ -78,7 +78,7 @@ namespace {
                         Lookup   lookups[MaxLookups];
         };
 
-        constinit StaticObject<Names> names;
+        constinit PsramObject<Names>  names;
         constinit bool                started = false;
 
         uint32_t networkOrder(uint32_t hostOrder) {
@@ -331,7 +331,7 @@ bool NetNames::isHostName(StringView name) {
 }
 
 Error NetNames::init() {
-        names.create();
+        if (names.create() == nullptr) return Error::NoMem;
         static constexpr struct {
                         const char   *key;
                         const char   *help;

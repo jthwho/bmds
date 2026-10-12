@@ -19,7 +19,7 @@ storage device?)").
   icon's `.desktop` file that way. `GuiClipboard::paste()` reads it on its own thread.
 - **The desktop shows the Desktop Entry files** of its directories (`[Desktop] Icons`, default
   `/boot/desktop`), and nothing else (`gui.md` §4m).
-- **Filesystems are mounted at paths** (`/boot`, `/sd0/p0`, `/ram0/p0`: `Vfs::listMounts()`). A
+- **Filesystems are mounted at paths** (`/boot`, `/sd0/p0`, `/tmp`: `Vfs::listMounts()`). A
   rename works within one, not across (`NotSupported`, which `mv` turns into a copy).
 - **FAT keeps a modification time, no owners, no permissions;** every user is root. A name
   starting with `.` is hidden by `ls` without `-a`.

@@ -72,7 +72,7 @@ enum class FsFormat : uint8_t {
 
 /** @brief What `Vfs::statfs()` reports about a mounted filesystem. */
 struct FsInfo {
-                const char *type = "";        ///< "FAT12", "FAT16", "FAT32", "exFAT" or "littlefs".
+                const char *type = "";        ///< "FAT12", "FAT16", "FAT32", "exFAT", "littlefs" or "tmpfs".
                 uint64_t    totalBytes = 0;   ///< Capacity of the data area.
                 uint64_t    freeBytes = 0;    ///< Free space.
                 uint32_t    clusterBytes = 0; ///< Allocation unit (littlefs: the erase block).
@@ -139,6 +139,7 @@ class Directory {
  * /dev/sd0       a block device (BlockDevices); /dev/sd0p0 a partition
  * /sd0/p0        a mounted FAT or exFAT filesystem (the storage service's default path)
  * /boot          littlefs on the board's flash (devplan/storage.md §13d)
+ * /tmp           a tmpfs: files in memory, gone at reboot (devplan/storage.md §15)
  * /rom           the ROM image on the board's flash, read-only (devplan/rom.md)
  * /home          a link to the user's home (setHome(); devplan/sysconf.md §7)
  * ```
@@ -191,8 +192,8 @@ namespace Vfs {
         /** @brief A mount, as `listMounts()` reports it. */
         struct MountInfo {
                         char        path[MaxMountPath + 1] = {}; ///< Where it is mounted.
-                        char        device[12] = {};             ///< The device's name ("sd0p0").
-                        const char *type = ""; ///< "fat12", "fat16", "fat32", "exfat", "littlefs" or "rom".
+                        char        device[12] = {};             ///< The device's name ("sd0p0"; "" for a tmpfs).
+                        const char *type = ""; ///< "fat12", "fat16", "fat32", "exfat", "littlefs", "rom" or "tmpfs".
         };
 
         /** @brief Sets up the VFS (the storage lock). Boot stage; idempotent. */
@@ -240,10 +241,30 @@ namespace Vfs {
         Error mount(StringView path, BlockDevice &device);
 
         /**
+         * @brief Mounts a new, empty filesystem in memory (`Psram`) at @p path: a
+         *        tmpfs, gone when unmounted (devplan/storage.md §15).
+         * @param path As `mount()`'s.
+         * @param limitBytes The memory its files, directories and names may take
+         *        (writes past it fail with `NoSpace`); taken as used, not reserved.
+         * @return `Ok`, `Invalid` (the path), `Exists`, `Full`.
+         */
+        Error mountTmpfs(StringView path, uint64_t limitBytes);
+
+        /**
+         * @brief Changes the limit of the tmpfs at @p path (what it holds is kept,
+         *        even over the new limit; writes then fail until it is under).
+         * @return `Ok`, `NotExist` (nothing mounted there), `Invalid` (not a tmpfs).
+         */
+        Error setTmpfsLimit(StringView path, uint64_t limitBytes);
+
+        /**
          * @brief Unmounts the filesystem at @p path.
          * @return `Ok`, `NotExist` (nothing mounted there), or `Busy` (pinned).
          */
         Error unmount(StringView path);
+
+        /** @brief Where the boot's tmpfs is (devplan/storage.md §15): where musl's `tmpfile()` looks. */
+        inline constexpr StringView TmpPath("/tmp");
 
         /** @brief The link to the user's home (`setHome()`): where every program finds it. */
         inline constexpr StringView HomePath("/home");

@@ -263,7 +263,7 @@ namespace {
                 Thread::Config config;
                 config.name = "sshd";
                 config.stackBytes = 6144;
-                config.stackSpace = MemSpace::Internal; // it may make the host key's directory on /boot (flash)
+                config.stackSpace = MemSpace::Psram; // /boot too: flash0's task does the flash work
                 config.kernel = true;
                 const Error err = state->thread.start(config, &serve, nullptr);
                 if (err.isError()) {

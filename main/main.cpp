@@ -22,13 +22,13 @@
 #include <bmds/loader.h>
 #include <bmds/logfiles.h>
 #include <bmds/midi.h>
-#include <bmds/ramdisk.h>
 #include <bmds/romdisk.h>
 #include <bmds/sshservice.h>
 #include <bmds/storage.h>
 #include <bmds/synthfile.h>
 #include <bmds/sysconf.h>
 #include <bmds/sysmon.h>
+#include <bmds/tmpfs.h>
 #include <bmds/usbhost.h>
 #include <bmds/usbserialconsole.h>
 #include <bmds/vfs.h>
@@ -77,7 +77,7 @@ namespace {
                 {"midi", bmds::Midi::init},           // the router, /dev/midi*; before USB's MIDI devices
                 {"clipboard", bmds::Clipboard::init}, // its configuration on /boot; /dev/clip0
                 {"storage", bmds::Storage::init},
-                {"ramdisk", bmds::RamDisk::init},
+                {"tmp", bmds::TmpFs::init},
                 {"programs", bmds::Loader::init},  // the process table
                 {"synth", bmds::SoundFonts::init}, // fonts synths share; after the loader: its cache is reclaimed first
                 {"input", bmds::Input::init},

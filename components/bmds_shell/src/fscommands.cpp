@@ -59,6 +59,14 @@ namespace {
                 return true;
         }
 
+        // What a mount is of, as Linux names it: its device node, or its type when it has none
+        // (a tmpfs).
+        const char *sourceOf(const Vfs::MountInfo &mount, char (&out)[24]) {
+                if (mount.device[0] == '\0') return mount.type;
+                std::snprintf(out, sizeof(out), "/dev/%s", mount.device);
+                return out;
+        }
+
 } // namespace
 
 int FsCommands::mount(CommandContext &ctx) {
@@ -66,8 +74,9 @@ int FsCommands::mount(CommandContext &ctx) {
         if (args.size() == 1) {
                 Vfs::MountInfo mounts[Vfs::MaxMounts];
                 const size_t   n = Vfs::listMounts(Span<Vfs::MountInfo>(mounts));
+                char           source[24];
                 for (size_t i = 0; i < n; ++i)
-                        ctx.printf("/dev/%s on %s type %s\n", mounts[i].device, mounts[i].path, mounts[i].type);
+                        ctx.printf("%s on %s type %s\n", sourceOf(mounts[i], source), mounts[i].path, mounts[i].type);
                 return Shell::ExitSuccess;
         }
         if (args.size() != 3) return ctx.usage();
@@ -133,7 +142,8 @@ int FsCommands::df(CommandContext &ctx) {
                 const uint64_t avail = fs.value().freeBytes;
                 const uint64_t used = total - avail;
                 char(&row)[5][24] = cells[rows];
-                std::snprintf(row[0], 24, "/dev/%s", mounts[i].device);
+                char source[24];
+                std::snprintf(row[0], 24, "%s", sourceOf(mounts[i], source));
                 const uint64_t values[3] = {total, used, avail};
                 for (int k = 0; k < 3; ++k) {
                         if (readable) {

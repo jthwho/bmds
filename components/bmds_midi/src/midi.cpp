@@ -15,7 +15,7 @@
 #include <bmds/memory.h>
 #include <bmds/midi.h>
 #include <bmds/midifile.h>
-#include <bmds/staticobject.h>
+#include <bmds/psramobject.h>
 #include <bmds/stats.h>
 #include <bmds/string.h>
 #include <bmds/sysconf.h>
@@ -95,7 +95,7 @@ namespace {
                         PortCounters     *counters = nullptr;   // MaxPorts of them, in PSRAM
         };
 
-        constinit StaticObject<System> midi;
+        constinit PsramObject<System>  midi;
         constinit std::atomic<bool>    ready{false};
 
         void readPort(void *arg, Span<int64_t> v) {
@@ -139,7 +139,7 @@ namespace {
 } // namespace
 
 Error Midi::init() {
-        midi.create();
+        if (midi.create() == nullptr) return Error::NoMem;
         void *block = Memory::alloc(MemSpace::Psram, sizeof(PortCounters) * MidiRouter::MaxPorts);
         if (block != nullptr) {
                 midi->counters = static_cast<PortCounters *>(block);

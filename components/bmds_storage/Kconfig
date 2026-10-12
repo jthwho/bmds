@@ -47,14 +47,4 @@ menu "BMDS storage"
             TZ. The default of the system configuration's clock/tzdata,
             which 'sysconf' changes at run time.
 
-    config BMDS_RAMDISK_MB
-        int "RAM disk size (MB, PSRAM, 0 for none)"
-        default 16
-        range 0 32
-        help
-            Size of the RAM disk mounted at /ram0/p0 (scratch files, programs
-            pushed with tools/bmds-run). A limit, not an allocation: PSRAM is
-            taken in 32 KB chunks as files are written and given back when
-            they are deleted, so an empty RAM disk costs a few chunks.
-
 endmenu

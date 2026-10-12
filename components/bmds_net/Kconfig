@@ -20,7 +20,7 @@ menu "BMDS network"
 
     config BMDS_NET_HEAP_KB
         int "IP stack heap (KB of internal RAM)"
-        default 96
+        default 64
         range 32 256
         help
             lwIP's heap, one block of internal DMA memory from boot (devplan/network.md §29):

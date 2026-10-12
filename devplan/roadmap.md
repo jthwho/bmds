@@ -55,7 +55,7 @@ Plans: [`storage.md`](storage.md), [`time.md`](time.md). Complete; verified on h
 - [x] Syscall table v1: fd-based I/O (stdin/stdout/stderr, `read/write/close/dup2/isatty`), terminal info/modes, file I/O, memory, time, exit, args, environment.
 - [x] ABI lock tests.
 - [x] Shell: run programs by name, `PATH`-like search; `#!` and `.sh` scripts launched by content; kill on a second Ctrl-C.
-- [x] Push-and-run over serial (host tool sends a program, device runs it — no reflash): `tools/bmds-run`, into the RAM disk (`/ram0/p0`); compatibility corpus `tests/compat/v1` (`tools/bmds-compat`).
+- [x] Push-and-run over serial (host tool sends a program, device runs it — no reflash): `tools/bmds-run`, into `/tmp` (a tmpfs since 2026-10-12, `storage.md` §15; the RAM disk `/ram0/p0` before); compatibility corpus `tests/compat/v1` (`tools/bmds-compat`).
 - [x] The SDK on static musl (`devplan/programs.md` §12, step 7): vendored musl, the Linux system call layer, file identity, `ftruncate`; BusyBox builds and runs.
 - [x] Emulated symbolic links on FAT/exFAT, Cygwin's format (`storage.md` §4: `symlink`, `readlink`, `lstat`); `ln -s`.
 - [x] Terminal size learned from a serial terminal (`ESC [ 18 t`, the answer taken out of the input; `terminal.md`), `COLUMNS`/`LINES`, `TIOCGWINSZ`; `clear`, `reset`.

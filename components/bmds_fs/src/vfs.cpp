@@ -25,6 +25,7 @@
 #include "fslayer.h"
 #include "lfsvolume.h"
 #include "romvolume.h"
+#include "tmpvolume.h"
 #include "zoneinfo.h"
 
 BMDS_NAMESPACE_BEGIN
@@ -37,8 +38,8 @@ namespace {
         struct Mount {
                         char         path[MaxMountPath + 1] = {};
                         Volume      *volume = nullptr;
-                        BlockDevice *device = nullptr;
-                        bool         pinned = false; // never unmounted (/boot)
+                        BlockDevice *device = nullptr; // null for a filesystem in memory (tmpfs)
+                        bool         pinned = false;   // never unmounted (/boot)
         };
 
         // The mount table, in mount order; under the storage lock.
@@ -687,7 +688,8 @@ namespace {
 
         // True if mount @p index is on @p device or on a partition of it. Lock held.
         bool isMountOn(size_t index, const BlockDevice &device) {
-                const BlockDevice         *mounted = mounts[index].device;
+                const BlockDevice *mounted = mounts[index].device;
+                if (mounted == nullptr) return false;
                 const BlockDevices::Entry *e = Fs::findEntryLocked(*mounted);
                 return mounted == &device || (e != nullptr && e->parent == &device);
         }
@@ -696,7 +698,8 @@ namespace {
         // device, a partition of it, or the whole device it is part of. Lock held.
         bool overlaps(size_t index, const BlockDevice &device) {
                 const BlockDevices::Entry *e = Fs::findEntryLocked(device);
-                return isMountOn(index, device) || (e != nullptr && e->parent == mounts[index].device);
+                return isMountOn(index, device) ||
+                       (e != nullptr && mounts[index].device != nullptr && e->parent == mounts[index].device);
         }
 
 } // namespace
@@ -965,7 +968,7 @@ Result<String> Vfs::normalize(StringView path, StringView cwd) {
 
 namespace {
 
-        Error mountAt(StringView path, BlockDevice &device);
+        Error mountAt(StringView path, BlockDevice *device, uint64_t limitBytes);
 
         // The filesystem on @p device mounted on a volume from its pool: a ROM image in
         // mapped bytes (devplan/rom.md §3d), littlefs on a flash, FAT on anything else
@@ -1007,7 +1010,7 @@ namespace {
 } // namespace
 
 Error Vfs::mount(StringView path, BlockDevice &device) {
-        const Error err = mountAt(path, device);
+        const Error err = mountAt(path, &device, 0);
         // A pending zone name: its database may be on this filesystem.
         if (err.isOk()) Clock::retryZoneName();
         return err;
@@ -1015,7 +1018,8 @@ Error Vfs::mount(StringView path, BlockDevice &device) {
 
 namespace {
 
-        Error mountAt(StringView path, BlockDevice &device) {
+        // @p device null: a tmpfs of at most @p limitBytes.
+        Error mountAt(StringView path, BlockDevice *device, uint64_t limitBytes) {
                 using namespace Vfs;
                 const Result<String> normalized = normalize(path, "/");
                 if (normalized.error().isError()) return normalized.error();
@@ -1030,17 +1034,28 @@ namespace {
                         // Not inside a mounted filesystem, nor over the path to one.
                         if (isBelow(p, mp) || isBelow(mp, p)) return Error::Invalid;
                         // One filesystem in two volumes would corrupt it.
-                        if (overlaps(i, device)) return Error::Busy;
+                        if (device != nullptr && overlaps(i, *device)) return Error::Busy;
                 }
                 if (mountCount == MaxMounts) return Error::Full;
-                Volume     *volume = nullptr;
-                const Error err = mountVolumeLocked(device, volume);
-                if (err.isError()) return err;
+                Volume *volume = nullptr;
+                if (device != nullptr) {
+                        const Error err = mountVolumeLocked(*device, volume);
+                        if (err.isError()) return err;
+                } else {
+                        TmpVolume *tmp = TmpVolume::acquire();
+                        if (tmp == nullptr) return Error::Full;
+                        const Error err = tmp->mount(limitBytes);
+                        if (err.isError()) {
+                                tmp->release();
+                                return err;
+                        }
+                        volume = tmp;
+                }
                 Mount &m = mounts[mountCount++];
                 std::memcpy(m.path, p.data(), p.size());
                 m.path[p.size()] = '\0';
                 m.volume = volume;
-                m.device = &device;
+                m.device = device;
                 Zones::mountsChangedLocked();
                 Fs::tellAllWatchesLocked();
                 logHomeLocked();
@@ -1049,6 +1064,21 @@ namespace {
         }
 
 } // namespace
+
+Error Vfs::mountTmpfs(StringView path, uint64_t limitBytes) {
+        return mountAt(path, nullptr, limitBytes);
+}
+
+Error Vfs::setTmpfsLimit(StringView path, uint64_t limitBytes) {
+        Mutex::Locker lock(Fs::lock(), WaitForever);
+        for (size_t i = 0; i < mountCount; ++i) {
+                if (path != StringView(mounts[i].path)) continue;
+                if (mounts[i].device != nullptr) return Error::Invalid;
+                static_cast<TmpVolume *>(mounts[i].volume)->setLimit(limitBytes);
+                return Error::Ok;
+        }
+        return Error::NotExist;
+}
 
 void Vfs::setHomeReport(HomeReport report) {
         Mutex::Locker lock(Fs::lock(), WaitForever);
@@ -1173,8 +1203,11 @@ size_t Vfs::listMounts(Span<MountInfo> out) {
                 MountInfo &info = out[i];
                 info = MountInfo();
                 std::memcpy(info.path, mounts[i].path, sizeof(info.path));
-                const BlockDevices::Entry *e = Fs::findEntryLocked(*mounts[i].device);
-                if (e != nullptr) std::memcpy(info.device, e->name, sizeof(info.device));
+                // None for a filesystem in memory.
+                if (mounts[i].device != nullptr) {
+                        const BlockDevices::Entry *e = Fs::findEntryLocked(*mounts[i].device);
+                        if (e != nullptr) std::memcpy(info.device, e->name, sizeof(info.device));
+                }
                 info.type = mounts[i].volume->typeName();
         }
         return n;

@@ -54,3 +54,9 @@ CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
 # driver list (components/bmds_board/boards/olimex_esp32p4_pc/flashchips.c).
 CONFIG_SPI_FLASH_AUTO_SUSPEND=y
 CONFIG_SPI_FLASH_OVERRIDE_CHIP_DRIVER_LIST=y
+
+# --- Internal RAM (devplan/foundation.md §9) ------------------------------------
+# Nothing runs I2C with the cache off, and no IRAM interrupt starts or stops a GDMA channel
+# (the crypto's ISR only signals; the display's DMA is the DW-GDMA): both stay in flash.
+CONFIG_I2C_MASTER_ISR_HANDLER_IN_IRAM=n
+CONFIG_GDMA_CTRL_FUNC_IN_IRAM=n

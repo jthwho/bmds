@@ -44,8 +44,8 @@ That decision and its rationale is recorded per driver in its devplan document.
 | `bmds_core` | Core types: `Error`, `Result`, `String`, `StringView`, `List`, `Map`, `Span`, `SharedPtr`, `UniquePtr`, `Buffer`, geometry types, `ObjectBase`, signals/slots. | **No** — host-testable |
 | `bmds_board` | Board definitions, `MemSpace` mapping, chip constants. | Yes (thinly) |
 | `bmds_kernel` | Boot sequence, task/IPC wrappers, logging, interrupt dispatch, device model. | Yes |
-| `bmds_fs` | Block devices (`BlockDevice`, `RamBlockDevice`), the filesystem (FatFs) and the VFS. | **No** — host-testable |
-| `bmds_storage` | The SD card (`SdCard`), the storage service (card detect, hot-plug), and the RAM disk (`/ram0/p0`). | Yes |
+| `bmds_fs` | Block devices (`BlockDevice`, `RamBlockDevice`), the filesystems (FatFs, littlefs, ROM images, tmpfs) and the VFS. | **No** — host-testable |
+| `bmds_storage` | The SD card (`SdCard`), the storage service (card detect, hot-plug), and `/tmp` (a tmpfs). | Yes |
 | `bmds_drivers` | Hardware drivers (may split per driver). | Yes |
 | `bmds_console` | Terminal abstraction, serial console, HDMI text console, ANSI/VT parsing. | Partly |
 | `bmds_shell` | Command shell, built-in commands. | Partly |

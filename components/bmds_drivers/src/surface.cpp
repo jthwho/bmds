@@ -25,7 +25,7 @@ namespace {
         constexpr size_t LineAlign = 64;             // the L1 cache line (internal RAM)
         constexpr size_t WriteBackChunk = 64 * 1024; // a cache operation runs with interrupts off
         constexpr size_t MaxPieces = 32;             // a job's copies
-        constexpr size_t MaxFillRows = 1024;         // rows a fill sends in one job
+        constexpr size_t MaxFillRows = 256;          // rows fills send in one job (24 B each, internal)
 
         // What's left of @p deadline, as a timeout (at least 1 ms).
         unsigned int remainingMs(const Deadline &deadline) {

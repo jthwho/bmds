@@ -162,3 +162,67 @@ None. Everything here is kernel-internal. `Error` codes and `MemSpace` values ar
 - **SD card-detect polarity:** confirm on hardware.
 - **Partition table:** OTA slots and a coredump partition, once there is a reason. A change requires reflashing the partition table but has no userspace impact.
 - **`BMDS_ISR_ATTR`:** defined when the interrupt dispatcher lands.
+
+## 9. Internal RAM review (2026-10-12; the user agreed to 1–6: easy wins, never at the cost of
+real-time work or the desktop's speed)
+
+**Where it stands** (`idf.py size`, the board's `mem` and boot report):
+- Static: 142,724 of 576,464 bytes of DIRAM (IRAM code 62,328, `.data` 15,220, `.bss` 65,156);
+  §5's 65,376 was the empty system. BMDS's own IRAM is about 1.7 KB; the rest is IDF (flash and
+  PSRAM drivers, FreeRTOS, the heap, the ISRs).
+- Heap (`Internal`): 584,991 total; 318,183 free at the end of boot; **138,815 free, largest
+  block 63,488**, once `autoexec.sh` has started the desktop and an ssh session is open.
+- What holds it at run time:
+
+  | Consumer | Bytes | Where | Needs internal? |
+  |---|---|---|---|
+  | lwIP heap | 98,560 | `netstack.cpp`, `BMDS_NET_HEAP_KB` 96 | Yes: the EMAC can't send from PSRAM. Measured peak 52 KB (`network.md` §29). |
+  | EMAC descriptors and buffers | 75,904 | `ethernetdevice.cpp` (32 rx, 16 tx) | Yes (DMA); 32 rx buffers are §30's no-loss fix. |
+  | Window manager text strip | 61,568 | `windowmanager.cpp` (720p) | Yes by design (`display.md` V9). |
+  | Blit chain descriptors | 26,368 | `surface.cpp`: `MaxFillRows` 1024 × 24 B | Internal DMA; most of it is for fills of up to 1024 rows. |
+  | Window manager plan and clips | 8,704 | `windowmanager.cpp` | Hot, but small arrays. |
+  | BMDS task stacks | about 34,000 | eth0 4K, net 6K, usb0 4K, flash0 3K, logd 5K, scanout 3K, wm 8K | flash0: yes; the rest by choice. |
+  | sshd thread stack | 6,144 | `sshservice.cpp` | By choice ("may write `/boot`"), yet `filebrowser.md` found a PSRAM stack can, since `flash0` does the flash work. |
+  | IDF tasks | about 13,000 | idle, timers, ipc, esp_timer, ISR stacks | Yes. |
+  | Program stacks | 32,768 each | `loader.cpp`: internal while the largest block ≥ stack + 64 KB | Speed only. With the desktop up the largest block is 63 KB, so none get it now. |
+  | Screenshot compressor | 167,744 transient | `png.cpp`: internal first, else PSRAM | Speed only; today it always falls back. |
+
+**Proposals, by size** (each measured before and after; none changes the ABI):
+1. **lwIP heap 96 → 64 KB** (−32 KB): its measured peak is 52 KB. Check `stats` for its peak
+   under the netstress flood with ssh and `-l` first.
+2. **Blit chain fill rows 1024 → 256** (−18 KB): a fill taller than 256 rows becomes several
+   jobs. Measure `win bench` fills.
+3. **logd and sshd stacks to PSRAM** (−11 KB): confirm a `/boot` write from each first.
+4. **Lazily created, in PSRAM, instead of `.bss`** (−15 KB): the 8 ptys (7.6 KB), the NTP client
+   (2.7 KB), the name table (1.9 KB), MIDI (2.2 KB), the display test's animation (1.9 KB).
+   Anything an ISR touches stays.
+5. **net 6 → 4 KB, usb0 stack checked** (−2 KB or more): 2.2 KB of net's is used at most.
+6. **IRAM and data that do nothing here** (a few KB): `I2C_MASTER_ISR_HANDLER_IN_IRAM` (I2C never
+   runs with the cache off), `GDMA_CTRL_FUNC_IN_IRAM`, the `PM_*` IRAM options and the 2 KB
+   `sleep_retention` data with power management off; check `ESP_TIMER_IN_IRAM`.
+7. **The policy, so freed RAM goes somewhere useful:** program stacks and the screenshot
+   compressor take internal RAM only above a reserve. Both rules exist; 1–6 free about 80 KB, and
+   whether the largest block then clears 96 KB (a 32 KB stack plus the reserve) depends on
+   fragmentation: measure it.
+
+Not proposed: the EMAC's rx buffers, the WM strip and the audio buffers, which are internal for
+measured reasons.
+
+**As built (2026-10-12):**
+- Done: 1 (`BMDS_NET_HEAP_KB` 64), 2 (`MaxFillRows` 256), 3 (logd and sshd stacks in PSRAM),
+  4 (ptys made in PSRAM when first opened; the NTP client, the name table, MIDI's state and the
+  display test's animation in `PsramObject`, a `StaticObject` whose object is in PSRAM),
+  5 (net's stack 4 KB; usb0's left at 4 KB, 2 KB free, as a hot-plug of an unusual device may need
+  it), and 6 for `I2C_MASTER_ISR_HANDLER_IN_IRAM` and `GDMA_CTRL_FUNC_IN_IRAM` (`sdkconfig.defaults`).
+- Not possible: the `PM_*` IRAM options and `ESP_TIMER_IN_IRAM`. On the P4, `PM_SLEEP_FUNC_IN_IRAM`
+  can only be changed on the C2, and it selects `PM_SLP_IRAM_OPT`, which selects
+  `ESP_TIMER_IN_IRAM`.
+- Static DIRAM: 142,704 → **124,768** bytes (`.bss` 65,156 → 48,820, IRAM 62,328 → 60,648).
+- Before the change, on the board: the netstress TCP test moved 4.98 MB/s out and 5.90 MB/s in,
+  lwIP's heap peaking at 27 KB; 80 window moves drew in about 20.3 ms a round.
+- **After, on the board:** boot ends with 382,195 bytes of `Internal` free (318,183 before; the
+  heap's total grew by the 17.9 KB of static freed); with the desktop up, 220 KB free and the
+  largest block 121 KB (139 KB and 63 KB before), so program stacks get internal RAM again. The
+  netstress TCP test: 4.95 to 4.99 MB/s out, 5.86 to 5.92 MB/s in over three runs (one first run
+  at 4.67 out), lwIP's heap peaking at 27 KB with no failures; the flood lost nothing. The window
+  moves drew in 19.2 and 19.7 ms a round. The net task used 2.3 KB of its 4 KB.

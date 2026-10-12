@@ -167,7 +167,7 @@ Error NetStack::init() {
         if (err.isError()) return err;
         Task::Config tc;
         tc.name = "net";
-        tc.stackBytes = 6144;
+        tc.stackBytes = 4096; // 2.3 KB used at most, after TCP both ways at full speed
         tc.priority = CONFIG_BMDS_NET_STACK_PRIORITY;
         err = stack->task.start(tc, &run, nullptr);
         if (err.isError()) return err;

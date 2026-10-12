@@ -7,8 +7,9 @@
 #
 # Runs the compatibility corpus on a board (docs/ABI.md): programs built with
 # an older SDK, kept as built, must still do exactly what they did. Sends a
-# corpus directory's programs to the RAM disk and runs each case of its
-# cases.txt there, comparing output (stdout and stderr together, as the
+# corpus directory's programs to the card (FAT, as they were written
+# against: v1's posix case expects names to fold case) and runs each case of
+# its cases.txt there, comparing output (stdout and stderr together, as the
 # console shows them) and exit status. Exits 1 if any case differs.
 #
 # cases.txt: "# comments", then per case a line "=== command" (shell syntax,
@@ -62,7 +63,7 @@ def main():
         board.sync()
         for corpus in corpora:
             name = os.path.basename(os.path.normpath(corpus))
-            where = "/ram0/p0/compat"
+            where = "/sd0/p0/compat"
             board.send_files(sorted(glob.glob(os.path.join(corpus, "*.elf"))), where)
             for case in parse(os.path.join(corpus, "cases.txt")):
                 output, status = board.run("(cd %s && %s)" % (where, case["command"]), 30)

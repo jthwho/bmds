@@ -62,6 +62,7 @@ add_executable(bmds_host_tests
         launch.cpp
         lineeditor.cpp
         lfsvfs.cpp
+        tmpfs.cpp
         list.cpp
         littlefs.cpp
         lwip.cpp
