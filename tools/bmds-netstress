@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+# @file      bmds-netstress
+# @copyright Jason Howard. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+# See LICENSE file in the project root folder for license information.
+#
+# Stresses a board's Ethernet from a wired peer and checks that nothing was lost
+# (devplan/network.md §30c): raw TCP each way, a line-rate UDP flood, the PHY restarted during
+# a flood, the board rebooted during a flood. After each, the driver's loss counters (`stats`
+# net.ethN.*) must not have moved and the MAC's receive path must not be wedged (`net regs`).
+#
+#   tools/bmds-netstress --board root@bmds0 --peer user@host [--tests tcp,flood,link,reboot]
+#
+# Run from any machine that reaches both over ssh (keys, no prompts). The peer must be wired to
+# the board's switch (a Wi-Fi peer can't load the link) and have python3 and nc (OpenBSD's).
+# Python's standard library only.
+
+import argparse
+import re
+import subprocess
+import sys
+import time
+
+SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
+
+# What the peer runs to flood: full-size UDP datagrams, unpaced (the switch paces them to the
+# board's line rate), to a port nobody listens on.
+FLOOD = r"""
+import socket, sys, time
+host, port, secs = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 << 20)
+data = b"\0" * 1472
+n = 0
+end = time.time() + secs
+while time.time() < end:
+    try:
+        s.sendto(data, (host, port))
+        n += 1
+    except OSError:
+        pass
+print(n)
+"""
+
+# Counters that must not move (net.ethN.*). Not these: rx_bulk_dropped (policy), rx_no_buffer (the
+# ring ran dry for a moment: the frame waits in the MAC's FIFO, and only those that then don't fit
+# are lost, as rx_overflow).
+LOSSES = ["rx_errors", "tx_errors", "rx_missed", "rx_overflow", "tx_realtime_waited", "rx_restarts"]
+
+
+def run(target, command, check=True, timeout=None, stdin=None):
+    r = subprocess.run(SSH + [target, command], capture_output=True, text=True, timeout=timeout, input=stdin)
+    if check and r.returncode != 0:
+        raise RuntimeError("%s: %s: %s" % (target, command, r.stderr.strip() or r.returncode))
+    return r.stdout
+
+
+def fire(target, command):
+    """Starts @p command and doesn't wait for it: one that takes the link (and the session with it)
+    down. Kill it when done."""
+    return subprocess.Popen(SSH + [target, command], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def stats(board, interface):
+    """The board's counters: net.<interface>.* and the cores' busy time."""
+    values = {}
+    for line in run(board, "stats").splitlines():
+        fields = line.split()
+        if len(fields) < 2:
+            continue
+        name, value = fields[0], fields[1]
+        if name.startswith("net.%s." % interface) and re.fullmatch(r"-?\d+", value):
+            values[name.split(".", 2)[2]] = int(value)
+        elif re.fullmatch(r"cpu\.core\d+\.busy_us", name):
+            values["busy_us"] = values.get("busy_us", 0) + int(value)
+    return values
+
+
+def wedged(board):
+    out = run(board, "net regs")
+    m = re.search(r"debug ([0-9a-f]{8})", out)
+    return m is not None and (int(m.group(1), 16) & 0x300) == 0x300
+
+
+def wait_for(board, seconds):
+    end = time.time() + seconds
+    while time.time() < end:
+        if subprocess.run(SSH + [board, "true"], capture_output=True).returncode == 0:
+            return True
+        time.sleep(1)
+    return False
+
+
+class Checker:
+    def __init__(self, args):
+        self.args = args
+        self.failed = 0
+
+    def report(self, name, ok, detail):
+        print("%-6s %s  %s" % (name, "PASS" if ok else "FAIL", detail))
+        if not ok:
+            self.failed += 1
+
+    def losses(self, before, after):
+        moved = ["%s +%d" % (k, after.get(k, 0) - before.get(k, 0)) for k in LOSSES
+                 if after.get(k, 0) != before.get(k, 0)]
+        return moved
+
+    def flood(self, seconds):
+        p = subprocess.Popen(SSH + [self.args.peer, "python3 - %s %d %g" % (self.args.board_ip, self.args.port,
+                                                                            seconds)],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        p.stdin.write(FLOOD)
+        p.stdin.close()
+        return p
+
+    @staticmethod
+    def sent(flood):
+        """Waits for a flood to end: the datagrams the peer sent."""
+        out = flood.stdout.read()
+        flood.wait()
+        return int(out.strip() or 0)
+
+    def test_tcp(self):
+        a = self.args
+        for direction in ("out", "in"):
+            before = stats(a.board, a.interface)
+            t0 = time.time()
+            if direction == "out":
+                listener = subprocess.Popen(SSH + [a.peer, "timeout 300 nc -l %d > /dev/null" % a.tcp_port])
+                time.sleep(1)
+                t0 = time.time()
+                run(a.board, "dd if=/dev/zero bs=16384 count=%d 2>/dev/null | nc %s %d" %
+                    (a.mb * 64, a.peer_ip, a.tcp_port), timeout=600)
+                listener.wait(timeout=60)
+            else:
+                listener = subprocess.Popen(SSH + [a.board, "nc -l -p %d > /dev/null" % a.tcp_port])
+                time.sleep(1)
+                t0 = time.time()
+                run(a.peer, "head -c %d /dev/zero | nc -N %s %d" % (a.mb << 20, a.board_ip, a.tcp_port),
+                    timeout=600)
+                listener.wait(timeout=60)
+            seconds = time.time() - t0
+            after = stats(a.board, a.interface)
+            moved = self.losses(before, after)
+            busy = (after["busy_us"] - before["busy_us"]) / 1000.0 / a.mb
+            self.report("tcp", not moved, "%-3s %6.2f MB/s, %4.0f CPU-ms/MB%s" %
+                        (direction, a.mb / seconds, busy, "; " + ", ".join(moved) if moved else ""))
+
+    def test_flood(self):
+        a = self.args
+        before = stats(a.board, a.interface)
+        sent = self.sent(self.flood(a.seconds))
+        after = stats(a.board, a.interface)
+        moved = self.losses(before, after)
+        frames = after["rx_frames"] - before["rx_frames"]
+        alive = wait_for(a.board, 10) and not wedged(a.board)
+        dry = after.get("rx_no_buffer", 0) - before.get("rx_no_buffer", 0)
+        self.report("flood", not moved and alive,
+                    "%d frames in %g s (%.0f/s; the peer sent %d), the ring dry %d times%s%s" %
+                    (frames, a.seconds, frames / a.seconds, sent, dry, "; " + ", ".join(moved) if moved else "",
+                     "" if alive else "; receive path dead"))
+
+    def test_link(self):
+        a = self.args
+        before = stats(a.board, a.interface)
+        p = self.flood(a.seconds + 10)
+        time.sleep(2)
+        reset = fire(a.board, "net phyreset")
+        self.sent(p)
+        reset.kill()
+        reset.wait()
+        alive = wait_for(a.board, 60) and not wedged(a.board)
+        after = stats(a.board, a.interface)
+        restarts = after.get("rx_restarts", 0) - before.get("rx_restarts", 0)
+        self.report("link", alive and restarts == 0,
+                    "PHY restarted under a flood: link changes +%d, receive resets +%d%s" %
+                    (after["link_changes"] - before["link_changes"], restarts, "" if alive else "; receive dead"))
+        if alive:
+            self.test_flood()
+
+    def test_reboot(self):
+        a = self.args
+        p = self.flood(a.seconds + 40)
+        time.sleep(2)
+        reboot = fire(a.board, "reboot")
+        time.sleep(5)
+        reboot.kill()
+        reboot.wait()
+        back = wait_for(a.board, 90)
+        self.sent(p)
+        alive = back and not wedged(a.board)
+        restarts = stats(a.board, a.interface).get("rx_restarts", 0) if back else -1
+        self.report("reboot", alive and restarts == 0,
+                    "rebooted under a flood: %s, receive resets %d" % ("back" if back else "not back", restarts))
+        if alive:
+            self.test_flood()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Stress a board's Ethernet from a wired peer.")
+    parser.add_argument("--board", default="root@bmds0", help="the board's ssh target (root@bmds0)")
+    parser.add_argument("--peer", required=True, help="the wired peer's ssh target")
+    parser.add_argument("--board-ip", help="the board's address (by default its interface's, from `net`)")
+    parser.add_argument("--peer-ip", help="the peer's address as the board reaches it (from its route)")
+    parser.add_argument("--interface", default="eth0")
+    parser.add_argument("--tests", default="tcp,flood,link,reboot")
+    parser.add_argument("--mb", type=int, default=64, help="megabytes each TCP way (64)")
+    parser.add_argument("--seconds", type=float, default=10, help="a flood's length (10)")
+    parser.add_argument("--port", type=int, default=5003, help="the flood's UDP port (nobody listening)")
+    parser.add_argument("--tcp-port", type=int, default=5001)
+    args = parser.parse_args()
+    if not wait_for(args.board, 90):
+        sys.exit("bmds-netstress: no answer from %s" % args.board)
+    if not args.board_ip:
+        m = re.search(r"%s:.*?\n\s+inet (\d+\.\d+\.\d+\.\d+)/" % args.interface, run(args.board, "net"), re.S)
+        if not m:
+            sys.exit("bmds-netstress: no address on %s (give --board-ip)" % args.interface)
+        args.board_ip = m.group(1)
+    if not args.peer_ip:
+        m = re.search(r"\bsrc (\S+)", run(args.peer, "ip route get %s" % args.board_ip))
+        if not m:
+            sys.exit("bmds-netstress: can't find the peer's address (give --peer-ip)")
+        args.peer_ip = m.group(1)
+    checker = Checker(args)
+    for test in args.tests.split(","):
+        getattr(checker, "test_" + test)()
+    sys.exit(1 if checker.failed else 0)
+
+
+if __name__ == "__main__":
+    main()

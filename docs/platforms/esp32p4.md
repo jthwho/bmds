@@ -137,6 +137,16 @@ until silicon v3; then test again.
   PHY, so it works without the line) good UDP frames up to 1400 bytes came back checked in RDES4,
   bad ones with RDES0's error summary set, and a UDP checksum of 0 passed (`devplan/network.md`
   §29).
+- **Don't let the EMAC flush frames when the receive ring is empty:** with the operation mode's
+  DFF clear (flushing on, ESP-IDF's choice), a ring run dry under a flood can wedge the receive
+  path for good: the debug register reads 0x340 (receive FIFO full, the read controller "reading
+  frame status"), the DMA waits with every descriptor, and everything after counts as FIFO
+  overflow. A 5 ms stall of the receive task in a flood did it; stopping and restarting receive
+  didn't clear it. With DFF set, a frame waits for a descriptor and later ones overflow; 20 stalls
+  of 3-50 ms didn't wedge it (`devplan/network.md` §30b).
+- **A receive interrupt a frame starves the receive task in a burst of small frames:** 64-byte
+  frames at line rate come every 6.7 µs, and the handler on the task's core took half its time.
+  Mask receive interrupts from the first until the task has drained the ring (status bits latch).
 - **Descriptors through the uncached view:** internal RAM is also mapped uncached at its address
   + `SOC_NON_CACHEABLE_OFFSET` (0x40000000; ESP-IDF's GDMA lists use it). The EMAC driver reads
   and writes its descriptors there (the DMA gets the ordinary address), so no descriptor needs
@@ -200,6 +210,11 @@ until silicon v3; then test again.
   mutex a frame, a priority-20 sender waited up to 2.6 ms though no holder kept it over 127 µs
   (`devplan/network.md` §30a). What a real-time task shares with bulk work must be a short
   spinlock, with the slow work outside it.
+- **Keep a real-time task off a busy driver's core:** a priority-20 sender sending every 1 ms under
+  a line-rate flood waited up to 250-350 µs to queue a frame on the core the EMAC's interrupt and
+  task (21) ran on, under 45 µs on the other. An interrupt is allocated on the core that
+  allocates it; the EMAC task is pinned to it, real-time senders to the other
+  (`devplan/network.md` §30c).
 - **Seeing it:** the profiler samples at the tick, which can't interrupt a critical section, so
   time inside one is charged to `vPortExitCriticalMultiCore` with the caller (`xQueueGenericSend`:
   a give or unlock; `xQueueSemaphoreTake`: a take or lock) as its return address.

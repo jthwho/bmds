@@ -58,7 +58,7 @@ namespace {
                  0,
                  {Rule::Zero, Health::Warning},
                  "",
-                 "Frames lost: no buffer, missed by the MAC, its FIFO overflowed, or no memory in the stack"},
+                 "Frames lost: missed by the MAC, its FIFO overflowed, or no memory in the stack"},
                 {"tx_dropped",
                  Unit::Count,
                  Kind::Total,
@@ -69,6 +69,45 @@ namespace {
                 {"rx_copied", Unit::Count, Kind::Total, 0, {}, "", "Frames copied because the stack held many buffers"},
                 {"rx_held", Unit::Count, Kind::Level, 0, {}, "", "Receive buffers the stack holds now"},
                 {"link_changes", Unit::Count, Kind::Total, 0, {}, "", "Times the link went up or down"},
+                {"rx_no_buffer",
+                 Unit::Count,
+                 Kind::Total,
+                 0,
+                 {},
+                 "",
+                 "Times the receive ring ran dry (a frame waits in the FIFO; those lost count as rx_overflow)"},
+                {"rx_missed", Unit::Count, Kind::Total, 0, {}, "", "Frames the MAC missed with no descriptor"},
+                {"rx_overflow",
+                 Unit::Count,
+                 Kind::Total,
+                 0,
+                 {},
+                 "",
+                 "Frames lost to the MAC's receive FIFO overflowing"},
+                {"rx_bulk_dropped",
+                 Unit::Count,
+                 Kind::Total,
+                 0,
+                 {},
+                 "",
+                 "Frames dropped as bulk traffic held its share of buffers (real-time flows running)"},
+                {"rx_checksummed", Unit::Count, Kind::Total, 0, {}, "", "Frames whose checksums the MAC checked"},
+                {"tx_in_place", Unit::Count, Kind::Total, 0, {}, "", "Frames the DMA sent from the stack's buffers"},
+                {"tx_realtime", Unit::Count, Kind::Total, 0, {}, "", "Real-time frames sent"},
+                {"tx_realtime_waited",
+                 Unit::Count,
+                 Kind::Total,
+                 0,
+                 {Rule::Zero, Health::Warning},
+                 "",
+                 "Real-time frames that found the transmit ring full"},
+                {"rx_restarts",
+                 Unit::Count,
+                 Kind::Total,
+                 0,
+                 {Rule::Zero, Health::Warning},
+                 "",
+                 "Times the MAC's receive path wedged and was reset"},
         };
 
         constexpr size_t InterfaceCount = sizeof(InterfaceStats) / sizeof(InterfaceStats[0]);
@@ -183,11 +222,21 @@ namespace {
                 v[5] = int64_t(c.txFrames);
                 v[6] = c.rxErrors;
                 v[7] = c.txErrors;
-                v[8] = int64_t(c.rxNoBuffer) + c.rxMissed + c.rxOverflow + k.rxDropped;
+                // Not rxNoBuffer: the ring ran dry, and the frame waited in the FIFO (§30b).
+                v[8] = int64_t(c.rxMissed) + c.rxOverflow + k.rxDropped;
                 v[9] = k.txDropped;
                 v[10] = k.rxCopied;
                 v[11] = ni->held();
                 v[12] = c.linkChanges;
+                v[13] = c.rxNoBuffer;
+                v[14] = c.rxMissed;
+                v[15] = c.rxOverflow;
+                v[16] = c.rxBulkDropped;
+                v[17] = int64_t(c.rxChecksummed);
+                v[18] = int64_t(c.txInPlace);
+                v[19] = int64_t(c.txRealTime);
+                v[20] = c.txRealTimeWaited;
+                v[21] = c.rxRestarts;
                 return;
         }
 

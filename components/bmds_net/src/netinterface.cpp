@@ -194,18 +194,21 @@ err_t NetInterface::netifInit(struct netif *netif) {
 
 void NetInterface::received(void *arg, EthernetDevice &device, const EthernetDevice::RxFrame &frame) {
         auto &n = *static_cast<NetInterface *>(arg);
-        bool  queued = false;
+        bool  queued = false, first = false;
         {
                 SpinLock::Locker lock(n._rxLock);
                 if (n._rxCount < EthernetDevice::RxBuffers) {
                         n._rxQueue[(n._rxHead + n._rxCount) % EthernetDevice::RxBuffers] = frame;
-                        ++n._rxCount;
+                        first = n._rxCount++ == 0;
                         queued = true;
                 }
         }
-        if (queued)
+        // The network task is woken by the first frame queued: it takes every frame there before it
+        // sleeps again. A wake a frame cost the device's task time it hasn't got in a burst of
+        // small frames (devplan/network.md §30b).
+        if (first)
                 NetStack::wake();
-        else
+        else if (!queued)
                 device.release(frame); // can't happen: each queued frame holds one of the buffers
         return;
 }

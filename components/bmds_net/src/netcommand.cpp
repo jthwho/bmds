@@ -212,6 +212,7 @@ namespace {
                            "buffers kept back, %" PRIu32 " frames dropped\n",
                            c.txRealTime, c.txRealTimeWaited, unsigned(d.bulkTxLimit()),
                            unsigned(EthernetDevice::TxDescriptors), unsigned(d.rxReserve()), c.rxBulkDropped);
+                ctx.printf("  %" PRIu32 " receive path resets (wedged)\n", c.rxRestarts);
                 const PtpTime t = d.ptpTime();
                 if (Clock::isSet())
                         ctx.printf("  1588 clock %" PRIu64 ".%09" PRIu32 " (%+" PRId64 " us from the system clock)\n",

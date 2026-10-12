@@ -1654,12 +1654,83 @@ transmit descriptors.
 
   The one long wait at *k* 2 is the first frame after the limit drops: the 16 bulk frames already
   in the ring drain first (under 2 ms, once, when the first flow registers).
-- **Not yet explained:** under a line-rate UDP flood the MAC misses about 3 frames in 65000, with
-  the ring found full again after (`eth0` didn't run for 2 ms or more, once or twice a run; not at
-  the flood's start). Buffers aren't the cause (the reserve keeps the ring refillable); a real-time
-  frame among them would be lost too. `netlat`'s loss counts will show whether it touches
-  real-time traffic in practice; more receive descriptors (32: 4 ms) are the cheap remedy.
+- **Not yet explained** (then; explained in §30b): under a line-rate UDP flood the MAC missed about
+  3 frames in 65000.
 - **The stamps:** a stamp is kept in its descriptor's slot until the slot is reused, 16 frames
   later; under bulk churn a slow reader loses it (`waitTxStamp()` returns `NotExist`). PTP's and
   `netlat`'s stamps must be delivered to the flow when reclaimed (piece 2), not looked up.
+
+### 30b. The flood's missed frames, and a receive path that wedged (2026-10-12)
+
+The user's ask: get to the bottom of §30a's missed frames. A timeline of the driver's events (the
+interrupt, the task's wake, each frame taken and its length, type and source, each refill), kept in
+a ring and printed when the MAC reported a miss, showed it:
+
+- **The frames lost were in bursts of small broadcasts.** About 20-30 ARP frames (64 bytes, from six
+  hosts on the LAN) arrived back to back, one every 6.7 µs (line rate for minimum frames), between
+  full flood frames 123 µs apart. The flood fills the switch's queue to the board's port, so the
+  LAN's ordinary broadcasts collect behind it and leave together. Any traffic that congests the
+  port (TCP to the board) clumps them the same way.
+- **The task couldn't keep up with a burst:** each frame raised an interrupt (about 7 µs apart, on
+  the task's core), so the task took a frame every 20-27 µs during the burst and every 11-13 after
+  it; the 16-descriptor ring ran out after about 20 frames. Fixed:
+  - **Receive interrupts masked while the task drains the ring** (as Linux's NAPI): the handler
+    masks them, the task unmasks them once it has taken every frame and refilled; the status bits
+    latch meanwhile, so nothing is missed.
+  - **The network task woken by the first frame queued,** not by each.
+  - **A buffer's cache cleaned when it is released,** by the receiver's task (only a receiver can
+    have written it), not by `eth0` at refill. `eth0`'s own drops skip it.
+
+  Per small frame in a burst, about 10 µs: the 16 descriptors absorb bursts of 40 or so.
+- **The receive path could wedge for good.** Twice the MAC stopped receiving altogether: its debug
+  register read 0x340 (receive FIFO full, its read controller "reading frame status"), the DMA ran
+  waiting with every descriptor its own, and frames counted only as FIFO overflow. A 5 ms stall of
+  `eth0` during a flood (a temporary command) reproduced it; stopping and restarting the MAC's
+  receiver and the receive DMA didn't clear it. The cause was flushing frames when the ring has no
+  descriptor (operation mode DFF clear, as ESP-IDF sets it): with it off, a frame waits in the FIFO
+  for a descriptor and later ones overflow (counted). Twenty stalls of 3-50 ms in a 50 s flood, and
+  stalls up to 1 s, left it running. (The first wedge, after a reboot during a flood, and the
+  second, while the timeline was printed from `eth0`, were both long stalls under a flood.)
+- **After:** 4 to 8 line-rate floods (260000-520000 frames) with no frame lost: no missed, no
+  buffer-unavailable, no overflow. Raw TCP unchanged (4.95 MB/s out, 6.06 in).
+
+### 30c. Hardening: the scenarios, a watchdog, a stress tool, the cores (2026-10-12)
+
+The user asked for all of §30b's follow-ups:
+
+- **`tools/bmds-netstress`** (Python, from any machine that reaches the board and a wired peer over
+  ssh; the peer needs `python3` and `nc`): `tcp` (raw TCP each way, MB/s and the board's CPU-ms per
+  MB), `flood` (full-size UDP at line rate into the board), `link` (the PHY restarted during a
+  flood), `reboot` (the board rebooted during a flood), each a flood after. A test fails if a loss
+  counter moved (`stats`' `net.eth0.rx_errors`, `tx_errors`, `rx_missed`, `rx_overflow`,
+  `tx_realtime_waited`, `rx_restarts`) or the MAC's receive FIFO is stuck full (`net regs`). It
+  takes the board's address from `net` and the peer's from its route.
+- **The scenarios the wedge first appeared in** pass: rebooted during a flood and the PHY restarted
+  during one, receive came back each time and a flood after lost nothing.
+- **A watchdog anyway:** `eth0` checks the MAC's debug register on each wake (an overflow interrupt
+  or the 1 s link check wakes it); its receive FIFO full for 100 ms with no frame taken is a wedge,
+  and `recoverRx()` resets the MAC: senders see the link down meanwhile, queued frames are dropped
+  (counted as errors), the rings are rebuilt, the address filters reapplied, the 1588 clock put
+  back where it was with its frequency (its addend kept), and receivers aren't told (the link
+  didn't change). `rx_restarts` counts it (a warning in `stats`; `net` shows it). Tested by
+  provoking the wedge (flushing turned back on in a test build, a 5 ms stall in a flood): detected,
+  reset, and pings, mDNS (the multicast filters) and TCP worked after.
+- **The stats** gain (appended) `rx_no_buffer`, `rx_missed`, `rx_overflow`, `rx_bulk_dropped`,
+  `rx_checksummed`, `tx_in_place`, `tx_realtime`, `tx_realtime_waited` and `rx_restarts`.
+  `rx_dropped` no longer counts `rx_no_buffer`: with flushing off a dry ring loses nothing (the
+  frame waits in the FIFO; those that then don't fit count as `rx_overflow`), and the stat is
+  "frames lost".
+- **The cores:** a priority-20 real-time sender, sending every 1 ms under a line-rate flood, waited
+  to get into the ring at most:
+
+  | Sender on | `eth0` unpinned | `eth0` on core 0 |
+  |---|---|---|
+  | core 0 (`eth0`'s interrupt's) | 235-252 µs | 349 µs |
+  | either | 167-170 µs | - |
+  | core 1 | 25-36 µs | 26-44 µs |
+
+  So `eth0` is pinned to its interrupt's core (the boot core, 0), and **real-time senders (the
+  AES67 sender, PTP's) run on core 1**, the decision for step 6 piece 2 and the AES67 step. The
+  audio engine (priority 20, unpinned) is `audio.md`'s to decide; core 1 suits it the same way.
+  Raw TCP after: 4.7-4.9 MB/s out, 5.9-6.1 in.
 

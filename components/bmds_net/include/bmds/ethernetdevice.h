@@ -149,6 +149,7 @@ class EthernetDevice {
                                 uint64_t txRealTime = 0;       ///< Frames sent with `TxRealTime`.
                                 uint32_t txRealTimeWaited = 0; ///< Of those, ones that found the ring full.
                                 uint32_t rxBulkDropped = 0;    ///< Frames dropped as bulk held its share of buffers.
+                                uint32_t rxRestarts = 0;       ///< Times the receive path wedged and the MAC was reset.
                 };
 
                 /** @brief Registers as read, for diagnosis (`net regs`). */
@@ -181,7 +182,9 @@ class EthernetDevice {
 
                 /**
                  * @brief Takes a received frame. Runs on the device's task: it must not block, and
-                 *        must call `release()` for the frame once (now or later).
+                 *        must call `release()` for the frame once (now or later). It may only read
+                 *        the frame there; a receiver that writes into it releases it from another
+                 *        task (the buffer's cache lines are cleaned there).
                  */
                 using Receiver = void (*)(void *arg, EthernetDevice &device, const RxFrame &frame);
 
@@ -276,7 +279,11 @@ class EthernetDevice {
                 /** @brief Sets who is told of link changes (nullptr: nobody). */
                 void setLinkHandler(LinkHandler handler, void *arg);
 
-                /** @brief Gives a received frame's buffer back. Any task. @nonblocking */
+                /**
+                 * @brief Gives a received frame's buffer back. Any task; from any but the device's,
+                 *        it cleans the buffer's cache lines (a receiver may have written it).
+                 * @nonblocking
+                 */
                 void release(const RxFrame &frame);
 
                 /**
@@ -389,7 +396,10 @@ class EthernetDevice {
                 Error       start();
                 Error       resetPhy();
                 Error       startMac();
-                void        startPtp();
+                void        startPtp(PtpTime time);
+                void        applyFilters(); // _filterLock held
+                bool        checkWedged(bool tookFrames);
+                void        recoverRx();
                 void        readFeatures();
                 void        probeFilters();
                 void        receive();
@@ -479,6 +489,11 @@ class EthernetDevice {
                 bool              _phyWasReset = false; // negotiating from its reset
 
                 std::atomic<uint32_t> _pendingStatus{0}; // DMA status bits the ISR saw
+                uint64_t              _rxProgressUs = 0; // last time the receive FIFO wasn't stuck full
+                uint32_t              _ptpAddend = 0;    // the 1588 clock's addend, restored after a reset
+                MacAddress            _filterGroups[MaxFilters]; // under _filterLock
+                size_t                _filterGroupCount = 0;
+                SpinLock              _intrLock; // the DMA's interrupt enables (ISR and task)
 };
 
 BMDS_NAMESPACE_END

@@ -259,7 +259,10 @@ Plan: [`input.md`](input.md).
   - [ ] 6. Real time: fast path, priority queue, timestamps, `netlat`. Design `network.md` §30: a
     real-time flow always sends and receives, however much TCP takes. Piece 1 built (§30a): the
     driver's bulk limits and receive reserve, a spinlock-only transmit path on uncached
-    descriptors.
+    descriptors. Then (§30b) no frame lost under line-rate floods: receive interrupts masked while
+    draining, and no flushing on an empty ring (it wedged the MAC's receive path for good).
+    Hardening (§30c): a receive watchdog that resets the MAC, `tools/bmds-netstress`, the loss
+    counters in `stats`, `eth0` on core 0 and real-time senders on core 1.
   - [ ] 7. PTP, master and slave (BMCA): two boards alone elect a grandmaster.
 
 ## Phase 8 — Self-Hosting

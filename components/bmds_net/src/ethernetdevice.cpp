@@ -71,6 +71,11 @@ namespace {
         constexpr uint32_t PtpAddend = 0xa0000000u;
         constexpr int32_t  MaxPpb = 5'000'000;
 
+        // The receive path wedged (devplan/network.md §30b): the MAC's debug register reports its
+        // receive FIFO full this long with no frame taken.
+        constexpr uint32_t RxFifoFull = 3u << 8; // RXFSTS
+        constexpr uint64_t WedgedUs = 100'000;
+
         // TDES0's control bits (the alternate, "enhanced" descriptor).
         constexpr uint32_t TxOwn = 1u << 31;
         constexpr uint32_t TxInterrupt = 1u << 30;
@@ -96,6 +101,11 @@ namespace {
         bool dmaReaches(const uint8_t *p, size_t bytes) {
                 return esp_ptr_dma_capable(p) && esp_ptr_dma_capable(p + bytes - 1);
         }
+
+        // Receiving's interrupts: off from the first frame until the task has taken them all (as
+        // Linux's NAPI). One a frame cost the task half its time in a burst of small frames, and
+        // the ring overran (devplan/network.md §30b).
+        constexpr uint32_t DmaRxInterrupts = EMAC_LL_INTR_RECEIVE_ENABLE | EMAC_LL_INTR_RECEIVE_BUFF_UNAVAILABLE_ENABLE;
 
         // DMA status bits the task acts on.
         constexpr uint32_t DmaInterrupts = EMAC_LL_INTR_TRANSMIT_ENABLE | EMAC_LL_INTR_RECEIVE_ENABLE |
@@ -211,6 +221,11 @@ struct EthernetDevice::Isr {
                         auto          &d = *static_cast<EthernetDevice *>(arg);
                         const uint32_t status = emac_ll_get_intr_status(&EMAC_DMA);
                         emac_ll_clear_corresponding_intr(&EMAC_DMA, status);
+                        if (status & DmaRxInterrupts) {
+                                d._intrLock.lockFromIsr();
+                                emac_ll_disable_corresponding_intr(&EMAC_DMA, DmaRxInterrupts);
+                                d._intrLock.unlockFromIsr();
+                        }
                         d._pendingStatus.fetch_or(status, std::memory_order_relaxed);
                         d._wake.releaseFromIsr();
                         return;
@@ -299,7 +314,7 @@ Error EthernetDevice::start() {
         if (err.isError()) return err;
         readFeatures();
         probeFilters();
-        startPtp();
+        startPtp(Clock::isSet() ? PtpTime::fromNs(Clock::now().ns) : PtpTime{});
 
         // The rings: chained descriptors, the receive ring given buffers from the pool.
         auto *rx = static_cast<RxDesc *>(_rxDesc);
@@ -334,6 +349,10 @@ Error EthernetDevice::start() {
         tc.name = _name;
         tc.stackBytes = 4096;
         tc.priority = CONFIG_BMDS_NET_PRIORITY;
+        // On the core its interrupt is on (allocated here, on the boot core), leaving the other
+        // to real-time senders: a priority-20 sender on this core waited up to 250 µs for the task
+        // under a flood, on the other 36 µs at most (devplan/network.md §30c).
+        tc.core = static_cast<int>(xPortGetCoreID());
         err = _task.start(tc, &EthernetDevice::taskEntry, this);
         if (err.isError()) return err;
 
@@ -414,7 +433,13 @@ Error EthernetDevice::startMac() {
         emac_dma_dev_t *dma = &EMAC_DMA;
         emac_ll_drop_tcp_err_frame_enable(dma, true);
         emac_ll_recv_store_forward_enable(dma, false);
-        emac_ll_flush_recv_frame_enable(dma, true);
+        // Not flushing frames when the ring has no descriptor (ESP-IDF flushes): with flushing, the
+        // receive FIFO wedged for good once a ring ran dry under a flood ("full", its read
+        // controller "reading frame status", the DMA waiting; a 5 ms stall of the task was enough,
+        // and stopping and restarting receive didn't clear it). Without, a frame waits in the
+        // FIFO for a descriptor and later ones overflow it (counted): 20 stalls of 3-50 ms in a
+        // flood, none wedged (devplan/network.md §30b).
+        emac_ll_flush_recv_frame_enable(dma, false);
         emac_ll_trans_store_forward_enable(dma, false);
         emac_ll_flush_trans_fifo_enable(dma, true);
         if (!waitUs([] { return !emac_ll_get_flush_trans_fifo(&EMAC_DMA); }, 1000)) return Error::Timeout;
@@ -493,21 +518,27 @@ Error EthernetDevice::setAddress(const MacAddress &address) {
 Error EthernetDevice::setMulticast(Span<const MacAddress> groups) {
         for (const MacAddress &g : groups)
                 if (!g.isMulticast()) return Error::Invalid;
-        Mutex::Locker   lock(_filterLock, WaitForever);
-        emac_mac_dev_t *mac = &EMAC_MAC;
-        const bool      all = groups.size() > _multicastFilters;
-        for (size_t i = 0; i < _multicastFilters; ++i) {
-                if (!all && i < groups.size())
-                        emac_ll_add_addr_filter(mac, static_cast<uint8_t>(i + 1), groups[i].bytes, 0, false);
-                else
-                        emac_ll_rm_addr_filter(mac, static_cast<uint8_t>(i + 1));
-        }
-        emac_ll_pass_all_multicast_enable(mac, all);
-        _allMulticast = all;
+        Mutex::Locker lock(_filterLock, WaitForever);
+        _allMulticast = groups.size() > _multicastFilters;
+        _filterGroupCount = _allMulticast ? 0 : groups.size();
+        for (size_t i = 0; i < _filterGroupCount; ++i) _filterGroups[i] = groups[i];
+        applyFilters();
         return Error::Ok;
 }
 
-void EthernetDevice::startPtp() {
+void EthernetDevice::applyFilters() {
+        emac_mac_dev_t *mac = &EMAC_MAC;
+        for (size_t i = 0; i < _multicastFilters; ++i) {
+                if (i < _filterGroupCount)
+                        emac_ll_add_addr_filter(mac, static_cast<uint8_t>(i + 1), _filterGroups[i].bytes, 0, false);
+                else
+                        emac_ll_rm_addr_filter(mac, static_cast<uint8_t>(i + 1));
+        }
+        emac_ll_pass_all_multicast_enable(mac, _allMulticast);
+        return;
+}
+
+void EthernetDevice::startPtp(PtpTime time) {
         PERIPH_RCC_ATOMIC() {
                 emac_ll_clock_enable_ptp(nullptr, EMAC_PTP_CLK_SRC_XTAL, true);
         }
@@ -520,13 +551,14 @@ void EthernetDevice::startPtp() {
         emac_ll_ts_all_enable(ptp, true); // every received frame stamped, not only PTP's
         emac_ll_set_ts_sub_second_incre_val(ptp, PtpIncrementNs);
         emac_ll_set_ts_update_method(ptp, ETH_PTP_UPDATE_METHOD_FINE);
-        emac_ll_set_ts_addend_val(ptp, PtpAddend);
+        if (_ptpAddend == 0) _ptpAddend = PtpAddend;
+        emac_ll_set_ts_addend_val(ptp, _ptpAddend);
         emac_ll_ts_addend_do_update(ptp);
         if (!waitUs([] { return emac_ll_is_ts_addend_update_done(&EMAC_PTP); }, PtpTimeoutUs))
                 bmdsWarn("%s: the 1588 clock's addend didn't load", _name);
-        // Started from the system clock if a source has set it (UTC; PTP's TAI offset is PTP's
-        // business, step 7), else from 0.
-        (void)setPtpTime(Clock::isSet() ? PtpTime::fromNs(Clock::now().ns) : PtpTime{});
+        // At start, from the system clock if a source has set it (UTC; PTP's TAI offset is PTP's
+        // business, step 7), else from 0; after a reset, where it was.
+        (void)setPtpTime(time);
         return;
 }
 
@@ -555,8 +587,16 @@ void EthernetDevice::run() {
                 // Sent frames first: lwIP won't retransmit a segment the driver holds, so an ACK
                 // finds every frame sent before it released.
                 reclaim();
+                const uint64_t taken = counters().rxFrames;
                 receive();
                 refill();
+                if (checkWedged(counters().rxFrames != taken)) recoverRx();
+                // Their status bits latched meanwhile, so a frame that came since raises the
+                // interrupt again at once.
+                {
+                        SpinLock::Locker lock(_intrLock);
+                        emac_ll_enable_corresponding_intr(&EMAC_DMA, DmaRxInterrupts);
+                }
                 if (_phyRestart.exchange(false)) {
                         _phyWasReset = resetPhy().isOk();
                         _phyStarted = false;
@@ -656,6 +696,11 @@ void EthernetDevice::receive() {
 }
 
 void EthernetDevice::release(const RxFrame &frame) {
+        // No dirty line may cover a buffer the DMA writes (docs/platforms/esp32p4.md §3). Only a
+        // receiver may have written one; the device's task only reads them, so its own drops skip
+        // this, and the cost falls on the receiver's task, not the one that keeps the ring full.
+        const bool mine = _task.handle() == xTaskGetCurrentTaskHandle();
+        if (!mine) writeBack(_rxPool + frame.buffer * BufferBytes, BufferBytes, true);
         {
                 SpinLock::Locker lock(_rxFreeLock);
                 _rxFree[_rxFreeCount++] = frame.buffer;
@@ -665,8 +710,7 @@ void EthernetDevice::release(const RxFrame &frame) {
                 --_counters.rxHeld;
         }
         // A ring waiting for buffers is refilled by the task.
-        if (_rxEmpty.load(std::memory_order_relaxed) > 0 && _task.handle() != xTaskGetCurrentTaskHandle())
-                _wake.release();
+        if (_rxEmpty.load(std::memory_order_relaxed) > 0 && !mine) _wake.release();
         return;
 }
 
@@ -680,10 +724,8 @@ void EthernetDevice::refill() {
                         if (_rxFreeCount == 0) break;
                         slot = _rxFree[--_rxFreeCount];
                 }
-                // No dirty line may cover a buffer the DMA writes (docs/platforms/esp32p4.md §3).
-                uint8_t *buffer = _rxPool + slot * BufferBytes;
-                writeBack(buffer, BufferBytes, true);
-                RxDesc &d = rx[_rxRefill];
+                uint8_t *buffer = _rxPool + slot * BufferBytes; // clean: release() saw to it
+                RxDesc  &d = rx[_rxRefill];
                 _rxSlot[_rxRefill] = slot;
                 d.Buffer1Addr = reinterpret_cast<uint32_t>(buffer);
                 d.RDES1.Value = 0;
@@ -1041,7 +1083,8 @@ Error EthernetDevice::setPtpFrequency(int32_t ppb) {
         emac_ptp_dev_t *ptp = &EMAC_PTP;
         if (!emac_ll_is_ts_addend_update_done(ptp)) return Error::Busy;
         const int64_t addend = static_cast<int64_t>(PtpAddend) + static_cast<int64_t>(PtpAddend) * ppb / 1'000'000'000;
-        emac_ll_set_ts_addend_val(ptp, static_cast<uint32_t>(addend));
+        _ptpAddend = static_cast<uint32_t>(addend);
+        emac_ll_set_ts_addend_val(ptp, _ptpAddend);
         emac_ll_ts_addend_do_update(ptp);
         return Error::Ok;
 }
@@ -1180,6 +1223,98 @@ void EthernetDevice::applyLink(const Link &l) {
                 bmdsInfo("%s: link down", _name);
         const LinkHandler handler = _linkHandler;
         if (handler != nullptr) handler(_linkHandlerArg, *this);
+        return;
+}
+
+bool EthernetDevice::checkWedged(bool tookFrames) {
+        const uint64_t now = System::uptimeUs();
+        if (!link().up || tookFrames || (REG_READ(EMAC_DEBUG_REG) & RxFifoFull) != RxFifoFull) {
+                _rxProgressUs = now;
+                return false;
+        }
+        return now - _rxProgressUs > WedgedUs;
+}
+
+void EthernetDevice::recoverRx() {
+        // A should-never-happen (§30b's cause is fixed), recovered from rather than left dead: the
+        // MAC reset and set up again, the rings rebuilt, the 1588 clock put back where it was.
+        // Frames queued to send are lost (counted as errors); senders see the link down meanwhile,
+        // and the receivers aren't told (the link didn't change).
+        bmdsWarn("%s: the receive path wedged (MAC debug %08lx); resetting the MAC", _name,
+                 static_cast<unsigned long>(REG_READ(EMAC_DEBUG_REG)));
+        const PtpTime  clock = ptpTime();
+        const uint64_t at = System::uptimeUs();
+        Link           l;
+        {
+                SpinLock::Locker lock(_stateLock);
+                l = _link;
+                _link.up = false;
+                ++_counters.rxRestarts;
+        }
+        stopTraffic();
+        {
+                SpinLock::Locker lock(_intrLock);
+                emac_ll_disable_all_intr(&EMAC_DMA);
+        }
+        Reclaimed reclaimed;
+        bool      wake;
+        {
+                SpinLock::Locker lock(_txLock);
+                auto            *tx = static_cast<TxDesc *>(_txDesc);
+                for (; _txQueued > 0; --_txQueued) {
+                        TxSlot &s = _txSlots[_txTail];
+                        tx[_txTail].TDES0.Value = TxChained;
+                        s.done = true;
+                        if (s.length != 0) {
+                                SpinLock::Locker state(_stateLock);
+                                ++_counters.txErrors;
+                        }
+                        if (s.token != nullptr) reclaimed.tokens[reclaimed.count++] = s.token;
+                        if (s.buffer >= 0) _txBufFree[_txBufFreeCount++] = static_cast<uint8_t>(s.buffer);
+                        s.token = nullptr;
+                        s.buffer = -1;
+                        s.bulk = false;
+                        _txTail = (_txTail + 1) % TxDescriptors;
+                }
+                _txHead = _txTail = 0;
+                _txBulkQueued = 0;
+                wake = _txWaiters > 0;
+        }
+        if (wake) _txSpace.release();
+        finish(reclaimed);
+        auto *rx = static_cast<RxDesc *>(_rxDesc);
+        for (size_t n = RxDescriptors - _rxEmpty.load(std::memory_order_relaxed), i = _rxNext; n > 0; --n) {
+                SpinLock::Locker lock(_rxFreeLock);
+                _rxFree[_rxFreeCount++] = _rxSlot[i];
+                i = (i + 1) % RxDescriptors;
+        }
+        for (size_t i = 0; i < RxDescriptors; ++i) rx[i].RDES0.Value = 0;
+        _rxNext = _rxRefill = 0;
+        _rxEmpty.store(RxDescriptors, std::memory_order_relaxed);
+        fence();
+        const Error err = startMac();
+        if (err.isError()) {
+                bmdsErr("%s: the MAC didn't come back from its reset: %s", _name, err.desc());
+                return; // the link stays down to senders
+        }
+        {
+                Mutex::Locker lock(_filterLock, WaitForever);
+                applyFilters();
+        }
+        startPtp(PtpTime::fromNs(clock.toNs() + static_cast<int64_t>(System::uptimeUs() - at) * 1000));
+        emac_ll_set_rx_desc_addr(&EMAC_DMA, busAddress(rx));
+        emac_ll_set_tx_desc_addr(&EMAC_DMA, busAddress(static_cast<TxDesc *>(_txDesc)));
+        refill();
+        emac_ll_enable_corresponding_intr(&EMAC_DMA, DmaInterrupts);
+        emac_ll_clear_all_pending_intr(&EMAC_DMA);
+        emac_ll_set_port_speed(&EMAC_MAC, l.speedMbps == 10 ? ETH_SPEED_10M : ETH_SPEED_100M);
+        emac_ll_set_duplex(&EMAC_MAC, l.fullDuplex ? ETH_DUPLEX_FULL : ETH_DUPLEX_HALF);
+        startTraffic();
+        {
+                SpinLock::Locker lock(_stateLock);
+                _link = l;
+        }
+        _rxProgressUs = System::uptimeUs();
         return;
 }
 
