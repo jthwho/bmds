@@ -39,6 +39,12 @@ class TaskOwner {
                 /** @brief Returns the calling task's owner, or null (a kernel task). */
                 static TaskOwner *current();
 
+                /**
+                 * @brief Returns task @p task's owner, or null (a kernel task).
+                 * @isrsafe (a plain read: the profiler's tick hook names programs with it)
+                 */
+                static TaskOwner *of(void *task);
+
                 /** @brief Sets the calling task's owner (null: none). */
                 static void setCurrent(TaskOwner *owner);
 

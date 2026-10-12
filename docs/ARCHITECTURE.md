@@ -68,7 +68,7 @@ tests/host/             Host-side doctest unit tests (plain CMake)
 tests/target/           On-target tests
 tests/compat/           Compatibility corpus: programs from each SDK version, kept as built
 dist/                   The distribution: recipes for third-party programs (BusyBox), built by tools/bmds-dist
-tools/                  Host tools (bmds-elfcheck, bmds-run push-and-run, bmds-compat, bmds-dist, ...)
+tools/                  Host tools (bmds-elfcheck, bmds-run push-and-run, bmds-compat, bmds-dist, bmds-prof, ...)
 cmake/                  Shared CMake helpers (BMDS compile flags)
 thirdparty/             Vendored third-party code (doctest, FatFs, littlefs, minimp3, stb_vorbis, dr_flac, Monocypher, the
                         IANA tzdata sources; musl is in sdk/libc)

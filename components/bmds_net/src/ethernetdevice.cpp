@@ -78,6 +78,10 @@ namespace {
         constexpr uint32_t TxTimestampStatus = 1u << 17;
         constexpr uint32_t TxErrorSummary = 1u << 15;
 
+        // Without a reason to (a stamp, a ring half full), a frame asks for the sent interrupt only
+        // this often, so the counters of sent frames trail by fewer when traffic stops.
+        constexpr uint32_t TxInterruptEvery = 8;
+
         // DMA status bits the task acts on.
         constexpr uint32_t DmaInterrupts = EMAC_LL_INTR_TRANSMIT_ENABLE | EMAC_LL_INTR_RECEIVE_ENABLE |
                                            EMAC_LL_INTR_RECEIVE_BUFF_UNAVAILABLE_ENABLE | EMAC_LL_INTR_OVERFLOW_ENABLE |
@@ -210,7 +214,7 @@ size_t EthernetDevice::count() {
         return deviceCount;
 }
 
-EthernetDevice::EthernetDevice(uint8_t number) : _number(number), _txSpace(TxDescriptors, TxDescriptors), _wake(1, 0) {
+EthernetDevice::EthernetDevice(uint8_t number) : _number(number), _txSpace(1, 0), _wake(1, 0) {
         _name[0] = 'e';
         _name[1] = 't';
         _name[2] = 'h';
@@ -659,15 +663,29 @@ Result<uint32_t> EthernetDevice::transmit(Span<const Span<const uint8_t>> pieces
                 return makeError<uint32_t>(Error::Invalid);
         if ((flags & ~static_cast<uint32_t>(TxStamp)) != 0) return makeError<uint32_t>(Error::Invalid);
         if (!link().up) return makeError<uint32_t>(Error::NotReady);
-        if (_txSpace.tryAcquire().isError()) {
+        // The sender takes back the sent descriptors itself, so a frame asks for an interrupt (which
+        // wakes the task to do it) only when a sender may come to wait for room or a stamp: an
+        // interrupt and two semaphore operations a frame were most of the task's 72 µs a frame
+        // (devplan/network.md §28).
+        const Deadline deadline(timeoutMs);
+        Mutex::Locker  lock(_txLock, WaitForever);
+        if (reclaimLocked()) _txStampWaiters.notify();
+        while (_txQueued == TxDescriptors) {
                 {
-                        SpinLock::Locker lock(_stateLock);
+                        SpinLock::Locker state(_stateLock);
                         ++_counters.txFull;
                 }
-                const Error err = _txSpace.acquire(timeoutMs);
-                if (err.isError()) return makeError<uint32_t>(err);
+                _txWaiting = true;
+                _txLock.unlock();
+                const Error err = _txSpace.acquire(deadline);
+                (void)_txLock.lock(WaitForever);
+                if (reclaimLocked()) _txStampWaiters.notify();
+                if (err.isError() && _txQueued == TxDescriptors) {
+                        _txWaiting = false;
+                        return makeError<uint32_t>(err);
+                }
         }
-        Mutex::Locker lock(_txLock, WaitForever);
+        _txWaiting = false;
         const size_t  i = _txHead;
         auto         &d = static_cast<TxDesc *>(_txDesc)[i];
         uint8_t      *buffer = _txPool + i * BufferBytes;
@@ -688,7 +706,9 @@ Result<uint32_t> EthernetDevice::transmit(Span<const Span<const uint8_t>> pieces
         d.TDES1.TransmitBuffer1Size = static_cast<uint32_t>(bytes);
         d.TimeStampLow = 0;
         d.TimeStampHigh = 0;
-        d.TDES0.Value = TxOwn | TxInterrupt | TxLast | TxFirst | TxChained | (stamp ? TxTimestampEnable : 0);
+        const bool interrupt = stamp || _txQueued + 1 >= TxDescriptors / 2 || (_txTicket % TxInterruptEvery) == 0;
+        d.TDES0.Value =
+                TxOwn | (interrupt ? TxInterrupt : 0) | TxLast | TxFirst | TxChained | (stamp ? TxTimestampEnable : 0);
         writeBackDesc(&d);
         emac_ll_transmit_poll_demand(&EMAC_DMA, 0);
         _txHead = (i + 1) % TxDescriptors;
@@ -701,39 +721,45 @@ Result<uint32_t> EthernetDevice::transmit(Span<const Span<const uint8_t>> pieces
 }
 
 void EthernetDevice::reclaim() {
-        bool stamped = false;
+        bool stamped;
         {
                 Mutex::Locker lock(_txLock, WaitForever);
-                auto         *tx = static_cast<TxDesc *>(_txDesc);
-                while (_txQueued > 0) {
-                        TxDesc &d = tx[_txTail];
-                        invalidateDesc(&d);
-                        const uint32_t status = d.TDES0.Value;
-                        if (status & TxOwn) break;
-                        TxSlot &s = _txSlots[_txTail];
-                        if (s.wantsStamp && (status & TxTimestampStatus)) {
-                                s.stamp.seconds = d.TimeStampHigh;
-                                s.stamp.nanoseconds = d.TimeStampLow;
-                                s.stamped = true;
-                        }
-                        s.done = true;
-                        stamped |= s.wantsStamp;
-                        {
-                                SpinLock::Locker state(_stateLock);
-                                if (status & TxErrorSummary)
-                                        ++_counters.txErrors;
-                                else {
-                                        ++_counters.txFrames;
-                                        _counters.txBytes += s.length;
-                                }
-                        }
-                        _txTail = (_txTail + 1) % TxDescriptors;
-                        --_txQueued;
-                        _txSpace.release();
-                }
+                stamped = reclaimLocked();
+                if (_txWaiting) _txSpace.release();
         }
         if (stamped) _txStampWaiters.notify();
         return;
+}
+
+bool EthernetDevice::reclaimLocked() {
+        bool  stamped = false;
+        auto *tx = static_cast<TxDesc *>(_txDesc);
+        while (_txQueued > 0) {
+                TxDesc &d = tx[_txTail];
+                invalidateDesc(&d);
+                const uint32_t status = d.TDES0.Value;
+                if (status & TxOwn) break;
+                TxSlot &s = _txSlots[_txTail];
+                if (s.wantsStamp && (status & TxTimestampStatus)) {
+                        s.stamp.seconds = d.TimeStampHigh;
+                        s.stamp.nanoseconds = d.TimeStampLow;
+                        s.stamped = true;
+                }
+                s.done = true;
+                stamped |= s.wantsStamp;
+                {
+                        SpinLock::Locker state(_stateLock);
+                        if (status & TxErrorSummary)
+                                ++_counters.txErrors;
+                        else {
+                                ++_counters.txFrames;
+                                _counters.txBytes += s.length;
+                        }
+                }
+                _txTail = (_txTail + 1) % TxDescriptors;
+                --_txQueued;
+        }
+        return stamped;
 }
 
 Result<PtpTime> EthernetDevice::waitTxStamp(uint32_t ticket, unsigned int timeoutMs) {

@@ -111,6 +111,31 @@ until silicon v3; then test again.
 - **2D-DMA:** 3 TX and 2 RX channels on this revision; TX 0-2 convert colours
   (`devplan/display.md`).
 
+## 4a. The Ethernet MAC (`devplan/network.md`)
+
+- **One DMA channel each way, no AV queues.** The DMA feature register (`EMAC_HWFEATURE_REG`)
+  reads `4b056725` on our chip (MAC version `00001137`): no AV feature, no additional channels,
+  although ESP-IDF's `emac_reg.h` lists `CHANNEL1*`/`CHANNEL2*` registers with credit-based
+  shapers (the GMAC's full configuration, not this one's). Real-time frames get no hardware queue
+  of their own: the driver bounds how much bulk traffic sits ahead of them (§5.2 of the plan).
+- **Also from that register:** no multicast hash filter (only the perfect address filters), no
+  layer 3/4 filter, no flexible PPS, no RMON counters; IEEE 1588-2008 timestamps, checksum
+  offload both ways, the alternate (enhanced) descriptors, RMII. Read it with `net`.
+- **Eight address filters beyond the station's**, though the register file has room for 15
+  (`emacaddr[15]`). Found by writing a value to each filter's low half, the last first, and
+  reading them back (2026-10-11): `emacaddr[0..7]` (addresses 1-8) hold theirs, the rest read 0.
+  ESP-IDF's `EMAC_LL_MAX_MAC_ADDR_NUM` (8) is right. The driver probes at start
+  (`EthernetDevice::multicastFilters()`) and uses them for multicast groups; with more groups it
+  sets "pass all multicast" (frame filter bit 4) and IP drops what nobody joined.
+- **The receive FIFO is 256 bytes**, too small for store-and-forward (ESP-IDF turns it off):
+  frames pass through as they come, and a bad one arrives with its error in the descriptor.
+- **Descriptors are 64 bytes**, one L1 line each, so each is synced alone; the timestamps are in
+  words 6 and 7 (digital rollover: seconds and nanoseconds).
+- **ESP-IDF's `emac_hal.c` is built only with its Ethernet driver**; BMDS uses `hal/emac_ll.h`
+  (header-only) and `soc/emac_periph.h`'s pin tables, and does the bring-up itself.
+- **Start the MAC and its DMA on link-up, stop them on link-down** (ESP-IDF's order; transmit:
+  MAC then DMA, the other way round can hang the transmitter).
+
 ## 4b. The crypto engines (`devplan/network.md` §26-27)
 
 - **Register mode beats ESP-IDF's DMA for SSH's sizes.** The CPU writing each block to the
@@ -138,30 +163,22 @@ until silicon v3; then test again.
   X25519 took 75 ms and an Ed25519 signature check 252 ms, Monocypher's 6.7 and 9.7 ms
   (both as built: TweetNaCl `-Os` in Dropbear, Monocypher `-O2`).
 
-## 4a. The Ethernet MAC (`devplan/network.md`)
+## 4c. FreeRTOS on two cores: what a lock costs (`devplan/network.md` §28)
 
-- **One DMA channel each way, no AV queues.** The DMA feature register (`EMAC_HWFEATURE_REG`)
-  reads `4b056725` on our chip (MAC version `00001137`): no AV feature, no additional channels,
-  although ESP-IDF's `emac_reg.h` lists `CHANNEL1*`/`CHANNEL2*` registers with credit-based
-  shapers (the GMAC's full configuration, not this one's). Real-time frames get no hardware queue
-  of their own: the driver bounds how much bulk traffic sits ahead of them (§5.2 of the plan).
-- **Also from that register:** no multicast hash filter (only the perfect address filters), no
-  layer 3/4 filter, no flexible PPS, no RMON counters; IEEE 1588-2008 timestamps, checksum
-  offload both ways, the alternate (enhanced) descriptors, RMII. Read it with `net`.
-- **Eight address filters beyond the station's**, though the register file has room for 15
-  (`emacaddr[15]`). Found by writing a value to each filter's low half, the last first, and
-  reading them back (2026-10-11): `emacaddr[0..7]` (addresses 1-8) hold theirs, the rest read 0.
-  ESP-IDF's `EMAC_LL_MAX_MAC_ADDR_NUM` (8) is right. The driver probes at start
-  (`EthernetDevice::multicastFilters()`) and uses them for multicast groups; with more groups it
-  sets "pass all multicast" (frame filter bit 4) and IP drops what nobody joined.
-- **The receive FIFO is 256 bytes**, too small for store-and-forward (ESP-IDF turns it off):
-  frames pass through as they come, and a bad one arrives with its error in the descriptor.
-- **Descriptors are 64 bytes**, one L1 line each, so each is synced alone; the timestamps are in
-  words 6 and 7 (digital rollover: seconds and nanoseconds).
-- **ESP-IDF's `emac_hal.c` is built only with its Ethernet driver**; BMDS uses `hal/emac_ll.h`
-  (header-only) and `soc/emac_periph.h`'s pin tables, and does the bring-up itself.
-- **Start the MAC and its DMA on link-up, stop them on link-down** (ESP-IDF's order; transmit:
-  MAC then DMA, the other way round can hang the transmitter).
+- **A mutex or semaphore operation costs microseconds, more when contended:** a BMDS `Mutex`'s
+  lock and unlock took 4.3 µs uncontended (ESP-IDF's crypto lock 4.9 µs). Under a TCP transfer,
+  with the network task on one core and the sender on the other, the time inside FreeRTOS's queue
+  operations (interrupts masked, spinning on the kernel's lock) was 40% of BusyBox `nc`'s samples.
+  Fewer wakes and fewer lock handoffs per byte paid more than faster code.
+- **Seeing it:** the profiler samples at the tick, which can't interrupt a critical section, so
+  time inside one is charged to `vPortExitCriticalMultiCore` with the caller (`xQueueGenericSend`:
+  a give or unlock; `xQueueSemaphoreTake`: a take or lock) as its return address.
+- **The interrupted context is at `pxTopOfStack`:** ESP-IDF's RISC-V interrupt entry stores the
+  task's stack pointer in its TCB when the interrupt didn't nest, and the frame there starts with
+  `mepc`, then `ra` (`riscv/rvruntime-frames.h`). A tick hook reads them (`sysmon.md` §9);
+  `xPortInterruptedFromISRContext()` is the nesting depth (above 1: the tick interrupted a handler).
+- **The EMAC's sent interrupt on every frame** woke the driver's task 72 µs a frame; asking for it
+  only now and then (a descriptor's IC bit) and reclaiming in the sender removed most of that.
 
 ## 5. ESP-IDF
 
@@ -205,3 +222,8 @@ until silicon v3; then test again.
   byte for byte on random input (sizes, offsets, formats). A kernel goes in with both.
 - **Compare against an exact reference, not a library's idea of it:** Pillow's "box" filter isn't
   an area average (`devplan/images.md`).
+- **CPU spent on a job:** the board's busy time before and after (`stats`' `cpu.core0.busy_us`
+  and `cpu.core1.busy_us`), divided by the work (ms per MB). One look at `top` during a transfer,
+  or the `IDLE` tasks' totals in `tasks` read over an SSH login, were off by up to a second a run.
+  Where it goes: `prof start` ... `prof stop; prof dump`, then `tools/bmds-prof`
+  (`devplan/sysmon.md` §9).

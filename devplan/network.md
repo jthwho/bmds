@@ -1434,6 +1434,47 @@ As §26 designed; measured from this PC (Wi-Fi, OpenSSH 9.6):
   the engines; tried over loopback with a key made for the test.
 - **Size:** the firmware 1 737 520 to 1 739 280 bytes; Dropbear 743 768 to 763 604.
 - **Not yet:** a wired peer's numbers (the downloads' CPU suggests 2.3-2.8 MB/s at most from
-  Dropbear as it is: its download path costs twice its upload's besides the crypto, worth a look);
+  Dropbear as it is: its download path costs twice its upload's besides the crypto, worth a look:
+  done in §28);
   DMA for AES; the HMAC, DS and key manager engines (a host key in eFuses). Found on the way: the
-  shell's `head` reading `/dev/zero` (a line with no end) fails with `Out of memory`.
+  shell's `head` reading `/dev/zero` (a line with no end) fails with `Out of memory` (fixed: it
+  streams, and has `-c`).
+
+## 28. SSH downloads and the TCP path (2026-10-11)
+
+§27 left Dropbear's downloads costing twice its uploads besides the crypto. Measured with the
+board's busy time (`stats`' `cpu.core*.busy_us` before and after: `top`'s one look and `tasks`'
+`IDLE` totals read over a login misled by up to a second a run) and the new profiler (`prof`,
+`tools/bmds-prof`: `sysmon.md` §9), the cost was mostly not Dropbear's:
+
+- **Raw TCP was most of it:** BusyBox `nc` sending `/dev/zero` cost 250 ms of CPU per MB at
+  2.7 MB/s, SSH's download 423. The profile: FreeRTOS's semaphore and mutex operations with
+  interrupts masked (on `vPortExitCriticalMultiCore`, 40% of `nc`'s samples), the `eth0` task 72 µs
+  a frame, copies.
+- **The send buffer was the ceiling:** 8 segments (11.7 KB) a round trip over Wi-Fi is about
+  2.3-2.9 MB/s, where both directions stopped; and every ACK woke the sender for a segment or two
+  of room, moving the core lock between cores each time.
+- **Changes:**
+  - `TCP_WND` and `TCP_SND_BUF` 16 segments (23 KB; `MEMP_NUM_TCP_SEG` 128). Received data past
+    the ring's share was already copied into the heap.
+  - A TCP socket is writable, and its writers woken by an ACK, with half its send buffer free
+    (Linux's `poll` rule), not at each ACK.
+  - The Ethernet driver's sender takes back sent descriptors itself; a frame asks for the sent
+    interrupt only with a stamp, with the ring half full, or every 8th (the counters of frames sent
+    trail by fewer than 8 when traffic stops); the room semaphore is used only when the ring is full.
+  - `Crypto::aes` writes the engine's registers itself (ESP-IDF's `aes_ll` copied each word
+    through `memcpy`) and XORs whole words: AES-CTR through the call 12.4 to 15.5 MB/s.
+- **After** (this PC on Wi-Fi, 16 MB, MB/s and the board's CPU-ms per MB):
+
+  | | Before | After |
+  |---|---|---|
+  | TCP down / up (`nc`) | 2.20-2.67 (249-252) / 2.19-2.86 (225-232) | 3.36 (233) / 4.55 (211) |
+  | SSH AES-128-CTR down / up | 2.16-2.46 (423-432) / 1.20-1.74 (326-343) | 3.15 (349) / 2.25 (305) |
+  | SSH ChaCha20-Poly1305 down / up | 1.97-2.25 (459-509) / 1.02-1.52 (431-435) | 2.43 (439) / 1.85 (406) |
+
+  Downloads now cost little more than uploads; what is left is the engines' register time (AES
+  a sixth of the busy samples, SHA a tenth), the semaphores' masked time (a sixth), and copies.
+- **Bigger pipes made it worse,** tried twice: 16 KB and 32 KB pipes (16 KB SSH packets) cost
+  417-491 ms/MB against 4 KB's 349; they stay 4 KB.
+- **Next, if wanted:** DMA for AES (the CPU free while it runs; ESP-IDF's DMA measured 28 MB/s),
+  checksum offload (`lwip_standard_chksum`, 1.3% of the download's samples), zero-copy transmit.

@@ -15,6 +15,10 @@ TaskOwner *TaskOwner::current() {
         return static_cast<TaskOwner *>(Detail::taskOwner());
 }
 
+TaskOwner *TaskOwner::of(void *task) {
+        return static_cast<TaskOwner *>(Detail::taskOwnerOf(task));
+}
+
 void TaskOwner::setCurrent(TaskOwner *owner) {
         Detail::setTaskOwner(owner);
         return;

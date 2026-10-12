@@ -263,11 +263,15 @@ int TextCommands::cat(CommandContext &ctx) {
         return opened ? Shell::ExitSuccess : Shell::ExitFailure;
 }
 
+// Streams: what is read goes out as it is, up to the count's end, so a line of any length costs no
+// memory (/dev/zero's never ends: it is copied until Ctrl-C, as GNU's head does).
 int TextCommands::head(CommandContext &ctx) {
         const Args    args = ctx.args();
         unsigned long count = 10;
+        bool          bytes = false;
         size_t        i = 1;
-        if (i < args.size() && StringView(args[i]).startsWith("-n")) {
+        if (i < args.size() && (StringView(args[i]).startsWith("-n") || StringView(args[i]).startsWith("-c"))) {
+                bytes = args[i][1] == 'c';
                 const char *value = args[i][2] != '\0' ? args[i] + 2 : (i + 1 < args.size() ? args[++i] : "");
                 if (!parseCount(value, count)) return ctx.usage();
                 ++i;
@@ -275,7 +279,6 @@ int TextCommands::head(CommandContext &ctx) {
         const Args files = args.mid(i);
         ReadBuffer buffer;
         if (!buffer.check(ctx)) return Shell::ExitFailure;
-        String     line;
         Error      failed;
         bool       first = true;
         const bool opened = forEachInput(ctx, files, [&](StringView name, CommandContext::Input &input) {
@@ -283,16 +286,25 @@ int TextCommands::head(CommandContext &ctx) {
                 if (files.size() > 1)
                         ctx.printf("%s==> %.*s <==\n", first ? "" : "\n", static_cast<int>(name.size()), name.data());
                 first = false;
-                LineReader reader(ctx, input, buffer.span());
-                for (unsigned long n = 0; n < count; ++n) {
-                        Error err = reader.next(line);
-                        if (err == Error::EndOfFile) break;
-                        if (err.isOk() && line.append('\n').isError()) err = Error::NoMem;
+                unsigned long left = count;
+                while (left > 0) {
+                        if (ctx.isInterrupted()) return false;
+                        auto [n, err] = input.read(buffer.span());
+                        if (err == Error::EndOfFile || err == Error::BadDescriptor) break;
                         if (err.isError()) {
                                 failed = err;
                                 return false;
                         }
-                        ctx.print(line);
+                        const uint8_t *data = buffer.span().data();
+                        size_t         take = 0;
+                        if (bytes) {
+                                take = n < left ? n : left;
+                                left -= take;
+                        } else {
+                                while (take < n && left > 0)
+                                        if (data[take++] == '\n') --left;
+                        }
+                        (void)ctx.write(FdTable::Stdout, ByteSpan(data, take));
                 }
                 return true;
         });
@@ -510,7 +522,8 @@ BMDS_SHELL_COMMAND(cat, TextCommands::cat, "[file]...", "Copy files (or standard
 BMDS_SHELL_COMMAND(echo, TextCommands::echo, "[-neE] [word]...", "Print the words, separated by spaces")
 BMDS_SHELL_COMMAND(grep, TextCommands::grep, "[-civnqF] pattern [file]...",
                    "Print the lines of files (or standard input) that match a basic regular expression")
-BMDS_SHELL_COMMAND(head, TextCommands::head, "[-n count] [file]...", "Print the first lines of files (10)")
+BMDS_SHELL_COMMAND(head, TextCommands::head, "[-n count | -c bytes] [file]...",
+                   "Print the first lines (10), or bytes, of files")
 BMDS_SHELL_COMMAND(wc, TextCommands::wc, "[-lwc] [file]...", "Count lines, words and bytes of files")
 
 BMDS_NAMESPACE_END

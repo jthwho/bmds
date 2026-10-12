@@ -250,6 +250,9 @@ Plan: [`input.md`](input.md).
     per login); Dropbear's X25519 and Ed25519 on Monocypher (11-37 times TweetNaCl's); the AES
     and SHA engines in register mode (`bmds_crypto`, slot 112 `crypto`) under libtomcrypt, the
     board's client preferring AES-CTR. A login 1.03 s to 0.2 s; MPI and ECC not worth it.
+    Then the TCP path (§28): 16-segment buffers, writers woken at half room, the EMAC's sent
+    interrupt only now and then: SSH downloads 2.2 to 3.2 MB/s, uploads 1.7 to 2.3, raw TCP up
+    2.9 to 4.6. The sampling profiler (`prof`, `tools/bmds-prof`, `sysmon.md` §9) found it.
   - [ ] 6. Real time: fast path, priority queue, timestamps, `netlat`.
   - [ ] 7. PTP, master and slave (BMCA): two boards alone elect a grandmaster.
 

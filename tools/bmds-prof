@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+# @file      bmds-prof
+# @copyright Jason Howard. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+# See LICENSE file in the project root folder for license information.
+#
+# Reads the board's `prof dump` (devplan/sysmon.md §9) and names where the CPU went: the busy
+# samples by task and function, and by function and caller (the sample's return address).
+#
+#   ssh root@bmds0 'prof start'; ...; ssh root@bmds0 'prof stop; prof dump' > prof.txt
+#   tools/bmds-prof prof.txt [--task NAME] [--top N] [--program NAME=ELF]...
+#
+# The kernel's samples resolve against build/bmds.elf; a program's against its unstripped ELF,
+# found in the firmware's ROM build (build/rom/dist), the distribution's (build-dist) or the SDK
+# examples (build-host/sdk-examples), or given with --program (NAME: the module's last path part).
+# Samples in an interrupt handler ("(isr)") and the idle tasks are left out of the busy ones.
+#
+# Python's standard library only; needs riscv32-esp-elf-addr2line (on PATH after ESP-IDF's
+# export.sh, or under ~/.espressif).
+
+import argparse
+import collections
+import glob
+import os
+import shutil
+import subprocess
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def addr2line():
+    tool = shutil.which("riscv32-esp-elf-addr2line")
+    if tool:
+        return tool
+    found = sorted(glob.glob(os.path.expanduser(
+        "~/.espressif/tools/riscv32-esp-elf/*/riscv32-esp-elf/bin/riscv32-esp-elf-addr2line")))
+    if not found:
+        sys.exit("bmds-prof: riscv32-esp-elf-addr2line not found (run ESP-IDF's export.sh)")
+    return found[-1]
+
+
+def find_program(name):
+    """The unstripped ELF of a program the board ran as NAME (a link's target followed)."""
+    for dist in ("build/rom/dist", "build-dist"):
+        for link in glob.glob(os.path.join(ROOT, dist, "stage", "*", "bin", name)):
+            target = os.path.basename(os.path.realpath(link))
+            package = link.split(os.sep)[-3]
+            for top, _, files in os.walk(os.path.join(ROOT, dist, "build", package)):
+                if target in files:
+                    return os.path.join(top, target)
+    example = os.path.join(ROOT, "build-host", "sdk-examples", name + ".elf")
+    return example if os.path.exists(example) else None
+
+
+def resolve(elf, addresses):
+    addresses = sorted(addresses)
+    if not addresses:
+        return {}
+    if elf is None:
+        return {a: "?" for a in addresses}
+    out = subprocess.run([addr2line(), "-f", "-C", "-e", elf] + ["%x" % a for a in addresses],
+                         capture_output=True, text=True, check=True).stdout.split("\n")
+    return {a: out[2 * i] for i, a in enumerate(addresses)}
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Name where the board's CPU went (prof dump).")
+    parser.add_argument("dump", help="the output of `prof dump` ('-': standard input)")
+    parser.add_argument("--task", help="only this task's samples")
+    parser.add_argument("--top", type=int, default=40, help="rows of each table (40)")
+    parser.add_argument("--program", action="append", default=[], metavar="NAME=ELF",
+                        help="the unstripped ELF for program module NAME")
+    parser.add_argument("--kernel", default=os.path.join(ROOT, "build", "bmds.elf"),
+                        help="the firmware's ELF (build/bmds.elf)")
+    args = parser.parse_args()
+
+    given = dict(p.split("=", 1) for p in args.program)
+    modules, samples = {}, []
+    with (sys.stdin if args.dump == "-" else open(args.dump)) as f:
+        for line in f:
+            fields = line.split()
+            if line.startswith("# module") and len(fields) >= 6:
+                modules[int(fields[2])] = (int(fields[3], 16), int(fields[4]), fields[5])
+            elif len(fields) == 5 and not line.startswith("#"):
+                samples.append((int(fields[0]), fields[1], int(fields[2], 16), int(fields[3], 16), int(fields[4])))
+    if not samples:
+        sys.exit("bmds-prof: no samples in %s" % args.dump)
+
+    # Each address as (module, offset); kernel addresses stay absolute.
+    def place(address, module):
+        base, size, _ = modules.get(module, (0, 0, "kernel"))
+        if module != 0 and base <= address < base + size:
+            return module, address - base
+        return 0, address
+
+    wanted = collections.defaultdict(set)
+    for _, _, pc, ra, module in samples:
+        for a in (pc, ra):
+            m, offset = place(a, module)
+            wanted[m].add(offset)
+    names = {}
+    for m, offsets in wanted.items():
+        if m == 0:
+            elf = args.kernel
+        else:
+            short = os.path.basename(modules[m][2])
+            elf = given.get(short) or find_program(short)
+            if elf is None:
+                print("bmds-prof: no ELF for %s (give --program %s=ELF)" % (modules[m][2], short),
+                      file=sys.stderr)
+        tag = "" if m == 0 else "[%s] " % os.path.basename(modules[m][2])
+        names[m] = {o: tag + n for o, n in resolve(elf, offsets).items()}
+
+    def name(address, module):
+        m, offset = place(address, module)
+        return names[m][offset]
+
+    by_task = collections.Counter(s[1] for s in samples)
+    print("%d samples; by task:" % len(samples))
+    for task, n in by_task.most_common():
+        print("  %6d %5.1f%%  %s" % (n, 100.0 * n / len(samples), task))
+    busy = [s for s in samples if not s[1].startswith("IDLE") and s[1] != "(isr)"
+            and (args.task is None or s[1] == args.task)]
+    if not busy:
+        return
+    functions, callers = collections.Counter(), collections.Counter()
+    for _, task, pc, ra, module in busy:
+        f = name(pc, module)
+        functions[(task, f)] += 1
+        callers[(task, f, name(ra, module))] += 1
+    print("\n%d busy samples; by task and function:" % len(busy))
+    for (task, f), n in functions.most_common(args.top):
+        print("  %6d %5.1f%%  %-12s %s" % (n, 100.0 * n / len(busy), task, f))
+    print("\nby function and caller:")
+    for (task, f, c), n in callers.most_common(args.top):
+        print("  %6d  %-12s %s  <-  %s" % (n, task, f, c))
+
+
+if __name__ == "__main__":
+    main()

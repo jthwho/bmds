@@ -59,6 +59,9 @@ namespace Detail {
         /** @brief Sets the calling task's `TaskOwner`. */
         void setTaskOwner(void *owner);
 
+        /** @brief Returns task @p task's `TaskOwner` (null if none). @isrsafe */
+        void *taskOwnerOf(void *task);
+
         /** @brief The system clock as carried across a reset (`Clock`). */
         struct ClockRecord {
                         int64_t wallMinusPersistentNs = 0; ///< Wall time minus `persistentTimeUs()` (in ns).

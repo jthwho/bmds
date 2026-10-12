@@ -98,6 +98,10 @@ void *Detail::taskOwner() {
         return taskOwnerPointer;
 }
 
+void *Detail::taskOwnerOf(void *task) {
+        return task == nullptr ? taskOwnerPointer : nullptr; // the host has no task handles
+}
+
 void Detail::setTaskOwner(void *owner) {
         taskOwnerPointer = owner;
         return;

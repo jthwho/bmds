@@ -7,6 +7,8 @@
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
 idf_component_register(SRCS src/cputime.cpp
+                            src/profcommand.cpp
+                            src/profiler.cpp
                             src/statscommand.cpp
                             src/sysmon.cpp
                        INCLUDE_DIRS include

@@ -288,7 +288,7 @@ TEST_CASE("Text commands") {
         SUBCASE("head") {
                 CHECK(f.out("echo -e '1\\n2\\n3' | head -n 2") == "1\n2\n");
                 CHECK(f.out("echo -e '1\\n2\\n3' | head -n2") == "1\n2\n");
-                CHECK(f.out("echo -n -e '1\\n2' | head") == "1\n2\n");
+                CHECK(f.out("echo -n -e '1\\n2' | head") == "1\n2"); // an unfinished line as it is, as GNU's
                 CHECK(f.out("echo x | head -n z", Shell::ExitUsage) == "usage: head [-n count]\n");
         }
 

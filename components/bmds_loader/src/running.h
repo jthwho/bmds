@@ -191,6 +191,7 @@ struct Running final : ProcessOwner, ProcessControl {
                 Process             *process = nullptr; // memory is always its (a vfork child shares it)
                 int32_t              pid = 0;
                 uint8_t             *image = nullptr;
+                size_t               imageBytes = 0;    // its size (the profiler's modules)
                 const ProgramEntry  *builtin = nullptr; // a program built in (/bin/NAME): no image
                 void                *data = nullptr;    // the builtin's (Context::data)
                 uintptr_t            entry = 0;         // the program's _start

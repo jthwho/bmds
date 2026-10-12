@@ -40,7 +40,7 @@
 #define MEMP_NUM_UDP_PCB 16
 #define MEMP_NUM_TCP_PCB 16
 #define MEMP_NUM_TCP_PCB_LISTEN 8
-#define MEMP_NUM_TCP_SEG 64
+#define MEMP_NUM_TCP_SEG 128
 #define MEMP_NUM_REASSDATA 8
 #define MEMP_NUM_ARP_QUEUE 16
 #define MEMP_NUM_IGMP_GROUP 16
@@ -108,8 +108,10 @@
 // --- TCP ------------------------------------------------------------------------------------
 
 #define TCP_MSS 1460
-#define TCP_WND (8 * TCP_MSS)
-#define TCP_SND_BUF (8 * TCP_MSS)
+// 16 segments each way: 8 limited a connection to 11.7 KB a round trip, 2.3-2.9 MB/s over this
+// PC's Wi-Fi (devplan/network.md §28). Received data past the ring's share is copied into the heap.
+#define TCP_WND (16 * TCP_MSS)
+#define TCP_SND_BUF (16 * TCP_MSS)
 #define TCP_SND_QUEUELEN ((4 * TCP_SND_BUF + TCP_MSS - 1) / TCP_MSS)
 #define TCP_QUEUE_OOSEQ 1
 #define TCP_OOSEQ_MAX_PBUFS 4

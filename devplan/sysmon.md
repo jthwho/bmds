@@ -680,3 +680,37 @@ counter's help line is in its description (`stats rules`).
   (§3.2) replaces the planned `sys_stats` and `stats_counters` calls; rules, overrides and the
   problem log are new (§3.3); new counters for block devices, input, ISR time and the console;
   the window gains Audio, Display and I/O tabs; the phasing puts the window before `top`.
+
+## 9. The profiler: where the CPU goes (2026-10-11)
+
+Counters say how much a task uses, not on what. Finding the SSH download's costs
+(`network.md` §28) took a sampling profiler; the user asked to keep it as a tool.
+
+- **Sampling:** at each FreeRTOS tick (1 kHz) on each core chosen, a tick hook
+  (`esp_register_freertos_tick_hook_for_cpu`) records the interrupted context: its `mepc` and `ra`
+  from the frame the interrupt entry saved at the task's `pxTopOfStack` (ESP-IDF's RISC-V port
+  saves it there for an interrupt that didn't nest), the task's name, the core, and the program
+  module it was in. A tick that interrupted another interrupt has no such frame: it is counted as
+  `(isr)`.
+- **Modules:** the loader registers a locator (`Profiler::setLocator`, interrupt-safe: plain
+  reads) giving a task's program image (base, size, command's first word) through the task's
+  owner (`TaskOwner::of`, new); the profiler keeps up to 16 modules seen, the kernel being module
+  0, so a program that has ended by the dump is still named.
+- **What it can't see:** interrupt handlers' own time; time inside a critical section lands on
+  its exit (`vPortExitCriticalMultiCore`: that is how lock contention shows); 1 ms resolution.
+- **Memory:** 32768 samples of 24 bytes (768 KB of PSRAM), allocated by `prof start`, kept for
+  `prof dump`, freed by `prof clear`. Nothing runs or is allocated while it is off; the hook
+  costs a flag test then.
+- **`prof start [-c CORE]`, `prof stop`, `prof dump`, `prof clear`** (shell, `bmds_stats`):
+  `stop` prints the samples by task (busy share); `dump` prints `# module N BASE BYTES NAME`
+  lines, then a `CORE TASK PC RA MODULE` line a sample.
+- **`tools/bmds-prof`:** reads a dump, resolves module 0 against `build/bmds.elf` and each
+  program module against the unstripped ELF given with `--program NAME=ELF`, and prints the busy
+  samples by task and function, and by function and caller.
+- **ABI:** the `prof` command's interface and its dump's format.
+- **As built (2026-10-11):** `Profiler` and `prof` in `bmds_stats`, the loader's locator, and
+  `tools/bmds-prof` (which finds a program's unstripped ELF in the ROM's or the distribution's
+  build by the module's name). The hook is registered by `start` and removed by `stop`, which then
+  waits two ticks so no hook on the other core is still writing. Tried on an SSH download (7 s on two cores,
+  14 092 samples): it named the costs `network.md` §28 fixed. A program's several processes
+  (Dropbear's listener and sessions) are a module each.

@@ -75,6 +75,10 @@ void *Detail::taskOwner() {
         return pvTaskGetThreadLocalStoragePointer(nullptr, OwnerTlsIndex);
 }
 
+void *Detail::taskOwnerOf(void *task) {
+        return pvTaskGetThreadLocalStoragePointer(static_cast<TaskHandle_t>(task), OwnerTlsIndex);
+}
+
 void Detail::setTaskOwner(void *owner) {
         vTaskSetThreadLocalStoragePointer(nullptr, OwnerTlsIndex, owner);
         return;

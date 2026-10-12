@@ -17,6 +17,7 @@
 #include <hal/aes_types.h>
 #include <hal/sha_ll.h>
 #include <hal/sha_types.h>
+#include <soc/aes_reg.h>
 #include <soc/hp_sys_clkrst_struct.h>
 #include <bmds/crypto.h>
 
@@ -45,16 +46,24 @@ namespace {
                         Engine &operator=(const Engine &) = delete;
         };
 
-        // One block through the AES engine (the key and direction already set).
+        // One block through the AES engine (the key and direction already set). The registers by
+        // hand: aes_ll's copy each word through memcpy, and they were a quarter of AES-CTR's time.
         inline void aesBlock(const uint32_t in[4], uint32_t out[4]) {
-                aes_ll_write_block(in);
-                aes_ll_start_transform();
-                while (aes_ll_get_state() != ESP_AES_STATE_IDLE) {}
-                aes_ll_read_block(out);
+                for (int i = 0; i < 4; ++i) REG_WRITE(AES_TEXT_IN_0_REG + 4 * i, in[i]);
+                REG_WRITE(AES_TRIGGER_REG, 1);
+                while (REG_READ(AES_STATE_REG) != ESP_AES_STATE_IDLE) {}
+                for (int i = 0; i < 4; ++i) out[i] = REG_READ(AES_TEXT_OUT_0_REG + 4 * i);
                 return;
         }
 
+        // @p out = @p a ^ @p b; whole words when the bytes are aligned (SSH's packets are).
         inline void xorBlock(const uint8_t *a, const uint32_t b[4], uint8_t *out) {
+                if (((reinterpret_cast<uintptr_t>(a) | reinterpret_cast<uintptr_t>(out)) & 3) == 0) {
+                        const auto *aw = reinterpret_cast<const uint32_t *>(a);
+                        auto       *ow = reinterpret_cast<uint32_t *>(out);
+                        for (int i = 0; i < 4; ++i) ow[i] = aw[i] ^ b[i];
+                        return;
+                }
                 uint32_t w[4];
                 std::memcpy(w, a, sizeof(w));
                 for (int i = 0; i < 4; ++i) w[i] ^= b[i];

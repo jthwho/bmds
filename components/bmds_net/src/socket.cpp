@@ -42,6 +42,11 @@ namespace {
 
         // Datagram buffer limits (Option::ReceiveBuffer).
         constexpr int32_t MinReceiveBuffer = 1024;
+
+        // A TCP socket is writable (and its writers woken) with half its send buffer free.
+        bool hasSendRoom(const struct tcp_pcb *pcb) {
+                return tcp_sndbuf(pcb) >= TCP_SND_BUF / 2 && tcp_sndqueuelen(pcb) <= TCP_SND_QUEUELEN / 2;
+        }
         constexpr int32_t MaxReceiveBuffer = 256 * 1024;
 
         Error errorOf(err_t err) {
@@ -165,8 +170,12 @@ struct SocketCallbacks {
                         return ERR_OK;
                 }
 
-                static err_t tcpSent(void *arg, struct tcp_pcb *, u16_t) {
+                // Writers wake when half the send buffer is free, not at every ACK (as Linux's
+                // poll): each wake was a context switch and the core lock changing cores for the
+                // room of one or two segments (devplan/network.md §28).
+                static err_t tcpSent(void *arg, struct tcp_pcb *pcb, u16_t) {
                         auto &s = *static_cast<Socket *>(arg);
+                        if (!hasSendRoom(pcb)) return ERR_OK;
                         s._writable.release();
                         s._pollers.notify();
                         return ERR_OK;
@@ -1119,8 +1128,7 @@ bool Socket::isWritable() const {
         if (_listening || _connecting) return false;
         if (_gone || _sendShut || _error.isError()) return true; // a write fails at once
         if (!_connected || _pcb == nullptr) return false;
-        const auto *pcb = static_cast<const struct tcp_pcb *>(_pcb);
-        return tcp_sndbuf(pcb) > 0 && tcp_sndqueuelen(pcb) < TCP_SND_QUEUELEN;
+        return hasSendRoom(static_cast<const struct tcp_pcb *>(_pcb));
 }
 
 uint8_t Socket::readiness() {

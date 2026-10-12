@@ -34,6 +34,7 @@
 #include <bmds/memory.h>
 #include <bmds/mutex.h>
 #include <bmds/processtable.h>
+#include <bmds/profiler.h>
 #include <bmds/program.h>
 #include <bmds/programimage.h>
 #include <bmds/pty.h>
@@ -447,6 +448,7 @@ namespace {
                 run->pid = run->main.currentPid = run->main.tid = pid;
                 run->main.signals = &process->signals().mainThread();
                 run->image = image.memory;
+                run->imageBytes = image.bytes;
                 run->builtin = image.builtin;
                 // Kernel code until it reaches the program's: a kill before then leaves it to end
                 // itself (a built-in program always gets its data: devplan/processes.md §3.8.1).
@@ -1238,6 +1240,7 @@ int32_t ProgramThread::exec(const char *path, char *const *argv, char *const *en
         current = nullptr;
         Memory::free(run->image);
         run->image = nullptr;
+        run->imageBytes = 0;
         queueStop(*this);
 }
 
@@ -1706,6 +1709,7 @@ void Running::end(int32_t status) {
         }
         Memory::free(image);
         image = nullptr;
+        imageBytes = 0;
         return;
 }
 
@@ -1836,6 +1840,18 @@ namespace {
                 return err == Error::Exists ? Error::Ok : err; // a second init()
         }
 
+        // The profiler's view of a task: its program's image (devplan/sysmon.md §9). Called from
+        // the tick hook, for the task it interrupted, which is running and so its process alive.
+        bool IRAM_ATTR locateProgram(void *task, uint32_t &base, uint32_t &bytes, const char *&name) {
+                auto          *owner = static_cast<ProcessOwner *>(TaskOwner::of(task));
+                const Running *run = owner != nullptr ? owner->run : nullptr;
+                if (run == nullptr || run->image == nullptr) return false;
+                base = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(run->image));
+                bytes = static_cast<uint32_t>(run->imageBytes);
+                name = run->command;
+                return true;
+        }
+
 } // namespace
 
 Error Loader::init() {
@@ -1851,6 +1867,7 @@ Error Loader::init() {
                 (void)Memory::addReclaimer(
                         &*imageCache); // before the fonts' (a later boot stage): programs reload cheaply
         }
+        Profiler::setLocator(&locateProgram);
         Error err = processes->init();
         if (err.isOk() && signalQueue == nullptr) {
                 signalQueue = xQueueCreate(SignalQueueLength, sizeof(Console *));

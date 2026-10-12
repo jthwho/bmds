@@ -235,7 +235,7 @@ Text built-ins (Phase 1b, `textcommands.cpp`). They read stdin and follow the GN
 |---|---|
 | `echo [-neE] [word]...` | The words, space-separated, as bash's builtin (`-e` escapes: `\a \b \c \e \f \n \r \t \v \\ \0nnn \xHH`). |
 | `cat [-]` | stdin, unchanged. |
-| `head [-n count]` | The first `count` (10) lines. Stops reading early, so the writer gets a broken pipe. |
+| `head [-n count \| -c bytes]` | The first `count` (10) lines, or bytes (`-c`, appended 2026-10-11). Streams what it reads, so a line of any length costs no memory (it once ran out reading `/dev/zero`). Stops reading early, so the writer gets a broken pipe. |
 | `wc [-lwc]` | Lines, words, bytes; one count bare, several padded to 7 columns (GNU). |
 | `grep [-civnqF] pattern` | Matching lines; `-c` count, `-n` `N:` prefix, `-q` status only. Exit 0 = selected, 1 = none, 2 = error. Patterns are a POSIX BRE subset (`bmds/regex.h`); unsupported syntax (`\(`, `\{`, `[:class:]`, GNU `\|`) is an error, not a literal, so it can be added later without changing any pattern's meaning. `-e`/`-E` are not there yet. |
 

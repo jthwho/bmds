@@ -327,6 +327,7 @@ class EthernetDevice {
                 void        receive();
                 void        refill();
                 void        reclaim();
+                bool        reclaimLocked(); // _txLock held; true if a stamped frame came back
                 void        checkLink();
                 void        applyLink(const Link &link);
                 void        startTraffic();
@@ -360,7 +361,8 @@ class EthernetDevice {
 
                 // Transmit: the next descriptor to fill and the next to reclaim.
                 Mutex         _txLock;
-                Semaphore     _txSpace;
+                Semaphore     _txSpace;           // released when room frees for a waiting sender
+                bool          _txWaiting = false; // under _txLock
                 size_t        _txHead = 0;
                 size_t        _txTail = 0;
                 size_t        _txQueued = 0;

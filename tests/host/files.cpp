@@ -42,7 +42,7 @@ namespace {
                 {"df", "[-h]", "", bmds::FsCommands::df},
                 {"echo", "[-neE] [word]...", "", bmds::TextCommands::echo},
                 {"grep", "[-civnqF] pattern [file]...", "", bmds::TextCommands::grep},
-                {"head", "[-n count] [file]...", "", bmds::TextCommands::head},
+                {"head", "[-n count | -c bytes] [file]...", "", bmds::TextCommands::head},
                 {"hexdump", "[-C] [file]", "", bmds::FileCommands::hexdump},
                 {"ln", "-s [-f] target name | -s [-f] target... dir", "", bmds::FileCommands::ln},
                 {"ls", "[-la1] [path]...", "", bmds::FileCommands::ls},
@@ -200,6 +200,12 @@ TEST_CASE("Files: the text commands read files") {
               "cat: /disk0/p0/missing: No such file or directory\nalpha\nbeta\ngamma\n");
         CHECK(f.out("cd /disk0/p0; head -n 1 one two") == "==> one <==\nalpha\n\n==> two <==\ndelta\n");
         CHECK(f.out("cd /disk0/p0; head -n 2 one") == "alpha\nbeta\n");
+        CHECK(f.out("cd /disk0/p0; head -c 8 one two") == "==> one <==\nalpha\nbe\n==> two <==\ndelta\nal");
+        CHECK(f.out("cd /disk0/p0; head -n0 one") == "");
+        CHECK(f.out("head -c 5 /dev/zero | wc -c") == "5\n");
+        // A line longer than the read buffer streams through, costing no memory.
+        put("/disk0/p0/long", std::string(70000, 'x') + "\nnext\n");
+        CHECK(f.out("cd /disk0/p0; head -n 1 long | wc -c") == "70001\n");
         CHECK(f.out("cd /disk0/p0; wc one two") == " 3  3 17 one\n 2  3 18 two\n 5  6 35 total\n");
         CHECK(f.out("cd /disk0/p0; wc -l one") == "3 one\n");
         CHECK(f.out("cd /disk0/p0; grep -n alpha one two") == "one:1:alpha\ntwo:2:alpha again\n");
