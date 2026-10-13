@@ -72,6 +72,11 @@ target_compile_options(leapseconds_fuzz PRIVATE -fno-exceptions -fno-rtti)
 target_link_libraries(leapseconds_fuzz PRIVATE bmds_core)
 target_link_options(leapseconds_fuzz PRIVATE -fsanitize=fuzzer)
 
+add_executable(updatepackage_fuzz updatepackage.cpp)
+target_compile_options(updatepackage_fuzz PRIVATE -fno-exceptions -fno-rtti)
+target_link_libraries(updatepackage_fuzz PRIVATE bmds_core)
+target_link_options(updatepackage_fuzz PRIVATE -fsanitize=fuzzer)
+
 # PTP (devplan/network.md §31): the messages and an ordinary clock's port, bmds_net's portable
 # ptp.cpp and ptpport.cpp.
 add_executable(ptp_fuzz ptp.cpp ${NET}/src/ptp.cpp ${NET}/src/ptpport.cpp)

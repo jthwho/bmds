@@ -2527,3 +2527,37 @@ and Delay_Reqs a second), then the default. The board was watched from here ever
   steps it.
 - **Waits for the grandmaster or a second board** (§31): lock against GPS time, two boards electing,
   PPS on a scope.
+
+### 31h. Where PTP stands, and what comes next (2026-10-13)
+
+Steps 1-5 of §31 are done and committed. Left of step 7 (roadmap): what needs a hardware-stamped
+grandmaster, a second board, or a PPS input.
+
+- **The user's next hardware** (their choice of order; GPS grandmaster recommended first):
+  - **A GPS PPS + Intel NIC time server** (linuxptp with hardware stamps, `ts2phc` from the PPS).
+    Ask: which NIC (i210, i225/i226: which SDP pins take PPS in), how the GPS gives time of day
+    (gpsd, NMEA), and run it with clockClass 6, PTP's timescale, `currentUtcOffsetValid`. Tests:
+    the board's lock without sartre's software-stamp noise (expect tens of ns), `CLOCK_TAI` from a
+    master's valid offset (never yet exercised: `ptp4l` on software stamps is on UTC), holdover
+    with its cable pulled, PPS against GPS on a scope.
+  - **A second ESP32-P4 board:** two boards electing, hardware stamps both ends; AES67 between
+    boards later.
+  - **GPS PPS into the board** (the user's idea): GPIO27 (EXT1 pin 6, beside PPS out on GPIO26 at
+    pin 4; EXT1 is a footprint: a header or wire to solder), 3.3 V only (a divider for a 5 V PPS),
+    GND shared. NMEA later on UEXT's UART0 RX (GPIO38, pin 4) if the board is to be a grandmaster.
+    Plan: first an interrupt that stamps the edge with ptpclock0, measured with a jumper GPIO26 to
+    GPIO27 (the board stamping its own PPS: the spread is the capture's own error); then, from
+    those numbers, a hardware capture (ETM to a timer, as PPS out before chip revision 3) if the
+    interrupt's jitter is too much for sub-µs. Not yet checked: what the P4 can latch on an input
+    edge. Add the pin to the board definition and `docs/HARDWARE.md`.
+- **Known, open:** `clock`'s source stays `ptp` after NTP has the clock back, until NTP steps it
+  (NTP slews without setting the source); `PTP_PEROUT_REQUEST` waits for AES67 (§31e).
+- **How the runs against `ptp4l` were done** (to do again): sartre (`jth@sartre`, 172.20.0.9,
+  `enp8s0`, mlx4, software stamps only, linuxptp 3.1.1 with `pmc`; chrony keeps its clock) can't
+  reach the board by ssh, and `ptp4l` needs root, which only the user has. So: a script in
+  `~/ptp5` on sartre that the user runs with sudo (`ptp4l -S -s --free_running 1` to follow the
+  board, never without `--free_running`: it set sartre's clock 37 s off once; `ptp4l -S
+  --priority1 100` to lead; `pmc -u -b 0 'GET TIME_PROPERTIES_DATA_SET'` etc. while it runs;
+  phases marked in a file), and a watcher here sampling `ptp` and `clock` on the board over ssh
+  every 4 s, switching board settings when the script waits for it (a `go` file). PTP settings on
+  the board are set unsaved and reverted after.

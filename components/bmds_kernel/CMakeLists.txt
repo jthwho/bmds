@@ -40,12 +40,14 @@ if(COMMAND idf_component_register)
                                     src/task.cpp
                                     src/tasklist.cpp
                                     src/thread.cpp
+                                    src/updatekeys.cpp
                                     src/waketimer.cpp
                                INCLUDE_DIRS include
                                REQUIRES bmds_core bmds_board freertos
                                PRIV_REQUIRES bootloader_support esp_app_format esp_driver_gptimer esp_hw_support esp_psram esp_system esp_timer heap log
                                LDFRAGMENTS linker.lf)
         bmds_target_options(${COMPONENT_LIB})
+        bmds_update_keys(${COMPONENT_LIB} updatekeys.inc "${CONFIG_BMDS_UPDATE_KEYS_RELEASE}")
 else()
         find_package(Threads REQUIRED)
         # No clockinit.cpp: on the host nothing survives a "reset".

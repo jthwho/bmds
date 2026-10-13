@@ -300,7 +300,12 @@ Plan: [`input.md`](input.md).
     Step 5 done (§31g): against `ptp4l`, both profiles, both roles, standing down and taking over;
     `ptp4l` sees the board's UTC offset valid on PTP's timescale. Fixed on the way: the servo
     steps a new master's first offset, a new parent's timescale is taken at once, NTP gets its
-    rate back from PTP and takes a large rate error whole. Left: the grandmaster's tests.
+    rate back from PTP and takes a large rate error whole. Left: the grandmaster's tests;
+    where to pick up, and the hardware wanted: §31h.
+  - [ ] Updates (`update.md`, the user's ask, 2026-10-13): a signed `.bmup` package (firmware, ROM,
+    recovery) pushed onto the card over SSH or copied there, checked, and applied by a recovery
+    firmware in `ota_1`; `update check|apply|status`, `reboot recovery`; headless or graphical
+    start to finish (the Updater, recovery's progress screen).
 
 ## Phase 8 — Self-Hosting
 

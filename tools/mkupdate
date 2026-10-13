@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+# @file      mkupdate
+# @copyright Jason Howard. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+# See LICENSE file in the project root folder for license information.
+#
+# Makes and reads update packages (.bmup, devplan/update.md §2; the format is
+# components/bmds_core/include/bmds/updatepackage.h's).
+#
+#   mkupdate keygen KEY PUB [--comment TEXT]
+#       A new signing key: the private key to KEY (PEM, mode 600; keep it out of the
+#       repository), its public half to PUB (one line: "ed25519 HEX COMMENT").
+#   mkupdate make OUT --board BOARD [--key KEY] [--firmware BIN] [--rom BIN]
+#                 [--recovery BIN] [--notes FILE] [--abi N] [--partitions CSV]
+#       (--key defaults to keys/dev.key; --abi to sdk/include/bmds/sys.h's BMDS_ABI_VERSION)
+#       A package of the images given, signed with KEY. The version, build id and least
+#       chip revision come from the firmware's image (the recovery's if there is none).
+#       With --partitions, each image is checked against its partition's size.
+#   mkupdate info FILE [--pub PUB]...
+#       Shows a package and checks its sections' hashes and its signature: against the
+#       keys in PUB, or keys/dev.pub and keys/release.pub (keys/README.md). Exits 1 if anything doesn't check.
+
+import argparse
+import hashlib
+import os
+import struct
+import sys
+import time
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+from cryptography.exceptions import InvalidSignature
+
+MAGIC = b'BMUP'
+FORMAT = 1
+HEADER_BYTES = 128
+SECTION_BYTES = 48
+SIGNATURE_BYTES = 64
+MAX_SECTIONS = 16
+
+FIRMWARE, ROM, RECOVERY, NOTES = 1, 2, 3, 4
+NAMES = {FIRMWARE: 'firmware', ROM: 'rom', RECOVERY: 'recovery', NOTES: 'notes'}
+PARTITIONS = {FIRMWARE: 'ota_0', ROM: 'rom', RECOVERY: 'ota_1'}
+
+APP_MAGIC = 0xE9
+APP_DESC_OFFSET = 32  # the image header (24) and the first segment's (8)
+APP_DESC_MAGIC = 0xABCD5432
+
+
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+KEYS = os.path.join(ROOT, 'keys')
+
+
+def abi_version():
+    # The SDK's BMDS_ABI_VERSION, from this repository.
+    sys_h = os.path.join(ROOT, 'sdk', 'include', 'bmds', 'sys.h')
+    for line in open(sys_h):
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] == '#define' and parts[1] == 'BMDS_ABI_VERSION':
+            return int(parts[2].rstrip('uU'), 0)
+    fail('no BMDS_ABI_VERSION in ' + sys_h)
+
+
+def fail(msg):
+    sys.exit('mkupdate: ' + msg)
+
+
+def field(text, what):
+    data = text.encode('ascii')
+    if len(data) > 32 or any(b < 0x20 or b > 0x7e for b in data):
+        fail('%s "%s" must be at most 32 printable ASCII characters' % (what, text))
+    return data.ljust(32, b'\0')
+
+
+def app_info(image, what):
+    """The version, build id and least chip revision of an IDF app image."""
+    if len(image) < APP_DESC_OFFSET + 176 or image[0] != APP_MAGIC:
+        fail('%s is not an app image' % what)
+    min_rev = struct.unpack_from('<H', image, 15)[0]
+    magic, = struct.unpack_from('<I', image, APP_DESC_OFFSET)
+    if magic != APP_DESC_MAGIC:
+        fail('%s has no app description' % what)
+    version = image[APP_DESC_OFFSET + 16:APP_DESC_OFFSET + 48].split(b'\0')[0].decode('ascii', 'replace')
+    elf_sha = image[APP_DESC_OFFSET + 144:APP_DESC_OFFSET + 176]
+    if image[23] == 1:  # hash_appended: the last 32 bytes are SHA-256 of the rest
+        if hashlib.sha256(image[:-32]).digest() != image[-32:]:
+            fail('%s fails its own SHA-256' % what)
+    return version, elf_sha, min_rev
+
+
+def partition_sizes(csv):
+    sizes = {}
+    for line in open(csv):
+        line = line.split('#')[0].strip()
+        if not line:
+            continue
+        cols = [c.strip() for c in line.split(',')]
+        if len(cols) >= 5:
+            size = cols[4].upper()
+            mult = 1
+            if size.endswith('K'):
+                mult, size = 1024, size[:-1]
+            elif size.endswith('M'):
+                mult, size = 1024 * 1024, size[:-1]
+            sizes[cols[0]] = int(size, 0) * mult
+    return sizes
+
+
+def load_key(path):
+    with open(path, 'rb') as f:
+        key = serialization.load_pem_private_key(f.read(), password=None)
+    if not isinstance(key, Ed25519PrivateKey):
+        fail('%s is not an Ed25519 key' % path)
+    return key
+
+
+def public_hex(key):
+    return key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
+
+
+def load_pubs(paths):
+    """(key, its file and comment) for each key in the files."""
+    keys = []
+    for path in paths:
+        for line in open(path):
+            parts = line.split(None, 2)
+            if len(parts) >= 2 and parts[0] == 'ed25519':
+                name = os.path.basename(path) + (': ' + parts[2].strip() if len(parts) > 2 else '')
+                keys.append((Ed25519PublicKey.from_public_bytes(bytes.fromhex(parts[1])), name))
+    return keys
+
+
+def cmd_keygen(args):
+    if os.path.exists(args.key):
+        fail('%s exists: not overwriting a key' % args.key)
+    key = Ed25519PrivateKey.generate()
+    pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                            serialization.NoEncryption())
+    fd = os.open(args.key, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'wb') as f:
+        f.write(pem)
+    with open(args.pub, 'w') as f:
+        f.write('ed25519 %s %s\n' % (public_hex(key), args.comment))
+    print('private key: %s (keep it safe, out of the repository)' % args.key)
+    print('public key:  %s' % args.pub)
+
+
+def cmd_make(args):
+    if args.key is None:
+        args.key = os.path.join(KEYS, 'dev.key')
+        print('signing with the dev key (only dev firmware accepts it)')
+    key = load_key(args.key)
+    if args.abi is None:
+        args.abi = abi_version()
+    images = []
+    for kind, path in ((FIRMWARE, args.firmware), (ROM, args.rom), (RECOVERY, args.recovery), (NOTES, args.notes)):
+        if path:
+            with open(path, 'rb') as f:
+                images.append((kind, f.read()))
+    if not any(kind in (FIRMWARE, ROM, RECOVERY) for kind, _ in images):
+        fail('nothing to update: give --firmware, --rom or --recovery')
+    info = None
+    for kind, data in images:
+        if kind in (FIRMWARE, RECOVERY):
+            got = app_info(data, NAMES[kind])
+            if info is None or kind == FIRMWARE:
+                info = got
+        elif kind == ROM and data[:4] != b'BMRO':
+            fail('the ROM image has no BMRO header')
+        elif kind == NOTES:
+            data.decode('utf-8')  # must be text
+    version, build_id, min_rev = info if info else ('', bytes(32), 0)
+    if args.partitions:
+        sizes = partition_sizes(args.partitions)
+        for kind, data in images:
+            part = PARTITIONS.get(kind)
+            if part and len(data) > sizes.get(part, 0):
+                fail('%s (%d bytes) is bigger than %s (%d)' % (NAMES[kind], len(data), part, sizes.get(part, 0)))
+
+    head_bytes = HEADER_BYTES + len(images) * SECTION_BYTES + SIGNATURE_BYTES
+    header = struct.pack('<4sHHIIIHH32s32s32sq', MAGIC, FORMAT, HEADER_BYTES, 0, len(images), args.abi, min_rev, 0,
+                         field(args.board, 'the board'), field(version, 'the version'), build_id,
+                         int(time.time()))
+    assert len(header) == HEADER_BYTES
+    table = b''
+    offset = head_bytes
+    for kind, data in images:
+        table += struct.pack('<IIII32s', kind, 0, offset, len(data), hashlib.blake2s(data).digest())
+        offset += len(data)
+    signed = header + table
+    with open(args.out, 'wb') as f:
+        f.write(signed)
+        f.write(key.sign(signed))
+        for _, data in images:
+            f.write(data)
+    print('%s: %s for %s, %s' % (args.out, version or '(no firmware)', args.board,
+                                 ', '.join('%s %d bytes' % (NAMES[k], len(d)) for k, d in images)))
+
+
+def cmd_info(args):
+    with open(args.file, 'rb') as f:
+        data = f.read()
+    if data[:4] != MAGIC:
+        fail('%s is not an update package' % args.file)
+    (magic, fmt, hbytes, flags, count, abi, min_rev, _, board, version, build_id,
+     made) = struct.unpack_from('<4sHHIIIHH32s32s32sq', data, 0)
+    if fmt != FORMAT or hbytes != HEADER_BYTES or count > MAX_SECTIONS:
+        fail('%s: format %d, header %d, %d sections: not one this tool reads' % (args.file, fmt, hbytes, count))
+    signed = HEADER_BYTES + count * SECTION_BYTES
+    print('board:    %s' % board.rstrip(b'\0').decode())
+    print('version:  %s' % version.rstrip(b'\0').decode())
+    print('build id: %s' % build_id.hex())
+    print('made:     %s' % time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(made)))
+    print('abi:      %d; least chip revision v%d.%d' % (abi, min_rev // 100, min_rev % 100))
+    good = True
+    for i in range(count):
+        kind, sflags, offset, size, digest = struct.unpack_from('<IIII32s', data, HEADER_BYTES + i * SECTION_BYTES)
+        ok = hashlib.blake2s(data[offset:offset + size]).digest() == digest and offset + size <= len(data)
+        good = good and ok
+        print('%-9s %9d bytes at %9d: %s' % (NAMES.get(kind, 'type %d' % kind) + ':', size, offset,
+                                             'hash good' if ok else 'HASH BAD'))
+    pubs = args.pub or [p for p in (os.path.join(KEYS, 'dev.pub'), os.path.join(KEYS, 'release.pub'))
+                        if os.path.exists(p)]
+    sig = data[signed:signed + SIGNATURE_BYTES]
+    signer = None
+    for k, name in load_pubs(pubs):
+        try:
+            k.verify(sig, data[:signed])
+            signer = name
+            break
+        except InvalidSignature:
+            pass
+    print('signed:   %s' % ('by ' + signer if signer else 'BY NONE OF THE KEYS'))
+    good = good and signer is not None
+    sys.exit(0 if good else 1)
+
+
+def main():
+    p = argparse.ArgumentParser(description='Makes and reads BMDS update packages (.bmup).')
+    sub = p.add_subparsers(dest='cmd', required=True)
+    k = sub.add_parser('keygen')
+    k.add_argument('key')
+    k.add_argument('pub')
+    k.add_argument('--comment', default='bmds-update')
+    m = sub.add_parser('make')
+    m.add_argument('out')
+    m.add_argument('--key', help='the signing key (default: keys/dev.key)')
+    m.add_argument('--board', required=True)
+    m.add_argument('--firmware')
+    m.add_argument('--rom')
+    m.add_argument('--recovery')
+    m.add_argument('--notes')
+    m.add_argument('--abi', type=int, help="BMDS_ABI_VERSION (default: the SDK's)")
+    m.add_argument('--partitions')
+    i = sub.add_parser('info')
+    i.add_argument('file')
+    i.add_argument('--pub', action='append')
+    args = p.parse_args()
+    {'keygen': cmd_keygen, 'make': cmd_make, 'info': cmd_info}[args.cmd](args)
+
+
+if __name__ == '__main__':
+    main()

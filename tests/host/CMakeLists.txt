@@ -85,6 +85,7 @@ add_executable(bmds_host_tests
         ntp.cpp
         ptp.cpp
         leapseconds.cpp
+        updatepackage.cpp
         shacrypt.cpp
         logtext.cpp
         topview.cpp
@@ -126,7 +127,9 @@ target_include_directories(bmds_host_tests PRIVATE ${BMDS_ROOT}/thirdparty/docte
 # same definitions.
 target_include_directories(bmds_host_tests PRIVATE ${BMDS_ROOT}/thirdparty/littlefs)
 target_compile_definitions(bmds_host_tests PRIVATE
-        BMDS_TEST_LEAPSECONDS="${BMDS_ROOT}/thirdparty/tzdata/leap-seconds.list")
+        BMDS_TEST_LEAPSECONDS="${BMDS_ROOT}/thirdparty/tzdata/leap-seconds.list"
+        BMDS_TEST_UPDATE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/update"
+        BMDS_TEST_KEYS_DIR="${BMDS_ROOT}/keys")
 target_compile_definitions(bmds_host_tests PRIVATE LFS_NO_MALLOC LFS_NO_DEBUG LFS_NO_WARN LFS_NO_ERROR)
 target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
         BMDS_CORPUS_DIR="${CMAKE_CURRENT_LIST_DIR}/corpus"

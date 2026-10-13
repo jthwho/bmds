@@ -1,0 +1,1 @@
+ed25519 df057b819666fb2822e3153af76dbf72d9fbd4a9087eb9ff02251bc2708ab09b dev key: in the repository, anyone can sign with it; release builds refuse it

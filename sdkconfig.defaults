@@ -60,3 +60,7 @@ CONFIG_SPI_FLASH_OVERRIDE_CHIP_DRIVER_LIST=y
 # (the crypto's ISR only signals; the display's DMA is the DW-GDMA): both stay in flash.
 CONFIG_I2C_MASTER_ISR_HANDLER_IN_IRAM=n
 CONFIG_GDMA_CTRL_FUNC_IN_IRAM=n
+
+# Update packages: the acceptance mode (keys/README.md). Dev accepts the in-repository dev key as
+# well as the release keys; a release image sets CONFIG_BMDS_UPDATE_KEYS_RELEASE=y.
+CONFIG_BMDS_UPDATE_KEYS_DEV=y
