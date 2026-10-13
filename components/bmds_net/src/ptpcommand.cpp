@@ -214,7 +214,8 @@ namespace {
                                                                                : "neither clock follows the other";
                         const char *why = s->arbitraryTimescale ? "the master's time is UTC, not PTP's timescale"
                                           : s->utcFromMaster    ? "the master's"
-                                                                : "assumed: no valid one from a master";
+                                          : s->utcFromFile      ? "the leap-second list's"
+                                                                : "assumed: no leap-second list";
                         ctx.printf("UTC offset %d s (%s); %s", s->utcOffset, why, who);
                         if (s->follow != PtpService::Follow::None) ctx.printf(" (last offset %s)", follow);
                         ctx.print("\n");

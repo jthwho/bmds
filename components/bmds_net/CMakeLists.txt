@@ -71,6 +71,7 @@ if(COMMAND idf_component_register)
                                     src/ntpcommand.cpp
                                     src/pingcommand.cpp
                                     src/ppsout.cpp
+                                    src/ptpclock.cpp
                                     src/ptpcommand.cpp
                                     src/ptpservice.cpp
                                     src/socket.cpp

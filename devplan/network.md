@@ -2365,3 +2365,113 @@ without them, and builds so the rest is a test run later.
   dropped, failed or missed in any run.
 - **Known:** `clock`'s source stays `ptp` after NTP takes the clock back, until NTP next steps
   it: NTP slews without setting the source.
+
+### 31e. Step 4's design: /dev/ptp0, CLOCK_TAI, the leap-second file (2026-10-13, approved by the user)
+
+- **The leap-second file:** `thirdparty/tzdata/leap-seconds.list`, from 2026e (`update-tzdata`
+  keeps it now; signature checked): 5 KB, 28 lines (1972's start and 27 leap seconds), TAI-UTC
+  37 s since 2017-01-01,
+  updated 2026-07-06, expires 2027-06-28. Its `#h` is SHA-1 over the digits of the update time,
+  the expiry, then each line's two numbers, run together (checked against this file).
+  - **The ROM** gets it as `/rom/share/leap-seconds.list` (`bmds_storage`'s ROM build, as
+    `zoneinfo.bin`); **the `tzdata` package** as `share/leap-seconds.list`.
+  - **`clock/leapseconds`** (`path`, default `/sd0/p0/share/leap-seconds.list`), as §31: the ROM's
+    while nothing is at the path; the one that expires later of the two wins; empty: none.
+  - **Parsing** in `bmds_core` (`leapseconds.h`, host-tested and fuzzed), with a small SHA-1 there
+    (`bmds_core` takes no ESP-IDF; 20 lines of rounds). A file that fails its hash or doesn't
+    parse is ignored and logged. Loaded at boot and when the card mounts or the setting changes
+    (as the zone database), into a table in the kernel (`Clock`): at most 64 entries.
+- **The TAI offset** (`Clock::taiOffset()`), in this order:
+  1. a PTP slave's master's, when valid (and on PTP's timescale);
+  2. the file's, for now (past its expiry still, but stale);
+  3. none: 0, so `CLOCK_TAI` reads UTC (Linux's behaviour without an offset).
+
+  The PTP service uses it in place of step 3's constant 37, and a master announces
+  `currentUtcOffsetValid` only from an unexpired file, with `leap61`/`leap59` through the UTC day
+  that ends in a leap second the file lists (1588's meaning: the day's last minute).
+- **ABI, for the user:**
+  - **`BMDS_CLOCK_TAI 2u`** for `clock_get` (an older kernel answers `BMDS_EINVAL`; `linux.c`'s
+    `CLOCK_TAI` then reads `CLOCK_REALTIME`, as Linux does with no offset).
+  - **`/dev/ptp0`**, a device file per Ethernet device's 1588 clock, and one new slot:
+    `BMDS_SYS_PTP_CTL 116u`, `int32_t ptp_ctl(int32_t fd, uint32_t op, void *arg)`:
+
+    | Op | Arg | Does |
+    |---|---|---|
+    | `BMDS_PTP_TIME 0` | `int64_t *` | reads the clock: ns since 1970 on PTP's timescale (TAI) |
+    | `BMDS_PTP_CAPS 1` | `bmds_ptp_caps_t *` | `size`, `max_adj_ppb` (500000), `flags` (`BMDS_PTP_CAP_PPS`: a PPS pin runs), `pps_pin` (GPIO, or -1), `index` (0 for ptp0), `reserved` |
+    | `BMDS_PTP_OFFSET 2` | `bmds_ptp_offset_t *` | `size`, `clock` (`BMDS_CLOCK_*`), `count` (1-25 in; done out), `reserved`, then `samples[25][3]` ns: the system clock, the PTP clock, the system clock |
+    | `BMDS_PTP_SET 3` | `const int64_t *` | sets it |
+    | `BMDS_PTP_STEP 4` | `const int64_t *` | adds to it in one update |
+    | `BMDS_PTP_GET_FREQ 5`, `BMDS_PTP_SET_FREQ 6` | `int64_t *` | its frequency correction, parts per trillion (the driver rounds to its 0.37 ppb) |
+
+    Set, step and frequency answer `BMDS_EBUSY` while the PTP service runs on that device.
+  - **`linux.c`:** `clock_gettime(FD_TO_CLOCKID(fd))` and `clock_getres` on it;
+    `clock_settime` and `clock_adjtime` on it (`ADJ_SETOFFSET`, `ADJ_FREQUENCY`, `ADJ_NANO`; other
+    modes `EINVAL`); ioctls `PTP_CLOCK_GETCAPS(2)`, `PTP_SYS_OFFSET`, `PTP_SYS_OFFSET_EXTENDED`
+    (its `clockid`: realtime, monotonic or TAI); `PTP_SYS_OFFSET_PRECISE` is `EOPNOTSUPP` (no
+    cross-timestamping). `CLOCK_TAI` (11).
+  - **Not now: `PTP_PEROUT_REQUEST`.** §31 listed it. The PPS already runs whenever the 1588
+    clock does; another period needs `PpsOut` generalised. The AES67 step brings it if a media
+    clock output wants it. CAPS says no periodic outputs (`n_per_out` 0), `pps` 1 when the pin runs.
+  - **`clock`** adds, after `Frequency:`:
+
+    ```
+    TAI:       UTC+37 s, from PTP's master
+    TAI:       UTC+37 s, from /rom/share/leap-seconds.list (expires 2027-06-28)
+    TAI:       UTC+37 s, from /sd0/p0/share/leap-seconds.list (expired 2027-06-28: stale)
+    TAI:       unknown (no leap-second file: clock/leapseconds); CLOCK_TAI reads UTC
+    ```
+
+    and **`clock leapseconds`**, as `clock tzdata`:
+
+    ```
+    /sd0/p0/share/leap-seconds.list: not there: the ROM's, /rom/share/leap-seconds.list
+    Updated 2026-07-06, expires 2027-06-28; 28 leap seconds, UTC+37 s since 2017-01-01
+      1972-01-01  +10 s
+      1972-07-01  +11 s
+      ...
+    ```
+
+    A file that fails: `/sd0/p0/share/leap-seconds.list: ignored: its hash doesn't match` (or
+    `not a leap-second list`), then the ROM's.
+- **Tests:** host tests for the parser (the real file, its hash, a changed digit, expiry, the
+  offset at dates around leaps); a fuzzer; `progtest` for `CLOCK_TAI`, `/dev/ptp0` (read,
+  `PTP_SYS_OFFSET_EXTENDED`, `EBUSY` while the service runs, a step and frequency while it
+  doesn't).
+
+### 31f. As built: step 4 (2026-10-13)
+
+- **As §31e,** with these differences:
+  - **`clock/leapseconds` can't be empty:** `path` settings refuse "" (`clock/tzdata` the same),
+    and accepting it for every path setting would hand all their readers a new case. There is
+    always a list: the card's or the ROM's.
+  - **The offset is taken at the list's update, not now:** the list is read at boot, maybe before
+    the clock is set (1955); its update time is before the real now, and a list names at most
+    the change still to come, so `Clock` keeps the offset then and the next change.
+  - **`bmds_fs` doesn't log** (it is host-built without the log): a refused list is told through
+    `Vfs::setLeapSecondsRefused()`, which the system configuration sets to a warning.
+  - **`linux/ptp_clock.h`** is new in `sdk/include` (as `sys/soundcard.h`): Linux's layouts and
+    numbers, written for BMDS, with `FD_TO_CLOCKID`. `clock_getres` on a PTP clock says 1 ns, as
+    Linux's does.
+  - **A slave's master's valid offset** goes to `Clock` (source `ptp` for `CLOCK_TAI`) only while
+    the system clock follows it.
+- **Host tests** (`tests/host/leapseconds.cpp`): SHA-1's FIPS vectors; the kept list (28 lines,
+  37 s, expiry 2027-06-28, the offset either side of 2017-01-01); a changed offset and a moved
+  expiry fail the hash; cut, empty and out-of-order lists refused; CR LF and blank lines taken; the
+  kernel's choice (file, a master's over it, none). `process.cpp`'s clock id 2, the invalid one
+  until now, is TAI: 3 is checked instead. **Fuzzed** (`leapseconds_fuzz`, seeded with the kept
+  list): 10.5 million inputs in 5 minutes, nothing found.
+- **On the board:**
+  - `clock`: `TAI:       UTC+37 s, from /rom/share/leap-seconds.list (expires 2027-06-28)`; with a
+    copy on the card, from it; a copy with one offset changed: `ignored: its hash doesn't match:
+    the ROM's`, and a warning in the log.
+  - `progtest ptp`: `CLOCK_TAI` UTC+37.000 s; `/dev/ptp0`'s caps (500000 ppb, PPS);
+    `PTP_SYS_OFFSET_EXTENDED` read within 3 µs a sample (the call, two system reads and the MAC's);
+    a +1 s step lands at +1.0013 s (the reads between); +100 ppm reads back +100.000;
+    `PTP_SYS_OFFSET_PRECISE` `EOPNOTSUPP`; past `max_adj` `ERANGE`.
+  - `progtest ptp busy` with the service on: `EBUSY` for `clock_settime` and `clock_adjtime`;
+    ptp0 then UTC+36.9993 s (TAI, the service having set it, still pulling in).
+  - `progtest net`, `rtnet` and `time` still pass.
+- **Costs:** code 4.6 KB as objects (the parser 1.6, SHA-1 0.8, the loader 1.3, `/dev/ptp0` 1.0);
+  internal RAM 0.3 KB (two paths and `Clock`'s 28 bytes); the ROM 5 KB; PSRAM only while a list is
+  read: its text (5 KB) and two tables (1 KB each).

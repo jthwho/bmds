@@ -10,10 +10,13 @@
  * interfaces' state (net_info).
  */
 
+#include <cstddef>
 #include <cstring>
+#include <bmds/clock.h>
 #include <bmds/errno.h>
 #include <bmds/netstatus.h>
 #include <bmds/process.h>
+#include <bmds/ptpclock.h>
 #include <bmds/socket.h>
 #include <bmds/sys.h>
 #include "running.h"
@@ -830,6 +833,79 @@ int32_t bmds_k_net_watch(uint32_t flags) {
         if (err == Error::InvalidState) return -BMDS_ENODEV;
         if (err.isError()) return -BMDS_ENOMEM;
         return call->addHandle(std::move(handle), flags);
+}
+
+int32_t bmds_k_ptp_ctl(int32_t fd, uint32_t op, void *arg) {
+        KernelCall                  call;
+        const bmds::FileHandle::Ptr handle = call->handle(fd);
+        if (!handle) return -BMDS_EBADF;
+        bmds::PtpClock *clock = handle->stream().ptpClock();
+        if (clock == nullptr) return -BMDS_ENOTTY;
+        if (arg == nullptr) return -BMDS_EFAULT;
+        auto errnoOf = [](Error err) -> int32_t {
+                switch (err.code()) {
+                        case Error::Ok: return 0;
+                        case Error::Busy: return -BMDS_EBUSY;
+                        case Error::OutOfRange: return -BMDS_ERANGE;
+                        case Error::Timeout: return -BMDS_EIO;
+                        default: return -BMDS_EINVAL;
+                }
+        };
+        int64_t value = 0;
+        switch (op) {
+                case BMDS_PTP_TIME:
+                        value = clock->timeNs();
+                        std::memcpy(arg, &value, sizeof(value));
+                        return 0;
+                case BMDS_PTP_CAPS: {
+                        bmds_ptp_caps_t c;
+                        const int32_t   r = bmds::detail::copyIn(static_cast<const bmds_ptp_caps_t *>(arg), c);
+                        if (r < 0) return r;
+                        c.max_adj_ppb = bmds::PtpClock::MaxAdjustPpb;
+                        c.pps_pin = clock->ppsPin();
+                        c.flags = c.pps_pin >= 0 ? BMDS_PTP_CAP_PPS : 0;
+                        c.index = clock->index();
+                        c.reserved = 0;
+                        return bmds::detail::copyOut(c, static_cast<bmds_ptp_caps_t *>(arg));
+                }
+                case BMDS_PTP_OFFSET: {
+                        // In place (616 bytes): the header, then as many readings as asked and fit.
+                        auto          *o = static_cast<bmds_ptp_offset_t *>(arg);
+                        const uint32_t size = o->size;
+                        const uint32_t header = offsetof(bmds_ptp_offset_t, samples);
+                        if (size < header) return -BMDS_EINVAL;
+                        const uint32_t room = (size - header) / (3 * sizeof(int64_t));
+                        const uint32_t which = o->clock;
+                        const uint32_t count = o->count;
+                        if (which > BMDS_CLOCK_TAI || count == 0 || count > BMDS_PTP_MAX_SAMPLES || count > room)
+                                return -BMDS_EINVAL;
+                        auto system = [which]() -> int64_t {
+                                switch (which) {
+                                        case BMDS_CLOCK_MONOTONIC: return bmds::Clock::monotonicNs();
+                                        case BMDS_CLOCK_TAI: return bmds::Clock::taiNow().ns;
+                                        default: return bmds::Clock::now().ns;
+                                }
+                        };
+                        for (uint32_t i = 0; i < count; ++i) {
+                                o->samples[i][0] = system();
+                                o->samples[i][1] = clock->timeNs();
+                                o->samples[i][2] = system();
+                        }
+                        return 0;
+                }
+                case BMDS_PTP_SET:
+                case BMDS_PTP_STEP:
+                case BMDS_PTP_SET_FREQ:
+                        std::memcpy(&value, arg, sizeof(value));
+                        if (op == BMDS_PTP_SET) return errnoOf(clock->set(value));
+                        if (op == BMDS_PTP_STEP) return errnoOf(clock->step(value));
+                        return errnoOf(clock->setFrequencyPpt(value));
+                case BMDS_PTP_GET_FREQ:
+                        value = clock->frequencyPpt();
+                        std::memcpy(arg, &value, sizeof(value));
+                        return 0;
+                default: return -BMDS_EINVAL;
+        }
 }
 
 } // extern "C"

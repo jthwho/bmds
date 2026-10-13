@@ -22,6 +22,7 @@ class AudioFile;
 class DecodedFile;
 class FileHandle;
 class MidiFile;
+class PtpClock;
 class Pty;
 class Socket;
 class SpeechFile;
@@ -188,6 +189,9 @@ class Stream {
 
                 /** @brief Returns the pseudo-terminal this is the emulator end of, or null. */
                 virtual Pty *pty() { return nullptr; }
+
+                /** @brief Returns this as a PTP clock (`/dev/ptp0`), or null. */
+                virtual PtpClock *ptpClock() { return nullptr; }
 
                 /** @brief Writes @p text (see `write(ByteSpan, unsigned int)`). */
                 Result<size_t> write(StringView text, unsigned int timeoutMs) {

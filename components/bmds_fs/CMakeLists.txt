@@ -30,6 +30,7 @@ set(BMDS_FS_SRCS
         src/tmpvolume.cpp
         src/trash.cpp
         src/vfs.cpp
+        src/leapfile.cpp
         src/zoneinfo.cpp
         ${BMDS_FATFS_DIR}/ff.c
         ${BMDS_FATFS_DIR}/ffunicode.c

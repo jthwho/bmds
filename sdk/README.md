@@ -12,6 +12,7 @@ the headers in `include/bmds/` are the ABI and never change incompatibly
 | `include/bmds/sys.h` | The system call table: slot numbers, typed calls (`bmds_open()`, `bmds_term_set()`...), their structs and flags, the startup contract. |
 | `include/bmds/program.h` | The executable format and the program note. |
 | `include/sys/soundcard.h` | OSS (`/dev/dsp`, `/dev/mixer`) with Linux's numbers, carried out by `crt/oss.c` on the audio calls. |
+| `include/linux/ptp_clock.h` | Linux's PTP hardware clock interface (`/dev/ptp0`) with Linux's layouts and numbers, carried out by `crt/linux.c` on `ptp_ctl`. |
 | `include/bmds/errno.h` | The system calls' error numbers (`BMDS_E...`). Programs using musl see Linux's in `errno`. |
 | `libc/musl/`, `libc/README.md` | musl 1.2.5, vendored with BMDS's patches (`libc/patches/bmds.diff`). |
 | `crt/start.c` | `_start`: the argument and auxiliary vector musl's startup wants, the thread-local template. |

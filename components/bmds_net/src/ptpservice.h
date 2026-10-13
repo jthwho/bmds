@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <bmds/config.h>
 #include <bmds/error.h>
+#include <bmds/ethernetdevice.h>
 #include <bmds/netflow.h>
 #include <bmds/ptp.h>
 
@@ -54,6 +55,7 @@ namespace PtpService {
                         int16_t            utcOffset = DefaultUtcOffset;
                         bool               utcFromMaster = false;
                         bool               arbitraryTimescale = false; ///< The master's time isn't TAI: taken as UTC.
+                        bool               utcFromFile = false;        ///< Not the master's: the leap-second list's.
                         NetFlow::Counters  flows;                      ///< Its flows' together.
         };
 
@@ -65,6 +67,9 @@ namespace PtpService {
 
         /** @brief Fills @p out. @blocking Briefly (the service's lock). */
         void status(Status &out);
+
+        /** @brief Returns true while the service runs on @p device (its 1588 clock is the service's). @nonblocking */
+        bool runsOn(const EthernetDevice &device);
 
         /** @brief Returns true while PTP has the system clock (NTP leaves it alone). @nonblocking */
         bool ownsSystemClock();

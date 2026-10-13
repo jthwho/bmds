@@ -21,6 +21,7 @@ set(BMDS_CORE_SRCS
         src/randompool.cpp
         src/romimage.cpp
         src/sha512.cpp
+        src/sha1.cpp
         src/shacrypt.cpp
         src/stat.cpp
         src/region.cpp
@@ -31,6 +32,7 @@ set(BMDS_CORE_SRCS
         src/mimeapps.cpp
         src/notificationlog.cpp
         src/hostname.cpp
+        src/leapseconds.cpp
         src/texttemplate.cpp
         src/bmp.cpp
         src/imageplan.cpp

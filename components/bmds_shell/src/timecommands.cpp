@@ -8,7 +8,10 @@
  * `date` and `clock`. Their arguments and output are a userspace interface.
  */
 
+#include <cstdio>
+#include <new>
 #include <bmds/clock.h>
+#include <bmds/memory.h>
 #include <bmds/shell.h>
 #include <bmds/string.h>
 #include <bmds/timecommands.h>
@@ -181,12 +184,17 @@ int TimeCommands::date(CommandContext &ctx) {
 namespace {
 
         int tzdata(CommandContext &ctx);
+        int leapseconds(CommandContext &ctx);
+
+        // A UTC date: 2027-06-28.
+        String utcDate(int64_t ns);
 
 } // namespace
 
 int TimeCommands::clock(CommandContext &ctx) {
         const Args args = ctx.args();
         if (args.size() == 2 && StringView(args[1]) == "tzdata") return tzdata(ctx);
+        if (args.size() == 2 && StringView(args[1]) == "leapseconds") return leapseconds(ctx);
         if (args.size() == 3 && StringView(args[1]) == "adjust") {
                 int64_t ns = 0;
                 if (!parseSecondsNs(args[2], ns)) return ctx.usage();
@@ -211,6 +219,18 @@ int TimeCommands::clock(CommandContext &ctx) {
                    static_cast<unsigned long long>(magnitude / Timestamp::NsPerSecond),
                    static_cast<unsigned long long>(magnitude % Timestamp::NsPerSecond));
         ctx.printf("Frequency: %+ld ppb\n", static_cast<long>(status.frequencyPpb));
+        const Clock::TaiOffset tai = Clock::taiOffset();
+        if (tai.source == Clock::TaiSource::Ptp) {
+                ctx.printf("TAI:       UTC%+d s, from PTP's master\n", tai.seconds);
+        } else if (tai.source == Clock::TaiSource::File) {
+                const Result<String> used = Vfs::leapSecondsInUse();
+                ctx.printf("TAI:       UTC%+d s, from %s (%s %s%s)\n", tai.seconds,
+                           used.error().isOk() ? used.value().cStr() : "the leap-second list",
+                           tai.stale ? "expired" : "expires", utcDate(tai.expiresNs).cStr(),
+                           tai.stale ? ": stale" : "");
+        } else {
+                ctx.print("TAI:       unknown (no leap-second list: clock/leapseconds); CLOCK_TAI reads UTC\n");
+        }
         const StringView      spec = zone.spec().isEmpty() ? StringView("UTC0") : zone.spec();
         const Clock::ZoneName name = Clock::zoneName();
         if (name.pending == Clock::ZonePending::NoDatabase) {
@@ -256,11 +276,74 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        String utcDate(int64_t ns) {
+                return formatted("%Y-%m-%d", TimeZone().localTime(Timestamp{ns}));
+        }
+
+        // `clock leapseconds`: the leap-second list (sysconf's clock/leapseconds), which is in use
+        // and what it holds.
+        int leapseconds(CommandContext &ctx) {
+                auto *r = static_cast<Vfs::LeapSecondsReport *>(
+                        Memory::alloc(MemSpace::Psram, sizeof(Vfs::LeapSecondsReport)));
+                if (r == nullptr) {
+                        ctx.eprint("clock: out of memory\n");
+                        return Shell::ExitFailure;
+                }
+                new (r) Vfs::LeapSecondsReport();
+                Vfs::examineLeapSeconds(*r);
+                const StringView rom = Vfs::RomLeapSeconds;
+                const StringView path(r->path);
+                // What the path holds: "not there", "ignored: ...", or (good) its expiry.
+                char reason[64] = "";
+                if (r->pathError.isError())
+                        std::snprintf(reason, sizeof(reason), "%s",
+                                      r->pathError == Error::NotExist || r->pathError == Error::NoMedia ||
+                                                      r->pathError == Error::NotDir
+                                              ? "not there"
+                                              : CommandContext::errorText(r->pathError));
+                else if (r->pathVerdict != LeapSeconds::Verdict::Ok)
+                        std::snprintf(reason, sizeof(reason), "ignored: %s", LeapSeconds::verdictText(r->pathVerdict));
+                else
+                        std::snprintf(reason, sizeof(reason), "expires %s, before the ROM's",
+                                      utcDate(r->pathExpires * Timestamp::NsPerSecond).cStr());
+                if (path.isEmpty()) {
+                        ctx.print("clock: no leap-second list is set (clock/leapseconds)\n");
+                } else if (!r->any) {
+                        ctx.printf("%s: %s", r->path, reason);
+                        if (path != rom)
+                                ctx.printf("; %.*s: %s", static_cast<int>(rom.size()), rom.data(),
+                                           r->romError.isError() ? "not there"
+                                                                 : LeapSeconds::verdictText(r->romVerdict));
+                        ctx.print("\n");
+                } else if (r->fromRom && path != rom) {
+                        ctx.printf("%s: %s: the ROM's, %.*s\n", r->path, reason, static_cast<int>(rom.size()),
+                                   rom.data());
+                } else {
+                        ctx.printf("%s\n", r->path);
+                }
+                if (r->any) {
+                        const LeapSeconds::Table &t = r->table;
+                        const LeapSeconds::Entry &last = t.entries[t.count - 1];
+                        // The first line is where the offset started (1972), not a leap second.
+                        ctx.printf("Updated %s, expires %s; %u leap seconds, UTC%+d s since %s\n",
+                                   utcDate(t.updated * Timestamp::NsPerSecond).cStr(),
+                                   utcDate(t.expires * Timestamp::NsPerSecond).cStr(),
+                                   static_cast<unsigned>(t.count - 1), last.offset,
+                                   utcDate(last.at * Timestamp::NsPerSecond).cStr());
+                        for (size_t i = 0; i < t.count; ++i)
+                                ctx.printf("  %s  %+d s\n", utcDate(t.entries[i].at * Timestamp::NsPerSecond).cStr(),
+                                           t.entries[i].offset);
+                }
+                r->~LeapSecondsReport();
+                Memory::free(r);
+                return Shell::ExitSuccess;
+        }
+
 } // namespace
 
-BMDS_SHELL_COMMAND(clock, TimeCommands::clock, "[tzdata | adjust [+|-]SECONDS]",
+BMDS_SHELL_COMMAND(clock, TimeCommands::clock, "[tzdata | leapseconds | adjust [+|-]SECONDS]",
                    "Show the system clock (source, slew, frequency, zone: sysconf's clock/zone); show the zone "
-                   "database (clock/tzdata); slew the time")
+                   "database (clock/tzdata); the leap-second list (clock/leapseconds); slew the time")
 BMDS_SHELL_COMMAND(date, TimeCommands::date, "[-u] [+FORMAT] | [-u] -s DATE",
                    "Show the time (in $TZ, or the kernel zone); set it: -s 'YYYY-MM-DD HH:MM[:SS]', -s @SECONDS")
 

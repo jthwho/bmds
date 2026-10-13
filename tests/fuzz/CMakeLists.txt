@@ -66,6 +66,12 @@ target_compile_options(ntp_fuzz PRIVATE -fno-exceptions -fno-rtti)
 target_link_libraries(ntp_fuzz PRIVATE bmds_core)
 target_link_options(ntp_fuzz PRIVATE -fsanitize=fuzzer)
 
+# The leap-second list (devplan/network.md §31e): bmds_core's parser and SHA-1.
+add_executable(leapseconds_fuzz leapseconds.cpp)
+target_compile_options(leapseconds_fuzz PRIVATE -fno-exceptions -fno-rtti)
+target_link_libraries(leapseconds_fuzz PRIVATE bmds_core)
+target_link_options(leapseconds_fuzz PRIVATE -fsanitize=fuzzer)
+
 # PTP (devplan/network.md §31): the messages and an ordinary clock's port, bmds_net's portable
 # ptp.cpp and ptpport.cpp.
 add_executable(ptp_fuzz ptp.cpp ${NET}/src/ptp.cpp ${NET}/src/ptpport.cpp)

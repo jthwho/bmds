@@ -47,4 +47,13 @@ menu "BMDS storage"
             TZ. The default of the system configuration's clock/tzdata,
             which 'sysconf' changes at run time.
 
+    config BMDS_LEAPSECONDS_PATH
+        string "Leap-second list"
+        default "/sd0/p0/share/leap-seconds.list"
+        help
+            IANA's leap-seconds.list (the tzdata package's), for CLOCK_TAI and PTP's UTC
+            offset (devplan/network.md §31e). The ROM's /rom/share/leap-seconds.list is used
+            while none is there, or when it expires later. The default of the system
+            configuration's clock/leapseconds.
+
 endmenu

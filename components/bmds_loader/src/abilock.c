@@ -154,6 +154,7 @@ _Static_assert(offsetof(bmds_sched_t, size) == 0 && offsetof(bmds_sched_t, polic
                "ABI: bmds_sched_t");
 _Static_assert(BMDS_SYS_AUDIO_SPEAK == 114, "ABI: slot AUDIO_SPEAK");
 _Static_assert(BMDS_SYS_AUDIO_SPEAK_INFO == 115, "ABI: slot AUDIO_SPEAK_INFO");
+_Static_assert(BMDS_SYS_PTP_CTL == 116, "ABI: slot PTP_CTL");
 _Static_assert(BMDS_SPEAK_MARKUP == 0x1000u && BMDS_SPEAK_VOICE_MAX == 32, "ABI: speech flags and sizes");
 #if UINTPTR_MAX == 0xffffffffu // (a pointer inside)
 _Static_assert(offsetof(bmds_speak_config_t, size) == 0 && offsetof(bmds_speak_config_t, flags) == 4 &&
@@ -737,3 +738,17 @@ _Static_assert(BMDS_ECONNABORTED == 103 && BMDS_ECONNRESET == 104 && BMDS_ENOBUF
                "ABI: errno 103-106");
 _Static_assert(BMDS_ENOTCONN == 107 && BMDS_ECONNREFUSED == 111 && BMDS_EHOSTUNREACH == 113, "ABI: errno 107-113");
 _Static_assert(BMDS_EALREADY == 114 && BMDS_EINPROGRESS == 115, "ABI: errno 114-115");
+
+/* PTP clocks and TAI (devplan/network.md §31e). */
+_Static_assert(BMDS_CLOCK_TAI == 2, "ABI: clock TAI");
+_Static_assert(BMDS_PTP_TIME == 0 && BMDS_PTP_CAPS == 1 && BMDS_PTP_OFFSET == 2 && BMDS_PTP_SET == 3 &&
+                       BMDS_PTP_STEP == 4 && BMDS_PTP_GET_FREQ == 5 && BMDS_PTP_SET_FREQ == 6 &&
+                       BMDS_PTP_CAP_PPS == 1 && BMDS_PTP_MAX_SAMPLES == 25,
+               "ABI: ptp_ctl");
+_Static_assert(offsetof(bmds_ptp_caps_t, size) == 0 && offsetof(bmds_ptp_caps_t, max_adj_ppb) == 4 &&
+                       offsetof(bmds_ptp_caps_t, flags) == 8 && offsetof(bmds_ptp_caps_t, pps_pin) == 12 &&
+                       offsetof(bmds_ptp_caps_t, index) == 16 && sizeof(bmds_ptp_caps_t) == 24,
+               "ABI: bmds_ptp_caps_t");
+_Static_assert(offsetof(bmds_ptp_offset_t, clock) == 4 && offsetof(bmds_ptp_offset_t, count) == 8 &&
+                       offsetof(bmds_ptp_offset_t, samples) == 16 && sizeof(bmds_ptp_offset_t) == 16 + 25 * 24,
+               "ABI: bmds_ptp_offset_t");

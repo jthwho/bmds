@@ -1159,6 +1159,7 @@ int32_t Process::clockGet(uint32_t clock, int64_t *ns) {
         switch (clock) {
                 case BMDS_CLOCK_REALTIME: *ns = Clock::now().ns; return 0;
                 case BMDS_CLOCK_MONOTONIC: *ns = Clock::monotonicNs(); return 0;
+                case BMDS_CLOCK_TAI: *ns = Clock::taiNow().ns; return 0;
                 default: return -BMDS_EINVAL;
         }
 }

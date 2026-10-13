@@ -22,6 +22,7 @@
 #include <bmds/netflow.h>
 #include <bmds/psramobject.h>
 #include <bmds/ptp.h>
+#include <bmds/ptpclock.h>
 #include <bmds/semaphore.h>
 #include <bmds/stats.h>
 #include <bmds/string.h>
@@ -100,6 +101,7 @@ namespace {
                         std::atomic<bool> settingsPending{true};
                         std::atomic<bool> owns{false};
                         std::atomic<bool> taskStarted{false};
+                        std::atomic<const EthernetDevice *> device{nullptr}; // while running: runsOn()
                         Semaphore         wake{1, 1};
                         Mutex             lock; // all below
                         Task              task;
@@ -298,12 +300,19 @@ namespace {
 
         // TAI less UTC for ptpclock0's time: a master's valid offset; none for a master whose time isn't
         // PTP's timescale (linuxptp's on software stamps runs on UTC); otherwise the assumed one.
+        // TAI less UTC known here: the leap-second file's, else the assumed one.
+        int16_t ownUtcOffset(bool *fromFile = nullptr) {
+                const Clock::TaiOffset t = Clock::taiOffset();
+                if (fromFile != nullptr) *fromFile = t.haveFile;
+                return t.haveFile ? t.fileSeconds : PtpService::DefaultUtcOffset;
+        }
+
         int16_t utcOffsetOf(const Ptp::Port::Status &s, bool &fromMaster, bool &arbitrary) {
                 const bool following = s.state == Ptp::Port::State::Slave || s.state == Ptp::Port::State::Uncalibrated;
                 arbitrary = following && (s.timeFlags & Ptp::PtpTimescale) == 0;
                 fromMaster = following && (arbitrary || s.utcOffset.valid);
                 if (arbitrary) return 0;
-                return fromMaster ? s.utcOffset.seconds : PtpService::DefaultUtcOffset;
+                return fromMaster ? s.utcOffset.seconds : ownUtcOffset();
         }
 
         // --- The port's world -------------------------------------------------------------
@@ -331,9 +340,13 @@ namespace {
         }
 
         Ptp::Port::UtcOffset Service::utcOffset() {
-                Ptp::Port::UtcOffset u; // until step 4's leap-second file: 37 s, not valid
-                u.seconds = PtpService::DefaultUtcOffset;
-                u.valid = false;
+                // The leap-second file's: valid until it expires (then still its offset, not valid).
+                const Clock::TaiOffset t = Clock::taiOffset();
+                Ptp::Port::UtcOffset   u;
+                u.seconds = t.haveFile ? t.fileSeconds : PtpService::DefaultUtcOffset;
+                u.valid = t.haveFile && !t.stale;
+                u.leap61 = t.leap61;
+                u.leap59 = t.leap59;
                 return u;
         }
 
@@ -386,11 +399,11 @@ namespace {
                         return err;
                 }
                 _device = d;
+                device.store(d);
                 // ptpclock0 runs on TAI: the driver seeds it with the system clock's UTC.
                 static bool onTai = false;
                 if (!onTai && Clock::isSet()) {
-                        (void)d->setPtpTime(
-                                PtpTime::fromNs(Clock::now().ns + PtpService::DefaultUtcOffset * NsPerSecond));
+                        (void)d->setPtpTime(PtpTime::fromNs(Clock::now().ns + ownUtcOffset() * NsPerSecond));
                         onTai = true;
                 }
                 _ptpPpb = (static_cast<double>(d->ptpAddend()) / EthernetDevice::NominalPtpAddend - 1.0) * 1e9;
@@ -425,6 +438,8 @@ namespace {
                         f->close();
                 }
                 _device = nullptr;
+                device.store(nullptr);
+                Clock::setPtpUtcOffset(0, false);
                 _followAt = INT64_MAX;
                 _follow = Follow::None;
                 owns.store(false);
@@ -547,12 +562,15 @@ namespace {
                         _followStarted = false;
                         owns.store(want == Follow::SystemFollows);
                 }
+                const Ptp::Port::Status &s = port()->status();
+                bool                     fromMaster, arbitrary;
+                const int16_t            utcOffset = utcOffsetOf(s, fromMaster, arbitrary);
+                // CLOCK_TAI takes a followed master's valid offset (the leap-second file's otherwise).
+                Clock::setPtpUtcOffset(utcOffset, want == Follow::SystemFollows && fromMaster && !arbitrary);
                 if (want == Follow::None) return;
                 int64_t ptp = 0, utc = 0;
                 if (!readClocks(ptp, utc)) return;
-                const Ptp::Port::Status &s = port()->status();
-                bool                     fromMaster, arbitrary;
-                const int64_t tai = static_cast<int64_t>(utcOffsetOf(s, fromMaster, arbitrary)) * NsPerSecond;
+                const int64_t tai = static_cast<int64_t>(utcOffset) * NsPerSecond;
                 const bool    system = want == Follow::SystemFollows;
                 // The follower's offset from the clock it follows (positive: ahead).
                 const int64_t offset = system ? utc - (ptp - tai) : ptp - tai - utc;
@@ -660,6 +678,7 @@ namespace {
                 out.foreignCount = f.size();
                 for (size_t i = 0; i < f.size(); ++i) out.foreign[i] = f[i];
                 out.utcOffset = utcOffsetOf(out.port, out.utcFromMaster, out.arbitraryTimescale);
+                (void)ownUtcOffset(&out.utcFromFile);
                 return;
         }
 
@@ -744,6 +763,8 @@ Error PtpService::init() {
                 }
                 service->settings[i] = id;
         }
+        if (const Error files = PtpClock::addFiles(); files.isError())
+                bmdsWarn("ptp: /dev/ptp0: %s", files.desc()); // the service works without it
         service->group.setName("net.ptp");
         (void)Stats::add(service->group); // counters only: the service works without them
         started = true;
@@ -758,6 +779,10 @@ void PtpService::status(Status &out) {
         if (!started) return;
         service->fill(out);
         return;
+}
+
+bool PtpService::runsOn(const EthernetDevice &d) {
+        return started && service->device.load() == &d;
 }
 
 bool PtpService::ownsSystemClock() {

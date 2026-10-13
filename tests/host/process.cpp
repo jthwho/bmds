@@ -682,7 +682,11 @@ TEST_CASE("Process: clocks, sleeping, memory") {
         int64_t       a = 0, b = 0, wall = 0;
         CHECK(p.clockGet(BMDS_CLOCK_MONOTONIC, &a) == 0);
         CHECK(p.clockGet(BMDS_CLOCK_REALTIME, &wall) == 0);
-        CHECK(p.clockGet(2, &wall) == -BMDS_EINVAL);
+        int64_t tai = 0;
+        CHECK(p.clockGet(BMDS_CLOCK_TAI, &tai) == 0); // no leap-second list here: UTC
+        CHECK(tai - wall >= 0);
+        CHECK(tai - wall < 1'000'000'000);
+        CHECK(p.clockGet(3, &wall) == -BMDS_EINVAL);
         CHECK(p.clockGet(BMDS_CLOCK_REALTIME, nullptr) == -BMDS_EFAULT);
         CHECK(p.sleep(3'000'000) == 0); // no interrupt: still sleeps
         CHECK(p.sleep(-5) == 0);

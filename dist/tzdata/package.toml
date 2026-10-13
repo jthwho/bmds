@@ -2,7 +2,7 @@
 # from the IANA sources kept in thirdparty/tzdata (tools/update-tzdata updates them).
 name = "tzdata"
 version_file = "thirdparty/tzdata/version"
-description = "Time zone database: /share/zoneinfo for TZ=Europe/Berlin and clock zone"
+description = "Time zone database: /share/zoneinfo for TZ=Europe/Berlin and clock zone; leap-seconds.list"
 license = "LicenseRef-Public-Domain"
 source_tree = "thirdparty/tzdata"
 license_files = ["LICENSE"]

@@ -378,7 +378,8 @@ TEST_CASE("date and clock") {
                 CHECK(status.find("Time:      2026-03-04 12:00:0") == 0);
                 CHECK(status.find("\nSource:    manual, set 2026-03-04 12:00:00 UTC\n") != std::string::npos);
                 CHECK(status.find("\nSlew:      -0.2") != std::string::npos);
-                CHECK(status.find("\nFrequency: +0 ppb\nZone:      UTC0 (UTC, UTC+0000)\n") != std::string::npos);
+                CHECK(status.find("\nFrequency: +0 ppb\nTAI:       unknown (no leap-second list: clock/leapseconds); "
+                                  "CLOCK_TAI reads UTC\nZone:      UTC0 (UTC, UTC+0000)\n") != std::string::npos);
                 CHECK(bmds::Clock::adjust(0) < 0);
         }
 }

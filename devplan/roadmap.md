@@ -294,6 +294,9 @@ Plan: [`input.md`](input.md).
     Step 3 done (§31c-d): the service on core 1, `net/ptp/*`, `ptp`, `net.ptp.*`; the system
     clock follows a slave's ptpclock0, a master's follows NTP. Against `ptp4l` (software stamps):
     both roles and the takeover work.
+    Step 4 done (§31e-f): `/dev/ptp0` (slot 116, Linux's PHC calls and ioctls in `linux.c`),
+    `CLOCK_TAI`, IANA's leap-second list in the ROM and the `tzdata` package (`clock/leapseconds`,
+    hash checked), `clock`'s `TAI:` line and `clock leapseconds`.
 
 ## Phase 8 — Self-Hosting
 

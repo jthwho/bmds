@@ -104,6 +104,10 @@ if(NOT BOOTLOADER_BUILD)
             --link bin/scp=dropbearmulti
             --file bin/sftp-server=${BMDS_ROM_SFTP}/bin/sftp-server
             --file share/licenses/dropbear/LICENSE=${BMDS_ROM_DROPBEAR}/share/licenses/dropbear/LICENSE)
+        # IANA's leap-second list (devplan/network.md §31e): CLOCK_TAI and PTP's UTC offset; a newer one
+        # on the card (clock/leapseconds) wins.
+        set(BMDS_ROM_LEAP_FILE ${BMDS_ROOT_DIR}/thirdparty/tzdata/leap-seconds.list)
+        set(BMDS_ROM_LEAP --file share/leap-seconds.list=${BMDS_ROM_LEAP_FILE})
         # Text to speech (devplan/speech.md): the en-US voice, read in place; Pico's notices.
         set(BMDS_ROM_PICO ${BMDS_ROOT_DIR}/thirdparty/svox-pico)
         set(BMDS_ROM_SPEECH_FILES ${BMDS_ROM_PICO}/lang/en-US_ta.bin ${BMDS_ROM_PICO}/lang/en-US_lh0_sg.bin
@@ -118,11 +122,12 @@ if(NOT BOOTLOADER_BUILD)
                                    --max-bytes ${BMDS_ROM_PARTITION_BYTES} ${BMDS_ROM_TREE}
                                    --file share/icons/bmds.icons=${BMDS_ROM_OUT}/bmds.icons
                                    --file share/icons/bmds.LICENSES=${BMDS_ROM_OUT}/bmds.LICENSES
-                                   ${BMDS_ROM_ZONES} ${BMDS_ROM_SSH} ${BMDS_ROM_SPEECH}
+                                   ${BMDS_ROM_ZONES} ${BMDS_ROM_LEAP} ${BMDS_ROM_SSH} ${BMDS_ROM_SPEECH}
                                    --hash-header ${BMDS_ROM_HASH}
                            DEPENDS ${BMDS_MKROM} ${BMDS_ROM_OUT}/bmds.icons ${BMDS_ROM_OUT}/bmds.LICENSES
                                    ${BMDS_ROM_DROPBEAR}/bin/dropbearmulti ${BMDS_ROM_SFTP}/bin/sftp-server
-                                   ${BMDS_ROM_TREE_FILES} ${BMDS_ROM_ZONES_FILE} ${BMDS_ROM_SPEECH_FILES}
+                                   ${BMDS_ROM_TREE_FILES} ${BMDS_ROM_ZONES_FILE} ${BMDS_ROM_LEAP_FILE}
+                                   ${BMDS_ROM_SPEECH_FILES}
                            VERBATIM)
         target_sources(${COMPONENT_LIB} PRIVATE ${BMDS_ROM_HASH})
         target_include_directories(${COMPONENT_LIB} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})

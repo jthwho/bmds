@@ -1011,8 +1011,11 @@ namespace {
 
 Error Vfs::mount(StringView path, BlockDevice &device) {
         const Error err = mountAt(path, &device, 0);
-        // A pending zone name: its database may be on this filesystem.
-        if (err.isOk()) Clock::retryZoneName();
+        // A pending zone name: its database may be on this filesystem; the leap-second list too.
+        if (err.isOk()) {
+                Clock::retryZoneName();
+                reloadLeapSeconds();
+        }
         return err;
 }
 

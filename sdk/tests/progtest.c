@@ -107,7 +107,9 @@
 #include <net/if.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <linux/ptp_clock.h>
 #include <sys/ioctl.h>
+#include <sys/timex.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/soundcard.h>
@@ -3668,6 +3670,110 @@ static void print_interfaces(uint32_t change) {
         return;
 }
 
+static int64_t ts_ns(const struct timespec *t) {
+        return (int64_t)t->tv_sec * 1000000000 + t->tv_nsec;
+}
+
+/* CLOCK_TAI and /dev/ptp0 (network.md §31e). "busy": the PTP service runs, so setting the clock
+   is refused; otherwise a step and a frequency there and back. */
+static int ptp_test(const char *mode) {
+        struct timespec utc, tai;
+        CHECK(clock_gettime(CLOCK_REALTIME, &utc) == 0);
+        CHECK(clock_gettime(CLOCK_TAI, &tai) == 0);
+        const int64_t tai_offset = ts_ns(&tai) - ts_ns(&utc);
+        printf("ptp: CLOCK_TAI is UTC%+.3f s\n", (double)tai_offset / 1e9);
+        CHECK(tai_offset > -1000000 && tai_offset < 100000000000LL);
+
+        const int fd = open("/dev/ptp0", O_RDWR);
+        CHECK(fd >= 0);
+        const clockid_t clock = FD_TO_CLOCKID(fd);
+        struct timespec t, res;
+        CHECK(clock_gettime(clock, &t) == 0);
+        CHECK(clock_getres(clock, &res) == 0 && res.tv_sec == 0 && res.tv_nsec == 1);
+        /* Not a PTP clock: a bad clock id. */
+        errno = 0;
+        CHECK(clock_gettime(FD_TO_CLOCKID(0), &t) == -1 && errno == EINVAL);
+
+        struct ptp_clock_caps caps;
+        CHECK(ioctl(fd, PTP_CLOCK_GETCAPS, &caps) == 0);
+        CHECK(caps.max_adj == 500000 && caps.n_per_out == 0 && caps.n_pins == 0);
+        printf("ptp: max_adj %d ppb, pps %d\n", caps.max_adj, caps.pps);
+
+        struct ptp_sys_offset_extended ext;
+        memset(&ext, 0, sizeof(ext));
+        ext.n_samples = 5;
+        ext.clockid = CLOCK_REALTIME;
+        CHECK(ioctl(fd, PTP_SYS_OFFSET_EXTENDED, &ext) == 0);
+        int64_t best = INT64_MAX, offset = 0;
+        for (unsigned i = 0; i < ext.n_samples; i++) {
+                const int64_t before = ext.ts[i][0].sec * 1000000000 + ext.ts[i][0].nsec;
+                const int64_t phc = ext.ts[i][1].sec * 1000000000 + ext.ts[i][1].nsec;
+                const int64_t after = ext.ts[i][2].sec * 1000000000 + ext.ts[i][2].nsec;
+                CHECK(after >= before);
+                if (after - before < best) {
+                        best = after - before;
+                        offset = phc - (before + after) / 2;
+                }
+        }
+        printf("ptp: ptp0 is UTC%+.6f s (read within %lld ns)\n", (double)offset / 1e9, (long long)best);
+        ext.clockid = CLOCK_TAI;
+        CHECK(ioctl(fd, PTP_SYS_OFFSET_EXTENDED, &ext) == 0);
+        ext.clockid = 99;
+        errno = 0;
+        CHECK(ioctl(fd, PTP_SYS_OFFSET_EXTENDED, &ext) == -1 && errno == EINVAL);
+        struct ptp_sys_offset plain;
+        memset(&plain, 0, sizeof(plain));
+        plain.n_samples = 3;
+        CHECK(ioctl(fd, PTP_SYS_OFFSET, &plain) == 0 && plain.ts[6].sec > 0);
+        struct ptp_sys_offset_precise precise;
+        errno = 0;
+        CHECK(ioctl(fd, PTP_SYS_OFFSET_PRECISE, &precise) == -1 && errno == EOPNOTSUPP);
+
+        struct timex tx;
+        memset(&tx, 0, sizeof(tx));
+        CHECK(clock_adjtime(clock, &tx) == TIME_OK);
+        const long freq = tx.freq;
+        if (strcmp(mode, "busy") == 0) {
+                memset(&tx, 0, sizeof(tx));
+                tx.modes = ADJ_FREQUENCY;
+                errno = 0;
+                CHECK(clock_adjtime(clock, &tx) == -1 && errno == EBUSY);
+                CHECK(clock_gettime(clock, &t) == 0);
+                errno = 0;
+                CHECK(clock_settime(clock, &t) == -1 && errno == EBUSY);
+                printf("ptp: the service has it: EBUSY\n");
+        } else {
+                /* +1 s and back, in one update each. */
+                struct timespec a, b;
+                CHECK(clock_gettime(clock, &a) == 0);
+                memset(&tx, 0, sizeof(tx));
+                tx.modes = ADJ_SETOFFSET | ADJ_NANO;
+                tx.time.tv_sec = 1;
+                CHECK(clock_adjtime(clock, &tx) == TIME_OK);
+                CHECK(clock_gettime(clock, &b) == 0);
+                const int64_t stepped = ts_ns(&b) - ts_ns(&a);
+                tx.time.tv_sec = -1;
+                CHECK(clock_adjtime(clock, &tx) == TIME_OK);
+                printf("ptp: stepped +1 s: %+.6f s later\n", (double)stepped / 1e9);
+                CHECK(stepped > 999000000 && stepped < 1010000000);
+                /* +100 ppm, read back, then as it was. */
+                memset(&tx, 0, sizeof(tx));
+                tx.modes = ADJ_FREQUENCY;
+                tx.freq = 100L << 16;
+                CHECK(clock_adjtime(clock, &tx) == TIME_OK);
+                printf("ptp: frequency set +100 ppm, reads %+.3f ppm\n", tx.freq / 65536.0);
+                CHECK(tx.freq > (99L << 16) && tx.freq < (101L << 16));
+                tx.freq = freq;
+                CHECK(clock_adjtime(clock, &tx) == TIME_OK);
+                tx.freq = 200000000L; /* 3052 ppm: past max_adj */
+                errno = 0;
+                CHECK(clock_adjtime(clock, &tx) == -1 && errno == ERANGE);
+        }
+        close(fd);
+        printf("ptp: ok\n");
+        return 0;
+}
+
 /* The interfaces, then again after each of @p count changes (net_watch). */
 static int net_watch_test(int count) {
         const int w = bmds_net_watch(0);
@@ -3690,7 +3796,7 @@ int main(int argc, char **argv) {
                         "threads|"
                         "threadspin|filetype|audio|decode|rt|midi|synth|speech|synthload|mididecode|hog|stats|tasks|"
                         "procs|"
-                        "system|notify|expand|image|net|netwatch|rtnet|sched [arg]\n");
+                        "system|notify|expand|image|net|netwatch|rtnet|sched|ptp [arg]\n");
                 return 2;
         }
         const char *what = argv[1];
@@ -3718,6 +3824,7 @@ int main(int argc, char **argv) {
         if (strcmp(what, "netwatch") == 0) return net_watch_test(argc > 2 ? atoi(arg) : 1);
         if (strcmp(what, "rtnet") == 0) return rt_net_test(argc > 2 ? arg : NULL);
         if (strcmp(what, "sched") == 0) return sched_test(arg);
+        if (strcmp(what, "ptp") == 0) return ptp_test(argc > 2 ? arg : "");
         if (strcmp(what, "schedof") == 0) return sched_getscheduler(0) & 0xff;
         if (strcmp(what, "procexec") == 0) return proc_exec(arg);
         if (strcmp(what, "proccheck") == 0) return proc_check(arg);

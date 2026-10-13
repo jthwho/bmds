@@ -189,6 +189,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_SCHED 113u     /**< `int32_t sched(uint32_t op, int32_t tid, bmds_sched_t *param)`. */
 #define BMDS_SYS_AUDIO_SPEAK 114u      /**< `int32_t audio_speak(const bmds_speak_config_t *config)`: a new fd. */
 #define BMDS_SYS_AUDIO_SPEAK_INFO 115u /**< `int32_t audio_speak_info(int32_t fd, bmds_speak_info_t *info)`. */
+#define BMDS_SYS_PTP_CTL 116u          /**< `int32_t ptp_ctl(int32_t fd, uint32_t op, void *arg)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -1077,6 +1078,11 @@ typedef struct bmds_stat_t {
 /** @brief `clock_get` clocks. */
 #define BMDS_CLOCK_REALTIME 0u  /**< Wall time, ns since 1970-01-01 UTC (may jump when set). */
 #define BMDS_CLOCK_MONOTONIC 1u /**< ns since boot, never goes back. */
+/**
+ * TAI: `BMDS_CLOCK_REALTIME` plus TAI less UTC (a PTP master's, else the leap-second list's,
+ * else 0). From 2026-10-13; an older kernel answers `BMDS_EINVAL`.
+ */
+#define BMDS_CLOCK_TAI 2u
 
 /** @brief Terminal modes (`term_get`, `term_set`); a program starts with all set. */
 #define BMDS_TERM_SIGNALS 0x01u /**< Ctrl-C sends `SIGINT` to the job instead of being read. */
@@ -1413,6 +1419,40 @@ typedef struct bmds_speak_info_t {
                 char     voice[BMDS_SPEAK_VOICE_MAX]; /**< The voice's name. */
 } bmds_speak_info_t;
 
+/** @brief `ptp_ctl` operations on a PTP clock's fd (`/dev/ptp0`: an Ethernet device's 1588 clock). */
+#define BMDS_PTP_TIME 0u     /**< `int64_t *`: reads it, ns since 1970 on PTP's timescale (TAI). */
+#define BMDS_PTP_CAPS 1u     /**< `bmds_ptp_caps_t *`: what it can do. */
+#define BMDS_PTP_OFFSET 2u   /**< `bmds_ptp_offset_t *`: readings of it between two of a system clock. */
+#define BMDS_PTP_SET 3u      /**< `const int64_t *`: sets it. */
+#define BMDS_PTP_STEP 4u     /**< `const int64_t *`: adds to it (negative: takes away) in one update. */
+#define BMDS_PTP_GET_FREQ 5u /**< `int64_t *`: its frequency correction, parts per trillion. */
+#define BMDS_PTP_SET_FREQ 6u /**< `const int64_t *`: sets it (the clock rounds to its own step). */
+
+/** @brief `bmds_ptp_caps_t::flags`. */
+#define BMDS_PTP_CAP_PPS 0x1u /**< A pulse on `pps_pin` rises on each of its seconds. */
+
+/** @brief A PTP clock's capabilities (`BMDS_PTP_CAPS`). */
+typedef struct bmds_ptp_caps_t {
+                uint32_t size;        /**< Set by the caller: `sizeof(bmds_ptp_caps_t)`. */
+                uint32_t max_adj_ppb; /**< The largest frequency correction taken, parts per billion. */
+                uint32_t flags;       /**< `BMDS_PTP_CAP_...`. */
+                int32_t  pps_pin;     /**< The PPS output's GPIO, or -1. */
+                uint32_t index;       /**< N of `/dev/ptpN`. */
+                uint32_t reserved;    /**< Zero. */
+} bmds_ptp_caps_t;
+
+/** @brief The most readings `BMDS_PTP_OFFSET` takes at once (Linux's `PTP_MAX_SAMPLES`). */
+#define BMDS_PTP_MAX_SAMPLES 25u
+
+/** @brief Readings of a PTP clock between two of a system clock (`BMDS_PTP_OFFSET`). */
+typedef struct bmds_ptp_offset_t {
+                uint32_t size;     /**< Set by the caller: `sizeof(bmds_ptp_offset_t)`. */
+                uint32_t clock;    /**< The system clock read: `BMDS_CLOCK_REALTIME`, `_MONOTONIC` or `_TAI`. */
+                uint32_t count;    /**< In: readings wanted, 1 to `BMDS_PTP_MAX_SAMPLES`. Out: taken. */
+                uint32_t reserved; /**< Zero. */
+                int64_t samples[BMDS_PTP_MAX_SAMPLES][3]; /**< ns: the system clock, the PTP clock, the system clock. */
+} bmds_ptp_offset_t;
+
 /** @brief `proc_timer`'s timers. */
 #define BMDS_TIMER_REAL 0u /**< Real time, raising `SIGALRM` (Linux's `ITIMER_REAL`). */
 
@@ -1537,6 +1577,7 @@ typedef int32_t (*bmds_sys_crypto_fn)(const bmds_crypto_op_t *op);
 typedef int32_t (*bmds_sys_sched_fn)(uint32_t op, int32_t tid, bmds_sched_t *param);
 typedef int32_t (*bmds_sys_audio_speak_fn)(const bmds_speak_config_t *config);
 typedef int32_t (*bmds_sys_audio_speak_info_fn)(int32_t fd, bmds_speak_info_t *info);
+typedef int32_t (*bmds_sys_ptp_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -2737,6 +2778,18 @@ static inline int32_t bmds_audio_speak(const bmds_speak_config_t *config) {
  */
 static inline int32_t bmds_audio_speak_info(int32_t fd, bmds_speak_info_t *info) {
         return ((bmds_sys_audio_speak_info_fn)bmds_sys->slot[BMDS_SYS_AUDIO_SPEAK_INFO])(fd, info);
+}
+
+/**
+ * @brief Operates on PTP clock fd @p fd (`/dev/ptp0`): `BMDS_PTP_...` with @p arg as each says.
+ *        Setting, stepping and the frequency are refused while the PTP service (`net/ptp`)
+ *        runs on the clock's device. From 2026-10-13.
+ * @return 0, or `-BMDS_ENOTTY` (not a PTP clock), `-BMDS_EBADF`, `-BMDS_EINVAL` (an op, a
+ *         `size`, a `count` or `clock`), `-BMDS_EBUSY` (the PTP service has the clock),
+ *         `-BMDS_ERANGE` (a frequency past `max_adj_ppb`), `-BMDS_EFAULT`.
+ */
+static inline int32_t bmds_ptp_ctl(int32_t fd, uint32_t op, void *arg) {
+        return ((bmds_sys_ptp_ctl_fn)bmds_sys->slot[BMDS_SYS_PTP_CTL])(fd, op, arg);
 }
 
 /**

@@ -84,6 +84,7 @@ add_executable(bmds_host_tests
         networkview.cpp
         ntp.cpp
         ptp.cpp
+        leapseconds.cpp
         shacrypt.cpp
         logtext.cpp
         topview.cpp
@@ -124,6 +125,8 @@ target_include_directories(bmds_host_tests PRIVATE ${BMDS_ROOT}/thirdparty/docte
 # littlefs's header for littlefs.cpp (devplan/storage.md §13c); its code is bmds_fs's, so the
 # same definitions.
 target_include_directories(bmds_host_tests PRIVATE ${BMDS_ROOT}/thirdparty/littlefs)
+target_compile_definitions(bmds_host_tests PRIVATE
+        BMDS_TEST_LEAPSECONDS="${BMDS_ROOT}/thirdparty/tzdata/leap-seconds.list")
 target_compile_definitions(bmds_host_tests PRIVATE LFS_NO_MALLOC LFS_NO_DEBUG LFS_NO_WARN LFS_NO_ERROR)
 target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
         BMDS_CORPUS_DIR="${CMAKE_CURRENT_LIST_DIR}/corpus"

@@ -34,6 +34,8 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/timex.h>
+#include <linux/ptp_clock.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/soundcard.h>
@@ -116,7 +118,23 @@ static void ts_write(void *ts, int64_t ns) {
         return;
 }
 
+/* A PTP hardware clock by its fd (network.md §31e): Linux's dynamic clock ids, ~fd << 3 | 3. */
+static int is_fd_clock(long clock) {
+        return clock < 0 && (clock & 7) == CLOCKFD;
+}
+
+static long ptp_ctl(long fd, uint32_t op, void *arg) {
+        if (!bmds_sys_has(BMDS_SYS_PTP_CTL)) return -ENOTTY;
+        return (long)bmds_ptp_ctl((int32_t)fd, op, arg);
+}
+
+/* An fd clock's errors as clock_* report them: not a PTP clock is a bad clock id. */
+static long fd_clock_error(long r) {
+        return r == -ENOTTY || r == -EBADF ? -EINVAL : r;
+}
+
 static long clock_ns(long clock, int64_t *ns) {
+        if (is_fd_clock(clock)) return fd_clock_error(ptp_ctl((long)CLOCKID_TO_FD(clock), BMDS_PTP_TIME, ns));
         switch (clock) {
                 case CLOCK_REALTIME:
                 case CLOCK_REALTIME_COARSE: *ns = now(BMDS_CLOCK_REALTIME); return 0;
@@ -124,11 +142,62 @@ static long clock_ns(long clock, int64_t *ns) {
                 case CLOCK_MONOTONIC_RAW:
                 case CLOCK_MONOTONIC_COARSE:
                 case CLOCK_BOOTTIME: *ns = now(BMDS_CLOCK_MONOTONIC); return 0;
+                /* UTC plus TAI's offset; an older kernel's (no offset known): UTC, as Linux's. */
+                case CLOCK_TAI:
+                        if (bmds_clock_get(BMDS_CLOCK_TAI, ns) < 0) *ns = now(BMDS_CLOCK_REALTIME);
+                        return 0;
                 /* A thread's own would need the task list, which scans the stacks: the process's. */
                 case CLOCK_PROCESS_CPUTIME_ID:
                 case CLOCK_THREAD_CPUTIME_ID: *ns = cpu_ns(); return 0;
                 default: return -EINVAL;
         }
+}
+
+/* musl's struct ktimex64 (src/linux/clock_adjtime.c): the time64 kernel's timex. */
+struct bmds_ktimex64 {
+                unsigned  modes;
+                int       pad0;
+                long long offset, freq, maxerror, esterror;
+                int       status;
+                int       pad1;
+                long long constant, precision, tolerance;
+                long long time_sec, time_usec;
+                long long tick, ppsfreq, jitter;
+                int       shift;
+                int       pad2;
+                long long stabil, jitcnt, calcnt, errcnt, stbcnt;
+                int       tai;
+                int       padding[11];
+};
+
+/* clock_adjtime on a PTP clock: a step (ADJ_SETOFFSET), a frequency (ADJ_FREQUENCY, ppm << 16),
+   then the frequency read back. Other clocks: the kernel's alone (EPERM), or a read of none. */
+static long do_clock_adjtime(long clock, void *arg) {
+        struct bmds_ktimex64 *t = arg;
+        if (t == NULL) return -EFAULT;
+        if (!is_fd_clock(clock)) {
+                if (t->modes != 0) return -EPERM;
+                t->freq = 0;
+                return TIME_OK;
+        }
+        const long fd = (long)CLOCKID_TO_FD(clock);
+        if ((t->modes & ~(unsigned)(ADJ_SETOFFSET | ADJ_FREQUENCY | ADJ_NANO)) != 0) return -EINVAL;
+        long r;
+        if (t->modes & ADJ_SETOFFSET) {
+                int64_t ns = t->time_sec * 1000000000 + ((t->modes & ADJ_NANO) ? t->time_usec : t->time_usec * 1000);
+                r = fd_clock_error(ptp_ctl(fd, BMDS_PTP_STEP, &ns));
+                if (r != 0) return r;
+        }
+        if (t->modes & ADJ_FREQUENCY) {
+                int64_t ppt = t->freq * 1000000 / 65536;
+                r = fd_clock_error(ptp_ctl(fd, BMDS_PTP_SET_FREQ, &ppt));
+                if (r != 0) return r;
+        }
+        int64_t ppt = 0;
+        r = fd_clock_error(ptp_ctl(fd, BMDS_PTP_GET_FREQ, &ppt));
+        if (r != 0) return r;
+        t->freq = ppt * 65536 / 1000000;
+        return TIME_OK;
 }
 
 static long sleep_ns(int64_t ns) {
@@ -832,6 +901,72 @@ static long tc_set(long fd, const struct termios *t) {
 
 static long net_ioctl(unsigned long request, void *arg);
 
+static void ptp_time(struct ptp_clock_time *t, int64_t ns) {
+        t->sec = ns / 1000000000;
+        t->nsec = (uint32_t)(ns % 1000000000);
+        t->reserved = 0;
+        return;
+}
+
+/* /dev/ptp0's requests (linux/ptp_clock.h) on ptp_ctl. */
+static long ptp_ioctl(long fd, unsigned long request, void *arg) {
+        if (arg == NULL) return -EFAULT;
+        switch (request) {
+                case PTP_CLOCK_GETCAPS:
+                case PTP_CLOCK_GETCAPS2: {
+                        bmds_ptp_caps_t c = {.size = sizeof(c)};
+                        const long      r = ptp_ctl(fd, BMDS_PTP_CAPS, &c);
+                        if (r < 0) return r;
+                        struct ptp_clock_caps *out = arg;
+                        memset(out, 0, sizeof(*out));
+                        out->max_adj = (int)c.max_adj_ppb;
+                        out->pps = (c.flags & BMDS_PTP_CAP_PPS) != 0;
+                        return 0;
+                }
+                case PTP_SYS_OFFSET:
+                case PTP_SYS_OFFSET2: {
+                        struct ptp_sys_offset *o = arg;
+                        if (o->n_samples == 0 || o->n_samples > PTP_MAX_SAMPLES) return -EINVAL;
+                        bmds_ptp_offset_t k = {.size = sizeof(k), .clock = BMDS_CLOCK_REALTIME, .count = o->n_samples};
+                        const long        r = ptp_ctl(fd, BMDS_PTP_OFFSET, &k);
+                        if (r < 0) return r;
+                        for (unsigned i = 0; i < o->n_samples; i++) {
+                                ptp_time(&o->ts[2 * i], k.samples[i][0]);
+                                ptp_time(&o->ts[2 * i + 1], k.samples[i][1]);
+                        }
+                        ptp_time(&o->ts[2 * o->n_samples], k.samples[o->n_samples - 1][2]);
+                        return 0;
+                }
+                case PTP_SYS_OFFSET_EXTENDED:
+                case PTP_SYS_OFFSET_EXTENDED2: {
+                        struct ptp_sys_offset_extended *o = arg;
+                        uint32_t                        clock;
+                        switch (o->clockid) {
+                                case CLOCK_REALTIME: clock = BMDS_CLOCK_REALTIME; break;
+                                case CLOCK_MONOTONIC:
+                                case CLOCK_MONOTONIC_RAW: clock = BMDS_CLOCK_MONOTONIC; break;
+                                case CLOCK_TAI: clock = BMDS_CLOCK_TAI; break;
+                                default: return -EINVAL;
+                        }
+                        if (o->n_samples == 0 || o->n_samples > PTP_MAX_SAMPLES || o->rsv[0] != 0 || o->rsv[1] != 0)
+                                return -EINVAL;
+                        bmds_ptp_offset_t k = {.size = sizeof(k), .clock = clock, .count = o->n_samples};
+                        const long        r = ptp_ctl(fd, BMDS_PTP_OFFSET, &k);
+                        if (r < 0) return r;
+                        for (unsigned i = 0; i < o->n_samples; i++)
+                                for (unsigned j = 0; j < 3; j++) ptp_time(&o->ts[i][j], k.samples[i][j]);
+                        return 0;
+                }
+                default: {
+                        /* Not a PTP clock: ENOTTY; one's other requests (cross-timestamps, pins,
+                           external stamps, periodic outputs): not provided. */
+                        int64_t    ns;
+                        const long r = ptp_ctl(fd, BMDS_PTP_TIME, &ns);
+                        return r < 0 ? r : -EOPNOTSUPP;
+                }
+        }
+}
+
 static long do_ioctl(long fd, unsigned long request, void *arg) {
         /* OSS: /dev/dsp's 'P' requests and /dev/mixer's 'M' (oss.c). */
         const unsigned long type = request >> 8 & 0xff;
@@ -842,6 +977,7 @@ static long do_ioctl(long fd, unsigned long request, void *arg) {
                 set_nonblock(fd, 1);
                 return 0;
         }
+        if (type == PTP_CLK_MAGIC) return ptp_ioctl(fd, request, arg);
         switch (request) {
                 case TCGETS: return tc_get(fd, arg);
                 case TCSETS:
@@ -2038,10 +2174,21 @@ static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
                         if (r == 0) ts_write((void *)b, ns);
                         return r;
                 }
-                case SYS_clock_getres_time64:
-                        if (b != 0) ts_write((void *)b, 1000);
+                case SYS_clock_getres_time64: {
+                        int64_t    ns;
+                        const long r = clock_ns(a, &ns); /* a clock that exists */
+                        if (r != 0) return r;
+                        if (b != 0) ts_write((void *)b, is_fd_clock(a) ? 1 : 1000);
                         return 0;
-                case SYS_clock_settime64: return -EPERM;
+                }
+                case SYS_clock_settime64: {
+                        if (!is_fd_clock(a)) return -EPERM;
+                        int64_t ns = ts_read((const void *)b);
+                        return fd_clock_error(ptp_ctl((long)CLOCKID_TO_FD(a), BMDS_PTP_SET, &ns));
+                }
+#ifdef SYS_clock_adjtime64
+                case SYS_clock_adjtime64: return do_clock_adjtime(a, (void *)b);
+#endif
                 case SYS_clock_nanosleep_time64: {
                         int64_t base;
                         if (clock_ns(a, &base) != 0) return -EINVAL;

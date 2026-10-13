@@ -42,7 +42,19 @@ namespace {
                      "The time zone database (tools/tzbundle's zoneinfo.bin), shown as /share/zoneinfo", 0, 0, nullptr,
                      nullptr)
 
+        // clock/leapseconds: IANA's leap-second list (devplan/network.md §31e); the ROM's meanwhile.
+        BMDS_SYSCONF(clockLeapseconds, "clock/leapseconds", Config::Type::Path, CONFIG_BMDS_LEAPSECONDS_PATH,
+                     "IANA's leap-seconds.list, for CLOCK_TAI and PTP (the ROM's while none is there, or it expires "
+                     "sooner)",
+                     0, 0, nullptr, nullptr)
+
         constinit StaticObject<SysConf::Watcher> clockWatcher;
+
+        // A leap-second list at clock/leapseconds that fails to parse or its hash: logged.
+        void leapSecondsRefused(StringView path, LeapSeconds::Verdict verdict) {
+                bmdsWarn("clock: %.*s: ignored: %s", int(path.size()), path.data(), LeapSeconds::verdictText(verdict));
+                return;
+        }
 
         // The clock's parameters applied: at boot and on each change.
         void applyClock(void *) {
@@ -50,6 +62,11 @@ namespace {
                 if (SysConf::get("clock/tzdata", value).isOk()) {
                         const Error err = Vfs::setZoneDatabase(value.view());
                         if (err.isError()) bmdsWarn("SysConf: clock/tzdata %s: %s", value.cStr(), err.desc());
+                }
+                Vfs::setLeapSecondsRefused(&leapSecondsRefused);
+                if (SysConf::get("clock/leapseconds", value).isOk()) {
+                        const Error err = Vfs::setLeapSecondsFile(value.view());
+                        if (err.isError()) bmdsWarn("SysConf: clock/leapseconds %s: %s", value.cStr(), err.desc());
                 }
                 if (SysConf::get("clock/zone", value).isOk()) {
                         const Error err = Clock::setTimeZone(value.view());

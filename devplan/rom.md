@@ -142,6 +142,7 @@ ROM; the device may be reformatted. It comes before `mediaplayer.md` step 3.
 /rom/share/icons/bmds.icons                   the bmds icon theme, one file, decoded (§3f)
 /rom/share/icons/bmds.LICENSES                the two upstreams' licenses and credits
 /rom/share/zoneinfo.bundle                    the time zone database (§3g)
+/rom/share/leap-seconds.list                  IANA's leap seconds, 5 KB (network.md §31e, 2026-10-13)
 ```
 
 - **The `bmds` icon theme** (the user's, 2026-10-09): BMDS's own theme, made from flat-color and

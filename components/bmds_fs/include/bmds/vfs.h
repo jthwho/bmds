@@ -12,6 +12,7 @@
 #include <bmds/config.h>
 #include <bmds/datetime.h>
 #include <bmds/error.h>
+#include <bmds/leapseconds.h>
 #include <bmds/filehandle.h>
 #include <bmds/builtinprograms.h>
 #include <bmds/result.h>
@@ -639,6 +640,53 @@ namespace Vfs {
          *         (a later format), ...
          */
         Result<ZoneDatabaseInfo> zoneDatabaseInfo();
+
+        // --- The leap-second list (devplan/network.md §31e) ---------------------
+
+        /** @brief The ROM's leap-second list: used while none is at the path set, or one that expires sooner. */
+        inline constexpr StringView RomLeapSeconds("/rom/share/leap-seconds.list");
+
+        /** @brief The largest leap-second list read (IANA's is 5 KB). */
+        inline constexpr size_t MaxLeapSecondsBytes = 16384;
+
+        /**
+         * @brief Uses the list at @p path (IANA's `leap-seconds.list`) for the kernel's TAI offset,
+         *        read now and again after each mount: of it and the ROM's, the good one that
+         *        expires later. A list that fails to parse or its hash is ignored and logged.
+         * @param path Absolute, at most `MaxZoneDatabasePath` bytes; "" for none (the ROM's
+         *        neither). It needn't exist yet.
+         * @return `Ok` or `Invalid`.
+         * @blocking Reads the files.
+         */
+        Error setLeapSecondsFile(StringView path);
+
+        /** @brief Reads the lists again (a mount: the one at the path may be there now). @blocking */
+        void reloadLeapSeconds();
+
+        /** @brief Told of a list at the path set that is refused (to log it). Must not wait. */
+        using LeapSecondsRefused = void (*)(StringView path, LeapSeconds::Verdict verdict);
+
+        /** @brief Sets who is told of a refused list (the system configuration's logging). */
+        void setLeapSecondsRefused(LeapSecondsRefused handler);
+
+        /** @brief Returns the path of the list in use since the last read ("" for none). */
+        Result<String> leapSecondsInUse();
+
+        /** @brief The lists as `clock leapseconds` shows them. */
+        struct LeapSecondsReport {
+                        char                 path[MaxZoneDatabasePath + 1] = {};            ///< The path set ("" none).
+                        Error                pathError = Error::NotExist;                   ///< Reading it; `Ok`: read.
+                        LeapSeconds::Verdict pathVerdict = LeapSeconds::Verdict::Malformed; ///< When read.
+                        int64_t              pathExpires = 0; ///< When good (UTC seconds).
+                        Error                romError = Error::NotExist;
+                        LeapSeconds::Verdict romVerdict = LeapSeconds::Verdict::Malformed;
+                        bool                 any = false;     ///< One is in use: `table`.
+                        bool                 fromRom = false; ///< It is the ROM's.
+                        LeapSeconds::Table   table;
+        };
+
+        /** @brief Reads the lists into @p out (about 1.2 KB: not on a small stack). @blocking */
+        void examineLeapSeconds(LeapSecondsReport &out);
 
         /**
          * @brief Returns the current rules of zone @p name (`Europe/Berlin`)

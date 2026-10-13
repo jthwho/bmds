@@ -33,9 +33,11 @@ RELEASES = "https://data.iana.org/time-zones/releases/"
 LATEST = "https://data.iana.org/time-zones/tzdata-latest.tar.gz"
 
 # The files kept: what zic reads (tools/tzbundle), the tables a zone picker
-# needs, and the release's identity and license.
+# needs, IANA's leap-second list (CLOCK_TAI and PTP: devplan/network.md §31),
+# and the release's identity and license.
 KEPT = ["africa", "antarctica", "asia", "australasia", "europe", "northamerica", "southamerica", "etcetera",
-        "backward", "zone1970.tab", "zone.tab", "iso3166.tab", "version", "LICENSE", "README"]
+        "backward", "zone1970.tab", "zone.tab", "iso3166.tab", "version", "LICENSE", "README",
+        "leap-seconds.list"]
 
 
 def die(message):

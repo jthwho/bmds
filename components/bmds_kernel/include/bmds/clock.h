@@ -13,6 +13,7 @@
 #include <bmds/config.h>
 #include <bmds/datetime.h>
 #include <bmds/error.h>
+#include <bmds/leapseconds.h>
 #include <bmds/stringview.h>
 #include <bmds/timezone.h>
 
@@ -144,6 +145,40 @@ namespace Clock {
 
         /** @brief Returns @p time in the kernel time zone. */
         LocalTime localTime(Timestamp time);
+
+        /** @brief Where the TAI offset comes from (devplan/network.md §31e). */
+        enum class TaiSource : uint8_t {
+                None, ///< Unknown: `CLOCK_TAI` reads UTC.
+                File, ///< The leap-second file (`clock/leapseconds`).
+                Ptp,  ///< A PTP master followed, which gives a valid one.
+        };
+
+        /** @brief TAI less UTC now, and what the leap-second file says around it. */
+        struct TaiOffset {
+                        int16_t   seconds = 0;
+                        TaiSource source = TaiSource::None;
+                        bool      haveFile = false; ///< A leap-second file is loaded (whichever the source).
+                        int16_t   fileSeconds = 0;  ///< The file's offset now, when `haveFile`.
+                        bool      stale = false;    ///< The file is past its expiry.
+                        bool      leap61 = false;   ///< The file: today (UTC) ends in an inserted second.
+                        bool      leap59 = false;   ///< ... a removed one.
+                        int64_t   expiresNs = 0;    ///< The file's expiry (UTC), when there is one.
+        };
+
+        /**
+         * @brief Takes what the leap-second file says now (the offset, the next change, the expiry)
+         *        from @p table; null when there is none.
+         */
+        void setLeapSeconds(const LeapSeconds::Table *table);
+
+        /** @brief A PTP master's valid offset (`ptpUtcOffsetValid`), or none (@p valid false). */
+        void setPtpUtcOffset(int16_t seconds, bool valid);
+
+        /** @brief Returns TAI less UTC now: PTP's, else the file's, else 0. @nonblocking */
+        TaiOffset taiOffset();
+
+        /** @brief Returns the time on TAI: `now()` plus `taiOffset()`. @nonblocking */
+        Timestamp taiNow();
 
         /**
          * @brief Saves the reset record now (done after every change; call

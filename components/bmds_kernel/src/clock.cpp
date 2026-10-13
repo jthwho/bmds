@@ -27,6 +27,20 @@ namespace {
         constinit SeqLocked<KernelZone>            zone;
         constinit std::atomic<Clock::ZoneResolver> resolver{nullptr};
 
+        // What the leap-second file and PTP say of TAI less UTC: the change in effect when the file
+        // was read, the next one after it, and PTP's. Whole words, for SeqLocked.
+        struct Leap {
+                        int64_t nextAt = 0;  // UTC seconds; 0: none listed
+                        int64_t expires = 0; // UTC seconds
+                        int16_t offset = 0;  // the file's, before nextAt
+                        int16_t nextOffset = 0;
+                        int16_t ptpOffset = 0;
+                        uint8_t haveFile = 0;
+                        uint8_t havePtp = 0;
+        };
+
+        constinit SeqLocked<Leap> leap;
+
         // An unset clock made to start (at boot) at 1955-11-05 06:15 local time in @p rules: the UTC
         // that reads so. The offset is taken twice, the second time at the first guess, so a zone whose
         // daylight saving changes near there still lands on 6:15.
@@ -78,6 +92,63 @@ bool Clock::isSet() {
 
 ClockStatus Clock::status() {
         return model.load().status(monotonicNs());
+}
+
+void Clock::setLeapSeconds(const LeapSeconds::Table *table) {
+        // At the list's own update, not now: the clock may not be set yet (1955), and the real now
+        // is later than the update. A list names at most the one change still to come.
+        const int64_t now = table != nullptr ? table->updated : 0;
+        leap.update([&](Leap &l) {
+                l.haveFile = table != nullptr;
+                if (table == nullptr) return;
+                l.offset = LeapSeconds::offsetAt(*table, now);
+                const LeapSeconds::Entry *next = LeapSeconds::nextAfter(*table, now);
+                l.nextAt = next != nullptr ? next->at : 0;
+                l.nextOffset = next != nullptr ? next->offset : l.offset;
+                l.expires = table->expires;
+        });
+        return;
+}
+
+void Clock::setPtpUtcOffset(int16_t seconds, bool valid) {
+        const Leap l = leap.load();
+        if ((l.havePtp != 0) == valid && (!valid || l.ptpOffset == seconds)) return;
+        leap.update([&](Leap &m) {
+                m.havePtp = valid;
+                m.ptpOffset = valid ? seconds : 0;
+        });
+        return;
+}
+
+Clock::TaiOffset Clock::taiOffset() {
+        const Leap    l = leap.load();
+        const int64_t now = Clock::now().ns / Timestamp::NsPerSecond;
+        TaiOffset     t;
+        t.haveFile = l.haveFile != 0;
+        if (t.haveFile) {
+                const bool passed = l.nextAt != 0 && now >= l.nextAt;
+                t.seconds = passed ? l.nextOffset : l.offset;
+                t.fileSeconds = t.seconds;
+                t.source = TaiSource::File;
+                t.expiresNs = l.expires * Timestamp::NsPerSecond;
+                t.stale = now >= l.expires;
+                // 1588's flags: the UTC day that ends at the change.
+                constexpr int64_t Day = 86'400;
+                if (!passed && l.nextAt != 0 && now / Day == (l.nextAt - 1) / Day) {
+                        t.leap61 = l.nextOffset > l.offset;
+                        t.leap59 = l.nextOffset < l.offset;
+                }
+        }
+        if (l.havePtp != 0) {
+                t.seconds = l.ptpOffset;
+                t.source = TaiSource::Ptp;
+        }
+        return t;
+}
+
+Timestamp Clock::taiNow() {
+        const Timestamp utc = now();
+        return Timestamp{utc.ns + int64_t(taiOffset().seconds) * Timestamp::NsPerSecond};
 }
 
 void Clock::saveResetRecord() {

@@ -131,10 +131,11 @@ int32_t bmds_k_term_ctl(int32_t fd, uint32_t op, uint32_t arg);
 int32_t bmds_k_fs_info(const char *path, bmds_fs_info_t *info);
 int32_t bmds_k_crypto(const bmds_crypto_op_t *op);
 int32_t bmds_k_sched(uint32_t op, int32_t tid, bmds_sched_t *param);
+int32_t bmds_k_ptp_ctl(int32_t fd, uint32_t op, void *arg);
 int32_t bmds_k_audio_speak(const bmds_speak_config_t *config);
 int32_t bmds_k_audio_speak_info(int32_t fd, bmds_speak_info_t *info);
 
-#define SLOTS 116
+#define SLOTS 117
 
 /* bmds_sys_t with its slots spelled out (same layout; checked below). */
 static const struct {
@@ -265,10 +266,11 @@ static const struct {
                 [BMDS_SYS_SCHED] = (bmds_sys_fn_t)bmds_k_sched,
                 [BMDS_SYS_AUDIO_SPEAK] = (bmds_sys_fn_t)bmds_k_audio_speak,
                 [BMDS_SYS_AUDIO_SPEAK_INFO] = (bmds_sys_fn_t)bmds_k_audio_speak_info,
+                [BMDS_SYS_PTP_CTL] = (bmds_sys_fn_t)bmds_k_ptp_ctl,
         },
 };
 
-_Static_assert(SLOTS == BMDS_SYS_AUDIO_SPEAK_INFO + 1, "every slot is in the table");
+_Static_assert(SLOTS == BMDS_SYS_PTP_CTL + 1, "every slot is in the table");
 _Static_assert(sizeof(table) == 16 + SLOTS * sizeof(bmds_sys_fn_t), "table layout");
 
 const bmds_sys_t *bmds_k_sys_table(void) {
