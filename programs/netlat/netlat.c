@@ -86,6 +86,7 @@ static uint32_t       count;
 static volatile int   stopping;
 static uint32_t       reordered, strays;
 static int            sock = -1;
+static int            load_socks[2] = {-1, -1}; /* shut down at the end: a stalled peer can't hold them */
 
 static int64_t clock_ns(clockid_t c) {
         struct timespec t;
@@ -187,14 +188,15 @@ static void *loader(void *arg) {
                 if (t >= 0) close(t);
                 return NULL;
         }
+        __atomic_store_n(&load_socks[sending], t, __ATOMIC_RELEASE);
         static char blocks[2][16384];
         char       *block = blocks[sending];
         while (!stopping) {
-                const ssize_t n = sending ? write(t, block, sizeof(blocks[0])) : read(t, block, sizeof(blocks[0]));
+                const ssize_t n =
+                        sending ? send(t, block, sizeof(blocks[0]), MSG_NOSIGNAL) : read(t, block, sizeof(blocks[0]));
                 if (n <= 0) break;
         }
-        close(t);
-        return NULL;
+        return NULL; /* main closes it */
 }
 
 static int compare(const void *a, const void *b) {
@@ -374,8 +376,15 @@ int main(int argc, char **argv) {
         stopping = 1;
         pthread_join(rx, NULL);
         if (opt.load) {
+                for (int i = 0; i < 2; ++i) {
+                        const int t = __atomic_load_n(&load_socks[i], __ATOMIC_ACQUIRE);
+                        if (t >= 0) shutdown(t, SHUT_RDWR);
+                }
                 pthread_join(load[0], NULL);
                 pthread_join(load[1], NULL);
+                for (int i = 0; i < 2; ++i) {
+                        if (load_socks[i] >= 0) close(load_socks[i]);
+                }
         }
         close(sock);
 

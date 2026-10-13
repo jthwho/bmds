@@ -237,6 +237,20 @@ until silicon v3; then test again.
   worst, against the tick's 360 µs and 680-900 µs (`progtest sched`, 1 ms periods). Its
   interrupt isn't cache-safe (`CONFIG_GPTIMER_ISR_CACHE_SAFE` off), so it is held off during a
   flash write and may touch memory in PSRAM (`waketimer.cpp`).
+- **A GPTimer's interrupt lands on whatever core registers its callbacks:**
+  `gptimer_register_event_callbacks()` allocates it on the calling core, and an unpinned caller
+  (the first program thread to ask for `SCHED_FIFO`) may be on either. On core 0, beside the EMAC's
+  interrupt, `eth0` (21) and `esp_timer` (22), a 1 ms real-time sender under a flood and TCP both
+  ways woke 116-124 µs late at the 99th percentile and up to 0.6-1.2 ms; registered on core 1
+  through `esp_ipc_call_blocking()`, 51-66 µs and 253-455 µs, over five boots. The handler in
+  IRAM at interrupt level 3 bought only 3-4 µs at the median: not kept. `esp_intr_dump()` into an
+  `fmemopen()` stream shows which core has what (`devplan/network.md` §30k).
+- **A lock bulk work holds for long is a real-time thread's wait, priority inheritance or not:**
+  a `SCHED_FIFO` receiver whose datagrams came lock-free through its flow still took lwIP's core
+  lock at every `poll()` and every receive that found nothing, to look at lwIP's own queue. TCP
+  holds that lock for whole copies of its send buffer, so the receiver's delay from the driver
+  was 1.5 ms at the 99th percentile and 3.4 ms at worst; read without the lock (an atomic count,
+  the wake a latched semaphore), 112-136 µs and 0.37-1.1 ms (`devplan/network.md` §30k).
 - **Opening the console's USB serial port with DTR and RTS set low first reset the chip**
   (pyserial, 2026-10-11): the boot log showed `rst:0x17 (CHIP_USB_UART_RESET)`. Opening it with
   pyserial's defaults doesn't: `tools/bmdsboard.py` (`bmds-run`, `bmds-compat`) left the uptime

@@ -444,7 +444,7 @@ class Socket final : public Stream {
                 size_t   _receivedBytes = 0;
                 Datagram _datagrams[MaxDatagrams];
                 size_t   _datagramHead = 0;
-                size_t   _datagramCount = 0;
+                std::atomic<size_t> _datagramCount{0}; // written under the core lock; read without it
                 size_t   _datagramBytes = 0;
                 Socket  *_pending[MaxBacklog] = {}; // accepted by lwIP, not yet by accept()
                 size_t   _pendingCount = 0;
@@ -456,7 +456,7 @@ class Socket final : public Stream {
                 bool     _connected = false;
                 bool     _gone = false;         // TCP: lwIP freed the PCB (reset, aborted, refused)
                 bool     _peerFinished = false; // TCP: the FIN came; reads end
-                bool     _receiveShut = false;
+                std::atomic<bool>   _receiveShut{false};   // written under the core lock; read without it
                 bool     _sendShut = false;
                 uint32_t _dropped = 0;
 

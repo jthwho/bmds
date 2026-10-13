@@ -763,7 +763,8 @@ ABI 1 has not shipped, but these are recorded as `ABI:` lines because they chang
     locks, so its task is there; one not yet running is only recorded.
   - `WakeTimer` (`bmds_kernel`): a GPTimer at 1 MHz, sleepers in a list on their stacks, the
     alarm releasing their semaphores from its interrupt; a sleep within 20 µs is spun out; the
-    tick's wait stays behind. Taken at the first real-time policy. The host's sleeps on the tick.
+    tick's wait stays behind. Taken at the first real-time policy, its interrupt on core 1
+    (network.md §30k). The host's sleeps on the tick.
   - The SDK: `linux.c`'s `sched_*`, `sched_getaffinity` (`nproc` 2, was 1), `getcpu`,
     `sched_yield`; musl's four `ENOSYS` stubs make their calls (`sdk/libc/patches/bmds.diff`).
   - On the board, `progtest sched` passes: the calls and their errors, FIFO 50 at kernel

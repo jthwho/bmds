@@ -1552,7 +1552,12 @@ Result<Socket::Received> Socket::receiveWithin(Span<const WritableByteSpan> piec
                                 break;
                         }
                 }
-                {
+                if (_type != Type::Stream && _datagramCount.load(std::memory_order_acquire) == 0 &&
+                    !_receiveShut.load(std::memory_order_acquire)) {
+                        // Nothing from lwIP either, seen without the core lock (TCP holds it for
+                        // long, §30k): a datagram queued after this releases _readable.
+                        err = Error::WouldBlock;
+                } else {
                         NetStack::Locker lock;
                         auto [part, perr] = receiveLocked(pieces, flags, got.bytes);
                         err = perr;
@@ -1681,15 +1686,23 @@ bool Socket::isWritable() const {
 }
 
 uint8_t Socket::readiness() {
-        NetStack::QuietLocker lock;
-        uint8_t               ready = 0;
-        if (isReadable()) ready |= Readable;
-        if (isWritable()) ready |= Writable;
-        if (_type == Type::Stream && !_listening) {
-                // Reset or failed: everything at once, as Linux's poll says. Both sides
-                // finished: hung up.
-                if (_gone) ready |= Readable | Writable | HungUp | Broken;
-                if (_peerFinished && _sendShut) ready |= HungUp;
+        uint8_t ready = 0;
+        if (_type == Type::Stream) {
+                NetStack::QuietLocker lock;
+                if (isReadable()) ready |= Readable;
+                if (isWritable()) ready |= Writable;
+                if (!_listening) {
+                        // Reset or failed: everything at once, as Linux's poll says. Both sides
+                        // finished: hung up.
+                        if (_gone) ready |= Readable | Writable | HungUp | Broken;
+                        if (_peerFinished && _sendShut) ready |= HungUp;
+                }
+        } else {
+                // Without the core lock (§30k): a datagram socket's state is its queue's count and
+                // its shutdown, and it can always be written.
+                ready = Writable;
+                if (_datagramCount.load(std::memory_order_acquire) > 0 || _receiveShut.load(std::memory_order_acquire))
+                        ready |= Readable;
         }
         SocketFastPath *fast = takeFast();
         if (fast != nullptr && fast->readable()) ready |= Readable;

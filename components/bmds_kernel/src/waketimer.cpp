@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <driver/gptimer.h>
+#include <esp_ipc.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <bmds/deadline.h>
@@ -111,9 +112,20 @@ Error WakeTimer::init() {
         config.resolution_hz = TimerHz;
         esp_err_t err = gptimer_new_timer(&config, &timer);
         if (err == ESP_OK) {
-                gptimer_event_callbacks_t callbacks = {};
-                callbacks.on_alarm = onAlarm;
-                err = gptimer_register_event_callbacks(timer, &callbacks, nullptr);
+                // The interrupt is allocated here, on the core this runs on: core 1, away from the
+                // drivers' tasks and esp_timer on core 0 (network.md §30k).
+                esp_err_t registered = ESP_FAIL;
+                err = esp_ipc_call_blocking(
+                        1,
+                        [](void *arg) {
+                                gptimer_event_callbacks_t callbacks = {};
+                                callbacks.on_alarm = onAlarm;
+                                *static_cast<esp_err_t *>(arg) =
+                                        gptimer_register_event_callbacks(timer, &callbacks, nullptr);
+                                return;
+                        },
+                        &registered);
+                if (err == ESP_OK) err = registered;
         }
         if (err == ESP_OK) err = gptimer_enable(timer);
         if (err == ESP_OK) err = gptimer_start(timer);

@@ -263,7 +263,7 @@ Plan: [`input.md`](input.md).
     Then (§29): lwIP's heap in internal RAM and frames sent from it in place (the EMAC can't send
     from PSRAM), received checksums checked by the MAC (it can't insert them past 256 bytes), AES
     by DMA from 1 KB: SSH AES-CTR's CPU per MB down 334 to 297, up 308 to 270.
-  - [ ] 6. Real time: fast path, priority queue, timestamps, `netlat`. Design `network.md` §30: a
+  - [x] 6. Real time: fast path, priority queue, timestamps, `netlat`. Design `network.md` §30: a
     real-time flow always sends and receives, however much TCP takes. Piece 1 built (§30a): the
     driver's bulk limits and receive reserve, a spinlock-only transmit path on uncached
     descriptors. Then (§30b) no frame lost under line-rate floods: receive interrupts masked while
@@ -281,6 +281,9 @@ Plan: [`input.md`](input.md).
     `processes.md` §3.12) real-time program threads: `SCHED_FIFO`/`RR` (slot 113) in a band
     under the drivers with Linux's 95 % budget, sleeps on a hardware timer (about 30 µs late):
     `netlat -r` lost 1 of 30000 under the full load (5953 before), its wake 37 µs at the median.
+    The tails (§30k): datagram sockets no longer take lwIP's core lock in `poll()` or an empty
+    receive, and the wake timer's interrupt is on core 1. Under the full load: 0 lost in 26 runs,
+    driver to program 116 µs at the 99th percentile (1538 before), wake 56 µs (124).
   - [ ] 7. PTP, master and slave (BMCA): two boards alone elect a grandmaster.
 
 ## Phase 8 — Self-Hosting

@@ -2033,3 +2033,58 @@ threads (processes.md §3.12, slot 113). `netlat -r PRIO` runs its sender and re
   is 1.6 ms and the worst 3.4 ms, though it outranks everything but the drivers; a few wakes and
   departures run a millisecond or two late. Not yet analysed: what holds the receiver (a lock a
   normal-priority thread holds, such as the IP stack's while TCP runs, is the first suspect).
+
+### 30k. The tails: the core lock, and the wake timer's core (2026-10-12)
+
+Two causes, each found by taking one suspect away and measuring again.
+
+- **The receiver took lwIP's core lock every time it looked.** Its datagrams come through its
+  flow without the lock, but `Socket::readiness()` (every `poll()`) and a receive that found the
+  flow empty both took the core lock to look at lwIP's own queue for the socket. TCP holds that
+  lock for whole send-buffer copies (`sendTcp`'s `tcp_write` loop) and for its input. Priority
+  inheritance hurries the holder, but the receiver still waits out the rest of its hold.
+  A datagram or raw socket now reads its queue's count and its shutdown without the lock: both are
+  atomics written under it. A datagram lwIP queues after the look releases `_readable`, a latched
+  semaphore, so the waiter can't miss it. TCP sockets still take the lock. Under the full load the
+  receiver's delay from the driver went from 1538 µs to 133 µs at the 99th percentile, and from
+  3399 µs to 541 µs at worst.
+- **The wake timer's interrupt was on core 0 half the time.** `gptimer_register_event_callbacks()`
+  allocates it on the calling core: the first program thread to ask for `SCHED_FIFO`, unpinned.
+  `esp_intr_dump()` showed it beside `ETH_MAC` and core 0's tick. It is now registered on core 1
+  through `esp_ipc_call_blocking()`, away from `eth0` (21) and `esp_timer` (22). The wake under
+  the full load:
+
+  | Variant | Boots | 99 % | Worst |
+  |---|---|---|---|
+  | The caller's core | 2 | 116-124 µs | 630-1191 µs |
+  | Core 1 | 5 | 51-66 µs | 253-455 µs |
+
+  The handler in IRAM, with `CONFIG_GPTIMER_CTRL_FUNC_IN_IRAM` and interrupt level 3, bought only
+  3-4 µs at the median, so it wasn't kept.
+- **Measured** on the final firmware (sartre reflecting; 1 ms, 300 bytes, fast path, `-r 50`):
+
+  | Load | Lost | Wake late, 50 % / max | Departure off grid, 50 % / max | Round trip, 50 % / max | Driver to program, 50 % / 99 % / max |
+  |---|---|---|---|---|---|
+  | None (10 s) | 0 of 10000 | 31 / 178 µs | 2 / 326 µs | 99 / 1967 µs | 71 / 124 / 495 µs |
+  | 90 Mbit/s flood (30 s) | 0 of 30000 | 32 / 290 µs | 4 / 528 µs | 287 / 3180 µs | 73 / 87 / 444 µs |
+  | Flood and TCP both ways (`-l`, 30 s) | 0 of 30000 | 36 / 380 µs | 10 / 414 µs | 301 / 2614 µs | 74 / 116 / 679 µs |
+
+  The loss and miss counters stayed 0: `rx_missed`, `rx_overflow`, `tx_realtime_waited` and
+  `rx_realtime_dropped`. `rx_bulk_dropped` counted the flood. No datagram was lost in any of 26
+  full-load runs with the socket change. The round trip's tail includes the reflector, Python on
+  Linux. **Step 6's test (§30) passes.**
+- **netlat ends when its peer stalls.** The TCP loaders blocked in `read`/`write` with no timeout,
+  so a stalled reflector held `main` in `pthread_join` forever. The reflector serves one TCP
+  connection at a time. `main` now shuts their sockets down first and closes them after the join;
+  the sender uses `MSG_NOSIGNAL`. With the reflector stopped by `SIGSTOP` mid-run, netlat ended
+  and reported.
+- **Seen, not explained:**
+  - One full-load run, early on, hung past its 75 s timeout. Two later runs woke about 1 ms late,
+    on the tick's pace, while that process lived; once it was killed, the wakes were normal. It
+    didn't happen again in 20 runs. A missed alarm isn't it: IDF's GPTimer fires at once on an
+    alarm set behind the count. A real-time thread spinning would fit: the 95 % budget is global,
+    so it would hold back every program's real-time threads. That boot's log was lost to a reflash.
+  - The budget does throttle at the end of some runs. netlat sorts and fits its 30000 samples in
+    soft-float doubles on its `SCHED_FIFO` main thread, after the measurement.
+  - Each `ssh` login makes 196 reads of `flash0` through the driver, each one pausing the cache.
+    Nothing reads it while idle. Not looked into.
