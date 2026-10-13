@@ -18,6 +18,16 @@ menu "BMDS network"
             runs lwIP's timers. Above the window manager, so the network keeps up while the
             screen is busy; below audio, which bulk traffic must never hold up.
 
+    config BMDS_PTP_PRIORITY
+        int "PTP service task priority"
+        default 18
+        range 1 24
+        help
+            The PTP service's task on core 1 (devplan/network.md §31c): it answers and sends PTP's
+            messages and keeps the clocks following each other. The hardware stamps make its
+            timing forgiving; it sits at the top of real-time programs, under the real-time
+            audio clients and the device tasks.
+
     config BMDS_NET_HEAP_KB
         int "IP stack heap (KB of internal RAM)"
         default 64

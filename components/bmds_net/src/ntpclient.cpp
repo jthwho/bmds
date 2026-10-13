@@ -34,6 +34,7 @@
 
 #include "netinterface.h"
 #include "ntpclient.h"
+#include "ptpservice.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -75,6 +76,10 @@ namespace {
                         std::atomic<bool> serversPending{false};
                         std::atomic<bool> addressPending{false};
                         Stats::Group      group;
+                        // sync()'s, without the lock: microseconds.
+                        std::atomic<bool>    syncedShown{false};
+                        std::atomic<int32_t> offsetUs{0};
+                        std::atomic<int32_t> delayUs{0};
                         // Under the core lock:
                         bool            enabled = false;
                         bool            synced = false;
@@ -189,6 +194,12 @@ namespace {
                 return;
         }
 
+        void setSynced(bool synced) {
+                client->synced = synced;
+                client->syncedShown.store(synced, std::memory_order_relaxed);
+                return;
+        }
+
         void startBurst() {
                 sys_untimeout(&tick, nullptr);
                 if (!client->enabled) return;
@@ -200,7 +211,7 @@ namespace {
         // The settings and servers, again (core lock held): a burst with the new list.
         void restart() {
                 client->discipline.reset();
-                client->synced = false;
+                setSynced(false);
                 buildServers();
                 if (!client->enabled) {
                         sys_untimeout(&tick, nullptr);
@@ -239,7 +250,23 @@ namespace {
                 return;
         }
 
+        int32_t clampUs(int64_t ns) {
+                const int64_t us = ns / 1000;
+                return us > INT32_MAX ? INT32_MAX : us < INT32_MIN ? INT32_MIN : static_cast<int32_t>(us);
+        }
+
         void discipline(Server &s, const Ntp::Sample &sample, int64_t now) {
+                client->offsetUs.store(clampUs(sample.offsetNs), std::memory_order_relaxed);
+                client->delayUs.store(clampUs(sample.delayNs), std::memory_order_relaxed);
+                if (PtpService::ownsSystemClock()) {
+                        // PTP has the clock: the offsets are shown, the clock left alone.
+                        if (!client->synced) bmdsInfo("ntp: synced to %s (the clock follows PTP)", s.name);
+                        setSynced(true);
+                        client->offsetNs = sample.offsetNs;
+                        client->delayNs = sample.delayNs;
+                        client->jitterNs = s.filter.jitterNs(now);
+                        return;
+                }
                 const ClockStatus             status = Clock::status();
                 const int64_t                 jitter = s.filter.jitterNs(now);
                 const Ntp::Discipline::Action a = client->discipline.update(
@@ -256,7 +283,7 @@ namespace {
                         (void)Clock::adjust(a.offsetNs);
                 }
                 if (!client->synced) bmdsInfo("ntp: synced to %s", s.name);
-                client->synced = true;
+                setSynced(true);
                 client->offsetNs = sample.offsetNs;
                 client->delayNs = sample.delayNs;
                 client->jitterNs = jitter;
@@ -379,7 +406,7 @@ namespace {
                 }
                 if (client->chosen >= 0 && client->servers[client->chosen].reach == 0) {
                         if (client->synced) bmdsWarn("ntp: %s stopped answering", client->servers[client->chosen].name);
-                        client->synced = false;
+                        setSynced(false);
                         client->chosen = choose(nowNs());
                 }
                 u32_t next = BurstIntervalMs;
@@ -508,6 +535,15 @@ Error NtpClient::burst() {
         }
         startBurst();
         return Error::Ok;
+}
+
+NtpClient::Sync NtpClient::sync() {
+        Sync s;
+        if (!started) return s;
+        s.synced = client->syncedShown.load(std::memory_order_relaxed);
+        s.offsetNs = int64_t(client->offsetUs.load(std::memory_order_relaxed)) * 1000;
+        s.delayNs = int64_t(client->delayUs.load(std::memory_order_relaxed)) * 1000;
+        return s;
 }
 
 void NtpClient::status(Status &out) {

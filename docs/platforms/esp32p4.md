@@ -186,6 +186,11 @@ until silicon v3; then test again.
 - **HP_SYSTEM has a live copy of the 1588 time bus:** `sys_gmac_ctrl2` is the seconds and
   `sys_gmac_ctrl1` the nanoseconds. Two reads, cheaper than the MAC's own registers
   (`ptpTime()` takes 360-400 ns); back to back with them it agrees to within that.
+- **The 1588 clock and the system timer count the same crystal:** as PTP master following the
+  NTP-disciplined system clock, ptpclock0's correction settled at -7040 ppb against the system
+  clock's -7084 ppb (2026-10-13). So one clock following the other takes its rate as it is and
+  corrects only the offset (`ptpservice.cpp`); a PI from scratch on reads a microsecond apart
+  swung the follower's rate by 1-2 ppm.
 
 ## 4b. The crypto engines (`devplan/network.md` §26-27)
 

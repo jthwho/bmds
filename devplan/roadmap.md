@@ -291,6 +291,9 @@ Plan: [`input.md`](input.md).
     network (lock within 251 ns at 1 µs jitter, election, failover without a step), fuzzed.
     Step 2 done (§31b): the 1588 clock stepped in one update; PPS out on GPIO26, the MAC's own
     from chip revision 3, before it (this v1.3 board) a GPTimer through the ETM, within 120 ns.
+    Step 3 done (§31c-d): the service on core 1, `net/ptp/*`, `ptp`, `net.ptp.*`; the system
+    clock follows a slave's ptpclock0, a master's follows NTP. Against `ptp4l` (software stamps):
+    both roles and the takeover work.
 
 ## Phase 8 — Self-Hosting
 

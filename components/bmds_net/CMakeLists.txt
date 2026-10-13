@@ -71,6 +71,8 @@ if(COMMAND idf_component_register)
                                     src/ntpcommand.cpp
                                     src/pingcommand.cpp
                                     src/ppsout.cpp
+                                    src/ptpcommand.cpp
+                                    src/ptpservice.cpp
                                     src/socket.cpp
                                     src/socketfastpath.cpp
                                     src/sshservice.cpp

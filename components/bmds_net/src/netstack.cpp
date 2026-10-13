@@ -36,6 +36,7 @@
 #include "netnames.h"
 #include "netstats.h"
 #include "ntpclient.h"
+#include "ptpservice.h"
 
 extern "C" {
 unsigned char *bmds_lwip_heap = nullptr;
@@ -162,6 +163,8 @@ Error NetStack::init() {
         err = NetNames::init();
         if (err.isError()) return err;
         err = NtpClient::init();
+        if (err.isError()) return err;
+        err = PtpService::init();
         if (err.isError()) return err;
         err = NetMdns::init();
         if (err.isError()) return err;

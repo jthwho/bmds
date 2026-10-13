@@ -18,6 +18,7 @@
 #include <bmds/shell.h>
 
 #include "ntpclient.h"
+#include "ptpservice.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -62,11 +63,12 @@ namespace {
                         ctx.print("NTP: no servers (net/ntp/servers, or DHCP's)\n");
                         return Shell::ExitSuccess;
                 }
+                const char *ptp = PtpService::ownsSystemClock() ? " (the clock follows PTP)" : "";
                 if (s.synced && chosen != nullptr)
-                        ctx.printf("NTP: synced to %s, stratum %u, polling every %d s\n", chosen->name, s.stratum,
-                                   1 << s.poll);
+                        ctx.printf("NTP: synced to %s, stratum %u, polling every %d s%s\n", chosen->name, s.stratum,
+                                   1 << s.poll, ptp);
                 else
-                        ctx.printf("NTP: not synced, polling every %d s\n", 1 << s.poll);
+                        ctx.printf("NTP: not synced, polling every %d s%s\n", 1 << s.poll, ptp);
                 const ClockStatus clock = Clock::status();
                 char              offset[24], delay[24], jitter[24];
                 if (s.synced) {

@@ -84,6 +84,16 @@ namespace NtpClient {
         /** @brief Fills @p out. Takes the core lock. */
         void status(Status &out);
 
+        /** @brief Whether the clock follows a server, and how far off it may be (PTP's master). */
+        struct Sync {
+                        bool    synced = false;
+                        int64_t offsetNs = 0; ///< The last offset corrected.
+                        int64_t delayNs = 0;  ///< Its round trip.
+        };
+
+        /** @brief Returns the client's sync. Any task, no lock. @nonblocking */
+        Sync sync();
+
 } // namespace NtpClient
 
 BMDS_NAMESPACE_END

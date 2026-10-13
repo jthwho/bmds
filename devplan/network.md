@@ -2246,3 +2246,122 @@ without them, and builds so the rest is a test run later.
 - **Costs:** one GPTimer, one ETM channel and one GPIO ETM task; an interrupt every 500 ms
   (each one a few µs). Code: `PpsOut` 1.6 KB, plus ESP-IDF's ETM drivers (gptimer_etm, gpio_etm,
   esp_etm): 8.3 KB as objects, less once unused functions are dropped.
+
+### 31c. Step 3's design: the service and its ABI (2026-10-13, approved by the user)
+
+- **The service** (`ptpservice.cpp`): a kernel task on core 1 at `CONFIG_BMDS_PTP_PRIORITY` (18:
+  the top of real-time programs, under the audio clients and the drivers). It owns the
+  `Ptp::Port` and its flows, and sleeps on one semaphore that the flows' listeners release (a
+  packet or a departure stamp) with the port's deadline as its timeout. No polling, no core lock.
+  - **Flows:** `udp`: two `Udp` flows on 224.0.1.129, ports 319 (event) and 320 (general),
+    depth 2 each, TTL 1, DSCP 46 (AES67's for PTP). `l2`: one `EtherType` flow on 0x88F7 with
+    group 01:1B:19:00:00:00, depth 3. Four of the eight receive buffers kept for flows stay
+    free for AES67.
+  - **The PTP clock** is `ptpclock0`: stamps from the frames, `now()` from the MAC, steps through
+    `stepPtpTime()`, the frequency through `setPtpFrequency()` (whole ppb: 2.7 addend steps;
+    the integral takes up the rounding, so no finer call).
+  - **At start,** if the system clock is set, `ptpclock0` is set to it plus the UTC offset: it
+    runs on TAI from then on (the driver seeds it with UTC).
+  - **The UTC offset** until step 4: a valid master's; otherwise 37 s, announced as not valid.
+- **Which clock follows which** (once a second, the two read around each other, the tightest of
+  4 readings; a second PI servo with linuxptp's gains at 1 s, as `phc2sys` does):
+  1. a slave with its servo locked: the system clock follows `ptpclock0` (source `ptp`); NTP
+     keeps polling but doesn't touch the clock;
+  2. otherwise, while NTP is synced: NTP has the system clock, and a master's `ptpclock0`
+     follows it (`phc2sys -s CLOCK_REALTIME`), so a board alone serves NTP's time;
+  3. otherwise, if the system clock's source is already `ptp` (a slave whose master went):
+     it keeps following `ptpclock0`, which is in holdover;
+  4. otherwise nobody follows: both run free.
+- **What a master announces:** class 248 always (no reference of its own). While NTP is synced:
+  timeSource NTP (0x50), and an accuracy from NTP's last offset and half its delay (e.g. 0x2B,
+  within 10 ms), which ranks it above a board that isn't (0xFE, unknown) in BMCA.
+- **Not done:** §31's `net/ptp/step` is dropped: the port steps only a first offset beyond 20 µs
+  (after each change of master), as linuxptp; later offsets slew.
+- **Settings** (`net/ptp/*`, applied live; a change of interface, transport or domain restarts
+  the port):
+
+  | Key | Type | Default | Meaning |
+  |---|---|---|---|
+  | `enabled` | bool | `false` | Run PTP |
+  | `interface` | string | `eth0` | The Ethernet interface |
+  | `domain` | int 0-127 | `0` | The PTP domain |
+  | `profile` | `media\|default` | `media` | The intervals `auto` stands for |
+  | `transport` | `udp\|l2` | `udp` | UDP/IPv4 multicast, or Ethernet |
+  | `priority1`, `priority2` | int 0-255 | `128` | BMCA's priorities (lower wins) |
+  | `slave-only` | bool | `false` | Never be master |
+  | `sync-interval` | `auto\|-7`..`4` | `auto` | log2 s between Syncs (media -3, default 0) |
+  | `announce-interval` | `auto\|-3`..`4` | `auto` | log2 s between Announces (both 1) |
+  | `delay-interval` | `auto\|-7`..`5` | `auto` | log2 s between Delay_Reqs, as master tells slaves (media -3, default 0) |
+
+  `delay-interval` is new over §10's table: `ptp4l` tests want it.
+- **`ptp`** (clock identities as linuxptp prints them):
+
+  ```
+  PTP: slave on eth0 (udp, media, domain 0) for 2 min 13 s
+  Master: 001b21.fffe.aabbcc port 1; grandmaster the same, class 6, accuracy 100 ns, GPS
+  Offset +0.123 us, path delay 31.204 us, frequency +12.345 ppm, servo locked
+  UTC offset 37 s (the master's); the system clock follows ptpclock0
+    Foreign master            Port Class Pri1 Pri2 Steps Accuracy
+  * 001b21.fffe.aabbcc           1     6  128  128     0   100 ns
+    e8f60a.fffe.e2e222 (this)    1   248  128  128     0  unknown
+  ```
+
+  As master the second line is `Grandmaster: this clock, class 248, accuracy 10 ms, NTP`, and
+  the offset line is left out. Off: `PTP: off (net/ptp/enabled)`. `ptp -v` adds per-type
+  message counts (sent, received) and the rest of the counters below, and the flows' drops.
+- **Counters** `net.ptp.*`: `state` (disabled|listening|master|passive|uncalibrated|slave),
+  `offset_ns` (kept as history), `delay_ns`, `frequency_ppb`, `rx_<type>` and `tx_<type>` for
+  sync, delay_req, follow_up, delay_resp and announce, `ignored`, `send_failures`,
+  `announce_timeouts`, `state_changes`, `master_changes`, `steps`, `follow_ups_missed`.
+- **`clock`** shows source `ptp` as it is. **`ntp`** adds `(the clock follows PTP)` to its first
+  line while PTP has it.
+- **A cost to measure:** while PTP runs, its flows are open, so bulk traffic is held to its
+  share of the driver (§30e: 8 receive buffers and 2 transmit descriptors kept for flows). TCP's
+  throughput with PTP on is measured and recorded here.
+
+### 31d. As built: step 3, the service (2026-10-13)
+
+- **As §31c,** with these differences:
+  - **The task starts the first time PTP is enabled** (at boot if saved), and stays, idle, once
+    disabled: no internal RAM until then. Its state is a `PsramObject`.
+  - **A master on the arbitrary timescale:** `ptp4l` on software stamps runs on the system's UTC
+    and doesn't set `ptpTimescale`. A slave of such a master takes its time as UTC (offset 0),
+    as `phc2sys` does; `ptp` says `UTC offset 0 s (the master's time is UTC, not PTP's
+    timescale)`. If the board then becomes master, ptpclock0 steps 37 s back to TAI.
+  - **The clocks' following isn't a second linuxptp servo:** the system timer and ptpclock0
+    count the same crystal (docs/platforms/esp32p4.md §4a), so the follower takes the other's
+    rate and a PI (kp 0.2, ki 0.02 a second) corrects only the offset. linuxptp's gains on reads
+    a microsecond apart swung the system clock's rate 1-2 ppm a second. A step for the first
+    offset beyond 20 µs, any beyond 1 ms (a new master, NTP's step), and when the system clock
+    is taken over.
+  - **The master line** shows the grandmaster's priorities, not its time source (the port keeps
+    only the dataset). Ours, as master, shows its own source.
+- **Measured on the board alone:**
+  - Master after the announce timeout; Sync, Follow_Up and Announce sent, every departure
+    stamped, none failed. ptpclock0 followed the NTP-disciplined system clock within ±0.5 µs
+    a sample (±0.4 ppm in rate) and announced "NTP, accuracy 25 ms" (NTP's offset and half its
+    delay).
+  - `l2` and the default profile (a Sync a second); slave-only stays listening, class 255; PTP
+    starts at boot when saved.
+  - TCP with sartre, 32 MB each way: 39 Mbit/s in and out without PTP, 36 with it (the flows
+    hold bulk traffic to its share): about 7 %.
+  - The task used 2.2 KB of its 4 KB stack through all of it, and 243 ms of CPU in 6 minutes.
+    Code: `ptpservice.cpp` 11.6 KB and `ptpcommand.cpp` 4.7 KB as objects (with their text).
+- **Against `ptp4l` on sartre** (UDP, software stamps there; §31 step 5's first runs):
+  - **`ptp4l -S -s --free_running 1` following the board:** it chose the board as best master
+    and measured a path delay of 21-23 µs (±3-4 µs). Not steering its clock, its offset was
+    sartre's clock against the board's, closing at the 7 ppm between them.
+  - **The board following `ptp4l -S --priority1 100`:** slave and locked after one step; path
+    delay 19-34 µs; offsets mostly within ±2 µs, up to 23 µs when sartre's stamps strayed, the
+    rate swinging up to ±11 ppm with them (the master's noise; a hardware-stamped grandmaster
+    will show the board's own). The system clock followed ptpclock0 (source `ptp`) and NTP
+    showed `(the clock follows PTP)`.
+  - **`ptp4l` stopped:** the board timed it out, became master without a step of the port, NTP
+    had the system clock again, and ptpclock0 followed it within a microsecond.
+- **The same over Ethernet (`-2`, `net/ptp/transport l2`):** the board as master answered every
+  Delay_Req (154 of 154 in the first 20 s); as slave it locked after one step with a path delay
+  of 17.6 µs (UDP's 19-23: sartre's IP stack left out) and offsets within ±2 µs after the first
+  half-minute; with `ptp4l` stopped it became master again and NTP had the clock back. Nothing
+  dropped, failed or missed in any run.
+- **Known:** `clock`'s source stays `ptp` after NTP takes the clock back, until NTP next steps
+  it: NTP slews without setting the source.
