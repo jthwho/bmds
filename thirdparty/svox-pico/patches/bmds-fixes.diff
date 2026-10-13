@@ -1,0 +1,170 @@
+diff --git a/lib/picoacph.c b/lib/picoacph.c
+index d59b03d..b2ec8ba 100644
+--- a/lib/picoacph.c
++++ b/lib/picoacph.c
+@@ -754,7 +754,8 @@ static picoos_uint8 acphAccGetNrsLeft(register picodata_ProcessingUnit this,
+         i--;
+     }
+ 
+-    if ((acph->headx[i].boundstrength != PICODATA_ITEMINFO1_BOUND_PHR0) &&
++    if ((i >= 0) && /* BMDS: no word before the first */
++        (acph->headx[i].boundstrength != PICODATA_ITEMINFO1_BOUND_PHR0) &&
+         (acph->headx[i].head.type == PICODATA_ITEM_WORDPHON)) {
+         (*nrwordspre)++;
+         *nrsyllspre += acphGetNrSylls(this, acph, i);
+diff --git a/lib/picoctrl.c b/lib/picoctrl.c
+index 4754f35..7e64bb6 100644
+--- a/lib/picoctrl.c
++++ b/lib/picoctrl.c
+@@ -616,6 +616,28 @@ picoctrl_Engine picoctrl_newEngine(picoos_MemoryManager mm,
+ 
+         done = (PICO_OK == picorsrc_createVoice(rm,voiceName,&(this->voice)));
+     }
++    if (done) {
++        /* BMDS: every knowledge base the processing units use without checking
++           it is there (a voice's files mismatched or damaged: they would read
++           through a null pointer); the phoneme parsers' FST_SVOXPA_PARSE is in
++           no voice, and checked where used */
++        static const picoos_uint8 required[] = {
++            PICOKNOW_KBID_TPP_MAIN, PICOKNOW_KBID_TAB_GRAPHS, PICOKNOW_KBID_TAB_PHONES,
++            PICOKNOW_KBID_TAB_POS, PICOKNOW_KBID_FIXED_IDS, PICOKNOW_KBID_LEX_MAIN,
++            PICOKNOW_KBID_DT_POSP, PICOKNOW_KBID_DT_POSD, PICOKNOW_KBID_DT_G2P,
++            PICOKNOW_KBID_DT_PHR, PICOKNOW_KBID_DT_ACC, PICOKNOW_KBID_FST_XSAMPA_PARSE,
++            PICOKNOW_KBID_FST_XSAMPA2SVOXPA, PICOKNOW_KBID_DT_DUR, PICOKNOW_KBID_DT_LFZ1,
++            PICOKNOW_KBID_DT_LFZ2, PICOKNOW_KBID_DT_LFZ3, PICOKNOW_KBID_DT_LFZ4,
++            PICOKNOW_KBID_DT_LFZ5, PICOKNOW_KBID_DT_MGC1, PICOKNOW_KBID_DT_MGC2,
++            PICOKNOW_KBID_DT_MGC3, PICOKNOW_KBID_DT_MGC4, PICOKNOW_KBID_DT_MGC5,
++            PICOKNOW_KBID_PDF_DUR, PICOKNOW_KBID_PDF_LFZ, PICOKNOW_KBID_PDF_MGC,
++            PICOKNOW_KBID_PDF_PHS
++        };
++        picoos_uint8 k;
++        for (k = 0; done && k < sizeof(required); k++) {
++            done = (NULL != this->voice->kbArray[required[k]]);
++        }
++    }
+     if (done)  {
+         bSize = picodata_get_default_buf_size(PICODATA_PUTYPE_TEXT);
+ 
+diff --git a/lib/picoos.c b/lib/picoos.c
+index 811f7b0..8459d79 100644
+--- a/lib/picoos.c
++++ b/lib/picoos.c
+@@ -558,6 +558,10 @@ void * picoos_allocate(picoos_MemoryManager this,
+ 
+     c->size = -(c->size);
+     adr = (void *)((picoos_objsize_t)c + this->usedCellHdrSize);
++    /* BMDS: zeroed. Pico reads some of what it allocates before writing it
++       (valgrind: pr_getOutput, acphAccGetNrsLeft, transDurWeighted), so
++       its speech depended on what the memory held before. */
++    picopal_mem_set(adr, 0, byteSize);
+     return adr;
+ }
+ 
+@@ -723,7 +727,7 @@ static void picoos_vSetErrorMsg(picoos_char * dst, picoos_objsize_t siz,
+ 
+                 /* knowledge bases */
+             case PICO_EXC_KB_MISSING:
+-                fmt = PICOOS_MSG_EXC_KB_MISSING;
++                base = PICOOS_MSG_EXC_KB_MISSING; /* BMDS: was fmt, leaving base NULL */
+                 break;
+ 
+                 /* runtime exceptions (programming problems, usually a bug. E.g. trying to access null pointer) */
+@@ -1159,7 +1163,7 @@ static picoos_bool picoos_StrRead (picoos_File f, picoos_char str[])
+ {
+     picoos_uint32 i = 0;
+     picoos_bool done = TRUE;
+-    picoos_char b;
++    picoos_char b = 0; /* BMDS: GCC -O2 sees it read unset when the read fails */
+ 
+     while (done && (str[i] != NULLC)) {
+         done = done && picoos_ReadByte(f,(picoos_char *)&b);
+diff --git a/lib/picopr.c b/lib/picopr.c
+index 7cf1824..fe3c13b 100644
+--- a/lib/picopr.c
++++ b/lib/picopr.c
+@@ -305,7 +305,7 @@ typedef struct pr_subobj
+     picoos_uint8 pr_WorkMem[PR_WORK_MEM_SIZE];
+     picoos_uint32 workMemTop;
+     picoos_uint32 maxWorkMemTop;
+-    picoos_uint8 pr_DynMem[PR_DYN_MEM_SIZE];
++    picoos_uint8 pr_DynMem[PR_DYN_MEM_SIZE] __attribute__((aligned(PICOOS_ALIGN_SIZE))); /* BMDS: a memory manager goes here */
+     picoos_MemoryManager dynMemMM;
+     picoos_int32 dynMemSize;
+     picoos_int32 maxDynMemSize;
+@@ -587,7 +587,10 @@ static void pr_int_to_string(picoos_int32 n, picoos_uchar * str, picoos_int32 ma
+ }
+ /* *****************************************************************************/
+ 
+-static void pr_firstLetterToLowerCase (const picoos_uchar src[], picoos_uchar dest[])
++/* BMDS: 'dest' holds 'destSize' bytes, its NUL included (it was taken to hold
++   PR_MAX_DATA_LEN, where an item's has room for its own data's length: a
++   longer lowercase letter, or a long word, ran past it) */
++static void pr_firstLetterToLowerCase (const picoos_uchar src[], picoos_uchar dest[], picoos_int32 destSize)
+ {
+ 
+     picoos_int32 i;
+@@ -595,21 +598,25 @@ static void pr_firstLetterToLowerCase (const picoos_uchar src[], picoos_uchar de
+     picoos_int32 l;
+     picoos_bool done;
+ 
++    if (destSize < 1) {
++        return;
++    }
+     i = 0;
+     j = 0;
+     l = picobase_det_utf8_length(src[0]);
+-    while ((i < l) && (j < PR_MAX_DATA_LEN)) {
++    while ((i < l) && (j < destSize - 1)) {
+         dest[j] = src[i];
+         i++;
+         j++;
+     }
+-    if (j < PR_MAX_DATA_LEN) {
+-        dest[j] = 0;
+-    }
+-    picobase_lowercase_utf8_str(dest, (picoos_char*)dest, PR_MAX_DATA_LEN, &done);
++    dest[j] = 0;
++    picobase_lowercase_utf8_str(dest, (picoos_char*)dest, destSize, &done);
+     j = picobase_det_utf8_length(dest[0]);
++    if (j > destSize - 1) {
++        j = destSize - 1;
++    }
+     l = pr_strlen(src);
+-    while ((i < l) && (j < PR_MAX_DATA_LEN)) {
++    while ((i < l) && (j < destSize - 1)) {
+         dest[j] = src[i];
+         i++;
+         j++;
+@@ -1217,7 +1224,8 @@ static void pr_appendItemToOutItemList (picodata_ProcessingUnit this, pr_subobj_
+                 ltype = PICODATA_ITEMINFO1_TOKTYPE_UNDEFINED;
+                 lsubtype =  -(1);
+             }
+-            pr_newItem(this, pr_DynMem,& litem, PICODATA_ITEM_TOKEN, ln2, /*inItem*/FALSE);
++            /* BMDS: with its lowercase forms (strci, strcis), which are written below */
++            pr_newItem(this, pr_DynMem,& litem, PICODATA_ITEM_TOKEN, ln2, /*inItem*/TRUE);
+             if (pr->outOfMemory) return;
+             litem->head.type = PICODATA_ITEM_TOKEN;
+             litem->head.info1 = item->head.info1;
+@@ -1230,8 +1238,8 @@ static void pr_appendItemToOutItemList (picodata_ProcessingUnit this, pr_subobj_
+             } else {
+                 litem->val = 0;
+             }
+-            picobase_lowercase_utf8_str(litem->data,litem->strci,PR_MAX_DATA_LEN, &ldone);
+-            pr_firstLetterToLowerCase(litem->data,litem->strcis);
++            picobase_lowercase_utf8_str(litem->data,litem->strci,ln2+1, &ldone); /* BMDS: its room */
++            pr_firstLetterToLowerCase(litem->data,litem->strcis,ln2+1);
+             litem->alc = picobase_is_utf8_lowercase(litem->data,PR_MAX_DATA_LEN);
+             litem->auc = picobase_is_utf8_uppercase(litem->data,PR_MAX_DATA_LEN);
+             litem->suc = pr_isSUC(litem->data);
+@@ -3500,8 +3508,9 @@ picodata_step_result_t prStep(register picodata_ProcessingUnit this,
+                     it->val = 0;
+                 }
+                 if (pr->inBuf[0] == PICODATA_ITEM_TOKEN) {
+-                    picobase_lowercase_utf8_str(it->data,it->strci,PR_MAX_DATA_LEN, &ldone);
+-                    pr_firstLetterToLowerCase(it->data,it->strcis);
++                    /* BMDS: their room (the data's length and a NUL), not PR_MAX_DATA_LEN */
++                    picobase_lowercase_utf8_str(it->data,it->strci,pr->inBuf[3]+1, &ldone);
++                    pr_firstLetterToLowerCase(it->data,it->strcis,pr->inBuf[3]+1);
+                     it->alc = picobase_is_utf8_lowercase(it->data,PR_MAX_DATA_LEN);
+                     it->auc = picobase_is_utf8_uppercase(it->data,PR_MAX_DATA_LEN);
+                     it->suc = pr_isSUC(it->data);

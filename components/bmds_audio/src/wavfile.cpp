@@ -137,4 +137,54 @@ namespace WavFile {
 
 } // namespace WavFile
 
+namespace {
+
+        void put16(uint8_t *p, uint32_t v) {
+                p[0] = static_cast<uint8_t>(v);
+                p[1] = static_cast<uint8_t>(v >> 8);
+                return;
+        }
+
+        void put32(uint8_t *p, uint32_t v) {
+                put16(p, v);
+                put16(p + 2, v >> 16);
+                return;
+        }
+
+} // namespace
+
+Error WavFile::header(uint8_t (&out)[HeaderBytes], SampleFormat format, uint8_t channels, uint32_t rateHz,
+                      uint64_t dataBytes) {
+        uint16_t tag = TagPcm;
+        uint16_t bits = 0;
+        switch (format) {
+                case SampleFormat::U8: bits = 8; break;
+                case SampleFormat::S16Le: bits = 16; break;
+                case SampleFormat::S32Le: bits = 32; break;
+                case SampleFormat::F32Le:
+                        bits = 32;
+                        tag = TagFloat;
+                        break;
+                default: return Error::Invalid;
+        }
+        if ((channels != 1 && channels != 2) || rateHz == 0) return Error::Invalid;
+        const uint32_t frameBytes = channels * (bits / 8u);
+        // The RIFF size counts what follows it: 36 bytes of header, then the data.
+        const bool     known = dataBytes != UnknownLength && dataBytes <= StreamedSize - (HeaderBytes - 8);
+        const uint32_t data = known ? static_cast<uint32_t>(dataBytes) : StreamedSize;
+        std::memcpy(out, "RIFF", 4);
+        put32(out + 4, known ? data + static_cast<uint32_t>(HeaderBytes - 8) : StreamedSize);
+        std::memcpy(out + 8, "WAVEfmt ", 8);
+        put32(out + 16, FmtBytes);
+        put16(out + 20, tag);
+        put16(out + 22, channels);
+        put32(out + 24, rateHz);
+        put32(out + 28, rateHz * frameBytes);
+        put16(out + 32, frameBytes);
+        put16(out + 34, bits);
+        std::memcpy(out + 36, "data", 4);
+        put32(out + 40, data);
+        return Error::Ok;
+}
+
 BMDS_NAMESPACE_END

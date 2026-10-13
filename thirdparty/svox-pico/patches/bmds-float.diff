@@ -1,0 +1,153 @@
+diff --git a/lib/picodsp.h b/lib/picodsp.h
+index 67457f8..9952aa7 100644
+--- a/lib/picodsp.h
++++ b/lib/picodsp.h
+@@ -103,7 +103,7 @@ extern "C" {
+ /*------------------------------------------------------------------------------------------
+  Fast Exp Approximation now remapped to a function in picoos
+  -----------------------------------------------------------------------------------------*/
+-#define EXP(y) picoos_quick_exp(y)
++#define EXP(y) picoos_quick_expf(y) /* BMDS: single precision */
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/lib/picoos.c b/lib/picoos.c
+index 8459d79..2399598 100644
+--- a/lib/picoos.c
++++ b/lib/picoos.c
+@@ -200,6 +200,10 @@ picoos_double picoos_fabs (const picoos_double fabs_arg)
+     return (picoos_double) picopal_fabs((picopal_double) fabs_arg);
+ }
+ 
++picoos_single picoos_quick_expf(const picoos_single y) { /* BMDS */
++    return (picoos_single) picopal_quick_expf ((picopal_single)y);
++}
++
+ picoos_double picoos_quick_exp(const picoos_double y) {
+     return (picoos_double) picopal_quick_exp ((picopal_double)y);
+ }
+diff --git a/lib/picoos.h b/lib/picoos.h
+index faa954f..956a2d8 100644
+--- a/lib/picoos.h
++++ b/lib/picoos.h
+@@ -97,6 +97,7 @@ picoos_double picoos_sin(const picoos_double sin_arg);
+ picoos_double picoos_fabs(const picoos_double fabs_arg);
+ 
+ picoos_double picoos_quick_exp(const picoos_double y);
++picoos_single picoos_quick_expf(const picoos_single y); /* BMDS */
+ 
+ 
+ void picoos_get_sep_part_str (picoos_char string[], picoos_int32 stringlen, picoos_int32 * ind, picoos_char sepCh, picoos_char part[], picoos_int32 maxsize, picoos_uint8 * done);
+diff --git a/lib/picopal.c b/lib/picopal.c
+index b3b6ae3..303ddb9 100644
+--- a/lib/picopal.c
++++ b/lib/picopal.c
+@@ -558,6 +558,29 @@ picopal_double picopal_quick_exp(const picopal_double y) {
+ }
+ 
+ 
++/* BMDS: picopal_quick_exp in single precision, for an FPU without doubles
++ * (the ESP32-P4's: there the double one, called for every spectrum bin of
++ * every frame, was a tenth of the synthesis in software arithmetic). The
++ * same curve: 2^23/ln 2 in place of 2^20/ln 2, and 127*2^23 - 8*60801 for
++ * 1023*2^20 - 60801; the double one sets only its high word (20 bits of
++ * mantissa, the low word left uninitialized), this has 23. 'y' is held to
++ * a float's range of exponents, where the conversion to an integer is
++ * defined. */
++picopal_single picopal_quick_expf(const picopal_single y) {
++    union {
++        picopal_single f;
++        picopal_int32 i;
++    } _eco;
++    picopal_single x = y;
++    if (x > 88.0f) {
++        x = 88.0f;
++    } else if (x < -87.0f) {
++        x = -87.0f;
++    }
++    _eco.i = (picopal_int32)(12102203.161561485f * x) + 1064866808;
++    return _eco.f;
++}
++
+ /* *************************************************/
+ /* timer                                           */
+ /* *************************************************/
+diff --git a/lib/picopal.h b/lib/picopal.h
+index acfc8e0..6e7d2b7 100644
+--- a/lib/picopal.h
++++ b/lib/picopal.h
+@@ -273,6 +273,8 @@ pico_status_t picopal_mpr_protect(void *addr, picopal_objsize_t len, picopal_int
+ 
+ /* Fast, Compact Approximation of the Exponential Function */
+ picopal_double picopal_quick_exp(const picopal_double y);
++/* BMDS: the same approximation in single precision (the ESP32-P4's FPU has no doubles) */
++picopal_single picopal_quick_expf(const picopal_single y);
+ 
+ /* *************************************************/
+ /* types functions for time measurement            */
+diff --git a/lib/picopam.c b/lib/picopam.c
+index 50ee4e3..5d50513 100644
+--- a/lib/picopam.c
++++ b/lib/picopam.c
+@@ -1470,7 +1470,7 @@ static pico_status_t pam_get_f0(register picodata_ProcessingUnit this,
+     lfivar = (picoos_single) (((picoos_uint16) lfItem[numstreams * 2])
+             << pam->pdflfz->ivarpow[0]);
+     lfz = (picoos_single) lfum / (picoos_single) lfivar;
+-    lfz = (picoos_single) exp((double) lfz);
++    lfz = expf(lfz); /* BMDS: was exp((double) lfz) */
+     phonF0[nI] = (picoos_single) lfz;
+ 
+     /*pitch modoification*/
+diff --git a/lib/picosig2.c b/lib/picosig2.c
+index c25cbe4..c6cfa49 100644
+--- a/lib/picosig2.c
++++ b/lib/picosig2.c
+@@ -725,7 +725,7 @@ void env_spec(sig_innerobj_t *sig_inObj)
+         /*Envelope becomes a complex exponential : F=exp(.5*spect + j*angh);*/
+         for (nI = 0; nI < voxbnd; nI++) {
+             get_trig(ang[nI], ctbl, &fcX, &fsX);
+-            fExp = (picoos_int32) EXP((double)spect[nI]*mult);
++            fExp = (picoos_int32) EXP((picoos_single)spect[nI]*mult); /* BMDS: was (double) */
+             Fr[nI] = fExp * fcX;
+             Fi[nI] = fExp * fsX;
+         }
+@@ -736,7 +736,7 @@ void env_spec(sig_innerobj_t *sig_inObj)
+         for (nI = voxbnd; nI < PICODSP_HFFTSIZE_P1; nI++) {
+             fcX = *co++;
+             fsX = *so++;
+-            fExp = (picoos_int32) EXP((double)spect[nI]*mult);
++            fExp = (picoos_int32) EXP((picoos_single)spect[nI]*mult); /* BMDS: was (double) */
+             Fr[nI] = fExp * fcX;
+             Fi[nI] = fExp * fsX;
+         }
+@@ -747,7 +747,7 @@ void env_spec(sig_innerobj_t *sig_inObj)
+         for (nI = 1; nI < PICODSP_HFFTSIZE_P1; nI++) {
+             fcX = *co++;
+             fsX = *so++;
+-            fExp = (picoos_int32) EXP((double)spect[nI]*mult);
++            fExp = (picoos_int32) EXP((picoos_single)spect[nI]*mult); /* BMDS: was (double) */
+ 
+             Fr[nI] = fExp * fcX;
+             Fi[nI] = fExp * fsX;
+diff --git a/lib/picosig.c b/lib/picosig.c
+index f224e65..73513fd 100644
+--- a/lib/picosig.c
++++ b/lib/picosig.c
+@@ -453,7 +453,7 @@ static pico_status_t sigProcess(register picodata_ProcessingUnit this,
+                                 / sig_subObj->scmeanLFZ) : (picoos_single) 0.0);
+ 
+                 if (sig_subObj->sig_inner.F0_p != (picoos_single) 0.0f) {
+-                    sig_subObj->sig_inner.F0_p = (picoos_single) exp(
++                    sig_subObj->sig_inner.F0_p = (picoos_single) expf( /* BMDS: was exp */
+                             (picoos_single) sig_subObj->sig_inner.F0_p);
+ 
+                 }
+@@ -481,7 +481,7 @@ static pico_status_t sigProcess(register picodata_ProcessingUnit this,
+ 
+                 sig_subObj->sig_inner.Fuv_p = (picoos_single) tmp_uint16
+                         / sig_subObj->scmeanLFZ;
+-                sig_subObj->sig_inner.Fuv_p = (picoos_single) EXP((double)sig_subObj->sig_inner.Fuv_p);
++                sig_subObj->sig_inner.Fuv_p = (picoos_single) EXP(sig_subObj->sig_inner.Fuv_p); /* BMDS: was (double) */
+             }
+             /*load cep values*/
+             offset = inReadPos + sizeof(picodata_itemhead_t)

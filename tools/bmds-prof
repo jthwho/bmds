@@ -84,7 +84,12 @@ def main():
             if line.startswith("# module") and len(fields) >= 6:
                 modules[int(fields[2])] = (int(fields[3], 16), int(fields[4]), fields[5])
             elif len(fields) == 5 and not line.startswith("#"):
-                samples.append((int(fields[0]), fields[1], int(fields[2], 16), int(fields[3], 16), int(fields[4])))
+                # `prof stop`'s summary ("N samples, M busy (P%)") has five fields too: not a sample.
+                try:
+                    samples.append((int(fields[0]), fields[1], int(fields[2], 16), int(fields[3], 16),
+                                    int(fields[4])))
+                except ValueError:
+                    continue
     if not samples:
         sys.exit("bmds-prof: no samples in %s" % args.dump)
 

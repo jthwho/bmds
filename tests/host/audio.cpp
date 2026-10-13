@@ -914,6 +914,39 @@ TEST_CASE("WavFile: streamed and oversized data sizes run to the end, in whole f
         CHECK(parseWav(v).value().dataBytes == 200);
 }
 
+TEST_CASE("WavFile: headers written, read back") {
+        for (SampleFormat format : {SampleFormat::U8, SampleFormat::S16Le, SampleFormat::S32Le, SampleFormat::F32Le}) {
+                for (uint8_t channels : {uint8_t(1), uint8_t(2)}) {
+                        CAPTURE(static_cast<int>(format));
+                        const size_t         frame = channels * bmds::SampleFormats::bytesPerSample(format);
+                        std::vector<uint8_t> v(WavFile::HeaderBytes + 50 * frame, 0);
+                        uint8_t              h[WavFile::HeaderBytes];
+                        REQUIRE(WavFile::header(h, format, channels, 16000, 50 * frame).isOk());
+                        std::memcpy(v.data(), h, sizeof(h));
+                        auto [info, err] = parseWav(v);
+                        REQUIRE(err.isOk());
+                        CHECK(info.format == format);
+                        CHECK(info.channels == channels);
+                        CHECK(info.rateHz == 16000);
+                        CHECK(info.dataOffset == WavFile::HeaderBytes);
+                        CHECK(info.dataBytes == 50 * frame);
+                        // The RIFF size: what follows it.
+                        CHECK((h[4] | h[5] << 8 | h[6] << 16 | uint32_t(h[7]) << 24) == v.size() - 8);
+                }
+        }
+        // A stream: "to the end", which reading takes as the file's end.
+        std::vector<uint8_t> v(WavFile::HeaderBytes + 300, 0);
+        uint8_t              h[WavFile::HeaderBytes];
+        REQUIRE(WavFile::header(h, SampleFormat::S16Le, 1, 16000, WavFile::UnknownLength).isOk());
+        CHECK((h[40] & h[41] & h[42] & h[43]) == 0xff);
+        CHECK((h[4] & h[5] & h[6] & h[7]) == 0xff);
+        std::memcpy(v.data(), h, sizeof(h));
+        CHECK(parseWav(v).value().dataBytes == 300);
+        CHECK(WavFile::header(h, SampleFormat::MuLaw, 1, 8000, 0) == Error::Invalid);
+        CHECK(WavFile::header(h, SampleFormat::S16Le, 3, 8000, 0) == Error::Invalid);
+        CHECK(WavFile::header(h, SampleFormat::S16Le, 1, 0, 0) == Error::Invalid);
+}
+
 TEST_CASE("WavFile: what it refuses") {
         auto expect = [](std::vector<uint8_t> v, Error want) {
                 auto [info, err] = parseWav(v);

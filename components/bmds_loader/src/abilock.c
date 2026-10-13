@@ -152,6 +152,23 @@ _Static_assert(offsetof(bmds_sched_t, size) == 0 && offsetof(bmds_sched_t, polic
                        offsetof(bmds_sched_t, throttled) == 24 && offsetof(bmds_sched_t, flags) == 28 &&
                        sizeof(bmds_sched_t) == 32,
                "ABI: bmds_sched_t");
+_Static_assert(BMDS_SYS_AUDIO_SPEAK == 114, "ABI: slot AUDIO_SPEAK");
+_Static_assert(BMDS_SYS_AUDIO_SPEAK_INFO == 115, "ABI: slot AUDIO_SPEAK_INFO");
+_Static_assert(BMDS_SPEAK_MARKUP == 0x1000u && BMDS_SPEAK_VOICE_MAX == 32, "ABI: speech flags and sizes");
+#if UINTPTR_MAX == 0xffffffffu // (a pointer inside)
+_Static_assert(offsetof(bmds_speak_config_t, size) == 0 && offsetof(bmds_speak_config_t, flags) == 4 &&
+                       offsetof(bmds_speak_config_t, voice) == 8 && offsetof(bmds_speak_config_t, speed) == 12 &&
+                       offsetof(bmds_speak_config_t, pitch) == 16 && offsetof(bmds_speak_config_t, volume) == 20 &&
+                       sizeof(bmds_speak_config_t) == 24,
+               "ABI: bmds_speak_config_t");
+#endif
+_Static_assert(offsetof(bmds_speak_info_t, size) == 0 && offsetof(bmds_speak_info_t, rate) == 4 &&
+                       offsetof(bmds_speak_info_t, channels) == 8 && offsetof(bmds_speak_info_t, format) == 12 &&
+                       offsetof(bmds_speak_info_t, frames) == 16 && offsetof(bmds_speak_info_t, speed) == 24 &&
+                       offsetof(bmds_speak_info_t, pitch) == 28 && offsetof(bmds_speak_info_t, volume) == 32 &&
+                       offsetof(bmds_speak_info_t, flags) == 36 && offsetof(bmds_speak_info_t, voice) == 40 &&
+                       sizeof(bmds_speak_info_t) == 72,
+               "ABI: bmds_speak_info_t");
 _Static_assert(BMDS_TERM_PTY_NUMBER == 0 && BMDS_TERM_PTY_UNLOCK == 1 && BMDS_TERM_SET_SIZE == 2 &&
                        BMDS_TERM_CONTROL == 3 && BMDS_TERM_RELEASE == 4 && BMDS_TERM_PTS_NUMBER == 5,
                "ABI: term_ctl operations");

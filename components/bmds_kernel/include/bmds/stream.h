@@ -24,6 +24,7 @@ class FileHandle;
 class MidiFile;
 class Pty;
 class Socket;
+class SpeechFile;
 class SynthFile;
 class WaitList;
 namespace Notifications {
@@ -166,6 +167,12 @@ class Stream {
                  *        `devplan/audio.md` §22), or null (the default).
                  */
                 virtual SynthFile *synthFile() { return nullptr; }
+
+                /**
+                 * @brief Returns the speech fd behind this stream (`audio_speak`:
+                 *        `devplan/speech.md` §4), or null (the default).
+                 */
+                virtual SpeechFile *speechFile() { return nullptr; }
 
                 /**
                  * @brief Returns the notification listener behind this stream (an events

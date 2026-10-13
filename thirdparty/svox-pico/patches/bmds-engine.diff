@@ -1,0 +1,196 @@
+diff --git a/lib/picoapi.c b/lib/picoapi.c
+index ceb8cc5..c786804 100644
+--- a/lib/picoapi.c
++++ b/lib/picoapi.c
+@@ -574,6 +574,57 @@ PICO_FUNC pico_newEngine(
+     return status;
+ }
+ 
++/**
++ * BMDS: pico_setEngineMarkup : Sets whether an engine obeys the markup tags in
++ * its text (it does when created) or reads them as text; from the next
++ * character put.
++ * @param    engine : pointer to a Pico engine handle
++ * @param    enabled : TRUE to obey tags
++ * @return  PICO_OK : successful
++ * @return     PICO_ERR_INVALID_HANDLE : errors
++*/
++PICO_FUNC pico_setEngineMarkup(
++        pico_Engine engine,
++        pico_Int16 enabled
++        )
++{
++    if (!picoctrl_isValidEngineHandle((picoctrl_Engine) engine)) {
++        return PICO_ERR_INVALID_HANDLE;
++    }
++    picoctrl_engGetCommon((picoctrl_Engine) engine)->markupOff = enabled ? FALSE : TRUE;
++    return PICO_OK;
++}
++
++/**
++ * BMDS: pico_setEngineProsody : Sets an engine's speed, pitch and volume, in
++ * percent of the voice's (as the markup's levels: speed 20 to 500, pitch 50
++ * to 200, volume 0 to 500), from the next character it reads. Markup in the
++ * text changes them after; its end tags go back to 100.
++ * @param    engine : pointer to a Pico engine handle
++ * @return  PICO_OK : successful
++ * @return     PICO_ERR_INVALID_HANDLE, PICO_ERR_INDEX_OUT_OF_RANGE : errors
++*/
++PICO_FUNC pico_setEngineProsody(
++        pico_Engine engine,
++        pico_Int16 speed,
++        pico_Int16 pitch,
++        pico_Int16 volume
++        )
++{
++    picoos_Common common;
++    if (!picoctrl_isValidEngineHandle((picoctrl_Engine) engine)) {
++        return PICO_ERR_INVALID_HANDLE;
++    }
++    if (speed < 20 || speed > 500 || pitch < 50 || pitch > 200 || volume < 0 || volume > 500) {
++        return PICO_ERR_INDEX_OUT_OF_RANGE;
++    }
++    common = picoctrl_engGetCommon((picoctrl_Engine) engine);
++    common->speed = (picoos_uint16) speed;
++    common->pitch = (picoos_uint16) pitch;
++    common->volume = (picoos_uint16) volume;
++    return PICO_OK;
++}
++
+ /**
+  * pico_disposeEngine : Disposes a Pico engine
+  * @param    system : pointer to a pico_System struct
+diff --git a/lib/picoapi.h b/lib/picoapi.h
+index 9f1c760..98d9c4b 100644
+--- a/lib/picoapi.h
++++ b/lib/picoapi.h
+@@ -368,6 +368,29 @@ PICO_FUNC pico_newEngine(
+         );
+ 
+ 
++/**
++   BMDS: sets whether 'engine' obeys the markup tags in its text (TRUE, as
++   it does when created) or reads them as text (FALSE), from the next
++   character put.
++*/
++PICO_FUNC pico_setEngineMarkup(
++        pico_Engine engine,
++        pico_Int16 enabled
++        );
++
++/**
++   BMDS: sets 'engine's speed, pitch and volume in percent of the voice's
++   (as the markup's levels: speed 20 to 500, pitch 50 to 200, volume 0
++   to 500), from the next character it reads. Markup in the text changes
++   them after; its end tags go back to 100.
++*/
++PICO_FUNC pico_setEngineProsody(
++        pico_Engine engine,
++        pico_Int16 speed,
++        pico_Int16 pitch,
++        pico_Int16 volume
++        );
++
+ /**
+  Disposes a Pico engine and releases all memory it occupied. The
+  engine handle becomes invalid.
+diff --git a/lib/picoos.c b/lib/picoos.c
+index 4e2b439..811f7b0 100644
+--- a/lib/picoos.c
++++ b/lib/picoos.c
+@@ -220,6 +220,10 @@ picoos_Common picoos_newCommon(picoos_MemoryManager mm)
+         this->em = NULL;
+         this->mm = NULL;
+         this->fileList = NULL;
++        this->markupOff = FALSE;
++        this->speed = 100;
++        this->pitch = 100;
++        this->volume = 100;
+     }
+     return this;
+ }
+diff --git a/lib/picoos.h b/lib/picoos.h
+index 859e176..faa954f 100644
+--- a/lib/picoos.h
++++ b/lib/picoos.h
+@@ -125,6 +125,8 @@ typedef struct picoos_common {
+     picoos_ExceptionManager em;
+     picoos_MemoryManager mm;
+     picoos_File fileList;
++    picoos_bool markupOff; /* BMDS: an engine's text is read as text, tags too */
++    picoos_uint16 speed, pitch, volume; /* BMDS: an engine's, in percent (100: as the voice) */
+ } picoos_common_t;
+ 
+ picoos_Common picoos_newCommon(picoos_MemoryManager mm);
+diff --git a/lib/picotok.c b/lib/picotok.c
+index d51062a..201606c 100644
+--- a/lib/picotok.c
++++ b/lib/picotok.c
+@@ -241,6 +241,7 @@ typedef struct tok_subobj
+     picoos_int32 nrEOL;
+ 
+     picoos_bool markupHandlingMode;       /* to be moved ??? */
++    picoos_uint16 speed, pitch, volume;   /* BMDS: the engine's, as last put */
+     picoos_bool aborted;                  /* to be moved ??? */
+ 
+     picoos_bool start;
+@@ -1320,7 +1321,8 @@ static void tok_treatChar (picodata_ProcessingUnit this, tok_subobj_t * tok, pic
+         case UTF_CHAR_INCOMPLETE:
+             break;
+         case UTF_CHAR_COMPLETE:
+-            markupHandling = (markupHandling && (tok->markupHandlingMode == MARKUP_HANDLING_ENABLED));
++            markupHandling = (markupHandling && (tok->markupHandlingMode == MARKUP_HANDLING_ENABLED)
++                              && !this->common->markupOff); /* BMDS */
+             id = picoktab_graphOffset(tok->graphTab, tok->utf);
+             if (id > 0) {
+                 if (picoktab_getIntPropTokenType(tok->graphTab, id, &uval8)) {
+@@ -1437,6 +1439,9 @@ static pico_status_t tokReset(register picodata_ProcessingUnit this, picoos_int3
+ 
+ 
+     tok->markupHandlingMode = TRUE;
++    tok->speed = PICO_SPEED_DEFAULT; /* BMDS */
++    tok->pitch = PICO_PITCH_DEFAULT;
++    tok->volume = PICO_VOLUME_DEFAULT;
+     tok->aborted = FALSE;
+ 
+     tok->start = TRUE;
+@@ -1526,6 +1531,29 @@ picodata_ProcessingUnit picotok_newTokenizeUnit(picoos_MemoryManager mm, picoos_
+     return this;
+ }
+ 
++/* BMDS: puts a command for each of the engine's speed, pitch and volume
++ * (pico_setEngineProsody) that changed since last put; TRUE if any did */
++static picoos_bool tok_putProsody (picodata_ProcessingUnit this, tok_subobj_t * tok)
++{
++    picoos_bool put = FALSE;
++    if (tok->speed != this->common->speed) {
++        tok->speed = this->common->speed;
++        tok_putItem(this, tok, PICODATA_ITEM_CMD, PICODATA_ITEMINFO1_CMD_SPEED, PICODATA_ITEMINFO2_CMD_ABSOLUTE, tok->speed, (picoos_uchar*)"");
++        put = TRUE;
++    }
++    if (tok->pitch != this->common->pitch) {
++        tok->pitch = this->common->pitch;
++        tok_putItem(this, tok, PICODATA_ITEM_CMD, PICODATA_ITEMINFO1_CMD_PITCH, PICODATA_ITEMINFO2_CMD_ABSOLUTE, tok->pitch, (picoos_uchar*)"");
++        put = TRUE;
++    }
++    if (tok->volume != this->common->volume) {
++        tok->volume = this->common->volume;
++        tok_putItem(this, tok, PICODATA_ITEM_CMD, PICODATA_ITEMINFO1_CMD_VOLUME, PICODATA_ITEMINFO2_CMD_ABSOLUTE, tok->volume, (picoos_uchar*)"");
++        put = TRUE;
++    }
++    return put;
++}
++
+ /**
+  * fill up internal buffer, try to locate token, write token to output
+  */
+@@ -1560,6 +1588,9 @@ picodata_step_result_t tokStep(register picodata_ProcessingUnit this,
+             }
+ 
+         }
++        else if (tok_putProsody(this, tok)) {
++            /* BMDS: put before the next character */
++        }
+         else if (PICO_EOF != (ch = picodata_cbGetCh(this->cbIn))) {
+             PICODBG_DEBUG(("read in %c", (picoos_char) ch));
+             tok_treatChar(this, tok, (picoos_uchar) ch, /*markupHandling*/TRUE);

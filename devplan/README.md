@@ -24,6 +24,7 @@ Design notes and implementation plans for BMDS subsystems. Write a plan here **b
 - [`sysconf.md`](sysconf.md) — the system configuration: typed parameters, `sysconf`, watchers, the SDK's calls.
 - [`filebrowser.md`](filebrowser.md) — the file browser: the toolkit's furniture and item views, `bmds_files`, folder windows in the panel, `files`.
 - [`audio.md`](audio.md) — Phase 7: audio devices (ES8311 on I²S), the mixing engine, OSS `/dev/dsp` and native audio fds, real-time clients, decoders, MIDI and the synth.
+- [`speech.md`](speech.md) — text to speech: SVOX Pico with its voices read in place from `/rom`, `say`, a speech fd for programs.
 - [`mediaplayer.md`](mediaplayer.md) — the media player: audio and MIDI files in a GUI window, a playlist; video later (planned).
 - [`network.md`](network.md) — Phase 7: Ethernet and the IPv4 stack (vendored lwIP), BSD sockets, a real-time fast path for PTP and AES67, NTP, SSH.
 - [`logging.md`](logging.md) — one log for the whole system: `syslog()` through `/dev/log`, `logger`, rotated files on the card.

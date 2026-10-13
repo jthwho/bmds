@@ -34,6 +34,7 @@
 #define BMDS_SYS_H
 
 #include <stdint.h>
+#include <bmds/errno.h> /* bmds_say's codes (appended 2026-10-12) */
 
 #ifdef __cplusplus
 extern "C" {
@@ -186,6 +187,8 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_FS_INFO 111u   /**< `int32_t fs_info(const char *path, bmds_fs_info_t *info)`. */
 #define BMDS_SYS_CRYPTO 112u    /**< `int32_t crypto(const bmds_crypto_op_t *op)`. */
 #define BMDS_SYS_SCHED 113u     /**< `int32_t sched(uint32_t op, int32_t tid, bmds_sched_t *param)`. */
+#define BMDS_SYS_AUDIO_SPEAK 114u      /**< `int32_t audio_speak(const bmds_speak_config_t *config)`: a new fd. */
+#define BMDS_SYS_AUDIO_SPEAK_INFO 115u /**< `int32_t audio_speak_info(int32_t fd, bmds_speak_info_t *info)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -1375,6 +1378,41 @@ typedef struct bmds_sched_t {
                 uint32_t flags;           /**< 0. */
 } bmds_sched_t;
 
+/** @brief `bmds_speak_config_t::flags` (appended 2026-10-12, slot 114): the text's markup obeyed. */
+#define BMDS_SPEAK_MARKUP 0x1000u
+
+/** @brief The longest voice name, its NUL included (`bmds_speak_info_t::voice`). */
+#define BMDS_SPEAK_VOICE_MAX 32u
+
+/**
+ * @brief Text to speech (`audio_speak`, appended 2026-10-12, slots 114-115, `devplan/speech.md`):
+ *        UTF-8 text written to the fd, samples read from it. Speed and pitch are percent of the
+ *        voice's, volume of the loudest level that doesn't clip (over about 115, peaks can); Pico's markup in the text (`<speed level='200'>`,
+ *        `<break time='300ms'/>`, `<spell>`...) is read as text unless `BMDS_SPEAK_MARKUP`.
+ */
+typedef struct bmds_speak_config_t {
+                uint32_t    size;   /**< Set by the caller: `sizeof(bmds_speak_config_t)`. */
+                uint32_t    flags;  /**< `BMDS_O_CLOEXEC`, `BMDS_SPEAK_MARKUP`, or 0. */
+                const char *voice;  /**< A voice's name (`"en-US"`; `say -v ?` lists them); NULL: `speech/voice`. */
+                uint32_t    speed;  /**< 20 to 500 (0: 100). */
+                uint32_t    pitch;  /**< 50 to 200 (0: 100). */
+                uint32_t    volume; /**< 1 to 500 (0: 100: as loud as it gets without clipping). */
+} bmds_speak_config_t;
+
+/** @brief A speech fd's state (`audio_speak_info`). */
+typedef struct bmds_speak_info_t {
+                uint32_t size;                        /**< Set by the caller: `sizeof(bmds_speak_info_t)`. */
+                uint32_t rate;                        /**< Its samples' rate: 16000. */
+                uint32_t channels;                    /**< 1. */
+                uint32_t format;                      /**< `BMDS_AUDIO_S16LE`. */
+                uint64_t frames;                      /**< Samples read so far. */
+                uint32_t speed;                       /**< As configured (100 for 0). */
+                uint32_t pitch;                       /**< As configured. */
+                uint32_t volume;                      /**< As configured. */
+                uint32_t flags;                       /**< `BMDS_SPEAK_MARKUP` if configured. */
+                char     voice[BMDS_SPEAK_VOICE_MAX]; /**< The voice's name. */
+} bmds_speak_info_t;
+
 /** @brief `proc_timer`'s timers. */
 #define BMDS_TIMER_REAL 0u /**< Real time, raising `SIGALRM` (Linux's `ITIMER_REAL`). */
 
@@ -1497,6 +1535,8 @@ typedef int32_t (*bmds_sys_term_ctl_fn)(int32_t fd, uint32_t op, uint32_t arg);
 typedef int32_t (*bmds_sys_fs_info_fn)(const char *path, bmds_fs_info_t *info);
 typedef int32_t (*bmds_sys_crypto_fn)(const bmds_crypto_op_t *op);
 typedef int32_t (*bmds_sys_sched_fn)(uint32_t op, int32_t tid, bmds_sched_t *param);
+typedef int32_t (*bmds_sys_audio_speak_fn)(const bmds_speak_config_t *config);
+typedef int32_t (*bmds_sys_audio_speak_info_fn)(int32_t fd, bmds_speak_info_t *info);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -2670,6 +2710,93 @@ static inline int32_t bmds_crypto(const bmds_crypto_op_t *op) {
  */
 static inline int32_t bmds_sched(uint32_t op, int32_t tid, bmds_sched_t *param) {
         return ((bmds_sys_sched_fn)bmds_sys->slot[BMDS_SYS_SCHED])(op, tid, param);
+}
+
+/**
+ * @brief Opens a speech fd (devplan/speech.md §4): write UTF-8 text to it, read 16 kHz mono
+ *        signed 16-bit samples (`audio_speak_info` says so) to play (`/dev/dsp`), keep or save.
+ *        A write takes what fits (a short count; `-BMDS_EAGAIN` when nothing did: read first).
+ *        A read makes whole samples up to its size, and returns 0 once everything written has
+ *        been said up to the last NUL byte: end the text with one. Without it the last sentence
+ *        waits for more text, even after its full stop. Neither waits: the speech is made in
+ *        the reader's thread (about a sixth of a core speaking in real time). A voice opens in
+ *        about 0.2 s; each fd takes about 1 MB of memory while open. Check
+ *        `bmds_sys_has(BMDS_SYS_AUDIO_SPEAK)` first.
+ * @return The fd, or `-BMDS_EINVAL` (a flag, range, name or `size`), `-BMDS_ENOENT` (no such
+ *         voice), `-BMDS_ENOMEM`, `-BMDS_EBUSY` (four voices in use), `-BMDS_EIO` (a damaged
+ *         voice), `-BMDS_EMFILE`, `-BMDS_EFAULT`.
+ */
+static inline int32_t bmds_audio_speak(const bmds_speak_config_t *config) {
+        return ((bmds_sys_audio_speak_fn)bmds_sys->slot[BMDS_SYS_AUDIO_SPEAK])(config);
+}
+
+/**
+ * @brief Fills @p info (its `size` set) with speech fd @p fd's state.
+ * @return 0, or `-BMDS_ENOTTY` (not a speech fd), `-BMDS_EBADF`, `-BMDS_EINVAL` (`size`),
+ *         `-BMDS_EFAULT`.
+ */
+static inline int32_t bmds_audio_speak_info(int32_t fd, bmds_speak_info_t *info) {
+        return ((bmds_sys_audio_speak_info_fn)bmds_sys->slot[BMDS_SYS_AUDIO_SPEAK_INFO])(fd, info);
+}
+
+/**
+ * @brief Says @p text aloud in the default voice (`speech/voice`) on `/dev/dsp`, and returns
+ *        once it has been heard: `audio_speak` and an audio fd, as `say` does.
+ * @return 0, or a call's `-errno` (`-BMDS_ENOSYS` without speech in the kernel; `-BMDS_EINTR`
+ *         on a signal, the rest dropped).
+ * @blocking While it speaks.
+ */
+static inline int32_t bmds_say(const char *text) {
+        bmds_speak_config_t config = {sizeof(bmds_speak_config_t), BMDS_O_CLOEXEC, 0, 0, 0, 0};
+        /* 2 s queued (a sentence at the slowest rate takes over 0.5 s to start), playing from 0.25 s. */
+        bmds_audio_config_t audio = {sizeof(bmds_audio_config_t), BMDS_AUDIO_S16LE, 1, 16000, 32768, 4000, 0, 0};
+        int16_t             samples[256];
+        const char         *at = text;
+        uint32_t            left = 0;
+        int32_t             speech, dsp, r = 0;
+        if (!bmds_sys_has(BMDS_SYS_AUDIO_SPEAK)) return -BMDS_ENOSYS;
+        while (text[left] != 0) left++;
+        left++; /* its NUL too: everything is said */
+        speech = bmds_audio_speak(&config);
+        if (speech < 0) return speech;
+        dsp = bmds_open("/dev/dsp", BMDS_O_WRITE | BMDS_O_CLOEXEC);
+        if (dsp < 0) {
+                bmds_close(speech);
+                return dsp;
+        }
+        r = bmds_audio_config(dsp, &audio, 0);
+        while (r >= 0) {
+                if (left != 0) {
+                        r = bmds_write(speech, at, left);
+                        if (r == -BMDS_EAGAIN) r = 0;
+                        if (r < 0) break;
+                        at += r;
+                        left -= (uint32_t)r;
+                }
+                r = bmds_read(speech, samples, sizeof(samples));
+                if (r < 0) break;
+                if (r == 0) {
+                        if (left == 0) break; /* the NUL written and all before it said */
+                        continue;
+                }
+                {
+                        const char *p = (const char *)samples;
+                        int32_t     n = r;
+                        while (n > 0) {
+                                r = bmds_write(dsp, p, (uint32_t)n);
+                                if (r < 0) break;
+                                p += r;
+                                n -= r;
+                        }
+                }
+        }
+        bmds_close(speech);
+        /* The close waits until what is queued has played (a signal drops it). */
+        if (r >= 0)
+                r = bmds_close(dsp);
+        else
+                bmds_close(dsp);
+        return r < 0 ? r : 0;
 }
 
 #ifdef __cplusplus

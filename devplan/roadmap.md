@@ -217,6 +217,12 @@ Plan: [`input.md`](input.md).
   - [ ] Mixer window (`audio.md` §17, planned 2026-10-09): `mixer`, per-application levels (the
     device, each stream, system sounds, the MIDI synth's `synth/gain`); the volume tray icon's
     context menu (Mute, Mixer…). After the media player.
+  - [ ] Speech (`speech.md`, planned 2026-10-12, the user's request): text to speech on SVOX
+    Pico, the en-US voice read in place from `/rom`, the others a package; `say` (the speakers or
+    a WAV file), a speech fd for programs (slots 114-115) and `bmds_say`. Steps 1 (Pico vendored,
+    patched and fuzzed; `Speaker`) and 2 (`Voices`, `say`, the settings, the ROM; measured: 6×
+    real time, a sixth of a core speaking, the voice kept in place) and 3 (slots 114-115, `bmds_say`,
+    `progtest speech`, the `speak` example) done. Next: the voices package (step 4).
   - [ ] 9. Capture and `record` (after the loopback cable), then the pedal work.
   - [ ] 10. AES67 and USB audio (after the network stack).
 - [ ] Network (`network.md`, designed 2026-10-10; the user's requirements and decisions):

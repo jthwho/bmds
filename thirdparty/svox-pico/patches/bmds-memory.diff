@@ -1,0 +1,286 @@
+diff --git a/lib/picoapi.c b/lib/picoapi.c
+index 589c0e0..ceb8cc5 100644
+--- a/lib/picoapi.c
++++ b/lib/picoapi.c
+@@ -334,6 +334,38 @@ PICO_FUNC pico_loadResource(
+     return status;
+ }
+ 
++/**
++ * BMDS: pico_loadResourceInPlace : Loads a resource file whose bytes lie in
++ * memory, used where they lie (nothing copied)
++ * @param    system : pointer to a pico_System struct
++ * @param    data : the file's bytes: valid and unchanged while it is loaded
++ * @param    size : their number
++ * @param    *outLingware : pointer to receive the loaded lingware resource
++ * @return  PICO_OK : successful
++ * @return     PICO_ERR_INVALID_HANDLE, PICO_ERR_NULLPTR_ACCESS, PICO_EXC_UNEXPECTED_FILE_TYPE : errors
++*/
++PICO_FUNC pico_loadResourceInPlace(
++        pico_System system,
++        const void *data,
++        pico_Uint32 size,
++        pico_Resource *outLingware
++        )
++{
++    pico_Status status = PICO_OK;
++
++    if (!is_valid_system_handle(system)) {
++        status = PICO_ERR_INVALID_HANDLE;
++    } else if ((data == NULL) || (outLingware == NULL)) {
++        status = PICO_ERR_NULLPTR_ACCESS;
++    } else {
++        picoos_emReset(system->common->em);
++        status = picorsrc_loadResourceInPlace(system->rm, (const picoos_uint8 *) data, size,
++                                              (picorsrc_Resource *) outLingware);
++    }
++
++    return status;
++}
++
+ /**
+  * pico_unloadResource : unLoads a resource file from the Pico system
+  * @param    system : pointer to a pico_System struct
+diff --git a/lib/picoapi.h b/lib/picoapi.h
+index aa60358..9f1c760 100644
+--- a/lib/picoapi.h
++++ b/lib/picoapi.h
+@@ -282,6 +282,19 @@ PICO_FUNC pico_loadResource(
+         pico_Resource *outResource
+         );
+ 
++/**
++   BMDS: loads a resource file whose 'size' bytes lie at 'data' (a
++   mapping of the file, say), used where they lie: nothing is copied.
++   'data' must stay valid and unchanged while the resource is loaded.
++   Otherwise as pico_loadResource.
++*/
++PICO_FUNC pico_loadResourceInPlace(
++        pico_System system,
++        const void *data,
++        pico_Uint32 size,
++        pico_Resource *outResource
++        );
++
+ /**
+    Unloads a resource file from the Pico system. If no engine uses the
+    resource file, the resource is removed immediately and its
+diff --git a/lib/picorsrc.c b/lib/picorsrc.c
+index d8976b2..b72bca2 100644
+--- a/lib/picorsrc.c
++++ b/lib/picorsrc.c
+@@ -24,6 +24,8 @@
+  *
+  */
+ 
++#include <stdint.h> /* BMDS: uintptr_t */
++#include <string.h> /* BMDS: memcmp, memcpy */
+ #include "picodefs.h"
+ #include "picoos.h"
+ #include "picodbg.h"
+@@ -530,6 +532,51 @@ static pico_status_t picorsrc_getKbList(picorsrc_ResourceManager this,
+ 
+ }
+ 
++/* BMDS: the name, the type and the knowledge bases of resource 'res', whose
++ * 'len' bytes of data are at res->start (picorsrc_loadResource's, shared with
++ * picorsrc_loadResourceInPlace) */
++static pico_status_t describeResource(picorsrc_ResourceManager this,
++        picorsrc_Resource res, picoos_file_header_t * hdr, picoos_uint32 len)
++{
++    pico_status_t status = PICO_OK;
++
++    /* note resource unique name */
++    if (PICO_OK == status) {
++        if (picoos_strlcpy(res->name,hdr->field[PICOOS_HEADER_NAME].value,PICORSRC_MAX_RSRC_NAME_SIZ) < PICORSRC_MAX_RSRC_NAME_SIZ) {
++            PICODBG_DEBUG(("assigned name %s to resource",res->name));
++            status = PICO_OK;
++        } else {
++            status = PICO_ERR_INDEX_OUT_OF_RANGE;
++            PICODBG_ERROR(("failed assigning name %s to resource",
++                           res->name));
++            picoos_emRaiseException(this->common->em,
++                                    PICO_ERR_INDEX_OUT_OF_RANGE, NULL,
++                                    (picoos_char *)"resource %s",res->name);
++        }
++    }
++
++    /* get resource type */
++    if (PICO_OK == status) {
++        if (!picoos_strcmp(hdr->field[PICOOS_HEADER_CONTENT_TYPE].value, PICORSRC_FIELD_VALUE_TEXTANA)) {
++            res->type = PICORSRC_TYPE_TEXTANA;
++        } else if (!picoos_strcmp(hdr->field[PICOOS_HEADER_CONTENT_TYPE].value, PICORSRC_FIELD_VALUE_SIGGEN)) {
++            res->type = PICORSRC_TYPE_SIGGEN;
++        } else if (!picoos_strcmp(hdr->field[PICOOS_HEADER_CONTENT_TYPE].value, PICORSRC_FIELD_VALUE_SIGGEN)) {
++            res->type = PICORSRC_TYPE_USER_LEX;
++        } else if (!picoos_strcmp(hdr->field[PICOOS_HEADER_CONTENT_TYPE].value, PICORSRC_FIELD_VALUE_SIGGEN)) {
++            res->type = PICORSRC_TYPE_USER_PREPROC;
++        } else {
++            res->type = PICORSRC_TYPE_OTHER;
++        }
++    }
++
++    if (PICO_OK == status) {
++        /* create kb list from resource */
++        status = picorsrc_getKbList(this, res->start, len, &res->kbList);
++    }
++    return status;
++}
++
+ /* load resource file. the type of resource file etc. are in the header,
+  * then follows the directory, then the knowledge bases themselves (as byte streams) */
+ 
+@@ -617,39 +664,8 @@ pico_status_t picorsrc_loadResource(picorsrc_ResourceManager this,
+              has an effect in test configurations only */
+             picoos_protectMem(this->common->mm, res->start, len, /*enable*/TRUE);
+         }
+-        /* note resource unique name */
+         if (PICO_OK == status) {
+-            if (picoos_strlcpy(res->name,header.field[PICOOS_HEADER_NAME].value,PICORSRC_MAX_RSRC_NAME_SIZ) < PICORSRC_MAX_RSRC_NAME_SIZ) {
+-                PICODBG_DEBUG(("assigned name %s to resource",res->name));
+-                status = PICO_OK;
+-            } else {
+-                status = PICO_ERR_INDEX_OUT_OF_RANGE;
+-                PICODBG_ERROR(("failed assigning name %s to resource",
+-                               res->name));
+-                picoos_emRaiseException(this->common->em,
+-                                        PICO_ERR_INDEX_OUT_OF_RANGE, NULL,
+-                                        (picoos_char *)"resource %s",res->name);
+-            }
+-        }
+-
+-        /* get resource type */
+-        if (PICO_OK == status) {
+-            if (!picoos_strcmp(header.field[PICOOS_HEADER_CONTENT_TYPE].value, PICORSRC_FIELD_VALUE_TEXTANA)) {
+-                res->type = PICORSRC_TYPE_TEXTANA;
+-            } else if (!picoos_strcmp(header.field[PICOOS_HEADER_CONTENT_TYPE].value, PICORSRC_FIELD_VALUE_SIGGEN)) {
+-                res->type = PICORSRC_TYPE_SIGGEN;
+-            } else if (!picoos_strcmp(header.field[PICOOS_HEADER_CONTENT_TYPE].value, PICORSRC_FIELD_VALUE_SIGGEN)) {
+-                res->type = PICORSRC_TYPE_USER_LEX;
+-            } else if (!picoos_strcmp(header.field[PICOOS_HEADER_CONTENT_TYPE].value, PICORSRC_FIELD_VALUE_SIGGEN)) {
+-                res->type = PICORSRC_TYPE_USER_PREPROC;
+-            } else {
+-                res->type = PICORSRC_TYPE_OTHER;
+-            }
+-        }
+-
+-        if (PICO_OK == status) {
+-            /* create kb list from resource */
+-            status = picorsrc_getKbList(this, res->start, len, &res->kbList);
++            status = describeResource(this, res, &header, len);
+         }
+     }
+ 
+@@ -672,6 +688,96 @@ pico_status_t picorsrc_loadResource(picorsrc_ResourceManager this,
+     }
+ }
+ 
++/* BMDS: picorsrc_loadResource's twin for a resource file whose 'size' bytes
++ * lie at 'data' (a mapping of it, or a copy), used where it lies: nothing is
++ * copied, and nothing freed when it is unloaded. 'data' must stay valid and
++ * unchanged while the resource is loaded. Every length in the header is
++ * checked against 'size'. */
++pico_status_t picorsrc_loadResourceInPlace(picorsrc_ResourceManager this,
++        const picoos_uint8 * data, picoos_uint32 size, picorsrc_Resource * resource)
++{
++    picorsrc_Resource res;
++    picoos_file_header_t header;
++    picoos_char svox[32];
++    picoos_uint8 svoxLen;
++    picoos_uint32 pos, hdrlen, len;
++    pico_status_t status = PICO_OK;
++
++    if (resource == NULL || data == NULL) {
++        return PICO_ERR_NULLPTR_ACCESS;
++    }
++    *resource = NULL;
++
++    /* the SVOX header, after at most PICO_MAX_FOREIGN_HEADER_LEN other bytes */
++    if (PICO_OK != picoos_getSVOXHeaderString(svox, &svoxLen, sizeof(svox))) {
++        return PICO_ERR_OTHER;
++    }
++    for (pos = 0; pos <= PICO_MAX_FOREIGN_HEADER_LEN; pos++) {
++        if (pos + svoxLen > size) {
++            pos = PICO_MAX_FOREIGN_HEADER_LEN + 1;
++        } else if (0 == memcmp(data + pos, svox, svoxLen)) {
++            break;
++        }
++    }
++    if (pos > PICO_MAX_FOREIGN_HEADER_LEN) {
++        return picoos_emRaiseException(this->common->em, PICO_EXC_UNEXPECTED_FILE_TYPE, NULL,
++                                       (picoos_char *) "no SVOX header");
++    }
++    pos += svoxLen;
++
++    /* the header string: its length (16 bits), then it */
++    if (pos + 2 > size) {
++        return PICO_EXC_UNEXPECTED_FILE_TYPE;
++    }
++    hdrlen = (picoos_uint32) data[pos] | ((picoos_uint32) data[pos + 1] << 8);
++    pos += 2;
++    if (hdrlen > PICOOS_MAX_HEADER_STRING_LEN - 1 || pos + hdrlen > size) {
++        return PICO_EXC_UNEXPECTED_FILE_TYPE;
++    }
++    memcpy(this->tmpHeader, data + pos, hdrlen);
++    this->tmpHeader[hdrlen] = NULLC;
++    pos += hdrlen;
++    status = picoos_hdrParseHeader(&header, this->tmpHeader);
++    if (PICO_OK != status) {
++        return status;
++    }
++    if (isResourceLoaded(this, header.field[PICOOS_HEADER_NAME].value)) {
++        picoos_emRaiseWarning(this->common->em,PICO_WARN_RESOURCE_DOUBLE_LOAD,NULL,(picoos_char *)"%s",header.field[PICOOS_HEADER_NAME].value);
++        return PICO_OK;
++    }
++
++    /* the data's length (32 bits), then the data */
++    if (pos + 4 > size) {
++        return PICO_EXC_UNEXPECTED_FILE_TYPE;
++    }
++    len = (picoos_uint32) data[pos] | ((picoos_uint32) data[pos + 1] << 8)
++          | ((picoos_uint32) data[pos + 2] << 16) | ((picoos_uint32) data[pos + 3] << 24);
++    pos += 4;
++    if (len > size - pos) {
++        return PICO_EXC_UNEXPECTED_FILE_TYPE;
++    }
++
++    if (PICO_MAX_NUM_RESOURCES <= this->numResources) {
++        return picoos_emRaiseException(this->common->em,PICO_EXC_MAX_NUM_EXCEED,NULL,(picoos_char *)"no more than %i resources",PICO_MAX_NUM_RESOURCES);
++    }
++    res = picorsrc_newResource(this->common->mm);
++    if (NULL == res) {
++        return picoos_emRaiseException(this->common->em,PICO_EXC_OUT_OF_MEM,NULL,NULL);
++    }
++    /* read only, though Pico's types don't say so */
++    res->start = (picoos_uint8 *) (uintptr_t) (data + pos);
++    status = describeResource(this, res, &header, len);
++    if (status == PICO_OK) {
++        res->next = this->resources;
++        this->resources = res;
++        this->numResources++;
++        *resource = res;
++    } else {
++        picorsrc_disposeResource(this->common->mm, &res);
++    }
++    return (status < 0) ? status : PICO_OK;
++}
++
+ static pico_status_t picorsrc_releaseKbList(picorsrc_ResourceManager this, picoknow_KnowledgeBase * kbList)
+ {
+     picoknow_KnowledgeBase kbprev, kb;
+diff --git a/lib/picorsrc.h b/lib/picorsrc.h
+index 4dfb19e..4f86aca 100644
+--- a/lib/picorsrc.h
++++ b/lib/picorsrc.h
+@@ -116,6 +116,11 @@ picoos_int16 picoctrl_isValidResourceHandle(picorsrc_Resource resource);
+ pico_status_t picorsrc_loadResource(picorsrc_ResourceManager this,
+         picoos_char * fileName, picorsrc_Resource * resource);
+ 
++/* BMDS: load a resource file whose 'size' bytes lie at 'data', used in place
++ * (nothing copied; 'data' valid and unchanged while it is loaded) */
++pico_status_t picorsrc_loadResourceInPlace(picorsrc_ResourceManager this,
++        const picoos_uint8 * data, picoos_uint32 size, picorsrc_Resource * resource);
++
+ /* unload resource file. (warn if resource file is busy) */
+ pico_status_t picorsrc_unloadResource(picorsrc_ResourceManager this, picorsrc_Resource * rsrc);
+ 

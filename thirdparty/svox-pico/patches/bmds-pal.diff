@@ -1,0 +1,127 @@
+diff --git a/lib/picopal.c b/lib/picopal.c
+index db05e2b..b3b6ae3 100644
+--- a/lib/picopal.c
++++ b/lib/picopal.c
+@@ -306,6 +306,84 @@ picopal_char picopal_eol(void)
+     If the opening of the file is successful a file pointer is given
+     back. Otherwise a NIL-File is given back.
+ */
++#if defined(PICO_NO_FILES)
++/* BMDS: no files. Pico's resources are given to it in memory
++   (pico_loadResourceInPlace), and markup that names files (<genfile>,
++   <usesig>, <play>) finds none to read or write. */
++picopal_File picopal_fopen (picopal_char filename[], picopal_access_mode mode)
++{
++    (void) filename;
++    (void) mode;
++    return (picopal_File) NULL;
++}
++
++picopal_File picopal_get_fnil (void)
++{
++    return (picopal_File) NULL;
++}
++
++picopal_int8 picopal_is_fnil (picopal_File f)
++{
++    return (NULL == f);
++}
++
++pico_status_t picopal_fflush (picopal_File f)
++{
++    (void) f;
++    return PICO_EOF;
++}
++
++pico_status_t picopal_fclose (picopal_File f)
++{
++    (void) f;
++    return PICO_EOF;
++}
++
++picopal_uint32 picopal_flength (picopal_File stream)
++{
++    (void) stream;
++    return 0;
++}
++
++picopal_uint8 picopal_feof (picopal_File stream)
++{
++    (void) stream;
++    return 1;
++}
++
++pico_status_t picopal_fseek (picopal_File f, picopal_uint32 offset, picopal_int8 seekmode)
++{
++    (void) f;
++    (void) offset;
++    (void) seekmode;
++    return PICO_EOF;
++}
++
++pico_status_t picopal_fget_char (picopal_File f, picopal_char * ch)
++{
++    (void) f;
++    *ch = '\0';
++    return PICO_EOF;
++}
++
++picopal_objsize_t picopal_fread_bytes (picopal_File f, void * ptr, picopal_objsize_t objsize, picopal_uint32 nobj)
++{
++    (void) f;
++    (void) ptr;
++    (void) objsize;
++    (void) nobj;
++    return 0;
++}
++
++picopal_objsize_t picopal_fwrite_bytes (picopal_File f, void * ptr, picopal_objsize_t objsize, picopal_uint32 nobj)
++{
++    (void) f;
++    (void) ptr;
++    (void) objsize;
++    (void) nobj;
++    return 0;
++}
++#else /* defined(PICO_NO_FILES) */
+ picopal_File picopal_fopen (picopal_char filename[], picopal_access_mode mode)
+ {
+     picopal_File res;
+@@ -400,6 +478,7 @@ picopal_objsize_t picopal_fread_bytes (picopal_File f, void * ptr, picopal_objsi
+ }
+ 
+ picopal_objsize_t picopal_fwrite_bytes (picopal_File f, void * ptr, picopal_objsize_t objsize, picopal_uint32 nobj){    return (picopal_objsize_t) fwrite(ptr, objsize, nobj, (FILE *)f);}
++#endif /* defined(PICO_NO_FILES) */
+ /* *************************************************/
+ /* functions for debugging/testing purposes only   */
+ /* *************************************************/
+diff --git a/lib/picopltf.h b/lib/picopltf.h
+index 0cf2659..c382638 100644
+--- a/lib/picopltf.h
++++ b/lib/picopltf.h
+@@ -31,6 +31,8 @@
+ #if !defined(__PICOPLTF_H__)
+ #define __PICOPLTF_H__
+ 
++#include <stdint.h> /* BMDS: uintptr_t, which several files use */
++
+ #define ENDIANNESS_BIG 1
+ #define ENDIANNESS_LITTLE 2
+ 
+@@ -38,6 +40,7 @@
+ #define PICO_Windows    1   /* Windows */
+ #define PICO_MacOSX     5   /* Macintosh OS X */
+ #define PICO_Linux      7   /* Linux */
++#define PICO_GENERIC    99  /* BMDS: another (named below, never defined upstream) */
+ 
+ /* * definition of current platform ***/
+ #if !defined(PICO_PLATFORM)
+@@ -48,7 +51,7 @@
+ #elif defined(linux) || defined(__linux__) || defined(__linux)
+ #define PICO_PLATFORM    PICO_Linux
+ #else
+-#error PICO_PLATFORM not defined
++#define PICO_PLATFORM    PICO_GENERIC /* BMDS */
+ #endif
+ #endif /* !defined(PICO_PLATFORM) */
+ 

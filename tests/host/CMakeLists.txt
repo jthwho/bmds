@@ -23,6 +23,7 @@ add_subdirectory(${BMDS_ROOT}/components/bmds_drivers ${CMAKE_BINARY_DIR}/bmds_d
 add_subdirectory(${BMDS_ROOT}/components/bmds_audio ${CMAKE_BINARY_DIR}/bmds_audio)
 add_subdirectory(${BMDS_ROOT}/components/bmds_midi ${CMAKE_BINARY_DIR}/bmds_midi)
 add_subdirectory(${BMDS_ROOT}/components/bmds_synth ${CMAKE_BINARY_DIR}/bmds_synth)
+add_subdirectory(${BMDS_ROOT}/components/bmds_speech ${CMAKE_BINARY_DIR}/bmds_speech)
 add_subdirectory(${BMDS_ROOT}/components/bmds_mplayer ${CMAKE_BINARY_DIR}/bmds_mplayer)
 add_subdirectory(${BMDS_ROOT}/components/bmds_sysmon ${CMAKE_BINARY_DIR}/bmds_sysmon)
 add_subdirectory(${BMDS_ROOT}/components/bmds_imageview ${CMAKE_BINARY_DIR}/bmds_imageview)
@@ -102,6 +103,7 @@ add_executable(bmds_host_tests
         shell.cpp
         signals.cpp
         span.cpp
+        speech.cpp
         staticobject.cpp
         stats.cpp
         string.cpp
@@ -128,6 +130,7 @@ target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_
         BMDS_IMAGES_DIR="${CMAKE_CURRENT_LIST_DIR}/images"
         BMDS_AUDIO_DIR="${CMAKE_CURRENT_LIST_DIR}/audio"
         BMDS_SYNTH_DIR="${CMAKE_CURRENT_LIST_DIR}/synth"
+        BMDS_SPEECH_DIR="${BMDS_ROOT}/thirdparty/svox-pico/lang"
         BMDS_COMPAT_DIR="${CMAKE_CURRENT_LIST_DIR}/../compat")
 # The time zone database built from thirdparty/tzdata (devplan/time.md §9), as
 # the distribution builds it, when the host has zic: its every zone is tested.
@@ -185,7 +188,7 @@ if(Python3_Interpreter_FOUND)
         add_test(NAME rom_icon_names COMMAND ${Python3_EXECUTABLE} ${BMDS_MKROM} check ${BMDS_ICONS_LIST}
                  ${BMDS_ROOT}/boot ${BMDS_ROOT}/dist ${BMDS_ROOT}/rom)
 endif()
-target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_audio bmds_midi bmds_synth bmds_input bmds_ui bmds_gui bmds_clipboard
+target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_audio bmds_midi bmds_synth bmds_speech bmds_input bmds_ui bmds_gui bmds_clipboard
         bmds_sysconf bmds_files bmds_mplayer bmds_sysmon bmds_panel bmds_imageview bmds_net bmds_lwip)
 bmds_target_options(bmds_host_tests)
 

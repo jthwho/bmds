@@ -77,6 +77,9 @@
  *                         processes, SCHED_RESET_ON_FORK, affinity and nproc, a real-time sleep's
  *                         lateness against the tick's, two busy real-time threads throttled
  *   progtest schedof      exit with the caller's policy (for sched)
+ *   progtest speech [quiet] text to speech (speech.md §4): audio_speak's errors, a sentence's
+ *                         samples, the info, NUL, markup, speed, odd reads, full writes, two fds;
+ *                         bmds_say aloud unless quiet
  *   progtest rtnet [PEER] real-time sockets (network.md §30f): SO_PRIORITY and IP_TOS, the
  *                         timestamp options and their control messages on loopback, the error
  *                         queue's errors, BMDS_SO_FASTPATH's; with PEER (a UDP reflector on port
@@ -1659,6 +1662,131 @@ static int midi(void) {
         CHECK(midi_port_open(port, O_RDONLY) == -1 && errno == ENOENT);
         CHECK(close(r) == 0 && close(w) == 0 && close(d) == 0);
         printf("midi: ok, ports %u and %u, 300 events with 44 dropped per reader\n", (unsigned)port, (unsigned)sink);
+        return 0;
+}
+
+/* Text to speech (devplan/speech.md §4): the calls' errors; a sentence made into samples (about
+   two seconds at 16 kHz, not silence); the info; text waiting for a NUL; markup read or obeyed; the
+   speed; reads into odd sizes and addresses; writes taking what fits; two fds at once; bmds_say,
+   aloud, unless ARG is "quiet". */
+static int speak_open(uint32_t flags, const char *voice, uint32_t speed) {
+        bmds_speak_config_t c = {.size = sizeof(c), .flags = flags, .voice = voice, .speed = speed};
+        return bmds_audio_speak(&c);
+}
+
+/* Writes all of TEXT (LEN bytes) to speech fd FD, reading as it goes; the samples read. */
+static long speak_all(int fd, const char *text, size_t len) {
+        static int16_t out[4096];
+        long           made = 0;
+        size_t         at = 0;
+        for (;;) {
+                if (at < len) {
+                        const ssize_t n = write(fd, text + at, len - at);
+                        if (n < 0 && errno != EAGAIN) return -1;
+                        if (n > 0) at += (size_t)n;
+                }
+                const ssize_t r = read(fd, out, sizeof(out));
+                if (r < 0) return -1;
+                made += r / 2;
+                if (r == 0 && at == len) return made;
+        }
+}
+
+static int speech(const char *arg) {
+        CHECK(bmds_sys_has(BMDS_SYS_AUDIO_SPEAK_INFO));
+        bmds_speak_config_t bad = {.size = sizeof(bad), .flags = 0x100};
+        CHECK(bmds_audio_speak(&bad) == -BMDS_EINVAL);
+        CHECK(speak_open(0, NULL, 10) == -BMDS_EINVAL);
+        CHECK(speak_open(0, NULL, 501) == -BMDS_EINVAL);
+        bad.flags = 0;
+        bad.pitch = 201;
+        CHECK(bmds_audio_speak(&bad) == -BMDS_EINVAL);
+        bad.pitch = 0;
+        bad.volume = 501;
+        CHECK(bmds_audio_speak(&bad) == -BMDS_EINVAL);
+        CHECK(speak_open(0, "xx-XX", 0) == -BMDS_ENOENT);
+        CHECK(speak_open(0, "../en-US", 0) == -BMDS_EINVAL);
+        CHECK(speak_open(0, "", 0) == -BMDS_EINVAL);
+        CHECK(speak_open(0, "a-name-far-longer-than-any-voice-has", 0) == -BMDS_EINVAL);
+
+        int fd = speak_open(BMDS_O_CLOEXEC, NULL, 0);
+        CHECK(fd >= 0);
+        bmds_speak_info_t info = {.size = sizeof(info)};
+        CHECK(bmds_audio_speak_info(fd, &info) == 0);
+        CHECK(info.rate == 16000 && info.channels == 1 && info.format == BMDS_AUDIO_S16LE && info.frames == 0);
+        CHECK(info.speed == 100 && info.pitch == 100 && info.volume == 100 && info.flags == 0);
+        CHECK(strcmp(info.voice, "en-US") == 0);
+        CHECK(bmds_audio_speak_info(1, &info) == -BMDS_ENOTTY);
+
+        /* A sentence. */
+        static const char hello[] = "Hello, this is BMDS speaking."; /* its NUL written too */
+        static int16_t    first[1024];
+        CHECK(write(fd, hello, sizeof(hello)) == (ssize_t)sizeof(hello));
+        CHECK(read(fd, first, sizeof(first)) == (ssize_t)sizeof(first));
+        int  peak = 0;
+        long made = 1024;
+        for (;;) {
+                const ssize_t r = read(fd, first, sizeof(first));
+                CHECK(r >= 0 && r % 2 == 0);
+                if (r == 0) break;
+                for (ssize_t i = 0; i < r / 2; ++i) peak = abs(first[i]) > peak ? abs(first[i]) : peak;
+                made += r / 2;
+        }
+        CHECK(made > 16000 && made < 64000);
+        CHECK(peak > 1000);
+        CHECK(bmds_audio_speak_info(fd, &info) == 0 && info.frames == (uint64_t)made);
+        /* Said once. */
+        CHECK(read(fd, first, sizeof(first)) == 0);
+
+        /* The last text waits for a NUL; then it is said. */
+        CHECK(write(fd, "Hello there", 11) == 11);
+        CHECK(read(fd, first, sizeof(first)) == 0);
+        CHECK(speak_all(fd, "", 1) > 4000);
+
+        /* Odd reads: a byte is too few; three give a sample; an odd address works. */
+        CHECK(write(fd, hello, sizeof(hello)) == (ssize_t)sizeof(hello));
+        CHECK(read(fd, first, 1) == -1 && errno == EINVAL);
+        CHECK(read(fd, first, 3) == 2);
+        CHECK(read(fd, (char *)first + 1, 301) == 300);
+        CHECK(speak_all(fd, "", 0) > 10000);
+        CHECK(close(fd) == 0);
+
+        /* Markup: read as text unless asked for; the speed as the tag's. */
+        static const char tagged[] = "<speed level='300'>Fast words here.";
+        static const char plain[] = "Fast words here.";
+        fd = speak_open(0, "en-US", 0);
+        const long plain_n = speak_all(fd, plain, sizeof(plain));
+        const long read_n = speak_all(fd, tagged, sizeof(tagged));
+        CHECK(close(fd) == 0);
+        fd = speak_open(BMDS_SPEAK_MARKUP, NULL, 0);
+        const long obeyed_n = speak_all(fd, tagged, sizeof(tagged));
+        CHECK(bmds_audio_speak_info(fd, &info) == 0 && info.flags == BMDS_SPEAK_MARKUP);
+        CHECK(close(fd) == 0);
+        fd = speak_open(0, NULL, 300);
+        const long fast_n = speak_all(fd, plain, sizeof(plain));
+        CHECK(close(fd) == 0);
+        CHECK(plain_n > 8000 && obeyed_n < plain_n * 2 / 3 && read_n > plain_n * 2);
+        CHECK(fast_n == obeyed_n);
+
+        /* A long text: a write takes what fits, then EAGAIN until read. */
+        static char lots[16384];
+        for (size_t i = 0; i < sizeof(lots); ++i) lots[i] = "Words and more words. "[i % 22];
+        fd = speak_open(0, NULL, 0);
+        const ssize_t took = write(fd, lots, sizeof(lots));
+        CHECK(took > 0 && took < (ssize_t)sizeof(lots));
+        CHECK(write(fd, lots + took, sizeof(lots) - (size_t)took) == -1 && errno == EAGAIN);
+        CHECK(read(fd, first, sizeof(first)) == (ssize_t)sizeof(first));
+        CHECK(close(fd) == 0); /* the rest dropped */
+
+        /* Two at once, each as one alone. */
+        const int a = speak_open(0, NULL, 0), b = speak_open(0, NULL, 0);
+        CHECK(a >= 0 && b >= 0);
+        CHECK(speak_all(a, plain, sizeof(plain)) == plain_n);
+        CHECK(speak_all(b, plain, sizeof(plain)) == plain_n);
+        CHECK(close(a) == 0 && close(b) == 0);
+
+        if (strcmp(arg, "quiet") != 0) CHECK(bmds_say("Speech from a program, through the system call.") == 0);
+        printf("speech: ok (%ld samples, plain %ld, read %ld, obeyed %ld)\n", made, plain_n, read_n, obeyed_n);
         return 0;
 }
 
@@ -3560,7 +3688,7 @@ int main(int argc, char **argv) {
                         "usage: progtest status|exit|leak|env|tty|float|files|time|sleep|term|lines|raw|mem|random|cwd|"
                         "spin|calls|posix|abort|spawn|scripts|signals|catch|ignore|fd|ppid|exec|orphan|tree|poll|"
                         "threads|"
-                        "threadspin|filetype|audio|decode|rt|midi|synth|synthload|mididecode|hog|stats|tasks|"
+                        "threadspin|filetype|audio|decode|rt|midi|synth|speech|synthload|mididecode|hog|stats|tasks|"
                         "procs|"
                         "system|notify|expand|image|net|netwatch|rtnet|sched [arg]\n");
                 return 2;
@@ -3573,6 +3701,7 @@ int main(int argc, char **argv) {
         if (strcmp(what, "rt") == 0) return rt();
         if (strcmp(what, "midi") == 0) return midi();
         if (strcmp(what, "synth") == 0) return synth(arg);
+        if (strcmp(what, "speech") == 0) return speech(arg);
         if (strcmp(what, "synthload") == 0) return synthload(arg);
         if (strcmp(what, "mididecode") == 0) return mididecode(arg);
         if (strcmp(what, "stats") == 0) return stats(arg);

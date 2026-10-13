@@ -2,3 +2,5 @@
 *.elf binary
 # PNGs (the icons, devplan/gui.md §4h) are kept in Git LFS.
 *.png filter=lfs diff=lfs merge=lfs -text
+# The SVOX Pico voices (devplan/speech.md) are kept in Git LFS.
+thirdparty/svox-pico/lang/*.bin filter=lfs diff=lfs merge=lfs -text

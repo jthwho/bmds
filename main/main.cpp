@@ -32,6 +32,7 @@
 #include <bmds/usbhost.h>
 #include <bmds/usbserialconsole.h>
 #include <bmds/vfs.h>
+#include <bmds/voices.h>
 
 namespace {
 
@@ -80,6 +81,7 @@ namespace {
                 {"tmp", bmds::TmpFs::init},
                 {"programs", bmds::Loader::init},  // the process table
                 {"synth", bmds::SoundFonts::init}, // fonts synths share; after the loader: its cache is reclaimed first
+                {"speech", bmds::Voices::init},    // the voices speakers share
                 {"input", bmds::Input::init},
                 {"usb", bmds::UsbHost::init},
                 {"net", bmds::EthernetDevice::init}, // eth0 (devplan/network.md)

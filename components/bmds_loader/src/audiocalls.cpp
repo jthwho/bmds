@@ -16,6 +16,7 @@
 #include <bmds/audiofile.h>
 #include <bmds/decodedfile.h>
 #include <bmds/errno.h>
+#include <bmds/speechfile.h>
 #include <bmds/synthfile.h>
 #include <bmds/sys.h>
 #include "running.h"
@@ -29,6 +30,8 @@ using bmds::Error;
 using bmds::KernelCall;
 using bmds::Process;
 using bmds::SampleFormat;
+using bmds::Speaker;
+using bmds::SpeechFile;
 using bmds::Synth;
 using bmds::SynthFile;
 using bmds::detail::copyIn;
@@ -85,6 +88,13 @@ namespace {
         int32_t synthFileOf(const bmds::FileHandle::Ptr &handle, SynthFile *&file) {
                 if (!handle) return -BMDS_EBADF;
                 file = handle->stream().synthFile();
+                return file != nullptr ? 0 : -BMDS_ENOTTY;
+        }
+
+        // The decoded file behind @p handle (an fd's), or the errno.
+        int32_t speechFileOf(const bmds::FileHandle::Ptr &handle, SpeechFile *&file) {
+                if (!handle) return -BMDS_EBADF;
+                file = handle->stream().speechFile();
                 return file != nullptr ? 0 : -BMDS_ENOTTY;
         }
 
@@ -345,6 +355,51 @@ int32_t bmds_k_audio_synth_info(int32_t fd, bmds_synth_info_t *info) {
         i.cpu_permille = k.cpuPermille;
         i.cpu_permille_max = k.cpuPermilleMax;
         copyText(file->fontPath(), i.font, sizeof(i.font));
+        return copyOut(i, info);
+}
+
+int32_t bmds_k_audio_speak(const bmds_speak_config_t *config) {
+        KernelCall          call;
+        bmds_speak_config_t c;
+        const int32_t       r = copyIn(config, c);
+        if (r < 0) return r;
+        SpeechFile::Config k;
+        k.prosody.speed = static_cast<uint16_t>(c.speed != 0 ? c.speed : 100);
+        k.prosody.pitch = static_cast<uint16_t>(c.pitch != 0 ? c.pitch : 100);
+        k.prosody.volume = static_cast<uint16_t>(c.volume != 0 ? c.volume : 100);
+        k.markup = (c.flags & BMDS_SPEAK_MARKUP) != 0;
+        if ((c.flags & ~(BMDS_O_CLOEXEC | BMDS_SPEAK_MARKUP)) != 0 || c.speed > Speaker::MaxSpeed ||
+            c.pitch > Speaker::MaxPitch || c.volume > Speaker::MaxVolume)
+                return -BMDS_EINVAL;
+        if (c.voice != nullptr) {
+                const size_t n = strnlen(c.voice, BMDS_SPEAK_VOICE_MAX);
+                if (n == 0 || n == BMDS_SPEAK_VOICE_MAX) return -BMDS_EINVAL;
+                k.voice = bmds::StringView(c.voice, n);
+        }
+        auto [handle, err] = SpeechFile::open(k);
+        if (err == Error::CorruptData || err == Error::NotSupported) return -BMDS_EIO; // a damaged voice
+        if (err.isError()) return Process::errnoFor(err);
+        return call->addHandle(std::move(handle), c.flags & BMDS_O_CLOEXEC);
+}
+
+int32_t bmds_k_audio_speak_info(int32_t fd, bmds_speak_info_t *info) {
+        KernelCall                  call;
+        const bmds::FileHandle::Ptr handle = call->handle(fd);
+        SpeechFile                 *file = nullptr;
+        const int32_t               r = speechFileOf(handle, file);
+        if (r < 0) return r;
+        if (info == nullptr) return -BMDS_EFAULT;
+        const SpeechFile::Info k = file->info();
+        bmds_speak_info_t      i = {};
+        i.rate = Speaker::RateHz;
+        i.channels = 1;
+        i.format = BMDS_AUDIO_S16LE;
+        i.frames = k.frames;
+        i.speed = k.prosody.speed;
+        i.pitch = k.prosody.pitch;
+        i.volume = k.prosody.volume;
+        i.flags = k.markup ? BMDS_SPEAK_MARKUP : 0;
+        copyText(k.voice, i.voice, sizeof(i.voice));
         return copyOut(i, info);
 }
 

@@ -88,3 +88,18 @@ add_executable(syslog_fuzz syslog.cpp)
 target_compile_options(syslog_fuzz PRIVATE -fno-exceptions -fno-rtti)
 target_link_libraries(syslog_fuzz PRIVATE bmds_core)
 target_link_options(syslog_fuzz PRIVATE -fsanitize=fuzzer)
+
+# Text to speech (devplan/speech.md): any text through the speaker on the en-US voice, Pico's
+# sources with the settings bmds_speech gives them.
+set(SPEECH ${BMDS_ROOT}/components/bmds_speech)
+include(${SPEECH}/pico.cmake)
+add_executable(speech_fuzz speech.cpp ${BMDS_ROOT}/tests/host/hostmemory.cpp ${SPEECH}/src/speaker.cpp
+                           ${SPEECH}/src/picopool.c ${BMDS_PICO_SRCS})
+target_include_directories(speech_fuzz PRIVATE ${BMDS_ROOT}/tests/host ${SPEECH}/include ${BMDS_PICO_INCLUDES})
+target_compile_definitions(speech_fuzz PRIVATE ${BMDS_PICO_DEFINITIONS}
+                                               BMDS_SPEECH_DIR="${BMDS_ROOT}/thirdparty/svox-pico/lang")
+target_compile_options(speech_fuzz PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti>)
+# Upstream's code: clang's warnings about it are no business here.
+set_source_files_properties(${BMDS_PICO_SRCS} PROPERTIES COMPILE_OPTIONS "-fwrapv;-w")
+target_link_libraries(speech_fuzz PRIVATE bmds_core)
+target_link_options(speech_fuzz PRIVATE -fsanitize=fuzzer)

@@ -20,7 +20,7 @@ BMDS_NAMESPACE_BEGIN
 
 /**
  * @brief Reads a WAV file's header: where its samples are and their format
- *        (`devplan/audio.md` §18).
+ *        (`devplan/audio.md` §18); writes one (`devplan/speech.md` §3).
  *
  * RIFF/WAVE, its chunks walked (with their padding to even lengths, unknown
  * ones skipped) to `fmt ` and `data`. PCM at 8, 16, 24 and 32 bits, IEEE float
@@ -59,6 +59,23 @@ namespace WavFile {
          *         channels, RIFX or RF64), or @p read's error.
          */
         Result<Info> parse(ReadAt read, void *arg, uint64_t fileSize);
+
+        /** @brief The header `header()` writes: RIFF, `fmt ` (16 bytes), `data`'s header. */
+        constexpr size_t HeaderBytes = 44;
+
+        /** @brief `header()`'s data size when it isn't known: a file written as a stream. */
+        constexpr uint64_t UnknownLength = UINT64_MAX;
+
+        /**
+         * @brief Writes into @p out the header of a WAV file of @p dataBytes of
+         *        samples in @p format (`U8`, `S16Le`, `S32Le` as PCM; `F32Le` as
+         *        IEEE float), @p channels (1 or 2) at @p rateHz. Data of
+         *        `UnknownLength`, or more than the sizes hold, gets the sizes
+         *        0xFFFFFFFF ("to the end", which `parse()` reads so).
+         * @return `Ok`, or `Invalid` (another format, a channel count, a rate of 0).
+         */
+        Error header(uint8_t (&out)[HeaderBytes], SampleFormat format, uint8_t channels, uint32_t rateHz,
+                     uint64_t dataBytes);
 
 } // namespace WavFile
 

@@ -85,6 +85,11 @@ until silicon v3; then test again.
   that reads and writes PSRAM is memory-bound long before it is compute-bound: measure the scalar
   and PIE times before tuning instructions. Column-order access thrashes the cache (turning a
   picture: 1525 ms by rows, 277 ms in 32 × 32 tiles).
+- **A big table read from flash competes with every other flash read:** SVOX Pico synthesizing flat
+  out (into a file) from its 1.4 MB voice mapped in `/rom` slowed the icon blend from the ROM
+  296 → 380 µs an icon (28 %); with the voice copied into PSRAM, 322 µs (9 %). Speaking at real
+  time (a sixth of that work) made no difference measurable: 332 against 346 µs
+  (`devplan/speech.md` §12, 2026-10-12).
 - **A software prefetch doesn't help:** a scalar load 192 bytes ahead in the blend's loop changed
   nothing (2026-10-10).
 - **The L2 cache's 128-byte line** (half the misses for streaming) couldn't be chosen with the
@@ -269,6 +274,10 @@ until silicon v3; then test again.
   the synth's voice loop (filter and looping as constants) both gained from it.
 - **Integer-to-float conversions are costly:** the voice loop gained 15 % by interpolating in
   integers and converting once instead of converting three values.
+- **No double-precision FPU:** a `double` is software (the ROM's libgcc; `tools/bmds-prof` shows
+  the samples as `??`, called from the code that uses the doubles). SVOX Pico's fast exponential
+  was double: a tenth of its synthesis; in `float`, 11 % faster (`devplan/speech.md` §12). Look
+  for `double` and unsuffixed constants (`0.5`) in vendored DSP code.
 - **`#pragma GCC unroll 4` didn't help** the voice loop (68 cycles a sample either way).
 
 ## 8. Measuring
