@@ -78,6 +78,12 @@ namespace NtpClient {
         /** @brief An interface's address changed (core lock held): a burst once it has one. */
         void addressChanged();
 
+        /**
+         * @brief PTP let go of the system clock: the network task puts back the frequency of the
+         *        client's last update and asks every server at once. Any task. @nonblocking
+         */
+        void clockReleased();
+
         /** @brief Asks every server now, 4 times 2 s apart (`ntp poll`). Takes the core lock. */
         Error burst();
 

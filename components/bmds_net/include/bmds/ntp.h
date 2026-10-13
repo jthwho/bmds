@@ -175,6 +175,12 @@ namespace Ntp {
          *   rate's error over that time, taken in by interval / (interval +
          *   `FrequencyTimeNs`), so a short interval's noise moves it little
          *   (6% at 64 s, half at 1024 s).
+         * - Each such interval also estimates the frequency that would have kept the
+         *   clock: the one set then, plus its error. From `MinEstimates` on, when their
+         *   mean is beyond 4 standard errors of it from the frequency set, the mean is
+         *   taken whole (a rate left far off, as by PTP following a slewing master, is
+         *   gone in minutes, not hours); the estimates start again then, after a step,
+         *   and every `MaxEstimates`.
          * - The poll exponent runs from `MinPoll` (64 s) to `MaxPoll` (1024 s):
          *   up one after `StableUpdates` updates within 4 jitters (at least
          *   `StableNs`), back to `MinPoll` on a step or an offset beyond that.
@@ -195,6 +201,12 @@ namespace Ntp {
 
                         /** @brief The least offset bound counted stable. */
                         static constexpr int64_t StableNs = 1'000'000;
+
+                        /** @brief Frequency estimates before their mean may be taken whole. */
+                        static constexpr int64_t MinEstimates = 3;
+
+                        /** @brief Estimates kept before they start again. */
+                        static constexpr int64_t MaxEstimates = 16;
 
                         /** @brief Stable updates before the poll doubles. */
                         static constexpr unsigned int StableUpdates = 4;
@@ -234,8 +246,13 @@ namespace Ntp {
                         void slowDown();
 
                 private:
+                        void restartEstimates();
+
                         int64_t      _lastNs = 0;
                         bool         _haveLast = false;
+                        int64_t      _estimates = 0; // the frequency's, since they started again
+                        int64_t      _estimateSum = 0;
+                        int64_t      _estimateSquares = 0;
                         int          _poll = MinPoll;
                         unsigned int _stable = 0;
         };

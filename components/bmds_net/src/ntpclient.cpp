@@ -80,6 +80,7 @@ namespace {
                         std::atomic<bool>    syncedShown{false};
                         std::atomic<int32_t> offsetUs{0};
                         std::atomic<int32_t> delayUs{0};
+                        std::atomic<bool>    releasedPending{false};
                         // Under the core lock:
                         bool            enabled = false;
                         bool            synced = false;
@@ -91,6 +92,8 @@ namespace {
                         int             chosen = -1;
                         unsigned int    burstLeft = 0;
                         Ntp::Discipline discipline;
+                        bool            haveFrequency = false; // the clock's after the client's last update
+                        int32_t         frequencyPpb = 0;
                         int64_t         offsetNs = 0;
                         int64_t         delayNs = 0;
                         int64_t         jitterNs = 0;
@@ -282,6 +285,8 @@ namespace {
                         if (a.setFrequency) (void)Clock::setFrequency(a.frequencyPpb);
                         (void)Clock::adjust(a.offsetNs);
                 }
+                client->frequencyPpb = Clock::status().frequencyPpb;
+                client->haveFrequency = true;
                 if (!client->synced) bmdsInfo("ntp: synced to %s", s.name);
                 setSynced(true);
                 client->offsetNs = sample.offsetNs;
@@ -505,10 +510,24 @@ void NtpClient::poll() {
                 burst = has && !client->hadAddress; // names can be looked up now, servers reached
                 client->hadAddress = has;
         }
+        if (client->releasedPending.exchange(false) && client->enabled) {
+                // PTP had the clock: its rate was its master's, maybe a slewing one; the client's own,
+                // and a burst rather than up to 1024 s on its last offset.
+                if (client->haveFrequency) (void)Clock::setFrequency(client->frequencyPpb);
+                client->discipline.reset();
+                burst = true;
+        }
         if (again)
                 restart(); // with a burst
         else if (burst)
                 startBurst();
+        return;
+}
+
+void NtpClient::clockReleased() {
+        if (!started) return;
+        client->releasedPending.store(true);
+        NetStack::wake();
         return;
 }
 

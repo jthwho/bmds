@@ -226,7 +226,8 @@ namespace Ptp {
                         /** @brief Sets the tuning and the sync interval (the gains follow it). */
                         void configure(const Config &config, int8_t logSyncInterval);
 
-                        /** @brief Forgets the samples; @p frequencyPpb is where the integral starts. */
+                        /** @brief Forgets the samples; @p frequencyPpb is where the integral starts. The next
+                         *         offset beyond `firstStepNs` is stepped again (a new master). */
                         void reset(double frequencyPpb);
 
                         /**
@@ -361,6 +362,8 @@ namespace Ptp {
                                                 {};             ///< The last announces (monotonic), newest first.
                                         unsigned int heard = 0; ///< Announces held in `heardNs`.
                                         bool         qualified = false;
+                                        UtcOffset    utcOffset;     ///< Its last Announce's,
+                                        uint8_t      timeFlags = 0; ///< taken when it becomes the parent.
                         };
 
                         /** @brief Counters since `start()`. */
@@ -434,6 +437,7 @@ namespace Ptp {
                         void     decide(int64_t nowNs, bool timedOut);
                         void     noteAnnounce(const Message &m, int64_t nowNs);
                         void     ageForeign(int64_t nowNs);
+                        void     takeTimeProperties(const Foreign &f);
                         void     restartAnnounceTimeout(int64_t nowNs);
                         void     resetMeasurements();
                         void     onSync(const Message &m, int64_t rxNs, int64_t nowNs);

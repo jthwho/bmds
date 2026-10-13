@@ -230,19 +230,26 @@ namespace Ptp {
                         f->port = m.header.source;
                 }
                 f->dataset = datasetOf(m, _identity);
+                f->utcOffset.seconds = m.utcOffset;
+                f->utcOffset.valid = (m.header.flags & UtcOffsetValid) != 0;
+                f->utcOffset.leap61 = (m.header.flags & Leap61) != 0;
+                f->utcOffset.leap59 = (m.header.flags & Leap59) != 0;
+                f->timeFlags = static_cast<uint8_t>(m.header.flags & 0x00ff);
                 for (size_t i = ForeignThreshold - 1; i > 0; --i) f->heardNs[i] = f->heardNs[i - 1];
                 f->heardNs[0] = nowNs;
                 if (f->heard < ForeignThreshold) ++f->heard;
                 if (_status.state != State::Master && _status.state != State::Listening && isFromParent(m.header)) {
                         restartAnnounceTimeout(nowNs);
                         _status.grandmaster = f->dataset;
-                        _status.utcOffset.seconds = m.utcOffset;
-                        _status.utcOffset.valid = (m.header.flags & UtcOffsetValid) != 0;
-                        _status.utcOffset.leap61 = (m.header.flags & Leap61) != 0;
-                        _status.utcOffset.leap59 = (m.header.flags & Leap59) != 0;
-                        _status.timeFlags = m.header.flags & 0x00ff;
+                        takeTimeProperties(*f);
                 }
                 decide(nowNs, false);
+                return;
+        }
+
+        void Port::takeTimeProperties(const Foreign &f) {
+                _status.utcOffset = f.utcOffset;
+                _status.timeFlags = f.timeFlags;
                 return;
         }
 
@@ -287,6 +294,9 @@ namespace Ptp {
                         _status.parent = best->port;
                         resetMeasurements();
                         _servo.reset(_io.frequency()); // holdover: start from the frequency we have
+                        // The Announce that chose it came before it was the parent: its time now, not
+                        // what this port had (as master, its own) until the next one.
+                        takeTimeProperties(*best);
                         setState(State::Uncalibrated, nowNs);
                         restartAnnounceTimeout(nowNs);
                 }

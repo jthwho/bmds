@@ -1052,7 +1052,8 @@ the System Monitor and the tray meter's alarms see the network like any subsyste
       + 1024 s) of it (6% at 64 s, half at 1024 s and beyond), within ±500 ppm. A pool server's
       few ms of jitter over 64 s is tens of ppm of noise, so a short interval moves it little.
       (First built taking all of the first estimate and a quarter of each after; the board's
-      pool server showed 2-5 ms of jitter, which makes that too noisy.)
+      pool server showed 2-5 ms of jitter, which makes that too noisy.) Since §31g, a large
+      error is also taken whole once the intervals' estimates agree on it (4 standard errors).
   - **The poll:** a burst of 4 requests 2 s apart to each server at start, when the servers or
     an interface's address change, and on `ntp poll`; then every 64 s, doubling to 1024 s while
     the offsets stay within 4 jitters (at least 1 ms), and back to 64 s on a step or an offset
@@ -2475,3 +2476,54 @@ without them, and builds so the rest is a test run later.
 - **Costs:** code 4.6 KB as objects (the parser 1.6, SHA-1 0.8, the loader 1.3, `/dev/ptp0` 1.0);
   internal RAM 0.3 KB (two paths and `Clock`'s 28 bytes); the ROM 5 KB; PSRAM only while a list is
   read: its text (5 KB) and two tables (1 KB each).
+
+### 31g. As built: step 5, the board against `ptp4l` (2026-10-13)
+
+The runs of §31d, again with step 4 in, then what §31 still asked: the board standing down for
+`ptp4l` restarted, and both profiles. One script on sartre (the user ran it with sudo): `ptp4l -S
+-s --free_running 1` following the board for 60 s with `pmc` reading it; `ptp4l -S --priority1
+100` for 60 s, stopped for 20, restarted for 40; on the media profile (`ptp4l` too at 8 Syncs
+and Delay_Reqs a second), then the default. The board was watched from here every 4 s.
+
+- **The first run found three faults** (fixed; the third run below is clean):
+  - **The board's clock went 37 s ahead each time it went back to slave of `ptp4l`.** As master,
+    ptpclock0 moves to TAI; `ptp4l` on software stamps is on UTC. linuxptp's servo steps only the
+    first offset of its life, and `Servo::reset()` (a new parent) kept that: back to slave, the
+    servo locked 37 s off and slewed at its 500 ppm bound (20 hours), and the system clock,
+    following a locked servo, took the 37 s. Three returns: 111 s. The board as master then took
+    sartre with it (that script's `ptp4l -s` lacked `--free_running`: stepped 37 s, chrony took it
+    back). Now a reset re-arms the first step: a new master's first offset beyond 20 µs is
+    stepped (linuxptp's clock doesn't move while master; ours does).
+  - **For 2 s the timescale was the board's own.** The Announce that chooses a parent comes before
+    it is the parent; its timescale and UTC offset were taken from the next (2 s on the media
+    profile), the port keeping its master's flags (PTP's timescale) until then. The servo locks
+    in 0.5 s at 8 Syncs a second: the system clock followed `ptp4l`'s UTC as TAI, 37 s back, until
+    the next Announce. Each foreign master's last Announce's time properties are kept now and
+    taken when it is chosen.
+  - **NTP kept PTP's rate.** Following sartre while chrony slewed it back, the system clock ran
+    at -320 ppm; given back, NTP kept that rate (its discipline starts from the clock's) and its
+    1024 s poll. Now `NtpClient::clockReleased()` (the service, on letting go) puts back the
+    frequency of NTP's last update and polls at once, the discipline started again.
+- **NTP's discipline takes a large rate error whole** (the user's ask): the -320 ppm survived a
+  reset in the RTC record, and 6% an update (64 s) took an hour. Each interval of 32 s or more
+  also estimates the frequency that would have kept the clock (the one set, plus its error);
+  from 3 on, when their mean is beyond 4 standard errors from the frequency set, the mean is
+  taken. An interval's error is its two ends' noise, so the mean's is the first and last offsets'
+  over n intervals: its variance is theirs over n², not n (a jitter bound failed on the board: the
+  filter's jitter carries the very rate error). Host tests: 253 ppm off with ±9 ms noise to within
+  35 ppm in 4 updates (the weighing alone: 198); a good rate in that noise moves at most 2.5 ppm.
+  On the board: -82 ppm to -14 after 3 updates, then +0.8.
+- **The third run** (all three fixes):
+  - **`ptp4l` following the board** (both profiles): best master the board; `pmc`: UTC offset 37,
+    `currentUtcOffsetValid` 1, `ptpTimescale` 1, time source NTP (0x50), accuracy 100 ms (0x2D);
+    path delay 18-21 µs. Its offsets (1.5-2.9 ms) are sartre's NTP time against the board's.
+  - **The board following `ptp4l`, stopped, restarted** (both profiles): slave and locked after
+    one step each time (4 slave runs, 4 steps); offsets within ±1 µs on the default profile, ±8 µs
+    on the media (sartre's stamps); master again 7 s after `ptp4l` stopped, NTP's frequency back
+    each time (+0.800 ppm), and slave again when it restarted. The board's clock stayed within
+    ssh's latency of this PC's through the run: no step of the system clock beyond them.
+  - Nothing dropped, failed, missed or lost: 2927 frames in, 13542 out, 6756 stamps.
+- **Known:** `clock`'s source stays `ptp` after NTP has the clock back (as §31d), until NTP next
+  steps it.
+- **Waits for the grandmaster or a second board** (§31): lock against GPS time, two boards electing,
+  PPS on a scope.

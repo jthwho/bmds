@@ -220,20 +220,41 @@ Ntp::Discipline::Action Ntp::Discipline::update(int64_t monoNs, int64_t offsetNs
                 a.step = true;
                 _lastNs = monoNs;
                 _haveLast = true;
+                restartEstimates();
                 _poll = MinPoll;
                 _stable = 0;
                 return a;
         }
         if (_haveLast && monoNs - _lastNs >= FrequencyIntervalNs) {
                 // The offset the pending slew doesn't explain built up since the last update.
-                // Weighed by the interval: a short one's error is mostly the offsets' noise.
                 const int64_t interval = monoNs - _lastNs;
                 const int64_t residual = clamp(offsetNs - slewRemainingNs, 2 * StepNs);
                 const int64_t errorPpb = residual * NsPerSecond / interval;
-                const int64_t weighed = interval < FrequencyTimeNs ? interval : FrequencyTimeNs; // no overflow
-                const int64_t change = errorPpb * (weighed / 1'000'000) / ((weighed + FrequencyTimeNs) / 1'000'000);
+                // The frequency this interval asked for, whatever was set meanwhile.
+                const int64_t estimate = clamp(frequencyPpb + errorPpb, 2 * MaxFrequencyPpb);
+                if (_estimates == MaxEstimates) restartEstimates(); // recent ones only
+                ++_estimates;
+                _estimateSum += estimate;
+                _estimateSquares += estimate * estimate;
+                const int64_t n = _estimates;
+                const int64_t mean = _estimateSum / n;
+                const int64_t off = mean - frequencyPpb;
+                // Their variance, times n - 1. One interval's error is its two ends' noise, so the
+                // mean's is the first and last offsets' only, over n intervals: its variance is
+                // theirs over n squared, not n.
+                const int64_t spread = _estimateSquares - _estimateSum / n * _estimateSum;
                 a.setFrequency = true;
-                a.frequencyPpb = static_cast<int32_t>(clamp(frequencyPpb + change, MaxFrequencyPpb));
+                if (n >= MinEstimates && off * off * n * n * (n - 1) > 16 * (spread > 0 ? spread : 0)) {
+                        // Beyond 4 standard errors of their mean: the mean, whole.
+                        a.frequencyPpb = static_cast<int32_t>(clamp(mean, MaxFrequencyPpb));
+                        restartEstimates();
+                } else {
+                        // Weighed by the interval: a short one's error is mostly the offsets' noise.
+                        const int64_t weighed = interval < FrequencyTimeNs ? interval : FrequencyTimeNs; // no overflow
+                        const int64_t change =
+                                errorPpb * (weighed / 1'000'000) / ((weighed + FrequencyTimeNs) / 1'000'000);
+                        a.frequencyPpb = static_cast<int32_t>(clamp(frequencyPpb + change, MaxFrequencyPpb));
+                }
         }
         _lastNs = monoNs;
         _haveLast = true;
@@ -246,6 +267,13 @@ Ntp::Discipline::Action Ntp::Discipline::update(int64_t monoNs, int64_t offsetNs
                 if (_poll < MaxPoll) ++_poll;
         }
         return a;
+}
+
+void Ntp::Discipline::restartEstimates() {
+        _estimates = 0;
+        _estimateSum = 0;
+        _estimateSquares = 0;
+        return;
 }
 
 void Ntp::Discipline::reset() {

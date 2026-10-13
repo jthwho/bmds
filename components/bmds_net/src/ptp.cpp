@@ -309,6 +309,9 @@ namespace Ptp {
                 _drift = -frequencyPpb; // linuxptp's sign inside: the correction is -drift
                 _count = 0;
                 _state = State::Unlocked;
+                // A new master may keep other time, and the service moves ptpclock0 while it is master
+                // (to TAI, after NTP): unlike linuxptp's, the first offset after a reset steps again.
+                _firstUpdate = true;
                 return;
         }
 

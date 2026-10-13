@@ -630,3 +630,46 @@ TEST_CASE("PTP: a priority changed live re-runs the election") {
         CHECK(b.port->state() == Ptp::Port::State::Master);
         CHECK(a.port->state() == Ptp::Port::State::Slave);
 }
+
+// The board's service moves ptpclock0 while it is master (to TAI, or after NTP): back to a master
+// whose time is elsewhere, the new master's first offset is stepped, not slewed for hours.
+TEST_CASE("PTP: a master's clock moved, then back to a slave: the new master's first offset is stepped") {
+        Sim   sim;
+        Node &a = sim.add(1, withPriority(100), 0, Epoch);
+        Node &b = sim.add(2, media(), 20'000, Epoch + 1500 * Ms);
+        sim.start();
+        sim.run(40 * S);
+        REQUIRE(b.port->state() == Ptp::Port::State::Slave);
+        REQUIRE(b.port->counts().steps == 1);
+
+        a.up = false;
+        sim.run(sim.now + 15 * S);
+        REQUIRE(b.port->state() == Ptp::Port::State::Master);
+        b.step(37 * S); // as the service does, from a master on UTC to TAI
+
+        a.up = true;
+        sim.run(sim.now + 20 * S);
+        CHECK(b.port->state() == Ptp::Port::State::Slave);
+        CHECK(b.port->counts().steps == 2);
+        CHECK(sim.worstOffset(b, a, sim.now + 20 * S) < 500);
+}
+
+// linuxptp on software stamps masters on the arbitrary timescale (UTC). The Announce that chooses
+// it comes before it is the parent: its timescale must be the port's from then, not the one the
+// port had as master until the next Announce (the system clock follows on it once locked).
+TEST_CASE("PTP: a new parent's time properties are taken when it is chosen") {
+        Sim               sim;
+        Ptp::Port::Config arbitrary = withPriority(100);
+        arbitrary.timeFlags = 0;
+        Node &a = sim.add(1, arbitrary, 0, Epoch);
+        Node &b = sim.add(2, media(), 0, Epoch + 37 * S);
+        a.up = false;
+        sim.start();
+        sim.run(30 * S);
+        REQUIRE(b.port->state() == Ptp::Port::State::Master);
+        CHECK((b.port->status().timeFlags & Ptp::PtpTimescale) != 0);
+        a.up = true;
+        while (b.port->state() == Ptp::Port::State::Master && sim.now < 60 * S) sim.run(sim.now + 1 * Ms);
+        REQUIRE(b.port->state() != Ptp::Port::State::Master);
+        CHECK((b.port->status().timeFlags & Ptp::PtpTimescale) == 0);
+}

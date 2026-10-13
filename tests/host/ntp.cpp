@@ -13,6 +13,8 @@
 #include <doctest.h>
 
 #include <cstdint>
+#include <algorithm>
+#include <cstdlib>
 #include <cstring>
 
 #include <bmds/ntp.h>
@@ -225,27 +227,30 @@ TEST_CASE("Ntp: the discipline") {
         CHECK(a.step);
         CHECK(a.offsetNs == 5 * Ms);
         // A burst's next, 2 s on: a slew, no frequency yet.
-        a = d.update(2 * S, 2 * Ms, true, 0, 0, 0);
+        a = d.update(2 * S, 2 * Ms, true, 0, 0, 3 * Ms);
         CHECK_FALSE(a.step);
         CHECK(a.offsetNs == 2 * Ms);
         CHECK_FALSE(a.setFrequency);
-        // 64 s on, 1 ms built up: 15625 ppb, taken in by 64 / (64 + 1024).
-        a = d.update(66 * S, 1 * Ms, true, 0, 0, 0);
+        // 64 s on, 1 ms built up: 15625 ppb, taken in by 64 / (64 + 1024) (the sum within the
+        // offsets' noise: 4 jitters of 3 ms).
+        a = d.update(66 * S, 1 * Ms, true, 0, 0, 3 * Ms);
         CHECK(a.setFrequency);
         CHECK(a.frequencyPpb == 15625 * 64 / 1088);
         // The slew still pending isn't the rate's.
-        a = d.update(130 * S, 3 * Ms, true, 15625, 2500 * 1000, 0);
+        a = d.update(130 * S, 3 * Ms, true, 15625, 2500 * 1000, 3 * Ms);
         CHECK(a.setFrequency);
         CHECK(a.frequencyPpb == 15625 + 7812 * 64 / 1088);
         // A long interval takes half.
-        a = d.update(130 * S + 1024 * S, 1 * Ms, true, 0, 0, 0);
+        a = d.update(130 * S + 1024 * S, 1 * Ms, true, 0, 0, 3 * Ms);
         CHECK(a.frequencyPpb == 976 / 2);
-        a = d.update(130 * S + 5024 * S, 4 * Ms, true, 0, 0, 0);
+        a = d.update(130 * S + 5024 * S, 4 * Ms, true, 0, 0, 3 * Ms);
         CHECK(a.frequencyPpb == 1000 / 2); // and no more, however long
-        // Within ±500 ppm.
-        a = d.update(6000 * S, 100 * Ms, true, 499'000, 0, 0);
+        // Within ±500 ppm (a fresh discipline: the estimates above aren't these).
+        D q;
+        (void)q.update(5936 * S, 0, false, 0, 0, 0);
+        a = q.update(6000 * S, 100 * Ms, true, 499'000, 0, 0);
         CHECK(a.frequencyPpb == D::MaxFrequencyPpb);
-        a = d.update(6064 * S, -100 * Ms, true, -499'000, 0, 0);
+        a = q.update(6064 * S, -100 * Ms, true, -499'000, 0, 0);
         CHECK(a.frequencyPpb == -D::MaxFrequencyPpb);
         // Beyond 128 ms: a step, and the poll back to 64 s.
         a = d.update(6128 * S, -200 * Ms, true, 0, 0, 0);
@@ -267,4 +272,75 @@ TEST_CASE("Ntp: the discipline") {
         p.reset();
         CHECK(p.poll() == D::MinPoll);
         CHECK(p.update(0, Ms, true, 0, 0, 0).step == false);
+}
+
+namespace {
+
+        // A clock disciplined from offsets taken every 64 s: its rate error and the slew modelled,
+        // each offset with up to ±noise of a fixed pattern (the filter's jitter about noise / 2).
+        struct DisciplinedClock {
+                        int64_t         phaseNs = 0;      // the clock less the true time
+                        int64_t         errorPpb = 0;     // its own rate error
+                        int32_t         frequencyPpb = 0; // the correction set
+                        int64_t         slewNs = 0;       // pending
+                        Ntp::Discipline d;
+
+                        void run(int updates, int64_t &t, int64_t noiseNs) {
+                                static constexpr int64_t Pattern[] = {3, -7, 10, -2, -10, 6, 0, 8, -5, 1};
+                                for (int i = 0; i < updates; ++i) {
+                                        const int64_t dt = 64 * S;
+                                        int64_t       slewed = dt / 2000; // 500 ppm
+                                        if (slewed > (slewNs < 0 ? -slewNs : slewNs))
+                                                slewed = slewNs < 0 ? -slewNs : slewNs;
+                                        if (slewNs < 0) slewed = -slewed;
+                                        slewNs -= slewed;
+                                        phaseNs += (errorPpb + frequencyPpb) * (dt / S) + slewed;
+                                        t += dt;
+                                        const int64_t                 noise = noiseNs * Pattern[i % 10] / 10;
+                                        const Ntp::Discipline::Action a =
+                                                d.update(t, -phaseNs + noise, true, frequencyPpb, slewNs, noiseNs / 2);
+                                        if (a.setFrequency) frequencyPpb = a.frequencyPpb;
+                                        if (a.step) {
+                                                phaseNs += a.offsetNs;
+                                                slewNs = 0;
+                                        } else {
+                                                slewNs = a.offsetNs;
+                                        }
+                                }
+                                return;
+                        }
+        };
+
+} // namespace
+
+TEST_CASE("Ntp: the discipline takes a large rate error whole once it stands out from the noise") {
+        // The clock left 253 ppm slow (PTP followed a slewing master), a server with 4.5 ms of jitter.
+        DisciplinedClock c;
+        c.errorPpb = 0;
+        c.frequencyPpb = -253'000;
+        int64_t t = 0;
+        (void)c.d.update(t, 0, false, c.frequencyPpb, 0, 0); // set
+        c.run(4, t, 9 * Ms);
+        MESSAGE("after 4 updates: " << c.frequencyPpb << " ppb");
+        CHECK(std::abs(c.frequencyPpb) < 40'000); // the weighing alone: about -198'000
+        c.run(20, t, 9 * Ms);
+        MESSAGE("after 24: " << c.frequencyPpb << " ppb, " << c.phaseNs / 1000 << " us off");
+        CHECK(std::abs(c.frequencyPpb) < 20'000); // the weighing's own wander on ±9 ms
+        CHECK(std::abs(c.phaseNs) < 20 * Ms);
+}
+
+TEST_CASE("Ntp: the discipline's whole takes don't chase the offsets' noise") {
+        // A good rate, offsets with ±9 ms of noise: no whole take on the noise alone.
+        DisciplinedClock c;
+        c.errorPpb = 8'000;
+        c.frequencyPpb = -8'000;
+        int64_t t = 0;
+        (void)c.d.update(t, 0, false, c.frequencyPpb, 0, 0);
+        int32_t worst = 0;
+        for (int i = 0; i < 100; ++i) {
+                c.run(1, t, 9 * Ms);
+                worst = std::max(worst, std::abs(c.frequencyPpb + 8'000));
+        }
+        MESSAGE("worst rate error: " << worst << " ppb");
+        CHECK(worst < 30'000);
 }

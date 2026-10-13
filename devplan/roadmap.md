@@ -297,6 +297,10 @@ Plan: [`input.md`](input.md).
     Step 4 done (§31e-f): `/dev/ptp0` (slot 116, Linux's PHC calls and ioctls in `linux.c`),
     `CLOCK_TAI`, IANA's leap-second list in the ROM and the `tzdata` package (`clock/leapseconds`,
     hash checked), `clock`'s `TAI:` line and `clock leapseconds`.
+    Step 5 done (§31g): against `ptp4l`, both profiles, both roles, standing down and taking over;
+    `ptp4l` sees the board's UTC offset valid on PTP's timescale. Fixed on the way: the servo
+    steps a new master's first offset, a new parent's timescale is taken at once, NTP gets its
+    rate back from PTP and takes a large rate error whole. Left: the grandmaster's tests.
 
 ## Phase 8 — Self-Hosting
 

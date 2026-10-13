@@ -442,7 +442,7 @@ namespace {
                 Clock::setPtpUtcOffset(0, false);
                 _followAt = INT64_MAX;
                 _follow = Follow::None;
-                owns.store(false);
+                if (owns.exchange(false)) NtpClient::clockReleased();
                 return;
         }
 
@@ -560,7 +560,8 @@ namespace {
                         _follow = want;
                         _followIntegral = 0;
                         _followStarted = false;
-                        owns.store(want == Follow::SystemFollows);
+                        if (owns.exchange(want == Follow::SystemFollows) && want != Follow::SystemFollows)
+                                NtpClient::clockReleased();
                 }
                 const Ptp::Port::Status &s = port()->status();
                 bool                     fromMaster, arbitrary;
