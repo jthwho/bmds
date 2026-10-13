@@ -3,7 +3,7 @@
 # commands.
 #
 # Ethernet framing, ARP, IPv4 text, the multicast filter, the real-time classifier, ICMP's rate
-# limits, NTP's arithmetic and the sockets are portable: also built as a plain CMake library for
+# limits, NTP's arithmetic, PTP and the sockets are portable: also built as a plain CMake library for
 # the host tests (tests/host), with lwIP itself as bmds_lwip (the same lwipopts.h; the host tests
 # define the port's functions and NetStack's).
 #
@@ -17,7 +17,9 @@ set(BMDS_NET_PORTABLE_SRCS
         src/icmpratelimit.cpp
         src/multicastfilter.cpp
         src/netclassifier.cpp
-        src/ntp.cpp)
+        src/ntp.cpp
+        src/ptp.cpp
+        src/ptpport.cpp)
 
 # lwIP: the core, IPv4, DNS and mDNS's responder (IPv6 is vendored for later, not built yet).
 set(BMDS_LWIP_SRCS
@@ -68,13 +70,14 @@ if(COMMAND idf_component_register)
                                     src/ntpclient.cpp
                                     src/ntpcommand.cpp
                                     src/pingcommand.cpp
+                                    src/ppsout.cpp
                                     src/socket.cpp
                                     src/socketfastpath.cpp
                                     src/sshservice.cpp
                                INCLUDE_DIRS include
                                PRIV_INCLUDE_DIRS ${BMDS_LWIP_INCLUDES}
                                REQUIRES bmds_core bmds_kernel
-                               PRIV_REQUIRES bmds_board bmds_fs bmds_shell bmds_sysconf esp_driver_gpio esp_hw_support esp_mm
+                               PRIV_REQUIRES bmds_board bmds_fs bmds_shell bmds_sysconf esp_driver_gpio esp_driver_gptimer esp_hw_support esp_mm
                                              hal soc
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})

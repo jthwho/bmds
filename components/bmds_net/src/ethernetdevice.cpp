@@ -45,9 +45,14 @@
 #include <bmds/staticobject.h>
 #include <bmds/system.h>
 
+#include "ppsout.h"
+
 BMDS_NAMESPACE_BEGIN
 
 namespace {
+
+        // The board's PPS pin, if it has one: the EMAC is one per chip, and so is its clock.
+        constinit PpsOut pps;
 
         using RxDesc = eth_dma_rx_descriptor_t;
         using TxDesc = eth_dma_tx_descriptor_t;
@@ -69,7 +74,7 @@ namespace {
         // counts nanoseconds), stepped 40 ns at a time by the fine method: the addend's carry
         // out at 25 MHz on average, 2^32 × 25 / 40 (ESP-IDF's choice).
         constexpr uint32_t PtpIncrementNs = 40;
-        constexpr uint32_t PtpAddend = 0xa0000000u;
+        constexpr uint32_t PtpAddend = EthernetDevice::NominalPtpAddend;
         constexpr int32_t  MaxPpb = 5'000'000;
 
         // The receive path wedged (devplan/network.md §30b): the MAC's debug register reports its
@@ -318,6 +323,7 @@ Error EthernetDevice::start() {
         readFeatures();
         probeFilters();
         startPtp(Clock::isSet() ? PtpTime::fromNs(Clock::now().ns) : PtpTime{});
+        if (board().ethernet.ppsOut != NoGpio) (void)pps.start(board().ethernet.ppsOut, *this);
 
         // The rings: chained descriptors, the receive ring given buffers from the pool.
         auto *rx = static_cast<RxDesc *>(_rxDesc);
@@ -574,6 +580,8 @@ void EthernetDevice::startPtp(PtpTime time) {
         emac_ll_ts_all_enable(ptp, true); // every received frame stamped, not only PTP's
         emac_ll_set_ts_sub_second_incre_val(ptp, PtpIncrementNs);
         emac_ll_set_ts_update_method(ptp, ETH_PTP_UPDATE_METHOD_FINE);
+        // The MAC's own PPS stays unused: it doesn't reach the GPIO matrix on this chip (PpsOut, §31b).
+        ptp->pps_ctrl.val = 0;
         if (_ptpAddend == 0) _ptpAddend = PtpAddend;
         emac_ll_set_ts_addend_val(ptp, _ptpAddend);
         emac_ll_ts_addend_do_update(ptp);
@@ -1299,7 +1307,37 @@ Error EthernetDevice::setPtpTime(PtpTime time) {
         emac_ll_set_ts_update_sub_second_val(ptp, time.nanoseconds);
         emac_ll_ts_init_do(ptp);
         if (!waitUs([] { return emac_ll_is_ts_init_done(&EMAC_PTP); }, PtpTimeoutUs)) return Error::Timeout;
+        pps.rearm();
         return Error::Ok;
+}
+
+// The update registers take the magnitude and a subtract bit, both parts as they are (measured:
+// docs/platforms/esp32p4.md; Linux's stmmac writes 10^9 - ns for a subtraction, wrong here).
+Error EthernetDevice::stepPtpTime(int64_t ns) {
+        const bool     subtract = ns < 0;
+        const uint64_t magnitude = subtract ? 0 - static_cast<uint64_t>(ns) : static_cast<uint64_t>(ns);
+        const uint64_t seconds = magnitude / 1'000'000'000;
+        const uint32_t nanoseconds = static_cast<uint32_t>(magnitude % 1'000'000'000);
+        if (seconds > UINT32_MAX) return Error::OutOfRange;
+        emac_ptp_dev_t *ptp = &EMAC_PTP;
+        if (!emac_ll_is_ts_update_time_done(ptp)) return Error::Busy;
+        emac_ll_set_ts_update_second_val(ptp, static_cast<uint32_t>(seconds));
+        emac_ll_set_ts_update_sub_second_val(ptp, nanoseconds);
+        if (subtract) {
+                emac_ll_ts_update_time_sub(ptp);
+        } else {
+                emac_ll_ts_update_time_add(ptp);
+        }
+        emac_ll_ts_update_time_do(ptp);
+        if (!waitUs([] { return emac_ll_is_ts_update_time_done(&EMAC_PTP); }, PtpTimeoutUs)) return Error::Timeout;
+        pps.rearm();
+        return Error::Ok;
+}
+
+EthernetDevice::PpsStatus EthernetDevice::ppsStatus() const {
+        PpsStatus s = pps.status();
+        s.pin = board().ethernet.ppsOut;
+        return s;
 }
 
 Error EthernetDevice::setPtpFrequency(int32_t ppb) {

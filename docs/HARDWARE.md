@@ -79,7 +79,8 @@ Every ESP32-P4 GPIO with a board function. Netlist names are given where they he
 | 22 | UEXT SDA | I²C1 | 2.2k pull-up. UEXT pin 6. |
 | 23 | UEXT SCL | I²C1 | 2.2k pull-up. UEXT pin 5. |
 | 24, 25 | USB-Serial/JTAG D-/D+ | USB FS | USB-C |
-| 26, 27 | Free (second FS PHY pins) | — | EXT1 pins 4 and 6 |
+| 26 | PPS out (the 1588 clock: 1 Hz, 100 ms, rising on the second) | EMAC | The second FS PHY's D-, unused. EXT1 pin 4. |
+| 27 | Free (the second FS PHY's D+) | — | EXT1 pin 6 |
 | 28 | RMII CRS_DV | EMAC | |
 | 29 | RMII RXD0 | EMAC | |
 | 30 | RMII RXD1 | EMAC | |

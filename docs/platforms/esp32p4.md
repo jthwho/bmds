@@ -167,6 +167,25 @@ until silicon v3; then test again.
   (header-only) and `soc/emac_periph.h`'s pin tables, and does the bring-up itself.
 - **Start the MAC and its DMA on link-up, stop them on link-down** (ESP-IDF's order; transmit:
   MAC then DMA, the other way round can hang the transmitter).
+- **The 1588 clock's PPS doesn't reach a pin before chip revision 3** (ours is v1.3). The MAC
+  makes it: HP_SYSTEM's read-only copy (`sys_gmac_ctrl0.sys_ptp_pps`) toggles as `pps_ctrl` says.
+  But GPIO matrix signal 243 (`EMAC_PTP_PPS_PAD_OUT_IDX`) never toggles on any pad, whichever
+  output enable is chosen. A scan of all 256 matrix signals against that copy found none; the
+  same scan did find I²S's while audio played. ESP-IDF's `esp_eth_mac_set_pps_out_gpio()` (6.0
+  on) documents "from silicon revision 3", and its table maps the signal to nothing before
+  (2026-10-12). The board's PPS is made by a timer instead (`devplan/network.md` §31b).
+- **The MAC's PPS settings, measured:** the flexible mode's enable bit doesn't stick (no flexible
+  PPS, as the feature register says). Fixed mode 0 is one 1588 clock period wide, at the second.
+  Under digital rollover, setting 1 is "1 Hz" made from bit 29 of the nanoseconds: it rises at
+  .537 s and falls on the second.
+- **Stepping the 1588 clock:** the update registers take the step's seconds and nanoseconds as
+  they are, with the subtract bit for a negative step (ESP-IDF's `emac_hal_ptp_adj_inc`).
+  Linux's stmmac writes 10^9 - ns for a subtraction under digital rollover; here that lands about
+  a second out. Each of 10 steps of ±250 ns to ±2 s landed within the 1 µs a read can show
+  (2026-10-12).
+- **HP_SYSTEM has a live copy of the 1588 time bus:** `sys_gmac_ctrl2` is the seconds and
+  `sys_gmac_ctrl1` the nanoseconds. Two reads, cheaper than the MAC's own registers
+  (`ptpTime()` takes 360-400 ns); back to back with them it agrees to within that.
 
 ## 4b. The crypto engines (`devplan/network.md` §26-27)
 
@@ -251,6 +270,20 @@ until silicon v3; then test again.
   holds that lock for whole copies of its send buffer, so the receiver's delay from the driver
   was 1.5 ms at the 99th percentile and 3.4 ms at worst; read without the lock (an atomic count,
   the wake a latched semaphore), 112-136 µs and 0.37-1.1 ms (`devplan/network.md` §30k).
+- **A GPTimer can't take its clock undivided:** its prescaler is 2 to 65536, so asking for
+  40 MHz from the 40 MHz crystal hits an assert in `timer_ll_set_clock_prescale` (a boot loop,
+  2026-10-12). PLL_F80M halved gives the same 25 ns counts, and the PLL is a whole multiple of
+  the crystal.
+- **`gptimer_get_raw_count()` costs about 1.8 µs:** it latches the count, then waits for the
+  timer's clock domain. To pair the count with another clock, write the latch
+  (`update.tx_update`) yourself between two reads of that clock, and wait afterwards: the PPS's
+  pairing went from a 1.9 µs bracket to 200-240 ns.
+- **Routing a peripheral output through the GPIO matrix:** `gpio_set_direction()` puts the pad
+  back to the plain GPIO output, so set the direction first and connect the signal after. With
+  `CONFIG_HAL_GPIO_USE_ROM_IMPL`, `gpio_matrix_output()` leaves the output enable to the
+  peripheral.
+- **The ETM makes hardware-timed edges:** a GPTimer's alarm event connected to a GPIO toggle task
+  changes the pin at the match, with no interrupt in between.
 - **Opening the console's USB serial port with DTR and RTS set low first reset the chip**
   (pyserial, 2026-10-11): the boot log showed `rst:0x17 (CHIP_USB_UART_RESET)`. Opening it with
   pyserial's defaults doesn't: `tools/bmdsboard.py` (`bmds-run`, `bmds-compat`) left the uptime

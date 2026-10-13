@@ -258,6 +258,16 @@ namespace {
                 else
                         ctx.printf("  1588 clock %" PRIu64 ".%09" PRIu32 " (the system clock isn't set)\n", t.seconds,
                                    t.nanoseconds);
+                const EthernetDevice::PpsStatus pps = d.ppsStatus();
+                if (pps.pin != NoGpio && !pps.running) {
+                        ctx.printf("  PPS out on GPIO%d: not running (see the log)\n", pps.pin);
+                } else if (pps.hardware) {
+                        ctx.printf("  PPS out on GPIO%d: the MAC's, a 25 ns pulse on each second\n", pps.pin);
+                } else if (pps.pin != NoGpio) {
+                        ctx.printf("  PPS out on GPIO%d: a timer's, rising on each second (within %" PRIu32
+                                   " ns), 100 ms high; %" PRIu32 " pulses, %" PRIu32 " missed\n",
+                                   pps.pin, (pps.bracketNs + 1) / 2, pps.edges, pps.late);
+                }
                 showIp(ctx, d);
                 return;
         }

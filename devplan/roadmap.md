@@ -284,7 +284,13 @@ Plan: [`input.md`](input.md).
     The tails (§30k): datagram sockets no longer take lwIP's core lock in `poll()` or an empty
     receive, and the wake timer's interrupt is on core 1. Under the full load: 0 lost in 26 runs,
     driver to program 116 µs at the 99th percentile (1538 before), wake 56 µs (124).
-  - [ ] 7. PTP, master and slave (BMCA): two boards alone elect a grandmaster.
+  - [ ] 7. PTP, master and slave (BMCA): two boards alone elect a grandmaster. Design §31 (the
+    grandmaster down: the protocol proven on a simulated network and against linuxptp; the
+    leap-second file in `/rom`, `clock/leapseconds`). Step 1 done (§31a): the portable core
+    (messages, BMCA, linuxptp's PI servo, the port with holdover), host-tested on a simulated
+    network (lock within 251 ns at 1 µs jitter, election, failover without a step), fuzzed.
+    Step 2 done (§31b): the 1588 clock stepped in one update; PPS out on GPIO26, the MAC's own
+    from chip revision 3, before it (this v1.3 board) a GPTimer through the ETM, within 120 ns.
 
 ## Phase 8 — Self-Hosting
 

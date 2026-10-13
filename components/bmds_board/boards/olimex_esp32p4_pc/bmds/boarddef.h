@@ -104,6 +104,9 @@ namespace Detail {
                                 .crsDv = 28,
                                 .rxd0 = 29,
                                 .rxd1 = 30,
+                                // EXT1 pin 4 (the header isn't fitted): the second FS PHY's D-,
+                                // which nothing here uses (USB is on the UTMI PHY).
+                                .ppsOut = 26,
                         },
                 .audio =
                         {

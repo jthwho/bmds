@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <bmds/board.h>
 #include <bmds/config.h>
 #include <bmds/error.h>
 #include <bmds/ethernet.h>
@@ -399,11 +400,42 @@ class EthernetDevice {
                  */
                 Result<PtpTime> waitTxStamp(uint32_t ticket, unsigned int timeoutMs);
 
+                /**
+                 * @brief The 1588 clock's addend at no correction: each 25 ns of the crystal adds it
+                 *        to a 32-bit accumulator, and each carry is 40 ns of the clock's time.
+                 */
+                static constexpr uint32_t NominalPtpAddend = 0xa0000000u;
+
+                /** @brief Returns the 1588 clock's addend now (its rate: addend / `NominalPtpAddend`). @isrsafe */
+                uint32_t ptpAddend() const { return _ptpAddend; }
+
+                /** @brief The PPS output's state (`net`). */
+                struct PpsStatus {
+                                GpioNum  pin = NoGpio; ///< The board's PPS pin (`NoGpio`: none).
+                                bool     running = false;
+                                bool     hardware = false; ///< The MAC's own PPS (chip revision 3 on); else a timer's.
+                                uint32_t edges = 0;        ///< Rising edges made (a timer's).
+                                uint32_t bracketNs =
+                                        0; ///< The last edge's uncertainty: the 1588 clock read around the timer's latch.
+                                uint32_t late = 0; ///< Edges skipped: armed too late.
+                };
+
+                /** @brief Returns the PPS output's state. @nonblocking */
+                PpsStatus ppsStatus() const;
+
                 /** @brief Returns the 1588 clock's time. @nonblocking */
                 PtpTime ptpTime() const;
 
                 /** @brief Sets the 1588 clock. */
                 Error setPtpTime(PtpTime time);
+
+                /**
+                 * @brief Adds @p ns (negative: takes it away) to the 1588 clock in one update,
+                 *        nothing lost to the time a read and a set take.
+                 * @return `Ok`, `Busy` (an update under way), `OutOfRange` (beyond 2^32 s: set it),
+                 *         `Timeout`.
+                 */
+                Error stepPtpTime(int64_t ns);
 
                 /**
                  * @brief Sets the 1588 clock's frequency correction, in parts per billion

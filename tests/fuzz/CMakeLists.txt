@@ -66,6 +66,14 @@ target_compile_options(ntp_fuzz PRIVATE -fno-exceptions -fno-rtti)
 target_link_libraries(ntp_fuzz PRIVATE bmds_core)
 target_link_options(ntp_fuzz PRIVATE -fsanitize=fuzzer)
 
+# PTP (devplan/network.md §31): the messages and an ordinary clock's port, bmds_net's portable
+# ptp.cpp and ptpport.cpp.
+add_executable(ptp_fuzz ptp.cpp ${NET}/src/ptp.cpp ${NET}/src/ptpport.cpp)
+target_include_directories(ptp_fuzz PRIVATE ${NET}/include)
+target_compile_options(ptp_fuzz PRIVATE -fno-exceptions -fno-rtti)
+target_link_libraries(ptp_fuzz PRIVATE bmds_core)
+target_link_options(ptp_fuzz PRIVATE -fsanitize=fuzzer)
+
 # The real-time classifier (devplan/network.md §30d): bmds_net's portable netclassifier.cpp and
 # the framing it reads with.
 add_executable(netclassifier_fuzz netclassifier.cpp ${NET}/src/netclassifier.cpp ${NET}/src/ethernet.cpp)

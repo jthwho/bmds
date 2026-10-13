@@ -2088,3 +2088,161 @@ Two causes, each found by taking one suspect away and measuring again.
     soft-float doubles on its `SCHED_FIFO` main thread, after the measurement.
   - Each `ssh` login makes 196 reads of `flash0` through the driver, each one pausing the cache.
     Nothing reads it while idle. Not looked into.
+
+## 31. Step 7's design: PTP, without the grandmaster for now (2026-10-12, for the user's review)
+
+§10 stands: one ordinary clock in the kernel, either role by BMCA, two-step, end-to-end delay,
+the media and default profiles, `ptpclock0` disciplined, and the system clock following it. The
+user's grandmaster is down, and there is one board here, so this section sets what can be proven
+without them, and builds so the rest is a test run later.
+
+- **What can be tested now:**
+  - **A simulated network on the host** carries most of the proof. The protocol is portable
+    code: messages, the port state machine, BMCA, the servo. It runs against several simulated
+    clocks with their own drift (±100 ppm), path delays, jitter and loss. Tests cover: BMCA's
+    choice and its ties; a master falling silent and the next taking over with its last
+    frequency (holdover, no jump); convergence time and steady-state offset for a given jitter;
+    a better master arriving and the board standing down. The message parser is fuzzed.
+  - **The board alone** becomes master once the announce timeout passes with nothing heard.
+  - **The board against linuxptp on sartre.** `ptp4l` is installed there, but its NIC (mlx4) has
+    software timestamps only (no PHC), and it needs root: the user runs it. Tests: `ptp4l`
+    following the board (its log shows offset and path delay); the board following `ptp4l` (a
+    better priority1 there); `ptp4l` stopped, the board taking over; restarted, the board standing
+    down. Both transports, both profiles. Precision is bounded by sartre's software stamps (tens
+    of µs), so this shows the protocol works with linuxptp, not how well it locks.
+- **What waits for the grandmaster or a second board:** lock against GPS time, two boards
+  electing alone, PPS offsets on a scope (§12's step 7 done-when, unchanged). PPS out is built
+  now, so a scope can already show the board's second against anything else.
+- **The ABI** (frozen once shipped; for the user):
+  - **Settings** `net/ptp/*` as §10's table, with `net/ptp/enabled` off by default (as SSH).
+  - **`ptp`:** role and state, grandmaster and its class, offset, path delay, frequency, the
+    foreign masters heard and why BMCA chose; `ptp -v` per message counts.
+  - **Counters** `net.ptp.*` in the stats registry: messages each way per type, timeouts, BMCA
+    changes, steps, the last offset and delay.
+  - **`/dev/ptp0`,** Linux's PHC interface: `clock_gettime(FD_TO_CLOCKID(fd))`,
+    `PTP_CLOCK_GETCAPS`, `PTP_SYS_OFFSET_EXTENDED`. Programs read it (netlat's one-way delay,
+    AES67 later). `clock_adjtime` and `clock_settime` on it are refused (`EBUSY`) while the PTP
+    service runs, and allowed while it is off, so a ported `ptp4l` could drive it.
+    `PTP_PEROUT_REQUEST` for the PPS pin, the same rule.
+  - **`CLOCK_TAI`:** the system clock plus the UTC offset: from PTP when locked, otherwise from
+    the leap-second file.
+  - **The leap-second file** (the user's, 2026-10-12): IANA's `leap-seconds.list`, kept as is,
+    about 5 KB of text: one line per leap second, a hash, and an expiry about six months ahead.
+    - **Source:** the same signed tzdata release `tools/update-tzdata` already fetches and checks.
+      It keeps that file in `thirdparty/tzdata` too, so there is no new source and no new trust.
+    - **Where:** in the ROM as `/rom/share/leap-seconds.list`, and in the card's `tzdata` package
+      as `share/leap-seconds.list`.
+    - **`clock/leapseconds`** (`path`) works as `clock/tzdata` does:
+      - it defaults to `/sd0/p0/share/leap-seconds.list`, so a newer file on the card overrides
+        the ROM's without a reflash;
+      - while no file is at that path, the ROM's is used;
+      - an empty path means none (the offset is known only from PTP).
+    - **A stale file loses to a fresh one:** if the file at the path expires before the ROM's,
+      the ROM's is used, and `clock` says so.
+    - **The hash is checked;** a file that fails it is ignored and logged.
+    - **Past its expiry,** the last offset is still used, but a master announces it with
+      `currentUtcOffsetValid` false and `clock` says it is stale.
+  - **`clock`** adds the TAI offset, its source (PTP, or which file) and the file's expiry;
+    `clock leapseconds` shows the file in use and its entries, as `clock tzdata` shows its file.
+- **Inside:**
+  - **Transport:** fast-path flows (§30e) for EtherType 0x88F7 (group 01:1B:19:00:00:00) and
+    UDP 319/320 on 224.0.1.129, with hardware stamps both ways. A Delay_Req's departure comes
+    back through the flow's stamp queue; a Sync's goes into its Follow_Up.
+  - **The driver adds** a stepped adjustment (offset added to the 1588 clock) and the PPS output
+    (the MAC's flexible PPS on GPIO26 or 27, from the board definition).
+  - **The servo:** linuxptp's PI (its default gains scaled by the sync interval). It steps beyond
+    1 ms at the start (and after that, only if `net/ptp/step` allows it); otherwise it slews
+    through the addend. The system clock follows `ptpclock0` as a clock source above NTP; NTP
+    keeps running and takes over if PTP loses lock.
+  - **The service** is a kernel task at the network's real-time priority on core 1. It wakes on
+    flows and timers, with no polling.
+- **Steps:**
+  1. The portable core and the host simulation; fuzz the parser.
+  2. The driver's step and PPS output; `net` shows PPS.
+  3. The service, settings, `ptp`, counters; the system clock following.
+  4. `/dev/ptp0`, `CLOCK_TAI` (slots, `linux.c`), the leap-second file (`update-tzdata`, the ROM,
+     the `tzdata` package, `clock/leapseconds`, `clock`); host tests for the parser, its hash
+     and expiry; fuzzed.
+  5. The board against `ptp4l` (the tests above); results recorded here.
+
+### 31a. As built: step 1, the portable core (2026-10-12)
+
+- **`bmds/ptp.h`** (`ptp.cpp`, `ptpport.cpp`; portable, in the host build and the firmware):
+  - **Messages:** Sync, Delay_Req, Follow_Up, Delay_Resp and Announce built and parsed, byte for
+    byte as IEEE 1588-2008 lays them out. TLVs are skipped, and 1588-2019's minor version is
+    accepted. Peer delay, signaling and management messages are read as far as the header.
+  - **The dataset comparison** follows figures 27 and 28 (better, or better by topology).
+  - **The servo** is linuxptp's PI: the gains for hardware stamps, scaled by the sync interval
+    (kp 1.31, ki 0.13 at 125 ms), and a step only for the first offset beyond 20 µs.
+  - **The port:** an ordinary clock's state machine: listening, master, passive, uncalibrated,
+    slave. Foreign masters qualify after 2 Announces in 4 intervals. Master: Announce, Sync and
+    Follow_Up from the departure stamp, Delay_Resp. Slave: two-step Syncs in either order, path
+    delay as the median of 7, randomized Delay_Req intervals. The owner gives it messages, stamps
+    and the time; it acts through `Io` (send, now, step, frequency, the UTC offset).
+- **Holdover, found by the failover test:** the frequency held once the master is gone was the
+  last correction, which carries the last offset's proportional part. It was 1 ppm off at 1 µs of
+  jitter, so the new master drifted 46 µs from the old one's time in 45 s. Two fixes:
+  - **What it holds to:** an average of the frequency applied over 32 s, started after 8 s of lock
+    so the pull-in is left out (until then, the integral). It holds 16 ppb from true.
+  - **When it holds:** a slave whose Syncs stop for 4 intervals holds the averaged rate while it
+    waits for the announce timeout (1588-2019's sync receipt timeout). Before, it ran 6-8 s on the
+    last correction.
+
+  Together: 1.2 µs in 45 s.
+- **Times from the wire saturate:** a master's times plus their corrections, and the differences
+  of four stamps, are kept within ±73 years. A hostile `t1` could otherwise overflow `int64_t`.
+- **Host tests** (`tests/host/ptp.cpp`, 13 cases, 0.3 s): the messages byte by byte and refused,
+  the comparison, the servo, and clocks on a simulated network. Each simulated clock has its own
+  drift (to ±80 ppm); messages see 30 µs of path, jitter and loss; stamps are quantized to 8 ns.
+  Every port sends and parses real bytes.
+
+  | Case | Result |
+  |---|---|
+  | A slave locks (1 µs jitter) | within 251 ns over 30 s; path delay 30.4 µs (true 30.5); one step |
+  | Election | the lowest identity, else priority1; a slave-only clock follows and never masters |
+  | Failover | the next master in under 15 s, no step anywhere; the remaining slave follows it within 500 ns |
+  | A better master arriving | takes over; the old master follows it |
+  | 10 % loss, 5 µs jitter, Follow_Ups ahead of their Syncs | within 2.3 µs |
+  | Another domain | ignored. A class-6 clock beaten by another goes passive |
+  | priority1 changed live | the election runs again |
+- **Fuzzed** (`ptp_fuzz`, `tests/fuzz/make-ptp-seeds.py`): every message round-trips. A port is
+  driven by the input (messages, time, stamps, configurations), and what it sends must parse.
+  The seeds reach slave (one step) and master. 10 minutes: 1.1 million inputs, 407 edges, nothing
+  found.
+- **Size:** 11.5 KB of code in the firmware, no RAM until step 3 opens a port.
+
+### 31b. As built: step 2, the clock's step and PPS out (2026-10-12)
+
+- **`EthernetDevice::stepPtpTime(ns)`** adds or takes away a step in one hardware update, so
+  nothing is lost to the time a read and a set take. The update registers take the step as it
+  is, with a subtract bit; Linux's stmmac writes a complement for a subtraction, which lands
+  about a second out here (measured; docs/platforms/esp32p4.md §4a). `ptpAddend()` and
+  `NominalPtpAddend` give the clock's rate.
+- **PPS out:** §31 planned the MAC's own PPS. On this chip (v1.3) it doesn't reach a pin, and
+  ESP-IDF documents its `esp_eth_mac_set_pps_out_gpio()` from revision 3 on (the user found
+  the call). So there are two paths, chosen at start by the chip's revision:
+  - **From revision 3:** the MAC's PPS, routed through the GPIO matrix as ESP-IDF does it: a
+    25 ns pulse on each second (fixed mode 0). Untested: no such chip here.
+  - **Before (this board):** `PpsOut` (`src/ppsout.cpp`). A GPTimer on PLL_F80M ÷ 2 (25 ns
+    counts; the PLL is a whole multiple of the crystal the 1588 clock counts) toggles the pin
+    through the ETM when its alarm matches, with no interrupt in between. Its interrupt, after
+    each edge, arms the next: rising on the 1588 clock's next second, falling 100 ms later.
+    - An alarm's count comes from the timer's count, latched between two reads of HP_SYSTEM's
+      copy of the 1588 time bus, and the addend's rate. That bracket is 200-240 ns, so an edge is
+      within about 120 ns.
+    - A step or a set re-arms the pending edge from the clock as it is.
+    - A toggle gone astray is put right before the next edge is armed.
+- **Board definition:** `BoardEthernet::ppsOut` is GPIO26: EXT1 pin 4, which isn't fitted. It
+  is the second FS PHY's D-; USB uses the UTMI PHY. `docs/HARDWARE.md` updated.
+- **`net`** shows `PPS out on GPIO26: a timer's, rising on each second (within N ns), 100 ms
+  high; P pulses, M missed`.
+- **Measured on the board** (a temporary command polling the pin; it can only see an edge some
+  microseconds late):
+  - each rise at x.000000159 to x.000118 s on the 1588 clock, each fall 100 ms after;
+  - after a +0.3 s step, the next rises still on whole seconds;
+  - no missed edges.
+
+  `progtest net` and `rtnet` still pass.
+- **Costs:** one GPTimer, one ETM channel and one GPIO ETM task; an interrupt every 500 ms
+  (each one a few µs). Code: `PpsOut` 1.6 KB, plus ESP-IDF's ETM drivers (gptimer_etm, gpio_etm,
+  esp_etm): 8.3 KB as objects, less once unused functions are dropped.

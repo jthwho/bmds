@@ -140,6 +140,7 @@ struct BoardEthernet {
                 GpioNum     crsDv = NoGpio;          ///< CRS_DV GPIO.
                 GpioNum     rxd0 = NoGpio;           ///< RXD0 GPIO.
                 GpioNum     rxd1 = NoGpio;           ///< RXD1 GPIO.
+                GpioNum     ppsOut = NoGpio;         ///< The 1588 clock's PPS output (1 Hz, rising on the second).
 };
 
 /** @brief Audio codec chips. */

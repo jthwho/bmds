@@ -12,6 +12,10 @@ the host tests: they run for as long as one lets them.
 - **`netclassifier_fuzz`:** the real-time classifier (`devplan/network.md` §30d), which reads every
   frame `eth0` takes while a flow is open: rules and a frame from the input; a match inside the
   frame, and a UDP match written again with the classifier's headers matching the same rule.
+- **`ptp_fuzz`:** PTP (`devplan/network.md` §31): each message parsed, built again and parsed to
+  the same fields; and an ordinary clock's port driven by the input (messages, the time moving on,
+  departure stamps, configurations), its clock stepped and slewed as it asks; what it sends must
+  parse, no fault, no overflow, no timer that never moves on.
 - **`sftp_fuzz`:** our SFTP server's protocol core (`programs/sftp-server/sftp.c`,
   `devplan/network.md` §24) after an INIT, requests in sequence, the file calls made up (files,
   directories, links, errors, names as long as names get); every reply whole and fitting, every
@@ -40,6 +44,11 @@ tests/fuzz/make-midi-seeds.py /mnt/data/tmp/midi        # a MIDI file: notes, ch
 
 ```sh
 ./ntp_fuzz -max_len=256 -max_total_time=600 -artifact_prefix=./ntp- ntp-corpus ntp-seeds
+```
+
+```sh
+tests/fuzz/make-ptp-seeds.py ptp-seeds
+./ptp_fuzz -max_len=8192 -max_total_time=600 -print_funcs=0 -artifact_prefix=./ptp- ptp-corpus ptp-seeds
 ```
 
 ```sh

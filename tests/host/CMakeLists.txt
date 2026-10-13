@@ -83,6 +83,7 @@ add_executable(bmds_host_tests
         realtime.cpp
         networkview.cpp
         ntp.cpp
+        ptp.cpp
         shacrypt.cpp
         logtext.cpp
         topview.cpp
