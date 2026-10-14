@@ -12,9 +12,10 @@
 #include <sdkconfig.h>
 #include <bmds/audiodevice.h>
 #include <bmds/boot.h>
-#include <bmds/bootdisk.h>
+#include <bmds/cfg.h>
 #include <bmds/clipboard.h>
 #include <bmds/ethernetdevice.h>
+#include <bmds/flashdisk.h>
 #include <bmds/netstack.h>
 #include <bmds/filehandle.h>
 #include <bmds/i2cbus.h>
@@ -70,17 +71,18 @@ namespace {
                 {"console", bmds::UsbSerialConsole::init},
                 {"i2c", bmds::I2cBus::init},
                 {"vfs", bmds::Vfs::init},
-                {"boot", bmds::BootDisk::init},       // /boot: the profile and autoexec.sh
+                {"flash", bmds::FlashDisk::init},     // /flash: the board's own files, the update's records
                 {"recovery", bmds::Update::watch},    // crashes in a row, Esc at power on: to recovery
                 {"rom", bmds::RomDisk::init},         // /rom: the files that come with the firmware
-                {"sysconf", bmds::SysConf::init},     // the system configuration, saved on /boot; /home
+                {"storage", bmds::Storage::init},     // the card: before /cfg, which may be on it
+                {"cfg", bmds::Cfg::init},             // /cfg: the card's configuration, else /flash's
+                {"sysconf", bmds::SysConf::init},     // the system configuration, saved in /cfg; /home
                 {"logs", bmds::LogFiles::init},       // /dev/log; the log's files in log/dir once it mounts
                 {"update", bmds::Update::init},       // the last update's result logged (devplan/update.md)
                 {"sysmon", bmds::Sysmon::init},       // the tasks' CPU time, the system's counters
                 {"audio", bmds::AudioDevice::init},   // dsp0: made, not started; follows audio/dsp0/...
                 {"midi", bmds::Midi::init},           // the router, /dev/midi*; before USB's MIDI devices
-                {"clipboard", bmds::Clipboard::init}, // its configuration on /boot; /dev/clip0
-                {"storage", bmds::Storage::init},
+                {"clipboard", bmds::Clipboard::init}, // its configuration in /cfg; /dev/clip0
                 {"tmp", bmds::TmpFs::init},
                 {"programs", bmds::Loader::init},  // the process table
                 {"synth", bmds::SoundFonts::init}, // fonts synths share; after the loader: its cache is reclaimed first

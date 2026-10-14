@@ -96,7 +96,7 @@ namespace {
 
         // The built-in declarations of these tests.
         constexpr Config::Param Params[] = {
-                {"home", Config::Type::Path, "/cfg/home", "Home", 0, 0, nullptr, nullptr},
+                {"home", Config::Type::Path, "/flash/home", "Home", 0, 0, nullptr, nullptr},
                 {"panel/edge", Config::Type::Enum, "top", "Edge", 0, 0, "top|bottom", nullptr},
                 {"panel/size", Config::Type::Int, "24", "Size", 8, 64, nullptr, nullptr},
                 {"wm/palette/desktop", Config::Type::Color, "404040", "Desktop", 0, 0, nullptr, nullptr},
@@ -181,8 +181,8 @@ TEST_CASE("Config: keys, types and canonical forms") {
 }
 
 TEST_CASE("SysConf: set, setdef, save, revert, and a reboot") {
-        Flash f("/cfg");
-        REQUIRE(SysConf::initForHost(Params, "/cfg/sysconf").isOk());
+        Flash f("/flash");
+        REQUIRE(SysConf::initForHost(Params, "/flash/sysconf").isOk());
         CHECK(get("panel/edge") == "top");
         CHECK(get("nothing") == "!NotExist");
         CHECK(SysConf::set("panel/edge", "left") == Error::Invalid);
@@ -195,12 +195,12 @@ TEST_CASE("SysConf: set, setdef, save, revert, and a reboot") {
         CHECK(SysConf::getColor("wm/palette/desktop").value() == 0x102030u);
         CHECK(SysConf::getInt("panel/size").value() == 24);
         CHECK(SysConf::getInt("panel/edge").error() == Error::Invalid);
-        CHECK(readFile("/cfg/sysconf") == "!NotExist"); // nothing saved yet
+        CHECK(readFile("/flash/sysconf") == "!NotExist"); // nothing saved yet
 
         // Saved: one key, then the rest.
         CHECK(SysConf::save("panel/edge").isOk());
-        CHECK(readFile("/cfg/sysconf").find("panel/edge=bottom\n") != std::string::npos);
-        CHECK(readFile("/cfg/sysconf").find("wm/palette/desktop") == std::string::npos);
+        CHECK(readFile("/flash/sysconf").find("panel/edge=bottom\n") != std::string::npos);
+        CHECK(readFile("/flash/sysconf").find("wm/palette/desktop") == std::string::npos);
         SysConf::Info info;
         REQUIRE(SysConf::info("wm/palette/desktop", info).isOk());
         CHECK(std::string(info.stateName()) == "changed");
@@ -209,7 +209,7 @@ TEST_CASE("SysConf: set, setdef, save, revert, and a reboot") {
         CHECK(std::string(info.stateName()) == "saved");
         // Changed again but not saved: a reboot forgets it.
         CHECK(SysConf::set("panel/size", "32").isOk());
-        REQUIRE(SysConf::initForHost(Params, "/cfg/sysconf").isOk());
+        REQUIRE(SysConf::initForHost(Params, "/flash/sysconf").isOk());
         CHECK(get("panel/edge") == "bottom");
         CHECK(get("wm/palette/desktop") == "102030");
         CHECK(get("wm/even") == "4");
@@ -222,22 +222,22 @@ TEST_CASE("SysConf: set, setdef, save, revert, and a reboot") {
         CHECK(get("panel/edge") == "bottom");
         CHECK(SysConf::setDefault("panel/edge").isOk());
         CHECK(SysConf::save("panel/edge").isOk());
-        CHECK(readFile("/cfg/sysconf").find("panel/edge") == std::string::npos);
+        CHECK(readFile("/flash/sysconf").find("panel/edge") == std::string::npos);
         REQUIRE(SysConf::info("panel/edge", info).isOk());
         CHECK(std::string(info.stateName()) == "default");
         CHECK_FALSE(info.hasSaved);
 
         // A saved line for a key nobody declared survives saves, and applies once declared.
         {
-                auto [h, err] = Vfs::open("/cfg/sysconf", Vfs::Write | Vfs::Append, Root);
+                auto [h, err] = Vfs::open("/flash/sysconf", Vfs::Write | Vfs::Append, Root);
                 REQUIRE(err.isOk());
                 REQUIRE(h->write(StringView("app/volume=7\npanel/size=999\n"), WaitForever).error().isOk());
         }
-        REQUIRE(SysConf::initForHost(Params, "/cfg/sysconf").isOk());
+        REQUIRE(SysConf::initForHost(Params, "/flash/sysconf").isOk());
         CHECK(get("panel/size") == "24"); // out of range: ignored
         CHECK(SysConf::set("panel/size", "40").isOk());
         CHECK(SysConf::save("panel/size").isOk());
-        const std::string store = readFile("/cfg/sysconf");
+        const std::string store = readFile("/flash/sysconf");
         CHECK(store.find("app/volume=7\n") != std::string::npos);
         CHECK(store.find("panel/size=40\n") != std::string::npos);
         CHECK(store.find("panel/size=999") == std::string::npos);
@@ -254,8 +254,8 @@ TEST_CASE("SysConf: set, setdef, save, revert, and a reboot") {
 }
 
 TEST_CASE("SysConf: list by prefix, watchers") {
-        Flash f("/cfg");
-        REQUIRE(SysConf::initForHost(Params, "/cfg/sysconf").isOk());
+        Flash f("/flash");
+        REQUIRE(SysConf::initForHost(Params, "/flash/sysconf").isOk());
         listed.clear();
         CHECK(SysConf::list("wm/palette", collect, nullptr).isOk());
         CHECK(listed ==
@@ -315,17 +315,17 @@ namespace {
 } // namespace
 
 TEST_CASE("Vfs: /home, a link to the home that falls back while it isn't mounted") {
-        Flash boot("/cfg");
+        Flash boot("/flash");
         auto  card = std::make_unique<Flash>("/card");
-        CHECK(Vfs::mkdir("/cfg/home", Root).isOk());
+        CHECK(Vfs::mkdir("/flash/home", Root).isOk());
         CHECK(Vfs::mkdir("/card/home", Root).isOk());
         reports.clear();
         Vfs::setHomeReport(recordReport);
         CHECK(Vfs::stat("/home", Root).error() == Error::NotExist); // no /home until set
-        REQUIRE(Vfs::setHome("/card/home", "/cfg/home").isOk());
+        REQUIRE(Vfs::setHome("/card/home", "/flash/home").isOk());
         REQUIRE(reports.size() == 1);
         CHECK(reports[0] == std::make_pair(std::string("/card/home"), true));
-        CHECK(Vfs::setHome("/home/x", "/cfg/home") == Error::Invalid);
+        CHECK(Vfs::setHome("/home/x", "/flash/home") == Error::Invalid);
 
         // Below it, and through it, as the target; itself, a link.
         auto [h, err] = Vfs::open("/home/notes", Vfs::Write | Vfs::Create, Root);
@@ -353,8 +353,8 @@ TEST_CASE("Vfs: /home, a link to the home that falls back while it isn't mounted
         // The card goes: /home leads to the fallback, then back when it returns.
         card.reset();
         REQUIRE(reports.size() == 2);
-        CHECK(reports[1] == std::make_pair(std::string("/cfg/home"), false));
-        CHECK(std::string(Vfs::readLink("/home", Root).value().cStr()) == "/cfg/home");
+        CHECK(reports[1] == std::make_pair(std::string("/flash/home"), false));
+        CHECK(std::string(Vfs::readLink("/home", Root).value().cStr()) == "/flash/home");
         CHECK(Vfs::stat("/home/notes", Root).error() == Error::NotExist);
         card = std::make_unique<Flash>("/card"); // a new, empty card
         CHECK(reports.size() == 3);
@@ -366,9 +366,73 @@ TEST_CASE("Vfs: /home, a link to the home that falls back while it isn't mounted
         Vfs::setHomeReport(nullptr);
 }
 
+TEST_CASE("Vfs: /cfg, a link to the configuration, with no fallback") {
+        Flash flash("/flash");
+        auto  card = std::make_unique<Flash>("/card");
+        CHECK(Vfs::mkdir("/flash/cfg", Root).isOk());
+        CHECK(Vfs::mkdir("/card/cfg", Root).isOk());
+        CHECK(Vfs::stat("/cfg", Root).error() == Error::NotExist); // no /cfg until set
+        CHECK(Vfs::mount("/cfg", card->device) == Error::Invalid); // the link's place, set or not
+        CHECK(Vfs::setCfg("/cfg/x") == Error::Invalid);
+        CHECK(Vfs::setCfg("/home/x") == Error::Invalid);
+        REQUIRE(Vfs::setCfg("/card/cfg").isOk());
+
+        // Below it, and through it, as the target; itself, a link beside /home.
+        REQUIRE(Vfs::setHome("/flash", "").isOk());
+        auto [h, err] = Vfs::open("/cfg/sysconf", Vfs::Write | Vfs::Create, Root);
+        REQUIRE(err.isOk());
+        h.reset();
+        CHECK(Vfs::stat("/card/cfg/sysconf", Root).isOk());
+        CHECK(Vfs::stat("/cfg", Root).value().isDirectory());
+        CHECK(Vfs::lstat("/cfg", Root).value().type == FileType::Link);
+        CHECK(std::string(Vfs::readLink("/cfg", Root).value().cStr()) == "/card/cfg");
+        CHECK(std::string(Vfs::realPath("/cfg/sysconf", Root).value().cStr()) == "/card/cfg/sysconf");
+        const std::vector<std::string> root = names("/");
+        CHECK(std::find(root.begin(), root.end(), "cfg@") != root.end());
+        CHECK(std::find(root.begin(), root.end(), "home@") != root.end());
+        CHECK(names("/cfg") == std::vector<std::string>{"sysconf"});
+        CHECK(Vfs::remove("/cfg", Root) == Error::PermissionDenied);
+        CHECK(Vfs::mkdir("/cfg", Root) == Error::Exists);
+
+        // The card goes: nothing below /cfg (no fallback), and it comes back with the card.
+        card.reset();
+        CHECK(std::string(Vfs::readLink("/cfg", Root).value().cStr()) == "/card/cfg");
+        CHECK(Vfs::stat("/cfg/sysconf", Root).error() == Error::NotExist);
+        CHECK(Vfs::open("/cfg/new", Vfs::Write | Vfs::Create, Root).error().isError());
+        card = std::make_unique<Flash>("/card");
+        CHECK(Vfs::mkdir("/cfg", Root) == Error::Exists);
+
+        // Taken away.
+        CHECK(Vfs::setCfg("").isOk());
+        CHECK(Vfs::setHome("", "").isOk());
+        CHECK(Vfs::lstat("/cfg", Root).error() == Error::NotExist);
+}
+
+TEST_CASE("SysConf: the store is written beside itself and renamed over") {
+        Flash f("/flash");
+        REQUIRE(SysConf::initForHost(Params, "/flash/sysconf").isOk());
+        CHECK(SysConf::set("panel/edge", "bottom").isOk());
+        CHECK(SysConf::save("panel/edge").isOk());
+        CHECK(readFile("/flash/sysconf").find("panel/edge=bottom\n") != std::string::npos);
+        CHECK(readFile("/flash/sysconf.new") == "!NotExist");
+
+        // A power cut between the write and the rename: the store gone, the new one whole.
+        CHECK(Vfs::rename("/flash/sysconf", "/flash/sysconf.new", Vfs::RenameMode::Replace, Root).isOk());
+        REQUIRE(SysConf::initForHost(Params, "/flash/sysconf").isOk());
+        CHECK(get("panel/edge") == "bottom"); // read, and put back in its place
+        CHECK(readFile("/flash/sysconf").find("panel/edge=bottom\n") != std::string::npos);
+        CHECK(readFile("/flash/sysconf.new") == "!NotExist");
+
+        // Its directory gone (the card /cfg leads to taken out): NoMedia, the value kept.
+        REQUIRE(SysConf::initForHost(Params, "/flash/gone/sysconf").isOk());
+        CHECK(SysConf::set("panel/edge", "bottom").isOk());
+        CHECK(SysConf::save("panel/edge") == Error::NoMedia);
+        CHECK(get("panel/edge") == "bottom");
+}
+
 TEST_CASE("SysConf: ids") {
-        Flash f("/cfg");
-        REQUIRE(SysConf::initForHost(Params, "/cfg/sysconf").isOk());
+        Flash f("/flash");
+        REQUIRE(SysConf::initForHost(Params, "/flash/sysconf").isOk());
 
         // A key's id is the same each time, and names the key.
         const bmds::Result<SysConf::Id> edge = SysConf::find("panel/edge");
@@ -428,8 +492,8 @@ TEST_CASE("SysConf: ids") {
 }
 
 TEST_CASE("SysConf: a kernel declaration keeps its check, a program's doesn't") {
-        Flash f("/cfg");
-        REQUIRE(SysConf::initForHost(Params, "/cfg/sysconf").isOk());
+        Flash f("/flash");
+        REQUIRE(SysConf::initForHost(Params, "/flash/sysconf").isOk());
         constexpr Config::Check evenOnly = [](bmds::StringView v) -> Error {
                 return (Config::toInt(v) % 2) == 0 ? Error::Ok : Error::Invalid;
         };
@@ -445,8 +509,8 @@ TEST_CASE("SysConf: a kernel declaration keeps its check, a program's doesn't") 
 }
 
 TEST_CASE("SysConf: the SDK's calls (sysconf_*)") {
-        Flash f("/cfg");
-        REQUIRE(SysConf::initForHost(Params, "/cfg/sysconf").isOk());
+        Flash f("/flash");
+        REQUIRE(SysConf::initForHost(Params, "/flash/sysconf").isOk());
         bmds::FdTable fds;
         Process       p(fds);
         char          text[BMDS_SYSCONF_VALUE_MAX + 1];
@@ -497,7 +561,7 @@ TEST_CASE("SysConf: the SDK's calls (sysconf_*)") {
         CHECK(info.max == 64);
         CHECK(p.sysconfSet(size, BMDS_SYSCONF_OP_SET, "30") == 0);
         CHECK(p.sysconfSet(BMDS_SYSCONF_ALL, BMDS_SYSCONF_OP_SAVE, nullptr) == 0);
-        CHECK(readFile("/cfg/sysconf").find("panel/size=30\n") != std::string::npos);
+        CHECK(readFile("/flash/sysconf").find("panel/size=30\n") != std::string::npos);
         // A shorter struct gets what fits.
         bmds_sysconf_info_t small = {};
         small.size = 8;
@@ -595,8 +659,8 @@ TEST_CASE("SysConf: the SDK's calls (sysconf_*)") {
 
 TEST_CASE("SysConf: a secret is never shown; the password, hashed, in /etc/shadow") {
         namespace Password = bmds::Password;
-        Flash f("/cfg");
-        REQUIRE(SysConf::initForHost(Params, "/cfg/sysconf").isOk());
+        Flash f("/flash");
+        REQUIRE(SysConf::initForHost(Params, "/flash/sysconf").isOk());
         REQUIRE(SysConf::declareKernel(Password::declaration()).isOk());
         CHECK(std::string(Config::typeName(Config::Type::Secret)) == "secret");
         CHECK(get("system/password") == "");
@@ -620,7 +684,7 @@ TEST_CASE("SysConf: a secret is never shown; the password, hashed, in /etc/shado
         REQUIRE(SysConf::getSecret("system/password", hash).isOk());
         CHECK(bmds::ShaCrypt::isHash(hash.view()));
         CHECK(hash.view().startsWith("$6$rounds=2000$"));
-        CHECK(readFile("/cfg/sysconf").find(std::string("system/password=") + hash.cStr()) != std::string::npos);
+        CHECK(readFile("/flash/sysconf").find(std::string("system/password=") + hash.cStr()) != std::string::npos);
         // /etc/shadow's line has it, for crypt() in programs.
         String shadow;
         REQUIRE(Password::shadowFile(shadow).isOk());

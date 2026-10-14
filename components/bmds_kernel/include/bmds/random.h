@@ -17,7 +17,7 @@ BMDS_NAMESPACE_BEGIN
 /**
  * @brief The kernel's random numbers (devplan/random.md): a pool seeded at
  *        boot from the hardware's noise source, fed from the hardware
- *        generator on every read and from `/boot/random-seed`, read through
+ *        generator on every read and from `/cfg/random-seed`, read through
  *        ChaCha20. What `/dev/urandom`, `/dev/random` and `getrandom` give.
  *
  * @par Thread Safety

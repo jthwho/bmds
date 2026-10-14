@@ -240,7 +240,7 @@ const Icon *IconTheme::findFile(StringView name, uint16_t side, bool userToo) {
         // The user's, the theme (on the card), what it inherits: never bmds's, which is the ROM's.
         char   dirs[3][80];
         size_t count = 0;
-        if (userToo) std::snprintf(dirs[count++], sizeof(dirs[0]), "/boot/icons/%ux%u/", side, side);
+        if (userToo) std::snprintf(dirs[count++], sizeof(dirs[0]), "/cfg/icons/%ux%u/", side, side);
         if (!isBmds()) {
                 readInherits();
                 std::snprintf(dirs[count++], sizeof(dirs[0]), "%s/%s/%ux%u/", ThemesDir, _theme, side, side);

@@ -28,7 +28,8 @@ BMDS_NAMESPACE_BEGIN
  * Erases and programs go into a `FlashQueue` (Psram) and return; the worker
  * task (`flash0`, internal stack) does them in order, one at a time, once
  * writing has paused for `DelayMs` (at most `MaxDelayMs` after it began, at
- * once for `flush()` or a queue half full). A flash operation stops both
+ * once for `flush()` or a queue half full; while `FlashWrites` is held, not
+ * until it goes, devplan/cfg.md §3). A flash operation stops both
  * cores, so done during a close it would hold that up too: waiting lets the
  * close return first, as FAT's cache did (§13a). Reads
  * copy from the partition mapped into the address space and lay the queue

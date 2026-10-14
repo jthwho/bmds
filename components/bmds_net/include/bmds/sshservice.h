@@ -26,7 +26,7 @@ class ProgramLauncher;
  *
  * Settings: `net/ssh/server` (bool, false), `net/ssh/port` (int, 22),
  * `net/ssh/password-login` (bool, true), `net/ssh/host-keys` (path,
- * `/boot/ssh`), `net/ssh/authorized-keys-dir` (a template, `${HOME}/.ssh`).
+ * `/cfg/ssh`), `net/ssh/authorized-keys-dir` (a template, `${HOME}/.ssh`).
  *
  * @par Thread Safety
  * `init()` once, at boot.

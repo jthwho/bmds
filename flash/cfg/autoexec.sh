@@ -1,13 +1,13 @@
-# /boot/autoexec.sh: run once by the first shell at startup.
+# /cfg/autoexec.sh: run once by the first shell at startup.
 
-# Home: the card's when there is one, else /boot/home (also when a home saved with
+# Home: the card's when there is one, else /flash/home (also when a home saved with
 # sysconf save is somewhere that isn't there). Neither is saved.
 if waitmount /sd0/p0 3000; then
         mkdir -p /sd0/p0/home
         sysconf set home /sd0/p0/home
 else
-        mkdir -p /boot/home
-        sysconf set home /boot/home
+        mkdir -p /flash/home
+        sysconf set home /flash/home
 fi
 
 # The card's own startup if it has one; else a desktop from what is built in.
@@ -19,5 +19,5 @@ else
         panel &
 fi
 
-# Your own startup, in your home (the card's, or /boot/home).
+# Your own startup, in your home (the card's, or /flash/home).
 [ -f /home/autoexec.sh ] && . /home/autoexec.sh

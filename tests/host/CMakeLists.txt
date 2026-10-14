@@ -193,7 +193,7 @@ if(Python3_Interpreter_FOUND)
                 BMDS_TEST_ICONS="${BMDS_ROM_OUT}/bmds.icons" BMDS_ICONS_LIST="${BMDS_ICONS_LIST}"
                 BMDS_ROOT_DIR="${BMDS_ROOT}")
         add_test(NAME rom_icon_names COMMAND ${Python3_EXECUTABLE} ${BMDS_MKROM} check ${BMDS_ICONS_LIST}
-                 ${BMDS_ROOT}/boot ${BMDS_ROOT}/dist ${BMDS_ROOT}/rom)
+                 ${BMDS_ROOT}/flash ${BMDS_ROOT}/dist ${BMDS_ROOT}/rom)
 endif()
 target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_audio bmds_midi bmds_synth bmds_speech bmds_input bmds_ui bmds_gui bmds_clipboard
         bmds_sysconf bmds_files bmds_mplayer bmds_sysmon bmds_panel bmds_imageview bmds_net bmds_lwip)

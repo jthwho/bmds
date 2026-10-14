@@ -13,6 +13,7 @@
 #include <sdkconfig.h>
 #include <bmds/deadline.h>
 #include <bmds/detail/platform.h>
+#include <bmds/flashwrites.h>
 #include <bmds/log.h>
 #include <bmds/memspace.h>
 
@@ -133,6 +134,8 @@ void FlashPartition::work() {
         if (mapErr != ESP_OK) {
                 for (;;) Task::sleep(1000000); // nothing to do: open() failed
         }
+        // The last hold given back wakes the worker as new work does (devplan/cfg.md §3).
+        WaitList::Entry released(FlashWrites::releases(), _work);
         for (;;) {
                 (void)_work.acquire(WaitForever);
                 // Let the writer finish (a close is several operations): start once it has
@@ -144,6 +147,17 @@ void FlashPartition::work() {
                                 if (_drainWaiters != 0 || _roomWaiters != 0 || _queue.isHalfFull()) break;
                         }
                         if (latest.isExpired() || _work.acquire(DelayMs).isError()) break;
+                }
+                // Held (audio playing): the queue waits until the hold goes, somebody waits for it
+                // (sync, a restart), or it is half full. Reads see it meanwhile.
+                for (;;) {
+                        {
+                                Mutex::Locker lock(_lock, WaitForever);
+                                if (_queue.isEmpty() || _drainWaiters != 0 || _roomWaiters != 0 ||
+                                    _queue.isHalfFull() || !FlashWrites::isHeld())
+                                        break;
+                        }
+                        (void)_work.acquire(WaitForever);
                 }
                 for (;;) {
                         FlashQueue::Op op;

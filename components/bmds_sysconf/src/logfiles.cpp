@@ -279,7 +279,7 @@ namespace LogFiles {
                 Thread::Config config;
                 config.name = "logd";
                 config.stackBytes = 5120;               // 2.9 KB used after rotations on exFAT
-                config.stackSpace = MemSpace::Psram;    // /boot too: flash0's task does the flash work
+                config.stackSpace = MemSpace::Psram;    // /flash too: flash0's task does the flash work
                 config.priority = 1;
                 config.kernel = true;
                 return s.thread.start(config, &run, nullptr);

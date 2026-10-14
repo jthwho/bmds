@@ -328,7 +328,7 @@ namespace {
 
         Error writeFile(StringView path, StringView text) {
                 Vfs::Context context;
-                const Error  made = Vfs::mkdir("/boot/update", context);
+                const Error  made = Vfs::mkdir("/flash/update", context);
                 if (made.isError() && made != Error::Exists) return made;
                 auto [file, err] = Vfs::open(path, Vfs::Write | Vfs::Create | Vfs::Truncate, context);
                 if (err.isError()) return err;
@@ -355,7 +355,7 @@ namespace {
         }
 
         // Left by recovery with a result, taken by the main firmware once it has logged it.
-        constexpr const char *UnseenPath = "/boot/update/unseen";
+        constexpr const char *UnseenPath = "/flash/update/unseen";
 
         Error writeIntent(const Job &job) {
                 char headHex[65];
@@ -517,7 +517,7 @@ namespace {
                         expect[i] = uint8_t(byte);
                 }
                 if (!parsed) {
-                        bmdsErr("Update: the intent on /boot can't be read (%s, %u bytes): removed",
+                        bmdsErr("Update: the intent on /flash can't be read (%s, %u bytes): removed",
                                 err.isError() ? err.desc() : "not a path and a hash", static_cast<unsigned>(t.size()));
                         Vfs::Context context;
                         (void)Vfs::remove(Update::IntentPath, context);
@@ -679,7 +679,7 @@ namespace {
         // Esc held as a keyboard is attached this soon after reset starts recovery.
         constexpr int64_t RecoveryKeyUs = 10'000'000;
         // Left by the main firmware for recovery when it kept restarting.
-        constexpr const char *RestartsPath = "/boot/update/restarts";
+        constexpr const char *RestartsPath = "/flash/update/restarts";
 
         RTC_NOINIT_ATTR RestartCount restartCount;
 

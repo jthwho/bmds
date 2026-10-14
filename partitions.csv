@@ -8,7 +8,7 @@ ota_0,     app,  ota_0,    0x10000,  4M
 ota_1,     app,  ota_1,    0x410000, 0x160000
 # Which firmware boots (idf.py flash writes it blank: ota_0).
 otadata,   data, ota,      0x570000, 0x2000
-# /boot (devplan/storage.md §13, §13d): littlefs, always mounted.
-boot,      data, littlefs, 0x580000, 512K
+# /flash (devplan/storage.md §13, §13d; devplan/cfg.md): littlefs, always mounted.
+flash,     data, littlefs, 0x580000, 512K
 # /rom (devplan/rom.md): the ROM image, read-only, mapped in place; the rest of the flash.
 rom,       data, 0x40,     0x600000, 0xA00000

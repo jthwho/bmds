@@ -12,6 +12,7 @@ set(BMDS_KERNEL_PORTABLE_SRCS
         src/clock.cpp
         src/fdtable.cpp
         src/filehandle.cpp
+        src/flashwrites.cpp
         src/interrupt.cpp
         src/memorystream.cpp
         src/notifications.cpp

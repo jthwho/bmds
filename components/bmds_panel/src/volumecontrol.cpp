@@ -205,7 +205,7 @@ void VolumeControl::fillMenu() {
 
 void VolumeControl::set(const char *key, StringView value) {
         if (SysConf::set(StringView(key), value).isError()) return;
-        // Kept across a restart: written to /boot once the changes stop.
+        // Kept across a restart: written to /cfg once the changes stop.
         if (_saveTimer >= 0) _app.stopTimer(_saveTimer);
         const Result<int> timer = _app.startTimer(SaveDelayMs, false, save, this);
         _saveTimer = timer.isOk() ? timer.value() : -1;

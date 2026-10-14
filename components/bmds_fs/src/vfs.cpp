@@ -39,7 +39,7 @@ namespace {
                         char         path[MaxMountPath + 1] = {};
                         Volume      *volume = nullptr;
                         BlockDevice *device = nullptr; // null for a filesystem in memory (tmpfs)
-                        bool         pinned = false;   // never unmounted (/boot)
+                        bool         pinned = false;   // never unmounted (/flash)
         };
 
         // The mount table, in mount order; under the storage lock.
@@ -140,7 +140,7 @@ namespace {
                 ZoneDir,    // /share/zoneinfo and its directories (devplan/time.md §9)
                 ZoneFile,   // /share/zoneinfo/NAME
                 DevFile,    // a file another component added (Vfs::addDeviceFile)
-                HomeLink,   // /home, the link setHome() made (devplan/sysconf.md §7)
+                RootLink,   // /home or /cfg, a link setHome() or setCfg() made (devplan/sysconf.md §7, cfg.md)
                 EtcDir,     // /etc (devplan/network.md §8)
                 EtcFile,    // /etc/NAME, built when opened (Vfs::addEtcFile)
                 DevSubDir,  // /dev/NAME, a directory of numbered devices (Vfs::addDeviceDirectory)
@@ -157,6 +157,11 @@ namespace {
         constinit char           *homeFallback = nullptr;
         constinit uint8_t         homeShown = 0; // what was last reported: 0 nothing, 1 the target, 2 the fallback
         constinit Vfs::HomeReport homeReport = nullptr;
+
+        // The link to the configuration (setCfg(), devplan/cfg.md): its target, Psram, under the
+        // storage lock. Null: no /cfg.
+        using Vfs::CfgPath;
+        constinit char *cfgTarget = nullptr;
 
         // Where the time zone database's directory is (read-only).
         using Vfs::ZoneInfoPath;
@@ -224,8 +229,8 @@ namespace {
                 Node node;
                 if (path == "/") return makeResult(node);
                 node.name = path.mid(path.lastIndexOf('/') + 1);
-                if (homeTarget != nullptr && path == HomePath) {
-                        node.kind = Kind::HomeLink;
+                if ((homeTarget != nullptr && path == HomePath) || (cfgTarget != nullptr && path == CfgPath)) {
+                        node.kind = Kind::RootLink;
                         return makeResult(node);
                 }
                 if (isAtOrBelow(path, "/dev")) {
@@ -319,6 +324,12 @@ namespace {
                 return StringView(homeTarget);
         }
 
+        // Where root link @p name ("home", "cfg") leads. Lock held.
+        StringView rootLinkLocked(StringView name) {
+                if (name == "home") return homeLocked();
+                return cfgTarget != nullptr ? StringView(cfgTarget) : StringView();
+        }
+
         // Reports where /home leads when that changed (setHome(), a mount, an unmount). Lock held.
         void logHomeLocked() {
                 if (homeTarget == nullptr) {
@@ -333,14 +344,17 @@ namespace {
                 return;
         }
 
-        // Rewrites normalized @p storage at or below /home to where it leads; /home itself
-        // only with @p followHome (else the link is what is meant). Lock held.
+        // Rewrites normalized @p storage at or below /home or /cfg to where it leads; the link
+        // itself only with @p followHome (else the link is what is meant). Lock held.
         Error homeRewriteLocked(String &storage, bool followHome) {
-                if (homeTarget == nullptr || !isAtOrBelow(storage.view(), HomePath)) return Error::Ok;
-                if (storage.size() == HomePath.size() && !followHome) return Error::Ok;
+                StringView link;
+                if (homeTarget != nullptr && isAtOrBelow(storage.view(), HomePath)) link = HomePath;
+                if (cfgTarget != nullptr && isAtOrBelow(storage.view(), CfgPath)) link = CfgPath;
+                if (link.isEmpty()) return Error::Ok;
+                if (storage.size() == link.size() && !followHome) return Error::Ok;
                 String out;
-                Error  err = out.append(homeLocked());
-                if (err.isOk()) err = out.append(storage.view().mid(HomePath.size()));
+                Error  err = out.append(rootLinkLocked(link.mid(1)));
+                if (err.isOk()) err = out.append(storage.view().mid(link.size()));
                 if (err.isOk()) storage = std::move(out);
                 return err;
         }
@@ -408,10 +422,10 @@ namespace {
                                 info.type = node.file->isDevice ? FileType::Device : FileType::File;
                                 if (node.file->size != nullptr) info.size = node.file->size(node.file->arg);
                                 return makeResult(std::move(info));
-                        case Kind::HomeLink:
+                        case Kind::RootLink:
                                 (void)info.name.assign(node.name);
                                 info.type = FileType::Link;
-                                info.size = homeLocked().size();
+                                info.size = rootLinkLocked(node.name).size();
                                 return makeResult(std::move(info));
                         case Kind::DevStream:
                         case Kind::DevConsole:
@@ -649,11 +663,17 @@ namespace {
         // the next component of each mount below. Returns child @p index, or
         // an empty view past the end. Lock held.
         StringView virtualChild(StringView dir, size_t index) {
-                static constexpr StringView InRoot[] = {"bin", "dev", "etc", "share"};
-                static constexpr StringView InRootHome[] = {"bin", "dev", "etc", "home", "share"};
+                static constexpr StringView InRoot[] = {"bin", "cfg", "dev", "etc", "home", "share"};
                 static constexpr StringView InShare[] = {"zoneinfo"};
-                Span<const StringView>      fixed;
-                if (dir == "/") fixed = homeTarget != nullptr ? Span<const StringView>(InRootHome) : InRoot;
+                StringView                  root[sizeof(InRoot) / sizeof(InRoot[0])];
+                size_t                      rootCount = 0;
+                for (const StringView name : InRoot) {
+                        if (name == "home" && homeTarget == nullptr) continue;
+                        if (name == "cfg" && cfgTarget == nullptr) continue;
+                        root[rootCount++] = name;
+                }
+                Span<const StringView> fixed;
+                if (dir == "/") fixed = Span<const StringView>(root, rootCount);
                 if (dir == SharePath) fixed = InShare;
                 if (index < fixed.size()) return fixed[index];
                 size_t emitted = fixed.size();
@@ -769,9 +789,10 @@ Result<FileInfo> Directory::next() {
                         if (child.isEmpty()) return makeError<FileInfo>(Error::EndOfFile);
                         ++s.index;
                         info = directoryInfo(child);
-                        if (StringView(s.path) == "/" && child == "home" && homeTarget != nullptr) {
+                        if (StringView(s.path) == "/" &&
+                            ((child == "home" && homeTarget != nullptr) || (child == "cfg" && cfgTarget != nullptr))) {
                                 info.type = FileType::Link;
-                                info.size = homeLocked().size();
+                                info.size = rootLinkLocked(child).size();
                         }
                         info.id = idAppend(idAppend(s.idPrefix, "/"), child);
                         return makeResult(std::move(info));
@@ -1028,7 +1049,8 @@ namespace {
                 if (normalized.error().isError()) return normalized.error();
                 const StringView p = normalized.value().view();
                 if (p == "/" || isAtOrBelow(p, "/dev") || isAtOrBelow(p, BinPath) || isAtOrBelow(p, ZoneInfoPath) ||
-                    isAtOrBelow(p, HomePath) || isAtOrBelow(p, EtcPath) || p.size() > MaxMountPath)
+                    isAtOrBelow(p, HomePath) || isAtOrBelow(p, CfgPath) || isAtOrBelow(p, EtcPath) ||
+                    p.size() > MaxMountPath)
                         return Error::Invalid;
                 Mutex::Locker lock(Fs::lock(), WaitForever);
                 for (size_t i = 0; i < mountCount; ++i) {
@@ -1131,6 +1153,32 @@ Error Vfs::setHome(StringView target, StringView fallback) {
         }
         Memory::free(oldTarget);
         Memory::free(oldFallback);
+        return Error::Ok;
+}
+
+Error Vfs::setCfg(StringView target) {
+        String t;
+        if (!target.isEmpty()) {
+                Result<String> nt = normalize(target, "/");
+                if (nt.error().isError()) return nt.error();
+                t = std::move(nt).value();
+                if (isAtOrBelow(t.view(), CfgPath) || isAtOrBelow(t.view(), HomePath)) return Error::Invalid;
+        }
+        char *newTarget = nullptr;
+        if (!t.isEmpty()) {
+                newTarget = static_cast<char *>(Memory::alloc(MemSpace::Psram, t.size() + 1));
+                if (newTarget == nullptr) return Error::NoMem;
+                std::memcpy(newTarget, t.cStr(), t.size() + 1);
+        }
+        char *oldTarget = nullptr;
+        {
+                Mutex::Locker lock(Fs::lock(), WaitForever);
+                oldTarget = std::exchange(cfgTarget, newTarget);
+                // Paths below /cfg now name other files.
+                Fs::changedLocked(0, 0);
+                Fs::tellAllWatchesLocked();
+        }
+        Memory::free(oldTarget);
         return Error::Ok;
 }
 
@@ -1289,7 +1337,7 @@ Error Vfs::addEtcFile(const EtcFile &file) {
 Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context &context) {
         if ((flags & (Read | Write)) == 0 || ((flags & (Truncate | Append)) != 0 && (flags & Write) == 0))
                 return makeError<FileHandle::Ptr>(Error::Invalid);
-        // /etc's files: built without the lock (they read settings, whose store is on /boot).
+        // /etc's files: built without the lock (they read settings, whose store is in /cfg).
         if (Etc::count() != 0) {
                 Result<String>   normalized = normalize(path, context.cwd);
                 const StringView p = normalized.error().isOk() ? normalized.value().view() : StringView();
@@ -1536,7 +1584,7 @@ Result<String> Vfs::readLink(StringView path, const Context &context) {
         const Result<FileInfo> info = statFollowLocked(storage, false, node);
         if (info.error().isError()) return makeError<String>(info.error());
         if (info.value().type != FileType::Link) return makeError<String>(Error::Invalid);
-        if (node.kind == Kind::HomeLink) return String::fromView(homeLocked());
+        if (node.kind == Kind::RootLink) return String::fromView(rootLinkLocked(node.name));
         String      target;
         const Error err = readLinkLocked(*node.volume, node.rest, target);
         if (err.isError()) return makeError<String>(err);
@@ -1725,7 +1773,7 @@ Error Vfs::remove(StringView path, const Context &context) {
                 err = targetLocked(storage, Error::IsDir, node);
                 const bool deviceNode = node.kind == Kind::DevStream || node.kind == Kind::DevConsole ||
                                         node.kind == Kind::DevBlock || node.kind == Kind::DevFile ||
-                                        node.kind == Kind::DevSubFile || node.kind == Kind::HomeLink;
+                                        node.kind == Kind::DevSubFile || node.kind == Kind::RootLink;
                 if (err == Error::IsDir && deviceNode) err = Error::PermissionDenied;
                 if (err.isError()) return err;
                 bool                   noPath = false;

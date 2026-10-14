@@ -110,7 +110,7 @@ class VolumeControl {
                 void popupClosed() {}
 
         private:
-                static constexpr uint32_t SaveDelayMs = 2000; // after the last change: /boot once
+                static constexpr uint32_t SaveDelayMs = 2000; // after the last change: /cfg once
 
                 static void save(void *arg);
                 static void activated(void *arg, TrayIcon &icon, TrayIcon::Reason reason);

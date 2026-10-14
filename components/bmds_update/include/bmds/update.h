@@ -21,8 +21,8 @@ BMDS_NAMESPACE_BEGIN
  * @brief Updates (devplan/update.md): checking a package (`.bmup`) on the card and applying it.
  *
  * The main firmware checks a package, writes its recovery firmware to `ota_1` if that differs,
- * leaves the intent on /boot and starts recovery; the recovery firmware writes `ota_0` and `rom`,
- * checks what it wrote, leaves the result on /boot and starts the main firmware again. A reset at
+ * leaves the intent on /flash and starts recovery; the recovery firmware writes `ota_0` and `rom`,
+ * checks what it wrote, leaves the result on /flash and starts the main firmware again. A reset at
  * any point leaves the intent, and recovery starts over (sections already written match, and are
  * skipped).
  *
@@ -35,8 +35,8 @@ BMDS_NAMESPACE_BEGIN
 namespace Update {
 
         /** @brief Where the intent and the result are kept. */
-        inline constexpr const char *IntentPath = "/boot/update/intent";
-        inline constexpr const char *ResultPath = "/boot/update/result"; ///< See `IntentPath`.
+        inline constexpr const char *IntentPath = "/flash/update/intent";
+        inline constexpr const char *ResultPath = "/flash/update/result"; ///< See `IntentPath`.
 
         /** @brief `Observer::finished`'s failure when recovery runs because the main firmware didn't start. */
         inline constexpr const char *SystemDidntStart = "the system didn't start";
@@ -93,7 +93,7 @@ namespace Update {
 
         /**
          * @brief Applies the package at @p path. In the main firmware: checks it, writes its recovery
-         *        firmware to `ota_1` if that differs, leaves the intent on /boot and makes
+         *        firmware to `ota_1` if that differs, leaves the intent on /flash and makes
          *        recovery the next firmware: the caller restarts. In recovery: applies it at once
          *        (the caller restarts). Unless @p force, a package that isn't newer than `ota_0`'s
          *        firmware is refused (`InvalidState`).
@@ -104,7 +104,7 @@ namespace Update {
         Error apply(StringView path, bool force, Report &out, Progress progress, void *arg);
 
         /**
-         * @brief The update left on /boot: the intent's package (empty if none), and the last
+         * @brief The update left on /flash: the intent's package (empty if none), and the last
          *        result's lines ("" if none).
          */
         struct Status {
@@ -135,7 +135,7 @@ namespace Update {
         /** @brief Sets the observer (outliving its use; null: none). Once, at boot. */
         void setObserver(const Observer *observer);
 
-        /** @brief Reads the intent and the result from /boot. @blocking */
+        /** @brief Reads the intent and the result from /flash. @blocking */
         Error status(Status &out);
 
         /**
@@ -148,7 +148,7 @@ namespace Update {
         Error init();
 
         /**
-         * @brief Boot stage, as early as /boot is there (devplan/update.md §17). The main firmware
+         * @brief Boot stage, as early as /flash is there (devplan/update.md §17). The main firmware
          *        counts the crashes in a row (a panic's or a watchdog's reset; any other reset, or
          *        running a minute after `confirm()`, clears the count) and at `RestartLimit` starts
          *        recovery, which says "The system kept restarting"; and starts recovery when Esc is

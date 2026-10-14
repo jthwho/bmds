@@ -75,7 +75,7 @@ namespace {
         constexpr const char *ConfigDir = "/home/.config";                    // the user's settings
         constexpr const char *PlacesPath = "/home/.config/desktop.conf";      // where the icons were put
         constexpr const char *UserMimeApps = "/home/.config/mimeapps.list";   // what opens files: the user's,
-        constexpr const char *DefaultMimeApps = "/boot/config/mimeapps.list"; // else the system's
+        constexpr const char *DefaultMimeApps = "/cfg/config/mimeapps.list";  // else the system's
         constexpr const char *FoldersPath = "/home/.config/folders.conf";     // how each folder was shown
 
         // The panel's settings: the system configuration's (devplan/sysconf.md §8).
@@ -92,7 +92,7 @@ namespace {
         BMDS_SYSCONF(panelLauncherIcon, "panel/launcher/icon", Config::Type::String, "start-here",
                      "The launcher button's icon (a theme's name)", 0, 64, nullptr, nullptr)
         BMDS_SYSCONF(panelLauncherApplications, "panel/launcher/applications", Config::Type::Paths,
-                     "/boot/applications;/sd0/p0/share/applications",
+                     "/cfg/applications;/sd0/p0/share/applications",
                      "The directories of Desktop Entry files the launcher lists", 0, 0, nullptr, nullptr)
         BMDS_SYSCONF(panelLauncherSubmenus, "panel/launcher/submenus", Config::Type::Int, "12",
                      "Entries past which the launcher groups them by category (0: never)", 0, 1000, nullptr, nullptr)

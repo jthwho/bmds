@@ -263,7 +263,7 @@ namespace {
                 Thread::Config config;
                 config.name = "sshd";
                 config.stackBytes = 6144;
-                config.stackSpace = MemSpace::Psram; // /boot too: flash0's task does the flash work
+                config.stackSpace = MemSpace::Psram; // /flash too: flash0's task does the flash work
                 config.kernel = true;
                 const Error err = state->thread.start(config, &serve, nullptr);
                 if (err.isError()) {
@@ -292,7 +292,7 @@ Error SshService::init(ProgramLauncher &launcher) {
                 {"net/ssh/port", Config::Type::Int, "22", "The SSH server's port", 1, 65535, nullptr, nullptr},
                 {"net/ssh/password-login", Config::Type::Bool, "true",
                  "Allow logins with system/password (never without one)", 0, 0, nullptr, nullptr},
-                {"net/ssh/host-keys", Config::Type::Path, "/boot/ssh", "Where the SSH server's host keys are", 0, 255,
+                {"net/ssh/host-keys", Config::Type::Path, "/cfg/ssh", "Where the SSH server's host keys are", 0, 255,
                  nullptr, nullptr},
                 {"net/ssh/authorized-keys-dir", Config::Type::String, "${HOME}/.ssh",
                  "The directory with authorized_keys (OpenSSH's format): a template (${HOME})", 0, 255, nullptr,

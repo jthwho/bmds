@@ -1,2 +1,2 @@
-# /boot/profile: read by every interactive shell as it starts, for your own settings.
+# /cfg/profile: read by every interactive shell as it starts, for your own settings.
 # HOME is /home (the link to sysconf's home) and PATH is sysconf's shell/path already.

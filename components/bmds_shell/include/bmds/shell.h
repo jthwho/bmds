@@ -95,10 +95,10 @@ class Shell final : public LineCompleter {
                  * @brief What every interactive shell sources as it starts: the
                  *        environment for all of them (`devplan/storage.md` §13).
                  */
-                static constexpr const char *ProfilePath = "/boot/profile";
+                static constexpr const char *ProfilePath = "/cfg/profile";
 
                 /** @brief What a login shell (`sh -l`, the serial shell) sources after the profile. */
-                static constexpr const char *LoginScriptPath = "/boot/autoexec.sh";
+                static constexpr const char *LoginScriptPath = "/cfg/autoexec.sh";
 
                 /**
                  * @brief Runs a shell as a program: `/bin/sh` for `exec`, and so for

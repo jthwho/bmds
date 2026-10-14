@@ -25,13 +25,13 @@ BMDS_NAMESPACE_BEGIN
 
 /**
  * @brief The system configuration: a registry of typed parameters with
- *        defaults, changed for the running system and saved to `/boot` only
+ *        defaults, changed for the running system and saved to `/cfg` only
  *        when asked (`devplan/sysconf.md`).
  *
  * Each parameter has a current value and maybe a saved one. At boot the
  * current value is the saved one, else the default; `set()` and
  * `setDefault()` change only the current value; `save()` puts it in the
- * store (`/boot/sysconf`), or takes the key out of it when it is the
+ * store (`/cfg/sysconf`), or takes the key out of it when it is the
  * default. Values are checked against their declared type, limits and
  * check before they are taken.
  *
@@ -53,7 +53,7 @@ namespace SysConf {
         using Param = Config::Param;
 
         /** @brief Where the saved values are kept. */
-        inline constexpr const char *StorePath = "/boot/sysconf";
+        inline constexpr const char *StorePath = "/cfg/sysconf";
 
         /** @brief Parameters programs may declare at run time (`declare()`). */
         inline constexpr size_t MaxRuntime = 64;
@@ -192,12 +192,13 @@ namespace SysConf {
         /**
          * @brief Saves @p key's current value (the default: taken out of the store)
          *        and rewrites the store.
-         * @return `Ok`, `NotExist`, or the error writing the store (nothing saved then).
-         * @blocking A write to `/boot`.
+         * @return `Ok`, `NotExist` (no such key), `NoMedia` (the card `/cfg` leads to was taken
+         *         out), or the error writing the store (nothing saved then).
+         * @blocking A write to `/cfg`.
          */
         Error save(StringView key);
 
-        /** @brief As `save(StringView)`, for @p id. @blocking A write to `/boot`. */
+        /** @brief As `save(StringView)`, for @p id. @blocking A write to `/cfg`. */
         Error save(Id id);
 
         /** @brief Saves every key whose current value differs from the store's. */

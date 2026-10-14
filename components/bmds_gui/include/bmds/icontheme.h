@@ -29,13 +29,13 @@ BMDS_NAMESPACE_BEGIN
  * by number (`IconId`, `find(IconId, side)`: an index) and by name.
  *
  * **Another theme** (`setTheme()`: a directory of `ThemesDir` on the card)
- * comes first: a name is looked for as `SIDExSIDE/NAME.png` in `/boot/icons`
+ * comes first: a name is looked for as `SIDExSIDE/NAME.png` in `/cfg/icons`
  * (the user's), then the theme's directory, then the theme it inherits (its
  * `index.theme`'s `Inherits=`, the first), then the bmds theme, then
  * `hicolor`; an icon of another size there is passed over. An id is looked
  * for by its name in the chosen theme (and what it inherits), then in the
  * bmds theme. With the bmds theme chosen, a name is looked for in
- * `/boot/icons`, then in it; an id is its icon at once.
+ * `/cfg/icons`, then in it; an id is its icon at once.
  *
  * An absolute path is read as it is. A program's own icon comes from the
  * program (`ProgramIcons`). An icon read from a file is kept, so it costs its

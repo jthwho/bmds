@@ -20,7 +20,7 @@ BMDS_NAMESPACE_BEGIN
 namespace SysConf::Home {
 
         /** @brief Where `/home` leads by default, and while `home` can't be reached. */
-        inline constexpr const char *DefaultPath = "/boot/home";
+        inline constexpr const char *DefaultPath = "/flash/home";
 
         /** @brief The `home` parameter's declaration (also for host tests). */
         const Config::Param &param();

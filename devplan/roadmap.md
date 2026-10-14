@@ -319,6 +319,10 @@ Plan: [`input.md`](input.md).
       tested on the board. Fetching from a URL postponed (the user's, 2026-10-14; planned in §17).
     - [x] Last: `ota_1` cut to 1.375 MB (recovery is 0.9 MB), `rom` 10 MB; `/boot` moved with its
       contents (§19).
+  - [x] `/cfg` on the card, `/boot` renamed `/flash` (`cfg.md`, the user's, 2026-10-14): the
+    configuration on the card when there is one (no flash writes, so no audio stalls), else on
+    `/flash`; no syncing; `/flash`'s writes held while audio plays. All three steps built and
+    tested on the board (§5). Open: a boot without a card, tried by hand.
 
 ## Phase 8 — Self-Hosting
 

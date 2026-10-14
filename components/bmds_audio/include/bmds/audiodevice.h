@@ -378,6 +378,7 @@ class AudioDevice {
                 uint32_t    _mclkHz = 0;
                 uint32_t    _apllHz = 0;
                 bool        _held = false;
+                bool        _holdingFlash = false; // a FlashWrites hold while running (devplan/cfg.md §3)
                 uint32_t    _rateOverride = 0; // hold()'s rate
 
                 // The interrupt's: a ring of finished buffers and the EOF count.

@@ -233,7 +233,7 @@ static inline int bmds_sys_has(uint32_t n) {
 /*
  * The system configuration (appended 2026-10-07, slots 59-65; devplan/sysconf.md §12): typed
  * parameters with defaults, named by keys (`wm/palette/desktop`), changed for the running system
- * and saved to /boot only when asked. Values are text in each type's canonical form. A key is
+ * and saved to /cfg only when asked. Values are text in each type's canonical form. A key is
  * found once (`sysconf_find`); its id names it for the rest of the boot: never keep an id across
  * boots or write it anywhere.
  */
@@ -2211,7 +2211,7 @@ static inline int32_t bmds_sysconf_watch(const char *prefix, uint32_t flags) {
 
 /**
  * @brief Writes what the filesystems hold to their devices: a card's directories and allocation,
- *        otherwise written within a second, and `/boot`'s queue. Before a card is taken out.
+ *        otherwise written within a second, and `/flash`'s queue. Before a card is taken out.
  *        (Slot 66, appended 2026-10-08: check `bmds_sys_has()`.)
  * @return 0, or `-BMDS_EIO` (a device failed: what it held is lost), `-BMDS_ENOMEDIUM`...
  */

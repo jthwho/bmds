@@ -160,7 +160,7 @@ namespace {
                 Update::Status s;
                 const Error    err = Update::status(s);
                 if (err.isError()) {
-                        ctx.eprintf("update: can't read /boot: %s\n", err.desc());
+                        ctx.eprintf("update: can't read /flash: %s\n", err.desc());
                         return Shell::ExitFailure;
                 }
                 const SystemInfo info = System::info();

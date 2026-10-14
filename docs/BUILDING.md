@@ -57,15 +57,34 @@ tools/bmds-update --check root@bmds0 build/bmds.bmup   # copy and check only
 
 `--force` installs a package that isn't newer than what is installed (`bmds/version.h`'s number).
 
-**A board flashed before 2026-10-14** has the old partition table (`/boot` at 0x620000). A
-package can't change the table, so flash it over USB once. To keep its `/boot` (settings, keys),
-copy it to the new place first (devplan/update.md §19):
+**A board flashed before 2026-10-14** has an older layout: a package can't change the partition
+table, so flash it over USB once. To keep its settings and keys:
 
-```bash
-esptool.py -p /dev/ttyACM0 --after no_reset read_flash 0x620000 0x80000 boot.img
-esptool.py -p /dev/ttyACM0 --after no_reset write_flash 0x580000 boot.img
-idf.py -B build -p /dev/ttyACM0 flash
-```
+1. **If its partition table puts `/boot` at 0x620000**, copy it to its new place first
+   (devplan/update.md §19):
+
+   ```bash
+   esptool.py -p /dev/ttyACM0 --after no_reset read_flash 0x620000 0x80000 boot.img
+   esptool.py -p /dev/ttyACM0 --after no_reset write_flash 0x580000 boot.img
+   ```
+
+2. **`/boot` is now `/flash`, and the configuration lives in `/cfg`** (devplan/cfg.md): the card's
+   `cfg/` when a card is in at boot, else `/flash/cfg`. Before flashing, on the board, move the
+   configuration into `cfg/` and replace the two default scripts (they name `/boot`):
+
+   ```sh
+   mkdir /boot/cfg
+   mv /boot/sysconf /boot/config /boot/applications /boot/ssh /boot/random-seed /boot/cfg/
+   rm /boot/autoexec.sh /boot/profile     # then copy flash/cfg/autoexec.sh and profile there
+   sync
+   ```
+
+   (`/boot/.defaults` lists what was installed: the `cfg/` entries go to `/boot/cfg/.defaults`,
+   without the prefix; `home/...` stays.) Moving `/boot/ssh` stops new SSH logins until the
+   restart; `sysconf set net/ssh/host-keys /boot/cfg/ssh` brings them back meanwhile.
+
+3. `idf.py -B build -p /dev/ttyACM0 flash`. With a card in, the first boot copies `/flash/cfg` to
+   the card's `cfg/`; after that the two are independent (`cfg` says which is in use).
 
 ## Host Unit Tests
 

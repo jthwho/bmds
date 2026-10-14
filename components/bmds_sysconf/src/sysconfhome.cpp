@@ -138,7 +138,7 @@ namespace SysConf::Home {
 
         } // namespace
 
-        BMDS_SYSCONF(home, "home", Config::Type::Path, "/boot/home", "The user's home directory: where /home leads", 0,
+        BMDS_SYSCONF(home, "home", Config::Type::Path, "/flash/home", "The user's home directory: where /home leads", 0,
                      0, nullptr, checkHome)
 
         const Config::Param &param() {

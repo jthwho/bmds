@@ -24,6 +24,7 @@
 #include <bmds/deadline.h>
 #include <bmds/es8311.h>
 #include <bmds/es8311regs.h>
+#include <bmds/flashwrites.h>
 #include <bmds/i2cbus.h>
 #include <bmds/interrupt.h>
 #include <bmds/log.h>
@@ -513,6 +514,9 @@ Error AudioDevice::startLocked(uint32_t rateHz, uint32_t periodFrames) {
                 _apllHz = apll;
         _state = State::Running;
         _lastError = Error::Ok;
+        // /flash's writes wait while it plays: a flash write stops the engine (devplan/cfg.md §3).
+        if (!_holdingFlash) FlashWrites::hold();
+        _holdingFlash = true;
         // Periods the DMA played while the codec started (a restart on the engine's own task
         // can't fill them) were silence anyway: lateness counts from here.
         _settled.store(true, std::memory_order_release);
@@ -549,6 +553,8 @@ Error AudioDevice::stopLocked(bool keepStreams) {
                 if (!keepStreams) dropAll();
         }
         _state = State::Stopped;
+        if (_holdingFlash) FlashWrites::release();
+        _holdingFlash = false;
         return err;
 }
 

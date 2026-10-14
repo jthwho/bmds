@@ -37,7 +37,7 @@ namespace Trash {
 
         /** @brief One thing in a trash, as `list()` tells it. */
         struct Entry {
-                        StringView mount; ///< Its filesystem's mount (`/boot`).
+                        StringView mount; ///< Its filesystem's mount (`/flash`).
                         StringView name;  ///< Its name in the trash (`restore()`'s).
                         StringView path;  ///< Where it was.
                         StringView date;  ///< When it was deleted (`YYYY-MM-DDThh:mm:ss`; may be empty).

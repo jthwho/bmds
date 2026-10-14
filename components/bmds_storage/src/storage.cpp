@@ -8,7 +8,7 @@
 
 #include <atomic>
 #include <bmds/blockdevices.h>
-#include <bmds/bootdisk.h>
+#include <bmds/cfg.h>
 #include <bmds/log.h>
 #include <bmds/sdcard.h>
 #include <bmds/semaphore.h>
@@ -108,14 +108,14 @@ namespace {
                                 service->firstCheck.release();
                         }
                         if (seedPending) {
-                                // A new random seed in /boot once boot's own use of /boot is over
+                                // A new random seed in /cfg once boot's own use of it is over
                                 // (devplan/random.md); a card change first is handled first.
                                 if (card.waitForDetectChange(SeedDelayMs) != Error::Timeout) {
                                         Vfs::beginSettling();
                                         continue;
                                 }
                                 seedPending = false;
-                                BootDisk::refreshRandomSeed();
+                                Cfg::refreshRandomSeed();
                         }
                         (void)card.waitForDetectChange(WaitForever);
                         Vfs::beginSettling();

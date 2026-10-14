@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * The window manager's desktop menu, from /boot/config/wm.conf, and the
+ * The window manager's desktop menu, from /cfg/config/wm.conf, and the
  * programs it starts (devplan/gui.md §4o).
  */
 
@@ -33,7 +33,7 @@ BMDS_NAMESPACE_BEGIN
 
 namespace {
 
-        constexpr const char *ConfigPath = "/boot/config/wm.conf";
+        constexpr const char *ConfigPath = "/cfg/config/wm.conf";
         constexpr size_t      MaxConfigBytes = 4096;
         constexpr size_t      MaxEnvironment = 48;
         constexpr size_t      MaxEnvironmentBytes = 4096;

@@ -5,14 +5,15 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * The recovery firmware's entry point (devplan/update.md §4): the console, the card, /boot, the
+ * The recovery firmware's entry point (devplan/update.md §4): the console, the card, /flash, the
  * screen and the keyboard, and a shell on each of the serial console and the screen, run without
  * the program loader (which brings the whole system with it).
  */
 
 #include <sdkconfig.h>
 #include <bmds/boot.h>
-#include <bmds/bootdisk.h>
+#include <bmds/cfg.h>
+#include <bmds/flashdisk.h>
 #include <bmds/builtinprograms.h>
 #include <bmds/filehandle.h>
 #include <bmds/i2cbus.h>
@@ -70,10 +71,11 @@ namespace {
                 {"console", bmds::UsbSerialConsole::init},
                 {"i2c", bmds::I2cBus::init}, // the display's bridge
                 {"vfs", bmds::Vfs::init},
-                {"boot", bmds::BootDisk::init},   // /boot: the update's intent and result
-                {"sysconf", bmds::SysConf::init}, // the system configuration, saved on /boot
+                {"flash", bmds::FlashDisk::init}, // /flash: the update's intent and result
+                {"storage", bmds::Storage::init}, // the card, where packages are; before /cfg
+                {"cfg", bmds::Cfg::init},         // /cfg: the card's configuration, else /flash's
+                {"sysconf", bmds::SysConf::init}, // the system configuration, saved in /cfg
                 {"logs", bmds::LogFiles::init},   // /dev/log; the log's files once the card mounts
-                {"storage", bmds::Storage::init}, // the card, where packages are
                 {"input", bmds::Input::init},
                 {"usb", bmds::UsbHost::init},           // the keyboard
                 {"screen", bmds::RecoveryScreen::init}, // Recovery Mode, the update, a terminal

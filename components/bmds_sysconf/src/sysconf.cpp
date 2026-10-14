@@ -8,6 +8,7 @@
  * The system configuration's registry (devplan/sysconf.md).
  */
 
+#include <cstdio>
 #include <cstring>
 #include <new>
 #include <utility>
@@ -191,6 +192,15 @@ namespace SysConf {
                 void loadLocked() {
                         Vfs::Context context;
                         auto [file, err] = Vfs::open(StringView(state.storePath), Vfs::Read, context);
+                        if (err == Error::NotExist) {
+                                // A power cut between writeStore()'s write and its rename: the new one.
+                                char next[sizeof(state.storePath) + 4];
+                                std::snprintf(next, sizeof(next), "%s.new", state.storePath);
+                                if (Vfs::rename(StringView(next), StringView(state.storePath),
+                                                Vfs::RenameMode::NoReplace, context)
+                                            .isOk())
+                                        return loadLocked(); // put back in its place, and read
+                        }
                         if (err == Error::NotExist) return;
                         if (err.isError()) {
                                 state.report.storeError = err;
@@ -243,15 +253,27 @@ namespace SysConf {
                         return err;
                 }
 
+                // Written beside the store and renamed over it (devplan/cfg.md §2): on a card, FAT
+                // isn't safe from a power cut mid-write, so the old store stays whole until then.
                 Error writeStore(const String &text) {
                         Vfs::Context context;
-                        auto [file, err] = Vfs::open(StringView(state.storePath),
-                                                     Vfs::Write | Vfs::Create | Vfs::Truncate, context);
-                        if (err.isError()) return err;
-                        auto [n, werr] = file->write(
-                                ByteSpan(reinterpret_cast<const uint8_t *>(text.data()), text.size()), WaitForever);
-                        if (werr.isOk() && n != text.size()) werr = Error::IoError;
-                        return werr; // committed (on littlefs: atomically) when the handle closes
+                        char         next[sizeof(state.storePath) + 4];
+                        std::snprintf(next, sizeof(next), "%s.new", state.storePath);
+                        {
+                                auto [file, err] =
+                                        Vfs::open(StringView(next), Vfs::Write | Vfs::Create | Vfs::Truncate, context);
+                                // Its directory not there: the card /cfg leads to was taken out (cfg.md §2).
+                                if (err == Error::NotExist) return Error::NoMedia;
+                                if (err.isError()) return err;
+                                auto [n, werr] = file->write(
+                                        ByteSpan(reinterpret_cast<const uint8_t *>(text.data()), text.size()),
+                                        WaitForever);
+                                if (werr.isOk() && n != text.size()) werr = Error::IoError;
+                                if (werr.isOk()) werr = file->stream().flush(WaitForever);
+                                if (werr.isError()) return werr;
+                        }
+                        return Vfs::rename(StringView(next), StringView(state.storePath), Vfs::RenameMode::Replace,
+                                           context);
                 }
 
                 // Sets entry @p index's current value to canonical @p value and tells the

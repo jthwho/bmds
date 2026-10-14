@@ -13,6 +13,7 @@
 #include <thread>
 #include <vector>
 #include <bmds/deadline.h>
+#include <bmds/flashwrites.h>
 #include <bmds/interrupt.h>
 #include <bmds/semaphore.h>
 
@@ -272,6 +273,22 @@ TEST_CASE("WaitList: notify releases every waiter; a full list refuses more") {
         list.remove(sb);
         CHECK_FALSE(list.hasWaiters());
         list.remove(bmds::WaitList::NoSlot); // nothing
+}
+
+TEST_CASE("FlashWrites: holds counted; the last one given back tells the waiters") {
+        namespace FlashWrites = bmds::FlashWrites;
+        Semaphore                   woken(1, 0);
+        const bmds::WaitList::Entry entry(FlashWrites::releases(), woken);
+        CHECK_FALSE(FlashWrites::isHeld());
+        FlashWrites::hold();
+        FlashWrites::hold();
+        CHECK(FlashWrites::isHeld());
+        FlashWrites::release();
+        CHECK(FlashWrites::isHeld());
+        CHECK(woken.tryAcquire().isError()); // one is still held
+        FlashWrites::release();
+        CHECK_FALSE(FlashWrites::isHeld());
+        CHECK(woken.tryAcquire().isOk());
 }
 
 TEST_CASE("WaitList: waiters coming and going while notified") {

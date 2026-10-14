@@ -18,7 +18,7 @@ menu "BMDS audio"
             the device's task, above the rest. One that stays out of its cycle for 4 periods is
             put back to its own priority until it cycles again.
 
-    # The I2S interrupt must run while the flash is written (/boot): with the cache off
+    # The I2S interrupt must run while the flash is written (/flash): with the cache off
     # it still clears finished buffers, so a gap plays silence, not stale audio
     # (devplan/audio.md §16).
     config BMDS_AUDIO_IRAM_SAFE

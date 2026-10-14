@@ -1,9 +1,9 @@
 # bmds_storage — the SD card driver and the storage service (card detect,
-# hot-plug), the `sd` command, /tmp, and /boot on the flash. Target-only.
+# hot-plug), the `sd` command, /tmp, /flash on the flash, and /cfg (devplan/cfg.md). Target-only.
 #
-# /boot's default files are the repository's boot/ directory, embedded by
-# tools/embedfiles.py (devplan/gui.md G14). /rom's image is built from rom/ by
-# tools/mkrom.py and written to the partition "rom" by idf.py flash (devplan/rom.md).
+# The default files are the repository's flash/ directory (cfg/ for /cfg, the rest for
+# /flash), embedded by tools/embedfiles.py (devplan/gui.md G14). /rom's image is built from
+# rom/ by tools/mkrom.py and written to the partition "rom" by idf.py flash (devplan/rom.md).
 #
 # WHOLE_ARCHIVE: nothing references sdcommand.cpp by symbol -- its command is
 # found through the linker section -- so without it the linker would never
@@ -11,7 +11,8 @@
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
-idf_component_register(SRCS src/bootdisk.cpp
+idf_component_register(SRCS src/cfg.cpp
+                            src/flashdisk.cpp
                             src/flashpartition.cpp
                             src/fsbench.cpp
                             src/romcommand.cpp
@@ -27,17 +28,17 @@ idf_component_register(SRCS src/bootdisk.cpp
                        WHOLE_ARCHIVE)
 bmds_target_options(${COMPONENT_LIB})
 
-set(BMDS_BOOT_DIR ${CMAKE_CURRENT_LIST_DIR}/../../boot)
-set(BMDS_BOOT_SRC ${CMAKE_CURRENT_BINARY_DIR}/bootdefaults.cpp)
+set(BMDS_FLASH_DIR ${CMAKE_CURRENT_LIST_DIR}/../../flash)
+set(BMDS_FLASH_SRC ${CMAKE_CURRENT_BINARY_DIR}/flashdefaults.cpp)
 set(BMDS_EMBED ${CMAKE_CURRENT_LIST_DIR}/../../tools/embedfiles.py)
-file(GLOB_RECURSE BMDS_BOOT_FILES CONFIGURE_DEPENDS ${BMDS_BOOT_DIR}/*)
+file(GLOB_RECURSE BMDS_FLASH_FILES CONFIGURE_DEPENDS ${BMDS_FLASH_DIR}/*)
 idf_build_get_property(BMDS_STORAGE_PYTHON PYTHON)
-add_custom_command(OUTPUT ${BMDS_BOOT_SRC}
-                   COMMAND ${BMDS_STORAGE_PYTHON} ${BMDS_EMBED} ${BMDS_BOOT_DIR} ${BMDS_BOOT_SRC}
-                           bootdefaults.h BootDefaults
-                   DEPENDS ${BMDS_EMBED} ${BMDS_BOOT_FILES}
+add_custom_command(OUTPUT ${BMDS_FLASH_SRC}
+                   COMMAND ${BMDS_STORAGE_PYTHON} ${BMDS_EMBED} ${BMDS_FLASH_DIR} ${BMDS_FLASH_SRC}
+                           flashdefaults.h FlashDefaults
+                   DEPENDS ${BMDS_EMBED} ${BMDS_FLASH_FILES}
                    VERBATIM)
-target_sources(${COMPONENT_LIB} PRIVATE ${BMDS_BOOT_SRC})
+target_sources(${COMPONENT_LIB} PRIVATE ${BMDS_FLASH_SRC})
 target_include_directories(${COMPONENT_LIB} PRIVATE src)
 
 # The ROM (devplan/rom.md §3c): the bmds icon theme made from rom/icons.list, the time zone

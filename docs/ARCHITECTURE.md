@@ -62,6 +62,9 @@ CMakeLists.txt          ESP-IDF project root
 sdkconfig.defaults      Checked-in configuration defaults
 partitions.csv          Flash partition table
 main/                   Minimal app_main() that hands off to the BMDS boot sequence
+recovery/               The recovery firmware (ota_1): applies updates (devplan/update.md)
+flash/                  Default files: cfg/ for /cfg (the configuration), the rest for /flash
+rom/                    The ROM image's sources: the icon list and icons (devplan/rom.md)
 components/             BMDS components (bmds_core, bmds_board, ...)
 sdk/                    Userspace SDK (C headers, musl and its system call layer, linker script, examples)
 tests/host/             Host-side doctest unit tests (plain CMake)

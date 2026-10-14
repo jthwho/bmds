@@ -126,7 +126,7 @@ namespace Config {
         /** @brief A canonical `Color` value as 0xRRGGBB (0 if it isn't one). */
         uint32_t toColor(StringView value);
 
-        // --- The store (`/boot/sysconf`): `key=value` lines ---------------------------
+        // --- The store (`/cfg/sysconf`): `key=value` lines ---------------------------
 
         /** @brief Called for each `key=value` line `parseStore()` finds (value unescaped). */
         using StoreLine = void (*)(void *arg, StringView key, StringView value);

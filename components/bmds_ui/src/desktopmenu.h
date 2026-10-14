@@ -18,7 +18,7 @@ class WindowManager;
 
 /**
  * @brief The window manager's desktop menu as `win start` gives it
- *        (`devplan/gui.md` §4o): the items of `/boot/config/wm.conf`, run as
+ *        (`devplan/gui.md` §4o): the items of `/cfg/config/wm.conf`, run as
  *        the panel runs a launcher entry, with what @p ctx's command had (its
  *        exported environment and directory, copied) and standard files on
  *        `/dev/null`.

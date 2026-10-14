@@ -139,10 +139,11 @@ class Directory {
  *                one TZif file per zone name (devplan/time.md §9)
  * /dev/sd0       a block device (BlockDevices); /dev/sd0p0 a partition
  * /sd0/p0        a mounted FAT or exFAT filesystem (the storage service's default path)
- * /boot          littlefs on the board's flash (devplan/storage.md §13d)
+ * /flash         littlefs on the board's flash (devplan/storage.md §13d)
  * /tmp           a tmpfs: files in memory, gone at reboot (devplan/storage.md §15)
  * /rom           the ROM image on the board's flash, read-only (devplan/rom.md)
  * /home          a link to the user's home (setHome(); devplan/sysconf.md §7)
+ * /cfg           a link to the configuration: the card's or /flash's (setCfg(); devplan/cfg.md)
  * ```
  *
  * The mount table is run-time state: `mount()` puts a filesystem at any
@@ -203,7 +204,7 @@ namespace Vfs {
         /**
          * @brief Writes what the filesystems hold to their devices: the FAT
          *        metadata written back within a second (devplan/storage.md §3),
-         *        and each device's own queue (`/boot`'s).
+         *        and each device's own queue (`/flash`'s).
          * @return `Ok`, or the first error: now, or of a write-back since the
          *         last sync (what failed is lost).
          * @blocking
@@ -294,9 +295,20 @@ namespace Vfs {
         /** @brief Installs @p report (null: none). */
         void setHomeReport(HomeReport report);
 
+        /** @brief The link to the configuration (`setCfg()`, `devplan/cfg.md`). */
+        inline constexpr StringView CfgPath("/cfg");
+
+        /**
+         * @brief Makes `/cfg` a link to @p target (the card's configuration, or `/flash`'s); an
+         *        empty @p target takes `/cfg` away. As `/home`, but with no fallback: while
+         *        @p target's filesystem isn't mounted, paths below `/cfg` don't exist.
+         * @return `Ok`, `Invalid` (a path at or below `/cfg` or `/home`), or `NoMem`.
+         */
+        Error setCfg(StringView target);
+
         /**
          * @brief Pins the mount at @p path: `unmount()` refuses it for good
-         *        (`/boot`, `devplan/storage.md` §13).
+         *        (`/flash`, `devplan/storage.md` §13).
          * @return `Ok` or `NotExist`.
          */
         Error pin(StringView path);

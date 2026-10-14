@@ -1,4 +1,4 @@
-# /boot/config/mimeapps.list: which applications open files, by type, unless
+# /cfg/config/mimeapps.list: which applications open files, by type, unless
 # /home/.config/mimeapps.list exists
 # (devplan/filetypes.md; freedesktop.org's format, read by the panel).
 #

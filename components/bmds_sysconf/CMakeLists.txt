@@ -1,5 +1,5 @@
 # bmds_sysconf — the system configuration (devplan/sysconf.md): the registry of typed parameters,
-# their saved values on /boot, watchers, /home following `home`, and the clock's zone and zone
+# their saved values in /cfg, watchers, /home following `home`, and the clock's zone and zone
 # database. The `sysconf` command is the shell's (bmds_shell), which sits above this.
 #
 # Portable: also built as a plain CMake library for the host tests (tests/host), without the boot

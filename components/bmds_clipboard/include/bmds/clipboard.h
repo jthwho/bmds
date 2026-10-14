@@ -72,7 +72,7 @@ class Clipboard {
                 static constexpr size_t DefaultLimitBytes = 1u << 20;
 
                 /** @brief The configuration file `init()` reads. */
-                static constexpr StringView ConfigPath{"/boot/config/clipboard.conf"};
+                static constexpr StringView ConfigPath{"/cfg/config/clipboard.conf"};
 
                 /** @brief Who renders an offer's types on request, and is told it lost it. */
                 struct Owner {
@@ -119,7 +119,7 @@ class Clipboard {
                 Clipboard &operator=(const Clipboard &) = delete;
 
                 /**
-                 * @brief Makes clipboard 0 (a boot stage, after `/boot`): reads
+                 * @brief Makes clipboard 0 (a boot stage, after `/cfg`): reads
                  *        `ConfigPath` and adds `/dev/clip0` and `/dev/clip0p`.
                  * @return `Ok`, or what failed (the clipboard works without its files).
                  */
