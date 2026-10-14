@@ -50,7 +50,17 @@ namespace {
                  "HID reports received"},
                 {"keyboards", Stat::Unit::Count, Stat::Kind::Level, 0, {}, "", "Keyboards attached now"},
                 {"mice", Stat::Unit::Count, Stat::Kind::Level, 0, {}, "", "Mice attached now"},
+                {"hid_rearm_failures",
+                 Stat::Unit::Count,
+                 Stat::Kind::Total,
+                 0,
+                 {},
+                 "",
+                 "HID transfers that couldn't be asked for again (retried)"},
         };
+
+        // A HID transfer that couldn't be asked for (TinyUSB refused it) is asked again this soon.
+        constexpr uint32_t RearmRetryMs = 20;
 
         void readUsb(void *arg, Span<int64_t> v) {
                 const UsbHost::Stats s = static_cast<UsbHost *>(arg)->stats();
@@ -59,6 +69,7 @@ namespace {
                 v[2] = s.hidReports;
                 v[3] = s.keyboards;
                 v[4] = s.mice;
+                v[5] = s.rearmFailures;
                 return;
         }
 
@@ -223,7 +234,40 @@ bool UsbHost::isOnTask() const {
 // TinyUSB's events; between them, until the next key repeat is due.
 void UsbHost::entry(void *arg) {
         auto *self = static_cast<UsbHost *>(arg);
-        for (;;) tuh_task_ext(self->repeatKeys(), false);
+        for (;;) tuh_task_ext(self->service(), false);
+}
+
+// Key repeats due, and HID transfers that couldn't be asked for asked again.
+uint32_t UsbHost::service() {
+        uint32_t   next = repeatKeys();
+        const auto now = static_cast<uint32_t>(System::uptimeUs() / 1000);
+        for (Hid &h : _hid) {
+                if (h.kind == Hid::Kind::None || h.armed) continue;
+                if (int32_t(now - h.retryMs) >= 0) arm(h);
+                if (!h.armed) {
+                        const uint32_t due = int32_t(h.retryMs - now) > 0 ? h.retryMs - now : 1;
+                        if (due < next) next = due;
+                }
+        }
+        return next;
+}
+
+// Asks for @p h's next report. A refusal (the endpoint busy, no channel free) would leave the
+// device unheard until it is plugged again: counted, and asked again shortly.
+void UsbHost::arm(Hid &h) {
+        h.armed = tuh_hid_receive_report(h.address, h.instance);
+        if (h.armed) return;
+        const auto now = static_cast<uint32_t>(System::uptimeUs() / 1000);
+        h.retryMs = now + RearmRetryMs;
+        uint32_t failures;
+        {
+                Mutex::Locker lock(_lock, WaitForever);
+                failures = ++_stats.rearmFailures;
+        }
+        if (failures <= 4 || failures % 100 == 0)
+                bmdsWarn("USB: %u: a HID report couldn't be asked for (%lu so far): asking again", h.address,
+                         static_cast<unsigned long>(failures));
+        return;
 }
 
 void UsbHost::emitKey(void *, const KeyEvent &event) {
@@ -401,7 +445,7 @@ void UsbHost::hidMounted(uint8_t address, uint8_t instance, Span<const uint8_t> 
                 free->leds = locks;
                 (void)tuh_hid_set_report(address, instance, 0, HID_REPORT_TYPE_OUTPUT, &free->leds, 1);
         }
-        (void)tuh_hid_receive_report(address, instance);
+        arm(*free);
         return;
 }
 
@@ -431,6 +475,7 @@ void UsbHost::hidReport(uint8_t address, uint8_t instance, const uint8_t *data, 
                 ++_stats.hidReports;
         }
         Hid *h = hid(address, instance);
+        if (h != nullptr) h->armed = false; // this transfer is done
         if (h != nullptr && h->kind == Hid::Kind::Keyboard) {
                 const auto now = static_cast<uint32_t>(System::uptimeUs() / 1000);
                 // A boot report: modifiers, a reserved byte, then up to six keys down.
@@ -450,7 +495,11 @@ void UsbHost::hidReport(uint8_t address, uint8_t instance, const uint8_t *data, 
                 if (length >= 4) p.wheel = static_cast<int8_t>(data[3]);
                 Input::pointer(p);
         }
-        (void)tuh_hid_receive_report(address, instance);
+        if (h != nullptr) {
+                arm(*h);
+        } else {
+                (void)tuh_hid_receive_report(address, instance);
+        }
         return;
 }
 

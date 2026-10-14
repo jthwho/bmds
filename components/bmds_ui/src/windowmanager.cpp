@@ -346,8 +346,9 @@ void WindowManager::run() {
                 if (picked >= 0 && chosen != nullptr) chosen(chosenArg, size_t(picked));
                 if (programPicked >= 0 && programFn != nullptr) programFn(programArg, size_t(programPicked));
                 _idle.notify();
-                // A round a frame at most: what comes meanwhile is drawn together.
-                if (surface != nullptr) (void)surface->waitFrame(frame, DrawTimeoutMs);
+                // A round a frame at most: what comes meanwhile is drawn together. Not while another
+                // surface is scanned (a program's full screen): surface 0 counts no frames then.
+                if (surface != nullptr && surface->isScanning()) (void)surface->waitFrame(frame, DrawTimeoutMs);
         }
 }
 
@@ -454,6 +455,10 @@ void WindowManager::applyPointer() {
                         event = _pointers[_pointerHead];
                         _pointerHead = static_cast<uint8_t>((_pointerHead + 1) % PointerQueue);
                         --_pointerCount;
+                }
+                if (_fullScreenId != 0) {
+                        fullScreenPointer(event);
+                        continue;
                 }
                 const Rect screen = _stack.screen();
                 const int  x = _pointerX + event.dx, y = _pointerY + event.dy;
@@ -1452,6 +1457,7 @@ Result<uint8_t> WindowManager::openLocked(const WindowConfig &config) {
         w.redraw = config.redraw;
         w.closed = config.closed;
         w.key = config.key;
+        w.fullScreen = config.fullScreen;
         w.resized = config.resized;
         w.arg = config.arg;
         w.decorations = config.decorations;
@@ -1498,14 +1504,15 @@ Error WindowManager::close(uint8_t id) {
 }
 
 Error WindowManager::closeLocked(uint8_t id) {
-        const uint8_t oldTop = focusId();
-        const Level   level = _stack.levelOf(id);
+        const uint8_t      oldTop = focusId();
+        const Level        level = _stack.levelOf(id);
         const Result<Rect> was = _stack.rectOf(id); // for closedAt
         const Rect         outer = was.isOk() ? was.value() : Rect();
-        const Error   err = _stack.close(id);
+        const Error        err = _stack.close(id);
         if (err.isError()) return err;
         const Window w = _windows[id - 1];
         _windows[id - 1] = Window();
+        if (_fullScreenId == id) _fullScreenId = 0; // its owner shows the desktop again (it is told: closed)
         if (_bandId == id) {
                 // Its area is redrawn as the window goes: nothing of the band to put back.
                 _bandId = 0;
@@ -2209,6 +2216,8 @@ namespace {
         constexpr uint8_t  UsageF10 = HidKey::F1 + 9;
         constexpr uint8_t  UsageLeftAlt = 0xe2;
         constexpr uint8_t  UsageRightAlt = 0xe6;
+        constexpr uint8_t  UsageLeftGui = 0xe3;
+        constexpr uint8_t  UsageRightGui = 0xe7;
         constexpr uint16_t SwitcherWidth = 320; // a box in the screen's middle, not a menu
 
 } // namespace
@@ -2240,6 +2249,7 @@ bool WindowManager::shortcut(const KeyEvent &event) {
                 }
                 return true;
         }
+        if (fullScreenKey(event)) return true;
         // A key pressed while a claimed modifier is down: that modifier's press is no tap.
         if (press && (event.usage < 0xe0 || event.usage > 0xe7)) _tapClean = false;
         if (windowKey(event)) return true;
@@ -2278,6 +2288,91 @@ Error WindowManager::grabKey(uint8_t client, uint8_t usage, uint8_t modifiers, G
         }
         if (free == nullptr) return Error::Full;
         *free = KeyGrab{fn, arg, client, usage, folded};
+        return Error::Ok;
+}
+
+// ---- Full screen (devplan/games.md §10c)
+
+// Alt+Enter asks the focused window to switch; while a window is full screen, an escape key
+// (Alt+Tab, Alt+F4, Alt+Space, a Windows key) asks it to leave, then goes on to do its own thing.
+bool WindowManager::fullScreenKey(const KeyEvent &event) {
+        if (event.action != KeyEvent::Action::Press) return false;
+        const bool alt = event.hasAlt(), ctrl = event.hasCtrl(), gui = (event.modifiers & KeyEvent::Gui) != 0;
+        if (alt && !ctrl && !gui && (event.usage == HidKey::Enter || event.usage == HidKey::KeypadEnter)) {
+                const uint8_t focus = focusId();
+                if (focus == 0) return false;
+                Window &w = _windows[focus - 1];
+                if (w.fullScreen == nullptr) return false;
+                w.fullScreen(w.arg, _fullScreenId != focus);
+                return true;
+        }
+        if (_fullScreenId == 0) return false;
+        const bool guiKey = event.usage == UsageLeftGui || event.usage == UsageRightGui;
+        const bool altKey =
+                alt && !ctrl && (event.usage == HidKey::Tab || event.usage == UsageF4 || event.usage == HidKey::Space);
+        if (guiKey || gui || altKey) leaveFullScreen();
+        return false; // the key does what it does
+}
+
+void WindowManager::leaveFullScreen() {
+        const uint8_t id = _fullScreenId;
+        if (id == 0) return;
+        _fullScreenId = 0; // its window, as it was, shows again
+        Window &w = _windows[id - 1];
+        if (w.fullScreen != nullptr) w.fullScreen(w.arg, false);
+        return;
+}
+
+// A full-screen window's pointer: the screen's coordinates, every event, nothing of the window
+// manager's own (no pointer drawn, no presses on frames).
+void WindowManager::fullScreenPointer(const PointerEvent &event) {
+        const Rect screen = _stack.screen();
+        const int  x = _pointerX + event.dx, y = _pointerY + event.dy;
+        const auto nx = static_cast<uint16_t>(x < 0 ? 0 : x >= screen.width ? screen.width - 1 : x);
+        const auto ny = static_cast<uint16_t>(y < 0 ? 0 : y >= screen.height ? screen.height - 1 : y);
+        const bool moved = nx != _pointerX || ny != _pointerY;
+        _pointerX = nx;
+        _pointerY = ny;
+        const uint8_t pressed = static_cast<uint8_t>(event.buttons & ~_buttons);
+        const uint8_t released = static_cast<uint8_t>(_buttons & ~event.buttons);
+        _buttons = event.buttons;
+        Window &w = _windows[_fullScreenId - 1];
+        auto    send = [&](MouseEvent::Type type, uint8_t button) {
+                if (w.mouse == nullptr) return;
+                MouseEvent m;
+                m.type = type;
+                m.x = static_cast<int16_t>(nx);
+                m.y = static_cast<int16_t>(ny);
+                m.button = button;
+                m.buttons = _buttons;
+                m.modifiers = _modifiers;
+                w.mouse(w.arg, m);
+                return;
+        };
+        if (moved || (event.dx != 0 || event.dy != 0)) send(MouseEvent::Type::Motion, 0);
+        for (const uint8_t b : {PointerEvent::Left, PointerEvent::Right, PointerEvent::Middle}) {
+                if ((pressed & b) != 0) send(MouseEvent::Type::Press, b);
+                if ((released & b) != 0) send(MouseEvent::Type::Release, b);
+        }
+        if (event.wheel != 0 && w.wheel != nullptr) w.wheel(w.arg, event.wheel);
+        return;
+}
+
+Error WindowManager::setFullScreen(uint8_t id, bool on) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        if (id == 0 || id > _windows.size() || _stack.rectOf(id).isError()) return Error::NotFound;
+        if (on) {
+                _fullScreenId = id;
+                _mouseId = 0;
+                _grabId = 0;
+                _sizeId = 0;
+        } else if (_fullScreenId == id) {
+                _fullScreenId = 0;
+        }
+        _cursorMoved = true; // shown or not, as it was
+        _requests.fetch_add(1, std::memory_order_acq_rel);
+        _wake.release();
         return Error::Ok;
 }
 

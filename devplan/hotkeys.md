@@ -5,6 +5,9 @@ up and down, mute, and the rest) through a general way of declaring the system's
 which the user can later set to do whatever they want. This document captures the design; the
 user-editable part comes later.
 
+`controls.md` (2026-10-14) extends this to every application's actions, with gamepads, and one
+standard editor for all bindings; the chords, actions and table here are its base.
+
 ## 1. Goal
 
 - **Special keys work:**

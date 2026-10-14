@@ -75,6 +75,12 @@ class Surface {
                  */
                 using Patcher = void (*)(void *arg, uint8_t *pixels, size_t stride);
 
+                /** @brief A source picture's pixels (`startBlit()`). */
+                enum class Source : uint8_t {
+                        Bgr24,  ///< B, G, R: the surface's own.
+                        Rgb565, ///< A little-endian 16-bit word, R in the top 5 bits: widened by the DMA.
+                };
+
                 /** @brief A copy inside the surface: @p from to (@p toX, @p toY). */
                 struct Copy {
                                 Rect     from;
@@ -160,7 +166,31 @@ class Surface {
                  * @blocking Only while a swap is pending, or for an earlier job.
                  */
                 Error startBlit(const Rect &to, const uint8_t *src, size_t srcStride, Span<const Rect> clip,
-                                unsigned int timeoutMs);
+                                unsigned int timeoutMs) {
+                        return startBlit(to, src, srcStride, clip, Source::Bgr24, timeoutMs);
+                }
+
+                /**
+                 * @brief As `startBlit()`, from @p source pixels (@p srcStride bytes a
+                 *        line, a multiple of the source's pixel). RGB565 is widened by
+                 *        the 2D-DMA on the way (`devplan/games.md` §10): half the
+                 *        source's bytes, no CPU a pixel.
+                 * @return As `blit()`.
+                 * @blocking Only while a swap is pending, or for an earlier job.
+                 */
+                Error startBlit(const Rect &to, const uint8_t *src, size_t srcStride, Span<const Rect> clip,
+                                Source source, unsigned int timeoutMs);
+
+                /**
+                 * @brief Says @p rects will be drawn whole (every pixel written) before the next
+                 *        `present()`: what of the last present's changes they cover is not copied
+                 *        forward (double buffering), only what they cover in part. A window redrawn
+                 *        in strips calls it first, so no strip copies forward a tile the next
+                 *        overwrites.
+                 * @return As `fill()`.
+                 * @blocking Only while a swap is pending, and for the copies.
+                 */
+                Error willDraw(Span<const Rect> rects, unsigned int timeoutMs);
 
                 /**
                  * @brief Waits for a started copy.
@@ -220,6 +250,9 @@ class Surface {
                 /** @brief Returns the presents shown so far. @nonblocking */
                 uint32_t shownPresents() const { return _shown.load(std::memory_order_acquire); }
 
+                /** @brief Returns true while a scanout shows it. @nonblocking */
+                bool isScanning() const { return _scanning.load(std::memory_order_acquire); }
+
                 /** @brief Returns true from a double-buffered present until its swap. @nonblocking */
                 bool isSwapPending() const { return _asked.load(std::memory_order_acquire); }
 
@@ -252,12 +285,13 @@ class Surface {
                 uint8_t           *back() const;
                 BlitChain::Picture picture(const uint8_t *buffer) const;
                 Error              prepare(const Deadline &deadline); // the swap done, the last changes copied
-                void               swapNow();
-                bool               fits(const Rect &rect) const;   // inside, on 4-pixel columns
-                bool               inside(const Rect &rect) const; // inside
-                Error              fillEdges(Span<const Rect> rects, uint32_t rgb, const Deadline &deadline);
-                void               markDamage(const Rect &rect);
-                Error              copyForward(const Deadline &deadline);
+                Error prepareFor(const Deadline &deadline, Span<const Rect> writes, Span<const Rect> reads);
+                void  swapNow();
+                bool  fits(const Rect &rect) const;   // inside, on 4-pixel columns
+                bool  inside(const Rect &rect) const; // inside
+                Error fillEdges(Span<const Rect> rects, uint32_t rgb, const Deadline &deadline);
+                void  markDamage(const Rect &rect);
+                Error copyForward(const uint32_t *tiles, const Deadline &deadline);
                 template <typename Done> Error waitUntil(Done done, const Deadline &deadline);
 
                 uint8_t              *_buffers[2] = {};
@@ -274,11 +308,13 @@ class Surface {
                 uint32_t              _presents = 0;      // presents asked for
                 uint32_t             *_damage = nullptr;  // tiles drawn since the last present, a bit each
                 uint32_t             *_forward = nullptr; // the last present's, still to copy into the other buffer
+                uint32_t             *_select = nullptr;  // prepareFor()'s tiles to copy now
                 uint16_t              _tileWords = 0;     // words a row of tiles
                 uint16_t              _tileRows = 0;
                 bool                  _forwardPending = false;
                 WaitListOf<4>         _waiters; // woken by each swap and each frame
                 BlitChain             _chain;
+                BlitChain             _widen; // RGB565 sources (started on first use)
                 Stats                 _stats;
 };
 

@@ -28,6 +28,9 @@ Design notes and implementation plans for BMDS subsystems. Write a plan here **b
 - [`mediaplayer.md`](mediaplayer.md) — the media player: audio and MIDI files in a GUI window, a playlist; video later (planned).
 - [`network.md`](network.md) — Phase 7: Ethernet and the IPv4 stack (vendored lwIP), BSD sockets, a real-time fast path for PTP and AES67, NTP, SSH.
 - [`logging.md`](logging.md) — one log for the whole system: `syslog()` through `/dev/log`, `logger`, rotated files on the card.
+- [`apps.md`](apps.md) — application folders (`apps/NAME.app`): found by looking, every one a command in a virtual `/apps`, their data in the home.
+- [`controls.md`](controls.md) — gamepads, and actions with keyboard and pad bindings for every application, changed in one standard editor.
+- [`games.md`](games.md) — surfaces for programs (windowed or full screen, Alt+Enter), the SDK's game library, Blocks, Doom, Solitaire.
 
 ## Plan Document Template
 

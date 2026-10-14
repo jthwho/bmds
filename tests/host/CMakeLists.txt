@@ -92,6 +92,7 @@ add_executable(bmds_host_tests
         hostname.cpp
         texttemplate.cpp
         images.cpp
+        pixelrepeat.cpp
         imageview.cpp
         notifications.cpp
         synth.cpp

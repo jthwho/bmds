@@ -154,6 +154,22 @@ class Painter {
                 Error pixels(int x, int y, const uint8_t *bgr, size_t stride, uint16_t width, uint16_t height);
 
                 /**
+                 * @brief Says @p rect (the painter's coordinates) will be drawn whole, every pixel
+                 *        that shows, by the calls that follow (`Surface::willDraw()`): a picture
+                 *        drawn in strips over what changed since the last present costs no copies.
+                 * @return The first error so far.
+                 */
+                Error cover(const Rect &rect);
+
+                /**
+                 * @brief As `pixels()`, from RGB565 pixels (@p stride bytes a row, even),
+                 *        widened by the 2D-DMA on the way.
+                 * @return As `pixels()`.
+                 * @blocking The copy.
+                 */
+                Error pixels565(int x, int y, const uint8_t *rgb565, size_t stride, uint16_t width, uint16_t height);
+
+                /**
                  * @brief Moves what shows of @p area by @p dy rows (down if
                  *        positive), inside the surface. A pixel is moved only if
                  *        its source shows and isn't damaged; @p area's other
@@ -192,9 +208,11 @@ class Painter {
                         if (_error.isOk()) _error = err;
                         return;
                 }
-                static Rect bounds(Span<const Rect> rects);
-                Rect        local(const Rect &r) const;
-                void        flush(uint32_t rgb);
+                Error copyPixels(int x, int y, const uint8_t *data, size_t stride, uint16_t width, uint16_t height,
+                                 bool rgb565);
+                static Rect                    bounds(Span<const Rect> rects);
+                Rect                           local(const Rect &r) const;
+                void                           flush(uint32_t rgb);
                 template <typename Draw> Error run(int x, int y, uint16_t maxWidth, uint16_t height, Draw draw);
 
                 Surface         &_surface;

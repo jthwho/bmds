@@ -182,14 +182,20 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_NET_INFO 107u        /**< `int32_t net_info(uint32_t index, bmds_net_info_t *info)`. */
 #define BMDS_SYS_PROC_TIMER                                                                                            \
         108u /**< `int32_t proc_timer(uint32_t which, const bmds_timer_t *set, bmds_timer_t *old)`. */
-#define BMDS_SYS_NET_WATCH 109u /**< `int32_t net_watch(uint32_t flags)`: a new fd. */
-#define BMDS_SYS_TERM_CTL 110u  /**< `int32_t term_ctl(int32_t fd, uint32_t op, uint32_t arg)`. */
-#define BMDS_SYS_FS_INFO 111u   /**< `int32_t fs_info(const char *path, bmds_fs_info_t *info)`. */
-#define BMDS_SYS_CRYPTO 112u    /**< `int32_t crypto(const bmds_crypto_op_t *op)`. */
-#define BMDS_SYS_SCHED 113u     /**< `int32_t sched(uint32_t op, int32_t tid, bmds_sched_t *param)`. */
+#define BMDS_SYS_NET_WATCH 109u        /**< `int32_t net_watch(uint32_t flags)`: a new fd. */
+#define BMDS_SYS_TERM_CTL 110u         /**< `int32_t term_ctl(int32_t fd, uint32_t op, uint32_t arg)`. */
+#define BMDS_SYS_FS_INFO 111u          /**< `int32_t fs_info(const char *path, bmds_fs_info_t *info)`. */
+#define BMDS_SYS_CRYPTO 112u           /**< `int32_t crypto(const bmds_crypto_op_t *op)`. */
+#define BMDS_SYS_SCHED 113u            /**< `int32_t sched(uint32_t op, int32_t tid, bmds_sched_t *param)`. */
 #define BMDS_SYS_AUDIO_SPEAK 114u      /**< `int32_t audio_speak(const bmds_speak_config_t *config)`: a new fd. */
 #define BMDS_SYS_AUDIO_SPEAK_INFO 115u /**< `int32_t audio_speak_info(int32_t fd, bmds_speak_info_t *info)`. */
 #define BMDS_SYS_PTP_CTL 116u          /**< `int32_t ptp_ctl(int32_t fd, uint32_t op, void *arg)`. */
+#define BMDS_SYS_SURFACE_OPEN 117u     /**< `int32_t surface_open(const bmds_surface_config_t *config)`: a new fd. */
+#define BMDS_SYS_SURFACE_BUFFER 118u   /**< `int32_t surface_buffer(int32_t fd, bmds_surface_buffer_t *info)`. */
+#define BMDS_SYS_SURFACE_ACQUIRE 119u  /**< `int32_t surface_acquire(int32_t fd, int32_t timeout_ms)`: an index. */
+#define BMDS_SYS_SURFACE_PRESENT 120u  /**< `int32_t surface_present(int32_t fd, const bmds_surface_present_t *p)`. */
+#define BMDS_SYS_SURFACE_CONTROL                                                                                       \
+        121u /**< `int32_t surface_control(int32_t fd, uint32_t op, void *arg, uint32_t size)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -1070,8 +1076,8 @@ typedef struct bmds_stat_t {
                 uint32_t open_flags;  /**< `fstat`: the fd's `BMDS_O_READ`/`BMDS_O_WRITE`; else 0. */
                 uint64_t file_size;   /**< Bytes (0 for directories and devices). */
                 int64_t  modified_ns; /**< Last modified, ns since 1970-01-01 UTC; 0 if unknown. */
-                uint64_t file_id;  /**< The same for each name and fd of one file, different for others; 0 if unknown. */
-                uint32_t device;   /**< The filesystem it is on (non-zero), or 0 (devices, pipes, `/`, `/dev`). */
+                uint64_t file_id; /**< The same for each name and fd of one file, different for others; 0 if unknown. */
+                uint32_t device;  /**< The filesystem it is on (non-zero), or 0 (devices, pipes, `/`, `/dev`). */
                 uint32_t reserved; /**< Zero. */
 } bmds_stat_t;
 
@@ -1453,6 +1459,130 @@ typedef struct bmds_ptp_offset_t {
                 int64_t samples[BMDS_PTP_MAX_SAMPLES][3]; /**< ns: the system clock, the PTP clock, the system clock. */
 } bmds_ptp_offset_t;
 
+/*
+ * Surfaces (slots 117-121, appended 2026-10-14, devplan/games.md §11): a picture a program draws
+ * with the CPU into its own buffers and presents, in a window or full screen (the user's setting
+ * per application, the program's suggestion its default, Alt+Enter between them); its events read
+ * from its fd.
+ */
+
+/**
+ * @brief A palette's 8-bit index (appended to the `BMDS_PIXEL_*` formats 2026-10-14): a surface's
+ *        `bmds_surface_config_t::format` may be it, `BMDS_PIXEL_RGB565` or `BMDS_PIXEL_BGR24`.
+ */
+#define BMDS_PIXEL_L8 5u
+
+/** @brief `bmds_surface_config_t::flags`. */
+#define BMDS_SURFACE_FULL_SCREEN 0x1u /**< Suggest full screen (else a window); the user's setting wins. */
+#define BMDS_SURFACE_WHOLE 0x2u       /**< Scale by whole multiples only, both ways (sharp pixels). */
+#define BMDS_SURFACE_FAST 0x4u        /**< Buffers in internal RAM (small ones only; else `BMDS_ENOMEM`). */
+
+/** @brief A surface to open (`surface_open`). */
+typedef struct bmds_surface_config_t {
+                uint32_t    size;     /**< Set by the caller: `sizeof(bmds_surface_config_t)`. */
+                uint32_t    width;    /**< Pixels: a multiple of 4, at most 1280. */
+                uint32_t    height;   /**< Pixels: at most 720. */
+                uint32_t    format;   /**< `BMDS_PIXEL_L8`, `BMDS_PIXEL_RGB565` or `BMDS_PIXEL_BGR24`. */
+                uint32_t    buffers;  /**< 2 or 3. */
+                uint32_t    flags;    /**< `BMDS_SURFACE_...`, or 0. */
+                uint32_t    aspect_x; /**< The picture's shape on the screen, e.g. 4 and 3 for 320x200 shown */
+                uint32_t    aspect_y; /**< as 4:3; both 0: square pixels. */
+                const char *title;    /**< The window's title (copied), or NULL: the program's name. */
+} bmds_surface_config_t;
+
+/** @brief Where a buffer is (`surface_buffer`). */
+typedef struct bmds_surface_buffer_t {
+                uint32_t size;   /**< Set by the caller: `sizeof(bmds_surface_buffer_t)`. */
+                uint32_t index;  /**< Set by the caller: which buffer, 0 up. */
+                void    *pixels; /**< Its first pixel, the program's to write while acquired. */
+                uint32_t stride; /**< Bytes from a row to the next. */
+} bmds_surface_buffer_t;
+
+/** @brief A rectangle of a surface, in its pixels. */
+typedef struct bmds_rect_t {
+                int32_t  x;
+                int32_t  y;
+                uint32_t width;
+                uint32_t height;
+} bmds_rect_t;
+
+/** @brief A buffer to show (`surface_present`). */
+typedef struct bmds_surface_present_t {
+                uint32_t           size;         /**< Set by the caller: `sizeof(bmds_surface_present_t)`. */
+                uint32_t           index;        /**< The buffer, acquired and drawn. */
+                const bmds_rect_t *damage;       /**< What changed since this buffer was last presented, */
+                uint32_t           damage_count; /**< `damage_count` rectangles; 0: all of it. */
+} bmds_surface_present_t;
+
+/** @brief `surface_control`'s operations. */
+#define BMDS_SURFACE_PALETTE 1u /**< `const bmds_surface_palette_t *`: L8's palette, from the next present. */
+#define BMDS_SURFACE_TITLE 2u   /**< `const char *` (`size` its bytes, no NUL needed): the window's title. */
+#define BMDS_SURFACE_POINTER 3u /**< `const uint32_t *`: `BMDS_POINTER_...` over the surface. */
+#define BMDS_SURFACE_WAIT 4u    /**< `const bmds_surface_wait_t *`: waits until a frame has begun. */
+#define BMDS_SURFACE_INFO 5u    /**< `bmds_surface_info_t *`: its state. */
+
+/** @brief `BMDS_SURFACE_POINTER`'s modes. */
+#define BMDS_POINTER_NORMAL 0u   /**< The system's arrow. */
+#define BMDS_POINTER_HIDDEN 1u   /**< None over the surface. */
+#define BMDS_POINTER_RELATIVE 2u /**< None, held still: motion comes as deltas (mouse look). */
+
+/** @brief `BMDS_SURFACE_PALETTE`'s argument. */
+typedef struct bmds_surface_palette_t {
+                uint32_t        size;  /**< `sizeof(bmds_surface_palette_t)`. */
+                uint32_t        first; /**< The first entry set, 0-255. */
+                uint32_t        count; /**< Entries set (`first + count` at most 256). */
+                const uint32_t *rgb;   /**< 0xRRGGBB each. */
+} bmds_surface_palette_t;
+
+/** @brief `BMDS_SURFACE_WAIT`'s argument. */
+typedef struct bmds_surface_wait_t {
+                uint32_t size;       /**< `sizeof(bmds_surface_wait_t)`. */
+                uint32_t frame;      /**< The frame waited for (`surface_present`'s result, `frames`). */
+                int32_t  timeout_ms; /**< Negative: forever; 0: only checks (`BMDS_EAGAIN`). */
+} bmds_surface_wait_t;
+
+/** @brief `BMDS_SURFACE_INFO`'s argument: the surface's state. */
+typedef struct bmds_surface_info_t {
+                uint32_t size;        /**< Set by the caller: `sizeof(bmds_surface_info_t)`. */
+                uint32_t full_screen; /**< 1 full screen, 0 a window. */
+                uint32_t active;      /**< 1 while it has the keys. */
+                uint32_t shown;       /**< 1 while it has a window or the screen (0: closed). */
+                uint32_t scale_x16;   /**< Its scale across, in 16ths (32: twice). */
+                uint32_t scale_y16;   /**< Down. */
+                int32_t  x;           /**< The picture on the screen, in the screen's pixels. */
+                int32_t  y;
+                uint32_t width;
+                uint32_t height;
+                uint32_t frames;   /**< Frames the display has begun. */
+                uint32_t presents; /**< Presents so far. */
+                uint32_t dropped;  /**< Presents replaced before they were shown. */
+} bmds_surface_info_t;
+
+/** @brief `bmds_surface_event_t::type`: a program skips types it doesn't know. */
+#define BMDS_EVENT_KEY 1u     /**< data: the HID extended usage ((page << 16) | usage), modifiers, character. */
+#define BMDS_EVENT_POINTER 2u /**< data: x, y (int32, the surface's pixels), buttons, dx and dy (int16 each). */
+#define BMDS_EVENT_WHEEL 3u   /**< data: notches (int32, positive away from the user). */
+#define BMDS_EVENT_ACTIVE 4u  /**< data: 1 active, 0 not (pause). */
+#define BMDS_EVENT_PRESENTED                                                                                           \
+        5u                   /**< data: full screen (1) or a window (0), the scale in 16ths (across | down << 16),
+                                     the picture's size (width | height << 16). */
+#define BMDS_EVENT_CLOSE 6u  /**< The user closed it (its window's close button, Alt+F4): the program decides. */
+#define BMDS_EVENT_ACTION 7u /**< Reserved (actions and their bindings). */
+#define BMDS_EVENT_PAD 8u    /**< Reserved (gamepads). */
+
+/** @brief `BMDS_EVENT_KEY`'s flags. */
+#define BMDS_KEY_DOWN 0x1u
+#define BMDS_KEY_UP 0x2u
+#define BMDS_KEY_REPEAT 0x4u
+
+/** @brief A surface's event: 32 bytes, forever (new kinds take new types). */
+typedef struct bmds_surface_event_t {
+                uint32_t type;    /**< `BMDS_EVENT_...`. */
+                uint32_t flags;   /**< Per type. */
+                int64_t  time_ns; /**< `BMDS_CLOCK_MONOTONIC` when it happened. */
+                uint32_t data[4]; /**< Per type. */
+} bmds_surface_event_t;
+
 /** @brief `proc_timer`'s timers. */
 #define BMDS_TIMER_REAL 0u /**< Real time, raising `SIGALRM` (Linux's `ITIMER_REAL`). */
 
@@ -1578,6 +1708,11 @@ typedef int32_t (*bmds_sys_sched_fn)(uint32_t op, int32_t tid, bmds_sched_t *par
 typedef int32_t (*bmds_sys_audio_speak_fn)(const bmds_speak_config_t *config);
 typedef int32_t (*bmds_sys_audio_speak_info_fn)(int32_t fd, bmds_speak_info_t *info);
 typedef int32_t (*bmds_sys_ptp_ctl_fn)(int32_t fd, uint32_t op, void *arg);
+typedef int32_t (*bmds_sys_surface_open_fn)(const bmds_surface_config_t *config);
+typedef int32_t (*bmds_sys_surface_buffer_fn)(int32_t fd, bmds_surface_buffer_t *info);
+typedef int32_t (*bmds_sys_surface_acquire_fn)(int32_t fd, int32_t timeout_ms);
+typedef int32_t (*bmds_sys_surface_present_fn)(int32_t fd, const bmds_surface_present_t *present);
+typedef int32_t (*bmds_sys_surface_control_fn)(int32_t fd, uint32_t op, void *arg, uint32_t size);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -2790,6 +2925,58 @@ static inline int32_t bmds_audio_speak_info(int32_t fd, bmds_speak_info_t *info)
  */
 static inline int32_t bmds_ptp_ctl(int32_t fd, uint32_t op, void *arg) {
         return ((bmds_sys_ptp_ctl_fn)bmds_sys->slot[BMDS_SYS_PTP_CTL])(fd, op, arg);
+}
+
+/**
+ * @brief Opens a surface (`bmds_surface_config_t`): its buffers (black) and its window, or the
+ *        screen. `read` gives its events (`bmds_surface_event_t`, whole records), `io_poll`
+ *        says when there are some, `close` ends it. (Slots 117-121, appended 2026-10-14: check
+ *        `bmds_sys_has(BMDS_SYS_SURFACE_OPEN)`.)
+ * @return A new fd, or `-BMDS_EINVAL` (the config), `-BMDS_ENOMEM`, `-BMDS_ENODEV` (no desktop
+ *         running), `-BMDS_EMFILE`, `-BMDS_EFAULT`.
+ */
+static inline int32_t bmds_surface_open(const bmds_surface_config_t *config) {
+        return ((bmds_sys_surface_open_fn)bmds_sys->slot[BMDS_SYS_SURFACE_OPEN])(config);
+}
+
+/**
+ * @brief Fills @p info (its `size` and `index` set) with where buffer `index` of surface @p fd is.
+ *        The address stays the same while the surface is open.
+ * @return 0, or `-BMDS_EINVAL` (the index, `size`), `-BMDS_ENOTTY` (not a surface), `-BMDS_EBADF`.
+ */
+static inline int32_t bmds_surface_buffer(int32_t fd, bmds_surface_buffer_t *info) {
+        return ((bmds_sys_surface_buffer_fn)bmds_sys->slot[BMDS_SYS_SURFACE_BUFFER])(fd, info);
+}
+
+/**
+ * @brief Takes a free buffer of surface @p fd to draw, waiting up to @p timeout_ms (negative:
+ *        forever; 0: only checks). The buffer is the program's until presented.
+ * @return Its index, or `-BMDS_EAGAIN` (none free in time), `-BMDS_EINTR`, `-BMDS_ENOTTY`,
+ *         `-BMDS_EBADF`.
+ */
+static inline int32_t bmds_surface_acquire(int32_t fd, int32_t timeout_ms) {
+        return ((bmds_sys_surface_acquire_fn)bmds_sys->slot[BMDS_SYS_SURFACE_ACQUIRE])(fd, timeout_ms);
+}
+
+/**
+ * @brief Shows a drawn buffer of surface @p fd (`bmds_surface_present_t`); the kernel writes it
+ *        back from the cache. The newest present is shown at the next frame; one replaced first is
+ *        never shown (`bmds_surface_info_t::dropped`).
+ * @return The frame it will be shown in (for `BMDS_SURFACE_WAIT`), or `-BMDS_EINVAL` (not an
+ *         acquired buffer, `size`, a damage rectangle), `-BMDS_ENOTTY`, `-BMDS_EBADF`, `-BMDS_EFAULT`.
+ */
+static inline int32_t bmds_surface_present(int32_t fd, const bmds_surface_present_t *present) {
+        return ((bmds_sys_surface_present_fn)bmds_sys->slot[BMDS_SYS_SURFACE_PRESENT])(fd, present);
+}
+
+/**
+ * @brief Operates on surface @p fd: `BMDS_SURFACE_...` with @p arg (@p size its bytes) as each says.
+ * @return 0, or `-BMDS_EINVAL` (the op, the argument), `-BMDS_EAGAIN` (`BMDS_SURFACE_WAIT` timed
+ *         out), `-BMDS_EINTR`, `-BMDS_ENOTSUP` (a palette for a surface that isn't L8),
+ *         `-BMDS_ENOTTY`, `-BMDS_EBADF`, `-BMDS_EFAULT`.
+ */
+static inline int32_t bmds_surface_control(int32_t fd, uint32_t op, void *arg, uint32_t size) {
+        return ((bmds_sys_surface_control_fn)bmds_sys->slot[BMDS_SYS_SURFACE_CONTROL])(fd, op, arg, size);
 }
 
 /**

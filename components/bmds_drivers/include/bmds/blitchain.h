@@ -65,6 +65,9 @@ class BlitChain {
                 /** @brief Waits for a job under way, frees everything. Idempotent. */
                 void stop();
 
+                /** @brief Returns true between `start()` and `stop()`. */
+                bool isStarted() const { return _hw != nullptr; }
+
                 /** @brief Returns the pieces added since the last run. */
                 size_t count() const { return _rxCount; }
 

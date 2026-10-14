@@ -31,6 +31,11 @@
 
 BMDS_NAMESPACE_BEGIN
 
+namespace detail {
+        int runDisplayPpa(CommandContext &ctx);  // displayppa.cpp
+        int runDisplayRows(CommandContext &ctx); // displayppa.cpp
+} // namespace detail
+
 namespace {
 
         using Args = Span<char *const>;
@@ -761,6 +766,8 @@ namespace {
                         return runPresent(ctx, args.size() == 3 ? args[2] : nullptr);
                 if (std::strcmp(what, "anim") == 0) return runAnim(ctx, args);
                 if (args.size() == 3 && std::strcmp(what, "stress") == 0) return runStress(ctx, args[2]);
+                if (std::strcmp(what, "ppa") == 0) return detail::runDisplayPpa(ctx);
+                if (std::strcmp(what, "rows") == 0) return detail::runDisplayRows(ctx);
                 return ctx.usage();
         }
 
@@ -768,9 +775,10 @@ namespace {
 
 BMDS_SHELL_COMMAND(display, runDisplay,
                    "[edid [raw]|scan|start|off|stats|test|fill X Y W H RRGGBB|"
-                   "present [N]|anim [start [N]|stop]|stress psram|write|internal]",
+                   "present [N]|anim [start [N]|stop]|stress psram|write|internal|ppa [soak SECONDS|path]|rows N "
+                   "[stripes] [irq K]]",
                    "Show the HDMI bridge and the monitor; 'edid' decodes the monitor's EDID ('raw': its bytes), "
                    "'scan' lists the bus, 'start' shows surface 0 (sysconf's display/mode and display/buffering), "
-                   "'test', 'fill' and 'anim' draw on it")
+                   "'test', 'fill' and 'anim' draw on it, 'ppa' measures the PPA")
 
 BMDS_NAMESPACE_END

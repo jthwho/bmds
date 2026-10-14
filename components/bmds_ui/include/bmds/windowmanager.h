@@ -167,6 +167,15 @@ class WindowManager {
                  */
                 using Gone = void (*)(void *arg);
 
+                /**
+                 * @brief Asked to show the window full screen (@p on) or back in its window (on
+                 *        the window manager's task, locked: it must not call it). Alt+Enter asks
+                 *        either way; an escape key (Alt+Tab, Alt+F4, Alt+Space, a Windows key)
+                 *        asks a full-screen window to leave before doing what it does. The owner
+                 *        switches, then says so with `setFullScreen()`.
+                 */
+                using FullScreen = void (*)(void *arg, bool on);
+
                 /** @brief Writes the window's contents as text to @p out (`win dump`; a test aid). */
                 using Dump = void (*)(void *arg, Stream &out);
 
@@ -188,10 +197,10 @@ class WindowManager {
                                 };
 
                                 Type    type = Type::Motion;
-                                int16_t x = 0;       ///< From the client area's top-left corner.
-                                int16_t y = 0;       ///< Outside it while a press is held: negative or past it.
-                                uint8_t button = 0;  ///< `PointerEvent::Button`: the one pressed or released.
-                                uint8_t buttons = 0; ///< `PointerEvent::Button` bits down after it.
+                                int16_t x = 0;         ///< From the client area's top-left corner.
+                                int16_t y = 0;         ///< Outside it while a press is held: negative or past it.
+                                uint8_t button = 0;    ///< `PointerEvent::Button`: the one pressed or released.
+                                uint8_t buttons = 0;   ///< `PointerEvent::Button` bits down after it.
                                 uint8_t modifiers = 0; ///< `KeyEvent::Modifier` bits down with it.
                 };
 
@@ -229,8 +238,8 @@ class WindowManager {
                 struct MenuItem {
                                 StringView
                                         label; ///< Its text (cut at `MaxMenuLabel` bytes); `&` marks its key (`Mnemonic`).
-                                StringView shortcut;  ///< Its key, shown at the right (cut at `MaxMenuShortcut`).
-                                uint8_t    flags = 0; ///< `MenuLayout::Flag`s: `Disabled`, `Separator`, `Checked`.
+                                StringView  shortcut;  ///< Its key, shown at the right (cut at `MaxMenuShortcut`).
+                                uint8_t     flags = 0; ///< `MenuLayout::Flag`s: `Disabled`, `Separator`, `Checked`.
                                 const Icon *icon = nullptr; ///< 16 × 16 at its left (null: none), kept while it shows.
                 };
 
@@ -311,11 +320,12 @@ class WindowManager {
                                 bool        focusable = true; ///< False: never focused. A desktop's or a panel's
                                                               ///< takes the keys when pressed or raised, never in
                                                               ///< Alt+Tab (`devplan/gui.md` §4r).
-                                bool        cascade = false;  ///< A normal window placed by the window manager
+                                bool cascade = false;         ///< A normal window placed by the window manager
                                                               ///< (`cascadeRect()`): `rect`'s size kept, its place not.
-                                bool      focusOnPress = true; ///< False: a press doesn't focus it (`raise()` does).
-                                Activated activated = nullptr; ///< May be null.
-                                ClosedAt  closedAt = nullptr;  ///< May be null; told instead of `closed`.
+                                bool       focusOnPress = true;  ///< False: a press doesn't focus it (`raise()` does).
+                                Activated  activated = nullptr;  ///< May be null.
+                                ClosedAt   closedAt = nullptr;   ///< May be null; told instead of `closed`.
+                                FullScreen fullScreen = nullptr; ///< May be null: Alt+Enter does nothing to it.
                 };
 
                 /** @brief A window, as `list()` reports it. */
@@ -625,6 +635,15 @@ class WindowManager {
                  */
                 Error setDecorations(uint8_t id, uint8_t decorations);
 
+                /**
+                 * @brief Marks window @p id full screen (@p on): its owner shows it on the display
+                 *        itself (`devplan/games.md` §10c), so the window manager gives it every
+                 *        pointer event, in the screen's coordinates, and asks it to leave
+                 *        (`FullScreen`) before an escape key. Off: back to normal.
+                 * @return `Ok`, or `NotFound` (no such window).
+                 */
+                Error setFullScreen(uint8_t id, bool on);
+
                 /** @brief Asks window @p id to redraw @p rect of its client area. */
                 Error invalidate(uint8_t id, const Rect &rect);
 
@@ -783,14 +802,15 @@ class WindowManager {
                                 bool        focusOnPress = true;
                                 Activated   activated = nullptr;
                                 ClosedAt    closedAt = nullptr;
+                                FullScreen  fullScreen = nullptr;
                 };
 
                 struct Client {
-                                Gone  gone = nullptr;
-                                void *arg = nullptr;
-                                bool  used = false;
-                                Watch watch = nullptr;
-                                void *watchArg = nullptr;
+                                Gone          gone = nullptr;
+                                void         *arg = nullptr;
+                                bool          used = false;
+                                Watch         watch = nullptr;
+                                void         *watchArg = nullptr;
                                 ServiceNotify servicesWatch = nullptr;
                                 void         *servicesWatchArg = nullptr;
                 };
@@ -833,18 +853,18 @@ class WindowManager {
                         Program  // a program's menu's (showMenu())
                 };
                 static constexpr size_t MenuItems = MaxDesktopItems; // the window menu has 8
-                struct Switcher; // Alt+Tab's list, while it shows
+                struct Switcher;                                     // Alt+Tab's list, while it shows
 
                 static constexpr size_t MaxPieces = 256;
                 static constexpr size_t UpdateWords = 8; // a bit for each window number
 
                 bool hasUpdates() const;
 
-                static void     entry(void *arg);
-                static void     keyEntry(void *arg, const KeyEvent &event);
-                static void     pointerEntry(void *arg, const PointerEvent &event);
-                static void     drawCursorPixels(void *arg, uint8_t *pixels, size_t stride);
-                static void     restorePixels(void *arg, uint8_t *pixels, size_t stride);
+                static void entry(void *arg);
+                static void keyEntry(void *arg, const KeyEvent &event);
+                static void pointerEntry(void *arg, const PointerEvent &event);
+                static void drawCursorPixels(void *arg, uint8_t *pixels, size_t stride);
+                static void restorePixels(void *arg, uint8_t *pixels, size_t stride);
 
         public:
                 /** @brief Bytes saved from under the pointer at most: its largest picture's area. */
@@ -852,7 +872,10 @@ class WindowManager {
 
         private:
                 void            deliverKeys();
-                bool            shortcut(const KeyEvent &event); // a key the window manager keeps
+                bool            shortcut(const KeyEvent &event);      // a key the window manager keeps
+                bool            fullScreenKey(const KeyEvent &event); // Alt+Enter, and escape keys while full screen
+                void            leaveFullScreen();                    // asks the full-screen window to leave
+                void            fullScreenPointer(const PointerEvent &event); // every event to it
                 void            switchOpen(int step);
                 void            switchTo(int item);
                 void            switchEnd(bool go);
@@ -928,86 +951,87 @@ class WindowManager {
                 Rect            placed(const Rect &rect) const;
                 void            count(const Painter &painter);
 
-                Mutex                 _lock;
-                Display              *_display = nullptr;
-                Surface              *_surface = nullptr;
-                WindowStack           _stack{0, 0};
-                List<Window>          _windows; // by number - 1, grown as numbers are used
-                WindowPalette         _palette;
-                uint8_t              *_under = nullptr;     // what the pointer covers (UnderBytes, Psram)
-                Rect                  _underRect;           // where; empty: nothing saved
-                uint8_t               _dragId = 0;
-                Rect                  _outline;
-                bool                  _outlineShown = false;
-                uint8_t               _bandId = 0;        // the window a rubber band is over; 0: none
-                Rect                  _band;              // where (screen coordinates)
-                bool                  _bandMoved = false; // to draw this round
+                Mutex         _lock;
+                Display      *_display = nullptr;
+                Surface      *_surface = nullptr;
+                WindowStack   _stack{0, 0};
+                List<Window>  _windows; // by number - 1, grown as numbers are used
+                WindowPalette _palette;
+                uint8_t      *_under = nullptr; // what the pointer covers (UnderBytes, Psram)
+                Rect          _underRect;       // where; empty: nothing saved
+                uint8_t       _dragId = 0;
+                Rect          _outline;
+                bool          _outlineShown = false;
+                uint8_t       _bandId = 0;        // the window a rubber band is over; 0: none
+                Rect          _band;              // where (screen coordinates)
+                bool          _bandMoved = false; // to draw this round
                 struct BandPiece {
                                 Rect     rect;       // a piece of its rings, widened to 4-pixel columns
                                 uint32_t offset = 0; // what it covered, in _bandUnder
                 };
-                List<BandPiece>       _bandPieces{MemSpace::Psram}; // drawn, to put back
-                List<uint8_t>         _bandUnder{MemSpace::Psram};  // what they covered
-                Painter::Tools        _tools;
-                GlyphRenderer         _renderer{GlyphRenderer::best()};
-                uint32_t              _updates[UpdateWords] = {}; // windows asking for an update, a bit by number
-                ComposePiece         *_pieces = nullptr;  // a round's plan
-                Rect                 *_scratch = nullptr; // a layer's pieces, client damage, and visible client
-                SpinLock              _inputLock;         // the two queues
-                KeyEvent              _keys[KeyQueue];
-                uint8_t               _keyTargets[KeyQueue] = {}; // the window a key is for; 0: the focus
-                List<Client>          _clients;                   // by connection - 1, grown as they are used
-                uint8_t               _keyHead = 0; // the next to deliver
-                uint8_t               _keyCount = 0;
-                PointerEvent          _pointers[PointerQueue];
-                uint8_t               _pointerHead = 0;
-                uint8_t               _pointerCount = 0;
-                uint16_t              _pointerX = 0; // the pointer's tip
-                uint16_t              _pointerY = 0;
-                uint8_t               _buttons = 0;         // down, as last applied
-                bool                  _cursorShown = false; // a mouse has moved it
-                bool                  _cursorMoved = false; // to draw this round
-                uint8_t               _grabId = 0;          // its title bar pressed: moved while held
-                uint16_t              _grabX = 0;           // the press, from the window's corner
-                uint16_t              _grabY = 0;
-                Pointer               _shape = Pointer::Arrow;
-                bool                  _pointerHidden = false; // by setPointerVisible()
-                bool                  _typingHidden = false;  // a key went to a window asking: until a move
-                uint8_t               _sizeId = 0;            // its resize handle pressed: resized while held
-                uint8_t               _sizeEdges = 0;         // the edges it holds
-                Rect                  _sizeStart;             // the window at the press
-                uint16_t              _sizeX = 0;             // the press
-                uint16_t              _sizeY = 0;
-                uint8_t               _pressId = 0; // its button pressed
-                WindowFrame::Part     _pressPart = WindowFrame::Part::Outside;
-                bool                  _pressShown = false; // drawn pressed: the pointer on it
-                uint8_t               _clickId = 0;        // the last title bar press, for a double click
-                uint64_t              _clickUs = 0;
-                uint8_t               _mouseId = 0;   // its client area pressed: has the mouse until all buttons are up
-                uint8_t               _hoverId = 0;   // the client area the pointer is over (told the mouse)
-                uint8_t               _swallowed = 0; // buttons whose press closed popups: their release goes nowhere
-                bool                  _listChanged = false; // for the watchers, at the round's end
-                Rect                  _workArea;
-                uint8_t               _menuId = 0;  // the window menu's popup; 0: closed
-                uint8_t               _menuFor = 0; // the window it is for (0: the desktop's)
-                size_t                _menuCount = 0;
-                char                  _desktopLabels[MaxDesktopItems][MaxDesktopLabel + 1] = {};
-                size_t                _desktopCount = 0;
-                DesktopChosen         _desktopChosen = nullptr;
-                void                 *_desktopArg = nullptr;
-                int                   _desktopPicked = -1;  // chosen: told after the round, unlocked
-                char                  _menuLabels[MenuItems][MaxMenuLabel + 1] = {}; // marks taken out
-                uint32_t              _menuKeys[MenuItems] = {};                     // their mnemonics
-                char                  _programShortcuts[MaxMenuItems][MaxMenuShortcut + 1] = {};
-                MenuChosen            _programChosen = nullptr; // the open program menu's
-                void                 *_programArg = nullptr;
-                int                   _programPicked = -1; // chosen: told after the round, unlocked
-                MenuChosen            _pickedFn = nullptr; // whom to tell it
-                void                 *_pickedArg = nullptr;
-                bool                  _canMinimize = false; // a client watches the window list
-                int                   _menuHighlight = -1;
-                MenuLayout            _menuLayout;
-                MenuLayout::Item      _menuItems[MenuItems];
+                List<BandPiece>   _bandPieces{MemSpace::Psram}; // drawn, to put back
+                List<uint8_t>     _bandUnder{MemSpace::Psram};  // what they covered
+                Painter::Tools    _tools;
+                GlyphRenderer     _renderer{GlyphRenderer::best()};
+                uint32_t          _updates[UpdateWords] = {}; // windows asking for an update, a bit by number
+                ComposePiece     *_pieces = nullptr;          // a round's plan
+                Rect             *_scratch = nullptr;         // a layer's pieces, client damage, and visible client
+                SpinLock          _inputLock;                 // the two queues
+                KeyEvent          _keys[KeyQueue];
+                uint8_t           _keyTargets[KeyQueue] = {}; // the window a key is for; 0: the focus
+                List<Client>      _clients;                   // by connection - 1, grown as they are used
+                uint8_t           _keyHead = 0;               // the next to deliver
+                uint8_t           _keyCount = 0;
+                PointerEvent      _pointers[PointerQueue];
+                uint8_t           _pointerHead = 0;
+                uint8_t           _pointerCount = 0;
+                uint16_t          _pointerX = 0; // the pointer's tip
+                uint16_t          _pointerY = 0;
+                uint8_t           _buttons = 0;         // down, as last applied
+                bool              _cursorShown = false; // a mouse has moved it
+                bool              _cursorMoved = false; // to draw this round
+                uint8_t           _grabId = 0;          // its title bar pressed: moved while held
+                uint16_t          _grabX = 0;           // the press, from the window's corner
+                uint16_t          _grabY = 0;
+                Pointer           _shape = Pointer::Arrow;
+                bool              _pointerHidden = false; // by setPointerVisible()
+                bool              _typingHidden = false;  // a key went to a window asking: until a move
+                uint8_t           _sizeId = 0;            // its resize handle pressed: resized while held
+                uint8_t           _sizeEdges = 0;         // the edges it holds
+                Rect              _sizeStart;             // the window at the press
+                uint16_t          _sizeX = 0;             // the press
+                uint16_t          _sizeY = 0;
+                uint8_t           _pressId = 0; // its button pressed
+                WindowFrame::Part _pressPart = WindowFrame::Part::Outside;
+                bool              _pressShown = false; // drawn pressed: the pointer on it
+                uint8_t           _clickId = 0;        // the last title bar press, for a double click
+                uint64_t          _clickUs = 0;
+                uint8_t           _mouseId = 0;      // its client area pressed: has the mouse until all buttons are up
+                uint8_t           _fullScreenId = 0; // shown full screen by its owner (setFullScreen())
+                uint8_t           _hoverId = 0;      // the client area the pointer is over (told the mouse)
+                uint8_t           _swallowed = 0;    // buttons whose press closed popups: their release goes nowhere
+                bool              _listChanged = false; // for the watchers, at the round's end
+                Rect              _workArea;
+                uint8_t           _menuId = 0;  // the window menu's popup; 0: closed
+                uint8_t           _menuFor = 0; // the window it is for (0: the desktop's)
+                size_t            _menuCount = 0;
+                char              _desktopLabels[MaxDesktopItems][MaxDesktopLabel + 1] = {};
+                size_t            _desktopCount = 0;
+                DesktopChosen     _desktopChosen = nullptr;
+                void             *_desktopArg = nullptr;
+                int               _desktopPicked = -1; // chosen: told after the round, unlocked
+                char              _menuLabels[MenuItems][MaxMenuLabel + 1] = {}; // marks taken out
+                uint32_t          _menuKeys[MenuItems] = {};                     // their mnemonics
+                char              _programShortcuts[MaxMenuItems][MaxMenuShortcut + 1] = {};
+                MenuChosen        _programChosen = nullptr; // the open program menu's
+                void             *_programArg = nullptr;
+                int               _programPicked = -1; // chosen: told after the round, unlocked
+                MenuChosen        _pickedFn = nullptr; // whom to tell it
+                void             *_pickedArg = nullptr;
+                bool              _canMinimize = false; // a client watches the window list
+                int               _menuHighlight = -1;
+                MenuLayout        _menuLayout;
+                MenuLayout::Item  _menuItems[MenuItems];
                 // The window menu's icons, the ROM's bmds theme's (devplan/rom.md §3i): Restore,
                 // Minimize, Maximize, Roll Up, Roll Down, Close; found at start(), invalid without it.
                 Icon                  _windowIcons[6];
@@ -1018,21 +1042,21 @@ class WindowManager {
                 uint8_t               _focusId = 0;        // the focusable window raised last (focusId())
                 KeyGrab               _grabs[MaxGrabs];
                 List<Service *>       _services{MemSpace::Psram}; // registerService()'s
-                uint8_t               _tapUsage = 0;      // a claimed modifier down (a tap if nothing else comes)
-                bool                  _tapClean = false;  // nothing else pressed while it was down
-                Snap                  _snap = Snap::None; // the drag's outline is a snap's
-                uint8_t               _unsnapId = 0;      // a snapped window grabbed: its size back when it moves
-                std::atomic<uint32_t> _requests{0};       // changes made
+                uint8_t               _tapUsage = 0;            // a claimed modifier down (a tap if nothing else comes)
+                bool                  _tapClean = false;        // nothing else pressed while it was down
+                Snap                  _snap = Snap::None;       // the drag's outline is a snap's
+                uint8_t               _unsnapId = 0;            // a snapped window grabbed: its size back when it moves
+                std::atomic<uint32_t> _requests{0};             // changes made
                 std::atomic<uint32_t> _asked[UpdateWords] = {}; // update() calls, taken by the next round
-                std::atomic<uint32_t> _drawn{0};          // changes drawn
-                uint32_t              _presented = 0;     // the last present's number
+                std::atomic<uint32_t> _drawn{0};                // changes drawn
+                uint32_t              _presented = 0;           // the last present's number
                 Stats                 _stats;
                 ::bmds::Stats::Group  _counters; // wmN (devplan/sysmon.md §6)
 
-                static void           readCounters(void *arg, Span<int64_t> values);
-                Semaphore             _wake{1, 0};
-                WaitListOf<4>         _idle; // woken after each round
-                Task                  _task;
+                static void   readCounters(void *arg, Span<int64_t> values);
+                Semaphore     _wake{1, 0};
+                WaitListOf<4> _idle; // woken after each round
+                Task          _task;
 };
 
 BMDS_NAMESPACE_END

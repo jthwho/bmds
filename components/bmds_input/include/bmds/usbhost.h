@@ -90,6 +90,8 @@ class UsbHost {
                                 uint32_t hidReports = 0; ///< HID reports received.
                                 uint32_t keyboards = 0;  ///< Keyboards attached now.
                                 uint32_t mice = 0;       ///< Mice attached now.
+                                uint32_t rearmFailures =
+                                        0; ///< HID transfers that couldn't be asked for again (retried).
                 };
 
                 /**
@@ -159,9 +161,11 @@ class UsbHost {
                                 Kind            kind = Kind::None;
                                 uint8_t         address = 0;
                                 uint8_t         instance = 0;
-                                uint8_t         leds = 0; // the LED report being sent (it must stay put)
+                                uint8_t         leds = 0;               // the LED report being sent (it must stay put)
                                 bool            reportProtocol = false; // a mouse's reports decoded by layout
                                 uint32_t        attachedMs = 0;         // uptime when it was attached
+                                bool            armed = false;          // a report transfer asked for
+                                uint32_t        retryMs = 0;            // when to ask again (not armed)
                                 KeyboardDecoder keys;
                                 MouseLayout     layout; // a mouse's, from its report descriptor
                 };
@@ -172,6 +176,8 @@ class UsbHost {
                 void        fill(Device &d, uint8_t address);
                 Hid        *hid(uint8_t address, uint8_t instance);
                 uint32_t    repeatKeys(); // ms until the next repeat is due
+                uint32_t    service();    // repeats and re-arms: ms until the next is due
+                void        arm(Hid &h);  // asks for the next report
                 void        setLocks(uint8_t locks);
 
                 Mutex   _lock;

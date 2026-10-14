@@ -137,6 +137,28 @@ namespace Pixels {
          */
         void swap24(const uint8_t *in, uint8_t *out, size_t count, Simd::Kernel kernel = Simd::best());
 
+        /**
+         * @brief Writes each of @p count 16-bit pixels @p in @p times times over at @p out
+         *        (`times` × @p count pixels; 1 to 8): a row scaled across by a whole factor
+         *        (`devplan/games.md` §10). PIE for 2 (8 pixels a step, both 16-byte aligned).
+         * @hotpath
+         */
+        void repeat16(const uint16_t *in, size_t count, uint16_t *out, unsigned times,
+                      Simd::Kernel kernel = Simd::best());
+
+        /**
+         * @brief As `repeat16()`, for 3-byte pixels (B, G, R).
+         * @hotpath
+         */
+        void repeat24(const uint8_t *in, size_t count, uint8_t *out, unsigned times);
+
+        /**
+         * @brief Writes each of @p count 8-bit indices @p in as its @p palette entry (0xRRGGBB)
+         *        in B, G, R, @p times times over at @p out (1 to 8).
+         * @hotpath
+         */
+        void expandIndexed(const uint8_t *in, size_t count, const uint32_t *palette, uint8_t *out, unsigned times);
+
         /** @brief Returns @p argb's luma (BT.601), 0-255. */
         constexpr uint8_t luma(uint32_t argb) {
                 return uint8_t((77u * (argb >> 16 & 0xff) + 150u * (argb >> 8 & 0xff) + 29u * (argb & 0xff) + 128u) >>

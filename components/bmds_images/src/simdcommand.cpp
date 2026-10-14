@@ -476,6 +476,46 @@ namespace {
                 return;
         }
 
+        // repeat16 at 2 (the PIE case: aligned, whole steps and a scalar tail).
+        int testRepeat16(CommandContext &ctx, Noise &noise) {
+                constexpr size_t Max = 1024;
+                Block            in(MemSpace::Internal, Max * 2), a(MemSpace::Internal, Max * 4 + 32),
+                        b(MemSpace::Internal, Max * 4 + 32);
+                if (in.p == nullptr || a.p == nullptr || b.p == nullptr) return Shell::ExitFailure;
+                for (unsigned c = 0; c < 2000; ++c) {
+                        const size_t n = noise.below(Max);
+                        noise.fill(in.p, Max * 2);
+                        std::memset(a.p, 0x5a, Max * 4 + 32);
+                        std::memset(b.p, 0x5a, Max * 4 + 32);
+                        const auto *src = reinterpret_cast<const uint16_t *>(in.p);
+                        Pixels::repeat16(src, n, reinterpret_cast<uint16_t *>(a.p), 2, Simd::Kernel::Scalar);
+                        Pixels::repeat16(src, n, reinterpret_cast<uint16_t *>(b.p), 2, Simd::Kernel::Pie);
+                        if (std::memcmp(a.p, b.p, Max * 4 + 32) != 0) {
+                                ctx.printf("repeat16: case %u (%u pixels) differs\n", c, unsigned(n));
+                                return Shell::ExitFailure;
+                        }
+                }
+                ctx.printf("repeat16: 2000 cases, the same\n");
+                return Shell::ExitSuccess;
+        }
+
+        void benchRepeat16(CommandContext &ctx) {
+                Block in(MemSpace::Internal, 640 * 2), out(MemSpace::Internal, 1280 * 2);
+                if (in.p == nullptr || out.p == nullptr) return;
+                uint32_t us[2];
+                for (int k = 0; k < 2; ++k) {
+                        const uint64_t t = System::uptimeUs();
+                        for (int i = 0; i < 360; ++i)
+                                Pixels::repeat16(reinterpret_cast<const uint16_t *>(in.p), 640,
+                                                 reinterpret_cast<uint16_t *>(out.p), 2,
+                                                 k == 0 ? Simd::Kernel::Scalar : Simd::Kernel::Pie);
+                        us[k] = uint32_t(System::uptimeUs() - t);
+                }
+                ctx.printf("repeat16 360 rows of 640 at 2: scalar %u us, pie %u us\n", unsigned(us[0]),
+                           unsigned(us[1]));
+                return;
+        }
+
         // The kernels: a name, a test (random cases, both ways compared) and a bench.
         struct Kernel {
                         const char *name;
@@ -491,6 +531,7 @@ namespace {
                 {"softjpeg", testSoftJpeg, benchSoftJpeg},
                 {"orient", testOrient, benchOrient},
                 {"blend", testBlend, benchBlend},
+                {"repeat16", testRepeat16, benchRepeat16},
         };
 
         int runSimd(CommandContext &ctx) {

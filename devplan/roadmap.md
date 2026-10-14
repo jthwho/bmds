@@ -83,6 +83,7 @@ Plans: [`storage.md`](storage.md), [`time.md`](time.md). Complete; verified on h
   - [ ] (b) Shared pages through the MMU window.
   - [ ] (c) SDK layout changes, each measured.
 - [ ] Example programs: `hello`, `cat`, a benchmark.
+- [ ] Application folders (`apps.md`, planned 2026-10-14): one folder per application (`/sd0/p0/apps/NAME.app`: the program, its data, `app.desktop`), found by looking (no registry), each one a command in a virtual `/apps` on the `PATH`, `BMDS_APP_DIR`, its data in `$HOME/.local/share/ID`; the launcher, the file browser and Open With from them.
 - [ ] Partition editing (`storage.md` §14): BusyBox `fdisk` (MBR) on the card, not built in; raw block device nodes as streams, writes kept out of mounted partitions, the table re-read on close; extended partitions read.
 - [x] A time zone database (`time.md` §9): zone names (`TZ=Europe/Berlin`, `clock zone Europe/Berlin`) from one bundle on the card, shown to programs as `/share/zoneinfo` (musl's own path: history included); looked up at boot, when a filesystem mounts and when `TZ` changes. The IANA sources in `thirdparty/tzdata` (2026e), `tools/update-tzdata`, the `tzdata` package; `clock tzdata`.
 - [x] `/dev/zero`, `/dev/urandom` and `/dev/random` (`storage.md` §4).
@@ -175,8 +176,10 @@ Plan: [`input.md`](input.md).
 
 ## Phase 6 — Graphics
 
-- [ ] Graphics modes for programs (resolution / pixel format), direct framebuffer access.
-- [ ] Basic 2D API (fill, blit, line, text), PPA / 2D-DMA acceleration where it pays off.
+- [ ] Surfaces for programs (`games.md` §3, planned 2026-10-14): a swap chain of the program's own buffers (L8 with a palette, RGB565, RGB888) presented in a window or full screen through one API (a per-application setting the application suggests, Alt+Enter toggles), scaled by the PPA, a zero-copy flip at the display's size, raw key and pointer events, the escape keys. Done: the PPA measured (its scaler interpolates and is slow: not the games'), the scan's line mode (rows repeated), the calls (slots 117-121) and `ProgramSurface`: windows at whole multiples and full screen with Alt+Enter, lazy copy-forward, `surfdemo` (`games.md` §12). Next: damage, pointer modes, the per-application setting.
+- [ ] The SDK's game library (`games.md` §4): drawing in PIE (fills, blits, sprites, tiles, text), PNG sheets, a sound-effect mixer, music through the synth, a frame loop.
+- [ ] Controls (`controls.md`, planned 2026-10-14): gamepads (HID through `HidLayout`, XInput, a standard pad by position, numbered, `pad`), actions declared by every application with a keyboard binding required and pad bindings where they apply, matched by the system, changed in one standard editor (the Controls window, `controls`, and the game library's in-game one).
+- [ ] Games (`games.md` §6): Blocks (Tetris's rules), Doom (doomgeneric as a `dist/` recipe, Freedoom, music through the synth), Solitaire (Klondike, in a window).
 - [x] Mouse cursor (`input.md` §9, step 3).
 
 ## Phase 7 — Sound and Network

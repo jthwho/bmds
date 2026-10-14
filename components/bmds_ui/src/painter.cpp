@@ -212,10 +212,36 @@ Error Painter::text(int x, int y, StringView utf8, const Font &font, uint32_t fg
         });
 }
 
+Error Painter::cover(const Rect &rect) {
+        const int32_t sx = int32_t(rect.x) + _originX, sy = int32_t(rect.y) + _originY;
+        const Rect    on{uint16_t(sx < 0 ? 0 : sx), uint16_t(sy < 0 ? 0 : sy), rect.width, rect.height};
+        Rect          pieces[32];
+        size_t        n = 0;
+        for (const Rect &piece : _clip) {
+                const Rect cut = on.intersected(piece);
+                if (cut.isEmpty()) continue;
+                if (n == 32) break; // the rest copied forward as they are drawn
+                pieces[n++] = cut;
+        }
+        if (n > 0) note(_surface.willDraw(Span<const Rect>(pieces, n), _timeoutMs));
+        return _error;
+}
+
 Error Painter::pixels(int x, int y, const uint8_t *bgr, size_t stride, uint16_t width, uint16_t height) {
-        const int32_t sx = int32_t(x) + _originX, sy = int32_t(y) + _originY;
-        if ((uint32_t(sx) & AlignMask) != 0 || (width & AlignMask) != 0 || bgr == nullptr ||
-            stride % Surface::BytesPerPixel != 0 || stride < size_t(width) * Surface::BytesPerPixel) {
+        return copyPixels(x, y, bgr, stride, width, height, false);
+}
+
+Error Painter::pixels565(int x, int y, const uint8_t *rgb565, size_t stride, uint16_t width, uint16_t height) {
+        return copyPixels(x, y, rgb565, stride, width, height, true);
+}
+
+Error Painter::copyPixels(int x, int y, const uint8_t *data, size_t stride, uint16_t width, uint16_t height,
+                          bool rgb565) {
+        const Surface::Source source = rgb565 ? Surface::Source::Rgb565 : Surface::Source::Bgr24;
+        const size_t          pixel = rgb565 ? 2 : Surface::BytesPerPixel;
+        const int32_t         sx = int32_t(x) + _originX, sy = int32_t(y) + _originY;
+        if ((uint32_t(sx) & AlignMask) != 0 || (width & AlignMask) != 0 || data == nullptr || stride % pixel != 0 ||
+            stride < size_t(width) * pixel) {
                 note(Error::Invalid);
                 return _error;
         }
@@ -229,9 +255,9 @@ Error Painter::pixels(int x, int y, const uint8_t *bgr, size_t stride, uint16_t 
         bool       shown = false;
         for (const Rect &piece : _clip) shown |= piece.intersects(to);
         if (!shown) return _error;
-        const uint8_t *from = bgr + size_t(top - sy) * stride + size_t(left - sx) * Surface::BytesPerPixel;
+        const uint8_t *from = data + size_t(top - sy) * stride + size_t(left - sx) * pixel;
         ++_calls;
-        Error err = _surface.startBlit(to, from, stride, _clip, _timeoutMs);
+        Error err = _surface.startBlit(to, from, stride, _clip, source, _timeoutMs);
         if (err.isOk()) err = _surface.wait(_timeoutMs); // the caller's picture is free to change after
         _tools.busyHalf = -1;                            // the strip's last copy is done too
         note(err);

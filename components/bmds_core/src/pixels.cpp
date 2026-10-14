@@ -8,6 +8,7 @@
  * Rows of pixels from and to 0xAARRGGBB (devplan/images.md §3a).
  */
 
+#include <cstdint>
 #include <bmds/image.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -217,6 +218,64 @@ void Pixels::toArgb(const uint8_t *in, size_t count, uint32_t *out, PixelFormat 
                 case PixelFormat::Gray8:
                         for (size_t i = 0; i < count; ++i) out[i] = 0xff000000u | uint32_t(in[i]) * 0x010101u;
                         break;
+        }
+        return;
+}
+
+void Pixels::repeat16(const uint16_t *in, size_t count, uint16_t *out, unsigned times, Simd::Kernel kernel) {
+        size_t done = 0;
+#if BMDS_HAS_PIE
+        if (Simd::usable(kernel) == Simd::Kernel::Pie && times == 2 && count >= 8 &&
+            (reinterpret_cast<uintptr_t>(in) & 15) == 0 && (reinterpret_cast<uintptr_t>(out) & 15) == 0) {
+                // 8 pixels a step: loaded twice and zipped by 16 bits, each pixel beside itself.
+                const size_t    steps = count / 8;
+                const uint16_t *a = in;
+                const uint16_t *b = in;
+                uint16_t       *o = out;
+                for (size_t i = 0; i < steps; ++i)
+                        asm volatile("esp.vld.128.ip q0, %[a], 16\n"
+                                     "esp.vld.128.ip q1, %[b], 16\n"
+                                     "esp.vzip.16 q0, q1\n"
+                                     "esp.vst.128.ip q0, %[o], 16\n"
+                                     "esp.vst.128.ip q1, %[o], 16\n"
+                                     : [a] "+cr"(a), [b] "+cr"(b), [o] "+cr"(o)
+                                     :
+                                     : "memory");
+                done = steps * 8;
+        }
+#endif
+        (void)kernel;
+        uint16_t *o = out + done * times;
+        for (size_t i = done; i < count; ++i) {
+                const uint16_t v = in[i];
+                for (unsigned t = 0; t < times; ++t) *o++ = v;
+        }
+        return;
+}
+
+void Pixels::repeat24(const uint8_t *in, size_t count, uint8_t *out, unsigned times) {
+        for (size_t i = 0; i < count; ++i) {
+                const uint8_t b = in[3 * i], g = in[3 * i + 1], r = in[3 * i + 2];
+                for (unsigned t = 0; t < times; ++t) {
+                        out[0] = b;
+                        out[1] = g;
+                        out[2] = r;
+                        out += 3;
+                }
+        }
+        return;
+}
+
+void Pixels::expandIndexed(const uint8_t *in, size_t count, const uint32_t *palette, uint8_t *out, unsigned times) {
+        for (size_t i = 0; i < count; ++i) {
+                const uint32_t c = palette[in[i]];
+                const uint8_t  b = uint8_t(c), g = uint8_t(c >> 8), r = uint8_t(c >> 16);
+                for (unsigned t = 0; t < times; ++t) {
+                        out[0] = b;
+                        out[1] = g;
+                        out[2] = r;
+                        out += 3;
+                }
         }
         return;
 }

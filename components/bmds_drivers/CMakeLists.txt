@@ -18,11 +18,13 @@ if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_DRIVERS_PORTABLE_SRCS}
                                     src/display.cpp
                                     src/displaycommand.cpp
+                                    src/displayppa.cpp
                                     src/i2cbus.cpp
                                     src/jpegcodec.cpp
                                     src/lt8912b.cpp
                                     src/memtestcommand.cpp
                                     src/blitchain.cpp
+                                    src/ppa.cpp
                                     src/scanout.cpp
                                     src/surface.cpp
                                INCLUDE_DIRS include

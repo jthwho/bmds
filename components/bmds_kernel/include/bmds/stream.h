@@ -27,6 +27,7 @@ class Pty;
 class Socket;
 class SpeechFile;
 class SynthFile;
+class ProgramSurface;
 class WaitList;
 namespace Notifications {
         class Listener;
@@ -121,10 +122,10 @@ class Stream {
 
                 /** @brief What a stream is ready for (`readiness()`). */
                 enum Ready : uint8_t {
-                        Readable = 1u << 0, ///< A read wouldn't wait (it may return data or the end).
-                        Writable = 1u << 1, ///< A write wouldn't wait (for at least one byte).
-                        HungUp = 1u << 2,   ///< The other end is gone: reads end (a pipe's writer closed).
-                        Broken = 1u << 3,   ///< Nobody will read: writes fail (a pipe's reader closed).
+                        Readable = 1u << 0,   ///< A read wouldn't wait (it may return data or the end).
+                        Writable = 1u << 1,   ///< A write wouldn't wait (for at least one byte).
+                        HungUp = 1u << 2,     ///< The other end is gone: reads end (a pipe's writer closed).
+                        Broken = 1u << 3,     ///< Nobody will read: writes fail (a pipe's reader closed).
                         ErrorQueue = 1u << 4, ///< Something waits in an error queue (a socket's send stamps).
                         Urgent = 1u << 5,     ///< Urgent data (a socket's error queue, if asked: `POLLPRI`).
                 };
@@ -189,6 +190,12 @@ class Stream {
 
                 /** @brief Returns the pseudo-terminal this is the emulator end of, or null. */
                 virtual Pty *pty() { return nullptr; }
+
+                /**
+                 * @brief Returns the program surface behind this stream (`surface_open`:
+                 *        `devplan/games.md` §11), or null (the default).
+                 */
+                virtual ProgramSurface *programSurface() { return nullptr; }
 
                 /** @brief Returns this as a PTP clock (`/dev/ptp0`), or null. */
                 virtual PtpClock *ptpClock() { return nullptr; }

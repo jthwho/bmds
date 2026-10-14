@@ -115,6 +115,34 @@ until silicon v3; then test again.
   callback and a timeout.
 - **2D-DMA:** 3 TX and 2 RX channels on this revision; TX 0-2 convert colours
   (`devplan/display.md`).
+- **The PPA's scaler (SRM) interpolates, and is slow** (`devplan/games.md` §10, measured
+  2026-10-14 with `display ppa`, the scan running): a 1-pixel checkerboard scaled 2× comes out
+  gray (bilinear: its input macro blocks are 18×18 for 16×16, a pixel around), and no register
+  selects nearest neighbour, so pixel art blurs at any factor. ~30-34 Mpixel/s written when
+  scaling up, 14.8 at 1× (a 1280×720 RGB888 copy: 62 ms). GRAY8 is chip revision 3 only. Fine
+  for photos and video; not for a game's frame.
+- **The blender's CLUT** (L8 through a 256-entry palette to RGB888; IDF leaves L8 out) is exact
+  and ~39 Mpixel/s: 1.65 ms for 320×200. Its **bypass mode with only the background channel
+  never completes**, and a 2D-DMA job that never completes stays in the pool: every later job
+  times out until a restart. Keep the foreground channel (an invisible A8 plane).
+- **What PSRAM takes, with the 720p scan reading 166 MB/s:** the 2D-DMA writes ~150 MB/s
+  (RGB565 widened to RGB888: 50 Mpixel/s, a 1280×720 frame in 18.3 ms, over a 60 Hz frame's
+  16.7 ms). The CPU reads it at only ~70-80 MB/s through the cache (doubling 640×360 RGB565
+  with PIE: 1 ms with the source cached, 6.6 ms from PSRAM). Design for fewer bytes: rows
+  repeated by the scan's descriptors rather than written twice, damage rather than whole frames,
+  sources brought into internal RAM by DMA rather than read by the CPU.
+- **The DW-GDMA clears each descriptor's valid bit when it finishes the block**, and has no
+  setting that stops it: a circular list has to be made valid again as it runs (the scanout does
+  it from its block interrupts). `dw_gdma_ll_lli_set_block_markers(lli, en_intr, is_last,
+  is_valid)` takes the interrupt first: passing the flags in another order marks descriptors
+  invalid (it cost a test run of stalls, 2026-10-14). Its descriptors are written through
+  their uncached addresses, ~240 cycles a store as measured: re-validating a 720-line list
+  costs ~175,000 cycles a frame even as one store a descriptor.
+- **Internal DMA RAM fragments: big blocks fail long before the total runs out.** With the
+  desktop, a terminal and a program's surface open, a 46 KB block (720 DW-GDMA descriptors) wasn't
+  to be had though more than that was free; IDF's `dw_gdma_new_link_list()` asks for one block.
+  The scanout builds its list from blocks of 64 descriptors (4 KB), linked, and makes the new list
+  before the link comes down, so a shortage changes nothing on the screen (2026-10-14).
 
 ## 4a. The Ethernet MAC (`devplan/network.md`)
 

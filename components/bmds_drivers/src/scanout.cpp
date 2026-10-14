@@ -13,6 +13,7 @@
 
 #include <cstring>
 #include <new>
+#include <esp_cache.h>
 #include <esp_clk_tree.h>
 #include <esp_cpu.h>
 #include <esp_intr_alloc.h>
@@ -25,6 +26,7 @@
 #include <esp_private/periph_ctrl.h>
 #include <freertos/FreeRTOS.h>
 #include <hal/axi_icm_ll.h>
+#include <hal/cache_ll.h>
 #include <hal/dw_gdma_ll.h>
 #include <hal/mipi_dsi_hal.h>
 #include <hal/mipi_dsi_ll.h>
@@ -45,6 +47,10 @@ namespace {
         // further interrupt to act on.
         constexpr int64_t StuckUs = 50'000;
         constexpr int64_t ResyncGapUs = 50'000; // at most one resync for underruns this often
+        // A surface switched to (show()) that stalls the stream this often in its first second is
+        // given up for the one before.
+        constexpr uint32_t FallbackStalls = 3;
+        constexpr int64_t  FallbackProbationUs = 1'000'000;
         // The 2D-DMA's write regulator (devplan/display.md §5c, measured): 6 since
         // 2026-10-05, a full-screen fill 16 ms (5 gave 8 ms, and underran the scan
         // when a shell started meanwhile).
@@ -80,37 +86,145 @@ namespace {
 
 } // namespace
 
+// The DMA's circular list of descriptors, in blocks of `ChunkItems` (internal DMA RAM, 64 bytes
+// each): 720 lines' 46 KB needn't be one free block. Written through their uncached addresses,
+// linked through their cached ones (the DMA's view), as IDF's own list is.
+struct Scanout::ItemList {
+                static constexpr uint32_t ChunkItems = 64;
+                static constexpr uint32_t MaxChunks = (1080 + ChunkItems - 1) / ChunkItems; // 1080 lines at most
+
+                dw_gdma_link_list_item_t *chunk[MaxChunks] = {}; // cached addresses
+                uint32_t                  base[MaxChunks] = {};  // the same, as the DMA reports them
+                uint32_t                  chunks = 0;
+                uint32_t                  count = 0;
+
+                BMDS_ISR_ATTR dw_gdma_link_list_item_t *item(uint32_t k) const {
+                        const auto c = reinterpret_cast<uint32_t>(chunk[k / ChunkItems]);
+                        return reinterpret_cast<dw_gdma_link_list_item_t *>(CACHE_LL_L2MEM_NON_CACHE_ADDR(c)) +
+                               k % ChunkItems;
+                }
+
+                // The descriptor at @p address (the DMA's, top bits masked), or `count`.
+                BMDS_ISR_ATTR uint32_t indexOf(uint32_t address) const {
+                        for (uint32_t c = 0; c < chunks; ++c) {
+                                const uint32_t n = c + 1 < chunks ? ChunkItems : count - c * ChunkItems;
+                                if (address >= base[c] && address < base[c] + n * sizeof(dw_gdma_link_list_item_t))
+                                        return c * ChunkItems + (address - base[c]) / sizeof(dw_gdma_link_list_item_t);
+                        }
+                        return count;
+                }
+
+                Error allocate(uint32_t items) {
+                        if (items == 0 || items > MaxChunks * ChunkItems) return Error::Invalid;
+                        count = items;
+                        chunks = (items + ChunkItems - 1) / ChunkItems;
+                        for (uint32_t c = 0; c < chunks; ++c) {
+                                const uint32_t n = c + 1 < chunks ? ChunkItems : items - c * ChunkItems;
+                                const size_t   bytes = n * sizeof(dw_gdma_link_list_item_t);
+                                chunk[c] = static_cast<dw_gdma_link_list_item_t *>(Memory::allocAligned(
+                                        MemSpace::InternalDma, bytes, DW_GDMA_LL_LINK_LIST_ALIGNMENT));
+                                if (chunk[c] == nullptr) {
+                                        release();
+                                        return Error::NoMem;
+                                }
+                                std::memset(chunk[c], 0, bytes);
+                                // Written back and dropped from the cache: written uncached from here on.
+                                (void)esp_cache_msync(chunk[c], bytes,
+                                                      ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE |
+                                                              ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+                                base[c] = reinterpret_cast<uint32_t>(chunk[c]) & 0x0fffffffu;
+                        }
+                        for (uint32_t k = 0; k < items; ++k) {
+                                const uint32_t next = (k + 1) % items;
+                                dw_gdma_ll_lli_set_next_item_addr(
+                                        item(k),
+                                        reinterpret_cast<uint32_t>(chunk[next / ChunkItems] + next % ChunkItems));
+                                dw_gdma_ll_lli_set_link_list_master_port(item(k), DW_GDMA_LL_MASTER_PORT_MEMORY);
+                        }
+                        return Error::Ok;
+                }
+
+                void release() {
+                        for (auto &c : chunk) {
+                                Memory::free(c);
+                                c = nullptr;
+                        }
+                        chunks = 0;
+                        count = 0;
+                        return;
+                }
+};
+
 struct Scanout::Hardware {
-                mipi_dsi_hal_context_t     hal = {};
-                esp_ldo_channel_handle_t   ldo = nullptr;
-                dw_gdma_channel_handle_t   dma = nullptr;
-                dw_gdma_link_list_handle_t list = nullptr;
-                dw_gdma_link_list_item_t  *items[Scanout::MaxBlocks] = {}; // the descriptors (uncached addresses)
-                intr_handle_t              bridgeIntr = nullptr;
-                bool                       busClock = false;
-                bool                       dpiClock = false;
-                uint32_t                   pixelHz = 0; // the pixel clock as set
-                uint32_t                   laneMbps = 0;
-                uint8_t                    channel = 0;    // the DMA channel's number
-                uint32_t                   itemBase = 0;   // the first descriptor's address, as the DMA sees it
-                uint32_t                   itemStride = 0; // bytes from one descriptor to the next
+                mipi_dsi_hal_context_t   hal = {};
+                esp_ldo_channel_handle_t ldo = nullptr;
+                dw_gdma_channel_handle_t dma = nullptr;
+                ItemList                 list; // the descriptors
+                intr_handle_t            bridgeIntr = nullptr;
+                bool                     busClock = false;
+                bool                     dpiClock = false;
+                uint32_t                 pixelHz = 0; // the pixel clock as set
+                uint32_t                 laneMbps = 0;
+                uint8_t                  channel = 0; // the DMA channel's number
+                // A descriptor's control word's upper half, valid, with and without its interrupt:
+                // the same for every descriptor, so making one valid again is a single store into
+                // uncached memory, not three read-modify-writes of its bit fields.
+                uint32_t ctrlInterrupt = 0;
+                uint32_t ctrlQuiet = 0;
 };
 
 // The interrupts: a block sent, the DMA at an invalid descriptor, the DSI
 // bridge running dry.
 struct ScanoutIsr {
-                // Descriptors [from, to) read @p buffer's blocks.
+                BMDS_ISR_ATTR static dw_gdma_link_list_item_t *item(const Scanout &s, uint32_t k) {
+                        return s._hw->list.item(k);
+                }
+
+                // Where descriptor @p k reads in a buffer: its block, or in line mode the row its line
+                // falls on.
+                BMDS_ISR_ATTR static uint32_t offset(const Scanout &s, uint32_t k) {
+                        return s._lineMode ? uint32_t(k * s._rows / s._items * s._stride) : uint32_t(k * s._blockBytes);
+                }
+
+                // Whether descriptor @p k interrupts: every one in block mode; in line mode one in
+                // `_irqEvery`, and the frame's last two (a swap's two steps, a frame's start).
+                BMDS_ISR_ATTR static bool interrupts(const Scanout &s, uint32_t k) {
+                        return !s._lineMode || (k + 1) % s._irqEvery == 0 || k + 2 >= s._items;
+                }
+
+                BMDS_ISR_ATTR static void validate(const Scanout &s, uint32_t k) {
+                        item(s, k)->ctrl_hi.val = interrupts(s, k) ? s._hw->ctrlInterrupt : s._hw->ctrlQuiet;
+                        return;
+                }
+
+                // Descriptors [from, to) read @p buffer. In line mode the row steps on without a
+                // division a descriptor (row = k × rows / items, carried as a remainder).
                 BMDS_ISR_ATTR static void pointAt(Scanout &s, const uint8_t *buffer, uint32_t from, uint32_t to) {
-                        for (uint32_t k = from; k < to; ++k)
-                                dw_gdma_ll_lli_set_src_addr(s._hw->items[k],
-                                                            reinterpret_cast<uint32_t>(buffer + k * s._blockBytes));
+                        if (from >= to) return;
+                        if (!s._lineMode) {
+                                for (uint32_t k = from; k < to; ++k)
+                                        dw_gdma_ll_lli_set_src_addr(
+                                                item(s, k), reinterpret_cast<uint32_t>(buffer + k * s._blockBytes));
+                                return;
+                        }
+                        uint32_t       row = from * s._rows / s._items;
+                        uint32_t       rest = from * s._rows % s._items;
+                        const uint8_t *at = buffer + row * s._stride;
+                        for (uint32_t k = from; k < to; ++k) {
+                                dw_gdma_ll_lli_set_src_addr(item(s, k), reinterpret_cast<uint32_t>(at));
+                                rest += s._rows;
+                                while (rest >= s._items) {
+                                        rest -= s._items;
+                                        at += s._stride;
+                                }
+                        }
                         return;
                 }
 
                 BMDS_ISR_ATTR static bool blockSent(dw_gdma_channel_handle_t, const dw_gdma_trans_done_event_data_t *,
                                                     void *arg) {
-                        const uint32_t     started = esp_cpu_get_cycle_count();
-                        auto              &s = *static_cast<Scanout *>(arg);
+                        const uint32_t started = esp_cpu_get_cycle_count();
+                        auto          &s = *static_cast<Scanout *>(arg);
                         // While the flash is written this runs with the cache off (an IRAM-safe
                         // interrupt): only internal RAM may be touched, so the surface's waiters
                         // are woken at the next interrupt with the cache on.
@@ -122,21 +236,28 @@ struct ScanoutIsr {
                         Scanout::Hardware &hw = *s._hw;
                         // Where the DMA is: a late interrupt can stand for several blocks
                         // (IDF's handler reads the status once).
-                        const uint32_t at = ((static_cast<uint32_t>(dw_gdma_ll_channel_get_current_link_list_item_addr(
-                                                      &DW_GDMA, hw.channel)) &
-                                              0x0fffffffu) -
-                                             hw.itemBase) /
-                                            hw.itemStride;
-                        const uint32_t blocks = s._blocks;
+                        const uint32_t at = hw.list.indexOf(
+                                static_cast<uint32_t>(
+                                        dw_gdma_ll_channel_get_current_link_list_item_addr(&DW_GDMA, hw.channel)) &
+                                0x0fffffffu);
+                        const uint32_t blocks = s._items;
                         if (at >= blocks) return false;
                         const bool wrapped = s._primed && at < s._lastItem;
                         s._sent.fetch_add(s._primed ? (at + blocks - s._lastItem) % blocks : at,
                                           std::memory_order_relaxed);
-                        // Every descriptor but the one under way valid again (a finished
-                        // one's write-back, clearing it, can land after its interrupt:
-                        // the next interrupt mends it, a frame before it is needed).
-                        for (uint32_t k = 0; k < blocks; ++k)
-                                if (k != at) dw_gdma_ll_lli_set_block_markers(hw.items[k], true, false, true);
+                        // The descriptors finished since the last interrupt valid again, from the
+                        // one before it (a finished one's write-back, clearing it, can land after
+                        // its interrupt: the next interrupt mends it, a frame before it is needed);
+                        // all but the one under way the first time, or after a long gap.
+                        const uint32_t since = (at + blocks - s._lastItem) % blocks;
+                        if (!s._primed || since + 2 >= blocks) {
+                                for (uint32_t k = 0; k < blocks; ++k)
+                                        if (k != at) validate(s, k);
+                        } else {
+                                for (uint32_t k = (s._lastItem + blocks - 1) % blocks; k != at;
+                                     k = k + 1 == blocks ? 0 : k + 1)
+                                        validate(s, k);
+                        }
                         Surface &surface = *s._surface;
                         if (s._swapPhase == 1 && at != blocks - 1) {
                                 // The new frame has begun from the new buffer: its last block too.
@@ -192,17 +313,10 @@ struct ScanoutIsr {
 Error Scanout::start(const Config &config, Surface &surface) {
         if (_running) return Error::InvalidState;
         const VideoTiming &t = config.timing;
-        if (!surface.isStarted() || surface.width() != t.hActive || surface.height() != t.vActive || config.lanes < 1 ||
-            config.lanes > MIPI_DSI_LL_MAX_DATA_LANES || t.pixelKhz < 1000)
-                return Error::Invalid;
-        // The frame in as many blocks (up to MaxBlocks) as divide its lines.
-        uint32_t blocks = MaxBlocks;
-        while (t.vActive % blocks != 0) --blocks;
-        if (blocks < 2) return Error::Invalid;
-        _blockBytes = surface.stride() * (t.vActive / blocks);
-        if (_blockBytes % 8 != 0) return Error::Invalid; // the DMA moves 64-bit words
-        _blocks = blocks;
+        if (config.lanes < 1 || config.lanes > MIPI_DSI_LL_MAX_DATA_LANES || t.pixelKhz < 1000) return Error::Invalid;
         _config = config;
+        const Error laid = layOut(surface);
+        if (laid.isError()) return laid;
         _surface = &surface;
         _sent.store(0);
         _frames.store(1); // the first begins as the DMA starts
@@ -221,6 +335,9 @@ Error Scanout::start(const Config &config, Surface &surface) {
         _rebuilds = 0;
         _failures = 0;
         _blocksBefore = 0;
+        _fallback = nullptr;
+        _fallbacks = 0;
+        _request.store(nullptr);
         while (_wake.tryAcquire().isOk()) {}
         void *hw = Memory::alloc(MemSpace::Internal, sizeof(Hardware));
         if (hw == nullptr) return Error::NoMem;
@@ -254,6 +371,107 @@ void Scanout::stop() {
         _surface = nullptr;
         _running = false;
         return;
+}
+
+// The descriptors' plan for @p surface: as many blocks (up to MaxBlocks) as divide the frame's
+// lines when it is the mode's height; shorter, a descriptor per line, its rows repeated.
+Error Scanout::layOut(const Surface &surface) {
+        const VideoTiming &t = _config.timing;
+        if (!surface.isStarted() || surface.width() != t.hActive || surface.height() == 0 ||
+            surface.height() > t.vActive)
+                return Error::Invalid;
+        _stride = surface.stride();
+        _rows = surface.height();
+        if (_rows == t.vActive) {
+                uint32_t blocks = MaxBlocks;
+                while (t.vActive % blocks != 0) --blocks;
+                if (blocks < 2) return Error::Invalid;
+                _items = blocks;
+                _lineMode = false;
+                _irqEvery = 1;
+                _blockBytes = _stride * (t.vActive / blocks);
+        } else {
+                _items = t.vActive;
+                _lineMode = true;
+                _irqEvery = 1; // TEST: every item interrupts
+                _blockBytes = _stride;
+        }
+        if (_blockBytes % 8 != 0) return Error::Invalid; // the DMA moves 64-bit words
+        return Error::Ok;
+}
+
+// The channel pointed at the list's first descriptor (IDF's dw_gdma_channel_use_link_list()).
+void Scanout::useList() {
+        dw_gdma_ll_channel_set_link_list_master_port(&DW_GDMA, _hw->channel, DW_GDMA_LL_MASTER_PORT_MEMORY);
+        dw_gdma_ll_channel_set_link_list_head_addr(&DW_GDMA, _hw->channel,
+                                                   reinterpret_cast<uint32_t>(_hw->list.chunk[0]));
+        return;
+}
+
+// The DMA's circular list for the plan (layOut()), reading the surface's shown buffer; the list
+// before it, if any, freed once the new one is made.
+Error Scanout::buildList() {
+        Hardware &hw = *_hw;
+        ItemList  fresh;
+        if (_prepared != nullptr) {
+                // Made by switchSurface() before the link came down.
+                fresh = *_prepared;
+                Memory::free(_prepared);
+                _prepared = nullptr;
+                if (fresh.count != _items) {
+                        fresh.release();
+                        return Error::Invalid;
+                }
+        } else {
+                const Error err = fresh.allocate(_items);
+                if (err.isError()) return err;
+        }
+        hw.list.release();
+        hw.list = fresh;
+        dw_gdma_block_transfer_config_t block = {};
+        block.src.burst_mode = DW_GDMA_BURST_MODE_INCREMENT;
+        block.src.burst_items = DW_GDMA_BURST_ITEMS_512;
+        block.src.burst_len = 16;
+        block.src.width = DW_GDMA_TRANS_WIDTH_64;
+        block.dst.addr = MIPI_DSI_BRG_MEM_BASE;
+        block.dst.burst_mode = DW_GDMA_BURST_MODE_FIXED;
+        block.dst.burst_items = DW_GDMA_BURST_ITEMS_256;
+        block.dst.burst_len = 16;
+        block.dst.width = DW_GDMA_TRANS_WIDTH_64;
+        block.size = _blockBytes / 8;
+        const uint8_t *shown = _surface->shown();
+        for (uint32_t i = 0; i < _items; ++i) {
+                block.src.addr = reinterpret_cast<uint32_t>(shown + ScanoutIsr::offset(*this, i));
+                dw_gdma_lli_handle_t lli = hw.list.item(i);
+                (void)dw_gdma_lli_config_transfer(lli, &block);
+                dw_gdma_block_markers_t markers = {};
+                markers.is_valid = true;
+                markers.en_trans_done_intr = ScanoutIsr::interrupts(*this, i);
+                (void)dw_gdma_lli_set_block_markers(lli, markers);
+        }
+        // The control word as configured, with and without the interrupt (validate()).
+        dw_gdma_link_list_item_t word = *hw.list.item(0);
+        dw_gdma_ll_lli_set_block_markers(&word, true, false, true); // interrupt, last, valid
+        hw.ctrlInterrupt = word.ctrl_hi.val;
+        dw_gdma_ll_lli_set_block_markers(&word, false, false, true);
+        hw.ctrlQuiet = word.ctrl_hi.val;
+        _swapPhase = 0;
+        _notifyPending = false;
+        return Error::Ok;
+}
+
+Error Scanout::show(Surface &surface, unsigned int timeoutMs) {
+        if (!_running) return Error::InvalidState;
+        if (&surface == _surface) return Error::Ok;
+        const VideoTiming &t = _config.timing;
+        if (!surface.isStarted() || surface.width() != t.hActive || surface.height() == 0 ||
+            surface.height() > t.vActive)
+                return Error::Invalid;
+        while (_switched.tryAcquire().isOk()) {}
+        _request.store(&surface, std::memory_order_release);
+        _wake.release();
+        const Error err = _switched.acquire(timeoutMs);
+        return err.isOk() ? _switchResult : err;
 }
 
 // The DSI host and PHY: clocks, the PHY PLL at the lane rate, the host's
@@ -380,43 +598,13 @@ Error Scanout::startDpi() {
         int channel = 0;
         (void)dw_gdma_channel_get_id(hw.dma, &channel);
         hw.channel = static_cast<uint8_t>(channel);
-        dw_gdma_link_list_config_t list = {};
-        list.num_items = _blocks;
-        list.link_type = DW_GDMA_LINKED_LIST_TYPE_CIRCULAR;
-        err = espError(dw_gdma_new_link_list(&list, &hw.list));
+        err = buildList();
         if (err.isError()) return err;
         dw_gdma_event_callbacks_t callbacks = {};
         callbacks.on_block_trans_done = ScanoutIsr::blockSent;
         callbacks.on_invalid_block = ScanoutIsr::invalidBlock;
         err = espError(dw_gdma_channel_register_event_callbacks(hw.dma, &callbacks, this));
         if (err.isError()) return err;
-        dw_gdma_block_transfer_config_t block = {};
-        block.src.burst_mode = DW_GDMA_BURST_MODE_INCREMENT;
-        block.src.burst_items = DW_GDMA_BURST_ITEMS_512;
-        block.src.burst_len = 16;
-        block.src.width = DW_GDMA_TRANS_WIDTH_64;
-        block.dst.addr = MIPI_DSI_BRG_MEM_BASE;
-        block.dst.burst_mode = DW_GDMA_BURST_MODE_FIXED;
-        block.dst.burst_items = DW_GDMA_BURST_ITEMS_256;
-        block.dst.burst_len = 16;
-        block.dst.width = DW_GDMA_TRANS_WIDTH_64;
-        block.size = _blockBytes / 8;
-        dw_gdma_block_markers_t markers = {};
-        markers.is_valid = true;
-        markers.en_trans_done_intr = true;
-        const uint8_t *shown = _surface->shown();
-        for (uint32_t i = 0; i < _blocks; ++i) {
-                block.src.addr = reinterpret_cast<uint32_t>(shown + i * _blockBytes);
-                dw_gdma_lli_handle_t lli = dw_gdma_link_list_get_item(hw.list, i);
-                hw.items[i] = reinterpret_cast<dw_gdma_link_list_item_t *>(lli);
-                (void)dw_gdma_lli_config_transfer(lli, &block);
-                (void)dw_gdma_lli_set_block_markers(lli, markers);
-        }
-        _swapPhase = 0;
-        _notifyPending = false;
-        hw.itemBase = reinterpret_cast<uint32_t>(hw.items[0]) & 0x0fffffffu;
-        hw.itemStride = reinterpret_cast<uint32_t>(hw.items[1]) - reinterpret_cast<uint32_t>(hw.items[0]);
-
         dsi_host_dev_t *host = hw.hal.host;
         mipi_dsi_host_ll_dpi_set_vcid(host, 0);
         mipi_dsi_host_ll_dpi_set_color_coding(host, LCD_COLOR_FMT_RGB888, 0);
@@ -455,8 +643,8 @@ Error Scanout::startDpi() {
         axi_icm_ll_set_qos_burstiness(AXI_ICM_MASTER_DMA2D, 4, AXI_ICM_ACCESS_WRITE);
         axi_icm_ll_set_qos_peak_transaction_rate(AXI_ICM_MASTER_DMA2D, 2, Dma2dWriteLevel, AXI_ICM_ACCESS_WRITE);
 
-        err = espError(dw_gdma_channel_use_link_list(hw.dma, hw.list));
-        if (err.isOk()) err = espError(dw_gdma_channel_enable_ctrl(hw.dma, true));
+        useList();
+        err = espError(dw_gdma_channel_enable_ctrl(hw.dma, true));
         if (err.isError()) return err;
         mipi_dsi_host_ll_enable_video_mode(host, true);
         mipi_dsi_host_ll_set_clock_lane_state(host, MIPI_DSI_LL_CLOCK_LANE_STATE_AUTO);
@@ -508,7 +696,7 @@ void Scanout::stopHardware() {
                 dw_gdma_ll_channel_clear_intr(&DW_GDMA, static_cast<uint8_t>(id), UINT32_MAX);
                 (void)dw_gdma_del_channel(hw.dma);
         }
-        if (hw.list != nullptr) (void)dw_gdma_del_link_list(hw.list);
+        hw.list.release();
         if (hw.bridgeIntr != nullptr) (void)esp_intr_free(hw.bridgeIntr);
         if (hw.busClock) {
                 mipi_dsi_hal_deinit(&hw.hal);
@@ -538,8 +726,31 @@ void Scanout::supervise() {
         while (!_stopping.load()) {
                 (void)_wake.acquire(CheckMs);
                 if (_stopping.load()) break;
+                if (_request.load(std::memory_order_acquire) != nullptr) {
+                        switchSurface();
+                        _underran.store(false, std::memory_order_relaxed);
+                        resyncUs = esp_timer_get_time();
+                        last = 0;
+                        progressUs = esp_timer_get_time();
+                        continue;
+                }
                 const bool underran =
                         _underran.load(std::memory_order_acquire) && esp_timer_get_time() - resyncUs >= ResyncGapUs;
+                if (_fallback != nullptr) {
+                        // The new surface on probation: stalls in its first moments send the
+                        // stream back to the surface before it.
+                        const uint32_t stalls = _stalls.load(std::memory_order_relaxed) - _fallbackStalls;
+                        if (stalls >= FallbackStalls) {
+                                fallBack();
+                                _stalled.store(false, std::memory_order_relaxed);
+                                _underran.store(false, std::memory_order_relaxed);
+                                resyncUs = esp_timer_get_time();
+                                last = 0;
+                                progressUs = esp_timer_get_time();
+                                continue;
+                        }
+                        if (esp_timer_get_time() - _fallbackUs >= FallbackProbationUs) _fallback = nullptr;
+                }
                 if (_stalled.exchange(false, std::memory_order_acquire) || underran) {
                         resync();
                         // What the restart itself raised (the output off and on) is no news.
@@ -555,7 +766,7 @@ void Scanout::supervise() {
                         last = sent;
                         progressUs = now;
                 } else if (now - progressUs >= StuckUs) {
-                        rebuild();
+                        (void)rebuild();
                         last = 0;
                         progressUs = esp_timer_get_time();
                 }
@@ -581,7 +792,7 @@ void Scanout::resync() {
                 if (!stopped) esp_rom_delay_us(100);
         }
         if (!stopped) {
-                rebuild();
+                (void)rebuild();
                 return;
         }
         dw_gdma_ll_channel_clear_intr(&DW_GDMA, hw.channel, UINT32_MAX);
@@ -591,15 +802,12 @@ void Scanout::resync() {
         _primed = false;
         _swapPhase = 0;
         _notifyPending = false;
-        for (uint32_t k = 0; k < _blocks; ++k) {
-                dw_gdma_ll_lli_set_src_addr(hw.items[k],
-                                            reinterpret_cast<uint32_t>(_surface->shown() + k * _blockBytes));
-                dw_gdma_ll_lli_set_block_markers(hw.items[k], true, false, true);
-        }
+        ScanoutIsr::pointAt(*this, _surface->shown(), 0, _items);
+        for (uint32_t k = 0; k < _items; ++k) ScanoutIsr::validate(*this, k);
         const VideoTiming &t = _config.timing;
         mipi_dsi_brg_ll_clear_interrupt_status(bridge, MIPI_DSI_BRG_LL_EVENT_UNDERRUN);
         mipi_dsi_brg_ll_set_num_pixel_bits(bridge, uint32_t(t.hActive) * t.vActive * Surface::BytesPerPixel * 8);
-        (void)dw_gdma_channel_use_link_list(hw.dma, hw.list);
+        useList();
         (void)dw_gdma_channel_enable_ctrl(hw.dma, true);
         mipi_dsi_brg_ll_enable_dpi_output(bridge, true);
         mipi_dsi_brg_ll_update_dpi_config(bridge);
@@ -607,10 +815,73 @@ void Scanout::resync() {
         return;
 }
 
+// show()'s request: the whole DSI path rebuilt for the new surface (a resync alone left the
+// picture out of step with the frame once), the old surface back if that fails.
+void Scanout::switchSurface() {
+        Surface *next = _request.exchange(nullptr, std::memory_order_acq_rel);
+        if (next == nullptr) return;
+        Surface *old = _surface;
+        Error    err = layOut(*next);
+        if (err.isOk()) {
+                // The new descriptors made before the link comes down: without memory for them,
+                // nothing changes on the screen.
+                void *memory = Memory::alloc(MemSpace::Internal, sizeof(ItemList));
+                auto *list = memory != nullptr ? ::new (memory) ItemList() : nullptr;
+                err = list != nullptr ? list->allocate(_items) : Error(Error::NoMem);
+                if (err.isError()) {
+                        if (list != nullptr) list->~ItemList();
+                        Memory::free(memory);
+                        (void)layOut(*old);
+                        _switchResult = err;
+                        _switched.release();
+                        return;
+                }
+                _prepared = list;
+                _surface = next;
+                err = rebuild();
+                if (err.isError()) {
+                        if (_prepared != nullptr) { // not taken: the link failed before the list
+                                _prepared->release();
+                                Memory::free(_prepared);
+                                _prepared = nullptr;
+                        }
+                        _surface = old;
+                        (void)layOut(*old);
+                        (void)rebuild();
+                }
+        }
+        if (err.isOk()) {
+                old->setScanning(false); // its pending swap made now
+                next->setScanning(true);
+                // Kept until the new surface has run cleanly for a while (supervise()).
+                _fallback = old;
+                _fallbackStalls = _stalls.load(std::memory_order_relaxed);
+                _fallbackUs = esp_timer_get_time();
+        }
+        _switchResult = err;
+        _switched.release();
+        return;
+}
+
+// A surface switched to that keeps stalling the stream: back to the one before.
+void Scanout::fallBack() {
+        Surface *next = _fallback;
+        _fallback = nullptr;
+        if (next == nullptr || next == _surface) return;
+        Surface *bad = _surface;
+        if (layOut(*next).isError()) return;
+        _surface = next;
+        (void)rebuild();
+        bad->setScanning(false);
+        next->setScanning(true);
+        ++_fallbacks;
+        return;
+}
+
 // The last resort: the whole DSI path rebuilt from scratch, as a fresh
 // start does (the monitor sees the link drop for a moment), then the
 // bridge chip told to lock onto it again (`Config::onRestart`).
-void Scanout::rebuild() {
+Error Scanout::rebuild() {
         stopHardware();
         _stalled.store(false, std::memory_order_relaxed);
         _underran.store(false, std::memory_order_relaxed);
@@ -622,14 +893,14 @@ void Scanout::rebuild() {
         if (err.isOk() && _config.onRestart != nullptr) _config.onRestart(_config.onRestartArg);
         if (err.isError()) ++_failures;
         ++_rebuilds;
-        return;
+        return err;
 }
 
 Scanout::Stats Scanout::stats() const {
         Stats s;
         s.frames = _frames.load(std::memory_order_relaxed);
         s.blocks = _blocksBefore + _sent.load(std::memory_order_relaxed);
-        s.blocksPerFrame = _blocks;
+        s.blocksPerFrame = _items;
         s.swaps = _swaps.load(std::memory_order_relaxed);
         s.stalls = _stalls.load(std::memory_order_relaxed);
         s.underruns = _underruns.load(std::memory_order_relaxed);
@@ -639,6 +910,7 @@ Scanout::Stats Scanout::stats() const {
         s.isrCyclesMax = _isrCyclesMax;
         s.isrCycles = _isrCycles;
         s.dmaItem = _lastItem;
+        s.fallbacks = _fallbacks;
         if (_hw != nullptr) {
                 s.pixelHz = _hw->pixelHz;
                 s.bridgeFifo = _hw->hal.bridge != nullptr ? mipi_dsi_brg_ll_get_fifo_depth(_hw->hal.bridge) : 0;

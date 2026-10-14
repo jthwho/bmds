@@ -155,6 +155,9 @@ _Static_assert(offsetof(bmds_sched_t, size) == 0 && offsetof(bmds_sched_t, polic
 _Static_assert(BMDS_SYS_AUDIO_SPEAK == 114, "ABI: slot AUDIO_SPEAK");
 _Static_assert(BMDS_SYS_AUDIO_SPEAK_INFO == 115, "ABI: slot AUDIO_SPEAK_INFO");
 _Static_assert(BMDS_SYS_PTP_CTL == 116, "ABI: slot PTP_CTL");
+_Static_assert(BMDS_SYS_SURFACE_OPEN == 117 && BMDS_SYS_SURFACE_BUFFER == 118 && BMDS_SYS_SURFACE_ACQUIRE == 119 &&
+                       BMDS_SYS_SURFACE_PRESENT == 120 && BMDS_SYS_SURFACE_CONTROL == 121,
+               "ABI: slots SURFACE_*");
 _Static_assert(BMDS_SPEAK_MARKUP == 0x1000u && BMDS_SPEAK_VOICE_MAX == 32, "ABI: speech flags and sizes");
 #if UINTPTR_MAX == 0xffffffffu // (a pointer inside)
 _Static_assert(offsetof(bmds_speak_config_t, size) == 0 && offsetof(bmds_speak_config_t, flags) == 4 &&
@@ -725,8 +728,10 @@ _Static_assert(BMDS_EACCES == 13 && BMDS_EFAULT == 14 && BMDS_EBUSY == 16 && BMD
 _Static_assert(BMDS_EXDEV == 18 && BMDS_ENODEV == 19 && BMDS_ENOTDIR == 20 && BMDS_EISDIR == 21, "ABI: errno 18-21");
 _Static_assert(BMDS_EINVAL == 22 && BMDS_ENFILE == 23 && BMDS_EMFILE == 24 && BMDS_ENOTTY == 25, "ABI: errno 22-25");
 _Static_assert(BMDS_EFBIG == 27 && BMDS_ENOSPC == 28 && BMDS_ESPIPE == 29 && BMDS_EROFS == 30, "ABI: errno 27-30");
-_Static_assert(BMDS_EPIPE == 32 && BMDS_ERANGE == 34 && BMDS_ENAMETOOLONG == 36 && BMDS_ENOSYS == 38, "ABI: errno 32-38");
-_Static_assert(BMDS_ENOTEMPTY == 39 && BMDS_ELOOP == 40 && BMDS_EOVERFLOW == 75 && BMDS_EILSEQ == 84, "ABI: errno 39-84");
+_Static_assert(BMDS_EPIPE == 32 && BMDS_ERANGE == 34 && BMDS_ENAMETOOLONG == 36 && BMDS_ENOSYS == 38,
+               "ABI: errno 32-38");
+_Static_assert(BMDS_ENOTEMPTY == 39 && BMDS_ELOOP == 40 && BMDS_EOVERFLOW == 75 && BMDS_EILSEQ == 84,
+               "ABI: errno 39-84");
 _Static_assert(BMDS_ENOTSUP == 95 && BMDS_ETIMEDOUT == 110 && BMDS_ENOMEDIUM == 123, "ABI: errno 95-123");
 _Static_assert(BMDS_ECANCELED == 125, "ABI: errno 125 (Linux's values throughout)");
 _Static_assert(BMDS_ENOTSOCK == 88 && BMDS_EDESTADDRREQ == 89 && BMDS_EMSGSIZE == 90 && BMDS_EPROTOTYPE == 91,
@@ -752,3 +757,50 @@ _Static_assert(offsetof(bmds_ptp_caps_t, size) == 0 && offsetof(bmds_ptp_caps_t,
 _Static_assert(offsetof(bmds_ptp_offset_t, clock) == 4 && offsetof(bmds_ptp_offset_t, count) == 8 &&
                        offsetof(bmds_ptp_offset_t, samples) == 16 && sizeof(bmds_ptp_offset_t) == 16 + 25 * 24,
                "ABI: bmds_ptp_offset_t");
+
+/* Surfaces (devplan/games.md §11). */
+_Static_assert(BMDS_PIXEL_L8 == 5, "ABI: pixel format L8");
+_Static_assert(BMDS_SURFACE_FULL_SCREEN == 1 && BMDS_SURFACE_WHOLE == 2 && BMDS_SURFACE_FAST == 4,
+               "ABI: surface flags");
+_Static_assert(BMDS_SURFACE_PALETTE == 1 && BMDS_SURFACE_TITLE == 2 && BMDS_SURFACE_POINTER == 3 &&
+                       BMDS_SURFACE_WAIT == 4 && BMDS_SURFACE_INFO == 5,
+               "ABI: surface_control ops");
+_Static_assert(BMDS_POINTER_NORMAL == 0 && BMDS_POINTER_HIDDEN == 1 && BMDS_POINTER_RELATIVE == 2,
+               "ABI: pointer modes");
+_Static_assert(BMDS_EVENT_KEY == 1 && BMDS_EVENT_POINTER == 2 && BMDS_EVENT_WHEEL == 3 && BMDS_EVENT_ACTIVE == 4 &&
+                       BMDS_EVENT_PRESENTED == 5 && BMDS_EVENT_CLOSE == 6 && BMDS_EVENT_ACTION == 7 &&
+                       BMDS_EVENT_PAD == 8,
+               "ABI: event types");
+_Static_assert(BMDS_KEY_DOWN == 1 && BMDS_KEY_UP == 2 && BMDS_KEY_REPEAT == 4, "ABI: key flags");
+#if UINTPTR_MAX == 0xffffffffu // (pointers inside)
+_Static_assert(offsetof(bmds_surface_config_t, width) == 4 && offsetof(bmds_surface_config_t, height) == 8 &&
+                       offsetof(bmds_surface_config_t, format) == 12 &&
+                       offsetof(bmds_surface_config_t, buffers) == 16 && offsetof(bmds_surface_config_t, flags) == 20 &&
+                       offsetof(bmds_surface_config_t, aspect_x) == 24 &&
+                       offsetof(bmds_surface_config_t, aspect_y) == 28 &&
+                       offsetof(bmds_surface_config_t, title) == 32 && sizeof(bmds_surface_config_t) == 36,
+               "ABI: bmds_surface_config_t");
+_Static_assert(offsetof(bmds_surface_buffer_t, index) == 4 && offsetof(bmds_surface_buffer_t, pixels) == 8 &&
+                       offsetof(bmds_surface_buffer_t, stride) == 12 && sizeof(bmds_surface_buffer_t) == 16,
+               "ABI: bmds_surface_buffer_t");
+_Static_assert(offsetof(bmds_rect_t, y) == 4 && offsetof(bmds_rect_t, width) == 8 &&
+                       offsetof(bmds_rect_t, height) == 12 && sizeof(bmds_rect_t) == 16,
+               "ABI: bmds_rect_t");
+_Static_assert(offsetof(bmds_surface_present_t, index) == 4 && offsetof(bmds_surface_present_t, damage) == 8 &&
+                       offsetof(bmds_surface_present_t, damage_count) == 12 && sizeof(bmds_surface_present_t) == 16,
+               "ABI: bmds_surface_present_t");
+_Static_assert(offsetof(bmds_surface_palette_t, first) == 4 && offsetof(bmds_surface_palette_t, count) == 8 &&
+                       offsetof(bmds_surface_palette_t, rgb) == 12 && sizeof(bmds_surface_palette_t) == 16,
+               "ABI: bmds_surface_palette_t");
+#endif
+_Static_assert(offsetof(bmds_surface_wait_t, frame) == 4 && offsetof(bmds_surface_wait_t, timeout_ms) == 8 &&
+                       sizeof(bmds_surface_wait_t) == 12,
+               "ABI: bmds_surface_wait_t");
+_Static_assert(offsetof(bmds_surface_info_t, full_screen) == 4 && offsetof(bmds_surface_info_t, scale_x16) == 16 &&
+                       offsetof(bmds_surface_info_t, x) == 24 && offsetof(bmds_surface_info_t, width) == 32 &&
+                       offsetof(bmds_surface_info_t, frames) == 40 && offsetof(bmds_surface_info_t, dropped) == 48 &&
+                       sizeof(bmds_surface_info_t) == 52,
+               "ABI: bmds_surface_info_t");
+_Static_assert(offsetof(bmds_surface_event_t, flags) == 4 && offsetof(bmds_surface_event_t, time_ns) == 8 &&
+                       offsetof(bmds_surface_event_t, data) == 16 && sizeof(bmds_surface_event_t) == 32,
+               "ABI: bmds_surface_event_t");
