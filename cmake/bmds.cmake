@@ -43,7 +43,8 @@ endfunction()
 
 # The public keys update packages may be signed with (devplan/update.md §2, keys/README.md), as
 # HEADER (in the target's binary directory, on its include path): the UpdatePackage::Key
-# initializers of keys/release.pub's keys, and keys/dev.pub's too unless RELEASE_ONLY. A release
+# initializers of keys/release.pub's keys (BMDS_UPDATE_RELEASE_KEYS of them), then keys/dev.pub's
+# unless RELEASE_ONLY. A release
 # build without a release key fails here. Configure reruns when keys/ changes.
 function(bmds_update_keys target header release_only)
         set(dir ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../keys)
@@ -73,7 +74,13 @@ function(bmds_update_keys target header release_only)
                         string(APPEND body "{{${bytes}}}, // ${name}\n")
                         math(EXPR count "${count} + 1")
                 endforeach()
+                if(file STREQUAL "${dir}/release.pub")
+                        string(APPEND body "#define BMDS_UPDATE_RELEASE_KEYS ${count}\n")
+                endif()
         endforeach()
+        if(NOT body MATCHES "BMDS_UPDATE_RELEASE_KEYS")
+                string(APPEND body "#define BMDS_UPDATE_RELEASE_KEYS 0\n")
+        endif()
         if(count EQUAL 0)
                 message(FATAL_ERROR "Release acceptance mode (CONFIG_BMDS_UPDATE_KEYS_RELEASE) "
                                     "and no release key in keys/release.pub (keys/README.md)")

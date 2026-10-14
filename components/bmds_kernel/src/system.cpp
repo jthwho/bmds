@@ -9,11 +9,13 @@
 #include <cstring>
 #include <esp_app_desc.h>
 #include <esp_chip_info.h>
+#include <esp_ota_ops.h>
 #include <esp_system.h>
 #include <esp_timer.h>
 #include <sdkconfig.h>
 #include <bmds/board.h>
 #include <bmds/system.h>
+#include <bmds/thread.h>
 #include <bmds/version.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -56,6 +58,35 @@ uint64_t System::uptimeUs() {
 
 void System::restart() {
         esp_restart();
+}
+
+System::Firmware System::running() {
+        const esp_partition_t *p = esp_ota_get_running_partition();
+        return p != nullptr && p->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_1 ? Firmware::Recovery : Firmware::Main;
+}
+
+Error System::setNextFirmware(Firmware firmware) {
+        struct Job {
+                        const esp_partition_t *partition;
+                        esp_err_t              result;
+        } job = {esp_partition_find_first(ESP_PARTITION_TYPE_APP,
+                                          firmware == Firmware::Recovery ? ESP_PARTITION_SUBTYPE_APP_OTA_1
+                                                                         : ESP_PARTITION_SUBTYPE_APP_OTA_0,
+                                          nullptr),
+                 ESP_FAIL};
+        if (job.partition == nullptr) return Error::NotExist;
+        // It reads the image with the caches off and writes otadata: not on a PSRAM stack.
+        const Error err = Thread::runOnInternalStack(
+                "otadata", 6144,
+                [](void *arg) {
+                        Job *j = static_cast<Job *>(arg);
+                        j->result = esp_ota_set_boot_partition(j->partition);
+                        return;
+                },
+                &job);
+        if (err.isError()) return err;
+        if (job.result == ESP_OK) return Error::Ok;
+        return job.result == ESP_ERR_OTA_VALIDATE_FAILED ? Error::CorruptData : Error::IoError;
 }
 
 BMDS_NAMESPACE_END

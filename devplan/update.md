@@ -16,7 +16,8 @@ watch it applied, see the result (the user's requirement, 2026-10-13).
   and ROM on the card, then reboots into recovery, which writes `ota_0` and `rom`, checks them,
   and sets `otadata`. The main firmware can't write itself or the ROM it has mounted." Recovery
   doesn't use `/rom` (it may be what is repaired); `reboot recovery` is appended to `reboot`. With
-  no factory partition, IDF's bootloader falls through to `ota_1` when `ota_0` won't load.
+  no factory partition, IDF's bootloader falls through to `ota_1` when `ota_0` won't load (**not
+  with this IDF: a bug, §11**).
 - **Sizes now:** the main firmware is 2.01 MB of `ota_0`'s 4 MB (IDF checked it against
   `ota_1`'s 2 MB instead: fixed in step 1, §8). The bootloader has
   1.2 KB free: this design changes nothing in it (no IDF rollback, no secure boot).
@@ -58,9 +59,11 @@ flash are in the kernel.
 1. **Deliver.** Headless: `scp bmds-0.2.0.bmup root@bmds0:/sd0/p0/update/` (works today; a host
    wrapper `tools/bmds-update HOST FILE` does that and `update apply`). A user: copy it onto the
    card from a PC. Fetching from a URL waits for an HTTP client (§7).
-2. **Check:** `update check FILE`: the checks of §2, the versions now and in the package, the
-   sections and whether each differs from what is flashed (machine-parsable, as `rom info`).
-3. **Apply:** `update apply FILE`: the checks again; if it carries a recovery firmware that
+2. **Check:** `update check FILE`: the checks of §2, the versions now and in the package (and
+   whether it is newer, the same or older: §10), the sections and whether each differs from what
+   is flashed (machine-parsable, as `rom info`).
+3. **Apply:** `update apply FILE`: the checks again (a package not newer than what runs is
+   refused without `--force`: §10); if it carries a recovery firmware that
    differs, the main firmware writes `ota_1` now (it doesn't run from it), reads it back and checks
    it, so recovery is never left broken by a cut-off write (until it checks, `otadata` stays
    `ota_0`); then it writes an intent to `/boot` (the package's path and header hash), sets
@@ -94,7 +97,7 @@ flash are in the kernel.
   left out are 0.9 MB of the main firmware's 2).
 - **Its icons and font are its own** (rom.md §3b), built into it.
 - **`idf.py flash` from the main project writes both**, so a board flashed from source has a
-  recovery. A package can carry a new one (section 3).
+  recovery (built first in `build-recovery/`: §11). A package can carry a new one (section 3).
 - **Entered by:** an update, `reboot recovery`, and the bootloader when `ota_0` won't load. A key
   held at power-on comes with the USB keyboard in recovery (later).
 
@@ -124,6 +127,11 @@ flash are in the kernel.
 3. **Recovery's screen:** the display, the text console and the update screen.
 4. **The Updater:** the syscalls, the app, the `.bmup` file type, the result after.
 5. **Later:** fetching from a URL; the crash loop counter; a key at power-on.
+6. **At the very end, the partition sizes** (the user's, 2026-10-13): `ota_1` cut to recovery's
+   measured size plus about half (likely 1.25 MB, once its screen is in), the rest to `rom`;
+   `otadata` and `/boot` move with it. `/boot` may simply be reformatted (nothing on it needs
+   keeping, the user's word); every board is flashed once over USB (a package can't change the
+   partition table).
 
 ## 7. Decisions (the user's, 2026-10-13: each as recommended; the ABI as written)
 
@@ -150,13 +158,13 @@ flash are in the kernel.
   (called only for that check) with one that checks against `BMDS_APP_PARTITION`: `ota_0`, or
   `ota_1` in the recovery build. It is included after IDF's (checked: the build now says "Smallest
   app (ota_0) partition is 0x400000 bytes ... 52% free").
-- **The format as §2,** with these settled: the header's 128 bytes are `BMUP`, u16 format, u16
-  header size, u32 flags, u32 section count, u32 ABI version, u16 least chip revision, u16 0,
-  board[32], version[32], build id[32], i64 when it was made (by `mkupdate`, not the firmware's
-  build); a section is u32 type, u32 flags, u32 offset, u32 size, BLAKE2s-256[32]. **Flags this
-  code doesn't know are refused** (`NewerFormat`), not ignored: they may change what a package
-  means. Unknown section types are skipped; any type listed twice, or a section inside the head
-  or past the file's end, is refused.
+- **The format as §2,** with these settled (the header grew to 136 bytes after: §10): the header's
+  128 bytes were `BMUP`, u16 format, u16 header size, u32 flags, u32 section count, u32 ABI
+  version, u16 least chip revision, u16 0, board[32], version[32], build id[32], i64 when it was
+  made (by `mkupdate`, not the firmware's build); a section is u32 type, u32 flags, u32 offset,
+  u32 size, BLAKE2s-256[32]. **Flags this code doesn't know are refused** (`NewerFormat`), not
+  ignored: they may change what a package means. Unknown section types are skipped; any type
+  listed twice, or a section inside the head or past the file's end, is refused.
 - **`bmds_core`:** `bmds/ed25519.h` (Monocypher's RFC 8032 Ed25519, built through
   `src/monocypher.c` and `src/monocypher_ed25519.c`: the two can't share a unit) and
   `bmds/updatepackage.h` (`headBytes()`, `parse()`, `verify()` against a list of keys). Unused
@@ -182,3 +190,96 @@ flash are in the kernel.
   `isDevMode()` give them to the firmware: rodata, unused until step 2 (the image is the same
   size). `mkupdate make` signs with `keys/dev.key` unless given `--key`, and `info` checks
   against `keys/`'s keys and names the one that signed.
+
+## 9. As built: the `update` target (2026-10-13)
+
+`build update` (the top-level `CMakeLists.txt`) makes `build/bmds.bmup` from that build's
+`bmds.bin` and `rom/rom.bin` for its board (`CONFIG_BMDS_BOARD_DIR`), after building both; it is
+not part of the default build. It signs with `BMDS_UPDATE_KEY` (a cache variable; empty means
+`keys/dev.key`) and carries `BMDS_UPDATE_NOTES` if set. `mkupdate make --accept PUB` refuses a
+key that isn't in PUB, and the target passes the keys the acceptance mode builds in, so a release
+build signed with the dev key fails instead of making a package its own firmware would refuse
+(checked with a stray key).
+
+## 10. The version (the user's, 2026-10-13)
+
+The package carried only `PROJECT_VER`, which IDF made the commit ("72cba49a-dirty"): nothing
+could tell newer from older. Now:
+
+- **One source:** `bmds/version.h`'s `BMDS_VERSION_MAJOR/MINOR/PATCH`. `cmake/version.cmake`
+  (included before `project()`) makes `PROJECT_VER` that and the commit: `0.1.0+72cba49a`, with
+  `-dirty` for uncommitted changes (as of configure time, as IDF's was). At most 31 characters
+  (the app description's field; configure fails past it): each part under 10000 keeps it so.
+- **In the header** (136 bytes now; format still 1, nothing has shipped): u16 major, minor, patch
+  and u16 0 after `madeAt`, at 128. `UpdatePackage::Version` orders them (`<=>`). The text stays
+  as the label. `mkupdate` takes the number from `bmds/version.h` and refuses a firmware image
+  whose label starts otherwise (a stale image); a package with no firmware gets the number as its
+  label.
+- **Downgrades** are allowed, since an older package is the only rollback, but confirmed: `update
+  apply` refuses a package that isn't newer without `--force`, and the Updater warns and asks
+  (step 2 and 4).
+- **Checked:** the host tests (the order; the reserved u16 refused), `test.bmup` remade in the
+  new format, the fuzzer for 2 minutes (54,576 inputs, nothing), the firmware says "App bmds
+  version: 0.1.0+72cba49a-dirty", and `build update`'s package shows `0.1.0
+  (0.1.0+72cba49a-dirty)`.
+
+## 11. As built: step 2, recovery and the headless update (2026-10-13)
+
+- **The recovery build** (`recovery/`: its own `main`, `sdkconfig.defaults` read after the main
+  one's, `CONFIG_BMDS_RECOVERY`, `BMDS_APP_PARTITION` `ota_1`): the console, `/boot`, sysconf, the
+  log, the card and the shell, **634 KB (70% of `ota_1` free)**. The shell runs from its `main`
+  through `Shell::programMain()` with no launcher: the program loader brings in the whole system
+  (audio, the network, the synth...), so card programs (`tail`) don't run in recovery; the 76
+  built-in commands do. `bmds_storage` builds no ROM image for it. Its sysconf declares 13 keys and
+  keeps the saved values of the rest ("3 saved values kept for keys not declared"). Built
+  separately in `build-recovery/` (a build nested in the main one would run its own unpaced
+  parallel build); the main `flash` writes it to `ota_1` and `build update` carries it when it
+  exists.
+- **`reboot recovery`** (`System::setNextFirmware()`: `esp_ota_set_boot_partition()`, which checks
+  the image first, so a missing or damaged recovery is refused: checked). In recovery, a plain
+  `reboot` goes back to the main firmware only if it checks; otherwise it says so and stays. Its
+  shell's prompt starts with a red `recovery` (the default `PS1`, the user's request).
+- **Flash work needs an internal stack:** `esp_ota_set_boot_partition()` from the shell (a PSRAM
+  stack) asserted in `spi_flash_disable_interrupts_caches_and_other_cpu` (the first `reboot
+  recovery`). `Thread::runOnInternalStack()` runs such work on a kernel thread with an internal
+  stack and waits; the update's whole job (card reads, hashing, erase and write) runs on one
+  (12 KB stack, a 16 KB internal buffer).
+- **`bmds_update`** (`bmds/update.h`): `check()`, `apply()`, `status()`, the boot stage `init()`,
+  and the `update` command: `check FILE` (board, version against `ota_0`'s, when made, which key,
+  each section the same as or differing from its partition, `Check: good` or why not; exit 1 if
+  not good), `apply [--force] FILE`, `status`. The intent (`/boot/update/intent`: the package's
+  path and the BLAKE2s of its signed head) and the result (`/boot/update/result`: `status:
+  applied|failed`, package, version, when, message) are text. The setting `update/dir`
+  (`/sd0/p0/update`) is where `tools/bmds-update` copies packages.
+- **The flow as §3**, with these settled: the main firmware writes `ota_1` only if the package's
+  recovery differs (read back against its hash), and says "installed already" (no restart) when
+  the firmware and ROM are flashed already. Recovery waits for the card's first mount, checks the
+  package again and that its head hashes as the intent says ("the package changed since it was
+  chosen"), writes `ota_0` and `rom` where they differ (each read back, and written again up to
+  twice when it reads back wrong), then tries to make the main firmware next: if it checks, the
+  intent goes and it restarts; if not, recovery stays with the intent kept and its shell open,
+  where `update apply FILE` (which writes its own intent first) repairs it. The main firmware logs
+  a new result once at boot (`/boot/update/unseen`). Recovery has no version check: it repairs.
+- **Tested on the board** (the dev key; packages from `build update` or `mkupdate`): a firmware
+  install (19.5 s in recovery: checking 5 s, erasing 2 MB about 10 s, writing and reading back
+  4 s); a reset (the console's RTS) during the erase, during the firmware's write, during the
+  ROM's write (the ROM damaged first: back with its content hash), and during the main firmware's
+  write of `ota_1` (the main firmware boots, nothing pending; applying again writes it); an intent
+  whose package changed, and one whose package is missing (failed, back to the main firmware,
+  which logs why); a missing package with `ota_0` damaged (recovery stays; `update apply` on its
+  console installs and restarts); a damaged package (`Check: bad: its contents don't match their
+  hash`), one signed by another key, the same version without `--force`, and `tools/bmds-update`
+  from copy to result (68 s). A bug found and fixed on the way: recovery restarted in a loop when
+  it meant to stay (one code had meant both "failed, the main firmware good" and "stay").
+- **The IDF bootloader's fallback to `ota_1` doesn't work on this IDF:** with `ota_0` zeroed it
+  said "image at 0x410000 has invalid magic byte" though `ota_1` read back good (`e9`) with
+  esptool. `bootloader_flash_read_allow_decrypt()` invalidates the cache at `FLASH_MMAP_VADDR`
+  after moving its window, which is at `FLASH_READ_VADDR`, so `ota_1`'s header comes from the
+  cache as `ota_0`'s zeros; upstream master invalidates `FLASH_READ_VADDR` (checked 2026-10-13).
+  The update flow doesn't need the fallback (`otadata` names recovery all the while `ota_0` is
+  written), but a broken `ota_0` with `otadata` naming it does: an IDF update (or that one line)
+  fixes it, the user's call.
+- **Open:** one check in about thirty found a section's hash wrong on a package that checked good
+  before and after (the same bytes on the card; 18 checks since, 6 just after a boot): a bad read
+  not yet explained, hence recovery's second write. The check reads 6.2 MB and hashes as much
+  flash: 5 s. The main firmware grew 47 KB (Ed25519, IDF's OTA code, the engine).

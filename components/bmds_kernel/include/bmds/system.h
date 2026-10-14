@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
+#include <bmds/error.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -53,6 +54,23 @@ class System {
 
                 /** @brief Restarts the chip. Flush consoles first. */
                 [[noreturn]] static void restart();
+
+                /** @brief A firmware in the flash (devplan/update.md §4). */
+                enum class Firmware : uint8_t {
+                        Main,     ///< The main firmware, in `ota_0`.
+                        Recovery, ///< The recovery firmware, in `ota_1`: applies updates.
+                };
+
+                /** @brief Returns the firmware running. */
+                static Firmware running();
+
+                /**
+                 * @brief Makes @p firmware the one the next reset starts (`otadata`), once its image
+                 *        checks as the bootloader would check it (its hash, a few hundred ms).
+                 * @return `Ok`; `NotExist` (no such partition); `CorruptData` (no good image there:
+                 *         nothing changed); `IoError`.
+                 */
+                static Error setNextFirmware(Firmware firmware);
 };
 
 BMDS_NAMESPACE_END

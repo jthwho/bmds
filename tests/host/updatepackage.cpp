@@ -62,7 +62,7 @@ namespace {
                 std::vector<uint8_t> v(head, 0);
                 std::memcpy(v.data(), "BMUP", 4);
                 put16(v, 4, 1);
-                put16(v, 6, 128);
+                put16(v, 6, 136);
                 put32(v, 12, uint32_t(count));
                 put32(v, 16, 1);
                 put16(v, 20, 103);
@@ -70,6 +70,9 @@ namespace {
                 std::memcpy(v.data() + 56, "0.2.0", 5);
                 v[88] = 0xab;
                 v[120] = 0x10; // made at 16 s
+                put16(v, 128, 0);
+                put16(v, 130, 2);
+                put16(v, 132, 1);
                 size_t offset = head;
                 for (size_t i = 0; i < count; ++i) {
                         const size_t e = UpdatePackage::HeaderBytes + i * UpdatePackage::SectionBytes;
@@ -148,11 +151,13 @@ TEST_CASE("Update packages: one made by tools/mkupdate") {
         size_t head = 0;
         REQUIRE(UpdatePackage::headBytes(Span<const uint8_t>(v.data(), UpdatePackage::HeaderBytes), head) ==
                 Verdict::Ok);
-        CHECK(head == 128 + 2 * 48 + 64);
+        CHECK(head == 136 + 2 * 48 + 64);
         UpdatePackage::Package p;
         REQUIRE(parse(v, p) == Verdict::Ok);
         CHECK(std::string(p.board) == "olimex_esp32p4_pc");
         CHECK(p.abiVersion == 1);
+        CHECK(std::string(p.versionText) == "0.1.0");
+        CHECK(p.version == UpdatePackage::Version{0, 1, 0});
         CHECK(p.sectionCount == 2);
         CHECK(UpdatePackage::verify(p, Span<const uint8_t>(v.data(), head), Span<const UpdatePackage::Key>(&key, 1)) ==
               Verdict::Ok);
@@ -168,12 +173,29 @@ TEST_CASE("Update packages: one made by tools/mkupdate") {
         CHECK(p.find(UpdatePackage::SectionType::Firmware) == nullptr);
 }
 
+TEST_CASE("Update packages: a version's text read") {
+        UpdatePackage::Version v;
+        CHECK(UpdatePackage::parseVersion("0.2.1+72cba49a-dirty", v));
+        CHECK(v == UpdatePackage::Version{0, 2, 1});
+        CHECK(UpdatePackage::parseVersion("10.0.65535", v));
+        CHECK(v == UpdatePackage::Version{10, 0, 65535});
+        CHECK(UpdatePackage::parseVersion("1.2.3-rc1", v));
+        CHECK_FALSE(UpdatePackage::parseVersion("72cba49a-dirty", v));
+        CHECK_FALSE(UpdatePackage::parseVersion("1.2", v));
+        CHECK_FALSE(UpdatePackage::parseVersion("1.2.65536", v));
+        CHECK_FALSE(UpdatePackage::parseVersion("1.2.3x", v));
+        CHECK_FALSE(UpdatePackage::parseVersion("", v));
+}
+
 TEST_CASE("Update packages: built, checked, and each fault refused") {
         UpdatePackage::Key     key;
         std::vector<uint8_t>   v = build({{1, "firmware bytes"}, {2, "BMRO rom bytes"}, {99, "a newer section"}}, key);
         UpdatePackage::Package p;
         REQUIRE(parse(v, p) == Verdict::Ok);
-        CHECK(std::string(p.version) == "0.2.0");
+        CHECK(std::string(p.versionText) == "0.2.0");
+        CHECK(p.version == UpdatePackage::Version{0, 2, 1});
+        CHECK(p.version > UpdatePackage::Version{0, 1, 9});
+        CHECK(p.version < UpdatePackage::Version{1, 0, 0});
         CHECK(p.minChipRevision == 103);
         CHECK(p.madeAt == 16);
         CHECK(p.buildId[0] == 0xab);
@@ -206,7 +228,7 @@ TEST_CASE("Update packages: built, checked, and each fault refused") {
                 put32(w, 8, 1); // a flag this code doesn't know
                 CHECK(parse(w, p) == Verdict::NewerFormat);
                 w = v;
-                put32(w, 128 + 4, 1); // a section's flag
+                put32(w, UpdatePackage::HeaderBytes + 4, 1); // a section's flag
                 CHECK(parse(w, p) == Verdict::NewerFormat);
                 w = v;
                 put16(w, 6, 64);
@@ -220,6 +242,9 @@ TEST_CASE("Update packages: built, checked, and each fault refused") {
                 w = v;
                 w[60 + 20] = 'x'; // text after the version's NUL
                 CHECK(parse(w, p) == Verdict::Malformed);
+                w = v;
+                put16(w, 134, 1); // the version's reserved u16
+                CHECK(parse(w, p) == Verdict::Malformed);
         }
         SUBCASE("sections outside the file, inside the head, or twice") {
                 std::vector<uint8_t> w(v.begin(), v.end() - 1);
@@ -227,15 +252,15 @@ TEST_CASE("Update packages: built, checked, and each fault refused") {
                 w.assign(v.begin(), v.begin() + 100);
                 CHECK(parse(w, p) == Verdict::Truncated);
                 w = v;
-                put32(w, 128 + 8, 10); // the firmware's offset, inside the head
+                put32(w, UpdatePackage::HeaderBytes + 8, 10); // the firmware's offset, inside the head
                 resign(w);
                 CHECK(parse(w, p) == Verdict::Malformed);
                 w = v;
-                put32(w, 128 + 48, 1); // the ROM listed as a second firmware
+                put32(w, UpdatePackage::HeaderBytes + 48, 1); // the ROM listed as a second firmware
                 resign(w);
                 CHECK(parse(w, p) == Verdict::Malformed);
                 w = v;
-                put32(w, 128, 0); // type 0
+                put32(w, UpdatePackage::HeaderBytes, 0); // type 0
                 CHECK(parse(w, p) == Verdict::Malformed);
         }
         SUBCASE("verdicts have words") {

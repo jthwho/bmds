@@ -55,6 +55,15 @@ menu "BMDS kernel"
             The clock itself keeps UTC; the shell's TZ variable overrides
             the zone for display.
 
+    config BMDS_RECOVERY
+        bool "The recovery firmware (recovery/)"
+        default n
+        help
+            Set by recovery/sdkconfig.defaults: this build is the
+            recovery firmware (devplan/update.md §4), run from ota_1, that
+            applies updates. It leaves out what it doesn't need (the
+            ROM's image, the network, audio, the GUI).
+
     choice BMDS_UPDATE_KEYS
         prompt "Update packages accepted (acceptance mode)"
         default BMDS_UPDATE_KEYS_DEV

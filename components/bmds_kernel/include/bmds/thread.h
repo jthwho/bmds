@@ -85,6 +85,16 @@ class Thread {
                 void detach();
 
                 /**
+                 * @brief Runs @p entry(@p arg) on a new kernel thread with an internal-RAM stack of
+                 *        @p stackBytes, at the caller's priority, and waits for it to return: for
+                 *        what turns the caches off (a flash erase or write, `esp_ota_*`), which
+                 *        asserts on a stack in PSRAM, as programs' and the shell's are.
+                 * @return `Ok`, or `NoMem` (it didn't run).
+                 * @blocking
+                 */
+                static Error runOnInternalStack(const char *name, size_t stackBytes, Entry entry, void *arg);
+
+                /**
                  * @brief Blocks the calling thread (or task) for @p delayMs.
                  * @blocking
                  */

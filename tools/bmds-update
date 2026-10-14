@@ -1,0 +1,61 @@
+#!/bin/sh
+# @file      bmds-update
+# @copyright Jason Howard. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+# See LICENSE file in the project root folder for license information.
+#
+# Pushes an update package to a board and applies it (devplan/update.md §3), over SSH:
+#
+#   tools/bmds-update [--force] [--check] HOST FILE
+#
+# FILE (a .bmup, e.g. build/bmds.bmup from `build update`) is copied into the board's update/dir
+# setting (/sd0/p0/update by default), checked, and applied: the board restarts into recovery,
+# installs it, and comes back. --check only copies and checks it; --force applies one that isn't
+# newer than what is installed. HOST is what ssh takes (root@bmds0).
+
+set -eu
+
+force=
+check=
+while [ $# -gt 2 ]; do
+        case "$1" in
+                --force) force=--force ;;
+                --check) check=1 ;;
+                *) echo "usage: bmds-update [--force] [--check] HOST FILE" >&2; exit 2 ;;
+        esac
+        shift
+done
+if [ $# -ne 2 ]; then
+        echo "usage: bmds-update [--force] [--check] HOST FILE" >&2
+        exit 2
+fi
+host=$1
+file=$2
+name=$(basename "$file")
+
+dir=$(ssh "$host" 'sysconf get update/dir')
+ssh "$host" "mkdir '$dir' 2>/dev/null; true"
+scp -q "$file" "$host:$dir/$name"
+ssh "$host" "update check '$dir/$name'"
+[ -n "$check" ] && exit 0
+# The board restarts while this runs: the connection ends without a status.
+ssh -o ServerAliveInterval=2 -o ServerAliveCountMax=3 "$host" \
+        "update apply $force '$dir/$name'" || true
+echo "bmds-update: waiting for $host to come back"
+sleep 5
+tries=0
+until ssh -o ConnectTimeout=3 "$host" true 2>/dev/null; do
+        tries=$((tries + 1))
+        if [ $tries -gt 90 ]; then
+                echo "bmds-update: $host didn't come back: see its console (recovery?)" >&2
+                exit 1
+        fi
+        sleep 2
+done
+status=$(ssh "$host" 'update status')
+echo "$status"
+case "$status" in
+        *"Last:     status: applied"*) exit 0 ;;
+        *) exit 1 ;;
+esac

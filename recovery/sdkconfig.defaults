@@ -1,0 +1,5 @@
+# The recovery firmware's configuration: the main one's (../sdkconfig.defaults, read first), and
+# these.
+
+CONFIG_BMDS_RECOVERY=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../partitions.csv"

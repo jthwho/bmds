@@ -44,8 +44,16 @@ target_include_directories(${COMPONENT_LIB} PRIVATE src)
 # database from thirdparty/tzdata (with the host's zic: without it, the ROM has none, and says so
 # here), then the image (and rom/files/, when there is such a tree), refused if it outgrows its
 # partition; idf.py flash writes it. Its content hash becomes romhash.h, which RomDisk compares
-# with what it finds.
-if(NOT BOOTLOADER_BUILD)
+# with what it finds. The recovery firmware (devplan/update.md §4) builds no ROM: it may be what
+# is repaired, so its RomContentHash matches none.
+if(CONFIG_BMDS_RECOVERY AND NOT BOOTLOADER_BUILD)
+        set(BMDS_ROM_HASH ${CMAKE_CURRENT_BINARY_DIR}/romhash.h)
+        file(WRITE ${BMDS_ROM_HASH}.new "// Recovery: no ROM built with it (components/bmds_storage).\n"
+                                        "#pragma once\n#include <cstdint>\n\nnamespace {\n\n"
+                                        "        constexpr uint8_t RomContentHash[32] = {};\n\n} // namespace\n")
+        configure_file(${BMDS_ROM_HASH}.new ${BMDS_ROM_HASH} COPYONLY)
+        target_include_directories(${COMPONENT_LIB} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+elseif(NOT BOOTLOADER_BUILD)
         set(BMDS_ROM_DIR ${CMAKE_CURRENT_LIST_DIR}/../../rom)
         set(BMDS_MKROM ${CMAKE_CURRENT_LIST_DIR}/../../tools/mkrom.py)
         set(BMDS_ROM_OUT ${CMAKE_BINARY_DIR}/rom)

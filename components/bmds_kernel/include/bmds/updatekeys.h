@@ -26,6 +26,9 @@ namespace UpdateKeys {
         /** @brief The accepted keys: the release keys, and in dev mode the dev key too. */
         Span<const UpdatePackage::Key> accepted();
 
+        /** @brief Returns true if `accepted()[index]` is the dev key, not a release key. */
+        bool isDevKey(size_t index);
+
         /** @brief Returns true if this firmware accepts the dev key (`CONFIG_BMDS_UPDATE_KEYS_DEV`). */
         bool isDevMode();
 

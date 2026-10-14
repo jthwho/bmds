@@ -129,6 +129,20 @@ void Thread::detach() {
         return;
 }
 
+Error Thread::runOnInternalStack(const char *name, size_t stackBytes, Entry entry, void *arg) {
+        Thread thread;
+        Config config;
+        config.name = name;
+        config.stackBytes = stackBytes;
+        config.stackSpace = MemSpace::Internal;
+        config.priority = uxTaskPriorityGet(nullptr);
+        config.kernel = true;
+        const Error err = thread.start(config, entry, arg);
+        if (err.isError()) return err;
+        thread.join();
+        return Error::Ok;
+}
+
 void Thread::join() {
         Record *rec = static_cast<Record *>(_impl);
         if (rec == nullptr) return;

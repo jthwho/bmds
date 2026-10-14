@@ -528,8 +528,25 @@ namespace {
 
         int runReboot(CommandContext &ctx) {
                 const Args args = ctx.args();
-                if (args.size() != 1) return ctx.usage();
-                ctx.print("Rebooting...\n");
+                const bool recovery = args.size() == 2 && StringView(args[1]) == "recovery";
+                if (args.size() != 1 && !recovery) return ctx.usage();
+                // Recovery's plain reboot goes back to the main firmware, if it checks good.
+                const bool toMain = !recovery && System::running() == System::Firmware::Recovery;
+                if (recovery || toMain) {
+                        const Error err =
+                                System::setNextFirmware(recovery ? System::Firmware::Recovery : System::Firmware::Main);
+                        if (err.isError() && recovery) {
+                                ctx.eprintf("reboot: no recovery firmware to start (%s)\n", err.desc());
+                                return Shell::ExitFailure;
+                        }
+                        if (err.isError()) {
+                                ctx.eprintf("reboot: the main firmware doesn't check (%s): staying in recovery; "
+                                            "apply an update ('update apply FILE')\n",
+                                            err.desc());
+                                return Shell::ExitFailure;
+                        }
+                }
+                ctx.print(recovery ? "Rebooting into recovery...\n" : "Rebooting...\n");
                 (void)Vfs::sync(); // the card's directories and allocation held for writing back
                 (void)ctx.shell().console().flush(RebootFlushMs);
                 System::restart();
@@ -551,7 +568,9 @@ BMDS_SHELL_COMMAND(log, runLog, "[show]",
 BMDS_SHELL_COMMAND(mem, runMem, "[-h | mark | new]",
                    "Show memory usage per memory space, and what caches hold (bytes; -h: 16.55M, 432.43k); "
                    "'mark' records the heap blocks in use, 'new' lists those in use now that weren't then")
-BMDS_SHELL_COMMAND(reboot, runReboot, "", "Restart the system")
+BMDS_SHELL_COMMAND(reboot, runReboot, "[recovery]",
+                   "Restart the system; 'recovery': into the recovery firmware (updates, repairs). In recovery, "
+                   "restart into the main firmware if it checks good")
 BMDS_SHELL_COMMAND(sleep, runSleep, "<seconds>", "Wait for a number of seconds (fractions allowed, e.g. 0.5)")
 BMDS_SHELL_COMMAND(uptime, runUptime, "", "Show time since boot")
 BMDS_SHELL_COMMAND(version, runVersion, "", "Show BMDS, build, board and chip versions, and the serial number")

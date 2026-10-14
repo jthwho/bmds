@@ -51,6 +51,23 @@ const UpdatePackage::Section *UpdatePackage::Package::find(SectionType type) con
         return nullptr;
 }
 
+bool UpdatePackage::parseVersion(const char *text, Version &out) {
+        uint16_t parts[3] = {};
+        for (int i = 0; i < 3; ++i) {
+                if (i > 0 && *text++ != '.') return false;
+                if (*text < '0' || *text > '9') return false;
+                uint32_t n = 0;
+                while (*text >= '0' && *text <= '9') {
+                        n = n * 10 + uint32_t(*text++ - '0');
+                        if (n > 0xffff) return false;
+                }
+                parts[i] = uint16_t(n);
+        }
+        if (*text != '\0' && *text != '+' && *text != '-') return false;
+        out = Version{parts[0], parts[1], parts[2]};
+        return true;
+}
+
 const char *UpdatePackage::verdictText(Verdict v) {
         switch (v) {
                 case Verdict::Ok: return "good";
@@ -89,9 +106,11 @@ UpdatePackage::Verdict UpdatePackage::parse(Span<const uint8_t> head, uint64_t f
         out.abiVersion = u32(h + 16);
         out.minChipRevision = u16(h + 20);
         if (u16(h + 22) != 0) return Verdict::Malformed;
-        if (!text(h + 24, out.board) || !text(h + 56, out.version)) return Verdict::Malformed;
+        if (!text(h + 24, out.board) || !text(h + 56, out.versionText)) return Verdict::Malformed;
         std::memcpy(out.buildId, h + 88, sizeof(out.buildId));
         out.madeAt = i64(h + 120);
+        out.version = Version{u16(h + 128), u16(h + 130), u16(h + 132)};
+        if (u16(h + 134) != 0) return Verdict::Malformed;
         out.signedBytes = HeaderBytes + out.sectionCount * SectionBytes;
         out.headBytes = need;
         for (size_t i = 0; i < out.sectionCount; ++i) {

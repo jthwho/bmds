@@ -303,6 +303,17 @@ until silicon v3; then test again.
   a buffer's end (the JPEG encoder above, the USB-Serial/JTAG FIFO in `docs/HARDWARE.md`).
 - **Revision macros:** some of ESP-IDF's workarounds depend on `CONFIG_ESP32P4_SELECTS_REV_LESS_V3`
   and on chip-revision macros; check which branch a workaround is in before relying on it.
+- **Anything that writes the flash or turns the caches off needs an internal stack:** called from
+  a task whose stack is in PSRAM (programs', the shell's), `esp_ota_set_boot_partition()` asserted
+  in `spi_flash_disable_interrupts_caches_and_other_cpu` (`esp_task_stack_is_sane_cache_disabled`).
+  So do `esp_partition_erase_range/write/read`. `Thread::runOnInternalStack()` runs such work on a
+  kernel thread with an internal stack and waits (`devplan/update.md` §11).
+- **The second-stage bootloader can't fall back to `ota_1` on this IDF (v6.1-dev, ff97953b):**
+  `bootloader_flash_read_allow_decrypt()` invalidates the cache at `FLASH_MMAP_VADDR` after moving
+  its read window, which is at `FLASH_READ_VADDR`. With `ota_0`'s first page zeroed, `ota_1`'s
+  header was read from the cache as zeros ("invalid magic byte"), though the flash held `e9`.
+  Upstream master invalidates `FLASH_READ_VADDR` (2026-10-13). Normal boots read one image and
+  don't see it (`devplan/update.md` §11).
 
 ## 6. The ROM
 

@@ -24,6 +24,10 @@ Span<const UpdatePackage::Key> UpdateKeys::accepted() {
         return Keys;
 }
 
+bool UpdateKeys::isDevKey(size_t index) {
+        return index + 1 > BMDS_UPDATE_RELEASE_KEYS; // ">= 0" is a warning without release keys
+}
+
 bool UpdateKeys::isDevMode() {
 #ifdef CONFIG_BMDS_UPDATE_KEYS_DEV
         return true;

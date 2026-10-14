@@ -12,9 +12,10 @@
 #       A new signing key: the private key to KEY (PEM, mode 600; keep it out of the
 #       repository), its public half to PUB (one line: "ed25519 HEX COMMENT").
 #   mkupdate make OUT --board BOARD [--key KEY] [--firmware BIN] [--rom BIN]
-#                 [--recovery BIN] [--notes FILE] [--abi N] [--partitions CSV]
+#                 [--recovery BIN] [--notes FILE] [--abi N] [--partitions CSV] [--accept PUB]...
 #       (--key defaults to keys/dev.key; --abi to sdk/include/bmds/sys.h's BMDS_ABI_VERSION)
-#       A package of the images given, signed with KEY. The version, build id and least
+#       A package of the images given, signed with KEY. With --accept, refused unless KEY is
+#       one of those (the keys the firmware it is for accepts). The version, build id and least
 #       chip revision come from the firmware's image (the recovery's if there is none).
 #       With --partitions, each image is checked against its partition's size.
 #   mkupdate info FILE [--pub PUB]...
@@ -34,9 +35,10 @@ from cryptography.exceptions import InvalidSignature
 
 MAGIC = b'BMUP'
 FORMAT = 1
-HEADER_BYTES = 128
+HEADER_BYTES = 136
 SECTION_BYTES = 48
 SIGNATURE_BYTES = 64
+HEADER = '<4sHHIIIHH32s32s32sqHHHH'
 MAX_SECTIONS = 16
 
 FIRMWARE, ROM, RECOVERY, NOTES = 1, 2, 3, 4
@@ -60,6 +62,20 @@ def abi_version():
         if len(parts) >= 3 and parts[0] == '#define' and parts[1] == 'BMDS_ABI_VERSION':
             return int(parts[2].rstrip('uU'), 0)
     fail('no BMDS_ABI_VERSION in ' + sys_h)
+
+
+def bmds_version():
+    """bmds/version.h's (major, minor, patch): what a package's version is compared by."""
+    path = os.path.join(ROOT, 'components', 'bmds_core', 'include', 'bmds', 'version.h')
+    found = {}
+    for line in open(path):
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] == '#define' and parts[1].startswith('BMDS_VERSION_'):
+            found[parts[1][len('BMDS_VERSION_'):]] = int(parts[2])
+    try:
+        return found['MAJOR'], found['MINOR'], found['PATCH']
+    except KeyError:
+        fail('no BMDS_VERSION_MAJOR, _MINOR and _PATCH in ' + path)
 
 
 def fail(msg):
@@ -151,6 +167,11 @@ def cmd_make(args):
         args.key = os.path.join(KEYS, 'dev.key')
         print('signing with the dev key (only dev firmware accepts it)')
     key = load_key(args.key)
+    if args.accept:
+        mine = public_hex(key)
+        raw = (serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        if not any(k.public_bytes(*raw).hex() == mine for k, _ in load_pubs(args.accept)):
+            fail('%s is not a key %s accepts (keys/README.md)' % (args.key, ' or '.join(args.accept)))
     if args.abi is None:
         args.abi = abi_version()
     images = []
@@ -171,6 +192,12 @@ def cmd_make(args):
         elif kind == NOTES:
             data.decode('utf-8')  # must be text
     version, build_id, min_rev = info if info else ('', bytes(32), 0)
+    number = bmds_version()
+    dotted = '%d.%d.%d' % number
+    if not version:
+        version = dotted
+    elif version.split('+')[0] != dotted:
+        fail('the firmware says it is %s, bmds/version.h %s: a stale image?' % (version, dotted))
     if args.partitions:
         sizes = partition_sizes(args.partitions)
         for kind, data in images:
@@ -179,9 +206,9 @@ def cmd_make(args):
                 fail('%s (%d bytes) is bigger than %s (%d)' % (NAMES[kind], len(data), part, sizes.get(part, 0)))
 
     head_bytes = HEADER_BYTES + len(images) * SECTION_BYTES + SIGNATURE_BYTES
-    header = struct.pack('<4sHHIIIHH32s32s32sq', MAGIC, FORMAT, HEADER_BYTES, 0, len(images), args.abi, min_rev, 0,
+    header = struct.pack(HEADER, MAGIC, FORMAT, HEADER_BYTES, 0, len(images), args.abi, min_rev, 0,
                          field(args.board, 'the board'), field(version, 'the version'), build_id,
-                         int(time.time()))
+                         int(time.time()), *number, 0)
     assert len(header) == HEADER_BYTES
     table = b''
     offset = head_bytes
@@ -204,12 +231,12 @@ def cmd_info(args):
     if data[:4] != MAGIC:
         fail('%s is not an update package' % args.file)
     (magic, fmt, hbytes, flags, count, abi, min_rev, _, board, version, build_id,
-     made) = struct.unpack_from('<4sHHIIIHH32s32s32sq', data, 0)
+     made, major, minor, patch, _) = struct.unpack_from(HEADER, data, 0)
     if fmt != FORMAT or hbytes != HEADER_BYTES or count > MAX_SECTIONS:
         fail('%s: format %d, header %d, %d sections: not one this tool reads' % (args.file, fmt, hbytes, count))
     signed = HEADER_BYTES + count * SECTION_BYTES
     print('board:    %s' % board.rstrip(b'\0').decode())
-    print('version:  %s' % version.rstrip(b'\0').decode())
+    print('version:  %d.%d.%d (%s)' % (major, minor, patch, version.rstrip(b'\0').decode()))
     print('build id: %s' % build_id.hex())
     print('made:     %s' % time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(made)))
     print('abi:      %d; least chip revision v%d.%d' % (abi, min_rev // 100, min_rev % 100))
@@ -253,6 +280,7 @@ def main():
     m.add_argument('--notes')
     m.add_argument('--abi', type=int, help="BMDS_ABI_VERSION (default: the SDK's)")
     m.add_argument('--partitions')
+    m.add_argument('--accept', action='append', help='a .pub file the key must be in')
     i = sub.add_parser('info')
     i.add_argument('file')
     i.add_argument('--pub', action='append')

@@ -71,7 +71,13 @@ void Shell::prepareInteractive(bool login) {
                 (void)vars.set("HOSTNAME", name);
         }
         // A colored prompt with the directory; the console fits the color to its terminal.
-        if (!inherited("PS1")) (void)vars.set("PS1", "\\[\\e[1;32m\\]\\h\\[\\e[0m\\]:\\[\\e[1;34m\\]\\w\\[\\e[0m\\]> ");
+        // In the recovery firmware it starts with "recovery" in red (devplan/update.md §4).
+        if (!inherited("PS1")) {
+                (void)vars.set("PS1", System::running() == System::Firmware::Recovery
+                                              ? "\\[\\e[1;31m\\]recovery\\[\\e[0m\\] "
+                                                "\\[\\e[1;32m\\]\\h\\[\\e[0m\\]:\\[\\e[1;34m\\]\\w\\[\\e[0m\\]> "
+                                              : "\\[\\e[1;32m\\]\\h\\[\\e[0m\\]:\\[\\e[1;34m\\]\\w\\[\\e[0m\\]> ");
+        }
         return;
 }
 

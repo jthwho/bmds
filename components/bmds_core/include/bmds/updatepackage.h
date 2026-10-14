@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
@@ -21,14 +22,15 @@ BMDS_NAMESPACE_BEGIN
  *        to flash, their hashes, and a signature over them. An on-disk format: append only.
  *
  * Little-endian. The head, which a check reads first, is:
- * - a 128-byte header: `BMUP`, u16 format (1), u16 the header's size (128), u32 flags (0; any
+ * - a 136-byte header: `BMUP`, u16 format (1), u16 the header's size (136), u32 flags (0; any
  *   other is a package this code doesn't read),
  *   u32 the section count, u32 `BMDS_ABI_VERSION`, u16 the least chip revision (major * 100 +
  *   minor, as IDF's image header), u16 0, the board (32 bytes, `CONFIG_BMDS_BOARD_DIR`, NUL
- *   padded), the version (32, `PROJECT_VER`), the build id (32, the app's ELF SHA-256), i64 when
- *   it was made (seconds since 1970);
- * - the sections, 48 bytes each: u32 type, u32 flags (0, as the header's), u32 offset, u32 size, then BLAKE2s-256
- *   of its bytes;
+ *   padded), the version's text (32, `PROJECT_VER`: "0.2.0+72cba49a"), the build id (32, the
+ *   app's ELF SHA-256), i64 when it was made (seconds since 1970), the version (u16 major, minor,
+ *   patch: `bmds/version.h`'s, what is compared), u16 0;
+ * - the sections, 48 bytes each: u32 type, u32 flags (0, as the header's), u32 offset, u32 size,
+ *   then BLAKE2s-256 of its bytes;
  * - an Ed25519 signature over the header and the sections.
  *
  * The sections' bytes follow, anywhere after the head within the file. Every hash is in the
@@ -41,7 +43,7 @@ BMDS_NAMESPACE_BEGIN
 namespace UpdatePackage {
 
         /** @brief The header's bytes, a section's, and the most sections a package has. */
-        constexpr size_t HeaderBytes = 128;
+        constexpr size_t HeaderBytes = 136;
         constexpr size_t SectionBytes = 48; ///< See `HeaderBytes`.
         constexpr size_t MaxSections = 16;  ///< See `HeaderBytes`.
 
@@ -62,6 +64,16 @@ namespace UpdatePackage {
                 Notes = 4,    ///< Release notes, UTF-8 text.
         };
 
+        /** @brief A version (`BMDS_VERSION_*`), ordered major, minor, patch. */
+        struct Version {
+                        uint16_t major = 0;
+                        uint16_t minor = 0;
+                        uint16_t patch = 0;
+
+                        /** @brief Orders versions: major, then minor, then patch. */
+                        auto operator<=>(const Version &) const = default;
+        };
+
         /** @brief One section. */
         struct Section {
                         uint32_t type = 0;
@@ -75,7 +87,8 @@ namespace UpdatePackage {
                         uint32_t abiVersion = 0;
                         uint16_t minChipRevision = 0;
                         char     board[33] = {};   ///< NUL-terminated.
-                        char     version[33] = {}; ///< NUL-terminated.
+                        char     versionText[33] = {}; ///< NUL-terminated (`PROJECT_VER`).
+                        Version  version;
                         uint8_t  buildId[32] = {};
                         int64_t  madeAt = 0; ///< Seconds since 1970.
                         size_t   sectionCount = 0;
@@ -103,6 +116,12 @@ namespace UpdatePackage {
         struct Key {
                         uint8_t bytes[Ed25519::PublicKeyBytes] = {};
         };
+
+        /**
+         * @brief Reads the number at the start of a version's text ("0.2.0+72cba49a": 0.2.0) into
+         *        @p out. @return false if it doesn't start with three dotted numbers below 65536.
+         */
+        bool parseVersion(const char *text, Version &out);
 
         /** @brief Returns a short English description of @p v ("its signature doesn't check"). */
         const char *verdictText(Verdict v);

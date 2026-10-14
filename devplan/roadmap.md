@@ -306,6 +306,12 @@ Plan: [`input.md`](input.md).
     recovery) pushed onto the card over SSH or copied there, checked, and applied by a recovery
     firmware in `ota_1`; `update check|apply|status`, `reboot recovery`; headless or graphical
     start to finish (the Updater, recovery's progress screen).
+    - [x] Step 1: the package, `tools/mkupdate`, dev and release keys, `build update`, the version.
+    - [x] Step 2: the recovery firmware (headless), `update check|apply|status`, `reboot recovery`,
+      `tools/bmds-update`; resets at each stage tested (§11). Open: the IDF bootloader's fallback
+      bug, one unexplained bad read.
+    - [ ] Step 3: recovery's screen ("Recovery Mode" its title). Step 4: the Updater. Step 5: fetch
+      from a URL, crash counter. Last: `ota_1` cut to recovery's size, the rest to `rom` (§6).
 
 ## Phase 8 — Self-Hosting
 
