@@ -5,8 +5,9 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * The recovery firmware's entry point (devplan/update.md §4): the console, the card, /boot and a
- * shell, run without the program loader (which brings the whole system with it).
+ * The recovery firmware's entry point (devplan/update.md §4): the console, the card, /boot, the
+ * screen and the keyboard, and a shell on each of the serial console and the screen, run without
+ * the program loader (which brings the whole system with it).
  */
 
 #include <sdkconfig.h>
@@ -14,22 +15,27 @@
 #include <bmds/bootdisk.h>
 #include <bmds/builtinprograms.h>
 #include <bmds/filehandle.h>
+#include <bmds/i2cbus.h>
+#include <bmds/input.h>
 #include <bmds/logfiles.h>
 #include <bmds/shell.h>
 #include <bmds/storage.h>
 #include <bmds/sysconf.h>
 #include <bmds/thread.h>
 #include <bmds/update.h>
+#include <bmds/usbhost.h>
 #include <bmds/usbserialconsole.h>
 #include <bmds/vfs.h>
+#include "recoveryscreen.h"
 
 namespace {
 
-        constinit bmds::Thread shellThread;
+        constinit bmds::Thread serialShellThread;
+        constinit bmds::Thread screenShellThread;
 
-        // The serial console's shell: a login shell, run again when it ends.
-        void serialShell(void *) {
-                bmds::Console &console = bmds::UsbSerialConsole::instance();
+        // A console's shell: a login shell, run again when it ends.
+        void consoleShell(void *arg) {
+                bmds::Console &console = *static_cast<bmds::Console *>(arg);
                 for (;;) {
                         auto [handle, err] = bmds::FileHandle::open(console, bmds::FileHandle::ReadWrite);
                         if (err.isError()) return;
@@ -49,23 +55,30 @@ namespace {
                 }
         }
 
-        bmds::Error startSerialShell() {
+        bmds::Error startShells() {
                 bmds::Thread::Config config;
                 config.name = "sh";
                 config.stackBytes = CONFIG_BMDS_SHELL_STACK_BYTES;
                 config.stackSpace = bmds::MemSpace::Psram;
-                return shellThread.start(config, serialShell, nullptr);
+                bmds::Error    err = serialShellThread.start(config, consoleShell, &bmds::UsbSerialConsole::instance());
+                bmds::Console *screen = bmds::RecoveryScreen::console();
+                if (err.isOk() && screen != nullptr) err = screenShellThread.start(config, consoleShell, screen);
+                return err;
         }
 
         constexpr bmds::Boot::Stage SystemStages[] = {
                 {"console", bmds::UsbSerialConsole::init},
+                {"i2c", bmds::I2cBus::init}, // the display's bridge
                 {"vfs", bmds::Vfs::init},
                 {"boot", bmds::BootDisk::init},   // /boot: the update's intent and result
                 {"sysconf", bmds::SysConf::init}, // the system configuration, saved on /boot
                 {"logs", bmds::LogFiles::init},   // /dev/log; the log's files once the card mounts
                 {"storage", bmds::Storage::init}, // the card, where packages are
-                {"update", bmds::Update::init},   // the intent applied, once the card is in
-                {"shell", startSerialShell},
+                {"input", bmds::Input::init},
+                {"usb", bmds::UsbHost::init},           // the keyboard
+                {"screen", bmds::RecoveryScreen::init}, // Recovery Mode, the update, a terminal
+                {"update", bmds::Update::init},         // the intent applied, once the card is in
+                {"shell", startShells},
         };
 
 } // namespace

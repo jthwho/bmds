@@ -300,7 +300,7 @@ class Shell final : public LineCompleter {
                 void completeCommand(StringView word, CompletionSink &sink);
                 void runInput();
                 void endInterrupt();
-                void prepareInteractive(bool login); // target: the defaults, the boot (shellesp.cpp)
+                bool prepareInteractive(bool login); // target: the defaults; false: no user scripts (shellesp.cpp)
                 void       prepareProgram();               // target: HOME and PATH if not inherited (shellesp.cpp)
                 void       hostName(String &out) const;    // the prompt's \h: the system's (shellesp.cpp)
                 void       reportJobs();                   // jobs that ended, before a prompt (jobs.cpp)

@@ -211,9 +211,11 @@ int Shell::interact(bool login) {
                 for (int sig : {SigTerm, SigQuit, SigTstp, SigTtin, SigTtou})
                         (void)_process->setSignalAction(sig, ProcessControl::SignalAction::Ignore);
         }
-        prepareInteractive(login);
-        (void)sourceIfExists(ProfilePath);
-        if (login) (void)sourceIfExists(LoginScriptPath);
+        // The recovery firmware reads neither: what it repairs may be what they break.
+        if (prepareInteractive(login)) {
+                (void)sourceIfExists(ProfilePath);
+                if (login) (void)sourceIfExists(LoginScriptPath);
+        }
         int status = run();
         // Pid 1 is the system's shell: it never ends (nothing can end its process).
         while (_process != nullptr && _process->processId() == 1 && !_process->isEnding()) status = run();
@@ -751,8 +753,8 @@ int shellAppletMain(const BuiltinProgram::Context &) {
 }
 
 // Nothing to wait for, no defaults beyond init()'s (shellesp.cpp on the target).
-void Shell::prepareInteractive(bool) {
-        return;
+bool Shell::prepareInteractive(bool) {
+        return true;
 }
 
 void Shell::prepareProgram() {

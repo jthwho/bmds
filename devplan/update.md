@@ -283,3 +283,56 @@ could tell newer from older. Now:
   before and after (the same bytes on the card; 18 checks since, 6 just after a boot): a bad read
   not yet explained, hence recovery's second write. The check reads 6.2 MB and hashes as much
   flash: 5 s. The main firmware grew 47 KB (Ed25519, IDF's OTA code, the engine).
+
+## 12. Step 3: recovery's screen (plan, 2026-10-13)
+
+What §5 asks of recovery, made of what the GUI is made of below its window manager:
+
+- **The display** at a fixed 1280×720 at 60 Hz (CEA), single-buffered: `Display::start()` from a
+  boot stage, not `display/mode` (recovery doesn't trust the user's settings; 720p is what every
+  HDMI sink takes). No display: recovery runs on, headless.
+- **The picture:** a band across the top, "Recovery Mode" and the version, in the recovery color
+  (amber on dark red); under it the update panel (only while an update runs or has a result: the
+  package's version, the stage in words, a progress bar and percentage; then "Installed,
+  restarting" or what failed and what to do); the rest a terminal running a second recovery shell
+  (the first stays on the serial console). Text is unscii 8×16, drawn by `GlyphRenderer` into a
+  strip of internal DMA RAM (a row of cells: 1280 × 16 × 3 bytes) and copied with
+  `Surface::blit()`; the bands and the bar are `fill()`s. Only what changed is drawn.
+- **One task** (`screen`, internal stack: it waits for the DMA) waits on a semaphore that the
+  terminal's changed hook and the update's progress give; no timer, no polling.
+- **The keyboard:** USB host and the HID decoder (`UsbHost`, `Input`), the screen as `Input`'s
+  sink, keys encoded by `TerminalKeys` into the terminal's input. The mouse is ignored.
+- **The update's progress** reaches the screen through an observer on `Update` (`setObserver()`:
+  progress, and the end with its result), called from the update's job.
+- **Size:** `bmds_drivers`, `bmds_ui` (whole, for its font and renderer: 121 KB), `bmds_console`,
+  `bmds_input` and TinyUSB come in: about 250 KB, recovery about 900 KB of `ota_1`'s 2 MB.
+- **Also in this step:** recovery's shells read neither `/boot/profile` nor `autoexec.sh` (they ran
+  the user's startup: what recovery repairs may be what breaks it).
+
+## 13. As built: step 3, recovery's screen (2026-10-14)
+
+- **As §12**, in `recovery/main/recoveryscreen.cpp`: the display at 1280×720 single-buffered
+  (`display/mode` not read), the band ("Recovery Mode", the version and the board), the panel, a
+  rule, and a terminal of 158 × 36 cells running recovery's second shell. One task (`screen`, 8 KB
+  internal stack) draws on a semaphore from the terminal's changed hook and the update's
+  observer (`Update::Observer`: `started`, `progress`, `finished`, from the job). Terminal rows are
+  hashed and only rows that changed are drawn. Keys: `Input`'s sink, `TerminalKeys`, the console's
+  input. **Recovery is 918 KB** (56% of `ota_1` free; it was 635 KB): `bmds_drivers`, `bmds_ui`,
+  `bmds_input`, TinyUSB.
+- **The panel's phases:** idle (how to install from the card, what `reboot` does); installing (the
+  version, the stage, "Don't turn the power off", the bar and percent); installed ("Restarting...");
+  failed and restarting ("The system is as it was"); failed and staying (put a card with an update
+  in and `update apply FILE`, or restart to try again). Recovery holds the end on the screen 2 s
+  before it restarts (1.5 s after `update apply` typed in it).
+- **Flicker:** redrawing the whole panel on each step of progress showed it half drawn (seen in a
+  screenshot); progress now redraws only the stage's line and the bar, each replacing its pixels
+  in one copy. **The erase** (most of a section's time: 17 s for the ROM) counts as a third of
+  each section's progress, erased 256 KB at a time: the bar no longer sits at 0% through it.
+- **Recovery's shells read neither `/boot/profile` nor `autoexec.sh`** (`prepareInteractive()`
+  says so): they had run the user's startup, the card's included.
+- **Tested on the board** with `screenshot` (in recovery through `bmds_ui`) saved to the card and
+  fetched from the main firmware: idle, installing (the ROM at 24%, the firmware at 12% during
+  its erase), installed, failed and restarting (a missing package), failed and staying (`ota_0`
+  damaged), and a real update of both firmwares (the main firmware wrote the new recovery, which
+  installed the firmware). **Not tested: typing on the USB keyboard** (it enumerates; nothing here
+  can press its keys); the mouse is ignored.

@@ -104,6 +104,27 @@ namespace Update {
                         String result;
         };
 
+        /**
+         * @brief Who watches recovery apply an update (recovery's screen): called from the
+         *        update's job, so quickly and without blocking. Any may be null.
+         */
+        struct Observer {
+                        /** The package checked good: writing starts (@p report's package is known). */
+                        void (*started)(void *arg, const Report &report) = nullptr;
+                        /** As `Progress`. */
+                        void (*progress)(void *arg, Stage stage, uint64_t done, uint64_t total) = nullptr;
+                        /**
+                         * It ended: @p failure is null when it was applied, else why not; @p restarting
+                         * is false when recovery stays (the main firmware doesn't check).
+                         */
+                        void (*finished)(void *arg, const Report &report, const char *failure,
+                                         bool restarting) = nullptr;
+                        void *arg = nullptr;
+        };
+
+        /** @brief Sets the observer (outliving its use; null: none). Once, at boot. */
+        void setObserver(const Observer *observer);
+
         /** @brief Reads the intent and the result from /boot. @blocking */
         Error status(Status &out);
 

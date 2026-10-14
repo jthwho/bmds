@@ -41,9 +41,14 @@ namespace {
         constexpr size_t   ChunkBytes = 16 * 1024;
         constexpr size_t   JobStackBytes = 12 * 1024;
         constexpr uint32_t SectorBytes = 4096;
+        constexpr uint32_t EraseStepBytes = 256 * 1024; // a multiple of the 64 KB erase block
         constexpr uint8_t  AppMagic = 0xE9;
+        // How long recovery shows how an update ended before it restarts.
+        constexpr unsigned RestartPauseMs = 2000;
 
         std::atomic<bool> busy{false};
+
+        std::atomic<const Update::Observer *> observer{nullptr};
 
         // Where packages are kept: what tools/bmds-update copies to, and (step 4) what the
         // Updater lists.
@@ -98,6 +103,10 @@ namespace {
 
         void report(Job &job, Update::Stage stage, uint64_t done, uint64_t total) {
                 if (job.progress != nullptr) job.progress(job.arg, stage, done, total);
+                const Update::Observer *o = observer.load(std::memory_order_acquire);
+                if (o != nullptr && o->progress != nullptr && job.mode == Mode::ApplyRecovery) {
+                        o->progress(o->arg, stage, done, total);
+                }
                 return;
         }
 
@@ -245,11 +254,18 @@ namespace {
                 if (partition == nullptr) return Error::NotExist;
                 bmdsInfo("Update: writing %s (%u bytes) to %s", sectionName(s.type), static_cast<unsigned>(s.size),
                          partition->label);
-                const uint64_t total = uint64_t(s.size) * 2;
+                // Erasing, writing and reading back, a third each: the erase alone is most of the time
+                // (a 3.5 MB ROM: 17 s), and a bar that doesn't move then looks stuck.
+                const uint64_t total = uint64_t(s.size) * 3;
                 uint64_t       done = 0;
                 report(job, stage, 0, total);
                 const uint32_t erase = (s.size + SectorBytes - 1) / SectorBytes * SectorBytes;
-                if (esp_partition_erase_range(partition, 0, erase) != ESP_OK) return Error::IoError;
+                for (uint32_t at = 0; at < erase; at += EraseStepBytes) {
+                        const uint32_t n = erase - at < EraseStepBytes ? erase - at : EraseStepBytes;
+                        if (esp_partition_erase_range(partition, at, n) != ESP_OK) return Error::IoError;
+                        done = at + n < s.size ? at + n : s.size;
+                        report(job, stage, done, total);
+                }
                 for (uint32_t at = 0; at < s.size;) {
                         const uint32_t n = s.size - at < ChunkBytes ? s.size - at : uint32_t(ChunkBytes);
                         const Error    err = readAt(job, uint64_t(s.offset) + at, job.chunk, n);
@@ -395,6 +411,8 @@ namespace {
                     std::memcmp(job.expectHead, r.headHash, 32) != 0) {
                         failure = "the package changed since it was chosen";
                 }
+                const Update::Observer *o = observer.load(std::memory_order_acquire);
+                if (failure == nullptr && o != nullptr && o->started != nullptr) o->started(o->arg, r);
                 size_t index = 0;
                 if (failure == nullptr && differing(r, SectionType::Firmware, index) != nullptr &&
                     writeChecked(job, index, Update::Stage::WritingFirmware).isError()) {
@@ -416,6 +434,7 @@ namespace {
                 } else {
                         bmdsInfo("Update: %s applied", r.package.versionText);
                 }
+                if (o != nullptr && o->finished != nullptr) o->finished(o->arg, r, failure, next.isOk());
                 // Staying (InvalidState) must not read as a failure to restart from (CorruptData).
                 if (next.isError()) return Error::InvalidState;
                 return failure != nullptr ? Error::CorruptData : Error::Ok;
@@ -523,13 +542,18 @@ namespace {
                 // main firmware checks); otherwise (InvalidState) recovery stays, its shell open.
                 if (done.isOk() || done == Error::CorruptData) {
                         bmdsInfo("Update: restarting");
-                        Thread::sleep(200); // the log to the console
+                        Thread::sleep(RestartPauseMs); // the log to the console, the result on the screen
                         System::restart();
                 }
                 return;
         }
 
 } // namespace
+
+void Update::setObserver(const Observer *o) {
+        observer.store(o, std::memory_order_release);
+        return;
+}
 
 const char *Update::stageText(Stage stage) {
         switch (stage) {

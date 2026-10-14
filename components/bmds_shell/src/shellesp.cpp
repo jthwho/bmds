@@ -51,7 +51,7 @@ namespace {
 
 } // namespace
 
-void Shell::prepareInteractive(bool login) {
+bool Shell::prepareInteractive(bool login) {
         // A login shell starts at boot: its first prompt comes after the boot report. Boot
         // always completes, so there is nothing to time out on.
         if (login) (void)Boot::waitUntilComplete(WaitForever);
@@ -78,7 +78,7 @@ void Shell::prepareInteractive(bool login) {
                                                 "\\[\\e[1;32m\\]\\h\\[\\e[0m\\]:\\[\\e[1;34m\\]\\w\\[\\e[0m\\]> "
                                               : "\\[\\e[1;32m\\]\\h\\[\\e[0m\\]:\\[\\e[1;34m\\]\\w\\[\\e[0m\\]> ");
         }
-        return;
+        return System::running() != System::Firmware::Recovery;
 }
 
 // Any new shell, interactive or not (`sh -c` over SSH): HOME and PATH unless inherited.

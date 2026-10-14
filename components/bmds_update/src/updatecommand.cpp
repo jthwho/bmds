@@ -16,6 +16,7 @@
 #include <bmds/datetime.h>
 #include <bmds/shell.h>
 #include <bmds/system.h>
+#include <bmds/thread.h>
 #include <bmds/update.h>
 #include <bmds/vfs.h>
 
@@ -25,6 +26,7 @@ namespace {
 
         // How long the console gets to show the last lines before a restart.
         constexpr unsigned RestartFlushMs = 500;
+        constexpr unsigned RecoveryPauseMs = 1500;
 
         const char *sectionLabel(uint32_t type) {
                 switch (static_cast<UpdatePackage::SectionType>(type)) {
@@ -149,6 +151,8 @@ namespace {
                            r.package.versionText);
                 (void)Vfs::sync();
                 (void)ctx.shell().console().flush(RestartFlushMs);
+                // Recovery's screen shows how it ended for a moment, as after an update at boot.
+                if (System::running() == System::Firmware::Recovery) Thread::sleep(RecoveryPauseMs);
                 System::restart();
         }
 
