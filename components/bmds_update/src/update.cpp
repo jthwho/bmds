@@ -361,18 +361,21 @@ namespace {
                 return err;
         }
 
-        void writeResult(const Job &job, const char *message) {
-                const Update::Report &r = *job.report;
-                const DateTime        t = DateTime::fromSeconds(Clock::now().seconds());
-                String                text;
+        void writeResultOf(StringView path, const char *version, const char *message) {
+                const DateTime t = DateTime::fromSeconds(Clock::now().seconds());
+                String         text;
                 (void)text.appendf("status: %s\npackage: %.*s\nversion: %s\nwhen: %04ld-%02u-%02u %02u:%02u:%02u UTC\n",
-                                   message == nullptr ? "applied" : "failed", int(job.path.size()), job.path.data(),
-                                   r.package.versionText, static_cast<long>(t.year), t.month, t.day, t.hour, t.minute,
-                                   t.second);
+                                   message == nullptr ? "applied" : "failed", int(path.size()), path.data(), version,
+                                   static_cast<long>(t.year), t.month, t.day, t.hour, t.minute, t.second);
                 if (message != nullptr) (void)text.appendf("message: %s\n", message);
                 if (writeFile(Update::ResultPath, text.view()).isError() || writeFile(UnseenPath, "").isError()) {
                         bmdsErr("Update: can't write the result");
                 }
+                return;
+        }
+
+        void writeResult(const Job &job, const char *message) {
+                writeResultOf(job.path, job.report->package.versionText, message);
                 return;
         }
 
@@ -620,6 +623,27 @@ Error Update::apply(StringView path, bool force, Report &out, Progress progress,
 }
 
 Error Update::status(Status &out) {
+        esp_app_desc_t         desc;
+        const esp_partition_t *main = partitionFor(uint32_t(SectionType::Firmware));
+        const esp_partition_t *recovery = partitionFor(uint32_t(SectionType::Recovery));
+        // The descriptions are read with the caches off: not on a PSRAM stack.
+        struct Read {
+                        const esp_partition_t *partition;
+                        esp_app_desc_t        *desc;
+                        char                  *out;
+        };
+        for (Read r : {Read{main, &desc, out.mainVersion}, Read{recovery, &desc, out.recoveryVersion}}) {
+                if (r.partition == nullptr) continue;
+                (void)Thread::runOnInternalStack(
+                        "otadesc", 4096,
+                        [](void *arg) {
+                                Read *x = static_cast<Read *>(arg);
+                                if (esp_ota_get_partition_description(x->partition, x->desc) == ESP_OK)
+                                        std::snprintf(x->out, 33, "%s", x->desc->version);
+                                return;
+                        },
+                        &r);
+        }
         auto [intent, ierr] = readFile(IntentPath);
         if (ierr.isOk()) {
                 const size_t nl = intent.view().indexOf('\n');
@@ -633,10 +657,29 @@ Error Update::status(Status &out) {
         return rerr.isOk() || rerr == Error::NotExist ? Error::Ok : rerr;
 }
 
+Error Update::confirm() {
+        // A no-op unless this firmware was just switched to (on probation).
+        return esp_ota_mark_app_valid_cancel_rollback() == ESP_OK ? Error::Ok : Error::IoError;
+}
+
 Error Update::init() {
         Vfs::Context context;
         const bool   pending = Vfs::stat(IntentPath, context).isOk();
         if (System::running() == System::Firmware::Recovery) {
+                // Chosen (switched to: on probation), or run because the main firmware didn't start
+                // (the bootloader fell back: its own entry was already valid, or there is none).
+                esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+                const bool chosen = esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) == ESP_OK &&
+                                    state == ESP_OTA_IMG_PENDING_VERIFY;
+                (void)confirm();
+                if (!chosen && !pending) {
+                        bmdsErr("Update: recovery runs because the system didn't start");
+                        const Update::Observer *o = observer.load(std::memory_order_acquire);
+                        if (o != nullptr && o->finished != nullptr) {
+                                static constinit const Update::Report none{}; // no constructor runs
+                                o->finished(o->arg, none, Update::SystemDidntStart, false);
+                        }
+                }
                 if (!pending) return Error::Ok;
                 Thread::Config config;
                 config.name = "update";
@@ -644,7 +687,17 @@ Error Update::init() {
                 config.kernel = true;
                 return intentThread.start(config, intentMain, nullptr);
         }
-        if (pending) bmdsWarn("Update: an update is waiting to be applied by recovery ('update status')");
+        // The main firmware with an intent still there: recovery never ran it (the new recovery firmware
+        // didn't start, and the bootloader came back here). Reported as a failed update, and dropped.
+        if (pending) {
+                auto [intent, ierr] = readFile(IntentPath);
+                const size_t nl = ierr.isOk() ? intent.view().indexOf('\n') : StringView::NPos;
+                bmdsErr("Update: recovery didn't run the update: its firmware didn't start");
+                writeResultOf(nl != StringView::NPos ? intent.view().left(nl) : StringView(), "",
+                              "the recovery firmware it brought didn't start");
+                (void)Vfs::remove(IntentPath, context);
+                (void)Vfs::sync();
+        }
         if (Vfs::stat(UnseenPath, context).isOk()) {
                 auto [result, err] = readFile(ResultPath);
                 StringView rest = result.view();

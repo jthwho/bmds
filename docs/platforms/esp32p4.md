@@ -308,6 +308,13 @@ until silicon v3; then test again.
   in `spi_flash_disable_interrupts_caches_and_other_cpu` (`esp_task_stack_is_sane_cache_disabled`).
   So do `esp_partition_erase_range/write/read`. `Thread::runOnInternalStack()` runs such work on a
   kernel thread with an internal stack and waits (`devplan/update.md` §11).
+- **Flash auto-suspend faults reads on this board** (P4 v1.3, W25Q128JV, IDF v6.1-dev): with
+  `CONFIG_SPI_FLASH_AUTO_SUSPEND`, a cache read of flash (code, rodata, mapped `/rom`) while an
+  erase or a program was suspended raised an instruction or load access fault on the reading
+  core, on the first ~1 MB write in each of four runs under load (a loop reading `/rom`), with
+  sector erases and with IDF's suspend-status check and a 100 µs tSUS too; idle, 20 writes passed.
+  Off (IDF's default): none in 12 under the same load. Off since 2026-10-14
+  (`devplan/update.md` §16): flash writes pause everything not in internal RAM, audio included.
 - **The second-stage bootloader can't fall back to `ota_1` on this IDF (v6.1-dev, ff97953b):**
   `bootloader_flash_read_allow_decrypt()` invalidates the cache at `FLASH_MMAP_VADDR` after moving
   its read window, which is at `FLASH_READ_VADDR`. With `ota_0`'s first page zeroed, `ota_1`'s

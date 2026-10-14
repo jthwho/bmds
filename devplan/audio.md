@@ -865,6 +865,10 @@ Measured on the board, and by the host tests (`tests/host/audio.cpp`):
     "Flash suspend feature is enabled".
   - **Caveat:** IDF's documentation lists neither the P4 nor this chip for the feature (its code
     supports the P4). Recheck `flashchips.c` against IDF's Winbond driver when IDF is updated.
+  - **Reversed (2026-10-14, the user's choice):** under load, a cache read during a suspended
+    erase or write faulted the reading core (devplan/update.md §16), in four runs of four; with
+    auto-suspend off, none. It is off again, and `flashchips.c` is gone: flash writes pause the
+    engine again (the glitch is accepted). A playout reserve in internal RAM would cover them.
 - **Settings:** volume, mute, rate and period apply while playing.
   - 70 % → 0xAC (−9.5 dB), 50 % → 0x9A, mute → 0x00, each read back (before the setting was dB).
   - A new rate or period restarts the device, and streams follow at the new rate.

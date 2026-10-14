@@ -226,6 +226,17 @@ namespace {
                                          PanelBackground);
                                 break;
                         case Phase::FailedStaying:
+                                if (std::strcmp(state->failure, Update::SystemDidntStart) == 0) {
+                                        // No update ran: recovery was started because the system didn't.
+                                        drawLine(renderer, y0, "The system didn't start.", BadText, PanelBackground);
+                                        drawLine(renderer, y1,
+                                                 "Install an update from the card with the keyboard below: update "
+                                                 "apply FILE (update check FILE first).",
+                                                 PanelDim, PanelBackground);
+                                        drawLine(renderer, y2, "reboot tries the system again.", PanelDim,
+                                                 PanelBackground);
+                                        break;
+                                }
                                 std::snprintf(line, sizeof(line), "The update wasn't installed: %s.", state->failure);
                                 drawLine(renderer, y0, line, BadText, PanelBackground);
                                 drawLine(renderer, y1,

@@ -168,10 +168,7 @@ namespace {
                            info.buildVersion);
                 ctx.printf("Pending:  %.*s\n", int(s.pending.isEmpty() ? 4 : s.pending.size()),
                            s.pending.isEmpty() ? "none" : s.pending.view().data());
-                if (s.result.isEmpty()) {
-                        ctx.printf("Last:     none\n");
-                        return Shell::ExitSuccess;
-                }
+                if (s.result.isEmpty()) ctx.printf("Last:     none\n");
                 // The result's own lines, under "Last:".
                 StringView rest = s.result.view();
                 while (!rest.isEmpty()) {
@@ -180,6 +177,11 @@ namespace {
                         ctx.printf("Last:     %.*s\n", int(line.size()), line.data());
                         rest = nl == StringView::NPos ? StringView() : rest.mid(nl + 1);
                 }
+                // An update applied from recovery can't replace recovery: the next from the system does.
+                ctx.printf("Recovery: %s%s\n", s.recoveryVersion[0] != '\0' ? s.recoveryVersion : "none",
+                           s.recoveryVersion[0] == '\0' || std::strcmp(s.recoveryVersion, s.mainVersion) == 0
+                                   ? ""
+                                   : " (not the system's: the next update applied from the system replaces it)");
                 return Shell::ExitSuccess;
         }
 

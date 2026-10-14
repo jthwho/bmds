@@ -7,6 +7,9 @@ CONFIG_IDF_TARGET="esp32p4"
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# A firmware switched to boots on probation and confirms itself (Update::confirm()); one that
+# resets first is abandoned for the other (devplan/update.md §16). 128 bytes of the bootloader.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # --- PSRAM (32 MB on the ESP32-P4NRW32 module) ---------------------------
 # 200 MHz (devplan/psram.md): the display scans an RGB888 surface straight from
@@ -49,11 +52,10 @@ CONFIG_SD_ENABLE_SDIO_SUPPORT=n
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
 
-# Flash erases and writes auto-suspend, so the caches stay on and the audio engine keeps running
-# while /boot is written (devplan/audio.md §17). The board's W25Q128JV is allowed by its own chip
-# driver list (components/bmds_board/boards/olimex_esp32p4_pc/flashchips.c).
-CONFIG_SPI_FLASH_AUTO_SUSPEND=y
-CONFIG_SPI_FLASH_OVERRIDE_CHIP_DRIVER_LIST=y
+# No flash auto-suspend (IDF's default): the caches are off during an erase or a write, so audio
+# pauses for it. With it on, a cache read during a suspended erase or write faulted the reading
+# core on this board, under load (devplan/update.md §16; the user's choice, 2026-10-14).
+# CONFIG_SPI_FLASH_AUTO_SUSPEND is not set
 
 # --- Internal RAM (devplan/foundation.md §9) ------------------------------------
 # Nothing runs I2C with the cache off, and no IRAM interrupt starts or stops a GDMA channel

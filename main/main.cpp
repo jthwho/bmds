@@ -90,6 +90,7 @@ namespace {
                 {"ip", bmds::NetStack::init},        // lwIP, lo, and eth0's addresses from sysconf
                 {"ssh", startSsh},                   // dropbear from the card while net/ssh/server is on
                 {"shell", startSerialShell},
+                {"healthy", bmds::Update::confirm}, // the boot got here: kept if it was on probation
         };
 
 } // namespace

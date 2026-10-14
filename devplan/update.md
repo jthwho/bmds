@@ -400,3 +400,44 @@ opening the Updater) rather than the Updater opening itself.
   restart, recovery installed it (the firmware differed), back with the result; the notification
   at boot; the window with no packages; a `.bmup` opened by its type (a notification targeting
   the file, clicked).
+
+## 16. App rollback, and flash auto-suspend under load (2026-10-14)
+
+- **Rollback** (§6 5a): `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` costs the bootloader 128 bytes
+  (0x5b30 → 0x5bb0, 0x450 free: measured in a scratch build first). A firmware switched to
+  (`esp_ota_set_boot_partition()`) boots on probation and confirms itself (`Update::confirm()`,
+  `esp_ota_mark_app_valid_cancel_rollback()`): recovery in its update stage, the main firmware in
+  a last boot stage (`healthy`). One that resets first is abandoned by the bootloader for the
+  other. **A new recovery that doesn't start:** the main firmware boots again with the intent
+  still on /boot, reports "the recovery firmware it brought didn't start" (the result, the
+  notification) and drops the intent. **A main firmware that doesn't start:** recovery runs
+  without being chosen (its own entry isn't on probation) and says "The system didn't start" on
+  its screen, with what to do. Existing boards need the bootloader flashed once over USB (a
+  package doesn't carry it). `update status` gains a last line, `Recovery: VERSION`, saying when
+  it isn't the system's (an update applied from recovery can't replace recovery).
+- **Found while testing it: flash writes fault reads under load.** Writing recovery to `ota_1`
+  from the main firmware panicked on core 1 (an instruction access fault in `snprintf`, the stats
+  task). Reproduced: `ota_1` rewritten 20 times on an idle system, no fault; with a second session
+  reading `/rom` (mapped flash) in a loop, a fault on the first write, twice (a load access fault;
+  the address in the firmware's rodata, then in `/rom`); erasing 4 KB sectors instead of 64 KB
+  blocks, the same. With `CONFIG_SPI_FLASH_AUTO_SUSPEND` (devplan/audio.md §17: the caches stay
+  on during an erase or a write, for the audio engine), a cache read that suspends the operation
+  sometimes reads wrong: every fault was a flash address, on core 1. The W25Q128JV's tSUS is 20 µs
+  (its datasheet), within IDF's 50; IDF documents neither the P4 nor this chip for the feature,
+  and this P4 is revision 1.3 (`ESP32P4_SELECTS_REV_LESS_V3`, no separate resume timing). It
+  affects every flash write, `/boot`'s too, when something reads flash meanwhile.
+- **Tried, to keep it:** IDF's own tuning (`SPI_FLASH_AUTO_CHECK_SUSPEND_STATUS`, tSUS 100 µs):
+  a fault on the first write under load again. **With auto-suspend off:** 12 rewrites under the
+  same load, none (slower: the read loop and the writes take turns at the flash).
+- **The user's choice:** auto-suspend off everywhere (IDF's default), the audio glitch during a
+  flash write accepted ("the alternatives are lipstick on a pig": an exclusive path for updates
+  alone, or a playout reserve in internal RAM). `flashchips.c` (the board's chip list, there only
+  to allow suspend) is gone; `sdkconfig` regenerated from the defaults.
+- **Rollback, tested on the board** (packages with a firmware or a recovery that `abort()`s at
+  once, built for the test and not kept): a recovery that doesn't start: aborted, the bootloader
+  back to the main firmware, which recorded "the recovery firmware it brought didn't start" and
+  posted a critical notification; a main firmware that doesn't start: installed by recovery,
+  aborted, the bootloader back to recovery, whose screen says "The system didn't start" with what
+  to do; `update apply` there installed a good one, which confirmed itself and stayed through a
+  reset. The normal path (`reboot recovery` and back) confirms each side quietly. With
+  auto-suspend off, writing `ota_1` from the main firmware didn't fault (12 under load, and these).

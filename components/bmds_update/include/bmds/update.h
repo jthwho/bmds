@@ -38,6 +38,9 @@ namespace Update {
         inline constexpr const char *IntentPath = "/boot/update/intent";
         inline constexpr const char *ResultPath = "/boot/update/result"; ///< See `IntentPath`.
 
+        /** @brief `Observer::finished`'s failure when recovery runs because the main firmware didn't start. */
+        inline constexpr const char *SystemDidntStart = "the system didn't start";
+
         /** @brief What a section's bytes are, against what is in its partition. */
         enum class Flashed : uint8_t {
                 Unknown, ///< Not compared (not a type this firmware writes, or the check stopped first).
@@ -102,6 +105,8 @@ namespace Update {
         struct Status {
                         String pending;
                         String result;
+                        char   mainVersion[33] = {};     ///< `ota_0`'s firmware's version ("" if none).
+                        char   recoveryVersion[33] = {}; ///< `ota_1`'s ("" if none).
         };
 
         /**
@@ -129,11 +134,20 @@ namespace Update {
         Error status(Status &out);
 
         /**
-         * @brief Boot stage. The main firmware logs the result of an update just applied. Recovery
-         *        applies the intent, if any, on a thread of its own once the card is mounted, then
-         *        restarts.
+         * @brief Boot stage. The main firmware logs the result of an update just applied, and
+         *        reports one recovery never ran (its intent still there: the new recovery didn't
+         *        start, and the bootloader came back). Recovery confirms itself (`confirm()`), says
+         *        so on its screen when it runs because the main firmware didn't start, and applies
+         *        the intent, if any, on a thread of its own once the card is mounted, then restarts.
          */
         Error init();
+
+        /**
+         * @brief The running firmware is healthy: a firmware just switched to boots on probation
+         *        (IDF's app rollback), and one that resets before this is abandoned for the other.
+         *        The main firmware's last boot stage; recovery's `init()`.
+         */
+        Error confirm();
 
 } // namespace Update
 
