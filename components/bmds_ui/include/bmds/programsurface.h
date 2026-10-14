@@ -168,8 +168,11 @@ class ProgramSurface final : public Stream {
                 Result<uint8_t> tryAcquire();
 
                 /**
-                 * @brief Shows buffer @p index (the program's, from `acquire()`), whose @p damage
-                 *        changed (empty: all). Writes it back from the cache.
+                 * @brief Shows buffer @p index (the program's, from `acquire()`), which differs
+                 *        from the last present in @p damage only (empty: all of it; a palette
+                 *        changed since: all of it). Only that is converted (full screen) or
+                 *        redrawn (a window); the buffer is whole all the same (an uncovered window
+                 *        is redrawn from it). Writes it back from the cache.
                  * @return The frame it will be shown in, or `Invalid` (not the program's).
                  * @nonblocking
                  */
@@ -217,6 +220,17 @@ class ProgramSurface final : public Stream {
                         Leave
                 };
 
+                // Rectangles of the picture that changed, merged where they meet (more than kept:
+                // their bounds), across on 8-pixel columns (PIE's 16 bytes in RGB565).
+                struct Damage {
+                                static constexpr size_t Max = 16;
+                                Rect                    rects[Max];
+                                uint8_t                 count = 0;
+
+                                void             add(const Rect &rect);
+                                Span<const Rect> span() const { return Span<const Rect>(rects, count); }
+                };
+
                 // Full screen: the scan surface's rows, the black rows above the picture, where it
                 // is across, its scale across and its width on the screen.
                 struct Layout {
@@ -236,7 +250,8 @@ class ProgramSurface final : public Stream {
                 void   pushPresented();          // the window manager's lock held: no calls into it
                 Rect   pictureRect(uint16_t clientWidth, uint16_t clientHeight, uint16_t &scale) const;
                 void   draw(Painter &painter);
-                void   expandRow(const uint8_t *src, uint8_t *out, uint16_t scale) const;
+                Damage damageOf(Span<const Rect> damage, bool all) const;
+                void   expandRow(const uint8_t *src, uint16_t count, uint8_t *out, uint16_t scale) const;
                 Layout layOut() const;
                 void   ask(Ask what);
                 void   run();
@@ -266,6 +281,7 @@ class ProgramSurface final : public Stream {
                 size_t         _stride = 0;
                 size_t         _bufferBytes = 0;
                 uint32_t      *_palette = nullptr; // 256 entries, 0xRRGGBB (L8)
+                bool           _paletteChanged = false; // since the last present (under _lock)
                 uint8_t       *_strip = nullptr;   // a window's scaled rows, internal DMA RAM
                 size_t         _stripBytes = 0;
 
@@ -292,6 +308,7 @@ class ProgramSurface final : public Stream {
                 Layout               _layout;
                 bool                 _fullScreen = false; // under _lock
                 bool                 _dirty = false;      // a present to convert (full screen; under _lock)
+                Damage               _pending;            // what to convert of it (under _lock)
 
                 Mutex         _queueLock;
                 Event         _queue[QueueEvents];

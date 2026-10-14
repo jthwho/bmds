@@ -6,10 +6,11 @@
  * See LICENSE file in the project root folder for license information.
  *
  * Surfaces (devplan/games.md §11): bouncing squares drawn with the CPU into a surface's buffers
- * and presented each frame; in L8 the palette cycles. Escape or closing the window ends it; the
- * frames shown and dropped are printed.
+ * and presented each frame; in L8 the palette cycles. With -d only the squares are redrawn and
+ * presented as damage (the palette stays). Escape or closing the window ends it; the frames shown
+ * and dropped are printed.
  *
- *     surfdemo [-f l8|565|888] [-s WIDTHxHEIGHT] [-b BUFFERS] [-t SECONDS] [-F] [-v]
+ *     surfdemo [-f l8|565|888] [-s WIDTHxHEIGHT] [-b BUFFERS] [-t SECONDS] [-F] [-d] [-v]
  */
 
 #include <stdio.h>
@@ -56,6 +57,16 @@ static void fill(uint8_t *pixels, uint32_t stride, int x, int y, int w, int h, u
         for (int r = 1; r < h; ++r) memcpy(first + (size_t)r * stride, first, (size_t)w * bpp);
 }
 
+/* Adds the square at (@p x, @p y) to @p list (of @p n). */
+static void add_rect(bmds_rect_t *list, uint32_t *n, int x, int y) {
+        if (x < 0) return; /* not drawn yet */
+        list[*n].x = x;
+        list[*n].y = y;
+        list[*n].width = SIDE;
+        list[*n].height = SIDE;
+        ++*n;
+}
+
 static const char *event_name(uint32_t type) {
         switch (type) {
                 case BMDS_EVENT_KEY: return "key";
@@ -69,9 +80,9 @@ static const char *event_name(uint32_t type) {
 }
 
 int main(int argc, char **argv) {
-        int      buffers = 2, seconds = 0, verbose = 0, opt;
+        int      buffers = 2, seconds = 0, verbose = 0, damage = 0, opt;
         uint32_t flags = 0;
-        while ((opt = getopt(argc, argv, "f:s:b:t:Fv")) != -1) {
+        while ((opt = getopt(argc, argv, "f:s:b:t:Fdv")) != -1) {
                 if (opt == 'f') {
                         format = strcmp(optarg, "l8") == 0    ? BMDS_PIXEL_L8
                                  : strcmp(optarg, "888") == 0 ? BMDS_PIXEL_BGR24
@@ -84,11 +95,13 @@ int main(int argc, char **argv) {
                         seconds = atoi(optarg);
                 } else if (opt == 'F') {
                         flags |= BMDS_SURFACE_FULL_SCREEN;
+                } else if (opt == 'd') {
+                        damage = 1;
                 } else if (opt == 'v') {
                         verbose = 1;
                 } else {
                         fprintf(stderr,
-                                "usage: surfdemo [-f l8|565|888] [-s WxH] [-b BUFFERS] [-t SECONDS] [-F] [-v]\n");
+                                "usage: surfdemo [-f l8|565|888] [-s WxH] [-b BUFFERS] [-t SECONDS] [-F] [-d] [-v]\n");
                         return 2;
                 }
         }
@@ -133,6 +146,15 @@ int main(int argc, char **argv) {
                 sq[i].color = format == BMDS_PIXEL_L8 ? (uint32_t)(16 + i * 20)
                                                       : (uint32_t)((i * 0x3a1f79u) | 0x404040u) & 0xffffffu;
         }
+        /* Where each buffer's squares were drawn (-d: erased there before drawing again), and the
+           last present's. */
+        int      drawn[3][SQUARES][2], last[SQUARES][2];
+        uint32_t background = format == BMDS_PIXEL_L8 ? 0 : 0x101828;
+        for (int b = 0; b < 3; ++b)
+                for (int i = 0; i < SQUARES; ++i) drawn[b][i][0] = -1, drawn[b][i][1] = -1;
+        for (int i = 0; i < SQUARES; ++i) last[i][0] = -1, last[i][1] = -1;
+        int           fresh[3] = {1, 1, 1}; /* the buffer's background not drawn yet */
+        bmds_rect_t   rects[2 * SQUARES];
         const int64_t start = now_ns();
         uint32_t      frames = 0, phase = 0;
         int32_t       shown = -1; /* the frame the last present goes out in */
@@ -170,16 +192,34 @@ int main(int argc, char **argv) {
                         break;
                 }
                 uint8_t *px = pixels[index];
-                fill(px, stride, 0, 0, width, height, format == BMDS_PIXEL_L8 ? 0 : 0x101828);
+                uint32_t nrects = 0;
+                if (!damage || fresh[index]) {
+                        fill(px, stride, 0, 0, width, height, background);
+                } else {
+                        /* This buffer's squares from its last frame, back to the background. */
+                        for (int i = 0; i < SQUARES; ++i)
+                                fill(px, stride, drawn[index][i][0], drawn[index][i][1], SIDE, SIDE, background);
+                }
                 for (int i = 0; i < SQUARES; ++i) {
                         square_t *s = &sq[i];
                         s->x += s->dx;
                         s->y += s->dy;
                         if (s->x < 0 || s->x > width - SIDE) s->dx = -s->dx, s->x += 2 * s->dx;
                         if (s->y < 0 || s->y > height - SIDE) s->dy = -s->dy, s->y += 2 * s->dy;
-                        fill(px, stride, s->x, s->y, SIDE, SIDE, s->color);
                 }
-                if (format == BMDS_PIXEL_L8) {
+                /* Drawn after all are erased: one square's erase never cuts another. */
+                for (int i = 0; i < SQUARES; ++i) {
+                        square_t *s = &sq[i];
+                        fill(px, stride, s->x, s->y, SIDE, SIDE, s->color);
+                        drawn[index][i][0] = s->x, drawn[index][i][1] = s->y;
+                        /* Changed since the last present: where the square was, and is. */
+                        add_rect(rects, &nrects, last[i][0], last[i][1]);
+                        add_rect(rects, &nrects, s->x, s->y);
+                        last[i][0] = s->x, last[i][1] = s->y;
+                }
+                const int whole = !damage || fresh[index];
+                fresh[index] = 0;
+                if (format == BMDS_PIXEL_L8 && !damage) {
                         /* The squares' entries cycle through the hues. */
                         for (int i = 0; i < SQUARES; ++i) {
                                 const uint32_t k = (phase + (uint32_t)i * 21) % 192, t = k % 64 * 4;
@@ -196,7 +236,8 @@ int main(int argc, char **argv) {
                         bmds_surface_wait_t wait = {sizeof(wait), (uint32_t)shown, 100};
                         bmds_surface_control(fd, BMDS_SURFACE_WAIT, &wait, sizeof(wait));
                 }
-                bmds_surface_present_t present = {sizeof(present), (uint32_t)index, NULL, 0};
+                bmds_surface_present_t present = {sizeof(present), (uint32_t)index, whole ? NULL : rects,
+                                                  whole ? 0 : nrects};
                 const int32_t          frame = bmds_surface_present(fd, &present);
                 if (frame < 0) {
                         fprintf(stderr, "surfdemo: surface_present: %s\n", strerror(-frame));

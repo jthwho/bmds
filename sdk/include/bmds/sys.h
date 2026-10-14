@@ -1510,7 +1510,7 @@ typedef struct bmds_rect_t {
 typedef struct bmds_surface_present_t {
                 uint32_t           size;         /**< Set by the caller: `sizeof(bmds_surface_present_t)`. */
                 uint32_t           index;        /**< The buffer, acquired and drawn. */
-                const bmds_rect_t *damage;       /**< What changed since this buffer was last presented, */
+                const bmds_rect_t *damage;       /**< What differs from the last present (any buffer's), */
                 uint32_t           damage_count; /**< `damage_count` rectangles; 0: all of it. */
 } bmds_surface_present_t;
 
@@ -2961,7 +2961,8 @@ static inline int32_t bmds_surface_acquire(int32_t fd, int32_t timeout_ms) {
 /**
  * @brief Shows a drawn buffer of surface @p fd (`bmds_surface_present_t`); the kernel writes it
  *        back from the cache. The newest present is shown at the next frame; one replaced first is
- *        never shown (`bmds_surface_info_t::dropped`).
+ *        never shown (`bmds_surface_info_t::dropped`). Only the damage is converted or redrawn,
+ *        but the buffer must hold the whole picture: an uncovered window is redrawn from it.
  * @return The frame it will be shown in (for `BMDS_SURFACE_WAIT`), or `-BMDS_EINVAL` (not an
  *         acquired buffer, `size`, a damage rectangle), `-BMDS_ENOTTY`, `-BMDS_EBADF`, `-BMDS_EFAULT`.
  */

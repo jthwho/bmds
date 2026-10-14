@@ -31,6 +31,7 @@ namespace {
 
         constexpr size_t       BufferAlign = 128; // the L2 cache line; the 2D-DMA's PSRAM alignment
         constexpr uint16_t     StripRows = 8;     // scaled rows in the strip
+        constexpr uint16_t     DamageColumns = 8; // damage across on these (PIE's 16 bytes in RGB565)
         constexpr size_t       WriteBackChunk = 64 * 1024;
         constexpr uint16_t     ScreenWidth = 1280; // the mode's (devplan/display.md V5)
         constexpr uint16_t     ScreenHeight = 720;
@@ -225,18 +226,23 @@ Result<uint8_t> ProgramSurface::acquire(unsigned int timeoutMs) {
 
 Result<uint32_t> ProgramSurface::present(uint8_t index, Span<const Rect> damage) {
         if (index >= _config.buffers) return makeError<uint32_t>(Error::Invalid);
-        (void)damage; // whole pictures for now (rows by damage: devplan/games.md §10b''')
+        bool all;
         {
                 Mutex::Locker locker(_lock, WaitForever);
                 if (_states[index] != State::Program) return makeError<uint32_t>(Error::Invalid);
+                all = _paletteChanged; // every pixel's color may have changed
+                _paletteChanged = false;
         }
+        const Damage changed = damageOf(damage, all);
         // The program's writes out of the cache for the DMA, in pieces (the lock not held).
         const size_t bytes = _stride * _config.height;
         for (size_t off = 0; off < bytes; off += WriteBackChunk)
                 (void)esp_cache_msync(_buffers[index] + off,
                                       bytes - off < WriteBackChunk ? bytes - off : WriteBackChunk,
                                       ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
-        bool freed = false, full = false;
+        bool   freed = false, full = false;
+        Rect   redraw[Damage::Max]; // a window's: the changes scaled into its client area
+        size_t redraws = 0;
         {
                 Mutex::Locker locker(_lock, WaitForever);
                 if (_latest >= 0) {
@@ -252,15 +258,62 @@ Result<uint32_t> ProgramSurface::present(uint8_t index, Span<const Rect> damage)
                 _latestDrawn = false;
                 ++_presents;
                 full = _fullScreen;
-                if (full) _dirty = true;
+                if (full) {
+                        // Added to what the presenter hasn't converted yet (presents it skips included).
+                        _dirty = true;
+                        for (const Rect &r : changed.span()) _pending.add(r);
+                } else {
+                        uint16_t   scale = 1;
+                        const Rect pic = pictureRect(_clientWidth, _clientHeight, scale);
+                        for (const Rect &r : changed.span())
+                                redraw[redraws++] = Rect{uint16_t(pic.x + r.x * scale), uint16_t(pic.y + r.y * scale),
+                                                         uint16_t(r.width * scale), uint16_t(r.height * scale)};
+                }
         }
         if (freed) _freed.release();
         if (full) {
                 _work.release();
         } else if (_wm != nullptr && _window != 0) {
-                (void)_wm->update(_window);
+                (void)_wm->invalidate(_window, Span<const Rect>(redraw, redraws));
         }
         return makeResult(frames() + 1);
+}
+
+// A present's damage on DamageColumns, merged (@p all, or none given: the whole picture).
+ProgramSurface::Damage ProgramSurface::damageOf(Span<const Rect> damage, bool all) const {
+        Damage d;
+        if (all || damage.size() == 0) {
+                d.add(Rect{0, 0, _config.width, _config.height});
+                return d;
+        }
+        for (const Rect &r : damage) {
+                Rect a = r.alignedX(DamageColumns);
+                if (a.right() > _config.width) a.width = uint16_t(_config.width - a.x); // the width: 4s
+                d.add(a);
+        }
+        return d;
+}
+
+void ProgramSurface::Damage::add(const Rect &rect) {
+        if (rect.isEmpty()) return;
+        // Merged with every one it meets or touches, until it meets none.
+        Rect u = rect;
+        for (size_t i = 0; i < count;) {
+                const Rect &e = rects[i];
+                if (u.x <= e.right() && e.x <= u.right() && u.y <= e.bottom() && e.y <= u.bottom()) {
+                        u = u.united(e);
+                        rects[i] = rects[--count];
+                        i = 0;
+                } else {
+                        ++i;
+                }
+        }
+        if (count == Max) { // too many: their bounds
+                for (size_t i = 0; i < count; ++i) u = u.united(rects[i]);
+                count = 0;
+        }
+        rects[count++] = u;
+        return;
 }
 
 // Done reading presented buffer @p index: free if it was replaced meanwhile.
@@ -283,6 +336,7 @@ Error ProgramSurface::setPalette(size_t first, Span<const uint32_t> rgb) {
         if (first > 256 || rgb.size() > 256 - first) return Error::Invalid;
         Mutex::Locker locker(_lock, WaitForever);
         for (size_t i = 0; i < rgb.size(); ++i) _palette[first + i] = rgb[i] & 0xffffffu;
+        if (rgb.size() > 0) _paletteChanged = true;
         return Error::Ok;
 }
 
@@ -352,16 +406,16 @@ ProgramSurface::Info ProgramSurface::info() {
 
 // ---- Scaling rows
 
-// Row @p src of the picture across by @p scale into @p out (B, G, R; RGB565 stays RGB565, which
-// the 2D-DMA widens).
-void ProgramSurface::expandRow(const uint8_t *src, uint8_t *out, uint16_t scale) const {
+// @p count pixels of a row from @p src across by @p scale into @p out (B, G, R; RGB565 stays
+// RGB565, which the 2D-DMA widens).
+void ProgramSurface::expandRow(const uint8_t *src, uint16_t count, uint8_t *out, uint16_t scale) const {
         switch (_config.format) {
-                case Format::L8: Pixels::expandIndexed(src, _config.width, _palette, out, scale); break;
+                case Format::L8: Pixels::expandIndexed(src, count, _palette, out, scale); break;
                 case Format::Rgb565:
-                        Pixels::repeat16(reinterpret_cast<const uint16_t *>(src), _config.width,
+                        Pixels::repeat16(reinterpret_cast<const uint16_t *>(src), count,
                                          reinterpret_cast<uint16_t *>(out), scale);
                         break;
-                default: Pixels::repeat24(src, _config.width, out, scale); break;
+                default: Pixels::repeat24(src, count, out, scale); break;
         }
         return;
 }
@@ -419,19 +473,31 @@ void ProgramSurface::draw(Painter &painter) {
                         (void)painter.pixels565(pic.x, pic.y, buf, _stride, _config.width, _config.height);
                 } else {
                         // Rows scaled across into the strip, each written `scale` times down; only the
-                        // strips the painter's clip reaches.
-                        const Rect     clip = painter.clipBounds();
+                        // strips and columns the painter's clip reaches (a present's damage).
+                        const Rect clip = painter.clipBounds().intersected(pic);
+                        if (clip.isEmpty()) {
+                                release(index);
+                                return;
+                        }
+                        uint16_t c0 = uint16_t((clip.x - pic.x) / scale & ~(DamageColumns - 1u));
+                        uint16_t c1 = uint16_t((clip.right() - pic.x + scale - 1) / scale);
+                        c1 = uint16_t((c1 + DamageColumns - 1) & ~(DamageColumns - 1u));
+                        if (c1 > _config.width) c1 = _config.width;
+                        const uint16_t cols = uint16_t(c1 - c0);
                         const bool     wide = _config.format == Format::Rgb565;
-                        const size_t   rowBytes = size_t(pic.width) * (wide ? 2 : Surface::BytesPerPixel);
+                        const size_t   rowBytes = size_t(cols) * scale * (wide ? 2 : Surface::BytesPerPixel);
+                        const size_t   bpp = bytesPerPixel(_config.format);
                         const uint16_t perStrip = uint16_t(StripRows / scale > 0 ? StripRows / scale : 1);
-                        for (uint16_t sy = 0; sy < _config.height; sy = uint16_t(sy + perStrip)) {
+                        const uint16_t first = uint16_t((clip.y - pic.y) / scale / perStrip * perStrip);
+                        const uint16_t end = uint16_t((clip.bottom() - pic.y + scale - 1) / scale);
+                        for (uint16_t sy = first; sy < end; sy = uint16_t(sy + perStrip)) {
                                 const uint16_t rows =
                                         uint16_t(_config.height - sy < perStrip ? _config.height - sy : perStrip);
-                                const Rect band{pic.x, uint16_t(pic.y + sy * scale), pic.width, uint16_t(rows * scale)};
-                                if (!band.intersects(clip)) continue;
+                                const Rect band{uint16_t(pic.x + c0 * scale), uint16_t(pic.y + sy * scale),
+                                                uint16_t(cols * scale), uint16_t(rows * scale)};
                                 for (uint16_t r = 0; r < rows; ++r) {
                                         uint8_t *dst = _strip + size_t(r) * scale * rowBytes;
-                                        expandRow(buf + size_t(sy + r) * _stride, dst, scale);
+                                        expandRow(buf + size_t(sy + r) * _stride + c0 * bpp, cols, dst, scale);
                                         for (uint16_t k = 1; k < scale; ++k)
                                                 std::memcpy(dst + k * rowBytes, dst, rowBytes);
                                 }
@@ -534,6 +600,8 @@ Error ProgramSurface::enterFullScreen() {
                 Mutex::Locker locker(_lock, WaitForever);
                 _fullScreen = true;
                 _dirty = _latest >= 0;
+                _pending.count = 0;
+                _pending.add(Rect{0, 0, _config.width, _config.height}); // the new surface is black
         }
         const int64_t t1 = Clock::monotonicNs();
         if (err.isOk()) err = d->scanout().show(*_fs, SwitchTimeoutMs);
@@ -583,36 +651,53 @@ void ProgramSurface::leaveFullScreen() {
 // the next frame's start).
 void ProgramSurface::convert() {
         int8_t index;
+        Damage changed;
         {
                 Mutex::Locker locker(_lock, WaitForever);
                 if (!_fullScreen || !_dirty || _fs == nullptr) return;
                 _dirty = false;
+                changed = _pending;
+                _pending.count = 0;
                 index = _latest;
                 _reading = index;
                 if (index >= 0) _latestDrawn = true;
         }
         if (index >= 0) {
-                const Layout   l = _layout;
-                const bool     wide = _config.format == Format::Rgb565;
-                const size_t   rowBytes = size_t(l.width) * (wide ? 2 : Surface::BytesPerPixel);
-                const size_t   half = _stripBytes / 2;
-                const uint16_t perHalf = uint16_t(half / rowBytes > 0 ? half / rowBytes : 1);
-                const Rect     whole{l.x, l.top, l.width, _config.height};
-                const Rect     clip[1] = {_fs->bounds()};
-                (void)_fs->willDraw(Span<const Rect>(&whole, 1), DrawTimeoutMs);
+                const Layout l = _layout;
+                const bool   wide = _config.format == Format::Rgb565;
+                const size_t bpp = bytesPerPixel(_config.format);
+                const size_t half = _stripBytes / 2;
+                const Rect   clip[1] = {_fs->bounds()};
+                // Where the changes land; the rest of the back buffer is the last present's (the
+                // scan surface copies it forward).
+                Rect on[Damage::Max];
+                for (size_t i = 0; i < changed.count; ++i) {
+                        const Rect &r = changed.rects[i];
+                        on[i] = Rect{uint16_t(l.x + r.x * l.scaleX), uint16_t(l.top + r.y),
+                                     uint16_t(r.width * l.scaleX), r.height};
+                }
+                (void)_fs->willDraw(Span<const Rect>(on, changed.count), DrawTimeoutMs);
                 const uint8_t *buf = _buffers[index];
                 int            k = 0;
-                for (uint16_t y = 0; y < _config.height; y = uint16_t(y + perHalf), k ^= 1) {
-                        const uint16_t rows = uint16_t(_config.height - y < perHalf ? _config.height - y : perHalf);
-                        uint8_t       *strip = _strip + size_t(k) * half;
-                        // This half's last copy started two strips ago; startBlit() waited for it with the last.
-                        for (uint16_t r = 0; r < rows; ++r)
-                                expandRow(buf + size_t(y + r) * _stride, strip + size_t(r) * rowBytes, l.scaleX);
-                        const Error err =
-                                _fs->startBlit(Rect{l.x, uint16_t(l.top + y), l.width, rows}, strip, rowBytes,
-                                               Span<const Rect>(clip, 1),
-                                               wide ? Surface::Source::Rgb565 : Surface::Source::Bgr24, DrawTimeoutMs);
-                        if (err.isError()) break;
+                Error          err;
+                for (size_t i = 0; i < changed.count && err.isOk(); ++i) {
+                        const Rect    &r = changed.rects[i];
+                        const size_t   rowBytes = size_t(on[i].width) * (wide ? 2 : Surface::BytesPerPixel);
+                        const uint16_t perHalf = uint16_t(half / rowBytes > 0 ? half / rowBytes : 1);
+                        for (uint16_t y = 0; y < r.height; y = uint16_t(y + perHalf), k ^= 1) {
+                                const uint16_t rows = uint16_t(r.height - y < perHalf ? r.height - y : perHalf);
+                                uint8_t       *strip = _strip + size_t(k) * half;
+                                // This half's last copy started two strips ago; startBlit() waited for it
+                                // with the last.
+                                for (uint16_t row = 0; row < rows; ++row)
+                                        expandRow(buf + size_t(r.y + y + row) * _stride + r.x * bpp, r.width,
+                                                  strip + size_t(row) * rowBytes, l.scaleX);
+                                err = _fs->startBlit(Rect{on[i].x, uint16_t(on[i].y + y), on[i].width, rows}, strip,
+                                                     rowBytes, Span<const Rect>(clip, 1),
+                                                     wide ? Surface::Source::Rgb565 : Surface::Source::Bgr24,
+                                                     DrawTimeoutMs);
+                                if (err.isError()) break;
+                        }
                 }
                 (void)_fs->wait(DrawTimeoutMs);
                 (void)_fs->present(DrawTimeoutMs);

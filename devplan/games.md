@@ -400,7 +400,7 @@ typedef struct bmds_rect_t {
 typedef struct bmds_surface_present_t {
         uint32_t           size;         /* sizeof(bmds_surface_present_t) */
         uint32_t           index;        /* the buffer drawn */
-        const bmds_rect_t *damage;       /* what changed since this buffer was last presented... */
+        const bmds_rect_t *damage;       /* what differs from the last present (any buffer's)... */
         uint32_t           damage_count; /* ...0: all of it */
 } bmds_surface_present_t;
 
@@ -480,7 +480,16 @@ with `controls.md`. The proposal stands as written.
   latest; covered whole, never (`Surface::willDraw()`, `Painter::cover()`): a window redrawn every
   frame isn't copied twice. The desktop's own drawing gains the same.
 - **`Pixels`:** `repeat16` (PIE for 2: `simd test repeat16`), `repeat24`, `expandIndexed`, host-tested.
-- **The demo:** `sdk/examples/surfdemo` (formats, sizes, buffers, `-F`; Escape or close ends it).
+- **The demo:** `sdk/examples/surfdemo` (formats, sizes, buffers, `-F`, `-d` damage; Escape or
+  close ends it).
+- **Damage** (step 2): a present's rectangles are what differs from the last present, whichever
+  buffer it was (§11's first wording, "since this buffer was last presented", was the program's
+  buffer age: the system can't rebuild the change from it). They are widened to 8-pixel columns
+  and merged where they meet (16 kept, more: their bounds). A window invalidates only them,
+  scaled; its redraw expands only the rows and columns its clip reaches. Full screen adds them to
+  what the presenter hasn't converted yet (a skipped present's included), and converts only those,
+  the scan surface's lazy copy-forward bringing the rest. A palette change makes the next present
+  whole. The program still keeps each buffer whole: an uncovered window is redrawn from it.
 
 Measured with `surfdemo` (the demo drawing every pixel each frame, overlapped with the display):
 
@@ -492,10 +501,20 @@ Measured with `surfdemo` (the demo drawing every pixel each frame, overlapped wi
 | window, 320×180 L8 at 2× | 60 | |
 | full screen, 640×360 RGB565 at 2× | 39 | (the presenter: ~12 ms a frame) |
 
+With damage (`surfdemo -d`: 12 squares of 24 pixels moved, the rest kept):
+
+| Case | Presents a second (whole pictures) |
+|---|---|
+| window, 640×360 RGB565 at 1× | 59 (55) |
+| window, 640×360 BGR24 at 1× | 57 (42) |
+| window, 320×180 RGB565 at 2× | 58 (58) |
+| full screen, 640×360 RGB565 at 2× | 60 (37) |
+| full screen, 640×360 L8 at 2× | 59 |
+| full screen, 320×180 RGB565 at 4× | 59 |
+
 - Before lazy forwarding a 2× window ran at 30: half-tile strips copied each tile forward
   before overwriting it (670 µs a strip against 145).
-- Full screen's 39: the presenter's conversion and the program's drawing share core 1 at times;
-  next: damage rows (§10b'''), the presenter's conversion overlapped further.
-- Not yet: damage in presents (whole pictures now), the pointer modes (hidden and relative), the
+- Full screen's 39: the presenter's conversion and the program's drawing share core 1 at times.
+- Not yet: the pointer modes (hidden and relative), the
   per-application setting (with `apps.md`), a close the program can refuse (the window goes at
   once; the program gets `CLOSE`).
