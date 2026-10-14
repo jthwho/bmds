@@ -302,7 +302,7 @@ Plan: [`input.md`](input.md).
     steps a new master's first offset, a new parent's timescale is taken at once, NTP gets its
     rate back from PTP and takes a large rate error whole. Left: the grandmaster's tests;
     where to pick up, and the hardware wanted: §31h.
-  - [ ] Updates (`update.md`, the user's ask, 2026-10-13): a signed `.bmup` package (firmware, ROM,
+  - [x] Updates (`update.md`, the user's ask, 2026-10-13; fetching from a URL postponed): a signed `.bmup` package (firmware, ROM,
     recovery) pushed onto the card over SSH or copied there, checked, and applied by a recovery
     firmware in `ota_1`; `update check|apply|status`, `reboot recovery`; headless or graphical
     start to finish (the Updater, recovery's progress screen).
@@ -317,7 +317,8 @@ Plan: [`input.md`](input.md).
       Recovery line; flash auto-suspend off (it faulted reads under load; §16).
     - [x] Step 5: the crash counter (3 in a row: recovery), Esc held at power on (§18), both
       tested on the board. Fetching from a URL postponed (the user's, 2026-10-14; planned in §17).
-    - [ ] Last: `ota_1` cut to recovery's size, the rest to `rom` (§6).
+    - [x] Last: `ota_1` cut to 1.375 MB (recovery is 0.9 MB), `rom` 10 MB; `/boot` moved with its
+      contents (§19).
 
 ## Phase 8 — Self-Hosting
 

@@ -57,6 +57,16 @@ tools/bmds-update --check root@bmds0 build/bmds.bmup   # copy and check only
 
 `--force` installs a package that isn't newer than what is installed (`bmds/version.h`'s number).
 
+**A board flashed before 2026-10-14** has the old partition table (`/boot` at 0x620000). A
+package can't change the table, so flash it over USB once. To keep its `/boot` (settings, keys),
+copy it to the new place first (devplan/update.md §19):
+
+```bash
+esptool.py -p /dev/ttyACM0 --after no_reset read_flash 0x620000 0x80000 boot.img
+esptool.py -p /dev/ttyACM0 --after no_reset write_flash 0x580000 boot.img
+idf.py -B build -p /dev/ttyACM0 flash
+```
+
 ## Host Unit Tests
 
 Hardware-independent code (`bmds_core` and other pure logic) is tested on the host with doctest (vendored in `thirdparty/doctest/`, so no network access is needed). Use the `build` wrapper rather than a raw parallel build:

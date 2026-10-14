@@ -1,7 +1,7 @@
 # bmds_storage's part of the project's configuration (devplan/update.md §1).
 #
 # IDF checks an app against the smallest app partition. Ours are two sizes: the main firmware's
-# ota_0 (4 MB) and the recovery firmware's ota_1 (2 MB), each built on its own. So the check is
+# ota_0 (4 MB) and the recovery firmware's ota_1 (1.375 MB), each built on its own. So the check is
 # against the partition the build is for: ota_0, or ota_1 in the recovery build
 # (BMDS_APP_PARTITION). This replaces partition_table's function of the same name, which is only
 # called for that check; it is included after partition_table's (IDF includes the project_include

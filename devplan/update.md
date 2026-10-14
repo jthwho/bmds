@@ -133,7 +133,7 @@ flash are in the kernel.
    saying when `ota_1` isn't the recovery of the last package applied (one applied from recovery
    can't replace recovery). Recovery already goes first in every update that carries a different
    one (§11), so the installer is always the newest.
-6. **At the very end, the partition sizes** (the user's, 2026-10-13): `ota_1` cut to recovery's
+6. **At the very end, the partition sizes** (done: §19) (the user's, 2026-10-13): `ota_1` cut to recovery's
    measured size plus about half (likely 1.25 MB, once its screen is in), the rest to `rom`;
    `otadata` and `/boot` move with it. `/boot` may simply be reformatted (nothing on it needs
    keeping, the user's word); every board is flashed once over USB (a package can't change the
@@ -522,3 +522,27 @@ comes back); the key is **Esc**; the restart limit **3**.
   intent, the result and the marker are all synced before a restart, but a restart flushes anyway
   (the shutdown handler); a panic doesn't.
 - **Sizes:** main 51% free, recovery 56% (unchanged to the KB), bootloader unchanged.
+
+## 19. As built: the partition sizes (2026-10-14)
+
+- **The table** (`partitions.csv`, `rom.md` §3a): `ota_1` 2 MB → **1.375 MB** (0x160000; recovery
+  is 0.90 MB, 36% free: "plus about half" rounded to the 64 KB page every partition starts on),
+  `otadata` 0x610000 → **0x570000** (and its 56 KB spare after), `/boot` 0x620000 → **0x580000**
+  (512 KB, as was), `rom` 0x6A0000 → **0x600000**, 9.375 MB → **10 MB** (the ROM is 3.4 MB).
+  `ota_0` and `nvs` stay. Nothing in the code named an offset; the size check reads the table.
+- **Moving a board** (a package can't change the table, so one USB flash each): `/boot` is
+  copied rather than reformatted, so its settings and keys stay (littlefs doesn't depend on where
+  it is):
+  ```
+  esptool.py -p PORT --after no_reset read_flash 0x620000 0x80000 boot.img   # the old /boot
+  esptool.py -p PORT --after no_reset write_flash 0x580000 boot.img           # at its new place
+  idf.py -B build -p PORT flash                                               # the new table, all
+  ```
+  (`sync` on the board first. `flash` doesn't write `boot`; the image lands where the new
+  `ota_1` no longer reaches.) Without the copy, the first boot finds `/boot` blank and makes it
+  again with the defaults.
+- **Tested on the board:** moved as above; `/boot` came back whole (settings, the SSH host key,
+  `home`); `rom` says 3440 KB of 10240 KB, matching the firmware; then two updates through
+  `tools/bmds-update` (a build with a changed log line, then the real one): recovery written to
+  the new `ota_1`, the firmware by recovery, back to main; `update check` after: every section
+  the same as flashed.

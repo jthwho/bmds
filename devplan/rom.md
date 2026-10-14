@@ -57,12 +57,14 @@ ROM; the device may be reformatted. It comes before `mediaplayer.md` step 3.
 |---|---|---|---|---|
 | `nvs` | data, nvs | 0x9000 | 24 KB | as now (IDF's own use) |
 | `ota_0` | app, ota_0 | 0x10000 | 4 MB | the main firmware (where the app always was) |
-| `ota_1` | app, ota_1 | 0x410000 | 2 MB | the recovery firmware (§3b) |
-| `otadata` | data, ota | 0x610000 | 8 KB | which firmware boots |
-| (spare) | | 0x612000 | 56 KB | so `boot` starts on a 64 KB page |
-| `boot` | data, littlefs | 0x620000 | 512 KB | `/boot`, read and write (§3h) |
-| `rom` | data, 0x40 | 0x6A0000 | 9.375 MB | `/rom`, read-only (§3c) |
+| `ota_1` | app, ota_1 | 0x410000 | 1.375 MB | the recovery firmware (§3b; 2 MB until 2026-10-14) |
+| `otadata` | data, ota | 0x570000 | 8 KB | which firmware boots |
+| (spare) | | 0x572000 | 56 KB | so `boot` starts on a 64 KB page |
+| `boot` | data, littlefs | 0x580000 | 512 KB | `/boot`, read and write (§3h) |
+| `rom` | data, 0x40 | 0x600000 | 10 MB | `/rom`, read-only (§3c) |
 
+- **Since 2026-10-14** (`update.md` §19): `ota_1` cut to the recovery firmware's measured size
+  and half again; `otadata` and `/boot` moved down with it, and the ROM got the rest.
 - **Recovery is `ota_1`, not `factory`** (changed in step 2): IDF's `idf.py flash` writes the
   app to `factory` when there is one, and its bootloader, with no `factory` and a blank
   `otadata`, boots `ota_0`, and if `ota_0` won't load tries the other slots

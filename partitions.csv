@@ -4,10 +4,11 @@ nvs,       data, nvs,      0x9000,   0x6000
 # The main firmware (idf.py flash writes it here: the first OTA slot, no factory partition).
 ota_0,     app,  ota_0,    0x10000,  4M
 # The recovery firmware (empty until it exists): booted when asked (otadata), or when ota_0 won't.
-ota_1,     app,  ota_1,    0x410000, 2M
+# 1.375 MB: recovery's 0.9 MB and half again (devplan/update.md §19).
+ota_1,     app,  ota_1,    0x410000, 0x160000
 # Which firmware boots (idf.py flash writes it blank: ota_0).
-otadata,   data, ota,      0x610000, 0x2000
+otadata,   data, ota,      0x570000, 0x2000
 # /boot (devplan/storage.md §13, §13d): littlefs, always mounted.
-boot,      data, littlefs, 0x620000, 512K
+boot,      data, littlefs, 0x580000, 512K
 # /rom (devplan/rom.md): the ROM image, read-only, mapped in place; the rest of the flash.
-rom,       data, 0x40,     0x6A0000, 0x960000
+rom,       data, 0x40,     0x600000, 0xA00000
