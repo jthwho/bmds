@@ -95,6 +95,7 @@ namespace {
                 {"xz", "application/x-xz", Archive},
                 {"elf", "application/x-executable", 0},
                 {"bin", "application/octet-stream", 0},
+                {"bmup", "application/x-bmds-update", 0}, // devplan/update.md §2
         };
 
         // Text-like types found only by content.
@@ -132,6 +133,7 @@ namespace {
                 {0, "[Desktop Entry]", 15, "application/x-desktop"},
                 {0, "<?xml", 5, "application/xml"},
                 {257, "ustar", 5, "application/x-tar"},
+                {0, "BMUP", 4, "application/x-bmds-update"},
         };
 
         bool startsAt(Span<const uint8_t> head, size_t offset, const char *bytes, size_t length) {

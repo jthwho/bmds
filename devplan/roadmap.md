@@ -312,8 +312,10 @@ Plan: [`input.md`](input.md).
       bug, one unexplained bad read.
     - [x] Step 3: recovery's screen ("Recovery Mode", the update's progress, a terminal; §13).
       Open: the keyboard tested by hand.
-    - [ ] Step 4: the Updater. Step 5: fetch from a URL, crash counter. Last: `ota_1` cut to
-      recovery's size, the rest to `rom` (§6).
+    - [x] Step 4: the Updater (`/bin/updater`, the `.bmup` type, the notification after; §15).
+    - [ ] Next (§6 5a): app rollback for a new recovery, `update status` on a stale recovery.
+      Step 5: fetch from a URL, crash counter. Last: `ota_1` cut to recovery's size, the rest to
+      `rom` (§6).
 
 ## Phase 8 — Self-Hosting
 

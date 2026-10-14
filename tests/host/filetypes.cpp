@@ -54,6 +54,7 @@ TEST_CASE("FileFormat: by name") {
         CHECK(FileFormat::byName("x.unknown").isEmpty());
         CHECK(FileFormat::byName("trailing.").isEmpty());
         CHECK(FileFormat::byName("").isEmpty());
+        CHECK(str(FileFormat::byName("bmds-0.2.0.bmup")) == "application/x-bmds-update");
 }
 
 TEST_CASE("FileFormat: by content") {
@@ -64,6 +65,7 @@ TEST_CASE("FileFormat: by content") {
         CHECK(content("\xff\xd8\xff\xe0") == "image/jpeg");
         CHECK(content("GIF89a..") == "image/gif");
         CHECK(content("%PDF-1.4\n") == "application/pdf");
+        CHECK(content(std::string("BMUP\x01\x00\x88\x00", 8)) == "application/x-bmds-update");
         CHECK(content(std::string("PK\x03\x04", 4)) == "application/zip");
         CHECK(content(std::string("\x1f\x8b\x08\x00", 4)) == "application/gzip");
         CHECK(content(std::string("\xfd"

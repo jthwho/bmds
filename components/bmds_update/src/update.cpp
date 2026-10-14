@@ -21,6 +21,8 @@
 #include <bmds/datetime.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
+#include <bmds/notificationlog.h>
+#include <bmds/notifications.h>
 #include <bmds/storage.h>
 #include <bmds/sysconf.h>
 #include <bmds/system.h>
@@ -45,6 +47,8 @@ namespace {
         constexpr uint8_t  AppMagic = 0xE9;
         // How long recovery shows how an update ended before it restarts.
         constexpr unsigned RestartPauseMs = 2000;
+        // How long the main firmware's balloon about an update shows (a failure's stays: critical).
+        constexpr int32_t ResultBalloonMs = 15000;
 
         std::atomic<bool> busy{false};
 
@@ -548,6 +552,28 @@ namespace {
                 return;
         }
 
+        // The notification of an update just applied (or not), once at boot: the Updater shows the rest.
+        void notifyResult(bool applied, StringView version, StringView message) {
+                Notification n;
+                n.urgency = applied ? Notification::Urgency::Normal : Notification::Urgency::Critical;
+                n.target = Notification::Target::Launch;
+                std::snprintf(n.targetText, sizeof(n.targetText), "updater.desktop");
+                std::snprintf(n.app, sizeof(n.app), "Updater");
+                std::snprintf(n.icon, sizeof(n.icon), "system-software-update");
+                n.timeoutMs = ResultBalloonMs; // longer than most: the screen may only just have come on
+                if (applied) {
+                        std::snprintf(n.title, sizeof(n.title), "Update installed");
+                        std::snprintf(n.body, sizeof(n.body), "BMDS %.*s is installed.", int(version.size()),
+                                      version.data());
+                } else {
+                        std::snprintf(n.title, sizeof(n.title), "The update wasn't installed");
+                        std::snprintf(n.body, sizeof(n.body), "%.*s. The system is as it was.", int(message.size()),
+                                      message.data());
+                }
+                if (Notifications::post(n, 0, nullptr).isError()) bmdsWarn("Update: can't post the notification");
+                return;
+        }
+
 } // namespace
 
 void Update::setObserver(const Observer *o) {
@@ -622,12 +648,17 @@ Error Update::init() {
         if (Vfs::stat(UnseenPath, context).isOk()) {
                 auto [result, err] = readFile(ResultPath);
                 StringView rest = result.view();
+                StringView status, version, message;
                 while (err.isOk() && !rest.isEmpty()) {
                         const size_t     nl = rest.indexOf('\n');
                         const StringView line = rest.left(nl);
                         bmdsInfo("Update: %.*s", int(line.size()), line.data());
+                        if (line.startsWith("status: ")) status = line.mid(8);
+                        if (line.startsWith("version: ")) version = line.mid(9);
+                        if (line.startsWith("message: ")) message = line.mid(9);
                         rest = nl == StringView::NPos ? StringView() : rest.mid(nl + 1);
                 }
+                if (err.isOk()) notifyResult(status == "applied", version, message);
                 (void)Vfs::remove(UnseenPath, context);
         }
         return Error::Ok;

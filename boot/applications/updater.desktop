@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Updater
+Comment=Installs a system update (.bmup) from the card, with its release notes
+Exec=updater %f
+Icon=system-software-update
+Terminal=false
+Categories=System;Settings;
+MimeType=application/x-bmds-update;

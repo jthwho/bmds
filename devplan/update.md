@@ -127,6 +127,12 @@ flash are in the kernel.
 3. **Recovery's screen:** the display, the text console and the update screen.
 4. **The Updater:** the syscalls, the app, the `.bmup` file type, the result after.
 5. **Later:** fetching from a URL; the crash loop counter; a key at power-on.
+5a. **After step 4 (the user's, 2026-10-14):** IDF's app rollback for the switch to a new recovery
+   (on probation until its update stage runs; a crash before falls back to `ota_0`), if the
+   bootloader has room (1.2 KB free: measure first); and `update status` in the main firmware
+   saying when `ota_1` isn't the recovery of the last package applied (one applied from recovery
+   can't replace recovery). Recovery already goes first in every update that carries a different
+   one (§11), so the installer is always the newest.
 6. **At the very end, the partition sizes** (the user's, 2026-10-13): `ota_1` cut to recovery's
    measured size plus about half (likely 1.25 MB, once its screen is in), the rest to `rom`;
    `otadata` and `/boot` move with it. `/boot` may simply be reformatted (nothing on it needs
@@ -336,3 +342,61 @@ What §5 asks of recovery, made of what the GUI is made of below its window mana
   damaged), and a real update of both firmwares (the main firmware wrote the new recovery, which
   installed the firmware). **Not tested: typing on the USB keyboard** (it enumerates; nothing here
   can press its keys); the mouse is ignored.
+
+## 14. Step 4: the Updater (plan, 2026-10-14)
+
+The user's choices (2026-10-14): **no syscalls yet** (the Updater calls `bmds/update.h` as the
+other built-in applications call the kernel's C++; the SDK has no GUI for a separate Updater to
+be built with, and the `update` command stays the scripts' contract; syscalls come when a
+separately built program needs them), and **a notification after an update** (posted at boot,
+opening the Updater) rather than the Updater opening itself.
+
+- **`/bin/updater [FILE]`**, a built-in GUI application (`bmds_updater`, the toolkit only, as the
+  image viewer). With FILE: that package. Without: the newest package in `update/dir`, or "No
+  update packages in DIR" with the last update's result.
+- **Its window:** the package's version against the installed one ("newer", "the same", "older"),
+  when it was made and which key signed it, the check's result in words, the release notes (the
+  `Notes` section, scrolled), and **Install** (and Close). A package that isn't newer: Install asks
+  "Install an older version?" first (the command's `--force`). A bad package: Install is off and
+  the reason is shown.
+- **Install:** the checks run again; the recovery firmware is written if it differs, with a
+  progress bar ("Writing the recovery system"); then "Restarting to install..." and the restart
+  (`Update::apply()`, then `Vfs::sync()` and `System::restart()`, as the command does).
+- **The file type:** `.bmup` and the magic `BMUP` are `application/x-bmds-update` in `FileFormat`
+  (append only); `mimeapps.list` opens it with `updater.desktop`; a launcher entry "Updater".
+- **After:** the main firmware's `Update::init()` posts a notification once (on the
+  `/boot/update/unseen` marker it logs on now): "BMDS VERSION installed" or "The update wasn't
+  installed" with the reason, its target `updater.desktop`, which shows the last result when no
+  package is newer.
+
+## 15. As built: step 4, the Updater (2026-10-14)
+
+- **`/bin/updater [FILE]`** (`components/bmds_updater`, 7.5 KB): as §14. The window shows the
+  version, the installed one and which is newer, when it was made and the key, the check's
+  verdict, the release notes (a `ScrollArea` that wraps them at word ends, in a field's frame),
+  then a progress bar and its stage while installing. Checking and installing run on a thread of
+  the program's own and are posted to the loop; progress is posted at most once until it is drawn.
+  A package not newer asks "It isn't newer than what is installed. Install it?" first. Close is off
+  while it installs. After `Update::apply()`: "Restarting to install...", a second, `Vfs::sync()`
+  and the restart. With no FILE: the newest `.bmup` in `update/dir` by its time, or "No update
+  packages in DIR" with the last result (and what is pending).
+- **The file type:** `.bmup` and `BMUP` at 0 are `application/x-bmds-update` (`FileFormat`, host
+  tested); `mimeapps.list` opens it with `updater.desktop` (new boards; the user's board's
+  `/boot/config/mimeapps.list` got the line by hand: existing `/boot` files aren't replaced).
+  Icons appended to `rom/icons.list`: `system-software-update` (the application's, flat-color's
+  synchronize) and `application-x-bmds-update` (the file's, its package).
+- **After an update:** the main firmware's boot stage posts "Update installed" ("BMDS VERSION is
+  installed.") or a critical "The update wasn't installed" with the reason, from the Updater, its
+  icon, opening `updater.desktop` when clicked; the balloon shows 15 s (a critical one stays):
+  with the default 6 s it was gone before the desktop was looked at, though the panel shows those
+  posted before it started (checked with a 30 s timeout at boot).
+- **Long notes** scroll: the wheel, the bar, and the keys (Up, Down, Page Up and Down, Home, End)
+  once the pane has the focus (a click or Tab). They are wrapped again when the vertical bar
+  appears, which narrows them (the first version cut the lines' ends and showed a horizontal bar:
+  seen with 60 entries). Notes over 64 KB show their first 64 KB, cut at a whole line, and say
+  the rest isn't shown (checked with 71 KB).
+- **Tested on the board** (screenshots, keys by `win hid`, clicks by `win pointer`): the window on
+  a package with notes; Install on the same version (the question, then Alt+I): progress, the
+  restart, recovery installed it (the firmware differed), back with the result; the notification
+  at boot; the window with no packages; a `.bmup` opened by its type (a notification targeting
+  the file, clicked).
