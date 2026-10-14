@@ -315,8 +315,9 @@ Plan: [`input.md`](input.md).
     - [x] Step 4: the Updater (`/bin/updater`, the `.bmup` type, the notification after; §15).
     - [x] App rollback (both firmwares on probation until they confirm), `update status`'s
       Recovery line; flash auto-suspend off (it faulted reads under load; §16).
-    - [ ] Step 5: fetch from a URL, crash counter. Last: `ota_1` cut to recovery's size, the rest to
-      `rom` (§6).
+    - [x] Step 5: the crash counter (3 in a row: recovery), Esc held at power on (§18), both
+      tested on the board. Fetching from a URL postponed (the user's, 2026-10-14; planned in §17).
+    - [ ] Last: `ota_1` cut to recovery's size, the rest to `rom` (§6).
 
 ## Phase 8 — Self-Hosting
 

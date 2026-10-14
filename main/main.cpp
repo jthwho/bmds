@@ -71,6 +71,7 @@ namespace {
                 {"i2c", bmds::I2cBus::init},
                 {"vfs", bmds::Vfs::init},
                 {"boot", bmds::BootDisk::init},       // /boot: the profile and autoexec.sh
+                {"recovery", bmds::Update::watch},    // crashes in a row, Esc at power on: to recovery
                 {"rom", bmds::RomDisk::init},         // /rom: the files that come with the firmware
                 {"sysconf", bmds::SysConf::init},     // the system configuration, saved on /boot; /home
                 {"logs", bmds::LogFiles::init},       // /dev/log; the log's files in log/dir once it mounts

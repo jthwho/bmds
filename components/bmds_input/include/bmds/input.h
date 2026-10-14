@@ -46,6 +46,22 @@ namespace Input {
         /** @brief Delivers a pointer event to the sink. */
         void pointer(const PointerEvent &event);
 
+        /** @brief Told of a key (its HID usage) down in a keyboard's first second attached. */
+        using AttachKey = void (*)(uint8_t usage);
+
+        /** @brief How long after a keyboard is attached its keys go to the `AttachKey` handler. */
+        inline constexpr uint32_t AttachKeyMs = 1000;
+
+        /**
+         * @brief Sets who is told of the keys down in a keyboard's first second attached: a key held
+         *        as it was plugged in, or as the system started (devplan/update.md §17: Esc starts
+         *        recovery); null: none. Called on the keyboard's task, before the key's event.
+         */
+        void setAttachKeyHandler(AttachKey handler);
+
+        /** @brief Tells the `AttachKey` handler, if any, of @p usage (the keyboard's driver). */
+        void attachKey(uint8_t usage);
+
 } // namespace Input
 
 BMDS_NAMESPACE_END

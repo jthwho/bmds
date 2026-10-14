@@ -126,7 +126,7 @@ flash are in the kernel.
    intent and result in `/boot`; resets at every stage of a write (power loss) on the board.
 3. **Recovery's screen:** the display, the text console and the update screen.
 4. **The Updater:** the syscalls, the app, the `.bmup` file type, the result after.
-5. **Later:** fetching from a URL; the crash loop counter; a key at power-on.
+5. **Later:** the crash loop counter; a key at power-on (§17); fetching from a URL (postponed).
 5a. **After step 4 (the user's, 2026-10-14):** IDF's app rollback for the switch to a new recovery
    (on probation until its update stage runs; a crash before falls back to `ota_0`), if the
    bootloader has room (1.2 KB free: measure first); and `update status` in the main firmware
@@ -441,3 +441,84 @@ opening the Updater) rather than the Updater opening itself.
   to do; `update apply` there installed a good one, which confirmed itself and stayed through a
   reset. The normal path (`reboot recovery` and back) confirms each side quietly. With
   auto-suspend off, writing `ota_1` from the main firmware didn't fault (12 under load, and these).
+
+## 17. Step 5: fetching, the restart counter, the key at power-on (plan, 2026-10-14)
+
+**What is there to build on.** BMDS runs its own lwIP (vendored, `bmds_net`) behind `Socket` and
+`NetStack::resolve()`, not IDF's: IDF's `esp_http_client` and `esp-tls` need IDF's lwIP and its
+sockets, and can't be used. mbedTLS is in the build (TLS 1.2 client, IDF's full certificate
+bundle), its allocations internal RAM today. Boot takes 0.64 s from reset to the shell; Ethernet
+starts at about 0.61 s; a USB keyboard is there at about 1.3 s.
+
+- **Fetching (the main firmware only).** A small HTTP/1.1 client: `http://` and `https://`
+  (mbedTLS over `Socket`, its send and receive as mbedTLS's BIO; the server checked against IDF's
+  certificate bundle; the clock is NTP's), redirects (up to 5), `Content-Length` or chunked,
+  `Range`. The parsing (the URL, the status line and headers, chunks) is portable, in `bmds_core`,
+  host-tested and fuzzed; the connection in `bmds_net`. mbedTLS's allocations go to PSRAM
+  (`CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC`, through `Memory` with a named space). A package is signed,
+  so plain HTTP can't change what is installed; HTTPS is for the servers that require it (most
+  release hosts redirect to it). Measured on the build before it lands: flash (mbedTLS's TLS and
+  X.509, the bundle: about 200 KB expected, of 2 MB free) and the RAM of one connection.
+  - **`update fetch [--check] [URL]`** (append-only, a new subcommand): downloads the package at
+    URL (default: the setting `update/url`) into `update/dir` under its name (written as
+    `NAME.part`, renamed when whole), then checks it and prints what `update check` prints. With
+    `--check`, only the head is read (a `Range` request for the first 4 KB: the header, the
+    sections and the signature), checked, and its version said against the installed one; nothing
+    is written. Then `update apply FILE` as now.
+  - **The setting `update/url`** (new, default empty): where this board's packages are published,
+    one URL that always names the newest (a release host's "latest" link). No feed or manifest
+    format: the package's own signed head is what is compared.
+  - **The Updater:** with `update/url` set, **Check for updates** (the head only, as `--check`),
+    then **Download** with a progress bar, then the existing Install. Recovery doesn't fetch (no
+    network in it, and it has no room for TLS once `ota_1` shrinks): a package for recovery is
+    put on the card.
+- **The restart counter (the main firmware).** A crash or a watchdog reset (`panic`, the
+  watchdogs, a CPU lockup: `esp_reset_reason()`) adds one to a count kept in RTC memory (kept over
+  resets, lost at power off); any other reset (power on, `reboot`, the reset button) clears it;
+  so does running 60 s after the `healthy` stage (a one-shot timer). At **3**, the main firmware
+  leaves `/boot/update/restarts` and starts recovery (`setNextFirmware(Recovery)`), whose screen
+  and log say "The system kept restarting", with what to do (`reboot` tries again; or install an
+  update). Counted in the `update` stage, moved up to just after `boot` (the first that can write
+  /boot), so `sysconf` and later stages' crashes count; a crash before it is a firmware that never
+  starts, which rollback catches when it is new. Not a setting: the settings are among what may
+  be broken.
+- **The key at power-on.** The BOOT button can't be it: it is a strapping pin (held at reset, the
+  chip starts its ROM's download mode) and Ethernet's TXD1 once Ethernet starts, 0.61 s after
+  reset. A **USB keyboard key held** can: a key down in a keyboard's first report (held as it
+  was attached), in the first 10 s after reset, starts recovery (`setNextFirmware(Recovery)`)
+  before the desktop starts. Recovery's screen says "Recovery Mode" as for `reboot recovery`.
+
+**The user's choices (2026-10-14):** fetching **postponed** (the plan above stands for when it
+comes back); the key is **Esc**; the restart limit **3**.
+
+## 18. As built: step 5, the crash counter and Esc (2026-10-14)
+
+- **`Update::watch()`**, a boot stage (`recovery`) just after `boot`, main firmware only. The count
+  is in RTC memory (magic, count, its complement: a count that doesn't check, as after power on or
+  under recovery's own RTC data, is 0). A reset by a panic, a watchdog or a CPU lockup adds one;
+  any other clears it; so does a one-shot FreeRTOS timer (static, 60 s) started by `confirm()` in
+  the `healthy` stage. At `Update::RestartLimit` (3) it writes `/boot/update/restarts`, sets
+  recovery next and restarts. Recovery takes the marker and reports
+  `Update::SystemKeptRestarting` as it does `SystemDidntStart`: "The system kept restarting." on
+  its screen, with the same advice.
+- **Esc:** `Input::setAttachKeyHandler()` (new): the USB host passes the keys in a keyboard's
+  boot reports during its first second attached (`Input::AttachKeyMs`). `watch()` sets a handler
+  that starts recovery on Esc within 10 s of reset.
+- **Rollback comes first:** a firmware still on probation (just installed, or just returned to
+  from recovery) that crashes before `healthy` is abandoned by the bootloader on the first crash
+  ("The system didn't start"), before the count matters. The count catches a confirmed firmware
+  that crashes after `healthy` (a broken setting, a program the profile starts).
+- **Tested on the board** with a test build (a stage after `healthy` that aborted while a count
+  in `/boot/crashtest` was above 0, and a `crashtest` command; not kept):
+  - three crashes in a row: "crash 1/2/3 of 3", recovery, "recovery runs because the system kept
+    restarting";
+  - two crashes, then a good boot: stays in main;
+  - a crash after 62 s up: counted as 1; another at once: 2.
+  - Esc held through a reset: recovery (the user, by hand, 2026-10-14).
+- **Found on the way: `/boot` wasn't durable on `sync`.** `FlashPartition::sync()` returned `Ok`
+  without waiting for the write queue, so `Vfs::sync()` (the `sync` command and system call too)
+  didn't wait for `/boot`. The test's countdown, written and synced before `abort()`, was lost
+  every time. `sync()` now drains the queue (`flush(WaitForever)`), and the countdown kept. The
+  intent, the result and the marker are all synced before a restart, but a restart flushes anyway
+  (the shutdown handler); a panic doesn't.
+- **Sizes:** main 51% free, recovery 56% (unchanged to the KB), bootloader unchanged.

@@ -877,6 +877,9 @@ order.
   - `fsync` (`Stream::flush()`) waits for the queue (`flush()`), so a program that asks for
     durability gets it. FAT's didn't.
   - A restart writes the queue out first (the shutdown handler, as now).
+  - **`Vfs::sync()` waits for the queue too** (fixed 2026-10-14, `update.md` §18):
+    `FlashPartition::sync()` returned `Ok` at once, so `sync` (the command, the system call,
+    `Vfs::sync()`) didn't make `/boot` durable. A panic just after a write and a sync lost it.
 - **Bad blocks:** an operation that fails in the worker is logged and the queue moves on.
   littlefs's own relocation of bad blocks can't act on it, because the error comes after the
   call returned. NOR flash rarely fails a program, and the IDF reports it the same way today

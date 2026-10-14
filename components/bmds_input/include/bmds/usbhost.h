@@ -161,6 +161,7 @@ class UsbHost {
                                 uint8_t         instance = 0;
                                 uint8_t         leds = 0; // the LED report being sent (it must stay put)
                                 bool            reportProtocol = false; // a mouse's reports decoded by layout
+                                uint32_t        attachedMs = 0;         // uptime when it was attached
                                 KeyboardDecoder keys;
                                 MouseLayout     layout; // a mouse's, from its report descriptor
                 };

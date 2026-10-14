@@ -40,6 +40,11 @@ namespace Update {
 
         /** @brief `Observer::finished`'s failure when recovery runs because the main firmware didn't start. */
         inline constexpr const char *SystemDidntStart = "the system didn't start";
+        /** @brief As `SystemDidntStart`, when the main firmware started recovery after crashing again and again. */
+        inline constexpr const char *SystemKeptRestarting = "the system kept restarting";
+
+        /** @brief Crashes in a row (resets by a panic or a watchdog) before the main firmware starts recovery. */
+        inline constexpr uint32_t RestartLimit = 3;
 
         /** @brief What a section's bytes are, against what is in its partition. */
         enum class Flashed : uint8_t {
@@ -141,6 +146,15 @@ namespace Update {
          *        the intent, if any, on a thread of its own once the card is mounted, then restarts.
          */
         Error init();
+
+        /**
+         * @brief Boot stage, as early as /boot is there (devplan/update.md §17). The main firmware
+         *        counts the crashes in a row (a panic's or a watchdog's reset; any other reset, or
+         *        running a minute after `confirm()`, clears the count) and at `RestartLimit` starts
+         *        recovery, which says "The system kept restarting"; and starts recovery when Esc is
+         *        held as a keyboard is attached in the first 10 s after reset. Recovery: nothing.
+         */
+        Error watch();
 
         /**
          * @brief The running firmware is healthy: a firmware just switched to boots on probation

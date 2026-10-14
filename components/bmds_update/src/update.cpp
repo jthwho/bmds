@@ -12,13 +12,19 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <esp_attr.h>
 #include <esp_chip_info.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
+#include <esp_system.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/timers.h>
 #include <sdkconfig.h>
 #include <bmds/blake2s.h>
 #include <bmds/clock.h>
 #include <bmds/datetime.h>
+#include <bmds/input.h>
+#include <bmds/inputevent.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/notificationlog.h>
@@ -657,7 +663,96 @@ Error Update::status(Status &out) {
         return rerr.isOk() || rerr == Error::NotExist ? Error::Ok : rerr;
 }
 
+namespace {
+
+        // The crashes in a row (devplan/update.md §17), in RTC memory: kept over resets, lost at power
+        // off. Recovery's own RTC memory may lie over it: a count that doesn't check starts at 0.
+        struct RestartCount {
+                        uint32_t magic;
+                        uint32_t count;
+                        uint32_t check; // ~count
+        };
+
+        constexpr uint32_t RestartMagic = 0x424d5243; // "BMRC"
+        // How long the main firmware runs after its boot before its crashes stop counting as a loop.
+        constexpr uint32_t SettledMs = 60000;
+        // Esc held as a keyboard is attached this soon after reset starts recovery.
+        constexpr int64_t RecoveryKeyUs = 10'000'000;
+        // Left by the main firmware for recovery when it kept restarting.
+        constexpr const char *RestartsPath = "/boot/update/restarts";
+
+        RTC_NOINIT_ATTR RestartCount restartCount;
+
+        constinit StaticTimer_t settledBuffer;
+        constinit TimerHandle_t settledTimer = nullptr;
+
+        void setRestartCount(uint32_t count) {
+                restartCount.magic = RestartMagic;
+                restartCount.count = count;
+                restartCount.check = ~count;
+                return;
+        }
+
+        bool crashed(esp_reset_reason_t reason) {
+                switch (reason) {
+                        case ESP_RST_PANIC:
+                        case ESP_RST_INT_WDT:
+                        case ESP_RST_TASK_WDT:
+                        case ESP_RST_WDT:
+                        case ESP_RST_CPU_LOCKUP: return true;
+                        default: return false;
+                }
+        }
+
+        void settled(TimerHandle_t) {
+                setRestartCount(0);
+                return;
+        }
+
+        // Recovery next, and the restart; returns only when recovery can't be started.
+        Error startRecovery() {
+                const Error err = System::setNextFirmware(System::Firmware::Recovery);
+                if (err.isError()) return err;
+                setRestartCount(0);
+                (void)Vfs::sync();
+                bmdsInfo("Update: restarting into recovery");
+                System::restart();
+        }
+
+        void attachKey(uint8_t usage) {
+                if (usage != HidKey::Escape || System::uptimeUs() >= RecoveryKeyUs) return;
+                bmdsInfo("Update: Esc held at power on: starting recovery");
+                const Error err = startRecovery();
+                bmdsErr("Update: can't start recovery: %s", err.desc());
+                return;
+        }
+
+} // namespace
+
+Error Update::watch() {
+        if (System::running() != System::Firmware::Main) return Error::Ok;
+        const esp_reset_reason_t reason = esp_reset_reason();
+        const bool     valid = restartCount.magic == RestartMagic && restartCount.check == ~restartCount.count;
+        const uint32_t count = !crashed(reason) ? 0 : valid ? restartCount.count + 1 : 1;
+        setRestartCount(count);
+        Input::setAttachKeyHandler(attachKey);
+        if (count == 0) return Error::Ok;
+        bmdsWarn("Update: crash %u of %u in a row", unsigned(count), unsigned(RestartLimit));
+        if (count < RestartLimit) return Error::Ok;
+        bmdsErr("Update: the system kept restarting: starting recovery");
+        Error err = writeFile(RestartsPath, "");
+        if (err.isOk()) err = startRecovery();
+        bmdsErr("Update: can't start recovery: %s", err.desc());
+        return err;
+}
+
 Error Update::confirm() {
+        // Crashes from a minute on aren't a loop: the count is cleared then.
+        if (System::running() == System::Firmware::Main && settledTimer == nullptr) {
+                settledTimer = xTimerCreateStatic("settled", pdMS_TO_TICKS(SettledMs), pdFALSE, nullptr, settled,
+                                                  &settledBuffer);
+                if (settledTimer != nullptr) (void)xTimerStart(settledTimer, 0);
+        }
         // A no-op unless this firmware was just switched to (on probation).
         return esp_ota_mark_app_valid_cancel_rollback() == ESP_OK ? Error::Ok : Error::IoError;
 }
@@ -672,12 +767,19 @@ Error Update::init() {
                 const bool chosen = esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) == ESP_OK &&
                                     state == ESP_OTA_IMG_PENDING_VERIFY;
                 (void)confirm();
-                if (!chosen && !pending) {
-                        bmdsErr("Update: recovery runs because the system didn't start");
+                // Started by the main firmware because it kept restarting (watch()).
+                const bool restarting = Vfs::stat(RestartsPath, context).isOk();
+                if (restarting) {
+                        (void)Vfs::remove(RestartsPath, context);
+                        (void)Vfs::sync();
+                }
+                if ((!chosen || restarting) && !pending) {
+                        const char *why = restarting ? Update::SystemKeptRestarting : Update::SystemDidntStart;
+                        bmdsErr("Update: recovery runs because %s", why);
                         const Update::Observer *o = observer.load(std::memory_order_acquire);
                         if (o != nullptr && o->finished != nullptr) {
                                 static constinit const Update::Report none{}; // no constructor runs
-                                o->finished(o->arg, none, Update::SystemDidntStart, false);
+                                o->finished(o->arg, none, why, false);
                         }
                 }
                 if (!pending) return Error::Ok;

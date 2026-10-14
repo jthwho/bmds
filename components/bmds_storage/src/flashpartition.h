@@ -77,7 +77,7 @@ class FlashPartition final : public BlockDevice, public FlashDevice {
                 uint32_t     sectorSize() const override { return SectorBytes; }
                 uint64_t     sectorCount() const override { return uint64_t(_blocks) * BlockBytes / SectorBytes; }
                 uint32_t     eraseBlockSectors() const override { return BlockBytes / SectorBytes; }
-                Error        sync() override { return Error::Ok; }
+                Error        sync() override { return flush(WaitForever); } // the queue written
                 FlashDevice *flash() override { return this; }
 
                 // FlashDevice

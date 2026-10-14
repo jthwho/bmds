@@ -54,6 +54,8 @@ namespace {
 
         constinit StaticObject<Stats::Group> counters;
 
+        constinit std::atomic<Input::AttachKey> attachKeyHandler{nullptr};
+
 } // namespace
 
 Error Input::init() {
@@ -89,6 +91,17 @@ void Input::pointer(const PointerEvent &event) {
                 current.pointer(current.arg, event);
         else
                 dropped.fetch_add(1, std::memory_order_relaxed);
+        return;
+}
+
+void Input::setAttachKeyHandler(AttachKey handler) {
+        attachKeyHandler.store(handler, std::memory_order_release);
+        return;
+}
+
+void Input::attachKey(uint8_t usage) {
+        const AttachKey handler = attachKeyHandler.load(std::memory_order_acquire);
+        if (handler != nullptr) handler(usage);
         return;
 }
 

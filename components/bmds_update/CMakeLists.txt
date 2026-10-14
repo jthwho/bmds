@@ -10,6 +10,6 @@ idf_component_register(SRCS src/update.cpp
                             src/updatecommand.cpp
                        INCLUDE_DIRS include
                        REQUIRES bmds_core bmds_kernel
-                       PRIV_REQUIRES app_update bmds_console bmds_fs bmds_shell bmds_storage bmds_sysconf esp_hw_support esp_partition
+                       PRIV_REQUIRES app_update bmds_console bmds_fs bmds_input bmds_shell bmds_storage bmds_sysconf esp_hw_support esp_partition
                        WHOLE_ARCHIVE)
 bmds_target_options(${COMPONENT_LIB})

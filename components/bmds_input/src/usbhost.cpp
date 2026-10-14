@@ -381,6 +381,7 @@ void UsbHost::hidMounted(uint8_t address, uint8_t instance, Span<const uint8_t> 
         free->instance = instance;
         free->layout = layout;
         free->reportProtocol = kind == Hid::Kind::Mouse && protocol == HID_ITF_PROTOCOL_NONE;
+        free->attachedMs = static_cast<uint32_t>(System::uptimeUs() / 1000);
         {
                 Mutex::Locker lock(_lock, WaitForever);
                 ++(kind == Hid::Kind::Keyboard ? _stats.keyboards : _stats.mice);
@@ -432,6 +433,10 @@ void UsbHost::hidReport(uint8_t address, uint8_t instance, const uint8_t *data, 
         Hid *h = hid(address, instance);
         if (h != nullptr && h->kind == Hid::Kind::Keyboard) {
                 const auto now = static_cast<uint32_t>(System::uptimeUs() / 1000);
+                // A boot report: modifiers, a reserved byte, then up to six keys down.
+                if (now - h->attachedMs < Input::AttachKeyMs)
+                        for (uint16_t i = 2; i < length && i < 8; ++i)
+                                if (data[i] >= HidKey::A) Input::attachKey(data[i]); // below: none, or errors
                 if (h->keys.report(Span<const uint8_t>(data, length), now, emitKey, this)) setLocks(h->keys.locks());
         } else if (h != nullptr && h->kind == Hid::Kind::Mouse && h->reportProtocol) {
                 PointerEvent p;
