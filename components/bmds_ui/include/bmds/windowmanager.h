@@ -202,6 +202,8 @@ class WindowManager {
                                 uint8_t button = 0;    ///< `PointerEvent::Button`: the one pressed or released.
                                 uint8_t buttons = 0;   ///< `PointerEvent::Button` bits down after it.
                                 uint8_t modifiers = 0; ///< `KeyEvent::Modifier` bits down with it.
+                                int16_t dx = 0; ///< `Motion`: the mouse's, in screen pixels (held or at an edge too).
+                                int16_t dy = 0;
                 };
 
                 /**
@@ -275,6 +277,7 @@ class WindowManager {
                         DiagonalDown, ///< The top-left and bottom-right corners'.
                         DiagonalUp,   ///< The top-right and bottom-left corners'.
                         Text,         ///< An I-beam: text to select or type into.
+                        None,         ///< None drawn (a game's own, or none).
                 };
 
                 /** @brief Looks at the screen (`capture()`). */
@@ -612,6 +615,16 @@ class WindowManager {
                 Error setPointer(uint8_t id, Pointer shape);
 
                 /**
+                 * @brief Locks the pointer to window @p id (@p on), or lets it go: while the
+                 *        window is focused (full screen or not), the pointer is hidden and held
+                 *        still, and every pointer event goes to the window, motion as `dx`, `dy`
+                 *        (mouse look). Focus elsewhere (Alt+Tab, the Windows key) lets it go until
+                 *        the window is focused again. One window at a time: the last locked.
+                 * @return `Ok`, `NotFound`, or `InvalidState` (not running).
+                 */
+                Error setPointerLock(uint8_t id, bool on);
+
+                /**
                  * @brief Sets window @p id's large icon (null: none; 32 × 32 at
                  *        most), kept by the caller as `setIcon()`'s: Alt+Tab's list
                  *        shows it (the small one doubled without it).
@@ -875,7 +888,8 @@ class WindowManager {
                 bool            shortcut(const KeyEvent &event);      // a key the window manager keeps
                 bool            fullScreenKey(const KeyEvent &event); // Alt+Enter, and escape keys while full screen
                 void            leaveFullScreen();                    // asks the full-screen window to leave
-                void            fullScreenPointer(const PointerEvent &event); // every event to it
+                void            capturedPointer(uint8_t id, const PointerEvent &event); // every event to it
+                uint8_t         lockedId() const; // the pointer's lock while its window is focused; 0: none
                 void            switchOpen(int step);
                 void            switchTo(int item);
                 void            switchEnd(bool go);
@@ -885,7 +899,8 @@ class WindowManager {
                 uint8_t         focusId() const;  // the top focusable window; 0: none
                 uint8_t         topPopup() const; // 0: none
                 void            closePopups();
-                void            mouseTo(uint8_t id, MouseEvent::Type type, uint16_t x, uint16_t y, uint8_t button);
+                void mouseTo(uint8_t id, MouseEvent::Type type, uint16_t x, uint16_t y, uint8_t button, int16_t dx = 0,
+                             int16_t dy = 0);
                 void            hoverAt(uint16_t x, uint16_t y); // motion without a press held: to the client under it
                 void            workAreaChanged();
                 Rect            workAreaLocked() const;
@@ -907,7 +922,10 @@ class WindowManager {
                 void            pressedMoved(uint16_t x, uint16_t y); // a button's press shown while over it
                 void            sizeTo(uint16_t x, uint16_t y);       // a resize under way: the outline there
                 Pointer         shapeAt(uint16_t x, uint16_t y) const;
-                bool            isCursorDrawn() const { return _cursorShown && !_pointerHidden && !_typingHidden; }
+                bool            isCursorDrawn() const {
+                        return _cursorShown && !_pointerHidden && !_typingHidden && _shape != Pointer::None &&
+                               lockedId() == 0;
+                }
                 void            act(uint8_t id, WindowFrame::Part part);
                 WindowFrame     frame(uint8_t id, const Rect &outer) const;
                 void            drawCursor();
@@ -1008,6 +1026,7 @@ class WindowManager {
                 uint64_t          _clickUs = 0;
                 uint8_t           _mouseId = 0;      // its client area pressed: has the mouse until all buttons are up
                 uint8_t           _fullScreenId = 0; // shown full screen by its owner (setFullScreen())
+                uint8_t           _lockId = 0;       // the pointer locked to it (setPointerLock())
                 uint8_t           _hoverId = 0;      // the client area the pointer is over (told the mouse)
                 uint8_t           _swallowed = 0;    // buttons whose press closed popups: their release goes nowhere
                 bool              _listChanged = false; // for the watchers, at the round's end

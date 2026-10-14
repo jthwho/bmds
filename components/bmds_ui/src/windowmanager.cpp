@@ -223,6 +223,7 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
         _shape = Pointer::Arrow;
         _pointerHidden = false;
         _typingHidden = false;
+        _lockId = 0;
         _mouseId = 0;
         _hoverId = 0;
         _swallowed = 0;
@@ -456,8 +457,9 @@ void WindowManager::applyPointer() {
                         _pointerHead = static_cast<uint8_t>((_pointerHead + 1) % PointerQueue);
                         --_pointerCount;
                 }
-                if (_fullScreenId != 0) {
-                        fullScreenPointer(event);
+                const uint8_t captured = _fullScreenId != 0 ? _fullScreenId : lockedId();
+                if (captured != 0) {
+                        capturedPointer(captured, event);
                         continue;
                 }
                 const Rect screen = _stack.screen();
@@ -503,7 +505,7 @@ void WindowManager::applyPointer() {
                 _buttons = event.buttons;
                 if (moved) {
                         if (_mouseId != 0) {
-                                mouseTo(_mouseId, MouseEvent::Type::Motion, nx, ny, 0);
+                                mouseTo(_mouseId, MouseEvent::Type::Motion, nx, ny, 0, event.dx, event.dy);
                         } else {
                                 hoverAt(nx, ny);
                         }
@@ -846,6 +848,8 @@ namespace {
                 {12, 19, 0, 0, ArrowRows},        {19, 9, 9, 4, HorizontalRows},  {9, 19, 4, 9, VerticalRows},
                 {15, 15, 7, 7, DiagonalDownRows}, {15, 15, 7, 7, DiagonalUpRows}, {7, 17, 3, 8, TextRows},
         };
+        static_assert(sizeof(Pictures) / sizeof(Pictures[0]) == size_t(WindowManager::Pointer::None),
+                      "a picture for each shape but None");
 
         struct CursorJob {
                         const Picture *picture;
@@ -878,6 +882,7 @@ namespace {
 
 // The pointer's picture on the screen, widened to 4-pixel columns.
 Rect WindowManager::cursorArea() const {
+        if (_shape == Pointer::None) return Rect();
         const Picture &p = Pictures[static_cast<size_t>(_shape)];
         const Rect     screen = _stack.screen();
         const int      x = int(_pointerX) - p.hotX, y = int(_pointerY) - p.hotY;
@@ -1375,6 +1380,8 @@ void WindowManager::changed(uint8_t oldFocus) {
         const uint8_t top = focusId();
         if (top != oldFocus) {
                 _listChanged = true;
+                // The pointer's lock holds, or lets go: the pointer hidden or shown again.
+                if (_lockId != 0 && (top == _lockId || oldFocus == _lockId)) _cursorMoved = true;
                 for (const uint8_t id : {oldFocus, top}) {
                         auto [z, err] = _stack.layerOf(id);
                         if (err.isError()) continue;
@@ -1513,6 +1520,7 @@ Error WindowManager::closeLocked(uint8_t id) {
         const Window w = _windows[id - 1];
         _windows[id - 1] = Window();
         if (_fullScreenId == id) _fullScreenId = 0; // its owner shows the desktop again (it is told: closed)
+        if (_lockId == id) _lockId = 0;
         if (_bandId == id) {
                 // Its area is redrawn as the window goes: nothing of the band to put back.
                 _bandId = 0;
@@ -1765,7 +1773,8 @@ void WindowManager::closePopups() {
 }
 
 // Window @p id's mouse callback, (@p x, @p y) made its client area's.
-void WindowManager::mouseTo(uint8_t id, MouseEvent::Type type, uint16_t x, uint16_t y, uint8_t button) {
+void WindowManager::mouseTo(uint8_t id, MouseEvent::Type type, uint16_t x, uint16_t y, uint8_t button, int16_t dx,
+                            int16_t dy) {
         const Window &w = _windows[id - 1];
         if (w.mouse == nullptr) return;
         auto [at, err] = _stack.rectOf(id);
@@ -1778,6 +1787,8 @@ void WindowManager::mouseTo(uint8_t id, MouseEvent::Type type, uint16_t x, uint1
         event.button = button;
         event.buttons = _buttons;
         event.modifiers = _modifiers;
+        event.dx = dx;
+        event.dy = dy;
         w.mouse(w.arg, event);
         return;
 }
@@ -2323,22 +2334,32 @@ void WindowManager::leaveFullScreen() {
         return;
 }
 
-// A full-screen window's pointer: the screen's coordinates, every event, nothing of the window
-// manager's own (no pointer drawn, no presses on frames).
-void WindowManager::fullScreenPointer(const PointerEvent &event) {
-        const Rect screen = _stack.screen();
-        const int  x = _pointerX + event.dx, y = _pointerY + event.dy;
-        const auto nx = static_cast<uint16_t>(x < 0 ? 0 : x >= screen.width ? screen.width - 1 : x);
-        const auto ny = static_cast<uint16_t>(y < 0 ? 0 : y >= screen.height ? screen.height - 1 : y);
+// The pointer of a full-screen window (the screen's coordinates) or a locked one (its client
+// area's, the pointer held): every event, nothing of the window manager's own (no pointer drawn,
+// no presses on frames).
+void WindowManager::capturedPointer(uint8_t id, const PointerEvent &event) {
+        uint16_t nx = _pointerX, ny = _pointerY;
+        if (lockedId() != id) {
+                const Rect screen = _stack.screen();
+                const int  x = _pointerX + event.dx, y = _pointerY + event.dy;
+                nx = static_cast<uint16_t>(x < 0 ? 0 : x >= screen.width ? screen.width - 1 : x);
+                ny = static_cast<uint16_t>(y < 0 ? 0 : y >= screen.height ? screen.height - 1 : y);
+        }
         const bool moved = nx != _pointerX || ny != _pointerY;
         _pointerX = nx;
         _pointerY = ny;
         const uint8_t pressed = static_cast<uint8_t>(event.buttons & ~_buttons);
         const uint8_t released = static_cast<uint8_t>(_buttons & ~event.buttons);
         _buttons = event.buttons;
-        Window &w = _windows[_fullScreenId - 1];
+        Window &w = _windows[id - 1];
         auto    send = [&](MouseEvent::Type type, uint8_t button) {
                 if (w.mouse == nullptr) return;
+                const int16_t dx = type == MouseEvent::Type::Motion ? event.dx : 0;
+                const int16_t dy = type == MouseEvent::Type::Motion ? event.dy : 0;
+                if (id != _fullScreenId) {
+                        mouseTo(id, type, nx, ny, button, dx, dy);
+                        return;
+                }
                 MouseEvent m;
                 m.type = type;
                 m.x = static_cast<int16_t>(nx);
@@ -2346,6 +2367,8 @@ void WindowManager::fullScreenPointer(const PointerEvent &event) {
                 m.button = button;
                 m.buttons = _buttons;
                 m.modifiers = _modifiers;
+                m.dx = dx;
+                m.dy = dy;
                 w.mouse(w.arg, m);
                 return;
         };
@@ -2751,6 +2774,26 @@ Error WindowManager::setPointer(uint8_t id, Pointer shape) {
         if (isCursorDrawn()) _cursorMoved = true; // drawn again in its new shape
         changed(focusId());
         return Error::Ok;
+}
+
+Error WindowManager::setPointerLock(uint8_t id, bool on) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        if (_stack.rectOf(id).isError()) return Error::NotFound;
+        const bool wasDrawn = isCursorDrawn();
+        if (on) {
+                _lockId = id;
+                _mouseId = 0; // a press held elsewhere: its release comes to the lock
+        } else if (_lockId == id) {
+                _lockId = 0;
+        }
+        if (wasDrawn != isCursorDrawn()) _cursorMoved = true;
+        changed(focusId());
+        return Error::Ok;
+}
+
+uint8_t WindowManager::lockedId() const {
+        return _lockId != 0 && focusId() == _lockId ? _lockId : 0;
 }
 
 Error WindowManager::setIcon(uint8_t id, const Icon *icon) {

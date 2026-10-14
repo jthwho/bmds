@@ -7,10 +7,12 @@
  *
  * Surfaces (devplan/games.md §11): bouncing squares drawn with the CPU into a surface's buffers
  * and presented each frame; in L8 the palette cycles. With -d only the squares are redrawn and
- * presented as damage (the palette stays). Escape or closing the window ends it; the frames shown
- * and dropped are printed.
+ * presented as damage (the palette stays). -p sets the pointer's mode: with relative, the mouse
+ * moves the first square. Escape or closing the window ends it; the frames shown and dropped are
+ * printed.
  *
- *     surfdemo [-f l8|565|888] [-s WIDTHxHEIGHT] [-b BUFFERS] [-t SECONDS] [-F] [-d] [-v]
+ *     surfdemo [-f l8|565|888] [-s WIDTHxHEIGHT] [-b BUFFERS] [-t SECONDS] [-F] [-d]
+ *              [-p normal|hidden|relative] [-v]
  */
 
 #include <stdio.h>
@@ -81,8 +83,8 @@ static const char *event_name(uint32_t type) {
 
 int main(int argc, char **argv) {
         int      buffers = 2, seconds = 0, verbose = 0, damage = 0, opt;
-        uint32_t flags = 0;
-        while ((opt = getopt(argc, argv, "f:s:b:t:Fdv")) != -1) {
+        uint32_t flags = 0, pointer = BMDS_POINTER_NORMAL;
+        while ((opt = getopt(argc, argv, "f:s:b:t:Fdp:v")) != -1) {
                 if (opt == 'f') {
                         format = strcmp(optarg, "l8") == 0    ? BMDS_PIXEL_L8
                                  : strcmp(optarg, "888") == 0 ? BMDS_PIXEL_BGR24
@@ -95,13 +97,17 @@ int main(int argc, char **argv) {
                         seconds = atoi(optarg);
                 } else if (opt == 'F') {
                         flags |= BMDS_SURFACE_FULL_SCREEN;
+                } else if (opt == 'p') {
+                        pointer = strcmp(optarg, "hidden") == 0     ? BMDS_POINTER_HIDDEN
+                                  : strcmp(optarg, "relative") == 0 ? BMDS_POINTER_RELATIVE
+                                                                    : BMDS_POINTER_NORMAL;
                 } else if (opt == 'd') {
                         damage = 1;
                 } else if (opt == 'v') {
                         verbose = 1;
                 } else {
-                        fprintf(stderr,
-                                "usage: surfdemo [-f l8|565|888] [-s WxH] [-b BUFFERS] [-t SECONDS] [-F] [-d] [-v]\n");
+                        fprintf(stderr, "usage: surfdemo [-f l8|565|888] [-s WxH] [-b BUFFERS] [-t SECONDS] [-F] [-d] "
+                                        "[-p normal|hidden|relative] [-v]\n");
                         return 2;
                 }
         }
@@ -120,6 +126,10 @@ int main(int argc, char **argv) {
         if (fd < 0) {
                 fprintf(stderr, "surfdemo: surface_open: %s\n", strerror(-fd));
                 return 1;
+        }
+        if (pointer != BMDS_POINTER_NORMAL) {
+                const int32_t r = bmds_surface_control(fd, BMDS_SURFACE_POINTER, &pointer, sizeof(pointer));
+                if (r < 0) fprintf(stderr, "surfdemo: pointer mode: %s\n", strerror(-r));
         }
         uint8_t *pixels[3] = {0};
         uint32_t stride = 0;
@@ -171,12 +181,22 @@ int main(int argc, char **argv) {
                                         /* printed with -v only: a terminal scrolling them costs time */
                                 } else if (e[i].type == BMDS_EVENT_POINTER || e[i].type == BMDS_EVENT_KEY ||
                                            e[i].type == BMDS_EVENT_WHEEL) {
-                                        printf("%s %08x %d %d %u flags %u\n", event_name(e[i].type),
+                                        printf("%s %08x %d %d %u %d %d flags %u\n", event_name(e[i].type),
                                                (unsigned)e[i].data[0], (int)e[i].data[0], (int)e[i].data[1],
-                                               (unsigned)e[i].data[2], (unsigned)e[i].flags);
+                                               (unsigned)e[i].data[2], (int16_t)e[i].data[3],
+                                               (int16_t)(e[i].data[3] >> 16), (unsigned)e[i].flags);
                                 } else {
                                         printf("%s %u %08x %08x\n", event_name(e[i].type), (unsigned)e[i].data[0],
                                                (unsigned)e[i].data[1], (unsigned)e[i].data[2]);
+                                }
+                                if (e[i].type == BMDS_EVENT_POINTER && pointer == BMDS_POINTER_RELATIVE) {
+                                        /* The first square follows the mouse's motion. */
+                                        sq[0].x += (int16_t)e[i].data[3];
+                                        sq[0].y += (int16_t)(e[i].data[3] >> 16);
+                                        if (sq[0].x < 0) sq[0].x = 0;
+                                        if (sq[0].x > width - SIDE) sq[0].x = width - SIDE;
+                                        if (sq[0].y < 0) sq[0].y = 0;
+                                        if (sq[0].y > height - SIDE) sq[0].y = height - SIDE;
                                 }
                                 if (e[i].type == BMDS_EVENT_CLOSE ||
                                     (e[i].type == BMDS_EVENT_KEY && e[i].data[0] == 0x00070029u))
@@ -200,7 +220,7 @@ int main(int argc, char **argv) {
                         for (int i = 0; i < SQUARES; ++i)
                                 fill(px, stride, drawn[index][i][0], drawn[index][i][1], SIDE, SIDE, background);
                 }
-                for (int i = 0; i < SQUARES; ++i) {
+                for (int i = pointer == BMDS_POINTER_RELATIVE ? 1 : 0; i < SQUARES; ++i) {
                         square_t *s = &sq[i];
                         s->x += s->dx;
                         s->y += s->dy;

@@ -1524,7 +1524,7 @@ typedef struct bmds_surface_present_t {
 /** @brief `BMDS_SURFACE_POINTER`'s modes. */
 #define BMDS_POINTER_NORMAL 0u   /**< The system's arrow. */
 #define BMDS_POINTER_HIDDEN 1u   /**< None over the surface. */
-#define BMDS_POINTER_RELATIVE 2u /**< None, held still: motion comes as deltas (mouse look). */
+#define BMDS_POINTER_RELATIVE 2u /**< None, held still while focused: motion comes as deltas (mouse look). */
 
 /** @brief `BMDS_SURFACE_PALETTE`'s argument. */
 typedef struct bmds_surface_palette_t {
@@ -1560,7 +1560,9 @@ typedef struct bmds_surface_info_t {
 
 /** @brief `bmds_surface_event_t::type`: a program skips types it doesn't know. */
 #define BMDS_EVENT_KEY 1u     /**< data: the HID extended usage ((page << 16) | usage), modifiers, character. */
-#define BMDS_EVENT_POINTER 2u /**< data: x, y (int32, the surface's pixels), buttons, dx and dy (int16 each). */
+#define BMDS_EVENT_POINTER                                                                                             \
+        2u /**< data: x, y (int32, the surface's pixels), buttons, dx | dy << 16 (int16 each: the mouse's motion
+                    in the screen's pixels, also when held by `BMDS_POINTER_RELATIVE`). */
 #define BMDS_EVENT_WHEEL 3u   /**< data: notches (int32, positive away from the user). */
 #define BMDS_EVENT_ACTIVE 4u  /**< data: 1 active, 0 not (pause). */
 #define BMDS_EVENT_PRESENTED                                                                                           \

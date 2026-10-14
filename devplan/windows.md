@@ -453,7 +453,13 @@ The first of step 8's affordances. Resize handles, pointer shapes, the wheel and
   the pointer comes back at the next motion or button change. The terminal asks for it.
 - **A window's pointer shape:** `WindowConfig::pointer` sets the shape over the client area. The
   shapes become a public enum, `WindowManager::Pointer` (append only): the arrow, the four resize
-  shapes, and a text I-beam. The terminal shows the I-beam.
+  shapes, and a text I-beam. The terminal shows the I-beam. `None` (2026-10-14, `games.md` §12)
+  draws nothing over the client area: a game's hidden pointer.
+- **The pointer's lock** (2026-10-14, `games.md` §12): `setPointerLock(id, on)`. While the
+  window is focused, the pointer is hidden and held still, and every pointer event goes to it
+  (motion as `MouseEvent::dx`, `dy`, which every motion event now carries); presses never reach
+  frames. Focus elsewhere (Alt+Tab, the Windows key, a new window) lets go until it comes back.
+  One window at a time. A full-screen window gets the same capture, the pointer moving unless locked.
 - **`win key TEXT`** (a test aid like `win pointer`): each character sent through the window
   manager as a keyboard would send it (press, then release, with the usage and modifiers a US
   keyboard needs, and the same escapes as `win type`), so the keyboard path (focus, the terminal's

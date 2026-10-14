@@ -345,9 +345,17 @@ Error ProgramSurface::setTitle(StringView title) {
         return _wm->setTitle(_window, title);
 }
 
+// Hidden: no picture over the window's client area (none is drawn full screen). Relative: the
+// window manager's lock, while the window is focused.
 Error ProgramSurface::setPointerMode(PointerMode mode) {
-        (void)mode; // hidden full screen; a window shows the arrow (relative mode: devplan/games.md §7 step 5)
-        return Error::Ok;
+        if (mode != PointerMode::Normal && mode != PointerMode::Hidden && mode != PointerMode::Relative)
+                return Error::Invalid;
+        if (_wm == nullptr || _window == 0) return Error::InvalidState;
+        // Relative's arrow shows while another window is focused: the lock hides it while held.
+        Error err = _wm->setPointer(_window, mode == PointerMode::Hidden ? WindowManager::Pointer::None
+                                                                         : WindowManager::Pointer::Arrow);
+        if (err.isOk()) err = _wm->setPointerLock(_window, mode == PointerMode::Relative);
+        return err;
 }
 
 Error ProgramSurface::waitFrame(uint32_t frame, unsigned int timeoutMs) {
@@ -794,6 +802,7 @@ void ProgramSurface::mouseEntry(void *arg, const WindowManager::MouseEvent &even
         e.data[0] = uint32_t(x);
         e.data[1] = uint32_t(y);
         e.data[2] = event.buttons;
+        e.data[3] = uint32_t(uint16_t(event.dx)) | uint32_t(uint16_t(event.dy)) << 16;
         self->push(e);
         return;
 }

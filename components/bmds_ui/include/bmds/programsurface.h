@@ -184,7 +184,11 @@ class ProgramSurface final : public Stream {
                 /** @brief Sets the window's title. */
                 Error setTitle(StringView title);
 
-                /** @brief Sets what the pointer does over it. */
+                /**
+                 * @brief Sets what the pointer does over it: the arrow, none, or none and held
+                 *        still while the window is focused, motion coming as the events' deltas.
+                 * @return `Ok`, `Invalid`, `InvalidState` (no window).
+                 */
                 Error setPointerMode(PointerMode mode);
 
                 /**

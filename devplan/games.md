@@ -442,7 +442,7 @@ typedef struct bmds_surface_event_t {
 | Type | `data` |
 |---|---|
 | `KEY` | HID extended usage ((page << 16) \| usage, `hotkeys.md` §3.1), modifiers, the layout's character (0: none); flags `DOWN`/`UP`/`REPEAT` |
-| `POINTER` | x, y (the surface's pixels; may be outside it while a button is held), buttons, dx and dy (int16 each, packed: relative mode) |
+| `POINTER` | x, y (the surface's pixels; may be outside it while a button is held), buttons, dx and dy (int16 each, packed: the mouse's motion, in every mode) |
 | `WHEEL` | notches (int32, positive away from the user) |
 | `ACTIVE` | 1 active, 0 inactive (focus lost, minimized, left full screen: pause) |
 | `PRESENTED` | window 0 / full screen 1, the scale (16ths across, 16ths down), the area's size on screen |
@@ -515,6 +515,12 @@ With damage (`surfdemo -d`: 12 squares of 24 pixels moved, the rest kept):
 - Before lazy forwarding a 2× window ran at 30: half-tile strips copied each tile forward
   before overwriting it (670 µs a strip against 145).
 - Full screen's 39: the presenter's conversion and the program's drawing share core 1 at times.
-- Not yet: the pointer modes (hidden and relative), the
+- **Pointer modes** (step 2): `HIDDEN` sets the window's pointer shape to the window manager's
+  new `None`; `RELATIVE` is the window manager's pointer lock (`windows.md` §4h): while the
+  surface is focused (in a window or full screen) the pointer is hidden and held, and every
+  motion comes with its deltas; focus elsewhere shows it again. Every `POINTER` event carries
+  `dx | dy << 16` (the mouse's own motion in screen pixels). `surfdemo -p relative` steers its
+  first square with the mouse.
+- Not yet: the
   per-application setting (with `apps.md`), a close the program can refuse (the window goes at
   once; the program gets `CLOSE`).
