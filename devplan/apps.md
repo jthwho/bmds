@@ -1,6 +1,6 @@
 # Applications: one folder each
 
-Status: **steps 1 to 4 built** (2026-10-14, §11 to §13); planned with the user 2026-10-14. Comes before the games (`games.md`), which are
+Status: **built** (2026-10-14, §11 to §14); planned with the user 2026-10-14. Comes before the games (`games.md`), which are
 installed this way.
 
 ## 1. Goal
@@ -229,3 +229,27 @@ in the default `PATH`, the data directory's place. No system calls: `bmds/app.h`
   `/apps/surf -d -t 4 /tmp/t.pdf`.
 - **Not yet:** the application's own icon in the file browser and on the desktop (the generic
   one now; the launcher already shows a program's icon notes); an Open With submenu.
+
+## 14. As built: step 5, building folders (2026-10-14)
+
+- **`bmds_add_app(name PROGRAM target DESKTOP file [FILES ...] [DIRECTORIES ...])`**
+  (`sdk/cmake/BmdsProgram.cmake`): `name.app` in the build directory, holding the stripped
+  program under its target's name, `app.desktop`, and the files and directories. CMake checks that
+  `Exec`'s first word is the program (a plain word: quoted names aren't read). The SDK examples
+  make `surfdemo.app` (`Categories=Game`) and `appinfo.app` (`Terminal=true`).
+- **`bmds-dist`:** a recipe installs an application into `$DESTDIR/apps/NAME.app/`, which lands in
+  the card's `apps/` (`bmds-dist install`'s root, `/sd0/p0`); the programs in application folders
+  are stripped as `bin/`'s are. `sdk-examples` (version 3) installs the two folders. The ROM's
+  packages (Dropbear, the SFTP server) are tools and stay in `bin/`; `programs/` has no
+  application.
+- **Found on the way (fixed): a root removed and made again wasn't watched.** A scan watched each
+  root before reading it, also when it wasn't there; a watch placed on a folder since removed (or
+  never there) isn't told of a new folder at that path, and the root stayed listed, so it was
+  never placed again. Copying folders into a re-made `apps/` went unseen until `apps rescan`. A
+  root that isn't there is now unwatched (only its parent is), so it is watched afresh once made.
+  The host test removes a root, makes it again and copies an application in.
+- **Tested on the board:** `bmds-dist build sdk-examples`, then `apps/` removed, made again and
+  the two folders copied in (scp): both listed at once, `appinfo` printed its folder, id and data
+  folder, `surfdemo` ran at 56 presents a second (a window at 2×). Cleaned up after.
+- **The surfdemo example** builds under the recipes' `-Wall -Wextra -Werror` (designated
+  initializers for the ABI's structs).

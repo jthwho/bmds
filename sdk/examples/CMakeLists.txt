@@ -18,5 +18,9 @@ bmds_add_program(speak SOURCES speak/speak.c)
 bmds_add_program(surfdemo SOURCES surfdemo/surfdemo.c)
 bmds_add_program(appinfo SOURCES appinfo/appinfo.c)
 
+# Application folders (devplan/apps.md): copied into a card's apps/, each a command in /apps.
+bmds_add_app(surfdemo PROGRAM surfdemo DESKTOP surfdemo/app.desktop)
+bmds_add_app(appinfo PROGRAM appinfo DESKTOP appinfo/app.desktop)
+
 # Test programs (not examples): the loader's board tests use them.
 bmds_add_program(progtest SOURCES ../tests/progtest.c)

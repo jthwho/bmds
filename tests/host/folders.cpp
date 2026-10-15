@@ -970,6 +970,16 @@ TEST_CASE_FIXTURE(Fixture, "Apps: folders found, ids and commands, the first win
         mkdir(at("/later"));
         makeApp(at("/later/late.app"), "");
         CHECK(run.waitFor({"blocks", "late", "walk"}));
+        // A root removed, then made again and filled later: its new folder is watched.
+        REQUIRE(Vfs::remove(view(at("/later/late.app/prog")), Root).isOk());
+        REQUIRE(Vfs::remove(view(at("/later/late.app/app.desktop")), Root).isOk());
+        REQUIRE(Vfs::rmdir(view(at("/later/late.app")), Root).isOk());
+        REQUIRE(Vfs::rmdir(view(at("/later")), Root).isOk());
+        CHECK(run.waitFor({"blocks", "walk"}));
+        mkdir(at("/later"));
+        CHECK(!run.waitFor({"again", "blocks", "walk"}, 1000)); // the scan of the empty root done
+        makeApp(at("/later/again.app"), "");
+        CHECK(run.waitFor({"again", "blocks", "walk"}));
         run.apps.stop();
         REQUIRE(Vfs::setAppLinks(bmds::Span<const Vfs::AppLink>()).isOk());
 }

@@ -169,6 +169,7 @@ class Apps {
                 void  scan();
                 void  publish(Scan &scan);
                 Error watchLocked(StringView path); // a folder to watch this scan
+                void  unwatchLocked(StringView path);
 
                 static void threadEntry(void *arg);
                 static void wakeEntry(void *arg);

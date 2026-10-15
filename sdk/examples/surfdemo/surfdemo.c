@@ -115,7 +115,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "surfdemo: this system has no surfaces\n");
                 return 1;
         }
-        bmds_surface_config_t config = {sizeof(config)};
+        bmds_surface_config_t config = {.size = sizeof(config)};
         config.width = (uint32_t)width;
         config.height = (uint32_t)height;
         config.format = format;
@@ -134,7 +134,7 @@ int main(int argc, char **argv) {
         uint8_t *pixels[3] = {0};
         uint32_t stride = 0;
         for (int i = 0; i < buffers; ++i) {
-                bmds_surface_buffer_t b = {sizeof(b), (uint32_t)i};
+                bmds_surface_buffer_t b = {.size = sizeof(b), .index = (uint32_t)i};
                 const int32_t         r = bmds_surface_buffer(fd, &b);
                 if (r < 0) {
                         fprintf(stderr, "surfdemo: surface_buffer: %s\n", strerror(-r));
@@ -266,7 +266,7 @@ int main(int argc, char **argv) {
                 shown = frame;
                 ++frames;
         }
-        bmds_surface_info_t info = {sizeof(info)};
+        bmds_surface_info_t info = {.size = sizeof(info)};
         bmds_surface_control(fd, BMDS_SURFACE_INFO, &info, sizeof(info));
         const double secs = (double)(now_ns() - start) / 1e9;
         printf("surfdemo: %u presents in %.1f s (%.1f a second), %u dropped; %ux%u at %ux on screen\n",

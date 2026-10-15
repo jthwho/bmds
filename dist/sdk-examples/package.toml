@@ -1,8 +1,8 @@
 # The SDK's audio and MIDI examples (sdk/examples): tone, player, keytone and midimon, built from this
-# repository.
+# repository; and two as application folders (devplan/apps.md): surfdemo and appinfo.
 name = "sdk-examples"
-version = "2"
-description = "SDK examples: tone (a sine), player (a sound file), keytone (a real-time keyboard synth), midimon (MIDI events)"
+version = "3"
+description = "SDK examples: tone (a sine), player (a sound file), keytone (a real-time keyboard synth), midimon (MIDI events); surfdemo.app and appinfo.app"
 license = "MIT"
 source_tree = "sdk/examples"
 license_files = ["../../LICENSE"]

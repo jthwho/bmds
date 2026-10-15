@@ -120,3 +120,49 @@ function(bmds_add_program name)
                 BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/${name}.elf
                 COMMENT "Stripping ${name}.elf")
 endfunction()
+
+# An application folder (devplan/apps.md §3, §14): ${name}.app in the build directory, holding
+# PROGRAM (a bmds_add_program() target, stripped, under its own name), DESKTOP as app.desktop,
+# and FILES and DIRECTORIES (copied in by their names). Copying the folder into a card's apps/
+# installs it. DESKTOP's Exec must name the program (its first word), as the system runs it.
+#
+#   bmds_add_app(blocks PROGRAM blocks DESKTOP blocks.desktop FILES music.mid DIRECTORIES levels)
+function(bmds_add_app name)
+        cmake_parse_arguments(ARG "" "PROGRAM;DESKTOP" "FILES;DIRECTORIES" ${ARGN})
+        if(NOT ARG_PROGRAM OR NOT ARG_DESKTOP)
+                message(FATAL_ERROR "bmds_add_app(${name}): PROGRAM and DESKTOP are needed")
+        endif()
+        get_filename_component(desktop "${ARG_DESKTOP}" ABSOLUTE)
+        # Exec's program, checked now rather than found missing on the board.
+        file(STRINGS "${desktop}" exec REGEX "^Exec=")
+        list(LENGTH exec execs)
+        if(NOT execs EQUAL 1)
+                message(FATAL_ERROR "bmds_add_app(${name}): ${desktop} needs one Exec= line")
+        endif()
+        string(REGEX REPLACE "^Exec=[ \t]*([^ \t]*).*$" "\\1" first "${exec}")
+        if(NOT first STREQUAL ARG_PROGRAM)
+                message(FATAL_ERROR "bmds_add_app(${name}): Exec runs '${first}', not the program '${ARG_PROGRAM}'")
+        endif()
+        set(folder ${CMAKE_CURRENT_BINARY_DIR}/${name}.app)
+        set(commands COMMAND ${CMAKE_COMMAND} -E rm -rf ${folder}
+                     COMMAND ${CMAKE_COMMAND} -E make_directory ${folder}
+                     COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_BINARY_DIR}/${ARG_PROGRAM}.elf
+                             ${folder}/${ARG_PROGRAM}
+                     COMMAND ${CMAKE_COMMAND} -E copy ${desktop} ${folder}/app.desktop)
+        set(depends ${ARG_PROGRAM} ${desktop})
+        foreach(f IN LISTS ARG_FILES)
+                get_filename_component(f "${f}" ABSOLUTE)
+                list(APPEND commands COMMAND ${CMAKE_COMMAND} -E copy ${f} ${folder}/)
+                list(APPEND depends ${f})
+        endforeach()
+        foreach(d IN LISTS ARG_DIRECTORIES)
+                get_filename_component(d "${d}" ABSOLUTE)
+                get_filename_component(base "${d}" NAME)
+                list(APPEND commands COMMAND ${CMAKE_COMMAND} -E copy_directory ${d} ${folder}/${base})
+                file(GLOB_RECURSE inside CONFIGURE_DEPENDS "${d}/*")
+                list(APPEND depends ${inside})
+        endforeach()
+        add_custom_command(OUTPUT ${folder}/app.desktop ${commands} DEPENDS ${depends}
+                           COMMENT "Making ${name}.app" VERBATIM)
+        add_custom_target(${name}.app ALL DEPENDS ${folder}/app.desktop)
+endfunction()

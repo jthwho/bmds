@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Surface Demo
+Comment=Bouncing squares on a surface, in a window or full screen (Alt+Enter)
+Exec=surfdemo -d
+Categories=Game;
+X-BMDS-Id=surfdemo

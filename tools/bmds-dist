@@ -7,7 +7,8 @@
 #
 # Builds the distribution (devplan/distribution.md): the programs in dist/,
 # from pinned upstream sources with the SDK, into build-dist/rootfs, the
-# card's tree; and installs that tree on a board over the serial cable.
+# card's tree (applications as apps/NAME.app folders: devplan/apps.md); and
+# installs that tree on a board over the serial cable.
 #
 #   bmds-dist list                  the packages
 #   bmds-dist build [package...]    build (all by default) into build-dist/rootfs
@@ -181,13 +182,18 @@ def build_package(recipe, cc):
     if uses_sdk(recipe):
         env.update({"CC": cc, "AR": find_tool("ar"), "STRIP": find_tool("strip"), "OBJCOPY": find_tool("objcopy")})
     run(["bash", "-e", os.path.join(recipe["dir"], "build.sh")], cwd=build, env=env)
-    # Programs as the loader needs them: symbols it doesn't use gone, relocations kept.
+    # Programs as the loader needs them: symbols it doesn't use gone, relocations kept; bin/'s,
+    # and every one in an application folder (apps/NAME.app, devplan/apps.md).
+    programs = []
     bindir = os.path.join(stage, "bin")
     if os.path.isdir(bindir):
-        for entry in sorted(os.listdir(bindir)):
-            path = os.path.join(bindir, entry)
-            if os.path.isfile(path) and not os.path.islink(path) and is_elf(path):
-                run([find_tool("objcopy"), "--strip-unneeded", path])
+        programs += [os.path.join(bindir, entry) for entry in sorted(os.listdir(bindir))]
+    appsdir = os.path.join(stage, "apps")
+    if os.path.isdir(appsdir):
+        programs += [os.path.join(appsdir, rel) for rel in tree_files(appsdir)]
+    for path in programs:
+        if os.path.isfile(path) and not os.path.islink(path) and is_elf(path):
+            run([find_tool("objcopy"), "--strip-unneeded", path])
     licenses = os.path.join(stage, "share", "licenses", name)
     os.makedirs(licenses, exist_ok=True)
     for license_file in recipe.get("license_files", []):

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=App Info
+Comment=An application folder, id and data folder
+Exec=appinfo
+Terminal=true
+Categories=Development;
+X-BMDS-Id=appinfo

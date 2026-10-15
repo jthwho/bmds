@@ -221,6 +221,19 @@ Error Apps::watchLocked(StringView path) {
         return err;
 }
 
+// Undoes this scan's watchLocked(@p path): not watched after it.
+void Apps::unwatchLocked(StringView path) {
+        for (size_t i = 0; i < _seen.size(); ++i) {
+                if (_seen[i].view() != path) continue;
+                _seen.removeAt(i);
+                break;
+        }
+        bool watched = false;
+        for (const String &s : _watched) watched = watched || s.view() == path;
+        if (!watched) _watches.remove(path); // added by this scan
+        return;
+}
+
 void Apps::scan() {
         Scan   s;
         String roots{MemSpace::Psram};
@@ -241,7 +254,9 @@ void Apps::scan() {
                 {
                         auto [dir, err] = Vfs::openDirectory(root, Root);
                         if (err.isError()) {
-                                // Not there (yet): its parent says when it comes.
+                                // Not there (yet): its parent says when it comes. Its own watch goes:
+                                // one placed on a folder since removed isn't told of a new one there.
+                                unwatchLocked(root);
                                 const size_t slash = root.lastIndexOf('/');
                                 if (slash > 0) (void)watchLocked(root.left(slash));
                                 continue;

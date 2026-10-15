@@ -47,10 +47,14 @@ Make `dist/<name>/` with:
 - **Launcher entries** (optional): Desktop Entry files installed in
   `$DESTDIR/share/applications/` show in the panel's launcher (`devplan/gui.md` G10, G11;
   BusyBox's `vi.desktop`).
+- **Application folders** (`devplan/apps.md`): an application with its own data, rather than a
+  Unix tool, installs as one folder, `$DESTDIR/apps/NAME.app/`, holding its program, an
+  `app.desktop` (its `Exec` names the program in the folder) and its data; it then shows in the
+  launcher and in `/apps` (a command on the `PATH`) by itself (`sdk-examples`' `surfdemo.app`).
 - Anything else the build reads (a configuration file, say).
 
-`bmds-dist` strips the programs in `bin/` (as the loader needs: relocations
-kept), copies the license files, records the package's files in
+`bmds-dist` strips the programs in `bin/` and in application folders (as the
+loader needs: relocations kept), copies the license files, records the package's files in
 `etc/dist/<name>.files`, and writes `etc/dist/links.sh` with every link (the
 board makes them: emulated links need the FAT System attribute, which a PC
 doesn't set).
