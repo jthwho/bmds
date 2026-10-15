@@ -26,6 +26,7 @@ namespace {
         constinit std::atomic<uint32_t> keys{0};
         constinit std::atomic<uint32_t> pointers{0};
         constinit std::atomic<uint32_t> dropped{0};
+        constinit std::atomic<uint32_t> pads{0};
 
         constexpr Stat::Desc InputStats[] = {
                 {"keys", Stat::Unit::Count, Stat::Kind::Total, 0, {}, "", "Key events from keyboards"},
@@ -43,12 +44,14 @@ namespace {
                  {},
                  "",
                  "Events with nowhere to go (no window manager running)"},
+                {"pad_events", Stat::Unit::Count, Stat::Kind::Total, 0, {}, "", "Gamepad events (standard pad)"},
         };
 
         void readInput(void *, Span<int64_t> v) {
                 v[0] = keys.load(std::memory_order_relaxed);
                 v[1] = pointers.load(std::memory_order_relaxed);
                 v[2] = dropped.load(std::memory_order_relaxed);
+                v[3] = pads.load(std::memory_order_relaxed);
                 return;
         }
 
@@ -89,6 +92,16 @@ void Input::pointer(const PointerEvent &event) {
         Mutex::Locker locker(*lock, WaitForever);
         if (current.pointer != nullptr)
                 current.pointer(current.arg, event);
+        else
+                dropped.fetch_add(1, std::memory_order_relaxed);
+        return;
+}
+
+void Input::pad(const PadEvent &event) {
+        pads.fetch_add(1, std::memory_order_relaxed);
+        Mutex::Locker locker(*lock, WaitForever);
+        if (current.pad != nullptr)
+                current.pad(current.arg, event);
         else
                 dropped.fetch_add(1, std::memory_order_relaxed);
         return;

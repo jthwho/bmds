@@ -773,6 +773,17 @@ _Static_assert(BMDS_EVENT_KEY == 1 && BMDS_EVENT_POINTER == 2 && BMDS_EVENT_WHEE
                        BMDS_EVENT_PAD == 8,
                "ABI: event types");
 _Static_assert(BMDS_KEY_DOWN == 1 && BMDS_KEY_UP == 2 && BMDS_KEY_REPEAT == 4, "ABI: key flags");
+_Static_assert(BMDS_PAD_BUTTON == 1 && BMDS_PAD_AXIS == 2 && BMDS_PAD_ATTACHED == 3 && BMDS_PAD_DETACHED == 4,
+               "ABI: pad event flags");
+_Static_assert(BMDS_PAD_SOUTH == 0 && BMDS_PAD_EAST == 1 && BMDS_PAD_WEST == 2 && BMDS_PAD_NORTH == 3 &&
+                       BMDS_PAD_L1 == 4 && BMDS_PAD_R1 == 5 && BMDS_PAD_L2 == 6 && BMDS_PAD_R2 == 7 &&
+                       BMDS_PAD_L3 == 8 && BMDS_PAD_R3 == 9 && BMDS_PAD_UP == 10 && BMDS_PAD_DOWN == 11 &&
+                       BMDS_PAD_LEFT == 12 && BMDS_PAD_RIGHT == 13 && BMDS_PAD_START == 14 && BMDS_PAD_SELECT == 15 &&
+                       BMDS_PAD_GUIDE == 16,
+               "ABI: pad buttons");
+_Static_assert(BMDS_PAD_LEFT_X == 0 && BMDS_PAD_LEFT_Y == 1 && BMDS_PAD_RIGHT_X == 2 && BMDS_PAD_RIGHT_Y == 3 &&
+                       BMDS_PAD_LEFT_TRIGGER == 4 && BMDS_PAD_RIGHT_TRIGGER == 5,
+               "ABI: pad axes");
 #if UINTPTR_MAX == 0xffffffffu // (pointers inside)
 _Static_assert(offsetof(bmds_surface_config_t, width) == 4 && offsetof(bmds_surface_config_t, height) == 8 &&
                        offsetof(bmds_surface_config_t, format) == 12 &&

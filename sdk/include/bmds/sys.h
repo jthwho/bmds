@@ -1578,12 +1578,55 @@ typedef struct bmds_surface_info_t {
                                      the picture's size (width | height << 16). */
 #define BMDS_EVENT_CLOSE 6u  /**< The user closed it (its window's close button, Alt+F4): the program decides. */
 #define BMDS_EVENT_ACTION 7u /**< Reserved (actions and their bindings). */
-#define BMDS_EVENT_PAD 8u    /**< Reserved (gamepads). */
+#define BMDS_EVENT_PAD                                                                                                 \
+        8u /**< A gamepad's control changed, or a pad came or went: flags `BMDS_PAD_BUTTON`... data[0] the pad's
+                    number (pad0 is 0), the rest by flags. The focused surface's only. */
 
 /** @brief `BMDS_EVENT_KEY`'s flags. */
 #define BMDS_KEY_DOWN 0x1u
 #define BMDS_KEY_UP 0x2u
 #define BMDS_KEY_REPEAT 0x4u
+
+/**
+ * @brief `BMDS_EVENT_PAD`'s flags: what happened (one of them, not bits).
+ *
+ * Pads are presented as the standard pad (devplan/controls.md §4a), their face buttons by
+ * position. On gaining the focus a surface is told of each pad attached and of what is down or
+ * off centre on it; on losing it, what was down comes up and sticks go to centre.
+ */
+#define BMDS_PAD_BUTTON 1u /**< data[1] a `BMDS_PAD_SOUTH`...; data[2] 1 down, 0 up. */
+#define BMDS_PAD_AXIS                                                                                                  \
+        2u                   /**< data[1] a `BMDS_PAD_LEFT_X`...; data[2] int32: sticks -32767 to 32767
+                                  (right and down positive), triggers 0 to 32767. */
+#define BMDS_PAD_ATTACHED 3u /**< The pad is there; data[1] its vendor << 16 | product. */
+#define BMDS_PAD_DETACHED 4u /**< The pad is gone (what was down came up first). */
+
+/** @brief `BMDS_PAD_BUTTON`'s buttons, by position. */
+#define BMDS_PAD_SOUTH 0u /**< Xbox A, PlayStation cross, Nintendo B. */
+#define BMDS_PAD_EAST 1u  /**< Xbox B, PlayStation circle, Nintendo A. */
+#define BMDS_PAD_WEST 2u  /**< Xbox X, PlayStation square, Nintendo Y. */
+#define BMDS_PAD_NORTH 3u /**< Xbox Y, PlayStation triangle, Nintendo X. */
+#define BMDS_PAD_L1 4u
+#define BMDS_PAD_R1 5u
+#define BMDS_PAD_L2 6u /**< The left trigger as a button: down past a quarter. */
+#define BMDS_PAD_R2 7u
+#define BMDS_PAD_L3 8u /**< The left stick pressed. */
+#define BMDS_PAD_R3 9u
+#define BMDS_PAD_UP 10u /**< The D-pad. */
+#define BMDS_PAD_DOWN 11u
+#define BMDS_PAD_LEFT 12u
+#define BMDS_PAD_RIGHT 13u
+#define BMDS_PAD_START 14u
+#define BMDS_PAD_SELECT 15u /**< Back, Share, Minus. */
+#define BMDS_PAD_GUIDE 16u  /**< The logo button: the system may keep it for itself. */
+
+/** @brief `BMDS_PAD_AXIS`'s axes. */
+#define BMDS_PAD_LEFT_X 0u
+#define BMDS_PAD_LEFT_Y 1u
+#define BMDS_PAD_RIGHT_X 2u
+#define BMDS_PAD_RIGHT_Y 3u
+#define BMDS_PAD_LEFT_TRIGGER 4u
+#define BMDS_PAD_RIGHT_TRIGGER 5u
 
 /** @brief A surface's event: 32 bytes, forever (new kinds take new types). */
 typedef struct bmds_surface_event_t {

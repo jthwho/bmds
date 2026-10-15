@@ -133,6 +133,13 @@ class WindowManager {
                 using Key = void (*)(void *arg, const KeyEvent &event);
 
                 /**
+                 * @brief Takes a gamepad's event while the window has the focus (on the window
+                 *        manager's task, locked: it must not call it). What was down when the
+                 *        focus came or went is the window's to settle (`Activated`).
+                 */
+                using Pad = void (*)(void *arg, const PadEvent &event);
+
+                /**
                  * @brief Told that the window gained (@p active) or lost the keys (on
                  *        the changing task, the window manager locked: it must not call
                  *        it).
@@ -286,6 +293,9 @@ class WindowManager {
                 /** @brief Key events queued for the window manager's task. */
                 static constexpr size_t KeyQueue = 32;
 
+                /** @brief Gamepads' events queued for the window manager's task. */
+                static constexpr size_t PadQueue = 32;
+
                 /** @brief Pointer events queued (motion without a button change is merged). */
                 static constexpr size_t PointerQueue = 16;
 
@@ -329,6 +339,7 @@ class WindowManager {
                                 Activated  activated = nullptr;  ///< May be null.
                                 ClosedAt   closedAt = nullptr;   ///< May be null; told instead of `closed`.
                                 FullScreen fullScreen = nullptr; ///< May be null: Alt+Enter does nothing to it.
+                                Pad        pad = nullptr;        ///< May be null: pads' events dropped.
                 };
 
                 /** @brief A window, as `list()` reports it. */
@@ -790,6 +801,7 @@ class WindowManager {
                                 Redraw      redraw = nullptr;
                                 Closed      closed = nullptr;
                                 Key         key = nullptr;
+                                Pad         pad = nullptr;
                                 Resized     resized = nullptr;
                                 void       *arg = nullptr;
                                 Rect        restore;         // where it was before it was maximized or snapped
@@ -877,6 +889,7 @@ class WindowManager {
                 static void entry(void *arg);
                 static void keyEntry(void *arg, const KeyEvent &event);
                 static void pointerEntry(void *arg, const PointerEvent &event);
+                static void padEntry(void *arg, const PadEvent &event);
                 static void drawCursorPixels(void *arg, uint8_t *pixels, size_t stride);
                 static void restorePixels(void *arg, uint8_t *pixels, size_t stride);
 
@@ -886,6 +899,7 @@ class WindowManager {
 
         private:
                 void            deliverKeys();
+                void            deliverPads();
                 bool            shortcut(const KeyEvent &event);      // a key the window manager keeps
                 bool            fullScreenKey(const KeyEvent &event); // Alt+Enter, and escape keys while full screen
                 void            leaveFullScreen();                    // asks the full-screen window to leave
@@ -1002,6 +1016,9 @@ class WindowManager {
                 uint8_t           _keyHead = 0;               // the next to deliver
                 uint8_t           _keyCount = 0;
                 PointerEvent      _pointers[PointerQueue];
+                PadEvent          _pads[PadQueue];
+                uint8_t           _padHead = 0;
+                uint8_t           _padCount = 0;
                 uint8_t           _pointerHead = 0;
                 uint8_t           _pointerCount = 0;
                 uint16_t          _pointerX = 0; // the pointer's tip

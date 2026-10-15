@@ -15,7 +15,7 @@
 BMDS_NAMESPACE_BEGIN
 
 /**
- * @brief Where keyboards' and mice's events go (`devplan/input.md` §4): one
+ * @brief Where keyboards', mice's and pads' events go (`devplan/input.md` §4): one
  *        consumer, the desktop, sets itself as the sink.
  *
  * Without a sink, events are dropped.
@@ -31,6 +31,7 @@ namespace Input {
         struct Sink {
                         void (*key)(void *arg, const KeyEvent &event) = nullptr;
                         void (*pointer)(void *arg, const PointerEvent &event) = nullptr;
+                        void (*pad)(void *arg, const PadEvent &event) = nullptr; ///< May be null: dropped.
                         void *arg = nullptr;
         };
 
@@ -45,6 +46,9 @@ namespace Input {
 
         /** @brief Delivers a pointer event to the sink. */
         void pointer(const PointerEvent &event);
+
+        /** @brief Delivers a pad event to the sink. */
+        void pad(const PadEvent &event);
 
         /** @brief Told of a key (its HID usage) down in a keyboard's first second attached. */
         using AttachKey = void (*)(uint8_t usage);

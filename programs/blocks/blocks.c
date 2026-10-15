@@ -100,6 +100,7 @@ typedef struct {
                 blocks_t          game;
                 int               screen;
                 uint32_t          held, pressed; /* BLOCKS_... */
+                uint32_t          stick;         /* BLOCKS_LEFT or _RIGHT: the left stick past half way */
                 bmds_game_image_t tiles;
                 char              dir[256];    /* the folder's */
                 char              scores[256]; /* the high scores' file ("": none) */
@@ -228,7 +229,7 @@ static void start(state_t *s) {
         int64_t ns = 0;
         bmds_clock_get(BMDS_CLOCK_MONOTONIC, &ns);
         blocks_start(&s->game, 1, (uint32_t)ns ^ (uint32_t)(ns >> 32));
-        s->held = s->pressed = 0;
+        s->held = s->pressed = s->stick = 0;
         s->placed = -1;
         show(s, PLAYING);
         music(s, 1);
@@ -262,6 +263,82 @@ static uint32_t action_of(uint32_t usage) {
         }
 }
 
+/* ---- Pads (devplan/controls.md §7b): the D-pad's left and right move, down drops, up holds */
+
+static uint32_t pad_action_of(uint32_t button) {
+        switch (button) {
+                case BMDS_PAD_LEFT: return BLOCKS_LEFT;
+                case BMDS_PAD_RIGHT: return BLOCKS_RIGHT;
+                case BMDS_PAD_DOWN: return BLOCKS_HARD;
+                case BMDS_PAD_UP: return BLOCKS_HOLD;
+                case BMDS_PAD_SOUTH:
+                case BMDS_PAD_WEST:
+                case BMDS_PAD_L1: return BLOCKS_CCW;
+                case BMDS_PAD_EAST:
+                case BMDS_PAD_NORTH:
+                case BMDS_PAD_R1: return BLOCKS_CW;
+                default: return 0;
+        }
+}
+
+static void pad_event(bmds_game_t *game, state_t *s, const bmds_surface_event_t *e) {
+        uint32_t button, down;
+        if (e->flags == BMDS_PAD_AXIS && e->data[1] == BMDS_PAD_LEFT_X) {
+                /* The left stick as the D-pad's left and right: past half way. */
+                const int32_t  x = (int32_t)e->data[2];
+                const uint32_t now = x < -16384 ? BLOCKS_LEFT : x > 16384 ? BLOCKS_RIGHT : 0;
+                if (s->screen == PLAYING) s->pressed |= now & ~s->stick;
+                s->held = (s->held & ~s->stick) | now;
+                s->stick = now;
+                return;
+        }
+        if (e->flags != BMDS_PAD_BUTTON) return;
+        button = e->data[1];
+        down = e->data[2] != 0;
+        if (!down) {
+                s->held &= ~pad_action_of(button);
+                return;
+        }
+        switch (s->screen) {
+                case PLAYING: {
+                        const uint32_t a = pad_action_of(button);
+                        s->held |= a;
+                        s->pressed |= a;
+                        if (button == BMDS_PAD_START) {
+                                show(s, PAUSED);
+                                if (s->audio != NULL) bmds_game_audio_pause(s->audio, 1);
+                        }
+                        break;
+                }
+                case PAUSED:
+                        if (button == BMDS_PAD_START) {
+                                show(s, PLAYING);
+                                if (s->audio != NULL) bmds_game_audio_pause(s->audio, 0);
+                        } else if (button == BMDS_PAD_SELECT) {
+                                if (s->audio != NULL) bmds_game_audio_pause(s->audio, 0);
+                                music(s, 0);
+                                show(s, TITLE);
+                        }
+                        break;
+                case TITLE:
+                case OVER:
+                        if (s->screen == OVER && s->entering) {
+                                if (button == BMDS_PAD_START) { /* the name as typed */
+                                        s->entering = 0;
+                                        record_score(s);
+                                        show(s, TITLE);
+                                        s->overlay_dirty = 1;
+                                }
+                        } else if (button == BMDS_PAD_START || button == BMDS_PAD_SOUTH) {
+                                start(s);
+                        }
+                        break;
+                default: break;
+        }
+        (void)game;
+        return;
+}
+
 static void type_name(state_t *s, const bmds_surface_event_t *e) {
         const uint32_t usage = e->data[0];
         size_t         n = strlen(s->name);
@@ -293,12 +370,16 @@ static void on_event(bmds_game_t *game, const bmds_surface_event_t *e) {
                         show(s, PAUSED);
                         bmds_game_redraw(game); /* drawn though inactive: not a frozen game */
                 }
-                s->held = 0; /* keys let go while away aren't seen */
+                s->held = s->stick = 0; /* keys let go while away aren't seen */
                 if (s->audio != NULL) bmds_game_audio_pause(s->audio, e->data[0] == 0);
                 return;
         }
         if (e->type == BMDS_EVENT_PRESENTED) {
                 s->redraw_all = 1;
+                return;
+        }
+        if (e->type == BMDS_EVENT_PAD) {
+                pad_event(game, s, e);
                 return;
         }
         if (e->type != BMDS_EVENT_KEY) return;
@@ -474,8 +555,9 @@ static void draw_overlay(bmds_canvas_t *c, state_t *s) {
                 bmds_canvas_text(c, (WIDTH - 29 * BMDS_GAME_GLYPH_WIDTH) / 2, 124 + (int32_t)i * 16, line,
                                  bmds_canvas_pixel(c, (int)i == s->placed ? ACCENT : VALUE), 1);
         }
-        centred(c, 296, "Enter: play   M: music   Q: quit", LABEL, 1);
-        centred(c, 316, "Arrows, Down/Space: drop, Z/X: turn, C: hold", LABEL, 1);
+        centred(c, 288, "Enter: play   M: music   Q: quit", LABEL, 1);
+        centred(c, 304, "Arrows, Down/Space: drop, Z/X: turn, C: hold", LABEL, 1);
+        centred(c, 320, "Pad: D-pad, down drops, up holds", LABEL, 1);
         return;
 }
 

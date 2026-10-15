@@ -253,6 +253,7 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
         Input::Sink sink;
         sink.key = keyEntry;
         sink.pointer = pointerEntry;
+        sink.pad = padEntry;
         sink.arg = this;
         Input::setSink(&sink);
         _requests.fetch_add(1, std::memory_order_acq_rel);
@@ -326,6 +327,7 @@ void WindowManager::run() {
                                 // reported drawn (sync()) before it is delivered.
                                 const uint32_t requests = _requests.load(std::memory_order_acquire);
                                 deliverKeys();
+                                deliverPads();
                                 applyPointer();
                                 frame = surface->frames();
                                 round(requests);
@@ -418,6 +420,36 @@ void WindowManager::deliverKeys() {
                         _typingHidden = true;
                 }
                 if (w.key != nullptr) w.key(w.arg, event);
+        }
+}
+
+void WindowManager::padEntry(void *arg, const PadEvent &event) {
+        auto *self = static_cast<WindowManager *>(arg);
+        {
+                SpinLock::Locker pads(self->_inputLock);
+                if (self->_padCount == PadQueue) return; // nobody is taking them
+                self->_pads[(self->_padHead + self->_padCount) % PadQueue] = event;
+                ++self->_padCount;
+        }
+        self->_wake.release();
+        return;
+}
+
+// The pads' events queued, to the focused window. With the lock held.
+void WindowManager::deliverPads() {
+        for (;;) {
+                PadEvent event;
+                {
+                        SpinLock::Locker pads(_inputLock);
+                        if (_padCount == 0) return;
+                        event = _pads[_padHead];
+                        _padHead = static_cast<uint8_t>((_padHead + 1) % PadQueue);
+                        --_padCount;
+                }
+                const uint8_t target = focusId();
+                if (target == 0) continue;
+                const Window &w = _windows[target - 1];
+                if (w.pad != nullptr) w.pad(w.arg, event);
         }
 }
 
@@ -1466,6 +1498,7 @@ Result<uint8_t> WindowManager::openLocked(const WindowConfig &config) {
         w.redraw = config.redraw;
         w.closed = config.closed;
         w.key = config.key;
+        w.pad = config.pad;
         w.fullScreen = config.fullScreen;
         w.resized = config.resized;
         w.arg = config.arg;

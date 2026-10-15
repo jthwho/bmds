@@ -9,6 +9,7 @@
  */
 
 #include <cstring>
+#include <bmds/input.h>
 #include <bmds/log.h>
 #include <bmds/mutex.h>
 #include <bmds/pads.h>
@@ -44,6 +45,24 @@ namespace {
 
         constinit PsramObject<Table> table;
 
+        // The standard pad's changes for Input's sink, handed over once the table's lock is let
+        // go (the sink's window manager reads the table while it holds its own).
+        struct Outbox {
+                        PadEvent events[size_t(PadState::ButtonCount) + size_t(PadState::AxisCount) + 1];
+                        size_t   count = 0;
+
+                        void add(PadEvent::Type type, uint8_t pad, uint8_t index, int32_t value) {
+                                if (count < sizeof(events) / sizeof(events[0]))
+                                        events[count++] = PadEvent{type, pad, index, value};
+                                return;
+                        }
+
+                        void send() const {
+                                for (size_t i = 0; i < count; ++i) Input::pad(events[i]);
+                                return;
+                        }
+        };
+
         void put(Table &t, Pads::Event::Type type, uint8_t pad, uint8_t index, int32_t value) {
                 const Pads::Event e{type, pad, index, value};
                 for (Pads::Listener *l : t.listeners)
@@ -59,7 +78,7 @@ namespace {
         }
 
         // The raw and standard changes of @p s to @p raw and @p state, told and kept.
-        void changed(Table &t, Slot &s, const RawPad &raw, const PadState &state) {
+        void changed(Table &t, Slot &s, const RawPad &raw, const PadState &state, Outbox &out) {
                 const uint8_t n = s.info.number;
                 using Type = Pads::Event::Type;
                 if (t.listening != 0) {
@@ -84,12 +103,14 @@ namespace {
                 for (uint32_t d = s.state.buttons ^ state.buttons; d != 0; d &= d - 1) {
                         const auto b = static_cast<uint8_t>(__builtin_ctz(d));
                         put(t, Type::Button, n, b, int32_t(state.buttons >> b & 1u));
+                        out.add(PadEvent::Type::Button, n, b, int32_t(state.buttons >> b & 1u));
                 }
                 s.state.buttons = state.buttons;
                 for (uint8_t i = 0; i < PadState::AxisCount; ++i)
                         if (moved(s.state.axes[i], state.axes[i])) {
                                 s.state.axes[i] = state.axes[i];
                                 put(t, Type::Axis, n, i, state.axes[i]);
+                                out.add(PadEvent::Type::Axis, n, i, state.axes[i]);
                         }
                 return;
         }
@@ -141,48 +162,52 @@ Result<uint8_t> Pads::attachHid(uint16_t vendor, uint16_t product, uint16_t loca
                 if (PadMapping::find(text, vendor, product, mapping, &name)) origin = Origin::Database;
         }
 
-        Table        &t = *table;
-        Mutex::Locker lock(t.lock, WaitForever);
-        // The slot its pad had (here, else anywhere), else one never used, else any free.
-        Slot *slot = nullptr;
-        int   best = 0;
-        for (Slot &s : t.slots) {
-                if (s.attached) continue;
-                const bool same = s.used && s.info.vendor == vendor && s.info.product == product;
-                const int  score = same && s.location == location ? 4 : same ? 3 : !s.used ? 2 : 1;
-                if (score > best) {
-                        best = score;
-                        slot = &s;
+        Table  &t = *table;
+        uint8_t number = 0;
+        {
+                Mutex::Locker lock(t.lock, WaitForever);
+                // The slot its pad had (here, else anywhere), else one never used, else any free.
+                Slot *slot = nullptr;
+                int   best = 0;
+                for (Slot &s : t.slots) {
+                        if (s.attached) continue;
+                        const bool same = s.used && s.info.vendor == vendor && s.info.product == product;
+                        const int  score = same && s.location == location ? 4 : same ? 3 : !s.used ? 2 : 1;
+                        if (score > best) {
+                                best = score;
+                                slot = &s;
+                        }
                 }
+                if (slot == nullptr) return makeError<uint8_t>(Error::Full);
+                Slot &s = *slot;
+                s.attached = true;
+                s.used = true;
+                s.location = location;
+                s.layout = layout;
+                s.mapping = mapping;
+                s.raw = RawPad();
+                s.state = PadState();
+                number = s.info.number;
+                s.info = Info();
+                s.info.number = number;
+                s.info.kind = Kind::Hid;
+                s.info.origin = origin;
+                s.info.vendor = vendor;
+                s.info.product = product;
+                s.info.axes = layout.axisCount();
+                s.info.hats = layout.hatCount();
+                s.info.buttons = layout.buttonCount();
+                const size_t length = name.size() < MaxName - 1 ? name.size() : MaxName - 1;
+                std::memcpy(s.info.name, name.data(), length);
+                s.info.name[length] = '\0';
+                s.descriptorLength =
+                        static_cast<uint16_t>(descriptor.size() < MaxDescriptor ? descriptor.size() : MaxDescriptor);
+                std::memcpy(s.descriptor, descriptor.data(), s.descriptorLength);
+                // The first report is news only where it isn't at rest: an axis's rest is its centre.
+                for (uint8_t i = 0; i < layout.axisCount(); ++i) s.raw.axes[i] = 0;
+                put(t, Event::Type::Attached, number, 0, 0);
         }
-        if (slot == nullptr) return makeError<uint8_t>(Error::Full);
-        Slot &s = *slot;
-        s.attached = true;
-        s.used = true;
-        s.location = location;
-        s.layout = layout;
-        s.mapping = mapping;
-        s.raw = RawPad();
-        s.state = PadState();
-        const uint8_t number = s.info.number;
-        s.info = Info();
-        s.info.number = number;
-        s.info.kind = Kind::Hid;
-        s.info.origin = origin;
-        s.info.vendor = vendor;
-        s.info.product = product;
-        s.info.axes = layout.axisCount();
-        s.info.hats = layout.hatCount();
-        s.info.buttons = layout.buttonCount();
-        const size_t length = name.size() < MaxName - 1 ? name.size() : MaxName - 1;
-        std::memcpy(s.info.name, name.data(), length);
-        s.info.name[length] = '\0';
-        s.descriptorLength =
-                static_cast<uint16_t>(descriptor.size() < MaxDescriptor ? descriptor.size() : MaxDescriptor);
-        std::memcpy(s.descriptor, descriptor.data(), s.descriptorLength);
-        // The first report is news only where it isn't at rest: an axis's rest is its centre.
-        for (uint8_t i = 0; i < layout.axisCount(); ++i) s.raw.axes[i] = 0;
-        put(t, Event::Type::Attached, number, 0, 0);
+        Input::pad(PadEvent{PadEvent::Type::Attached, number, 0, int32_t(uint32_t(vendor) << 16 | product)});
         bmdsInfo("Pads: pad%u: %04x:%04x, %u axes, %u hats, %u buttons, mapping: %s", number, vendor, product,
                  layout.axisCount(), layout.hatCount(), layout.buttonCount(),
                  origin == Origin::Database ? "database" : "standard");
@@ -202,26 +227,35 @@ void Pads::setName(uint8_t number, StringView name) {
 
 void Pads::reportHid(uint8_t number, Span<const uint8_t> report) {
         if (!table.isCreated()) return;
-        Table        &t = *table;
-        Mutex::Locker lock(t.lock, WaitForever);
-        Slot         *s = attachedSlot(t, number);
-        RawPad        raw;
-        if (s == nullptr || !s->layout.decode(report, raw)) return; // another report ID's
-        PadState state;
-        s->mapping.apply(raw, state);
-        changed(t, *s, raw, state);
+        Table &t = *table;
+        Outbox out;
+        {
+                Mutex::Locker lock(t.lock, WaitForever);
+                Slot         *s = attachedSlot(t, number);
+                RawPad        raw;
+                if (s == nullptr || !s->layout.decode(report, raw)) return; // another report ID's
+                PadState state;
+                s->mapping.apply(raw, state);
+                changed(t, *s, raw, state, out);
+        }
+        out.send();
         return;
 }
 
 void Pads::detach(uint8_t number) {
         if (!table.isCreated()) return;
-        Table        &t = *table;
-        Mutex::Locker lock(t.lock, WaitForever);
-        Slot         *s = attachedSlot(t, number);
-        if (s == nullptr) return;
-        changed(t, *s, RawPad(), PadState()); // its buttons up, its axes centred
-        s->attached = false;
-        put(t, Event::Type::Detached, number, 0, 0);
+        Table &t = *table;
+        Outbox out;
+        {
+                Mutex::Locker lock(t.lock, WaitForever);
+                Slot         *s = attachedSlot(t, number);
+                if (s == nullptr) return;
+                changed(t, *s, RawPad(), PadState(), out); // its buttons up, its axes centred
+                s->attached = false;
+                put(t, Event::Type::Detached, number, 0, 0);
+        }
+        out.add(PadEvent::Type::Detached, number, 0, 0);
+        out.send();
         bmdsInfo("Pads: pad%u: gone", number);
         return;
 }

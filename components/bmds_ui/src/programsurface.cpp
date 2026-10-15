@@ -21,6 +21,7 @@
 #include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/painter.h>
+#include <bmds/pads.h>
 #include <bmds/pngdecoder.h>
 #include <bmds/programsurface.h>
 #include <bmds/scanout.h>
@@ -148,6 +149,7 @@ Error ProgramSurface::start(const Config &config) {
         wc.arg = this;
         wc.closed = closedEntry;
         wc.key = keyEntry;
+        wc.pad = padEntry;
         wc.resized = resizedEntry;
         wc.decorations = deco;
         wc.widthStep = config.width;
@@ -920,6 +922,41 @@ void ProgramSurface::keyEntry(void *arg, const KeyEvent &event) {
         return;
 }
 
+void ProgramSurface::padEntry(void *arg, const PadEvent &event) {
+        Event e;
+        e.type = uint32_t(EventType::Pad);
+        e.flags = uint32_t(event.type);
+        e.timeNs = Clock::monotonicNs();
+        e.data[0] = event.pad;
+        e.data[1] = event.type == PadEvent::Type::Attached ? uint32_t(event.value) : event.index;
+        e.data[2] = event.type == PadEvent::Type::Attached ? 0 : uint32_t(event.value);
+        static_cast<ProgramSurface *>(arg)->push(e);
+        return;
+}
+
+// The focus came (each pad attached, and what is down or off centre on it) or went (what is down
+// comes up, sticks to centre): nothing stays held that the program can't see let go.
+void ProgramSurface::padsSettled(bool active) {
+        Pads::Info   pads[Pads::MaxPads];
+        const size_t n = Pads::list(Span<Pads::Info>(pads, Pads::MaxPads));
+        for (size_t i = 0; i < n; ++i) {
+                PadState state;
+                RawPad   raw;
+                if (Pads::state(pads[i].number, state, raw).isError()) continue;
+                if (active)
+                        padEntry(this, PadEvent{PadEvent::Type::Attached, pads[i].number, 0,
+                                                int32_t(uint32_t(pads[i].vendor) << 16 | pads[i].product)});
+                for (uint8_t b = 0; b < PadState::ButtonCount; ++b)
+                        if (state.isDown(PadState::Button(b)))
+                                padEntry(this, PadEvent{PadEvent::Type::Button, pads[i].number, b, active ? 1 : 0});
+                for (uint8_t a = 0; a < PadState::AxisCount; ++a)
+                        if (state.axes[a] != 0)
+                                padEntry(this,
+                                         PadEvent{PadEvent::Type::Axis, pads[i].number, a, active ? state.axes[a] : 0});
+        }
+        return;
+}
+
 void ProgramSurface::mouseEntry(void *arg, const WindowManager::MouseEvent &event) {
         auto *self = static_cast<ProgramSurface *>(arg);
         if (event.type == WindowManager::MouseEvent::Type::Leave) return;
@@ -975,11 +1012,13 @@ void ProgramSurface::activatedEntry(void *arg, bool active) {
                 full = self->_fullScreen;
         }
         if (!active && full) self->ask(Leave); // another window took the keys: the desktop back
+        if (!active) self->padsSettled(false);
         Event e;
         e.type = uint32_t(EventType::Active);
         e.timeNs = Clock::monotonicNs();
         e.data[0] = active ? 1 : 0;
         self->push(e);
+        if (active) self->padsSettled(true);
         return;
 }
 

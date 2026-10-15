@@ -216,6 +216,69 @@ mapping is wrong. The first check for the user's pad.
   N` prints the mapping as a `gamepads.txt` line; `pad descriptor N` dumps the report
   descriptor in hex, for a pad that needs a new entry.
 
+## 7b. Pads to programs before actions: `BMDS_EVENT_PAD` (2026-10-15; agreed with the user)
+
+Step 3 (actions matched by the system) is large; the pad's own events can reach games first,
+through the event type the surfaces reserved (`games.md` §11). Blocks and Doom read them now and
+keep reading them for what actions don't cover (which pad is which player).
+
+```c
+/* BMDS_EVENT_PAD: a pad's standard control changed, or a pad came or went (the focused
+ * surface's). data[0]: the pad's number (pad0 is 0). */
+#define BMDS_PAD_BUTTON   1u /* flags: data[1] a BMDS_PAD_SOUTH..., data[2] 1 down, 0 up */
+#define BMDS_PAD_AXIS     2u /* flags: data[1] a BMDS_PAD_LEFT_X..., data[2] int32: sticks
+                                -32767..32767 (right, down positive), triggers 0..32767 */
+#define BMDS_PAD_ATTACHED 3u /* flags: the pad is there; data[1] vendor << 16 | product */
+#define BMDS_PAD_DETACHED 4u /* flags: the pad is gone (its buttons came up first) */
+
+/* Buttons, by position (devplan/controls.md §4a). */
+#define BMDS_PAD_SOUTH 0u   /* Xbox A, PlayStation cross, Nintendo B */
+#define BMDS_PAD_EAST 1u
+#define BMDS_PAD_WEST 2u
+#define BMDS_PAD_NORTH 3u
+#define BMDS_PAD_L1 4u
+#define BMDS_PAD_R1 5u
+#define BMDS_PAD_L2 6u      /* the triggers as buttons: down past a quarter */
+#define BMDS_PAD_R2 7u
+#define BMDS_PAD_L3 8u
+#define BMDS_PAD_R3 9u
+#define BMDS_PAD_UP 10u
+#define BMDS_PAD_DOWN 11u
+#define BMDS_PAD_LEFT 12u
+#define BMDS_PAD_RIGHT 13u
+#define BMDS_PAD_START 14u
+#define BMDS_PAD_SELECT 15u /* Back, Share, Minus */
+#define BMDS_PAD_GUIDE 16u  /* the logo button: the system may keep it (§5d) */
+
+/* Axes. */
+#define BMDS_PAD_LEFT_X 0u
+#define BMDS_PAD_LEFT_Y 1u
+#define BMDS_PAD_RIGHT_X 2u
+#define BMDS_PAD_RIGHT_Y 3u
+#define BMDS_PAD_LEFT_TRIGGER 4u
+#define BMDS_PAD_RIGHT_TRIGGER 5u
+```
+
+- **Only to the focused surface,** as keys are. On gaining the focus it is told of each pad
+  attached (`ATTACHED`) and what is down or off centre on it; on losing it, what was down comes up
+  and sticks go to centre, so nothing sticks.
+- **The standard pad only;** raw controls stay with `pad test` (a pad that maps wrongly gets a
+  database line, not a game's workaround).
+- **No new system call.** Names and labels (which pad, its kind for "press Ⓐ") come with step 3's
+  calls.
+- **Inside:** `Pads` hands standard events to `Input`'s sink (a `pad` function beside `key`); the
+  window manager queues them for the focused window (`WindowConfig::pad`); `ProgramSurface`
+  makes them records. `libbmdsgame` passes them to the game's `event` callback as it does keys
+  (nothing new in `game.h`).
+- **The games:** Blocks (the user's, 2026-10-15): the D-pad's left and right (and the left stick)
+  move, down drops, up holds; South, West and L1 turn left, East, North and R1 right; Start
+  pauses, starts and keeps a typed name; Select leaves a paused game. Doom: its platform layer's key events from the pad (D-pad and left stick
+  move and turn, South fire, East use, West run, North and the shoulders cycle weapons, Start the
+  menu, Select the map), as SDL ports do; in the menus South accepts and East goes back. Doom's
+  weapon cycling keys, unbound upstream, default to `[` and `]`.
+- **Later** (steps 3-5, the user's "standard input assignment"): the games' pad bindings become
+  their actions' default pad bindings, changed in the standard editor.
+
 ## 8. Budgets (estimates)
 
 - A pad: its layout (~200 bytes) and last report; events only on change.

@@ -132,4 +132,26 @@ struct PointerEvent {
                 uint8_t buttons = 0; ///< `Button` bits down now.
 };
 
+/**
+ * @brief A gamepad's standard control changed, or a pad came or went (`devplan/controls.md`
+ *        §7b): what `BMDS_EVENT_PAD` carries.
+ *
+ * @par Thread Safety
+ * A plain value.
+ */
+struct PadEvent {
+                /** @brief What happened: `BMDS_PAD_BUTTON`'s values, in order. */
+                enum class Type : uint8_t {
+                        Button = 1, ///< `index`: a `PadState::Button`; `value`: 1 down, 0 up.
+                        Axis,       ///< `index`: a `PadState::Axis`; `value`: its value.
+                        Attached,   ///< `value`: vendor << 16 | product.
+                        Detached,
+                };
+
+                Type    type = Type::Button;
+                uint8_t pad = 0; ///< Its number.
+                uint8_t index = 0;
+                int32_t value = 0;
+};
+
 BMDS_NAMESPACE_END

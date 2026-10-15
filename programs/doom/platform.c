@@ -27,6 +27,7 @@
 #include "i_system.h"
 #include "i_video.h"
 #include "m_config.h"
+#include "m_controls.h"
 
 #define WIDTH 320
 #define HEIGHT 200
@@ -57,6 +58,9 @@ static uint32_t g_pointer = BMDS_POINTER_NORMAL;
 static uint16_t g_queue[QUEUE]; /* pressed << 8 | Doom's key */
 static uint32_t g_queue_head, g_queue_tail;
 static uint8_t  g_down[256 / 8]; /* Doom's keys held */
+
+static unsigned char g_pad_keys[BMDS_PAD_GUIDE + 1]; /* the key each pad button pressed (0: none) */
+static unsigned char g_stick_keys[2];                /* the left stick's: across, then down */
 
 static int      g_mouse_moved;
 static int32_t  g_mouse_dx, g_mouse_dy;
@@ -147,6 +151,8 @@ static void set_active(int active) {
                 /* Away: nothing stays held, and a game being played waits. */
                 for (unsigned key = 0; key < 256; ++key)
                         if ((g_down[key / 8] & (1u << (key % 8))) != 0) queue_key(0, (unsigned char)key);
+                memset(g_pad_keys, 0, sizeof(g_pad_keys));
+                memset(g_stick_keys, 0, sizeof(g_stick_keys));
                 g_buttons = 0;
                 g_mouse_moved = 1;
                 if (playing() && !netgame) {
@@ -156,6 +162,59 @@ static void set_active(int active) {
         } else if (g_paused_by_us) {
                 if (paused) sendpause = true;
                 g_paused_by_us = 0;
+        }
+        return;
+}
+
+/* ---- Pads (devplan/controls.md §7b), as SDL ports bind them */
+
+/* Doom's key for pad @p button: in the menus South accepts and East goes back. */
+static unsigned char pad_key(uint32_t button) {
+        switch (button) {
+                case BMDS_PAD_UP: return KEY_UPARROW;
+                case BMDS_PAD_DOWN: return KEY_DOWNARROW;
+                case BMDS_PAD_LEFT: return KEY_LEFTARROW;
+                case BMDS_PAD_RIGHT: return KEY_RIGHTARROW;
+                case BMDS_PAD_SOUTH: return menuactive ? KEY_ENTER : KEY_FIRE;
+                case BMDS_PAD_EAST: return menuactive ? KEY_BACKSPACE : KEY_USE;
+                case BMDS_PAD_WEST: return KEY_RSHIFT; /* run */
+                case BMDS_PAD_NORTH:
+                case BMDS_PAD_R1: return (unsigned char)key_nextweapon;
+                case BMDS_PAD_L1: return (unsigned char)key_prevweapon;
+                case BMDS_PAD_START: return KEY_ESCAPE;
+                case BMDS_PAD_SELECT: return KEY_TAB; /* the map */
+                default: return 0;
+        }
+}
+
+/* The left stick past half way as the arrows: across turns, down walks. */
+static void pad_stick(uint32_t axis, int32_t value) {
+        const int     i = axis == BMDS_PAD_LEFT_X ? 0 : 1;
+        unsigned char key = 0;
+        if (value < -16384) key = i == 0 ? KEY_LEFTARROW : KEY_UPARROW;
+        if (value > 16384) key = i == 0 ? KEY_RIGHTARROW : KEY_DOWNARROW;
+        if (key == g_stick_keys[i]) return;
+        if (g_stick_keys[i] != 0) queue_key(0, g_stick_keys[i]);
+        if (key != 0) queue_key(1, key);
+        g_stick_keys[i] = key;
+        return;
+}
+
+static void pad(const bmds_surface_event_t *e) {
+        if (e->flags == BMDS_PAD_AXIS && (e->data[1] == BMDS_PAD_LEFT_X || e->data[1] == BMDS_PAD_LEFT_Y)) {
+                pad_stick(e->data[1], (int32_t)e->data[2]);
+                return;
+        }
+        if (e->flags != BMDS_PAD_BUTTON || e->data[1] > BMDS_PAD_GUIDE) return;
+        const uint32_t button = e->data[1];
+        if (e->data[2] != 0) {
+                const unsigned char key = pad_key(button);
+                if (key == 0) return;
+                g_pad_keys[button] = key; /* released as pressed, whatever the menu does meanwhile */
+                queue_key(1, key);
+        } else if (g_pad_keys[button] != 0) {
+                queue_key(0, g_pad_keys[button]);
+                g_pad_keys[button] = 0;
         }
         return;
 }
@@ -181,6 +240,7 @@ static void handle(const bmds_surface_event_t *e) {
                         g_buttons = e->data[2] & 7u; /* left fire, right strafe, middle forward */
                         g_mouse_moved = 1;
                         break;
+                case BMDS_EVENT_PAD: pad(e); break;
                 case BMDS_EVENT_ACTIVE: set_active(e->data[0] != 0); break;
                 case BMDS_EVENT_PRESENTED: g_full_screen = e->data[0] != 0; break;
                 case BMDS_EVENT_CLOSE: I_Quit(); break; /* as the menu's quit: the settings saved */
@@ -223,6 +283,10 @@ static void acquire(void) {
 }
 
 void DG_Init(void) {
+        /* Weapon cycling, unbound upstream: the pad's North and shoulders use it (saved with the
+         * rest, so a binding of the user's own stays). */
+        if (key_prevweapon == 0) key_prevweapon = '[';
+        if (key_nextweapon == 0) key_nextweapon = ']';
         bmds_surface_config_t c;
         memset(&c, 0, sizeof(c));
         c.size = sizeof(c);

@@ -81,7 +81,7 @@ class ProgramSurface final : public Stream {
                         Presented = 5,
                         Close = 6,
                         Action = 7, ///< Reserved (`devplan/controls.md`).
-                        Pad = 8,    ///< Reserved.
+                        Pad = 8,    ///< A gamepad's (`devplan/controls.md` §7b); flags: `PadEvent::Type`.
                 };
 
                 /** @brief A key event's flags: the ABI's. */
@@ -293,6 +293,8 @@ class ProgramSurface final : public Stream {
 
                 static void redrawEntry(void *arg, Painter &painter);
                 static void keyEntry(void *arg, const KeyEvent &event);
+                static void padEntry(void *arg, const PadEvent &event);
+                void        padsSettled(bool active); // what is down on the pads, told or let go
                 static void mouseEntry(void *arg, const WindowManager::MouseEvent &event);
                 static void wheelEntry(void *arg, int notches);
                 static void activatedEntry(void *arg, bool active);
