@@ -74,7 +74,7 @@ class Scanout {
                                 uint32_t stalls = 0;         ///< The DMA met an invalid descriptor.
                                 uint32_t underruns = 0;      ///< The DSI bridge ran dry.
                                 uint32_t resyncs = 0;        ///< Restarts of the stream.
-                                uint32_t rebuilds = 0;       ///< Rebuilds of the whole DSI path.
+                                uint32_t rebuilds = 0;       ///< Rebuilds of the whole DSI path (a stuck stream's).
                                 uint32_t failures = 0;       ///< Restarts that failed.
                                 uint32_t pixelHz = 0;        ///< The pixel clock as set.
                                 uint32_t isrCyclesMax = 0;   ///< The slowest block interrupt.
@@ -82,6 +82,7 @@ class Scanout {
                                 uint32_t bridgeFifo = 0;     ///< The DSI bridge's FIFO depth.
                                 uint32_t isrCycles = 0;      ///< The block interrupts' cycles in all (wraps).
                                 uint32_t fallbacks = 0;      ///< Surfaces given up for stalling (`show()`).
+                                uint32_t switches = 0;       ///< Surfaces (or modes) switched to (`show()`).
                 };
 
                 /** @brief A scanout on DSI bus @p bus (0 on the ESP32-P4). */
@@ -182,7 +183,7 @@ class Scanout {
                 void        useList();                      // the channel pointed at it
                 void        switchSurface();                // show()'s request, on the supervisor's task
                 void        resync();
-                Error       rebuild();
+                Error       rebuild(bool recovery); // the link anew (@p recovery: a stuck one's, counted)
                 void        fallBack();
                 void        stopHardware();
 
@@ -216,6 +217,7 @@ class Scanout {
                 uint32_t               _isrCycles = 0; // written by the interrupt alone
                 uint32_t               _resyncs = 0;
                 uint32_t               _rebuilds = 0;
+                uint32_t               _switches = 0;
                 uint32_t               _failures = 0;
                 uint32_t               _blocksBefore = 0; // blocks sent before the last restart
                 Semaphore              _wake{4, 0};

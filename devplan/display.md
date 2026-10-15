@@ -378,3 +378,10 @@ Superseded for text by `windows.md` (2026-10-05): a desktop with windows, the te
   any settle count, DDS word, lane count or vertical sync tried. A longer horizontal back porch
   (160-300 at 40 MHz, against VGA's 48) brought a picture that still glitched every few seconds
   to now and then. The bridge's datasheet is the next lead.
+- **Switches aren't problems** (2026-10-14, the user's report: after Doom, the system monitor
+  kept counting, and `scanout.rebuilds` stayed open): every full screen in and out rebuilds the
+  DSI link, and each counted as a rebuild, a `Zero` rule's warning. Rebuilds now count only a
+  stuck stream's restarts; `show()`'s switches count in `scanout.switches` (no rule; `display
+  stats`: "pictures switched to"). And the surface leaving the scan is let go as soon as the
+  hardware stops, before the ~100 ms restart: the desktop's next present waited for a frame that
+  wasn't coming (74 ms, `surface.wait_us_max` critical for as long as Doom ran).

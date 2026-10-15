@@ -333,6 +333,7 @@ Error Scanout::start(const Config &config, Surface &surface) {
         _isrCycles = 0;
         _resyncs = 0;
         _rebuilds = 0;
+        _switches = 0;
         _failures = 0;
         _blocksBefore = 0;
         _fallback = nullptr;
@@ -805,7 +806,7 @@ void Scanout::supervise() {
                         last = sent;
                         progressUs = now;
                 } else if (now - progressUs >= StuckUs) {
-                        (void)rebuild();
+                        (void)rebuild(true);
                         last = 0;
                         progressUs = esp_timer_get_time();
                 }
@@ -831,7 +832,7 @@ void Scanout::resync() {
                 if (!stopped) esp_rom_delay_us(100);
         }
         if (!stopped) {
-                (void)rebuild();
+                (void)rebuild(true);
                 return;
         }
         dw_gdma_ll_channel_clear_intr(&DW_GDMA, hw.channel, UINT32_MAX);
@@ -891,7 +892,7 @@ void Scanout::switchSurface() {
                 _prepared = list;
                 _nextSurface = next;
                 _nextPlan = plan;
-                err = rebuild();
+                err = rebuild(false);
                 if (err.isError()) {
                         if (_prepared != nullptr) { // not taken: the link failed before the list
                                 _prepared->release();
@@ -901,15 +902,14 @@ void Scanout::switchSurface() {
                         if (planFor(*old, oldTiming, _nextPlan).isOk()) {
                                 _nextPlan.lanes = oldLanes;
                                 _nextSurface = old;
-                                (void)rebuild();
+                                (void)rebuild(false);
+                                old->setScanning(true); // back on it (rebuild() let it go)
                         }
                 }
         }
         if (err.isOk()) {
-                if (old != next) {
-                        old->setScanning(false); // its pending swap made now
-                        next->setScanning(true);
-                }
+                if (old != next) next->setScanning(true); // the old one let go in rebuild()
+                ++_switches;
                 // Kept until the new surface has run cleanly for a while (supervise()).
                 _fallback = old;
                 _fallbackTiming = oldTiming;
@@ -933,22 +933,22 @@ void Scanout::fallBack() {
         if (planFor(*next, _fallbackTiming, _nextPlan).isError()) return;
         _nextPlan.lanes = _fallbackLanes;
         _nextSurface = next; // taken with its plan (and timing) once the link is down
-        (void)rebuild();
-        if (bad != next) {
-                bad->setScanning(false);
-                next->setScanning(true);
-        }
+        (void)rebuild(false);
+        if (bad != next) next->setScanning(true); // the bad one let go in rebuild()
         ++_fallbacks;
         return;
 }
 
-// The last resort: the whole DSI path rebuilt from scratch, as a fresh
-// start does (the monitor sees the link drop for a moment), then the
-// bridge chip told to lock onto it again (`Config::onRestart`).
-Error Scanout::rebuild() {
+// The whole DSI path rebuilt from scratch, as a fresh start does (the monitor sees the link drop
+// for a moment), then the bridge chip told to lock onto it again (`Config::onRestart`): the last
+// resort of a stuck stream (@p recovery: counted), or a switch to another surface or mode.
+Error Scanout::rebuild(bool recovery) {
         stopHardware();
-        // No link, no interrupt: a surface switched to, and its plan, taken now.
+        // No link, no interrupt: a surface switched to, and its plan, taken now. The one left is
+        // let go at once, its presents swapping as they come, not waiting out the restart below
+        // (~100 ms: the PHY's PLL, the DPI, the bridge's setup) for a frame that won't come.
         if (_nextSurface != nullptr) {
+                if (_nextSurface != _surface) _surface->setScanning(false);
                 _surface = _nextSurface;
                 apply(_nextPlan);
                 _nextSurface = nullptr;
@@ -962,7 +962,7 @@ Error Scanout::rebuild() {
         if (err.isOk()) err = startDpi();
         if (err.isOk() && _config.onRestart != nullptr) _config.onRestart(_config.onRestartArg);
         if (err.isError()) ++_failures;
-        ++_rebuilds;
+        if (recovery) ++_rebuilds;
         return err;
 }
 
@@ -976,6 +976,7 @@ Scanout::Stats Scanout::stats() const {
         s.underruns = _underruns.load(std::memory_order_relaxed);
         s.resyncs = _resyncs;
         s.rebuilds = _rebuilds;
+        s.switches = _switches;
         s.failures = _failures;
         s.isrCyclesMax = _isrCyclesMax;
         s.isrCycles = _isrCycles;

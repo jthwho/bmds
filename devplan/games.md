@@ -912,3 +912,17 @@ refresh, and the conversion is 128,000 pixels (2× across; rows repeated by the 
 - **Seen on the way:** screenshots taken while Doom runs in a window come out with the colours
   scrambled (the layout right; the PNG filter ~60 times slower than usual), and clean once Doom
   stops: the open "screenshot noise" item, now reproducible. Not looked into yet.
+
+### 20c. The system monitor after a game (2026-10-14, the user's report)
+
+- **Fixed:** full screen in and out raised `display0.scanout.rebuilds` (it stayed open) and
+  `display0.surface.wait_us_max` (critical while Doom ran): `display.md`, "Switches aren't
+  problems".
+- **Real, and left:** `cpu.core1.busy_us` while Doom runs: all its threads end up on core 1 (ESP-IDF
+  pins a task to its core the first time it uses the FPU, and Doom's start there), with the
+  conversion and the scanout, while core 0 idles. Spreading program threads over the cores is
+  the fix to make. `mem.internal_dma.free` warns while Doom's screen (64 KB of internal RAM) is
+  held; it closes when Doom ends.
+- **Open:** a real-time client is sometimes one period late as a program starts (1 start in 3
+  with a sound only, `bounce -a`; none from the full-screen switches: six Alt+Enters added
+  none). The cause isn't found; the warning closes by itself.

@@ -347,9 +347,10 @@ namespace {
                 if (d == nullptr) return Shell::ExitFailure;
                 const Scanout::Stats s = d->scanout().stats();
                 const Surface       &surface = d->surface();
-                ctx.printf("Scanout:  %u frames, %u blocks (%u a frame), %u swaps\n", static_cast<unsigned>(s.frames),
-                           static_cast<unsigned>(s.blocks), static_cast<unsigned>(s.blocksPerFrame),
-                           static_cast<unsigned>(s.swaps));
+                ctx.printf("Scanout:  %u frames, %u blocks (%u a frame), %u swaps, %u pictures switched to\n",
+                           static_cast<unsigned>(s.frames), static_cast<unsigned>(s.blocks),
+                           static_cast<unsigned>(s.blocksPerFrame), static_cast<unsigned>(s.swaps),
+                           static_cast<unsigned>(s.switches));
                 ctx.printf("Problems: %u underruns, %u stalls, %u resyncs, %u rebuilds (%u failed)\n",
                            static_cast<unsigned>(s.underruns), static_cast<unsigned>(s.stalls),
                            static_cast<unsigned>(s.resyncs), static_cast<unsigned>(s.rebuilds),

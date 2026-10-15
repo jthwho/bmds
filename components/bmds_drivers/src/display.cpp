@@ -60,6 +60,7 @@ namespace {
                 StatForwardUsMax,
                 StatWaitUs,
                 StatWaitUsMax,
+                StatSwitches,
                 StatCount
         };
 
@@ -105,7 +106,7 @@ namespace {
                  0,
                  {Rule::Zero, Health::Warning},
                  "",
-                 "Rebuilds of the whole DSI path"},
+                 "Rebuilds of the whole DSI path (a stuck stream's)"},
                 {"scanout.failures",
                  Unit::Count,
                  Kind::Total,
@@ -149,6 +150,13 @@ namespace {
                  {Rule::Above, Health::Warning},
                  "",
                  "The longest wait (judged against two frames and four)"},
+                {"scanout.switches",
+                 Unit::Count,
+                 Kind::Total,
+                 0,
+                 {},
+                 "",
+                 "Pictures switched to (a full screen, back to the desktop): the link rebuilt for each"},
         };
         static_assert(sizeof(DisplayStats) / sizeof(DisplayStats[0]) == StatCount);
 
@@ -195,6 +203,7 @@ void Display::readStats(void *arg, Span<int64_t> v) {
         v[StatUnderruns] = o.underruns;
         v[StatResyncs] = o.resyncs;
         v[StatRebuilds] = o.rebuilds;
+        v[StatSwitches] = o.switches;
         v[StatFailures] = o.failures;
         // The interrupt's 32-bit cycle count widened here (it wraps in 12 s of interrupts alone).
         if (o.isrCycles < d._isrCyclesSeen) d._isrCyclesSeen = 0; // a restart cleared it
