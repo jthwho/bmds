@@ -33,7 +33,7 @@ BMDS_NAMESPACE_BEGIN
 namespace {
 
         constexpr size_t       BufferAlign = 128; // the L2 cache line; the 2D-DMA's PSRAM alignment
-        constexpr uint16_t     StripRows = 8;     // scaled rows in the strip
+        constexpr uint16_t     StripRows = 8;     // full screen's strip: rows of the screen's width
         constexpr uint16_t     DamageColumns = 8; // damage across on these (PIE's 16 bytes in RGB565)
         constexpr size_t       WriteBackChunk = 64 * 1024;
         constexpr uint16_t     ScreenWidth = 1280; // the desktop's mode (devplan/display.md V5)
@@ -114,12 +114,6 @@ Error ProgramSurface::start(const Config &config) {
                 if (_palette == nullptr) return Error::NoMem;
                 for (uint32_t i = 0; i < 256; ++i) _palette[i] = i * 0x010101u; // gray until set
         }
-        // Scaled rows (and every L8 picture) go through a strip the CPU fills: full screen in two
-        // halves, one filled while the 2D-DMA copies the other.
-        _stripBytes = size_t(ScreenWidth) * Surface::BytesPerPixel * StripRows;
-        _strip = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, _stripBytes, 64));
-        if (_strip == nullptr) return Error::NoMem;
-
         Task::Config tc;
         tc.name = "surface";
         tc.stackBytes = 4096;
@@ -483,7 +477,7 @@ Rect ProgramSurface::pictureRect(uint16_t width, uint16_t height, uint16_t &scal
 }
 
 // @p clip of the picture (at @p pic, @p scale times its size) from @p buf: its rows scaled across
-// into the strip, each written `scale` times down, a band at a time.
+// into the window manager's strip, each shown `scale` times down by the 2D-DMA, a band at a time.
 void ProgramSurface::drawScaled(Painter &painter, const uint8_t *buf, const Rect &pic, uint16_t scale,
                                 const Rect &clip) {
         if (clip.isEmpty()) return;
@@ -491,28 +485,34 @@ void ProgramSurface::drawScaled(Painter &painter, const uint8_t *buf, const Rect
         uint16_t c1 = uint16_t((clip.right() - pic.x + scale - 1) / scale);
         c1 = uint16_t((c1 + DamageColumns - 1) & ~(DamageColumns - 1u));
         if (c1 > _config.width) c1 = _config.width;
-        const uint16_t cols = uint16_t(c1 - c0);
-        const bool     wide = _config.format == Format::Rgb565;
-        const size_t   rowBytes = size_t(cols) * scale * (wide ? 2 : Surface::BytesPerPixel);
-        const size_t   bpp = bytesPerPixel(_config.format);
-        const uint16_t perStrip = uint16_t(StripRows / scale > 0 ? StripRows / scale : 1);
+        Band           b{this, nullptr, scale, 0, c0, uint16_t(c1 - c0)};
+        const uint16_t perStrip = painter.stripRows();
         const uint16_t first = uint16_t((clip.y - pic.y) / scale);
         const uint16_t end = uint16_t((clip.bottom() - pic.y + scale - 1) / scale);
         for (uint16_t sy = first; sy < end; sy = uint16_t(sy + perStrip)) {
-                const uint16_t rows = uint16_t(end - sy < perStrip ? end - sy : perStrip);
-                const Rect     band{uint16_t(pic.x + c0 * scale), uint16_t(pic.y + sy * scale), uint16_t(cols * scale),
-                                uint16_t(rows * scale)};
-                for (uint16_t r = 0; r < rows; ++r) {
-                        uint8_t *dst = _strip + size_t(r) * scale * rowBytes;
-                        expandRow(buf + size_t(sy + r) * _stride + c0 * bpp, cols, dst, scale);
-                        for (uint16_t k = 1; k < scale; ++k) std::memcpy(dst + k * rowBytes, dst, rowBytes);
-                }
-                if (wide)
-                        (void)painter.pixels565(band.x, band.y, _strip, rowBytes, band.width, band.height);
-                else
-                        (void)painter.pixels(band.x, band.y, _strip, rowBytes, band.width, band.height);
+                b.rows = uint16_t(end - sy < perStrip ? end - sy : perStrip);
+                b.src = buf + size_t(sy) * _stride;
+                if (painter.rows(pic.x + c0 * scale, pic.y + sy * scale, uint16_t(b.cols * scale), b.rows, scale,
+                                 _config.format == Format::Rgb565, makeBand, &b)
+                            .isError())
+                        break;
         }
         return;
+}
+
+// The next piece of a band: its source columns from @p column / scale on, as many whole fours of
+// them as fit @p room, each row expanded across.
+uint16_t ProgramSurface::makeBand(void *arg, uint8_t *strip, size_t stride, uint16_t column, uint16_t room) {
+        const Band    &b = *static_cast<const Band *>(arg);
+        const uint16_t at = uint16_t(column / b.scale);
+        uint16_t       n = uint16_t((room / b.scale) & ~3u);
+        if (n > b.cols - at) n = uint16_t(b.cols - at);
+        if (n == 0) return 0;
+        const size_t bpp = bytesPerPixel(b.self->_config.format);
+        for (uint16_t r = 0; r < b.rows; ++r)
+                b.self->expandRow(b.src + size_t(r) * b.self->_stride + (b.c0 + at) * bpp, n,
+                                  strip + size_t(r) * stride, b.scale);
+        return uint16_t(n * b.scale);
 }
 
 void ProgramSurface::redrawEntry(void *arg, Painter &painter) {
@@ -718,8 +718,16 @@ Error ProgramSurface::enterFullScreen(const VideoTiming &mode, bool own) {
         const int64_t t0 = Clock::monotonicNs();
         bmdsInfo("ProgramSurface: full screen: %ux%u rows, %u across%s", unsigned(mode.hActive), unsigned(_layout.rows),
                  unsigned(_layout.width), own ? ", the monitor's mode" : "");
-        void *memory = Memory::alloc(MemSpace::Psram, sizeof(Surface));
-        if (memory == nullptr) return Error::NoMem;
+        // The picture's rows go through a strip the CPU fills, in two halves: one filled while the
+        // 2D-DMA copies the other. Only while full screen: a window draws in the window manager's.
+        _stripBytes = size_t(ScreenWidth) * Surface::BytesPerPixel * StripRows;
+        _strip = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, _stripBytes, 64));
+        void *memory = _strip != nullptr ? Memory::alloc(MemSpace::Psram, sizeof(Surface)) : nullptr;
+        if (memory == nullptr) {
+                Memory::free(_strip);
+                _strip = nullptr;
+                return Error::NoMem;
+        }
         _fs = ::new (memory) Surface();
         Error err = _fs->start(mode.hActive, _layout.rows, Surface::Buffering::Double); // black
         if (err.isOk()) {
@@ -746,6 +754,8 @@ Error ProgramSurface::enterFullScreen(const VideoTiming &mode, bool own) {
                 _fs->~Surface();
                 Memory::free(_fs);
                 _fs = nullptr;
+                Memory::free(_strip);
+                _strip = nullptr;
                 return err;
         }
         pushPresented();
@@ -768,6 +778,8 @@ void ProgramSurface::leaveFullScreen() {
                 Memory::free(_fs);
                 _fs = nullptr;
         }
+        Memory::free(_strip); // the last copy from it waited for above
+        _strip = nullptr;
         pushPresented();
         if (_wm != nullptr && _window != 0) (void)_wm->update(_window);
         return;

@@ -6,11 +6,16 @@
  * See LICENSE file in the project root folder for license information.
  *
  * The `simd` command (devplan/simd.md §3): each vector kernel timed against its scalar twin, and
- * checked byte for byte against it on random input. Its output format is a userspace interface:
- * keep the lines and their fields, add new ones only at the end.
+ * checked byte for byte against it on random input; `stress` does that from tasks on both cores
+ * switching mid-kernel, and checks PIE's registers survive the switches (simd.md §5). Its output
+ * format is a userspace interface: keep the lines and their fields, add new ones only at the end.
  */
 
+#include <atomic>
 #include <cstring>
+#include <new>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <bmds/command.h>
 #include <bmds/font.h>
 #include <bmds/glyphrenderer.h>
@@ -23,6 +28,7 @@
 #include <bmds/shell.h>
 #include <bmds/simd.h>
 #include <bmds/system.h>
+#include <bmds/task.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -516,6 +522,261 @@ namespace {
                 return;
         }
 
+        // ---- Stress (simd.md §5): the kernels from tasks that switch mid-kernel, and PIE's registers
+        // checked across switches.
+
+        constexpr unsigned StressWorkers = 4; // two a core, at one priority: switched every tick
+        constexpr unsigned StressKinds = 5;
+        const char *const  StressNames[StressKinds] = {"registers", "swap24", "repeat16", "pngfilter", "blend"};
+
+        struct StressWorker {
+                        Task               task;
+                        Noise              noise;
+                        std::atomic<bool> *stop = nullptr;
+                        std::atomic<bool>  done{false};
+                        uint8_t           *buf = nullptr; // StressBytes, 16-byte aligned, internal RAM
+                        uint32_t           cases[StressKinds] = {};
+                        uint32_t           failures[StressKinds] = {};
+                        uint32_t           firstKind = StressKinds; // none yet
+                        uint32_t           firstCase = 0;
+                        uint32_t           firstDetail = 0;
+                        unsigned           id = 0;
+        };
+
+        constexpr size_t StressBytes = 3 * 4096;
+
+        // PIE's registers (all FreeRTOS saves: Q0-Q7, QACC, UA_STATE, XACC, SAR, SAR_BYTES) loaded with
+        // noise and read straight back, then read again after many yields to a task using PIE too: the
+        // two reads must match. (Read back, not compared with the noise: some bits may not be kept.)
+        // @return the first byte that differs, or -1.
+        int32_t stressRegisters(StressWorker &w) {
+#if BMDS_HAS_PIE
+                constexpr size_t Bytes = 8 * 16 + 4 * 16 + 16 + 16; // Q, QACC, UA_STATE, XACC and the SARs
+                uint8_t         *pattern = w.buf, *before = w.buf + 256, *after = w.buf + 512;
+                w.noise.fill(pattern, Bytes);
+                std::memset(before, 0, Bytes);
+                std::memset(after, 0, Bytes);
+                const uint32_t sar = w.noise.below(64), sarBytes = w.noise.below(16);
+                uint8_t       *p = pattern, *o = before;
+                asm volatile("esp.vld.128.ip q0, %[p], 16\n"
+                             "esp.vld.128.ip q1, %[p], 16\n"
+                             "esp.vld.128.ip q2, %[p], 16\n"
+                             "esp.vld.128.ip q3, %[p], 16\n"
+                             "esp.vld.128.ip q4, %[p], 16\n"
+                             "esp.vld.128.ip q5, %[p], 16\n"
+                             "esp.vld.128.ip q6, %[p], 16\n"
+                             "esp.vld.128.ip q7, %[p], 16\n"
+                             "esp.ld.qacc.l.l.128.ip %[p], 16\n"
+                             "esp.ld.qacc.l.h.128.ip %[p], 16\n"
+                             "esp.ld.qacc.h.l.128.ip %[p], 16\n"
+                             "esp.ld.qacc.h.h.128.ip %[p], 16\n"
+                             "esp.ld.ua.state.ip %[p], 16\n"
+                             "esp.ld.xacc.ip %[p], 0\n"
+                             "esp.movx.w.sar %[sar]\n"
+                             "esp.movx.w.sar.bytes %[sb]\n"
+                             : [p] "+r"(p)
+                             : [sar] "r"(sar), [sb] "r"(sarBytes)
+                             : "memory");
+                const auto store = [](uint8_t *to) {
+                        uint32_t r0, r1;
+                        asm volatile("esp.vst.128.ip q0, %[o], 16\n"
+                                     "esp.vst.128.ip q1, %[o], 16\n"
+                                     "esp.vst.128.ip q2, %[o], 16\n"
+                                     "esp.vst.128.ip q3, %[o], 16\n"
+                                     "esp.vst.128.ip q4, %[o], 16\n"
+                                     "esp.vst.128.ip q5, %[o], 16\n"
+                                     "esp.vst.128.ip q6, %[o], 16\n"
+                                     "esp.vst.128.ip q7, %[o], 16\n"
+                                     "esp.st.qacc.l.l.128.ip %[o], 16\n"
+                                     "esp.st.qacc.l.h.128.ip %[o], 16\n"
+                                     "esp.st.qacc.h.l.128.ip %[o], 16\n"
+                                     "esp.st.qacc.h.h.128.ip %[o], 16\n"
+                                     "esp.st.ua.state.ip %[o], 16\n"
+                                     "esp.st.u.xacc.ip %[o], 0\n"
+                                     "esp.movx.r.sar %[r0]\n"
+                                     "esp.movx.r.sar.bytes %[r1]\n"
+                                     : [o] "+r"(to), [r0] "=r"(r0), [r1] "=r"(r1)
+                                     :
+                                     : "memory");
+                        to[8] = uint8_t(r0); // after XACC's 5 bytes (the 16 bytes from `to` are its and these)
+                        to[9] = uint8_t(r1);
+                        to[5] = to[6] = to[7] = 0; // not XACC's
+                        for (int i = 10; i < 16; ++i) to[i] = 0;
+                };
+                store(o);
+                // CFG too: not in FreeRTOS's list, so the core's, set at boot (Simd::setUp()) and never
+                // changed. It must read 3 (misaligned loads and stores) before and after the switches.
+                uint32_t cfgNow;
+                asm volatile("esp.movx.r.cfg %0" : "=cr"(cfgNow));
+                o[Bytes - 1] = uint8_t(cfgNow & 3u);
+                if ((cfgNow & 3u) != 3u) return int32_t(Bytes); // off before we began
+                // Switched away from, mid-way: the other task on this core uses PIE in between.
+                for (int k = 0; k < 20; ++k) {
+                        taskYIELD();
+                        for (int spin = 0; spin < 200; ++spin) asm volatile("" ::: "memory");
+                }
+                store(after);
+                asm volatile("esp.movx.r.cfg %0" : "=cr"(cfgNow));
+                after[Bytes - 1] = uint8_t(cfgNow & 3u);
+                for (size_t i = 0; i < Bytes; ++i)
+                        if (before[i] != after[i]) return int32_t(i);
+#else
+                (void)w;
+#endif
+                return -1;
+        }
+
+        // One random case of @p kind, both ways. @return true if the same.
+        bool stressCase(StressWorker &w, unsigned kind, uint32_t &detail) {
+                Noise       &noise = w.noise;
+                uint8_t     *in = w.buf, *a = w.buf + StressBytes / 3, *b = w.buf + 2 * StressBytes / 3;
+                const size_t third = StressBytes / 3;
+                switch (kind) {
+                        case 0: {
+                                const int32_t at = stressRegisters(w);
+                                detail = uint32_t(at);
+                                return at < 0;
+                        }
+                        case 1: {
+                                const size_t n = noise.below(1300), io = noise.below(16), oo = noise.below(16);
+                                noise.fill(in, third);
+                                std::memset(a, 0x5a, third);
+                                std::memset(b, 0x5a, third);
+                                Pixels::swap24(in + io, a + oo, n, Simd::Kernel::Scalar);
+                                Pixels::swap24(in + io, b + oo, n, Simd::Kernel::Pie);
+                                detail = uint32_t(n);
+                                return std::memcmp(a, b, third) == 0;
+                        }
+                        case 2: {
+                                const size_t n = noise.below(1000);
+                                noise.fill(in, third);
+                                std::memset(a, 0x5a, third);
+                                std::memset(b, 0x5a, third);
+                                const auto *src = reinterpret_cast<const uint16_t *>(in);
+                                Pixels::repeat16(src, n, reinterpret_cast<uint16_t *>(a), 2, Simd::Kernel::Scalar);
+                                Pixels::repeat16(src, n, reinterpret_cast<uint16_t *>(b), 2, Simd::Kernel::Pie);
+                                detail = uint32_t(n);
+                                return std::memcmp(a, b, third) == 0;
+                        }
+                        case 3: {
+                                // prev and cur (with 16 zeros before each), then the two filtered rows.
+                                const size_t bytes = 3 * (1 + noise.below(600));
+                                uint8_t     *prev = in + 16, *cur = prev + 1800 + 16;
+                                std::memset(in, 0, 16);
+                                std::memset(prev + 1800, 0, 16);
+                                pngRows(noise, prev, cur, bytes);
+                                PngFilter::row(cur, prev, bytes, a, Simd::Kernel::Scalar);
+                                PngFilter::row(cur, prev, bytes, b, Simd::Kernel::Pie);
+                                detail = uint32_t(bytes);
+                                return std::memcmp(a, b, bytes + 1) == 0;
+                        }
+                        default: {
+                                const size_t      n = noise.below(900), io = noise.below(16), oo = noise.below(16);
+                                const uint32_t    bg = noise.next() & 0xffffff;
+                                const PixelFormat f = noise.below(2) == 0 ? PixelFormat::Bgr24 : PixelFormat::Rgb24;
+                                auto             *pixels = reinterpret_cast<uint32_t *>(in); // 1024 of them
+                                iconPixels(noise, pixels, 1024);
+                                std::memset(a, 0x5a, third);
+                                std::memset(b, 0x5a, third);
+                                Pixels::fromArgb(pixels + io, n, a + oo, f, bg, Simd::Kernel::Scalar);
+                                Pixels::fromArgb(pixels + io, n, b + oo, f, bg, Simd::Kernel::Pie);
+                                detail = uint32_t(n);
+                                return std::memcmp(a, b, third) == 0;
+                        }
+                }
+        }
+
+        void stressEntry(void *arg) {
+                auto &w = *static_cast<StressWorker *>(arg);
+                while (!w.stop->load(std::memory_order_relaxed)) {
+                        const unsigned kind = w.noise.below(StressKinds);
+                        uint32_t       detail = 0;
+                        const bool     same = stressCase(w, kind, detail);
+                        ++w.cases[kind];
+                        if (!same) {
+                                if (w.failures[kind]++ == 0 && w.firstKind == StressKinds) {
+                                        w.firstKind = kind;
+                                        w.firstCase = w.cases[kind];
+                                        w.firstDetail = detail;
+                                }
+                        }
+                }
+                w.done.store(true, std::memory_order_release);
+                for (;;) Task::sleep(WaitForever); // stopped by runStress()
+        }
+
+        int runStress(CommandContext &ctx, StringView arg) {
+                unsigned seconds = 10;
+                if (!arg.isEmpty()) {
+                        seconds = 0;
+                        for (char c : arg) {
+                                if (c < '0' || c > '9' || seconds > 100000) return ctx.usage();
+                                seconds = seconds * 10 + unsigned(c - '0');
+                        }
+                        if (seconds == 0) return ctx.usage();
+                }
+                std::atomic<bool> stop{false};
+                StressWorker     *workers = static_cast<StressWorker *>(
+                        Memory::alloc(MemSpace::Internal, sizeof(StressWorker) * StressWorkers));
+                if (workers == nullptr) {
+                        ctx.eprintf("simd: out of memory\n");
+                        return Shell::ExitFailure;
+                }
+                unsigned started = 0;
+                bool     failed = false;
+                for (unsigned i = 0; i < StressWorkers; ++i) {
+                        StressWorker *w = ::new (&workers[i]) StressWorker();
+                        w->id = i;
+                        w->stop = &stop;
+                        w->noise.s = 0x9e3779b9u * (i + 1);
+                        w->buf = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::Internal, StressBytes, 16));
+                        Task::Config tc;
+                        tc.name = "simdstress";
+                        tc.stackBytes = 4096;
+                        tc.priority = 1;
+                        tc.core = int(i % 2);
+                        if (w->buf == nullptr || w->task.start(tc, stressEntry, w).isError()) {
+                                failed = true;
+                                break;
+                        }
+                        ++started;
+                }
+                if (!failed) {
+                        ctx.printf("stress: %u tasks (two a core) for %u s\n", StressWorkers, seconds);
+                        const uint64_t until = System::uptimeUs() + uint64_t(seconds) * 1000000u;
+                        while (System::uptimeUs() < until && !ctx.isInterrupted()) Task::sleep(100);
+                }
+                stop.store(true, std::memory_order_relaxed);
+                for (unsigned i = 0; i < started; ++i)
+                        while (!workers[i].done.load(std::memory_order_acquire)) Task::sleep(10);
+                int status = failed ? Shell::ExitFailure : Shell::ExitSuccess;
+                if (failed) ctx.eprintf("simd: couldn't start the stress tasks\n");
+                for (unsigned k = 0; k < StressKinds && !failed; ++k) {
+                        uint32_t cases = 0, failures = 0;
+                        for (unsigned i = 0; i < started; ++i) {
+                                cases += workers[i].cases[k];
+                                failures += workers[i].failures[k];
+                        }
+                        ctx.printf("stress: %s: %lu cases, %lu differ\n", StressNames[k], (unsigned long)cases,
+                                   (unsigned long)failures);
+                        if (failures != 0) status = Shell::ExitFailure;
+                }
+                for (unsigned i = 0; i < started; ++i) {
+                        const StressWorker &w = workers[i];
+                        if (w.firstKind < StressKinds)
+                                ctx.printf("stress: task %u (core %u): first %s difference at case %lu (detail %lu)\n",
+                                           w.id, w.id % 2, StressNames[w.firstKind], (unsigned long)w.firstCase,
+                                           (unsigned long)w.firstDetail);
+                }
+                for (unsigned i = 0; i < StressWorkers; ++i) {
+                        if (i < started) (void)workers[i].task.stop();
+                        Memory::free(workers[i].buf);
+                        workers[i].~StressWorker();
+                }
+                Memory::free(workers);
+                return status;
+        }
+
         // The kernels: a name, a test (random cases, both ways compared) and a bench.
         struct Kernel {
                         const char *name;
@@ -543,6 +804,7 @@ namespace {
                 if (args.size() < 2 || args.size() > 3) return ctx.usage();
                 const StringView what(args[1]);
                 const StringView which = args.size() == 3 ? StringView(args[2]) : StringView();
+                if (what == "stress") return runStress(ctx, which);
                 if (what != "bench" && what != "test") return ctx.usage();
                 int  status = Shell::ExitSuccess;
                 bool found = which.isEmpty();
@@ -565,7 +827,8 @@ namespace {
 
 } // namespace
 
-BMDS_SHELL_COMMAND(simd, runSimd, "bench [KERNEL] | test [KERNEL]",
-                   "Time the PIE vector kernels against their scalar twins, or check them byte for byte")
+BMDS_SHELL_COMMAND(simd, runSimd, "bench [KERNEL] | test [KERNEL] | stress [SECONDS]",
+                   "Time the PIE vector kernels against their scalar twins, check them byte for byte, or both "
+                   "from tasks switching on both cores (PIE's registers kept across switches)")
 
 BMDS_NAMESPACE_END

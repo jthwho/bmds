@@ -95,6 +95,20 @@ class Thread {
                 static Error runOnInternalStack(const char *name, size_t stackBytes, Entry entry, void *arg);
 
                 /**
+                 * @brief Keeps the calling thread (or task) on @p core from now on, moving it there
+                 *        if it runs on the other (`devplan/processes.md` §3.12a).
+                 *
+                 * ESP-IDF pins a task to its core the first time it uses the FPU or PIE (their
+                 * registers are saved lazily, so its state stays in that core's); before that it
+                 * may run on either, and may be pinned anywhere. After: only its own core.
+                 *
+                 * @return `Ok`, `Invalid` (no such core), or `InvalidState` (pinned to the
+                 *         other already).
+                 * @blocking Moving: until the other core runs it (its next switch, a tick at most).
+                 */
+                static Error pinCurrent(int core);
+
+                /**
                  * @brief Blocks the calling thread (or task) for @p delayMs.
                  * @blocking
                  */

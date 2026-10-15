@@ -89,6 +89,17 @@ class BlitChain {
                           uint16_t toY, uint16_t width, uint16_t height);
 
                 /**
+                 * @brief As `add()`, each of @p from's rows sent @p repeat times down:
+                 *        the copy's row i is @p from's row @p fromY + (@p first + i) /
+                 *        @p repeat (@p first below @p repeat). A transmit descriptor a
+                 *        row, as a fill's: the source's bytes read once a row written.
+                 * @return As `add()` (`Full` also when the rows' descriptors don't fit).
+                 * @nonblocking
+                 */
+                Error addRepeated(const Picture &from, uint16_t fromX, uint16_t fromY, uint16_t repeat, uint16_t first,
+                                  const Picture &to, uint16_t toX, uint16_t toY, uint16_t width, uint16_t height);
+
+                /**
                  * @brief Adds a fill of @p width × @p height pixels at (@p toX,
                  *        @p toY) of @p to with the @p width pixels at @p line
                  *        (in the destination's format, DMA-readable), sent once a

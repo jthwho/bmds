@@ -41,9 +41,6 @@ namespace {
                 static constexpr uint8_t Constants[2] = {1, 128};
                 const uint8_t           *c = Constants;
                 const uint32_t           sh = 8;
-                uint32_t                 cfg;
-                asm volatile("esp.movx.r.cfg %0" : "=cr"(cfg));
-                asm volatile("esp.movx.w.cfg %0" ::"cr"(cfg | 3u));
                 asm volatile("esp.vldbc.8.ip q5, %0, 1\n" // ones
                              "esp.vldbc.8.ip q7, %0, 1\n" // 128
                              : "+cr"(c)
@@ -96,7 +93,6 @@ namespace {
                                      : "memory");
 #undef BMDS_BLEND_CHANNEL
                 }
-                asm volatile("esp.movx.w.cfg %0" ::"cr"(cfg));
                 return;
         }
 #endif
@@ -132,13 +128,10 @@ void Pixels::swap24(const uint8_t *in, uint8_t *out, size_t count, Simd::Kernel 
 #if BMDS_HAS_PIE
         if (Simd::usable(kernel) == Simd::Kernel::Pie && count >= 16) {
                 // 16 pixels a step: their 48 bytes split into three planes (vunzipt) and woven back in the
-                // other order (vzipt). Misaligned loads and stores by the hardware (CFG).
-                uint32_t       cfg;
+                // other order (vzipt). Misaligned loads and stores by the hardware (CFG, set at boot).
                 const size_t   steps = count / 16;
                 const uint8_t *src = in;
                 uint8_t       *dst = out;
-                asm volatile("esp.movx.r.cfg %0" : "=cr"(cfg));
-                asm volatile("esp.movx.w.cfg %0" ::"cr"(cfg | 3u));
                 for (size_t i = 0; i < steps; ++i)
                         asm volatile("esp.vld.128.ip q0, %0, 16\n"
                                      "esp.vld.128.ip q1, %0, 16\n"
@@ -151,7 +144,6 @@ void Pixels::swap24(const uint8_t *in, uint8_t *out, size_t count, Simd::Kernel 
                                      : "+cr"(src), "+cr"(dst)
                                      :
                                      : "memory");
-                asm volatile("esp.movx.w.cfg %0" ::"cr"(cfg));
                 done = steps * 16;
         }
 #endif
@@ -318,8 +310,10 @@ namespace {
                 auto        *o = reinterpret_cast<uint32_t *>(out);
                 const size_t groups = count / 4;
                 for (size_t g = 0; g < groups; ++g, in += 4, o += 3 * Times) {
-                        const uint32_t c[4] = {palette[in[0]] & 0xffffffu, palette[in[1]] & 0xffffffu,
-                                               palette[in[2]] & 0xffffffu, palette[in[3]] & 0xffffffu};
+                        uint32_t v; // four indices in one load (PSRAM's reads are the dear part)
+                        std::memcpy(&v, in, 4);
+                        const uint32_t c[4] = {palette[v & 0xff] & 0xffffffu, palette[(v >> 8) & 0xff] & 0xffffffu,
+                                               palette[(v >> 16) & 0xff] & 0xffffffu, palette[v >> 24] & 0xffffffu};
                         expandFour<Times>(c, o);
                 }
                 return groups * 4;

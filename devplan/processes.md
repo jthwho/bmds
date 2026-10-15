@@ -488,6 +488,31 @@ the budget's: a 16-entry table and an `esp_timer`. No polling while no thread is
 `SCHED_RESET_ON_FORK`, a busy real-time thread throttled while the shell still answers, the
 precise sleep's lateness), then `netlat -r` repeating the done-when test (network.md §30).
 
+### 3.12a Which core a thread runs on (2026-10-15)
+
+ESP-IDF pins a task to the core it runs on the first time it uses the FPU or PIE (their
+registers are saved lazily, so the task's state lives in that core's), and nothing moves it after.
+So every program thread ended up wherever it happened to be at its first float: Doom's game and
+music threads on one core with the display's conversion one run, spread the next (`games.md` §23).
+The user approved (2026-10-15) a way to choose:
+
+- **The loader pins a program's first task** at creation to the core less busy over the last
+  window of a second or more before the start (from the idle tasks' run time; shorter gaps reuse
+  the last estimate, since every shell command is a program), ties (within 15 points) to core 1,
+  where the display's work is; core 0 has the window manager, audio, USB and the network.
+- **`BMDS_SCHED_PIN`** (op 3 of slot 113, `bmds_sched_t::cores`, appended): the calling thread
+  keeps to one core, moved there if it runs on the other (`Thread::pinCurrent()`: the port's own
+  `vPortTaskPinToCore()`, then yields until the other core takes it); only while it isn't pinned
+  yet, which is safe because none of its state is in a core's registers then. Pinned already:
+  only its own core succeeds. All the cores: a no-op. musl's `sched_setaffinity` and
+  `pthread_setaffinity_np` on the calling thread use it.
+- **libbmdsgame** puts its mixer and music threads on the core its game's thread isn't on, each
+  pinning itself first thing in an entry that uses no floats (a body using floats can save float
+  registers in its prologue, which would pin it first).
+- **Checked:** a thread moved to the other core 50 times in 50; one pinned by a float refused to
+  move. Doom: the game's thread on core 1, music and mixer on core 0, about 45% and 64% in four
+  runs out of four (before: 64% and 36%, or with everything on core 1 at times), 0 late periods.
+
 ## 4. ABI impact
 
 ABI 1 has not shipped, but these are recorded as `ABI:` lines because they change behavior:
@@ -506,6 +531,8 @@ ABI 1 has not shipped, but these are recorded as `ABI:` lines because they chang
 - Real-time threads (§3.12): slot 113 (`sched`), `bmds_sched_t`, `BMDS_SCHED_*`; musl's
   `sched_setscheduler` family works (it was `ENOSYS`), `sched_yield` yields; `sleep` (24) is
   precise for a real-time thread (it was always rounded up to the tick).
+- Which core (§3.12a, 2026-10-15): `BMDS_SCHED_PIN`, op 3 of slot 113, appended;
+  `sched_setaffinity` on the calling thread keeps it to one core (it was always `EINVAL`).
 
 ## 5. Costs
 

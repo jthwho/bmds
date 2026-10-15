@@ -145,7 +145,8 @@ _Static_assert(BMDS_SCHED_OTHER == 0 && BMDS_SCHED_FIFO == 1 && BMDS_SCHED_RR ==
                        BMDS_SCHED_IDLE == 5 && BMDS_SCHED_RESET_ON_FORK == 0x40000000u,
                "ABI: scheduling policies (Linux's)");
 _Static_assert(BMDS_SCHED_PRIORITY_MIN == 1 && BMDS_SCHED_PRIORITY_MAX == 99, "ABI: real-time priorities");
-_Static_assert(BMDS_SCHED_GET == 0 && BMDS_SCHED_SET == 1 && BMDS_SCHED_YIELD == 2, "ABI: sched operations");
+_Static_assert(BMDS_SCHED_GET == 0 && BMDS_SCHED_SET == 1 && BMDS_SCHED_YIELD == 2 && BMDS_SCHED_PIN == 3,
+               "ABI: sched operations");
 _Static_assert(offsetof(bmds_sched_t, size) == 0 && offsetof(bmds_sched_t, policy) == 4 &&
                        offsetof(bmds_sched_t, priority) == 8 && offsetof(bmds_sched_t, cores) == 12 &&
                        offsetof(bmds_sched_t, core) == 16 && offsetof(bmds_sched_t, kernel_priority) == 20 &&

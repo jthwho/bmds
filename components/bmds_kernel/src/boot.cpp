@@ -21,6 +21,7 @@
 #include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/semaphore.h>
+#include <bmds/simdsetup.h>
 #include <bmds/staticobject.h>
 #include <bmds/notifications.h>
 #include <bmds/stats.h>
@@ -40,7 +41,7 @@ namespace {
         constinit StaticObject<Semaphore> bootDone;
 
         // Most stages a boot can have (kernel + system); sizes the timing array.
-        constexpr size_t MaxStages = 32;
+        constexpr size_t MaxStages = 40;
 
         Error initMemory() {
                 // Every MemSpace the board maps must have backing memory; a
@@ -64,6 +65,7 @@ namespace {
                 {"memory", initMemory},          {"random", Random::init}, // before anything reads it
                 {"clock", Clock::init},          {"stats", Stats::init},   // before any component adds its counters
                 {"notify", Notifications::init},                           // before a program can post one
+                {"simd", Simd::setUp}, // PIE's misaligned access on, for good: before any kernel runs
         };
         constexpr size_t StageCount = sizeof(Stages) / sizeof(Stages[0]);
 

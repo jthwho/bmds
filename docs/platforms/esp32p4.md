@@ -22,8 +22,17 @@ the board for what it does: **check every kernel on the board** (`simd test`).
   constraint (x8-x15), never `"r"`: GCC picks any register and the assembler refuses it.
 - **Misaligned access is a CFG setting.** By default a 128-bit access silently clears its low 4
   address bits. `esp.movx.r.cfg`/`esp.movx.w.cfg`: bit 1 makes loads misaligned-safe, bit 0 stores
-  (as ESP-DSP sets them). Set them around a kernel and restore them; both are verified by tests
-  with random offsets.
+  (as ESP-DSP sets them).
+- **CFG is the core's, not the task's: set it once, never around a kernel.** FreeRTOS's lazy PIE
+  switch saves Q0-Q7, QACC, UA_STATE, XACC, SAR, SAR_BYTES and the FFT width, but not CFG. Our
+  kernels used to read CFG, set the two bits and put the old value back; two tasks interleaving on
+  a core could put back a stale 0 under the other mid-loop, whose misaligned loads and stores then
+  quietly lost their low address bits: pictures right in shape, colours scrambled in columns (the
+  screenshots of `games.md` §20b, §22). Found by `simd stress` (a value of CFG's own didn't
+  survive the switches; with the kernels as they were, a blend case failed within 20 s). Now
+  `Simd::setUp()`, a boot stage, sets CFG to 3 on both cores (from a short task pinned to each)
+  and nothing writes it again; it reads 3 across millions of switches, PIE's disable and re-enable
+  at each switch included (`devplan/simd.md` §6).
 - **`esp.vsub.u8` (and `vadd`) saturate** on v2p1, they don't wrap. `esp.vssubs.u8` is vector by
   scalar register, not vector by vector. Wrapping byte arithmetic: `|a − b|` as
   `vmax − vmin` (exact), then a `vcmp` mask to choose `d` or `256 − d` (`~d + 1`, safe for d ≥ 1).
@@ -114,7 +123,13 @@ until silicon v3; then test again.
   then no done interrupt). Its blocking mode then waits forever: use non-blocking mode with a done
   callback and a timeout.
 - **2D-DMA:** 3 TX and 2 RX channels on this revision; TX 0-2 convert colours
-  (`devplan/display.md`).
+  (`devplan/display.md`). Its colour conversions are RGB888 to and from RGB565 and YUV: nothing
+  narrows 32-bit pixels to 24.
+- **The 2D-DMA's TX and RX descriptors needn't have the same shapes:** only the bytes must agree.
+  A TX descriptor a row naming the same source row k times, under one RX block k times taller,
+  repeats rows down without the CPU copying them (`BlitChain::addRepeated()`, as fills send one
+  line a row). Windows scaled up draw this way: a k-th of the strip expanded and written back
+  (`devplan/games.md` §24).
 - **The PPA's scaler (SRM) interpolates, and is slow** (`devplan/games.md` §10, measured
   2026-10-14 with `display ppa`, the scan running): a 1-pixel checkerboard scaled 2× comes out
   gray (bilinear: its input macro blocks are 18×18 for 16×16, a pixel around), and no register

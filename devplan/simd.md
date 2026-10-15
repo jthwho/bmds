@@ -85,8 +85,8 @@ sampling and reduction; blend 2000 rows), all identical; `simd bench` times them
   a branch loop now.
 - **PIE's registers:** its instructions take only x8-x15 (and x24-x31); in inline assembly the
   `"cr"` constraint, not `"r"`.
-- **CFG:** bit 1 turns on misaligned loads and bit 0 misaligned stores (the kernels set and restore
-  them); checked by the tests' random offsets.
+- **CFG:** bit 1 turns on misaligned loads and bit 0 misaligned stores; set once at boot on both
+  cores, never by a kernel (§6). Checked by the tests' random offsets.
 - **`vsub.u8` saturates**, and `vssubs` is vector-by-scalar: wrapping arithmetic is built from
   max − min and a compare's mask. `vsat.s16 q, q, lo, hi` clamps as expected (its TRM text reads
   oddly). `srcmb` floors (no rounding mode on v2p1): the rounding goes in as one more
@@ -148,3 +148,29 @@ README saying so): `tjpgdcnf.h` defines `JD_MCU_OUTPUT` as `bmds_softjpeg_mcu_ou
 ## 5. ABI impact
 
 None: kernels inside the system. `simd` is a new shell command (its output frozen once shipped).
+
+## 6. PIE under task switches: `simd stress` (2026-10-15)
+
+Screenshots came out scrambled twice (`games.md` §22): the row swap (PIE) wrong and slow, the next
+capture clean. To check PIE's state across switches:
+
+- **`simd stress [SECONDS]`** (default 10): four tasks, two pinned to each core at one priority
+  (switched every tick), each running random cases of swap24, repeat16, the PNG filter and the
+  blend both ways and comparing, and a register check: every register FreeRTOS saves (Q0-Q7, QACC,
+  UA_STATE, XACC, SAR, SAR_BYTES) loaded with noise and read back, then read again after twenty
+  yields to the other task on its core, which uses PIE meanwhile; and CFG, which must read 3.
+- **Found:** the saved registers all survive. **CFG doesn't**: it is the core's, and FreeRTOS's
+  lazy switch doesn't save it. The kernels set its misaligned bits around their loops and put the
+  old value back, so two tasks interleaving on one core could leave one mid-loop with misaligned
+  access off: its 128-bit loads and stores silently aligned down (the scrambled columns, and the
+  extra time). With the kernels as they were, a 20-second run caught a blend case going wrong;
+  planting a CFG value of its own, the register check lost it in 74% of cases.
+- **Fixed:** `Simd::setUp()` (a kernel boot stage) sets CFG to 3 on both cores, from a short
+  task pinned to each (PIE's save area comes from that task's stack: first tried from the IPC
+  tasks, it left `ipc0` 384 bytes of stack), and no kernel reads or writes it now (pixels, the PNG
+  filter, the JPEG colour conversion, the scaler). Misaligned access costs nothing on aligned addresses, and nothing here
+  relies on the default truncation (no `usar` loads). Measured: `simd stress 60`, 509,000 cases,
+  none different, CFG 3 throughout; `simd test` the same as before; `simd stress 30` with
+  Solitaire's bouncing cards running, none different.
+- **Rule:** nothing writes CFG after boot. A program using PIE someday must not either (or the
+  switch must start saving it).

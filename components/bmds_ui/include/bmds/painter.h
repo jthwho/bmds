@@ -176,6 +176,34 @@ class Painter {
                 Error pixels565(int x, int y, const uint8_t *rgb565, size_t stride, uint16_t width, uint16_t height);
 
                 /**
+                 * @brief Makes the next piece of a row band in the strip: @p column
+                 *        (from the band's left) onward, at most @p room pixels of each
+                 *        of the band's rows, @p stride bytes apart, at @p strip.
+                 * @return The pixels made across: a multiple of 4 unless the band's
+                 *         last; 0 to stop.
+                 */
+                using RowMaker = uint16_t (*)(void *arg, uint8_t *strip, size_t stride, uint16_t column, uint16_t room);
+
+                /**
+                 * @brief Draws a band of @p width × @p height pixels (@p height at most
+                 *        `stripRows()`) at (@p x, @p y), each row shown @p repeat times
+                 *        down (the 2D-DMA reading it again), what of it shows, made by
+                 *        @p make in the window manager's strip a piece at a time: one
+                 *        piece made while the 2D-DMA copies the last: B, G, R pixels, or
+                 *        RGB565 if @p rgb565 (widened by the 2D-DMA). @p x (made the
+                 *        surface's) and @p width are on 4-pixel columns. Returns with
+                 *        the last piece's copy started; whatever @p make read is free.
+                 * @return The first error so far (`Invalid`: off the columns, too tall, no
+                 *         repeat).
+                 * @blocking A piece's copy.
+                 */
+                Error rows(int x, int y, uint16_t width, uint16_t height, uint16_t repeat, bool rgb565, RowMaker make,
+                           void *arg);
+
+                /** @brief Returns the most rows `rows()` takes. */
+                uint16_t stripRows() const { return _tools.height; }
+
+                /**
                  * @brief Moves what shows of @p area by @p dy rows (down if
                  *        positive), inside the surface. A pixel is moved only if
                  *        its source shows and isn't damaged; @p area's other
@@ -219,7 +247,9 @@ class Painter {
                 static Rect                    bounds(Span<const Rect> rects);
                 Rect                           local(const Rect &r) const;
                 void                           flush(uint32_t rgb);
-                template <typename Draw> Error run(int x, int y, uint16_t maxWidth, uint16_t height, Draw draw);
+                template <typename Draw>
+                Error run(int x, int y, uint16_t maxWidth, uint16_t height, Draw draw, bool rgb565 = false,
+                          uint16_t repeat = 1);
 
                 Surface         &_surface;
                 Span<const Rect> _clip;

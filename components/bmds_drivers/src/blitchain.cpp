@@ -196,6 +196,28 @@ Error BlitChain::add(const Picture &from, uint16_t fromX, uint16_t fromY, const 
         return Error::Ok;
 }
 
+Error BlitChain::addRepeated(const Picture &from, uint16_t fromX, uint16_t fromY, uint16_t repeat, uint16_t first,
+                             const Picture &to, uint16_t toX, uint16_t toY, uint16_t width, uint16_t height) {
+        if (repeat <= 1 && first == 0) return add(from, fromX, fromY, to, toX, toY, width, height);
+        if (_hw == nullptr) return Error::InvalidState;
+        if (repeat == 0 || first >= repeat || width == 0 || height == 0) return Error::Invalid;
+        if (_rxCount == _max || _txCount + height > _maxTx) return Error::Full;
+        const uint32_t rows = (uint32_t(first) + height - 1) / repeat + 1; // of the source
+        if (rows > MaxField || !fits(from, fromX, fromY, width, uint16_t(rows)) || !fits(to, toX, toY, width, height))
+                return Error::Invalid;
+        const bool widen = _conversion == Conversion::Rgb565ToRgb888;
+        if (widen ? (from.bytesPerPixel != 2 || to.bytesPerPixel != 3) : from.bytesPerPixel != to.bytesPerPixel)
+                return Error::Invalid;
+        if (_busy && wait(StopTimeoutMs).isError()) return Error::Timeout;
+        Hardware &hw = *_hw;
+        for (uint32_t i = 0; i < height; ++i, ++_txCount)
+                describe(at(hw.tx, _txCount), from, fromX, uint16_t(fromY + (first + i) / repeat), width, 1, false,
+                         at(hw.tx, _txCount + 1));
+        describe(at(hw.rx, _rxCount), to, toX, toY, width, height, false, at(hw.rx, _rxCount + 1));
+        ++_rxCount;
+        return Error::Ok;
+}
+
 Error BlitChain::addFill(const uint8_t *line, const Picture &to, uint16_t toX, uint16_t toY, uint16_t width,
                          uint16_t height) {
         if (_hw == nullptr) return Error::InvalidState;

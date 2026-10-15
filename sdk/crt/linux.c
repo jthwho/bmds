@@ -1709,14 +1709,19 @@ static long do_sched_getaffinity(long tid, unsigned long size, void *mask) {
         return sizeof(unsigned long);
 }
 
-/* A task's cores are fixed when it starts (every core, for a program's): only a mask that
- * keeps them all succeeds. */
+/* A mask that keeps a thread's cores changes nothing. Fewer: the calling thread may keep to
+ * one core (BMDS_SCHED_PIN), until its first floating point pins it where it runs; other threads
+ * can't be moved. */
 static long do_sched_setaffinity(long tid, unsigned long size, const void *mask) {
         bmds_sched_t s;
         if (size < sizeof(unsigned long)) return -EINVAL;
         const long r = sched_get(tid, &s);
         if (r < 0) return r;
-        return (*(const unsigned long *)mask & s.cores) == s.cores ? 0 : -EINVAL;
+        const unsigned long want = *(const unsigned long *)mask;
+        if ((want & s.cores) == s.cores) return 0;
+        s.cores = (uint32_t)want;
+        const int32_t p = bmds_sched(BMDS_SCHED_PIN, (int32_t)tid, &s);
+        return p == 0 ? 0 : -EINVAL;
 }
 
 static long do_getcpu(unsigned *cpu, unsigned *node) {

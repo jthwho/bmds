@@ -199,7 +199,11 @@ on BMDS's table; programs never see that layer. What differs from Linux:
   its own priority as `RR` does), inherited by threads and processes unless
   `SCHED_RESET_ON_FORK`. Real-time threads get 95 % of each second, as Linux's default. Their
   sleeps wake from a hardware timer, about 30 µs after the time (others' on the 1 ms tick).
-  `sched_getaffinity` gives both cores; `sched_setaffinity` can't move a thread (`EINVAL`).
+  `sched_getaffinity` gives a thread's cores: a program's first thread keeps to one from the
+  start (the less busy, `devplan/processes.md` §3.12a); others may run on both until their first
+  floating point (or vector) instruction pins them where they run. `sched_setaffinity` (and
+  `pthread_setaffinity_np`) on the calling thread keeps it to one core, if done before that (as
+  the game library's audio threads do); other threads can't be moved (`EINVAL`).
 - **Not yet:** threads, POSIX timers (`timer_create`),
   `sigaltstack`, `sigwaitinfo`, realtime signals, the sender's pid in
   `siginfo`.

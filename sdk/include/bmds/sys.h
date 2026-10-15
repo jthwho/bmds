@@ -1373,6 +1373,14 @@ typedef struct bmds_crypto_op_t {
 #define BMDS_SCHED_GET 0u   /**< Fills `param` in. */
 #define BMDS_SCHED_SET 1u   /**< Sets `policy` (with `BMDS_SCHED_RESET_ON_FORK`) and `priority`. */
 #define BMDS_SCHED_YIELD 2u /**< Lets threads of its priority run (`tid` 0, `param` NULL). */
+/**
+ * @brief Keeps the calling thread (`tid` 0 or its own) on the cores in `param->cores` (appended
+ *        2026-10-15): one core, or all of them. A thread is pinned to one core for good the first
+ *        time it uses floating point (or the vector unit); until then it may choose (and is moved
+ *        there), after only its own core succeeds (`BMDS_EINVAL` otherwise). All the cores: a
+ *        no-op, where it may still run anywhere. `sched_setaffinity` and `pthread_setaffinity_np`.
+ */
+#define BMDS_SCHED_PIN 3u
 
 /**
  * @brief A thread's scheduling (`sched`, appended 2026-10-12, slot 113). The caller sets

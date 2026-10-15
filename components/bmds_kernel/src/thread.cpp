@@ -115,6 +115,23 @@ Error Thread::start(const Config &config, Entry entry, void *arg) {
         return Error::Ok;
 }
 
+// The port's own (port.c), as its FPU and PIE traps pin a task: not in a header.
+extern "C" void vPortTaskPinToCore(StaticTask_t *task, int coreid);
+
+Error Thread::pinCurrent(int core) {
+        if (core < 0 || core >= portNUM_PROCESSORS) return Error::Invalid;
+        TaskHandle_t     self = xTaskGetCurrentTaskHandle();
+        const BaseType_t pinned = xTaskGetCoreID(self);
+        if (pinned != tskNO_AFFINITY) return pinned == core ? Error::Ok : Error::InvalidState;
+        // Not pinned: it has never used the FPU or PIE, so none of its state is in a core's
+        // registers, and nothing pins it meanwhile (only its own FPU or PIE use would).
+        vPortTaskPinToCore(reinterpret_cast<StaticTask_t *>(self), core);
+        // On the other core: this one's scheduler won't run it again; the other takes it at
+        // its next switch.
+        while (xPortGetCoreID() != core) taskYIELD();
+        return Error::Ok;
+}
+
 void Thread::sleep(unsigned int delayMs) {
         vTaskDelay(Detail::toTicks(delayMs));
         return;

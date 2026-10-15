@@ -207,16 +207,12 @@ namespace {
                           size_t n) {
                 static const uint16_t Round[8] __attribute__((aligned(16))) = {128, 128, 128, 128, 128, 128, 128, 128};
                 static const uint16_t Ones[8] __attribute__((aligned(16))) = {1, 1, 1, 1, 1, 1, 1, 1};
-                const uint16_t       *rp = Round, *op = Ones;
-                uint32_t              cfg;
-                asm volatile("esp.movx.r.cfg %0" : "=cr"(cfg));
-                asm volatile("esp.movx.w.cfg %0" ::"cr"(cfg | 2u)); // misaligned loads by the hardware
+                const uint16_t       *rp = Round, *op = Ones; // misaligned loads: CFG, set at boot
                 asm volatile("esp.vld.128.ip q6, %0, 0\n"
                              "esp.vld.128.ip q7, %1, 0\n" ::"cr"(rp),
                              "cr"(op)
                              : "memory");
                 downPie(row0, stride, w, taps, mid, n);
-                asm volatile("esp.movx.w.cfg %0" ::"cr"(cfg));
                 return;
         }
 
@@ -225,9 +221,6 @@ namespace {
                         __attribute__((aligned(16))) = {0x8000, 0x8000, 0x8000, 0x8000, 0x8000, 0x8000, 0x8000, 0x8000};
                 static const uint16_t Ones[8] __attribute__((aligned(16))) = {1, 1, 1, 1, 1, 1, 1, 1};
                 const uint16_t       *hp = Half, *op = Ones;
-                uint32_t              cfg;
-                asm volatile("esp.movx.r.cfg %0" : "=cr"(cfg));
-                asm volatile("esp.movx.w.cfg %0" ::"cr"(cfg | 2u));
                 asm volatile("esp.vld.128.ip q5, %0, 0\n"
                              "esp.vld.128.ip q7, %1, 0\n" ::"cr"(hp),
                              "cr"(op)
@@ -238,7 +231,6 @@ namespace {
                         acrossPie<4>(mid, t, width, out);
                 else
                         acrossPie<1>(mid, t, width, out);
-                asm volatile("esp.movx.w.cfg %0" ::"cr"(cfg));
                 return;
         }
 #endif

@@ -911,7 +911,8 @@ refresh, and the conversion is 128,000 pixels (2× across; rows repeated by the 
   Alt+Enter brought it back.
 - **Seen on the way:** screenshots taken while Doom runs in a window come out with the colours
   scrambled (the layout right; the PNG filter ~60 times slower than usual), and clean once Doom
-  stops: the open "screenshot noise" item, now reproducible. Not looked into yet.
+  stops: the open "screenshot noise" item, now reproducible. Found later: PIE's CFG racing between
+  tasks (`simd.md` §6).
 
 ### 20c. The system monitor after a game (2026-10-14, the user's report)
 
@@ -1014,7 +1015,52 @@ rules pure C and host-tested, the program on `libbmdsgame`, the art and sounds w
 - **Seen again: scrambled screenshots** (§20b's open item). Twice, the first PNG after a program
   went full screen came out with its colours scrambled in columns (the layout right) and slow:
   the row swap (`Pixels::swap24()`, PIE) 8 times its usual time, the filter 60. JPEGs and later
-  PNGs of the same picture were clean, and it didn't happen again on demand. The slowdown in PIE
-  code points at its registers' lazy saving between tasks; not looked into yet.
+  PNGs of the same picture were clean, and it didn't happen again on demand. **Found and fixed**
+  (2026-10-15, `simd.md` §6): PIE's CFG (misaligned access) is the core's, not saved per task,
+  and the kernels set and restored it, racing each other.
 - **Not yet:** the options box answers keys only (a click closes it); Vegas' cumulative score;
   dealing by number.
+
+## 23. Which core a game's threads run on (2026-10-15)
+
+- **Measured:** each thread of Doom stayed wherever it was at its first float (ESP-IDF pins it
+  then): the game's thread (21-27%) and the synth's (31-41%) on core 0 in most runs, with the
+  display's conversion (`surface`, 27%, core 1 by design) on the other; before, all of them on
+  core 1 at times (`cpu.core1.busy_us` critical, §20c).
+- **Now** (`processes.md` §3.12a): the loader pins a program's first task to the less busy core
+  (ties to core 1, the display's), and libbmdsgame's mixer and music threads pin themselves to the
+  other (`BMDS_SCHED_PIN`). Doom: the game's thread on core 1 with the conversion, the synth and
+  mixer on core 0 with the kernel's audio, about 45% and 64%, the same in four runs out of four,
+  0 late periods, 59-61 frames a second.
+- **Seen on the way:** Solitaire couldn't start while Doom ran (`Out of memory`). Fixed: §24.
+
+## 24. Two games at once, and what scaled windows cost (2026-10-15)
+
+- **The failure:** every `ProgramSurface` took a 30 KB strip of internal DMA RAM when it opened
+  (1280 × 8 rows of RGB888, for scaled rows), whether it ever scaled or not. With Doom full screen
+  the largest free internal DMA block was 18 KB, so Solitaire's `bmds_surface_open()` failed.
+- **Now:** a window draws its scaled rows in the window manager's strip (`Painter::rows()`: the
+  caller makes each piece in a half while the 2D-DMA copies the other; RGB565 or BGR), and full
+  screen allocates its strip on entering and frees it on leaving. A windowed program costs no
+  strip; Doom full screen keeps its 30 KB. Doom and Solitaire run together (Doom leaves full
+  screen when Solitaire's window takes the focus).
+- **Measured** (`surfdemo`, 640x360 at 2x): BGR24 from 33 presents a second (one run of the old
+  code, which waited for each 8-row band's copy) to 57-58 (three runs); RGB565 and L8 at 58 both
+  ways. At 3x (960 wide, bands crossing the strip's halves) the rates fall on 60's steps (30, 40,
+  55-58) both ways: no change seen. Pictures checked at 2x and 3x in all three formats.
+- **Scaled windows' load** (the user's ask, Doom maximized at 3x: core 0 at 100%, the window
+  manager 42%): the CPU expanded each row across, copied it twice down and wrote all of it back
+  from the cache; the 2D-DMA read it all. Now each strip row is expanded once and the 2D-DMA
+  sends it `scale` times (`Surface::startBlit()`'s repeat; a TX descriptor a row, one RX block),
+  and the palette's indices load four at a time. A frame from 26 ms to 14 (most of it waiting
+  for PSRAM: 1.7 MB written), the window manager's CPU from ~16 ms a frame to ~10, Doom's frames
+  shown from ~22 a second to ~29, core 0 at 77%. The expansion alone (320x200 at 3x, idle):
+  4.3 ms to 3.6 with Doom's frame in PSRAM, 2.6 from internal RAM. Further cuts would cost
+  colour: an RGB565 strip (the 2D-DMA widening) would halve the CPU's stores; not done.
+- **Seen meanwhile, open:** 2 PNG screenshots of about 16 taken with Doom drawing came out
+  streaked down the columns, both filtering for ~3 s instead of ~0.1. The deflate stream's
+  Adler-32 matched, so the filter's input was wrong: a filtered row computed against a "last row"
+  that wasn't the one sent. `simd stress` under the same load showed nothing; not reproduced.
+- **What else holds internal RAM:** a program's thread stacks go there while the largest block
+  keeps 64 KB to spare (`stackSpaceFor()`), and the games' 32 KB stacks use 2-8 KB; windowed Doom
+  costs 37 KB this way, full screen 65 KB more (its strip and the screen).

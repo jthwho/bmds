@@ -243,11 +243,8 @@ extern "C" JRESULT bmds_softjpeg_mcu_output(JDEC *jd, int (*)(JDEC *, void *, JR
                          (out.format == PixelFormat::Bgr24 || out.format == PixelFormat::Rgb24) && n >= 8;
         static const int16_t Round[8] __attribute__((aligned(16))) = {512, 512, 512, 512, 512, 512, 512, 512};
         static const int16_t Ones[8] __attribute__((aligned(16))) = {1, 1, 1, 1, 1, 1, 1, 1};
-        uint32_t             cfg = 0;
         if (pie) {
-                const int16_t *rp = Round, *op = Ones;
-                asm volatile("esp.movx.r.cfg %0" : "=cr"(cfg));
-                asm volatile("esp.movx.w.cfg %0" ::"cr"(cfg | 3u));
+                const int16_t *rp = Round, *op = Ones; // misaligned loads and stores: CFG, set at boot
                 asm volatile("esp.vld.128.ip q6, %0, 0\n"
                              "esp.vld.128.ip q7, %1, 0\n" ::"cr"(rp),
                              "cr"(op)
@@ -265,9 +262,6 @@ extern "C" JRESULT bmds_softjpeg_mcu_output(JDEC *jd, int (*)(JDEC *, void *, JR
 #endif
                 convertScalar(yp + oy * rw, cbp + oy * rw, crp + oy * rw, n, row, out.format);
         }
-#if BMDS_HAS_PIE
-        if (pie) asm volatile("esp.movx.w.cfg %0" ::"cr"(cfg));
-#endif
         return JDR_OK;
 }
 

@@ -145,11 +145,13 @@ Error Painter::fill(Span<const Rect> rects, uint32_t rgb) {
 
 // Text in chunks of a strip half: @p draw expands the next chunk into a half
 // (while the 2D-DMA copies the other into the surface), then it is copied
-// piece by piece of the clip, as one job.
-template <typename Draw> Error Painter::run(int x, int y, uint16_t maxWidth, uint16_t height, Draw draw) {
+// piece by piece of the clip, as one job. Each of the @p height rows made shows @p repeat times
+// down (the 2D-DMA reading it again).
+template <typename Draw>
+Error Painter::run(int x, int y, uint16_t maxWidth, uint16_t height, Draw draw, bool rgb565, uint16_t repeat) {
         const int32_t sx = int32_t(x) + _originX, sy = int32_t(y) + _originY;
         if ((uint32_t(sx) & AlignMask) != 0 || _tools.strip == nullptr || _tools.renderer == nullptr ||
-            height > _tools.height) {
+            height > _tools.height || repeat == 0) {
                 note(Error::Invalid);
                 return _error;
         }
@@ -158,7 +160,8 @@ template <typename Draw> Error Painter::run(int x, int y, uint16_t maxWidth, uin
         // What is on the surface: the columns and rows left of and above it cut off.
         int32_t width = maxWidth;
         if (sx + width > surfaceW) width = surfaceW - sx;
-        const int32_t rows = sy + int32_t(height) > surfaceH ? surfaceH - sy : int32_t(height);
+        const int32_t tall = int32_t(height) * repeat;
+        const int32_t rows = sy + tall > surfaceH ? surfaceH - sy : tall;
         const int32_t skipY = sy < 0 ? -sy : 0;
         if (sx + width <= 0 || skipY >= rows) return _error;
         const int32_t left = sx < 0 ? 0 : sx;
@@ -168,11 +171,15 @@ template <typename Draw> Error Painter::run(int x, int y, uint16_t maxWidth, uin
         for (const Rect &piece : _clip) visible |= piece.intersects(whole);
         if (!visible) return _error;
 
-        const size_t stride = size_t(_tools.halfWidth) * Surface::BytesPerPixel;
+        // A half's size is the BGR one's; RGB565 rows are packed closer in it.
+        const Surface::Source source = rgb565 ? Surface::Source::Rgb565 : Surface::Source::Bgr24;
+        const size_t          pixel = rgb565 ? 2 : Surface::BytesPerPixel;
+        const size_t          stride = size_t(_tools.halfWidth) * pixel;
+        const size_t          halfBytes = size_t(_tools.halfWidth) * Surface::BytesPerPixel * _tools.height;
         int32_t      done = 0;
         while (done < width) {
                 const int  half = _tools.busyHalf == 0 ? 1 : 0; // not the one being copied
-                uint8_t   *strip = _tools.strip + size_t(half) * stride * _tools.height;
+                uint8_t   *strip = _tools.strip + size_t(half) * halfBytes;
                 const auto room =
                         static_cast<uint16_t>(width - done < _tools.halfWidth ? width - done : _tools.halfWidth);
                 bool           more = false;
@@ -188,9 +195,9 @@ template <typename Draw> Error Painter::run(int x, int y, uint16_t maxWidth, uin
                         for (const Rect &piece : _clip) shown |= piece.intersects(chunk);
                         if (shown) {
                                 ++_calls;
-                                const uint8_t *from =
-                                        strip + size_t(skipY) * stride + size_t(cut) * Surface::BytesPerPixel;
-                                const Error err = _surface.startBlit(chunk, from, stride, _clip, _timeoutMs);
+                                const uint8_t *from = strip + size_t(skipY / repeat) * stride + size_t(cut) * pixel;
+                                const Error    err = _surface.startBlit(chunk, from, stride, _clip, source, repeat,
+                                                                        uint16_t(skipY % repeat), _timeoutMs);
                                 note(err);
                                 if (err.isOk()) _tools.busyHalf = static_cast<int8_t>(half);
                         }
@@ -210,6 +217,24 @@ Error Painter::text(int x, int y, StringView utf8, const Font &font, uint32_t fg
                 more = at < utf8.size();
                 return w;
         });
+}
+
+Error Painter::rows(int x, int y, uint16_t width, uint16_t height, uint16_t repeat, bool rgb565, RowMaker make,
+                    void *arg) {
+        if (make == nullptr || (width & AlignMask) != 0) {
+                note(Error::Invalid);
+                return _error;
+        }
+        uint16_t column = 0;
+        return run(
+                x, y, width, height,
+                [&](uint8_t *strip, size_t stride, uint16_t room, bool &more) {
+                        const uint16_t w = make(arg, strip, stride, column, room);
+                        column = uint16_t(column + w);
+                        more = column < width;
+                        return w;
+                },
+                rgb565, repeat);
 }
 
 Error Painter::cover(const Rect &rect) {

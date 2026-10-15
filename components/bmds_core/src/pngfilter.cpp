@@ -115,11 +115,8 @@ void PngFilter::row(const uint8_t *cur, const uint8_t *prev, size_t bytes, uint8
 #if BMDS_HAS_PIE
         static const uint8_t Zeros[16] __attribute__((aligned(16))) = {};
         static const uint8_t Ones[16] __attribute__((aligned(16))) = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
-        uint32_t             cfg = 0;
         if (pie) {
-                const uint8_t *op = Ones;
-                asm volatile("esp.movx.r.cfg %0" : "=cr"(cfg));
-                asm volatile("esp.movx.w.cfg %0" ::"cr"(cfg | 3u)); // misaligned loads and stores
+                const uint8_t *op = Ones; // misaligned loads and stores: CFG, set at boot
                 asm volatile("esp.vld.128.ip q7, %0, 0" ::"cr"(op) : "memory");
                 // None: against zeros (the same 16 each step: a zero row of the chunk's length is read).
                 uint32_t none = 0;
@@ -141,9 +138,6 @@ void PngFilter::row(const uint8_t *cur, const uint8_t *prev, size_t bytes, uint8
 #endif
                 applyScalar(f, cur, prev, pie ? chunks * 16 : 0, bytes, row);
         }
-#if BMDS_HAS_PIE
-        if (pie) asm volatile("esp.movx.w.cfg %0" ::"cr"(cfg));
-#endif
         return;
 }
 

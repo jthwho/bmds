@@ -271,6 +271,15 @@ class ProgramSurface final : public Stream {
                 void   draw(Painter &painter);
                 void   drawScaled(Painter &painter, const uint8_t *buf, const Rect &pic, uint16_t scale,
                                   const Rect &clip);
+                struct Band { // drawScaled()'s, for makeBand()
+                                const ProgramSurface *self;
+                                const uint8_t        *src; // the band's first row
+                                uint16_t              scale;
+                                uint16_t              rows; // source rows
+                                uint16_t              c0;   // the first source column
+                                uint16_t              cols;
+                };
+                static uint16_t makeBand(void *arg, uint8_t *strip, size_t stride, uint16_t column, uint16_t room);
                 Damage damageOf(Span<const Rect> damage, bool all) const;
                 void   expandRow(const uint8_t *src, uint16_t count, uint8_t *out, uint16_t scale) const;
                 Layout layOut(uint16_t screenWidth, uint16_t screenHeight, bool own) const;
@@ -306,7 +315,7 @@ class ProgramSurface final : public Stream {
                 Icon           _icon;              // the window's (setIcons()): its pixels ours
                 Icon           _largeIcon;
                 bool           _paletteChanged = false; // since the last present (under _lock)
-                uint8_t       *_strip = nullptr;   // a window's scaled rows, internal DMA RAM
+                uint8_t       *_strip = nullptr;        // full screen's rows, internal DMA RAM (while full screen)
                 size_t         _stripBytes = 0;
 
                 Mutex     _lock; // the buffers' states, the window's size

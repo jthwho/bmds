@@ -27,6 +27,7 @@ namespace {
         constexpr size_t MaxPieces = 32;             // a job's copies
         constexpr size_t MaxPrepareRects = 32;       // rectangles a drawing tells prepareFor()
         constexpr size_t MaxFillRows = 256;          // rows fills send in one job (24 B each, internal)
+        constexpr size_t MaxWidenRows = 128;         // repeated RGB565 rows in one job (the same)
 
         // What's left of @p deadline, as a timeout (at least 1 ms).
         unsigned int remainingMs(const Deadline &deadline) {
@@ -507,16 +508,17 @@ Error Surface::blit(const Rect &to, const uint8_t *src, size_t srcStride, unsign
 }
 
 Error Surface::startBlit(const Rect &to, const uint8_t *src, size_t srcStride, Span<const Rect> clip, Source source,
-                         unsigned int timeoutMs) {
+                         uint16_t repeat, uint16_t first, unsigned int timeoutMs) {
         if (!isStarted()) return Error::InvalidState;
         const size_t pixel = source == Source::Rgb565 ? 2 : BytesPerPixel;
         if (!fits(to) || src == nullptr || srcStride % pixel != 0 || srcStride < size_t(to.width) * pixel ||
-            srcStride / pixel > UINT16_MAX)
+            srcStride / pixel > UINT16_MAX || repeat == 0 || first >= repeat)
                 return Error::Invalid;
+        const uint16_t rows = uint16_t((uint32_t(first) + to.height - 1) / repeat + 1); // of the source
         for (const Rect &piece : clip)
                 if (to.intersects(piece) && !fits(to.intersected(piece))) return Error::Invalid;
         if (source == Source::Rgb565 && !_widen.isStarted()) {
-                const Error err = _widen.start(BlitChain::Conversion::Rgb565ToRgb888, MaxPieces);
+                const Error err = _widen.start(BlitChain::Conversion::Rgb565ToRgb888, MaxPieces, MaxWidenRows);
                 if (err.isError()) return err;
         }
         BlitChain     &chain = source == Source::Rgb565 ? _widen : _chain;
@@ -538,20 +540,28 @@ Error Surface::startBlit(const Rect &to, const uint8_t *src, size_t srcStride, S
         // The source of a job under way may be ours; the other chain's job lands first.
         if (err.isOk()) err = _chain.wait(remainingMs(deadline));
         if (err.isError()) return err;
-        const size_t bytes = srcStride * (to.height - 1) + size_t(to.width) * pixel;
+        const size_t bytes = srcStride * (rows - 1) + size_t(to.width) * pixel;
         for (size_t off = 0; off < bytes; off += WriteBackChunk)
                 (void)esp_cache_msync(const_cast<uint8_t *>(src) + off,
                                       bytes - off < WriteBackChunk ? bytes - off : WriteBackChunk,
                                       ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
-        const BlitChain::Picture from{src, static_cast<uint16_t>(srcStride / pixel), to.height, uint8_t(pixel)};
+        const BlitChain::Picture from{src, static_cast<uint16_t>(srcStride / pixel), rows, uint8_t(pixel)};
         const BlitChain::Picture into = picture(back());
         for (const Rect &piece : clip) {
                 const Rect cut = to.intersected(piece);
                 if (cut.isEmpty()) continue;
+                const uint32_t down = first + uint32_t(cut.y - to.y); // the cut's first row, in repeats
+                const auto     add = [&] {
+                        return chain.addRepeated(from, static_cast<uint16_t>(cut.x - to.x), uint16_t(down / repeat),
+                                                     repeat, uint16_t(down % repeat), into, cut.x, cut.y, cut.width,
+                                                     cut.height);
+                };
                 if (chain.count() == MaxPieces) err = chain.run(remainingMs(deadline));
-                if (err.isOk())
-                        err = chain.add(from, static_cast<uint16_t>(cut.x - to.x), static_cast<uint16_t>(cut.y - to.y),
-                                        into, cut.x, cut.y, cut.width, cut.height);
+                if (err.isOk()) err = add();
+                if (err == Error::Full) { // the rows' descriptors: the job so far sent first
+                        err = chain.run(remainingMs(deadline));
+                        if (err.isOk()) err = add();
+                }
                 if (err.isError()) {
                         chain.clear();
                         return err;

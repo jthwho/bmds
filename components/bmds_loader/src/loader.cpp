@@ -15,6 +15,7 @@
 #include <optional>
 #include <esp_cache.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/idf_additions.h>
 #include <freertos/queue.h>
 #include <freertos/timers.h>
 #include <sdkconfig.h>
@@ -43,7 +44,9 @@
 #include <bmds/stats.h>
 #include <bmds/shebang.h>
 #include <bmds/sys.h>
+#include <bmds/system.h>
 #include <bmds/tasklist.h>
+#include <bmds/thread.h>
 #include <bmds/vfs.h>
 #include "realtimethreads.h"
 #include "running.h"
@@ -528,6 +531,38 @@ namespace {
                                : MemSpace::Psram;
         }
 
+        // The core a program's first task keeps to (devplan/processes.md §3.12a): the one less busy
+        // over the last window of a second or more ending at a program's start (the idle tasks' run
+        // time; shorter gaps keep the last estimate: every shell command is a program), ties (within 15 points)
+        // to core 1, where the display's work is (core 0 has the window manager, audio and the
+        // network). Its other threads may choose (BMDS_SCHED_PIN); the game library puts its audio
+        // on the other core. A task is pinned by its first floating point anyway: this chooses
+        // where, instead of wherever it happens to run then.
+        int coreForProgram() {
+                static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
+                static uint64_t     lastUs = 0, lastIdle[portNUM_PROCESSORS] = {};
+                static uint32_t     busyPercent[portNUM_PROCESSORS] = {};
+                const uint64_t      now = uint64_t(System::uptimeUs());
+                uint64_t            idle[portNUM_PROCESSORS];
+                for (int c = 0; c < portNUM_PROCESSORS; ++c) idle[c] = ulTaskGetIdleRunTimeCounterForCore(c);
+                int core = 1;
+                portENTER_CRITICAL(&lock);
+                const uint64_t span = now - lastUs;
+                if (lastUs != 0 && span >= 1000000) { // else the last estimate (a second at least)
+                        for (int c = 0; c < portNUM_PROCESSORS; ++c) {
+                                const uint64_t idleUs = idle[c] - lastIdle[c];
+                                busyPercent[c] = idleUs >= span ? 0 : uint32_t((span - idleUs) * 100 / span);
+                        }
+                }
+                if (lastUs == 0 || span >= 1000000) {
+                        lastUs = now;
+                        for (int c = 0; c < portNUM_PROCESSORS; ++c) lastIdle[c] = idle[c];
+                }
+                if (busyPercent[1] > busyPercent[0] + 15) core = 0;
+                portEXIT_CRITICAL(&lock);
+                return core;
+        }
+
         // Starts @p run's first task, named after @p path's last component; @p exec: it goes on
         // from the calling thread (an exec in place), whose scheduling it keeps.
         Error startRunning(Running &run, StringView path, size_t stackBytes, bool exec) {
@@ -546,6 +581,7 @@ namespace {
                                               : Running::ofCurrentTask() != nullptr ? uxTaskPriorityGet(nullptr)
                                                                                     : CONFIG_BMDS_SHELL_PRIORITY;
                 config.priority = RealTimeThreads::inherit(run.main, starter, normal, exec);
+                config.core = coreForProgram();
                 const Error err = run.main.task.start(config, run.builtin != nullptr ? builtinMain : programMain, &run);
                 if (err.isOk())
                         bmdsDebug("Loader: %s (pid %d) at %p, stack %u in %s", name, static_cast<int>(run.pid),
@@ -1478,9 +1514,16 @@ int32_t ProgramThread::sched(uint32_t op, int32_t target, bmds_sched_t *param) {
                 taskYIELD();
                 return 0;
         }
-        if (op != BMDS_SCHED_GET && op != BMDS_SCHED_SET) return -BMDS_EINVAL;
+        if (op != BMDS_SCHED_GET && op != BMDS_SCHED_SET && op != BMDS_SCHED_PIN) return -BMDS_EINVAL;
         bmds_sched_t p;
         if (const int32_t r = detail::copyIn(param, p); r < 0) return r;
+        if (op == BMDS_SCHED_PIN) { // the caller only: its task is the running one
+                if (target != 0 && target != (depth > 0 ? currentPid : tid)) return -BMDS_EINVAL;
+                const uint32_t all = (1u << portNUM_PROCESSORS) - 1u, cores = p.cores & all;
+                if (cores == all) return 0;
+                if (cores == 0 || (cores & (cores - 1u)) != 0) return -BMDS_EINVAL; // one core
+                return Thread::pinCurrent(__builtin_ctz(cores)).isOk() ? 0 : -BMDS_EINVAL;
+        }
         if (op == BMDS_SCHED_SET && p.flags != 0) return -BMDS_EINVAL;
         auto act = [&](ProgramThread &t) {
                 if (op == BMDS_SCHED_SET) return RealTimeThreads::set(t, p.policy, p.priority);

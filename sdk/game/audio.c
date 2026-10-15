@@ -9,7 +9,8 @@
  * runs the mixer (mix.c) a period at a time. Sounds: decoded whole by `audio_decode` and resampled
  * to the device's rate at load. Music: a thread that reads a decoder (the synth's, for MIDI) and
  * writes to an ordinary stream of its own, which the system resamples and mixes; its writes block,
- * so it runs as fast as the music plays.
+ * so it runs as fast as the music plays. Both threads keep to the core the game's thread doesn't
+ * (games.md §23).
  */
 
 #include <pthread.h>
@@ -33,6 +34,7 @@ struct bmds_game_audio_t {
                 pthread_t         thread;
                 int               quit;
                 int32_t           error; /* the mixer thread's, if it stopped */
+                int32_t           core;  /* the audio threads', or -1 (anywhere) */
                 /* The music. */
                 pthread_t thread_music;
                 int       music_running;
@@ -44,6 +46,44 @@ struct bmds_game_audio_t {
                 int32_t   music_gain; /* 0-32768 */
                 int16_t   music_buf[MUSIC_FRAMES * 2];
 };
+
+/* ---- Cores: the game's thread keeps to the one it runs on, the audio threads to the other, so the
+   game, the mixer and the synth never pile onto one core while the other idles. A thread is pinned
+   for good by its first floating point, so each audio thread asks first thing, in an entry that
+   uses none (its body is another function: a prologue saving float registers would pin it). */
+
+static int32_t game_core(void) {
+        bmds_sched_t s;
+        memset(&s, 0, sizeof(s));
+        s.size = sizeof(s);
+        if (bmds_sched(BMDS_SCHED_GET, 0, &s) < 0 || s.core < 0 || s.core > 1) return -1;
+        if (s.cores != 3u) return s.cores == 1u ? 0 : s.cores == 2u ? 1 : -1; /* pinned already */
+        s.cores = 1u << s.core;
+        return bmds_sched(BMDS_SCHED_PIN, 0, &s) == 0 ? s.core : -1;
+}
+
+static void keep_to(int32_t core) {
+        if (core < 0) return;
+        bmds_sched_t s;
+        memset(&s, 0, sizeof(s));
+        s.size = sizeof(s);
+        s.cores = 1u << core;
+        (void)bmds_sched(BMDS_SCHED_PIN, 0, &s);
+        return;
+}
+
+static void *mixer_thread(void *arg) __attribute__((noinline));
+static void *music_thread(void *arg) __attribute__((noinline));
+
+static void *mixer_entry(void *arg) {
+        keep_to(((bmds_game_audio_t *)arg)->core);
+        return mixer_thread(arg);
+}
+
+static void *music_entry(void *arg) {
+        keep_to(((bmds_game_audio_t *)arg)->core);
+        return music_thread(arg);
+}
 
 static void *mixer_thread(void *arg) {
         bmds_game_audio_t *a = arg;
@@ -93,7 +133,9 @@ int bmds_game_audio_open(const bmds_game_audio_config_t *config, bmds_game_audio
         if (err == 0) {
                 a->rate = got.rate;
                 a->channels = got.channels;
-                if (pthread_create(&a->thread, NULL, mixer_thread, a) != 0) err = -BMDS_ENOMEM;
+                const int32_t game = game_core(); /* two cores: the audio threads take the other */
+                a->core = game < 0 ? -1 : 1 - game;
+                if (pthread_create(&a->thread, NULL, mixer_entry, a) != 0) err = -BMDS_ENOMEM;
         }
         if (err != 0) {
                 bmds_close(a->fd);
@@ -377,7 +419,7 @@ int bmds_game_music_play(bmds_game_audio_t *audio, const char *path, float volum
                 audio->music_stop = 0;
                 bmds_game_music_volume(audio, volume);
                 STORE(audio->music_out, out);
-                if (pthread_create(&audio->thread_music, NULL, music_thread, audio) != 0) err = -BMDS_ENOMEM;
+                if (pthread_create(&audio->thread_music, NULL, music_entry, audio) != 0) err = -BMDS_ENOMEM;
         }
         if (err != 0) {
                 if (out >= 0) bmds_close(out);

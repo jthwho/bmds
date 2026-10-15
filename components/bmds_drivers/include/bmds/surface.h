@@ -179,7 +179,20 @@ class Surface {
                  * @blocking Only while a swap is pending, or for an earlier job.
                  */
                 Error startBlit(const Rect &to, const uint8_t *src, size_t srcStride, Span<const Rect> clip,
-                                Source source, unsigned int timeoutMs);
+                                Source source, unsigned int timeoutMs) {
+                        return startBlit(to, src, srcStride, clip, source, 1, 0, timeoutMs);
+                }
+
+                /**
+                 * @brief As `startBlit()`, each of @p src's rows written @p repeat times
+                 *        down: @p to's row i is @p src's row (@p first + i) / @p repeat
+                 *        (@p first below @p repeat). The 2D-DMA reads a row again for
+                 *        each: no CPU copies, a @p repeat'th of the source written back.
+                 * @return As `blit()`.
+                 * @blocking Only while a swap is pending, or for an earlier job.
+                 */
+                Error startBlit(const Rect &to, const uint8_t *src, size_t srcStride, Span<const Rect> clip,
+                                Source source, uint16_t repeat, uint16_t first, unsigned int timeoutMs);
 
                 /**
                  * @brief Says @p rects will be drawn whole (every pixel written) before the next
