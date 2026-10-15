@@ -453,6 +453,92 @@ void Controls::releaseAll(Emit emit, void *arg) {
         return;
 }
 
+Error Controls::setBinding(size_t index, bool pad, StringView text) {
+        if (index >= _count) return Error::NotExist;
+        Action    &a = _actions[index];
+        const bool axis = a.kind == Kind::Axis;
+        if (pad) return parsePads(text, axis, a.pad, a.padHigh) ? Error::Ok : Error::Invalid;
+        Chord low[MaxKeys], high[MaxKeys];
+        if (!parseKeys(text, axis, low, high) || !low[0].isValid()) return Error::Invalid;
+        for (size_t k = 0; k < MaxKeys; ++k) {
+                a.keys[k] = low[k];
+                a.keysHigh[k] = high[k];
+        }
+        return Error::Ok;
+}
+
+namespace {
+
+        bool sameChord(const Chord &a, const Chord &b) {
+                if (!a.isValid() || !b.isValid() || a.modifiers != b.modifiers) return false;
+                // A side-less modifier key is either side: it meets its left and right ones.
+                return a.matches(b.usage, a.modifiers) || b.matches(a.usage, b.modifiers);
+        }
+
+        bool samePad(const Controls::PadSource &a, const Controls::PadSource &b) {
+                return a.type != PadType::None && a.type == b.type && a.index == b.index;
+        }
+
+} // namespace
+
+uint64_t Controls::conflicts(size_t index, bool pad) const {
+        uint64_t found = 0;
+        if (index >= _count) return 0;
+        const Action &a = _actions[index];
+        for (size_t j = 0; j < _count; ++j) {
+                const Action &b = _actions[j];
+                if (j == index || (a.sets & b.sets) == 0) continue;
+                bool same = false;
+                for (size_t k = 0; k < (pad ? MaxPad : MaxKeys) && !same; ++k)
+                        for (size_t m = 0; m < (pad ? MaxPad : MaxKeys) && !same; ++m)
+                                if (pad) {
+                                        same = samePad(a.pad[k], b.pad[m]) || samePad(a.pad[k], b.padHigh[m]) ||
+                                               samePad(a.padHigh[k], b.pad[m]) || samePad(a.padHigh[k], b.padHigh[m]);
+                                } else {
+                                        same = sameChord(a.keys[k], b.keys[m]) || sameChord(a.keys[k], b.keysHigh[m]) ||
+                                               sameChord(a.keysHigh[k], b.keys[m]) ||
+                                               sameChord(a.keysHigh[k], b.keysHigh[m]);
+                                }
+                if (same) found |= uint64_t(1) << j;
+        }
+        return found;
+}
+
+int Controls::indexOf(StringView name) const {
+        for (size_t i = 0; i < _count; ++i)
+                if (name == StringView(_actions[i].name)) return int(i);
+        return -1;
+}
+
+size_t Controls::formatUser(const Controls &defaults, const Controls &current, char *out, size_t size) {
+        if (size == 0) return 0;
+        size_t used = 0;
+        out[0] = '\0';
+        auto add = [&](const char *fmt, const char *a, const char *b) {
+                const int w = std::snprintf(out + used, size - used, fmt, a, b);
+                if (w > 0) used = used + size_t(w) < size ? used + size_t(w) : size - 1;
+        };
+        for (size_t i = 0; i < current._count; ++i) {
+                const Action &a = current._actions[i];
+                const int     d = defaults.indexOf(a.name);
+                char          now[2][256], was[2][256];
+                bool          differs[2] = {};
+                for (int w = 0; w < 2; ++w) {
+                        size_t n = 0;
+                        (void)current.bindingText(a.id, w == 1, now[w], sizeof(now[w]), n);
+                        was[w][0] = '\0';
+                        if (d >= 0)
+                                (void)defaults.bindingText(defaults._actions[d].id, w == 1, was[w], sizeof(was[w]), n);
+                        differs[w] = d < 0 || std::strcmp(now[w], was[w]) != 0;
+                }
+                if (!differs[0] && !differs[1]) continue;
+                add("%s[Action %s]\n", used == 0 ? "" : "\n", a.name);
+                if (differs[0]) add("%sKeys=%s\n", "", now[0]);
+                if (differs[1]) add("%sPad=%s\n", "", now[1]);
+        }
+        return used;
+}
+
 Error Controls::bindingText(uint16_t id, bool pad, char *out, size_t size, size_t &length) const {
         const Action *a = nullptr;
         for (size_t i = 0; i < _count; ++i)

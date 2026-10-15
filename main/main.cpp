@@ -22,6 +22,7 @@
 #include <bmds/i2cbus.h>
 #include <bmds/input.h>
 #include <bmds/pads.h>
+#include <bmds/programcontrols.h>
 #include <bmds/loader.h>
 #include <bmds/logfiles.h>
 #include <bmds/midi.h>
@@ -91,7 +92,8 @@ namespace {
                 {"synth", bmds::SoundFonts::init}, // fonts synths share; after the loader: its cache is reclaimed first
                 {"speech", bmds::Voices::init},    // the voices speakers share
                 {"input", bmds::Input::init},
-                {"pads", bmds::Pads::init}, // the gamepads' table; before USB attaches any
+                {"pads", bmds::Pads::init},                // the gamepads' table; before USB attaches any
+                {"controls", bmds::ProgramControls::init}, // programs' actions, changed live
                 {"usb", bmds::UsbHost::init},
                 {"net", bmds::EthernetDevice::init}, // eth0 (devplan/network.md)
                 {"ip", bmds::NetStack::init},        // lwIP, lo, and eth0's addresses from sysconf

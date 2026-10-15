@@ -39,6 +39,7 @@ namespace {
         constexpr size_t      MaxEnvironmentBytes = 4096;
         constexpr size_t      MaxCwd = 255;
         constexpr size_t      LaunchStackBytes = 8192;
+        constexpr size_t      RunIndex = ~size_t(0); // launch(): runDesktopCommand()'s command
 
         // What the menu's launches need, kept from `win start` (PSRAM, made once, reused).
         struct Menu {
@@ -46,6 +47,7 @@ namespace {
                         char             commands[WindowManager::MaxDesktopItems][DesktopEntry::MaxExec + 1];
                         size_t           count = 0;
                         char             keyCommand[DesktopEntry::MaxExec + 1] = {}; // [Keys] Terminal
+                        char             runCommand[DesktopEntry::MaxExec + 1] = {}; // runDesktopCommand()'s
                         char             environmentText[MaxEnvironmentBytes];
                         StringView       environment[MaxEnvironment];
                         size_t           environmentCount = 0;
@@ -70,9 +72,10 @@ namespace {
                         menu->launchThread.detach();
                 }
                 const bool key = index == WindowManager::DesktopKey; // Ctrl+Shift+Windows
-                if (menu->launcher == nullptr || (!key && index >= menu->count)) return;
-                const char *label = key ? "Ctrl+Shift+Windows" : menu->labels[index];
-                const char *command = key ? menu->keyCommand : menu->commands[index];
+                const bool run = index == RunIndex;                  // runDesktopCommand()
+                if (menu->launcher == nullptr || (!key && !run && index >= menu->count)) return;
+                const char *label = key ? "Ctrl+Shift+Windows" : run ? "command" : menu->labels[index];
+                const char *command = key ? menu->keyCommand : run ? menu->runCommand : menu->commands[index];
                 char        buffer[DesktopEntry::MaxExec + 1];
                 StringView  args[DesktopEntry::MaxArgs];
                 auto [n, err] =
@@ -185,6 +188,19 @@ namespace {
         }
 
 } // namespace
+
+Error runDesktopCommand(StringView command) {
+        if (menu == nullptr) return Error::NotReady;
+        if (command.isEmpty() || command.size() > DesktopEntry::MaxExec) return Error::Invalid;
+        {
+                Mutex::Locker lock(menu->launchLock, WaitForever);
+                if (menu->launchThread.isStarted()) return Error::Busy;
+                std::memcpy(menu->runCommand, command.data(), command.size());
+                menu->runCommand[command.size()] = '\0';
+        }
+        chosen(nullptr, RunIndex);
+        return Error::Ok;
+}
 
 Error installDesktopMenu(WindowManager &wm, CommandContext &ctx) {
         if (menu == nullptr) {

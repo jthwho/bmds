@@ -460,6 +460,17 @@ The first of step 8's affordances. Resize handles, pointer shapes, the wheel and
   (motion as `MouseEvent::dx`, `dy`, which every motion event now carries); presses never reach
   frames. Focus elsewhere (Alt+Tab, the Windows key, a new window) lets go until it comes back.
   One window at a time. A full-screen window gets the same capture, the pointer moving unless locked.
+- **Getting the pointer back from a window** (2026-10-15, the user's report: in a window, it wasn't
+  clear how). Ctrl+Alt lets the lock go (as virtual machines do): the pointer shows, and the window
+  gets no mouse at all (moving over it doesn't turn a game's view); a left click in its client area
+  takes the pointer again (raised and focused; the click goes no further). Focus leaving and
+  coming back takes it again too. While it holds the pointer its title says so ("- Ctrl+Alt frees
+  the mouse"); let go, "- click it for the mouse". Ctrl reaches the window first (Doom fires once):
+  a chord's first key can't be held back. Full screen keeps the pointer (below).
+- **Full screen is exclusive** (2026-10-15, the user's: the Windows key was too easy to hit). While
+  a window is full screen and focused, Alt+Enter is the window manager's only key: every other one,
+  the Windows key's tap, Alt+Tab, Alt+F4 and Alt+Space included, is the game's. Before, those left
+  full screen and did their own thing.
 - **`win key TEXT`** (a test aid like `win pointer`): each character sent through the window
   manager as a keyboard would send it (press, then release, with the usage and modifiers a US
   keyboard needs, and the same escapes as `win type`), so the keyboard path (focus, the terminal's

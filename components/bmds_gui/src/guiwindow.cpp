@@ -59,6 +59,7 @@ Error GuiWindow::show(const Rect &rect) {
         c.redraw = redraw;
         c.closedAt = closedEntry;
         c.key = keyEntry;
+        c.pad = padEntry;
         c.resized = resizedEntry;
         c.wheel = wheelEntry;
         c.mouse = mouseEntry;
@@ -334,6 +335,14 @@ void GuiWindow::keyEntry(void *arg, const KeyEvent &event) {
         return;
 }
 
+void GuiWindow::padEntry(void *arg, const PadEvent &event) {
+        GuiApplication::Event e;
+        e.type = Type::Pad;
+        e.pad = event;
+        static_cast<GuiWindow *>(arg)->queue(e);
+        return;
+}
+
 void GuiWindow::activatedEntry(void *arg, bool active) {
         GuiApplication::Event e;
         e.type = Type::Activated;
@@ -377,6 +386,7 @@ void GuiWindow::handle(const GuiApplication::Event &event) {
         switch (event.type) {
                 case Type::Mouse: mouse(event.mouse); break;
                 case Type::Key: key(event.key); break;
+                case Type::Pad: padEvent(event.pad); break;
                 case Type::Wheel: wheel(event.wheel); break;
                 case Type::Activated: {
                         const bool active = event.width != 0 && isShown();
@@ -413,6 +423,7 @@ void GuiWindow::handle(const GuiApplication::Event &event) {
 
 // A key, in the order the class's description gives.
 void GuiWindow::key(const KeyEvent &event) {
+        if (keyFirst(event)) return;
         if (event.action == KeyEvent::Action::Release) return;
         _app.hideToolTip();
         const uint32_t key = Mnemonic::keyOf(event);

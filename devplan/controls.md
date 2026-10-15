@@ -144,7 +144,9 @@ mapping is wrong. The first check for the user's pad.
 
 "Where applicable": a pad isn't a mouse, so the desktop gets only what suits it:
 - **`Guide`** is the pad's escape hatch, as the keyboard's (`games.md` §3c): it leaves a
-  full-screen game and opens the launcher. A pad alone can start and leave games.
+  full-screen game and opens the launcher. A pad alone can start and leave games. *To settle with
+  the user before step 6:* full screen is now exclusive, Alt+Enter its only way out (2026-10-15,
+  `windows.md` §4h); Guide would be the pad's Alt+Enter, or nothing.
 - The launcher, menus and message boxes take `Up`/`Down`/`Left`/`Right`, `South` (accept) and
   `East` (back): the keys they already have, bound to the pad.
 - The rest of the desktop (the file browser, the terminal) stays keyboard and mouse.
@@ -384,6 +386,59 @@ typedef struct bmds_controls_binding_t {
 **Then (step 5) the games:** Blocks, Doom and Solitaire ship `controls.conf` with today's keys
 and pad layouts as defaults, and read `ACTION` events instead of keys (Doom: its platform layer
 turns actions into Doom's keys). Their pad code of §7b goes.
+
+## 7d. Step 4: the Controls window (2026-10-15, built)
+
+No system call: the window and its command are built-in programs on the kernel's C++ API, as the
+other built-ins are; the in-game editor (step 5) is what needs the call's editing ops.
+
+- **The model** (`Controls`, pure): `setBinding(action, keys or pad, text)` (validated as a
+  declaration's), `conflicts(action, keys or pad)` (other actions in a shared set with a binding
+  in common), and `formatUser(defaults, current)`: the user's file as the difference (only the
+  `Keys=` and `Pad=` lines that differ). One action's keys can't be emptied: the keyboard stays
+  first-class.
+- **Live:** `ProgramControls` keeps its program's application id and declaration; a registry of
+  the running ones lets a changed user file be laid over every running copy of that application
+  at once (what was held let go). The window and the command call it after writing the file.
+- **`/bin/controls`** (`bmds_controls`, a built-in program, nothing in the OS refers to it):
+  - `controls` opens the window on the applications that have actions; `controls ID` on one.
+  - The text form: `controls ID list` (`ACTION  KEYS  PAD`, a line each), `controls ID bind ACTION
+    keys|pad TEXT`, `controls ID reset [ACTION]`.
+  - The folder from `Apps::system()` by id; the user's file `$HOME/.config/bmds/controls/ID.conf`.
+- **The window:** an application chooser (combo box) when started without one; the actions in a
+  list by group (Action, Keys, Pad); buttons Set key, Add key, Set pad, Add pad, Clear pad, Reset,
+  Reset all. Setting captures the next key (a chord: the modifiers held; a modifier alone when
+  released with no other key) or pad button or stick half; Escape cancels a key capture. A
+  binding another action in a shared set has is offered to move: that action loses it (and gets
+  this one's old key if it would have none). The toolkit gains pad events for windows (as keys).
+- **The window menu:** a surface whose program declared actions gets Alt+Space ▸ Controls..., which
+  runs the command named by `wm/controls` (default `controls`) with the application's id.
+
+**As built (2026-10-15):**
+- `Controls`: `setBinding()`, `conflicts()` (a side-less modifier meets either side; a pad pair's
+  ends count), `indexOf()`, `activeSet()`, `formatUser()`; host-tested, the file read back giving
+  the same bindings.
+- `ProgramControls` keeps its declaration (PSRAM) and application id; a registry (16 programs, a
+  boot-made lock: the `controls` stage) lets `userChanged()` lay a changed file over each running
+  copy, its set kept.
+- `bmds_controls` (`/bin/controls`): `ControlsBook` (one application: its folder by
+  `Apps::system()`, the defaults and the current bindings, saving the difference, or removing the
+  file when nothing differs); `controls -l` lists the applications with actions. The window:
+  Application chooser, the actions (Action, Group, Keys, Pad without its `Pad.` prefixes), status
+  line, buttons Set Key, Add Key, Set Pad, Add Pad, Clear Pad, Reset, Reset All, Close. Enter or a
+  double click sets a key. A captured binding another action in a shared set has is offered to
+  move ("Z is Turn left's too. Move it to Drop?"): Yes takes it from the other (which keeps a key,
+  or gets this one's old one); No puts back what was there.
+- The toolkit: `GuiWindow::keyFirst()` (every key event first, releases too) and `padEvent()`
+  (windows get pads' events, `GuiApplication::Event::Type::Pad`).
+- The window manager: `setWindowItem()`, a window's own window-menu item, told after the round;
+  `runDesktopCommand()` starts a command line as the desktop menu does (its environment, its
+  thread). `ProgramSurface` offers C&ontrols... once its program has declared, running `wm/controls`.
+- **Checked on the board** (Blocks and Doom staged in `/tmp/apps`, first on `apps/path` for the
+  test): `controls -l`, `list`, `bind`, `reset`; a binding changed while Blocks ran took effect at
+  once (F3 started it); the window: Enter then F5 set Drop's key, Z moved from Turn left on Yes,
+  Shift alone captured and refused on No, Reset All removed the file; Alt+Space ▸ Controls... on
+  Blocks opened the window on it. Not checked: capturing a pad control (needs hands on the pad).
 
 ## 8. Budgets (estimates)
 

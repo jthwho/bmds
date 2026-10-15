@@ -256,12 +256,14 @@ class GuiApplication {
                                         Watch,
                                         Post,
                                         Activated, ///< `width` 1: it has the keys now; 0: it lost them.
+                                        Pad,       ///< A gamepad's, while it has the keys: `pad`.
                                 };
                                 Type                      type = Type::Post;
                                 uint8_t                   slot = 0; ///< The window's (its generation in `generation`).
                                 uint8_t                   generation = 0;
                                 WindowManager::MouseEvent mouse;
                                 KeyEvent                  key;
+                                PadEvent                  pad;
                                 int16_t                   wheel = 0;
                                 uint16_t                  width = 0;
                                 uint16_t                  height = 0;

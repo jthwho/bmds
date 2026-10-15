@@ -341,7 +341,7 @@ writes and a write-back of the range) if it matters. 46 KB of internal DMA RAM f
     calls `update(id)`; the buffer is released when the round's jobs end.
   - **Full screen:** the window manager hands the display over (`WindowManager::
     setFullScreen()`: no rounds drawn, the pointer hidden, keys and the mouse to the surface,
-    the escape keys kept). Two cases:
+    the escape keys kept; since 2026-10-15 none but Alt+Enter: `windows.md` §4h). Two cases:
     - **The display's size and RGB888:** the scan reads the program's buffers themselves
       (`Scanout` shows a given buffer at a frame's start, as a swap does): no copy at all. The
       buffers are allocated to the scan's constraints (alignment, the block division).

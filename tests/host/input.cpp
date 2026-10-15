@@ -840,3 +840,53 @@ TEST_CASE("Controls: declarations refused") {
         // Forward compatible: unknown keys and groups skipped.
         CHECK(c.declare("[Controls]\nFuture=1\n[Other]\nX=1\n[Action a]\nId=1\nKeys=A\nTooltip=x\n", line).isOk());
 }
+
+TEST_CASE("Controls: bindings changed, conflicts found, the user's file as the difference") {
+        static bmds::Controls defaults, c;
+        uint32_t              line = 0;
+        REQUIRE(defaults.declare(GameControls, line).isOk());
+        REQUIRE(c.declare(GameControls, line).isOk());
+        char text[512];
+        CHECK(bmds::Controls::formatUser(defaults, c, text, sizeof(text)) == 0);
+        const int turn = c.indexOf("turn-left"), undo = c.indexOf("undo"), steer = c.indexOf("steer"),
+                  down = c.indexOf("down");
+        REQUIRE(turn >= 0);
+        REQUIRE(c.indexOf("nope") == -1);
+        // Ctrl+Z is undo's: turn-left given it conflicts with undo (both in play), not with down (menu).
+        REQUIRE(c.setBinding(size_t(turn), false, "Ctrl+Z; Q").isOk());
+        CHECK(c.conflicts(size_t(turn), false) == uint64_t(1) << undo);
+        // Down is menu's down's key: no conflict, the sets differ. Steer is in every set: it does.
+        REQUIRE(c.setBinding(size_t(turn), false, "Down").isOk());
+        CHECK(c.conflicts(size_t(turn), false) == 0);
+        REQUIRE(c.setBinding(size_t(turn), false, "Left").isOk());
+        CHECK(c.conflicts(size_t(turn), false) == uint64_t(1) << steer);
+        // A side-less Ctrl meets a right Ctrl.
+        REQUIRE(c.setBinding(size_t(undo), false, "RightCtrl").isOk());
+        REQUIRE(c.setBinding(size_t(turn), false, "Ctrl").isOk());
+        CHECK(c.conflicts(size_t(turn), false) == uint64_t(1) << undo);
+        // Pads: South against a pair's half.
+        REQUIRE(c.setBinding(size_t(steer), true, "Pad.South Pad.East").isOk());
+        CHECK(c.conflicts(size_t(turn), true) == uint64_t(1) << steer);
+        // Refused: no key left, nonsense, a button's pad as an axis.
+        CHECK(c.setBinding(size_t(turn), false, "") == bmds::Error::Invalid);
+        CHECK(c.setBinding(size_t(turn), false, "Hyper+A") == bmds::Error::Invalid);
+        CHECK(c.setBinding(size_t(turn), true, "Pad.LeftX") == bmds::Error::Invalid);
+        REQUIRE(c.setBinding(size_t(turn), true, "").isOk()); // no pad is allowed
+        (void)down;
+        const size_t n = bmds::Controls::formatUser(defaults, c, text, sizeof(text));
+        CHECK(std::string(text, n) == "[Action turn-left]\nKeys=Ctrl\nPad=\n"
+                                      "\n[Action undo]\nKeys=RightCtrl\n"
+                                      "\n[Action steer]\nPad=Pad.South Pad.East\n");
+        // Read back over the defaults: the same bindings.
+        static bmds::Controls again;
+        REQUIRE(again.declare(GameControls, line).isOk());
+        again.applyUser(bmds::StringView(text, n));
+        char   a[64], b[64];
+        size_t la = 0, lb = 0;
+        for (size_t i = 0; i < c.count(); ++i)
+                for (int pad = 0; pad < 2; ++pad) {
+                        REQUIRE(c.bindingText(c.action(i).id, pad == 1, a, sizeof(a), la).isOk());
+                        REQUIRE(again.bindingText(again.action(i).id, pad == 1, b, sizeof(b), lb).isOk());
+                        CHECK(std::string(a) == std::string(b));
+                }
+}

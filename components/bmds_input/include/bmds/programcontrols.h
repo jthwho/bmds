@@ -36,6 +36,9 @@ BMDS_NAMESPACE_BEGIN
  */
 class ProgramControls {
         public:
+                /** @brief Boot stage: makes the running programs' registry's lock. */
+                static Error init();
+
                 /** @brief Makes one (PSRAM). @return It, or null when PSRAM is out. */
                 static ProgramControls *create();
 
@@ -48,14 +51,32 @@ class ProgramControls {
                 /** @brief Drops a reference; the last frees it. */
                 void unref();
 
+                /** @brief Bytes of a declaration kept (and read). */
+                static constexpr size_t MaxDeclaration = 16 * 1024;
+
+                /** @brief Bytes of an application's id, NUL included. */
+                static constexpr size_t MaxId = 32;
+
                 /**
                  * @brief Reads @p declaration, then lays @p user (the user's file's text; may be
-                 *        empty) over it. What was held is let go (told to the target).
+                 *        empty) over it. What was held is let go (told to the target). The
+                 *        declaration is kept, and @p appId (may be empty) names the program for
+                 *        `userChanged()`.
                  * @param badLine The first line refused, on `Invalid` (0: no line: an action
                  *        without keys or an Id).
-                 * @return `Controls::declare()`'s error.
+                 * @return `Controls::declare()`'s error, `NoMem`, or `Full` (too long).
                  */
-                Error declare(StringView declaration, StringView user, uint32_t &badLine);
+                Error declare(StringView declaration, StringView user, StringView appId, uint32_t &badLine);
+
+                /**
+                 * @brief Lays @p user (the user's file, changed: the Controls window, `controls`)
+                 *        over every running program of application @p appId at once, its active set
+                 *        kept and what was held let go.
+                 */
+                static void userChanged(StringView appId, StringView user);
+
+                /** @brief Copies the application's id (`declare()`'s; empty: none) into @p out. */
+                void appId(char (&out)[MaxId]);
 
                 /** @brief `Controls::setSet()`, told to the target. */
                 Error setSet(StringView name);
@@ -80,12 +101,18 @@ class ProgramControls {
 
         private:
                 ProgramControls() = default;
-                ~ProgramControls() = default;
+                ~ProgramControls();
+
+                void relay(StringView user); // userChanged() for this one
 
                 std::atomic<uint32_t> _refs{1};
                 Mutex                 _lock;
                 Controls::Emit        _target = nullptr;
                 void                 *_targetArg = nullptr;
+                char                 *_declaration = nullptr; // kept (Psram) for userChanged()
+                size_t                _declarationBytes = 0;
+                char                  _appId[MaxId] = {};
+                bool                  _listed = false; // in the running programs' registry
                 Controls              _controls;
 };
 

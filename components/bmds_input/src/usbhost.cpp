@@ -76,6 +76,45 @@ namespace {
         // A HID transfer that couldn't be asked for (TinyUSB refused it) is asked again this soon.
         constexpr uint32_t RearmRetryMs = 20;
 
+        // A pad's next report is asked for this long after the last (125 a second). The DWC2
+        // driver keeps an endpoint's interval only after a NAK: a pad always has a report, so
+        // asked again at once it was polled back to back (~270 a second, low speed through the
+        // hub's transaction translator, beside the keyboard).
+        constexpr uint32_t PadPollMs = 8;
+
+        // A keyboard's idle rate (HID SET_IDLE, in 4 ms units): it sends its keys again this often
+        // though nothing changed. TinyUSB sets 0 (changes only), so a report lost below the driver
+        // left a key down for good: a low-speed keyboard's reports cross the hub's transaction
+        // translator, which answers the keyboard itself, and a split that then fails loses the
+        // report with no retry (Doom kept walking backwards, its key repeating). 500 ms is the
+        // HID specification's default for keyboards; the same report again makes no events.
+        constexpr uint16_t KeyboardIdle = 500 / 4;
+
+        void idleSet(tuh_xfer_t *) {
+                return; // a keyboard may refuse it (a STALL): it then reports changes only
+        }
+
+        // Asks keyboard interface @p instance of @p address to report every KeyboardIdle.
+        void setKeyboardIdle(uint8_t address, uint8_t instance) {
+                tuh_itf_info_t info = {};
+                if (!tuh_hid_itf_get_info(address, instance, &info)) return;
+                tusb_control_request_t setup = {};
+                setup.bmRequestType_bit.recipient = TUSB_REQ_RCPT_INTERFACE;
+                setup.bmRequestType_bit.type = TUSB_REQ_TYPE_CLASS;
+                setup.bmRequestType_bit.direction = TUSB_DIR_OUT;
+                setup.bRequest = HID_REQ_CONTROL_SET_IDLE;
+                setup.wValue = tu_htole16(uint16_t(KeyboardIdle << 8)); // every report ID
+                setup.wIndex = tu_htole16(info.desc.bInterfaceNumber);
+                setup.wLength = 0;
+                tuh_xfer_t xfer = {};
+                xfer.daddr = address;
+                xfer.ep_addr = 0;
+                xfer.setup = &setup; // copied (or queued) by the call
+                xfer.complete_cb = idleSet;
+                if (!tuh_control_xfer(&xfer)) bmdsWarn("USB: %u: keyboard: SET_IDLE not sent", address);
+                return;
+        }
+
         void readUsb(void *arg, Span<int64_t> v) {
                 const UsbHost::Stats s = static_cast<UsbHost *>(arg)->stats();
                 v[0] = s.added;
@@ -505,6 +544,7 @@ void UsbHost::hidMounted(uint8_t address, uint8_t instance, Span<const uint8_t> 
                 free->keys.setLocks(locks);
                 free->leds = locks;
                 (void)tuh_hid_set_report(address, instance, 0, HID_REPORT_TYPE_OUTPUT, &free->leds, 1);
+                setKeyboardIdle(address, instance);
         }
         arm(*free);
         return;
@@ -565,7 +605,9 @@ void UsbHost::hidReport(uint8_t address, uint8_t instance, const uint8_t *data, 
                 if (length >= 4) p.wheel = static_cast<int8_t>(data[3]);
                 Input::pointer(p);
         }
-        if (h != nullptr) {
+        if (h != nullptr && h->kind == Hid::Kind::Pad) {
+                h->retryMs = static_cast<uint32_t>(System::uptimeUs() / 1000) + PadPollMs; // service() asks then
+        } else if (h != nullptr) {
                 arm(*h);
         } else {
                 (void)tuh_hid_receive_report(address, instance);

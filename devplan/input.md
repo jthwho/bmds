@@ -179,6 +179,30 @@ wm task, each round: drain keys ─► focused window's key callback (Terminal �
   but not heard (this bug's mark, if anything like it comes back). Not reproduced on demand: the
   window is a few instructions, hit after many thousands of polls.
 
+## 5d. Keys held in Doom; a pad polled flat out (2026-10-15, the user's reports)
+
+- **Doom kept walking forward after Up was let go** (windowed, maximized). A program surface's
+  queue (64 events) dropped its oldest event when full, and mouse motion over a windowed game, a
+  pointer event per report, could fill it while the game stalled (a level loading), pushing a key's
+  release out. Now a move with the buttons unchanged merges into the move queued last (when it is
+  the newest event), and a full queue drops its oldest move or wheel; a key, action or pad event
+  only when it holds nothing else, logged (`ProgramSurface: events lost`).
+- **The pad was polled ~270 times a second.** TinyUSB's DWC2 host keeps an interrupt endpoint's
+  `bInterval` only to retry after a NAK; a report asked for again at once after data starts at
+  once. Keyboards and mice NAK until something changes; DragonRise's pad always has a report, so it
+  was read back to back, low speed through the hub's transaction translator beside the keyboard.
+  `UsbHost` now asks for a pad's next report 8 ms after the last (`service()`'s timer).
+- **Then Doom walked backwards for good**, with no event lost: `input.keys` counted 30 a second,
+  the keyboard's repeat, and its last report was 66 s old. The release report itself was lost
+  below the driver. A low-speed keyboard's reports cross the hub's transaction translator, which
+  answers the keyboard on its own; a split that then fails loses the report, and the keyboard,
+  answered, never sends it again. TinyUSB sets every HID interface's idle rate to 0 (reports on
+  change only), so nothing corrected it. `UsbHost` now sends keyboards SET_IDLE 500 ms (the HID
+  specification's default for keyboards) when they attach: the keys come again twice a second, a
+  lost release is put right within half a second, and the same report again makes no events
+  (checked: 2 reports a second idle, `input.keys` still 0). Mice keep 0: a repeated report would
+  repeat its motion.
+
 ## 6. Resource budget (estimates; measured as the steps land)
 
 | What | Where | Estimate / measured |

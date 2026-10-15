@@ -305,6 +305,7 @@ class ProgramSurface final : public Stream {
                 static void padEntry(void *arg, const PadEvent &event);
                 void        padsSettled(bool active); // what is down on the pads, told or let go
                 static void actionEntry(void *arg, const Controls::Output &output);
+                static void controlsChosen(void *arg); // the window menu's Controls...
                 static void mouseEntry(void *arg, const WindowManager::MouseEvent &event);
                 static void wheelEntry(void *arg, int notches);
                 static void activatedEntry(void *arg, bool active);
@@ -330,6 +331,7 @@ class ProgramSurface final : public Stream {
                 Rect                           _underRect;
                 uint8_t                        _under[WindowManager::UnderBytes];
                 std::atomic<ProgramControls *> _controls{nullptr};
+                char                           _appId[ProgramControls::MaxId] = {}; // its program's application
                 uint8_t       *_buffers[MaxBuffers] = {};
                 size_t         _stride = 0;
                 size_t         _bufferBytes = 0;
@@ -369,6 +371,7 @@ class ProgramSurface final : public Stream {
                 Event         _queue[QueueEvents];
                 size_t        _head = 0;
                 size_t        _count = 0;
+                uint32_t      _lostEvents = 0; // keys, actions or pads dropped: a full queue of them
                 Semaphore     _ready{1, 0};
                 WaitListOf<4> _pollers;
 };

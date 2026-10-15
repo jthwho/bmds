@@ -155,6 +155,38 @@ class Controls {
                  */
                 Error bindingText(uint16_t id, bool pad, char *out, size_t size, size_t &length) const;
 
+                /**
+                 * @brief Replaces action @p index's key bindings (or with @p pad its pad bindings)
+                 *        with @p text, as a declaration writes them (`Z;Ctrl`, `Pad.South`).
+                 * @return `Invalid` if it doesn't parse, or would leave the action without a key.
+                 */
+                Error setBinding(size_t index, bool pad, StringView text);
+
+                /**
+                 * @brief Returns the actions (a bit per index) sharing a set with action @p index
+                 *        and a key binding (or with @p pad a pad control) with it.
+                 */
+                uint64_t conflicts(size_t index, bool pad) const;
+
+                /** @brief Returns the index of the action named @p name, or -1. */
+                int indexOf(StringView name) const;
+
+                /** @brief Returns set @p index's name (`setCount()` of them). */
+                const char *setName(size_t index) const { return _sets[index]; }
+
+                /** @brief Returns the sets' count. */
+                size_t setCount() const { return _setCount; }
+
+                /** @brief Returns the active set's name, or empty (none). */
+                StringView activeSet() const { return _active == NoSet ? StringView() : StringView(_sets[_active]); }
+
+                /**
+                 * @brief Writes the user's file for @p current: the `Keys=` and `Pad=` lines that
+                 *        differ from @p defaults (the same declaration), under their `[Action NAME]`.
+                 * @return Its length (truncated to fit, NUL-ended); 0: nothing differs.
+                 */
+                static size_t formatUser(const Controls &defaults, const Controls &current, char *out, size_t size);
+
                 /** @brief Returns the actions' count. */
                 size_t count() const { return _count; }
 

@@ -216,6 +216,19 @@ class GuiWindow : public Widget {
                 /** @brief The pointer left it. */
                 virtual void pointerLeft() {}
 
+                /**
+                 * @brief Sees every key event first, releases too, before any widget (a window
+                 *        capturing a key to bind: `devplan/controls.md` §7d). @return True if used:
+                 *        nothing else sees it.
+                 */
+                virtual bool keyFirst(const KeyEvent &event) {
+                        (void)event;
+                        return false;
+                }
+
+                /** @brief A gamepad's event while it has the keys (`devplan/controls.md` §7b). */
+                virtual void padEvent(const PadEvent &event) { (void)event; }
+
                 /** @brief A key no widget used. @return True if used. */
                 virtual bool keyUnused(const KeyEvent &event) {
                         (void)event;
@@ -228,6 +241,7 @@ class GuiWindow : public Widget {
                 static void redraw(void *arg, Painter &painter);
                 static void closedEntry(void *arg, const Rect &outer);
                 static void keyEntry(void *arg, const KeyEvent &event);
+                static void padEntry(void *arg, const PadEvent &event);
                 static void activatedEntry(void *arg, bool active);
                 bool        activateMnemonic(uint32_t key);
                 void        key(const KeyEvent &event);

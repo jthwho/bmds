@@ -36,7 +36,7 @@ namespace {
         static_assert(BMDS_SOURCE_KEYBOARD == bmds::Controls::Keyboard && BMDS_SOURCE_PAD == bmds::Controls::Pad,
                       "the ABI's sources");
 
-        constexpr size_t MaxText = 16 * 1024; // a declaration's, a user's file's
+        constexpr size_t MaxText = bmds::ProgramControls::MaxDeclaration; // a declaration's, a user's file's
         constexpr size_t MaxSetName = 64;
         constexpr size_t MaxPath = 256;
 
@@ -104,7 +104,7 @@ namespace {
                                 userText = StringView(user.text, readFile(StringView(path, size_t(n)), user.text));
                 }
                 uint32_t    line = 0;
-                const Error err = controls->declare(text, userText, line);
+                const Error err = controls->declare(text, userText, id, line);
                 if (err.isError()) {
                         bmdsWarn("controls: %.*s: refused (%s, line %lu)", int(id.size()), id.data(), err.desc(),
                                  static_cast<unsigned long>(line));

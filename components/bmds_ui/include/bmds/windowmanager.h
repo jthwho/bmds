@@ -635,6 +635,20 @@ class WindowManager {
                  */
                 Error setPointerLock(uint8_t id, bool on);
 
+                /** @brief Told its window's own menu item was chosen (on the window manager's task, unlocked). */
+                using WindowItemChosen = void (*)(void *arg);
+
+                /** @brief Bytes of a window's own menu item's label kept. */
+                static constexpr size_t MaxWindowItem = 23;
+
+                /**
+                 * @brief Gives window @p id an item of its own in its window menu (Alt+Space), after
+                 *        Full Screen: @p label (`&` marking its key; empty: none), @p fn told when
+                 *        chosen (a program's Controls..., `devplan/controls.md` §7d).
+                 * @return `Ok`, `NotFound`.
+                 */
+                Error setWindowItem(uint8_t id, StringView label, WindowItemChosen fn, void *arg);
+
                 /** @brief The arrow pointer's picture and colours, for drawing it elsewhere. */
                 struct CursorPicture {
                                 uint8_t            width = 0;
@@ -824,6 +838,9 @@ class WindowManager {
                                 Key         key = nullptr;
                                 Pad         pad = nullptr;
                                 Resized     resized = nullptr;
+                                WindowItemChosen itemFn = nullptr; // its own window menu item
+                                void            *itemArg = nullptr;
+                                char             itemLabel[MaxWindowItem + 1] = {};
                                 void       *arg = nullptr;
                                 Rect        restore;         // where it was before it was maximized or snapped
                                 uint8_t     decorations = 0; // WindowFrame's flags
@@ -897,9 +914,10 @@ class WindowManager {
                         Close,
                         None,
                         Desktop, // the desktop menu's item _menuCommand[i]
-                        Program  // a program's menu's (showMenu())
+                        Program, // a program's menu's (showMenu())
+                        Window   // the window's own item (setWindowItem())
                 };
-                static constexpr size_t MenuItems = MaxDesktopItems; // the window menu has 9 at most
+                static constexpr size_t MenuItems = MaxDesktopItems; // the window menu has 10 at most
                 struct Switcher;                                     // Alt+Tab's list, while it shows
 
                 static constexpr size_t MaxPieces = 256;
@@ -921,9 +939,10 @@ class WindowManager {
         private:
                 void            deliverKeys();
                 void            deliverPads();
+                bool            freedLockAt(uint16_t x, uint16_t y) const; // over the lock's client, let go
+                void            lockTitleChanged();                        // its title's hint redrawn
                 bool            shortcut(const KeyEvent &event);      // a key the window manager keeps
                 bool            fullScreenKey(const KeyEvent &event); // Alt+Enter, and escape keys while full screen
-                void            leaveFullScreen();                    // asks the full-screen window to leave
                 void            capturedPointer(uint8_t id, const PointerEvent &event); // every event to it
                 uint8_t         lockedId() const; // the pointer's lock while its window is focused; 0: none
                 void            switchOpen(int step);
@@ -1066,6 +1085,7 @@ class WindowManager {
                 uint8_t           _mouseId = 0;      // its client area pressed: has the mouse until all buttons are up
                 uint8_t           _fullScreenId = 0; // shown full screen by its owner (setFullScreen())
                 uint8_t           _lockId = 0;       // the pointer locked to it (setPointerLock())
+                bool              _lockFreed = false; // Ctrl+Alt let the lock go: a click in it takes it again
                 uint8_t           _hoverId = 0;      // the client area the pointer is over (told the mouse)
                 uint8_t           _swallowed = 0;    // buttons whose press closed popups: their release goes nowhere
                 bool              _listChanged = false; // for the watchers, at the round's end
@@ -1085,6 +1105,8 @@ class WindowManager {
                 void             *_programArg = nullptr;
                 int               _programPicked = -1; // chosen: told after the round, unlocked
                 MenuChosen        _pickedFn = nullptr; // whom to tell it
+                WindowItemChosen  _itemPicked = nullptr; // a window's own item chosen: told after the round
+                void             *_itemArg = nullptr;
                 void             *_pickedArg = nullptr;
                 bool              _canMinimize = false; // a client watches the window list
                 int               _menuHighlight = -1;

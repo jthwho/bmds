@@ -10,11 +10,13 @@
  * repeated by the scan); its events queued for read().
  */
 
+#include <cstdio>
 #include <cstring>
 #include <new>
 #include <esp_cache.h>
 #include <bmds/clock.h>
 #include <bmds/deadline.h>
+#include <bmds/desktopentry.h>
 #include <bmds/display.h>
 #include <bmds/image.h>
 #include <bmds/interrupt.h>
@@ -28,6 +30,7 @@
 #include <bmds/surface.h>
 #include <bmds/sysconf.h>
 #include <bmds/videomodes.h>
+#include "desktopmenu.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -63,6 +66,11 @@ namespace {
         }
 
         // Off by default: the LT8912B doesn't hold VGA's 31.5 kHz modes steadily (games.md §20a).
+        // wm/controls: the command a program's window menu runs for its Controls... (with its id).
+        BMDS_SYSCONF(wmControls, "wm/controls", Config::Type::String, "controls",
+                     "The command a game's window menu runs for Controls... (the application's id added)", 0, 128,
+                     nullptr, nullptr)
+
         BMDS_SYSCONF(fullScreenModes, "display/fullscreen-modes", Config::Type::Bool, "false",
                      "Show a full-screen picture in a mode of the monitor's it fills exactly (Doom's 320x200 in "
                      "640x400 at 70 Hz), the monitor resyncing as it starts and ends; false: scaled on the "
@@ -986,16 +994,48 @@ void ProgramSurface::fullScreenEntry(void *arg, bool on) {
 
 // ---- Events (the window manager's task, its lock held: no calls into it)
 
+// Queued for the program. A mouse mustn't crowd out keys (a key's release lost is a key held for
+// good): a move with the buttons as they were joins the move queued last, if that is the newest
+// event; and a full queue drops its oldest move or wheel, a key, action or pad event only if it
+// holds nothing else (logged).
 void ProgramSurface::push(const Event &event) {
+        uint32_t lost = 0;
         {
                 Mutex::Locker locker(_queueLock, WaitForever);
-                if (_count == QueueEvents) { // full: the oldest goes
-                        _head = (_head + 1) % QueueEvents;
+                if (event.type == uint32_t(EventType::Pointer) && _count > 0) {
+                        Event &last = _queue[(_head + _count - 1) % QueueEvents];
+                        if (last.type == event.type && last.data[2] == event.data[2]) {
+                                auto sum = [](uint32_t a, uint32_t b, int shift) {
+                                        const int32_t v = int32_t(int16_t(a >> shift)) + int32_t(int16_t(b >> shift));
+                                        return uint32_t(uint16_t(v < -32768 ? -32768 : v > 32767 ? 32767 : v)) << shift;
+                                };
+                                last.data[0] = event.data[0];
+                                last.data[1] = event.data[1];
+                                last.data[3] =
+                                        sum(last.data[3], event.data[3], 0) | sum(last.data[3], event.data[3], 16);
+                                last.timeNs = event.timeNs;
+                                return; // the reader, woken for the first, takes it
+                        }
+                }
+                if (_count == QueueEvents) {
+                        size_t victim = 0; // the oldest move or wheel, else the oldest
+                        for (size_t i = 0; i < _count; ++i) {
+                                const uint32_t t = _queue[(_head + i) % QueueEvents].type;
+                                if (t == uint32_t(EventType::Pointer) || t == uint32_t(EventType::Wheel)) {
+                                        victim = i;
+                                        break;
+                                }
+                                if (i + 1 == _count) lost = ++_lostEvents;
+                        }
+                        for (size_t i = victim; i + 1 < _count; ++i)
+                                _queue[(_head + i) % QueueEvents] = _queue[(_head + i + 1) % QueueEvents];
                         --_count;
                 }
                 _queue[(_head + _count) % QueueEvents] = event;
                 ++_count;
         }
+        if (lost == 1 || (lost != 0 && lost % 100 == 0))
+                bmdsWarn("ProgramSurface: events lost, the program not reading (%lu so far)", (unsigned long)lost);
         _ready.release();
         _pollers.notify();
         return;
@@ -1035,6 +1075,23 @@ void ProgramSurface::setControls(ProgramControls *controls) {
                 active = _active;
         }
         if (active) controls->setTarget(actionEntry, this);
+        // Its window menu offers the Controls window on its application (devplan/controls.md §7d).
+        controls->appId(_appId);
+        if (_appId[0] != '\0' && _wm != nullptr && _window != 0)
+                (void)_wm->setWindowItem(_window, "C&ontrols...", controlsChosen, this);
+        return;
+}
+
+// The window menu's Controls...: the command wm/controls names, with the application's id.
+void ProgramSurface::controlsChosen(void *arg) {
+        auto  *self = static_cast<ProgramSurface *>(arg);
+        String command;
+        if (SysConf::get("wm/controls", command).isError() || command.isEmpty()) return;
+        char      line[DesktopEntry::MaxExec + 1];
+        const int n = std::snprintf(line, sizeof(line), "%s %s", command.cStr(), self->_appId);
+        if (n <= 0 || size_t(n) >= sizeof(line)) return;
+        const Error err = runDesktopCommand(StringView(line, size_t(n)));
+        if (err.isError()) bmdsWarn("ProgramSurface: %s: %s", line, err.desc());
         return;
 }
 

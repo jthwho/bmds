@@ -319,6 +319,8 @@ void WindowManager::run() {
                 int           programPicked = -1;
                 MenuChosen    programFn = nullptr;
                 void         *programArg = nullptr;
+                WindowItemChosen itemFn = nullptr;
+                void            *itemArg = nullptr;
                 {
                         Mutex::Locker lock(_lock, WaitForever);
                         surface = _surface;
@@ -344,12 +346,16 @@ void WindowManager::run() {
                                 _programPicked = -1;
                                 programFn = _pickedFn;
                                 programArg = _pickedArg;
+                                itemFn = _itemPicked;
+                                itemArg = _itemArg;
+                                _itemPicked = nullptr;
                         }
                 }
                 // A desktop menu's choice, told without the lock (it may start a program), and a
                 // program's menu's.
                 if (picked >= 0 && chosen != nullptr) chosen(chosenArg, size_t(picked));
                 if (programPicked >= 0 && programFn != nullptr) programFn(programArg, size_t(programPicked));
+                if (itemFn != nullptr) itemFn(itemArg);
                 _idle.notify();
                 // A round a frame at most: what comes meanwhile is drawn together. Not while another
                 // surface is scanned (a program's full screen): surface 0 counts no frames then.
@@ -537,7 +543,8 @@ void WindowManager::applyPointer() {
                 const uint8_t pressed = static_cast<uint8_t>(event.buttons & ~_buttons);
                 const uint8_t released = static_cast<uint8_t>(_buttons & ~event.buttons);
                 _buttons = event.buttons;
-                if (moved) {
+                const bool freed = freedLockAt(nx, ny);
+                if (moved && !freed) {
                         if (_mouseId != 0) {
                                 mouseTo(_mouseId, MouseEvent::Type::Motion, nx, ny, 0, event.dx, event.dy);
                         } else {
@@ -546,6 +553,19 @@ void WindowManager::applyPointer() {
                 }
                 for (const uint8_t b : {PointerEvent::Left, PointerEvent::Right, PointerEvent::Middle}) {
                         if ((pressed & b) == 0) continue;
+                        if (freed && _mouseId == 0) {
+                                // A click in a let-go lock's client area takes the pointer again (raised
+                                // and focused); it goes no further, nor its release.
+                                _swallowed = static_cast<uint8_t>(_swallowed | b);
+                                if (b == PointerEvent::Left) {
+                                        const uint8_t oldFocus = focusId();
+                                        _lockFreed = false;
+                                        (void)raiseLocked(_lockId);
+                                        lockTitleChanged();
+                                        changed(oldFocus);
+                                }
+                                continue;
+                        }
                         // A press off every popup closes them, and goes no further.
                         if (topPopup() != 0) {
                                 const uint8_t at = windowAt(nx, ny);
@@ -930,6 +950,18 @@ Rect WindowManager::cursorArea() const {
                     static_cast<uint16_t>(bottom - top)};
 }
 
+Error WindowManager::setWindowItem(uint8_t id, StringView label, WindowItemChosen fn, void *arg) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_stack.rectOf(id).isError()) return Error::NotFound;
+        Window      &w = _windows[id - 1];
+        const size_t n = label.size() < MaxWindowItem ? label.size() : MaxWindowItem;
+        std::memcpy(w.itemLabel, label.data(), n);
+        w.itemLabel[n] = '\0';
+        w.itemFn = n != 0 ? fn : nullptr;
+        w.itemArg = arg;
+        return Error::Ok;
+}
+
 WindowManager::CursorPicture WindowManager::arrowPicture() {
         Mutex::Locker  lock(_lock, WaitForever);
         const Picture &p = Pictures[static_cast<size_t>(Pointer::Arrow)];
@@ -1153,9 +1185,18 @@ void WindowManager::drawLayer(size_t z, Span<const Rect> pieces) {
                         drawBevel(chrome, r, pressed ? Bevel::Style::Sunken : Bevel::Style::Raised);
                 }
                 const Rect title = f.title();
+                // A window holding the pointer says how to get it back.
+                char       shown[MaxTitle + 40];
+                StringView words(w.title);
+                if (id == lockedId() && id != _fullScreenId) {
+                        std::snprintf(shown, sizeof(shown), "%s - Ctrl+Alt frees the mouse", w.title);
+                        words = StringView(shown);
+                } else if (id == _lockId && _lockFreed) {
+                        std::snprintf(shown, sizeof(shown), "%s - click it for the mouse", w.title);
+                        words = StringView(shown);
+                }
                 if (!title.isEmpty())
-                        (void)chrome.text(title.x, title.y, StringView(w.title), Fonts::unscii16, text, color,
-                                          title.width);
+                        (void)chrome.text(title.x, title.y, words, Fonts::unscii16, text, color, title.width);
                 count(chrome);
         }
 
@@ -1437,6 +1478,7 @@ void WindowManager::changed(uint8_t oldFocus) {
                 _listChanged = true;
                 // The pointer's lock holds, or lets go: the pointer hidden or shown again.
                 if (_lockId != 0 && (top == _lockId || oldFocus == _lockId)) _cursorMoved = true;
+                if (oldFocus == _lockId) _lockFreed = false; // focused again, it takes the pointer
                 for (const uint8_t id : {oldFocus, top}) {
                         auto [z, err] = _stack.layerOf(id);
                         if (err.isError()) continue;
@@ -1937,6 +1979,7 @@ Error WindowManager::showWindowMenuLocked(uint8_t id, const Rect &anchor) {
             MenuChoice::Maximize);
         // A window that can show full screen (a program's surface: games.md §3c), as Alt+Enter does.
         if (w.fullScreen != nullptr) add("&Full Screen", "Alt+Enter", 0, icon(6), MenuChoice::FullScreen);
+        if (w.itemFn != nullptr) add(w.itemLabel, "", 0, nullptr, MenuChoice::Window);
         add(w.shaded ? "Roll &Down" : "Roll &Up", "",
             off(app && !hidden && (w.decorations & WindowFrame::TitleBar) != 0), icon(w.shaded ? 4 : 3),
             MenuChoice::Shade);
@@ -2007,6 +2050,11 @@ void WindowManager::menuChoose(int item) {
                 return;
         }
         if (id == 0 || _stack.rectOf(id).isError()) return;
+        if (choice == MenuChoice::Window) {
+                _itemPicked = _windows[id - 1].itemFn; // told after this round, the lock released
+                _itemArg = _windows[id - 1].itemArg;
+                return;
+        }
         switch (choice) {
                 case MenuChoice::Restore: (void)restoreLocked(id); break;
                 case MenuChoice::Minimize: (void)minimizeLocked(id); break;
@@ -2029,6 +2077,7 @@ void WindowManager::menuChoose(int item) {
                 case MenuChoice::Close: (void)closeLocked(id); break;
                 case MenuChoice::Desktop:
                 case MenuChoice::Program:
+                case MenuChoice::Window:
                 case MenuChoice::None: break;
         }
         return;
@@ -2328,6 +2377,25 @@ bool WindowManager::shortcut(const KeyEvent &event) {
                 return true;
         }
         if (fullScreenKey(event)) return true;
+        // Full screen is the game's alone (the user's, 2026-10-15): every other key is its, the
+        // Windows key's tap and the window manager's chords included; only Alt+Enter leaves.
+        if (_fullScreenId != 0 && _fullScreenId == focusId()) {
+                _tapUsage = 0;
+                _tapClean = false;
+                return false;
+        }
+        // Ctrl+Alt lets a window's hold on the pointer go (in a window: full screen keeps it).
+        if (event.action == KeyEvent::Action::Press && lockedId() != 0 &&
+            (event.usage == 0xe0 || event.usage == 0xe2 || event.usage == 0xe4 || event.usage == 0xe6)) {
+                const uint8_t own = static_cast<uint8_t>(1u << (event.usage - 0xe0));
+                const uint8_t mods = static_cast<uint8_t>(event.modifiers | own);
+                if ((mods & KeyEvent::Ctrl) != 0 && (mods & KeyEvent::Alt) != 0 &&
+                    (mods & (KeyEvent::Shift | KeyEvent::Gui)) == 0) {
+                        _lockFreed = true;
+                        lockTitleChanged();
+                        return true;
+                }
+        }
         // A key pressed while a claimed modifier is down: that modifier's press is no tap.
         if (press && (event.usage < 0xe0 || event.usage > 0xe7)) _tapClean = false;
         if (windowKey(event)) return true;
@@ -2371,8 +2439,7 @@ Error WindowManager::grabKey(uint8_t client, uint8_t usage, uint8_t modifiers, G
 
 // ---- Full screen (devplan/games.md §10c)
 
-// Alt+Enter asks the focused window to switch; while a window is full screen, an escape key
-// (Alt+Tab, Alt+F4, Alt+Space, a Windows key) asks it to leave, then goes on to do its own thing.
+// Alt+Enter asks the focused window to switch, the only key that leaves full screen.
 bool WindowManager::fullScreenKey(const KeyEvent &event) {
         if (event.action != KeyEvent::Action::Press) return false;
         const bool alt = event.hasAlt(), ctrl = event.hasCtrl(), gui = (event.modifiers & KeyEvent::Gui) != 0;
@@ -2384,21 +2451,7 @@ bool WindowManager::fullScreenKey(const KeyEvent &event) {
                 w.fullScreen(w.arg, _fullScreenId != focus);
                 return true;
         }
-        if (_fullScreenId == 0) return false;
-        const bool guiKey = event.usage == UsageLeftGui || event.usage == UsageRightGui;
-        const bool altKey =
-                alt && !ctrl && (event.usage == HidKey::Tab || event.usage == UsageF4 || event.usage == HidKey::Space);
-        if (guiKey || gui || altKey) leaveFullScreen();
-        return false; // the key does what it does
-}
-
-void WindowManager::leaveFullScreen() {
-        const uint8_t id = _fullScreenId;
-        if (id == 0) return;
-        _fullScreenId = 0; // its window, as it was, shows again
-        Window &w = _windows[id - 1];
-        if (w.fullScreen != nullptr) w.fullScreen(w.arg, false);
-        return;
+        return false;
 }
 
 // The pointer of a full-screen window (the screen's coordinates) or a locked one (its client
@@ -2849,18 +2902,39 @@ Error WindowManager::setPointerLock(uint8_t id, bool on) {
         if (_stack.rectOf(id).isError()) return Error::NotFound;
         const bool wasDrawn = isCursorDrawn();
         if (on) {
+                if (_lockId != id) lockTitleChanged(); // the old one's hint goes
                 _lockId = id;
+                _lockFreed = false;
                 _mouseId = 0; // a press held elsewhere: its release comes to the lock
         } else if (_lockId == id) {
+                lockTitleChanged();
                 _lockId = 0;
+                _lockFreed = false;
         }
+        lockTitleChanged();
         if (wasDrawn != isCursorDrawn()) _cursorMoved = true;
         changed(focusId());
         return Error::Ok;
 }
 
 uint8_t WindowManager::lockedId() const {
-        return _lockId != 0 && focusId() == _lockId ? _lockId : 0;
+        return _lockId != 0 && !_lockFreed && focusId() == _lockId ? _lockId : 0;
+}
+
+// A locked window's pointer let go (Ctrl+Alt), and the pointer over its client area: it gets no
+// mouse until a click there takes the pointer again.
+bool WindowManager::freedLockAt(uint16_t x, uint16_t y) const {
+        if (!_lockFreed || _lockId == 0 || windowAt(x, y) != _lockId) return false;
+        auto [outer, err] = _stack.rectOf(_lockId);
+        return err.isOk() && frame(_lockId, outer).client().contains(Rect{x, y, 1, 1});
+}
+
+void WindowManager::lockTitleChanged() {
+        if (_lockId == 0) return;
+        auto [outer, err] = _stack.rectOf(_lockId);
+        if (err.isOk()) (void)_stack.invalidate(_lockId, frame(_lockId, outer).titleBar());
+        _cursorMoved = true; // shown or hidden
+        return;
 }
 
 Error WindowManager::setIcon(uint8_t id, const Icon *icon) {
