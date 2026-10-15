@@ -83,6 +83,31 @@ class Lt8912b {
                  */
                 Error setOutput(bool on);
 
+                /**
+                 * @brief Sets the DSI receiver's settle count for the next `configure()` (0: the
+                 *        usual 0x10, right for the 720p link). A test aid (`display try`).
+                 */
+                void setSettle(uint8_t settle) {
+                        _settle = settle;
+                        return;
+                }
+
+                /** @brief Sets the DDS frequency word for the next `configure()` (0: the table's). A test aid. */
+                void setDds(uint32_t word) {
+                        _dds = word;
+                        return;
+                }
+
+                /** @brief Returns the settle count the last `configure()` used. */
+                uint8_t settle() const { return _settleUsed; }
+
+                /**
+                 * @brief Reads what the bridge measures of its DSI input: main 0x9c-0x9d and
+                 *        0x9e-0x9f (lines a frame: 750 for the 720p link), low byte first.
+                 * @blocking
+                 */
+                Error measured(uint16_t &first, uint16_t &lines);
+
                 /** @brief Returns the bus. */
                 I2cBus &bus() { return _bus; }
 
@@ -97,6 +122,9 @@ class Lt8912b {
                 I2cDevice *_main = nullptr;
                 I2cDevice *_dsi = nullptr;
                 I2cDevice *_avi = nullptr;
+                uint8_t    _settle = 0;     // setSettle()'s
+                uint8_t    _settleUsed = 0; // the last configure()'s
+                uint32_t   _dds = 0;        // setDds()'s
 };
 
 BMDS_NAMESPACE_END

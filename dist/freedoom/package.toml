@@ -1,0 +1,10 @@
+# Freedoom (devplan/games.md §19): free game data for Doom engines, Phase 1 (Doom's episodes) and
+# Phase 2 (Doom II's levels), installed into Doom's application folder (dist/doom).
+name = "freedoom"
+version = "0.13.0"
+description = "Freedoom: free levels, art, sounds and music for Doom (Phase 1 and Phase 2)"
+license = "BSD-3-Clause"
+source = "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip"
+sha256 = "3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db9688f59"
+license_files = ["COPYING.txt", "CREDITS.txt", "CREDITS-MUSIC.txt"]
+sdk = false

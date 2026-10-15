@@ -40,19 +40,51 @@ namespace {
                      0, 0, nullptr, checkTemplate)
 
         struct Copy {
-                        uint8_t *to = nullptr;
+                        uint8_t       *to = nullptr;
+                        size_t         bytes = 0; // its room
+                        const Scanout *scan = nullptr;
+                        uint16_t       width = 0; // what was taken
+                        uint16_t       height = 0;
+                        size_t         stride = 0;
         };
 
-        // The shown buffer into the copy (the CPU never writes it: no dirty lines to lose).
-        void copyShown(void *arg, const Surface &surface) {
-                auto          *copy = static_cast<Copy *>(arg);
-                const uint8_t *from = surface.shown();
-                const size_t   bytes = surface.stride() * surface.height();
+        void syncIn(const uint8_t *from, size_t bytes) {
                 for (size_t off = 0; off < bytes; off += SyncChunk)
                         (void)esp_cache_msync(const_cast<uint8_t *>(from) + off,
                                               bytes - off < SyncChunk ? bytes - off : SyncChunk,
                                               ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-                std::memcpy(copy->to, from, bytes);
+                return;
+        }
+
+        // What the scan shows into the copy (the CPU never writes a shown buffer: no dirty lines to
+        // lose): the desktop's @p surface, or a program's full screen in its place, at the mode
+        // sent (the desktop's, or the monitor's own: games.md §20), its rows repeated as the scan
+        // repeats them (line k shows row k × rows / lines). A full screen isn't freed meanwhile:
+        // leaving it needs the window manager's lock, held while this runs.
+        void copyShown(void *arg, const Surface &surface) {
+                auto          *copy = static_cast<Copy *>(arg);
+                const Surface *shown = copy->scan != nullptr ? copy->scan->surface() : nullptr;
+                if (shown != nullptr && shown != &surface && shown->height() > 0) {
+                        const uint32_t lines = copy->scan->timing().vActive;
+                        const size_t   stride = shown->stride();
+                        const uint32_t rows = shown->height();
+                        if (rows <= lines && stride * lines <= copy->bytes) {
+                                const uint8_t *from = shown->shown();
+                                syncIn(from, stride * rows);
+                                for (uint32_t k = 0; k < lines; ++k)
+                                        std::memcpy(copy->to + size_t(k) * stride,
+                                                    from + size_t(uint64_t(k) * rows / lines) * stride, stride);
+                                copy->width = shown->width();
+                                copy->height = uint16_t(lines);
+                                copy->stride = stride;
+                                return;
+                        }
+                }
+                syncIn(surface.shown(), surface.stride() * surface.height());
+                std::memcpy(copy->to, surface.shown(), surface.stride() * surface.height());
+                copy->width = surface.width();
+                copy->height = surface.height();
+                copy->stride = surface.stride();
                 return;
         }
 
@@ -141,11 +173,13 @@ Error Screenshot::save(String &path, int level, uint8_t flags, const Vfs::Contex
         const uint64_t start = System::uptimeUs();
         Copy           copy;
         copy.to = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, bytes));
+        copy.bytes = bytes;
+        copy.scan = &d->scanout();
         if (copy.to == nullptr) {
                 report.failed = "copy";
                 return Error::NoMem;
         }
-        // The desktop's last round whole; without one, the surface as it is.
+        // The desktop's last round whole (or a full screen's latest); without one, the surface as it is.
         Error err;
         auto [wm, werr] = WindowManager::manager(0);
         if (werr.isOk() && wm->isRunning()) {
@@ -154,8 +188,8 @@ Error Screenshot::save(String &path, int level, uint8_t flags, const Vfs::Contex
                 copyShown(&copy, surface);
         }
         report.copyUs = uint32_t(System::uptimeUs() - start);
-        report.width = surface.width();
-        report.height = surface.height();
+        report.width = copy.width;
+        report.height = copy.height;
         if (err.isError()) {
                 Memory::free(copy.to);
                 report.failed = "capture";
@@ -187,9 +221,9 @@ Error Screenshot::save(String &path, int level, uint8_t flags, const Vfs::Contex
                 if (err.isOk()) {
                         ImageBuffer in;
                         in.pixels = copy.to;
-                        in.width = surface.width();
-                        in.height = surface.height();
-                        in.stride = surface.stride();
+                        in.width = copy.width;
+                        in.height = copy.height;
+                        in.stride = copy.stride;
                         in.format = PixelFormat::Bgr24;
                         Counted counted{&*file};
                         err = codec->encode(in, JpegCodec::Encode{}, countedToFile, &counted, WaitForever);
@@ -197,8 +231,7 @@ Error Screenshot::save(String &path, int level, uint8_t flags, const Vfs::Contex
                         report.stats.compressUs = uint32_t(System::uptimeUs() - start) - report.copyUs;
                 }
         } else if (err.isOk()) {
-                err = Png::write(copy.to, surface.width(), surface.height(), surface.stride(), level, toFile, &*file,
-                                 &report.stats);
+                err = Png::write(copy.to, copy.width, copy.height, copy.stride, level, toFile, &*file, &report.stats);
         }
         Memory::free(copy.to);
         file.reset(); // closed: written out

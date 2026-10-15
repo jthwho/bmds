@@ -376,12 +376,13 @@ void Scanout::stop() {
 // The descriptors' plan for @p surface: as many blocks (up to MaxBlocks) as divide the frame's
 // lines when it is the mode's height; shorter, a descriptor per line, its rows repeated, each
 // interrupting (setLineInterrupts() to try fewer).
-Error Scanout::planFor(const Surface &surface, Plan &plan) const {
-        const VideoTiming &t = _config.timing;
+Error Scanout::planFor(const Surface &surface, const VideoTiming &t, Plan &plan) const {
         if (!surface.isStarted() || surface.width() != t.hActive || surface.height() == 0 ||
             surface.height() > t.vActive)
                 return Error::Invalid;
         Plan p;
+        p.timing = t;
+        p.lanes = _config.lanes;
         p.stride = surface.stride();
         p.rows = surface.height();
         if (p.rows == t.vActive) {
@@ -407,6 +408,8 @@ Error Scanout::planFor(const Surface &surface, Plan &plan) const {
 }
 
 void Scanout::apply(const Plan &plan) {
+        _config.timing = plan.timing;
+        _config.lanes = plan.lanes;
         _stride = plan.stride;
         _rows = plan.rows;
         _items = plan.items;
@@ -418,7 +421,7 @@ void Scanout::apply(const Plan &plan) {
 
 Error Scanout::layOut(const Surface &surface) {
         Plan        plan;
-        const Error err = planFor(surface, plan);
+        const Error err = planFor(surface, _config.timing, plan);
         if (err.isOk()) apply(plan);
         return err;
 }
@@ -486,11 +489,24 @@ Error Scanout::buildList() {
 Error Scanout::show(Surface &surface, unsigned int timeoutMs) {
         if (!_running) return Error::InvalidState;
         if (&surface == _surface) return Error::Ok;
-        const VideoTiming &t = _config.timing;
-        if (!surface.isStarted() || surface.width() != t.hActive || surface.height() == 0 ||
-            surface.height() > t.vActive)
+        if (!surface.isStarted() || surface.height() == 0) return Error::Invalid; // its size: planFor()'s
+        while (_switched.tryAcquire().isOk()) {}
+        _requestHasTiming = false;
+        _request.store(&surface, std::memory_order_release);
+        _wake.release();
+        const Error err = _switched.acquire(timeoutMs);
+        return err.isOk() ? _switchResult : err;
+}
+
+Error Scanout::show(Surface &surface, const VideoTiming &timing, uint8_t lanes, unsigned int timeoutMs) {
+        if (!_running) return Error::InvalidState;
+        if (!surface.isStarted() || surface.width() != timing.hActive || surface.height() == 0 ||
+            surface.height() > timing.vActive || timing.pixelKhz < 1000 || lanes > MIPI_DSI_LL_MAX_DATA_LANES)
                 return Error::Invalid;
         while (_switched.tryAcquire().isOk()) {}
+        _requestTiming = timing;
+        _requestLanes = lanes;
+        _requestHasTiming = true;
         _request.store(&surface, std::memory_order_release);
         _wake.release();
         const Error err = _switched.acquire(timeoutMs);
@@ -843,12 +859,22 @@ void Scanout::resync() {
 void Scanout::switchSurface() {
         Surface *next = _request.exchange(nullptr, std::memory_order_acq_rel);
         if (next == nullptr) return;
-        Surface *old = _surface;
-        // The new plan and surface are taken by rebuild() once the link is down: the interrupt reads
-        // them, and the old list runs until then (a plan changed earlier walked it with the new
-        // one's count: a store into a chunk it doesn't have).
+        Surface          *old = _surface;
+        const VideoTiming oldTiming = _config.timing;
+        const uint8_t     oldLanes = _config.lanes;
+        const VideoTiming timing = _requestHasTiming ? _requestTiming : oldTiming;
+        const uint8_t     lanes = _requestHasTiming && _requestLanes != 0 ? _requestLanes : oldLanes;
+        if (next == old && timing == oldTiming && lanes == oldLanes) {
+                _switchResult = Error::Ok;
+                _switched.release();
+                return;
+        }
+        // The new plan (and timing) and surface are taken by rebuild() once the link is down: the
+        // interrupt reads them, and the old list runs until then (a plan changed earlier walked it
+        // with the new one's count: a store into a chunk it doesn't have).
         Plan  plan;
-        Error err = planFor(*next, plan);
+        Error err = planFor(*next, timing, plan);
+        plan.lanes = lanes;
         if (err.isOk()) {
                 // The new descriptors made before the link comes down: without memory for them,
                 // nothing changes on the screen.
@@ -872,17 +898,22 @@ void Scanout::switchSurface() {
                                 Memory::free(_prepared);
                                 _prepared = nullptr;
                         }
-                        if (planFor(*old, _nextPlan).isOk()) {
+                        if (planFor(*old, oldTiming, _nextPlan).isOk()) {
+                                _nextPlan.lanes = oldLanes;
                                 _nextSurface = old;
                                 (void)rebuild();
                         }
                 }
         }
         if (err.isOk()) {
-                old->setScanning(false); // its pending swap made now
-                next->setScanning(true);
+                if (old != next) {
+                        old->setScanning(false); // its pending swap made now
+                        next->setScanning(true);
+                }
                 // Kept until the new surface has run cleanly for a while (supervise()).
                 _fallback = old;
+                _fallbackTiming = oldTiming;
+                _fallbackLanes = oldLanes;
                 _fallbackStalls = _stalls.load(std::memory_order_relaxed);
                 _fallbackUs = esp_timer_get_time();
         }
@@ -895,13 +926,18 @@ void Scanout::switchSurface() {
 void Scanout::fallBack() {
         Surface *next = _fallback;
         _fallback = nullptr;
-        if (next == nullptr || next == _surface) return;
+        if (next == nullptr ||
+            (next == _surface && _fallbackTiming == _config.timing && _fallbackLanes == _config.lanes))
+                return;
         Surface *bad = _surface;
-        if (planFor(*next, _nextPlan).isError()) return;
-        _nextSurface = next; // taken with its plan once the link is down
+        if (planFor(*next, _fallbackTiming, _nextPlan).isError()) return;
+        _nextPlan.lanes = _fallbackLanes;
+        _nextSurface = next; // taken with its plan (and timing) once the link is down
         (void)rebuild();
-        bad->setScanning(false);
-        next->setScanning(true);
+        if (bad != next) {
+                bad->setScanning(false);
+                next->setScanning(true);
+        }
         ++_fallbacks;
         return;
 }

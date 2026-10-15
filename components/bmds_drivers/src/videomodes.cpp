@@ -23,6 +23,8 @@ namespace {
         // pixel kHz, h active/front/sync/back, v active/front/sync/back, h+, v+.
         constexpr Standard Standards[] = {
                 {60, {25'175, 640, 16, 96, 48, 480, 10, 2, 33, false, false, false}},   // DMT
+                {70, {25'175, 640, 16, 96, 48, 400, 12, 2, 35, false, true, false}},    // VGA's mode 13h
+                {70, {28'322, 720, 18, 108, 54, 400, 12, 2, 35, false, true, false}},   // DMT
                 {60, {40'000, 800, 40, 128, 88, 600, 1, 4, 23, true, true, false}},     // DMT
                 {60, {65'000, 1024, 24, 136, 160, 768, 3, 6, 29, false, false, false}}, // DMT
                 {60, {74'250, 1280, 110, 40, 220, 720, 5, 5, 20, true, true, false}},   // CEA 4
@@ -97,18 +99,39 @@ Result<VideoTiming> VideoModes::timing(uint16_t width, uint16_t height, uint16_t
         return makeResult(cvtReducedBlanking(width, height, hz));
 }
 
+Result<VideoTiming> VideoModes::fullScreen(uint16_t width, uint16_t height, uint32_t aspectX, uint32_t aspectY,
+                                           const Edid &monitor) {
+        // VGA's modes, shown at 4:3: a picture fills one exactly by whole factors at its own shape.
+        struct Candidate {
+                        uint16_t width, height, hz;
+        };
+        constexpr Candidate Candidates[] = {{640, 400, 70}, {640, 480, 60}, {720, 400, 70}};
+        if (width == 0 || height == 0) return makeError<VideoTiming>(Error::Invalid);
+        // Its shape in thousandths: its aspect, or square pixels.
+        const uint64_t shape =
+                aspectX != 0 && aspectY != 0 ? uint64_t(aspectX) * 1000 / aspectY : uint64_t(width) * 1000 / height;
+        for (const Candidate &c : Candidates) {
+                if (c.width % width != 0 || c.height % height != 0) continue;
+                if (shape * 100 < 1333 * 98 || shape * 100 > 1333 * 102) continue; // 4:3, within 2 %
+                auto [t, err] = timing(c.width, c.height, c.hz);
+                if (err.isOk() && monitor.takes(t)) return makeResult(t);
+        }
+        return makeError<VideoTiming>(Error::NotFound);
+}
+
 Result<VideoTiming> VideoModes::fitToClock(const VideoTiming &timing, const uint32_t *sourceKhz, size_t sources,
-                                           uint32_t maxKhz) {
+                                           uint32_t minKhz, uint32_t maxKhz) {
         constexpr uint32_t MaxHTotal = 4095;
         const uint32_t     milliHz = timing.refreshMilliHz();
         if (milliHz == 0) return makeError<VideoTiming>(Error::Invalid);
-        // The slowest divided clock at least as fast as the timing's own.
+        // The slowest divided clock at least as fast as the timing's own (and @p minKhz).
+        const uint32_t floorKhz = timing.pixelKhz > minKhz ? timing.pixelKhz : minKhz;
         uint32_t best = 0;
         for (size_t i = 0; i < sources; ++i) {
                 for (uint32_t div = 1; div <= 256; ++div) {
                         if (sourceKhz[i] % div != 0) continue;
                         const uint32_t khz = sourceKhz[i] / div;
-                        if (khz < timing.pixelKhz) break;
+                        if (khz < floorKhz) break;
                         if (khz <= maxKhz && (best == 0 || khz < best)) best = khz;
                 }
         }

@@ -67,13 +67,44 @@ class Display {
                  */
                 Error start(const VideoTiming &mode, Surface::Buffering buffering);
 
+                /**
+                 * @brief Sends @p surface (started, @p mode's width, at most its height) in
+                 *        @p mode (fitted by `fitMode()` for @p lanes, at least @p minKhz) over
+                 *        @p lanes DSI lanes (0: the board's): the link rebuilt at its clock, the
+                 *        monitor resyncing; surface 0 kept as it is (`devplan/games.md` §20).
+                 * @return `Ok`, `NotSupported`, `Invalid`, or the scanout's error.
+                 * @blocking
+                 */
+                Error show(Surface &surface, const VideoTiming &mode, uint8_t lanes, uint32_t minKhz,
+                           unsigned int timeoutMs);
+
+                /**
+                 * @brief As `fitMode()`, for @p lanes DSI lanes (0: the board's), at least
+                 *        @p minKhz (0: none).
+                 */
+                static Result<VideoTiming> fitMode(const VideoTiming &mode, uint8_t lanes, uint32_t minKhz);
+
+                /** @brief Sends surface 0 again in its own mode (after `show()`). @blocking */
+                Error showDesktop(unsigned int timeoutMs);
+
+                /**
+                 * @brief Reads the monitor's EDID (the base block and its first extension) over
+                 *        the bridge's bus.
+                 * @return The EDID, or the bus's error, `Invalid` (a damaged block).
+                 * @blocking
+                 */
+                Result<Edid> monitor();
+
+                /** @brief Reads EDID block @p n (0 or 1) on @p bus into @p block. @blocking */
+                static Error readEdidBlock(I2cBus &bus, uint8_t n, uint8_t (&block)[Edid::BlockBytes]);
+
                 /** @brief Stops the picture and frees surface 0. Idempotent. */
                 void stop();
 
                 /** @brief Returns true while showing. */
                 bool isRunning() const { return _scanout.isRunning(); }
 
-                /** @brief Returns the mode running (as fitted). */
+                /** @brief Returns surface 0's mode (as fitted; `scanout().timing()`: the one sent). */
                 const VideoTiming &timing() const { return _timing; }
 
                 /** @brief Returns surface 0. */

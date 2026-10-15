@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 #include <esp_cache.h>
 #include <bmds/board.h>
 #include <bmds/command.h>
@@ -40,8 +41,6 @@ namespace {
 
         using Args = Span<char *const>;
 
-        constexpr uint8_t      EdidAddress = 0x50;
-        constexpr uint32_t     DdcHz = 100'000; // DDC's standard clock
         constexpr unsigned int TimeoutMs = 100;
 
         // Modes by name.
@@ -99,10 +98,7 @@ namespace {
         }
         // EDID block @p n (0 or 1) from the monitor, over the bridge's bus.
         Error readEdid(I2cBus &bus, uint8_t n, uint8_t (&block)[Edid::BlockBytes]) {
-                auto [ddc, err] = bus.device(EdidAddress, DdcHz, TimeoutMs);
-                if (err.isError()) return err;
-                const uint8_t offset = static_cast<uint8_t>(n * Edid::BlockBytes);
-                return ddc->writeRead(ByteSpan(&offset, 1), WritableByteSpan(block, sizeof(block)), TimeoutMs);
+                return Display::readEdidBlock(bus, n, block);
         }
         void printTiming(CommandContext &ctx, const VideoTiming &t, const char *note) {
                 const uint32_t mhz = t.refreshMilliHz();
@@ -406,6 +402,116 @@ namespace {
                 Memory::free(strip);
                 if (err.isOk()) err = surface.present(TimeoutMs).error();
                 return err;
+        }
+
+        // display try MODE [NAME=VALUE...]: the test picture (a white frame round it) in another
+        // mode, for 10 seconds (seconds=), then the desktop's mode again; the link's lanes, the
+        // bridge's settle and DDS word, a minimum pixel clock and the sync widths changeable. For
+        // trying what the bridge and a monitor take (devplan/games.md §20).
+        int runTry(CommandContext &ctx, Args args) {
+                Display *d = running(ctx);
+                if (d == nullptr) return Shell::ExitFailure;
+                if (args.size() < 3) return ctx.usage();
+                auto [parsed, merr] = VideoModes::parse(StringView(args[2]));
+                if (merr.isError()) {
+                        ctx.eprintf("display: %s: not a mode (WIDTHxHEIGHT@HZ)\n", args[2]);
+                        return Shell::ExitFailure;
+                }
+                VideoTiming mode = parsed;
+                // Then NAME=VALUE: lanes, seconds, settle, dds, min (MHz), vsync and hsync (taken
+                // from or given to the back porch: the totals stay).
+                unsigned lanes = 0, seconds = 10, settle = 0;
+                uint16_t hBack = 0;
+                uint32_t dds = 0, minKhz = 0;
+                for (size_t i = 3; i < args.size(); ++i) {
+                        const char *eq = std::strchr(args[i], '=');
+                        if (eq == nullptr) return ctx.usage();
+                        const StringView    name(args[i], static_cast<size_t>(eq - args[i]));
+                        const unsigned long v = std::strtoul(eq + 1, nullptr, 0);
+                        if (name == "lanes") {
+                                lanes = static_cast<unsigned>(v);
+                        } else if (name == "seconds") {
+                                seconds = static_cast<unsigned>(v);
+                        } else if (name == "settle") {
+                                settle = static_cast<unsigned>(v);
+                        } else if (name == "dds") {
+                                dds = static_cast<uint32_t>(v);
+                        } else if (name == "min") {
+                                minKhz = static_cast<uint32_t>(v * 1000);
+                        } else if (name == "vsync" && v >= 1 && v < uint32_t(mode.vSync) + mode.vBack) {
+                                mode.vBack = static_cast<uint16_t>(mode.vBack + mode.vSync - v);
+                                mode.vSync = static_cast<uint16_t>(v);
+                        } else if (name == "hsync" && v >= 1 && v < uint32_t(mode.hSync) + mode.hBack) {
+                                mode.hBack = static_cast<uint16_t>(mode.hBack + mode.hSync - v);
+                                mode.hSync = static_cast<uint16_t>(v);
+                        } else if (name == "hback" && v >= 1) {
+                                hBack = static_cast<uint16_t>(v); // taken from the front porch once fitted
+                        } else {
+                                return ctx.usage();
+                        }
+                }
+                if (lanes > 4 || seconds == 0 || seconds > 600 || settle > 0x3f || dds > 0xffffff) return ctx.usage();
+                if (d->scanout().surface() != &d->surface()) {
+                        ctx.eprintf("display: another picture is shown (a full screen)\n");
+                        return Shell::ExitFailure;
+                }
+                auto [fittedMode, ferr] = Display::fitMode(mode, static_cast<uint8_t>(lanes), minKhz);
+                if (ferr.isError()) {
+                        ctx.eprintf("display: %s: %s\n", args[2], ferr.desc());
+                        return Shell::ExitFailure;
+                }
+                VideoTiming fitted = fittedMode;
+                if (hBack != 0) {
+                        const uint32_t room = uint32_t(fitted.hFront) + fitted.hBack;
+                        if (hBack >= room) return ctx.usage();
+                        fitted.hFront = static_cast<uint16_t>(room - hBack);
+                        fitted.hBack = hBack;
+                }
+                const unsigned n = lanes != 0 ? lanes : board().display.dsiLanes;
+                printTiming(ctx, fitted, "as sent");
+                ctx.printf("Link:     %u lanes at %u Mbps\n", n,
+                           static_cast<unsigned>(fitted.pixelKhz * 24 / n / 1000));
+                void *memory = Memory::alloc(MemSpace::Psram, sizeof(Surface));
+                if (memory == nullptr) return Shell::ExitFailure;
+                auto *surface = ::new (memory) Surface();
+                Error err = surface->start(fitted.hActive, fitted.vActive, Surface::Buffering::Double);
+                if (err.isOk()) err = drawTestPicture(*surface);
+                // A white frame: the picture's edges, to see the monitor's cropping and scaling.
+                const uint16_t w = fitted.hActive, h = fitted.vActive;
+                const Rect     edges[4] = {
+                        {0, 0, w, 2}, {0, uint16_t(h - 2), w, 2}, {0, 0, 2, h}, {uint16_t(w - 2), 0, 2, h}};
+                for (const Rect &r : edges)
+                        if (err.isOk()) err = surface->fill(r, 0xffffff, TimeoutMs);
+                if (err.isOk()) err = surface->present(TimeoutMs).error();
+                d->bridge().setSettle(static_cast<uint8_t>(settle));
+                d->bridge().setDds(dds);
+                // Already fitted: refitting keeps it (its clock is one the PLLs make).
+                if (err.isOk()) err = d->show(*surface, fitted, static_cast<uint8_t>(lanes), minKhz, 1000);
+                if (err.isOk()) {
+                        ctx.printf("Showing for %u s (the bridge's settle 0x%02x)\n", seconds,
+                                   static_cast<unsigned>(d->bridge().settle()));
+                        Task::sleep(seconds > 2 ? 2000 : seconds * 1000);
+                        uint16_t first = 0, lines = 0;
+                        if (d->bridge().measured(first, lines).isOk())
+                                ctx.printf("Bridge:   measures 0x9c-9d %u, lines a frame %u (sent %u)\n",
+                                           static_cast<unsigned>(first), static_cast<unsigned>(lines),
+                                           static_cast<unsigned>(fitted.vTotal()));
+                        if (seconds > 2) Task::sleep((seconds - 2) * 1000);
+                        const Scanout::Stats st = d->scanout().stats();
+                        ctx.printf("Scan:     %u underruns, %u stalls, %u resyncs, %u fallbacks\n",
+                                   static_cast<unsigned>(st.underruns), static_cast<unsigned>(st.stalls),
+                                   static_cast<unsigned>(st.resyncs), static_cast<unsigned>(st.fallbacks));
+                }
+                d->bridge().setSettle(0);
+                d->bridge().setDds(0);
+                const Error back = d->showDesktop(1000);
+                surface->~Surface();
+                Memory::free(memory);
+                if (err.isError() || back.isError()) {
+                        ctx.eprintf("display: %s\n", (err.isError() ? err : back).desc());
+                        return Shell::ExitFailure;
+                }
+                return Shell::ExitSuccess;
         }
 
         int runTestPicture(CommandContext &ctx) {
@@ -761,6 +867,7 @@ namespace {
                 if (args.size() == 2 && std::strcmp(what, "off") == 0) return runOff(ctx);
                 if (args.size() == 2 && std::strcmp(what, "stats") == 0) return runStats(ctx);
                 if (args.size() == 2 && std::strcmp(what, "test") == 0) return runTestPicture(ctx);
+                if (std::strcmp(what, "try") == 0) return runTry(ctx, args);
                 if (std::strcmp(what, "fill") == 0) return runFill(ctx, args);
                 if (args.size() <= 3 && std::strcmp(what, "present") == 0)
                         return runPresent(ctx, args.size() == 3 ? args[2] : nullptr);
@@ -774,11 +881,13 @@ namespace {
 } // namespace
 
 BMDS_SHELL_COMMAND(display, runDisplay,
-                   "[edid [raw]|scan|start|off|stats|test|fill X Y W H RRGGBB|"
+                   "[edid [raw]|scan|start|off|stats|test|try WxH@HZ [lanes=N seconds=N settle=N dds=N min=MHZ vsync=N "
+                   "hsync=N hback=N]|fill X Y W H RRGGBB|"
                    "present [N]|anim [start [N]|stop]|stress psram|write|internal|ppa [soak SECONDS|path]|rows N "
                    "[stripes] [irq K]]",
                    "Show the HDMI bridge and the monitor; 'edid' decodes the monitor's EDID ('raw': its bytes), "
                    "'scan' lists the bus, 'start' shows surface 0 (sysconf's display/mode and display/buffering), "
-                   "'test', 'fill' and 'anim' draw on it, 'ppa' measures the PPA")
+                   "'test', 'fill' and 'anim' draw on it, 'try' shows a test picture in another mode for a while, "
+                   "'ppa' measures the PPA")
 
 BMDS_NAMESPACE_END

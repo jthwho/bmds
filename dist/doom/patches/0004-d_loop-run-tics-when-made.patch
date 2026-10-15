@@ -1,0 +1,20 @@
+d_loop: run the tics waited for as soon as they are made
+
+TryRunTics() waits in a loop of NetUpdate() and I_Sleep(1); after the sleep the new tic is made,
+but the clock has moved too, so it returned to "update the screen" without running it: each tic
+was drawn twice (BMDS: 63 presents a second at 35 tics, a third of them never shown).
+
+--- a/doomgeneric/d_loop.c	2026-10-11 06:12:25.000000000 -0700
++++ b/doomgeneric/d_loop.c	2026-10-14 21:37:58.023755308 -0700
+@@ -773,6 +773,11 @@
+ 	if (lowtic < gametic/ticdup)
+ 	    I_Error ("TryRunTics: lowtic < gametic");
+ 
++        // The tics waited for are here: run them now, rather than return
++        // below because the clock moved meanwhile and draw this frame twice.
++        if (PlayersInGame() && lowtic >= gametic/ticdup + counts)
++            break;
++
+         // Don't stay in this loop forever.  The menu is still running,
+         // so return to update the screen
+ 

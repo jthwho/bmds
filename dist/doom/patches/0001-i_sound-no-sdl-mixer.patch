@@ -1,0 +1,18 @@
+i_sound: no SDL_mixer
+
+With FEATURE_SOUND it includes SDL_mixer.h, which nothing in it uses: the sound and music modules
+are the platform's (DG_sound_module, DG_music_module: programs/doom/sound.c).
+
+--- a/doomgeneric/i_sound.c	2026-10-11 06:12:25.000000000 -0700
++++ b/doomgeneric/i_sound.c	2026-10-14 20:02:12.550555753 -0700
+@@ -18,10 +18,6 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ 
+-#if defined(FEATURE_SOUND) && !defined(__DJGPP__)
+-#include <SDL_mixer.h>
+-#endif
+-
+ #include "config.h"
+ #include "doomfeatures.h"
+ #include "doomtype.h"

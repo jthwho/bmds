@@ -19,6 +19,11 @@ namespace {
 
         constinit StaticObject<Display> displays[Display::MaxDisplays];
 
+        // The monitor's EDID on the DDC bus (the bridge's I2C).
+        constexpr uint8_t      EdidAddress = 0x50;
+        constexpr uint32_t     DdcHz = 100'000; // DDC's standard clock
+        constexpr unsigned int DdcTimeoutMs = 100;
+
         // The pixel clocks the DPI clock divides from (its PLLs), kHz.
         constexpr uint32_t Plls[] = {240'000, 160'000};
 
@@ -222,9 +227,13 @@ void Display::adjustStats(void *arg, size_t index, Stat::Limits &limits) {
 }
 
 Result<VideoTiming> Display::fitMode(const VideoTiming &mode) {
+        return fitMode(mode, 0, 0);
+}
+
+Result<VideoTiming> Display::fitMode(const VideoTiming &mode, uint8_t lanes, uint32_t minKhz) {
         // The link carries 24 bits a pixel, 1.5 Gbps a lane at most.
-        const uint32_t maxKhz = board().display.dsiLanes * 1'500'000u / 24u;
-        auto [fitted, err] = VideoModes::fitToClock(mode, Plls, sizeof(Plls) / sizeof(Plls[0]), maxKhz);
+        const uint32_t maxKhz = (lanes != 0 ? lanes : board().display.dsiLanes) * 1'500'000u / 24u;
+        auto [fitted, err] = VideoModes::fitToClock(mode, Plls, sizeof(Plls) / sizeof(Plls[0]), minKhz, maxKhz);
         if (err.isError()) return makeError<VideoTiming>(Error::NotSupported);
         return makeResult(fitted);
 }
@@ -250,6 +259,35 @@ Error Display::start(const VideoTiming &mode, Surface::Buffering buffering) {
         return err;
 }
 
+Error Display::show(Surface &surface, const VideoTiming &mode, uint8_t lanes, uint32_t minKhz, unsigned int timeoutMs) {
+        const uint8_t n = lanes != 0 ? lanes : board().display.dsiLanes;
+        auto [timing, err] = fitMode(mode, n, minKhz);
+        if (err.isError()) return err;
+        return _scanout.show(surface, timing, n, timeoutMs);
+}
+
+Error Display::showDesktop(unsigned int timeoutMs) {
+        return _scanout.show(_surface, _timing, board().display.dsiLanes, timeoutMs);
+}
+
+Error Display::readEdidBlock(I2cBus &bus, uint8_t n, uint8_t (&block)[Edid::BlockBytes]) {
+        auto [ddc, err] = bus.device(EdidAddress, DdcHz, DdcTimeoutMs);
+        if (err.isError()) return err;
+        const uint8_t offset = static_cast<uint8_t>(n * Edid::BlockBytes);
+        return ddc->writeRead(ByteSpan(&offset, 1), WritableByteSpan(block, sizeof(block)), DdcTimeoutMs);
+}
+
+Result<Edid> Display::monitor() {
+        uint8_t     block[Edid::BlockBytes];
+        const Error err = readEdidBlock(_bridge.bus(), 0, block);
+        if (err.isError()) return makeError<Edid>(err);
+        auto [edid, perr] = Edid::parse(ByteSpan(block, sizeof(block)));
+        if (perr.isError()) return makeError<Edid>(perr);
+        if (edid.extensions > 0 && readEdidBlock(_bridge.bus(), 1, block).isOk())
+                (void)edid.parseExtension(ByteSpan(block, sizeof(block)));
+        return makeResult(edid);
+}
+
 void Display::stop() {
         _scanout.stop();
         _surface.stop();
@@ -263,10 +301,11 @@ Error Display::claim(const char *owner) {
 }
 
 // A rebuilt DSI link: the bridge set up again, as at the start (after a link
-// drop its receiver alone doesn't always lock).
+// drop its receiver alone doesn't always lock), at the timing now sent (a
+// program's full-screen mode, or surface 0's).
 void Display::onLinkRestart(void *arg) {
         auto &self = *static_cast<Display *>(arg);
-        if (self._bridge.configure(self._timing, board().display.dsiLanes, true).isOk())
+        if (self._bridge.configure(self._scanout.timing(), self._scanout.lanes(), true).isOk())
                 (void)self._bridge.resetReceiver();
         return;
 }

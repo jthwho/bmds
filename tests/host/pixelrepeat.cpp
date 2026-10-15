@@ -49,3 +49,28 @@ TEST_CASE("Pixels::expandIndexed looks each index up as B, G, R") {
         for (size_t i = 0; i < 18; ++i) CHECK(out[i] == want[i]);
         CHECK(out[18] == 0x5a);
 }
+
+TEST_CASE("Pixels::expandIndexed's word paths match a byte at a time") {
+        std::vector<uint32_t> palette(256);
+        for (uint32_t i = 0; i < 256; ++i) palette[i] = 0xff000000u | (i * 0x9e3779b1u >> 8); // the top byte ignored
+        uint8_t in[13];
+        for (size_t i = 0; i < sizeof(in); ++i) in[i] = uint8_t(i * 37 + 11);
+        for (unsigned times = 1; times <= 8; ++times) {
+                for (size_t count = 0; count <= sizeof(in); ++count) {
+                        for (size_t shift = 0; shift < 4; ++shift) { // the output's alignment
+                                std::vector<uint8_t> buf(shift + 3 * times * count + 1, 0x5a);
+                                Pixels::expandIndexed(in, count, palette.data(), buf.data() + shift, times);
+                                bool same = true;
+                                for (size_t i = 0; i < count * times; ++i) {
+                                        const uint32_t c = palette[in[i / times]];
+                                        const uint8_t *p = buf.data() + shift + 3 * i;
+                                        same = same && p[0] == uint8_t(c) && p[1] == uint8_t(c >> 8) &&
+                                               p[2] == uint8_t(c >> 16);
+                                }
+                                CHECK(same);
+                                CHECK(buf[shift + 3 * times * count] == 0x5a); // nothing past the end
+                                for (size_t i = 0; i < shift; ++i) CHECK(buf[i] == 0x5a);
+                        }
+                }
+        }
+}

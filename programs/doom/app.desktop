@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Doom
+Comment=The 1993 first-person shooter (doomgeneric), with Freedoom or your own WADs
+Exec=doom
+Icon=biohazard
+Categories=Game;
+X-BMDS-Id=doom
+X-BMDS-Display=FullScreen

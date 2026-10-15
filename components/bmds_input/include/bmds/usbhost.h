@@ -92,6 +92,18 @@ class UsbHost {
                                 uint32_t mice = 0;       ///< Mice attached now.
                                 uint32_t rearmFailures =
                                         0; ///< HID transfers that couldn't be asked for again (retried).
+                                uint32_t unhandledHalts = 0; ///< The controller's halts of no known cause (retried).
+                                uint32_t unhandledHcint = 0; ///< The last one's channel interrupt bits.
+                };
+
+                /** @brief A HID interface's state (`hids()`). */
+                struct HidState {
+                                uint8_t  address = 0;
+                                uint8_t  instance = 0;
+                                bool     keyboard = false; ///< Else a mouse.
+                                bool     armed = false;    ///< A report transfer is asked for.
+                                uint32_t reports = 0;      ///< Reports received.
+                                uint32_t sinceMs = 0;      ///< Since the last report (or attaching).
                 };
 
                 /**
@@ -125,6 +137,13 @@ class UsbHost {
                  * @return How many were copied.
                  */
                 size_t devices(Span<DeviceInfo> out);
+
+                /**
+                 * @brief Copies the HID interfaces' states into @p out (read as the host's task
+                 *        changes them: a diagnostic).
+                 * @return How many were copied.
+                 */
+                size_t hids(Span<HidState> out);
 
                 /** @brief Returns the counters. */
                 Stats stats();
@@ -166,6 +185,8 @@ class UsbHost {
                                 uint32_t        attachedMs = 0;         // uptime when it was attached
                                 bool            armed = false;          // a report transfer asked for
                                 uint32_t        retryMs = 0;            // when to ask again (not armed)
+                                uint32_t        lastMs = 0;             // uptime at its last report (or attaching)
+                                uint32_t        reports = 0;
                                 KeyboardDecoder keys;
                                 MouseLayout     layout; // a mouse's, from its report descriptor
                 };

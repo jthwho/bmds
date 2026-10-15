@@ -369,3 +369,12 @@ Superseded for text by `windows.md` (2026-10-05): a desktop with windows, the te
 - **A crash on a mode change, from IDF's DW-GDMA teardown** (2026-10-05): `display test 1024x576@60 fb565` straight after a 960×540 run panicked with a load access fault in IDF's shared-interrupt handler, reading 0x50081030, the DW-GDMA's interrupt status register. IDF's `channel_destroy()` (`esp_hw_support/dma/dw_gdma.c`) releases the DMA group first, which turns the DW-GDMA's bus clock off with the last channel, and only then frees the channel's shared interrupt; an interrupt on that line in between reads the status register with the clock off. The scanout now masks and clears its channel's interrupts before deleting it, and holds an idle DW-GDMA channel for good (no interrupt, never started; one of the 4 channels) so the group and its clock outlive the scanout's channel. 60 mode changes afterwards (720p, 960×540 and 1024×576 framebuffers, the CPU path, `test off`), no fault; the crash itself came once, so that is evidence, not proof. Worth reporting to Espressif.
 - `display test` picks the lines a block when they aren't given: the most up to 24 (the framebuffer) or 8 that divide the mode's height (20 for 960×540), at least 4.
 - **960×540 at 60 Hz works on the monitor** (2026-10-05, the user's report; ASUS VE248): CVT reduced blanking fitted to 40 MHz (h 960 127 32 80, v 540 3 5 8, 60.002 Hz), from the RGB565 framebuffer with 20-line blocks. The panel's 1920×1080 scales it by exactly 2; it needs 62 MB/s of PSRAM reads against 720p's 110. (1024×576 not reported on.)
+- **VGA's 31.5 kHz modes don't hold on the LT8912B** (2026-10-14, `games.md` §20a; the user
+  watching the ASUS VE248): `display try MODE [lanes= seconds= settle= dds= min= vsync= hsync=
+  hback=]` shows a test picture in any mode (switching the scan's timing and lanes, the desktop
+  kept) and reads what the bridge measures of its input (main 0x9e-0x9f, lines a frame, low byte
+  first). The bridge always measured the lines sent; the monitor showed 800×600@60 (40 MHz) and
+  1024×768@60 (80 MHz) but stayed black for 640×480@60, 640×400@70 and 720×400@70 at 30 MHz, with
+  any settle count, DDS word, lane count or vertical sync tried. A longer horizontal back porch
+  (160-300 at 40 MHz, against VGA's 48) brought a picture that still glitched every few seconds
+  to now and then. The bridge's datasheet is the next lead.

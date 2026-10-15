@@ -42,7 +42,10 @@ class Deadline {
                 /** @brief Returns true for a `WaitForever` deadline. */
                 bool isForever() const { return _expiresUs == Forever; }
 
-                /** @brief Returns the microseconds left: 0 once expired, `Forever` for `WaitForever`. */
+                /**
+                 * @brief Returns the microseconds left: 0 once expired, `Forever` for `WaitForever`.
+                 *        Check for 0 before making a timeout of it: 0 ms is `WaitForever`.
+                 */
                 int64_t remainingUs() const {
                         if (isForever()) return Forever;
                         const int64_t left = _expiresUs - Detail::monotonicUs();

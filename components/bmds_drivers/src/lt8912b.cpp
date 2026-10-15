@@ -104,12 +104,20 @@ Error Lt8912b::configure(const VideoTiming &t, uint8_t lanes, bool hdmi) {
         if (lanes < 1 || lanes > 4) return Error::Invalid;
         Error err = writeAll(*_main, PowerUp, TimeoutMs);
         // The DSI receiver: termination on, settle time, lanes (0 means 4).
+        _settleUsed = _settle != 0 ? _settle : 0x10;
         const RegValue receiver[] = {
-                {0x10, 0x01}, {0x11, 0x10}, {0x13, static_cast<uint8_t>(lanes & 3)}, {0x14, 0x00}, {0x15, 0x00},
+                {0x10, 0x01}, {0x11, _settleUsed}, {0x13, static_cast<uint8_t>(lanes & 3)}, {0x14, 0x00}, {0x15, 0x00},
                 {0x1a, 0x03}, {0x1b, 0x03},
         };
         if (err.isOk()) err = writeAll(*_dsi, receiver, TimeoutMs);
         if (err.isOk()) err = writeAll(*_dsi, Dds, TimeoutMs);
+        // A test aid: another DDS frequency word in place of the table's 0x3e2993 (setDds()).
+        if (err.isOk() && _dds != 0) {
+                const RegValue word[] = {{0x4e, static_cast<uint8_t>(_dds)},
+                                         {0x4f, static_cast<uint8_t>(_dds >> 8)},
+                                         {0x50, static_cast<uint8_t>(_dds >> 16)}};
+                err = writeAll(*_dsi, word, TimeoutMs);
+        }
         // The video timing the receiver expects.
         const uint32_t hTotal = t.hTotal();
         const uint32_t vTotal = t.vTotal();
@@ -148,6 +156,19 @@ Error Lt8912b::configure(const VideoTiming &t, uint8_t lanes, bool hdmi) {
         if (err.isOk()) err = writeAll(*_main, Bypass, TimeoutMs);
         if (err.isOk()) err = setOutput(true);
         return err;
+}
+
+Error Lt8912b::measured(uint16_t &first, uint16_t &lines) {
+        if (_main == nullptr) return Error::InvalidState;
+        uint8_t v[4] = {};
+        for (uint8_t i = 0; i < 4; ++i) {
+                auto [b, err] = _main->readRegister(static_cast<uint8_t>(0x9c + i), TimeoutMs);
+                if (err.isError()) return err;
+                v[i] = b;
+        }
+        first = static_cast<uint16_t>(v[1] << 8 | v[0]);
+        lines = static_cast<uint16_t>(v[3] << 8 | v[2]);
+        return Error::Ok;
 }
 
 Error Lt8912b::resetReceiver() {

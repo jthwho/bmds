@@ -119,6 +119,21 @@ class Scanout {
                 Error show(Surface &surface, unsigned int timeoutMs);
 
                 /**
+                 * @brief As `show()`, at @p timing (fitted to the clocks already, the surface its
+                 *        width and at most its height) over @p lanes data lanes (0: as now): the
+                 *        link rebuilt at its clock, the monitor resyncing. A surface that stalls
+                 *        falls back with the timing and lanes it had.
+                 * @blocking
+                 */
+                Error show(Surface &surface, const VideoTiming &timing, uint8_t lanes, unsigned int timeoutMs);
+
+                /** @brief Returns the timing being sent (the supervisor's task, or while stopped). */
+                const VideoTiming &timing() const { return _config.timing; }
+
+                /** @brief Returns the data lanes in use (the supervisor's task, or while stopped). */
+                uint8_t lanes() const { return _config.lanes; }
+
+                /**
                  * @brief Sets how often a line-mode descriptor interrupts: one in @p every
                  *        (0: every one, the default: fewer stopped swaps, games.md §14). Taken
                  *        at the next `show()`. A tuning aid (`display rows`).
@@ -150,6 +165,8 @@ class Scanout {
                                 uint32_t rows = 0;
                                 uint32_t irqEvery = 1;
                                 bool     lineMode = false;
+                                VideoTiming timing;
+                                uint8_t     lanes = 0;
                 };
 
                 static void supervisorTask(void *arg);
@@ -157,7 +174,8 @@ class Scanout {
                 Error       startLink();
                 Error       startDpi();
                 void        configureBridge();
-                Error       planFor(const Surface &surface, Plan &plan) const; // the descriptors' plan for @p surface
+                Error       planFor(const Surface &surface, const VideoTiming &timing,
+                                    Plan &plan) const; // the descriptors' plan for @p surface at @p timing
                 void        apply(const Plan &plan);
                 Error       layOut(const Surface &surface); // planFor() and apply(): the link down only
                 Error       buildList();                    // the DMA's list for the plan, on the shown buffer
@@ -203,7 +221,12 @@ class Scanout {
                 Semaphore              _wake{4, 0};
                 Semaphore              _switched{1, 0};
                 std::atomic<Surface *> _request{nullptr};   // show()'s
+                VideoTiming            _requestTiming;      // and its timing (written before _request)
+                uint8_t                _requestLanes = 0;   // and its lanes (0: as now)
+                bool                   _requestHasTiming = false;
                 Surface               *_fallback = nullptr; // the surface before a show(), while on probation
+                VideoTiming            _fallbackTiming;     // and its timing
+                uint8_t                _fallbackLanes = 0;  // and lanes
                 uint32_t               _fallbackStalls = 0; // the stalls when it was shown
                 int64_t                _fallbackUs = 0;
                 uint32_t               _fallbacks = 0;

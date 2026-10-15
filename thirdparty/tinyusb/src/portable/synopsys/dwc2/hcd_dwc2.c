@@ -113,6 +113,12 @@ typedef struct {
 } hcd_data_t;
 
 static hcd_data_t _hcd_data;
+
+// BMDS: halts none of the DMA handlers' causes cover, retried rather than left halted (a halted
+// channel nobody restarts leaves its endpoint busy for good: a keyboard falls silent). Counted for
+// the `usb` command (thirdparty/tinyusb/README.md).
+volatile uint32_t tuh_dwc2_unhandled_halts = 0;
+volatile uint32_t tuh_dwc2_unhandled_hcint = 0;
 static tuh_configure_dwc2_t _tuh_cfg = {.use_hs_phy = TUH_OPT_HIGH_SPEED};
 
 //--------------------------------------------------------------------
@@ -1225,6 +1231,19 @@ static bool handle_channel_in_dma(dwc2_regs_t* dwc2, uint8_t ch_id, uint32_t hci
     } else if (hcint & HCINT_FARME_OVERRUN) {
       // retry start-split in next binterval
       channel_xfer_in_retry(dwc2, ch_id, hcint);
+    } else {
+      // BMDS: no cause handled above: retried as a transaction error, then failed.
+      tuh_dwc2_unhandled_halts++;
+      tuh_dwc2_unhandled_hcint = hcint;
+      xfer->err_count++;
+      if (xfer->err_count >= HCD_XFER_ERROR_MAX) {
+        is_done = true;
+        xfer->result = XFER_RESULT_FAILED;
+      } else {
+        hcsplt.split_compl = 0;
+        channel->hcsplt = hcsplt.value;
+        channel_xfer_in_retry(dwc2, ch_id, hcint);
+      }
     }
 
     if (xfer->closing == 1) {
@@ -1312,6 +1331,18 @@ static bool handle_channel_out_dma(dwc2_regs_t* dwc2, uint8_t ch_id, uint32_t hc
       xfer->err_count = 0;
       channel_xfer_out_wrapup(dwc2, ch_id);
       channel_xfer_start(dwc2, ch_id);
+    } else if (!(hcint & (HCINT_NYET | HCINT_ACK))) {
+      // BMDS: no cause handled above: retried as a transaction error, then failed.
+      tuh_dwc2_unhandled_halts++;
+      tuh_dwc2_unhandled_hcint = hcint;
+      xfer->err_count++;
+      if (xfer->err_count >= HCD_XFER_ERROR_MAX) {
+        xfer->result = XFER_RESULT_FAILED;
+        is_done = true;
+      } else {
+        channel_xfer_out_wrapup(dwc2, ch_id);
+        channel_xfer_start(dwc2, ch_id);
+      }
     }
 
     if (xfer->closing == 1) {

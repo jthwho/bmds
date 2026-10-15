@@ -760,3 +760,144 @@ and bound there; a pad with them).
   with the fixes above) had no stall, no focus change and steady ticks (60 a second); one more
   `poll()` came back ~210 ms late. The tracing build was then replaced. If the stall comes back,
   rebuild that build from this section's description. The late `poll()` is still unexplained.
+
+## 19. Step 6 design: Doom (2026-10-14)
+
+Two recipes, nothing of Doom's or Freedoom's in the repository:
+
+- **`dist/doom`:** doomgeneric (GPL-2), pinned to a commit (its GitHub archive and sha256: it
+  has no releases), with our platform layer, `programs/doom/` (MIT, ours; the linked program is
+  GPL-2 as a whole and ships with doomgeneric's licence). Built with `$CC` as `apps/doom.app/doom`
+  with `app.desktop` (`X-BMDS-Display=FullScreen`). Patches: only what can't be done from the
+  platform layer (the SDL_mixer include in `i_sound.c`; `I_WaitVBL()`, empty, so the quit sound
+  plays out; the screen from the platform, `i_video.c`; tics run once made, `d_loop.c`: §20a).
+- **`dist/freedoom`:** Freedoom 0.13.0 (BSD), `freedoom1.wad` and `freedoom2.wad` (28.8 MB
+  each) into the same folder. Its release is a zip: `bmds-dist` learns to unpack one.
+
+**The platform layer** (doomgeneric's six `DG_` calls, and its sound and music modules):
+
+- **The picture:** doomgeneric built for 8 bits (`CMAP256`) at 320×200, so `I_FinishUpdate()`
+  copies Doom's screen straight into ours: an L8 surface, 320×200, three buffers in PSRAM, aspect
+  4:3, full screen suggested. Doom draws its screen in internal RAM (`DG_VideoBuffer()`, §20);
+  `I_FinishUpdate()` copies it into the buffer we hold acquired (`DG_ScreenBuffer` points at it),
+  `DG_DrawFrame()` presents it whole and acquires the next. Palette changes (the damage and pickup
+  flashes, the gamma) go to the surface before the present that shows them.
+- **Time:** Doom runs at 35 tics a second and every wait in it (`TryRunTics()`, the wipe) is a
+  loop of `I_Sleep(1)` until the tic count changes. `DG_SleepMs()` therefore sleeps at least
+  what it is asked and on to Doom's next tic (its clock's start is ours: our first
+  `DG_GetTicksMs()`), waiting on the surface's events meanwhile: a wake a tic, no 1 ms polling.
+- **Keys:** the surface's key events, by HID usage, into Doom's codes (arrows, Ctrl fire, Space
+  use, Alt strafe, Shift run, `,` `.` strafe, Tab map, Escape menu, Enter, F1-F12, digits,
+  letters, `-` `=`, Backspace, Pause) in a queue `DG_GetKey()` empties. Losing the focus lets go
+  of every key and button held, and pauses a game being played (Doom's own pause, its PAUSE
+  shown), resumed on the way back if it was ours.
+- **The mouse:** relative while playing a level (not in the menu, paused or a demo), hidden
+  otherwise. Its motion is summed and given to Doom once a tic (Doom keeps only the last motion
+  event of a tic); buttons as Doom's (fire, strafe, forward). Up and down don't walk (`novert`
+  on by default; the setting is Doom's own).
+- **Closing the window** (Alt+F4) quits as the menu's quit does, the settings saved.
+- **Files:** the data folder (`bmds_app_data_dir()`) is Doom's current directory: its settings
+  (`default.cfg`, `doomgeneric.cfg`), saves and screenshots. The game data: the first of Doom's
+  own list (`doom2.wad`, `plutonia.wad`, `tnt.wad`, `doom.wad`, `doom1.wad`, ..., `freedoom2.wad`,
+  `freedoom1.wad`) found in the data folder, then in the application folder, given as `-iwad`
+  unless the command line names one. The user's own WADs go in the data folder.
+- **Memory:** Doom's zone its default 6 MB, from PSRAM (§20: 8 MB didn't always find room).
+
+**Sound effects through `libbmdsgame`'s mixer**, not Doom's own (the plan in §6b): its sound
+module maps directly onto voices (a channel is a voice; volume 0-127 and separation 0-254 are
+volume and pan). A lump (DMX: 8-bit unsigned at 11025-44100 Hz, 16 bytes padding each end) is
+wrapped as a WAV in memory and loaded with `bmds_game_sound_load_memory()` the first time it is
+played. Resampled to 48 kHz, Freedoom 2's 109 sounds would take ~12 MB, so they are kept up to a
+budget (4 MB), the least recently played not playing freed first.
+
+**Music through the synth:** `RegisterSong()` takes a MIDI lump as it is (Freedoom's all are)
+or converts a MUS one (id's WADs) with doomgeneric's `mus2mid`; `PlaySong()` writes it to a
+file in `/tmp` and plays it with `bmds_game_music_play()`, looping. Doom's music volume is the
+music's; its pause mutes it, as Chocolate Doom's does. Measured: the synth's cost with the
+busiest tracks, a song's start, and sound memory after a level.
+
+## 20. Doom on the board: cost, and full screen in the monitor's own mode (2026-10-14)
+
+**Measured** (`prof`, 10 s, MAP01 standing; percent of one core):
+
+- First build: Doom's process ~74% (rendering ~30%, the synth ~10%, a 64 KB `memcpy` of Doom's
+  screen into the surface's buffer 7%); the kernel's conversion task 45-60%, nearly all
+  `Pixels::expandIndexed()` (L8 to RGB888, 3× across) at ~12 cycles an output pixel, byte stores
+  in a loop over the factor. The system saturated: the synth's thread, an ordinary one, starved,
+  and the user heard the music break up in full screen.
+- **Fixes:** the music's thread is real-time at the lowest priority (`SCHED_FIFO` 1: above games
+  and the display's work; 0 underruns since, its queue full); `expandIndexed()` packs four pixels
+  into 3 × factor words (factors 1-4; host-tested against the byte loop at every alignment):
+  ~7 cycles a pixel; Doom draws into internal RAM (a patch lets the platform give its screen),
+  the surface's buffers in PSRAM. After: the conversion ~25% of a core, Doom's process ~80% with
+  the music, idle ~40% of the two cores.
+- **What stays:** a CPU copy into PSRAM costs a line miss at a time (~2 ms for Doom's 64 KB);
+  the conversion is bound by memory, not arithmetic (word stores gained a third, not three
+  times).
+- Doom's zone is its default 6 MB: PSRAM is in pieces (22 MB free, the largest 8 MB), so 8 MB
+  failed beside the synth's font (~6 MB in one piece, loaded before the zone is taken).
+
+**Design: the monitor's own mode for a picture that fills one.** Scaling 320×200 to 720p costs
+192,000 converted pixels a frame, and 35 frames a second can't be paced evenly into 60. VGA's
+mode 13h was 320×200 doubled to 640×400 at 70 Hz: Doom's 35 frames are exactly every other
+refresh, and the conversion is 128,000 pixels (2× across; rows repeated by the scan).
+
+- **When:** entering full screen, a mode the picture fills exactly by whole factors both ways at
+  its own shape (its aspect, or square pixels), the mode shown at 4:3 (VGA's modes) or with
+  square pixels (the desktop's), which the monitor takes: listed in its EDID (established,
+  standard, CEA or detailed) or inside its range limits (vertical and line rates, pixel clock).
+  The candidates: 640×400 at 70 Hz (mode 13h's timing, 25.175 MHz), 640×480 at 60 Hz, 720×400 at
+  70 Hz. None: scaled on the desktop's mode, as before. Doom (320×200 at 4:3) gets 640×400@70;
+  320×240 gets 640×480; Blocks (640×360, 16:9) fills 1280×720 already: no switch.
+- **Setting:** `display/fullscreen-modes`: false keeps every full screen on the desktop's mode.
+  The monitor blanks for a moment at each switch (Alt+Enter both ways). False by default after
+  the board's trial (§20a).
+- **The kernel:** `Scanout::show()` takes the new surface with a timing; the switch rebuilds the
+  DSI path already, now at the new clock, and a surface that stalls falls back with its own
+  timing. `Display::show()` fits the mode to the PLLs and tells the bridge; the bridge's restarts
+  use the timing being sent. `Display::monitor()` reads the EDID (moved from the `display`
+  command). `VideoModes::fullScreen()` chooses (pure, host-tested). `ProgramSurface` lays out on
+  the mode's size and maps the pointer from the desktop's coordinates to it. Screenshots take
+  the shown surface at its own size.
+
+### 20a. On the board (2026-10-14)
+
+- **The mode switch works end to end, and the bridge doesn't hold the mode.** Doom went full
+  screen in 640×400 at 70 Hz (the scan at 400 lines from 200 rows, 70.2 frames a second, 0
+  underruns, screenshots at 640×400), but the user's monitor showed black with a picture for a
+  moment now and then. `display try MODE [lanes= seconds= settle= dds= min= vsync= hsync= hback=]`
+  (a test picture in any mode, then the desktop's) narrowed it down with the user watching:
+  - The LT8912B **takes the DSI input in every mode**: it measures the frame's lines exactly as
+    sent (main 0x9e-0x9f, low byte first: 750 at 720p, 525 at 640×480, 449 at 640×400).
+  - **Shown:** 1280×720@60 (80 MHz), 800×600@60 (40 MHz, standard timing), 1024×768@60 (80 MHz,
+    the line stretched). **Black:** 640×480@60, 640×400@70, 720×400@70 at 30 MHz (VGA's
+    25.175 MHz isn't one the PLLs make), with one DSI lane (720 Mbps), with the receiver's settle
+    count 4-12 (fixed at 0x10), with three DDS frequency words, at 40 and 80 MHz, and with
+    4-6-line vertical syncs.
+  - **What moved it:** a longer horizontal back porch at 31.5 kHz lines. 640×480@60 at 40 MHz
+    with a 160-pixel back porch (VGA's is 48) was steady for 10 s; 640×400@70 at 40 MHz glitched
+    every few seconds with 160, now and then with 300, often with 480 (the front porch cut to
+    55); at 80 MHz with 300, every few seconds. No setting held for a minute.
+  - So `display/fullscreen-modes` is **false by default**: full screen scales on the desktop's
+    mode as before. The code stays (`Scanout::show()` with a timing and lanes, `Display::show()`,
+    `Display::monitor()`, `VideoModes::fullScreen()`, `Edid::takes()`, a minimum clock for
+    `fitToClock()`), and `display try` for coming back to it. The bridge's datasheet (its
+    timing-dependent registers) is the next lead.
+- **A kernel bug behind every Doom hang:** `poll()` checked its deadline, then turned what was
+  left into milliseconds rounded up; expired in between, that was 0 ms, `WaitForever`. A timed
+  `poll` then waited for an event: Doom's 1-2 ms sleeps froze the game for good (found with a
+  watchdog thread marking the main thread's calls: stuck in `io_poll` with a 2 ms timeout, freed
+  by a signal). It also explains Blocks' occasional ~210 ms late `poll()` (§18a): the next event
+  woke it. Fixed in `Process::poll()`; Doom ran 200 s since without a stall.
+- **Each tic was drawn twice:** doomgeneric's `TryRunTics()` made the tic it waited for, saw the
+  clock had moved and returned "to update the screen" without running it: 63 presents a second
+  at 35 tics, a third never shown. A patch runs the tics once they are made: 35 presents, 0
+  dropped.
+- **A keyboard that fell silent** (the user's, in Doom's options in full screen; the Num Lock
+  light dead, so no reports reached the USB task). TinyUSB's buffer-DMA channel handlers leave a
+  channel halted for a cause they don't cover, its endpoint busy for good. They now retry it as a
+  transaction error and count it; `usb stats` shows the count and each HID interface's state.
+  Unconfirmed as the cause: the counter has stayed 0 since.
+- **Open:** all of Doom's threads, the conversion task and the scanout run on core 1 while core 0
+  is mostly idle; entering and leaving full screen leaves a window manager drawing error and a
+  ~100 ms surface wait among the system's problems (seen after Doom's run, not looked into).

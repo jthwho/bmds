@@ -1,0 +1,38 @@
+i_video: the screen from the platform
+
+Doom draws its screen a column at a time, and the zone is in PSRAM: a platform may give it a
+faster place (DG_VideoBuffer, weak: none, the zone as before). BMDS gives internal RAM.
+
+--- a/doomgeneric/i_video.c	2026-10-11 06:12:25.000000000 -0700
++++ b/doomgeneric/i_video.c	2026-10-14 20:39:42.410633374 -0700
+@@ -92,6 +92,10 @@
+ 
+ void I_GetEvent(void);
+ 
++// Doom's screen (SCREENWIDTH x SCREENHEIGHT bytes), if the platform gives one.
++byte *DG_VideoBuffer(void) __attribute__((weak));
++static boolean platform_screen;
++
+ // The screen buffer; this is modified to draw things to the screen
+ 
+ byte *I_VideoBuffer = NULL;
+@@ -286,7 +290,10 @@
+     }
+ 
+ 
+-    /* Allocate screen to draw to */
++    /* Allocate screen to draw to: the platform's, if it gives one */
++	I_VideoBuffer = DG_VideoBuffer != NULL ? DG_VideoBuffer() : NULL;
++	platform_screen = I_VideoBuffer != NULL;
++	if (!platform_screen)
+ 	I_VideoBuffer = (byte*)Z_Malloc (SCREENWIDTH * SCREENHEIGHT, PU_STATIC, NULL);  // For DOOM to draw on
+ 
+ 	screenvisible = true;
+@@ -297,6 +304,7 @@
+ 
+ void I_ShutdownGraphics (void)
+ {
++	if (!platform_screen)
+ 	Z_Free (I_VideoBuffer);
+ }
+ 

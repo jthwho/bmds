@@ -19,7 +19,7 @@ whose lock the outer build holds, and one job at a time.
 Make `dist/<name>/` with:
 
 - **`package.toml`:** `name` (the directory's), `version`, `description`,
-  `license` (SPDX), `source` (the release tarball's URL), `sha256`,
+  `license` (SPDX), `source` (the release tarball's URL, or a zip's), `sha256`,
   `license_files` (paths in the source to install under `share/licenses/<name>`),
   optionally `stack` (bytes the program's stack must have; default the
   kernel's) and `source_dir` (the tarball's top directory, if it isn't

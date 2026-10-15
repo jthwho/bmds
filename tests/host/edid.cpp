@@ -239,7 +239,7 @@ TEST_CASE("VideoModes: fitting a mode to the clocks the PLLs make") {
         using namespace bmds::VideoModes;
         constexpr uint32_t Plls[] = {240'000, 160'000};
         // CEA 720p60 (74.25 MHz) at 80 MHz: wider front porch, same lines, ~60 Hz.
-        const VideoTiming fit = fitToClock(parse("1280x720@60").value(), Plls, 2, 125'000).value();
+        const VideoTiming fit = fitToClock(parse("1280x720@60").value(), Plls, 2, 0, 125'000).value();
         CHECK(fit.pixelKhz == 80'000);
         CHECK(fit.vTotal() == 750);
         CHECK(fit.hTotal() == 1778);
@@ -248,11 +248,58 @@ TEST_CASE("VideoModes: fitting a mode to the clocks the PLLs make") {
         CHECK(fit.refreshMilliHz() <= 60'010);
         // An exact clock stays as it is.
         const VideoTiming esp = {80'000, 1280, 408, 32, 80, 720, 3, 5, 13, true, false, false};
-        CHECK(fitToClock(esp, Plls, 2, 125'000).value().hTotal() == esp.hTotal());
+        CHECK(fitToClock(esp, Plls, 2, 0, 125'000).value().hTotal() == esp.hTotal());
         // 1080p50 (CVT-RB, 115 MHz) at 120 MHz.
-        const VideoTiming fhd = fitToClock(parse("1920x1080@50").value(), Plls, 2, 125'000).value();
+        const VideoTiming fhd = fitToClock(parse("1920x1080@50").value(), Plls, 2, 0, 125'000).value();
         CHECK(fhd.pixelKhz == 120'000);
         CHECK(fhd.hTotal() <= 4095);
         // Beyond the link: no clock.
-        CHECK(fitToClock(parse("1920x1080@60").value(), Plls, 2, 125'000).error() == Error::NotSupported);
+        CHECK(fitToClock(parse("1920x1080@60").value(), Plls, 2, 0, 125'000).error() == Error::NotSupported);
+}
+
+TEST_CASE("Edid::takes: a listed mode, or one inside the range limits") {
+        Edid e;
+        e.established = 1u << 23; // 720x400 at 70 Hz
+        auto [vga, verr] = bmds::VideoModes::timing(720, 400, 70);
+        REQUIRE(verr.isOk());
+        CHECK(e.takes(vga));
+        auto [m13h, merr] = bmds::VideoModes::timing(640, 400, 70);
+        REQUIRE(merr.isOk());
+        CHECK(m13h.pixelKhz == 25'175);
+        CHECK_FALSE(e.takes(m13h)); // not listed, no limits
+        e.range.present = true;     // the VE248's: 50-76 Hz, 30-83 kHz, 170 MHz
+        e.range.minHz = 50;
+        e.range.maxHz = 76;
+        e.range.minKhz = 30;
+        e.range.maxKhz = 83;
+        e.range.maxPixelKhz = 170'000;
+        CHECK(e.takes(m13h)); // 70.1 Hz, 31.5 kHz
+        e.range.minKhz = 32;
+        CHECK_FALSE(e.takes(m13h));
+}
+
+TEST_CASE("VideoModes::fullScreen: a VGA mode the picture fills at its shape") {
+        Edid e;
+        e.range.present = true;
+        e.range.minHz = 50;
+        e.range.maxHz = 76;
+        e.range.minKhz = 30;
+        e.range.maxKhz = 83;
+        e.range.maxPixelKhz = 170'000;
+        // Doom: 320x200 shown at 4:3: mode 13h's 640x400 at 70 Hz.
+        auto [doom, derr] = bmds::VideoModes::fullScreen(320, 200, 4, 3, e);
+        REQUIRE(derr.isOk());
+        CHECK(doom.hActive == 640);
+        CHECK(doom.vActive == 400);
+        CHECK((doom.refreshMilliHz() + 500) / 1000 == 70);
+        // Square pixels at 4:3 fill 640x480.
+        auto [qvga, qerr] = bmds::VideoModes::fullScreen(320, 240, 0, 0, e);
+        REQUIRE(qerr.isOk());
+        CHECK(qvga.vActive == 480);
+        // Other shapes stay on the desktop's mode.
+        CHECK(bmds::VideoModes::fullScreen(320, 200, 0, 0, e).error() == Error::NotFound); // 16:10
+        CHECK(bmds::VideoModes::fullScreen(640, 360, 0, 0, e).error() == Error::NotFound); // Blocks, 16:9
+        // A monitor that takes none of them.
+        Edid none;
+        CHECK(bmds::VideoModes::fullScreen(320, 200, 4, 3, none).error() == Error::NotFound);
 }

@@ -25,6 +25,7 @@ import sys
 import tarfile
 import tomllib
 import urllib.request
+import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 DIST = os.path.join(ROOT, "dist")
@@ -104,7 +105,7 @@ def build_sdk():
 
 
 def fetch(recipe):
-    """The release tarball, downloaded once and checked."""
+    """The release tarball (or zip), downloaded once and checked."""
     url = recipe["source"]
     path = os.path.join(CACHE, os.path.basename(url))
     if not os.path.isfile(path):
@@ -129,8 +130,15 @@ def unpack(recipe, tarball):
     src = os.path.join(src_root, top)
     shutil.rmtree(src, ignore_errors=True)
     os.makedirs(src_root, exist_ok=True)
-    with tarfile.open(tarball) as t:
-        t.extractall(src_root, filter="tar")
+    if zipfile.is_zipfile(tarball):
+        with zipfile.ZipFile(tarball) as z:
+            for member in z.namelist():
+                if os.path.isabs(member) or ".." in member.split("/"):
+                    die("%s: %s is outside the tree" % (tarball, member))
+            z.extractall(src_root)
+    else:
+        with tarfile.open(tarball) as t:
+            t.extractall(src_root, filter="tar")
     unpacked = os.path.join(src_root, recipe.get("source_dir", top))
     if unpacked != src:
         os.replace(unpacked, src)

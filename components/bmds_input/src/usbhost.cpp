@@ -22,6 +22,10 @@
 #include <bmds/usbhost.h>
 #include "usbmidi.h"
 
+// hcd_dwc2.c's (thirdparty/tinyusb/README.md): halts it retried that it had no case for.
+extern "C" volatile uint32_t tuh_dwc2_unhandled_halts;
+extern "C" volatile uint32_t tuh_dwc2_unhandled_hcint;
+
 BMDS_NAMESPACE_BEGIN
 
 namespace {
@@ -57,6 +61,13 @@ namespace {
                  {},
                  "",
                  "HID transfers that couldn't be asked for again (retried)"},
+                {"unhandled_halts",
+                 Stat::Unit::Count,
+                 Stat::Kind::Total,
+                 0,
+                 {Stat::Rule::Zero, Stat::Health::Warning},
+                 "",
+                 "Controller halts of no known cause (retried: a device would have fallen silent)"},
         };
 
         // A HID transfer that couldn't be asked for (TinyUSB refused it) is asked again this soon.
@@ -70,6 +81,7 @@ namespace {
                 v[3] = s.keyboards;
                 v[4] = s.mice;
                 v[5] = s.rearmFailures;
+                v[6] = s.unhandledHalts;
                 return;
         }
 
@@ -224,7 +236,26 @@ size_t UsbHost::devices(Span<DeviceInfo> out) {
 
 UsbHost::Stats UsbHost::stats() {
         Mutex::Locker lock(_lock, WaitForever);
-        return _stats;
+        Stats         s = _stats;
+        s.unhandledHalts = tuh_dwc2_unhandled_halts;
+        s.unhandledHcint = tuh_dwc2_unhandled_hcint;
+        return s;
+}
+
+size_t UsbHost::hids(Span<HidState> out) {
+        const auto now = static_cast<uint32_t>(System::uptimeUs() / 1000);
+        size_t     n = 0;
+        for (const Hid &h : _hid) {
+                if (h.kind == Hid::Kind::None || n >= out.size()) continue;
+                HidState &o = out[n++];
+                o.address = h.address;
+                o.instance = h.instance;
+                o.keyboard = h.kind == Hid::Kind::Keyboard;
+                o.armed = h.armed;
+                o.reports = h.reports;
+                o.sinceMs = now - h.lastMs;
+        }
+        return n;
 }
 
 bool UsbHost::isOnTask() const {
@@ -426,6 +457,7 @@ void UsbHost::hidMounted(uint8_t address, uint8_t instance, Span<const uint8_t> 
         free->layout = layout;
         free->reportProtocol = kind == Hid::Kind::Mouse && protocol == HID_ITF_PROTOCOL_NONE;
         free->attachedMs = static_cast<uint32_t>(System::uptimeUs() / 1000);
+        free->lastMs = free->attachedMs;
         {
                 Mutex::Locker lock(_lock, WaitForever);
                 ++(kind == Hid::Kind::Keyboard ? _stats.keyboards : _stats.mice);
@@ -475,7 +507,11 @@ void UsbHost::hidReport(uint8_t address, uint8_t instance, const uint8_t *data, 
                 ++_stats.hidReports;
         }
         Hid *h = hid(address, instance);
-        if (h != nullptr) h->armed = false; // this transfer is done
+        if (h != nullptr) {
+                h->armed = false; // this transfer is done
+                h->lastMs = static_cast<uint32_t>(System::uptimeUs() / 1000);
+                ++h->reports;
+        }
         if (h != nullptr && h->kind == Hid::Kind::Keyboard) {
                 const auto now = static_cast<uint32_t>(System::uptimeUs() / 1000);
                 // A boot report: modifiers, a reserved byte, then up to six keys down.

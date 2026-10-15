@@ -80,6 +80,21 @@ namespace {
                            static_cast<unsigned long>(s.gone));
                 ctx.printf("HID: %lu keyboards, %lu mice, %lu reports\n", static_cast<unsigned long>(s.keyboards),
                            static_cast<unsigned long>(s.mice), static_cast<unsigned long>(s.hidReports));
+                // Each interface: waiting for a report (armed) or not, and since its last one. A
+                // device that stays silent while used, armed, lost its transfer below the driver.
+                UsbHost::HidState hids[8];
+                const size_t      n = host.hids(Span<UsbHost::HidState>(hids, 8));
+                for (size_t i = 0; i < n; ++i)
+                        ctx.printf("  %u.%u %-8s %s, %lu reports, the last %lu ms ago\n", hids[i].address,
+                                   hids[i].instance, hids[i].keyboard ? "keyboard" : "mouse",
+                                   hids[i].armed ? "waiting" : "not waiting",
+                                   static_cast<unsigned long>(hids[i].reports),
+                                   static_cast<unsigned long>(hids[i].sinceMs));
+                ctx.printf("Retried: %lu HID requests refused, %lu controller halts of no known cause",
+                           static_cast<unsigned long>(s.rearmFailures), static_cast<unsigned long>(s.unhandledHalts));
+                if (s.unhandledHalts != 0)
+                        ctx.printf(" (the last: hcint 0x%08lx)", static_cast<unsigned long>(s.unhandledHcint));
+                ctx.printf("\n");
                 return Shell::ExitSuccess;
         }
 

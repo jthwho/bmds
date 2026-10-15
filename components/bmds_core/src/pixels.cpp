@@ -266,7 +266,82 @@ void Pixels::repeat24(const uint8_t *in, size_t count, uint8_t *out, unsigned ti
         return;
 }
 
+namespace {
+
+        // Four pixels @p c (B, G, R in their low 24 bits) each @p Times times over, as 3 × Times
+        // words: the 3-byte units packed in order (a unit split across words gives its low bytes
+        // to the first).
+        template <unsigned Times> inline void expandFour(const uint32_t c[4], uint32_t *o);
+
+        template <> inline void expandFour<1>(const uint32_t c[4], uint32_t *o) {
+                o[0] = c[0] | c[1] << 24;
+                o[1] = c[1] >> 8 | c[2] << 16;
+                o[2] = c[2] >> 16 | c[3] << 8;
+                return;
+        }
+
+        template <> inline void expandFour<2>(const uint32_t c[4], uint32_t *o) {
+                o[0] = c[0] | c[0] << 24;
+                o[1] = c[0] >> 8 | c[1] << 16;
+                o[2] = c[1] >> 16 | c[1] << 8;
+                o[3] = c[2] | c[2] << 24;
+                o[4] = c[2] >> 8 | c[3] << 16;
+                o[5] = c[3] >> 16 | c[3] << 8;
+                return;
+        }
+
+        template <> inline void expandFour<3>(const uint32_t c[4], uint32_t *o) {
+                o[0] = c[0] | c[0] << 24;
+                o[1] = c[0] >> 8 | c[0] << 16;
+                o[2] = c[0] >> 16 | c[1] << 8;
+                o[3] = c[1] | c[1] << 24;
+                o[4] = c[1] >> 8 | c[2] << 16;
+                o[5] = c[2] >> 16 | c[2] << 8;
+                o[6] = c[2] | c[3] << 24;
+                o[7] = c[3] >> 8 | c[3] << 16;
+                o[8] = c[3] >> 16 | c[3] << 8;
+                return;
+        }
+
+        template <> inline void expandFour<4>(const uint32_t c[4], uint32_t *o) {
+                for (unsigned i = 0; i < 4; ++i, o += 3) {
+                        o[0] = c[i] | c[i] << 24;
+                        o[1] = c[i] >> 8 | c[i] << 16;
+                        o[2] = c[i] >> 16 | c[i] << 8;
+                }
+                return;
+        }
+
+        template <unsigned Times>
+        size_t expandWords(const uint8_t *in, size_t count, const uint32_t *palette, uint8_t *out) {
+                auto        *o = reinterpret_cast<uint32_t *>(out);
+                const size_t groups = count / 4;
+                for (size_t g = 0; g < groups; ++g, in += 4, o += 3 * Times) {
+                        const uint32_t c[4] = {palette[in[0]] & 0xffffffu, palette[in[1]] & 0xffffffu,
+                                               palette[in[2]] & 0xffffffu, palette[in[3]] & 0xffffffu};
+                        expandFour<Times>(c, o);
+                }
+                return groups * 4;
+        }
+
+} // namespace
+
 void Pixels::expandIndexed(const uint8_t *in, size_t count, const uint32_t *palette, uint8_t *out, unsigned times) {
+        // Whole words where the row allows (four pixels make whole words at any factor): byte
+        // stores a pixel took ~12 cycles an output pixel (games.md §20).
+        size_t done = 0;
+        if ((reinterpret_cast<uintptr_t>(out) & 3) == 0) {
+                switch (times) {
+                        case 1: done = expandWords<1>(in, count, palette, out); break;
+                        case 2: done = expandWords<2>(in, count, palette, out); break;
+                        case 3: done = expandWords<3>(in, count, palette, out); break;
+                        case 4: done = expandWords<4>(in, count, palette, out); break;
+                        default: break;
+                }
+        }
+        in += done;
+        out += done * 3 * times;
+        count -= done;
         for (size_t i = 0; i < count; ++i) {
                 const uint32_t c = palette[in[i]];
                 const uint8_t  b = uint8_t(c), g = uint8_t(c >> 8), r = uint8_t(c >> 16);

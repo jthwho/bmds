@@ -102,6 +102,38 @@ namespace {
 
 } // namespace
 
+bool Edid::takes(const VideoTiming &t) const {
+        if (t.interlaced || t.pixelKhz == 0) return false;
+        const uint32_t milliHz = t.refreshMilliHz();
+        const uint16_t hz = static_cast<uint16_t>((milliHz + 500) / 1000);
+        const auto     same = [&](const Mode &m) {
+                return !m.interlaced && m.width == t.hActive && m.height == t.vActive && m.hz == hz;
+        };
+        Mode m;
+        for (int bit = 23; bit >= 0; --bit)
+                if ((established >> bit & 1) != 0 && establishedMode(bit, m) && same(m)) return true;
+        for (uint8_t i = 0; i < standardCount; ++i)
+                if (same(standard[i])) return true;
+        for (uint8_t i = 0; i < videoModeCount; ++i) {
+                uint8_t vic = 0;
+                bool    native = false;
+                if (videoMode(videoModes[i], m, vic, native) && same(m)) return true;
+        }
+        const auto listed = [&](const VideoTiming &d) {
+                const uint32_t dHz = (d.refreshMilliHz() + 500) / 1000;
+                return !d.interlaced && d.hActive == t.hActive && d.vActive == t.vActive && dHz == hz;
+        };
+        for (uint8_t i = 0; i < detailedCount; ++i)
+                if (listed(detailed[i])) return true;
+        for (uint8_t i = 0; i < extDetailedCount; ++i)
+                if (listed(extDetailed[i])) return true;
+        if (!range.present) return false;
+        const uint32_t lineHz = static_cast<uint32_t>(uint64_t(t.pixelKhz) * 1000 / t.hTotal());
+        return milliHz >= uint32_t(range.minHz) * 1000 && milliHz <= uint32_t(range.maxHz) * 1000 + 999 &&
+               lineHz >= uint32_t(range.minKhz) * 1000 && lineHz <= uint32_t(range.maxKhz) * 1000 + 999 &&
+               (range.maxPixelKhz == 0 || t.pixelKhz <= range.maxPixelKhz);
+}
+
 bool Edid::establishedMode(int bit, Mode &out) {
         const int index = 23 - bit;
         if (index < 0 || index >= int(sizeof(Established) / sizeof(Established[0]))) return false;

@@ -1,0 +1,13 @@
+# Doom (devplan/games.md §19): doomgeneric, Chocolate Doom made portable, with BMDS's platform
+# layer (programs/doom), as apps/doom.app. Its game data: dist/freedoom, or the user's own WADs in
+# the data folder. doomgeneric has no releases: pinned to a commit.
+name = "doom"
+version = "2026.10.11-e257a09"
+description = "Doom: doomgeneric (Chocolate Doom), full screen, with sound and music on the synth"
+license = "GPL-2.0-only"
+source = "https://github.com/ozkl/doomgeneric/archive/e257a09527062bfb986b6e5e0780839b6cbd5b71.tar.gz"
+sha256 = "26f8f60daa6c6e4d3c01e5eac9fb700d592dede803d13ac848154ff356b2a2e7"
+source_dir = "doomgeneric-e257a09527062bfb986b6e5e0780839b6cbd5b71"
+license_files = ["LICENSE"]
+# Bytes of stack the program asks for (the renderer's BSP walk recurses).
+stack = 65536

@@ -609,7 +609,13 @@ int32_t Process::poll(bmds_pollfd_t *fds, uint32_t count, int32_t timeoutMs) {
                 }
                 if (result != 0 || timeoutMs == 0 || deadline.isExpired()) break;
                 unsigned int waitMs = WaitForever;
-                if (!deadline.isForever()) waitMs = static_cast<unsigned int>((deadline.remainingUs() + 999) / 1000);
+                if (!deadline.isForever()) {
+                        // Expired since the check above: done. (Rounded up from 0 it would be 0 ms,
+                        // WaitForever: a timed poll waited until an event, Doom's for good.)
+                        const int64_t us = deadline.remainingUs();
+                        if (us == 0) break;
+                        waitMs = static_cast<unsigned int>((us + 999) / 1000);
+                }
                 if (unwatched && (waitMs == WaitForever || waitMs > UnwatchedPollMs)) waitMs = UnwatchedPollMs;
                 const Deadline step(waitMs);
                 if (Interrupt::waitCurrent(wake, step) == Error::Interrupted) {

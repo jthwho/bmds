@@ -144,6 +144,19 @@ wm task, each round: drain keys ─► focused window's key callback (Terminal �
   already). Keyboards stay in boot protocol.
 - **Cost:** a layout is about 40 bytes, one per HID slot (8); parsing runs once per mount.
 
+## 5b. A keyboard gone silent (2026-10-14, `games.md` §20a)
+
+- The user's keyboard stopped mid-game (Doom in full screen), the Num Lock light with it: no
+  reports reached `usb0`. The class driver asks again only when a report (or a failure) comes
+  back, and TinyUSB's buffer-DMA channel handlers leave a channel halted when its cause is none
+  they handle: the endpoint stays busy for good. The first local change to TinyUSB
+  (`thirdparty/tinyusb/README.md`) retries such a halt as a transaction error (then fails the
+  transfer, which the driver asks again) and counts it.
+- `usb stats` shows the count (the last one's `hcint`), a `usb0.unhandled_halts` counter warns,
+  and each HID interface is listed: waiting for a report or not, its reports, and how long since
+  the last. If it happens again, `usb stats` from another machine says whether the transfer was
+  lost below the driver.
+
 ## 6. Resource budget (estimates; measured as the steps land)
 
 | What | Where | Estimate / measured |

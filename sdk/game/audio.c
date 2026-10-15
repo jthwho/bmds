@@ -13,6 +13,7 @@
  */
 
 #include <pthread.h>
+#include <sched.h>
 #include <string.h>
 #include "game_internal.h"
 
@@ -292,6 +293,12 @@ void bmds_game_sound_free(bmds_game_sound_t *sound) {
 static void *music_thread(void *arg) {
         bmds_game_audio_t *a = arg;
         const uint32_t     frame_bytes = 2 * a->music_channels;
+        /* Real-time at the lowest priority: above the game and the display's work, so a busy frame
+           doesn't starve the synth into gaps (games.md §20); refused, it plays as it is. */
+        struct sched_param rt;
+        memset(&rt, 0, sizeof(rt));
+        rt.sched_priority = 1;
+        (void)pthread_setschedparam(pthread_self(), SCHED_FIFO, &rt);
         while (!LOAD(a->music_stop)) {
                 int32_t n = bmds_read(a->music_decoder, a->music_buf, MUSIC_FRAMES * frame_bytes);
                 if (n == 0 && a->music_loop) {

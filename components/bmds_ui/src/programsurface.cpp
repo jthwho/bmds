@@ -24,6 +24,8 @@
 #include <bmds/programsurface.h>
 #include <bmds/scanout.h>
 #include <bmds/surface.h>
+#include <bmds/sysconf.h>
+#include <bmds/videomodes.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -33,7 +35,7 @@ namespace {
         constexpr uint16_t     StripRows = 8;     // scaled rows in the strip
         constexpr uint16_t     DamageColumns = 8; // damage across on these (PIE's 16 bytes in RGB565)
         constexpr size_t       WriteBackChunk = 64 * 1024;
-        constexpr uint16_t     ScreenWidth = 1280; // the mode's (devplan/display.md V5)
+        constexpr uint16_t     ScreenWidth = 1280; // the desktop's mode (devplan/display.md V5)
         constexpr uint16_t     ScreenHeight = 720;
         constexpr unsigned int SwitchTimeoutMs = 1000; // a scan switch rebuilds the link: ~62 ms
         constexpr unsigned int DrawTimeoutMs = 100;
@@ -56,6 +58,19 @@ namespace {
         Display *display0() {
                 auto [d, err] = Display::display(0);
                 return err.isOk() && d->isRunning() ? d : nullptr;
+        }
+
+        // Off by default: the LT8912B doesn't hold VGA's 31.5 kHz modes steadily (games.md §20a).
+        BMDS_SYSCONF(fullScreenModes, "display/fullscreen-modes", Config::Type::Bool, "false",
+                     "Show a full-screen picture in a mode of the monitor's it fills exactly (Doom's 320x200 in "
+                     "640x400 at 70 Hz), the monitor resyncing as it starts and ends; false: scaled on the "
+                     "desktop's mode. Experimental: this board's HDMI bridge glitches in those modes",
+                     0, 0, nullptr, nullptr)
+
+        bool fullScreenModes() {
+                if (!SysConf::isReady()) return false;
+                auto [on, err] = SysConf::getBool(bmdsConf_fullScreenModes.key);
+                return err.isOk() && on;
         }
 
 } // namespace
@@ -414,9 +429,9 @@ ProgramSurface::Info ProgramSurface::info() {
         if (full) {
                 const Layout l = _layout;
                 i.scaleX16 = uint16_t(l.scaleX * 16);
-                i.scaleY16 = uint16_t(uint32_t(ScreenHeight) * 16 / l.rows);
-                i.area = Rect{l.x, uint16_t(uint32_t(l.top) * ScreenHeight / l.rows), l.width,
-                              uint16_t(uint32_t(_config.height) * ScreenHeight / l.rows)};
+                i.scaleY16 = uint16_t(uint32_t(l.screenHeight) * 16 / l.rows);
+                i.area = Rect{l.x, uint16_t(uint32_t(l.top) * l.screenHeight / l.rows), l.width,
+                              uint16_t(uint32_t(_config.height) * l.screenHeight / l.rows)};
         } else {
                 i.scaleX16 = uint16_t(scale * 16);
                 i.scaleY16 = uint16_t(scale * 16);
@@ -549,25 +564,32 @@ void ProgramSurface::draw(Painter &painter) {
 // The picture on the screen: whole multiples both ways (BMDS_SURFACE_WHOLE: rows repeated a
 // whole number of times, black rows above and below), else the screen's height filled (rows
 // repeated as the scan's mapping falls) and across the whole multiple nearest the picture's
-// shape (its aspect, or square pixels); centered across.
-ProgramSurface::Layout ProgramSurface::layOut() const {
+// shape (its aspect, or square pixels); centered across. In a mode of the monitor's (@p own),
+// the picture fills it by whole factors (VideoModes::fullScreen()).
+ProgramSurface::Layout ProgramSurface::layOut(uint16_t screenWidth, uint16_t screenHeight, bool own) const {
         Layout         l;
+        l.screenWidth = screenWidth;
+        l.screenHeight = screenHeight;
         const uint16_t w = _config.width, h = _config.height;
-        uint16_t       most = uint16_t(ScreenWidth / w);
+        uint16_t       most = uint16_t(screenWidth / w);
         if (most > MaxScale) most = MaxScale;
         if (most < 1) most = 1;
-        if ((_config.flags & Whole) != 0) {
-                uint16_t s = uint16_t(ScreenHeight / h);
+        if (own) {
+                l.scaleX = uint16_t(screenWidth / w);
+                l.rows = h;
+                l.top = 0;
+        } else if ((_config.flags & Whole) != 0) {
+                uint16_t s = uint16_t(screenHeight / h);
                 if (s > most) s = most;
                 if (s < 1) s = 1;
-                while (s > 1 && ScreenHeight % s != 0) --s;
+                while (s > 1 && screenHeight % s != 0) --s;
                 l.scaleX = s;
-                l.rows = uint16_t(ScreenHeight / s);
+                l.rows = uint16_t(screenHeight / s);
                 l.top = uint16_t((l.rows - h) / 2);
         } else {
                 // The width that keeps the shape at the screen's height, in whole multiples.
-                const uint32_t want = _config.aspectX != 0 ? uint32_t(ScreenHeight) * _config.aspectX / _config.aspectY
-                                                           : uint32_t(ScreenHeight) * w / h;
+                const uint32_t want = _config.aspectX != 0 ? uint32_t(screenHeight) * _config.aspectX / _config.aspectY
+                                                           : uint32_t(screenHeight) * w / h;
                 uint32_t       s = (want + w / 2) / w;
                 if (s < 1) s = 1;
                 if (s > most) s = most;
@@ -576,7 +598,7 @@ ProgramSurface::Layout ProgramSurface::layOut() const {
                 l.top = 0;
         }
         l.width = uint16_t(w * l.scaleX);
-        l.x = uint16_t(((ScreenWidth - l.width) / 2) & ~3u);
+        l.x = uint16_t(((screenWidth - l.width) / 2) & ~3u);
         return l;
 }
 
@@ -618,14 +640,41 @@ void ProgramSurface::run() {
 Error ProgramSurface::enterFullScreen() {
         Display *d = display0();
         if (d == nullptr || _wm == nullptr || _window == 0) return Error::InvalidState;
-        _layout = layOut();
+        // A mode of the monitor's the picture fills exactly, if allowed and there is one; else, and
+        // if that fails, scaled on the desktop's.
+        VideoTiming mode = d->timing();
+        bool        own = false;
+        if (fullScreenModes()) {
+                auto [edid, eerr] = d->monitor();
+                if (eerr.isOk()) {
+                        auto [t, terr] = VideoModes::fullScreen(_config.width, _config.height, _config.aspectX,
+                                                                _config.aspectY, edid);
+                        if (terr.isOk()) {
+                                mode = t;
+                                own = true;
+                        }
+                }
+        }
+        Error err = enterFullScreen(mode, own);
+        if (err.isError() && own) {
+                bmdsWarn("ProgramSurface: full screen in %ux%u: %s; scaled instead", unsigned(mode.hActive),
+                         unsigned(mode.vActive), err.desc());
+                err = enterFullScreen(d->timing(), false);
+        }
+        return err;
+}
+
+Error ProgramSurface::enterFullScreen(const VideoTiming &mode, bool own) {
+        Display *d = display0();
+        if (d == nullptr) return Error::InvalidState;
+        _layout = layOut(mode.hActive, mode.vActive, own);
         const int64_t t0 = Clock::monotonicNs();
-        bmdsInfo("ProgramSurface: full screen: %ux%u rows at %ux across", unsigned(ScreenWidth), unsigned(_layout.rows),
-                 unsigned(_layout.scaleX));
+        bmdsInfo("ProgramSurface: full screen: %ux%u rows at %ux across%s", unsigned(mode.hActive),
+                 unsigned(_layout.rows), unsigned(_layout.scaleX), own ? ", the monitor's mode" : "");
         void *memory = Memory::alloc(MemSpace::Psram, sizeof(Surface));
         if (memory == nullptr) return Error::NoMem;
         _fs = ::new (memory) Surface();
-        Error err = _fs->start(ScreenWidth, _layout.rows, Surface::Buffering::Double); // black
+        Error err = _fs->start(mode.hActive, _layout.rows, Surface::Buffering::Double); // black
         if (err.isOk()) {
                 Mutex::Locker locker(_lock, WaitForever);
                 _fullScreen = true;
@@ -634,7 +683,8 @@ Error ProgramSurface::enterFullScreen() {
                 _pending.add(Rect{0, 0, _config.width, _config.height}); // the new surface is black
         }
         const int64_t t1 = Clock::monotonicNs();
-        if (err.isOk()) err = d->scanout().show(*_fs, SwitchTimeoutMs);
+        if (err.isOk())
+                err = own ? d->show(*_fs, mode, 0, 0, SwitchTimeoutMs) : d->scanout().show(*_fs, SwitchTimeoutMs);
         const int64_t t2 = Clock::monotonicNs();
         if (err.isOk()) err = _wm->setFullScreen(_window, true);
         bmdsInfo("ProgramSurface: full screen: %s; surface %lld us, scan %lld us, window manager %lld us", err.desc(),
@@ -645,7 +695,7 @@ Error ProgramSurface::enterFullScreen() {
                         Mutex::Locker locker(_lock, WaitForever);
                         _fullScreen = false;
                 }
-                if (d->scanout().surface() == _fs) (void)d->scanout().show(d->surface(), SwitchTimeoutMs);
+                if (d->scanout().surface() == _fs) (void)d->showDesktop(SwitchTimeoutMs);
                 _fs->~Surface();
                 Memory::free(_fs);
                 _fs = nullptr;
@@ -663,7 +713,7 @@ void ProgramSurface::leaveFullScreen() {
                 _fullScreen = false;
                 _dirty = false;
         }
-        if (d != nullptr && d->scanout().surface() == _fs) (void)d->scanout().show(d->surface(), SwitchTimeoutMs);
+        if (d != nullptr && d->scanout().surface() == _fs) (void)d->showDesktop(SwitchTimeoutMs);
         if (_wm != nullptr && _window != 0) (void)_wm->setFullScreen(_window, false);
         if (_fs != nullptr) {
                 (void)_fs->wait(DrawTimeoutMs);
@@ -767,11 +817,11 @@ void ProgramSurface::pushPresented() {
                 uint16_t      scale = 1;
                 const Rect    pic = pictureRect(_clientWidth, _clientHeight, scale);
                 if (_fullScreen) {
-                        const uint32_t down16 = uint32_t(ScreenHeight) * 16 / _layout.rows;
+                        const uint32_t down16 = uint32_t(_layout.screenHeight) * 16 / _layout.rows;
                         e.data[0] = 1;
                         e.data[1] = uint32_t(_layout.scaleX * 16) | down16 << 16;
-                        e.data[2] = uint32_t(_layout.width) | (uint32_t(_config.height) * ScreenHeight / _layout.rows)
-                                                                      << 16;
+                        e.data[2] = uint32_t(_layout.width) |
+                                    (uint32_t(_config.height) * _layout.screenHeight / _layout.rows) << 16;
                 } else {
                         e.data[0] = 0;
                         e.data[1] = uint32_t(scale * 16) | uint32_t(scale * 16) << 16;
@@ -804,10 +854,13 @@ void ProgramSurface::mouseEntry(void *arg, const WindowManager::MouseEvent &even
         {
                 Mutex::Locker locker(self->_lock, WaitForever);
                 if (self->_fullScreen) {
-                        // The screen's coordinates: the line's row (the scan's mapping), less the black ones.
+                        // The desktop's coordinates into the mode's, then the line's row (the scan's
+                        // mapping), less the black ones.
                         const Layout  l = self->_layout;
-                        const int32_t dx = int32_t(event.x) - l.x;
-                        y = int32_t(event.y) * l.rows / ScreenHeight - l.top;
+                        const int32_t mx = int32_t(event.x) * l.screenWidth / ScreenWidth;
+                        const int32_t my = int32_t(event.y) * l.screenHeight / ScreenHeight;
+                        const int32_t dx = mx - l.x;
+                        y = my * l.rows / l.screenHeight - l.top;
                         x = dx >= 0 ? dx / l.scaleX : -((-dx + l.scaleX - 1) / l.scaleX);
                 } else {
                         uint16_t   scale = 1;

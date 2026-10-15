@@ -38,6 +38,9 @@ struct VideoTiming {
                 bool     vSyncHigh = false;  ///< Vertical sync is active high.
                 bool     interlaced = false; ///< Interlaced (fields, not frames).
 
+                /** @brief Returns true if every field is the same. */
+                constexpr bool operator==(const VideoTiming &) const = default;
+
                 /** @brief Pixels per line, blanking included. */
                 constexpr uint32_t hTotal() const { return uint32_t(hActive) + hFront + hSync + hBack; }
 
@@ -115,6 +118,14 @@ struct Edid {
                 uint8_t     videoModeCount = 0;
                 VideoTiming extDetailed[MaxExtDetailed]; ///< The CEA extension's detailed timings.
                 uint8_t     extDetailedCount = 0;
+
+                /**
+                 * @brief Returns whether the monitor takes @p timing (progressive): a mode it
+                 *        lists (established, standard, CEA or detailed) of its size and rate (to
+                 *        the Hz), or one inside its range limits (vertical and line rates, pixel
+                 *        clock).
+                 */
+                bool takes(const VideoTiming &timing) const;
 
                 /**
                  * @brief Parses a base block.

@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
+#include <bmds/edid.h>
 #include <bmds/error.h>
 #include <bmds/filehandle.h>
 #include <bmds/mutex.h>
@@ -237,13 +238,16 @@ class ProgramSurface final : public Stream {
                 };
 
                 // Full screen: the scan surface's rows, the black rows above the picture, where it
-                // is across, its scale across and its width on the screen.
+                // is across, its scale across and its width on the screen; the screen's mode (the
+                // desktop's, or one of the monitor's the picture fills: games.md §20).
                 struct Layout {
                                 uint16_t rows = 0;
                                 uint16_t top = 0;
                                 uint16_t x = 0;
                                 uint16_t scaleX = 1;
                                 uint16_t width = 0;
+                                uint16_t screenWidth = 0;
+                                uint16_t screenHeight = 0;
                 };
 
                 ProgramSurface() = default;
@@ -259,10 +263,11 @@ class ProgramSurface final : public Stream {
                                   const Rect &clip);
                 Damage damageOf(Span<const Rect> damage, bool all) const;
                 void   expandRow(const uint8_t *src, uint16_t count, uint8_t *out, uint16_t scale) const;
-                Layout layOut() const;
+                Layout layOut(uint16_t screenWidth, uint16_t screenHeight, bool own) const;
                 void   ask(Ask what);
                 void   run();
                 Error  enterFullScreen();
+                Error  enterFullScreen(const VideoTiming &mode, bool own);
                 void   leaveFullScreen();
                 void   convert();             // the newest present into the scan surface
                 void   release(int8_t index); // done reading a presented buffer
