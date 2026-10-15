@@ -370,8 +370,16 @@ typedef struct bmds_controls_binding_t {
 - **Blocks** (step 5's first): `controls.conf` with three sets (`title`, `play`, `paused`), no
   set while a name is typed (raw keys; a pad's Start keeps it); its title and pause hints are made
   from `BINDING`, so a rebinding shows (checked on the board: `Keys=F2` for `play` in the user's
-  file, Enter then did nothing and F2 started). Its §7b pad code is gone. Doom and Solitaire
-  still read keys and pads raw.
+  file, Enter then did nothing and F2 started). Its §7b pad code is gone.
+- **Doom** (2026-10-15): `controls.conf` with two sets, `game` and `menu` (chosen as Doom's menu
+  opens and closes); each action becomes the key Doom's own configuration binds to it (`key_up`,
+  `key_fire`, `key_menu_forward`...), so a binding changed in either file works, and it is
+  released as the key it pressed. Letters, digits, F keys and Alt stay raw (save names, weapon
+  numbers, cheats, the strafe modifier). Pads: as §7b, plus the right stick strafing and R2
+  firing; its §7b pad code is gone. Checked on the board with keys (Escape opens the menu, Down
+  steps it).
+- **Solitaire:** keyboard and mouse only (the user's, 2026-10-15: no pad there); its keys aren't
+  actions yet.
 
 **Then (step 5) the games:** Blocks, Doom and Solitaire ship `controls.conf` with today's keys
 and pad layouts as defaults, and read `ACTION` events instead of keys (Doom: its platform layer

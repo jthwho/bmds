@@ -394,6 +394,9 @@ Error ProgramSurface::setPointerMode(PointerMode mode) {
         Error err = _wm->setPointer(_window, mode == PointerMode::Hidden ? WindowManager::Pointer::None
                                                                          : WindowManager::Pointer::Arrow);
         if (err.isOk()) err = _wm->setPointerLock(_window, mode == PointerMode::Relative);
+        _pointerMode.store(uint8_t(mode), std::memory_order_release);
+        _arrowMoved.store(true, std::memory_order_release); // full screen: shown or not, as asked
+        _work.release();
         return err;
 }
 
@@ -748,6 +751,16 @@ Error ProgramSurface::enterFullScreen(const VideoTiming &mode, bool own) {
                 err = own ? d->show(*_fs, mode, 0, 0, SwitchTimeoutMs) : d->scanout().show(*_fs, SwitchTimeoutMs);
         const int64_t t2 = Clock::monotonicNs();
         if (err.isOk()) err = _wm->setFullScreen(_window, true);
+        if (err.isOk()) {
+                _arrow = _wm->arrowPicture();
+                _underRect = Rect();
+                uint16_t px = 0, py = 0;
+                _wm->pointerPosition(px, py);
+                const int32_t mx = int32_t(px) * _layout.screenWidth / ScreenWidth;
+                const int32_t my = int32_t(py) * _layout.screenHeight / ScreenHeight;
+                _arrowAt.store(mx | my << 16, std::memory_order_release);
+                _arrowMoved.store(true, std::memory_order_release);
+        }
         bmdsInfo("ProgramSurface: full screen: %s; surface %lld us, scan %lld us, window manager %lld us", err.desc(),
                  (long long)((t1 - t0) / 1000), (long long)((t2 - t1) / 1000),
                  (long long)((Clock::monotonicNs() - t2) / 1000));
@@ -784,6 +797,8 @@ void ProgramSurface::leaveFullScreen() {
                 Memory::free(_fs);
                 _fs = nullptr;
         }
+        _underRect = Rect();
+        _arrowAt.store(-1, std::memory_order_release);
         Memory::free(_strip); // the last copy from it waited for above
         _strip = nullptr;
         pushPresented();
@@ -795,18 +810,25 @@ void ProgramSurface::leaveFullScreen() {
 // of the strip filled by the CPU while the 2D-DMA copies the other; then presented (swapped at
 // the next frame's start).
 void ProgramSurface::convert() {
-        int8_t index;
+        int8_t index = -1;
         Damage changed;
+        bool   dirty;
         {
                 Mutex::Locker locker(_lock, WaitForever);
-                if (!_fullScreen || !_dirty || _fs == nullptr) return;
-                _dirty = false;
-                changed = _pending;
-                _pending.count = 0;
-                index = _latest;
-                _reading = index;
-                if (index >= 0) _latestDrawn = true;
+                if (!_fullScreen || _fs == nullptr) return;
+                dirty = _dirty;
+                if (dirty) {
+                        _dirty = false;
+                        changed = _pending;
+                        _pending.count = 0;
+                        index = _latest;
+                        _reading = index;
+                        if (index >= 0) _latestDrawn = true;
+                }
         }
+        const bool moved = _arrowMoved.exchange(false, std::memory_order_acq_rel);
+        if (!dirty && !moved) return;
+        restoreUnder(); // before anything is drawn: nothing drawn copies the arrow
         if (index >= 0) {
                 const Layout l = _layout;
                 const bool   wide = _config.format == Format::Rgb565;
@@ -859,9 +881,101 @@ void ProgramSurface::convert() {
                         }
                 }
                 (void)_fs->wait(DrawTimeoutMs);
-                (void)_fs->present(DrawTimeoutMs);
         }
-        release(index);
+        drawArrow();
+        (void)_fs->present(DrawTimeoutMs);
+        if (dirty) release(index);
+        return;
+}
+
+namespace {
+
+        struct ArrowJob {
+                        const WindowManager::CursorPicture *arrow;
+                        int32_t                             column; // the picture's first column, from the area's
+                        uint16_t                            width;  // the area's
+                        uint16_t                            rows;
+                        uint16_t                            firstRow; // the area's first row, on the scan surface
+                        uint32_t                            screenRows, scanRows; // the scan's mapping
+                        int32_t                             pictureTop; // the picture's first row, on the screen
+                        uint8_t                            *under;
+        };
+
+        struct UnderJob {
+                        const uint8_t *under;
+                        uint16_t       width;
+                        uint16_t       rows;
+        };
+
+        // The arrow over the area's pixels, a scan row taking the picture's row its first screen
+        // row shows (the scan repeats rows: the arrow keeps its size on the screen).
+        void drawArrowPixels(void *arg, uint8_t *pixels, size_t stride) {
+                const auto  *job = static_cast<const ArrowJob *>(arg);
+                const auto  &p = *job->arrow;
+                const size_t bytes = size_t(job->width) * Surface::BytesPerPixel;
+                for (uint16_t r = 0; r < job->rows; ++r)
+                        std::memcpy(job->under + r * bytes, pixels + size_t(r) * stride, bytes);
+                for (uint16_t r = 0; r < job->rows; ++r) {
+                        const int32_t screenRow = int32_t(
+                                (uint32_t(job->firstRow + r) * job->screenRows + job->scanRows - 1) / job->scanRows);
+                        const int32_t sr = screenRow - job->pictureTop;
+                        if (sr < 0 || sr >= p.height) continue;
+                        const char *shape = p.rows[sr];
+                        uint8_t    *row = pixels + size_t(r) * stride;
+                        for (uint16_t c = 0; c < job->width; ++c) {
+                                const int32_t sc = int32_t(c) - job->column;
+                                if (sc < 0 || sc >= p.width || shape[sc] == '.') continue;
+                                const uint32_t rgb = shape[sc] == 'X' ? p.edge : p.fill;
+                                uint8_t       *px = row + size_t(c) * Surface::BytesPerPixel;
+                                px[0] = uint8_t(rgb);
+                                px[1] = uint8_t(rgb >> 8);
+                                px[2] = uint8_t(rgb >> 16);
+                        }
+                }
+                return;
+        }
+
+        void restoreArrowPixels(void *arg, uint8_t *pixels, size_t stride) {
+                const auto  *job = static_cast<const UnderJob *>(arg);
+                const size_t bytes = size_t(job->width) * Surface::BytesPerPixel;
+                for (uint16_t r = 0; r < job->rows; ++r)
+                        std::memcpy(pixels + size_t(r) * stride, job->under + r * bytes, bytes);
+                return;
+        }
+
+} // namespace
+
+void ProgramSurface::restoreUnder() {
+        if (_underRect.isEmpty() || _fs == nullptr) return;
+        UnderJob job{_under, _underRect.width, _underRect.height};
+        (void)_fs->patch(_underRect, restoreArrowPixels, &job, DrawTimeoutMs);
+        _underRect = Rect();
+        return;
+}
+
+// The arrow, where the pointer is, unless the program hides it (hidden, or held for mouse look).
+void ProgramSurface::drawArrow() {
+        const int32_t at = _arrowAt.load(std::memory_order_acquire);
+        if (_fs == nullptr || at < 0 || _arrow.rows == nullptr ||
+            PointerMode(_pointerMode.load(std::memory_order_acquire)) != PointerMode::Normal)
+                return;
+        const Layout  l = _layout;
+        const Rect    bounds = _fs->bounds();
+        const int32_t x = (at & 0xffff) - _arrow.hotX, y = (at >> 16) - _arrow.hotY;
+        constexpr int Align = 4; // whole 4-pixel columns, as the surface's copies like
+        int32_t       left = x < 0 ? 0 : x & ~(Align - 1);
+        int32_t       right = (x + _arrow.width + Align - 1) & ~(Align - 1);
+        // The scan rows showing the picture's screen rows.
+        int32_t first = y < 0 ? 0 : int32_t(uint32_t(y) * l.rows / l.screenHeight);
+        int32_t last = int32_t((uint32_t(y + _arrow.height > 0 ? y + _arrow.height : 0) * l.rows + l.screenHeight - 1) /
+                               l.screenHeight);
+        if (right > bounds.width) right = bounds.width;
+        if (last > bounds.height) last = bounds.height;
+        if (right <= left || last <= first) return;
+        const Rect area{uint16_t(left), uint16_t(first), uint16_t(right - left), uint16_t(last - first)};
+        if (size_t(area.width) * area.height * Surface::BytesPerPixel > sizeof(_under)) return;
+        ArrowJob job{&_arrow, x - left, area.width, area.height, area.y, l.screenHeight, l.rows, y, _under};
+        if (_fs->patch(area, drawArrowPixels, &job, DrawTimeoutMs).isOk()) _underRect = area;
         return;
 }
 
@@ -1009,6 +1123,10 @@ void ProgramSurface::mouseEntry(void *arg, const WindowManager::MouseEvent &even
                         const int32_t mx = int32_t(event.x) * l.screenWidth / ScreenWidth;
                         const int32_t my = int32_t(event.y) * l.screenHeight / ScreenHeight;
                         const int32_t dx = mx - l.x;
+                        if (self->_arrowAt.exchange(mx | my << 16, std::memory_order_acq_rel) != (mx | my << 16)) {
+                                self->_arrowMoved.store(true, std::memory_order_release);
+                                self->_work.release(); // the presenter moves the arrow
+                        }
                         y = my * l.rows / l.screenHeight - l.top;
                         // The column's input pixel (Pixels::stretch()'s mapping), rounded down.
                         const int32_t w = self->_config.width, across = l.width;

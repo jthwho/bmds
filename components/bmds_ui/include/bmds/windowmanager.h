@@ -635,6 +635,27 @@ class WindowManager {
                  */
                 Error setPointerLock(uint8_t id, bool on);
 
+                /** @brief The arrow pointer's picture and colours, for drawing it elsewhere. */
+                struct CursorPicture {
+                                uint8_t            width = 0;
+                                uint8_t            height = 0;
+                                uint8_t            hotX = 0; ///< The tip, in the picture.
+                                uint8_t            hotY = 0;
+                                const char *const *rows =
+                                        nullptr;   ///< A row's characters: `X` edge, `o` fill, `.` clear.
+                                uint32_t edge = 0; ///< 0xRRGGBB.
+                                uint32_t fill = 0;
+                };
+
+                /**
+                 * @brief Returns the arrow's picture in the palette's colours: what a full-screen
+                 *        surface draws over its own picture, the desktop not showing.
+                 */
+                CursorPicture arrowPicture();
+
+                /** @brief Returns where the pointer's tip is, on the desktop (`ScreenWidth` across). */
+                void pointerPosition(uint16_t &x, uint16_t &y);
+
                 /**
                  * @brief Sets window @p id's large icon (null: none; 32 × 32 at
                  *        most), kept by the caller as `setIcon()`'s: Alt+Tab's list

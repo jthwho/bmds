@@ -59,8 +59,9 @@ static uint16_t g_queue[QUEUE]; /* pressed << 8 | Doom's key */
 static uint32_t g_queue_head, g_queue_tail;
 static uint8_t  g_down[256 / 8]; /* Doom's keys held */
 
-static unsigned char g_pad_keys[BMDS_PAD_GUIDE + 1]; /* the key each pad button pressed (0: none) */
-static unsigned char g_stick_keys[2];                /* the left stick's: across, then down */
+#define ACTIONS 32
+static unsigned char g_action_keys[ACTIONS]; /* the Doom key each action (by Id) pressed; 0: none */
+static int           g_menu_set = -1;        /* the set chosen: 1 menu, 0 game; -1 none yet */
 
 static int      g_mouse_moved;
 static int32_t  g_mouse_dx, g_mouse_dy;
@@ -151,8 +152,7 @@ static void set_active(int active) {
                 /* Away: nothing stays held, and a game being played waits. */
                 for (unsigned key = 0; key < 256; ++key)
                         if ((g_down[key / 8] & (1u << (key % 8))) != 0) queue_key(0, (unsigned char)key);
-                memset(g_pad_keys, 0, sizeof(g_pad_keys));
-                memset(g_stick_keys, 0, sizeof(g_stick_keys));
+                memset(g_action_keys, 0, sizeof(g_action_keys)); /* the system lets them go */
                 g_buttons = 0;
                 g_mouse_moved = 1;
                 if (playing() && !netgame) {
@@ -166,56 +166,56 @@ static void set_active(int active) {
         return;
 }
 
-/* ---- Pads (devplan/controls.md §7b), as SDL ports bind them */
+/* ---- Actions (controls.conf, devplan/controls.md §7c): each turned into the key Doom's own
+ * configuration binds to it, so a binding changed in either works. */
 
-/* Doom's key for pad @p button: in the menus South accepts and East goes back. */
-static unsigned char pad_key(uint32_t button) {
-        switch (button) {
-                case BMDS_PAD_UP: return KEY_UPARROW;
-                case BMDS_PAD_DOWN: return KEY_DOWNARROW;
-                case BMDS_PAD_LEFT: return KEY_LEFTARROW;
-                case BMDS_PAD_RIGHT: return KEY_RIGHTARROW;
-                case BMDS_PAD_SOUTH: return menuactive ? KEY_ENTER : KEY_FIRE;
-                case BMDS_PAD_EAST: return menuactive ? KEY_BACKSPACE : KEY_USE;
-                case BMDS_PAD_WEST: return KEY_RSHIFT; /* run */
-                case BMDS_PAD_NORTH:
-                case BMDS_PAD_R1: return (unsigned char)key_nextweapon;
-                case BMDS_PAD_L1: return (unsigned char)key_prevweapon;
-                case BMDS_PAD_START: return KEY_ESCAPE;
-                case BMDS_PAD_SELECT: return KEY_TAB; /* the map */
+static unsigned char action_key(uint32_t id) {
+        switch (id) {
+                case 1: return (unsigned char)key_up;
+                case 2: return (unsigned char)key_down;
+                case 3: return (unsigned char)key_left;
+                case 4: return (unsigned char)key_right;
+                case 5: return (unsigned char)key_strafeleft;
+                case 6: return (unsigned char)key_straferight;
+                case 7: return (unsigned char)key_speed;
+                case 8: return (unsigned char)key_fire;
+                case 9: return (unsigned char)key_use;
+                case 10: return (unsigned char)key_prevweapon;
+                case 11: return (unsigned char)key_nextweapon;
+                case 12: return (unsigned char)key_map_toggle;
+                case 13: return (unsigned char)key_menu_activate;
+                case 20: return (unsigned char)key_menu_up;
+                case 21: return (unsigned char)key_menu_down;
+                case 22: return (unsigned char)key_menu_left;
+                case 23: return (unsigned char)key_menu_right;
+                case 24: return (unsigned char)key_menu_forward;
+                case 25: return (unsigned char)key_menu_back;
                 default: return 0;
         }
 }
 
-/* The left stick past half way as the arrows: across turns, down walks. */
-static void pad_stick(uint32_t axis, int32_t value) {
-        const int     i = axis == BMDS_PAD_LEFT_X ? 0 : 1;
-        unsigned char key = 0;
-        if (value < -16384) key = i == 0 ? KEY_LEFTARROW : KEY_UPARROW;
-        if (value > 16384) key = i == 0 ? KEY_RIGHTARROW : KEY_DOWNARROW;
-        if (key == g_stick_keys[i]) return;
-        if (g_stick_keys[i] != 0) queue_key(0, g_stick_keys[i]);
-        if (key != 0) queue_key(1, key);
-        g_stick_keys[i] = key;
+static void action(const bmds_surface_event_t *e) {
+        const uint32_t id = e->data[0];
+        if (id >= ACTIONS) return;
+        if (e->flags == BMDS_ACTION_PRESS || e->flags == BMDS_ACTION_REPEAT) {
+                const unsigned char key = e->flags == BMDS_ACTION_REPEAT ? g_action_keys[id] : action_key(id);
+                if (key == 0) return;
+                g_action_keys[id] = key; /* released as pressed, whatever is configured meanwhile */
+                queue_key(1, key);
+        } else if (e->flags == BMDS_ACTION_RELEASE && g_action_keys[id] != 0) {
+                queue_key(0, g_action_keys[id]);
+                g_action_keys[id] = 0;
+        }
         return;
 }
 
-static void pad(const bmds_surface_event_t *e) {
-        if (e->flags == BMDS_PAD_AXIS && (e->data[1] == BMDS_PAD_LEFT_X || e->data[1] == BMDS_PAD_LEFT_Y)) {
-                pad_stick(e->data[1], (int32_t)e->data[2]);
-                return;
-        }
-        if (e->flags != BMDS_PAD_BUTTON || e->data[1] > BMDS_PAD_GUIDE) return;
-        const uint32_t button = e->data[1];
-        if (e->data[2] != 0) {
-                const unsigned char key = pad_key(button);
-                if (key == 0) return;
-                g_pad_keys[button] = key; /* released as pressed, whatever the menu does meanwhile */
-                queue_key(1, key);
-        } else if (g_pad_keys[button] != 0) {
-                queue_key(0, g_pad_keys[button]);
-                g_pad_keys[button] = 0;
-        }
+/* The menu's set while Doom's menu is up (its arrows step it, Enter chooses), else the game's. */
+static void choose_set(void) {
+        const int menu = menuactive ? 1 : 0;
+        if (menu == g_menu_set) return;
+        g_menu_set = menu;
+        const char *set = menu ? "menu" : "game";
+        (void)bmds_controls(BMDS_CONTROLS_SET, (void *)set, (uint32_t)strlen(set));
         return;
 }
 
@@ -240,7 +240,7 @@ static void handle(const bmds_surface_event_t *e) {
                         g_buttons = e->data[2] & 7u; /* left fire, right strafe, middle forward */
                         g_mouse_moved = 1;
                         break;
-                case BMDS_EVENT_PAD: pad(e); break;
+                case BMDS_EVENT_ACTION: action(e); break;
                 case BMDS_EVENT_ACTIVE: set_active(e->data[0] != 0); break;
                 case BMDS_EVENT_PRESENTED: g_full_screen = e->data[0] != 0; break;
                 case BMDS_EVENT_CLOSE: I_Quit(); break; /* as the menu's quit: the settings saved */
@@ -252,6 +252,7 @@ static void handle(const bmds_surface_event_t *e) {
 /* The surface's events waiting, handled. */
 static void events(void) {
         bmds_surface_event_t e[8];
+        choose_set();
         for (;;) {
                 bmds_pollfd_t p = {sizeof(p), g_fd, BMDS_POLL_IN, 0};
                 if (bmds_io_poll(&p, 1, 0, NULL) <= 0 || (p.revents & BMDS_POLL_IN) == 0) return;
@@ -287,6 +288,10 @@ void DG_Init(void) {
          * rest, so a binding of the user's own stays). */
         if (key_prevweapon == 0) key_prevweapon = '[';
         if (key_nextweapon == 0) key_nextweapon = ']';
+        /* The actions: the folder's controls.conf. Without them (not run from its folder) the keys
+         * reach Doom as they are, and the pads not at all. */
+        const int32_t declared = bmds_controls(BMDS_CONTROLS_DECLARE, NULL, 0);
+        if (declared < 0) fprintf(stderr, "doom: no controls.conf (%d): keys only\n", (int)declared);
         bmds_surface_config_t c;
         memset(&c, 0, sizeof(c));
         c.size = sizeof(c);

@@ -272,6 +272,8 @@ class ProgramSurface final : public Stream {
 
                 Error  start(const Config &config);
                 void   closeWindow();
+                void   restoreUnder();           // the presenter's: what the arrow covered, back
+                void   drawArrow();              // the presenter's: the arrow over the picture, full screen
                 void   push(const Event &event); // the queue's lock taken inside
                 void   pushPresented();          // the window manager's lock held: no calls into it
                 Rect   pictureRect(uint16_t clientWidth, uint16_t clientHeight, uint16_t &scale) const;
@@ -318,6 +320,15 @@ class ProgramSurface final : public Stream {
                 WindowManager *_wm = nullptr;
                 uint8_t        _client = 0;
                 uint8_t        _window = 0; // 0: none
+                // The arrow full screen (the desktop's isn't shown): where (the mode's pixels), and
+                // what it covers on the scan surface. Moves are the window manager's task's; the
+                // rest the presenter's.
+                std::atomic<int32_t>           _arrowAt{-1}; // x | y << 16; -1: none known
+                std::atomic<bool>              _arrowMoved{false};
+                std::atomic<uint8_t>           _pointerMode{0}; // PointerMode
+                WindowManager::CursorPicture   _arrow;
+                Rect                           _underRect;
+                uint8_t                        _under[WindowManager::UnderBytes];
                 std::atomic<ProgramControls *> _controls{nullptr};
                 uint8_t       *_buffers[MaxBuffers] = {};
                 size_t         _stride = 0;

@@ -930,6 +930,27 @@ Rect WindowManager::cursorArea() const {
                     static_cast<uint16_t>(bottom - top)};
 }
 
+WindowManager::CursorPicture WindowManager::arrowPicture() {
+        Mutex::Locker  lock(_lock, WaitForever);
+        const Picture &p = Pictures[static_cast<size_t>(Pointer::Arrow)];
+        CursorPicture  out;
+        out.width = p.width;
+        out.height = p.height;
+        out.hotX = p.hotX;
+        out.hotY = p.hotY;
+        out.rows = p.rows;
+        out.edge = _palette.color(Role::CursorEdge);
+        out.fill = _palette.color(Role::CursorFill);
+        return out;
+}
+
+void WindowManager::pointerPosition(uint16_t &x, uint16_t &y) {
+        Mutex::Locker lock(_lock, WaitForever);
+        x = _pointerX;
+        y = _pointerY;
+        return;
+}
+
 // The picture over what @p pixels holds (the cursor area).
 void WindowManager::drawCursorPixels(void *arg, uint8_t *pixels, size_t stride) {
         const auto    *job = static_cast<const CursorJob *>(arg);

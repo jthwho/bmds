@@ -125,8 +125,10 @@ Error Png::write(const uint8_t *bgr, uint16_t width, uint16_t height, size_t str
         // Rows: 16 zero bytes (Sub's left of the first pixel), the last and this one (RGB), and this
         // one filtered.
         constexpr size_t Lead = 16;
-        auto            *rows =
-                static_cast<uint8_t *>(Memory::alloc(MemSpace::Internal, 2 * (Lead + rowBytes) + lineBytes + OutBytes));
+        const size_t     rowsBytes = 2 * (Lead + rowBytes) + lineBytes + OutBytes;
+        auto            *rows = static_cast<uint8_t *>(Memory::alloc(MemSpace::Internal, rowsBytes));
+        if (rows == nullptr)
+                rows = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, rowsBytes)); // slower: still made
         if (d == nullptr || rows == nullptr) {
                 Memory::free(d);
                 Memory::free(rows);

@@ -63,6 +63,17 @@ the board for what it does: **check every kernel on the board** (`simd test`).
 - **No floating-point vectors.** Audio and the float decoders aren't PIE's.
 - **Registers live between asm statements**, as GCC doesn't know they exist: constants can be
   loaded once and used by later statements, if no PIE-using function is called between.
+- **PIE's 128-bit accesses need L2 RAM or PSRAM: not the LP RAM, not the TCM.** ESP-IDF's P4
+  heap layout says so ("TCM and RTCRAM memory regions cannot satisfy 128-bit data access"), yet it
+  registers the LP RAM (32 KB) with `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT` as a last resort, and
+  the TCM likewise. So `heap_caps_malloc(INTERNAL | 8BIT)` returns LP RAM once the L2 RAM is
+  short, and a PIE kernel over it runs ~20× slower and reads garbage. Found as PNG screenshots
+  streaked down the columns (filtering 2-6 s instead of 0.03), with Doom or a full-screen surface
+  holding internal RAM: the PNG writer's rows had landed there. `MALLOC_CAP_SIMD` would exclude
+  both, but ESP-IDF registers its PSRAM malloc reserve (`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL`,
+  32 KB of L2 RAM) without it; every byte of L2 RAM is DMA-capable and neither LP RAM nor TCM is,
+  so BMDS's internal spaces ask for **`MALLOC_CAP_DMA`** (`boarddef.h`). Plain `malloc()` can
+  still get LP RAM: fine for scalar code, never for a buffer a kernel touches.
 - **Lazy save, per task:** FreeRTOS saves PIE's registers the first time a task uses PIE (a trap);
   **never use PIE in an interrupt handler** (it aborts).
 

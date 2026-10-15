@@ -1057,10 +1057,18 @@ rules pure C and host-tested, the program on `libbmdsgame`, the art and sounds w
   shown from ~22 a second to ~29, core 0 at 77%. The expansion alone (320x200 at 3x, idle):
   4.3 ms to 3.6 with Doom's frame in PSRAM, 2.6 from internal RAM. Further cuts would cost
   colour: an RGB565 strip (the 2D-DMA widening) would halve the CPU's stores; not done.
-- **Seen meanwhile, open:** 2 PNG screenshots of about 16 taken with Doom drawing came out
-  streaked down the columns, both filtering for ~3 s instead of ~0.1. The deflate stream's
-  Adler-32 matched, so the filter's input was wrong: a filtered row computed against a "last row"
-  that wasn't the one sent. `simd stress` under the same load showed nothing; not reproduced.
+- **Seen meanwhile, solved (2026-10-15):** 2 PNG screenshots of about 16 taken with Doom drawing
+  came out streaked down the columns, both filtering for ~3 s instead of ~0.1. Full-screen
+  Solitaire made it happen every time: with the L2 RAM short, the PNG writer's rows came from the
+  LP RAM, where PIE's 128-bit loads are slow and wrong (`docs/platforms/esp32p4.md` §1). The
+  internal spaces now ask for DMA-capable memory, which only the L2 RAM is; the rows fall back to
+  PSRAM when the L2 RAM can't hold them.
+- **The pointer full screen (2026-10-15, the user's report):** the desktop isn't shown, so its
+  arrow wasn't either. A full-screen surface whose pointer mode is `NORMAL` now draws the window
+  manager's arrow (`arrowPicture()`) on the scan surface itself: the presenter puts back what it
+  covered, converts the present, draws it where the pointer is (a scan row takes the arrow's row
+  its first screen line shows, so the scan's row repeat keeps its size), then presents; a move
+  alone wakes the presenter for that. `HIDDEN` and `RELATIVE` (Doom's mouse look) draw none.
 - **What else holds internal RAM:** a program's thread stacks go there while the largest block
   keeps 64 KB to spare (`stackSpaceFor()`), and the games' 32 KB stacks use 2-8 KB; windowed Doom
   costs 37 KB this way, full screen 65 KB more (its strip and the screen).

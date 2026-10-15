@@ -30,8 +30,13 @@ namespace Detail {
                 .psramBytes = 32u * 1024u * 1024u, // In-package (ESP32-P4NRW32)
                 .memSpaces =
                         {
-                                // Indexed by MemSpace.
-                                {.heapCaps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT},
+                                // Indexed by MemSpace. Internal is the L2 RAM, all of it DMA-capable:
+                                // asking for DMA keeps out the LP RAM (slow, and its 128-bit loads
+                                // come back wrong: PIE kernels got garbage there once the L2 RAM was
+                                // short) and the TCM, which the heap otherwise gives an internal
+                                // request when nothing else is left. (Not MALLOC_CAP_SIMD: ESP-IDF
+                                // registers its PSRAM reserve of L2 RAM without it.)
+                                {.heapCaps = MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT},
                                 {.heapCaps = MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT},
                                 {.heapCaps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT},
                                 {.heapCaps = MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA | MALLOC_CAP_CACHE_ALIGNED},
