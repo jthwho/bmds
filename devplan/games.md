@@ -565,7 +565,7 @@ each tested before the next; Blocks (step 5) is its first user.
 
 **Part 2: images.** PNG (and the system's other formats) through `image_decode` into an image in
 the canvas's format; a transparent key or the PNG's alpha (an alpha below one half: the key).
-Alpha blending later, if a game needs it.
+Alpha blending later, if a game needs it. Built: §15.
 
 **Part 3: sound.** A mixer on a real-time client (`audio_cycle`, its own thread): voices with
 volume and pan, one-shots and loops, WAV samples loaded whole (16-bit PCM, any rate: resampled at
@@ -618,3 +618,34 @@ against a fake surface; the loop and the sound on the board with a demo.
   went on at 60 a second but swaps stopped: no interrupt saw the DMA on the last line, where a swap
   begins. Why isn't known (the last two lines interrupt either way).
 - **Next:** part 2 (images), part 3 (sound), then Blocks.
+
+## 15. As built: step 4 part 2, images (2026-10-14)
+
+- **`bmds_game_image_load(path, how, image)`**, **`bmds_game_image_load_memory(data, length, how,
+  image)`** (a picture built into the program), **`bmds_game_image_free()`** (`image.c`). A file
+  is read into memory once (`image_info` and `image_decode` each read an fd to its end), decoded
+  as BGRA32 into a `bmds_mem_alloc()` buffer (`how->mem_flags`: `BMDS_MEM_FAST` for internal RAM),
+  converted in place row by row (the output is never wider than its input), then cut to size.
+  EXIF orientation is undone. Any format `image_decode` knows: PNG, JPEG, BMP.
+- **`bmds_game_load_t`:** the canvas's format; `BMDS_GAME_LOAD_KEY_RGB` with `key_rgb` (a colour
+  in the file that is transparent: BMP sprites); L8's palette (each pixel the nearest colour,
+  weighted 3:4:2, the last lookup cached) and `key`, the index transparent pixels become (no colour
+  is mapped to it).
+- **Transparency:** an alpha below 128 (or the key colour) is transparent. If any pixel is, the
+  image comes keyed. RGB565 and BGR24 use magenta (0xF81F, 0xFF00FF) as the key; an opaque pixel
+  that would equal it is moved a step of green (0xF83F, 0xFF01FF), so the game never chooses a
+  key. Alpha blending: still later, if a game needs it.
+- **Host-tested** (`convert.c`, no system calls): RGB565 and BGR24 in place, alpha and a key
+  colour, an opaque magenta moved off the key, L8's nearest colour never the key, refused requests.
+- **`bounce -i PICTURE`** draws each square as the picture; L8 gets a palette (a 6×6×6 cube), so
+  the L8 path is exercised too. A 24×24 PNG with soft edges, 32 of them at 640×360: 58-60 frames a
+  second in RGB565, BGR24 and L8, windowed or full screen.
+- **Found and fixed: L8 (and scaled) windows were slow.** A window whose picture is expanded by
+  the CPU (L8, or scaled) converted the bounds of all the clip into the strip, 8 rows a band, and
+  each band was written once a clip rectangle: 32 spread squares in L8 drew at 2-7 frames a second.
+  `ProgramSurface::drawScaled()` now converts and writes each clip rectangle on its own
+  (`Painter::clipCount()`, `clipAt()`): 58-60. Dense changes at 2× (32 squares at 320×180) draw
+  at 45-47, as RGB565.
+- **Seen, open:** a `screenshot` taken while a program is full screen shows the desktop's
+  buffer, which holds what the full-screen picture left there (RGB565 read as BGR24: noise). The
+  screen and the desktop after it are right; the capture should take what is shown.

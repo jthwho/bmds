@@ -5,8 +5,8 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * libbmdsgame's canvas and text (sdk/game, devplan/games.md §13): clipped drawing in each format,
- * its damage, blits with a key, glyphs.
+ * libbmdsgame's canvas, text and image conversion (sdk/game, devplan/games.md §13): clipped
+ * drawing in each format, its damage, blits with a key, glyphs, decoded pixels into a canvas's.
  */
 
 #include <doctest.h>
@@ -17,7 +17,7 @@
 #include <bmds/game.h>
 
 extern "C" {
-extern const unsigned char bmds_game_font16[191][16];
+#include "../../sdk/game/game_internal.h"
 }
 
 namespace {
@@ -31,6 +31,10 @@ namespace {
                                 const uint32_t bpp = format == BMDS_PIXEL_L8 ? 1 : format == BMDS_PIXEL_RGB565 ? 2 : 3;
                                 pixels.assign(size_t(w) * h * bpp, 0);
                                 REQUIRE(bmds_canvas_init(&canvas, pixels.data(), uint32_t(w) * bpp, w, h, format) == 0);
+                        }
+
+                        static uint32_t bgr(const uint8_t *p, int32_t x) {
+                                return uint32_t(p[3 * x] | p[3 * x + 1] << 8 | p[3 * x + 2] << 16);
                         }
 
                         uint32_t at(int32_t x, int32_t y) const {
@@ -201,4 +205,48 @@ TEST_CASE("Game text: glyphs, widths, Latin-1, others as ?") {
         bmds_canvas_text(&t.canvas, 0, 0, "A", 0xffff, 2);
         for (int32_t y = 0; y < 32; ++y) CHECK((t.at(5, y) != 0) == ((a[y / 2] & (0x80 >> 2)) != 0));
         CHECK(t.damage() == "0,0 12x32;");
+}
+
+TEST_CASE("Game images: BGRA32 converted in place, alpha and a colour as the key") {
+        // B, G, R, A: red, half-transparent green, magenta (opaque), clear blue.
+        const uint8_t         source[] = {0, 0, 255, 255, 0, 255, 0, 127, 255, 0, 255, 255, 255, 0, 0, 0};
+        bmds_game_load_t      how = {sizeof(how), BMDS_PIXEL_RGB565, 0, 0, nullptr, 0, 0, 0};
+        bmds_game_converter_t c;
+        REQUIRE(bmds_game_converter_init(&c, &how) == 0);
+        uint8_t buf[sizeof(source)];
+        std::memcpy(buf, source, sizeof(buf));
+        CHECK(bmds_game_convert(&c, buf, buf, 4) == 2); // in place
+        uint16_t v[4];
+        std::memcpy(v, buf, sizeof(v));
+        CHECK(v[0] == 0xf800);
+        CHECK(v[1] == BMDS_GAME_KEY_RGB565);
+        CHECK(v[2] == (BMDS_GAME_KEY_RGB565 | 0x20)); // opaque magenta: moved off the key
+        CHECK(v[3] == BMDS_GAME_KEY_RGB565);
+        // BGR24, red the key colour.
+        how.format = BMDS_PIXEL_BGR24;
+        how.flags = BMDS_GAME_LOAD_KEY_RGB;
+        how.key_rgb = 0xff0000;
+        REQUIRE(bmds_game_converter_init(&c, &how) == 0);
+        std::memcpy(buf, source, sizeof(buf));
+        CHECK(bmds_game_convert(&c, buf, buf, 4) == 3);
+        CHECK(Picture::bgr(buf, 0) == BMDS_GAME_KEY_BGR24);
+        CHECK(Picture::bgr(buf, 2) == 0xff01ff);
+        // L8: the nearest of the palette, the key index never a colour's.
+        const uint32_t   palette[] = {0xff00ff, 0x000000, 0xf00000, 0x00ff00, 0x0000ff};
+        bmds_game_load_t l8 = {sizeof(l8), BMDS_PIXEL_L8, 0, 0, palette, 5, 0, 0};
+        REQUIRE(bmds_game_converter_init(&c, &l8) == 0);
+        uint8_t out[4];
+        CHECK(bmds_game_convert(&c, source, out, 4) == 2);
+        CHECK(out[0] == 2); // red: 0xf00000
+        CHECK(out[1] == 0); // transparent: the key
+        CHECK(out[2] != 0); // magenta: not the key, though palette[0] matches it
+        CHECK(out[3] == 0);
+        // Refused: L8 without a palette, an unknown format, an old size.
+        l8.palette = nullptr;
+        CHECK(bmds_game_converter_init(&c, &l8) == -1);
+        how.format = 9;
+        CHECK(bmds_game_converter_init(&c, &how) == -1);
+        how.format = BMDS_PIXEL_RGB565;
+        how.size = 4;
+        CHECK(bmds_game_converter_init(&c, &how) == -1);
 }

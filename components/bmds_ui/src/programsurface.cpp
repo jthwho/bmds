@@ -464,6 +464,39 @@ Rect ProgramSurface::pictureRect(uint16_t width, uint16_t height, uint16_t &scal
         return Rect{x, y, w, h};
 }
 
+// @p clip of the picture (at @p pic, @p scale times its size) from @p buf: its rows scaled across
+// into the strip, each written `scale` times down, a band at a time.
+void ProgramSurface::drawScaled(Painter &painter, const uint8_t *buf, const Rect &pic, uint16_t scale,
+                                const Rect &clip) {
+        if (clip.isEmpty()) return;
+        uint16_t c0 = uint16_t((clip.x - pic.x) / scale & ~(DamageColumns - 1u));
+        uint16_t c1 = uint16_t((clip.right() - pic.x + scale - 1) / scale);
+        c1 = uint16_t((c1 + DamageColumns - 1) & ~(DamageColumns - 1u));
+        if (c1 > _config.width) c1 = _config.width;
+        const uint16_t cols = uint16_t(c1 - c0);
+        const bool     wide = _config.format == Format::Rgb565;
+        const size_t   rowBytes = size_t(cols) * scale * (wide ? 2 : Surface::BytesPerPixel);
+        const size_t   bpp = bytesPerPixel(_config.format);
+        const uint16_t perStrip = uint16_t(StripRows / scale > 0 ? StripRows / scale : 1);
+        const uint16_t first = uint16_t((clip.y - pic.y) / scale);
+        const uint16_t end = uint16_t((clip.bottom() - pic.y + scale - 1) / scale);
+        for (uint16_t sy = first; sy < end; sy = uint16_t(sy + perStrip)) {
+                const uint16_t rows = uint16_t(end - sy < perStrip ? end - sy : perStrip);
+                const Rect     band{uint16_t(pic.x + c0 * scale), uint16_t(pic.y + sy * scale), uint16_t(cols * scale),
+                                uint16_t(rows * scale)};
+                for (uint16_t r = 0; r < rows; ++r) {
+                        uint8_t *dst = _strip + size_t(r) * scale * rowBytes;
+                        expandRow(buf + size_t(sy + r) * _stride + c0 * bpp, cols, dst, scale);
+                        for (uint16_t k = 1; k < scale; ++k) std::memcpy(dst + k * rowBytes, dst, rowBytes);
+                }
+                if (wide)
+                        (void)painter.pixels565(band.x, band.y, _strip, rowBytes, band.width, band.height);
+                else
+                        (void)painter.pixels(band.x, band.y, _strip, rowBytes, band.width, band.height);
+        }
+        return;
+}
+
 void ProgramSurface::redrawEntry(void *arg, Painter &painter) {
         static_cast<ProgramSurface *>(arg)->draw(painter);
         return;
@@ -501,42 +534,10 @@ void ProgramSurface::draw(Painter &painter) {
                 } else if (scale == 1 && _config.format == Format::Rgb565) {
                         (void)painter.pixels565(pic.x, pic.y, buf, _stride, _config.width, _config.height);
                 } else {
-                        // Rows scaled across into the strip, each written `scale` times down; only the
-                        // strips and columns the painter's clip reaches (a present's damage).
-                        const Rect clip = painter.clipBounds().intersected(pic);
-                        if (clip.isEmpty()) {
-                                release(index);
-                                return;
-                        }
-                        uint16_t c0 = uint16_t((clip.x - pic.x) / scale & ~(DamageColumns - 1u));
-                        uint16_t c1 = uint16_t((clip.right() - pic.x + scale - 1) / scale);
-                        c1 = uint16_t((c1 + DamageColumns - 1) & ~(DamageColumns - 1u));
-                        if (c1 > _config.width) c1 = _config.width;
-                        const uint16_t cols = uint16_t(c1 - c0);
-                        const bool     wide = _config.format == Format::Rgb565;
-                        const size_t   rowBytes = size_t(cols) * scale * (wide ? 2 : Surface::BytesPerPixel);
-                        const size_t   bpp = bytesPerPixel(_config.format);
-                        const uint16_t perStrip = uint16_t(StripRows / scale > 0 ? StripRows / scale : 1);
-                        const uint16_t first = uint16_t((clip.y - pic.y) / scale / perStrip * perStrip);
-                        const uint16_t end = uint16_t((clip.bottom() - pic.y + scale - 1) / scale);
-                        for (uint16_t sy = first; sy < end; sy = uint16_t(sy + perStrip)) {
-                                const uint16_t rows =
-                                        uint16_t(_config.height - sy < perStrip ? _config.height - sy : perStrip);
-                                const Rect band{uint16_t(pic.x + c0 * scale), uint16_t(pic.y + sy * scale),
-                                                uint16_t(cols * scale), uint16_t(rows * scale)};
-                                for (uint16_t r = 0; r < rows; ++r) {
-                                        uint8_t *dst = _strip + size_t(r) * scale * rowBytes;
-                                        expandRow(buf + size_t(sy + r) * _stride + c0 * bpp, cols, dst, scale);
-                                        for (uint16_t k = 1; k < scale; ++k)
-                                                std::memcpy(dst + k * rowBytes, dst, rowBytes);
-                                }
-                                if (wide) {
-                                        (void)painter.pixels565(band.x, band.y, _strip, rowBytes, band.width,
-                                                                band.height);
-                                } else {
-                                        (void)painter.pixels(band.x, band.y, _strip, rowBytes, band.width, band.height);
-                                }
-                        }
+                        // Each rectangle of the clip on its own (their bounds would expand and write
+                        // what didn't change, and each band once a rectangle).
+                        for (size_t i = 0; i < painter.clipCount(); ++i)
+                                drawScaled(painter, buf, pic, scale, painter.clipAt(i).intersected(pic));
                 }
         }
         release(index);

@@ -65,6 +65,40 @@ typedef struct bmds_game_image_t {
                 uint32_t       key;    /**< The transparent pixel value, with `BMDS_GAME_IMAGE_KEYED`. */
 } bmds_game_image_t;
 
+/** @brief `bmds_game_load_t::flags`: pixels of `key_rgb` in the file are transparent too. */
+#define BMDS_GAME_LOAD_KEY_RGB 1u
+
+/**
+ * @brief How to load an image (`bmds_game_image_load()`): into which format, what is transparent.
+ *        Pixels whose alpha is below one half are transparent; if any are, the image is keyed.
+ */
+typedef struct bmds_game_load_t {
+                uint32_t        size;    /**< `sizeof(bmds_game_load_t)`. */
+                uint32_t        format;  /**< The canvas's: `BMDS_PIXEL_L8`, `_RGB565` or `_BGR24`. */
+                uint32_t        flags;   /**< `BMDS_GAME_LOAD_KEY_RGB`. */
+                uint32_t        key_rgb; /**< 0xRRGGBB: with `BMDS_GAME_LOAD_KEY_RGB`, transparent. */
+                const uint32_t *palette; /**< L8: the colours (0xRRGGBB) of indices 0 on: each pixel the nearest. */
+                uint32_t        palette_count; /**< L8: 1-256. */
+                uint32_t        key;           /**< L8: the index transparent pixels become (no colour becomes it). */
+                uint32_t        mem_flags; /**< `bmds_mem_alloc()`'s (`BMDS_MEM_FAST`: internal RAM, faster blits). */
+} bmds_game_load_t;
+
+/**
+ * @brief Loads the picture at @p path (PNG, JPEG or BMP: `bmds_image_decode()`'s) into @p image,
+ *        in @p how's format. RGB565 and BGR24 key their transparent pixels with a value no opaque
+ *        pixel keeps (magenta's; such a pixel is moved a step of green from it).
+ * @return 0, or a negative error (`-BMDS_EINVAL`: @p how; `-BMDS_ENOMEM`; the open's and the
+ *         decode's errors). Free @p image with `bmds_game_image_free()`.
+ */
+int bmds_game_image_load(const char *path, const bmds_game_load_t *how, bmds_game_image_t *image);
+
+/** @brief Loads a picture from @p length bytes at @p data (one built in), as `bmds_game_image_load()`. */
+int bmds_game_image_load_memory(const void *data, uint32_t length, const bmds_game_load_t *how,
+                                bmds_game_image_t *image);
+
+/** @brief Frees a loaded image's pixels and empties it (an empty one: nothing). */
+void bmds_game_image_free(bmds_game_image_t *image);
+
 /**
  * @brief Makes @p canvas a picture of @p width × @p height pixels of @p format at @p pixels,
  *        @p stride bytes a row: clipped to all of it, no damage.

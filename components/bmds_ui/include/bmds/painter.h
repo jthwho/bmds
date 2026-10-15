@@ -94,6 +94,12 @@ class Painter {
                 /** @brief Returns the smallest rectangle holding the clip, in the painter's coordinates. */
                 Rect clipBounds() const { return local(bounds(_clip)); }
 
+                /** @brief Returns the clip's rectangles (disjoint). */
+                size_t clipCount() const { return _clip.size(); }
+
+                /** @brief Returns clip rectangle @p i, in the painter's coordinates. */
+                Rect clipAt(size_t i) const { return local(_clip[i]); }
+
                 /** @brief Returns the damage's rectangles. */
                 size_t damageCount() const { return _damage.size(); }
 

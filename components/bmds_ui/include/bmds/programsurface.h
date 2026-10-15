@@ -255,6 +255,8 @@ class ProgramSurface final : public Stream {
                 void   pushPresented();          // the window manager's lock held: no calls into it
                 Rect   pictureRect(uint16_t clientWidth, uint16_t clientHeight, uint16_t &scale) const;
                 void   draw(Painter &painter);
+                void   drawScaled(Painter &painter, const uint8_t *buf, const Rect &pic, uint16_t scale,
+                                  const Rect &clip);
                 Damage damageOf(Span<const Rect> damage, bool all) const;
                 void   expandRow(const uint8_t *src, uint16_t count, uint8_t *out, uint16_t scale) const;
                 Layout layOut() const;
