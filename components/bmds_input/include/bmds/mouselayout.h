@@ -67,6 +67,8 @@ class MouseLayout {
                 bool decode(Span<const uint8_t> report, PointerEvent &event) const;
 
         private:
+                struct Builder;
+
                 Field    _x;
                 Field    _y;
                 Field    _wheel;

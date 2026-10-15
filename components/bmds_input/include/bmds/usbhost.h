@@ -47,7 +47,7 @@ class UsbHost {
                 /** @brief Interfaces kept per device. */
                 static constexpr size_t MaxInterfaces = 4;
 
-                /** @brief Keyboards and mice at once (boot-protocol HID interfaces). */
+                /** @brief Keyboards, mice and pads at once (HID interfaces). */
                 static constexpr size_t MaxHid = 8;
 
                 /** @brief Bytes kept of a string descriptor (ASCII, NUL included). */
@@ -90,6 +90,7 @@ class UsbHost {
                                 uint32_t hidReports = 0; ///< HID reports received.
                                 uint32_t keyboards = 0;  ///< Keyboards attached now.
                                 uint32_t mice = 0;       ///< Mice attached now.
+                                uint32_t pads = 0;       ///< Gamepads attached now.
                                 uint32_t rearmFailures =
                                         0; ///< HID transfers that couldn't be asked for again (retried).
                                 uint32_t unhandledHalts = 0; ///< The controller's halts of no known cause (retried).
@@ -102,7 +103,8 @@ class UsbHost {
                 struct HidState {
                                 uint8_t  address = 0;
                                 uint8_t  instance = 0;
-                                bool     keyboard = false; ///< Else a mouse.
+                                bool     keyboard = false; ///< Else a mouse, or a pad.
+                                bool     pad = false;      ///< A gamepad (`Pads`).
                                 bool     armed = false;    ///< A report transfer is asked for.
                                 uint32_t reports = 0;      ///< Reports received.
                                 uint32_t sinceMs = 0;      ///< Since the last report (or attaching).
@@ -172,16 +174,18 @@ class UsbHost {
                                 uint16_t   text[MaxName + 1] = {}; // a string descriptor arriving (UTF-16LE)
                 };
 
-                // A keyboard or mouse: a boot-protocol HID interface. On the host's task only.
+                // A keyboard, mouse or pad: a HID interface. On the host's task only.
                 struct Hid {
                                 enum class Kind : uint8_t {
                                         None,
                                         Keyboard,
-                                        Mouse
+                                        Mouse,
+                                        Pad
                                 };
                                 Kind            kind = Kind::None;
                                 uint8_t         address = 0;
                                 uint8_t         instance = 0;
+                                uint8_t         pad = 0;                // a pad's number (Pads)
                                 uint8_t         leds = 0;               // the LED report being sent (it must stay put)
                                 bool            reportProtocol = false; // a mouse's reports decoded by layout
                                 uint32_t        attachedMs = 0;         // uptime when it was attached

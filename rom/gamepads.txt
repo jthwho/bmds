@@ -1,0 +1,14 @@
+# Gamepad mappings (devplan/controls.md §7a): SDL's gamecontrollerdb.txt line format.
+#
+# GUID,name,target:source,...,platform:BMDS,
+#
+# The GUID's bytes 4-5 are the vendor and 8-9 the product (little-endian); the rest is ignored.
+# Sources: bN (button N + 1), aN (axis N, by descriptor order), aN~ (inverted), +aN/-aN (a half),
+# hN.M (hat N, direction bits M: 1 up, 2 right, 4 down, 8 left). SDL's a, b, x and y are by
+# position: South, East, West, North. `pad map N` prints a pad's line; `pad test N` shows which
+# source is which.
+
+# DragonRise's generic chip (0079:0011): NES- and SNES-style pads. The D-pad is axes 3 and 4 (axes
+# 0-2 sit at the centre); B b2, A b1, Select b8, Start b9 (checked on an NES-style pad,
+# 2026-10-15); SNES-style pads add X b0, Y b3, L b4, R b5 (to check).
+03000000790000001100000000000000,DragonRise Retro Pad,a:b2,b:b1,back:b8,dpdown:+a4,dpleft:-a3,dpright:+a3,dpup:-a4,leftshoulder:b4,rightshoulder:b5,start:b9,x:b3,y:b0,platform:BMDS,

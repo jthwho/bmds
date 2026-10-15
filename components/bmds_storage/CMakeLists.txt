@@ -126,17 +126,20 @@ elseif(NOT BOOTLOADER_BUILD)
             --file share/speech/en-US_lh0_sg.bin=${BMDS_ROM_PICO}/lang/en-US_lh0_sg.bin
             --file share/licenses/svox-pico/NOTICE=${BMDS_ROM_PICO}/NOTICE
             --file share/licenses/svox-pico/voices.NOTICE=${BMDS_ROM_PICO}/lang/NOTICE)
+        # The gamepads' mappings (devplan/controls.md §7a): SDL's line format, our own entries.
+        set(BMDS_ROM_PADS_FILE ${BMDS_ROOT_DIR}/rom/gamepads.txt)
+        set(BMDS_ROM_PADS --file share/gamepads.txt=${BMDS_ROM_PADS_FILE})
         add_custom_command(OUTPUT ${BMDS_ROM_BIN} ${BMDS_ROM_HASH}
                            COMMAND ${BMDS_STORAGE_PYTHON} ${BMDS_MKROM} image ${BMDS_ROM_BIN}
                                    --max-bytes ${BMDS_ROM_PARTITION_BYTES} ${BMDS_ROM_TREE}
                                    --file share/icons/bmds.icons=${BMDS_ROM_OUT}/bmds.icons
                                    --file share/icons/bmds.LICENSES=${BMDS_ROM_OUT}/bmds.LICENSES
                                    ${BMDS_ROM_ZONES} ${BMDS_ROM_LEAP} ${BMDS_ROM_SSH} ${BMDS_ROM_SPEECH}
-                                   --hash-header ${BMDS_ROM_HASH}
+                                   ${BMDS_ROM_PADS} --hash-header ${BMDS_ROM_HASH}
                            DEPENDS ${BMDS_MKROM} ${BMDS_ROM_OUT}/bmds.icons ${BMDS_ROM_OUT}/bmds.LICENSES
                                    ${BMDS_ROM_DROPBEAR}/bin/dropbearmulti ${BMDS_ROM_SFTP}/bin/sftp-server
                                    ${BMDS_ROM_TREE_FILES} ${BMDS_ROM_ZONES_FILE} ${BMDS_ROM_LEAP_FILE}
-                                   ${BMDS_ROM_SPEECH_FILES}
+                                   ${BMDS_ROM_SPEECH_FILES} ${BMDS_ROM_PADS_FILE}
                            VERBATIM)
         target_sources(${COMPONENT_LIB} PRIVATE ${BMDS_ROM_HASH})
         target_include_directories(${COMPONENT_LIB} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})

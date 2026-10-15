@@ -15,6 +15,8 @@
 #include <vector>
 #include <bmds/keyboarddecoder.h>
 #include <bmds/mouselayout.h>
+#include <bmds/padlayout.h>
+#include <bmds/padmapping.h>
 #include <bmds/terminalkeys.h>
 
 using bmds::KeyboardDecoder;
@@ -466,4 +468,158 @@ TEST_CASE("MouseLayout: extended usages, a keyboard alone, truncated and random 
                 const bmds::MouseLayout r = layoutOf(bytes, 1 + t % 64);
                 if (r.isValid()) (void)r.decode(Span<const uint8_t>(bytes, t % 16), e);
         }
+}
+
+namespace {
+
+        // DragonRise's generic chip (0079:0011), an NES-style pad's (read off the board).
+        constexpr uint8_t DragonRise[] = {
+                0x05, 0x01, 0x09, 0x04, 0xa1, 0x01, 0xa1, 0x02, 0x75, 0x08, 0x95, 0x05, 0x15, 0x00, 0x26, 0xff, 0x00,
+                0x35, 0x00, 0x46, 0xff, 0x00, 0x09, 0x30, 0x09, 0x30, 0x09, 0x30, 0x09, 0x30, 0x09, 0x31, 0x81, 0x02,
+                0x75, 0x04, 0x95, 0x01, 0x25, 0x07, 0x46, 0x3b, 0x01, 0x65, 0x14, 0x09, 0x00, 0x81, 0x42, 0x65, 0x00,
+                0x75, 0x01, 0x95, 0x0a, 0x25, 0x01, 0x45, 0x01, 0x05, 0x09, 0x19, 0x01, 0x29, 0x0a, 0x81, 0x02, 0x06,
+                0x00, 0xff, 0x75, 0x01, 0x95, 0x0a, 0x25, 0x01, 0x45, 0x01, 0x09, 0x01, 0x81, 0x02, 0xc0, 0xa1, 0x02,
+                0x75, 0x08, 0x95, 0x04, 0x46, 0xff, 0x00, 0x26, 0xff, 0x00, 0x09, 0x02, 0x91, 0x02, 0xc0, 0xc0,
+        };
+
+        // A typical DirectInput pad: report ID 1, 12 buttons, a hat (0-7, null 8), X Y Z Rz.
+        constexpr uint8_t HatPad[] = {
+                0x05, 0x01, 0x09, 0x05, 0xa1, 0x01, 0x85, 0x01, 0x05, 0x09, 0x19, 0x01, 0x29, 0x0c, 0x15,
+                0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x0c, 0x81, 0x02, 0x05, 0x01, 0x09, 0x39, 0x15, 0x00,
+                0x25, 0x07, 0x75, 0x04, 0x95, 0x01, 0x81, 0x42, 0x09, 0x30, 0x09, 0x31, 0x09, 0x32, 0x09,
+                0x35, 0x15, 0x00, 0x26, 0xff, 0x00, 0x75, 0x08, 0x95, 0x04, 0x81, 0x02, 0xc0,
+        };
+
+        bmds::PadLayout padOf(const uint8_t *d, size_t n) {
+                return bmds::PadLayout::parse(Span<const uint8_t>(d, n));
+        }
+
+        // A DragonRise report: axes 0-4, then the null hat nibble and ten buttons.
+        void dragonRiseReport(uint8_t (&r)[8], uint8_t x, uint8_t y, uint16_t buttons) {
+                r[0] = r[1] = r[2] = 0x7f;
+                r[3] = x;
+                r[4] = y;
+                r[5] = static_cast<uint8_t>(0x0f | (buttons & 0x0f) << 4);
+                r[6] = static_cast<uint8_t>(buttons >> 4);
+                r[7] = 0;
+                return;
+        }
+
+} // namespace
+
+TEST_CASE("PadLayout: DragonRise's pad, its repeated X axes numbered by position") {
+        const bmds::PadLayout l = padOf(DragonRise, sizeof(DragonRise));
+        REQUIRE(l.isValid());
+        CHECK(l.reportId() == 0);
+        CHECK(l.axisCount() == 5);
+        CHECK(l.hatCount() == 0); // its nibble's usage is undefined
+        CHECK(l.buttonCount() == 10);
+        CHECK(l.axisUsage(3) == 0x30);
+        CHECK(l.axisUsage(4) == 0x31);
+        uint8_t r[8];
+        dragonRiseReport(r, 0x00, 0xff, 1u << 2 | 1u << 9);
+        bmds::RawPad raw;
+        REQUIRE(l.decode(Span<const uint8_t>(r, sizeof(r)), raw));
+        CHECK(raw.axes[0] == -129);
+        CHECK(raw.axes[3] == -32768);
+        CHECK(raw.axes[4] == 32767);
+        CHECK(raw.buttons == (1u << 2 | 1u << 9));
+        CHECK(!l.decode(Span<const uint8_t>(r, 6), raw)); // too short for its buttons
+        CHECK(!bmds::MouseLayout::parse(Span<const uint8_t>(DragonRise, sizeof(DragonRise))).isValid());
+        CHECK(!padOf(WheelMouse, sizeof(WheelMouse)).isValid());
+}
+
+TEST_CASE("PadLayout: a report ID, a hat with a null state") {
+        const bmds::PadLayout l = padOf(HatPad, sizeof(HatPad));
+        REQUIRE(l.isValid());
+        CHECK(l.reportId() == 1);
+        CHECK(l.axisCount() == 4);
+        CHECK(l.hatCount() == 1);
+        CHECK(l.buttonCount() == 12);
+        bmds::RawPad  raw;
+        const uint8_t r[] = {0x01, 0x01, 0x30, 0x80, 0x80, 0x00, 0xff}; // button 1, hat 3 (down-right)
+        REQUIRE(l.decode(Span<const uint8_t>(r, sizeof(r)), raw));
+        CHECK(raw.buttons == 1u);
+        CHECK(raw.hats[0] == (bmds::RawPad::HatDown | bmds::RawPad::HatRight));
+        CHECK(raw.axes[0] == 128);
+        CHECK(raw.axes[2] == -32768);
+        CHECK(raw.axes[3] == 32767);
+        const uint8_t centred[] = {0x01, 0x00, 0x80, 0x80, 0x80, 0x80, 0x80}; // hat 8: its null state
+        REQUIRE(l.decode(Span<const uint8_t>(centred, sizeof(centred)), raw));
+        CHECK(raw.hats[0] == 0);
+        const uint8_t other[] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+        CHECK(!l.decode(Span<const uint8_t>(other, sizeof(other)), raw));
+        // Random bytes and every cut: no harm.
+        for (size_t cut = 0; cut <= sizeof(HatPad); ++cut) (void)padOf(HatPad, cut);
+        uint32_t state = 7;
+        for (int t = 0; t < 20000; ++t) {
+                uint8_t bytes[64];
+                for (uint8_t &b : bytes) {
+                        state = state * 1103515245u + 12345u;
+                        b = static_cast<uint8_t>(state >> 16);
+                }
+                const bmds::PadLayout p = padOf(bytes, 1 + t % 64);
+                if (p.isValid()) (void)p.decode(Span<const uint8_t>(bytes, t % 16), raw);
+        }
+}
+
+TEST_CASE("PadMapping: the usual order, by usage") {
+        const bmds::PadMapping m = bmds::PadMapping::standard(padOf(HatPad, sizeof(HatPad)));
+        char                   text[bmds::PadMapping::MaxText];
+        m.format(text, sizeof(text));
+        CHECK(std::string(text) == "a:b0,b:b1,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,"
+                                   "leftshoulder:b4,leftstick:b10,lefttrigger:b6,leftx:a0,lefty:a1,"
+                                   "rightshoulder:b5,rightstick:b11,righttrigger:b7,rightx:a2,righty:a3,start:b9,"
+                                   "x:b2,y:b3,");
+        bmds::RawPad raw;
+        raw.hats[0] = bmds::RawPad::HatUp | bmds::RawPad::HatLeft;
+        raw.buttons = 1u << 6; // L2, as a button
+        raw.axes[0] = 2000;    // in the dead zone
+        raw.axes[1] = -32768;
+        bmds::PadState s;
+        m.apply(raw, s);
+        CHECK(s.isDown(bmds::PadState::Up));
+        CHECK(s.isDown(bmds::PadState::Left));
+        CHECK(!s.isDown(bmds::PadState::Down));
+        CHECK(s.isDown(bmds::PadState::L2));
+        CHECK(s.axes[bmds::PadState::LeftTrigger] == 32767);
+        CHECK(s.axes[bmds::PadState::LeftX] == 0);
+        CHECK(s.axes[bmds::PadState::LeftY] == -32767);
+}
+
+TEST_CASE("PadMapping: parsed, formatted back, found in a database, applied to DragonRise's pad") {
+        const char      *line = "a:b2,b:b1,back:b8,dpdown:+a4,dpleft:-a3,dpright:+a3,dpup:-a4,lefttrigger:a2,"
+                                "leftx:a0~,start:b9,";
+        bmds::PadMapping m;
+        REQUIRE(bmds::PadMapping::parse(line, m).isOk());
+        char text[bmds::PadMapping::MaxText];
+        m.format(text, sizeof(text));
+        CHECK(std::string(text) == line);
+        CHECK(bmds::PadMapping::parse("a:b99", m) == bmds::Error::Invalid);
+        CHECK(bmds::PadMapping::parse("a:h0.0", m) == bmds::Error::Invalid);
+        CHECK(bmds::PadMapping::parse("a:x1", m) == bmds::Error::Invalid);
+        CHECK(bmds::PadMapping::parse("misc1:b3,platform:BMDS,crc:1234", m).isOk()); // unknown: skipped
+
+        const char      *database = "# a comment\n"
+                                    "03000000790000001100000000000000,Linux's,a:b0,platform:Linux,\n"
+                                    "030000007900000012000000000000,Short,a:b0,\n"
+                                    "03000000790000001100000000000000,DragonRise Retro Pad,a:b2,b:b1,dpleft:-a3,"
+                                    "dpup:-a4,start:b9,platform:BMDS,\n";
+        bmds::StringView name;
+        REQUIRE(bmds::PadMapping::find(database, 0x0079, 0x0011, m, &name));
+        CHECK(name == bmds::StringView("DragonRise Retro Pad"));
+        CHECK(!bmds::PadMapping::find(database, 0x0079, 0x0012, m, nullptr));
+
+        const bmds::PadLayout l = padOf(DragonRise, sizeof(DragonRise));
+        uint8_t               r[8];
+        dragonRiseReport(r, 0x00, 0x00, 1u << 2); // left and up, B
+        bmds::RawPad   raw;
+        bmds::PadState s;
+        REQUIRE(l.decode(Span<const uint8_t>(r, sizeof(r)), raw));
+        m.apply(raw, s);
+        CHECK(s.buttons == (1u << bmds::PadState::South | 1u << bmds::PadState::Left | 1u << bmds::PadState::Up));
+        dragonRiseReport(r, 0x7f, 0x7f, 1u << 9);
+        REQUIRE(l.decode(Span<const uint8_t>(r, sizeof(r)), raw));
+        m.apply(raw, s);
+        CHECK(s.buttons == 1u << bmds::PadState::Start);
 }

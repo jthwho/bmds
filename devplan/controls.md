@@ -1,8 +1,8 @@
 # Controls: actions and bindings for every application, gamepads
 
-Status: **planned** (2026-10-14, with the user). Builds on `hotkeys.md` (actions, chords, the
-`Hotkeys` table), which it extends from the system's keys to every application's; used by the
-games (`games.md`) and the GUI toolkit.
+Status: **step 1 built** (2026-10-15; planned 2026-10-14 with the user). Builds on `hotkeys.md`
+(actions, chords, the `Hotkeys` table), which it extends from the system's keys to every
+application's; used by the games (`games.md`) and the GUI toolkit.
 
 ## 1. Goal
 
@@ -173,6 +173,48 @@ mapping is wrong. The first check for the user's pad.
 5. **The game library's editor;** the games declare their actions (Blocks, Doom's keys mapped to
    actions in its platform layer, Solitaire).
 6. **The desktop's pad navigation,** `Guide`.
+
+## 7a. Step 1's design (2026-10-15)
+
+- **The user's first pad:** an NES-style pad, `0079:0011` (DragonRise's generic chip: report
+  protocol, Joystick collection, no boot interface, no strings). Its five axes are four X and a
+  Y; the D-pad is axes 3 and 4 (0, 127, 255), the rest sit at 127; B is `b2`, A `b1`, Select
+  `b8`, Start `b9` (found with `pad test`, 2026-10-15). Its line is in the database, with the
+  SNES-style buttons the same chip usually has (X `b0`, Y `b3`, L `b4`, R `b5`) to be checked
+  on the user's SNES-style pad.
+- **`HidDescriptor`** (`bmds_input`, pure) is the parser `hotkeys.md` calls `HidLayout`: it
+  walks a report descriptor and hands each input element (its application collection, report
+  ID, bit offset and size, logical range, usage or usage range for arrays, flags) to a visitor.
+  Nothing is stored, so each user keeps only what it needs. `MouseLayout` is rebuilt on it (its
+  tests unchanged); the consumer and system collections (`hotkeys.md` §3.2) will be too.
+- **`PadLayout`** (pure): the first Joystick, Game Pad or Multi-axis collection's axes (Generic
+  Desktop X to Wheel, in descriptor order: `a0`, `a1`...; at most 8), hats (`h0`, `h1`) and
+  buttons (the Button page, by number: `b0` is button 1; at most 32). `decode()` gives the
+  **raw pad**: axes scaled to −32768..32767, hats as SDL's bits (1 up, 2 right, 4 down, 8 left),
+  buttons as bits. Pads repeat usages (DragonRise's has four X axes before its Y), which is
+  why axes are numbered by position, not named by usage.
+- **`PadMapping`** (pure): the standard pad (§4a) from the raw pad. Written in SDL's
+  `gamecontrollerdb.txt` format (`a:b1,dpleft:-a3,leftx:a0,lefty:a1~,dpup:h0.1`; SDL's `a`, `b`,
+  `x`, `y` are by position: South, East, West, North), parsed into a fixed table, formatted
+  back for `pad map`. Without an entry, the usual order (§4b) by usage: X/Y the left stick, Z/Rz
+  (or Rx/Ry when there is no Rz) the right, hat 0 the D-pad, buttons 1-4 South, East, West,
+  North, then L1, R1, L2, R2, Select, Start, L3, R3, Guide. Sticks get a dead zone (1/8);
+  an axis read as a button is down past half.
+- **The database** (`/rom/share/gamepads.txt`): SDL's line format, our own entries (axis numbers
+  are ours, by descriptor order, so SDL's Linux and Windows lines don't carry over unchanged),
+  `platform:BMDS` or no platform. Looked up by vendor and product (the GUID's bytes 4-5 and
+  8-9), read in place (`Vfs::map`), so the lookup on the USB task never blocks. The user's own
+  file (`/cfg/config/gamepads.txt`) comes with step 2, read off the USB task.
+- **`Pads`** (`bmds_input`, kernel): up to 8 pads, numbered in the order connected; a slot keeps
+  the vendor, product and hub port of the pad it last had, and a pad coming back takes its old
+  number. Each holds its layout, mapping, last raw pad and standard pad (PSRAM, ~500 bytes a
+  pad). A report becomes events only on change: a button's edge, an axis moved by 1/16 of its
+  range or back to centre. Step 1's only consumer is a **listener** (a ring of events and a
+  semaphore) for `pad test`; step 3 delivers them to programs.
+- **`pad`** lists them (`PAD VID:PID KIND MAPPING AXES HATS BUTTONS NAME`); `pad test N` prints
+  each raw and standard change as it happens until Ctrl-C (`b2 down -> South down`); `pad map
+  N` prints the mapping as a `gamepads.txt` line; `pad descriptor N` dumps the report
+  descriptor in hex, for a pad that needs a new entry.
 
 ## 8. Budgets (estimates)
 

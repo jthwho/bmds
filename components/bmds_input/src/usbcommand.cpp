@@ -78,15 +78,19 @@ namespace {
                 const UsbHost::Stats s = host.stats();
                 ctx.printf("Devices: %lu added, %lu gone\n", static_cast<unsigned long>(s.added),
                            static_cast<unsigned long>(s.gone));
-                ctx.printf("HID: %lu keyboards, %lu mice, %lu reports\n", static_cast<unsigned long>(s.keyboards),
-                           static_cast<unsigned long>(s.mice), static_cast<unsigned long>(s.hidReports));
+                ctx.printf("HID: %lu keyboards, %lu mice, %lu pads, %lu reports\n",
+                           static_cast<unsigned long>(s.keyboards), static_cast<unsigned long>(s.mice),
+                           static_cast<unsigned long>(s.pads), static_cast<unsigned long>(s.hidReports));
                 // Each interface: waiting for a report (armed) or not, and since its last one. A
                 // device that stays silent while used, armed, lost its transfer below the driver.
                 UsbHost::HidState hids[8];
                 const size_t      n = host.hids(Span<UsbHost::HidState>(hids, 8));
                 for (size_t i = 0; i < n; ++i)
                         ctx.printf("  %u.%u %-8s %s, %lu reports, the last %lu ms ago\n", hids[i].address,
-                                   hids[i].instance, hids[i].keyboard ? "keyboard" : "mouse",
+                                   hids[i].instance,
+                                   hids[i].keyboard ? "keyboard"
+                                   : hids[i].pad    ? "pad"
+                                                    : "mouse",
                                    hids[i].armed ? "waiting" : "not waiting",
                                    static_cast<unsigned long>(hids[i].reports),
                                    static_cast<unsigned long>(hids[i].sinceMs));

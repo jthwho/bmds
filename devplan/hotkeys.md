@@ -77,7 +77,8 @@ standard editor for all bindings; the chords, actions and table here are its bas
 
 ### 3.2 Decoding special keys (`bmds_input`)
 
-- **`HidLayout`:** `MouseLayout`'s parser generalized. It also finds the Consumer Control (0x0C/
+- **`HidLayout`:** `MouseLayout`'s parser generalized (built as `HidDescriptor`, a visitor over
+  the input elements: `controls.md` §7a). It also finds the Consumer Control (0x0C/
   0x01) and System Control (0x01/0x80) application collections, with their fields as bit fields
   (Variable) or arrays (Array). Pure and host-tested on real keyboards' descriptors.
 - **Events:** each report is compared with the last for that collection. Usages newly down become

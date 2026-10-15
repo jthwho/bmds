@@ -16,6 +16,7 @@
 #include <bmds/board.h>
 #include <bmds/input.h>
 #include <bmds/log.h>
+#include <bmds/pads.h>
 #include <bmds/staticobject.h>
 #include <bmds/stats.h>
 #include <bmds/system.h>
@@ -55,6 +56,7 @@ namespace {
                  "HID reports received"},
                 {"keyboards", Stat::Unit::Count, Stat::Kind::Level, 0, {}, "", "Keyboards attached now"},
                 {"mice", Stat::Unit::Count, Stat::Kind::Level, 0, {}, "", "Mice attached now"},
+                {"pads", Stat::Unit::Count, Stat::Kind::Level, 0, {}, "", "Gamepads attached now"},
                 {"hid_rearm_failures",
                  Stat::Unit::Count,
                  Stat::Kind::Total,
@@ -81,8 +83,9 @@ namespace {
                 v[2] = s.hidReports;
                 v[3] = s.keyboards;
                 v[4] = s.mice;
-                v[5] = s.rearmFailures;
-                v[6] = s.unhandledHalts;
+                v[5] = s.pads;
+                v[6] = s.rearmFailures;
+                v[7] = s.unhandledHalts;
                 return;
         }
 
@@ -253,6 +256,7 @@ size_t UsbHost::hids(Span<HidState> out) {
                 o.address = h.address;
                 o.instance = h.instance;
                 o.keyboard = h.kind == Hid::Kind::Keyboard;
+                o.pad = h.kind == Hid::Kind::Pad;
                 o.armed = h.armed;
                 o.reports = h.reports;
                 o.sinceMs = now - h.lastMs;
@@ -424,16 +428,20 @@ void UsbHost::stringArrived(uint8_t address, bool product, bool ok) {
                 if (d == nullptr || !d->present) return;
                 if (ok) copyString(d->text, MaxName + 1, product ? d->info.name : d->info.manufacturer);
         }
-        if (!product)
+        if (!product) {
                 (void)tuh_descriptor_get_product_string(address, EnglishUs, d->text, sizeof(d->text), stringDone, 1);
-        else if (ok)
+        } else if (ok) {
                 detail::usbMidiNamed(address, StringView(d->info.name)); // its MIDI ports, if it has any
+                for (const Hid &h : _hid)
+                        if (h.kind == Hid::Kind::Pad && h.address == address) Pads::setName(h.pad, d->info.name);
+        }
         return;
 }
 
-// A HID interface: a boot keyboard, or a mouse (boot or not), gets a slot and its reports. A mouse
-// whose report descriptor gives its layout goes to report protocol (where its wheel is: boot
-// protocol may leave it out), decoded by the layout (devplan/input.md §5a).
+// A HID interface: a boot keyboard, a mouse (boot or not) or a pad gets a slot and its reports. A
+// mouse whose report descriptor gives its layout goes to report protocol (where its wheel is: boot
+// protocol may leave it out), decoded by the layout (devplan/input.md §5a). A joystick or game pad
+// is attached to Pads (devplan/controls.md §7a).
 void UsbHost::hidMounted(uint8_t address, uint8_t instance, Span<const uint8_t> descriptor) {
         const uint8_t     protocol = tuh_hid_interface_protocol(address, instance);
         Hid::Kind         kind = protocol == HID_ITF_PROTOCOL_KEYBOARD ? Hid::Kind::Keyboard
@@ -441,31 +449,50 @@ void UsbHost::hidMounted(uint8_t address, uint8_t instance, Span<const uint8_t> 
                                                                        : Hid::Kind::None;
         const MouseLayout layout = kind == Hid::Kind::Keyboard ? MouseLayout() : MouseLayout::parse(descriptor);
         if (kind == Hid::Kind::None && layout.isValid()) kind = Hid::Kind::Mouse; // in report protocol already
-        if (kind == Hid::Kind::None) return; // other report-protocol devices: later (devplan/input.md §8)
         Hid    *free = nullptr;
         uint8_t locks = 0;
         for (Hid &h : _hid) {
                 if (h.kind == Hid::Kind::None && free == nullptr) free = &h;
                 if (h.kind == Hid::Kind::Keyboard) locks = h.keys.locks();
         }
+        uint8_t pad = 0;
+        if (kind == Hid::Kind::None && free != nullptr) { // a pad, or something for later (devplan/input.md §8)
+                uint16_t       vendor = 0, product = 0;
+                tuh_bus_info_t bus = {};
+                (void)tuh_vid_pid_get(address, &vendor, &product);
+                (void)tuh_bus_info_get(address, &bus);
+                auto [number, err] = Pads::attachHid(
+                        vendor, product, static_cast<uint16_t>(bus.hub_addr << 8 | bus.hub_port), descriptor);
+                if (err == Error::NotSupported) return;
+                if (err.isError()) {
+                        bmdsWarn("USB: %u: HID %u: a pad, not attached: %s", address, instance, err.desc());
+                        return;
+                }
+                kind = Hid::Kind::Pad;
+                pad = number;
+        }
+        if (kind == Hid::Kind::None) return;
         if (free == nullptr) {
-                bmdsWarn("USB: %u: HID %u: no room (%u keyboards and mice)", address, instance, unsigned(MaxHid));
+                bmdsWarn("USB: %u: HID %u: no room (%u HID interfaces)", address, instance, unsigned(MaxHid));
                 return;
         }
         *free = Hid();
         free->kind = kind;
         free->address = address;
         free->instance = instance;
+        free->pad = pad;
         free->layout = layout;
         free->reportProtocol = kind == Hid::Kind::Mouse && protocol == HID_ITF_PROTOCOL_NONE;
         free->attachedMs = static_cast<uint32_t>(System::uptimeUs() / 1000);
         free->lastMs = free->attachedMs;
         {
                 Mutex::Locker lock(_lock, WaitForever);
-                ++(kind == Hid::Kind::Keyboard ? _stats.keyboards : _stats.mice);
+                ++(kind == Hid::Kind::Keyboard ? _stats.keyboards : kind == Hid::Kind::Pad ? _stats.pads : _stats.mice);
         }
         if (kind == Hid::Kind::Keyboard) {
                 bmdsInfo("USB: %u: keyboard", address);
+        } else if (kind == Hid::Kind::Pad) {
+                bmdsInfo("USB: %u: pad%u", address, pad);
         } else {
                 bmdsInfo("USB: %u: mouse, %u buttons%s%s", address,
                          unsigned(layout.isValid() ? layout.buttonCount() : 3u), layout.hasWheel() ? ", a wheel" : "",
@@ -495,9 +522,12 @@ void UsbHost::hidUnmounted(uint8_t address, uint8_t instance) {
         if (h == nullptr) return;
         if (h->kind == Hid::Kind::Keyboard) h->keys.releaseAll(emitKey, this);
         if (h->kind == Hid::Kind::Mouse) Input::pointer(PointerEvent()); // its buttons up
+        if (h->kind == Hid::Kind::Pad) Pads::detach(h->pad);
         {
                 Mutex::Locker lock(_lock, WaitForever);
-                --(h->kind == Hid::Kind::Keyboard ? _stats.keyboards : _stats.mice);
+                --(h->kind == Hid::Kind::Keyboard ? _stats.keyboards
+                   : h->kind == Hid::Kind::Pad    ? _stats.pads
+                                                  : _stats.mice);
         }
         *h = Hid();
         return;
@@ -521,6 +551,8 @@ void UsbHost::hidReport(uint8_t address, uint8_t instance, const uint8_t *data, 
                         for (uint16_t i = 2; i < length && i < 8; ++i)
                                 if (data[i] >= HidKey::A) Input::attachKey(data[i]); // below: none, or errors
                 if (h->keys.report(Span<const uint8_t>(data, length), now, emitKey, this)) setLocks(h->keys.locks());
+        } else if (h != nullptr && h->kind == Hid::Kind::Pad) {
+                Pads::reportHid(h->pad, Span<const uint8_t>(data, length));
         } else if (h != nullptr && h->kind == Hid::Kind::Mouse && h->reportProtocol) {
                 PointerEvent p;
                 if (h->layout.decode(Span<const uint8_t>(data, length), p)) Input::pointer(p); // else another ID's
