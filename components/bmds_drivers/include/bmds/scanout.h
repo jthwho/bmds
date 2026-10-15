@@ -120,8 +120,8 @@ class Scanout {
 
                 /**
                  * @brief Sets how often a line-mode descriptor interrupts: one in @p every
-                 *        (0: about `MaxBlocks` a frame, the default). Taken at the next
-                 *        `show()`. A tuning aid (`display rows`).
+                 *        (0: every one, the default: fewer stopped swaps, games.md §14). Taken
+                 *        at the next `show()`. A tuning aid (`display rows`).
                  */
                 void setLineInterrupts(uint32_t every) {
                         _lineInterrupts = every;
@@ -141,12 +141,25 @@ class Scanout {
                 struct Hardware; // the IDF handles
                 struct ItemList; // the DMA's descriptors
 
+                // The descriptors' plan for a surface (planFor()): what the interrupt reads, so it
+                // changes only while no link runs (apply() in rebuild(), after stopHardware()).
+                struct Plan {
+                                size_t   blockBytes = 0;
+                                size_t   stride = 0;
+                                uint32_t items = 0;
+                                uint32_t rows = 0;
+                                uint32_t irqEvery = 1;
+                                bool     lineMode = false;
+                };
+
                 static void supervisorTask(void *arg);
                 void        supervise();
                 Error       startLink();
                 Error       startDpi();
                 void        configureBridge();
-                Error       layOut(const Surface &surface); // the descriptors' plan for @p surface
+                Error       planFor(const Surface &surface, Plan &plan) const; // the descriptors' plan for @p surface
+                void        apply(const Plan &plan);
+                Error       layOut(const Surface &surface); // planFor() and apply(): the link down only
                 Error       buildList();                    // the DMA's list for the plan, on the shown buffer
                 void        useList();                      // the channel pointed at it
                 void        switchSurface();                // show()'s request, on the supervisor's task
@@ -160,6 +173,8 @@ class Scanout {
                 Surface               *_surface = nullptr;
                 Hardware              *_hw = nullptr;
                 ItemList              *_prepared = nullptr;    // switchSurface()'s list, made before the link came down
+                Surface               *_nextSurface = nullptr; // rebuild()'s to take once the link is down
+                Plan                   _nextPlan;              // and its plan
                 size_t                 _blockBytes = 0;        // an item's
                 size_t                 _stride = 0;            // a row's bytes
                 uint32_t               _items = 0;             // descriptors a frame

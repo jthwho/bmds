@@ -34,7 +34,14 @@ if(NOT TARGET bmds_crt)
         set_target_properties(bmds_crt PROPERTIES OUTPUT_NAME bmds ARCHIVE_OUTPUT_DIRECTORY "${BMDS_LIBC_LIB}")
         target_link_libraries(bmds_crt PUBLIC bmds_headers)
         target_compile_options(bmds_crt PRIVATE -Os -Wall -Wextra -Werror)
-        add_custom_target(bmds_libs DEPENDS bmds_libc bmds_crt)
+        # libbmdsgame.a (bmds/game.h, devplan/games.md §13): what games share; an archive, so a
+        # program that uses none of it gets none.
+        add_library(bmds_game STATIC ${BMDS_SDK_DIR}/game/canvas.c ${BMDS_SDK_DIR}/game/text.c
+                                     ${BMDS_SDK_DIR}/game/font16.c ${BMDS_SDK_DIR}/game/loop.c)
+        set_target_properties(bmds_game PROPERTIES OUTPUT_NAME bmdsgame ARCHIVE_OUTPUT_DIRECTORY "${BMDS_LIBC_LIB}")
+        target_link_libraries(bmds_game PUBLIC bmds_headers)
+        target_compile_options(bmds_game PRIVATE -O2 -Wall -Wextra -Werror)
+        add_custom_target(bmds_libs DEPENDS bmds_libc bmds_crt bmds_game)
         # bmds-cc: the same compiler and link for other build systems
         # (CC=.../bmds-cc make), once bmds_libs is built.
         configure_file(${CMAKE_CURRENT_LIST_DIR}/bmds-cc.in ${CMAKE_BINARY_DIR}/bmds-cc
@@ -93,8 +100,8 @@ function(bmds_add_program name)
                 set_source_files_properties(${icons} PROPERTIES OBJECT_DEPENDS "${pngs}")
         endif()
         add_executable(${name} ${ARG_SOURCES} ${icons})
-        target_link_libraries(${name} PRIVATE bmds_headers -Wl,--start-group bmds_crt bmds_libc ${BMDS_LIBGCC}
-                                      -Wl,--end-group)
+        target_link_libraries(${name} PRIVATE bmds_headers -Wl,--start-group bmds_game bmds_crt bmds_libc
+                                      ${BMDS_LIBGCC} -Wl,--end-group)
         target_link_options(${name} PRIVATE
                 # Linked at 0 with its relocations kept: the kernel moves it.
                 -static -nostdlib -L${BMDS_LIBC_LIB} -u _start -Wl,--emit-relocs

@@ -374,30 +374,53 @@ void Scanout::stop() {
 }
 
 // The descriptors' plan for @p surface: as many blocks (up to MaxBlocks) as divide the frame's
-// lines when it is the mode's height; shorter, a descriptor per line, its rows repeated.
-Error Scanout::layOut(const Surface &surface) {
+// lines when it is the mode's height; shorter, a descriptor per line, its rows repeated, each
+// interrupting (setLineInterrupts() to try fewer).
+Error Scanout::planFor(const Surface &surface, Plan &plan) const {
         const VideoTiming &t = _config.timing;
         if (!surface.isStarted() || surface.width() != t.hActive || surface.height() == 0 ||
             surface.height() > t.vActive)
                 return Error::Invalid;
-        _stride = surface.stride();
-        _rows = surface.height();
-        if (_rows == t.vActive) {
+        Plan p;
+        p.stride = surface.stride();
+        p.rows = surface.height();
+        if (p.rows == t.vActive) {
                 uint32_t blocks = MaxBlocks;
                 while (t.vActive % blocks != 0) --blocks;
                 if (blocks < 2) return Error::Invalid;
-                _items = blocks;
-                _lineMode = false;
-                _irqEvery = 1;
-                _blockBytes = _stride * (t.vActive / blocks);
+                p.items = blocks;
+                p.lineMode = false;
+                p.irqEvery = 1;
+                p.blockBytes = p.stride * (t.vActive / blocks);
         } else {
-                _items = t.vActive;
-                _lineMode = true;
-                _irqEvery = 1; // TEST: every item interrupts
-                _blockBytes = _stride;
+                p.items = t.vActive;
+                p.lineMode = true;
+                // Every line interrupts (about 4% of a core): with one in 45, swaps stopped (the frame
+                // went on at 60 a second, the swap count didn't move: no interrupt saw the DMA on the
+                // last line, a swap's start), measured 2026-10-14; why is open (devplan/games.md §14).
+                p.irqEvery = _lineInterrupts != 0 ? _lineInterrupts : 1;
+                p.blockBytes = p.stride;
         }
-        if (_blockBytes % 8 != 0) return Error::Invalid; // the DMA moves 64-bit words
+        if (p.blockBytes % 8 != 0) return Error::Invalid; // the DMA moves 64-bit words
+        plan = p;
         return Error::Ok;
+}
+
+void Scanout::apply(const Plan &plan) {
+        _stride = plan.stride;
+        _rows = plan.rows;
+        _items = plan.items;
+        _irqEvery = plan.irqEvery;
+        _lineMode = plan.lineMode;
+        _blockBytes = plan.blockBytes;
+        return;
+}
+
+Error Scanout::layOut(const Surface &surface) {
+        Plan        plan;
+        const Error err = planFor(surface, plan);
+        if (err.isOk()) apply(plan);
+        return err;
 }
 
 // The channel pointed at the list's first descriptor (IDF's dw_gdma_channel_use_link_list()).
@@ -821,23 +844,27 @@ void Scanout::switchSurface() {
         Surface *next = _request.exchange(nullptr, std::memory_order_acq_rel);
         if (next == nullptr) return;
         Surface *old = _surface;
-        Error    err = layOut(*next);
+        // The new plan and surface are taken by rebuild() once the link is down: the interrupt reads
+        // them, and the old list runs until then (a plan changed earlier walked it with the new
+        // one's count: a store into a chunk it doesn't have).
+        Plan  plan;
+        Error err = planFor(*next, plan);
         if (err.isOk()) {
                 // The new descriptors made before the link comes down: without memory for them,
                 // nothing changes on the screen.
                 void *memory = Memory::alloc(MemSpace::Internal, sizeof(ItemList));
                 auto *list = memory != nullptr ? ::new (memory) ItemList() : nullptr;
-                err = list != nullptr ? list->allocate(_items) : Error(Error::NoMem);
+                err = list != nullptr ? list->allocate(plan.items) : Error(Error::NoMem);
                 if (err.isError()) {
                         if (list != nullptr) list->~ItemList();
                         Memory::free(memory);
-                        (void)layOut(*old);
                         _switchResult = err;
                         _switched.release();
                         return;
                 }
                 _prepared = list;
-                _surface = next;
+                _nextSurface = next;
+                _nextPlan = plan;
                 err = rebuild();
                 if (err.isError()) {
                         if (_prepared != nullptr) { // not taken: the link failed before the list
@@ -845,9 +872,10 @@ void Scanout::switchSurface() {
                                 Memory::free(_prepared);
                                 _prepared = nullptr;
                         }
-                        _surface = old;
-                        (void)layOut(*old);
-                        (void)rebuild();
+                        if (planFor(*old, _nextPlan).isOk()) {
+                                _nextSurface = old;
+                                (void)rebuild();
+                        }
                 }
         }
         if (err.isOk()) {
@@ -869,8 +897,8 @@ void Scanout::fallBack() {
         _fallback = nullptr;
         if (next == nullptr || next == _surface) return;
         Surface *bad = _surface;
-        if (layOut(*next).isError()) return;
-        _surface = next;
+        if (planFor(*next, _nextPlan).isError()) return;
+        _nextSurface = next; // taken with its plan once the link is down
         (void)rebuild();
         bad->setScanning(false);
         next->setScanning(true);
@@ -883,6 +911,12 @@ void Scanout::fallBack() {
 // bridge chip told to lock onto it again (`Config::onRestart`).
 Error Scanout::rebuild() {
         stopHardware();
+        // No link, no interrupt: a surface switched to, and its plan, taken now.
+        if (_nextSurface != nullptr) {
+                _surface = _nextSurface;
+                apply(_nextPlan);
+                _nextSurface = nullptr;
+        }
         _stalled.store(false, std::memory_order_relaxed);
         _underran.store(false, std::memory_order_relaxed);
         _blocksBefore += _sent.load(std::memory_order_relaxed);

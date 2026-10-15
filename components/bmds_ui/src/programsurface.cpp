@@ -296,11 +296,16 @@ ProgramSurface::Damage ProgramSurface::damageOf(Span<const Rect> damage, bool al
 
 void ProgramSurface::Damage::add(const Rect &rect) {
         if (rect.isEmpty()) return;
-        // Merged with every one it meets or touches, until it meets none.
+        // Merged with each one it meets or touches whose bounds with it add little: merging on touch
+        // alone chains, one rectangle ending up around everything.
+        const auto meets = [](const Rect &a, const Rect &b) {
+                return a.x <= b.right() && b.x <= a.right() && a.y <= b.bottom() && b.y <= a.bottom();
+        };
         Rect u = rect;
         for (size_t i = 0; i < count;) {
                 const Rect &e = rects[i];
-                if (u.x <= e.right() && e.x <= u.right() && u.y <= e.bottom() && e.y <= u.bottom()) {
+                const Rect  overlap = u.intersected(e);
+                if (meets(u, e) && u.united(e).area() * 4 <= (u.area() + e.area() - overlap.area()) * 5) {
                         u = u.united(e);
                         rects[i] = rects[--count];
                         i = 0;
@@ -308,11 +313,27 @@ void ProgramSurface::Damage::add(const Rect &rect) {
                         ++i;
                 }
         }
-        if (count == Max) { // too many: their bounds
-                for (size_t i = 0; i < count; ++i) u = u.united(rects[i]);
-                count = 0;
+        if (count < Max) {
+                rects[count++] = u;
+                return;
         }
-        rects[count++] = u;
+        // Full: the two (the new one among them) whose bounds add the least area merged, in their
+        // place even where that overlaps others (only drawn twice).
+        Rect all[Max + 1];
+        for (size_t i = 0; i < Max; ++i) all[i] = rects[i];
+        all[Max] = u;
+        size_t  pa = 0, pb = 1;
+        int64_t best = INT64_MAX;
+        for (size_t a = 0; a <= Max; ++a) {
+                for (size_t b = a + 1; b <= Max; ++b) {
+                        const int64_t added = int64_t(all[a].united(all[b]).area()) - all[a].area() - all[b].area();
+                        if (added < best) best = added, pa = a, pb = b;
+                }
+        }
+        count = 0;
+        for (size_t k = 0; k <= Max; ++k)
+                if (k != pa && k != pb) rects[count++] = all[k];
+        rects[count++] = all[pa].united(all[pb]);
         return;
 }
 

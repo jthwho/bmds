@@ -73,6 +73,10 @@ add_executable(bmds_host_tests
         memorystream.cpp
         oss.cpp
         ${BMDS_ROOT}/sdk/crt/oss.c
+        game.cpp
+        ${BMDS_ROOT}/sdk/game/canvas.c
+        ${BMDS_ROOT}/sdk/game/text.c
+        ${BMDS_ROOT}/sdk/game/font16.c
         memspace.cpp
         midi.cpp
         mplayer.cpp

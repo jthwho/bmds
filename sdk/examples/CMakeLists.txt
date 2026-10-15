@@ -17,6 +17,7 @@ bmds_add_program(midimon SOURCES midimon/midimon.c)
 bmds_add_program(speak SOURCES speak/speak.c)
 bmds_add_program(surfdemo SOURCES surfdemo/surfdemo.c)
 bmds_add_program(appinfo SOURCES appinfo/appinfo.c)
+bmds_add_program(bounce SOURCES bounce/bounce.c)
 
 # Application folders (devplan/apps.md): copied into a card's apps/, each a command in /apps.
 bmds_add_app(surfdemo PROGRAM surfdemo DESKTOP surfdemo/app.desktop)

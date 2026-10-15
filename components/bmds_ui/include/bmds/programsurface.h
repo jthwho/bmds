@@ -224,8 +224,9 @@ class ProgramSurface final : public Stream {
                         Leave
                 };
 
-                // Rectangles of the picture that changed, merged where they meet (more than kept:
-                // their bounds), across on 8-pixel columns (PIE's 16 bytes in RGB565).
+                // Rectangles of the picture that changed, across on 8-pixel columns (PIE's 16 bytes in
+                // RGB565): merged where they meet if that adds little; more than kept, the pair whose
+                // bounds add the least merged.
                 struct Damage {
                                 static constexpr size_t Max = 16;
                                 Rect                    rects[Max];
