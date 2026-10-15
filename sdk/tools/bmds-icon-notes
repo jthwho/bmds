@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+# @file      bmds-icon-notes
+# @copyright Jason Howard. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+# See LICENSE file in the project root folder for license information.
+#
+# A program's built-in icons (devplan/gui.md §4j) for builds without CMake: writes the assembler
+# file of BMDS_NOTE_ICON notes (bmds/program.h) that bmds_add_program(... ICONS ...) makes, to be
+# compiled and linked with the program by bmds-cc. 16x16 and 32x32 PNGs are the sizes shown.
+#
+#   bmds-icon-notes -o icons.S NAME a-16.png a-32.png
+#   bmds-cc -o prog prog.c icons.S
+#
+# Python's standard library only.
+
+import argparse
+import os
+import struct
+import sys
+
+
+def png_size(path):
+    with open(path, "rb") as f:
+        head = f.read(24)
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n" or head[12:16] != b"IHDR":
+        sys.exit("bmds-icon-notes: %s isn't a PNG" % path)
+    return struct.unpack(">II", head[16:24])
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Writes a program's icon notes as an assembler file.")
+    parser.add_argument("-o", "--output", required=True, help="the assembler file to write")
+    parser.add_argument("name", help="the program's name (a comment)")
+    parser.add_argument("pngs", nargs="+", help="PNG images, one note each")
+    args = parser.parse_args()
+
+    asm = ["/* %s's icons (bmds/program.h: BMDS_NOTE_ICON), made by bmds-icon-notes. */" % args.name,
+           '        .section .note.bmds.icon,"",@note']
+    label = 10
+    for png in args.pngs:
+        path = os.path.abspath(png)
+        w, h = png_size(path)
+        if w > 0xFFFF or h > 0xFFFF:
+            sys.exit("bmds-icon-notes: %s is too big" % png)
+        a, b, c = label + 1, label + 2, label + 3
+        asm += ["        .balign 4",
+                "        .long 5, %df - %df, 2 /* namesz, descsz, BMDS_NOTE_ICON */" % (c, label),
+                '        .asciz "BMDS"',
+                "        .balign 4",
+                "%d:      .long 16 /* sizeof(bmds_icon_note_t) */" % label,
+                "        .short %d, %d" % (w, h),
+                "        .long 1, %df - %df /* BMDS_ICON_FORMAT_PNG, its length */" % (b, a),
+                '%d:      .incbin "%s"' % (a, path),
+                "%d:" % b,
+                "%d:" % c]
+        label += 10
+    asm.append("        .balign 4")
+    with open(args.output, "w") as f:
+        f.write("\n".join(asm) + "\n")
+
+
+if __name__ == "__main__":
+    main()

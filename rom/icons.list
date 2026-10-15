@@ -188,3 +188,4 @@ window-shade                    bmds        window-shade
 window-unshade                  bmds        window-unshade
 system-software-update          flat-color  synchronize
 application-x-bmds-update       flat-color  package
+window-fullscreen               bmds        window-fullscreen

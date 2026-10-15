@@ -52,36 +52,44 @@ const Icon *FileIcons::dimmed(const Icon *icon) {
 }
 
 const Icon *FileIcons::forType(StringView type, uint16_t side) {
-        return find(type, side, false);
+        return find(type, side, Kind::Type);
 }
 
 const Icon *FileIcons::named(StringView name, uint16_t side) {
-        return find(name, side, true);
+        return find(name, side, Kind::Name);
 }
 
-const FileIcons::Kept *FileIcons::kept(StringView key, uint16_t side, bool isName) const {
+const Icon *FileIcons::forApp(StringView folder, uint16_t side) {
+        return find(folder, side, Kind::App);
+}
+
+const FileIcons::Kept *FileIcons::kept(StringView key, uint16_t side, Kind kind) const {
         for (const Kept *k : _kept)
-                if (k->side == side && k->isName == isName && StringView(k->key) == key) return k;
+                if (k->side == side && k->kind == kind && StringView(k->key) == key) return k;
         return nullptr;
 }
 
 const Icon *FileIcons::loadedForType(StringView type, uint16_t side) {
-        return loaded(type, side, false);
+        return loaded(type, side, Kind::Type);
 }
 
 const Icon *FileIcons::loadedNamed(StringView name, uint16_t side) {
-        return loaded(name, side, true);
+        return loaded(name, side, Kind::Name);
 }
 
-const Icon *FileIcons::loaded(StringView key, uint16_t side, bool isName) {
+const Icon *FileIcons::loadedForApp(StringView folder, uint16_t side) {
+        return loaded(folder, side, Kind::App);
+}
+
+const Icon *FileIcons::loaded(StringView key, uint16_t side, Kind kind) {
         if (key.isEmpty() || key.size() > MaxKey) return nullptr;
-        if (const Kept *k = kept(key, side, isName); k != nullptr) return k->icon.isValid() ? &k->icon : nullptr;
+        if (const Kept *k = kept(key, side, kind); k != nullptr) return k->icon.isValid() ? &k->icon : nullptr;
         for (const Wanted &w : _wanted)
-                if (w.side == side && w.isName == isName && StringView(w.key) == key) return nullptr; // asked
+                if (w.side == side && w.kind == kind && StringView(w.key) == key) return nullptr; // asked
         Wanted w;
         std::memcpy(w.key, key.data(), key.size());
         w.side = side;
-        w.isName = isName;
+        w.kind = kind;
         if (_wanted.append(w).isError()) return nullptr; // asked again at the next draw
         if (_asked != nullptr) _asked(_askedArg);
         return nullptr;
@@ -89,18 +97,20 @@ const Icon *FileIcons::loaded(StringView key, uint16_t side, bool isName) {
 
 bool FileIcons::loadAsked() {
         const bool any = !_wanted.isEmpty();
-        for (const Wanted &w : _wanted) (void)find(StringView(w.key), w.side, w.isName);
+        for (const Wanted &w : _wanted) (void)find(StringView(w.key), w.side, w.kind);
         _wanted.clear();
         return any;
 }
 
-const Icon *FileIcons::find(StringView key, uint16_t side, bool isName) {
+const Icon *FileIcons::find(StringView key, uint16_t side, Kind kind) {
         if (key.isEmpty() || key.size() > MaxKey) return nullptr;
-        if (const Kept *k = kept(key, side, isName); k != nullptr) return k->icon.isValid() ? &k->icon : nullptr;
-        // Looked for once: the type's own, its generic one, unknown.
+        if (const Kept *k = kept(key, side, kind); k != nullptr) return k->icon.isValid() ? &k->icon : nullptr;
+        // Looked for once: the type's own, its generic one, unknown; an application's, its own.
         const Icon *found = nullptr;
-        if (isName) {
+        if (kind == Kind::Name) {
                 found = _theme.find(key, side);
+        } else if (kind == Kind::App) {
+                found = _theme.forAppFolder(key, side);
         } else {
                 char name[FileFormat::MaxType + 1];
                 found = _theme.find(FileFormat::iconName(key, Span<char>(name)), side);
@@ -113,7 +123,7 @@ const Icon *FileIcons::find(StringView key, uint16_t side, bool isName) {
         auto *k = ::new (mem) Kept();
         std::memcpy(k->key, key.data(), key.size());
         k->side = side;
-        k->isName = isName;
+        k->kind = kind;
         if (found != nullptr && found->isValid() && _theme.isPermanent(found)) {
                 k->icon = *found; // the ROM's: used where it is
         } else if (found != nullptr && found->isValid()) {

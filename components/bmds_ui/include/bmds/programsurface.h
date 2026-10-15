@@ -14,6 +14,7 @@
 #include <bmds/edid.h>
 #include <bmds/error.h>
 #include <bmds/filehandle.h>
+#include <bmds/icon.h>
 #include <bmds/mutex.h>
 #include <bmds/rect.h>
 #include <bmds/result.h>
@@ -186,6 +187,14 @@ class ProgramSurface final : public Stream {
                 Error setTitle(StringView title);
 
                 /**
+                 * @brief Gives the window icons, its program's (`gui.md` §4j): @p small (a PNG of
+                 *        16 × 16 at most: the title bar, the panel's button) and @p large (32 × 32
+                 *        at most: Alt+Tab), either empty; decoded and kept with it.
+                 * @return `Ok`, or `Invalid` (not a PNG of that size), `NoMem`.
+                 */
+                Error setIcons(ByteSpan small, ByteSpan large);
+
+                /**
                  * @brief Sets what the pointer does over it: the arrow, none, or none and held
                  *        still while the window is focused, motion coming as the events' deltas.
                  * @return `Ok`, `Invalid`, `InvalidState` (no window).
@@ -293,6 +302,8 @@ class ProgramSurface final : public Stream {
                 size_t         _stride = 0;
                 size_t         _bufferBytes = 0;
                 uint32_t      *_palette = nullptr; // 256 entries, 0xRRGGBB (L8)
+                Icon           _icon;              // the window's (setIcons()): its pixels ours
+                Icon           _largeIcon;
                 bool           _paletteChanged = false; // since the last present (under _lock)
                 uint8_t       *_strip = nullptr;   // a window's scaled rows, internal DMA RAM
                 size_t         _stripBytes = 0;

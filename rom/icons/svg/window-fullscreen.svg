@@ -1,0 +1,9 @@
+<svg version="1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+    <!-- BMDS's own (devplan/rom.md §3i): a window filling the whole screen, marks in its corners. -->
+    <rect x="1" y="1" width="46" height="46" rx="2" fill="#1976D2"/>
+    <rect x="5" y="5" width="38" height="38" fill="#E3F2FD"/>
+    <path d="M8 8h12L8 20z" fill="#1976D2"/>
+    <path d="M40 8v12L28 8z" fill="#1976D2"/>
+    <path d="M8 40v-12l12 12z" fill="#1976D2"/>
+    <path d="M40 40h-12l12-12z" fill="#1976D2"/>
+</svg>

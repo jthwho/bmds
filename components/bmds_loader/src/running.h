@@ -209,6 +209,7 @@ struct Running final : ProcessOwner, ProcessControl {
                 std::atomic<bool>    watchingStats{false};               // stats_control(WATCH): released with it
                 uint64_t             cpuBaseUs = 0;                      // the program's before an exec
                 char                 command[Loader::CommandBytes] = {}; // argv joined, cut (ps)
+                char                 path[Loader::PathBytes] = {};       // its program file, whole ("": too long)
                 Mutex                threadsLock;                        // the fields below
                 Member              *threads = nullptr;                  // its kernel Threads
                 int                  threadCount = 0;

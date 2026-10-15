@@ -3,7 +3,7 @@
 # from dist/freedoom or the user.
 
 cp "$PKGDIR/Makefile" Makefile
-$BMDS_MAKE SRC="$SRC" PLATFORM="$ROOT/programs/doom" CC="$CC" doom
+$BMDS_MAKE SRC="$SRC" PLATFORM="$ROOT/programs/doom" ROOT="$ROOT" CC="$CC" doom
 app="$DESTDIR/apps/doom.app"
 mkdir -p "$app"
 cp doom "$app/doom"

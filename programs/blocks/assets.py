@@ -7,9 +7,11 @@
 #
 # Blocks' assets (devplan/games.md §17), written at build time into the application folder:
 # tiles.png (the cells), the sound effects as WAVs, and music.mid (Korobeiniki, a public-domain
-# folk song, in our own arrangement). Python's standard library only.
+# folk song, in our own arrangement); and the program's icons (built into it: devplan/gui.md §4j).
+# Python's standard library only.
 #
 #     assets.py OUTDIR
+#     assets.py --icons DIR     icon-16.png and icon-32.png
 
 import math
 import os
@@ -76,6 +78,47 @@ def tiles(path):
                 put(9 + p, x, y, shade(c, -0.15) if ring else [0, 0, 0], 255 if ring else 0)
             put(8, x, y, shade(0xFFFFFF, 0) if not edge else shade(0xC8D0E0, 0))
     png(path, width, TILE, px)
+
+
+# The icon: a well of bevelled cells (T, I, J), on a dark tile. '.' empty.
+ICON_CELLS = [
+    ". T . .",
+    "T T T I",
+    "J . . I",
+    "J J J I",
+]
+ICON_COLOURS = {"T": COLOURS[2], "I": COLOURS[0], "J": COLOURS[5]}
+
+
+def icon(path, side):
+    margin = 0 if side <= 16 else 2  # the tile's border shows round the cells when there is room
+    cell = (side - 2 * margin) // 4
+    px = bytearray(side * side * 4)
+
+    def put(x, y, rgb):
+        i = (y * side + x) * 4
+        px[i : i + 4] = bytes(rgb + [255])
+
+    for y in range(side):
+        for x in range(side):
+            edge = x == 0 or y == 0 or x == side - 1 or y == side - 1
+            put(x, y, shade(0x3a4560, 0) if edge else shade(0x111827, 0))
+    for row, line in enumerate(ICON_CELLS):
+        for col, name in enumerate(line.split()):
+            if name == ".":
+                continue
+            c = ICON_COLOURS[name]
+            bevel = 1 if side <= 16 else 2
+            for y in range(cell):
+                for x in range(cell):
+                    if x < bevel or y < bevel:
+                        rgb = shade(c, 0.45)  # lit from the top left
+                    elif x >= cell - bevel or y >= cell - bevel:
+                        rgb = shade(c, -0.45)
+                    else:
+                        rgb = shade(c, 0.1 - 0.25 * y / cell)
+                    put(margin + col * cell + x, margin + row * cell + y, rgb)
+    png(path, side, side, px)
 
 
 RATE = 22050
@@ -218,6 +261,11 @@ def music(path):
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--icons":
+        os.makedirs(sys.argv[2], exist_ok=True)
+        for side in (16, 32):
+            icon(os.path.join(sys.argv[2], "icon-%d.png" % side), side)
+        return
     out = sys.argv[1]
     os.makedirs(out, exist_ok=True)
     tiles(os.path.join(out, "tiles.png"))

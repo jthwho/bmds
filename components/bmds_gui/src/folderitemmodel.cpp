@@ -68,7 +68,14 @@ const Icon *FolderItemModel::icon(size_t row, uint16_t size) const {
         const uint16_t            side = size > 16 ? 32 : 16;
         const Icon               *icon = nullptr;
         if (e.isDirectory() && Apps::isFolderName(_folder.name(row))) {
-                icon = _icons.loadedNamed("application-x-executable", side); // an application (apps.md §7)
+                // An application (apps.md §7): its own icon (its Icon=, else its program's).
+                char       path[FileIcons::MaxAppPath + 1];
+                const auto dir = _folder.path();
+                const int  n = std::snprintf(path, sizeof(path), "%.*s%s%.*s", int(dir.size()), dir.data(),
+                                            dir.endsWith('/') ? "" : "/", int(_folder.name(row).size()),
+                                             _folder.name(row).data());
+                if (n > 0 && size_t(n) < sizeof(path)) icon = _icons.loadedForApp(StringView(path, size_t(n)), side);
+                if (icon == nullptr) icon = _icons.loadedNamed("application-x-executable", side);
         } else if (e.isDirectory()) {
                 icon = _icons.loadedNamed("folder", side);
         } else if (e.builtin) {

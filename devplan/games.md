@@ -901,3 +901,14 @@ refresh, and the conversion is 128,000 pixels (2× across; rows repeated by the 
 - **Open:** all of Doom's threads, the conversion task and the scanout run on core 1 while core 0
   is mostly idle; entering and leaving full screen leaves a window manager drawing error and a
   ~100 ms surface wait among the system's problems (seen after Doom's run, not looked into).
+
+### 20b. Full Screen in the window menu (2026-10-14, the user's request)
+
+- A window that can show full screen (a program's surface: `WindowConfig::fullScreen`) has
+  **Full Screen** (Alt+Enter) in its window menu, after Maximize, with BMDS's own
+  `window-fullscreen` icon (in the ROM's pack); it does what Alt+Enter does. Other windows'
+  menus are as before. Tried on the board with Blocks: chosen from the menu, it went full screen;
+  Alt+Enter brought it back.
+- **Seen on the way:** screenshots taken while Doom runs in a window come out with the colours
+  scrambled (the layout right; the PNG filter ~60 times slower than usual), and clean once Doom
+  stops: the open "screenshot noise" item, now reproducible. Not looked into yet.

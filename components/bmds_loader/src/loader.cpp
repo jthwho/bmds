@@ -478,7 +478,7 @@ namespace {
         }
 
         // A Running for @p image and @p process (owned once it starts), not yet started.
-        Running *createRunning(const Image &image, Process *process, int32_t pid) {
+        Running *createRunning(const Image &image, Process *process, int32_t pid, StringView path, StringView cwd) {
                 void *memory = Memory::alloc(MemSpace::Psram, sizeof(Running));
                 if (memory == nullptr) return nullptr;
                 auto *run = new (memory) Running;
@@ -500,6 +500,10 @@ namespace {
                         if (n < 0 || used + size_t(n) >= sizeof(run->command)) break;
                         used += size_t(n);
                 }
+                // Its program file, whole (where its icons are: a surface's window shows them).
+                auto [full, ferr] = Vfs::normalize(path, cwd);
+                if (ferr.isOk() && full.view().size() < sizeof(run->path))
+                        std::memcpy(run->path, full.view().data(), full.view().size());
                 return run;
         }
 
@@ -1240,7 +1244,7 @@ int32_t ProgramThread::exec(const char *path, char *const *argv, char *const *en
                 s.attach(s.mainThread());
                 s.detach(*signals);
         }
-        Running *replacement = createRunning(loaded, target, targetPid);
+        Running *replacement = createRunning(loaded, target, targetPid, p, current->cwd());
         if (replacement != nullptr && depth == 0) {
                 // The process goes on: its time so far and its watch with it (a vfork child's time
                 // was its parent's).
@@ -2271,7 +2275,7 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
         }
 
         // Its process and its task.
-        Running *run = createRunning(image, process, 0);
+        Running *run = createRunning(image, process, 0, request.path, cwd);
         if (run == nullptr) {
                 report(request, "out of memory");
                 Process::destroy(process);

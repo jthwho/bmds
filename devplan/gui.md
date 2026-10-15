@@ -356,7 +356,9 @@ no icon file installed and no `Icon=` written.
   followed) or a file.
 - **Used by:** `IconTheme::program()`; the panel's launcher (an entry without a usable `Icon=`
   shows its program's); the terminal sets its window's icon from its own (`/bin/terminal`), so
-  its title bar, panel button and Alt+Tab row show it.
+  its title bar, panel button and Alt+Tab row show it. A program's surface window gets its
+  program's (2026-10-14), and so do application folders in the file browser and on the desktop
+  (`apps.md` §15). `sdk/tools/bmds-icon-notes` makes the notes for builds without CMake.
 
 ### 4k. The Windows key, snapping, rolling up (the user's request, 2026-10-06; built)
 

@@ -858,6 +858,7 @@ class WindowManager {
                         Restore,
                         Minimize,
                         Maximize,
+                        FullScreen, // as Alt+Enter (a window with WindowConfig::fullScreen)
                         Shade,
                         Above,
                         Close,
@@ -865,7 +866,7 @@ class WindowManager {
                         Desktop, // the desktop menu's item _menuCommand[i]
                         Program  // a program's menu's (showMenu())
                 };
-                static constexpr size_t MenuItems = MaxDesktopItems; // the window menu has 8
+                static constexpr size_t MenuItems = MaxDesktopItems; // the window menu has 9 at most
                 struct Switcher;                                     // Alt+Tab's list, while it shows
 
                 static constexpr size_t MaxPieces = 256;
@@ -1053,7 +1054,7 @@ class WindowManager {
                 MenuLayout::Item  _menuItems[MenuItems];
                 // The window menu's icons, the ROM's bmds theme's (devplan/rom.md §3i): Restore,
                 // Minimize, Maximize, Roll Up, Roll Down, Close; found at start(), invalid without it.
-                Icon                  _windowIcons[6];
+                Icon                  _windowIcons[7];
                 MenuChoice            _menuChoices[MenuItems] = {};
                 Switcher             *_switcher = nullptr; // in PSRAM while Alt+Tab's list shows
                 uint8_t               _switchId = 0;       // its popup

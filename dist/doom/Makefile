@@ -1,6 +1,6 @@
 # Doom: doomgeneric's files (its Makefile's list, less the X11 platform, plus mus2mid) and BMDS's
 # platform layer (programs/doom), with bmds-cc. Copied into the build directory by build.sh and run
-# there: make SRC=... PLATFORM=... CC=...
+# there: make SRC=... PLATFORM=... ROOT=... CC=...
 
 DOOM = $(SRC)/doomgeneric
 DEFINES = -DCMAP256 -DDOOMGENERIC_RESX=320 -DDOOMGENERIC_RESY=200 -DFEATURE_SOUND -DNORMALUNIX \
@@ -19,13 +19,21 @@ DOOM_OBJS = dummy am_map doomdef doomstat dstrings d_event d_items d_iwad d_loop
             i_input i_video doomgeneric mus2mid
 PLATFORM_OBJS = platform sound
 
-OBJS = $(addsuffix .o,$(DOOM_OBJS)) $(addprefix bmds_,$(addsuffix .o,$(PLATFORM_OBJS)))
+OBJS = $(addsuffix .o,$(DOOM_OBJS)) $(addprefix bmds_,$(addsuffix .o,$(PLATFORM_OBJS))) icons.o
 
 doom: $(OBJS)
 	$(CC) -o $@ $(OBJS)
 
 %.o: $(DOOM)/%.c
 	$(CC) $(DOOM_CFLAGS) -c $< -o $@
+
+# Its icons, built into the program (devplan/gui.md §4j).
+icons.S: $(PLATFORM)/icon.py
+	python3 $(PLATFORM)/icon.py .
+	python3 $(ROOT)/sdk/tools/bmds-icon-notes -o $@ doom icon-16.png icon-32.png
+
+icons.o: icons.S
+	$(CC) -c $< -o $@
 
 bmds_%.o: $(PLATFORM)/%.c $(PLATFORM)/doom_bmds.h
 	$(CC) $(PLATFORM_CFLAGS) -c $< -o $@

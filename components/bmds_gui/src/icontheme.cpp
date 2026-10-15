@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <new>
+#include <bmds/desktopentry.h>
 #include <bmds/icontheme.h>
 #include <bmds/inireader.h>
 #include <bmds/memory.h>
@@ -307,6 +308,50 @@ const Icon *IconTheme::program(StringView path, uint16_t side) {
         const Icon         *icon = keep(path, side, true, err.isOk() ? image.png : nullptr, image.bytes);
         Memory::free(image.png);
         return icon;
+}
+
+const Icon *IconTheme::forAppFolder(StringView folder, uint16_t side) {
+        // Its description, as the launcher reads it (a short file: one read at most this big).
+        constexpr size_t MaxEntryBytes = 4096;
+        char             entryPath[MaxName + 1];
+        char             program[MaxName + 1];
+        const int        n =
+                std::snprintf(entryPath, sizeof(entryPath), "%.*s/app.desktop", int(folder.size()), folder.data());
+        auto        *text = static_cast<char *>(Memory::alloc(MemSpace::Psram, MaxEntryBytes));
+        DesktopEntry entry;
+        bool         read = false;
+        if (text != nullptr && n > 0 && size_t(n) < sizeof(entryPath)) {
+                auto [file, oerr] = Vfs::open(StringView(entryPath, size_t(n)), Vfs::Read, Vfs::Context());
+                size_t got = 0;
+                while (oerr.isOk() && got < MaxEntryBytes) {
+                        auto [k, rerr] = file->read(
+                                WritableByteSpan(reinterpret_cast<uint8_t *>(text) + got, MaxEntryBytes - got),
+                                WaitForever);
+                        if (rerr.isError() || k == 0) break;
+                        got += k;
+                }
+                if (oerr.isOk()) {
+                        auto [parsed, perr] = DesktopEntry::parse(StringView(text, got));
+                        if (perr.isOk()) {
+                                entry = parsed;
+                                read = true;
+                        }
+                }
+        }
+        Memory::free(text);
+        if (!read) return find(IconId::ApplicationXExecutable, side);
+        // Exec's program: a file in the folder.
+        StringView path;
+        char       argText[DesktopEntry::MaxExec + 1];
+        StringView args[DesktopEntry::MaxArgs];
+        auto [count, serr] = DesktopEntry::splitExec(StringView(entry.exec), argText, sizeof(argText),
+                                                     Span<StringView>(args, DesktopEntry::MaxArgs));
+        if (serr.isOk() && count > 0 && args[0].indexOf('/') == StringView::NPos) {
+                const int m = std::snprintf(program, sizeof(program), "%.*s/%.*s", int(folder.size()), folder.data(),
+                                            int(args[0].size()), args[0].data());
+                if (m > 0 && size_t(m) < sizeof(program)) path = StringView(program, size_t(m));
+        }
+        return forProgram(StringView(entry.icon), path, side);
 }
 
 const Icon *IconTheme::forProgram(StringView name, StringView path, uint16_t side) {

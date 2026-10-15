@@ -148,8 +148,10 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
         // The window menu's icons, in the ROM (found before the lock: the VFS has its own).
         if (auto [bytes, merr] = Vfs::map("/rom/share/icons/bmds.icons", Vfs::Context()); merr.isOk()) {
                 if (auto [pack, perr] = IconPack::open(bytes); perr.isOk()) {
-                        constexpr IconId ids[] = {IconId::WindowRestore, IconId::WindowMinimize, IconId::WindowMaximize,
-                                                  IconId::WindowShade,   IconId::WindowUnshade,  IconId::WindowClose};
+                        constexpr IconId ids[] = {IconId::WindowRestore,   IconId::WindowMinimize,
+                                                  IconId::WindowMaximize,  IconId::WindowShade,
+                                                  IconId::WindowUnshade,   IconId::WindowClose,
+                                                  IconId::WindowFullscreen};
                         for (size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); ++i) {
                                 const uint32_t *pixels = pack.pixels(uint32_t(ids[i]), 16);
                                 if (pixels != nullptr) _windowIcons[i] = Icon{16, 16, pixels};
@@ -1868,22 +1870,28 @@ Error WindowManager::showWindowMenuLocked(uint8_t id, const Rect &anchor) {
         const auto icon = [this](size_t i) {
                 return _windowIcons[i].isValid() ? &_windowIcons[i] : nullptr;
         };
-        setMenuItem(0, "&Restore", "", off(hidden || w.maximized || w.snapped), icon(0));
-        setMenuItem(1, "Mi&nimize", "Win+Down",
-                    off(_canMinimize && !hidden && (w.decorations & WindowFrame::MinimizeButton) != 0), icon(1));
-        setMenuItem(2, "Ma&ximize", "Win+Up", off(!w.maximized && (w.decorations & WindowFrame::MaximizeButton) != 0),
-                    icon(2));
-        setMenuItem(3, w.shaded ? "Roll &Down" : "Roll &Up", "",
-                    off(app && !hidden && (w.decorations & WindowFrame::TitleBar) != 0), icon(w.shaded ? 4 : 3));
-        setMenuItem(4, "", "", MenuLayout::Separator);
-        setMenuItem(5, "Always on &Top", "", static_cast<uint8_t>(off(app) | (above ? MenuLayout::Checked : 0)));
-        setMenuItem(6, "", "", MenuLayout::Separator);
-        setMenuItem(7, "&Close", "Alt+F4", off((w.decorations & WindowFrame::CloseButton) != 0), icon(5));
-        constexpr MenuChoice choices[] = {MenuChoice::Restore, MenuChoice::Minimize, MenuChoice::Maximize,
-                                          MenuChoice::Shade,   MenuChoice::None,     MenuChoice::Above,
-                                          MenuChoice::None,    MenuChoice::Close};
-        constexpr size_t     Count = sizeof(choices) / sizeof(choices[0]);
-        for (size_t i = 0; i < Count; ++i) _menuChoices[i] = choices[i];
+        size_t     count = 0;
+        const auto add = [&](const char *label, const char *shortcut, uint8_t flags, const Icon *itemIcon,
+                             MenuChoice choice) {
+                setMenuItem(count, label, shortcut, flags, itemIcon);
+                _menuChoices[count++] = choice;
+        };
+        add("&Restore", "", off(hidden || w.maximized || w.snapped), icon(0), MenuChoice::Restore);
+        add("Mi&nimize", "Win+Down", off(_canMinimize && !hidden && (w.decorations & WindowFrame::MinimizeButton) != 0),
+            icon(1), MenuChoice::Minimize);
+        add("Ma&ximize", "Win+Up", off(!w.maximized && (w.decorations & WindowFrame::MaximizeButton) != 0), icon(2),
+            MenuChoice::Maximize);
+        // A window that can show full screen (a program's surface: games.md §3c), as Alt+Enter does.
+        if (w.fullScreen != nullptr) add("&Full Screen", "Alt+Enter", 0, icon(6), MenuChoice::FullScreen);
+        add(w.shaded ? "Roll &Down" : "Roll &Up", "",
+            off(app && !hidden && (w.decorations & WindowFrame::TitleBar) != 0), icon(w.shaded ? 4 : 3),
+            MenuChoice::Shade);
+        add("", "", MenuLayout::Separator, nullptr, MenuChoice::None);
+        add("Always on &Top", "", static_cast<uint8_t>(off(app) | (above ? MenuLayout::Checked : 0)), nullptr,
+            MenuChoice::Above);
+        add("", "", MenuLayout::Separator, nullptr, MenuChoice::None);
+        add("&Close", "Alt+F4", off((w.decorations & WindowFrame::CloseButton) != 0), icon(5), MenuChoice::Close);
+        const size_t Count = count;
         _menuCount = Count;
         Error err = _menuLayout.layout(Span<const MenuLayout::Item>(_menuItems, Count), Fonts::unscii16);
         if (err.isError()) return err;
@@ -1949,6 +1957,11 @@ void WindowManager::menuChoose(int item) {
                 case MenuChoice::Restore: (void)restoreLocked(id); break;
                 case MenuChoice::Minimize: (void)minimizeLocked(id); break;
                 case MenuChoice::Maximize: (void)maximizeLocked(id); break;
+                case MenuChoice::FullScreen: {
+                        Window &w = _windows[id - 1];
+                        if (w.fullScreen != nullptr) w.fullScreen(w.arg, _fullScreenId != id);
+                        break;
+                }
                 case MenuChoice::Above: {
                         const uint8_t oldFocus = focusId();
                         const bool    above = _stack.levelOf(id) == Level::Above;

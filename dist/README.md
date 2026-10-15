@@ -51,6 +51,8 @@ Make `dist/<name>/` with:
   Unix tool, installs as one folder, `$DESTDIR/apps/NAME.app/`, holding its program, an
   `app.desktop` (its `Exec` names the program in the folder) and its data; it then shows in the
   launcher and in `/apps` (a command on the `PATH`) by itself (`sdk-examples`' `surfdemo.app`).
+  Its program can carry its own icons, shown for the folder, in the launcher and on its windows:
+  `sdk/tools/bmds-icon-notes` makes them from 16 and 32 pixel PNGs (`blocks`, `doom`).
 - Anything else the build reads (a configuration file, say).
 
 `bmds-dist` strips the programs in `bin/` and in application folders (as the

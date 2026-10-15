@@ -44,6 +44,9 @@ class Loader final : public ProgramLauncher {
                 /** @brief Bytes of a process's command line kept for `ps` (cut to fit). */
                 static constexpr size_t CommandBytes = 48;
 
+                /** @brief The longest program path kept with a running program (its icons'). */
+                static constexpr size_t PathBytes = 160;
+
                 /** @brief Bytes of a task's name (FreeRTOS's limit). */
                 static constexpr size_t TaskNameBytes = 16;
 

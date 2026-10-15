@@ -123,6 +123,14 @@ class IconTheme {
                  */
                 const Icon *forProgram(StringView name, StringView path, uint16_t side);
 
+                /**
+                 * @brief An application folder's icon (`NAME.app`, `devplan/apps.md` §7): its
+                 *        `app.desktop`'s `Icon` if found, else its program's own (`Exec`'s
+                 *        first word, in the folder), else `application-x-executable`. Reads
+                 *        files: the loop, not drawing.
+                 */
+                const Icon *forAppFolder(StringView folder, uint16_t side);
+
                 /** @brief Forgets every icon kept (their pixels freed: none of them may be in use). */
                 void clear();
 

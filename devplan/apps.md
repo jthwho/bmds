@@ -253,3 +253,17 @@ in the default `PATH`, the data directory's place. No system calls: `bmds/app.h`
   folder, `surfdemo` ran at 56 presents a second (a window at 2×). Cleaned up after.
 - **The surfdemo example** builds under the recipes' `-Wall -Wextra -Werror` (designated
   initializers for the ABI's structs).
+
+## 15. Icons (2026-10-14, the user's request)
+
+- **An application's own icon everywhere:** the file browser and the desktop now show an
+  application folder with its own icon (`IconTheme::forAppFolder()`: its `app.desktop`'s `Icon` if
+  the theme has it, else its program's built-in icon, else `application-x-executable`; folder
+  windows ask through `FileIcons::loadedForApp()`, loaded on the loop). A program's surface window
+  (`games.md` §3) takes its program's icons as it opens (the loader now keeps each program's
+  path), so its title bar, panel button and Alt+Tab row show them. The launcher already did.
+- **Blocks and Doom carry their own** (16 and 32 pixels, drawn at build time: Blocks' `assets.py
+  --icons`, Doom's `icon.py`), built in with `sdk/tools/bmds-icon-notes` (the notes
+  `bmds_add_program(... ICONS ...)` makes, for `bmds-cc` builds); their `app.desktop`s name no
+  `Icon` now.
+- **Still not:** an `Icon=` relative to the folder.

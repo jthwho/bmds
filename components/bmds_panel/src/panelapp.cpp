@@ -1303,9 +1303,10 @@ namespace {
 
         const Icon *PanelApp::desktopIcon(const Entry &entry) {
                 if (entry.isLauncher()) return entryIcon(entry, DesktopWindow::IconSide);
-                // An application's folder (devplan/apps.md §7): the application's icon, not a folder's.
+                // An application's folder (devplan/apps.md §7): the application's own icon (its Icon=,
+                // else its program's), not a folder's.
                 if (StringView(entry.type) == FileFormat::Directory && Apps::isFolderName(StringView(entry.file)))
-                        return fileIcon("application/x-executable");
+                        return _app.icons().forAppFolder(StringView(entry.path), DesktopWindow::IconSide);
                 return fileIcon(StringView(entry.type));
         }
 

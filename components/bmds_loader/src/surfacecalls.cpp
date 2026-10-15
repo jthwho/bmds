@@ -11,7 +11,9 @@
 
 #include <cstring>
 #include <bmds/errno.h>
+#include <bmds/memory.h>
 #include <bmds/process.h>
+#include <bmds/programicons.h>
 #include <bmds/programsurface.h>
 #include <bmds/sys.h>
 #include "running.h"
@@ -66,6 +68,28 @@ namespace {
                 return ms < 0 ? bmds::WaitForever : static_cast<unsigned int>(ms);
         }
 
+        // Its program's icons (gui.md §4j) on a new surface's window: a program without them, or
+        // one whose file can't be read, keeps the window's own.
+        void giveIcons(bmds::FileHandle &handle, const char *path) {
+                ProgramSurface *surface = handle.stream().programSurface();
+                if (surface == nullptr || path == nullptr || path[0] == '\0') return;
+                const bmds::Vfs::Context  context;
+                bmds::ProgramIcons::Image small, large;
+                const bmds::StringView    file(path, std::strlen(path));
+                const bmds::Error serr = bmds::ProgramIcons::read(file, context, 16, bmds::MemSpace::Psram, small);
+                const bmds::Error lerr = bmds::ProgramIcons::read(file, context, 32, bmds::MemSpace::Psram, large);
+                // Only the sizes asked for: the nearest may be bigger (setIcons() refuses that).
+                const auto fits = [](const bmds::ProgramIcons::Image &i, uint16_t side) {
+                        return i.png != nullptr && i.width <= side && i.height <= side;
+                };
+                (void)surface->setIcons(
+                        fits(small, 16) && serr.isOk() ? bmds::ByteSpan(small.png, small.bytes) : bmds::ByteSpan(),
+                        fits(large, 32) && lerr.isOk() ? bmds::ByteSpan(large.png, large.bytes) : bmds::ByteSpan());
+                bmds::Memory::free(small.png);
+                bmds::Memory::free(large.png);
+                return;
+        }
+
         bmds::StringView textOf(const char *text, size_t max) {
                 if (text == nullptr) return bmds::StringView();
                 size_t n = 0;
@@ -109,6 +133,7 @@ int32_t bmds_k_surface_open(const bmds_surface_config_t *config) {
         auto [handle, err] = ProgramSurface::open(k);
         if (err == Error::NotSupported) return -BMDS_ENODEV;
         if (err.isError()) return bmds::Process::errnoFor(err);
+        giveIcons(*handle, call.thread().run->path);
         return call->addHandle(std::move(handle), 0);
 }
 

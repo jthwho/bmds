@@ -75,6 +75,15 @@ class FileIcons {
                 /** @brief As `named()`, without reading a file (as `loadedForType()`). */
                 const Icon *loadedNamed(StringView name, uint16_t side);
 
+                /** @brief The longest application folder path looked up. */
+                static constexpr size_t MaxAppPath = 95;
+
+                /** @brief Returns the application folder @p folder's icon (`IconTheme::forAppFolder()`), or null. */
+                const Icon *forApp(StringView folder, uint16_t side);
+
+                /** @brief As `forApp()`, without reading a file (as `loadedForType()`). */
+                const Icon *loadedForApp(StringView folder, uint16_t side);
+
                 /** @brief Loads the icons asked for. @return True if any was looked for. */
                 bool loadAsked();
 
@@ -92,13 +101,20 @@ class FileIcons {
                 void forgetMissing();
 
         private:
-                static constexpr size_t MaxKey = 63;
+                static constexpr size_t MaxKey = 95; // IconTheme::MaxName: an application folder's path
+
+                // What a key is.
+                enum class Kind : uint8_t {
+                        Type,
+                        Name,
+                        App // an application folder's path
+                };
 
                 // One looked for: its copy, or none.
                 struct Kept {
                                 char      key[MaxKey + 1] = {};
                                 uint16_t  side = 0;
-                                bool      isName = false; // looked up by name, not by type
+                                Kind      kind = Kind::Type;
                                 Icon      icon;           // invalid: not found
                                 uint32_t *pixels = nullptr; // PSRAM: the copy (null: none, or the ROM's own)
                                 Icon      dim;
@@ -109,12 +125,12 @@ class FileIcons {
                 struct Wanted {
                                 char     key[MaxKey + 1] = {};
                                 uint16_t side = 0;
-                                bool     isName = false;
+                                Kind     kind = Kind::Type;
                 };
 
-                const Icon *find(StringView key, uint16_t side, bool isName);
-                const Kept *kept(StringView key, uint16_t side, bool isName) const;
-                const Icon *loaded(StringView key, uint16_t side, bool isName);
+                const Icon *find(StringView key, uint16_t side, Kind kind);
+                const Kept *kept(StringView key, uint16_t side, Kind kind) const;
+                const Icon *loaded(StringView key, uint16_t side, Kind kind);
 
                 IconTheme   &_theme;
                 List<Kept *> _kept{MemSpace::Psram};

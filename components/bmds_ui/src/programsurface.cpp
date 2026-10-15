@@ -21,6 +21,7 @@
 #include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/painter.h>
+#include <bmds/pngdecoder.h>
 #include <bmds/programsurface.h>
 #include <bmds/scanout.h>
 #include <bmds/surface.h>
@@ -193,6 +194,8 @@ ProgramSurface::~ProgramSurface() {
         }
         Memory::free(_palette);
         Memory::free(_strip);
+        Memory::free(const_cast<uint32_t *>(_icon.pixels)); // the window is closed: nothing shows them
+        Memory::free(const_cast<uint32_t *>(_largeIcon.pixels));
 }
 
 void ProgramSurface::closeWindow() {
@@ -557,6 +560,42 @@ void ProgramSurface::draw(Painter &painter) {
         }
         release(index);
         return;
+}
+
+// ---- The window's icons
+
+namespace {
+
+        // @p png (at most @p side pixels each way) into @p icon, its pixels allocated.
+        Error decodeIcon(ByteSpan png, uint16_t side, Icon &icon) {
+                if (png.isEmpty()) return Error::Ok;
+                auto [size, err] = Png::size(png);
+                if (err.isError() || size.width == 0 || size.height == 0 || size.width > side || size.height > side)
+                        return Error::Invalid;
+                const size_t pixels = size_t(size.width) * size.height;
+                auto        *mem = static_cast<uint32_t *>(Memory::alloc(MemSpace::Psram, pixels * sizeof(uint32_t)));
+                if (mem == nullptr) return Error::NoMem;
+                auto [got, derr] = Png::decode(png, Span<uint32_t>(mem, pixels), MemSpace::Psram);
+                if (derr.isError()) {
+                        Memory::free(mem);
+                        return derr;
+                }
+                icon = Icon{got.width, got.height, mem};
+                return Error::Ok;
+        }
+
+} // namespace
+
+Error ProgramSurface::setIcons(ByteSpan small, ByteSpan large) {
+        if (_icon.pixels != nullptr || _largeIcon.pixels != nullptr) return Error::InvalidState; // once
+        Error err = decodeIcon(small, 16, _icon);
+        if (err.isOk()) err = decodeIcon(large, 32, _largeIcon);
+        if (err.isError()) return err;
+        if (_wm != nullptr && _window != 0) {
+                if (_icon.isValid()) (void)_wm->setIcon(_window, &_icon);
+                if (_largeIcon.isValid()) (void)_wm->setLargeIcon(_window, &_largeIcon);
+        }
+        return Error::Ok;
 }
 
 // ---- Full screen (the presenter task)
