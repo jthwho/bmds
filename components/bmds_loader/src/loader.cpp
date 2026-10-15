@@ -289,7 +289,6 @@ namespace {
         // one, and BMDS_APP_ID its id.
         constexpr StringView AppDirVariable("BMDS_APP_DIR=");
         constexpr StringView AppIdVariable("BMDS_APP_ID=");
-        constexpr StringView AppExtension(".app");
 
         bool isAppVariable(StringView e) {
                 return e.startsWith(AppDirVariable) || e.startsWith(AppIdVariable);
@@ -307,14 +306,12 @@ namespace {
                 if (slash == StringView::NPos || slash == 0) return Error::Ok;
                 const StringView folder = r.left(slash);
                 const StringView name = folder.mid(folder.lastIndexOf('/') + 1);
-                if (name.size() <= AppExtension.size() ||
-                    !name.mid(name.size() - AppExtension.size()).equalsIgnoreCase(AppExtension))
-                        return Error::Ok;
+                if (!Apps::isFolderName(name)) return Error::Ok;
                 Error e = dir.append(AppDirVariable);
                 if (e.isOk()) e = dir.append(folder);
                 char       installed[DesktopEntry::MaxId + 1] = {};
                 Apps      *apps = Apps::system();
-                StringView appId = name.left(name.size() - AppExtension.size());
+                StringView appId = name.left(name.size() - Apps::Extension.size());
                 if (apps != nullptr && apps->idOf(folder, installed)) appId = StringView(installed);
                 if (e.isOk() && Apps::isValidName(appId)) {
                         e = id.append(AppIdVariable);

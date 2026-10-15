@@ -162,8 +162,10 @@ file is the last argument. `%%` is `%`; `%i %c %k` are dropped as now.
 
 ## 9. Open questions
 
-- **`MimeType=` in entries:** a fallback when `mimeapps.list` names nothing (as freedesktop.org
-  does), and an "Open With" submenu.
+- **`MimeType=` in entries:** the fallback is built (2026-10-14, `apps.md` §13): for the type, then
+  `text/plain` for a text-like one, an application whose `MimeType=` has it (or its `MEDIA/*`)
+  opens it when `mimeapps.list` names none, before `application/octet-stream`. Still open: an
+  "Open With" submenu.
 - **User additions to the type table** (an extension file in `/boot/config`), read once at boot.
 - **A file manager** and an `open` command, then the opener as a library.
 

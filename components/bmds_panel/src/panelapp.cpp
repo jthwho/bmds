@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <bmds/apps.h>
 #include <bmds/builtinprograms.h>
 #include <bmds/clipboard.h>
 #include <bmds/clock.h>
@@ -1301,8 +1302,11 @@ namespace {
         }
 
         const Icon *PanelApp::desktopIcon(const Entry &entry) {
-                return entry.isLauncher() ? entryIcon(entry, DesktopWindow::IconSide)
-                                          : fileIcon(StringView(entry.type));
+                if (entry.isLauncher()) return entryIcon(entry, DesktopWindow::IconSide);
+                // An application's folder (devplan/apps.md §7): the application's icon, not a folder's.
+                if (StringView(entry.type) == FileFormat::Directory && Apps::isFolderName(StringView(entry.file)))
+                        return fileIcon("application/x-executable");
+                return fileIcon(StringView(entry.type));
         }
 
         // The files cut changed: the windows redraw their icons; the desktop's are copied again,

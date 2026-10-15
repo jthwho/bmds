@@ -9,6 +9,7 @@
  */
 
 #include <cstring>
+#include <bmds/apps.h>
 #include <bmds/memory.h>
 #include <bmds/string.h>
 
@@ -18,9 +19,7 @@ BMDS_NAMESPACE_BEGIN
 
 namespace {
 
-        constexpr size_t     MaxEntryBytes = 4096;
-        constexpr StringView AppExtension(".app");
-        constexpr StringView AppDescription("app.desktop");
+        constexpr size_t MaxEntryBytes = 4096;
 
         // Up to MaxEntryBytes of @p path into @p text, @p got of them; false if it can't be opened.
         bool readText(StringView path, const Vfs::Context &context, char *text, size_t &got) {
@@ -58,10 +57,49 @@ namespace {
                 return Error::Ok;
         }
 
+        // A program's name in its folder: a relative path that stays in it.
+        bool isInsideName(StringView path) {
+                if (path.isEmpty() || path[0] == '/') return false;
+                for (StringView rest = path; !rest.isEmpty();) {
+                        const size_t     slash = rest.indexOf('/');
+                        const StringView part = slash == StringView::NPos ? rest : rest.left(slash);
+                        if (part.isEmpty() || part == "." || part == "..") return false;
+                        rest = slash == StringView::NPos ? StringView() : rest.mid(slash + 1);
+                }
+                return true;
+        }
+
+        // readAppFolder() with @p text (MaxEntryBytes) to read into.
+        bool readAppFolderInto(StringView folder, const Vfs::Context &context, StringView program, DesktopEntry &out,
+                               char *text) {
+                String path;
+                if (path.append(folder).isError() || path.append('/').isError() ||
+                    path.append(Apps::DescriptionFile).isError())
+                        return false;
+                size_t got = 0;
+                if (!readText(path.view(), context, text, got)) return false;
+                auto [entry, perr] = DesktopEntry::parse(StringView(text, got));
+                if (perr.isError() || entry.hidden) return false;
+                String own;
+                if (program.isEmpty()) {
+                        // Exec's first word, a file in the folder.
+                        char       argText[DesktopEntry::MaxExec + 1];
+                        StringView args[DesktopEntry::MaxArgs];
+                        const auto split = DesktopEntry::splitExec(StringView(entry.exec), argText, sizeof(argText),
+                                                                   Span<StringView>(args, DesktopEntry::MaxArgs));
+                        if (split.error().isError() || !isInsideName(args[0])) return false;
+                        if (own.append(folder).isError() || own.append('/').isError() || own.append(args[0]).isError())
+                                return false;
+                        program = own.view();
+                }
+                if (replaceProgram(entry.exec, sizeof(entry.exec), program).isError()) return false;
+                out = entry;
+                return true;
+        }
+
         // The installed applications, through /apps: each link leads to a program in its NAME.app
         // folder, whose app.desktop is the entry.
-        void readApps(const Vfs::Context &context, PanelEntry *entries, size_t &count, size_t max,
-                      PanelEntryReport report, void *arg, char *text) {
+        void readApps(const Vfs::Context &context, PanelEntry *entries, size_t &count, size_t max, char *text) {
                 auto [dir, err] = Vfs::openDirectory(Vfs::AppsPath, context);
                 if (err.isError()) return;
                 for (;;) {
@@ -76,30 +114,22 @@ namespace {
                         if (lerr.isError()) continue;
                         // Its folder: the NAME.app the program is in, at any depth (Exec=bin/x).
                         StringView folder = program.view();
-                        const auto isAppFolder = [](StringView f) {
-                                return f.size() > AppExtension.size() &&
-                                       f.mid(f.size() - AppExtension.size()).equalsIgnoreCase(AppExtension);
-                        };
-                        while (!folder.isEmpty() && !isAppFolder(folder)) {
+                        while (!folder.isEmpty() && !Apps::isFolderName(folder.mid(folder.lastIndexOf('/') + 1))) {
                                 const size_t slash = folder.lastIndexOf('/');
                                 folder = slash == StringView::NPos || slash == 0 ? StringView() : folder.left(slash);
                         }
                         if (folder.isEmpty()) continue;
                         String path;
                         if (path.append(folder).isError() || path.append('/').isError() ||
-                            path.append(AppDescription).isError() || path.size() >= sizeof(PanelEntry::path))
+                            path.append(Apps::DescriptionFile).isError() || path.size() >= sizeof(PanelEntry::path))
                                 continue;
-                        size_t got = 0;
-                        if (!readText(path.view(), context, text, got)) continue;
-                        auto [entry, perr] = DesktopEntry::parse(StringView(text, got));
-                        if (perr.isError()) {
-                                if (report != nullptr) report(arg, path.cStr());
-                                continue;
-                        }
+                        // Hidden or unusable: the apps service has said why.
+                        DesktopEntry entry;
+                        if (!readAppFolderInto(folder, context, link.view(), entry, text)) continue;
                         // Its id, as the system's (devplan/apps.md §3): X-BMDS-Id, else the folder's name.
                         const StringView name = folder.mid(folder.lastIndexOf('/') + 1);
                         const StringView id = entry.id[0] != '\0' ? StringView(entry.id)
-                                                                  : name.left(name.size() - AppExtension.size());
+                                                                  : name.left(name.size() - Apps::Extension.size());
                         char             file[sizeof(PanelEntry::file)];
                         const size_t     fileBytes = id.size() + 8; // ".desktop"
                         if (fileBytes >= sizeof(file)) continue;
@@ -109,7 +139,6 @@ namespace {
                         for (size_t i = 0; i < count; ++i)
                                 seen = seen || StringView(entries[i].file) == StringView(file);
                         if (seen || count == max) continue;
-                        if (replaceProgram(entry.exec, sizeof(entry.exec), link.view()).isError()) continue;
                         PanelEntry &e = entries[count++];
                         e = PanelEntry();
                         e.entry = entry;
@@ -121,12 +150,20 @@ namespace {
 
 } // namespace
 
+bool readAppFolder(StringView folder, const Vfs::Context &context, StringView program, DesktopEntry &entry) {
+        char *text = static_cast<char *>(Memory::alloc(MemSpace::Psram, MaxEntryBytes));
+        if (text == nullptr) return false;
+        const bool ok = readAppFolderInto(folder, context, program, entry, text);
+        Memory::free(text);
+        return ok;
+}
+
 bool readEntryDirectory(StringView directory, const Vfs::Context &context, PanelEntry *entries, size_t &count,
                         size_t max, PanelEntryReport report, void *arg, bool allFiles) {
         if (directory == Vfs::AppsPath) {
                 char *text = static_cast<char *>(Memory::alloc(MemSpace::Psram, MaxEntryBytes));
                 if (text == nullptr) return true;
-                readApps(context, entries, count, max, report, arg, text);
+                readApps(context, entries, count, max, text);
                 Memory::free(text);
                 return true; // always there: installed applications come and go on their own
         }

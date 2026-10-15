@@ -199,6 +199,26 @@ TEST_CASE("DesktopEntry: an application folder's keys") {
         CHECK(DesktopEntry::parse(StringView(longId.data(), longId.size())).error() == Error::BufferTooSmall);
 }
 
+TEST_CASE("DesktopEntry: MimeType, cut at a whole type, matched with MEDIA/*") {
+        auto [e, err] = DesktopEntry::parse("[Desktop Entry]\nName=x\nExec=y\nMimeType=text/plain;image/*;\n");
+        REQUIRE(err.isOk());
+        CHECK(DesktopEntry::hasMimeType(e.mimeTypes, "text/plain"));
+        CHECK(DesktopEntry::hasMimeType(e.mimeTypes, "TEXT/Plain"));
+        CHECK(DesktopEntry::hasMimeType(e.mimeTypes, "image/png"));
+        CHECK(!DesktopEntry::hasMimeType(e.mimeTypes, "text/html"));
+        CHECK(!DesktopEntry::hasMimeType(e.mimeTypes, "imagex/png"));
+        std::string longList = "[Desktop Entry]\nName=x\nExec=y\nMimeType=";
+        for (int i = 0; i < 40; ++i) longList += "audio/type" + std::to_string(i) + ";";
+        longList += "\n";
+        auto [l, lerr] = DesktopEntry::parse(StringView(longList.data(), longList.size()));
+        REQUIRE(lerr.isOk());
+        const std::string kept(l.mimeTypes);
+        CHECK(kept.size() <= DesktopEntry::MaxMimeTypes);
+        CHECK(kept.back() == ';');
+        CHECK(DesktopEntry::hasMimeType(l.mimeTypes, "audio/type0"));
+        CHECK(!DesktopEntry::hasMimeType(l.mimeTypes, "audio/type39"));
+}
+
 TEST_CASE("DesktopEntry: what isn't an entry") {
         CHECK(DesktopEntry::parse("Name=x\nExec=y\n").error() == Error::Invalid);
         CHECK(DesktopEntry::parse("[Desktop Entry]\nExec=y\n").error() == Error::Invalid);

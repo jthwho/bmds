@@ -38,12 +38,6 @@ namespace {
                 return a.size() < b.size();
         }
 
-        // "NAME.app", the extension in any case.
-        bool isAppFolderName(StringView name) {
-                const size_t ext = Apps::Extension.size();
-                return name.size() > ext && name.mid(name.size() - ext).equalsIgnoreCase(Apps::Extension);
-        }
-
         // A program's name in its folder: a relative path that stays in it.
         bool isInsideName(StringView path) {
                 if (path.isEmpty() || path[0] == '/') return false;
@@ -110,6 +104,11 @@ struct Apps::Scan {
                         return;
                 }
 };
+
+bool Apps::isFolderName(StringView name) {
+        const size_t ext = Extension.size();
+        return name.size() > ext && name.mid(name.size() - ext).equalsIgnoreCase(Extension);
+}
 
 bool Apps::isValidName(StringView name) {
         if (name.isEmpty() || name.size() > DesktopEntry::MaxId || name[0] == '.' || name[0] == '-') return false;
@@ -250,7 +249,7 @@ void Apps::scan() {
                         for (;;) {
                                 auto [info, nerr] = dir.next();
                                 if (nerr.isError()) break;
-                                if (!isAppFolderName(info.name.view())) continue;
+                                if (!isFolderName(info.name.view())) continue;
                                 String name{MemSpace::Psram};
                                 if (name.assign(info.name.view()).isError()) continue;
                                 size_t at = names.size();

@@ -11,6 +11,8 @@
 
 #include <cstdio>
 #include <cstring>
+#include <new>
+#include <bmds/apps.h>
 #include <bmds/clipboard.h>
 #include <bmds/fdtable.h>
 #include <bmds/fileformat.h>
@@ -23,12 +25,14 @@
 #include <bmds/vfs.h>
 
 #include "folderactions.h"
+#include "panelentries.h"
 
 BMDS_NAMESPACE_BEGIN
 
 namespace {
 
         constexpr StringView DesktopSuffix(".desktop");
+        constexpr size_t     MaxCandidates = 64; // launcher entries looked through for a MimeType
 
         // @p path's file, read whole up to @p max bytes into @p out (PSRAM). @return The bytes.
         size_t readFile(StringView path, const Vfs::Context &vc, char *out, size_t max) {
@@ -132,6 +136,13 @@ void FolderActions::open(StringView path) {
                 return;
         }
         if (info.type == FileType::Directory) {
+                // An application's folder runs it (devplan/apps.md §7); one it can't run opens.
+                DesktopEntry entry;
+                if (Apps::isFolderName(path.mid(path.lastIndexOf('/') + 1)) &&
+                    readAppFolder(path, vc, StringView(), entry)) {
+                        launch(entry);
+                        return;
+                }
                 _host.openFolder(path, StringView());
                 return;
         }
@@ -167,6 +178,9 @@ void FolderActions::openFile(StringView path, StringView type) {
                 StringView   ids[8];
                 const size_t n = MimeApps::lookup(StringView(text, got), types[t], Span<StringView>(ids));
                 for (size_t i = 0; i < n && !opened; ++i) opened = openWith(ids[i], path);
+                // None set for it: an application that says it opens it (MimeType=, T6's fallback,
+                // apps.md §7); not for application/octet-stream, which says nothing.
+                if (!opened && t < 2) opened = openByMimeType(path, types[t]);
         }
         Memory::free(text);
         if (!opened) {
@@ -184,17 +198,58 @@ bool FolderActions::openWith(StringView id, StringView file) {
         const Vfs::Context vc{_context.cwd, nullptr};
         StringView         dirs(_applications);
         for (StringView d = IniReader::nextListItem(dirs); !d.isEmpty(); d = IniReader::nextListItem(dirs)) {
+                if (d == Vfs::AppsPath) {
+                        // The installed applications: their entries are named ID.desktop.
+                        auto *entries = static_cast<PanelEntry *>(
+                                Memory::alloc(MemSpace::Psram, sizeof(PanelEntry) * MaxCandidates));
+                        if (entries == nullptr) continue;
+                        size_t count = 0;
+                        for (size_t i = 0; i < MaxCandidates; ++i) ::new (&entries[i]) PanelEntry();
+                        (void)readEntryDirectory(d, vc, entries, count, MaxCandidates, nullptr, nullptr);
+                        bool found = false;
+                        for (size_t i = 0; i < count && !found; ++i) {
+                                if (StringView(entries[i].file) != id) continue;
+                                found = true;
+                                launch(entries[i].entry, file);
+                        }
+                        Memory::free(entries);
+                        if (found) return true;
+                        continue;
+                }
                 String path;
                 if (path.append(d).isError() || path.append('/').isError() || path.append(id).isError()) continue;
                 char         text[1024];
                 const size_t got = readFile(path.view(), vc, text, sizeof(text));
                 if (got == 0) continue;
                 auto [entry, perr] = DesktopEntry::parse(StringView(text, got));
-                if (perr.isError() || entry.hidden) continue;
+                if (perr.isError()) continue;
+                if (entry.hidden) return false; // hides the later ones of its name
                 launch(entry, file);
                 return true;
         }
         return false;
+}
+
+// The first launcher entry (the launcher's directories in order, the first of a name) whose
+// MimeType has @p type, started on @p path. False if none has it.
+bool FolderActions::openByMimeType(StringView path, StringView type) {
+        auto *entries = static_cast<PanelEntry *>(Memory::alloc(MemSpace::Psram, sizeof(PanelEntry) * MaxCandidates));
+        if (entries == nullptr) return false;
+        for (size_t i = 0; i < MaxCandidates; ++i) ::new (&entries[i]) PanelEntry();
+        const Vfs::Context vc{_context.cwd, nullptr};
+        size_t             count = 0;
+        StringView         dirs(_applications);
+        for (StringView d = IniReader::nextListItem(dirs); !d.isEmpty(); d = IniReader::nextListItem(dirs))
+                (void)readEntryDirectory(d, vc, entries, count, MaxCandidates, nullptr, nullptr);
+        bool opened = false;
+        for (size_t i = 0; i < count && !opened; ++i) {
+                const DesktopEntry &e = entries[i].entry;
+                if (e.hidden || !DesktopEntry::hasMimeType(StringView(e.mimeTypes), type)) continue;
+                launch(e, path);
+                opened = true;
+        }
+        Memory::free(entries);
+        return opened;
 }
 
 // ---- The clipboard (devplan/clipboard.md §4f, devplan/filebrowser.md §4j)

@@ -9,6 +9,7 @@
  */
 
 #include <cstdio>
+#include <bmds/apps.h>
 #include <bmds/clock.h>
 #include <bmds/fileformat.h>
 #include <bmds/folderitemmodel.h>
@@ -66,7 +67,9 @@ const Icon *FolderItemModel::icon(size_t row, uint16_t size) const {
         const FolderModel::Entry &e = _folder.entry(row);
         const uint16_t            side = size > 16 ? 32 : 16;
         const Icon               *icon = nullptr;
-        if (e.isDirectory()) {
+        if (e.isDirectory() && Apps::isFolderName(_folder.name(row))) {
+                icon = _icons.loadedNamed("application-x-executable", side); // an application (apps.md §7)
+        } else if (e.isDirectory()) {
                 icon = _icons.loadedNamed("folder", side);
         } else if (e.builtin) {
                 icon = _icons.loadedNamed("application-x-executable", side);
@@ -103,7 +106,7 @@ StringView FolderItemModel::columnText(size_t row, size_t column, Span<char> buf
                         break;
                 case TypeColumn: {
                         // As the Type sort orders them: by the extension.
-                        if (e.isDirectory()) return "Folder";
+                        if (e.isDirectory()) return Apps::isFolderName(_folder.name(row)) ? "Application" : "Folder";
                         if (e.builtin || e.format == Executable) return e.builtin ? "Built-in program" : "Program";
                         const StringView ext = FolderModel::extensionOf(_folder.name(row));
                         if (ext.isEmpty()) return "File";

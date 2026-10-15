@@ -1,6 +1,6 @@
 # Applications: one folder each
 
-Status: **steps 1 to 3 built** (2026-10-14, §11, §12); planned with the user 2026-10-14. Comes before the games (`games.md`), which are
+Status: **steps 1 to 4 built** (2026-10-14, §11 to §13); planned with the user 2026-10-14. Comes before the games (`games.md`), which are
 installed this way.
 
 ## 1. Goal
@@ -200,3 +200,32 @@ in the default `PATH`, the data directory's place. No system calls: `bmds/app.h`
   board: an override in `/cfg/applications` (the same first-wins check as before).
 - **Not yet:** an `Icon=` relative to the folder (a theme's name or an absolute path works; without
   one the program's own icon notes are used, `gui.md` §4j); Open With by `MimeType=` (step 4).
+
+## 13. As built: step 4, the file browser and Open With (2026-10-14)
+
+- **`Apps::isFolderName()`** (`NAME.app`, any case) is the one test: the loader, the panel and
+  `FolderItemModel` use it. A folder is an application's by its name; one that can't run (no
+  usable `app.desktop`) opens as a folder.
+- **The folder window:** an application's folder shows with the theme's
+  `application-x-executable` icon and the type "Application". Open (double click, Enter) runs it:
+  its `app.desktop` with `Exec`'s program the folder's (`readAppFolder()`, shared with the
+  launcher's `/apps` reading); it needn't be installed (a folder outside `apps/path` runs too,
+  `BMDS_APP_ID` from its name). **Show Contents** (File menu and the item's menu, when one
+  application folder is selected) goes into it; Open in New Window shows its contents in a new
+  window, as for any folder. The tree shows it as a folder.
+- **The desktop:** an application folder there shows the program icon and opens (runs) the same
+  way (`FolderActions::open()`). Not tried on the board (it would have meant the user's Desktop).
+- **Open With:** an id in `mimeapps.list` (`ID.desktop`) finds an installed application in the
+  `/apps` source of `panel/launcher/applications`. **`MimeType=`** is now read (`DesktopEntry`: a
+  long list is cut at its last whole type, not refused) and is the fallback when `mimeapps.list`
+  names nothing: the type, then `text/plain` for text, each by `mimeapps.list` and then by
+  `MimeType=` (the launcher's directories in order, the first of a name), and last
+  `application/octet-stream` by `mimeapps.list` only. A `Hidden=true` entry in an earlier
+  directory now stops `openWith()`, as it hides the launcher entry.
+- **Tested on the board:** `surfdemo` as `surf.app` (`Exec=surfdemo -d -t 4 %f`,
+  `MimeType=application/pdf;`): in `/sd0/p0/apps` with the application icon; Enter ran
+  `/sd0/p0/apps/surf.app/surfdemo -d -t 4`; Show Contents (by the arrows, and by its mnemonic
+  typed) went into the folder; a `.pdf` in `/tmp` (no line for it in `mimeapps.list`) opened as
+  `/apps/surf -d -t 4 /tmp/t.pdf`.
+- **Not yet:** the application's own icon in the file browser and on the desktop (the generic
+  one now; the launcher already shows a program's icon notes); an Open With submenu.

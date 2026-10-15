@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstring>
 #include <new>
+#include <bmds/apps.h>
 #include <bmds/fileops.h>
 #include <bmds/guiapplication.h>
 #include <bmds/memory.h>
@@ -631,6 +632,12 @@ bool FolderWindow::folderSelected() const {
         return r >= 0 && v.selection().selectedCount() == 1 && _items.folder().entry(size_t(r)).isDirectory();
 }
 
+bool FolderWindow::applicationSelected() const {
+        if (!folderSelected()) return false;
+        const int r = view().selection().nextSelected(0);
+        return Apps::isFolderName(_items.folder().name(size_t(r)));
+}
+
 bool FolderWindow::canPaste() {
         return _host.folderActions().canPaste();
 }
@@ -638,7 +645,10 @@ bool FolderWindow::canPaste() {
 void FolderWindow::openRow(size_t row, bool newWindow) {
         String p(MemSpace::Psram);
         itemPath(row, p);
-        if (_items.folder().entry(row).isDirectory()) {
+        // An application's folder runs it (devplan/apps.md §7); its contents by Show Contents or
+        // in a new window.
+        const bool application = Apps::isFolderName(_items.folder().name(row));
+        if (_items.folder().entry(row).isDirectory() && !(application && !newWindow)) {
                 if (newWindow) {
                         _host.openFolder(p.view(), StringView());
                 } else {
@@ -812,6 +822,14 @@ void FolderWindow::choose(int choice) {
                         for (int r = v.selection().nextSelected(0); r >= 0;
                              r = v.selection().nextSelected(size_t(r) + 1))
                                 openRow(size_t(r), choice == ChooseOpenNew || n > 1);
+                        break;
+                }
+                case ChooseShowContents: {
+                        const int r = v.selection().nextSelected(0);
+                        if (r < 0) break;
+                        String p(MemSpace::Psram);
+                        itemPath(size_t(r), p);
+                        (void)go(p.view());
                         break;
                 }
                 case ChooseNewFolder: createNew(FileOps::NewKind::Folder); break;
@@ -1075,6 +1093,9 @@ void FolderMenus::fill(Menu &menu, FolderWindow &w) {
         menu.clear();
         if (&menu == &_file) {
                 (void)menu.addItem("&Open", W::ChooseOpen, needOne, "Enter", icon(IconId::DocumentOpen));
+                if (w.applicationSelected())
+                        (void)menu.addItem("Show Co&ntents", W::ChooseShowContents, 0, StringView(),
+                                           icon(IconId::Folder));
                 (void)menu.addItem("Open in New &Window", W::ChooseOpenNew, w.folderSelected() ? 0 : Off, "Shift+Enter",
                                    icon(IconId::WindowNew));
                 (void)menu.addSeparator();
@@ -1113,6 +1134,9 @@ void FolderMenus::fill(Menu &menu, FolderWindow &w) {
                 (void)menu.addItem("&Desktop", W::ChooseDesktop, 0, StringView(), icon(IconId::UserDesktop));
         } else if (&menu == &_item) {
                 (void)menu.addItem("&Open", W::ChooseOpen, 0, StringView(), icon(IconId::DocumentOpen));
+                if (w.applicationSelected())
+                        (void)menu.addItem("Show Co&ntents", W::ChooseShowContents, 0, StringView(),
+                                           icon(IconId::Folder));
                 (void)menu.addItem("Open in New &Window", W::ChooseOpenNew, w.folderSelected() ? 0 : Off, StringView(),
                                    icon(IconId::WindowNew));
                 (void)menu.addSeparator();

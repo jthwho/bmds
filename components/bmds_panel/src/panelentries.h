@@ -46,6 +46,14 @@ using PanelEntryReport = void (*)(void *arg, const char *path);
 bool readEntryDirectory(StringView directory, const Vfs::Context &context, PanelEntry *entries, size_t &count,
                         size_t max, PanelEntryReport report, void *arg, bool allFiles = false);
 
+/**
+ * @brief Reads application folder @p folder's `app.desktop` (`devplan/apps.md` §3) into
+ *        @p entry, its `Exec`'s program replaced by @p program (empty: the folder's own, `Exec`'s
+ *        first word in it), its arguments kept.
+ * @return False if there's none to use (no file, not an entry, hidden, `Exec` outside the folder).
+ */
+bool readAppFolder(StringView folder, const Vfs::Context &context, StringView program, DesktopEntry &entry);
+
 /** @brief Leaves out @p entries' hidden and not-shown ones, and sorts the rest by name. */
 void keepShownEntries(PanelEntry *entries, size_t &count);
 

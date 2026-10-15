@@ -113,6 +113,7 @@ class FolderWindow final : public GuiWindow {
                         ChooseAbout,
                         ChooseCut,
                         ChooseDeleteForGood,
+                        ChooseShowContents, // an application's folder, as a folder
                 };
 
                 FolderWindow(GuiApplication &app, const Config &config, FolderWindowHost &host);
@@ -170,6 +171,9 @@ class FolderWindow final : public GuiWindow {
 
                 /** @brief Returns true if only a folder is selected. */
                 bool folderSelected() const;
+
+                /** @brief Returns true if one item is selected and it is an application's folder (`NAME.app`). */
+                bool applicationSelected() const;
 
                 /** @brief Returns true if the clipboard has files to paste. */
                 bool canPaste();

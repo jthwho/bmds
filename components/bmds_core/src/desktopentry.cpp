@@ -65,6 +65,17 @@ Result<DesktopEntry> DesktopEntry::parse(StringView text, Warn warn, void *warnA
                 } else if (key == "Categories") {
                         out = e.categories;
                         outBytes = sizeof(e.categories);
+                } else if (key == "MimeType") {
+                        // Kept to the last whole type that fits: a long list isn't the entry's fault.
+                        StringView list = item.value;
+                        if (list.size() >= sizeof(e.mimeTypes)) {
+                                list = list.left(sizeof(e.mimeTypes) - 1);
+                                const size_t semi = list.lastIndexOf(';');
+                                list = semi == StringView::NPos ? StringView() : list.left(semi + 1);
+                        }
+                        std::memcpy(e.mimeTypes, list.data(), list.size());
+                        e.mimeTypes[list.size()] = '\0';
+                        continue;
                 } else if (key == "Terminal") {
                         flag = &e.terminal;
                 } else if (key == "NoDisplay") {
@@ -172,6 +183,18 @@ Result<size_t> DesktopEntry::splitExec(StringView exec, char *buffer, size_t buf
                 buffer[used + file.size()] = '\0';
         }
         return makeResult(count);
+}
+
+bool DesktopEntry::hasMimeType(StringView mimeTypes, StringView type) {
+        const size_t slash = type.indexOf('/');
+        for (StringView item = IniReader::nextListItem(mimeTypes); !item.isEmpty();
+             item = IniReader::nextListItem(mimeTypes)) {
+                if (item.equalsIgnoreCase(type)) return true;
+                if (slash != StringView::NPos && item.size() == slash + 2 && item.endsWith("/*") &&
+                    item.left(slash).equalsIgnoreCase(type.left(slash)))
+                        return true;
+        }
+        return false;
 }
 
 bool DesktopEntry::hasCategory(StringView categories, StringView category) {

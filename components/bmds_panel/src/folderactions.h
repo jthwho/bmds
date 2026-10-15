@@ -83,8 +83,9 @@ class FolderActions {
                 void launch(const DesktopEntry &entry, StringView file = StringView());
 
                 /**
-                 * @brief Opens @p path: a folder in a window, a launcher (`.desktop`) by its
-                 *        command, another file by its type's application.
+                 * @brief Opens @p path: a folder in a window (an application's `NAME.app`
+                 *        folder: its application run), a launcher (`.desktop`) by its command,
+                 *        another file by its type's application.
                  */
                 void open(StringView path);
 
@@ -95,7 +96,10 @@ class FolderActions {
                  */
                 bool openWith(StringView id, StringView file);
 
-                /** @brief Opens file @p path of type @p type by the application `mimeapps.list` names. */
+                /**
+                 * @brief Opens file @p path of type @p type by the application `mimeapps.list`
+                 *        names, else by the first whose `MimeType=` has it.
+                 */
                 void openFile(StringView path, StringView type);
 
                 /** @brief Puts @p paths on the clipboard, copied (`CopiedFiles`' types). */
@@ -139,6 +143,7 @@ class FolderActions {
                             Span<char> problem);
 
         private:
+                bool         openByMimeType(StringView path, StringView type);
                 static void  pasted(void *arg, Error err, StringView type, StringView data);
                 static Error render(void *arg, StringView type, String &out);
                 static void  lost(void *arg, Clipboard::Selection selection);

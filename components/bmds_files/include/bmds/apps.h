@@ -146,6 +146,9 @@ class Apps {
                  */
                 static bool isValidName(StringView name);
 
+                /** @brief Returns true if @p name (a folder's) is an application's: `NAME.app`, any case. */
+                static bool isFolderName(StringView name);
+
                 /**
                  * @brief The system's applications (`init()`), or null.
                  * @isrsafe No; @nonblocking.

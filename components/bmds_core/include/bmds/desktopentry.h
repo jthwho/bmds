@@ -23,7 +23,7 @@ BMDS_NAMESPACE_BEGIN
  *        (`NAME.desktop`) the panel uses (`devplan/gui.md` G10).
  *
  * The `[Desktop Entry]` group's `Type`, `Name`, `Comment`, `Exec`, `Icon`,
- * `Terminal`, `Categories`, `NoDisplay` and `Hidden`, and an application
+ * `Terminal`, `Categories`, `MimeType`, `NoDisplay` and `Hidden`, and an application
  * folder's `X-BMDS-Id`, `X-BMDS-Command` and `X-BMDS-Display`
  * (`devplan/apps.md` §3); localized keys, other keys and other groups are
  * ignored. Strings are kept unescaped, in fixed
@@ -38,6 +38,7 @@ struct DesktopEntry {
                 static constexpr size_t MaxExec = 255;
                 static constexpr size_t MaxIcon = 63;
                 static constexpr size_t MaxCategories = 127;
+                static constexpr size_t MaxMimeTypes = 255;
                 static constexpr size_t MaxId = 31; ///< `X-BMDS-Id`, `X-BMDS-Command`.
 
                 /** @brief `X-BMDS-Display`: the presentation an application suggests. */
@@ -55,6 +56,7 @@ struct DesktopEntry {
                 char exec[MaxExec + 1] = {};             ///< As written (quoting kept): `splitExec()`.
                 char icon[MaxIcon + 1] = {};             ///< A name or a path; not drawn yet.
                 char categories[MaxCategories + 1] = {}; ///< A `;` list.
+                char    mimeTypes[MaxMimeTypes + 1] = {};   ///< `MimeType`, a `;` list (cut at a whole type if long).
                 bool terminal = false;                   ///< Run in a terminal.
                 bool noDisplay = false;                  ///< Not shown in menus.
                 bool hidden = false;                     ///< As if it didn't exist (hides another of its name).
@@ -91,6 +93,13 @@ struct DesktopEntry {
 
                 /** @brief Returns true if the `;` list @p categories holds @p category. */
                 static bool hasCategory(StringView categories, StringView category);
+
+                /**
+                 * @brief Returns true if the `;` list @p mimeTypes holds @p type, or its whole
+                 *        media type (`image/` then `*`: BMDS's, as `mimeapps.list`'s,
+                 *        `devplan/filetypes.md` T6).
+                 */
+                static bool hasMimeType(StringView mimeTypes, StringView type);
 };
 
 BMDS_NAMESPACE_END
