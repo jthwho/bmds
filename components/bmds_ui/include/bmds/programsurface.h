@@ -247,8 +247,9 @@ class ProgramSurface final : public Stream {
                 };
 
                 // Full screen: the scan surface's rows, the black rows above the picture, where it
-                // is across, its scale across and its width on the screen; the screen's mode (the
-                // desktop's, or one of the monitor's the picture fills: games.md §20).
+                // is across, its scale across (a whole factor; 0: width ÷ the picture's, any ratio,
+                // games.md §22) and its width on the screen; the screen's mode (the desktop's, or one
+                // of the monitor's the picture fills: games.md §20).
                 struct Layout {
                                 uint16_t rows = 0;
                                 uint16_t top = 0;

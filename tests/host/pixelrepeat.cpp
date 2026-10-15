@@ -5,7 +5,8 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * Pixels' row expanders (devplan/games.md §10): whole factors across, the palette's lookup.
+ * Pixels' row expanders (devplan/games.md §10, §22): whole factors across, any ratio, the palette's
+ * lookup.
  */
 
 #include <doctest.h>
@@ -73,4 +74,33 @@ TEST_CASE("Pixels::expandIndexed's word paths match a byte at a time") {
                         }
                 }
         }
+}
+
+TEST_CASE("Pixels::stretch scales a row across by any ratio, the nearest pixel") {
+        uint16_t in[64];
+        for (uint16_t i = 0; i < 64; ++i) in[i] = uint16_t(0x100 + i);
+        // 1.5 times (640 to 960): output column X shows input X × 2 / 3, from any first column.
+        for (uint32_t first : {0u, 4u, 12u, 30u}) {
+                std::vector<uint16_t> out(33, 0x5a5a);
+                Pixels::stretch(reinterpret_cast<const uint8_t *>(in), 2, nullptr, first, 32, 640, 960,
+                                reinterpret_cast<uint8_t *>(out.data()));
+                for (uint32_t i = 0; i < 32; ++i) CHECK(out[i] == in[(first + i) * 2 / 3]);
+                CHECK(out[32] == 0x5a5a);
+        }
+        // Down (5 to 3) and 3-byte pixels.
+        uint8_t rgb[3 * 10];
+        for (uint8_t i = 0; i < 30; ++i) rgb[i] = i;
+        std::vector<uint8_t> out(3 * 6, 0);
+        Pixels::stretch(rgb, 3, nullptr, 0, 6, 5, 3, out.data());
+        for (uint32_t i = 0; i < 6; ++i)
+                for (uint32_t b = 0; b < 3; ++b) CHECK(out[i * 3 + b] == rgb[(i * 5 / 3) * 3 + b]);
+        // Indices through the palette as B, G, R.
+        std::vector<uint32_t> palette(256, 0);
+        palette[1] = 0x112233;
+        palette[2] = 0x445566;
+        const uint8_t        idx[2] = {1, 2};
+        std::vector<uint8_t> bgr(3 * 3, 0);
+        Pixels::stretch(idx, 1, palette.data(), 0, 3, 2, 3, bgr.data());
+        const uint8_t want[9] = {0x33, 0x22, 0x11, 0x33, 0x22, 0x11, 0x66, 0x55, 0x44};
+        for (size_t i = 0; i < 9; ++i) CHECK(bgr[i] == want[i]);
 }

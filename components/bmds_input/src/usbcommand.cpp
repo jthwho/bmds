@@ -95,6 +95,12 @@ namespace {
                 if (s.unhandledHalts != 0)
                         ctx.printf(" (the last: hcint 0x%08lx)", static_cast<unsigned long>(s.unhandledHcint));
                 ctx.printf("\n");
+                // A channel taken with its interrupt off is a transfer nobody will finish.
+                const uint32_t lost = s.channelsTaken & ~s.channelInterrupts;
+                ctx.printf("Channels: 0x%04lx taken, 0x%04lx interrupting", static_cast<unsigned long>(s.channelsTaken),
+                           static_cast<unsigned long>(s.channelInterrupts));
+                if (lost != 0) ctx.printf(" (0x%04lx taken but not heard: stuck)", static_cast<unsigned long>(lost));
+                ctx.printf("\n");
                 return Shell::ExitSuccess;
         }
 

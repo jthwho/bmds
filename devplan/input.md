@@ -157,6 +157,28 @@ wm task, each round: drain keys ─► focused window's key callback (Terminal �
   the last. If it happens again, `usb stats` from another machine says whether the transfer was
   lost below the driver.
 
+## 5c. Silent again: a race in the host driver (2026-10-15, Solitaire)
+
+- **Seen:** the keyboard stopped again while the user played Solitaire. `usb stats`: the
+  keyboard (low speed, behind the board's high-speed hub, so every poll is a split transaction)
+  had sent 8 reports, the last 21 minutes before, and was "waiting"; the mouse on the same hub
+  was current; 0 refused requests and 0 unhandled halts. So the poll was asked for and never
+  came back, with no error anywhere.
+- **The cause found by reading `hcd_dwc2.c`:** an interrupt poll that gets NAKs is put off to a
+  later frame, and the SOF interrupt starts it again (`edpt_xfer_kickoff()` from the handler),
+  while the USB task starts transfers too (each mouse report asks for the next). Both take
+  channels with an unguarded test and set (`channel_alloc()`) and change `haintmsk` by read,
+  modify and write, and nothing serialised them (`hcd_int_disable()` frees the interrupt on this
+  port, so TinyUSB's own guard was left commented out). An interrupt between a read and its
+  write left a poll with its channel's interrupt off (or two polls on one channel): the
+  controller finished it and nobody heard. The mouse, restarted every report, recovers; the
+  idle keyboard waits forever.
+- **Fixed:** one spinlock (`portENTER_CRITICAL_SAFE`) around the whole interrupt handler and the
+  task's entries that touch channels or endpoints (open, close, transfer, abort, clear stall,
+  device close). `usb stats` adds a line: the channels taken, those interrupting, and any taken
+  but not heard (this bug's mark, if anything like it comes back). Not reproduced on demand: the
+  window is a few instructions, hit after many thousands of polls.
+
 ## 6. Resource budget (estimates; measured as the steps land)
 
 | What | Where | Estimate / measured |

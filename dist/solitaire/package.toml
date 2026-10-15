@@ -1,0 +1,8 @@
+# Solitaire (programs/solitaire, devplan/games.md §21): Klondike on libbmdsgame, as an application
+# folder with its cards and sounds (built by its assets.py).
+name = "solitaire"
+version = "1"
+description = "Solitaire: Klondike, drawing one or three, with Windows' scoring and our own cards"
+license = "MIT"
+source_tree = "programs/solitaire"
+license_files = ["../../LICENSE"]

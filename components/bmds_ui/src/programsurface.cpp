@@ -431,7 +431,7 @@ ProgramSurface::Info ProgramSurface::info() {
         i.shown = full || _window != 0;
         if (full) {
                 const Layout l = _layout;
-                i.scaleX16 = uint16_t(l.scaleX * 16);
+                i.scaleX16 = uint16_t(uint32_t(l.width) * 16 / _config.width);
                 i.scaleY16 = uint16_t(uint32_t(l.screenHeight) * 16 / l.rows);
                 i.area = Rect{l.x, uint16_t(uint32_t(l.top) * l.screenHeight / l.rows), l.width,
                               uint16_t(uint32_t(_config.height) * l.screenHeight / l.rows)};
@@ -602,8 +602,9 @@ Error ProgramSurface::setIcons(ByteSpan small, ByteSpan large) {
 
 // The picture on the screen: whole multiples both ways (BMDS_SURFACE_WHOLE: rows repeated a
 // whole number of times, black rows above and below), else the screen's height filled (rows
-// repeated as the scan's mapping falls) and across the whole multiple nearest the picture's
-// shape (its aspect, or square pixels); centered across. In a mode of the monitor's (@p own),
+// repeated as the scan's mapping falls) and across the picture's shape (its aspect, or square
+// pixels): a whole multiple when one is within 3% of it, else that width exactly (columns
+// repeated as rows are: games.md §22); centered across. In a mode of the monitor's (@p own),
 // the picture fills it by whole factors (VideoModes::fullScreen()).
 ProgramSurface::Layout ProgramSurface::layOut(uint16_t screenWidth, uint16_t screenHeight, bool own) const {
         Layout         l;
@@ -632,9 +633,16 @@ ProgramSurface::Layout ProgramSurface::layOut(uint16_t screenWidth, uint16_t scr
                 uint32_t       s = (want + w / 2) / w;
                 if (s < 1) s = 1;
                 if (s > most) s = most;
-                l.scaleX = uint16_t(s);
                 l.rows = h;
                 l.top = 0;
+                const uint32_t off = s * w > want ? s * w - want : want - s * w;
+                if (off * 32 > want && want <= screenWidth) { // no whole multiple near it: as wide as it is
+                        l.scaleX = 0;
+                        l.width = uint16_t(want & ~3u);
+                        l.x = uint16_t(((screenWidth - l.width) / 2) & ~3u);
+                        return l;
+                }
+                l.scaleX = uint16_t(s);
         }
         l.width = uint16_t(w * l.scaleX);
         l.x = uint16_t(((screenWidth - l.width) / 2) & ~3u);
@@ -708,8 +716,8 @@ Error ProgramSurface::enterFullScreen(const VideoTiming &mode, bool own) {
         if (d == nullptr) return Error::InvalidState;
         _layout = layOut(mode.hActive, mode.vActive, own);
         const int64_t t0 = Clock::monotonicNs();
-        bmdsInfo("ProgramSurface: full screen: %ux%u rows at %ux across%s", unsigned(mode.hActive),
-                 unsigned(_layout.rows), unsigned(_layout.scaleX), own ? ", the monitor's mode" : "");
+        bmdsInfo("ProgramSurface: full screen: %ux%u rows, %u across%s", unsigned(mode.hActive), unsigned(_layout.rows),
+                 unsigned(_layout.width), own ? ", the monitor's mode" : "");
         void *memory = Memory::alloc(MemSpace::Psram, sizeof(Surface));
         if (memory == nullptr) return Error::NoMem;
         _fs = ::new (memory) Surface();
@@ -792,8 +800,16 @@ void ProgramSurface::convert() {
                 Rect on[Damage::Max];
                 for (size_t i = 0; i < changed.count; ++i) {
                         const Rect &r = changed.rects[i];
-                        on[i] = Rect{uint16_t(l.x + r.x * l.scaleX), uint16_t(l.top + r.y),
-                                     uint16_t(r.width * l.scaleX), r.height};
+                        if (l.scaleX == 0) { // the columns showing it, on 4-pixel columns
+                                const uint32_t w = _config.width;
+                                const uint32_t x0 = (uint32_t(r.x) * l.width / w) & ~3u;
+                                const uint32_t x1 = ((uint32_t(r.right()) * l.width + w - 1) / w + 3) & ~3u;
+                                on[i] = Rect{uint16_t(l.x + x0), uint16_t(l.top + r.y),
+                                             uint16_t((x1 < l.width ? x1 : l.width) - x0), r.height};
+                        } else {
+                                on[i] = Rect{uint16_t(l.x + r.x * l.scaleX), uint16_t(l.top + r.y),
+                                             uint16_t(r.width * l.scaleX), r.height};
+                        }
                 }
                 (void)_fs->willDraw(Span<const Rect>(on, changed.count), DrawTimeoutMs);
                 const uint8_t *buf = _buffers[index];
@@ -808,9 +824,15 @@ void ProgramSurface::convert() {
                                 uint8_t       *strip = _strip + size_t(k) * half;
                                 // This half's last copy started two strips ago; startBlit() waited for it
                                 // with the last.
-                                for (uint16_t row = 0; row < rows; ++row)
-                                        expandRow(buf + size_t(r.y + y + row) * _stride + r.x * bpp, r.width,
-                                                  strip + size_t(row) * rowBytes, l.scaleX);
+                                for (uint16_t row = 0; row < rows; ++row) {
+                                        const uint8_t *src = buf + size_t(r.y + y + row) * _stride;
+                                        uint8_t       *dst = strip + size_t(row) * rowBytes;
+                                        if (l.scaleX == 0)
+                                                Pixels::stretch(src, unsigned(bpp), _palette, uint32_t(on[i].x - l.x),
+                                                                on[i].width, _config.width, l.width, dst);
+                                        else
+                                                expandRow(src + r.x * bpp, r.width, dst, l.scaleX);
+                                }
                                 err = _fs->startBlit(Rect{on[i].x, uint16_t(on[i].y + y), on[i].width, rows}, strip,
                                                      rowBytes, Span<const Rect>(clip, 1),
                                                      wide ? Surface::Source::Rgb565 : Surface::Source::Bgr24,
@@ -858,7 +880,7 @@ void ProgramSurface::pushPresented() {
                 if (_fullScreen) {
                         const uint32_t down16 = uint32_t(_layout.screenHeight) * 16 / _layout.rows;
                         e.data[0] = 1;
-                        e.data[1] = uint32_t(_layout.scaleX * 16) | down16 << 16;
+                        e.data[1] = uint32_t(_layout.width) * 16 / _config.width | down16 << 16;
                         e.data[2] = uint32_t(_layout.width) |
                                     (uint32_t(_config.height) * _layout.screenHeight / _layout.rows) << 16;
                 } else {
@@ -900,7 +922,9 @@ void ProgramSurface::mouseEntry(void *arg, const WindowManager::MouseEvent &even
                         const int32_t my = int32_t(event.y) * l.screenHeight / ScreenHeight;
                         const int32_t dx = mx - l.x;
                         y = my * l.rows / l.screenHeight - l.top;
-                        x = dx >= 0 ? dx / l.scaleX : -((-dx + l.scaleX - 1) / l.scaleX);
+                        // The column's input pixel (Pixels::stretch()'s mapping), rounded down.
+                        const int32_t w = self->_config.width, across = l.width;
+                        x = dx >= 0 ? dx * w / across : -((-dx * w + across - 1) / across);
                 } else {
                         uint16_t   scale = 1;
                         const Rect pic = self->pictureRect(self->_clientWidth, self->_clientHeight, scale);

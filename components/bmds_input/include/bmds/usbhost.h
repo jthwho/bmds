@@ -94,6 +94,8 @@ class UsbHost {
                                         0; ///< HID transfers that couldn't be asked for again (retried).
                                 uint32_t unhandledHalts = 0; ///< The controller's halts of no known cause (retried).
                                 uint32_t unhandledHcint = 0; ///< The last one's channel interrupt bits.
+                                uint32_t channelsTaken = 0;  ///< The controller's channels in use, a bit each.
+                                uint32_t channelInterrupts = 0; ///< Those whose interrupt is on (haintmsk).
                 };
 
                 /** @brief A HID interface's state (`hids()`). */

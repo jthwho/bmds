@@ -119,6 +119,15 @@ static hcd_data_t _hcd_data;
 // the `usb` command (thirdparty/tinyusb/README.md).
 volatile uint32_t tuh_dwc2_unhandled_halts = 0;
 volatile uint32_t tuh_dwc2_unhandled_hcint = 0;
+
+// BMDS: the interrupt handler starts transfers too (the SOF handler restarts periodic polls put
+// off to a later frame), so it and the task's calls both take channels (channel_alloc()'s test and
+// set) and change haintmsk (read, modify, write). Unserialised, the interrupt (on either core) could
+// land between the two: a poll lost its channel's interrupt enable, or shared a channel, and waited
+// for good (a keyboard fell silent while the mouse, restarted every report, went on). One lock: the
+// whole handler, and each entry of the task's that touches channels or endpoints.
+#include "freertos/FreeRTOS.h"
+static portMUX_TYPE _hcd_lock = portMUX_INITIALIZER_UNLOCKED;
 static tuh_configure_dwc2_t _tuh_cfg = {.use_hs_phy = TUH_OPT_HIGH_SPEED};
 
 //--------------------------------------------------------------------
@@ -523,7 +532,7 @@ tusb_speed_t hcd_port_speed_get(uint8_t rhport) {
 }
 
 // HCD closes all opened endpoints belong to this device
-void hcd_device_close(uint8_t rhport, uint8_t dev_addr) {
+static void device_close_locked(uint8_t rhport, uint8_t dev_addr) {
   dwc2_regs_t* dwc2 = DWC2_REG(rhport);
   for (uint8_t ep_id = 0; ep_id < CFG_TUH_DWC2_ENDPOINT_MAX; ep_id++) {
     const hcd_endpoint_t *edpt = &_hcd_data.edpt[ep_id];
@@ -538,7 +547,7 @@ void hcd_device_close(uint8_t rhport, uint8_t dev_addr) {
 //--------------------------------------------------------------------+
 
 // Open an endpoint
-bool hcd_edpt_open(uint8_t rhport, uint8_t dev_addr, const tusb_desc_endpoint_t* desc_ep) {
+static bool edpt_open_locked(uint8_t rhport, uint8_t dev_addr, const tusb_desc_endpoint_t* desc_ep) {
   dwc2_regs_t* dwc2 = DWC2_REG(rhport);
   const tusb_speed_t rh_speed = hprt_speed_get(dwc2);
 
@@ -594,7 +603,7 @@ bool hcd_edpt_open(uint8_t rhport, uint8_t dev_addr, const tusb_desc_endpoint_t*
   return true;
 }
 
-bool hcd_edpt_close(uint8_t rhport, uint8_t daddr, uint8_t ep_addr) {
+static bool edpt_close_locked(uint8_t rhport, uint8_t daddr, uint8_t ep_addr) {
   dwc2_regs_t  *dwc2   = DWC2_REG(rhport);
   const uint8_t ep_num = tu_edpt_number(ep_addr);
   const uint8_t ep_dir = tu_edpt_dir(ep_addr);
@@ -727,7 +736,7 @@ static bool edpt_xfer_kickoff(dwc2_regs_t* dwc2, uint8_t ep_id) {
   return channel_xfer_start(dwc2, ch_id);
 }
 
-bool hcd_edpt_xfer(uint8_t rhport, uint8_t dev_addr, uint8_t ep_addr, uint8_t * buffer, uint16_t buflen) {
+static bool edpt_xfer_locked(uint8_t rhport, uint8_t dev_addr, uint8_t ep_addr, uint8_t * buffer, uint16_t buflen) {
   dwc2_regs_t* dwc2 = DWC2_REG(rhport);
   const uint8_t ep_num = tu_edpt_number(ep_addr);
   const uint8_t ep_dir = tu_edpt_dir(ep_addr);
@@ -750,7 +759,7 @@ bool hcd_edpt_xfer(uint8_t rhport, uint8_t dev_addr, uint8_t ep_addr, uint8_t * 
 
 // Abort a queued transfer. Note: it can only abort transfer that has not been started
 // Return true if a queued transfer is aborted, false if there is no transfer to abort
-bool hcd_edpt_abort_xfer(uint8_t rhport, uint8_t dev_addr, uint8_t ep_addr) {
+static bool edpt_abort_xfer_locked(uint8_t rhport, uint8_t dev_addr, uint8_t ep_addr) {
   dwc2_regs_t* dwc2 = DWC2_REG(rhport);
   const uint8_t ep_num = tu_edpt_number(ep_addr);
   const uint8_t ep_dir = tu_edpt_dir(ep_addr);
@@ -782,7 +791,7 @@ bool hcd_setup_send(uint8_t rhport, uint8_t dev_addr, const uint8_t setup_packet
 }
 
 // clear stall, data toggle is also reset to DATA0
-bool hcd_edpt_clear_stall(uint8_t rhport, uint8_t dev_addr, uint8_t ep_addr) {
+static bool edpt_clear_stall_locked(uint8_t rhport, uint8_t dev_addr, uint8_t ep_addr) {
   (void) rhport;
   const uint8_t ep_num = tu_edpt_number(ep_addr);
   const uint8_t ep_dir = tu_edpt_dir(ep_addr);
@@ -1537,7 +1546,7 @@ static void handle_hprt_irq(uint8_t rhport, bool in_isr) {
                  |           |
     GINTSTS :  HCInt     | PrtInt | NPTxFEmp | PTxFEmpp | RXFLVL | SOF
 */
-void hcd_int_handler(uint8_t rhport, bool in_isr) {
+static void int_handler_locked(uint8_t rhport, bool in_isr) {
   dwc2_regs_t* dwc2 = DWC2_REG(rhport);
   const uint32_t gintmsk = dwc2->gintmsk;
   const uint32_t gintsts = dwc2->gintsts & gintmsk;
@@ -1603,6 +1612,72 @@ void hcd_int_handler(uint8_t rhport, bool in_isr) {
     }
   }
 #endif
+}
+
+//--------------------------------------------------------------------
+// BMDS: the entries, under the lock (above)
+//--------------------------------------------------------------------
+
+void hcd_device_close(uint8_t rhport, uint8_t dev_addr) {
+  portENTER_CRITICAL_SAFE(&_hcd_lock);
+  device_close_locked(rhport, dev_addr);
+  portEXIT_CRITICAL_SAFE(&_hcd_lock);
+}
+
+bool hcd_edpt_open(uint8_t rhport, uint8_t dev_addr, const tusb_desc_endpoint_t* desc_ep) {
+  portENTER_CRITICAL_SAFE(&_hcd_lock);
+  const bool ok = edpt_open_locked(rhport, dev_addr, desc_ep);
+  portEXIT_CRITICAL_SAFE(&_hcd_lock);
+  return ok;
+}
+
+bool hcd_edpt_close(uint8_t rhport, uint8_t daddr, uint8_t ep_addr) {
+  portENTER_CRITICAL_SAFE(&_hcd_lock);
+  const bool ok = edpt_close_locked(rhport, daddr, ep_addr);
+  portEXIT_CRITICAL_SAFE(&_hcd_lock);
+  return ok;
+}
+
+bool hcd_edpt_xfer(uint8_t rhport, uint8_t dev_addr, uint8_t ep_addr, uint8_t * buffer, uint16_t buflen) {
+  portENTER_CRITICAL_SAFE(&_hcd_lock);
+  const bool ok = edpt_xfer_locked(rhport, dev_addr, ep_addr, buffer, buflen);
+  portEXIT_CRITICAL_SAFE(&_hcd_lock);
+  return ok;
+}
+
+bool hcd_edpt_abort_xfer(uint8_t rhport, uint8_t dev_addr, uint8_t ep_addr) {
+  portENTER_CRITICAL_SAFE(&_hcd_lock);
+  const bool ok = edpt_abort_xfer_locked(rhport, dev_addr, ep_addr);
+  portEXIT_CRITICAL_SAFE(&_hcd_lock);
+  return ok;
+}
+
+bool hcd_edpt_clear_stall(uint8_t rhport, uint8_t dev_addr, uint8_t ep_addr) {
+  portENTER_CRITICAL_SAFE(&_hcd_lock);
+  const bool ok = edpt_clear_stall_locked(rhport, dev_addr, ep_addr);
+  portEXIT_CRITICAL_SAFE(&_hcd_lock);
+  return ok;
+}
+
+void hcd_int_handler(uint8_t rhport, bool in_isr) {
+  portENTER_CRITICAL_SAFE(&_hcd_lock);
+  int_handler_locked(rhport, in_isr);
+  portEXIT_CRITICAL_SAFE(&_hcd_lock);
+}
+
+// BMDS: the channels taken (a bit each) and those whose interrupt is on (haintmsk), for the `usb`
+// command: one taken with its interrupt off is a poll nobody will finish.
+uint32_t tuh_dwc2_channels(uint8_t rhport, uint32_t* interrupts) {
+  dwc2_regs_t* dwc2 = DWC2_REG(rhport);
+  uint32_t taken = 0;
+  portENTER_CRITICAL_SAFE(&_hcd_lock);
+  const uint8_t count = dwc2_channel_count(dwc2);
+  for (uint8_t ch_id = 0; ch_id < count; ch_id++) {
+    if (_hcd_data.xfer[ch_id].allocated) taken |= TU_BIT(ch_id);
+  }
+  *interrupts = dwc2->haintmsk;
+  portEXIT_CRITICAL_SAFE(&_hcd_lock);
+  return taken;
 }
 
 #endif

@@ -9,6 +9,7 @@
  */
 
 #include <cstdint>
+#include <cstring>
 #include <bmds/image.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -325,6 +326,37 @@ namespace {
         }
 
 } // namespace
+
+void Pixels::stretch(const uint8_t *in, unsigned bytes, const uint32_t *palette, uint32_t first, uint32_t count,
+                     uint32_t from, uint32_t to, uint8_t *out) {
+        if (to == 0) return;
+        // The input column steps by from / to: a whole part and a remainder carried.
+        const uint64_t at = uint64_t(first) * from;
+        uint32_t       col = uint32_t(at / to), rem = uint32_t(at % to);
+        const uint32_t whole = from / to, part = from % to;
+        for (uint32_t i = 0; i < count; ++i) {
+                if (bytes == 1) {
+                        const uint32_t rgb = palette[in[col]];
+                        out[0] = uint8_t(rgb);
+                        out[1] = uint8_t(rgb >> 8);
+                        out[2] = uint8_t(rgb >> 16);
+                        out += 3;
+                } else if (bytes == 2) {
+                        std::memcpy(out, in + size_t(col) * 2, 2);
+                        out += 2;
+                } else {
+                        std::memcpy(out, in + size_t(col) * 3, 3);
+                        out += 3;
+                }
+                col += whole;
+                rem += part;
+                if (rem >= to) {
+                        rem -= to;
+                        ++col;
+                }
+        }
+        return;
+}
 
 void Pixels::expandIndexed(const uint8_t *in, size_t count, const uint32_t *palette, uint8_t *out, unsigned times) {
         // Whole words where the row allows (four pixels make whole words at any factor): byte

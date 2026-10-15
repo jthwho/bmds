@@ -216,7 +216,7 @@ Gamepads and the bindings editor are `controls.md`'s steps, alongside these.
 
 ## 9. Open questions
 
-- Solitaire's card art (licence).
+- ~~Solitaire's card art (licence).~~ Our own, drawn at build time (§21).
 - **An SDL2 or SDL3 backend** on these calls, as a `dist/` package: many games and ports would
   follow. Too big for now; the calls are designed so its video, audio and events map cleanly.
 - Whether a full-screen game may take the display at another mode (a real 640×480 for a retro
@@ -926,3 +926,95 @@ refresh, and the conversion is 128,000 pixels (2× across; rows repeated by the 
 - **Open:** a real-time client is sometimes one period late as a program starts (1 start in 3
   with a sound only, `bounce -a`; none from the full-screen switches: six Alt+Enters added
   none). The cause isn't found; the warning closes by itself.
+
+## 21. Step 7 design: Solitaire (2026-10-14)
+
+`programs/solitaire/`, MIT, installed by the `dist/solitaire` recipe as `apps/solitaire.app`, in a
+window from the start (`X-BMDS-Display=Window`; Alt+Enter as any surface). Blocks' layout: the
+rules pure C and host-tested, the program on `libbmdsgame`, the art and sounds written by
+`assets.py` at build time.
+
+- **Card art: our own** (§9's open question closed): drawn by `assets.py` (Python's standard
+  library, as Blocks' tiles), so there is no licence to check and no build dependency (Byron
+  Knoll's set is SVG: rendering it needs a rasterizer). 71×96 cards (Windows' size, so seven
+  columns fit 640 across with room between), rounded corners keyed, the pips' curves
+  supersampled 4×4. Ranks in the corners from a small bitmap font of the script's own; pips laid
+  out as printed cards (the lower half turned); the courts double-headed figures in the suit's
+  colours with a crown, a tiara or a cap; a back of a blue lattice. One sheet, `cards.png`: the
+  52 faces in 4 rows of 13, then the back, an empty place, a foundation's place and the stock's
+  two (turn again, and done). 923×480 RGB565 is 886 KB: in PSRAM.
+- **Rules (`rules.c`):** Klondike. 13 piles (the stock, the waste, 4 foundations, 7 columns), a
+  card a byte (suit × 13 + rank, the top bit face up). Draw one or three; a column takes a King
+  when empty, else one lower of the other colour; a foundation an Ace when empty, else the next
+  of its suit; any face-up run moves; a column's new top turns over by itself. Scoring, Windows':
+  **standard** (waste to column 5, to a foundation 10, a card turned 5, back from a foundation
+  −15, −2 each 10 seconds, the stock turned again −100 drawing one and −20 after three passes
+  drawing three, never below 0, and 700,000 ÷ seconds at the win after 30 seconds), **Vegas**
+  (−52 to start, 5 a card up, −5 back down, one pass drawing one and three drawing three) or
+  none. **Undo** as far back as the game goes (each move keeps the score, passes and the waste's
+  fan it replaced); `sol_auto_step()` finds a card that can go up (a double click's, a right
+  click's). Host-tested: the deal, every legal and refused move, draws and passes, turning over,
+  both scorings, undo back to the deal, the win.
+- **The picture:** 640×480 RGB565 (whole multiples in a large window, as every surface; 1.5× full
+  screen at 720p). Green felt; the top row (stock, waste fanned three across when drawing three,
+  four foundations), seven columns under it (face-down cards 6 pixels apart, face-up 18, closer
+  when a column would reach the status line), a status line (score, time, moves). Each frame
+  works out where every card is (a display list: position, face, order) and redraws, clipped,
+  only the places where something differs from the last frame: a dragged run costs its old and
+  new rectangles.
+- **Motion:** cards fly where the game sends them (a draw from the stock, a double click to a
+  foundation, the right click's moves, the keyboard's): their place eases over 8 ticks, the
+  rules already moved on, so input finishes the flights first. The deal flies out card by card.
+  **The win:** the foundations' cards leave one by one, the top of each in turn, bouncing on the
+  bottom and losing a quarter of their speed each time, drawn every tick without erasing: Windows'
+  trails, and the loop's damage is one card a frame.
+- **Mouse:** press on a movable card and drag (the run above it comes along); released over a
+  pile that takes it (the most overlap among those that do), it moves there, else it goes back.
+  A click on the stock draws; a double click (400 ms, the window manager's) sends a card up; a
+  right click sends up everything that can go.
+- **Keyboard** (first-class): a cursor over the piles, Left and Right across a row, Up and Down
+  between the rows and along a column's face-up cards; Space or Enter picks up and puts down (a
+  picked-up run is outlined), Escape lets go. D or the stock: draw. F: this card up; A: all
+  that can go up. Ctrl+Z, Backspace or U: undo. F2 or N: deal again. O: options (draw one or
+  three, the scoring, sound: changing the first two deals again). F1 or H: the keys. The cursor
+  shows from the first key and hides when the mouse moves.
+- **Sound:** card sounds made by `assets.py` (a snap, a turn, a shuffle for the deal, a short
+  fanfare for the win), M on and off. No music.
+- **Kept:** the options, and games played and won, in `settings` in the data folder.
+- **The timer** counts ticks, so it stops while the window isn't active (the loop runs no ticks)
+  and when the game is won; it starts with the first move.
+
+## 22. As built: step 7, Solitaire (2026-10-14)
+
+- **`programs/solitaire/`:** `rules.c` (§21's rules, pure C), `solitaire.c` (the program),
+  `assets.py` (the cards, the sounds and the icons), `app.desktop`; **`dist/solitaire`** builds
+  `apps/solitaire.app`. The art as §21 planned: 52 faces (pips laid out as printed cards, the
+  courts double-headed: a King with a crown, beard and sword, a Queen with a tiara and a flower, a
+  Jack with a cap, a feather and a halberd), a lattice back, the places; the icons two cards
+  fanned. `solitaire -W` deals a game already played out, which finishes by itself: the win's
+  demo (not counted in the games won).
+- **Host-tested** (`tests/host/solitaire.cpp`, 10 cases): the deal, columns and foundations (taken
+  and refused), turning over, drawing three and the fan, passes and their cost, Vegas, the time's
+  cost, undo back to the deal from random play (39 seeds, drawing one and three), the history's
+  limit, the win and its bonus, the played-out deal.
+- **On the board** (`win hid` keys, `win pointer`): the deal flying out, drawing, Aces sent up
+  with F and by double click, a drag from the waste to a foundation, A and right click sending all
+  up, undo turning a column's card back down, drawing three fanned, the options (draw three, a new
+  deal), the keyboard's pick-up outline, and the win: the cards bouncing off the foundations with
+  their trails, then the box, a key dealing again. At rest Solitaire doesn't show in `top`;
+  bouncing, its thread takes about 17% (two keyed card blits a tick from PSRAM, and the loop's
+  copy forward), the window manager 7%.
+- **Full screen at any ratio** (found here): 640×480 is 4:3, 1.5 times across at 720p, and full
+  screen only widened by whole multiples, so it showed 2 times across: a third too wide. Now a
+  whole multiple is used when one is within 3% of the picture's shape, else exactly the shape's
+  width, each column the nearest of the picture's (`Pixels::stretch()`, host-tested), as the scan
+  already repeats rows. The pointer's mapping, `BMDS_SURFACE_INFO`'s and `PRESENTED`'s scales
+  follow. Solitaire full screen is 960×720, centred; `bounce -s 640x480 -F` runs at 61 frames.
+  Blocks (2×) and Doom (3× at 4:3) are unchanged.
+- **Seen again: scrambled screenshots** (§20b's open item). Twice, the first PNG after a program
+  went full screen came out with its colours scrambled in columns (the layout right) and slow:
+  the row swap (`Pixels::swap24()`, PIE) 8 times its usual time, the filter 60. JPEGs and later
+  PNGs of the same picture were clean, and it didn't happen again on demand. The slowdown in PIE
+  code points at its registers' lazy saving between tasks; not looked into yet.
+- **Not yet:** the options box answers keys only (a click closes it); Vegas' cumulative score;
+  dealing by number.

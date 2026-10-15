@@ -81,6 +81,8 @@ add_executable(bmds_host_tests
         ${BMDS_ROOT}/sdk/game/mix.c
         blocks.cpp
         ${BMDS_ROOT}/programs/blocks/rules.c
+        solitaire.cpp
+        ${BMDS_ROOT}/programs/solitaire/rules.c
         memspace.cpp
         midi.cpp
         mplayer.cpp

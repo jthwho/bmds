@@ -159,6 +159,17 @@ namespace Pixels {
          */
         void expandIndexed(const uint8_t *in, size_t count, const uint32_t *palette, uint8_t *out, unsigned times);
 
+        /**
+         * @brief Writes @p count pixels of a row scaled across by @p to / @p from (any ratio,
+         *        the nearest pixel: some repeated once more than others, as the scan repeats
+         *        rows): output column `first + i` shows input column `(first + i) × from / to`
+         *        of the row at @p in. @p bytes 2 or 3 copies pixels of that size; 1 looks
+         *        indices up in @p palette (0xRRGGBB) and writes B, G, R (`devplan/games.md` §22).
+         * @hotpath
+         */
+        void stretch(const uint8_t *in, unsigned bytes, const uint32_t *palette, uint32_t first, uint32_t count,
+                     uint32_t from, uint32_t to, uint8_t *out);
+
         /** @brief Returns @p argb's luma (BT.601), 0-255. */
         constexpr uint8_t luma(uint32_t argb) {
                 return uint8_t((77u * (argb >> 16 & 0xff) + 150u * (argb >> 8 & 0xff) + 29u * (argb & 0xff) + 128u) >>

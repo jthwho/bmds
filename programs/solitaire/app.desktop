@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Solitaire
+Comment=Klondike: build the suits up from the Aces
+Exec=solitaire
+Categories=Game;CardGame;
+X-BMDS-Id=solitaire
+X-BMDS-Display=Window

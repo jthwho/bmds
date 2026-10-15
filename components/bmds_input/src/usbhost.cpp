@@ -25,6 +25,7 @@
 // hcd_dwc2.c's (thirdparty/tinyusb/README.md): halts it retried that it had no case for.
 extern "C" volatile uint32_t tuh_dwc2_unhandled_halts;
 extern "C" volatile uint32_t tuh_dwc2_unhandled_hcint;
+extern "C" uint32_t          tuh_dwc2_channels(uint8_t rhport, uint32_t *interrupts);
 
 BMDS_NAMESPACE_BEGIN
 
@@ -239,6 +240,7 @@ UsbHost::Stats UsbHost::stats() {
         Stats         s = _stats;
         s.unhandledHalts = tuh_dwc2_unhandled_halts;
         s.unhandledHcint = tuh_dwc2_unhandled_hcint;
+        if (_running) s.channelsTaken = tuh_dwc2_channels(RootPort, &s.channelInterrupts);
         return s;
 }
 
