@@ -1,0 +1,8 @@
+# Blocks (programs/blocks, devplan/games.md §17): the falling-blocks game on libbmdsgame, as an
+# application folder with its tiles, sounds and music (built by its assets.py).
+name = "blocks"
+version = "1"
+description = "Blocks: falling blocks (the guideline's rules), with sound and Korobeiniki on the synth"
+license = "MIT"
+source_tree = "programs/blocks"
+license_files = ["../../LICENSE"]

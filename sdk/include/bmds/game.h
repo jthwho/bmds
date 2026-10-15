@@ -190,7 +190,8 @@ typedef struct bmds_game_config_t {
 
 /**
  * @brief Runs a game: opens its surface and loops (events, ticks, drawing, presents) until
- *        `bmds_game_quit()`. While the surface isn't active, no ticks run and nothing is drawn.
+ *        `bmds_game_quit()`. While the surface isn't active, no ticks run and nothing is drawn
+ *        unless asked (`bmds_game_redraw()`).
  * @return 0, or a negative error (`-BMDS_EINVAL`, `-BMDS_ENODEV`: no desktop, or the surface
  *         calls' errors).
  */
@@ -202,7 +203,7 @@ void *bmds_game_arg(const bmds_game_t *game);
 /** @brief Ends the loop after this callback. */
 void bmds_game_quit(bmds_game_t *game);
 
-/** @brief Asks for a frame (`draw`) without a tick. */
+/** @brief Asks for a frame (`draw`) without a tick, inactive too (a pause screen drawn as it goes). */
 void bmds_game_redraw(bmds_game_t *game);
 
 /** @brief Returns the surface's descriptor (for `BMDS_SURFACE_...` controls: the palette, the pointer). */

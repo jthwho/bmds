@@ -230,7 +230,8 @@ int bmds_game_run(const bmds_game_config_t *config) {
                         if (g.ticks < due) g.origin_ns = now_ns() - (int64_t)g.ticks * g.period_ns;
                 }
                 if (g.quit) break;
-                if (g.active && (ran > 0 || g.redraw)) {
+                /* Inactive, a frame only when asked (a pause screen, say). */
+                if ((g.active && ran > 0) || g.redraw) {
                         g.redraw = 0;
                         err = frame(&g);
                 }

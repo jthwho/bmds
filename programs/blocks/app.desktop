@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Blocks
+Comment=Falling blocks: fill rows to clear them
+Exec=blocks
+Icon=grid
+Categories=Game;
+X-BMDS-Id=blocks
+X-BMDS-Display=Window

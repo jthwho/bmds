@@ -682,3 +682,81 @@ against a fake surface; the loop and the sound on the board with a demo.
   (the synth) and 22.5% for an MP3, the kernel's audio task 6-20% (the MP3 at 44.1 kHz is
   resampled there).
 - **Next:** Blocks (step 5), the library's first user.
+
+## 17. Step 5 design: Blocks (2026-10-14)
+
+`programs/blocks/`, MIT, installed by the `dist/blocks` recipe as `apps/blocks.app`. The first
+user of all of `libbmdsgame`. Keyboard only until `controls.md` lands (its actions then declared
+and bound there; a pad with them).
+
+- **Rules (`rules.c`, pure C, host-tested):** the guideline's. A 10×20 field (two hidden rows
+  above), the seven pieces from a shuffled bag of seven, SRS rotation with its wall kicks (the I's
+  own table), spawning at columns 3-6 and dropping a row at once. Gravity by level (the
+  guideline's (0.8 - (level - 1) × 0.007)^(level - 1) seconds a row, levels every 10 lines), soft
+  drop 20× (1 point a row), hard drop (2 a row), a 0.5 s lock delay reset by a move or turn (15
+  times, again on a new lowest row), hold once a piece, five next pieces, a ghost. Clears score
+  100, 300, 500, 800 × the level, after a 0.4 s flash. Auto-repeat is the game's, from key downs
+  and ups (170 ms, then every 33 ms), so a tick's input is deterministic and testable. Game over:
+  a piece that can't spawn, or locked wholly above the field. T-spins and back-to-back: later.
+- **The picture:** 640×360 RGB565, 16-pixel cells: the field in the middle, hold and the score on
+  the left, the next five on the right, our 8×16 text. Cells are tiles of a PNG sheet built with
+  the folder (bevelled colours, an empty cell, a flash, ghost outlines with transparency: the
+  keyed blit). Each frame draws only the cells and figures that changed from the last, so most
+  frames present a few rectangles.
+- **Sound:** effects (move, turn, lock, hard drop, hold, clears 1-3 and 4, level, game over) as
+  WAVs built with the folder; Korobeiniki (a public-domain folk song: our own arrangement, lead,
+  bass and drums) as a MIDI file played by the synth, looping. M turns the music off and on.
+- **Screens:** the title (the high scores, Enter to start), playing, paused (Escape or P: the
+  field hidden), game over (a name typed in for a high score). Inactive: paused. Q quits from the
+  title, pause or game over; closing the window quits.
+- **High scores:** the top ten (score, level, lines, name) in `scores` in the data folder
+  (`bmds_app_data_dir()`), a line each.
+- **Assets:** `programs/blocks/assets.py` (Python, zlib only) writes `tiles.png`, the WAVs and
+  `music.mid` into the folder at build time; nothing binary in the repository.
+- **Keys:** Left and Right move, Down or Space drop all the way (the user's, 2026-10-14: soft drop
+  stays in the rules, unbound), Up or X turn right, Z or Ctrl
+  turn left, C or Shift hold, Escape or P pause, M music, Enter start, Q quit.
+
+## 18. As built: step 5, Blocks (2026-10-14)
+
+- **`programs/blocks/`:** `rules.c` (the rules, §17, pure C), `blocks.c` (the program),
+  `assets.py` (the tiles, the effects and the music, written into the folder at build time),
+  `app.desktop` (`X-BMDS-Display=Window`, `Icon=grid`). **`dist/blocks`** builds
+  `apps/blocks.app`; installed on the board, it shows in the launcher and as `blocks` on the PATH.
+- **Host-tested** (`tests/host/blocks.cpp`): the bag (each piece once in seven), turns and SRS
+  kicks (an I kicked off the wall), the O not turning, gravity (level 1: a row in 60 ticks; the
+  rate is rounded up, as truncated it took 61), soft drop and its points, the lock delay and its
+  15 resets, auto-repeat, a four-line clear with its score, level and the rows above moved down,
+  hold once a piece, the game's end.
+- **On the board:** the title with the high scores, a game played from `win hid` keys (moves,
+  turns, hold, hard drops, the ghost, the next five), pause, Alt+Enter to full screen and back,
+  game over with a name typed in, saved to `~/.local/share/blocks/scores` and shown on the title.
+  Effects and Korobeiniki played with 0 late periods and 0 underruns.
+- **Cost while playing** (`top -T`): the game's thread 0.9%, the mixer's 0.8%, the music's 8%
+  (the synth); on the title, under 1% in all. The first draft found each cell's ghost by dropping
+  the piece again for each of the 200 cells, every tick; the cells are now worked out once a
+  frame, then only the changed ones drawn.
+- **Not yet:** the line-clear flash seen on the board (the rules are tested; a scripted clear
+  needs a fixed bag), a starting level, T-spins and back-to-back, the pad and rebinding
+  (`controls.md`), and the application's own icon (a theme's `grid` for now).
+
+### 18a. After the user's first game (2026-10-14)
+
+- **Faster at the start:** gravity is the guideline's a level on (level 1 falls a row in 0.79 s,
+  not 1 s; level 20 in 0.24 ms, past a row a tick anyway).
+- **Down drops all the way**, as Space does (the user's).
+- **Clears:** the full rows blink three times (0.1 s lit, 0.1 s not), are emptied, then the rows
+  above drop onto them a row at a time (the lowest first, 83 ms apart, a soft thud each), then the
+  next piece comes. In the rules (`clearing_tick()`, `blocks_flashing()`), host-tested.
+- **Paused while away, shown:** losing the focus paused the game, but the loop draws nothing while
+  inactive, so the PAUSED box never showed and the game looked frozen until a key (Escape)
+  resumed it. `bmds_game_redraw()` now draws a frame while inactive, and Blocks asks for one.
+- **Open: a stall reported by the user** (the falling stopping after moves, and after a clear's
+  flash, until a key). Not reproduced with `win hid` keys in long sessions, and no wait in the
+  loop, the surface's buffers, its events or the window manager's wakes is unbounded or misses a
+  wake on reading. Seen instead, twice: a 16 ms `poll()` returning after ~240 ms. A build that
+  logs slow waits, the events and each second's ticks, frames and presents to
+  `/tmp/blocks-trace.txt` was put on the board to catch it. The user's next session (7.7 minutes,
+  with the fixes above) had no stall, no focus change and steady ticks (60 a second); one more
+  `poll()` came back ~210 ms late. The tracing build was then replaced. If the stall comes back,
+  rebuild that build from this section's description. The late `poll()` is still unexplained.
