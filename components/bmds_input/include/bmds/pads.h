@@ -56,7 +56,11 @@ namespace Pads {
         enum class Origin : uint8_t {
                 Database, ///< Its line in the database.
                 Standard, ///< The usual order: no line for it.
+                User,     ///< Its line in the user's file (`input/gamepads`).
         };
+
+        /** @brief Returns @p origin's name (`database`, `standard`, `user`). */
+        const char *originName(Origin origin);
 
         /** @brief What is known of an attached pad. */
         struct Info {
@@ -122,8 +126,15 @@ namespace Pads {
                         uint32_t  _dropped = 0;
         };
 
-        /** @brief Boot stage: makes the table (PSRAM). Before any driver starts. */
+        /** @brief Boot stage: makes the table (PSRAM), reads the user's mappings. Before any driver starts. */
         Error init();
+
+        /**
+         * @brief Reads the user's mappings again (`input/gamepads`, at most 32 KB: the rest is
+         *        ignored) and looks every attached pad up again. Done when the setting changes.
+         * @return `Ok` (no file is none), or the file's error. @blocking
+         */
+        Error reload();
 
         // The drivers'.
 

@@ -13,6 +13,8 @@
 
 #include <string>
 #include <vector>
+#include <bmds/chord.h>
+#include <bmds/controls.h>
 #include <bmds/keyboarddecoder.h>
 #include <bmds/mouselayout.h>
 #include <bmds/padlayout.h>
@@ -622,4 +624,219 @@ TEST_CASE("PadMapping: parsed, formatted back, found in a database, applied to D
         REQUIRE(l.decode(Span<const uint8_t>(r, sizeof(r)), raw));
         m.apply(raw, s);
         CHECK(s.buttons == 1u << bmds::PadState::Start);
+}
+
+TEST_CASE("Chord: parsed, formatted, matched") {
+        bmds::Chord c;
+        char        text[bmds::Chord::MaxText];
+        REQUIRE(bmds::Chord::parse("ctrl+shift+t", c).isOk());
+        CHECK(c.usage == 0x00070017u);
+        CHECK(c.modifiers == (bmds::Chord::Ctrl | bmds::Chord::Shift));
+        c.format(text, sizeof(text));
+        CHECK(std::string(text) == "Ctrl+Shift+T");
+        CHECK(c.matches(0x00070017u, bmds::Chord::Ctrl | bmds::Chord::Shift | bmds::Chord::Alt));
+        CHECK(!c.matches(0x00070017u, bmds::Chord::Ctrl));
+        const struct {
+                        const char *in, *out;
+        } round[] = {{"F5", "F5"},
+                     {"f24", "F24"},
+                     {"Esc", "Escape"},
+                     {"0", "0"},
+                     {"7", "7"},
+                     {"KeypadEnter", "KeypadEnter"},
+                     {"Alt+F4", "Alt+F4"},
+                     {"VolUp", "VolUp"},
+                     {"0x000C0123", "0x000C0123"},
+                     {"Win", "Win"},
+                     {"rightctrl", "RightCtrl"}};
+        for (const auto &r : round) {
+                INFO(r.in);
+                REQUIRE(bmds::Chord::parse(r.in, c).isOk());
+                c.format(text, sizeof(text));
+                CHECK(std::string(text) == r.out);
+        }
+        // A side-less modifier key: either side, its own bit aside.
+        REQUIRE(bmds::Chord::parse("Ctrl", c).isOk());
+        CHECK(c.matches(0x000700e0u, bmds::Chord::Ctrl));
+        CHECK(c.matches(0x000700e4u, bmds::Chord::Ctrl));
+        CHECK(!c.matches(0x000700e1u, bmds::Chord::Shift));
+        REQUIRE(bmds::Chord::parse("LeftCtrl", c).isOk());
+        CHECK(!c.matches(0x000700e4u, bmds::Chord::Ctrl));
+        for (const char *bad : {"", "Ctrl+", "Hyper+A", "F25", "Foo", "0x12"}) {
+                INFO(bad);
+                CHECK(bmds::Chord::parse(bad, c) == bmds::Error::Invalid);
+        }
+        CHECK(bmds::Chord::modifiersOf(0x11) == bmds::Chord::Ctrl);
+        CHECK(bmds::Chord::modifiersOf(0x84) == (bmds::Chord::Alt | bmds::Chord::Win));
+}
+
+namespace {
+
+        constexpr const char *GameControls = "[Controls]\n"
+                                             "Sets=play;menu\n"
+                                             "\n"
+                                             "[Action turn-left]\n"
+                                             "Id=3\n"
+                                             "Label=Turn left\n"
+                                             "Group=Movement\n"
+                                             "Sets=play\n"
+                                             "Keys=Z;Ctrl\n"
+                                             "Pad=Pad.South;Pad.LeftX-\n"
+                                             "\n"
+                                             "[Action undo]\n"
+                                             "Id=4\n"
+                                             "Sets=play\n"
+                                             "Keys=Ctrl+Z\n"
+                                             "\n"
+                                             "[Action steer]\n"
+                                             "Id=5\n"
+                                             "Kind=axis\n"
+                                             "Keys=Left Right;A D\n"
+                                             "Pad=Pad.LeftX;Pad.Left Pad.Right\n"
+                                             "\n"
+                                             "[Action down]\n"
+                                             "Id=6\n"
+                                             "Sets=menu\n"
+                                             "Keys=Down\n"
+                                             "Repeat=true\n";
+
+        struct Told {
+                        std::vector<bmds::Controls::Output> outputs;
+
+                        static void emit(void *arg, const bmds::Controls::Output &o) {
+                                static_cast<Told *>(arg)->outputs.push_back(o);
+                                return;
+                        }
+
+                        std::string take() {
+                                std::string s;
+                                for (const auto &o : outputs) {
+                                        static const char *const Types[] = {"", "press", "release", "repeat", "axis"};
+                                        s += std::to_string(o.id) + " " + Types[int(o.type)] + " " +
+                                             std::to_string(o.value) + ";";
+                                }
+                                outputs.clear();
+                                return s;
+                        }
+        };
+
+        constexpr uint32_t K(uint8_t usage) {
+                return 0x00070000u | usage;
+        }
+
+        bmds::PadEvent padButton(uint8_t pad, uint8_t button, int32_t down) {
+                return bmds::PadEvent{bmds::PadEvent::Type::Button, pad, button, down};
+        }
+
+        bmds::PadEvent padAxis(uint8_t pad, uint8_t axis, int32_t value) {
+                return bmds::PadEvent{bmds::PadEvent::Type::Axis, pad, axis, value};
+        }
+
+} // namespace
+
+TEST_CASE("Controls: a declaration read; keys and pads matched in the active set") {
+        static bmds::Controls c; // big: not on the stack
+        uint32_t              line = 0;
+        REQUIRE(c.declare(GameControls, line).isOk());
+        CHECK(c.count() == 4);
+        CHECK(std::string(c.action(0).label) == "Turn left");
+        CHECK(std::string(c.action(2).label) == "steer"); // its name without a label
+        using A = bmds::KeyEvent::Action;
+        Told t;
+        // Z presses turn-left; Ctrl+Z is undo, not turn-left (more modifiers win).
+        CHECK(c.key(K(0x1d), 0, A::Press, Told::emit, &t));
+        CHECK(t.take() == "3 press 1;");
+        CHECK(c.key(K(0x1d), 0, A::Repeat, Told::emit, &t));
+        CHECK(t.take().empty()); // no Repeat=true
+        CHECK(c.key(K(0x1d), 0, A::Release, Told::emit, &t));
+        CHECK(t.take() == "3 release 0;");
+        CHECK(c.key(K(0x1d), bmds::Chord::Ctrl, A::Press, Told::emit, &t));
+        CHECK(t.take() == "4 press 1;");
+        CHECK(c.key(K(0x1d), bmds::Chord::Ctrl, A::Release, Told::emit, &t));
+        CHECK(t.take() == "4 release 0;");
+        // Two sources of one button: down while either is.
+        CHECK(c.key(K(0xe4), bmds::Chord::Ctrl, A::Press, Told::emit, &t)); // right Ctrl
+        CHECK(c.pad(padButton(0, bmds::PadState::South, 1), Told::emit, &t));
+        CHECK(c.key(K(0xe4), bmds::Chord::Ctrl, A::Release, Told::emit, &t));
+        CHECK(c.pad(padButton(0, bmds::PadState::South, 0), Told::emit, &t));
+        CHECK(t.take() == "3 press 1;3 release 0;");
+        // An unbound key and an unbound button stay raw.
+        CHECK(!c.key(K(0x04 + 'q' - 'a'), 0, A::Press, Told::emit, &t));
+        CHECK(!c.pad(padButton(0, bmds::PadState::Start, 1), Told::emit, &t));
+        // The axis: keys as -1 and 1, both 0; the stick's value as it moves; its half as a button.
+        CHECK(c.key(K(0x50), 0, A::Press, Told::emit, &t)); // Left
+        CHECK(c.key(K(0x07), 0, A::Press, Told::emit, &t)); // D
+        CHECK(c.key(K(0x50), 0, A::Release, Told::emit, &t));
+        CHECK(c.key(K(0x07), 0, A::Release, Told::emit, &t));
+        CHECK(t.take() == "5 axis -32767;5 axis 0;5 axis 32767;5 axis 0;");
+        CHECK(c.pad(padAxis(1, bmds::PadState::LeftX, -20000), Told::emit, &t));
+        CHECK(t.take() == "3 press 1;5 axis -20000;"); // in declaration order
+        CHECK(c.pad(padAxis(1, bmds::PadState::LeftX, -10000), Told::emit, &t));
+        CHECK(t.take() == "3 release 0;5 axis -10000;");
+        CHECK(c.pad(padAxis(1, bmds::PadState::LeftX, 0), Told::emit, &t));
+        CHECK(t.take() == "5 axis 0;");
+        CHECK(c.pad(padButton(0, bmds::PadState::Right, 1), Told::emit, &t));
+        CHECK(t.take() == "5 axis 32767;");
+        // Another set: what was held let go; play's bindings raw now, menu's matched, repeating.
+        REQUIRE(c.setSet("menu", Told::emit, &t).isOk());
+        CHECK(t.take() == "5 axis 0;");
+        CHECK(!c.key(K(0x1d), 0, A::Press, Told::emit, &t));
+        CHECK(c.key(K(0x51), 0, A::Press, Told::emit, &t));
+        CHECK(c.key(K(0x51), 0, A::Repeat, Told::emit, &t));
+        CHECK(t.take() == "6 press 1;6 repeat 1;");
+        CHECK(c.setSet("nope", Told::emit, &t) == bmds::Error::NotExist);
+        // No set: everything raw.
+        REQUIRE(c.setSet("", Told::emit, &t).isOk());
+        CHECK(t.take() == "6 release 0;");
+        CHECK(!c.key(K(0x51), 0, A::Press, Told::emit, &t));
+
+        char   text[64];
+        size_t n = 0;
+        REQUIRE(c.bindingText(5, false, text, sizeof(text), n).isOk());
+        CHECK(std::string(text) == "Left Right; A D");
+        REQUIRE(c.bindingText(5, true, text, sizeof(text), n).isOk());
+        CHECK(std::string(text) == "Pad.LeftX; Pad.Left Pad.Right");
+        REQUIRE(c.bindingText(3, true, text, sizeof(text), n).isOk());
+        CHECK(std::string(text) == "Pad.South; Pad.LeftX-");
+        CHECK(c.bindingText(99, false, text, sizeof(text), n) == bmds::Error::NotExist);
+
+        // The user's bindings laid over: Keys and Pad replaced; unknown actions and bad lines skipped.
+        c.applyUser("[Action turn-left]\nKeys=Q\nPad=\n[Action nope]\nKeys=W\n[Action undo]\nKeys=Hyper+U\n");
+        REQUIRE(c.bindingText(3, false, text, sizeof(text), n).isOk());
+        CHECK(std::string(text) == "Q");
+        REQUIRE(c.bindingText(3, true, text, sizeof(text), n).isOk());
+        CHECK(std::string(text).empty());
+        REQUIRE(c.bindingText(4, false, text, sizeof(text), n).isOk());
+        CHECK(std::string(text) == "Ctrl+Z");
+}
+
+TEST_CASE("Controls: declarations refused") {
+        static bmds::Controls c;
+        uint32_t              line = 0;
+        const struct {
+                        const char *text;
+                        uint32_t    line;
+        } bad[] = {
+                {"[Action a]\nId=1\n", 0},                                   // no keys: the keyboard is first-class
+                {"[Action a]\nKeys=A\n", 0},                                 // no Id
+                {"[Action a]\nId=1\nKeys=A\n[Action b]\nId=1\nKeys=B\n", 5}, // an Id twice
+                {"[Action a]\nId=1\nKeys=A\n[Action a]\nId=2\nKeys=B\n", 4}, // a name twice
+                {"[Action A]\nId=1\nKeys=A\n", 1},                           // a name's characters
+                {"[Action a]\nId=70000\nKeys=A\n", 2},
+                {"[Action a]\nId=1\nKeys=Hyper+A\n", 3},
+                {"[Action a]\nId=1\nKind=lever\nKeys=A\n", 3},
+                {"[Action a]\nId=1\nKind=axis\nKeys=A\n", 4},     // an axis's keys are pairs
+                {"[Action a]\nId=1\nKeys=A\nPad=Pad.LeftX\n", 4}, // a button's pad is never an axis
+                {"[Action a]\nId=1\nSets=play\nKeys=A\n", 3},     // sets are declared first
+                {"[Action a]\nId=1\nKeys=A\nthis is not ini\n", 4},
+                {"", 0},
+        };
+        for (const auto &b : bad) {
+                INFO(b.text);
+                CHECK(c.declare(b.text, line).isError());
+                CHECK(line == b.line);
+                CHECK(!c.isDeclared());
+        }
+        // Forward compatible: unknown keys and groups skipped.
+        CHECK(c.declare("[Controls]\nFuture=1\n[Other]\nX=1\n[Action a]\nId=1\nKeys=A\nTooltip=x\n", line).isOk());
 }

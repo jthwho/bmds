@@ -33,11 +33,12 @@ if(COMMAND idf_component_register)
                                     src/proccommand.cpp
                                     src/realtimethreads.cpp
                                     src/statscalls.cpp
+                                    src/controlscalls.cpp
                                     src/surfacecalls.cpp
                                     src/syscalls.cpp
                                     src/systable.c
                                INCLUDE_DIRS include ${BMDS_SDK_INCLUDE}
-                               REQUIRES bmds_core bmds_kernel bmds_console bmds_fs bmds_sysconf
+                               REQUIRES bmds_core bmds_kernel bmds_console bmds_fs bmds_input bmds_sysconf
                                PRIV_REQUIRES bmds_audio bmds_crypto bmds_drivers bmds_files bmds_images bmds_ui bmds_midi bmds_net bmds_stats bmds_synth bmds_speech bmds_shell esp_hw_support esp_mm
                                              esp_timer
                                              freertos
@@ -48,6 +49,6 @@ if(COMMAND idf_component_register)
 else()
         add_library(bmds_loader STATIC ${BMDS_LOADER_PURE_SRCS})
         target_include_directories(bmds_loader PUBLIC include ${BMDS_SDK_INCLUDE})
-        target_link_libraries(bmds_loader PUBLIC bmds_core bmds_kernel bmds_console bmds_fs bmds_sysconf)
+        target_link_libraries(bmds_loader PUBLIC bmds_core bmds_kernel bmds_console bmds_fs bmds_sysconf bmds_input)
         bmds_target_options(bmds_loader)
 endif()

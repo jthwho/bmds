@@ -49,25 +49,26 @@
 
 /* HID keys (page 7). */
 #define KEY(u) (0x00070000u | (u))
-#define K_C KEY(0x06)
-#define K_M KEY(0x10)
-#define K_P KEY(0x13)
-#define K_Q KEY(0x14)
-#define K_X KEY(0x1b)
-#define K_Z KEY(0x1d)
 #define K_ENTER KEY(0x28)
 #define K_ESCAPE KEY(0x29)
 #define K_BACKSPACE KEY(0x2a)
-#define K_SPACE KEY(0x2c)
-#define K_RIGHT KEY(0x4f)
-#define K_LEFT KEY(0x50)
-#define K_DOWN KEY(0x51)
-#define K_UP KEY(0x52)
 #define K_KP_ENTER KEY(0x58)
-#define K_LCTRL KEY(0xe0)
-#define K_LSHIFT KEY(0xe1)
-#define K_RCTRL KEY(0xe4)
-#define K_RSHIFT KEY(0xe5)
+
+/* The actions' Ids (controls.conf). */
+enum {
+        A_LEFT = 1,
+        A_RIGHT,
+        A_DROP,
+        A_TURN_LEFT,
+        A_TURN_RIGHT,
+        A_HOLD,
+        A_PAUSE,
+        A_RESUME,
+        A_GIVE_UP,
+        A_PLAY,
+        A_QUIT,
+        A_MUSIC
+};
 
 enum {
         TITLE,
@@ -100,7 +101,7 @@ typedef struct {
                 blocks_t          game;
                 int               screen;
                 uint32_t          held, pressed; /* BLOCKS_... */
-                uint32_t          stick;         /* BLOCKS_LEFT or _RIGHT: the left stick past half way */
+                char              hints[5][160]; /* the title's and pause's lines, from the bindings */
                 bmds_game_image_t tiles;
                 char              dir[256];    /* the folder's */
                 char              scores[256]; /* the high scores' file ("": none) */
@@ -219,9 +220,13 @@ static void sounds_for(state_t *s, uint32_t events) {
 
 /* ---- Screens */
 
+/* The screen, and the actions that go with it (typing a name: none, the keys raw). */
 static void show(state_t *s, int screen) {
+        static const char *const SETS[] = {"title", "play", "paused", "title"};
+        const char              *set = screen == OVER && s->entering ? NULL : SETS[screen];
         s->screen = screen;
         s->redraw_all = 1;
+        (void)bmds_controls(BMDS_CONTROLS_SET, (void *)set, set != NULL ? (uint32_t)strlen(set) : 0);
         return;
 }
 
@@ -229,7 +234,7 @@ static void start(state_t *s) {
         int64_t ns = 0;
         bmds_clock_get(BMDS_CLOCK_MONOTONIC, &ns);
         blocks_start(&s->game, 1, (uint32_t)ns ^ (uint32_t)(ns >> 32));
-        s->held = s->pressed = s->stick = 0;
+        s->held = s->pressed = 0;
         s->placed = -1;
         show(s, PLAYING);
         music(s, 1);
@@ -243,99 +248,81 @@ static void game_over(state_t *s) {
         return;
 }
 
-/* ---- Keys */
+/* ---- Actions (controls.conf): what each does on each screen */
 
-static uint32_t action_of(uint32_t usage) {
-        switch (usage) {
-                case K_LEFT: return BLOCKS_LEFT;
-                case K_RIGHT: return BLOCKS_RIGHT;
-                case K_DOWN:
-                case K_SPACE: return BLOCKS_HARD; /* all the way */
-                case K_UP:
-                case K_X: return BLOCKS_CW;
-                case K_Z:
-                case K_LCTRL:
-                case K_RCTRL: return BLOCKS_CCW;
-                case K_C:
-                case K_LSHIFT:
-                case K_RSHIFT: return BLOCKS_HOLD;
+static uint32_t move_of(uint32_t id) {
+        switch (id) {
+                case A_LEFT: return BLOCKS_LEFT;
+                case A_RIGHT: return BLOCKS_RIGHT;
+                case A_DROP: return BLOCKS_HARD; /* all the way */
+                case A_TURN_LEFT: return BLOCKS_CCW;
+                case A_TURN_RIGHT: return BLOCKS_CW;
+                case A_HOLD: return BLOCKS_HOLD;
                 default: return 0;
         }
 }
 
-/* ---- Pads (devplan/controls.md §7b): the D-pad's left and right move, down drops, up holds */
-
-static uint32_t pad_action_of(uint32_t button) {
-        switch (button) {
-                case BMDS_PAD_LEFT: return BLOCKS_LEFT;
-                case BMDS_PAD_RIGHT: return BLOCKS_RIGHT;
-                case BMDS_PAD_DOWN: return BLOCKS_HARD;
-                case BMDS_PAD_UP: return BLOCKS_HOLD;
-                case BMDS_PAD_SOUTH:
-                case BMDS_PAD_WEST:
-                case BMDS_PAD_L1: return BLOCKS_CCW;
-                case BMDS_PAD_EAST:
-                case BMDS_PAD_NORTH:
-                case BMDS_PAD_R1: return BLOCKS_CW;
-                default: return 0;
+static void action(bmds_game_t *game, state_t *s, const bmds_surface_event_t *e) {
+        const uint32_t id = e->data[0];
+        if (e->flags == BMDS_ACTION_RELEASE) {
+                s->held &= ~move_of(id);
+                return;
         }
+        if (e->flags != BMDS_ACTION_PRESS) return;
+        switch (id) {
+                case A_MUSIC:
+                        s->music = !s->music;
+                        if (s->screen == PLAYING) music(s, s->music);
+                        break;
+                case A_PAUSE:
+                        show(s, PAUSED);
+                        if (s->audio != NULL) bmds_game_audio_pause(s->audio, 1);
+                        break;
+                case A_RESUME:
+                        show(s, PLAYING);
+                        if (s->audio != NULL) bmds_game_audio_pause(s->audio, 0);
+                        break;
+                case A_GIVE_UP:
+                        if (s->audio != NULL) bmds_game_audio_pause(s->audio, 0);
+                        music(s, 0);
+                        show(s, TITLE);
+                        break;
+                case A_PLAY: start(s); break;
+                case A_QUIT: bmds_game_quit(game); break;
+                default:
+                        s->held |= move_of(id);
+                        s->pressed |= move_of(id);
+                        break;
+        }
+        return;
 }
 
-static void pad_event(bmds_game_t *game, state_t *s, const bmds_surface_event_t *e) {
-        uint32_t button, down;
-        if (e->flags == BMDS_PAD_AXIS && e->data[1] == BMDS_PAD_LEFT_X) {
-                /* The left stick as the D-pad's left and right: past half way. */
-                const int32_t  x = (int32_t)e->data[2];
-                const uint32_t now = x < -16384 ? BLOCKS_LEFT : x > 16384 ? BLOCKS_RIGHT : 0;
-                if (s->screen == PLAYING) s->pressed |= now & ~s->stick;
-                s->held = (s->held & ~s->stick) | now;
-                s->stick = now;
-                return;
-        }
-        if (e->flags != BMDS_PAD_BUTTON) return;
-        button = e->data[1];
-        down = e->data[2] != 0;
-        if (!down) {
-                s->held &= ~pad_action_of(button);
-                return;
-        }
-        switch (s->screen) {
-                case PLAYING: {
-                        const uint32_t a = pad_action_of(button);
-                        s->held |= a;
-                        s->pressed |= a;
-                        if (button == BMDS_PAD_START) {
-                                show(s, PAUSED);
-                                if (s->audio != NULL) bmds_game_audio_pause(s->audio, 1);
-                        }
-                        break;
-                }
-                case PAUSED:
-                        if (button == BMDS_PAD_START) {
-                                show(s, PLAYING);
-                                if (s->audio != NULL) bmds_game_audio_pause(s->audio, 0);
-                        } else if (button == BMDS_PAD_SELECT) {
-                                if (s->audio != NULL) bmds_game_audio_pause(s->audio, 0);
-                                music(s, 0);
-                                show(s, TITLE);
-                        }
-                        break;
-                case TITLE:
-                case OVER:
-                        if (s->screen == OVER && s->entering) {
-                                if (button == BMDS_PAD_START) { /* the name as typed */
-                                        s->entering = 0;
-                                        record_score(s);
-                                        show(s, TITLE);
-                                        s->overlay_dirty = 1;
-                                }
-                        } else if (button == BMDS_PAD_START || button == BMDS_PAD_SOUTH) {
-                                start(s);
-                        }
-                        break;
-                default: break;
-        }
-        (void)game;
+/* An action's first binding as text, without a pad's "Pad." ("" if none). */
+static void first_binding(uint32_t id, uint32_t which, char *out, size_t size) {
+        bmds_controls_binding_t b = {sizeof(b), id, which, out, (uint32_t)size};
+        out[0] = '\0';
+        if (bmds_controls(BMDS_CONTROLS_BINDING, &b, sizeof(b)) < 0) out[0] = '\0';
+        char *semicolon = strchr(out, ';');
+        if (semicolon != NULL) *semicolon = '\0';
+        if (strncmp(out, "Pad.", 4) == 0) memmove(out, out + 4, strlen(out + 4) + 1);
+        return;
+}
+
+/* The title's and the pause's help, from the bindings as they are now. */
+static void make_hints(state_t *s) {
+        char k[12][16], p[4][16];
+        for (uint32_t i = 0; i < 12; ++i) first_binding(i + 1, BMDS_BINDING_KEYS, k[i], sizeof(k[i]));
+        first_binding(A_LEFT, BMDS_BINDING_PAD, p[0], sizeof(p[0]));
+        first_binding(A_RIGHT, BMDS_BINDING_PAD, p[1], sizeof(p[1]));
+        first_binding(A_DROP, BMDS_BINDING_PAD, p[2], sizeof(p[2]));
+        first_binding(A_HOLD, BMDS_BINDING_PAD, p[3], sizeof(p[3]));
+        snprintf(s->hints[0], sizeof(s->hints[0]), "%s: play   %s: music   %s: quit", k[A_PLAY - 1], k[A_MUSIC - 1],
+                 k[A_QUIT - 1]);
+        snprintf(s->hints[1], sizeof(s->hints[1]), "%s/%s: move  %s: drop  %s/%s: turn  %s: hold", k[A_LEFT - 1],
+                 k[A_RIGHT - 1], k[A_DROP - 1], k[A_TURN_LEFT - 1], k[A_TURN_RIGHT - 1], k[A_HOLD - 1]);
+        snprintf(s->hints[2], sizeof(s->hints[2]), "Pad: %s/%s move, %s drops, %s holds", p[0], p[1], p[2], p[3]);
+        snprintf(s->hints[3], sizeof(s->hints[3]), "%s: play on", k[A_RESUME - 1]);
+        snprintf(s->hints[4], sizeof(s->hints[4]), "%s: give up", k[A_GIVE_UP - 1]);
         return;
 }
 
@@ -370,7 +357,7 @@ static void on_event(bmds_game_t *game, const bmds_surface_event_t *e) {
                         show(s, PAUSED);
                         bmds_game_redraw(game); /* drawn though inactive: not a frozen game */
                 }
-                s->held = s->stick = 0; /* keys let go while away aren't seen */
+                s->held = 0; /* the system lets go of what was held */
                 if (s->audio != NULL) bmds_game_audio_pause(s->audio, e->data[0] == 0);
                 return;
         }
@@ -378,57 +365,19 @@ static void on_event(bmds_game_t *game, const bmds_surface_event_t *e) {
                 s->redraw_all = 1;
                 return;
         }
-        if (e->type == BMDS_EVENT_PAD) {
-                pad_event(game, s, e);
+        if (e->type == BMDS_EVENT_ACTION) {
+                action(game, s, e);
                 return;
         }
-        if (e->type != BMDS_EVENT_KEY) return;
-        const uint32_t usage = e->data[0];
-        if ((e->flags & BMDS_KEY_UP) != 0) {
-                s->held &= ~action_of(usage);
-                return;
-        }
-        if ((e->flags & BMDS_KEY_DOWN) == 0) return;
-        const int repeat = (e->flags & BMDS_KEY_REPEAT) != 0;
-        if (s->screen == OVER && s->entering) {
-                type_name(s, e);
-                return;
-        }
-        if (repeat) return; /* the game repeats its own moves */
-        if (usage == K_M) {
-                s->music = !s->music;
-                if (s->screen == PLAYING) music(s, s->music);
-                return;
-        }
-        switch (s->screen) {
-                case PLAYING: {
-                        const uint32_t a = action_of(usage);
-                        s->held |= a;
-                        s->pressed |= a;
-                        if (usage == K_ESCAPE || usage == K_P) {
-                                show(s, PAUSED);
-                                if (s->audio != NULL) bmds_game_audio_pause(s->audio, 1);
-                        }
-                        break;
-                }
-                case PAUSED:
-                        if (usage == K_ESCAPE || usage == K_P || usage == K_ENTER) {
-                                show(s, PLAYING);
-                                if (s->audio != NULL) bmds_game_audio_pause(s->audio, 0);
-                        } else if (usage == K_Q) {
-                                if (s->audio != NULL) bmds_game_audio_pause(s->audio, 0);
-                                music(s, 0);
-                                show(s, TITLE);
-                        }
-                        break;
-                case TITLE:
-                case OVER:
-                        if (usage == K_ENTER || usage == K_KP_ENTER || usage == K_SPACE)
-                                start(s);
-                        else if (usage == K_Q || usage == K_ESCAPE)
-                                bmds_game_quit(game);
-                        break;
-                default: break;
+        /* Raw keys and pads: only while typing a name (no actions then); a pad's Start keeps it. */
+        if (s->screen != OVER || !s->entering) return;
+        if (e->type == BMDS_EVENT_KEY && (e->flags & BMDS_KEY_DOWN) != 0) type_name(s, e);
+        if (e->type == BMDS_EVENT_PAD && e->flags == BMDS_PAD_BUTTON && e->data[1] == BMDS_PAD_START &&
+            e->data[2] != 0) {
+                s->entering = 0;
+                record_score(s);
+                show(s, TITLE);
+                s->overlay_dirty = 1;
         }
         return;
 }
@@ -523,8 +472,8 @@ static void draw_overlay(bmds_canvas_t *c, state_t *s) {
                 bmds_canvas_fill(c, FIELD_X, 132, BLOCKS_WIDTH * CELL, 104, bmds_canvas_pixel(c, BOX));
                 bmds_canvas_rect(c, FIELD_X, 132, BLOCKS_WIDTH * CELL, 104, bmds_canvas_pixel(c, FRAME));
                 centred(c, 148, "PAUSED", VALUE, 2);
-                centred(c, 192, "Esc: play on", LABEL, 1);
-                centred(c, 210, "Q: give up", LABEL, 1);
+                centred(c, 192, s->hints[3], LABEL, 1);
+                centred(c, 210, s->hints[4], LABEL, 1);
                 return;
         }
         /* Over the field and both panels. */
@@ -541,7 +490,9 @@ static void draw_overlay(bmds_canvas_t *c, state_t *s) {
                         centred(c, 192, line, VALUE, 2);
                         centred(c, 300, "Enter: keep it", LABEL, 1);
                 } else {
-                        centred(c, 300, "Enter: play again   Q: quit", LABEL, 1);
+                        char again[160];
+                        snprintf(again, sizeof(again), "%s", s->hints[0]);
+                        centred(c, 300, again, LABEL, 1);
                 }
                 return;
         }
@@ -555,9 +506,9 @@ static void draw_overlay(bmds_canvas_t *c, state_t *s) {
                 bmds_canvas_text(c, (WIDTH - 29 * BMDS_GAME_GLYPH_WIDTH) / 2, 124 + (int32_t)i * 16, line,
                                  bmds_canvas_pixel(c, (int)i == s->placed ? ACCENT : VALUE), 1);
         }
-        centred(c, 288, "Enter: play   M: music   Q: quit", LABEL, 1);
-        centred(c, 304, "Arrows, Down/Space: drop, Z/X: turn, C: hold", LABEL, 1);
-        centred(c, 320, "Pad: D-pad, down drops, up holds", LABEL, 1);
+        centred(c, 288, s->hints[0], LABEL, 1);
+        centred(c, 304, s->hints[1], LABEL, 1);
+        centred(c, 320, s->hints[2], LABEL, 1);
         return;
 }
 
@@ -674,6 +625,20 @@ int main(int argc, char **argv) {
                 s.music = path_in(s.music_path, sizeof(s.music_path), s.dir, "music.mid") == 0;
         }
 
+        /* The actions: the folder's controls.conf (the system reads it), else the one beside the program. */
+        err = bmds_controls(BMDS_CONTROLS_DECLARE, NULL, 0);
+        if (err == -BMDS_ENOENT && path_in(path, sizeof(path), s.dir, "controls.conf") == 0) {
+                static char text[8192];
+                FILE       *f = fopen(path, "r");
+                size_t      n = f != NULL ? fread(text, 1, sizeof(text), f) : 0;
+                if (f != NULL) fclose(f);
+                err = n > 0 ? bmds_controls(BMDS_CONTROLS_DECLARE, text, (uint32_t)n) : -BMDS_ENOENT;
+        }
+        if (err < 0) {
+                fprintf(stderr, "blocks: its controls: %s\n", strerror(-err));
+                return 1;
+        }
+        make_hints(&s);
         show(&s, TITLE);
         bmds_game_config_t config;
         memset(&config, 0, sizeof(config));

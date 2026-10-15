@@ -196,6 +196,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_SURFACE_PRESENT 120u  /**< `int32_t surface_present(int32_t fd, const bmds_surface_present_t *p)`. */
 #define BMDS_SYS_SURFACE_CONTROL                                                                                       \
         121u /**< `int32_t surface_control(int32_t fd, uint32_t op, void *arg, uint32_t size)`. */
+#define BMDS_SYS_CONTROLS 122u /**< `int32_t controls(uint32_t op, void *arg, uint32_t size)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -1577,7 +1578,9 @@ typedef struct bmds_surface_info_t {
         5u                   /**< data: full screen (1) or a window (0), the scale in 16ths (across | down << 16),
                                      the picture's size (width | height << 16). */
 #define BMDS_EVENT_CLOSE 6u  /**< The user closed it (its window's close button, Alt+F4): the program decides. */
-#define BMDS_EVENT_ACTION 7u /**< Reserved (actions and their bindings). */
+#define BMDS_EVENT_ACTION                                                                                              \
+        7u /**< One of the program's actions (`bmds_controls`): flags `BMDS_ACTION_PRESS`...; data[0] its Id,
+                    data[1] its value, data[2] its source (`BMDS_SOURCE_...`, a pad's number << 8). */
 #define BMDS_EVENT_PAD                                                                                                 \
         8u /**< A gamepad's control changed, or a pad came or went: flags `BMDS_PAD_BUTTON`... data[0] the pad's
                     number (pad0 is 0), the rest by flags. The focused surface's only. */
@@ -1619,6 +1622,46 @@ typedef struct bmds_surface_info_t {
 #define BMDS_PAD_START 14u
 #define BMDS_PAD_SELECT 15u /**< Back, Share, Minus. */
 #define BMDS_PAD_GUIDE 16u  /**< The logo button: the system may keep it for itself. */
+
+/**
+ * @brief Actions (`bmds_controls`, slot 122, appended 2026-10-15, devplan/controls.md §7c): what a
+ *        program can do, declared with a keyboard binding each (and pad bindings where they
+ *        apply), matched by the system against the focused surface's keys and pads. A match comes
+ *        as a `BMDS_EVENT_ACTION` and not as the key or pad event it was.
+ *
+ * The declaration is `controls.conf`'s text (INI): a `[Controls]` group (`Sets=play;menu`, the
+ * first active at start; one set if left out) and an `[Action NAME]` group per action (`Id=`,
+ * `Label=`, `Group=`, `Kind=button|axis`, `Sets=`, `Keys=` (required: `Z;Ctrl`, an axis's pairs
+ * `Left Right;A D`), `Pad=` (`Pad.South;Pad.LeftX-`, an axis's `Pad.LeftX` or pairs), `Repeat=`).
+ * The user's changed bindings (`$HOME/.config/bmds/controls/ID.conf`, the same format) are laid
+ * over it.
+ */
+#define BMDS_CONTROLS_DECLARE 1u /**< arg: the declaration (size bytes); NULL: the folder's controls.conf. */
+#define BMDS_CONTROLS_SET 2u     /**< arg: the set's name (size bytes); NULL: none (every event raw). */
+#define BMDS_CONTROLS_BINDING 3u /**< arg: `bmds_controls_binding_t`: an action's bindings as text. */
+
+/** @brief `BMDS_EVENT_ACTION`'s flags: what happened (one of them, not bits). */
+#define BMDS_ACTION_PRESS 1u   /**< A button action went down: data[1] 1. */
+#define BMDS_ACTION_RELEASE 2u /**< It came up: data[1] 0. */
+#define BMDS_ACTION_REPEAT 3u  /**< A held key repeated (an action with `Repeat=true`). */
+#define BMDS_ACTION_AXIS 4u    /**< An axis action's value changed: data[1] int32, -32767 to 32767. */
+
+/** @brief `BMDS_EVENT_ACTION`'s source, data[2]'s low byte (a pad's number above it). */
+#define BMDS_SOURCE_KEYBOARD 1u
+#define BMDS_SOURCE_PAD 2u
+
+/** @brief `bmds_controls_binding_t::which`. */
+#define BMDS_BINDING_KEYS 1u /**< The keyboard's: `Z; Ctrl`. */
+#define BMDS_BINDING_PAD 2u  /**< The pads': `Pad.South; Pad.LeftX-`. */
+
+/** @brief An action's bindings as text (`BMDS_CONTROLS_BINDING`), for menus and hints. */
+typedef struct bmds_controls_binding_t {
+                uint32_t size;      /**< sizeof(bmds_controls_binding_t). */
+                uint32_t id;        /**< The action's Id. */
+                uint32_t which;     /**< `BMDS_BINDING_KEYS` or `BMDS_BINDING_PAD`. */
+                char    *text;      /**< Filled, NUL-ended (empty: none bound). */
+                uint32_t text_size; /**< Its bytes. */
+} bmds_controls_binding_t;
 
 /** @brief `BMDS_PAD_AXIS`'s axes. */
 #define BMDS_PAD_LEFT_X 0u
@@ -1766,6 +1809,7 @@ typedef int32_t (*bmds_sys_surface_buffer_fn)(int32_t fd, bmds_surface_buffer_t 
 typedef int32_t (*bmds_sys_surface_acquire_fn)(int32_t fd, int32_t timeout_ms);
 typedef int32_t (*bmds_sys_surface_present_fn)(int32_t fd, const bmds_surface_present_t *present);
 typedef int32_t (*bmds_sys_surface_control_fn)(int32_t fd, uint32_t op, void *arg, uint32_t size);
+typedef int32_t (*bmds_sys_controls_fn)(uint32_t op, void *arg, uint32_t size);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -3031,6 +3075,18 @@ static inline int32_t bmds_surface_present(int32_t fd, const bmds_surface_presen
  */
 static inline int32_t bmds_surface_control(int32_t fd, uint32_t op, void *arg, uint32_t size) {
         return ((bmds_sys_surface_control_fn)bmds_sys->slot[BMDS_SYS_SURFACE_CONTROL])(fd, op, arg, size);
+}
+
+/**
+ * @brief The program's actions: `BMDS_CONTROLS_...` with @p arg (@p size its bytes) as each says.
+ * @return 0 (`BMDS_CONTROLS_BINDING`: the text's length), or `-BMDS_EINVAL` (a declaration refused:
+ *         the line is logged; an op, an argument), `-BMDS_ENOENT` (no controls.conf, no such set
+ *         or action, nothing declared), `-BMDS_E2BIG`, `-BMDS_ENOMEM`, `-BMDS_EFAULT`,
+ *         `-BMDS_ENOSYS` (a system without actions).
+ */
+static inline int32_t bmds_controls(uint32_t op, void *arg, uint32_t size) {
+        if (!bmds_sys_has(BMDS_SYS_CONTROLS)) return -BMDS_ENOSYS;
+        return ((bmds_sys_controls_fn)bmds_sys->slot[BMDS_SYS_CONTROLS])(op, arg, size);
 }
 
 /**

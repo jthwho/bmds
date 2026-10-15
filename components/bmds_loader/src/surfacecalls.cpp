@@ -134,6 +134,9 @@ int32_t bmds_k_surface_open(const bmds_surface_config_t *config) {
         if (err == Error::NotSupported) return -BMDS_ENODEV;
         if (err.isError()) return bmds::Process::errnoFor(err);
         giveIcons(*handle, call.thread().run->path);
+        // Its program's actions, if declared (else the declaration gives them, devplan/controls.md §7c).
+        if (bmds::ProgramControls *controls = call->existingControls(); controls != nullptr)
+                handle->stream().programSurface()->setControls(controls);
         return call->addHandle(std::move(handle), 0);
 }
 

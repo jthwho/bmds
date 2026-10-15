@@ -22,10 +22,6 @@ BMDS_NAMESPACE_BEGIN
 
 namespace {
 
-        const char *originName(Pads::Origin origin) {
-                return origin == Pads::Origin::Database ? "database" : "standard";
-        }
-
         // A pad's number from @p text (`0`, or `pad0`).
         bool padNumber(const char *text, uint8_t &out) {
                 if (std::strncmp(text, "pad", 3) == 0) text += 3;
@@ -43,7 +39,7 @@ namespace {
                 for (size_t i = 0; i < n; ++i) {
                         const Pads::Info &p = pads[i];
                         ctx.printf("%-4u %04x:%04x %-4s %-8s %-4u %-4u %-7u %s\n", p.number, p.vendor, p.product, "hid",
-                                   originName(p.origin), p.axes, p.hats, p.buttons, p.name);
+                                   Pads::originName(p.origin), p.axes, p.hats, p.buttons, p.name);
                 }
                 return Shell::ExitSuccess;
         }
@@ -152,7 +148,7 @@ namespace {
                 } else {
                         ctx.printf("pad%u: %s (%04x:%04x), mapping: %s. Press buttons, move sticks; Ctrl-C ends.\n",
                                    number, info.name[0] != '\0' ? info.name : "a gamepad", info.vendor, info.product,
-                                   originName(info.origin));
+                                   Pads::originName(info.origin));
                 }
                 const Deadline until(seconds != 0 ? seconds * 1000u : WaitForever);
                 for (;;) {
@@ -174,6 +170,14 @@ namespace {
                 if (args.size() == 1) return showPads(ctx);
                 const char *verb = args[1];
                 uint8_t     number = 0;
+                if (std::strcmp(verb, "reload") == 0 && args.size() == 2) {
+                        const Error err = Pads::reload();
+                        if (err.isError()) {
+                                ctx.eprintf("pad: the mappings file: %s\n", CommandContext::errorText(err));
+                                return Shell::ExitFailure;
+                        }
+                        return showPads(ctx);
+                }
                 if (std::strcmp(verb, "test") == 0) {
                         size_t   at = 2;
                         unsigned seconds = 0;
@@ -196,9 +200,10 @@ namespace {
 
 } // namespace
 
-BMDS_SHELL_COMMAND(pad, runPad, "[test [-t SECONDS] [N] | map N | descriptor N]",
-                   "List the gamepads; 'test' shows their buttons and sticks live (until Ctrl-C, or for SECONDS), "
-                   "'map' prints a pad's mapping "
-                   "as a gamepads.txt line, 'descriptor' its HID report descriptor")
+BMDS_SHELL_COMMAND(
+        pad, runPad, "[test [-t SECONDS] [N] | map N | descriptor N | reload]",
+        "List the gamepads; 'test' shows their buttons and sticks live (until Ctrl-C, or for SECONDS), "
+        "'map' prints a pad's mapping "
+        "as a gamepads.txt line, 'descriptor' its HID report descriptor, 'reload' reads input/gamepads again")
 
 BMDS_NAMESPACE_END

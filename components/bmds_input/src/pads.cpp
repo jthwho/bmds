@@ -11,9 +11,13 @@
 #include <cstring>
 #include <bmds/input.h>
 #include <bmds/log.h>
+#include <bmds/memory.h>
+#include <bmds/sysconf.h>
 #include <bmds/mutex.h>
 #include <bmds/pads.h>
 #include <bmds/psramobject.h>
+#include <bmds/staticobject.h>
+#include <bmds/string.h>
 #include <bmds/vfs.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -21,6 +25,7 @@ BMDS_NAMESPACE_BEGIN
 namespace {
 
         constexpr size_t  MaxListeners = 4;
+        constexpr size_t  MaxUserBytes = 32 * 1024; // the user's mappings, read whole
         constexpr int32_t AxisStep = 65536 / 16; // an axis moved less than this isn't news
 
         struct Slot {
@@ -41,9 +46,42 @@ namespace {
                         Slot            slots[Pads::MaxPads];
                         Pads::Listener *listeners[MaxListeners] = {};
                         size_t          listening = 0;
+                        char           *user = nullptr; // the user's mappings (input/gamepads), Psram
+                        size_t          userLength = 0;
         };
 
         constinit PsramObject<Table> table;
+
+        // input/gamepads: the user's own mappings, looked up before the ROM's (devplan/controls.md
+        // §7a); read at boot, when it changes, and by `pad reload`.
+        BMDS_SYSCONF(inputGamepads, "input/gamepads", Config::Type::Path, "/cfg/config/gamepads.txt",
+                     "Your own gamepad mappings (SDL's gamecontrollerdb.txt lines), before the ROM's", 0, 0, nullptr,
+                     nullptr)
+
+        constinit StaticObject<SysConf::Watcher> watcher;
+
+        // @p s's mapping: the user's line, else the ROM's, else the usual order. The table locked.
+        void lookUp(Table &t, Slot &s, StringView *name) {
+                const uint16_t vendor = s.info.vendor, product = s.info.product;
+                s.mapping = PadMapping::standard(s.layout);
+                s.info.origin = Pads::Origin::Standard;
+                if (t.user != nullptr &&
+                    PadMapping::find(StringView(t.user, t.userLength), vendor, product, s.mapping, name)) {
+                        s.info.origin = Pads::Origin::User;
+                        return;
+                }
+                if (auto [bytes, err] = Vfs::map(Pads::RomDatabase, Vfs::Context()); err.isOk()) {
+                        const StringView text(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+                        if (PadMapping::find(text, vendor, product, s.mapping, name))
+                                s.info.origin = Pads::Origin::Database;
+                }
+                return;
+        }
+
+        void settingChanged(void *) {
+                (void)Pads::reload();
+                return;
+        }
 
         // The standard pad's changes for Input's sink, handed over once the table's lock is let
         // go (the sink's window manager reads the table while it holds its own).
@@ -146,24 +184,71 @@ Error Pads::init() {
         if (table.isCreated()) return Error::Ok;
         if (table.create() == nullptr) return Error::NoMem;
         for (uint8_t i = 0; i < MaxPads; ++i) table->slots[i].info.number = i;
+        (void)reload();
+        watcher.create();
+        (void)watcher->start("input/gamepads", settingChanged, nullptr);
         return Error::Ok;
+}
+
+const char *Pads::originName(Origin origin) {
+        switch (origin) {
+                case Origin::Database: return "database";
+                case Origin::Standard: return "standard";
+                case Origin::User: return "user";
+        }
+        return "?";
+}
+
+Error Pads::reload() {
+        if (!table.isCreated()) return Error::NotReady;
+        String path;
+        Error  err = SysConf::get("input/gamepads", path);
+        char  *text = nullptr;
+        size_t got = 0;
+        if (err.isOk()) {
+                auto [file, oerr] = Vfs::open(path.view(), Vfs::Read, Vfs::Context());
+                err = oerr;
+                if (err.isOk()) {
+                        text = static_cast<char *>(Memory::alloc(MemSpace::Psram, MaxUserBytes));
+                        if (text == nullptr) return Error::NoMem;
+                        for (;;) {
+                                auto [n, rerr] = file->read(
+                                        WritableByteSpan(reinterpret_cast<uint8_t *>(text) + got, MaxUserBytes - got),
+                                        WaitForever);
+                                if (rerr.isError() || n == 0 || got + n >= MaxUserBytes) {
+                                        got += rerr.isError() ? 0 : n;
+                                        break;
+                                }
+                                got += n;
+                        }
+                }
+        }
+        if (err == Error::NotExist) err = Error::Ok; // none: the ROM's alone
+        // The new text in place, every attached pad looked up again.
+        char *old;
+        {
+                Table        &t = *table;
+                Mutex::Locker lock(t.lock, WaitForever);
+                old = t.user;
+                t.user = got != 0 ? text : nullptr;
+                t.userLength = got;
+                for (Slot &s : t.slots)
+                        if (s.attached) lookUp(t, s, nullptr);
+        }
+        if (old != nullptr) Memory::free(old);
+        if (got == 0 && text != nullptr) Memory::free(text);
+        if (got != 0) bmdsInfo("Pads: %s: %u bytes of mappings", path.cStr(), unsigned(got));
+        return err;
 }
 
 Result<uint8_t> Pads::attachHid(uint16_t vendor, uint16_t product, uint16_t location, Span<const uint8_t> descriptor) {
         if (!table.isCreated()) return makeError<uint8_t>(Error::NotReady);
         const PadLayout layout = PadLayout::parse(descriptor);
         if (!layout.isValid()) return makeError<uint8_t>(Error::NotSupported);
-        // Its mapping: the database's line, else the usual order. The ROM is read in place.
-        PadMapping mapping = PadMapping::standard(layout);
-        Origin     origin = Origin::Standard;
-        StringView name; // the line's, until the device's own arrives (if it has one)
-        if (auto [bytes, err] = Vfs::map(RomDatabase, Vfs::Context()); err.isOk()) {
-                const StringView text(reinterpret_cast<const char *>(bytes.data()), bytes.size());
-                if (PadMapping::find(text, vendor, product, mapping, &name)) origin = Origin::Database;
-        }
 
         Table  &t = *table;
         uint8_t number = 0;
+        Origin  origin;
         {
                 Mutex::Locker lock(t.lock, WaitForever);
                 // The slot its pad had (here, else anywhere), else one never used, else any free.
@@ -184,19 +269,20 @@ Result<uint8_t> Pads::attachHid(uint16_t vendor, uint16_t product, uint16_t loca
                 s.used = true;
                 s.location = location;
                 s.layout = layout;
-                s.mapping = mapping;
                 s.raw = RawPad();
                 s.state = PadState();
                 number = s.info.number;
                 s.info = Info();
                 s.info.number = number;
                 s.info.kind = Kind::Hid;
-                s.info.origin = origin;
                 s.info.vendor = vendor;
                 s.info.product = product;
                 s.info.axes = layout.axisCount();
                 s.info.hats = layout.hatCount();
                 s.info.buttons = layout.buttonCount();
+                StringView name; // the line's, until the device's own arrives (if it has one)
+                lookUp(t, s, &name);
+                origin = s.info.origin;
                 const size_t length = name.size() < MaxName - 1 ? name.size() : MaxName - 1;
                 std::memcpy(s.info.name, name.data(), length);
                 s.info.name[length] = '\0';
@@ -209,8 +295,7 @@ Result<uint8_t> Pads::attachHid(uint16_t vendor, uint16_t product, uint16_t loca
         }
         Input::pad(PadEvent{PadEvent::Type::Attached, number, 0, int32_t(uint32_t(vendor) << 16 | product)});
         bmdsInfo("Pads: pad%u: %04x:%04x, %u axes, %u hats, %u buttons, mapping: %s", number, vendor, product,
-                 layout.axisCount(), layout.hatCount(), layout.buttonCount(),
-                 origin == Origin::Database ? "database" : "standard");
+                 layout.axisCount(), layout.hatCount(), layout.buttonCount(), originName(origin));
         return makeResult(number);
 }
 

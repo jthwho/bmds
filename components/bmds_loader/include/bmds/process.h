@@ -26,6 +26,8 @@
 
 BMDS_NAMESPACE_BEGIN
 
+class ProgramControls;
+
 class Console;
 
 /**
@@ -155,6 +157,16 @@ class Process {
                 /** @brief Returns its file descriptors. */
                 FdTable &fds() { return _fds; }
 
+                /**
+                 * @brief Returns the program's actions (`devplan/controls.md` §7c), made on first
+                 *        use (null when PSRAM is out); dropped when the program ends or is replaced.
+                 *        Not referenced for the caller: valid while the program runs.
+                 */
+                ProgramControls *controls();
+
+                /** @brief Returns the program's actions if made (`controls()`), else null. */
+                ProgramControls *existingControls() const { return _controls.load(std::memory_order_acquire); }
+
                 /** @brief Returns the bytes it has allocated and not freed. */
                 size_t allocatedBytes() const { return _allocatedBytes; }
 
@@ -270,6 +282,7 @@ class Process {
 
                 FdTable    _fds;
                 std::atomic<Console *> _console;
+                std::atomic<ProgramControls *> _controls{nullptr};
                 Signals    _signals;
                 String     _cwd;
                 LineInput *_line = nullptr;

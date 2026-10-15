@@ -16,6 +16,7 @@
 #include <bmds/filehandle.h>
 #include <bmds/icon.h>
 #include <bmds/mutex.h>
+#include <bmds/programcontrols.h>
 #include <bmds/rect.h>
 #include <bmds/result.h>
 #include <bmds/semaphore.h>
@@ -148,6 +149,12 @@ class ProgramSurface final : public Stream {
 
                 /** @brief Returns the configuration (title excepted). */
                 const Config &config() const { return _config; }
+
+                /**
+                 * @brief Matches its keys and pads' events against @p controls (its program's
+                 *        actions, `devplan/controls.md` §7c), referenced until it closes. Once.
+                 */
+                void setControls(ProgramControls *controls);
 
                 /** @brief Returns buffer @p index's first pixel, or null. */
                 uint8_t *buffer(uint8_t index) const { return index < _config.buffers ? _buffers[index] : nullptr; }
@@ -295,6 +302,7 @@ class ProgramSurface final : public Stream {
                 static void keyEntry(void *arg, const KeyEvent &event);
                 static void padEntry(void *arg, const PadEvent &event);
                 void        padsSettled(bool active); // what is down on the pads, told or let go
+                static void actionEntry(void *arg, const Controls::Output &output);
                 static void mouseEntry(void *arg, const WindowManager::MouseEvent &event);
                 static void wheelEntry(void *arg, int notches);
                 static void activatedEntry(void *arg, bool active);
@@ -310,6 +318,7 @@ class ProgramSurface final : public Stream {
                 WindowManager *_wm = nullptr;
                 uint8_t        _client = 0;
                 uint8_t        _window = 0; // 0: none
+                std::atomic<ProgramControls *> _controls{nullptr};
                 uint8_t       *_buffers[MaxBuffers] = {};
                 size_t         _stride = 0;
                 size_t         _bufferBytes = 0;

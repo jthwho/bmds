@@ -183,7 +183,11 @@ ProgramSurface::~ProgramSurface() {
                 (void)_taskDone.acquire(WaitForever);
                 (void)_task.stop();
         }
-        closeWindow();
+        closeWindow(); // no event callback runs after it
+        if (ProgramControls *controls = _controls.load(std::memory_order_acquire); controls != nullptr) {
+                controls->clearTarget(this);
+                controls->unref();
+        }
         for (uint8_t *&b : _buffers) {
                 Memory::free(b);
                 b = nullptr;
@@ -907,8 +911,39 @@ void ProgramSurface::pushPresented() {
         return;
 }
 
+void ProgramSurface::setControls(ProgramControls *controls) {
+        if (controls == nullptr || _controls.load(std::memory_order_acquire) != nullptr) return;
+        controls->ref();
+        _controls.store(controls, std::memory_order_release);
+        bool active;
+        {
+                Mutex::Locker locker(_lock, WaitForever);
+                active = _active;
+        }
+        if (active) controls->setTarget(actionEntry, this);
+        return;
+}
+
+// A matched action's event (the ABI's BMDS_EVENT_ACTION).
+void ProgramSurface::actionEntry(void *arg, const Controls::Output &output) {
+        Event e;
+        e.type = uint32_t(EventType::Action);
+        e.flags = uint32_t(output.type);
+        e.timeNs = Clock::monotonicNs();
+        e.data[0] = output.id;
+        e.data[1] = uint32_t(output.value);
+        e.data[2] = output.source;
+        static_cast<ProgramSurface *>(arg)->push(e);
+        return;
+}
+
 void ProgramSurface::keyEntry(void *arg, const KeyEvent &event) {
         auto *self = static_cast<ProgramSurface *>(arg);
+        // The program's actions first: a match isn't delivered raw.
+        if (ProgramControls *controls = self->_controls.load(std::memory_order_acquire);
+            controls != nullptr && controls->key(0x00070000u | event.usage, Chord::modifiersOf(event.modifiers),
+                                                 event.action, actionEntry, self))
+                return;
         Event e;
         e.type = uint32_t(EventType::Key);
         e.flags = event.action == KeyEvent::Action::Press    ? KeyDown
@@ -923,6 +958,10 @@ void ProgramSurface::keyEntry(void *arg, const KeyEvent &event) {
 }
 
 void ProgramSurface::padEntry(void *arg, const PadEvent &event) {
+        auto *self = static_cast<ProgramSurface *>(arg);
+        if (ProgramControls *controls = self->_controls.load(std::memory_order_acquire);
+            controls != nullptr && controls->pad(event, actionEntry, self))
+                return;
         Event e;
         e.type = uint32_t(EventType::Pad);
         e.flags = uint32_t(event.type);
@@ -930,7 +969,7 @@ void ProgramSurface::padEntry(void *arg, const PadEvent &event) {
         e.data[0] = event.pad;
         e.data[1] = event.type == PadEvent::Type::Attached ? uint32_t(event.value) : event.index;
         e.data[2] = event.type == PadEvent::Type::Attached ? 0 : uint32_t(event.value);
-        static_cast<ProgramSurface *>(arg)->push(e);
+        self->push(e);
         return;
 }
 
@@ -1012,7 +1051,16 @@ void ProgramSurface::activatedEntry(void *arg, bool active) {
                 full = self->_fullScreen;
         }
         if (!active && full) self->ask(Leave); // another window took the keys: the desktop back
-        if (!active) self->padsSettled(false);
+        ProgramControls *controls = self->_controls.load(std::memory_order_acquire);
+        if (!active) {
+                self->padsSettled(false);
+                if (controls != nullptr) { // keys held let go too, and a set change told nowhere
+                        controls->releaseAll(actionEntry, self);
+                        controls->clearTarget(self);
+                }
+        } else if (controls != nullptr) {
+                controls->setTarget(actionEntry, self);
+        }
         Event e;
         e.type = uint32_t(EventType::Active);
         e.timeNs = Clock::monotonicNs();

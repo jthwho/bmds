@@ -204,7 +204,9 @@ mapping is wrong. The first check for the user's pad.
   are ours, by descriptor order, so SDL's Linux and Windows lines don't carry over unchanged),
   `platform:BMDS` or no platform. Looked up by vendor and product (the GUID's bytes 4-5 and
   8-9), read in place (`Vfs::map`), so the lookup on the USB task never blocks. The user's own
-  file (`/cfg/config/gamepads.txt`) comes with step 2, read off the USB task.
+  file comes first: the setting `input/gamepads` (default `/cfg/config/gamepads.txt`, at most
+  32 KB), read into PSRAM at boot, when the setting changes and by `pad reload` (built
+  2026-10-15; a pad mapped by it shows as `user`).
 - **`Pads`** (`bmds_input`, kernel): up to 8 pads, numbered in the order connected; a slot keeps
   the vendor, product and hub port of the pad it last had, and a pad coming back takes its old
   number. Each holds its layout, mapping, last raw pad and standard pad (PSRAM, ~500 bytes a
@@ -278,6 +280,102 @@ keep reading them for what actions don't cover (which pad is which player).
   weapon cycling keys, unbound upstream, default to `[` and `]`.
 - **Later** (steps 3-5, the user's "standard input assignment"): the games' pad bindings become
   their actions' default pad bindings, changed in the standard editor.
+
+## 7c. Step 3: actions for applications (2026-10-15; agreed with the user, built)
+
+The first ABI of actions: declaring them, choosing the set, the action event, a binding as
+text. The editor's calls (capture, bind, reset) and the Controls window come with step 4 as ops
+appended to the same call; the system's own keys (`hotkeys.md` phases 2-4) join the same table
+then.
+
+**One declaration format, a file or a string** (`controls.conf`, INI as `.desktop` files are):
+
+```ini
+[Controls]
+Sets=play;menu              # the sets, the first active at start; one "set" if left out
+
+[Action turn-left]          # its name: [a-z0-9-], unique in the file
+Id=3                        # what the program gets in ACTION events (1-65535, unique)
+Label=Turn left             # for the editor and menus
+Group=Movement              # the editor's grouping
+Kind=button                 # button (pressed, released), or axis (-1 to 1)
+Sets=play                   # where it is bound (default: every set)
+Keys=Z;Ctrl                 # required: chords (hotkeys.md §3.1's syntax), ';' between; an
+                            # axis's a pair, low first: Keys=Left Right;A D
+Pad=Pad.South;Pad.West      # optional: pad controls (Pad.South, Pad.LeftX- as a button,
+                            # Pad.LeftX as an axis)
+Repeat=false                # true: a held key's repeats come as presses too (menus)
+```
+
+- An application with a folder ships `controls.conf` in it; the system reads it when the program
+  first asks for its controls. A program without one passes the same text (`DECLARE`). One
+  parser, one format: the editor shows a folder's file while the program isn't running.
+- **A declaration without `Keys=` on every action is refused** (`BMDS_EINVAL`, the line logged):
+  the keyboard is first-class.
+- **The user's changes:** `$HOME/.config/bmds/controls/ID.conf`, the same format, holding only
+  the `Keys=` and `Pad=` lines that differ.
+
+**The call** (slot 122, by op, as `surface_control`):
+
+```c
+/* 122: the calling program's actions. */
+int32_t bmds_controls(uint32_t op, void *arg, uint32_t arg_size);
+
+#define BMDS_CONTROLS_DECLARE 1u /* arg: the declaration's text (arg_size bytes); NULL: the
+                                    folder's controls.conf. Again: replaces it. */
+#define BMDS_CONTROLS_SET     2u /* arg: the set's name (arg_size bytes), NULL: none (every key
+                                    and pad event raw: typing a name) */
+#define BMDS_CONTROLS_BINDING 3u /* arg: bmds_controls_binding_t: an action's bindings as text */
+
+typedef struct bmds_controls_binding_t {
+        uint32_t size;      /* sizeof */
+        uint32_t id;        /* the action's Id */
+        uint32_t which;     /* BMDS_BINDING_KEYS or BMDS_BINDING_PAD */
+        char    *text;      /* filled: "Z; Ctrl", "Pad.South" (the pad's label later), NUL-ended */
+        uint32_t text_size;
+} bmds_controls_binding_t;
+```
+
+**The event** (the reserved `BMDS_EVENT_ACTION`, to the focused surface):
+
+| flags | data |
+|---|---|
+| `BMDS_ACTION_PRESS`, `_RELEASE`, `_REPEAT` (a button's) or `_AXIS` | [0] the action's Id; [1] the value (1 or 0; an axis's −32767 to 32767); [2] the source: `BMDS_SOURCE_KEYBOARD` (1), `_PAD` (2) in the low byte, the pad's number above |
+
+- **Matching is the system's** (the surface's side of the kernel): a key or pad event of the
+  focused surface is matched against the active set; a match becomes an `ACTION` event and
+  **isn't also delivered raw**; anything else is delivered as it was. With no set, everything is
+  raw. Two keys bound to one button action: it is down while either is.
+- **Axes:** a stick's value as it moves (its dead zone the pad's); two keys as −1 and 1 (both:
+  0); a stick's half as a button is down past half way.
+- Bindings change at once (the user's file followed live), whatever the program is doing.
+
+**As built (2026-10-15):**
+- `Chord` (`bmds_input`, pure): keys and chords as text, `hotkeys.md` §3.1's names (letters,
+  digits, F1-F24, the named keys, the media keys, hex for the rest), side-less modifiers and
+  modifier keys (`Ctrl` is either; `LeftCtrl` one), matching with at least the chord's modifiers
+  down. `Controls` (pure): the declaration (INI; comments are whole lines, `#` first: the example
+  above writes them after values only to explain), the user's file laid over it, sets, matching
+  (the most modifiers win; a key or button is remembered with the action it pressed, so its
+  release goes there whatever changed meanwhile; two sources of one button count), axes, binding
+  text. Both host-tested.
+- `ProgramControls` (`bmds_input`): a program's, counted, shared by its process (made on its
+  first `DECLARE`, dropped when the program ends) and its surfaces (given at open, or at the
+  declaration to those already open). A surface matches its keys and pads' events against it on
+  the window manager's task; the focused surface is its target, so a set change's releases go
+  there; losing the focus lets everything go.
+- The declaration is read by the kernel from `$BMDS_APP_DIR/controls.conf`, the user's file from
+  `$HOME/.config/bmds/controls/$BMDS_APP_ID.conf` (16 KB each at most); a refused declaration
+  logs its line.
+- **Blocks** (step 5's first): `controls.conf` with three sets (`title`, `play`, `paused`), no
+  set while a name is typed (raw keys; a pad's Start keeps it); its title and pause hints are made
+  from `BINDING`, so a rebinding shows (checked on the board: `Keys=F2` for `play` in the user's
+  file, Enter then did nothing and F2 started). Its §7b pad code is gone. Doom and Solitaire
+  still read keys and pads raw.
+
+**Then (step 5) the games:** Blocks, Doom and Solitaire ship `controls.conf` with today's keys
+and pad layouts as defaults, and read `ACTION` events instead of keys (Doom: its platform layer
+turns actions into Doom's keys). Their pad code of §7b goes.
 
 ## 8. Budgets (estimates)
 

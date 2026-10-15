@@ -159,6 +159,18 @@ _Static_assert(BMDS_SYS_PTP_CTL == 116, "ABI: slot PTP_CTL");
 _Static_assert(BMDS_SYS_SURFACE_OPEN == 117 && BMDS_SYS_SURFACE_BUFFER == 118 && BMDS_SYS_SURFACE_ACQUIRE == 119 &&
                        BMDS_SYS_SURFACE_PRESENT == 120 && BMDS_SYS_SURFACE_CONTROL == 121,
                "ABI: slots SURFACE_*");
+_Static_assert(BMDS_SYS_CONTROLS == 122, "ABI: slot CONTROLS");
+_Static_assert(BMDS_CONTROLS_DECLARE == 1 && BMDS_CONTROLS_SET == 2 && BMDS_CONTROLS_BINDING == 3, "ABI: controls ops");
+_Static_assert(BMDS_ACTION_PRESS == 1 && BMDS_ACTION_RELEASE == 2 && BMDS_ACTION_REPEAT == 3 && BMDS_ACTION_AXIS == 4,
+               "ABI: action event flags");
+_Static_assert(BMDS_SOURCE_KEYBOARD == 1 && BMDS_SOURCE_PAD == 2 && BMDS_BINDING_KEYS == 1 && BMDS_BINDING_PAD == 2,
+               "ABI: action sources, bindings");
+#if UINTPTR_MAX == 0xffffffffu // (a pointer inside)
+_Static_assert(offsetof(bmds_controls_binding_t, size) == 0 && offsetof(bmds_controls_binding_t, id) == 4 &&
+                       offsetof(bmds_controls_binding_t, which) == 8 && offsetof(bmds_controls_binding_t, text) == 12 &&
+                       offsetof(bmds_controls_binding_t, text_size) == 16 && sizeof(bmds_controls_binding_t) == 20,
+               "ABI: bmds_controls_binding_t");
+#endif
 _Static_assert(BMDS_SPEAK_MARKUP == 0x1000u && BMDS_SPEAK_VOICE_MAX == 32, "ABI: speech flags and sizes");
 #if UINTPTR_MAX == 0xffffffffu // (a pointer inside)
 _Static_assert(offsetof(bmds_speak_config_t, size) == 0 && offsetof(bmds_speak_config_t, flags) == 4 &&

@@ -18,6 +18,7 @@
 #include <bmds/memory.h>
 #include <bmds/pipe.h>
 #include <bmds/process.h>
+#include <bmds/programcontrols.h>
 #include <bmds/sysconf.h>
 #include <bmds/sys.h>
 #include <bmds/waitlist.h>
@@ -187,8 +188,20 @@ void Process::destroy(Process *process) {
 }
 
 // What a program leaves behind but its fds and arguments.
+ProgramControls *Process::controls() {
+        ProgramControls *c = _controls.load(std::memory_order_acquire);
+        if (c != nullptr) return c;
+        ProgramControls *made = ProgramControls::create();
+        if (made == nullptr) return nullptr;
+        if (_controls.compare_exchange_strong(c, made, std::memory_order_acq_rel)) return made;
+        made->unref(); // another thread made it first
+        return c;
+}
+
 void Process::releaseProgram() {
         for (Directory &d : _dirs) d.close();
+        if (ProgramControls *c = _controls.exchange(nullptr, std::memory_order_acq_rel); c != nullptr)
+                c->unref(); // its surfaces keep theirs until they close
         if (_line != nullptr) {
                 _line->~LineInput();
                 Memory::free(_line);
