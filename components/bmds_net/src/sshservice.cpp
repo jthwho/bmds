@@ -40,7 +40,8 @@ namespace {
         constexpr const char *AuthorizedKey = "net/ssh/authorized-keys-dir";
 
         constexpr const char *HostKeyName = "dropbear_ed25519_host_key";
-        constexpr const char *DefaultPath = "/bin:/rom/bin:/sd0/p0/bin"; // as the shell's, when shell/path is unset
+        constexpr const char *DefaultPath =
+                "/bin:/rom/bin:/apps:/sd0/p0/bin"; // as the shell's, when shell/path is unset
 
         constexpr unsigned int FirstRetryMs = 5'000;
         constexpr unsigned int MaxRetryMs = 300'000;

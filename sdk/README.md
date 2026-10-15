@@ -13,6 +13,7 @@ the headers in `include/bmds/` are the ABI and never change incompatibly
 | `include/bmds/program.h` | The executable format and the program note. |
 | `include/sys/soundcard.h` | OSS (`/dev/dsp`, `/dev/mixer`) with Linux's numbers, carried out by `crt/oss.c` on the audio calls. |
 | `include/linux/ptp_clock.h` | Linux's PTP hardware clock interface (`/dev/ptp0`) with Linux's layouts and numbers, carried out by `crt/linux.c` on `ptp_ctl`. |
+| `include/bmds/app.h` | An installed application's folder, id and data folder (`bmds_app_dir()`, `bmds_app_id()`, `bmds_app_data_dir()`), from `BMDS_APP_DIR` and `BMDS_APP_ID` ([`devplan/apps.md`](../devplan/apps.md)); `crt/app.c`. |
 | `include/bmds/errno.h` | The system calls' error numbers (`BMDS_E...`). Programs using musl see Linux's in `errno`. |
 | `libc/musl/`, `libc/README.md` | musl 1.2.5, vendored with BMDS's patches (`libc/patches/bmds.diff`). |
 | `crt/start.c` | `_start`: the argument and auxiliary vector musl's startup wants, the thread-local template. |
@@ -23,7 +24,7 @@ the headers in `include/bmds/` are the ABI and never change incompatibly
 | `cmake/BmdsProgram.cmake` | `bmds_add_program(name SOURCES ... [STACK_SIZE bytes] [ICONS png...])` (ICONS: the program's own icons, 16x16 and 32x32 PNGs, built in as `BMDS_NOTE_ICON` notes: `bmds/program.h`); generates `bmds-cc`. |
 | `cmake/BmdsLibc.cmake` | Builds musl's `libc.a` and assembles its headers in the build tree. |
 | `cmake/bmds-cc.in` | The compiler wrapper for other build systems (`CC=<build>/bmds-cc make`). |
-| `examples/` | `hello`; `cat` (files or stdin, with the raw calls); `ls [-al]` (portable POSIX only); `tone` (a sine on `/dev/dsp`, through OSS or the native audio calls); `player FILE` (a WAV, MP3, Ogg Vorbis, FLAC or MIDI file on `/dev/dsp`, decoded by the firmware: `bmds_audio_decode`; MIDI files play through the synth on `synth/font`); `keytone [-p FRAMES] [-x] [-r RATE] [-m PORT]` (the keyboard as a piano octave, through a real-time audio client: `bmds_audio_cycle`; with `-m`, a MIDI port's notes too); `midimon [PORT]`, `midimon -c NAME` (MIDI events as they arrive, with their times: `bmds_midi_config`; `-c` makes a port that passes them on); `speak [-o FILE.wav] TEXT...` (text spoken aloud with `bmds_say`, or its samples read from a speech fd, `bmds_audio_speak`, and saved). |
+| `examples/` | `hello`; `cat` (files or stdin, with the raw calls); `ls [-al]` (portable POSIX only); `tone` (a sine on `/dev/dsp`, through OSS or the native audio calls); `player FILE` (a WAV, MP3, Ogg Vorbis, FLAC or MIDI file on `/dev/dsp`, decoded by the firmware: `bmds_audio_decode`; MIDI files play through the synth on `synth/font`); `keytone [-p FRAMES] [-x] [-r RATE] [-m PORT]` (the keyboard as a piano octave, through a real-time audio client: `bmds_audio_cycle`; with `-m`, a MIDI port's notes too); `midimon [PORT]`, `midimon -c NAME` (MIDI events as they arrive, with their times: `bmds_midi_config`; `-c` makes a port that passes them on); `speak [-o FILE.wav] TEXT...` (text spoken aloud with `bmds_say`, or its samples read from a speech fd, `bmds_audio_speak`, and saved); `surfdemo` (a surface in a window or full screen); `appinfo` (installed as `apps/NAME.app`: its folder, id and data folder). |
 | `tests/` | `progtest`, used by the loader's board tests. |
 
 ## Building a program

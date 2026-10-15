@@ -144,6 +144,8 @@ class Directory {
  * /rom           the ROM image on the board's flash, read-only (devplan/rom.md)
  * /home          a link to the user's home (setHome(); devplan/sysconf.md §7)
  * /cfg           a link to the configuration: the card's or /flash's (setCfg(); devplan/cfg.md)
+ * /apps/NAME     a link to an installed application's program (setAppLinks();
+ *                devplan/apps.md §5); /apps is read-only
  * ```
  *
  * The mount table is run-time state: `mount()` puts a filesystem at any
@@ -305,6 +307,27 @@ namespace Vfs {
          * @return `Ok`, `Invalid` (a path at or below `/cfg` or `/home`), or `NoMem`.
          */
         Error setCfg(StringView target);
+
+        /** @brief Where every installed application's command is (`devplan/apps.md` §5). */
+        inline constexpr StringView AppsPath("/apps");
+
+        /** @brief An entry of `/apps`: @p name a link to @p target (`setAppLinks()`). */
+        struct AppLink {
+                        StringView name;   ///< One component: not empty, no `/`, not `.` or `..`.
+                        StringView target; ///< An absolute path.
+        };
+
+        /** @brief The longest `/apps` entry's name. */
+        inline constexpr size_t MaxAppName = 63;
+
+        /**
+         * @brief Makes `/apps` hold @p links instead of what it held (none: empty). As
+         *        `/home`, each is resolved at each lookup: the link itself as the last
+         *        component of `lstat()`, `readLink()` and the changes (which `/apps` refuses:
+         *        `ReadOnly`), where it leads everywhere else. Watches of `/apps` are told.
+         * @return `Ok`, `Invalid` (a name or target as above; nothing changes), or `NoMem`.
+         */
+        Error setAppLinks(Span<const AppLink> links);
 
         /**
          * @brief Pins the mount at @p path: `unmount()` refuses it for good

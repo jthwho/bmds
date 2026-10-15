@@ -145,6 +145,8 @@ namespace {
                 EtcFile,    // /etc/NAME, built when opened (Vfs::addEtcFile)
                 DevSubDir,  // /dev/NAME, a directory of numbered devices (Vfs::addDeviceDirectory)
                 DevSubFile, // /dev/NAME/N, one of them
+                AppsDir,    // /apps (devplan/apps.md §5)
+                AppLink,    // /apps/NAME, a link setAppLinks() made
         };
 
         // Where the programs built into the firmware are listed (read-only).
@@ -162,6 +164,35 @@ namespace {
         // storage lock. Null: no /cfg.
         using Vfs::CfgPath;
         constinit char *cfgTarget = nullptr;
+
+        // /apps's links (setAppLinks()): one Psram block, an Entry each then their text; under
+        // the storage lock. Null: /apps is empty.
+        using Vfs::AppsPath;
+        struct AppTable {
+                        struct Entry {
+                                        uint32_t name; // offsets into text, each NUL-ended
+                                        uint32_t target;
+                        };
+                        size_t count;
+                        Entry *entries;
+                        char  *text;
+        };
+        constinit AppTable *appTable = nullptr;
+
+        size_t appCountLocked() {
+                return appTable != nullptr ? appTable->count : 0;
+        }
+
+        StringView appNameLocked(size_t i) {
+                return StringView(appTable->text + appTable->entries[i].name);
+        }
+
+        // Where /apps/@p name leads, or empty (none). Lock held.
+        StringView appTargetLocked(StringView name) {
+                for (size_t i = 0; i < appCountLocked(); ++i)
+                        if (appNameLocked(i) == name) return StringView(appTable->text + appTable->entries[i].target);
+                return StringView();
+        }
 
         // Where the time zone database's directory is (read-only).
         using Vfs::ZoneInfoPath;
@@ -221,7 +252,8 @@ namespace {
         // True if normalized @p path is in a tree nothing can be written to:
         // the programs built in, the time zone database, /etc.
         bool isReadOnlyTree(StringView path) {
-                return isAtOrBelow(path, BinPath) || isAtOrBelow(path, ZoneInfoPath) || isAtOrBelow(path, Vfs::EtcPath);
+                return isAtOrBelow(path, BinPath) || isAtOrBelow(path, ZoneInfoPath) ||
+                       isAtOrBelow(path, Vfs::EtcPath) || isAtOrBelow(path, AppsPath);
         }
 
         // Resolves a normalized path. Lock held.
@@ -266,6 +298,16 @@ namespace {
                                 path.lastIndexOf('/') == BinPath.size() ? BuiltinPrograms::find(node.name) : nullptr;
                         if (node.program == nullptr) return makeError<Node>(Error::NotExist);
                         node.kind = Kind::BinProgram;
+                        return makeResult(node);
+                }
+                if (isAtOrBelow(path, AppsPath)) {
+                        if (path == AppsPath) {
+                                node.kind = Kind::AppsDir;
+                                return makeResult(node);
+                        }
+                        if (path.lastIndexOf('/') != AppsPath.size() || appTargetLocked(node.name).isEmpty())
+                                return makeError<Node>(Error::NotExist);
+                        node.kind = Kind::AppLink;
                         return makeResult(node);
                 }
                 if (isAtOrBelow(path, Vfs::EtcPath)) {
@@ -347,6 +389,20 @@ namespace {
         // Rewrites normalized @p storage at or below /home or /cfg to where it leads; the link
         // itself only with @p followHome (else the link is what is meant). Lock held.
         Error homeRewriteLocked(String &storage, bool followHome) {
+                // /apps/NAME first: where it leads may be below /home.
+                if (isBelow(storage.view(), AppsPath)) {
+                        const StringView rest = storage.view().mid(AppsPath.size() + 1);
+                        const size_t     slash = rest.indexOf('/');
+                        const StringView name = slash == StringView::NPos ? rest : rest.left(slash);
+                        const StringView target = appTargetLocked(name);
+                        if (!target.isEmpty() && (slash != StringView::NPos || followHome)) {
+                                String out;
+                                Error  err = out.append(target);
+                                if (err.isOk() && slash != StringView::NPos) err = out.append(rest.mid(slash));
+                                if (err.isError()) return err;
+                                storage = std::move(out);
+                        }
+                }
                 StringView link;
                 if (homeTarget != nullptr && isAtOrBelow(storage.view(), HomePath)) link = HomePath;
                 if (cfgTarget != nullptr && isAtOrBelow(storage.view(), CfgPath)) link = CfgPath;
@@ -398,7 +454,13 @@ namespace {
                         case Kind::BinDir:
                         case Kind::EtcDir:
                         case Kind::DevSubDir:
+                        case Kind::AppsDir:
                         case Kind::DevDir: return makeResult(directoryInfo(node.name));
+                        case Kind::AppLink:
+                                (void)info.name.assign(node.name);
+                                info.type = FileType::Link;
+                                info.size = appTargetLocked(node.name).size();
+                                return makeResult(std::move(info));
                         case Kind::EtcFile:
                                 (void)info.name.assign(node.name);
                                 info.type = FileType::File; // size 0: built when opened
@@ -663,7 +725,7 @@ namespace {
         // the next component of each mount below. Returns child @p index, or
         // an empty view past the end. Lock held.
         StringView virtualChild(StringView dir, size_t index) {
-                static constexpr StringView InRoot[] = {"bin", "cfg", "dev", "etc", "home", "share"};
+                static constexpr StringView InRoot[] = {"apps", "bin", "cfg", "dev", "etc", "home", "share"};
                 static constexpr StringView InShare[] = {"zoneinfo"};
                 StringView                  root[sizeof(InRoot) / sizeof(InRoot[0])];
                 size_t                      rootCount = 0;
@@ -801,6 +863,15 @@ Result<FileInfo> Directory::next() {
                         if (s.index >= Etc::count()) return makeError<FileInfo>(Error::EndOfFile);
                         (void)info.name.assign(Etc::at(s.index).name);
                         info.type = FileType::File;
+                        info.id = idAppend(idAppend(s.idPrefix, "/"), info.name.view());
+                        ++s.index;
+                        return makeResult(std::move(info));
+                }
+                case Kind::AppsDir: {
+                        if (s.index >= appCountLocked()) return makeError<FileInfo>(Error::EndOfFile);
+                        (void)info.name.assign(appNameLocked(s.index));
+                        info.type = FileType::Link;
+                        info.size = appTargetLocked(info.name.view()).size();
                         info.id = idAppend(idAppend(s.idPrefix, "/"), info.name.view());
                         ++s.index;
                         return makeResult(std::move(info));
@@ -1050,7 +1121,7 @@ namespace {
                 const StringView p = normalized.value().view();
                 if (p == "/" || isAtOrBelow(p, "/dev") || isAtOrBelow(p, BinPath) || isAtOrBelow(p, ZoneInfoPath) ||
                     isAtOrBelow(p, HomePath) || isAtOrBelow(p, CfgPath) || isAtOrBelow(p, EtcPath) ||
-                    p.size() > MaxMountPath)
+                    isAtOrBelow(p, AppsPath) || p.size() > MaxMountPath)
                         return Error::Invalid;
                 Mutex::Locker lock(Fs::lock(), WaitForever);
                 for (size_t i = 0; i < mountCount; ++i) {
@@ -1179,6 +1250,48 @@ Error Vfs::setCfg(StringView target) {
                 Fs::tellAllWatchesLocked();
         }
         Memory::free(oldTarget);
+        return Error::Ok;
+}
+
+Error Vfs::setAppLinks(Span<const AppLink> links) {
+        size_t text = 0;
+        for (const AppLink &l : links) {
+                if (l.name.isEmpty() || l.name.size() > MaxAppName || l.name.contains('/') || l.name == "." ||
+                    l.name == ".." || l.target.isEmpty() || l.target[0] != '/' || l.target.contains('\0'))
+                        return Error::Invalid;
+                text += l.name.size() + 1 + l.target.size() + 1;
+        }
+        AppTable *table = nullptr;
+        if (!links.isEmpty()) {
+                const size_t bytes = sizeof(AppTable) + links.size() * sizeof(AppTable::Entry) + text;
+                auto        *block = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, bytes));
+                if (block == nullptr) return Error::NoMem;
+                table = reinterpret_cast<AppTable *>(block);
+                table->count = links.size();
+                table->entries = reinterpret_cast<AppTable::Entry *>(block + sizeof(AppTable));
+                table->text = reinterpret_cast<char *>(table->entries + links.size());
+                uint32_t   at = 0;
+                const auto put = [&](StringView part) {
+                        const uint32_t start = at;
+                        std::memcpy(table->text + at, part.data(), part.size());
+                        at += uint32_t(part.size());
+                        table->text[at++] = '\0';
+                        return start;
+                };
+                for (size_t i = 0; i < links.size(); ++i) {
+                        table->entries[i].name = put(links[i].name);
+                        table->entries[i].target = put(links[i].target);
+                }
+        }
+        AppTable *old = nullptr;
+        {
+                Mutex::Locker lock(Fs::lock(), WaitForever);
+                old = std::exchange(appTable, table);
+                // Paths below /apps now lead elsewhere; its watches see entries come and go.
+                Fs::changedLocked(0, 0);
+                Fs::tellEntryLocked("/apps/-", DirectoryWatch::Entries, false); // any name in /apps
+        }
+        Memory::free(old);
         return Error::Ok;
 }
 
@@ -1399,6 +1512,7 @@ Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context 
                         case Kind::ZoneDir:
                         case Kind::EtcDir:
                         case Kind::DevSubDir:
+                        case Kind::AppsDir:
                         case Kind::DevDir: return makeError<FileHandle::Ptr>(Error::IsDir);
                         case Kind::DevSubFile: return node.devDir->open(node.devDir->arg, node.devIndex, flags);
                         // Reached through a link (the name itself is opened above, unlocked):
@@ -1585,6 +1699,7 @@ Result<String> Vfs::readLink(StringView path, const Context &context) {
         if (info.error().isError()) return makeError<String>(info.error());
         if (info.value().type != FileType::Link) return makeError<String>(Error::Invalid);
         if (node.kind == Kind::RootLink) return String::fromView(rootLinkLocked(node.name));
+        if (node.kind == Kind::AppLink) return String::fromView(appTargetLocked(node.name));
         String      target;
         const Error err = readLinkLocked(*node.volume, node.rest, target);
         if (err.isError()) return makeError<String>(err);
@@ -1773,7 +1888,8 @@ Error Vfs::remove(StringView path, const Context &context) {
                 err = targetLocked(storage, Error::IsDir, node);
                 const bool deviceNode = node.kind == Kind::DevStream || node.kind == Kind::DevConsole ||
                                         node.kind == Kind::DevBlock || node.kind == Kind::DevFile ||
-                                        node.kind == Kind::DevSubFile || node.kind == Kind::RootLink;
+                                        node.kind == Kind::DevSubFile || node.kind == Kind::RootLink ||
+                                        node.kind == Kind::AppLink;
                 if (err == Error::IsDir && deviceNode) err = Error::PermissionDenied;
                 if (err.isError()) return err;
                 bool                   noPath = false;

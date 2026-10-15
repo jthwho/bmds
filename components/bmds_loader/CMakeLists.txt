@@ -38,7 +38,7 @@ if(COMMAND idf_component_register)
                                     src/systable.c
                                INCLUDE_DIRS include ${BMDS_SDK_INCLUDE}
                                REQUIRES bmds_core bmds_kernel bmds_console bmds_fs bmds_sysconf
-                               PRIV_REQUIRES bmds_audio bmds_crypto bmds_drivers bmds_images bmds_ui bmds_midi bmds_net bmds_stats bmds_synth bmds_speech bmds_shell esp_hw_support esp_mm
+                               PRIV_REQUIRES bmds_audio bmds_crypto bmds_drivers bmds_files bmds_images bmds_ui bmds_midi bmds_net bmds_stats bmds_synth bmds_speech bmds_shell esp_hw_support esp_mm
                                              esp_timer
                                              freertos
                                # proccommand.cpp's commands are found through their linker

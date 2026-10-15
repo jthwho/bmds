@@ -23,8 +23,10 @@ BMDS_NAMESPACE_BEGIN
  *        (`NAME.desktop`) the panel uses (`devplan/gui.md` G10).
  *
  * The `[Desktop Entry]` group's `Type`, `Name`, `Comment`, `Exec`, `Icon`,
- * `Terminal`, `Categories`, `NoDisplay` and `Hidden`; localized keys, other
- * keys and other groups are ignored. Strings are kept unescaped, in fixed
+ * `Terminal`, `Categories`, `NoDisplay` and `Hidden`, and an application
+ * folder's `X-BMDS-Id`, `X-BMDS-Command` and `X-BMDS-Display`
+ * (`devplan/apps.md` §3); localized keys, other keys and other groups are
+ * ignored. Strings are kept unescaped, in fixed
  * sizes (a longer value makes the file invalid rather than cut a command).
  *
  * @par Thread Safety
@@ -36,6 +38,14 @@ struct DesktopEntry {
                 static constexpr size_t MaxExec = 255;
                 static constexpr size_t MaxIcon = 63;
                 static constexpr size_t MaxCategories = 127;
+                static constexpr size_t MaxId = 31; ///< `X-BMDS-Id`, `X-BMDS-Command`.
+
+                /** @brief `X-BMDS-Display`: the presentation an application suggests. */
+                enum class Display : uint8_t {
+                        Default,    ///< Not said.
+                        Window,     ///< `Window`.
+                        FullScreen, ///< `FullScreen`.
+                };
 
                 /** @brief The arguments `splitExec()` writes at most. */
                 static constexpr size_t MaxArgs = 32;
@@ -48,6 +58,9 @@ struct DesktopEntry {
                 bool terminal = false;                   ///< Run in a terminal.
                 bool noDisplay = false;                  ///< Not shown in menus.
                 bool hidden = false;                     ///< As if it didn't exist (hides another of its name).
+                char    id[MaxId + 1] = {};                 ///< `X-BMDS-Id` (empty: not said).
+                char    command[MaxId + 1] = {};            ///< `X-BMDS-Command` (empty: not said).
+                Display display = Display::Default;         ///< `X-BMDS-Display`.
 
                 /** @brief A complaint about one line, for the caller to report. */
                 using Warn = void (*)(void *arg, uint32_t line, const char *message);

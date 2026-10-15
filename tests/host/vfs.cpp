@@ -265,7 +265,7 @@ TEST_CASE("Vfs: devices, partitions and mounts") {
         CHECK(Vfs::findDevice("/dev/null", Root) == nullptr);
         CHECK(mountList() == std::vector<std::string>{"ram0p0 /ram0/p0 fat32"});
 
-        CHECK(list("/") == std::vector<std::string>{"bin/", "dev/", "etc/", "ram0/", "share/"});
+        CHECK(list("/") == std::vector<std::string>{"apps/", "bin/", "dev/", "etc/", "ram0/", "share/"});
         CHECK(list("/ram0") == std::vector<std::string>{"p0/"});
         CHECK(list("/dev") == std::vector<std::string>{"clip0", "clip0p", "console", "null", "ram0", "ram0p0", "random",
                                                        "tty", "urandom", "zero"});
@@ -284,11 +284,11 @@ TEST_CASE("Vfs: devices, partitions and mounts") {
         SUBCASE("mounting by hand, and what is refused") {
                 CHECK(Vfs::unmount("/ram0/p0").isOk());
                 CHECK(Vfs::unmount("/ram0/p0") == Error::NotExist);
-                CHECK(list("/") == std::vector<std::string>{"bin/", "dev/", "etc/", "share/"});
+                CHECK(list("/") == std::vector<std::string>{"apps/", "bin/", "dev/", "etc/", "share/"});
                 CHECK(Vfs::stat("/ram0", Root).error() == Error::NotExist);
                 CHECK(Vfs::mount("/data/main", *p0).isOk());
                 CHECK(Vfs::stat("/data/../data/main/../main/.", Root).value().isDirectory());
-                CHECK(list("/") == std::vector<std::string>{"bin/", "data/", "dev/", "etc/", "share/"});
+                CHECK(list("/") == std::vector<std::string>{"apps/", "bin/", "data/", "dev/", "etc/", "share/"});
                 CHECK(Vfs::mount("/data/main", *p0) == Error::Exists);
                 CHECK(Vfs::mount("/other", *p0) == Error::Busy);
                 CHECK(Vfs::mount("/other", ram) == Error::Busy); // the whole device under a mounted partition
@@ -762,6 +762,47 @@ namespace {
         using Change = bmds::DirectoryWatch::Change;
 
 } // namespace
+
+TEST_CASE("Vfs: /apps, links to applications' programs, read-only") {
+        fresh(FsFormat::Fat32);
+        CHECK(list("/apps").empty());
+        CHECK(Vfs::stat("/apps", Root).value().isDirectory());
+        CHECK(Vfs::mkdir("/ram0/p0/apps", Root).isOk());
+        CHECK(Vfs::mkdir("/ram0/p0/apps/blocks.app", Root).isOk());
+        put("/ram0/p0/apps/blocks.app/blocks", "program");
+        Watched apps;
+        CHECK(apps.watch.watch("/apps", Root).isOk());
+        const Vfs::AppLink links[] = {{"blocks", "/ram0/p0/apps/blocks.app/blocks"},
+                                      {"tour", "/ram0/p0/apps/tour.app"}};
+        CHECK(Vfs::setAppLinks(bmds::Span<const Vfs::AppLink>(links, 2)).isOk());
+        CHECK(apps.take() == Change::Entries);
+        CHECK(list("/apps") == std::vector<std::string>{"blocks", "tour"});
+        // The link itself, and where it leads.
+        CHECK(Vfs::lstat("/apps/blocks", Root).value().type == FileType::Link);
+        CHECK(Vfs::readLink("/apps/blocks", Root).value().view() == "/ram0/p0/apps/blocks.app/blocks");
+        CHECK(Vfs::stat("/apps/blocks", Root).value().type == FileType::File);
+        CHECK(get("/apps/blocks") == "program");
+        CHECK(Vfs::realPath("/apps/blocks", Root).value().view() == "/ram0/p0/apps/blocks.app/blocks");
+        CHECK(Vfs::stat("/apps/tour", Root).error() == Error::NotExist); // leads nowhere
+        CHECK(Vfs::stat("/apps/other", Root).error() == Error::NotExist);
+        // Read-only: nothing made, removed or renamed; no mount there.
+        CHECK(Vfs::open("/apps/new", Vfs::Write | Vfs::Create, Root).error() == Error::ReadOnly);
+        CHECK(Vfs::remove("/apps/blocks", Root) == Error::ReadOnly);
+        CHECK(Vfs::mkdir("/apps/dir", Root) == Error::ReadOnly);
+        CHECK(Vfs::symlink("/x", "/apps/x", Root) == Error::ReadOnly);
+        bmds::BlockDevice *p0 = bmds::BlockDevices::find("ram0p0");
+        REQUIRE(p0 != nullptr);
+        CHECK(Vfs::mount("/apps", *p0) == Error::Invalid);
+        // Refused sets change nothing; an empty one empties it.
+        const Vfs::AppLink bad[] = {{"a/b", "/x"}};
+        CHECK(Vfs::setAppLinks(bmds::Span<const Vfs::AppLink>(bad, 1)) == Error::Invalid);
+        const Vfs::AppLink relative[] = {{"a", "x"}};
+        CHECK(Vfs::setAppLinks(bmds::Span<const Vfs::AppLink>(relative, 1)) == Error::Invalid);
+        CHECK(list("/apps").size() == 2);
+        CHECK(Vfs::setAppLinks(bmds::Span<const Vfs::AppLink>()).isOk());
+        CHECK(list("/apps").empty());
+        CHECK(apps.take() == Change::Entries);
+}
 
 TEST_CASE("Vfs: directory watches") {
         fresh(FsFormat::Fat32);

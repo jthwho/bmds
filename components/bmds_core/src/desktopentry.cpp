@@ -71,6 +71,21 @@ Result<DesktopEntry> DesktopEntry::parse(StringView text, Warn warn, void *warnA
                         flag = &e.noDisplay;
                 } else if (key == "Hidden") {
                         flag = &e.hidden;
+                } else if (key == "X-BMDS-Id") {
+                        out = e.id;
+                        outBytes = sizeof(e.id);
+                } else if (key == "X-BMDS-Command") {
+                        out = e.command;
+                        outBytes = sizeof(e.command);
+                } else if (key == "X-BMDS-Display") {
+                        if (item.value == "Window") {
+                                e.display = Display::Window;
+                        } else if (item.value == "FullScreen") {
+                                e.display = Display::FullScreen;
+                        } else {
+                                complain(warn, warnArg, item.line, "not Window or FullScreen");
+                        }
+                        continue;
                 } else {
                         continue; // localized (Name[de]) and keys not used
                 }

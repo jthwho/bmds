@@ -37,6 +37,10 @@ using PanelEntryReport = void (*)(void *arg, const char *path);
  *        @p max used), but those of a name already there; hidden ones too (they hide
  *        later ones of their name). With @p allFiles (the desktop's), every other file and
  *        directory too, but those named with a leading `.`, each with its type.
+ *
+ *        `/apps` (`Vfs::AppsPath`) is the installed applications (`devplan/apps.md` §4): each
+ *        link's folder's `app.desktop`, named `ID.desktop` (an entry of that name in an earlier
+ *        directory overrides or hides it), its `Exec` run through `/apps/COMMAND`.
  * @return False if the directory isn't there (no card yet: no error).
  */
 bool readEntryDirectory(StringView directory, const Vfs::Context &context, PanelEntry *entries, size_t &count,

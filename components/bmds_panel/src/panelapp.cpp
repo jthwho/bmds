@@ -92,8 +92,10 @@ namespace {
         BMDS_SYSCONF(panelLauncherIcon, "panel/launcher/icon", Config::Type::String, "start-here",
                      "The launcher button's icon (a theme's name)", 0, 64, nullptr, nullptr)
         BMDS_SYSCONF(panelLauncherApplications, "panel/launcher/applications", Config::Type::Paths,
-                     "/cfg/applications;/sd0/p0/share/applications",
-                     "The directories of Desktop Entry files the launcher lists", 0, 0, nullptr, nullptr)
+                     "/cfg/applications;/apps;/sd0/p0/share/applications",
+                     "The directories of Desktop Entry files the launcher lists (/apps: the installed "
+                     "applications' folders)",
+                     0, 0, nullptr, nullptr)
         BMDS_SYSCONF(panelLauncherSubmenus, "panel/launcher/submenus", Config::Type::Int, "12",
                      "Entries past which the launcher groups them by category (0: never)", 0, 1000, nullptr, nullptr)
         BMDS_SYSCONF(panelWindowsMaxWidth, "panel/windows/max-width", Config::Type::Int, "200",
@@ -385,6 +387,8 @@ namespace {
                         const Icon *desktopIcon(const Entry &entry);
                         void        freeLauncher();
                         void        reloadLauncher();
+                        void        watchLauncher(bool on); // its directories (/apps among them)
+                        bool        isLauncherDirectory(StringView path) const;
                         void        buildMenu(size_t submenuAfter);
                         Error       buildItems(BoxLayout *row);
                         void        applyTray();
@@ -456,6 +460,7 @@ namespace {
                         std::atomic<bool>              _iconsPosted{false};         // iconsDue() on its way
                         int                            _watchTimer = -1;            // the changes to take
                         bool                           _mountsTold = false;         // by this take
+                        bool                           _launcherTold = false;       // by this take
                         FolderSettings                 _folderSettings;
                         FolderMenus                   *_folderMenus = nullptr; // PSRAM, the first window's
                         List<FolderWindow *>           _folderWindows{MemSpace::Psram};
@@ -550,6 +555,26 @@ namespace {
                 _entries = nullptr;
                 _entryCount = 0;
                 return;
+        }
+
+        // The launcher's directories watched (or not): an application installed or removed, an entry
+        // added, changed or deleted, a card put in, read again (devplan/apps.md §4).
+        void PanelApp::watchLauncher(bool on) {
+                StringView dirs(_applications);
+                for (StringView d = IniReader::nextListItem(dirs); !d.isEmpty(); d = IniReader::nextListItem(dirs)) {
+                        if (on)
+                                (void)_watches.add(d);
+                        else
+                                _watches.remove(d);
+                }
+                return;
+        }
+
+        bool PanelApp::isLauncherDirectory(StringView path) const {
+                StringView dirs(_applications);
+                for (StringView d = IniReader::nextListItem(dirs); !d.isEmpty(); d = IniReader::nextListItem(dirs))
+                        if (d == path) return true;
+                return false;
         }
 
         // The entries read again (a directory wasn't there: the card mounted since?).
@@ -1650,6 +1675,7 @@ namespace {
                 _submenuAfter = static_cast<size_t>(intSetting(bmdsConf_panelLauncherSubmenus));
                 loadEntries(StringView(_applications));
                 buildMenu(_submenuAfter);
+                watchLauncher(true);
                 _actions.setApplications(StringView(_applications));
                 readFilesSettings();
                 loadFolders();
@@ -1820,8 +1846,10 @@ namespace {
                                 *m = nullptr;
                         }
                 }
+                watchLauncher(false);
                 const StringView apps = setting(bmdsConf_panelLauncherApplications);
                 std::snprintf(_applications, sizeof(_applications), "%.*s", int(apps.size()), apps.data());
+                watchLauncher(true);
                 _actions.setApplications(StringView(_applications));
                 _submenuAfter = static_cast<size_t>(intSetting(bmdsConf_panelLauncherSubmenus));
                 reloadLauncher();
@@ -1974,7 +2002,15 @@ namespace {
                 auto *self = static_cast<PanelApp *>(arg);
                 self->_watchTimer = -1;
                 self->_mountsTold = false;
+                self->_launcherTold = false;
                 self->_watches.take(watchChanged, self);
+                if (self->_launcherTold) {
+                        // Not under an open menu: read again when it next opens.
+                        if (self->_menu != nullptr && self->_menu->isShown())
+                                self->_incomplete = true;
+                        else
+                                self->reloadLauncher();
+                }
                 if (self->_mountsTold) {
                         // A card in or out: icons not found may be there now, the desktop's too.
                         self->_fileIcons.forgetMissing();
@@ -1986,6 +2022,7 @@ namespace {
         void PanelApp::watchChanged(void *arg, StringView path, uint8_t changes) {
                 auto *self = static_cast<PanelApp *>(arg);
                 if ((changes & DirectoryWatch::Mounts) != 0) self->_mountsTold = true;
+                if (self->isLauncherDirectory(path)) self->_launcherTold = true;
                 for (FolderWindow *w : self->_folderWindows) w->watchedChanged(path, changes);
                 if ((changes & DirectoryWatch::Mounts) != 0) return; // the desktop once, after them all
                 StringView dirs(self->_desktopDirs);

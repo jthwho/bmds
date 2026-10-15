@@ -10,6 +10,7 @@
  */
 
 #include <sdkconfig.h>
+#include <bmds/apps.h>
 #include <bmds/audiodevice.h>
 #include <bmds/boot.h>
 #include <bmds/cfg.h>
@@ -84,6 +85,7 @@ namespace {
                 {"midi", bmds::Midi::init},           // the router, /dev/midi*; before USB's MIDI devices
                 {"clipboard", bmds::Clipboard::init}, // its configuration in /cfg; /dev/clip0
                 {"tmp", bmds::TmpFs::init},
+                {"apps", bmds::Apps::init},        // the installed applications, /apps (after the card's mount)
                 {"programs", bmds::Loader::init},  // the process table
                 {"synth", bmds::SoundFonts::init}, // fonts synths share; after the loader: its cache is reclaimed first
                 {"speech", bmds::Voices::init},    // the voices speakers share

@@ -29,6 +29,7 @@
 #include <bmds/interrupt.h>
 #include <bmds/intervaltimers.h>
 #include <bmds/list.h>
+#include <bmds/apps.h>
 #include <bmds/loader.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
@@ -282,6 +283,44 @@ namespace {
                 err = placeFrom(*entry, image, failure);
                 imageCache->release(entry);
                 return true;
+        }
+
+        // An application's folder (devplan/apps.md §3, §11): BMDS_APP_DIR names it to a program in
+        // one, and BMDS_APP_ID its id.
+        constexpr StringView AppDirVariable("BMDS_APP_DIR=");
+        constexpr StringView AppIdVariable("BMDS_APP_ID=");
+        constexpr StringView AppExtension(".app");
+
+        bool isAppVariable(StringView e) {
+                return e.startsWith(AppDirVariable) || e.startsWith(AppIdVariable);
+        }
+
+        // "BMDS_APP_DIR=FOLDER" into @p dir and "BMDS_APP_ID=ID" into @p id if program @p path
+        // (relative to @p cwd, links followed: /apps's too) is in a NAME.app folder; else both
+        // are left empty. The id is the installed application's (Apps), else the folder's name
+        // without .app (a folder outside apps/path), if that is a valid one.
+        Error appVariablesFor(StringView path, StringView cwd, String &dir, String &id) {
+                auto [real, err] = Vfs::realPath(path, contextFor(cwd));
+                if (err.isError()) return Error::Ok; // not a file: nothing to say
+                const StringView r = real.view();
+                const size_t     slash = r.lastIndexOf('/');
+                if (slash == StringView::NPos || slash == 0) return Error::Ok;
+                const StringView folder = r.left(slash);
+                const StringView name = folder.mid(folder.lastIndexOf('/') + 1);
+                if (name.size() <= AppExtension.size() ||
+                    !name.mid(name.size() - AppExtension.size()).equalsIgnoreCase(AppExtension))
+                        return Error::Ok;
+                Error e = dir.append(AppDirVariable);
+                if (e.isOk()) e = dir.append(folder);
+                char       installed[DesktopEntry::MaxId + 1] = {};
+                Apps      *apps = Apps::system();
+                StringView appId = name.left(name.size() - AppExtension.size());
+                if (apps != nullptr && apps->idOf(folder, installed)) appId = StringView(installed);
+                if (e.isOk() && Apps::isValidName(appId)) {
+                        e = id.append(AppIdVariable);
+                        if (e.isOk()) e = id.append(appId);
+                }
+                return e;
         }
 
         // Loads the program at @p path (relative to @p cwd).
@@ -1167,6 +1206,14 @@ int32_t ProgramThread::exec(const char *path, char *const *argv, char *const *en
                         auto [copy, cerr] = String::fromView(p);
                         if (cerr.isError() || args.append(std::move(copy)).isError()) return -BMDS_ENOMEM;
                 }
+                // BMDS_APP_DIR and BMDS_APP_ID are the new program's own (devplan/apps.md §3).
+                String appDir;
+                String appId;
+                if (appVariablesFor(p, current->cwd(), appDir, appId).isError()) return -BMDS_ENOMEM;
+                for (size_t i = env.size(); i > 0; --i)
+                        if (isAppVariable(env[i - 1])) env.removeAt(i - 1);
+                if (!appDir.isEmpty() && env.append(appDir.view()).isError()) return -BMDS_ENOMEM;
+                if (!appId.isEmpty() && env.append(appId.view()).isError()) return -BMDS_ENOMEM;
                 LoadFailure failure;
                 err = resolveExec(p, current->cwd(), Span<const StringView>(env.data(), env.size()), args, loaded,
                                   failure, 0);
@@ -2190,13 +2237,19 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
         }
         List<StringView> environment;
         String           tz;
+        String           appDir;
+        String           appId;
         err = process->setCwd(cwd);
-        if (err.isOk()) err = environment.reserve(request.environment.size() + 1);
+        if (err.isOk()) err = environment.reserve(request.environment.size() + 3);
+        if (err.isOk() && request.builtin == nullptr) err = appVariablesFor(request.path, cwd, appDir, appId);
         bool hasTz = false;
         for (StringView e : request.environment) {
                 hasTz = hasTz || e.startsWith("TZ=");
+                if (isAppVariable(e)) continue; // the program's own, below
                 if (err.isOk()) err = environment.append(e);
         }
+        if (err.isOk() && !appDir.isEmpty()) err = environment.append(appDir.view());
+        if (err.isOk() && !appId.isEmpty()) err = environment.append(appId.view());
         // A program from a file (musl reads TZ) gets the kernel zone, as it is now, by its name
         // when it has one, so musl reads the database's file and dates before today's rules come
         // out right. Built-in programs ask the kernel themselves, so they follow a change of it

@@ -44,7 +44,7 @@ namespace {
 
         // A new shell's PATH (devplan/sysconf.md §8): where commands that aren't built-ins are
         // looked for (name, name.elf, name.sh). Shells running keep theirs.
-        constexpr const char DefaultPath[] = "/bin:/rom/bin:/sd0/p0/bin";
+        constexpr const char DefaultPath[] = "/bin:/rom/bin:/apps:/sd0/p0/bin";
 
         BMDS_SYSCONF(shellPath, "shell/path", Config::Type::String, DefaultPath,
                      "A new shell's PATH: directories separated by :", 0, 1024, nullptr, nullptr)

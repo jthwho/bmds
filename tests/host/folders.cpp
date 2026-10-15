@@ -11,11 +11,13 @@
 
 #include <doctest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <string>
 #include <vector>
+#include <bmds/apps.h>
 #include <bmds/blockdevices.h>
 #include <bmds/clipboardtype.h>
 #include <bmds/copiedfiles.h>
@@ -815,4 +817,159 @@ TEST_CASE_FIXTURE(Fixture, "FileWorker: jobs in order, questions answered for al
         CHECK(!exists(onB("/tree")));
         CHECK(log.waitFor([&] { return !worker.isBusy(); }));
         worker.reap();
+}
+
+namespace {
+
+        // An application folder: its app.desktop (@p extra lines added) and a program.
+        void makeApp(const std::string &folder, const std::string &extra, const char *program = "prog") {
+                mkdir(folder);
+                put(folder + "/app.desktop", "[Desktop Entry]\nName=App\nExec=" + std::string(program) + "\n" + extra);
+                const std::string prog(program);
+                if (prog.find('/') != std::string::npos) mkdir(folder + "/" + prog.substr(0, prog.find('/')));
+                if (!prog.empty()) put(folder + "/" + prog, "program");
+        }
+
+        // An Apps run, its roots fixed, its scans waited for.
+        struct AppsRun {
+                        std::string             roots;
+                        std::mutex              lock;
+                        std::condition_variable changed;
+                        bmds::Apps              apps;
+
+                        static bmds::Error rootsOf(void *arg, bmds::String &out) {
+                                return out.assign(view(static_cast<AppsRun *>(arg)->roots));
+                        }
+
+                        static void notify(void *arg) {
+                                auto                       *self = static_cast<AppsRun *>(arg);
+                                std::lock_guard<std::mutex> g(self->lock);
+                                self->changed.notify_all();
+                                return;
+                        }
+
+                        void start() {
+                                bmds::Apps::Config c;
+                                c.roots = rootsOf;
+                                c.rootsArg = this;
+                                c.notify = notify;
+                                c.notifyArg = this;
+                                c.links = true;
+                                REQUIRE(apps.start(c).isOk());
+                        }
+
+                        // Waits up to @p ms for /apps to list @p names (scans may come between).
+                        bool waitFor(const std::vector<std::string> &names, int ms = 10000);
+
+                        std::vector<std::string> commands() {
+                                std::vector<std::string> out;
+                                apps.visit(
+                                        [](void *arg, const bmds::Apps::App &a) {
+                                                static_cast<std::vector<std::string> *>(arg)->push_back(
+                                                        std::string(a.command) + "=" + a.id + ":" + a.program.cStr());
+                                        },
+                                        &out);
+                                return out;
+                        }
+
+                        std::vector<std::string> problems() {
+                                std::vector<std::string> out;
+                                apps.visitProblems(
+                                        [](void *arg, const bmds::Apps::Problem &p) {
+                                                static_cast<std::vector<std::string> *>(arg)->push_back(
+                                                        std::string(p.folder.cStr()) + ": " + p.why);
+                                        },
+                                        &out);
+                                return out;
+                        }
+        };
+
+        std::vector<std::string> listed(const char *path) {
+                auto [dir, err] = Vfs::openDirectory(path, Root);
+                REQUIRE(err.isOk());
+                std::vector<std::string> names;
+                for (;;) {
+                        auto [info, nerr] = dir.next();
+                        if (nerr.isError()) break;
+                        names.emplace_back(info.name.cStr());
+                }
+                std::sort(names.begin(), names.end());
+                return names;
+        }
+
+        bool AppsRun::waitFor(const std::vector<std::string> &names, int ms) {
+                const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+                for (;;) {
+                        if (listed("/apps") == names) return true;
+                        std::unique_lock<std::mutex> g(lock);
+                        if (changed.wait_until(g, end) == std::cv_status::timeout) return listed("/apps") == names;
+                }
+        }
+
+} // namespace
+
+TEST_CASE("Apps: names") {
+        using bmds::Apps;
+        CHECK(Apps::isValidName("blocks"));
+        CHECK(Apps::isValidName("Doom-2_x.y+z"));
+        CHECK(!Apps::isValidName(""));
+        CHECK(!Apps::isValidName(".hidden"));
+        CHECK(!Apps::isValidName("-flag"));
+        CHECK(!Apps::isValidName("a b"));
+        CHECK(!Apps::isValidName("a/b"));
+        CHECK(!Apps::isValidName(std::string(32, 'a').c_str()));
+}
+
+TEST_CASE_FIXTURE(Fixture, "Apps: folders found, ids and commands, the first winning, problems, /apps") {
+        mkdir(at("/apps"));
+        makeApp(at("/apps/blocks.app"), "X-BMDS-Display=FullScreen\n");
+        makeApp(at("/apps/Tour.APP"), "X-BMDS-Id=tour\nX-BMDS-Command=walk\n", "bin/tour");
+        mkdir(at("/apps/broken.app"));
+        makeApp(at("/apps/noprog.app"), "", "");
+        put(at("/apps/noprog.app/app.desktop"), "[Desktop Entry]\nName=x\nExec=missing\n");
+        makeApp(at("/apps/same.app"), "X-BMDS-Command=blocks\n");
+        makeApp(at("/apps/hidden.app"), "Hidden=true\n");
+        makeApp(at("/apps/escape.app"), "", "");
+        put(at("/apps/escape.app/app.desktop"), "[Desktop Entry]\nName=x\nExec=../blocks.app/prog\n");
+        put(at("/apps/notes.txt"), "not an application");
+        mkdir(onB("/apps"));
+        makeApp(onB("/apps/blocks.app"), ""); // the first root's wins
+        AppsRun run;
+        run.roots = at("/apps") + ";" + onB("/apps") + ";/nowhere/apps";
+        run.start();
+        CHECK(run.commands() == std::vector<std::string>{"blocks=blocks:" + at("/apps/blocks.app/prog"),
+                                                         "walk=tour:" + at("/apps/Tour.APP/bin/tour")});
+        CHECK(run.problems() ==
+              std::vector<std::string>{at("/apps/broken.app") + ": no app.desktop",
+                                       at("/apps/escape.app") + ": Exec is not a program in the folder",
+                                       at("/apps/noprog.app") + ": its program is missing",
+                                       at("/apps/same.app") + ": its command is another application's",
+                                       onB("/apps/blocks.app") + ": its id is another application's"});
+        CHECK(run.apps.generation() == 1);
+        // /apps: a link per command.
+        CHECK(listed("/apps") == std::vector<std::string>{"blocks", "walk"});
+        CHECK(Vfs::readLink("/apps/walk", Root).value().view() == view(at("/apps/Tour.APP/bin/tour")));
+        CHECK(read("/apps/blocks") == "program");
+        // A folder copied in (made, then filled): found once the changes settle.
+        makeApp(at("/apps/new.app"), "");
+        CHECK(run.waitFor({"blocks", "new", "walk"}));
+        // An app.desktop changed: its command follows.
+        put(at("/apps/new.app/app.desktop"), "[Desktop Entry]\nName=New\nExec=prog\nX-BMDS-Command=newer\n");
+        CHECK(run.waitFor({"blocks", "newer", "walk"}));
+        // Removed: gone.
+        REQUIRE(Vfs::remove(view(at("/apps/new.app/prog")), Root).isOk());
+        REQUIRE(Vfs::remove(view(at("/apps/new.app/app.desktop")), Root).isOk());
+        REQUIRE(Vfs::rmdir(view(at("/apps/new.app")), Root).isOk());
+        CHECK(run.waitFor({"blocks", "walk"}));
+        // A root made after the start: its parent is watched meanwhile.
+        const uint32_t seen = run.apps.generation();
+        run.roots += ";" + at("/later");
+        run.apps.rescan();
+        CHECK(!run.waitFor({"blocks", "late", "walk"}, 1000));
+        CHECK(run.apps.generation() == seen); // nothing changed: nothing told
+        mkdir(at("/later"));
+        makeApp(at("/later/late.app"), "");
+        CHECK(run.waitFor({"blocks", "late", "walk"}));
+        run.apps.stop();
+        REQUIRE(Vfs::setAppLinks(bmds::Span<const Vfs::AppLink>()).isOk());
 }

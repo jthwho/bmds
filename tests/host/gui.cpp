@@ -175,6 +175,30 @@ TEST_CASE("DesktopEntry: the keys used, others ignored") {
         CHECK(w.lines == std::vector<uint32_t>{11, 12});
 }
 
+TEST_CASE("DesktopEntry: an application folder's keys") {
+        Warnings w;
+        auto [e, err] = DesktopEntry::parse("[Desktop Entry]\n"
+                                            "Name=Blocks\n"
+                                            "Exec=blocks\n"
+                                            "X-BMDS-Id=blocks\n"
+                                            "X-BMDS-Command=tetris\n"
+                                            "X-BMDS-Display=FullScreen\n",
+                                            Warnings::warn, &w);
+        REQUIRE(err.isOk());
+        CHECK(std::string(e.id) == "blocks");
+        CHECK(std::string(e.command) == "tetris");
+        CHECK(e.display == DesktopEntry::Display::FullScreen);
+        CHECK(w.lines.empty());
+        auto [plain, perr] =
+                DesktopEntry::parse("[Desktop Entry]\nName=x\nExec=y\nX-BMDS-Display=Huge\n", Warnings::warn, &w);
+        REQUIRE(perr.isOk());
+        CHECK(plain.id[0] == '\0');
+        CHECK(plain.display == DesktopEntry::Display::Default);
+        CHECK(w.lines == std::vector<uint32_t>{4});
+        std::string longId = "[Desktop Entry]\nName=x\nExec=y\nX-BMDS-Id=" + std::string(32, 'i') + "\n";
+        CHECK(DesktopEntry::parse(StringView(longId.data(), longId.size())).error() == Error::BufferTooSmall);
+}
+
 TEST_CASE("DesktopEntry: what isn't an entry") {
         CHECK(DesktopEntry::parse("Name=x\nExec=y\n").error() == Error::Invalid);
         CHECK(DesktopEntry::parse("[Desktop Entry]\nExec=y\n").error() == Error::Invalid);

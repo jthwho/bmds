@@ -2,12 +2,14 @@
 # batches and kept sorted (FolderModel), and copies, moves, removals, the trash, renames and new
 # files with progress and questions (FileOps), run on a thread of their own (FileWorker); the
 # clipboard's files, copied or cut (CopiedFiles); a window's Back and Forward
-# (NavigationHistory) and folders.conf (FolderSettings). No GUI: the panel's folder windows and
+# (NavigationHistory) and folders.conf (FolderSettings); the installed applications (Apps,
+# devplan/apps.md; the system's, /apps and the apps command: target only). No GUI: the panel's folder windows and
 # the desktop are built on it.
 #
 # Portable: also built as a plain CMake library for the host tests (tests/host), on RAM disks.
 
 set(BMDS_FILES_SRCS
+        src/apps.cpp
         src/copiedfiles.cpp
         src/fileops.cpp
         src/fileworker.cpp
@@ -20,9 +22,10 @@ set(BMDS_FILES_SRCS
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
 if(COMMAND idf_component_register)
-        idf_component_register(SRCS ${BMDS_FILES_SRCS}
+        idf_component_register(SRCS ${BMDS_FILES_SRCS} src/appsservice.cpp
                                INCLUDE_DIRS include
-                               REQUIRES bmds_core bmds_fs bmds_kernel)
+                               REQUIRES bmds_core bmds_fs bmds_kernel
+                               PRIV_REQUIRES bmds_shell bmds_sysconf)
         bmds_target_options(${COMPONENT_LIB})
 else()
         add_library(bmds_files STATIC ${BMDS_FILES_SRCS})

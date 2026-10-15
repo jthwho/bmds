@@ -651,7 +651,7 @@ already a shell command, the serial terminal's size).
   D7's fallbacks (`/usr/bin/env name`; a missing path's last component as a built-in) are gone;
   `#!/bin/env name` does what `/usr/bin/env` did.
 - **`PATH`** defaults to `/bin:/sd0/p0/bin` (the user's choice, 2026-10-05; `/bin:/rom/bin:/sd0/p0/bin` since
-  2026-10-11, `network.md` §24a): the built-ins first,
+  2026-10-11, `network.md` §24a; `/bin:/rom/bin:/apps:/sd0/p0/bin` since 2026-10-14, `apps.md` §5): the built-ins first,
   so a program on the card can't take a built-in's name, and they are found without the card. It is
   set in `/boot/profile` (`storage.md` §13), so the order is one line to change.
 - **ABI impact:** the paths `/bin/NAME` and the names; the default `PATH` gains `/bin` (appended).

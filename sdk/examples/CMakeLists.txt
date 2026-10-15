@@ -16,6 +16,7 @@ bmds_add_program(keytone SOURCES keytone/keytone.c)
 bmds_add_program(midimon SOURCES midimon/midimon.c)
 bmds_add_program(speak SOURCES speak/speak.c)
 bmds_add_program(surfdemo SOURCES surfdemo/surfdemo.c)
+bmds_add_program(appinfo SOURCES appinfo/appinfo.c)
 
 # Test programs (not examples): the loader's board tests use them.
 bmds_add_program(progtest SOURCES ../tests/progtest.c)
