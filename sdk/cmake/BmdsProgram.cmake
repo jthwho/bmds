@@ -38,7 +38,8 @@ if(NOT TARGET bmds_crt)
         # program that uses none of it gets none.
         add_library(bmds_game STATIC ${BMDS_SDK_DIR}/game/canvas.c ${BMDS_SDK_DIR}/game/text.c
                                      ${BMDS_SDK_DIR}/game/font16.c ${BMDS_SDK_DIR}/game/loop.c
-                                     ${BMDS_SDK_DIR}/game/convert.c ${BMDS_SDK_DIR}/game/image.c)
+                                     ${BMDS_SDK_DIR}/game/convert.c ${BMDS_SDK_DIR}/game/image.c
+                                     ${BMDS_SDK_DIR}/game/mix.c ${BMDS_SDK_DIR}/game/audio.c)
         set_target_properties(bmds_game PROPERTIES OUTPUT_NAME bmdsgame ARCHIVE_OUTPUT_DIRECTORY "${BMDS_LIBC_LIB}")
         target_link_libraries(bmds_game PUBLIC bmds_headers)
         target_compile_options(bmds_game PRIVATE -O2 -Wall -Wextra -Werror)

@@ -571,7 +571,7 @@ Alpha blending later, if a game needs it. Built: §15.
 volume and pan, one-shots and loops, WAV samples loaded whole (16-bit PCM, any rate: resampled at
 load). Music: a file played by `audio_decode` (MIDI through the synth, or MP3, Ogg, FLAC), read
 into the mixer's stream on its thread, looping. The music's cost (the synth's) is measured with
-Blocks' tune.
+Blocks' tune. Built (§16) with the music on its own thread and stream instead.
 
 **Testing:** the drawing, text, damage and buffer-age code is pure C and runs in the host tests
 against a fake surface; the loop and the sound on the board with a demo.
@@ -649,3 +649,36 @@ against a fake surface; the loop and the sound on the board with a demo.
 - **Seen, open:** a `screenshot` taken while a program is full screen shows the desktop's
   buffer, which holds what the full-screen picture left there (RGB565 read as BGR24: noise). The
   screen and the desktop after it are right; the capture should take what is shown.
+
+## 16. As built: step 4 part 3, sound (2026-10-14)
+
+- **Effects (`mix.c`, `audio.c`):** `bmds_game_audio_open()` opens `/dev/dsp` as a real-time
+  client (F32, stereo, a 256-frame period: 5.3 ms at 48 kHz) and starts a thread that runs the
+  mixer each `audio_cycle`. `bmds_game_play(sound, volume, pan, flags)` returns at once: the game's
+  thread queues a command (64 kept between periods) and hands out the voice itself, 16 slots
+  numbered with a generation, so a voice that ended or was taken is never touched by a late
+  command. The mixer says which generation of each slot ended; with every slot busy, the oldest
+  voice that doesn't loop is taken (all looping: `-BMDS_EBUSY`). Each voice's gains move to their
+  target (volume × pan × the effects' volume) over a period, so changes and stops don't click; a
+  stopped voice fades over one period and ends. Pause: silence, nothing moves.
+- **Sounds:** `bmds_game_sound_load()` decodes any file `audio_decode` knows (WAV, MP3, Ogg
+  Vorbis, FLAC; MIDI through the synth too) whole as 16-bit samples, 1 or 2 channels, resampled
+  linearly to the device's rate at load (10 minutes at most), so the mixer only adds.
+- **Music, changed from §13:** not through the mixer. `bmds_game_music_play()` opens the decoder
+  (and reports its errors) on the game's thread, then a thread of its own reads it and writes to a
+  second, ordinary stream (`S16LE` at the file's rate, a 250 ms queue): the system resamples it
+  with its own resampler and mixes it, the decoding (the synth's, for MIDI) stays off the
+  real-time thread, and the blocking writes pace it, with no ring or wakeups of the library's.
+  Looping seeks the decoder to 0. Its volume scales the samples; pause is the stream's
+  `BMDS_AUDIO_PAUSE`; stop drops the queue (a waiting write returns) and joins.
+- **Host-tested:** voices panned, mono and stereo out, ends, loops, a stop's fade, stealing the
+  oldest, refusing when all loop, pause, a full queue, resampling (lengths, interpolation, the
+  last frame held).
+- **`bounce -a SOUND -m MUSIC`:** a sound each time a square meets a wall, panned to where it is,
+  music looping; paused while the window isn't focused (the `ACTIVE` event). On the board, 32
+  squares and a 22.05 kHz WAV (resampled at load to 48 kHz): 60 frames a second, 0 late periods
+  and 0 music underruns in a run; one late period seen once, as the focus changed. `top -T`
+  (share of the CPU, 2 s): the mixer thread 4.5-7%, the music thread 12.5% for a MIDI tune
+  (the synth) and 22.5% for an MP3, the kernel's audio task 6-20% (the MP3 at 44.1 kHz is
+  resampled there).
+- **Next:** Blocks (step 5), the library's first user.

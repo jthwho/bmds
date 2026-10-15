@@ -250,3 +250,77 @@ TEST_CASE("Game images: BGRA32 converted in place, alpha and a colour as the key
         how.size = 4;
         CHECK(bmds_game_converter_init(&c, &how) == -1);
 }
+
+TEST_CASE("Game sound: the mixer's voices, gains, loops, stops, stealing") {
+        bmds_game_mixer_t m;
+        bmds_game_mixer_init(&m);
+        const int16_t     ones[4] = {16384, 16384, 16384, 16384}; // 0.5 each
+        bmds_game_sound_t mono = {ones, 4, 1};
+        float             out[8 * 2];
+        // Panned hard left: the right silent; it plays its 4 frames, then ends.
+        const int32_t v = bmds_game_mixer_play(&m, &mono, 1.0f, -1.0f, 0);
+        REQUIRE(v >= 0);
+        uint32_t g = 0;
+        CHECK(bmds_game_mixer_voice(&m, v, &g) >= 0);
+        bmds_game_mixer_run(&m, out, 8, 2);
+        CHECK(out[0] == doctest::Approx(0.5f));
+        CHECK(out[1] == 0.0f);
+        CHECK(out[6] == doctest::Approx(0.5f));
+        CHECK(out[8] == 0.0f);                         // past its end
+        CHECK(bmds_game_mixer_voice(&m, v, &g) == -1); // ended
+        // Looping: on through the period; stopped, it fades over the next and ends.
+        const int32_t loop = bmds_game_mixer_play(&m, &mono, 0.5f, 0.0f, BMDS_GAME_PLAY_LOOP);
+        bmds_game_mixer_run(&m, out, 8, 2);
+        CHECK(out[14] == doctest::Approx(0.25f));
+        CHECK(out[15] == doctest::Approx(0.25f));
+        uint32_t            lg = 0;
+        const int32_t       slot = bmds_game_mixer_voice(&m, loop, &lg);
+        bmds_game_command_t stop = {BMDS_GAME_COMMAND_STOP, uint32_t(slot), lg, nullptr, 0, 0, 0, 0, 0};
+        REQUIRE(bmds_game_mixer_push(&m, &stop) == 0);
+        bmds_game_mixer_run(&m, out, 8, 2);
+        CHECK(out[0] < 0.25f);
+        CHECK(out[0] > out[14]); // falling
+        CHECK(out[14] < 0.05f);
+        CHECK(bmds_game_mixer_voice(&m, loop, &lg) == -1);
+        // Mono out: the two sides averaged.
+        bmds_game_mixer_play(&m, &mono, 1.0f, 0.0f, 0);
+        bmds_game_mixer_run(&m, out, 2, 1);
+        CHECK(out[0] == doctest::Approx(0.5f));
+        // All busy: the oldest that doesn't loop taken; all looping: refused.
+        bmds_game_mixer_init(&m);
+        int32_t first = -1;
+        for (uint32_t i = 0; i < BMDS_GAME_VOICES; ++i) {
+                const int32_t x = bmds_game_mixer_play(&m, &mono, 1.0f, 0.0f, i == 0 ? 0 : BMDS_GAME_PLAY_LOOP);
+                if (i == 0) first = x;
+        }
+        bmds_game_mixer_run(&m, out, 1, 2); // the queue taken
+        const int32_t stolen = bmds_game_mixer_play(&m, &mono, 1.0f, 0.0f, BMDS_GAME_PLAY_LOOP);
+        CHECK((stolen & 15) == (first & 15));
+        CHECK(stolen != first);
+        CHECK(bmds_game_mixer_voice(&m, first, &g) == -1);
+        CHECK(bmds_game_mixer_play(&m, &mono, 1.0f, 0.0f, 0) == -BMDS_EBUSY);
+        // Paused: silence, nothing moves.
+        bmds_game_command_t pause = {BMDS_GAME_COMMAND_PAUSE, 0, 0, nullptr, 0, 0, 0, 1.0f, 0};
+        bmds_game_mixer_push(&m, &pause);
+        bmds_game_mixer_run(&m, out, 8, 2);
+        CHECK(out[0] == 0.0f);
+        // The queue full: refused.
+        bmds_game_mixer_init(&m);
+        for (uint32_t i = 0; i < BMDS_GAME_COMMANDS; ++i) bmds_game_mixer_push(&m, &pause);
+        CHECK(bmds_game_mixer_play(&m, &mono, 1.0f, 0.0f, 0) == -BMDS_EAGAIN);
+}
+
+TEST_CASE("Game sound: resampling") {
+        CHECK(bmds_game_resampled(44100, 44100, 48000) == 48000);
+        CHECK(bmds_game_resampled(100, 8000, 48000) == 600);
+        CHECK(bmds_game_resampled(5, 48000, 48000) == 5);
+        const int16_t in[] = {0, 1000, 600, 0}; // two stereo frames
+        int16_t       out[2 * 4];
+        bmds_game_resample(in, 2, 2, 24000, 48000, out);
+        CHECK(out[0] == 0);
+        CHECK(out[1] == 1000);
+        CHECK(out[2] == 300); // halfway
+        CHECK(out[3] == 500);
+        CHECK(out[4] == 600);
+        CHECK(out[6] == 600); // the last held
+}

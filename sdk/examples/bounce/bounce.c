@@ -8,10 +8,11 @@
  * libbmdsgame's frame loop (bmds/game.h, devplan/games.md §13): squares bouncing at 60 ticks a
  * second, each frame drawing only what changed (a square erased where it was, drawn where it is;
  * once a second, the rate in text). The loop brings each buffer up to the last frame shown, so
- * nothing else is drawn. With -i, each square is a picture (a PNG's transparency kept). Escape
- * or closing the window ends it.
+ * nothing else is drawn. With -i, each square is a picture (a PNG's transparency kept); with -a,
+ * a sound plays as a square meets a wall, panned to where it is; with -m, music plays on, looping.
+ * Escape or closing the window ends it.
  *
- *     bounce [-s WIDTHxHEIGHT] [-f l8|565|888] [-n SQUARES] [-i PICTURE] [-F]
+ *     bounce [-s WIDTHxHEIGHT] [-f l8|565|888] [-n SQUARES] [-i PICTURE] [-a SOUND] [-m MUSIC] [-F]
  */
 
 #include <stdio.h>
@@ -38,6 +39,9 @@ typedef struct {
                 int32_t           side_x, side_y; /* a square's size */
                 bmds_game_image_t image;          /* with -i: drawn as each square */
                 uint32_t          palette[256];   /* L8's */
+                bmds_game_audio_t *audio;          /* with -a or -m */
+                bmds_game_sound_t  sound;          /* with -a */
+                uint64_t           plays;
 } state_t;
 
 #define L8_BACKGROUND 0
@@ -52,6 +56,8 @@ static int64_t now_ns(void) {
 }
 
 static void on_event(bmds_game_t *game, const bmds_surface_event_t *e) {
+        state_t *s = bmds_game_arg(game);
+        if (e->type == BMDS_EVENT_ACTIVE && s->audio != NULL) bmds_game_audio_pause(s->audio, e->data[0] == 0);
         if (e->type == BMDS_EVENT_CLOSE || (e->type == BMDS_EVENT_KEY && e->data[0] == 0x00070029u))
                 bmds_game_quit(game); /* closed, or Escape */
 }
@@ -62,8 +68,13 @@ static void on_tick(bmds_game_t *game) {
                 square_t *q = &s->sq[i];
                 q->x += q->dx;
                 q->y += q->dy;
-                if (q->x < 0 || q->x > s->width - s->side_x) q->dx = -q->dx, q->x += 2 * q->dx;
-                if (q->y < 20 || q->y > s->height - s->side_y) q->dy = -q->dy, q->y += 2 * q->dy;
+                int hit = 0;
+                if (q->x < 0 || q->x > s->width - s->side_x) q->dx = -q->dx, q->x += 2 * q->dx, hit = 1;
+                if (q->y < 20 || q->y > s->height - s->side_y) q->dy = -q->dy, q->y += 2 * q->dy, hit = 1;
+                if (hit && s->sound.samples != NULL) {
+                        const float pan = 2.0f * (float)q->x / (float)(s->width - s->side_x) - 1.0f;
+                        if (bmds_game_play(s->audio, &s->sound, 0.5f, pan, 0) >= 0) ++s->plays;
+                }
         }
 }
 
@@ -113,9 +124,9 @@ int main(int argc, char **argv) {
         config.format = BMDS_PIXEL_RGB565;
         config.title = "Bounce";
         s.count = 12;
-        const char *picture = NULL;
+        const char *picture = NULL, *sound = NULL, *music = NULL;
         int         opt;
-        while ((opt = getopt(argc, argv, "s:f:n:i:F")) != -1) {
+        while ((opt = getopt(argc, argv, "s:f:n:i:a:m:F")) != -1) {
                 if (opt == 's') {
                         if (sscanf(optarg, "%ux%u", &config.width, &config.height) != 2) return 2;
                 } else if (opt == 'f') {
@@ -127,10 +138,15 @@ int main(int argc, char **argv) {
                         if (s.count < 1 || s.count > MAX_SQUARES) return 2;
                 } else if (opt == 'i') {
                         picture = optarg;
+                } else if (opt == 'a') {
+                        sound = optarg;
+                } else if (opt == 'm') {
+                        music = optarg;
                 } else if (opt == 'F') {
                         config.flags |= BMDS_SURFACE_FULL_SCREEN;
                 } else {
-                        fprintf(stderr, "usage: bounce [-s WxH] [-f l8|565|888] [-n SQUARES] [-i PICTURE] [-F]\n");
+                        fprintf(stderr, "usage: bounce [-s WxH] [-f l8|565|888] [-n SQUARES] [-i PICTURE] [-a SOUND] "
+                                        "[-m MUSIC] [-F]\n");
                         return 2;
                 }
         }
@@ -158,6 +174,21 @@ int main(int argc, char **argv) {
                         return 1;
                 }
         }
+        if (sound != NULL || music != NULL) {
+                int err = bmds_game_audio_open(NULL, &s.audio);
+                if (err == 0 && sound != NULL) {
+                        err = bmds_game_sound_load(s.audio, sound, &s.sound);
+                        if (err == 0)
+                                printf("bounce: %s: %u frames, %u channels at %u Hz\n", sound, (unsigned)s.sound.frames,
+                                       (unsigned)s.sound.channels, (unsigned)bmds_game_audio_rate(s.audio));
+                }
+                if (err == 0 && music != NULL) err = bmds_game_music_play(s.audio, music, 0.7f, BMDS_GAME_PLAY_LOOP);
+                if (err < 0) {
+                        fprintf(stderr, "bounce: sound: %s\n", strerror(-err));
+                        bmds_game_audio_close(s.audio);
+                        return 1;
+                }
+        }
         for (int32_t i = 0; i < s.count; ++i) {
                 s.sq[i].x = (i * 37) % (s.width - s.side_x);
                 s.sq[i].y = 20 + (i * 53) % (s.height - s.side_y - 20);
@@ -173,10 +204,14 @@ int main(int argc, char **argv) {
         config.draw = on_draw;
         const int err = bmds_game_run(&config);
         bmds_game_image_free(&s.image);
+        bmds_game_audio_close(s.audio); /* its voices stopped: then the sound may go */
+        bmds_game_sound_free(&s.sound);
         if (err < 0) {
                 fprintf(stderr, "bounce: %s\n", strerror(-err));
                 return 1;
         }
-        printf("bounce: %llu frames, %s\n", (unsigned long long)s.frames, s.rate);
+        printf("bounce: %llu frames, %s", (unsigned long long)s.frames, s.rate);
+        if (s.plays != 0) printf(", %llu sounds", (unsigned long long)s.plays);
+        printf("\n");
         return 0;
 }

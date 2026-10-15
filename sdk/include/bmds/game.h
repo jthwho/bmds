@@ -14,11 +14,14 @@
  * - The frame loop (`bmds_game_run()`) opens the surface, calls the game's callbacks (events, a
  *   fixed-rate tick, drawing) and presents what was drawn. A frame starts as the last one shown,
  *   so a game draws only what changes, and only that is presented.
+ * - Sound (`bmds_game_audio_open()`): effects mixed on a real-time audio thread of the library's,
+ *   started by the game's thread without waiting; music decoded and played on a thread of its own.
  *
  * Pixel values are the canvas's own (`bmds_canvas_pixel()` makes one from 0xRRGGBB, once): an
  * RGB565 value, B, G, R bytes as 0xRRGGBB, or an L8 index.
  *
- * Not thread-safe: a canvas and a game are one thread's.
+ * Not thread-safe: a canvas, a game and an audio are one thread's (the library's own threads
+ * aside).
  */
 
 #ifndef BMDS_GAME_H
@@ -210,6 +213,95 @@ uint64_t bmds_game_ticks(const bmds_game_t *game);
 
 /** @brief Returns true while the surface is active (focused). */
 int bmds_game_is_active(const bmds_game_t *game);
+
+/** @brief Effects playing at once (`bmds_game_play()`). */
+#define BMDS_GAME_VOICES 16u
+
+/** @brief The sound (effects and music) of a game. */
+typedef struct bmds_game_audio_t bmds_game_audio_t;
+
+/** @brief How `bmds_game_audio_open()` plays. */
+typedef struct bmds_game_audio_config_t {
+                uint32_t size;          /**< `sizeof(bmds_game_audio_config_t)`. */
+                uint32_t period_frames; /**< The mixer's period (its latency's step); 0: 256. */
+                uint32_t flags;         /**< 0. */
+} bmds_game_audio_config_t;
+
+/**
+ * @brief Opens the sound device (`/dev/dsp`) as a real-time client and starts the mixer's thread
+ *        (@p config NULL: the defaults).
+ * @return 0 and @p audio, or a negative error (`-BMDS_ENOMEM`, the device's: `-BMDS_ENOENT` no
+ *         sound device, `-BMDS_EBUSY`).
+ */
+int bmds_game_audio_open(const bmds_game_audio_config_t *config, bmds_game_audio_t **audio);
+
+/** @brief Stops the music and the effects and closes @p audio (NULL: nothing). */
+void bmds_game_audio_close(bmds_game_audio_t *audio);
+
+/** @brief Returns the device's rate, which loaded sounds are at. */
+uint32_t bmds_game_audio_rate(const bmds_game_audio_t *audio);
+
+/** @brief Pauses (@p paused not 0) or resumes the effects and the music: while inactive, say. */
+void bmds_game_audio_pause(bmds_game_audio_t *audio, int paused);
+
+/** @brief Sets the effects' volume, 0 to 1 (the start: 1). */
+void bmds_game_audio_volume(bmds_game_audio_t *audio, float volume);
+
+/** @brief A sound loaded to play: 16-bit samples at the device's rate, 1 or 2 channels. */
+typedef struct bmds_game_sound_t {
+                const int16_t *samples; /**< Interleaved, left first. */
+                uint32_t       frames;
+                uint32_t       channels;
+} bmds_game_sound_t;
+
+/**
+ * @brief Loads the sound file at @p path (`bmds_audio_decode()`'s: WAV, MP3, Ogg Vorbis, FLAC)
+ *        whole into @p sound, resampled to @p audio's rate.
+ * @return 0, or a negative error (`-BMDS_ERANGE`: longer than 10 minutes; `-BMDS_ENOMEM`, the
+ *         open's and the decoder's). Free it with `bmds_game_sound_free()`, its voices stopped.
+ */
+int bmds_game_sound_load(bmds_game_audio_t *audio, const char *path, bmds_game_sound_t *sound);
+
+/** @brief Loads a sound from @p length bytes at @p data (one built in), as `bmds_game_sound_load()`. */
+int bmds_game_sound_load_memory(bmds_game_audio_t *audio, const void *data, uint32_t length, bmds_game_sound_t *sound);
+
+/** @brief Frees a loaded sound and empties it (an empty one: nothing). No voice may be playing it. */
+void bmds_game_sound_free(bmds_game_sound_t *sound);
+
+/** @brief `bmds_game_play()`'s flags: it plays until stopped, from its start again at its end. */
+#define BMDS_GAME_PLAY_LOOP 1u
+
+/**
+ * @brief Starts @p sound at @p volume (0 to 1) and @p pan (-1 left to 1 right), from the
+ *        mixer's next period. With every voice busy, the oldest that doesn't loop is taken.
+ * @return The voice (0 or more), or `-BMDS_EBUSY` (every voice loops), `-BMDS_EAGAIN` (more
+ *         asked since the mixer's last period than it keeps), `-BMDS_EINVAL`.
+ */
+int32_t bmds_game_play(bmds_game_audio_t *audio, const bmds_game_sound_t *sound, float volume, float pan,
+                       uint32_t flags);
+
+/** @brief Changes a voice's volume and pan (over a period: no click). Ended: nothing. */
+void bmds_game_voice_set(bmds_game_audio_t *audio, int32_t voice, float volume, float pan);
+
+/** @brief Stops a voice (faded over a period). Ended: nothing. */
+void bmds_game_voice_stop(bmds_game_audio_t *audio, int32_t voice);
+
+/** @brief Returns true while @p voice plays (as far as the mixer has said). */
+int bmds_game_voice_is_playing(const bmds_game_audio_t *audio, int32_t voice);
+
+/**
+ * @brief Plays the sound file at @p path (`bmds_audio_decode()`'s: MIDI through the synth, MP3,
+ *        Ogg Vorbis, FLAC, WAV) as the music at @p volume, from its start again at its end with
+ *        `BMDS_GAME_PLAY_LOOP`, decoded on a thread of its own; the music playing stops first.
+ * @return 0, or a negative error (the open's and the decoder's, the device's, `-BMDS_ENOMEM`).
+ */
+int bmds_game_music_play(bmds_game_audio_t *audio, const char *path, float volume, uint32_t flags);
+
+/** @brief Stops the music (none: nothing). */
+void bmds_game_music_stop(bmds_game_audio_t *audio);
+
+/** @brief Sets the music's volume, 0 to 1. */
+void bmds_game_music_volume(bmds_game_audio_t *audio, float volume);
 
 #ifdef __cplusplus
 }
