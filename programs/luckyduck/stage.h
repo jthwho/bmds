@@ -28,7 +28,8 @@ enum {
         STAGE_LABEL,  /**< `text` in 8×16 at scale `font` (0: 1), colour `rgb`. */
         STAGE_BUTTON, /**< A button: `w`×`h`, `text` its label, `font` its state (`UI_...`). */
         STAGE_PANEL,  /**< A panel `w`×`h`. */
-        STAGE_BLEND   /**< `rgb` over `w`×`h`, `alpha`/256 of it. */
+        STAGE_BLEND,  /**< `rgb` over `w`×`h`, `alpha`/256 of it. */
+        STAGE_CHIPS   /**< A pile worth `rgb` dollars, its bottom chip's top-left at (`x`, `y`). */
 };
 
 /** @brief `stage_item_t::flags`. */

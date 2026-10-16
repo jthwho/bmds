@@ -167,6 +167,15 @@ def sleeper():
     return pic
 
 
+def arrow():
+    """A gold arrow pointing down: whose turn it is."""
+    pic = Picture(30, 24)
+    tip = polygon([(3, 4), (27, 4), (15, 21)])
+    paint(pic, tip.grow(1.6), OUTLINE)
+    paint(pic, tip, lit(tip, (0xFF, 0xC8, 0x30), glow=0.35, rim=0.3, edge=4))
+    return pic
+
+
 def bulb(on):
     """A marquee bulb on the sign's dark frame (its glow drawn on the frame's colour)."""
     pic = Picture(18, 18)

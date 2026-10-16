@@ -22,7 +22,8 @@
 
 #define CW ART_CARD_W
 #define CH ART_CARD_H
-#define COL_X(c) (WIDTH / 2 - 500 + (c) * 150)
+/* The columns centred between the left edge and the system buttons. */
+#define COL_X(c) ((WIDTH - 158) / 2 - 500 + (c) * 150)
 #define TOP_Y 16
 #define TABLEAU_Y 180
 #define STATUS_Y (HEIGHT - 44)
@@ -51,24 +52,22 @@
 #define S_DEAL SFX_DEAL
 #define S_WIN SFX_WIN
 
-/* The status band's buttons. */
+/* The buttons: the system's stacked at the top right, the game's (undo) in the status band. */
 enum {
         B_LOBBY,
-        B_DEAL,
-        B_UNDO,
+        B_NEW,
         B_OPTIONS,
         B_HELP,
+        B_UNDO,
         BUTTONS
 };
 static ui_button_t BUTTON[BUTTONS];
 
-/* The buttons along the status band's right. */
 static void place_buttons(void) {
-        static const char *const label[BUTTONS] = {"LOBBY", "DEAL", "UNDO", "OPTIONS", "HELP"};
-        static const uint32_t    key[BUTTONS] = {0, K_N, K_U, K_O, K_H};
-        static const int32_t     x[BUTTONS] = {620, 500, 380, 260, 120}, w[BUTTONS] = {110, 110, 110, 130, 100};
+        static const char *const label[BUTTONS] = {"LOBBY", "NEW GAME", "OPTIONS", "HELP", "UNDO"};
+        static const uint32_t    key[BUTTONS] = {0, K_N, K_O, K_F1, K_U};
         for (int i = 0; i < BUTTONS; ++i) {
-                BUTTON[i].r = rect(WIDTH - x[i], STATUS_Y + 6, w[i], 34);
+                BUTTON[i].r = i < B_UNDO ? app_system_button(i) : rect(WIDTH - 136, STATUS_Y + 6, 120, 34);
                 BUTTON[i].label = label[i];
                 BUTTON[i].key = key[i];
         }
@@ -107,7 +106,6 @@ typedef struct {
 
 enum {
         BOX_NONE,
-        BOX_HELP,
         BOX_OPTIONS,
         BOX_WON
 };
@@ -127,7 +125,7 @@ typedef struct {
                 bmds_rect_t shown_cursor, shown_held; /* width 0: none */
                 int         shown_box;
                 uint32_t    box_version, shown_box_version;
-                char        shown_status[96];
+                char        shown_status[160];
                 /* Motion. */
                 flight_t flight[SOL_CARDS];
                 uint32_t flights;
@@ -674,9 +672,50 @@ static void set_option(state_t *s, uint32_t usage) {
                 return;
         }
         save_settings(s);
-        deal(s);
+        /* Before the first move, dealt again at once; else from the next deal (the game under way
+           isn't ended for it). */
+        if (!s->game.started) deal(s);
         s->box = BOX_OPTIONS;
         ++s->box_version;
+        return;
+}
+
+static const char *const HELP[] = {
+        "Klondike: build the four suits up from the Aces.",
+        "The columns build down in alternating colours; only a",
+        "King goes to an empty column. Draw from the stock, one",
+        "card or three (Options), and play the waste's top card.",
+        "",
+        "Mouse: drag cards; a double click sends a card up;",
+        "a right click sends up everything that can go.",
+        "",
+        "Arrows       move the cursor",
+        "Space/Enter  draw, pick up, put down",
+        "D  draw      F  this card up     A  all up",
+        "Esc          let go (or back to the lobby)",
+        "Ctrl+Z/U     undo",
+        "N/F2  new game   O  options   M  sound   F1  help",
+        "",
+        "Scoring: standard (Windows'), Vegas (a deal costs $52 from",
+        "the bank, each card sent up pays $5), or none.",
+};
+
+static void show_help(void) {
+        app_info("SOLITAIRE", HELP, (int)(sizeof(HELP) / sizeof(HELP[0])));
+        return;
+}
+
+static void deal_now(void) {
+        deal(&s_state);
+        return;
+}
+
+/* A new game: asked first when one is under way (it can't be come back to). */
+static void new_game(state_t *s) {
+        if (s->game.started && !s->game.won && !s->winning)
+                app_confirm("START A NEW GAME?", "The game under way ends if you deal again.", "NEW GAME", deal_now);
+        else
+                deal(s);
         return;
 }
 
@@ -732,10 +771,10 @@ static void on_key(state_t *s, const bmds_surface_event_t *e) {
                         if (sol_undo(&s->game) == 0) play(s, S_FLIP, 0.5f);
                         break;
                 case K_N:
-                case K_F2: deal(s); return;
+                case K_F2: new_game(s); return;
                 case K_O: s->box = BOX_OPTIONS; break;
                 case K_H:
-                case K_F1: s->box = BOX_HELP; break;
+                case K_F1: show_help(); break;
                 default: break;
         }
         /* The cursor stays on a card that is there. */
@@ -853,13 +892,13 @@ static void on_pointer(state_t *s, const bmds_surface_event_t *e) {
                 s->auto_play = 0;
                 switch (s->hover) {
                         case B_LOBBY: app_leave(); return;
-                        case B_DEAL: deal(s); return;
+                        case B_NEW: new_game(s); return;
                         case B_UNDO:
                                 s->held_pile = -1;
                                 if (sol_undo(&s->game) == 0) play(s, S_FLIP, 0.5f);
                                 return;
                         case B_OPTIONS: s->box = BOX_OPTIONS; return;
-                        default: s->box = BOX_HELP; return;
+                        default: show_help(); return;
                 }
         }
         const int was_started = s->game.started;
@@ -940,19 +979,36 @@ static void blit_tile(bmds_canvas_t *c, const state_t *s, int32_t x, int32_t y, 
         return;
 }
 
-static void status_text(const state_t *s, char *out, size_t size) {
+#define FIELDS 4
+#define FIELD_W 220 /* each field its own column: a number changing moves nothing after it */
+
+/* The status band's fields: the score (and the bank, Vegas), the moves, the time last. @return How many. */
+static int status_fields(const state_t *s, char out[FIELDS][32]) {
         const solitaire_t *g = &s->game;
-        char               score[64] = "", bank[24];
+        int                n = 0;
         if (g->scoring == SOL_SCORE_STANDARD) {
-                snprintf(score, sizeof(score), "SCORE: %d", (int)g->score);
+                snprintf(out[n++], 32, "SCORE: %d", (int)g->score);
         } else if (g->scoring == SOL_SCORE_VEGAS) {
                 char amount[24];
                 money(amount, sizeof(amount), g->score);
-                money(bank, sizeof(bank), bank_balance());
-                snprintf(score, sizeof(score), "SCORE: %s   BANK: %s", amount, bank);
+                snprintf(out[n++], 32, "SCORE: %s", amount);
+                money(amount, sizeof(amount), bank_balance());
+                snprintf(out[n++], 32, "BANK: %s", amount);
         }
-        snprintf(out, size, "%s%sTIME: %u:%02u   MOVES: %u", score, score[0] != '\0' ? "   " : "",
-                 (unsigned)(g->seconds / 60), (unsigned)(g->seconds % 60), (unsigned)g->moves);
+        snprintf(out[n++], 32, "MOVES: %u", (unsigned)g->moves);
+        snprintf(out[n++], 32, "TIME: %u:%02u", (unsigned)(g->seconds / 60), (unsigned)(g->seconds % 60));
+        return n;
+}
+
+/* The fields as one text: what changed since the last frame. */
+static void status_text(const state_t *s, char *out, size_t size) {
+        char      f[FIELDS][32];
+        const int n = status_fields(s, f);
+        out[0] = '\0';
+        for (int i = 0; i < n; ++i) {
+                const size_t used = strlen(out);
+                snprintf(out + used, size - used, "%s|", f[i]);
+        }
         return;
 }
 
@@ -999,18 +1055,7 @@ static void draw_box(bmds_canvas_t *c, const state_t *s) {
         const bmds_rect_t r = box_rect();
         char              line[80];
         ui_panel(c, r);
-        if (s->box == BOX_HELP) {
-                ui_text_centred(c, ART_FONT_MED, WIDTH / 2, r.y + 24, "SOLITAIRE");
-                box_line(c, 220, "Arrows       move the cursor", TEXT);
-                box_line(c, 242, "Space/Enter  draw, pick up, put down", TEXT);
-                box_line(c, 264, "D  draw      F  this card up", TEXT);
-                box_line(c, 286, "A  all up    Esc  let go (or the lobby)", TEXT);
-                box_line(c, 308, "Ctrl+Z/U     undo", TEXT);
-                box_line(c, 330, "F2/N  deal   O  options   M  sound", TEXT);
-                box_line(c, 368, "Mouse: drag cards; a double click sends one up,", DIM);
-                box_line(c, 390, "a right click all that can go.", DIM);
-                box_line(c, 480, "Esc or a click: close", DIM);
-        } else if (s->box == BOX_OPTIONS) {
+        if (s->box == BOX_OPTIONS) {
                 static const char *const scoring[] = {"standard", "Vegas (from the bank)", "none"};
                 ui_text_centred(c, ART_FONT_MED, WIDTH / 2, r.y + 24, "OPTIONS");
                 snprintf(line, sizeof(line), "1 / 3    draw %s", s->draw == 3 ? "three" : "one");
@@ -1019,7 +1064,7 @@ static void draw_box(bmds_canvas_t *c, const state_t *s) {
                 box_line(c, 252, line, TEXT);
                 snprintf(line, sizeof(line), "M        sound %s", sound_on() ? "on" : "off");
                 box_line(c, 278, line, TEXT);
-                box_line(c, 314, "Changing the draw or scoring deals again.", DIM);
+                box_line(c, 314, "A change of draw or scoring starts with the next deal.", DIM);
                 box_line(c, 336, "Vegas: a deal costs $52 from the bank, each card up pays $5.", DIM);
                 snprintf(line, sizeof(line), "Games won: %u of %u", (unsigned)s->won, (unsigned)s->played);
                 box_line(c, 384, line, TEXT);
@@ -1043,12 +1088,22 @@ static void draw_box(bmds_canvas_t *c, const state_t *s) {
         return;
 }
 
-/* The status band: the score, the time, the moves, and the buttons. */
+/* The status band: the score, the time, the moves, and undo. */
 static void draw_band(bmds_canvas_t *c, const state_t *s) {
-        char text[96];
+        char text[160];
         status_text(s, text, sizeof(text));
-        (void)ui_text(c, ART_FONT_SMALL, 20, STATUS_Y + 18, text);
-        for (int i = 0; i < BUTTONS; ++i) ui_button(c, &BUTTON[i], s->hover == i ? UI_HOVER : UI_NORMAL);
+        (void)text;
+        char      f[FIELDS][32];
+        const int n = status_fields(s, f);
+        for (int i = 0; i < n; ++i) (void)ui_text(c, ART_FONT_SMALL, 20 + i * FIELD_W, STATUS_Y + 18, f[i]);
+        ui_button(c, &BUTTON[B_UNDO], s->hover == B_UNDO ? UI_HOVER : UI_NORMAL);
+        return;
+}
+
+/* The system's buttons at the top right, those inside @p r. */
+static void draw_system(bmds_canvas_t *c, const state_t *s, bmds_rect_t r) {
+        for (int i = 0; i < B_UNDO; ++i)
+                if (meets(&BUTTON[i].r, &r)) ui_button(c, &BUTTON[i], s->hover == i ? UI_HOVER : UI_NORMAL);
         return;
 }
 
@@ -1082,6 +1137,7 @@ static void draw_scene(bmds_canvas_t *c, const state_t *s, const view_t *v, bmds
         const bmds_rect_t held = held_rect(s), cursor = cursor_rect(s);
         if (held.width > 0 && meets(&held, &r)) outline(c, held, HELD);
         if (cursor.width > 0 && meets(&cursor, &r)) outline(c, cursor, CURSOR);
+        draw_system(c, s, r);
         const bmds_rect_t box = box_rect();
         if (s->box != BOX_NONE && meets(&box, &r)) draw_box(c, s);
         bmds_canvas_set_clip(c, NULL);
@@ -1159,10 +1215,14 @@ static void scene_draw(bmds_canvas_t *c) {
                 s->shown_box = s->box;
                 s->shown_box_version = s->box_version;
         }
-        char text[96];
+        char text[160];
         status_text(s, text, sizeof(text));
-        if (strcmp(text, s->shown_status) != 0 || s->hover != s->shown_hover) {
+        if (s->hover != s->shown_hover) { /* the buttons lit and unlit */
+                if (s->shown_hover >= 0) dirty(s, BUTTON[s->shown_hover].r);
+                if (s->hover >= 0) dirty(s, BUTTON[s->hover].r);
                 s->shown_hover = s->hover;
+        }
+        if (strcmp(text, s->shown_status) != 0) {
                 dirty(s, rect(0, STATUS_Y, WIDTH, HEIGHT - STATUS_Y));
                 snprintf(s->shown_status, sizeof(s->shown_status), "%s", text);
         }

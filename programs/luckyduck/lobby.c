@@ -33,7 +33,7 @@ typedef struct {
 /* Two rows across the middle (their places from the picture's size: lobby_enter()). */
 static table_t TABLES[] = {
         {ART_TABLE_SOLITAIRE, 0, 0, &solitaire_scene},
-        {ART_TABLE_BLACKJACK, 0, 0, NULL},
+        {ART_TABLE_BLACKJACK, 0, 0, &blackjack_scene},
         {ART_TABLE_DICE, 0, 0, NULL},
         {ART_TABLE_VIDEO, 0, 0, NULL},
         {ART_TABLE_POKER, 0, 0, NULL},

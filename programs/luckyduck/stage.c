@@ -70,6 +70,7 @@ bmds_rect_t stage_bounds(const stage_item_t *it) {
                 case STAGE_BUTTON:
                 case STAGE_PANEL:
                 case STAGE_BLEND: return rect(it->x, it->y, it->w, it->h);
+                case STAGE_CHIPS: return ui_chips_rect(it->x, it->y, it->rgb);
                 default: return rect(0, 0, 0, 0);
         }
 }
@@ -135,6 +136,7 @@ void stage_draw_item(bmds_canvas_t *c, const stage_item_t *it) {
                 }
                 case STAGE_PANEL: ui_panel(c, rect(it->x, it->y, it->w, it->h)); break;
                 case STAGE_BLEND: bmds_canvas_fill_blend(c, it->x, it->y, it->w, it->h, it->rgb, it->alpha); break;
+                case STAGE_CHIPS: ui_chips(c, it->x, it->y, it->rgb); break;
                 default: break;
         }
         return;

@@ -72,6 +72,17 @@ bmds_rect_t ui_card_source(int tile);
  */
 bmds_rect_t ui_uncovered(bmds_rect_t c, const bmds_rect_t *cards, int count);
 
+/** @brief Chips' values, `ART_CHIP_0` up. */
+#define UI_CHIP_KINDS 6
+extern const int32_t ui_chip_value[UI_CHIP_KINDS];
+
+/** @brief A pile of chips worth @p dollars (the fewest, the biggest at the bottom; at most 14
+ *         drawn), its bottom chip's top-left at (@p x, @p y): each chip 5 pixels above the last. */
+void ui_chips(bmds_canvas_t *c, int32_t x, int32_t y, uint32_t dollars);
+
+/** @brief The rectangle ui_chips() covers. */
+bmds_rect_t ui_chips_rect(int32_t x, int32_t y, uint32_t dollars);
+
 /** @brief Sprite @p sprite with its top-left at (@p x, @p y); @p mirror: facing the other way. */
 void ui_sprite(bmds_canvas_t *c, int32_t x, int32_t y, int sprite, int mirror);
 

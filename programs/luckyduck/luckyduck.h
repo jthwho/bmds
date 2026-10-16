@@ -26,6 +26,8 @@
 /* HID keys (page 7). */
 #define KEY(u) (0x00070000u | (u))
 #define K_A KEY(0x04)
+#define K_B KEY(0x05)
+#define K_C KEY(0x06)
 #define K_D KEY(0x07)
 #define K_F KEY(0x09)
 #define K_H KEY(0x0b)
@@ -33,8 +35,12 @@
 #define K_M KEY(0x10)
 #define K_N KEY(0x11)
 #define K_O KEY(0x12)
+#define K_P KEY(0x13)
+#define K_R KEY(0x15)
 #define K_S KEY(0x16)
+#define K_T KEY(0x17)
 #define K_U KEY(0x18)
+#define K_Y KEY(0x1c)
 #define K_Z KEY(0x1d)
 #define K_1 KEY(0x1e)
 #define K_3 KEY(0x20)
@@ -79,6 +85,7 @@ typedef struct scene_t {
 
 extern const scene_t lobby_scene;
 extern const scene_t solitaire_scene;
+extern const scene_t blackjack_scene;
 
 /** @brief The sounds (the folder's WAVs). */
 enum {
@@ -121,8 +128,21 @@ void app_switch(const scene_t *scene, int argc, char **argv);
 /** @brief Back to the lobby: asks first if a game is under way. */
 void app_leave(void);
 
-/** @brief Whether the leave box is up (the scene's events don't come while it is). */
+/** @brief Whether a box is up (the scene's events and ticks don't come while it is). */
 int app_asking(void);
+
+/**
+ * @brief Asks @p title (with @p line under it): @p yes (Y, or a click) calls @p yes_fn; "keep
+ *        playing", the safe answer lit from the start, is Enter's, Space's, Escape's and N's. Every game asks this before it ends a game under way: going to
+ *        the lobby, a new game, quitting (devplan/luckyduck.md §9).
+ */
+void app_confirm(const char *title, const char *line, const char *yes, void (*yes_fn)(void));
+
+/** @brief Shows @p count lines of @p title to read (rules, help) until closed. @p lines must last. */
+void app_info(const char *title, const char *const *lines, int count);
+
+/** @brief System buttons' places: stacked at the top right, @p i from the top (gameplay's are in the band). */
+bmds_rect_t app_system_button(int i);
 
 /** @brief The felt inside @p r onto @p c (the background of every redraw). */
 void felt_restore(bmds_canvas_t *c, bmds_rect_t r);

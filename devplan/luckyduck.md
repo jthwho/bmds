@@ -310,6 +310,18 @@ at 1280×720 with the 100×140 cards:
 
 ## 9. Input
 
+**Conventions for every game** (the user's, 2026-10-15):
+
+- **System buttons apart from the game's:** Lobby, Rules or Help, Options, New game are stacked at
+  the top right (`app_system_button()`); what is played (Hit, Deal, Undo, the chip rack...) is in
+  the bottom band.
+- **Ending a game under way asks first** (`app_confirm()`: the answer, or "keep playing"): back to
+  the lobby, a new game, and closing the window. A game counts as under way when leaving would
+  lose it (Solitaire after its first move; Blackjack's round in play; a bet not yet dealt comes
+  back, so betting doesn't).
+- **Rules and help in one box** (`app_info()`), not printed on the table.
+
+
 - **The mouse:** everything that can be done is a button or a thing on the table to click, lit
   while the pointer is over it. A right click undoes a bet's last chip.
 - **Keys:** each button shows its letter (Blackjack's H, S, D, P, R). Escape is the lobby, F1
@@ -466,3 +478,110 @@ The user's notes on step 1, and what was done:
     pointer leaves the window (the window manager's `Leave`, dropped before). Checked on the board:
     over the Dice table Solitaire stays down, over Solitaire it lifts, onto the panel it drops.
   - "BANK" sits over the amount, both to the right, as the amount can grow to many digits.
+
+## 16. Step 2 design: Blackjack (2026-10-15)
+
+§8b's rules, built as §6 asks (rules that run from actions and a seed, seats, per-seat views, an
+event log that drives the picture).
+
+- **`deck.{c,h}`:** xoshiro128** seeded (the rules' only randomness), Fisher-Yates shuffles. A
+  card is a byte (suit × 13 + rank, as Solitaire's).
+- **`blackjack_rules.{c,h}`** (pure C, host-tested in `tests/host/luckyduck_blackjack.cpp`):
+  - A table of 5 seats (seat 0 at first base, the screen's right; the player at seat 2), each with
+    a stack and up to 4 hands; the dealer's hand; a 6-deck shoe with the cut card at 75%
+    (reshuffled before the next round once passed).
+  - Phases: betting, insurance (the up card an Ace), play (seat by seat, hand by hand), the
+    dealer, settled. Actions: `bj_bet()`, `bj_deal()`, `bj_insure()`, `bj_act()` (hit, stand,
+    double, split, surrender), each refused when not legal (`bj_can()`).
+  - Rules (options in the table): the dealer stands on soft 17 (or hits it), peeks with an Ace or
+    a ten up, blackjack pays 3:2 (rounded down to the dollar), insurance 2:1 (half the bet; with a
+    blackjack it is even money), double on any two (after a split too), split equal values to 4
+    hands (split Aces one card each, no more), late surrender (an option, on by default), a player
+    bust loses even if the dealer busts.
+  - **Events** (a round's log): shuffle, bet, deal (a seat's hand or the dealer's, up or down),
+    the hole card turned, split, double, insurance, a turn, bust, blackjack, a hand's result and
+    payout, the round's end. `bj_event_for(seat)` gives an event as that seat may see it (the hole
+    card hidden until turned): the scene reads only those, as a network client would.
+  - **Basic strategy** (`bj_basic()`: S17 or H17, doubles, splits after a split, surrender) plays
+    the bot ducks and answers the hint button.
+- **The scene (`blackjack.c`):**
+  - The felt painted on entering: a curved table edge and its padded rail, five gold betting
+    circles, and the prints along arcs ("BLACKJACK PAYS 3 TO 2", the soft-17 rule, "INSURANCE PAYS
+    2 TO 1") in the headline letters, each glyph turned along the curve (`ui_text_arc()`).
+  - Lucky deals from a shoe at the top right; the discards go to a tray at the top left.
+  - The player's hands at full size in the middle (smaller cards from 3 hands), the bots' at 72%
+    on either side, each bot duck beside its circle with its name and stack.
+  - **The picture lags the rules:** the scene replays the log one event at a time into its own
+    model of the table, each event starting its animation and holding the next for its length (a
+    card dealt 12 ticks, the hole card turned 14, a result 30). Input waits until it has caught
+    up. A bot acts after a short "think".
+  - **Motion:** every card and chip pile follows its place: when the model moves it (dealt, split,
+    swept), it eases from where it shows; a card turned face up narrows and widens
+    (`bmds_canvas_blit_scaled()`), dealt cards spin as they fly. Payouts slide from the dealer's
+    tray, losses to it; results pop as headlines ("BLACKJACK!", "BUST", "WIN", "PUSH").
+  - **Betting:** a chip rack ($1, $5, $25, $100, $500) in the bottom band; a click adds the chip
+    to the bet (it flies to the circle), a right click on the circle takes the last back; Deal
+    (Enter), Rebet (the last bet), Clear. Then Hit (H), Stand (S), Double (D), Split (P),
+    Surrender (R), Insurance or Even money (Y/N), a hint (Lucky whispers basic strategy).
+  - Chips: one sprite a denomination (a chip seen from above at an angle), a pile drawn bottom up
+    a few pixels apart, its amount made of the fewest chips.
+  - The bank is the player's stack: a bet leaves it when placed, payouts return to it, and the
+    bank is written at the round's end. Below the table minimum, Lucky tops it up (§7).
+  - Options: the soft-17 rule, surrender, bot ducks (0-4, default 2).
+
+## 17. As built: step 2, Blackjack (2026-10-15)
+
+- **`deck.{c,h}`, `blackjack_rules.{c,h}`** as §16, host-tested (`tests/host/luckyduck_blackjack.cpp`,
+  11 cases): the random numbers (same seed, same numbers; unbiased ranges) and shuffles, totals
+  (soft, hard, hidden cards), bets and their limits, the deal's order, busts and the dealer's
+  draws, pushes, both soft-17 rules, blackjacks at 3:2 (an odd bet rounded down), the peek,
+  insurance (taken and declined, won and lost), doubling (and its stack), surrender (and when not),
+  splits with a double after, split Aces, the cut card's reshuffle, the hole card hidden in the
+  seats' log, basic strategy.
+- **`blackjack.c`:** the table as §16 planned. The felt has its curved rail, five gold circles,
+  "BLACKJACK PAYS 3 TO 2" along an arc (`ui_text_arc()`: each glyph turned with the curve) and the
+  two rules printed flat. Lucky deals from the shoe (a flick of the wing a card), cheers at the
+  player's blackjack and droops when the dealer busts. Mallory, Pearl, Woody and Squeaky (the
+  number in the options, default 2) bet, think, play basic strategy, and look happy or sad.
+  Cards spin as they fly from the shoe, land and turn; splits slide apart, a bet pile under each
+  hand; results pop up over the hands; payouts slide from the dealer to the bet and home, losses
+  to the dealer. A gold arrow bobs over the hand to act. The hint (T) is Lucky whispering basic
+  strategy. Keys: Enter deal, B rebet, C clear, H/S/D/P/R, Y/N insurance, T hint, O options.
+- **Stage and helpers:** `STAGE_CHIPS` (a pile from the fewest chips, `ui_chips()`), and new art:
+  six chips at an angle (they stack 5 pixels apart) and flat for the rack, the shoe, the tray, the
+  arrow, the bot ducks in four poses.
+- **Checked on the board:** rounds dealt and played to the end (bets flying to circles, the deal's
+  spin, a blackjack, a bot's bust, the dealer drawing, results and payouts, the bank moving), a
+  split (with a temporary stacked shoe, removed), the hint, the buttons for each phase. Found and
+  fixed there: the dealer's draws now wait for their cards to land and turn before what follows
+  shows (a WIN showed while the dealer's card was still face down); the band's bank and bet moved
+  to two lines and the hint onto the felt (the player's turn has five buttons).
+- **Not yet:** insurance and even money seen on the board (host-tested only); the options box
+  answers keys only (a click closes it); doubling's chips and surrender's half seen only by logic.
+
+### 17a. After the user's look (2026-10-15)
+
+- The table's prints are gone (the arc, the soft-17 and insurance lines): a Rules button (F1) shows
+  them all in `app_info()`'s box. `ui_text_arc()` went with them.
+- "BLACKJACK!" and the dealer's headlines are the size of "WIN".
+- A chip adds what it says ($1 and $1K were raised to the minimum, cut to the maximum): the rules
+  take any bet the stack covers and check the limits at the deal (`bj_bet_ok()`); out of them, the
+  deal doesn't happen and the table says "TABLE MINIMUM IS $5" (or the maximum).
+- The system buttons (Lobby, Rules, Options) moved to the top right, the shoe left of them; the
+  band has only the game's. The shoe is drawn as one (the decks' edges stacked in a smoked box, a
+  card at its mouth) and the tray shows a pile of the discards since the shuffle.
+- Solitaire follows the same rules: Lobby, New Game (asks while a game is under way), Options and
+  Help (now the shared box) at the top right, its columns 40 pixels left for them; Undo in the
+  band; a change of draw or scoring waits for the next deal (dealt at once before the first move).
+- Closing the window asks too while a game is under way.
+
+### 17b. Cleanups (2026-10-15, the user's)
+
+- Solitaire's columns are centred between the left edge and the system buttons.
+- Its status fields each have a column (score, the bank in Vegas, moves, the time last): the time
+  ticking no longer nudges what follows it.
+- A confirm box's safe answer ("keep playing") is lit from the start and is Enter's, Space's,
+  Escape's and N's; only Y or a click on the other button ends the game.
+- Blackjack's band: BANK and BET side by side, a small label over each amount (stacked, the amounts
+  ran into each other). The tray's discards are card backs lying in it, the pile a little higher
+  as it grows (they were squashed upright cards).

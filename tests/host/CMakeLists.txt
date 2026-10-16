@@ -83,6 +83,9 @@ add_executable(bmds_host_tests
         ${BMDS_ROOT}/programs/blocks/rules.c
         solitaire.cpp
         ${BMDS_ROOT}/programs/luckyduck/solitaire_rules.c
+        luckyduck_blackjack.cpp
+        ${BMDS_ROOT}/programs/luckyduck/blackjack_rules.c
+        ${BMDS_ROOT}/programs/luckyduck/deck.c
         memspace.cpp
         midi.cpp
         mplayer.cpp

@@ -203,3 +203,36 @@ bmds_rect_t ui_uncovered(bmds_rect_t c, const bmds_rect_t *cards, int count) {
         }
         return c;
 }
+
+/* ---- Chips */
+
+const int32_t ui_chip_value[UI_CHIP_KINDS] = {1, 5, 25, 100, 500, 1000};
+
+#define PILE_MAX 14
+#define CHIP_STEP 5
+
+/* The chips (their kinds, the biggest first) making @p dollars, at most PILE_MAX. @return How many. */
+static int pile(uint32_t dollars, uint8_t *kinds) {
+        int n = 0;
+        for (int k = UI_CHIP_KINDS - 1; k >= 0 && n < PILE_MAX; --k)
+                while (dollars >= (uint32_t)ui_chip_value[k] && n < PILE_MAX) {
+                        kinds[n++] = (uint8_t)k;
+                        dollars -= (uint32_t)ui_chip_value[k];
+                }
+        return n;
+}
+
+bmds_rect_t ui_chips_rect(int32_t x, int32_t y, uint32_t dollars) {
+        uint8_t   kinds[PILE_MAX];
+        const int n = pile(dollars, kinds);
+        if (n == 0) return rect(0, 0, 0, 0);
+        const art_tile_t *t = &art_sprites[ART_CHIP_0];
+        return rect(x, y - (n - 1) * CHIP_STEP, t->w, t->h + (n - 1) * CHIP_STEP);
+}
+
+void ui_chips(bmds_canvas_t *c, int32_t x, int32_t y, uint32_t dollars) {
+        uint8_t   kinds[PILE_MAX];
+        const int n = pile(dollars, kinds);
+        for (int i = 0; i < n; ++i) ui_sprite(c, x, y - i * CHIP_STEP, ART_CHIP_0 + kinds[i], 0);
+        return;
+}

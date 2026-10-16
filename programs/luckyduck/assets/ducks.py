@@ -254,6 +254,23 @@ DUCKLING_POSES = {
 }
 
 
+# The bot ducks at the Blackjack table (devplan/luckyduck.md §16): their kinds and names, and
+# the poses a player needs.
+BOTS = [("mallard", "MALLORY"), ("pekin", "PEARL"), ("wood", "WOODY"), ("rubber", "SQUEAKY")]
+BOT_POSES = {
+    "IDLE": pose(),
+    "THINK": pose(head=-10, wing=35, eyes="open"),
+    "HAPPY": pose(eyes="happy", beak=16, wing=55, bob=-6),
+    "SAD": pose(eyes="sad", wing=-10, head=12, bob=3),
+}
+
+
+def bot(name, size=84):
+    """BOT_<KIND>_<POSE>."""
+    _, kind, pose_name = name.split("_", 2)
+    return frame(kind.lower(), BOT_POSES[pose_name], size)
+
+
 def frame(style, pose_, size):
     pic = Picture(size, size)
     draw_duck(pic, 0, 0, size, style, pose_)

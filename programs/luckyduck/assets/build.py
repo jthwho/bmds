@@ -25,6 +25,7 @@ import cards  # noqa: E402
 import ducks  # noqa: E402
 import lobby  # noqa: E402
 import sounds  # noqa: E402
+import table  # noqa: E402
 from draw import Picture, mix, vertical  # noqa: E402
 import font  # noqa: E402
 from font import CHARS, advance, draw_text  # noqa: E402
@@ -75,9 +76,9 @@ def sprite_job(name):
         return ducks.lucky(name)
     if name in ducks.DUCKLING_POSES:
         return ducks.duckling(name)
-    for table, title in lobby.GAMES:
-        if name == table:
-            return lobby.table(table, title)
+    for tname, title in lobby.GAMES:
+        if name == tname:
+            return lobby.table(tname, title)
     if name == "SIGN_SOON":
         return lobby.sign()
     if name == "BUBBLE_QUACK":
@@ -88,13 +89,28 @@ def sprite_job(name):
         return lobby.bulb(name == "BULB_ON")
     if name == "SHADOW":
         return ducks.ground_shadow()
+    if name.startswith("BOT_"):
+        return ducks.bot(name)
+    if name.startswith("CHIP_BIG_"):
+        return table.big_chip(int(name[9:]))
+    if name.startswith("CHIP_"):
+        return table.chip(int(name[5:]))
+    if name == "ARROW":
+        return lobby.arrow()
+    if name == "SHOE":
+        return table.shoe()
+    if name == "TRAY":
+        return table.tray()
     if name == "SLEEP_Z":
         return lobby.sleeper()
     raise ValueError(name)
 
 
 SPRITES = list(ducks.LUCKY_POSES) + list(ducks.DUCKLING_POSES) + [t for t, _ in lobby.GAMES] + [
-    "SIGN_SOON", "BUBBLE_QUACK", "BUBBLE_QUACK_LEFT", "SLEEP_Z", "BULB_ON", "BULB_OFF", "SHADOW"]
+    "SIGN_SOON", "BUBBLE_QUACK", "BUBBLE_QUACK_LEFT", "SLEEP_Z", "BULB_ON", "BULB_OFF", "SHADOW"] + [
+    "BOT_%s_%s" % (kind.upper(), p) for kind, _ in ducks.BOTS for p in ducks.BOT_POSES] + [
+    "CHIP_%d" % i for i in range(len(table.CHIPS))] + ["CHIP_BIG_%d" % i for i in range(len(table.CHIPS))] + [
+    "SHOE", "TRAY", "ARROW"]
 
 
 def kern_job(job):

@@ -21,10 +21,16 @@
 
 app_t app;
 
-static const scene_t *const SCENES[] = {&lobby_scene, &solitaire_scene};
+static const scene_t *const SCENES[] = {&lobby_scene, &solitaire_scene, &blackjack_scene};
 
 static const char *const SOUND_FILES[SFX_COUNT] = {"place.wav",  "flip.wav",   "deal.wav",  "win.wav", "quack.wav",
                                                    "quack2.wav", "quacks.wav", "click.wav", "sad.wav"};
+
+enum {
+        BOX_NONE,
+        BOX_CONFIRM,
+        BOX_INFO
+};
 
 static struct {
                 const scene_t     *scene;
@@ -43,8 +49,13 @@ static struct {
                 const scene_t *start;
                 int            start_argc;
                 char         **start_argv;
-                /* The leave box. */
-                int asking, asking_shown, asking_hover, asking_hover_shown;
+                /* The box up: a question or something to read. */
+                int         box;
+                char        box_title[40], box_line[96];
+                const char *box_yes;
+                void (*box_yes_fn)(void);
+                const char *const *box_lines;
+                int                box_count, box_shown, box_hover, box_hover_shown;
 } m;
 
 /* ---- Sound */
@@ -298,7 +309,7 @@ static void enter(const scene_t *scene, int argc, char **argv) {
 
 void app_switch(const scene_t *scene, int argc, char **argv) {
         if (m.scene != NULL && m.scene->leave != NULL) m.scene->leave();
-        m.asking = 0;
+        m.box = BOX_NONE;
         enter(scene, argc, argv);
         m.moving = 1;
         m.edge = m.shown_edge = 0;
@@ -308,76 +319,132 @@ void app_switch(const scene_t *scene, int argc, char **argv) {
         return;
 }
 
-void app_leave(void) {
-        if (m.scene == &lobby_scene) return;
-        if (m.scene->busy != NULL && m.scene->busy()) {
-                m.asking = 1;
-                m.asking_hover = -1;
-                return;
-        }
+static void to_lobby(void) {
         app_switch(&lobby_scene, 0, NULL);
         return;
 }
 
+void app_leave(void) {
+        if (m.scene == &lobby_scene) return;
+        if (m.scene->busy != NULL && m.scene->busy()) {
+                app_confirm("LEAVE THE TABLE?", "The game under way ends if you go back to the lobby.", "LEAVE",
+                            to_lobby);
+                return;
+        }
+        to_lobby();
+        return;
+}
+
+bmds_rect_t app_system_button(int i) {
+        return rect(WIDTH - 158, 10 + i * 42, 146, 36);
+}
+
 int app_asking(void) {
-        return m.asking;
+        return m.box != BOX_NONE;
 }
 
-/* ---- The leave box */
+/* ---- The boxes: a question, or something to read (rules, help) */
 
-static bmds_rect_t ask_rect(void) {
-        return rect(WIDTH / 2 - 280, HEIGHT / 2 - 120, 560, 240);
-}
+#define INFO_LINES 22
 
-static ui_button_t ASK_BUTTONS[2];
-
-static void ask_layout(void) {
-        const ui_button_t leave = {{WIDTH / 2 - 190, HEIGHT / 2 + 50, 170, 40}, "LEAVE", K_L};
-        const ui_button_t stay = {{WIDTH / 2 + 20, HEIGHT / 2 + 50, 170, 40}, "STAY", K_S};
-        ASK_BUTTONS[0] = leave;
-        ASK_BUTTONS[1] = stay;
+void app_confirm(const char *title, const char *line, const char *yes, void (*yes_fn)(void)) {
+        m.box = BOX_CONFIRM;
+        snprintf(m.box_title, sizeof(m.box_title), "%s", title);
+        snprintf(m.box_line, sizeof(m.box_line), "%s", line);
+        m.box_yes = yes;
+        m.box_yes_fn = yes_fn;
+        m.box_shown = 0;
+        m.box_hover = -1;
         return;
 }
 
-static void ask_answer(int leave) {
-        m.asking = 0;
+void app_info(const char *title, const char *const *lines, int count) {
+        m.box = BOX_INFO;
+        snprintf(m.box_title, sizeof(m.box_title), "%s", title);
+        m.box_lines = lines;
+        m.box_count = count < INFO_LINES ? count : INFO_LINES;
+        m.box_shown = 0;
+        m.box_hover = -1;
+        return;
+}
+
+static bmds_rect_t box_rect(void) {
+        if (m.box == BOX_INFO) {
+                const int32_t h = 150 + m.box_count * 20;
+                return rect(WIDTH / 2 - 330, HEIGHT / 2 - h / 2, 660, h);
+        }
+        return rect(WIDTH / 2 - 300, HEIGHT / 2 - 120, 600, 240);
+}
+
+/* The box's buttons: its answer and "keep playing", or "close". */
+static int box_buttons(ui_button_t *out) {
+        const bmds_rect_t r = box_rect();
+        const int32_t     y = r.y + (int32_t)r.height - 66;
+        if (m.box == BOX_INFO) {
+                const ui_button_t close = {{WIDTH / 2 - 80, y, 160, 40}, "CLOSE", K_ESCAPE};
+                out[0] = close;
+                return 1;
+        }
+        const ui_button_t yes = {{WIDTH / 2 - 240, y, 220, 40}, m.box_yes, K_Y};
+        const ui_button_t no = {{WIDTH / 2 + 20, y, 220, 40}, "KEEP PLAYING", K_ESCAPE};
+        out[0] = yes;
+        out[1] = no;
+        return 2;
+}
+
+static void box_answer(int yes) {
+        void (*fn)(void) = m.box == BOX_CONFIRM && yes ? m.box_yes_fn : NULL;
+        m.box = BOX_NONE;
         sfx(SFX_CLICK, 0.6f);
-        if (leave)
-                app_switch(&lobby_scene, 0, NULL);
-        else
-                m.full_redraw = 1;
+        m.full_redraw = 1;
+        if (fn != NULL) fn();
         return;
 }
 
-static void ask_event(const bmds_surface_event_t *e) {
+static void box_event(const bmds_surface_event_t *e) {
+        ui_button_t b[2];
+        const int   n = box_buttons(b);
         if (e->type == BMDS_EVENT_KEY && (e->flags & BMDS_KEY_DOWN) != 0) {
                 const uint32_t usage = e->data[0];
-                if (usage == K_L || usage == K_ENTER || usage == K_KP_ENTER)
-                        ask_answer(1);
-                else if (usage == K_S || usage == K_ESCAPE)
-                        ask_answer(0);
+                if (m.box == BOX_INFO) {
+                        if (usage == K_ESCAPE || usage == K_ENTER || usage == K_KP_ENTER || usage == K_SPACE)
+                                box_answer(0);
+                } else if (usage == K_Y) { /* only Y ends the game: a key hit by chance keeps playing */
+                        box_answer(1);
+                } else if (usage == K_N || usage == K_ESCAPE || usage == K_ENTER || usage == K_KP_ENTER ||
+                           usage == K_SPACE) {
+                        box_answer(0);
+                }
         } else if (e->type == BMDS_EVENT_POINTER) {
                 const uint32_t pressed = e->data[2] & ~app.buttons;
-                m.asking_hover = ui_button_at(ASK_BUTTONS, 2, (int32_t)e->data[0], (int32_t)e->data[1]);
-                if ((pressed & 1u) != 0 && m.asking_hover >= 0) ask_answer(m.asking_hover == 0);
+                m.box_hover = ui_button_at(b, n, (int32_t)e->data[0], (int32_t)e->data[1]);
+                if ((pressed & 1u) != 0 && m.box_hover >= 0) box_answer(m.box_hover == 0 && m.box == BOX_CONFIRM);
         }
         return;
 }
 
-static void ask_draw(bmds_canvas_t *c) {
-        if (!m.asking_shown) {
+static void box_draw(bmds_canvas_t *c) {
+        ui_button_t b[2];
+        const int   n = box_buttons(b);
+        if (!m.box_shown) {
                 bmds_canvas_fill_blend(c, 0, 0, WIDTH, HEIGHT, 0x000000, BMDS_GAME_OPAQUE / 2);
-                const bmds_rect_t r = ask_rect();
+                const bmds_rect_t r = box_rect();
                 ui_panel(c, r);
-                ui_text_centred(c, ART_FONT_MED, WIDTH / 2, r.y + 30, "LEAVE THE TABLE?");
-                const char *line = "The game under way ends if you go back to the lobby.";
-                ui_line(c, WIDTH / 2 - (int32_t)strlen(line) * 4, r.y + 88, line, C_TEXT);
-                m.asking_shown = 1;
-                m.asking_hover_shown = -2;
+                ui_text_centred(c, ART_FONT_MED, WIDTH / 2, r.y + 28, m.box_title);
+                if (m.box == BOX_INFO) {
+                        for (int i = 0; i < m.box_count; ++i)
+                                ui_line(c, r.x + 44, r.y + 80 + i * 20, m.box_lines[i], C_TEXT);
+                } else {
+                        ui_line(c, WIDTH / 2 - (int32_t)strlen(m.box_line) * 4, r.y + 92, m.box_line, C_TEXT);
+                }
+                m.box_shown = 1;
+                m.box_hover_shown = -2;
         }
-        if (m.asking_hover != m.asking_hover_shown) {
-                for (int i = 0; i < 2; ++i) ui_button(c, &ASK_BUTTONS[i], m.asking_hover == i ? UI_HOVER : UI_NORMAL);
-                m.asking_hover_shown = m.asking_hover;
+        if (m.box_hover != m.box_hover_shown) {
+                /* Lit: the one under the pointer, else the safe one (keep playing, close): Enter's. */
+                const int lit = m.box_hover >= 0 ? m.box_hover : n - 1;
+                for (int i = 0; i < n; ++i) ui_button(c, &b[i], lit == i ? UI_HOVER : UI_NORMAL);
+                m.box_hover_shown = m.box_hover;
         }
         return;
 }
@@ -425,6 +492,11 @@ static void move_draw(bmds_canvas_t *c) {
 
 /* ---- The loop */
 
+static void quit(void) {
+        bmds_game_quit(app.game);
+        return;
+}
+
 /* The first callback: the picture's size known (a maximized window's), the felt fitted to it and
    the first scene entered. */
 static void begin(bmds_game_t *game) {
@@ -437,7 +509,6 @@ static void begin(bmds_game_t *game) {
         app.felt.height = HEIGHT;
         (void)bmds_canvas_init(&app.felt_canvas, (void *)app.felt.pixels, app.felt.stride, WIDTH, HEIGHT,
                                BMDS_PIXEL_RGB565);
-        ask_layout();
         enter(m.start, m.start_argc, m.start_argv);
         m.full_redraw = 1;
         return;
@@ -447,7 +518,12 @@ static void on_event(bmds_game_t *game, const bmds_surface_event_t *e) {
         int64_t now = 0;
         begin(game);
         switch (e->type) {
-                case BMDS_EVENT_CLOSE: bmds_game_quit(game); return;
+                case BMDS_EVENT_CLOSE: /* the window's close: a game under way asks first */
+                        if (m.scene->busy != NULL && m.scene->busy() && m.box == BOX_NONE)
+                                app_confirm("QUIT LUCKY DUCK?", "The game under way ends if you quit.", "QUIT", quit);
+                        else
+                                bmds_game_quit(game);
+                        return;
                 case BMDS_EVENT_PRESENTED: m.full_redraw = 1; return;
                 case BMDS_EVENT_ACTIVE:
                         if (m.audio != NULL) bmds_game_audio_pause(m.audio, e->data[0] == 0);
@@ -460,8 +536,8 @@ static void on_event(bmds_game_t *game, const bmds_surface_event_t *e) {
                         break;
                 default: break;
         }
-        if (m.asking) {
-                ask_event(e);
+        if (m.box != BOX_NONE) {
+                box_event(e);
         } else if (!m.moving || e->type != BMDS_EVENT_POINTER || (e->data[2] & ~app.buttons) == 0) {
                 m.scene->event(e); /* a click while the ducklings cross is dropped */
         }
@@ -476,7 +552,7 @@ static void on_event(bmds_game_t *game, const bmds_surface_event_t *e) {
 static void on_tick(bmds_game_t *game) {
         begin(game);
         move_tick();
-        if (!m.asking && !m.moving) m.scene->tick(); /* a still picture to uncover: cheaper */
+        if (m.box == BOX_NONE && !m.moving) m.scene->tick(); /* a still picture to uncover: cheaper */
         return;
 }
 
@@ -485,14 +561,13 @@ static void on_draw(bmds_game_t *game, bmds_canvas_t *c) {
         if (m.full_redraw) {
                 m.full_redraw = 0;
                 m.moving = 0;
-                m.asking_shown = 0;
+                m.box_shown = 0;
                 m.scene->redraw(c, rect(0, 0, WIDTH, HEIGHT));
         }
-        if (m.asking) {
-                ask_draw(c);
+        if (m.box != BOX_NONE) {
+                box_draw(c);
                 return;
         }
-        m.asking_shown = 0;
         if (m.moving)
                 move_draw(c);
         else
