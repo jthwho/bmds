@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <bmds/config.h>
 #include <bmds/error.h>
 
@@ -65,6 +66,13 @@ class TaskOwner {
                  *        record gives its process, devplan/processes.md §3.10).
                  */
                 virtual TaskOwner *threadOwner() { return this; }
+
+                /**
+                 * @brief Returns the session of the process this owner belongs to, or 0 (none:
+                 *        the window manager's starting pointer matches windows by it,
+                 *        devplan/windows.md §4l).
+                 */
+                virtual int32_t sessionId() { return 0; }
 
         protected:
                 TaskOwner() = default;

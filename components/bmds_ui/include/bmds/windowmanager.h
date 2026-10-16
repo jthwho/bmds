@@ -38,6 +38,7 @@
 BMDS_NAMESPACE_BEGIN
 
 class Display;
+class ProgramLauncher;
 class Surface;
 
 /**
@@ -285,7 +286,17 @@ class WindowManager {
                         DiagonalUp,   ///< The top-right and bottom-left corners'.
                         Text,         ///< An I-beam: text to select or type into.
                         None,         ///< None drawn (a game's own, or none).
+                        Starting,     ///< The arrow with an hourglass: a program starting (`programStarting()`).
                 };
+
+                /** @brief Programs shown starting at once (`programStarting()`): a newer replaces the oldest. */
+                static constexpr size_t MaxStarting = 4;
+
+                /** @brief How long a program is shown starting at most, without a window. */
+                static constexpr unsigned int StartingTimeoutMs = 20000;
+
+                /** @brief The starting pointer's frames: the sand turns this often. */
+                static constexpr unsigned int StartingFrameMs = 250;
 
                 /** @brief Looks at the screen (`capture()`). */
                 using Capture = void (*)(void *arg, const Surface &surface);
@@ -626,6 +637,17 @@ class WindowManager {
                 Error setPointer(uint8_t id, Pointer shape);
 
                 /**
+                 * @brief Shows that program @p pid is starting (`devplan/windows.md` §4l): the
+                 *        arrow becomes `Pointer::Starting` until a process of session @p pid opens
+                 *        an application window, the program is gone (@p launcher's
+                 *        `sendSignal(pid, 0)`), or @p timeoutMs pass. For a program started as
+                 *        the leader of a new session (the panel's launches).
+                 * @param launcher Kept until then: one that lasts (the loader).
+                 * @nonblocking
+                 */
+                void programStarting(int32_t pid, ProgramLauncher *launcher, unsigned int timeoutMs);
+
+                /**
                  * @brief Locks the pointer to window @p id (@p on), or lets it go: while the
                  *        window is focused (full screen or not), the pointer is hidden and held
                  *        still, and every pointer event goes to the window, motion as `dx`, `dy`
@@ -934,7 +956,7 @@ class WindowManager {
 
         public:
                 /** @brief Bytes saved from under the pointer at most: its largest picture's area. */
-                static constexpr size_t UnderBytes = (19 + 2 * 4) * 19 * 3; // B, G, R
+                static constexpr size_t UnderBytes = (24 + 2 * 4) * 27 * 3; // B, G, R: the starting pointer's
 
         private:
                 void            deliverKeys();
@@ -976,7 +998,12 @@ class WindowManager {
                 void            release(uint16_t x, uint16_t y);
                 void            pressedMoved(uint16_t x, uint16_t y); // a button's press shown while over it
                 void            sizeTo(uint16_t x, uint16_t y);       // a resize under way: the outline there
-                Pointer         shapeAt(uint16_t x, uint16_t y) const;
+                Pointer         shapeAt(uint16_t x, uint16_t y) const; // the arrow: the starting one, if so
+                Pointer         frameShapeAt(uint16_t x, uint16_t y) const;
+                bool            startingTick();                 // the sand turned, the timed out dropped
+                void            startingChecks();               // the programs gone dropped (unlocked)
+                void            startingEnded(int32_t session); // a window of @p session opened
+                void            startingChanged();              // the pointer's shape again
                 bool            isCursorDrawn() const {
                         return _cursorShown && !_pointerHidden && !_typingHidden && _shape != Pointer::None &&
                                lockedId() == 0;
@@ -1070,6 +1097,15 @@ class WindowManager {
                 uint16_t          _grabX = 0;           // the press, from the window's corner
                 uint16_t          _grabY = 0;
                 Pointer           _shape = Pointer::Arrow;
+                struct Starting {
+                                int32_t          pid = 0; // and session; 0: none
+                                int64_t          untilUs = 0;
+                                ProgramLauncher *launcher = nullptr;
+                };
+                Starting          _starting[MaxStarting];
+                uint8_t           _startingCount = 0;
+                uint8_t           _startingFrame = 0;
+                int64_t           _startingFrameUs = 0;   // when the sand turns next
                 bool              _pointerHidden = false; // by setPointerVisible()
                 bool              _typingHidden = false;  // a key went to a window asking: until a move
                 uint8_t           _sizeId = 0;            // its resize handle pressed: resized while held

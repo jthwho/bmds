@@ -597,6 +597,37 @@ At 720p:
   at most once a frame and may drop to every other one under load. Scrolling by a 2D-DMA copy
   inside surface 0 was measured in step 4 and loses to redrawing the rows (§9).
 
+## 4l. The starting pointer: feedback while a program starts (2026-10-16)
+
+The user's report: launching Lucky Duck gives no sign that anything is happening. It reads its
+program, pictures and sounds (several seconds from the card) before its window opens.
+
+- **The picture:** `Pointer::Starting`, the arrow with a small hourglass whose sand runs (three
+  frames, a quarter second each). It is appended after `None`. It replaces the arrow wherever the
+  arrow would show; the other shapes (a resize handle, an I-beam, a game's `None`) win, so the
+  pointer still says what a click there does. The other windows keep working meanwhile.
+- **Who says a program is starting:** the panel, after `ProgramLauncher::start()` gives it the pid
+  (`FolderActions::launch()`: the desktop, the Apps menu, folders, notifications' actions). It
+  calls `WindowManager::programStarting(pid, launcher, timeoutMs)`. The panel starts each program
+  as the leader of a new session, so the pid is also the session.
+- **What ends it, for each program starting** (up to 4 at once; more replace the oldest):
+  - **A window opened by its session:** an application-level window whose opener's task belongs to
+    a process of that session. `TaskOwner` gains `sessionId()` (0 for kernel tasks), and the loader
+    answers from its process table. `WindowManager::open()` asks before it takes its lock, so a
+    child of the program opening the window counts too (`terminal -e`).
+  - **The program gone:** `launcher->sendSignal(pid, 0)` says `NotExist`. It is checked at each
+    frame of the animation, so a program that fails, or hands off to one already running, stops
+    the hourglass within a quarter second.
+  - **The time running out:** 20 s.
+- **No polling when idle:** the window manager's task waits for its wake as before. Only while a
+  program is starting does it wake each quarter second, to turn the sand and run the checks.
+- **Not done:** a starting button on the taskbar (Windows' and GNOME's), if the pointer isn't
+  enough.
+- **Built and checked on the board (2026-10-16):** Lucky Duck from the Apps menu showed the
+  hourglass, its sand turning between frames, until its window opened about 1.5 s after the click.
+  The arrow then came back, and the program was its own session's leader as expected. The
+  program-gone path (`sendSignal(pid, 0)`) and the timeout are untested on the board.
+
 ## 6. ABI (later)
 
 The goal is GUI programs as separate executables. Not before the internal API has settled. Expected

@@ -1747,6 +1747,10 @@ Process *Running::processOf(int32_t id) {
         return found;
 }
 
+int32_t ProcessOwner::sessionId() {
+        return run != nullptr && processes.isCreated() ? processes->sessionOf(run->pid) : 0;
+}
+
 Error Running::attach(Member &member) {
         Mutex::Locker locker(threadsLock, WaitForever);
         if (ending) return Error::InvalidState;

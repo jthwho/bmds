@@ -24,8 +24,10 @@
 #include <bmds/memory.h>
 #include <bmds/mnemonic.h>
 #include <bmds/staticobject.h>
+#include <bmds/programlauncher.h>
 #include <bmds/surface.h>
 #include <bmds/system.h>
+#include <bmds/taskowner.h>
 #include <bmds/vfs.h>
 #include <bmds/windowmanager.h>
 
@@ -309,8 +311,10 @@ void WindowManager::entry(void *arg) {
 }
 
 void WindowManager::run() {
+        bool starting = false; // a program starting: woken each frame of its pointer
         for (;;) {
-                (void)_wake.acquire(WaitForever);
+                (void)_wake.acquire(starting ? StartingFrameMs : WaitForever);
+                bool             checks = false;
                 Surface      *surface = nullptr;
                 uint32_t      frame = 0;
                 int           picked = -1;
@@ -331,6 +335,7 @@ void WindowManager::run() {
                                 deliverKeys();
                                 deliverPads();
                                 applyPointer();
+                                checks = startingTick();
                                 frame = surface->frames();
                                 round(requests);
                                 if (_listChanged) {
@@ -350,7 +355,9 @@ void WindowManager::run() {
                                 itemArg = _itemArg;
                                 _itemPicked = nullptr;
                         }
+                        starting = _startingCount > 0;
                 }
+                if (checks) startingChecks();
                 // A desktop menu's choice, told without the lock (it may start a program), and a
                 // program's menu's.
                 if (picked >= 0 && chosen != nullptr) chosen(chosenArg, size_t(picked));
@@ -773,8 +780,15 @@ void WindowManager::sizeTo(uint16_t x, uint16_t y) {
         return;
 }
 
-// The pointer's picture at (@p x, @p y): the resize's under way, a handle's, or the arrow.
+// The pointer's picture at (@p x, @p y): frameShapeAt()'s, its arrow the starting one while a
+// program starts.
 WindowManager::Pointer WindowManager::shapeAt(uint16_t x, uint16_t y) const {
+        const Pointer shape = frameShapeAt(x, y);
+        return shape == Pointer::Arrow && _startingCount > 0 ? Pointer::Starting : shape;
+}
+
+// The resize's under way, a handle's, the window's over its client area, or the arrow.
+WindowManager::Pointer WindowManager::frameShapeAt(uint16_t x, uint16_t y) const {
         uint8_t edges = _sizeEdges;
         if (_sizeId == 0) {
                 if (_grabId != 0 || _pressId != 0) return Pointer::Arrow;
@@ -905,6 +919,53 @@ namespace {
         static_assert(sizeof(Pictures) / sizeof(Pictures[0]) == size_t(WindowManager::Pointer::None),
                       "a picture for each shape but None");
 
+        // The starting pointer (devplan/windows.md §4l): the arrow, and an hourglass whose sand runs.
+        constexpr const char *Starting0Rows[] = {
+                "X.......................", "XX......................", "XoX.....................",
+                "XooX....................", "XoooX...................", "XooooX..................",
+                "XoooooX.................", "XooooooX................", "XoooooooX...............",
+                "XooooooooX..............", "XoooooooooX.............", "XooooooXXXXX............",
+                "XoooXooX.....XXXXXXXXXXX", "XooXXooX.....XoooooooooX", "XoX..XooX....XXXXXXXXXXX",
+                "XX...XooX.....XXXXXXXXX.", "X.....XooX.....XXXXXXX..", "......XooX......XXXXX...",
+                ".......XX........XXX....", "..................X.....", ".................XoX....",
+                "................XoooX...", "...............XoooooX..", "..............XoooooooX.",
+                ".............XXXXXXXXXXX", ".............XoooooooooX", ".............XXXXXXXXXXX",
+        };
+
+        constexpr const char *Starting1Rows[] = {
+                "X.......................", "XX......................", "XoX.....................",
+                "XooX....................", "XoooX...................", "XooooX..................",
+                "XoooooX.................", "XooooooX................", "XoooooooX...............",
+                "XooooooooX..............", "XoooooooooX.............", "XooooooXXXXX............",
+                "XoooXooX.....XXXXXXXXXXX", "XooXXooX.....XoooooooooX", "XoX..XooX....XXXXXXXXXXX",
+                "XX...XooX.....XoooooooX.", "X.....XooX.....XoooooX..", "......XooX......XXXXX...",
+                ".......XX........XXX....", "..................X.....", ".................XXX....",
+                "................XoXoX...", "...............XXXXXXX..", "..............XXXXXXXXX.",
+                ".............XXXXXXXXXXX", ".............XoooooooooX", ".............XXXXXXXXXXX",
+        };
+
+        constexpr const char *Starting2Rows[] = {
+                "X.......................", "XX......................", "XoX.....................",
+                "XooX....................", "XoooX...................", "XooooX..................",
+                "XoooooX.................", "XooooooX................", "XoooooooX...............",
+                "XooooooooX..............", "XoooooooooX.............", "XooooooXXXXX............",
+                "XoooXooX.....XXXXXXXXXXX", "XooXXooX.....XoooooooooX", "XoX..XooX....XXXXXXXXXXX",
+                "XX...XooX.....XoooooooX.", "X.....XooX.....XoooooX..", "......XooX......XoooX...",
+                ".......XX........XoX....", "..................X.....", ".................XXX....",
+                "................XXXXX...", "...............XXXXXXX..", "..............XXXXXXXXX.",
+                ".............XXXXXXXXXXX", ".............XoooooooooX", ".............XXXXXXXXXXX",
+        };
+
+        constexpr Picture StartingPictures[] = {
+                {24, 27, 0, 0, Starting0Rows}, {24, 27, 0, 0, Starting1Rows}, {24, 27, 0, 0, Starting2Rows}};
+        constexpr uint8_t StartingFrames = sizeof(StartingPictures) / sizeof(StartingPictures[0]);
+
+        // Shape @p shape's picture (the starting one's frame @p frame); not None.
+        const Picture &pictureOf(WindowManager::Pointer shape, uint8_t frame) {
+                if (shape == WindowManager::Pointer::Starting) return StartingPictures[frame % StartingFrames];
+                return Pictures[static_cast<size_t>(shape)];
+        }
+
         struct CursorJob {
                         const Picture *picture;
                         int            column; // the picture's first column, from the area's
@@ -929,6 +990,9 @@ namespace {
                 for (const Picture &p : Pictures)
                         if ((p.width + 2u * 4u) * p.height * Surface::BytesPerPixel > WindowManager::UnderBytes)
                                 return false;
+                for (const Picture &p : StartingPictures)
+                        if ((p.width + 2u * 4u) * p.height * Surface::BytesPerPixel > WindowManager::UnderBytes)
+                                return false;
                 return true;
         }());
 
@@ -937,7 +1001,7 @@ namespace {
 // The pointer's picture on the screen, widened to 4-pixel columns.
 Rect WindowManager::cursorArea() const {
         if (_shape == Pointer::None) return Rect();
-        const Picture &p = Pictures[static_cast<size_t>(_shape)];
+        const Picture &p = pictureOf(_shape, _startingFrame);
         const Rect     screen = _stack.screen();
         const int      x = int(_pointerX) - p.hotX, y = int(_pointerY) - p.hotY;
         const uint32_t left = uint32_t(x < 0 ? 0 : x) & ~(Align - 1u);
@@ -1031,7 +1095,7 @@ void WindowManager::restoreUnder() {
 void WindowManager::drawCursor() {
         _cursorMoved = false;
         if (!isCursorDrawn()) return;
-        const Picture &p = Pictures[static_cast<size_t>(_shape)];
+        const Picture &p = pictureOf(_shape, _startingFrame);
         const Rect     area = cursorArea();
         CursorJob      job;
         job.picture = &p;
@@ -1512,9 +1576,15 @@ Rect WindowManager::placed(const Rect &rect) const {
 }
 
 Result<uint8_t> WindowManager::open(const WindowConfig &config) {
+        // Whose it is, asked before the lock (the loader takes its own): a program starting ends
+        // with its session's first window (devplan/windows.md §4l).
+        TaskOwner    *owner = TaskOwner::current();
+        const int32_t session = owner != nullptr ? owner->sessionId() : 0;
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface == nullptr) return makeError<uint8_t>(Error::InvalidState);
-        return openLocked(config);
+        auto opened = openLocked(config);
+        if (opened.isOk() && session > 0 && WindowStack::isApplication(config.level)) startingEnded(session);
+        return opened;
 }
 
 Result<uint8_t> WindowManager::openLocked(const WindowConfig &config) {
@@ -2894,6 +2964,88 @@ Error WindowManager::setPointer(uint8_t id, Pointer shape) {
         if (isCursorDrawn()) _cursorMoved = true; // drawn again in its new shape
         changed(focusId());
         return Error::Ok;
+}
+
+void WindowManager::programStarting(int32_t pid, ProgramLauncher *launcher, unsigned int timeoutMs) {
+        if (pid <= 0) return;
+        Mutex::Locker lock(_lock, WaitForever);
+        const int64_t now = Detail::monotonicUs();
+        size_t        i = 0;
+        while (i < _startingCount && _starting[i].pid != pid) ++i;
+        if (i == _startingCount) {
+                if (_startingCount == MaxStarting) { // the oldest goes
+                        for (size_t k = 1; k < MaxStarting; ++k) _starting[k - 1] = _starting[k];
+                        --_startingCount;
+                }
+                i = _startingCount++;
+        }
+        if (_startingCount == 1) {
+                _startingFrame = 0;
+                _startingFrameUs = now + int64_t(StartingFrameMs) * 1000;
+        }
+        _starting[i].pid = pid;
+        _starting[i].launcher = launcher;
+        _starting[i].untilUs = now + int64_t(timeoutMs) * 1000;
+        startingChanged();
+        _wake.release();
+        return;
+}
+
+// Each round while a program starts: the timed out dropped, the sand turned. @return Whether
+// it is time to look for programs gone (once a frame).
+bool WindowManager::startingTick() {
+        if (_startingCount == 0) return false;
+        const int64_t now = Detail::monotonicUs();
+        size_t        kept = 0;
+        for (size_t i = 0; i < _startingCount; ++i)
+                if (_starting[i].untilUs > now) _starting[kept++] = _starting[i];
+        if (kept != _startingCount) {
+                _startingCount = static_cast<uint8_t>(kept);
+                startingChanged();
+        }
+        if (_startingCount == 0 || now < _startingFrameUs) return false;
+        _startingFrame = static_cast<uint8_t>((_startingFrame + 1) % StartingFrames);
+        _startingFrameUs = now + int64_t(StartingFrameMs) * 1000;
+        if (_shape == Pointer::Starting && isCursorDrawn()) _cursorMoved = true;
+        return true;
+}
+
+// The programs starting that are gone (failed, or handed off and ended): asked of their
+// launchers without the lock.
+void WindowManager::startingChecks() {
+        Starting list[MaxStarting];
+        size_t   n = 0;
+        {
+                Mutex::Locker lock(_lock, WaitForever);
+                for (size_t i = 0; i < _startingCount; ++i) list[n++] = _starting[i];
+        }
+        for (size_t i = 0; i < n; ++i) {
+                if (list[i].launcher == nullptr || list[i].launcher->sendSignal(list[i].pid, 0) != Error::NotExist)
+                        continue;
+                Mutex::Locker lock(_lock, WaitForever);
+                startingEnded(list[i].pid);
+                _wake.release(); // drawn in its new shape
+        }
+        return;
+}
+
+void WindowManager::startingEnded(int32_t session) {
+        size_t kept = 0;
+        for (size_t i = 0; i < _startingCount; ++i)
+                if (_starting[i].pid != session) _starting[kept++] = _starting[i];
+        if (kept == _startingCount) return;
+        _startingCount = static_cast<uint8_t>(kept);
+        startingChanged();
+        return;
+}
+
+// The pointer's shape where it is, again (the arrow, or the starting one).
+void WindowManager::startingChanged() {
+        const Pointer now = shapeAt(_pointerX, _pointerY);
+        if (now == _shape) return;
+        _shape = now;
+        if (isCursorDrawn()) _cursorMoved = true;
+        return;
 }
 
 Error WindowManager::setPointerLock(uint8_t id, bool on) {

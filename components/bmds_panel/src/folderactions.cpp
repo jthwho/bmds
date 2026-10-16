@@ -23,6 +23,7 @@
 #include <bmds/mimeapps.h>
 #include <bmds/programlauncher.h>
 #include <bmds/vfs.h>
+#include <bmds/windowmanager.h>
 
 #include "folderactions.h"
 #include "panelentries.h"
@@ -120,6 +121,11 @@ void FolderActions::launch(const DesktopEntry &entry, StringView file) {
                 auto [pid, serr] = _context.launcher->start(request);
                 err = serr;
                 if (err.isOk() && _context.process != nullptr) _context.process->disownChild(pid);
+                if (err.isOk()) { // the pointer shows it starting until its window opens (windows.md §4l)
+                        auto [wm, werr] = WindowManager::manager(0);
+                        if (werr.isOk() && wm != nullptr)
+                                wm->programStarting(pid, _context.launcher, WindowManager::StartingTimeoutMs);
+                }
         }
         if (err.isError())
                 say("panel: ", entry.name, ": ", err == Error::NotExist ? "not found\n" : "can't start it\n");

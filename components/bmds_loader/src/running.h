@@ -44,6 +44,9 @@ struct ProcessOwner : TaskOwner {
                 /** @brief The calling task's owner, or null (a kernel task). */
                 static ProcessOwner *current() { return static_cast<ProcessOwner *>(TaskOwner::current()); }
 
+                /** @brief Its process's session, from the process table. */
+                int32_t sessionId() override;
+
         protected:
                 ProcessOwner() = default;
                 ~ProcessOwner() = default;
