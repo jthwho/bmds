@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Lucky Duck
+Comment=The casino: Solitaire, and more tables coming
+Exec=luckyduck
+Categories=Game;CardGame;
+X-BMDS-Id=luckyduck
+X-BMDS-Display=Window

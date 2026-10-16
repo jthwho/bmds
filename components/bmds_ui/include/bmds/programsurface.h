@@ -71,6 +71,7 @@ class ProgramSurface final : public Stream {
                         FullScreen = 0x1, ///< Suggest full screen.
                         Whole = 0x2,      ///< Whole multiples only.
                         Fast = 0x4,       ///< Buffers in internal RAM.
+                        Maximized = 0x8,  ///< A maximized window; 0×0: its client area's size.
                 };
 
                 /** @brief Event types: the ABI's `BMDS_EVENT_...` values. */
@@ -131,7 +132,13 @@ class ProgramSurface final : public Stream {
                                 uint32_t frames = 0;    ///< The display's frames so far.
                                 uint32_t presents = 0;
                                 uint32_t dropped = 0; ///< Presents replaced before shown.
+                                uint16_t width = 0;   ///< The surface's own size (its buffers').
+                                uint16_t height = 0;
                 };
+
+                /** @brief A pointer event's x and y once the pointer has left the window (the ABI's
+                 *         `BMDS_POINTER_GONE`). */
+                static constexpr int32_t PointerGone = -32768;
 
                 /** @brief Buffers at most. */
                 static constexpr uint8_t MaxBuffers = 3;
@@ -270,7 +277,7 @@ class ProgramSurface final : public Stream {
                 ProgramSurface() = default;
                 ~ProgramSurface();
 
-                Error  start(const Config &config);
+                Error  start(const Config &requested);
                 void   closeWindow();
                 void   restoreUnder();           // the presenter's: what the arrow covered, back
                 void   drawArrow();              // the presenter's: the arrow over the picture, full screen

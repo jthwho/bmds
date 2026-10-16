@@ -1020,6 +1020,8 @@ rules pure C and host-tested, the program on `libbmdsgame`, the art and sounds w
   and the kernels set and restored it, racing each other.
 - **Not yet:** the options box answers keys only (a click closes it); Vegas' cumulative score;
   dealing by number.
+- **Moved (2026-10-15)** into Lucky Duck, the casino (`luckyduck.md` §8a, §14): the same rules
+  and play at 1280×720 with duck cards; Vegas' score now plays from the casino's bank.
 
 ## 23. Which core a game's threads run on (2026-10-15)
 

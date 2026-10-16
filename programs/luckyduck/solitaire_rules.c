@@ -1,5 +1,5 @@
 /**
- * @file      rules.c
+ * @file      solitaire_rules.c
  * @copyright Jason Howard. All rights reserved.
  *
  * SPDX-License-Identifier: MIT
@@ -9,7 +9,7 @@
  * scorings, undo.
  */
 
-#include "rules.h"
+#include "solitaire_rules.h"
 
 #include <string.h>
 

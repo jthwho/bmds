@@ -775,6 +775,8 @@ _Static_assert(offsetof(bmds_ptp_offset_t, clock) == 4 && offsetof(bmds_ptp_offs
 _Static_assert(BMDS_PIXEL_L8 == 5, "ABI: pixel format L8");
 _Static_assert(BMDS_SURFACE_FULL_SCREEN == 1 && BMDS_SURFACE_WHOLE == 2 && BMDS_SURFACE_FAST == 4,
                "ABI: surface flags");
+_Static_assert(BMDS_SURFACE_MAXIMIZED == 8, "ABI: surface flags (appended 2026-10-15)");
+_Static_assert(BMDS_POINTER_GONE == -32768, "ABI: a pointer event's position on leaving (appended 2026-10-15)");
 _Static_assert(BMDS_SURFACE_PALETTE == 1 && BMDS_SURFACE_TITLE == 2 && BMDS_SURFACE_POINTER == 3 &&
                        BMDS_SURFACE_WAIT == 4 && BMDS_SURFACE_INFO == 5,
                "ABI: surface_control ops");
@@ -823,7 +825,9 @@ _Static_assert(offsetof(bmds_surface_wait_t, frame) == 4 && offsetof(bmds_surfac
 _Static_assert(offsetof(bmds_surface_info_t, full_screen) == 4 && offsetof(bmds_surface_info_t, scale_x16) == 16 &&
                        offsetof(bmds_surface_info_t, x) == 24 && offsetof(bmds_surface_info_t, width) == 32 &&
                        offsetof(bmds_surface_info_t, frames) == 40 && offsetof(bmds_surface_info_t, dropped) == 48 &&
-                       sizeof(bmds_surface_info_t) == 52,
+                       offsetof(bmds_surface_info_t, picture_width) == 52 &&
+                       offsetof(bmds_surface_info_t, picture_height) == 56 &&
+                       sizeof(bmds_surface_info_t) == 60, /* 52 before picture_width/height (2026-10-15) */
                "ABI: bmds_surface_info_t");
 _Static_assert(offsetof(bmds_surface_event_t, flags) == 4 && offsetof(bmds_surface_event_t, time_ns) == 8 &&
                        offsetof(bmds_surface_event_t, data) == 16 && sizeof(bmds_surface_event_t) == 32,

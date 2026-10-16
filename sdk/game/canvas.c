@@ -271,6 +271,16 @@ void bmds_canvas_blit(bmds_canvas_t *canvas, int32_t x, int32_t y, const bmds_ga
                         memcpy(to, from, (size_t)w * bpp);
                         continue;
                 }
+                if (bpp == 2) { /* RGB565: a word at a time, no call per pixel */
+                        const uint16_t *f = (const uint16_t *)(const void *)from;
+                        uint16_t       *t = (uint16_t *)(void *)to;
+                        const uint16_t  key = (uint16_t)image->key;
+                        for (int32_t i = 0; i < w; ++i) {
+                                const uint16_t v = f[i];
+                                if (v != key) t[i] = v;
+                        }
+                        continue;
+                }
                 for (int32_t i = 0; i < w; ++i, from += bpp, to += bpp)
                         if (!is_pixel(from, canvas->format, image->key)) memcpy(to, from, bpp);
         }
@@ -313,4 +323,201 @@ void bmds_canvas_copy(bmds_canvas_t *to, const bmds_canvas_t *from, const bmds_r
                 for (int32_t y = e.y0; y < e.y1; ++y)
                         memcpy(at(to, e.x0, y), at(from, e.x0, y), (size_t)(e.x1 - e.x0) * bpp);
         }
+}
+
+/* ---- Scaled, turned, shaded and blended drawing (devplan/luckyduck.md §4) */
+
+/* @p source cut to @p image's bounds; empty: x1 <= x0. */
+static edges_t source_of(const bmds_game_image_t *image, const bmds_rect_t *source) {
+        edges_t s = {0, 0, image->width, image->height};
+        if (source != NULL) {
+                const edges_t r = edges_of(source);
+                if (r.x0 > s.x0) s.x0 = r.x0;
+                if (r.y0 > s.y0) s.y0 = r.y0;
+                if (r.x1 < s.x1) s.x1 = r.x1;
+                if (r.y1 < s.y1) s.y1 = r.y1;
+        }
+        return s;
+}
+
+/* Copies the pixel at @p from to @p to unless it is the image's key. */
+static inline void put_keyed(uint8_t *to, const uint8_t *from, const bmds_game_image_t *image, uint32_t bpp) {
+        if (bpp == 2) {
+                const uint16_t v = *(const uint16_t *)(const void *)from;
+                if ((image->flags & BMDS_GAME_IMAGE_KEYED) == 0 || v != (uint16_t)image->key)
+                        *(uint16_t *)(void *)to = v;
+                return;
+        }
+        if ((image->flags & BMDS_GAME_IMAGE_KEYED) != 0 && is_pixel(from, image->format, image->key)) return;
+        memcpy(to, from, bpp);
+}
+
+void bmds_canvas_blit_scaled(bmds_canvas_t *canvas, int32_t x, int32_t y, int32_t width, int32_t height,
+                             const bmds_game_image_t *image, const bmds_rect_t *source) {
+        if (image == NULL || image->format != canvas->format || width == 0 || height == 0) return;
+        const edges_t s = source_of(image, source);
+        if (is_empty(s)) return;
+        const int     mirror_x = width < 0, mirror_y = height < 0;
+        const int32_t w = mirror_x ? -width : width, h = mirror_y ? -height : height;
+        const edges_t d = clipped(canvas, (edges_t){x, y, (int32_t)((int64_t)x + w), (int32_t)((int64_t)y + h)});
+        if (is_empty(d)) return;
+        const uint32_t bpp = bytes_per_pixel(canvas->format);
+        const int32_t  sw = s.x1 - s.x0, sh = s.y1 - s.y0;
+        /* Each destination pixel's centre mapped into the source, in 1/65536ths. */
+        const int64_t step_x = ((int64_t)sw << 16) / w, step_y = ((int64_t)sh << 16) / h;
+        for (int32_t row = d.y0; row < d.y1; ++row) {
+                int32_t sy = (int32_t)(((int64_t)(row - y) * step_y + step_y / 2) >> 16);
+                if (sy >= sh) sy = sh - 1;
+                if (mirror_y) sy = sh - 1 - sy;
+                const uint8_t *line = image->pixels + (size_t)(s.y0 + sy) * image->stride;
+                uint8_t       *to = at(canvas, d.x0, row);
+                int64_t        u = (int64_t)(d.x0 - x) * step_x + step_x / 2;
+                for (int32_t col = d.x0; col < d.x1; ++col, to += bpp, u += step_x) {
+                        int32_t sx = (int32_t)(u >> 16);
+                        if (sx >= sw) sx = sw - 1;
+                        put_keyed(to, line + (size_t)(s.x0 + (mirror_x ? sw - 1 - sx : sx)) * bpp, image, bpp);
+                }
+        }
+        damage_edges(canvas, d);
+}
+
+/* The sine of @p turn (of BMDS_GAME_TURN) in 1/65536ths, without libm: a quarter's by its
+   Taylor polynomial to the ninth power (within a 65536th), the rest by symmetry. */
+static int32_t sine16(uint32_t turn) {
+        turn &= BMDS_GAME_TURN - 1;
+        const uint32_t quarter = BMDS_GAME_TURN / 4;
+        const int      negative = turn >= BMDS_GAME_TURN / 2;
+        uint32_t       t = turn % (BMDS_GAME_TURN / 2);
+        if (t > quarter) t = BMDS_GAME_TURN / 2 - t;
+        /* sin(pi/2 * u) for u = t / quarter in [0, 1], in Horner's form: doubles are software on
+           the P4, but a dozen operations a call are nothing next to the pixels. */
+        const double  u = (double)t / quarter, u2 = u * u;
+        const double  v = u * (1.5707963267948966 +
+                              u2 * (-0.6459640975062462 +
+                                    u2 * (0.0796926262461670 + u2 * (-0.0046817541353187 + u2 * 0.0001604411847874))));
+        const int32_t r = (int32_t)(v * 65536.0 + 0.5);
+        return negative ? -r : r;
+}
+
+void bmds_canvas_blit_rotated(bmds_canvas_t *canvas, int32_t cx, int32_t cy, uint32_t turn, uint32_t scale,
+                              const bmds_game_image_t *image, const bmds_rect_t *source) {
+        if (image == NULL || image->format != canvas->format || scale == 0) return;
+        const edges_t s = source_of(image, source);
+        if (is_empty(s)) return;
+        const int32_t sw = s.x1 - s.x0, sh = s.y1 - s.y0;
+        const int32_t sn = sine16(turn), cs = sine16(turn + BMDS_GAME_TURN / 4);
+        /* The turned picture's bounds: half of each side's reach, plus a pixel for rounding. */
+        const int64_t asn = sn < 0 ? -sn : sn, acs = cs < 0 ? -cs : cs;
+        const int32_t ex = (int32_t)(((acs * sw + asn * sh) * scale / BMDS_GAME_SCALE) >> 17) + 1;
+        const int32_t ey = (int32_t)(((asn * sw + acs * sh) * scale / BMDS_GAME_SCALE) >> 17) + 1;
+        const edges_t d = clipped(canvas, (edges_t){cx - ex, cy - ey, cx + ex + 1, cy + ey + 1});
+        if (is_empty(d)) return;
+        /* The inverse: a destination pixel's offset from the centre (dx, dy) comes from
+           u = (dx cos + dy sin) / k, v = (dy cos - dx sin) / k, k the scale; in 1/65536ths. */
+        const int64_t  ux = (int64_t)cs * BMDS_GAME_SCALE / scale, vx = -(int64_t)sn * BMDS_GAME_SCALE / scale;
+        const int64_t  uy = (int64_t)sn * BMDS_GAME_SCALE / scale, vy = (int64_t)cs * BMDS_GAME_SCALE / scale;
+        const uint32_t bpp = bytes_per_pixel(canvas->format);
+        const int64_t  half_w = (int64_t)sw << 15, half_h = (int64_t)sh << 15;
+        for (int32_t row = d.y0; row < d.y1; ++row) {
+                /* The first pixel's centre, from the centre (cx, cy) a pixel's corner. */
+                const int64_t dy2 = 2 * (int64_t)(row - cy) + 1, dx2 = 2 * (int64_t)(d.x0 - cx) + 1;
+                int64_t       u = ((dx2 * ux + dy2 * uy) >> 1) + half_w;
+                int64_t       v = ((dx2 * vx + dy2 * vy) >> 1) + half_h;
+                uint8_t      *to = at(canvas, d.x0, row);
+                for (int32_t col = d.x0; col < d.x1; ++col, to += bpp, u += ux, v += vx) {
+                        if (u < 0 || v < 0) continue;
+                        const int32_t sx = (int32_t)(u >> 16), sy = (int32_t)(v >> 16);
+                        if (sx >= sw || sy >= sh) continue;
+                        put_keyed(to, image->pixels + (size_t)(s.y0 + sy) * image->stride + (size_t)(s.x0 + sx) * bpp,
+                                  image, bpp);
+                }
+        }
+        damage_edges(canvas, d);
+}
+
+/* @p p's pixel darkened to @p level of 32. */
+static void shade_pixel(uint8_t *p, uint32_t format, uint32_t level) {
+        if (format == BMDS_PIXEL_RGB565) {
+                const uint32_t v = *(uint16_t *)(void *)p;
+                /* Red and blue together, green alone: neither product reaches the other's bits. */
+                *(uint16_t *)(void *)p =
+                        (uint16_t)((((v & 0xf81fu) * level) >> 5 & 0xf81fu) | (((v & 0x07e0u) * level) >> 5 & 0x07e0u));
+        } else if (format == BMDS_PIXEL_BGR24) {
+                for (int i = 0; i < 3; ++i) p[i] = (uint8_t)((p[i] * level) >> 5);
+        }
+}
+
+static uint32_t level32(uint32_t level) {
+        return level >= BMDS_GAME_OPAQUE ? 32u : level / (BMDS_GAME_OPAQUE / 32);
+}
+
+void bmds_canvas_shade(bmds_canvas_t *canvas, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t level) {
+        if (width <= 0 || height <= 0) return;
+        const edges_t d =
+                clipped(canvas, (edges_t){x, y, (int32_t)((int64_t)x + width), (int32_t)((int64_t)y + height)});
+        if (is_empty(d) || canvas->format == BMDS_PIXEL_L8) return;
+        const uint32_t l = level32(level), bpp = bytes_per_pixel(canvas->format);
+        for (int32_t row = d.y0; row < d.y1; ++row) {
+                uint8_t *p = at(canvas, d.x0, row);
+                for (int32_t col = d.x0; col < d.x1; ++col, p += bpp) shade_pixel(p, canvas->format, l);
+        }
+        damage_edges(canvas, d);
+}
+
+void bmds_canvas_shade_image(bmds_canvas_t *canvas, int32_t x, int32_t y, const bmds_game_image_t *image,
+                             const bmds_rect_t *source, uint32_t level) {
+        if (image == NULL || image->format != canvas->format || canvas->format == BMDS_PIXEL_L8) return;
+        edges_t s = source_of(image, source);
+        if (source != NULL) {
+                x += s.x0 - source->x;
+                y += s.y0 - source->y;
+        }
+        if (is_empty(s)) return;
+        const edges_t d = clipped(canvas, (edges_t){x, y, x + (s.x1 - s.x0), y + (s.y1 - s.y0)});
+        if (is_empty(d)) return;
+        s.x0 += d.x0 - x;
+        s.y0 += d.y0 - y;
+        const uint32_t l = level32(level), bpp = bytes_per_pixel(canvas->format);
+        const int      keyed = (image->flags & BMDS_GAME_IMAGE_KEYED) != 0;
+        for (int32_t row = 0; row < d.y1 - d.y0; ++row) {
+                const uint8_t *from = image->pixels + (size_t)(s.y0 + row) * image->stride + (size_t)s.x0 * bpp;
+                uint8_t       *to = at(canvas, d.x0, d.y0 + row);
+                for (int32_t i = 0; i < d.x1 - d.x0; ++i, from += bpp, to += bpp)
+                        if (!keyed || !is_pixel(from, image->format, image->key)) shade_pixel(to, canvas->format, l);
+        }
+        damage_edges(canvas, d);
+}
+
+void bmds_canvas_fill_blend(bmds_canvas_t *canvas, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t rgb,
+                            uint32_t alpha) {
+        if (width <= 0 || height <= 0) return;
+        if (canvas->format == BMDS_PIXEL_L8) {
+                if (alpha >= BMDS_GAME_OPAQUE / 2) bmds_canvas_fill(canvas, x, y, width, height, rgb);
+                return;
+        }
+        const edges_t d =
+                clipped(canvas, (edges_t){x, y, (int32_t)((int64_t)x + width), (int32_t)((int64_t)y + height)});
+        if (is_empty(d)) return;
+        const uint32_t a = level32(alpha), bpp = bytes_per_pixel(canvas->format);
+        if (canvas->format == BMDS_PIXEL_RGB565) {
+                /* Green spread to the top half: the three fields apart, blended in one multiply each. */
+                const uint32_t c = bmds_canvas_pixel(canvas, rgb);
+                const uint32_t over = ((c | c << 16) & 0x07e0f81fu) * a;
+                for (int32_t row = d.y0; row < d.y1; ++row) {
+                        uint16_t *p = (uint16_t *)(void *)at(canvas, d.x0, row);
+                        for (int32_t col = d.x0; col < d.x1; ++col, ++p) {
+                                const uint32_t under = ((uint32_t)*p | (uint32_t)*p << 16) & 0x07e0f81fu;
+                                const uint32_t m = ((under * (32 - a) + over) >> 5) & 0x07e0f81fu;
+                                *p = (uint16_t)(m | m >> 16);
+                        }
+                }
+        } else {
+                const uint8_t c[3] = {(uint8_t)rgb, (uint8_t)(rgb >> 8), (uint8_t)(rgb >> 16)};
+                for (int32_t row = d.y0; row < d.y1; ++row) {
+                        uint8_t *p = at(canvas, d.x0, row);
+                        for (int32_t col = d.x0; col < d.x1; ++col, p += bpp)
+                                for (int i = 0; i < 3; ++i) p[i] = (uint8_t)((p[i] * (32 - a) + c[i] * a) >> 5);
+                }
+        }
+        damage_edges(canvas, d);
 }

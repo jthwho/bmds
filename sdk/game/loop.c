@@ -73,6 +73,14 @@ int bmds_game_is_active(const bmds_game_t *game) {
         return game->active;
 }
 
+uint32_t bmds_game_width(const bmds_game_t *game) {
+        return game->config.width;
+}
+
+uint32_t bmds_game_height(const bmds_game_t *game) {
+        return game->config.height;
+}
+
 /* Buffer @p b brought up to the last present: what the presents since its own changed, copied from
    the newest buffer. */
 static void bring_up_to_date(bmds_game_t *g, int32_t b) {
@@ -191,6 +199,16 @@ int bmds_game_run(const bmds_game_config_t *config) {
         g.fd = bmds_surface_open(&sc);
         if (g.fd < 0) return g.fd;
         int32_t err = 0;
+        if (config->width == 0 || config->height == 0) { /* the system chose (a maximized window's) */
+                bmds_surface_info_t info;
+                memset(&info, 0, sizeof(info));
+                info.size = sizeof(info);
+                err = bmds_surface_control(g.fd, BMDS_SURFACE_INFO, &info, sizeof(info));
+                if (err == 0 && (info.picture_width == 0 || info.picture_height == 0)) err = -BMDS_ENOSYS;
+                g.config.width = info.picture_width;
+                g.config.height = info.picture_height;
+        }
+        config = &g.config;
         for (uint32_t i = 0; i < g.buffers && err == 0; ++i) {
                 bmds_surface_buffer_t b;
                 memset(&b, 0, sizeof(b));

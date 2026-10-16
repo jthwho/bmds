@@ -170,6 +170,122 @@ TEST_CASE("Game canvas: blits, a source rectangle, the key, clipping") {
         CHECK(q.damage().empty());
 }
 
+TEST_CASE("Game canvas: scaled blits, mirrored, keyed, clipped") {
+        // A 2x2 sprite: 1 2 / 3 0, 0 the key.
+        const uint8_t     sheet[] = {1, 2, 3, 0};
+        bmds_game_image_t image = {sheet, 2, 2, 2, BMDS_PIXEL_L8, BMDS_GAME_IMAGE_KEYED, 0};
+        Picture           p(4, 4, BMDS_PIXEL_L8);
+        bmds_canvas_clear(&p.canvas, 7);
+        bmds_canvas_damage_clear(&p.canvas);
+        bmds_canvas_blit_scaled(&p.canvas, 0, 0, 4, 4, &image, nullptr);
+        CHECK(p.at(0, 0) == 1);
+        CHECK(p.at(1, 1) == 1);
+        CHECK(p.at(2, 0) == 2);
+        CHECK(p.at(3, 1) == 2);
+        CHECK(p.at(0, 3) == 3);
+        CHECK(p.at(3, 3) == 7); // the key
+        CHECK(p.damage() == "0,0 4x4;");
+        // Mirrored across, squeezed to a column of 1: the source's middle (its right column).
+        bmds_canvas_clear(&p.canvas, 7);
+        bmds_canvas_blit_scaled(&p.canvas, 0, 0, -2, 2, &image, nullptr);
+        CHECK(p.at(0, 0) == 2);
+        CHECK(p.at(1, 0) == 1);
+        CHECK(p.at(1, 1) == 3);
+        CHECK(p.at(0, 1) == 7);
+        bmds_canvas_clear(&p.canvas, 7);
+        bmds_canvas_blit_scaled(&p.canvas, 1, 0, 1, 2, &image, nullptr);
+        CHECK(p.at(1, 0) == 2);
+        // Off the right edge: clipped, the damage too.
+        bmds_canvas_damage_clear(&p.canvas);
+        bmds_canvas_blit_scaled(&p.canvas, 3, 0, 4, 4, &image, nullptr);
+        CHECK(p.at(3, 0) == 1);
+        CHECK(p.damage() == "3,0 1x4;");
+        // Nothing for a size of 0, or another format.
+        Picture q(4, 4, BMDS_PIXEL_RGB565);
+        bmds_canvas_blit_scaled(&q.canvas, 0, 0, 4, 4, &image, nullptr);
+        bmds_canvas_blit_scaled(&p.canvas, 0, 0, 0, 4, &image, nullptr);
+        CHECK(q.damage().empty());
+}
+
+TEST_CASE("Game canvas: rotated blits") {
+        // A 4x2 sprite, its left half 1 and right half 2.
+        const uint8_t     sheet[] = {1, 1, 2, 2, 1, 1, 2, 2};
+        bmds_game_image_t image = {sheet, 4, 4, 2, BMDS_PIXEL_L8, 0, 0};
+        Picture           p(8, 8, BMDS_PIXEL_L8);
+        // Unturned at its size: as a plain blit, centred on (4, 4).
+        bmds_canvas_blit_rotated(&p.canvas, 4, 4, 0, BMDS_GAME_SCALE, &image, nullptr);
+        CHECK(p.rows() == "........\n........\n........\n..####..\n..####..\n........\n........\n........\n");
+        CHECK(p.at(2, 3) == 1);
+        CHECK(p.at(5, 4) == 2);
+        // A quarter turn clockwise: standing up, the left half at the top.
+        bmds_canvas_clear(&p.canvas, 0);
+        bmds_canvas_damage_clear(&p.canvas);
+        bmds_canvas_blit_rotated(&p.canvas, 4, 4, BMDS_GAME_TURN / 4, BMDS_GAME_SCALE, &image, nullptr);
+        CHECK(p.rows() == "........\n........\n...##...\n...##...\n...##...\n...##...\n........\n........\n");
+        CHECK(p.at(3, 2) == 1);
+        CHECK(p.at(4, 5) == 2);
+        CHECK(p.canvas.damage_count == 1);
+        // A half turn: the halves swapped.
+        bmds_canvas_clear(&p.canvas, 0);
+        bmds_canvas_blit_rotated(&p.canvas, 4, 4, BMDS_GAME_TURN / 2, BMDS_GAME_SCALE, &image, nullptr);
+        CHECK(p.at(2, 3) == 2);
+        CHECK(p.at(5, 4) == 1);
+        // Twice the size.
+        bmds_canvas_clear(&p.canvas, 0);
+        bmds_canvas_blit_rotated(&p.canvas, 4, 4, 0, 2 * BMDS_GAME_SCALE, &image, nullptr);
+        CHECK(p.rows() == "........\n........\n########\n########\n########\n########\n........\n........\n");
+        // An eighth: inside the bounds, and the damage covers what was drawn.
+        Picture r(16, 16, BMDS_PIXEL_L8);
+        bmds_canvas_blit_rotated(&r.canvas, 8, 8, BMDS_GAME_TURN / 8, 2 * BMDS_GAME_SCALE, &image, nullptr);
+        REQUIRE(r.canvas.damage_count == 1);
+        const bmds_rect_t &d = r.canvas.damage[0];
+        int                drawn = 0;
+        for (int32_t y = 0; y < 16; ++y)
+                for (int32_t x = 0; x < 16; ++x)
+                        if (r.at(x, y) != 0) {
+                                ++drawn;
+                                CHECK((x >= d.x && y >= d.y && x < d.x + int32_t(d.width) &&
+                                       y < d.y + int32_t(d.height)));
+                        }
+        CHECK(drawn > 24); // about 32 pixels' area
+        CHECK(drawn < 40);
+}
+
+TEST_CASE("Game canvas: shades and translucent fills") {
+        Picture p(4, 2, BMDS_PIXEL_RGB565);
+        bmds_canvas_clear(&p.canvas, bmds_canvas_pixel(&p.canvas, 0xffffff));
+        bmds_canvas_damage_clear(&p.canvas);
+        bmds_canvas_shade(&p.canvas, 0, 0, 2, 1, BMDS_GAME_OPAQUE / 2);
+        CHECK(p.at(0, 0) == ((15u << 11) | (31u << 5) | 15u));
+        CHECK(p.at(2, 0) == 0xffffu);
+        CHECK(p.damage() == "0,0 2x1;");
+        bmds_canvas_shade(&p.canvas, 0, 1, 1, 1, 0);
+        CHECK(p.at(0, 1) == 0);
+        bmds_canvas_shade(&p.canvas, 1, 1, 1, 1, BMDS_GAME_OPAQUE);
+        CHECK(p.at(1, 1) == 0xffffu);
+        // A shape's shadow: only where the sprite isn't its key.
+        const uint16_t    sprite[] = {1, 0xf81f, 1, 1};
+        bmds_game_image_t image = {
+                reinterpret_cast<const uint8_t *>(sprite), 4, 2, 2, BMDS_PIXEL_RGB565, BMDS_GAME_IMAGE_KEYED, 0xf81f};
+        Picture q(2, 2, BMDS_PIXEL_RGB565);
+        bmds_canvas_clear(&q.canvas, 0xffff);
+        bmds_canvas_shade_image(&q.canvas, 0, 0, &image, nullptr, 0);
+        CHECK(q.rows() == ".#\n..\n");
+        // Blends: half white over black, and a BGR24 quarter.
+        Picture b(2, 1, BMDS_PIXEL_RGB565);
+        bmds_canvas_fill_blend(&b.canvas, 0, 0, 1, 1, 0xffffff, BMDS_GAME_OPAQUE / 2);
+        CHECK(b.at(0, 0) == ((15u << 11) | (31u << 5) | 15u));
+        CHECK(b.at(1, 0) == 0);
+        Picture c(1, 1, BMDS_PIXEL_BGR24);
+        bmds_canvas_fill_blend(&c.canvas, 0, 0, 1, 1, 0x804020, BMDS_GAME_OPAQUE / 4);
+        CHECK(c.at(0, 0) == 0x201008u);
+        // L8: an index where at least half.
+        Picture l(2, 1, BMDS_PIXEL_L8);
+        bmds_canvas_fill_blend(&l.canvas, 0, 0, 1, 1, 5, BMDS_GAME_OPAQUE / 2);
+        bmds_canvas_fill_blend(&l.canvas, 1, 0, 1, 1, 5, BMDS_GAME_OPAQUE / 4);
+        CHECK(l.rows() == "#.\n");
+}
+
 TEST_CASE("Game canvas: copy between buffers, no damage") {
         Picture a(4, 2, BMDS_PIXEL_RGB565), b(4, 2, BMDS_PIXEL_RGB565);
         bmds_canvas_clear(&a.canvas, 5);

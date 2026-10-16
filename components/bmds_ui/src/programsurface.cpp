@@ -100,10 +100,23 @@ Result<FileHandle::Ptr> ProgramSurface::open(const Config &config) {
         return makeError<FileHandle::Ptr>(err);
 }
 
-Error ProgramSurface::start(const Config &config) {
+Error ProgramSurface::start(const Config &requested) {
+        Config config = requested;
+        if ((config.flags & Maximized) != 0 && config.width == 0 && config.height == 0) {
+                // The maximized window's client area, at scale 1 (devplan/luckyduck.md §15).
+                auto [wm, werr] = WindowManager::manager(0);
+                if (werr.isError() || wm == nullptr) return Error::NotSupported;
+                const Rect    work = wm->workArea();
+                const uint8_t deco = WindowFrame::Standard;
+                const int32_t w = int32_t(work.width) - 2 * WindowFrame::sideWidth(deco);
+                const int32_t h = int32_t(work.height) - WindowFrame::topHeight(deco) - WindowFrame::sideWidth(deco);
+                config.width = uint16_t((w > ScreenWidth ? ScreenWidth : w > 4 ? w : 4) & ~3);
+                config.height = uint16_t(h > ScreenHeight ? ScreenHeight : h > 1 ? h : 1);
+        }
         if (config.width == 0 || config.width % 4 != 0 || config.height == 0 || config.width > ScreenWidth ||
             config.height > ScreenHeight || config.buffers < 2 || config.buffers > MaxBuffers ||
-            (config.flags & ~(FullScreen | Whole | Fast)) != 0 || (config.aspectX == 0) != (config.aspectY == 0) ||
+            (config.flags & ~(FullScreen | Whole | Fast | Maximized)) != 0 ||
+            (config.aspectX == 0) != (config.aspectY == 0) ||
             (config.format != Format::L8 && config.format != Format::Rgb565 && config.format != Format::Bgr24))
                 return Error::Invalid;
         _config = config;
@@ -179,7 +192,10 @@ Error ProgramSurface::start(const Config &config) {
         _window = id;
         pushPresented();
         // The program's suggestion (the user's setting per application comes with apps.md).
-        if ((config.flags & FullScreen) != 0) ask(Enter);
+        if ((config.flags & FullScreen) != 0)
+                ask(Enter);
+        else if ((config.flags & Maximized) != 0)
+                (void)wm->maximize(id);
         return Error::Ok;
 }
 
@@ -440,6 +456,8 @@ ProgramSurface::Info ProgramSurface::info() {
         }
         i.fullScreen = full;
         i.shown = full || _window != 0;
+        i.width = _config.width;
+        i.height = _config.height;
         if (full) {
                 const Layout l = _layout;
                 i.scaleX16 = uint16_t(uint32_t(l.width) * 16 / _config.width);
@@ -1168,9 +1186,20 @@ void ProgramSurface::padsSettled(bool active) {
 }
 
 void ProgramSurface::mouseEntry(void *arg, const WindowManager::MouseEvent &event) {
-        auto *self = static_cast<ProgramSurface *>(arg);
-        if (event.type == WindowManager::MouseEvent::Type::Leave) return;
+        auto   *self = static_cast<ProgramSurface *>(arg);
         int32_t x, y;
+        if (event.type == WindowManager::MouseEvent::Type::Leave) {
+                // Gone (BMDS_POINTER_GONE): the program unlights what was under it.
+                Event e;
+                e.type = uint32_t(EventType::Pointer);
+                e.timeNs = Clock::monotonicNs();
+                e.data[0] = uint32_t(int32_t(PointerGone));
+                e.data[1] = uint32_t(int32_t(PointerGone));
+                e.data[2] = event.buttons;
+                e.data[3] = 0;
+                self->push(e);
+                return;
+        }
         {
                 Mutex::Locker locker(self->_lock, WaitForever);
                 if (self->_fullScreen) {

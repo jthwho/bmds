@@ -14,7 +14,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <set>
-#include "../../programs/solitaire/rules.h"
+#include "../../programs/luckyduck/solitaire_rules.h"
 
 namespace {
 

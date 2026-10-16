@@ -35,7 +35,9 @@ namespace {
                               BMDS_PIXEL_BGR24 == uint32_t(ProgramSurface::Format::Bgr24),
                       "the ABI's formats");
         static_assert(BMDS_SURFACE_FULL_SCREEN == ProgramSurface::FullScreen &&
-                              BMDS_SURFACE_WHOLE == ProgramSurface::Whole && BMDS_SURFACE_FAST == ProgramSurface::Fast,
+                              BMDS_SURFACE_WHOLE == ProgramSurface::Whole &&
+                              BMDS_SURFACE_FAST == ProgramSurface::Fast &&
+                              BMDS_SURFACE_MAXIMIZED == ProgramSurface::Maximized,
                       "the ABI's flags");
         static_assert(BMDS_EVENT_KEY == uint32_t(ProgramSurface::EventType::Key) &&
                               BMDS_EVENT_POINTER == uint32_t(ProgramSurface::EventType::Pointer) &&
@@ -53,6 +55,7 @@ namespace {
                               BMDS_POINTER_HIDDEN == uint32_t(ProgramSurface::PointerMode::Hidden) &&
                               BMDS_POINTER_RELATIVE == uint32_t(ProgramSurface::PointerMode::Relative),
                       "the ABI's pointer modes");
+        static_assert(BMDS_POINTER_GONE == ProgramSurface::PointerGone, "the ABI's pointer gone");
 
         constexpr uint32_t MaxDamage = 64; // rectangles a present takes (more: all of it)
         constexpr size_t   MaxTitle = 128; // bytes of a title read
@@ -109,7 +112,8 @@ int32_t bmds_k_surface_open(const bmds_surface_config_t *config) {
         if (c.width > UINT16_MAX || c.height > UINT16_MAX ||
             (c.format != BMDS_PIXEL_L8 && c.format != BMDS_PIXEL_RGB565 && c.format != BMDS_PIXEL_BGR24) ||
             c.buffers < 2 || c.buffers > ProgramSurface::MaxBuffers ||
-            (c.flags & ~(BMDS_SURFACE_FULL_SCREEN | BMDS_SURFACE_WHOLE | BMDS_SURFACE_FAST)) != 0 ||
+            (c.flags & ~(BMDS_SURFACE_FULL_SCREEN | BMDS_SURFACE_WHOLE | BMDS_SURFACE_FAST | BMDS_SURFACE_MAXIMIZED)) !=
+                    0 ||
             c.aspect_x > UINT16_MAX || c.aspect_y > UINT16_MAX)
                 return -BMDS_EINVAL;
         ProgramSurface::Config k;
@@ -249,6 +253,8 @@ int32_t bmds_k_surface_control(int32_t fd, uint32_t op, void *arg, uint32_t size
                         i.frames = k.frames;
                         i.presents = k.presents;
                         i.dropped = k.dropped;
+                        i.picture_width = k.width;
+                        i.picture_height = k.height;
                         return bmds::detail::copyOut(i, static_cast<bmds_surface_info_t *>(arg));
                 }
                 default: return -BMDS_EINVAL;

@@ -149,6 +149,56 @@ int32_t bmds_canvas_text(bmds_canvas_t *canvas, int32_t x, int32_t y, const char
 /** @brief Returns the widest line of @p text's width at @p scale, in pixels. */
 int32_t bmds_game_text_width(const char *text, int32_t scale);
 
+/**
+ * @brief Draws @p source of @p image (NULL: all of it; cut to the image) stretched to
+ *        @p width × @p height with its top-left at (@p x, @p y), each pixel the nearest of the
+ *        source's, leaving out its key's pixels if it has one. A negative @p width mirrors it
+ *        across (a negative @p height, down). Nothing if the formats differ. A card's turn is
+ *        this, its width eased to 0 and back.
+ */
+void bmds_canvas_blit_scaled(bmds_canvas_t *canvas, int32_t x, int32_t y, int32_t width, int32_t height,
+                             const bmds_game_image_t *image, const bmds_rect_t *source);
+
+/** @brief `bmds_canvas_blit_rotated()`'s turn: a whole one. */
+#define BMDS_GAME_TURN 65536u
+
+/** @brief `bmds_canvas_blit_rotated()`'s scale: the image's own size. */
+#define BMDS_GAME_SCALE 256u
+
+/**
+ * @brief Draws @p source of @p image (NULL: all of it) turned clockwise by @p turn (of
+ *        `BMDS_GAME_TURN`) and scaled by @p scale (of `BMDS_GAME_SCALE`) with its centre at
+ *        (@p cx, @p cy), each pixel the nearest of the source's, leaving out its key's pixels if
+ *        it has one. The damage is the turned picture's bounds. Nothing if the formats differ.
+ */
+void bmds_canvas_blit_rotated(bmds_canvas_t *canvas, int32_t cx, int32_t cy, uint32_t turn, uint32_t scale,
+                              const bmds_game_image_t *image, const bmds_rect_t *source);
+
+/** @brief A shade's or a blend's whole: `bmds_canvas_shade()`'s level that leaves pixels as they are. */
+#define BMDS_GAME_OPAQUE 256u
+
+/**
+ * @brief Darkens a rectangle: each pixel's colour times @p level (of `BMDS_GAME_OPAQUE`, in 32
+ *        steps). L8 pixels are left as they are (an index has no brightness).
+ */
+void bmds_canvas_shade(bmds_canvas_t *canvas, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t level);
+
+/**
+ * @brief Darkens, as `bmds_canvas_shade()`, the pixels @p source of @p image would cover drawn at
+ *        (@p x, @p y): its key's pixels left out, so a keyed sprite casts its own shape (a
+ *        shadow). Nothing if the formats differ.
+ */
+void bmds_canvas_shade_image(bmds_canvas_t *canvas, int32_t x, int32_t y, const bmds_game_image_t *image,
+                             const bmds_rect_t *source, uint32_t level);
+
+/**
+ * @brief Fills a rectangle with 0xRRGGBB @p rgb over what is there, @p alpha of
+ *        `BMDS_GAME_OPAQUE` of it (in 32 steps): a translucent fill. L8 fills with index @p rgb
+ *        where @p alpha is at least half, and leaves the pixels otherwise.
+ */
+void bmds_canvas_fill_blend(bmds_canvas_t *canvas, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t rgb,
+                            uint32_t alpha);
+
 /** @brief Adds @p rect (cut to the canvas) to the damage, as drawing does. */
 void bmds_canvas_damage(bmds_canvas_t *canvas, const bmds_rect_t *rect);
 
@@ -170,8 +220,8 @@ typedef struct bmds_game_t bmds_game_t;
 /** @brief What `bmds_game_run()` runs. */
 typedef struct bmds_game_config_t {
                 uint32_t    size;  /**< `sizeof(bmds_game_config_t)`. */
-                uint32_t    width; /**< The picture's (a multiple of 4). */
-                uint32_t    height;
+                uint32_t    width; /**< The picture's (a multiple of 4); 0 and 0 with `BMDS_SURFACE_MAXIMIZED`: */
+                uint32_t    height;   /**< the maximized window's (`bmds_game_width()`, `bmds_game_height()`). */
                 uint32_t    format;   /**< `BMDS_PIXEL_L8`, `_RGB565` or `_BGR24`. */
                 uint32_t    buffers;  /**< 2 or 3 (0: 2). */
                 uint32_t    flags;    /**< `BMDS_SURFACE_...` (FULL_SCREEN: suggested). */
@@ -214,6 +264,12 @@ uint64_t bmds_game_ticks(const bmds_game_t *game);
 
 /** @brief Returns true while the surface is active (focused). */
 int bmds_game_is_active(const bmds_game_t *game);
+
+/** @brief Returns the picture's width (the config's, or what the system chose for 0). */
+uint32_t bmds_game_width(const bmds_game_t *game);
+
+/** @brief Returns the picture's height. */
+uint32_t bmds_game_height(const bmds_game_t *game);
 
 /** @brief Effects playing at once (`bmds_game_play()`). */
 #define BMDS_GAME_VOICES 16u

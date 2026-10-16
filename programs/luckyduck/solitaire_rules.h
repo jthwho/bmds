@@ -1,5 +1,5 @@
 /**
- * @file      rules.h
+ * @file      solitaire_rules.h
  * @copyright Jason Howard. All rights reserved.
  *
  * SPDX-License-Identifier: MIT

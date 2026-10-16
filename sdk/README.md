@@ -22,7 +22,7 @@ the headers in `include/bmds/` are the ABI and never change incompatibly
 | `crt/oss.c` | OSS's `SNDCTL_DSP_*` and `SOUND_MIXER_*` ioctls on the audio calls and the `audio/*` settings. |
 | `ld/bmds.ld` | The program layout: one image linked at 0, the note, thread-local storage. |
 | `cmake/bmds-toolchain.cmake` | A CMake toolchain file for Espressif's `riscv32-esp-elf-gcc`. |
-| `tools/bmds-icon-notes` | `bmds-icon-notes -o icons.S NAME a-16.png a-32.png`: the same icon notes as `ICONS`, as an assembler file to build with `bmds-cc`, for builds without CMake (`dist/blocks`, `dist/doom`, `dist/solitaire`). |
+| `tools/bmds-icon-notes` | `bmds-icon-notes -o icons.S NAME a-16.png a-32.png`: the same icon notes as `ICONS`, as an assembler file to build with `bmds-cc`, for builds without CMake (`dist/blocks`, `dist/doom`, `dist/luckyduck`). |
 | `cmake/BmdsProgram.cmake` | `bmds_add_program(name SOURCES ... [STACK_SIZE bytes] [ICONS png...])` (ICONS: the program's own icons, 16x16 and 32x32 PNGs, built in as `BMDS_NOTE_ICON` notes: `bmds/program.h`); generates `bmds-cc`. `bmds_add_app(name PROGRAM target DESKTOP app.desktop [FILES ...] [DIRECTORIES ...])`: an application folder, `name.app` in the build directory (its `Exec` checked to name the program), copied into a card's `apps/` to install ([`devplan/apps.md`](../devplan/apps.md)). |
 | `cmake/BmdsLibc.cmake` | Builds musl's `libc.a` and assembles its headers in the build tree. |
 | `cmake/bmds-cc.in` | The compiler wrapper for other build systems (`CC=<build>/bmds-cc make`). |

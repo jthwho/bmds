@@ -1485,12 +1485,19 @@ typedef struct bmds_ptp_offset_t {
 #define BMDS_SURFACE_FULL_SCREEN 0x1u /**< Suggest full screen (else a window); the user's setting wins. */
 #define BMDS_SURFACE_WHOLE 0x2u       /**< Scale by whole multiples only, both ways (sharp pixels). */
 #define BMDS_SURFACE_FAST 0x4u        /**< Buffers in internal RAM (small ones only; else `BMDS_ENOMEM`). */
+/**
+ * @brief Open in a maximized window (appended 2026-10-15, devplan/luckyduck.md §15). With `width`
+ *        and `height` both 0 the surface is the maximized window's client area at scale 1 (at
+ *        most 1280×720, its width down to a multiple of 4): `BMDS_SURFACE_INFO`'s `picture_width`
+ *        and `picture_height` say what it got. A size given is kept (scaled as any window's).
+ */
+#define BMDS_SURFACE_MAXIMIZED 0x8u
 
 /** @brief A surface to open (`surface_open`). */
 typedef struct bmds_surface_config_t {
                 uint32_t    size;     /**< Set by the caller: `sizeof(bmds_surface_config_t)`. */
-                uint32_t    width;    /**< Pixels: a multiple of 4, at most 1280. */
-                uint32_t    height;   /**< Pixels: at most 720. */
+                uint32_t    width;    /**< Pixels: a multiple of 4, at most 1280 (0: see `BMDS_SURFACE_MAXIMIZED`). */
+                uint32_t    height;   /**< Pixels: at most 720 (0: see `BMDS_SURFACE_MAXIMIZED`). */
                 uint32_t    format;   /**< `BMDS_PIXEL_L8`, `BMDS_PIXEL_RGB565` or `BMDS_PIXEL_BGR24`. */
                 uint32_t    buffers;  /**< 2 or 3. */
                 uint32_t    flags;    /**< `BMDS_SURFACE_...`, or 0. */
@@ -1565,6 +1572,8 @@ typedef struct bmds_surface_info_t {
                 uint32_t frames;   /**< Frames the display has begun. */
                 uint32_t presents; /**< Presents so far. */
                 uint32_t dropped;  /**< Presents replaced before they were shown. */
+                uint32_t picture_width; /**< The surface's own size, its buffers' (appended 2026-10-15). */
+                uint32_t picture_height;
 } bmds_surface_info_t;
 
 /** @brief `bmds_surface_event_t::type`: a program skips types it doesn't know. */
@@ -1573,6 +1582,13 @@ typedef struct bmds_surface_info_t {
         2u /**< data: x, y (int32, the surface's pixels), buttons, dx | dy << 16 (int16 each: the mouse's motion
                     in the screen's pixels, also when held by `BMDS_POINTER_RELATIVE`). */
 #define BMDS_EVENT_WHEEL 3u   /**< data: notches (int32, positive away from the user). */
+
+/**
+ * @brief A `BMDS_EVENT_POINTER`'s x and y when the pointer has left the surface's window (appended
+ *        2026-10-15): one such event comes as it leaves (no motion, the buttons as they are), so
+ *        a program can unlight what was under it. It is outside any surface.
+ */
+#define BMDS_POINTER_GONE (-32768)
 #define BMDS_EVENT_ACTIVE 4u  /**< data: 1 active, 0 not (pause). */
 #define BMDS_EVENT_PRESENTED                                                                                           \
         5u                   /**< data: full screen (1) or a window (0), the scale in 16ths (across | down << 16),

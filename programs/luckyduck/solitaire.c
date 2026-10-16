@@ -5,89 +5,75 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * Solitaire (devplan/games.md §21): Klondike in a window on libbmdsgame. The rules are rules.c's;
- * this is the picture (640×480 RGB565, cards from the folder's cards.png, each frame redrawing
- * only where a card or mark differs from the last), cards flying where the game sends them, the
- * mouse and the keyboard, the sounds, the options, and the bouncing cards of a win.
+ * Lucky Duck's Solitaire (devplan/games.md §21, devplan/luckyduck.md §8a): Klondike, as it was on
+ * its own, at the casino's size (a maximized window's) with its cards. The rules are solitaire_rules.c's; this is the
+ * picture (each frame redrawing only where a card or mark differs from the last, from the felt),
+ * cards flying where the game sends them, the mouse and the keyboard, the options, the bouncing
+ * cards of a win, and Vegas scoring played from the bank.
  *
- *     solitaire [-F] [-W]     -F full screen; -W a game played out, finishing by itself (the win's demo)
+ *     luckyduck solitaire [-W]     -W a game played out, finishing by itself (the win's demo)
  */
 
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <bmds/app.h>
-#include <bmds/game.h>
-#include "rules.h"
+#include "solitaire_rules.h"
+#include "ui.h"
 
-#define WIDTH 640
-#define HEIGHT 480
-#define CW 71 /* a card */
-#define CH 96
-#define COL_X(c) (20 + (c) * 88)
-#define TOP_Y 10
-#define TABLEAU_Y 120
-#define STATUS_Y 460
-#define FAN_X 14    /* the waste's fan, drawing three */
-#define DOWN_STEP 6 /* a column's face-down cards */
-#define UP_STEP 24  /* its face-up cards, closer when it would reach the status line */
-#define MIN_STEP 10
+#define CW ART_CARD_W
+#define CH ART_CARD_H
+#define COL_X(c) (WIDTH / 2 - 500 + (c) * 150)
+#define TOP_Y 16
+#define TABLEAU_Y 180
+#define STATUS_Y (HEIGHT - 44)
+#define FAN_X 22     /* the waste's fan, drawing three */
+#define DOWN_STEP 10 /* a column's face-down cards */
+#define UP_STEP 36   /* its face-up cards, closer when it would reach the status line */
+#define MIN_STEP 14
 #define FLIGHT_TICKS 9
-#define DRAG_START 3 /* pixels moved before a press drags */
+#define DRAG_START 4 /* pixels moved before a press drags */
 #define DOUBLE_NS 400000000LL
 
-/* Tiles of cards.png: the faces (suit × 13 + rank), then these in its last row. */
-#define TILE_BACK 52
-#define TILE_EMPTY 53
-#define TILE_HOME 54
-#define TILE_AGAIN 55
-#define TILE_DONE 56
+#define TILE_BACK ART_CARD_BACK
+#define TILE_EMPTY ART_CARD_EMPTY
+#define TILE_HOME ART_CARD_HOME
+#define TILE_AGAIN ART_CARD_AGAIN
+#define TILE_DONE ART_CARD_DONE
 
-#define FELT 0x0e7a36
-#define BAND 0x0a5a28
-#define TEXT 0xe8f4e8
-#define DIM 0xa0c8a8
-#define CURSOR 0x40e0ff
+#define BAND 0x08301c
+#define TEXT C_TEXT
+#define DIM C_DIM
+#define CURSOR C_CURSOR
 #define HELD 0xffd020
-#define BOX 0x103a20
-#define BOX_EDGE 0x70c090
 
-/* HID keys (page 7). */
-#define KEY(u) (0x00070000u | (u))
-#define K_A KEY(0x04)
-#define K_D KEY(0x07)
-#define K_F KEY(0x09)
-#define K_H KEY(0x0b)
-#define K_M KEY(0x10)
-#define K_N KEY(0x11)
-#define K_O KEY(0x12)
-#define K_S KEY(0x16)
-#define K_U KEY(0x18)
-#define K_Z KEY(0x1d)
-#define K_1 KEY(0x1e)
-#define K_3 KEY(0x20)
-#define K_ENTER KEY(0x28)
-#define K_ESCAPE KEY(0x29)
-#define K_BACKSPACE KEY(0x2a)
-#define K_SPACE KEY(0x2c)
-#define K_F1 KEY(0x3a)
-#define K_F2 KEY(0x3b)
-#define K_RIGHT KEY(0x4f)
-#define K_LEFT KEY(0x50)
-#define K_DOWN KEY(0x51)
-#define K_UP KEY(0x52)
-#define K_KP_ENTER KEY(0x58)
-#define MOD_CTRL 0x11u
+#define S_PLACE SFX_PLACE
+#define S_FLIP SFX_FLIP
+#define S_DEAL SFX_DEAL
+#define S_WIN SFX_WIN
 
+/* The status band's buttons. */
 enum {
-        S_PLACE,
-        S_FLIP,
-        S_DEAL,
-        S_WIN,
-        SOUNDS
+        B_LOBBY,
+        B_DEAL,
+        B_UNDO,
+        B_OPTIONS,
+        B_HELP,
+        BUTTONS
 };
-static const char *const SOUND_FILES[SOUNDS] = {"place.wav", "flip.wav", "deal.wav", "win.wav"};
+static ui_button_t BUTTON[BUTTONS];
+
+/* The buttons along the status band's right. */
+static void place_buttons(void) {
+        static const char *const label[BUTTONS] = {"LOBBY", "DEAL", "UNDO", "OPTIONS", "HELP"};
+        static const uint32_t    key[BUTTONS] = {0, K_N, K_U, K_O, K_H};
+        static const int32_t     x[BUTTONS] = {620, 500, 380, 260, 120}, w[BUTTONS] = {110, 110, 110, 130, 100};
+        for (int i = 0; i < BUTTONS; ++i) {
+                BUTTON[i].r = rect(WIDTH - x[i], STATUS_Y + 6, w[i], 34);
+                BUTTON[i].label = label[i];
+                BUTTON[i].key = key[i];
+        }
+        return;
+}
 
 /* What a frame shows: items by key (the cards, then the piles' places), drawn in `order`. */
 #define KEY_PLACE SOL_CARDS /* + the pile */
@@ -129,11 +115,10 @@ enum {
 #define MAX_DIRTY 24
 
 typedef struct {
-                solitaire_t       game;
-                bmds_game_image_t cards;
-                char              dir[256];
-                char              settings[256]; /* "": none kept */
-                uint32_t          draw, scoring, sound, played, won;
+                solitaire_t game;
+                uint32_t    draw, scoring, played, won;
+                int32_t     vegas_synced;       /* the Vegas score the bank has been paid to */
+                int         hover, shown_hover; /* the status band's button under the pointer */
                 /* What the last frame showed, and what to redraw. */
                 view_t      shown;
                 int         redraw_all;
@@ -172,94 +157,52 @@ typedef struct {
                 int16_t  trail[16][3];     /* x, y, the card */
                 uint32_t trail_count;
                 int      launch_under; /* the foundation whose new top to draw, or -1 */
-                /* Sound. */
-                bmds_game_audio_t *audio;
-                bmds_game_sound_t  sfx[SOUNDS];
 } state_t;
 
-/* ---- Settings: "NAME VALUE" a line. */
+static state_t s_state;
+
+/* ---- Settings, in the casino's */
 
 static void load_settings(state_t *s) {
-        s->draw = 1;
-        s->scoring = SOL_SCORE_STANDARD;
-        s->sound = 1;
-        if (s->settings[0] == '\0') return;
-        FILE *f = fopen(s->settings, "r");
-        if (f == NULL) return;
-        char     line[64], name[32];
-        unsigned value;
-        while (fgets(line, sizeof(line), f) != NULL) {
-                if (sscanf(line, "%31s %u", name, &value) != 2) continue;
-                if (strcmp(name, "draw") == 0)
-                        s->draw = value == 3 ? 3 : 1;
-                else if (strcmp(name, "scoring") == 0)
-                        s->scoring = value < SOL_SCORINGS ? value : SOL_SCORE_STANDARD;
-                else if (strcmp(name, "sound") == 0)
-                        s->sound = value != 0;
-                else if (strcmp(name, "played") == 0)
-                        s->played = value;
-                else if (strcmp(name, "won") == 0)
-                        s->won = value;
-        }
-        fclose(f);
+        s->draw = setting("solitaire.draw", 1) == 3 ? 3 : 1;
+        s->scoring = (uint32_t)setting("solitaire.scoring", SOL_SCORE_STANDARD);
+        if (s->scoring >= SOL_SCORINGS) s->scoring = SOL_SCORE_STANDARD;
+        s->played = (uint32_t)setting("solitaire.played", 0);
+        s->won = (uint32_t)setting("solitaire.won", 0);
         return;
 }
 
 static void save_settings(const state_t *s) {
-        if (s->settings[0] == '\0') return;
-        FILE *f = fopen(s->settings, "w");
-        if (f == NULL) return;
-        fprintf(f, "draw %u\nscoring %u\nsound %u\nplayed %u\nwon %u\n", (unsigned)s->draw, (unsigned)s->scoring,
-                (unsigned)s->sound, (unsigned)s->played, (unsigned)s->won);
-        fclose(f);
+        set_setting("solitaire.draw", s->draw);
+        set_setting("solitaire.scoring", s->scoring);
+        set_setting("solitaire.played", s->played);
+        set_setting("solitaire.won", s->won);
         return;
 }
 
 /* ---- Sound */
 
 static void play(state_t *s, int sound, float volume) {
-        if (s->audio != NULL && s->sound && s->sfx[sound].samples != NULL)
-                (void)bmds_game_play(s->audio, &s->sfx[sound], volume, 0.0f, 0);
+        (void)s;
+        sfx(sound, volume);
+        return;
+}
+
+/* ---- Vegas: the score is the bank's (devplan/luckyduck.md §7) */
+
+static void vegas_sync(state_t *s) {
+        /* A demo (-W) isn't a game: it neither costs nor pays. */
+        if (s->game.scoring != SOL_SCORE_VEGAS || !s->counted || s->game.score == s->vegas_synced) return;
+        bank_add(s->game.score - s->vegas_synced);
+        s->vegas_synced = s->game.score;
         return;
 }
 
 /* ---- Rectangles */
 
-static bmds_rect_t rect(int32_t x, int32_t y, int32_t w, int32_t h) {
-        const bmds_rect_t r = {x, y, (uint32_t)(w > 0 ? w : 0), (uint32_t)(h > 0 ? h : 0)};
-        return r;
-}
-
-static int meets(const bmds_rect_t *a, const bmds_rect_t *b) {
-        return a->width > 0 && b->width > 0 && a->x < b->x + (int32_t)b->width && b->x < a->x + (int32_t)a->width &&
-               a->y < b->y + (int32_t)b->height && b->y < a->y + (int32_t)a->height;
-}
-
-static bmds_rect_t bounds(const bmds_rect_t *a, const bmds_rect_t *b) {
-        const int32_t x0 = a->x < b->x ? a->x : b->x, y0 = a->y < b->y ? a->y : b->y;
-        const int32_t ax1 = a->x + (int32_t)a->width, bx1 = b->x + (int32_t)b->width;
-        const int32_t ay1 = a->y + (int32_t)a->height, by1 = b->y + (int32_t)b->height;
-        return rect(x0, y0, (ax1 > bx1 ? ax1 : bx1) - x0, (ay1 > by1 ? ay1 : by1) - y0);
-}
-
-static int contains(const bmds_rect_t *r, int32_t x, int32_t y) {
-        return x >= r->x && y >= r->y && x < r->x + (int32_t)r->width && y < r->y + (int32_t)r->height;
-}
-
-/* Adds @p r to what the next frame redraws (merged with one it meets; full: with the last). */
+/* Adds @p r to what the next frame redraws. */
 static void dirty(state_t *s, bmds_rect_t r) {
-        if (r.width == 0 || r.height == 0) return;
-        for (uint32_t i = 0; i < s->dirty_count; ++i) {
-                if (!meets(&s->dirty[i], &r)) continue;
-                r = bounds(&s->dirty[i], &r);
-                s->dirty[i] = s->dirty[--s->dirty_count];
-                i = (uint32_t)-1; /* the bigger one may meet others now */
-        }
-        if (s->dirty_count == MAX_DIRTY) {
-                s->dirty[MAX_DIRTY - 1] = bounds(&s->dirty[MAX_DIRTY - 1], &r);
-                return;
-        }
-        s->dirty[s->dirty_count++] = r;
+        dirty_add(s->dirty, &s->dirty_count, MAX_DIRTY, r);
         return;
 }
 
@@ -367,6 +310,19 @@ static int ease(int32_t from, int32_t to, uint32_t ticks) {
         return from + (to - from) * (2 * n * t - t * t) / (n * n); /* easing out */
 }
 
+/* Whether flight @p f is waiting (a face-down card yet to leave) under another waiting at the
+   same place: not drawn, as it can't be seen (a deal's cards wait on the stock: each drawn there
+   would cost every redraw near it a whole card). */
+static int hidden_waiting(const state_t *s, uint32_t f) {
+        const flight_t *fl = &s->flight[f];
+        if (fl->delay == 0 || fl->ticks != 0) return 0;
+        for (uint32_t g = f + 1; g < s->flights; ++g) {
+                const flight_t *o = &s->flight[g];
+                if (o->delay > 0 && o->ticks == 0 && o->fx == fl->fx && o->fy == fl->fy) return 1;
+        }
+        return 0;
+}
+
 /* Works out every item of the frame: the places, the piles, a drag, the flights. */
 static void layout(const state_t *s, view_t *v) {
         memset(v, 0, sizeof(*v));
@@ -408,6 +364,7 @@ static void layout(const state_t *s, view_t *v) {
         }
         for (uint32_t f = 0; f < s->flights; ++f) {
                 const flight_t *fl = &s->flight[f];
+                if (hidden_waiting(s, f)) continue;
                 /* Where it is going: its place in the rules now. */
                 for (int pile = 0; pile < SOL_PILES; ++pile) {
                         const sol_pile_t *p = &g->pile[pile];
@@ -519,8 +476,11 @@ static void deal(state_t *s) {
                 s->auto_play = 1;
                 s->demo = 0;
         } else {
+                if (s->scoring == SOL_SCORE_VEGAS && bank_ensure(52)) play(s, SFX_SAD, 0.5f); /* Lucky tops it up */
                 sol_deal(&s->game, s->draw, s->scoring, (uint32_t)ns ^ (uint32_t)(ns >> 32));
         }
+        s->vegas_synced = 0;
+        vegas_sync(s);
         s->dragging = 0;
         s->press_pile = -1;
         s->held_pile = -1;
@@ -729,8 +689,7 @@ static void on_key(state_t *s, const bmds_surface_event_t *e) {
         }
         s->cursor_on = 1;
         if (usage == K_M) {
-                s->sound = !s->sound;
-                save_settings(s);
+                sound_toggle();
                 ++s->box_version;
                 return;
         }
@@ -741,6 +700,10 @@ static void on_key(state_t *s, const bmds_surface_event_t *e) {
                 }
                 if (usage == K_ESCAPE || usage == K_O || usage == K_F1 || usage == K_H || usage == K_ENTER)
                         s->box = BOX_NONE;
+                return;
+        }
+        if (usage == K_ESCAPE && s->held_pile < 0) {
+                app_leave();
                 return;
         }
         land_all(s);
@@ -875,6 +838,7 @@ static void on_pointer(state_t *s, const bmds_surface_event_t *e) {
         s->px = x < -CW ? -CW : x > WIDTH + CW ? WIDTH + CW : x;
         s->py = y < -CH ? -CH : y > HEIGHT + CH ? HEIGHT + CH : y;
         s->buttons = buttons;
+        s->hover = ui_button_at(BUTTON, BUTTONS, x, y);
         if (s->winning) {
                 if (pressed != 0) deal(s);
                 return;
@@ -882,6 +846,21 @@ static void on_pointer(state_t *s, const bmds_surface_event_t *e) {
         if (s->box != BOX_NONE) {
                 if (pressed != 0) s->box = BOX_NONE;
                 return;
+        }
+        if ((pressed & 1u) != 0 && s->hover >= 0 && !s->dragging) {
+                play(s, SFX_CLICK, 0.6f);
+                land_all(s);
+                s->auto_play = 0;
+                switch (s->hover) {
+                        case B_LOBBY: app_leave(); return;
+                        case B_DEAL: deal(s); return;
+                        case B_UNDO:
+                                s->held_pile = -1;
+                                if (sol_undo(&s->game) == 0) play(s, S_FLIP, 0.5f);
+                                return;
+                        case B_OPTIONS: s->box = BOX_OPTIONS; return;
+                        default: s->box = BOX_HELP; return;
+                }
         }
         const int was_started = s->game.started;
         if ((pressed & 1u) != 0) on_press(s, e->time_ns);
@@ -906,14 +885,9 @@ static void on_pointer(state_t *s, const bmds_surface_event_t *e) {
 
 /* ---- Events and ticks */
 
-static void on_event(bmds_game_t *game, const bmds_surface_event_t *e) {
-        state_t *s = bmds_game_arg(game);
+static void scene_event(const bmds_surface_event_t *e) {
+        state_t *s = &s_state;
         switch (e->type) {
-                case BMDS_EVENT_CLOSE: bmds_game_quit(game); break;
-                case BMDS_EVENT_PRESENTED: s->redraw_all = 1; break;
-                case BMDS_EVENT_ACTIVE:
-                        if (s->audio != NULL) bmds_game_audio_pause(s->audio, e->data[0] == 0);
-                        break;
                 case BMDS_EVENT_POINTER: on_pointer(s, e); break;
                 case BMDS_EVENT_KEY:
                         if ((e->flags & BMDS_KEY_DOWN) != 0) on_key(s, e);
@@ -923,8 +897,9 @@ static void on_event(bmds_game_t *game, const bmds_surface_event_t *e) {
         return;
 }
 
-static void on_tick(bmds_game_t *game) {
-        state_t *s = bmds_game_arg(game);
+static void scene_tick(void) {
+        state_t *s = &s_state;
+        vegas_sync(s);
         if (s->winning) {
                 win_tick(s);
                 return;
@@ -960,20 +935,24 @@ static void on_tick(bmds_game_t *game) {
 /* ---- Drawing */
 
 static void blit_tile(bmds_canvas_t *c, const state_t *s, int32_t x, int32_t y, int tile) {
-        const bmds_rect_t r = rect((tile % 13) * CW, (tile / 13) * CH, CW, CH);
-        bmds_canvas_blit(c, x, y, &s->cards, &r);
+        (void)s;
+        ui_card(c, x, y, tile);
         return;
 }
 
 static void status_text(const state_t *s, char *out, size_t size) {
         const solitaire_t *g = &s->game;
-        char               score[24] = "";
-        if (g->scoring == SOL_SCORE_STANDARD)
-                snprintf(score, sizeof(score), "Score: %d", (int)g->score);
-        else if (g->scoring == SOL_SCORE_VEGAS)
-                snprintf(score, sizeof(score), "Score: $%d", (int)g->score);
-        snprintf(out, size, "%-16s Time: %u:%02u   Moves: %u", score, (unsigned)(g->seconds / 60),
-                 (unsigned)(g->seconds % 60), (unsigned)g->moves);
+        char               score[64] = "", bank[24];
+        if (g->scoring == SOL_SCORE_STANDARD) {
+                snprintf(score, sizeof(score), "SCORE: %d", (int)g->score);
+        } else if (g->scoring == SOL_SCORE_VEGAS) {
+                char amount[24];
+                money(amount, sizeof(amount), g->score);
+                money(bank, sizeof(bank), bank_balance());
+                snprintf(score, sizeof(score), "SCORE: %s   BANK: %s", amount, bank);
+        }
+        snprintf(out, size, "%s%sTIME: %u:%02u   MOVES: %u", score, score[0] != '\0' ? "   " : "",
+                 (unsigned)(g->seconds / 60), (unsigned)(g->seconds % 60), (unsigned)g->moves);
         return;
 }
 
@@ -1005,78 +984,101 @@ static void outline(bmds_canvas_t *c, bmds_rect_t r, uint32_t rgb) {
 }
 
 static bmds_rect_t box_rect(void) {
-        return rect(110, 100, 420, 260);
+        return rect(WIDTH / 2 - 300, HEIGHT / 2 - 190, 600, 380);
 }
 
+#define BOX_X (WIDTH / 2 - 250)
+
+/* A line @p y down the box as laid out at y 150 (the box at the picture's middle). */
 static void box_line(bmds_canvas_t *c, int32_t y, const char *text, uint32_t rgb) {
-        bmds_canvas_text(c, 130, y, text, bmds_canvas_pixel(c, rgb), 1);
+        ui_line(c, BOX_X, y - 150 + box_rect().y, text, rgb);
         return;
 }
 
 static void draw_box(bmds_canvas_t *c, const state_t *s) {
         const bmds_rect_t r = box_rect();
         char              line[80];
-        bmds_canvas_fill(c, r.x, r.y, (int32_t)r.width, (int32_t)r.height, bmds_canvas_pixel(c, BOX));
-        outline(c, r, BOX_EDGE);
+        ui_panel(c, r);
         if (s->box == BOX_HELP) {
-                box_line(c, 116, "SOLITAIRE: the keys", HELD);
-                box_line(c, 144, "Arrows      move the cursor", TEXT);
-                box_line(c, 162, "Space/Enter draw, pick up, put down", TEXT);
-                box_line(c, 180, "D  draw     F  this card up", TEXT);
-                box_line(c, 198, "A  all up   Esc  let go", TEXT);
-                box_line(c, 216, "Ctrl+Z/U    undo", TEXT);
-                box_line(c, 234, "F2/N  deal  O  options  M  sound", TEXT);
-                box_line(c, 262, "Mouse: drag cards; double click", DIM);
-                box_line(c, 280, "sends one up, right click all.", DIM);
-                box_line(c, 324, "Esc: close", DIM);
+                ui_text_centred(c, ART_FONT_MED, WIDTH / 2, r.y + 24, "SOLITAIRE");
+                box_line(c, 220, "Arrows       move the cursor", TEXT);
+                box_line(c, 242, "Space/Enter  draw, pick up, put down", TEXT);
+                box_line(c, 264, "D  draw      F  this card up", TEXT);
+                box_line(c, 286, "A  all up    Esc  let go (or the lobby)", TEXT);
+                box_line(c, 308, "Ctrl+Z/U     undo", TEXT);
+                box_line(c, 330, "F2/N  deal   O  options   M  sound", TEXT);
+                box_line(c, 368, "Mouse: drag cards; a double click sends one up,", DIM);
+                box_line(c, 390, "a right click all that can go.", DIM);
+                box_line(c, 480, "Esc or a click: close", DIM);
         } else if (s->box == BOX_OPTIONS) {
-                static const char *const scoring[] = {"standard", "Vegas", "none"};
-                box_line(c, 116, "OPTIONS", HELD);
+                static const char *const scoring[] = {"standard", "Vegas (from the bank)", "none"};
+                ui_text_centred(c, ART_FONT_MED, WIDTH / 2, r.y + 24, "OPTIONS");
                 snprintf(line, sizeof(line), "1 / 3    draw %s", s->draw == 3 ? "three" : "one");
-                box_line(c, 150, line, TEXT);
+                box_line(c, 226, line, TEXT);
                 snprintf(line, sizeof(line), "S        scoring: %s", scoring[s->scoring]);
-                box_line(c, 172, line, TEXT);
-                snprintf(line, sizeof(line), "M        sound %s", s->sound ? "on" : "off");
-                box_line(c, 194, line, TEXT);
-                box_line(c, 222, "Changing the draw or scoring deals again.", DIM);
+                box_line(c, 252, line, TEXT);
+                snprintf(line, sizeof(line), "M        sound %s", sound_on() ? "on" : "off");
+                box_line(c, 278, line, TEXT);
+                box_line(c, 314, "Changing the draw or scoring deals again.", DIM);
+                box_line(c, 336, "Vegas: a deal costs $52 from the bank, each card up pays $5.", DIM);
                 snprintf(line, sizeof(line), "Games won: %u of %u", (unsigned)s->won, (unsigned)s->played);
-                box_line(c, 260, line, TEXT);
-                box_line(c, 324, "Esc: close", DIM);
+                box_line(c, 384, line, TEXT);
+                box_line(c, 480, "Esc or a click: close", DIM);
         } else {
-                bmds_canvas_text(c, r.x + ((int32_t)r.width - bmds_game_text_width("YOU WON!", 3)) / 2, 140, "YOU WON!",
-                                 bmds_canvas_pixel(c, HELD), 3);
+                ui_text_centred(c, ART_FONT_BIG, WIDTH / 2, r.y + 44, "YOU WON!");
                 if (s->game.scoring != SOL_SCORE_NONE) {
-                        snprintf(line, sizeof(line), "Score %s%d in %u:%02u",
-                                 s->game.scoring == SOL_SCORE_VEGAS ? "$" : "", (int)s->game.score,
-                                 (unsigned)(s->game.seconds / 60), (unsigned)(s->game.seconds % 60));
-                        box_line(c, 220, line, TEXT);
+                        char amount[24];
+                        if (s->game.scoring == SOL_SCORE_VEGAS)
+                                money(amount, sizeof(amount), s->game.score);
+                        else
+                                snprintf(amount, sizeof(amount), "%d", (int)s->game.score);
+                        snprintf(line, sizeof(line), "Score %s in %u:%02u", amount, (unsigned)(s->game.seconds / 60),
+                                 (unsigned)(s->game.seconds % 60));
+                        box_line(c, 300, line, TEXT);
                 }
                 snprintf(line, sizeof(line), "Games won: %u of %u", (unsigned)s->won, (unsigned)s->played);
-                box_line(c, 244, line, TEXT);
-                box_line(c, 324, "Click or press a key to deal again", DIM);
+                box_line(c, 326, line, TEXT);
+                box_line(c, 480, "Click or press a key to deal again", DIM);
         }
+        return;
+}
+
+/* The status band: the score, the time, the moves, and the buttons. */
+static void draw_band(bmds_canvas_t *c, const state_t *s) {
+        char text[96];
+        status_text(s, text, sizeof(text));
+        (void)ui_text(c, ART_FONT_SMALL, 20, STATUS_Y + 18, text);
+        for (int i = 0; i < BUTTONS; ++i) ui_button(c, &BUTTON[i], s->hover == i ? UI_HOVER : UI_NORMAL);
         return;
 }
 
 /* Everything inside @p r, from the felt up. */
 static void draw_scene(bmds_canvas_t *c, const state_t *s, const view_t *v, bmds_rect_t r) {
         bmds_canvas_set_clip(c, &r);
-        bmds_canvas_fill(c, r.x, r.y, (int32_t)r.width, (int32_t)r.height, bmds_canvas_pixel(c, FELT));
-        const bmds_rect_t band = rect(0, STATUS_Y, WIDTH, HEIGHT - STATUS_Y);
-        if (meets(&r, &band)) {
-                char text[96];
-                status_text(s, text, sizeof(text));
-                bmds_canvas_fill(c, 0, STATUS_Y, WIDTH, HEIGHT - STATUS_Y, bmds_canvas_pixel(c, BAND));
-                bmds_canvas_text(c, 12, STATUS_Y + 2, text, bmds_canvas_pixel(c, TEXT), 1);
-                const char *keys = "F1: keys   O: options";
-                bmds_canvas_text(c, WIDTH - 12 - bmds_game_text_width(keys, 1), STATUS_Y + 2, keys,
-                                 bmds_canvas_pixel(c, DIM), 1);
-        }
+        r = c->clip;
+        /* Each card drawn only where no card over it hides it, the felt likewise (columns are
+           mostly cards under cards). */
+        bmds_rect_t cards[KEYS];
+        int         order[KEYS], n = 0;
         for (int k = 0; k < v->count; ++k) {
                 const item_t     *it = &v->item[v->order[k]];
                 const bmds_rect_t cr = rect(it->x, it->y, CW, CH);
-                if (meets(&cr, &r)) blit_tile(c, s, it->x, it->y, it->tile);
+                if (!meets(&cr, &r)) continue;
+                order[n] = v->order[k];
+                cards[n++] = it->tile < TILE_EMPTY ? cr : rect(0, 0, 0, 0); /* the places: see-through */
         }
+        felt_restore(c, ui_uncovered(r, cards, n));
+        const bmds_rect_t band = rect(0, STATUS_Y, WIDTH, HEIGHT - STATUS_Y);
+        if (meets(&r, &band)) draw_band(c, s);
+        for (int k = 0; k < n; ++k) {
+                const item_t     *it = &v->item[order[k]];
+                const bmds_rect_t shows =
+                        ui_uncovered(intersection(rect(it->x, it->y, CW, CH), r), cards + k + 1, n - k - 1);
+                if (shows.width == 0) continue;
+                bmds_canvas_set_clip(c, &shows);
+                blit_tile(c, s, it->x, it->y, it->tile);
+        }
+        bmds_canvas_set_clip(c, &r);
         const bmds_rect_t held = held_rect(s), cursor = cursor_rect(s);
         if (held.width > 0 && meets(&held, &r)) outline(c, held, HELD);
         if (cursor.width > 0 && meets(&cursor, &r)) outline(c, cursor, CURSOR);
@@ -1091,13 +1093,9 @@ static int same(const item_t *a, const item_t *b) {
                                              a->layer == b->layer && a->pile == b->pile && a->index == b->index));
 }
 
-static int same_rect(const bmds_rect_t *a, const bmds_rect_t *b) {
-        return a->x == b->x && a->y == b->y && a->width == b->width && a->height == b->height;
-}
-
 static void draw_win(bmds_canvas_t *c, state_t *s) {
         if (s->redraw_all) { /* the trails are lost: the felt and the foundations again */
-                bmds_canvas_clear(c, bmds_canvas_pixel(c, FELT));
+                felt_restore(c, rect(0, 0, c->width, c->height));
                 for (int f = SOL_FOUNDATION; f < SOL_TABLEAU; ++f) {
                         const sol_pile_t *p = &s->game.pile[f];
                         int32_t           x, y;
@@ -1111,7 +1109,7 @@ static void draw_win(bmds_canvas_t *c, state_t *s) {
                 const sol_pile_t *p = &s->game.pile[s->launch_under];
                 int32_t           x, y;
                 pile_origin(s->launch_under, &x, &y);
-                bmds_canvas_fill(c, x, y, CW, CH, bmds_canvas_pixel(c, FELT));
+                felt_restore(c, rect(x, y, CW, CH));
                 blit_tile(c, s, x, y, p->count > 0 ? (p->cards[p->count - 1] & ~SOL_UP) : TILE_HOME);
                 s->launch_under = -1;
         }
@@ -1125,8 +1123,8 @@ static void draw_win(bmds_canvas_t *c, state_t *s) {
         return;
 }
 
-static void on_draw(bmds_game_t *game, bmds_canvas_t *c) {
-        state_t *s = bmds_game_arg(game);
+static void scene_draw(bmds_canvas_t *c) {
+        state_t *s = &s_state;
         if (s->winning) {
                 draw_win(c, s);
                 return;
@@ -1163,7 +1161,8 @@ static void on_draw(bmds_game_t *game, bmds_canvas_t *c) {
         }
         char text[96];
         status_text(s, text, sizeof(text));
-        if (strcmp(text, s->shown_status) != 0) {
+        if (strcmp(text, s->shown_status) != 0 || s->hover != s->shown_hover) {
+                s->shown_hover = s->hover;
                 dirty(s, rect(0, STATUS_Y, WIDTH, HEIGHT - STATUS_Y));
                 snprintf(s->shown_status, sizeof(s->shown_status), "%s", text);
         }
@@ -1173,82 +1172,58 @@ static void on_draw(bmds_game_t *game, bmds_canvas_t *c) {
         return;
 }
 
-/* ---- Start */
-
-static int path_in(char *out, size_t size, const char *dir, const char *name) {
-        const int n = snprintf(out, size, "%s/%s", dir, name);
-        return n >= 0 && (size_t)n < size ? 0 : -1;
+static void scene_redraw(bmds_canvas_t *c, bmds_rect_t r) {
+        state_t *s = &s_state;
+        if (s->winning) { /* the trails are lost */
+                s->redraw_all = 1;
+                draw_win(c, s);
+                return;
+        }
+        static view_t now;
+        layout(s, &now);
+        draw_scene(c, s, &now, r);
+        return;
 }
 
-int main(int argc, char **argv) {
-        static state_t s;
-        int            full = 0;
-        for (int i = 1; i < argc; ++i) {
-                if (strcmp(argv[i], "-F") == 0) {
-                        full = 1;
-                } else if (strcmp(argv[i], "-W") == 0) {
-                        s.demo = 1;
-                } else {
-                        fprintf(stderr, "usage: solitaire [-F] [-W]\n");
-                        return 2;
-                }
-        }
-        const char *dir = bmds_app_dir();
-        if (dir != NULL) {
-                snprintf(s.dir, sizeof(s.dir), "%s", dir);
-        } else {
-                snprintf(s.dir, sizeof(s.dir), "%s", argv[0]);
-                char *slash = strrchr(s.dir, '/');
-                if (slash != NULL)
-                        *slash = '\0';
-                else
-                        snprintf(s.dir, sizeof(s.dir), ".");
-        }
-        char data[256];
-        if (bmds_app_data_dir(data, sizeof(data)) != 0 ||
-            path_in(s.settings, sizeof(s.settings), data, "settings") != 0)
-                s.settings[0] = '\0';
-        load_settings(&s);
+/* ---- The scene */
 
-        char                   path[300];
-        const bmds_game_load_t how = {sizeof(how), BMDS_PIXEL_RGB565, 0, 0, NULL, 0, 0, 0};
-        int err = path_in(path, sizeof(path), s.dir, "cards.png") == 0 ? bmds_game_image_load(path, &how, &s.cards)
-                                                                       : -BMDS_ENAMETOOLONG;
-        if (err < 0) {
-                fprintf(stderr, "solitaire: %s: %s\n", path, strerror(-err));
-                return 1;
-        }
-        if (bmds_game_audio_open(NULL, &s.audio) == 0) {
-                for (int i = 0; i < SOUNDS; ++i)
-                        if (path_in(path, sizeof(path), s.dir, SOUND_FILES[i]) != 0 ||
-                            bmds_game_sound_load(s.audio, path, &s.sfx[i]) < 0)
-                                fprintf(stderr, "solitaire: %s: not loaded\n", path);
-        }
-        int64_t ns = 0;
-        bmds_clock_get(BMDS_CLOCK_MONOTONIC, &ns);
-        srand((unsigned)ns);
-        s.last_press_card = -1;
-        deal(&s);
-
-        bmds_game_config_t config;
-        memset(&config, 0, sizeof(config));
-        config.size = sizeof(config);
-        config.width = WIDTH;
-        config.height = HEIGHT;
-        config.format = BMDS_PIXEL_RGB565;
-        config.flags = full ? BMDS_SURFACE_FULL_SCREEN : 0;
-        config.title = "Solitaire";
-        config.arg = &s;
-        config.event = on_event;
-        config.tick = on_tick;
-        config.draw = on_draw;
-        err = bmds_game_run(&config);
-        bmds_game_audio_close(s.audio);
-        for (int i = 0; i < SOUNDS; ++i) bmds_game_sound_free(&s.sfx[i]);
-        bmds_game_image_free(&s.cards);
-        if (err < 0) {
-                fprintf(stderr, "solitaire: %s\n", strerror(-err));
-                return 1;
-        }
+static int scene_enter(int argc, char **argv) {
+        state_t *s = &s_state;
+        s->demo = 0;
+        for (int i = 0; i < argc; ++i)
+                if (strcmp(argv[i], "-W") == 0) s->demo = 1;
+        load_settings(s);
+        felt_baize(0x1c9450, 0x0a4a26);
+        bmds_canvas_fill_blend(&app.felt_canvas, 0, STATUS_Y, WIDTH, HEIGHT - STATUS_Y, 0x000000, 120);
+        bmds_canvas_fill(&app.felt_canvas, 0, STATUS_Y, WIDTH, 2, bmds_canvas_pixel(&app.felt_canvas, 0xb08028));
+        bmds_canvas_damage_clear(&app.felt_canvas);
+        place_buttons();
+        s->last_press_card = -1;
+        s->hover = s->shown_hover = -1;
+        s->buttons = 0;
+        s->cursor_on = 0;
+        deal(s);
+        /* What shows is drawn by the transition (or the first frame's redraw): this frame is the last's. */
+        s->redraw_all = 0;
+        layout(s, &s->shown);
+        s->shown_box = s->box;
+        status_text(s, s->shown_status, sizeof(s->shown_status));
         return 0;
 }
+
+static void scene_leave(void) {
+        state_t *s = &s_state;
+        vegas_sync(s);
+        save_settings(s);
+        return;
+}
+
+static int scene_busy(void) {
+        const state_t *s = &s_state;
+        return s->game.started && !s->game.won && !s->winning;
+}
+
+const scene_t solitaire_scene = {
+        "solitaire", "Solitaire", scene_enter,  scene_leave, scene_event,
+        scene_tick,  scene_draw,  scene_redraw, scene_busy,
+};

@@ -105,6 +105,10 @@ until silicon v3; then test again.
   that reads and writes PSRAM is memory-bound long before it is compute-bound: measure the scalar
   and PIE times before tuning instructions. Column-order access thrashes the cache (turning a
   picture: 1525 ms by rows, 277 ms in 32 × 32 tiles).
+  The same from a userspace game (2026-10-15, `luckyduck.md` §14): `memcpy` of a 1280×720 RGB565
+  frame PSRAM to PSRAM 64 ms (~28 MB/s each way), a 100×140 keyed card blit 0.8 ms, a redrawn
+  pixel ~230 ns with two layers (each a source read, the destination's line filled and written
+  back): at 1280×720, what a frame touches decides its rate, not the code.
 - **A big table read from flash competes with every other flash read:** SVOX Pico synthesizing flat
   out (into a file) from its 1.4 MB voice mapped in `/rom` slowed the icon blend from the ROM
   296 → 380 µs an icon (28 %); with the voice copied into PSRAM, 322 µs (9 %). Speaking at real
