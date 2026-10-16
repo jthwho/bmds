@@ -24,6 +24,13 @@ void bmds_game_damage_in_clip(bmds_canvas_t *canvas, const bmds_rect_t *rect);
 /** @brief Adds @p rect to @p list (of @p count, at most @p max): merged with what it meets. */
 void bmds_game_rects_add(bmds_rect_t *list, uint32_t *count, uint32_t max, const bmds_rect_t *rect);
 
+/**
+ * @brief Copies @p count rectangles from @p from to @p to (same size and format) but none of the
+ *        @p excepts (at most `BMDS_GAME_REPAINTED_MAX`).
+ */
+void bmds_game_copy_except(bmds_canvas_t *to, const bmds_canvas_t *from, const bmds_rect_t *rects, uint32_t count,
+                           const bmds_rect_t *except, uint32_t excepts);
+
 /** @brief The transparent RGB565 and BGR24 value of a loaded image: magenta. */
 #define BMDS_GAME_KEY_RGB565 0xf81fu
 #define BMDS_GAME_KEY_BGR24 0xff00ffu

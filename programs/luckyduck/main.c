@@ -439,6 +439,7 @@ static void box_event(const bmds_surface_event_t *e) {
 }
 
 static void box_draw(bmds_canvas_t *c) {
+        bmds_game_up_to_date(app.game); /* the box dims what is there */
         ui_button_t b[2];
         const int   n = box_buttons(b);
         if (!m.box_shown) {
@@ -482,6 +483,7 @@ static void move_tick(void) {
 }
 
 static void move_draw(bmds_canvas_t *c) {
+        bmds_game_up_to_date(app.game); /* the ducklings uncover what is there */
         const int32_t right = m.edge < WIDTH ? m.edge : WIDTH;
         bmds_canvas_t sub;
         if (right <= 0 || bmds_canvas_init(&sub, c->pixels, c->stride, right, HEIGHT, c->format) != 0) return;
@@ -671,6 +673,7 @@ int main(int argc, char **argv) {
         config.event = on_event;
         config.tick = on_tick;
         config.draw = on_draw;
+        config.options = BMDS_GAME_REPAINTS; /* the stage repaints its rectangles whole (the rest asks) */
         const int err = bmds_game_run(&config);
         if (m.scene != NULL && m.scene->leave != NULL) m.scene->leave();
         bmds_game_audio_close(m.audio);

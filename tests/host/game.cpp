@@ -11,6 +11,7 @@
 
 #include <doctest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -205,6 +206,93 @@ TEST_CASE("Game canvas: scaled blits, mirrored, keyed, clipped") {
         bmds_canvas_blit_scaled(&q.canvas, 0, 0, 4, 4, &image, nullptr);
         bmds_canvas_blit_scaled(&p.canvas, 0, 0, 0, 4, &image, nullptr);
         CHECK(q.damage().empty());
+}
+
+namespace {
+
+        // The turned blit as first written (a pixel at a time over its bounds, 64-bit steps): the
+        // faster one must draw exactly the same.
+        int32_t ref_sine16(uint32_t turn) {
+                turn &= BMDS_GAME_TURN - 1;
+                const uint32_t quarter = BMDS_GAME_TURN / 4;
+                const int      negative = turn >= BMDS_GAME_TURN / 2;
+                uint32_t       t = turn % (BMDS_GAME_TURN / 2);
+                if (t > quarter) t = BMDS_GAME_TURN / 2 - t;
+                const double u = double(t) / quarter, u2 = u * u;
+                const double v =
+                        u * (1.5707963267948966 +
+                             u2 * (-0.6459640975062462 +
+                                   u2 * (0.0796926262461670 + u2 * (-0.0046817541353187 + u2 * 0.0001604411847874))));
+                const int32_t r = int32_t(v * 65536.0 + 0.5);
+                return negative ? -r : r;
+        }
+
+        void ref_rotated(Picture &p, int32_t cx, int32_t cy, uint32_t turn, uint32_t scale,
+                         const bmds_game_image_t &image, const bmds_rect_t &src, const bmds_rect_t &clip) {
+                const int32_t sw = int32_t(src.width), sh = int32_t(src.height);
+                const int32_t sn = ref_sine16(turn), cs = ref_sine16(turn + BMDS_GAME_TURN / 4);
+                const int64_t asn = sn < 0 ? -sn : sn, acs = cs < 0 ? -cs : cs;
+                const int32_t ex = int32_t(((acs * sw + asn * sh) * scale / BMDS_GAME_SCALE) >> 17) + 1;
+                const int32_t ey = int32_t(((asn * sw + acs * sh) * scale / BMDS_GAME_SCALE) >> 17) + 1;
+                const int32_t x0 = std::max(cx - ex, clip.x), y0 = std::max(cy - ey, clip.y);
+                const int32_t x1 = std::min(cx + ex + 1, clip.x + int32_t(clip.width));
+                const int32_t y1 = std::min(cy + ey + 1, clip.y + int32_t(clip.height));
+                const int64_t ux = int64_t(cs) * BMDS_GAME_SCALE / scale, vx = -int64_t(sn) * BMDS_GAME_SCALE / scale;
+                const int64_t uy = int64_t(sn) * BMDS_GAME_SCALE / scale, vy = int64_t(cs) * BMDS_GAME_SCALE / scale;
+                const int64_t half_w = int64_t(sw) << 15, half_h = int64_t(sh) << 15;
+                for (int32_t row = y0; row < y1; ++row) {
+                        const int64_t dy2 = 2 * int64_t(row - cy) + 1, dx2 = 2 * int64_t(x0 - cx) + 1;
+                        int64_t       u = ((dx2 * ux + dy2 * uy) >> 1) + half_w;
+                        int64_t       v = ((dx2 * vx + dy2 * vy) >> 1) + half_h;
+                        for (int32_t col = x0; col < x1; ++col, u += ux, v += vx) {
+                                if (u < 0 || v < 0) continue;
+                                const int32_t sx = int32_t(u >> 16), sy = int32_t(v >> 16);
+                                if (sx >= sw || sy >= sh) continue;
+                                uint16_t px;
+                                std::memcpy(&px,
+                                            image.pixels + size_t(src.y + sy) * image.stride + size_t(src.x + sx) * 2,
+                                            2);
+                                if (px == uint16_t(image.key)) continue;
+                                std::memcpy(p.pixels.data() + size_t(row) * p.canvas.stride + size_t(col) * 2, &px, 2);
+                        }
+                }
+        }
+
+} // namespace
+
+TEST_CASE("Game canvas: turned blits draw exactly what a pixel at a time would") {
+        // A keyed RGB565 sheet of distinct pixels, a tile of it turned at many angles and sizes.
+        const int32_t         sw = 37, sh = 29;
+        std::vector<uint16_t> sheet(size_t(sw) * sh);
+        for (size_t i = 0; i < sheet.size(); ++i) sheet[i] = uint16_t(i * 2654435761u >> 7) | 1u;
+        sheet[5] = sheet[100] = sheet[300] = 0; // keyed pixels
+        bmds_game_image_t image = {reinterpret_cast<const uint8_t *>(sheet.data()),
+                                   uint32_t(sw) * 2,
+                                   sw,
+                                   sh,
+                                   BMDS_PIXEL_RGB565,
+                                   BMDS_GAME_IMAGE_KEYED,
+                                   0};
+        const bmds_rect_t src = {3, 2, 31, 23};
+        uint32_t          seed = 12345;
+        auto              next = [&seed] {
+                return seed = seed * 1103515245u + 12345u, seed >> 8;
+        };
+        size_t drawn = 0;
+        for (int round = 0; round < 400; ++round) {
+                const uint32_t    turn = next() % BMDS_GAME_TURN, scale = 40 + next() % 600;
+                const int32_t     cx = int32_t(next() % 80) - 10, cy = int32_t(next() % 70) - 10;
+                Picture           fast(64, 56, BMDS_PIXEL_RGB565), slow(64, 56, BMDS_PIXEL_RGB565);
+                const bmds_rect_t clip = {int32_t(next() % 20), int32_t(next() % 20), 30 + next() % 34,
+                                          30 + next() % 26};
+                bmds_canvas_set_clip(&fast.canvas, &clip);
+                const bmds_rect_t kept = fast.canvas.clip; // as the canvas clipped it to itself
+                bmds_canvas_blit_rotated(&fast.canvas, cx, cy, turn, scale, &image, &src);
+                ref_rotated(slow, cx, cy, turn, scale, image, src, kept);
+                REQUIRE(fast.pixels == slow.pixels);
+                for (uint8_t b : fast.pixels) drawn += b != 0;
+        }
+        CHECK(drawn > 100000); // most rounds drew something
 }
 
 TEST_CASE("Game canvas: rotated blits") {
@@ -439,4 +527,88 @@ TEST_CASE("Game sound: resampling") {
         CHECK(out[3] == 500);
         CHECK(out[4] == 600);
         CHECK(out[6] == 600); // the last held
+}
+
+TEST_CASE("Game canvas: copies but for some rectangles") {
+        // Against a pixel at a time: in a copied rectangle and in none left out.
+        uint32_t seed = 99;
+        auto     next = [&seed] {
+                seed = seed * 1103515245u + 12345u;
+                return seed >> 8;
+        };
+        for (int round = 0; round < 300; ++round) {
+                Picture from(48, 40, BMDS_PIXEL_RGB565), to(48, 40, BMDS_PIXEL_RGB565), want(48, 40, BMDS_PIXEL_RGB565);
+                for (size_t i = 0; i < from.pixels.size(); ++i) from.pixels[i] = uint8_t(i * 7 + 1);
+                auto random_rect = [&next] {
+                        return bmds_rect_t{int32_t(next() % 60) - 6, int32_t(next() % 50) - 6, next() % 30,
+                                           next() % 26};
+                };
+                bmds_rect_t    rects[6], except[BMDS_GAME_REPAINTED_MAX];
+                const uint32_t count = 1 + next() % 6, excepts = next() % BMDS_GAME_REPAINTED_MAX;
+                for (uint32_t i = 0; i < count; ++i) rects[i] = random_rect();
+                for (uint32_t i = 0; i < excepts; ++i) except[i] = random_rect();
+                bmds_game_copy_except(&to.canvas, &from.canvas, rects, count, except, excepts);
+                auto inside = [](const bmds_rect_t &r, int32_t x, int32_t y) {
+                        return x >= r.x && y >= r.y && x < r.x + int32_t(r.width) && y < r.y + int32_t(r.height);
+                };
+                for (int32_t y = 0; y < 40; ++y)
+                        for (int32_t x = 0; x < 48; ++x) {
+                                bool copy = false, kept = false;
+                                for (uint32_t i = 0; i < count; ++i) copy |= inside(rects[i], x, y);
+                                for (uint32_t i = 0; i < excepts; ++i) kept |= inside(except[i], x, y);
+                                if (copy && !kept)
+                                        std::memcpy(&want.pixels[size_t(y) * 96 + size_t(x) * 2],
+                                                    &from.pixels[size_t(y) * 96 + size_t(x) * 2], 2);
+                        }
+                REQUIRE(to.pixels == want.pixels);
+        }
+}
+
+TEST_CASE("Game canvas: scaled RGB565 blits draw exactly what a pixel at a time would") {
+        const int32_t         sw = 41, sh = 33;
+        std::vector<uint16_t> sheet(size_t(sw) * sh);
+        for (size_t i = 0; i < sheet.size(); ++i) sheet[i] = uint16_t(i * 2654435761u >> 9) | 1u;
+        sheet[7] = sheet[90] = 0; // keyed
+        bmds_game_image_t image = {reinterpret_cast<const uint8_t *>(sheet.data()),
+                                   uint32_t(sw) * 2,
+                                   sw,
+                                   sh,
+                                   BMDS_PIXEL_RGB565,
+                                   BMDS_GAME_IMAGE_KEYED,
+                                   0};
+        const bmds_rect_t src = {2, 3, 35, 27};
+        uint32_t          seed = 7;
+        auto              next = [&seed] {
+                seed = seed * 1103515245u + 12345u;
+                return seed >> 8;
+        };
+        for (int round = 0; round < 400; ++round) {
+                Picture       fast(64, 56, BMDS_PIXEL_RGB565), slow(64, 56, BMDS_PIXEL_RGB565);
+                const int32_t x = int32_t(next() % 70) - 10, y = int32_t(next() % 60) - 10;
+                int32_t       w = 1 + int32_t(next() % 90), h = 1 + int32_t(next() % 80);
+                if (next() % 3 == 0) w = -w; // mirrored
+                if (next() % 4 == 0) h = -h;
+                const bmds_rect_t clip = {int32_t(next() % 20), int32_t(next() % 20), 30 + next() % 34,
+                                          30 + next() % 26};
+                bmds_canvas_set_clip(&fast.canvas, &clip);
+                const bmds_rect_t k = fast.canvas.clip;
+                bmds_canvas_blit_scaled(&fast.canvas, x, y, w, h, &image, &src);
+                // The reference: each destination pixel's centre mapped into the source.
+                const int32_t aw = w < 0 ? -w : w, ah = h < 0 ? -h : h, ssw = int32_t(src.width),
+                              ssh = int32_t(src.height);
+                const int64_t step_x = (int64_t(ssw) << 16) / aw, step_y = (int64_t(ssh) << 16) / ah;
+                for (int32_t row = std::max(y, k.y); row < std::min(y + ah, k.y + int32_t(k.height)); ++row) {
+                        int32_t sy = int32_t((int64_t(row - y) * step_y + step_y / 2) >> 16);
+                        if (sy >= ssh) sy = ssh - 1;
+                        if (h < 0) sy = ssh - 1 - sy;
+                        for (int32_t col = std::max(x, k.x); col < std::min(x + aw, k.x + int32_t(k.width)); ++col) {
+                                int32_t sx = int32_t((int64_t(col - x) * step_x + step_x / 2) >> 16);
+                                if (sx >= ssw) sx = ssw - 1;
+                                if (w < 0) sx = ssw - 1 - sx;
+                                const uint16_t px = sheet[size_t(src.y + sy) * sw + size_t(src.x + sx)];
+                                if (px != 0) std::memcpy(&slow.pixels[size_t(row) * 128 + size_t(col) * 2], &px, 2);
+                        }
+                }
+                REQUIRE(fast.pixels == slow.pixels);
+        }
 }

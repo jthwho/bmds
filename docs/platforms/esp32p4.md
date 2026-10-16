@@ -109,6 +109,14 @@ until silicon v3; then test again.
   frame PSRAM to PSRAM 64 ms (~28 MB/s each way), a 100×140 keyed card blit 0.8 ms, a redrawn
   pixel ~230 ns with two layers (each a source read, the destination's line filled and written
   back): at 1280×720, what a frame touches decides its rate, not the code.
+  Measured again in Lucky Duck's Video Poker (2026-10-16, `luckyduck.md` §23):
+  - The felt restore (a row copy PSRAM to PSRAM) cost about 180 ns a pixel during a deal, with the
+    scan and the window manager's composing reading PSRAM too.
+  - Filling those rows (writing only) was no faster: the cache reads a line in before it is
+    written, so a write costs nearly what a copy does.
+  - The ways out were touching fewer pixels (no felt under opaque cards; no copy where a frame
+    repaints anyway) and not the instructions. A turned blit's 64-bit steps and per-pixel tests
+    cost little next to its memory.
 - **A big table read from flash competes with every other flash read:** SVOX Pico synthesizing flat
   out (into a file) from its 1.4 MB voice mapped in `/rom` slowed the icon blend from the ROM
   296 → 380 µs an icon (28 %); with the voice copied into PSRAM, 322 µs (9 %). Speaking at real

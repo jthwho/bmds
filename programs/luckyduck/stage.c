@@ -97,7 +97,8 @@ void stage_draw_item(bmds_canvas_t *c, const stage_item_t *it) {
                         if (it->turn != 0 || it->scale != 0)
                                 bmds_canvas_blit_rotated(c, it->x + w / 2, it->y + h / 2, it->turn,
                                                          it->scale != 0 ? it->scale : BMDS_GAME_SCALE, image, &src);
-                        else if (it->w != 0 || it->h != 0 || (it->flags & STAGE_MIRROR) != 0)
+                        else if ((it->w != 0 && it->w != w) || (it->h != 0 && it->h != h) ||
+                                 (it->flags & STAGE_MIRROR) != 0) /* its own size: the plain blit, rows copied */
                                 bmds_canvas_blit_scaled(c, it->x, it->y,
                                                         (it->w != 0 ? it->w : w) *
                                                                 ((it->flags & STAGE_MIRROR) ? -1 : 1),
@@ -157,6 +158,57 @@ static uint32_t ordered(const stage_item_t *items, uint16_t *order) {
         return n;
 }
 
+/* Takes @p cut out of the @p count rectangles in @p pieces (at most @p max): each piece it meets
+   becomes the up to four bands left around it. @return The new count; with no room, @p cut is
+   left in (the felt then restored under it too: wasted, never wrong). */
+static uint32_t cut_out(bmds_rect_t *pieces, uint32_t count, uint32_t max, bmds_rect_t cut) {
+        bmds_rect_t out[48];
+        uint32_t    n = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+                const bmds_rect_t p = pieces[i], k = intersection(p, cut);
+                if (k.width == 0 || k.height == 0) {
+                        if (n == 48) return count;
+                        out[n++] = p;
+                        continue;
+                }
+                const int32_t     px1 = p.x + (int32_t)p.width, py1 = p.y + (int32_t)p.height;
+                const int32_t     kx1 = k.x + (int32_t)k.width, ky1 = k.y + (int32_t)k.height;
+                const bmds_rect_t bands[4] = {rect(p.x, p.y, (int32_t)p.width, k.y - p.y),   /* above */
+                                              rect(p.x, ky1, (int32_t)p.width, py1 - ky1),   /* below */
+                                              rect(p.x, k.y, k.x - p.x, (int32_t)k.height),  /* left */
+                                              rect(kx1, k.y, px1 - kx1, (int32_t)k.height)}; /* right */
+                for (int b = 0; b < 4; ++b) {
+                        if (bands[b].width == 0 || bands[b].height == 0) continue;
+                        if (n == 48) return count;
+                        out[n++] = bands[b];
+                }
+        }
+        if (n > max) return count;
+        memcpy(pieces, out, n * sizeof(out[0]));
+        return n;
+}
+
+/* The felt inside @p clip but under no card's opaque middle (a card is opaque but for its
+   corners; turned ones aren't counted): what a card is drawn over needn't be restored first, and
+   restoring is half of what a redraw costs (PSRAM read and written: devplan/luckyduck.md §23). */
+static void restore_uncovered(const stage_item_t *items, const uint16_t *order, uint32_t n, bmds_canvas_t *c,
+                              bmds_rect_t clip) {
+        bmds_rect_t pieces[16] = {clip};
+        uint32_t    count = 1;
+        for (uint32_t i = 0; i < n && count > 0; ++i) {
+                const stage_item_t *it = &items[order[i]];
+                if (it->kind != STAGE_CARD || it->turn != 0 || it->scale != 0) continue;
+                if (it->tile >= ART_CARD_EMPTY && it->tile != ART_CARD_JOKER) continue; /* the places are hollow */
+                const bmds_rect_t b = stage_bounds(it);
+                if (b.width <= 2 * UI_CARD_RADIUS || b.height <= 2 * UI_CARD_RADIUS || !meets(&b, &clip)) continue;
+                count = cut_out(pieces, count, 16,
+                                rect(b.x + UI_CARD_RADIUS, b.y + UI_CARD_RADIUS, (int32_t)b.width - 2 * UI_CARD_RADIUS,
+                                     (int32_t)b.height - 2 * UI_CARD_RADIUS));
+        }
+        for (uint32_t i = 0; i < count; ++i) felt_restore(c, pieces[i]);
+        return;
+}
+
 static void redraw(const stage_item_t *items, const uint16_t *order, uint32_t n, bmds_canvas_t *c, bmds_rect_t r) {
         bmds_canvas_set_clip(c, &r);
         const bmds_rect_t clip = c->clip;
@@ -164,7 +216,8 @@ static void redraw(const stage_item_t *items, const uint16_t *order, uint32_t n,
                 bmds_canvas_set_clip(c, NULL);
                 return;
         }
-        felt_restore(c, clip);
+        bmds_game_repainted(app.game, &clip); /* every pixel of it, from the felt up */
+        restore_uncovered(items, order, n, c, clip);
         for (uint32_t i = 0; i < n; ++i) {
                 const stage_item_t *it = &items[order[i]];
                 const bmds_rect_t   b = stage_bounds(it);

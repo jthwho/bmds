@@ -1179,6 +1179,7 @@ static void draw_win(bmds_canvas_t *c, state_t *s) {
 
 static void scene_draw(bmds_canvas_t *c) {
         state_t *s = &s_state;
+        bmds_game_up_to_date(app.game); /* the win's trails are never erased: what is there counts */
         if (s->winning) {
                 draw_win(c, s);
                 return;
@@ -1232,6 +1233,7 @@ static void scene_draw(bmds_canvas_t *c) {
 
 static void scene_redraw(bmds_canvas_t *c, bmds_rect_t r) {
         state_t *s = &s_state;
+        bmds_game_up_to_date(app.game);
         if (s->winning) { /* the trails are lost */
                 s->redraw_all = 1;
                 draw_win(c, s);

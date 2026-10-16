@@ -876,3 +876,44 @@ picture replays), so a network can take a seat later.
 - **Seen on the board:** after many test runs and screenshots in `/tmp`, PSRAM's largest free block
   fell to 2.4 MB. The screenshot's 2.8 MB copy failed then, until the test copy closed.
 - **Open:** Double Double Bonus's 13 rows are tight at 21 pixels; double-up; Deuces Wild.
+
+## 23. Smoother animation (2026-10-16, the user's: "the video poker animations aren't that smooth")
+
+- **Measured:** ticks run at a fixed 60 a second and a frame follows them, so a frame past 16.7 ms
+  makes the next frame run two ticks (the motion jumps).
+  - During a deal or a draw, frames took up to 30 ms to draw, and 11 to 18 of each second's 60
+    frames skipped a tick. Between hands, under 1 ms.
+  - The board's profiler (`tools/bmds-prof`) put the busy time in plain copies (felt and cards,
+    42%), the scaled blit (13%: every card at rest went through it at 100%), the turned blit
+    (11%), and the double buffer's catch-up copy (22% of that `memcpy`).
+  - The slow frames' areas were small (60,000 to 130,000 pixels), so a redrawn pixel cost about
+    230 ns. The felt alone cost about 180 ns a pixel, read and written in PSRAM while the scan and
+    the window manager use it too (`docs/platforms/esp32p4.md`).
+- **Changed (each measured):**
+  - **The stage:** a card or sprite at its own size is drawn by the plain blit (rows copied),
+    not the scaled one.
+  - **Felt under cards:** each redraw restores the felt only where no card's opaque middle will
+    cover it (`restore_uncovered()`: card faces, backs and the Joker; the place tiles are hollow).
+    That roughly halved the felt.
+  - **The catch-up copy:** Lucky Duck opts into `BMDS_GAME_REPAINTS` (`games.md` §14a). The stage
+    declares each rectangle it repaints, and the copy happens after drawing, skipping those. A box
+    (it dims the picture), the ducklings' transition and Solitaire (its win's trails are never
+    erased) call `bmds_game_up_to_date()` first.
+  - **Video Poker:**
+    - Cards slide from the deck growing (full size halfway) instead of spinning: a turned card's
+      bounds are a square up to three times its area.
+    - The draw's departures go in turn, as the arrivals do.
+    - The winning cards' rim and the royal flush's flash are four thin strips each: a full
+      rectangle redrew the whole card, and the screen-wide flash 500,000 pixels.
+  - **`libbmdsgame`'s turned and scaled blits** work out each row's span once, step in 32 bits,
+    and have an RGB565 path. Host-tested to draw exactly what the old ones did.
+- **Result:** the worst frame went from 30 to about 20 ms. The busiest seconds skip 1 to 8 ticks
+  (about 5) instead of 11 to 18. Every scene was checked on the board after the change: Video
+  Poker, its leave box, the ducklings' transition, the lobby, Blackjack, the dice and Solitaire.
+- **Tried, no gain:**
+  - Filling the screen's plain gradient rows instead of copying them: the cache reads a line in
+    before writing it, so a fill costs about what a copy does.
+  - Sending cards 7 ticks apart instead of 5.
+- **What is left:** what a frame touches in PSRAM sets its cost. The next step is the 2D-DMA
+  doing a program's bulk copies (the felt restore and the catch-up copy). That would be a new
+  surface call, an ABI addition, so it waits for the user.

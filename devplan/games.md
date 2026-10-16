@@ -619,6 +619,25 @@ against a fake surface; the loop and the sound on the board with a demo.
   begins. Why isn't known (the last two lines interrupt either way).
 - **Next:** part 2 (images), part 3 (sound), then Blocks.
 
+
+### 14a. Repainting games, and faster turned and scaled blits (2026-10-16, `luckyduck.md` §23)
+
+- **`bmds_game_config_t::options`:** `BMDS_GAME_REPAINTS` is appended to the config (a static
+  library, so not an ABI change).
+  - With it, the loop doesn't bring the buffer up to date before `draw`. The draw declares each
+    rectangle it is about to repaint whole (`bmds_game_repainted()`), or calls
+    `bmds_game_up_to_date()` before drawing anything else.
+  - After the draw, the loop copies what the last presents changed, but not where the draw
+    repainted (`bmds_game_copy_except()`, in row bands, so it needs no memory).
+  - With double buffers and smooth motion, most of the last frame's change is drawn again, so it
+    no longer gets copied first.
+  - It can't go wrong silently: past `BMDS_GAME_REPAINTED_MAX` (32) rectangles a frame, the call
+    brings the buffer up to date itself.
+- **Turned blits** work out each row's span inside the source once (no pixel is tested), step in
+  32 bits (the core's width), and have an RGB565 path. **Scaled blits** gained the same RGB565
+  path. Host-tested against the old pixel-at-a-time code on random turns, sizes, mirrors and
+  clips.
+
 ## 15. As built: step 4 part 2, images (2026-10-14)
 
 - **`bmds_game_image_load(path, how, image)`**, **`bmds_game_image_load_memory(data, length, how,

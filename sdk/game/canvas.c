@@ -310,6 +310,64 @@ void bmds_canvas_damage_clear(bmds_canvas_t *canvas) {
         canvas->damage_count = 0;
 }
 
+/* The canvas's edges clipped to it. */
+static edges_t in_canvas(const bmds_canvas_t *c, edges_t e) {
+        if (e.x0 < 0) e.x0 = 0;
+        if (e.y0 < 0) e.y0 = 0;
+        if (e.x1 > c->width) e.x1 = c->width;
+        if (e.y1 > c->height) e.y1 = c->height;
+        return e;
+}
+
+void bmds_game_copy_except(bmds_canvas_t *to, const bmds_canvas_t *from, const bmds_rect_t *rects, uint32_t count,
+                           const bmds_rect_t *except, uint32_t excepts) {
+        if (to->format != from->format || to->width != from->width || to->height != from->height) return;
+        const uint32_t bpp = bytes_per_pixel(to->format);
+        for (uint32_t i = 0; i < count; ++i) {
+                const edges_t r = in_canvas(to, edges_of(&rects[i]));
+                if (is_empty(r)) continue;
+                /* Bands of rows across which the same rectangles are left out: each band's rows are
+                   the gaps between them. */
+                int32_t y = r.y0;
+                while (y < r.y1) {
+                        int32_t next = r.y1;
+                        int32_t gx0[BMDS_GAME_REPAINTED_MAX], gx1[BMDS_GAME_REPAINTED_MAX];
+                        int     n = 0;
+                        for (uint32_t k = 0; k < excepts; ++k) {
+                                const edges_t e = edges_of(&except[k]);
+                                if (e.x1 <= r.x0 || e.x0 >= r.x1 || is_empty(e)) continue;
+                                if (e.y0 > y) {
+                                        if (e.y0 < next) next = e.y0;
+                                        continue;
+                                }
+                                if (e.y1 <= y) continue;
+                                if (e.y1 < next) next = e.y1;
+                                if (n == (int)BMDS_GAME_REPAINTED_MAX) continue; /* never: excepts are fewer */
+                                /* Kept sorted by left edge. */
+                                int at_n = n++;
+                                while (at_n > 0 && gx0[at_n - 1] > e.x0) {
+                                        gx0[at_n] = gx0[at_n - 1];
+                                        gx1[at_n] = gx1[at_n - 1];
+                                        --at_n;
+                                }
+                                gx0[at_n] = e.x0;
+                                gx1[at_n] = e.x1;
+                        }
+                        /* The spans of the band not left out. */
+                        int32_t x = r.x0;
+                        for (int k = 0; k <= n && x < r.x1; ++k) {
+                                const int32_t end = k < n ? (gx0[k] < r.x1 ? gx0[k] : r.x1) : r.x1;
+                                if (end > x)
+                                        for (int32_t row = y; row < next; ++row)
+                                                memcpy(at(to, x, row), at(from, x, row), (size_t)(end - x) * bpp);
+                                if (k < n && gx1[k] > x) x = gx1[k];
+                        }
+                        y = next;
+                }
+        }
+        return;
+}
+
 void bmds_canvas_copy(bmds_canvas_t *to, const bmds_canvas_t *from, const bmds_rect_t *rects, uint32_t count) {
         if (to->format != from->format || to->width != from->width || to->height != from->height) return;
         const uint32_t bpp = bytes_per_pixel(to->format);
@@ -372,6 +430,22 @@ void bmds_canvas_blit_scaled(bmds_canvas_t *canvas, int32_t x, int32_t y, int32_
                 const uint8_t *line = image->pixels + (size_t)(s.y0 + sy) * image->stride;
                 uint8_t       *to = at(canvas, d.x0, row);
                 int64_t        u = (int64_t)(d.x0 - x) * step_x + step_x / 2;
+                if (bpp == 2 && step_x <= INT32_MAX / 4 && u + step_x * (d.x1 - d.x0) <= INT32_MAX) {
+                        /* RGB565 in 32 bits, the core's width (a card's flip, a sprite's size). */
+                        const uint16_t *from = (const uint16_t *)(const void *)(line + (size_t)s.x0 * 2);
+                        uint16_t       *p = (uint16_t *)(void *)to;
+                        const uint16_t  key = (uint16_t)image->key;
+                        const int       keyed = (image->flags & BMDS_GAME_IMAGE_KEYED) != 0;
+                        const int32_t   step = (int32_t)step_x;
+                        int32_t         v = (int32_t)u;
+                        for (int32_t col = d.x0; col < d.x1; ++col, ++p, v += step) {
+                                int32_t sx = v >> 16;
+                                if (sx >= sw) sx = sw - 1;
+                                const uint16_t px = from[mirror_x ? sw - 1 - sx : sx];
+                                if (!keyed || px != key) *p = px;
+                        }
+                        continue;
+                }
                 for (int32_t col = d.x0; col < d.x1; ++col, to += bpp, u += step_x) {
                         int32_t sx = (int32_t)(u >> 16);
                         if (sx >= sw) sx = sw - 1;
@@ -399,6 +473,32 @@ static int32_t sine16(uint32_t turn) {
         return negative ? -r : r;
 }
 
+/* floor(a / b), b > 0. */
+static int64_t floor_div(int64_t a, int64_t b) {
+        const int64_t q = a / b;
+        return (a % b != 0 && a < 0) ? q - 1 : q;
+}
+
+/* Narrows [@p k0, @p k1) to the steps k at which @p from + k * @p step lies in [0, @p limit).
+   @return Whether any are left. */
+static int span(int64_t from, int64_t step, int64_t limit, int32_t *k0, int32_t *k1) {
+        int64_t lo, hi; /* k in [lo, hi] */
+        if (step == 0) {
+                if (from < 0 || from >= limit) return 0;
+                return *k0 < *k1;
+        }
+        if (step > 0) {
+                lo = -floor_div(from, step); /* ceil(-from / step) */
+                hi = floor_div(limit - 1 - from, step);
+        } else {
+                lo = -floor_div(limit - 1 - from, -step); /* ceil((from - (limit - 1)) / -step) */
+                hi = floor_div(from, -step);
+        }
+        if (lo > *k0) *k0 = lo > *k1 ? *k1 : (int32_t)lo;
+        if (hi + 1 < *k1) *k1 = hi + 1 < *k0 ? *k0 : (int32_t)(hi + 1);
+        return *k0 < *k1;
+}
+
 void bmds_canvas_blit_rotated(bmds_canvas_t *canvas, int32_t cx, int32_t cy, uint32_t turn, uint32_t scale,
                               const bmds_game_image_t *image, const bmds_rect_t *source) {
         if (image == NULL || image->format != canvas->format || scale == 0) return;
@@ -418,19 +518,34 @@ void bmds_canvas_blit_rotated(bmds_canvas_t *canvas, int32_t cx, int32_t cy, uin
         const int64_t  uy = (int64_t)sn * BMDS_GAME_SCALE / scale, vy = (int64_t)cs * BMDS_GAME_SCALE / scale;
         const uint32_t bpp = bytes_per_pixel(canvas->format);
         const int64_t  half_w = (int64_t)sw << 15, half_h = (int64_t)sh << 15;
+        const int      keyed = (image->flags & BMDS_GAME_IMAGE_KEYED) != 0;
         for (int32_t row = d.y0; row < d.y1; ++row) {
                 /* The first pixel's centre, from the centre (cx, cy) a pixel's corner. */
                 const int64_t dy2 = 2 * (int64_t)(row - cy) + 1, dx2 = 2 * (int64_t)(d.x0 - cx) + 1;
-                int64_t       u = ((dx2 * ux + dy2 * uy) >> 1) + half_w;
-                int64_t       v = ((dx2 * vx + dy2 * vy) >> 1) + half_h;
-                uint8_t      *to = at(canvas, d.x0, row);
-                for (int32_t col = d.x0; col < d.x1; ++col, to += bpp, u += ux, v += vx) {
-                        if (u < 0 || v < 0) continue;
-                        const int32_t sx = (int32_t)(u >> 16), sy = (int32_t)(v >> 16);
-                        if (sx >= sw || sy >= sh) continue;
-                        put_keyed(to, image->pixels + (size_t)(s.y0 + sy) * image->stride + (size_t)(s.x0 + sx) * bpp,
-                                  image, bpp);
+                const int64_t u0 = ((dx2 * ux + dy2 * uy) >> 1) + half_w;
+                const int64_t v0 = ((dx2 * vx + dy2 * vy) >> 1) + half_h;
+                /* The columns whose (u, v) fall inside the source, worked out once a row: a turned
+                   picture covers about half its bounds, and no pixel is tested. */
+                int32_t k0 = 0, k1 = d.x1 - d.x0;
+                if (!span(u0, ux, (int64_t)sw << 16, &k0, &k1) || !span(v0, vx, (int64_t)sh << 16, &k0, &k1)) continue;
+                /* 32 bits from here: the core's own width (|u|, |v| stay within the source's reach). */
+                int32_t        u = (int32_t)(u0 + ux * k0), v = (int32_t)(v0 + vx * k0);
+                const int32_t  dux = (int32_t)ux, dvx = (int32_t)vx;
+                uint8_t       *to = at(canvas, d.x0 + k0, row);
+                const uint8_t *base = image->pixels + (size_t)s.y0 * image->stride + (size_t)s.x0 * bpp;
+                if (bpp == 2) {
+                        uint16_t      *p = (uint16_t *)(void *)to;
+                        const uint16_t key = (uint16_t)image->key;
+                        for (int32_t k = k0; k < k1; ++k, ++p, u += dux, v += dvx) {
+                                const uint16_t px =
+                                        *(const uint16_t *)(const void *)(base + (size_t)(v >> 16) * image->stride +
+                                                                          (size_t)(u >> 16) * 2);
+                                if (!keyed || px != key) *p = px;
+                        }
+                        continue;
                 }
+                for (int32_t k = k0; k < k1; ++k, to += bpp, u += dux, v += dvx)
+                        put_keyed(to, base + (size_t)(v >> 16) * image->stride + (size_t)(u >> 16) * bpp, image, bpp);
         }
         damage_edges(canvas, d);
 }

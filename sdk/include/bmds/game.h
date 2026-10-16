@@ -219,8 +219,8 @@ typedef struct bmds_game_t bmds_game_t;
 
 /** @brief What `bmds_game_run()` runs. */
 typedef struct bmds_game_config_t {
-                uint32_t    size;  /**< `sizeof(bmds_game_config_t)`. */
-                uint32_t    width; /**< The picture's (a multiple of 4); 0 and 0 with `BMDS_SURFACE_MAXIMIZED`: */
+                uint32_t    size;     /**< `sizeof(bmds_game_config_t)`. */
+                uint32_t    width;    /**< The picture's (a multiple of 4); 0 and 0 with `BMDS_SURFACE_MAXIMIZED`: */
                 uint32_t    height;   /**< the maximized window's (`bmds_game_width()`, `bmds_game_height()`). */
                 uint32_t    format;   /**< `BMDS_PIXEL_L8`, `_RGB565` or `_BGR24`. */
                 uint32_t    buffers;  /**< 2 or 3 (0: 2). */
@@ -236,7 +236,17 @@ typedef struct bmds_game_config_t {
                 void (*tick)(bmds_game_t *game);
                 /** @brief Draws on @p canvas, which holds the last frame shown: only what changed. */
                 void (*draw)(bmds_game_t *game, bmds_canvas_t *canvas);
+                uint32_t options; /**< `BMDS_GAME_...`. */
 } bmds_game_config_t;
+
+/**
+ * @brief `bmds_game_config_t::options`: the draw declares what it repaints. Before drawing
+ *        anything it calls either bmds_game_repainted() for a rectangle it then paints every pixel
+ *        of, and only there, or bmds_game_up_to_date() (after which it may draw anything, blends
+ *        too). The canvas is brought up to date after drawing, but not where it was repainted: with
+ *        double buffers, the last frame's changes are mostly drawn again, so not copied first.
+ */
+#define BMDS_GAME_REPAINTS 0x1u
 
 /**
  * @brief Runs a game: opens its surface and loops (events, ticks, drawing, presents) until
@@ -258,6 +268,19 @@ void bmds_game_redraw(bmds_game_t *game);
 
 /** @brief Returns the surface's descriptor (for `BMDS_SURFACE_...` controls: the palette, the pointer). */
 int32_t bmds_game_fd(const bmds_game_t *game);
+
+/** @brief From `draw`, with `BMDS_GAME_REPAINTS`: brings the canvas up to date now (none of what
+ *         was repainted so far). Then anything may be drawn. Otherwise nothing. */
+void bmds_game_up_to_date(bmds_game_t *game);
+
+/**
+ * @brief From `draw`, with `BMDS_GAME_REPAINTS`: every pixel of @p rect is about to be painted
+ *        (none depends on what is there). Past `BMDS_GAME_REPAINTED_MAX` a frame, the canvas is
+ *        brought up to date instead (bmds_game_up_to_date()). Otherwise nothing.
+ */
+void bmds_game_repainted(bmds_game_t *game, const bmds_rect_t *rect);
+
+#define BMDS_GAME_REPAINTED_MAX 32u
 
 /** @brief Returns the ticks run so far. */
 uint64_t bmds_game_ticks(const bmds_game_t *game);

@@ -41,7 +41,6 @@
 /* Stage keys. */
 enum {
         K_CARD = 0,  /* + the slot */
-        K_GLOW = 5,  /* + the slot */
         K_HELD = 10, /* + the slot */
         K_DECK = 16, /* + 3 */
         K_LUCKY = 20,
@@ -51,12 +50,13 @@ enum {
         K_HEADLINE,
         K_COLUMN,
         K_ROW,
-        K_FLASH,
         K_COIN = 30,     /* + the coin */
         K_FEATHER = 50,  /* + the feather */
         K_DUCKLING = 80, /* + the duckling */
         K_BAND = 90,     /* + 6 */
         K_BUTTON = 100,  /* + the button */
+        K_RIM = 160,     /* + the slot × 4 + the side */
+        K_FLASH = 180,   /* + the side */
         K_BOX = 200      /* + 16 */
 };
 
@@ -64,6 +64,7 @@ enum {
    shows one first turns that one down and takes it back to the deck. */
 enum {
         S_GONE,
+        S_DELAY,    /* on the screen, its turn to go */
         S_OUT_FLIP, /* turning face down to go */
         S_OUT,      /* flying back to the deck */
         S_WAIT,     /* in the deck, its turn to come */
@@ -81,7 +82,7 @@ typedef struct {
                 uint8_t  up;     /* the face shows (it turns at a flip's middle) */
                 uint8_t  lift;   /* pixels lifted, easing to the hold's */
                 uint16_t t;
-                uint16_t wait_in, wait_flip; /* S_WAIT's and S_LANDED's lengths */
+                uint16_t wait_out, wait_in, wait_flip; /* S_DELAY's, S_WAIT's and S_LANDED's lengths */
 } slot_t;
 
 typedef struct {
@@ -248,11 +249,14 @@ static void send(int i, uint8_t face, int order, int count) {
         s->next = face;
         s->coming = 1;
         s->t = 0;
-        if (s->state == S_GONE)
+        if (s->state == S_GONE) {
                 s->state = S_WAIT;
-        else
-                s->state = s->up ? S_OUT_FLIP : S_OUT;
-        s->wait_in = (uint16_t)(order * STAGGER);
+                s->wait_in = (uint16_t)(order * STAGGER);
+        } else { /* turned down and sent back in the same order (S_DELAY), each then coming at once */
+                s->state = S_DELAY;
+                s->wait_out = (uint16_t)(order * STAGGER);
+                s->wait_in = 0;
+        }
         s->wait_flip = (uint16_t)((count - 1 - order) * STAGGER + 4 + order * RIPPLE);
         return;
 }
@@ -268,6 +272,12 @@ static void slots_tick(void) {
                 slot_t *s = &v.slot[i];
                 ++s->t;
                 switch (s->state) {
+                        case S_DELAY:
+                                if (s->t >= s->wait_out) {
+                                        s->state = s->up ? S_OUT_FLIP : S_OUT;
+                                        s->t = 0;
+                                }
+                                break;
                         case S_OUT_FLIP:
                         case S_UP_FLIP:
                                 if (s->t == FLIP / 2) {
@@ -693,6 +703,24 @@ static bmds_rect_t card_rect(int i) {
         return rect(card_x(i), cards_y() - v.slot[i].lift, ART_CARD_W, ART_CARD_H);
 }
 
+/* A frame of four strips @p width wide just inside @p r: a change redraws only them, not what
+   they surround. */
+static void rim(stage_t *st, uint32_t key, bmds_rect_t r, int32_t width, uint32_t rgb) {
+        const bmds_rect_t sides[4] = {
+                rect(r.x, r.y, (int32_t)r.width, width),
+                rect(r.x, r.y + (int32_t)r.height - width, (int32_t)r.width, width),
+                rect(r.x, r.y + width, width, (int32_t)r.height - 2 * width),
+                rect(r.x + (int32_t)r.width - width, r.y + width, width, (int32_t)r.height - 2 * width)};
+        for (uint32_t k = 0; k < 4; ++k) {
+                stage_item_t *it = stage_put(st, key + k, STAGE_BLEND, 20, sides[k].x, sides[k].y);
+                it->w = (int16_t)sides[k].width;
+                it->h = (int16_t)sides[k].height;
+                it->rgb = rgb;
+                it->alpha = 255;
+        }
+        return;
+}
+
 static void layout_card(stage_t *st, int i) {
         const slot_t *s = &v.slot[i];
         if (s->state == S_GONE || s->state == S_WAIT) return;
@@ -700,23 +728,18 @@ static void layout_card(stage_t *st, int i) {
         deck_place(&dx, &dy);
         const bmds_rect_t home = card_rect(i);
         int32_t           x = home.x, y = home.y, k = 256;
-        uint16_t          spin = 0;
-        if (s->state == S_IN || s->state == S_OUT) {
+        const int         moving = s->state == S_IN || s->state == S_OUT;
+        if (moving) { /* sliding and growing (or shrinking): no turn, whose bounds would cost thrice */
                 const int in = s->state == S_IN;
                 x = in ? ease(dx, home.x, s->t, FLIGHT) : ease(home.x, dx, s->t, FLIGHT);
                 y = in ? ease(dy, home.y, s->t, FLIGHT) : ease(home.y, dy, s->t, FLIGHT);
-                k = in ? ease(DECK_SCALE, 256, s->t, FLIGHT) : ease(256, DECK_SCALE, s->t, FLIGHT);
-                spin = (uint16_t)ease(0, BMDS_GAME_TURN - 1, s->t, FLIGHT); /* a turn, slowing to land flat */
+                /* Full size halfway (from the deck) or still for the first half (to it): a card at its
+                   own size is copied by rows, a scaled one a pixel at a time. */
+                k = in ? ease(DECK_SCALE, 256, s->t, FLIGHT / 2)
+                       : (s->t < FLIGHT / 2 ? 256 : ease(256, DECK_SCALE, s->t - FLIGHT / 2, FLIGHT / 2));
         }
-        stage_item_t *it = stage_put(st, (uint32_t)(K_CARD + i), STAGE_CARD, spin ? 50 : 30, x, y);
+        stage_item_t *it = stage_put(st, (uint32_t)(K_CARD + i), STAGE_CARD, moving ? 50 : 30, x, y);
         it->tile = (uint16_t)(s->up ? s->face : ART_CARD_BACK);
-        if (spin != 0) {
-                it->turn = spin;
-                it->scale = (uint16_t)k;
-                it->x = (int16_t)(x - (ART_CARD_W - ART_CARD_W * k / 256) / 2);
-                it->y = (int16_t)(y - (ART_CARD_H - ART_CARD_H * k / 256) / 2);
-                return;
-        }
         int32_t w = ART_CARD_W * k / 256;
         if (s->state == S_OUT_FLIP || s->state == S_UP_FLIP) { /* narrowing to its edge, widening on the other face */
                 const int32_t f = s->t < FLIP / 2 ? FLIP / 2 - s->t : s->t - FLIP / 2;
@@ -734,14 +757,11 @@ static void layout_card(stage_t *st, int i) {
                 it->flags = STAGE_CENTRE;
                 snprintf(it->text, sizeof(it->text), "HELD");
         }
-        if (v.result && (v.scoring & (1u << i))) { /* a gold rim behind, pulsing lighter and back */
+        if (v.result && (v.scoring & (1u << i))) { /* a gold rim, pulsing lighter and back */
                 static const uint32_t pulse[4] = {0xe8a820, 0xffc838, 0xffe070, 0xfff0b0};
                 const int32_t         p = (int32_t)((v.ticks / 5) % 6);
-                it = stage_put(st, (uint32_t)(K_GLOW + i), STAGE_BLEND, 20, x - 5, y - 5);
-                it->w = ART_CARD_W + 10;
-                it->h = ART_CARD_H + 10;
-                it->rgb = pulse[p < 4 ? p : 6 - p];
-                it->alpha = 255;
+                rim(st, (uint32_t)(K_RIM + 4 * i), rect(x - 5, y - 5, ART_CARD_W + 10, ART_CARD_H + 10), 5,
+                    pulse[p < 4 ? p : 6 - p]);
         }
         return;
 }
@@ -913,13 +933,8 @@ static void layout(void) {
         /* A royal flush's party. */
         if (v.party > 0) {
                 const int32_t p = PARTY - v.party;
-                if (p < 120 && (p / 6) % 2 == 0) {
-                        it = stage_put(st, K_FLASH, STAGE_BLEND, 4, s.x, s.y);
-                        it->w = (int16_t)s.width;
-                        it->h = (int16_t)s.height;
-                        it->rgb = 0xffd040;
-                        it->alpha = 90;
-                }
+                if (p < 150 && (p / 6) % 2 == 0) /* the cabinet's gold frame flashing */
+                        rim(st, K_FLASH, rect(s.x - 13, s.y - 13, s.width + 26, s.height + 26), 6, 0xfff8c0);
                 for (int i = 0; i < FEATHERS; ++i) {
                         const feather_t *f = &v.feather[i];
                         if (f->y < -20.0f || f->y > (float)BAND_Y) continue;

@@ -41,6 +41,9 @@ struct bmds_game_t {
                 int                active;
                 int                quit;
                 int                redraw;
+                int32_t            drawing;                            /* the buffer being drawn, or -1 */
+                bmds_rect_t        repainted[BMDS_GAME_REPAINTED_MAX]; /* this frame's, BMDS_GAME_REPAINTS */
+                uint32_t           repainted_count;
 };
 
 static int64_t now_ns(void) {
@@ -83,29 +86,48 @@ uint32_t bmds_game_height(const bmds_game_t *game) {
 
 /* Buffer @p b brought up to the last present: what the presents since its own changed, copied from
    the newest buffer. */
-static void bring_up_to_date(bmds_game_t *g, int32_t b) {
+/* Copies into buffer @p b what the presents since its own changed (from the newest), but none of
+   @p except (what this frame drew, when it repaints: `BMDS_GAME_REPAINTS`). */
+static void bring_up_to_date_except(bmds_game_t *g, int32_t b, const bmds_rect_t *except, uint32_t excepts) {
         if (g->newest < 0 || g->shown_as[b] == g->presents) return;
         const bmds_canvas_t *from = &g->canvas[g->newest];
         bmds_canvas_t       *to = &g->canvas[b];
         const bmds_rect_t    all = {0, 0, (uint32_t)to->width, (uint32_t)to->height};
-        if (g->presents - g->shown_as[b] > HISTORY) {
-                bmds_canvas_copy(to, from, &all, 1);
-        } else {
-                bmds_rect_t rects[BMDS_CANVAS_MAX_DAMAGE];
-                uint32_t    count = 0;
-                int         whole = 0;
-                for (uint32_t n = g->shown_as[b] + 1; n <= g->presents && !whole; ++n) {
-                        const damage_t *d = &g->history[n % HISTORY];
-                        whole = d->all;
-                        for (uint32_t i = 0; i < d->count; ++i)
-                                bmds_game_rects_add(rects, &count, BMDS_CANVAS_MAX_DAMAGE, &d->rects[i]);
-                }
-                if (whole)
-                        bmds_canvas_copy(to, from, &all, 1);
-                else
-                        bmds_canvas_copy(to, from, rects, count);
+        bmds_rect_t          rects[BMDS_CANVAS_MAX_DAMAGE];
+        uint32_t             count = 0;
+        int                  whole = g->presents - g->shown_as[b] > HISTORY;
+        for (uint32_t n = g->shown_as[b] + 1; n <= g->presents && !whole; ++n) {
+                const damage_t *d = &g->history[n % HISTORY];
+                whole = d->all;
+                for (uint32_t i = 0; i < d->count; ++i)
+                        bmds_game_rects_add(rects, &count, BMDS_CANVAS_MAX_DAMAGE, &d->rects[i]);
         }
+        if (whole) {
+                rects[0] = all;
+                count = 1;
+        }
+        bmds_game_copy_except(to, from, rects, count, except, excepts);
         g->shown_as[b] = g->presents;
+}
+
+static void bring_up_to_date(bmds_game_t *g, int32_t b) {
+        bring_up_to_date_except(g, b, NULL, 0);
+}
+
+void bmds_game_up_to_date(bmds_game_t *game) {
+        if (game->drawing >= 0) bring_up_to_date_except(game, game->drawing, game->repainted, game->repainted_count);
+        return;
+}
+
+void bmds_game_repainted(bmds_game_t *game, const bmds_rect_t *rect) {
+        const int32_t b = game->drawing;
+        if (b < 0 || game->newest < 0 || game->shown_as[b] == game->presents) return; /* up to date */
+        if (game->repainted_count == BMDS_GAME_REPAINTED_MAX) {
+                bmds_game_up_to_date(game);
+                return;
+        }
+        game->repainted[game->repainted_count++] = *rect;
+        return;
 }
 
 /* A frame: a buffer, the program's drawing on it, its damage presented. */
@@ -116,11 +138,17 @@ static int frame(bmds_game_t *g) {
                 if (b < 0) return b;
         }
         g->held = -1;
-        bring_up_to_date(g, b);
+        const int repaints = (g->config.options & BMDS_GAME_REPAINTS) != 0;
+        if (!repaints) bring_up_to_date(g, b);
         bmds_canvas_t *c = &g->canvas[b];
         bmds_canvas_set_clip(c, NULL);
         bmds_canvas_damage_clear(c);
+        g->drawing = b;
+        g->repainted_count = 0;
         g->config.draw(g, c);
+        /* Up to date but for what was repainted (nothing left to do if the draw asked first). */
+        if (repaints) bring_up_to_date_except(g, b, g->repainted, g->repainted_count);
+        g->drawing = -1;
         if (c->damage_count == 0) {
                 g->held = b; /* nothing drawn: the same buffer next time */
                 return 0;
@@ -182,6 +210,7 @@ int bmds_game_run(const bmds_game_config_t *config) {
         g.buffers = config->buffers != 0 ? config->buffers : 2;
         g.newest = -1;
         g.held = -1;
+        g.drawing = -1;
         g.period_ns = 1000000000 / (config->tick_hz != 0 ? config->tick_hz : 60);
         g.active = 1; /* until told otherwise: a window opens focused */
 
