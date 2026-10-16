@@ -132,8 +132,8 @@ typedef struct {
 /** @brief Default rules: $5 to $500, the dealer stands on soft 17, surrender allowed. */
 bj_rules_t bj_default_rules(void);
 
-/** @brief Makes a table with @p rules, the shoe shuffled from @p seed, no one sitting. */
-void bj_init(bj_table_t *t, const bj_rules_t *rules, uint32_t seed);
+/** @brief Makes a table with @p rules, the shoe shuffled from @p key, no one sitting. */
+void bj_init(bj_table_t *t, const bj_rules_t *rules, deck_key_t key);
 
 /** @brief Sits a player at @p seat with @p stack chips (or stands one up: @p playing 0). */
 void bj_sit(bj_table_t *t, int seat, int playing, int32_t stack);

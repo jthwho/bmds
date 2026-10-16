@@ -24,7 +24,7 @@ namespace {
 
         // An empty game (no cards anywhere) to set piles up by hand.
         void empty(solitaire_t &s, uint32_t draw = 1, uint32_t scoring = SOL_SCORE_STANDARD) {
-                sol_deal(&s, draw, scoring, 1);
+                sol_deal(&s, draw, scoring, deck_key(1));
                 for (auto &p : s.pile) p.count = 0;
                 s.score = 0;
                 return;
@@ -43,7 +43,7 @@ namespace {
 
 TEST_CASE("Solitaire: the deal") {
         solitaire_t s;
-        sol_deal(&s, 3, SOL_SCORE_VEGAS, 42);
+        sol_deal(&s, 3, SOL_SCORE_VEGAS, deck_key(42));
         std::set<int> seen;
         for (uint32_t col = 0; col < 7; ++col) {
                 const sol_pile_t &p = s.pile[SOL_TABLEAU + col];
@@ -63,7 +63,7 @@ TEST_CASE("Solitaire: the deal") {
         CHECK(s.draw == 3);
         CHECK(!s.started);
         solitaire_t other;
-        sol_deal(&other, 3, SOL_SCORE_VEGAS, 43);
+        sol_deal(&other, 3, SOL_SCORE_VEGAS, deck_key(43));
         CHECK(std::memcmp(s.pile, other.pile, sizeof(s.pile)) != 0);
 }
 
@@ -169,7 +169,7 @@ TEST_CASE("Solitaire: drawing three, the fan, passes and their cost") {
 
 TEST_CASE("Solitaire: Vegas") {
         solitaire_t s;
-        sol_deal(&s, 1, SOL_SCORE_VEGAS, 7);
+        sol_deal(&s, 1, SOL_SCORE_VEGAS, deck_key(7));
         CHECK(s.score == -52);
         while (s.pile[SOL_STOCK].count > 0) CHECK(sol_draw(&s) == 1);
         CHECK(!sol_can_draw(&s)); // one pass drawing one
@@ -199,7 +199,7 @@ TEST_CASE("Solitaire: Vegas") {
 
 TEST_CASE("Solitaire: the time costs 2 every 10 seconds once started") {
         solitaire_t s;
-        sol_deal(&s, 1, SOL_SCORE_STANDARD, 9);
+        sol_deal(&s, 1, SOL_SCORE_STANDARD, deck_key(9));
         for (int i = 0; i < 30; ++i) sol_second(&s);
         CHECK(s.seconds == 0);
         s.started = 1;
@@ -213,7 +213,7 @@ TEST_CASE("Solitaire: undo goes back to the deal") {
         for (uint32_t seed = 1; seed < 40; ++seed) {
                 for (uint32_t draw : {1u, 3u}) {
                         solitaire_t s;
-                        sol_deal(&s, draw, SOL_SCORE_STANDARD, seed);
+                        sol_deal(&s, draw, SOL_SCORE_STANDARD, deck_key(seed));
                         const solitaire_t dealt = s;
                         uint32_t          made = 0, r = seed * 2654435761u;
                         // Play at random: up when possible, else a random legal column move, else draw.

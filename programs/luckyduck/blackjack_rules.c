@@ -101,10 +101,10 @@ bj_rules_t bj_default_rules(void) {
         return r;
 }
 
-void bj_init(bj_table_t *t, const bj_rules_t *rules, uint32_t seed) {
+void bj_init(bj_table_t *t, const bj_rules_t *rules, deck_key_t key) {
         memset(t, 0, sizeof(*t));
         t->rules = *rules;
-        deck_seed(&t->rng, seed);
+        deck_seed_key(&t->rng, key);
         t->phase = BJ_BETTING;
         t->turn_seat = -1;
         shuffle(t);

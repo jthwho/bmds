@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
@@ -28,6 +29,10 @@ BMDS_NAMESPACE_BEGIN
  * CPU's cache: sources are written back by their writers. A fill sends one
  * line of pixels again for every row of a block (a transmit descriptor a
  * row, one receive descriptor), so it needs no picture of its size.
+ * A job the hardware never finishes (no end of frame: its channels held,
+ * every later call timing out) is ended by force once it is older than
+ * `StuckMs`, and said in the log, so it costs a frame rather than every
+ * frame after it (`devplan/windows.md` §4k).
  *
  * @par Thread Safety
  * One task at a time.
@@ -62,7 +67,11 @@ class BlitChain {
                  */
                 Error start(Conversion conversion, size_t maxPieces, size_t maxRows = 0);
 
-                /** @brief Waits for a job under way, frees everything. Idempotent. */
+                /**
+                 * @brief Waits for a job under way (up to 1 s, a stuck one ended), frees
+                 *        everything. Idempotent. A job still queued for channels after that
+                 *        keeps its memory (said in the log) rather than lose it under the 2D-DMA.
+                 */
                 void stop();
 
                 /** @brief Returns true between `start()` and `stop()`. */
@@ -138,17 +147,30 @@ class BlitChain {
                 /** @brief Returns true while a job is under way (or not yet seen done). */
                 bool isBusy() const { return _busy; }
 
+                /** @brief The age past which a job is taken as stuck: far longer than any picture's copy takes. */
+                static constexpr unsigned int StuckMs = 250;
+
+                /** @brief Returns how many jobs were ended by force since `start()`. */
+                uint32_t stuckJobs() const { return _stuck; }
+
         private:
                 struct Hardware;
 
                 Hardware  *_hw = nullptr;
                 Semaphore  _done{1, 0};
                 bool       _busy = false; // a job enqueued and not yet seen done
+                uint64_t          _submittedUs = 0;             // when the job under way was enqueued
+                std::atomic<bool> _picked{false};               // the job under way has its channels (the ISR's)
+                std::atomic<bool> _overrun{false};              // its receive descriptors ran out (the ISR's)
+                uint32_t          _stuck = 0;                   // jobs ended by force
+                uint16_t          _jobPieces = 0, _jobRows = 0; // the job under way's receive and transmit descriptors
                 size_t     _txCount = 0;  // transmit descriptors written
                 size_t     _rxCount = 0;  // receive descriptors (pieces) written
                 size_t     _max = 0;      // pieces
                 size_t     _maxTx = 0;    // transmit descriptors
                 Conversion _conversion = Conversion::None;
+
+                Error recover();
 
                 friend struct BlitChainIsr;
 };

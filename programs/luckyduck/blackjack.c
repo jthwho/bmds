@@ -1327,13 +1327,11 @@ static void bj_scene_redraw(bmds_canvas_t *c, bmds_rect_t r) {
 static int bj_scene_enter(int argc, char **argv) {
         (void)argc;
         (void)argv;
-        int64_t ns = 0;
-        bmds_clock_get(BMDS_CLOCK_MONOTONIC, &ns);
         bj_rules_t rules = bj_default_rules();
         rules.hit_soft_17 = setting("blackjack.h17", 0) != 0;
         rules.surrender = setting("blackjack.surrender", 1) != 0;
         memset(&b, 0, sizeof(b));
-        bj_init(&b.table, &rules, (uint32_t)ns ^ (uint32_t)(ns >> 32));
+        bj_init(&b.table, &rules, app_key());
         if (bank_ensure(rules.min_bet)) sfx(SFX_SAD, 0.5f);
         const int32_t bank = (int32_t)bank_balance();
         bj_sit(&b.table, PLAYER, 1, bank);

@@ -22,6 +22,7 @@ from multiprocessing import Pool
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import cards  # noqa: E402
+import dice  # noqa: E402
 import ducks  # noqa: E402
 import lobby  # noqa: E402
 import sounds  # noqa: E402
@@ -38,6 +39,7 @@ FONTS = [
     ("BIG", 40, 2.2, "gold", OUTLINE, 2.6, 3),
     ("MED", 24, 2.3, (0xFF, 0xFF, 0xFF), (0x28, 0x18, 0x0C), 2.0, 2),
     ("SMALL", 15, 2.4, (0xFF, 0xFF, 0xFF), (0x28, 0x18, 0x0C), 1.5, 0),
+    ("HINT", 15, 2.4, (0xFF, 0xD0, 0x40), (0x28, 0x18, 0x0C), 1.5, 0),  # the small one in gold
 ]
 SPACING = 1.2
 SHADOW = (0x14, 0x10, 0x0C)
@@ -45,7 +47,7 @@ SHADOW = (0x14, 0x10, 0x0C)
 
 # Each style's spacing beyond the plain one, in units: its outline on both sides would otherwise
 # eat the gap (the small style's letters touched); the big one's shadow and size hide it.
-EXTRA_SPACING = {"BIG": 0.0, "MED": 1.0, "SMALL": 2.0}
+EXTRA_SPACING = {"BIG": 0.0, "MED": 1.0, "SMALL": 2.0, "HINT": 2.0}
 
 
 def spacing_of(f):
@@ -72,7 +74,7 @@ def glyph_job(args):
 # ---- The sprites, by name
 
 def sprite_job(name):
-    if name in ducks.LUCKY_POSES:
+    if name in ducks.LUCKY_POSES or name in ducks.CUP_POSES:
         return ducks.lucky(name)
     if name in ducks.DUCKLING_POSES:
         return ducks.duckling(name)
@@ -101,6 +103,16 @@ def sprite_job(name):
         return table.shoe()
     if name == "TRAY":
         return table.tray()
+    if name.startswith("DIE_SMALL_"):
+        return dice.face(int(name[10:]), dice.SMALL)
+    if name.startswith("DIE_TUMBLE_"):
+        return dice.tumble(int(name[11:]))
+    if name == "DIE_SHADOW":
+        return dice.shadow()
+    if name.startswith("DIE_"):
+        return dice.face(int(name[4:]))
+    if name.startswith("FEATHER_"):
+        return dice.feather(int(name[8:]))
     if name == "SLEEP_Z":
         return lobby.sleeper()
     raise ValueError(name)
@@ -110,7 +122,9 @@ SPRITES = list(ducks.LUCKY_POSES) + list(ducks.DUCKLING_POSES) + [t for t, _ in 
     "SIGN_SOON", "BUBBLE_QUACK", "BUBBLE_QUACK_LEFT", "SLEEP_Z", "BULB_ON", "BULB_OFF", "SHADOW"] + [
     "BOT_%s_%s" % (kind.upper(), p) for kind, _ in ducks.BOTS for p in ducks.BOT_POSES] + [
     "CHIP_%d" % i for i in range(len(table.CHIPS))] + ["CHIP_BIG_%d" % i for i in range(len(table.CHIPS))] + [
-    "SHOE", "TRAY", "ARROW"]
+    "SHOE", "TRAY", "ARROW"] + list(ducks.CUP_POSES) + ["DIE_%d" % v for v in range(1, 7)] + [
+    "DIE_SMALL_%d" % v for v in range(1, 7)] + ["DIE_TUMBLE_%d" % f for f in range(dice.TUMBLE_FRAMES)] + [
+    "DIE_SHADOW", "FEATHER_0", "FEATHER_1"]
 
 
 def kern_job(job):
@@ -183,7 +197,8 @@ def write_code(code_dir, sprite_places, sprites, glyphs):
     for f in FONTS:
         h.append("        ART_FONT_%s," % f[0])
     h += ["        ART_FONTS", "};", "", "typedef struct {",
-          "                uint8_t            cap; /* a capital's height */",
+          "                uint8_t            cap;  /* a capital's height */",
+          "                uint8_t            tail; /* the spacing after the last letter's ink */",
           "                const art_glyph_t *glyph; /* 95 of them */", "} art_font_t;",
           "extern const art_font_t art_fonts[ART_FONTS];", "",
           "/* Each font's kerning: pairs (by ASCII, sorted) and the pixels between them (negative closer). */",
@@ -210,7 +225,7 @@ def write_code(code_dir, sprite_places, sprites, glyphs):
         c.append("};")
     c += ["", "const art_font_t art_fonts[ART_FONTS] = {"]
     for f in FONTS:
-        c.append("        {%d, glyphs_%s}," % (f[1], f[0].lower()))
+        c.append("        {%d, %d, glyphs_%s}," % (f[1], int(round(spacing_of(f) * f[1] / 10.0)), f[0].lower()))
     c += ["};", ""]
     with open(os.path.join(code_dir, "art.c"), "w") as f:
         f.write("\n".join(c))

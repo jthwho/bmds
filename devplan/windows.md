@@ -536,7 +536,48 @@ Asked for by the user after 8d.
   frees the ones on the list. The terminal's callback closes its window and marks the session
   not started, so `win term N` opens a fresh one (the screen reset, the history emptied).
 
-## 5. Budgets (estimates; measured as the steps land)
+## 4k. A 2D-DMA job that never finishes (2026-10-15; built)
+
+- **What happened:** the desktop froze during a Lucky Duck game: the panel's clock stopped, the CPU
+  stayed 96% idle, and `screenshot`, `win pointer`, and for a while `win list`, hung.
+  - `win stats` showed 5,540 drawing errors, climbing about 2 a round, with each round taking
+    0.9 s where it takes a few ms.
+  - Closing the game didn't help; a reboot did.
+- **Why it froze:** one of the display surface's `BlitChain` jobs never reached its end of frame.
+  - `_busy` then stayed set, and every later `add()`, `run()` and `wait()` waited its 100 ms and
+    failed. That is about nine calls a round, all with the window manager's `_lock` held.
+  - Every caller of that lock waits forever. The shell sits at priority 2, last in the
+    priority-ordered queue, so its commands starved; the panel's and the sampler's priorities
+    were lifted to 5 by inheritance.
+  - `docs/platforms/esp32p4.md` already recorded the cause class: a 2D-DMA job that never
+    completes stays in the pool, and only a restart cleared it.
+- **The trigger is not known.** The freeze came during the first real Lucky Duck celebration,
+  minutes after a second copy of the game ran out of memory while starting. Neither reproduced
+  afterwards: about 20 celebrations (5,000 rounds) and an out-of-memory third copy beside two
+  others all gave 0 errors.
+- **Recovery (`BlitChain`):**
+  - A job older than `StuckMs` (250 ms; a whole 1080p RGB888 copy takes about 60) is ended with
+    `dma2d_force_end()`, its completion drained, and the chain freed. It costs about 300 ms of
+    drawing instead of the desktop.
+  - It is ended only if its channels were given to it. `on_job_picked` now sets `_picked`; until
+    then, IDF's `trans->rx_chan` still names the previous job's channel, which may by then be
+    another job's.
+  - A job never given channels can't be taken out of IDF's queue, so it waits, and the log says
+    others hold the channels.
+  - `wait()` acts only when the job is old, not merely when the caller's time runs out (callers
+    pass what remains of their own deadlines).
+  - Each forced end is logged (the first three, then at powers of two): the job's pieces and rows,
+    its age, its first piece's rectangle and picture, and whether IDF's `on_desc_empty` (data
+    past the receive descriptors: the two sides' bytes disagreeing) fired. That is what to read
+    in `log show` the next time, to find the trigger.
+  - `stop()` waits up to a second (a stuck job ended within it) before freeing descriptors the
+    hardware might still read. A job still queued after that keeps its memory, and the log says
+    so.
+- **Left as it is:** the window manager waits on hardware with `_lock` held (every draw call up to
+  `DrawTimeoutMs`), so any slow driver starves every lock caller. Worth its own design if
+  anything else ever stalls.
+
+
 
 At 720p:
 

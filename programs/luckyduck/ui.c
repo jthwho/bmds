@@ -43,6 +43,11 @@ int32_t ui_text_width(int font, const char *text) {
         return w;
 }
 
+int32_t ui_text_ink_width(int font, const char *text) {
+        const int32_t w = ui_text_width(font, text);
+        return w > art_fonts[font].tail ? w - art_fonts[font].tail : w;
+}
+
 int32_t ui_text(bmds_canvas_t *c, int font, int32_t x, int32_t y, const char *text) {
         int32_t pen = x;
         for (const char *p = text; *p != '\0'; ++p) {
@@ -58,7 +63,7 @@ int32_t ui_text(bmds_canvas_t *c, int font, int32_t x, int32_t y, const char *te
 }
 
 void ui_text_centred(bmds_canvas_t *c, int font, int32_t cx, int32_t y, const char *text) {
-        (void)ui_text(c, font, cx - ui_text_width(font, text) / 2, y, text);
+        (void)ui_text(c, font, cx - ui_text_ink_width(font, text) / 2, y, text);
         return;
 }
 

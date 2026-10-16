@@ -28,7 +28,7 @@ namespace {
         // A table with the shoe's next cards set (in the order dealt) and players at @p seats with $1000.
         void stack(bj_table_t &t, std::initializer_list<uint8_t> next, std::initializer_list<int> seats,
                    bj_rules_t rules = bj_default_rules()) {
-                bj_init(&t, &rules, 1);
+                bj_init(&t, &rules, deck_key(1));
                 size_t i = 0;
                 for (uint8_t card : next) t.shoe[i++] = card;
                 t.next = 0;
@@ -66,6 +66,37 @@ TEST_CASE("Lucky Duck deck: seeded randomness, unbiased ranges, shuffles keep th
         int each[DECK_CARDS] = {};
         for (uint8_t card : cards) ++each[card];
         for (int n : each) CHECK(n == BJ_DECKS);
+}
+
+TEST_CASE("Lucky Duck deck: a key's 128 bits all count, and shuffles are even") {
+        // One bit changed anywhere in the key: another stream (each word reaches the state).
+        deck_key_t base = {{0x12345678u, 0x9abcdef0u, 0x0f1e2d3cu, 0x4b5a6978u}};
+        deck_rng_t a, b;
+        deck_seed_key(&a, base);
+        const uint32_t first = deck_next(&a);
+        for (int w = 0; w < 4; ++w)
+                for (int bit = 0; bit < 32; bit += 7) {
+                        deck_key_t k = base;
+                        k.w[w] ^= 1u << bit;
+                        deck_seed_key(&b, k);
+                        CHECK(deck_next(&b) != first);
+                }
+        // All zeros is a key like any other: its stream isn't stuck.
+        deck_seed_key(&a, deck_key_t{{0, 0, 0, 0}});
+        uint32_t ored = 0;
+        for (int i = 0; i < 8; ++i) ored |= deck_next(&a);
+        CHECK(ored != 0);
+        // A card lands in each of the 52 places about equally often (52,000 shuffles).
+        deck_seed(&a, 5);
+        int place[DECK_CARDS] = {};
+        for (int n = 0; n < 52000; ++n) {
+                uint8_t deck[DECK_CARDS];
+                deck_fill(deck, 1);
+                deck_shuffle(&a, deck, DECK_CARDS);
+                for (int i = 0; i < DECK_CARDS; ++i)
+                        if (deck[i] == 0) ++place[i];
+        }
+        for (int n : place) CHECK((n > 860 && n < 1140));
 }
 
 TEST_CASE("Lucky Duck blackjack: hand totals, soft and hard, blackjacks") {
@@ -300,8 +331,8 @@ TEST_CASE("Lucky Duck blackjack: splits, split Aces, four hands") {
 TEST_CASE("Lucky Duck blackjack: the cut card, determinism, the log as a seat sees it") {
         bj_rules_t r = bj_default_rules();
         bj_table_t a, b;
-        bj_init(&a, &r, 7);
-        bj_init(&b, &r, 7);
+        bj_init(&a, &r, deck_key(7));
+        bj_init(&b, &r, deck_key(7));
         CHECK(std::memcmp(a.shoe, b.shoe, sizeof(a.shoe)) == 0);
         CHECK(a.cut > BJ_SHOE * 3 / 4 - 11);
         CHECK(a.cut < BJ_SHOE * 3 / 4 + 11);

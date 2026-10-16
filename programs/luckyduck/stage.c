@@ -57,7 +57,7 @@ bmds_rect_t stage_bounds(const stage_item_t *it) {
                         if (it->h != 0) h = it->h;
                         return rect(it->x, it->y, w, h);
                 case STAGE_TEXT: {
-                        const int32_t tw = ui_text_width(it->font, it->text);
+                        const int32_t tw = (it->flags & STAGE_CENTRE) != 0 ? ui_text_ink_width(it->font, it->text) : 0;
                         const int32_t x = (it->flags & STAGE_CENTRE) != 0 ? it->x - tw / 2 : it->x;
                         return ui_text_rect(it->font, x, it->y, it->text);
                 }
@@ -117,7 +117,7 @@ void stage_draw_item(bmds_canvas_t *c, const stage_item_t *it) {
                         }
                         break;
                 case STAGE_TEXT: {
-                        const int32_t tw = ui_text_width(it->font, it->text);
+                        const int32_t tw = (it->flags & STAGE_CENTRE) != 0 ? ui_text_ink_width(it->font, it->text) : 0;
                         (void)ui_text(c, it->font, (it->flags & STAGE_CENTRE) != 0 ? it->x - tw / 2 : it->x, it->y,
                                       it->text);
                         break;

@@ -21,10 +21,11 @@
 
 app_t app;
 
-static const scene_t *const SCENES[] = {&lobby_scene, &solitaire_scene, &blackjack_scene};
+static const scene_t *const SCENES[] = {&lobby_scene, &solitaire_scene, &blackjack_scene, &dice_scene};
 
-static const char *const SOUND_FILES[SFX_COUNT] = {"place.wav",  "flip.wav",   "deal.wav",  "win.wav", "quack.wav",
-                                                   "quack2.wav", "quacks.wav", "click.wav", "sad.wav"};
+static const char *const SOUND_FILES[SFX_COUNT] = {"place.wav", "flip.wav",   "deal.wav",   "win.wav",
+                                                   "quack.wav", "quack2.wav", "quacks.wav", "click.wav",
+                                                   "sad.wav",   "rattle.wav", "clack.wav"};
 
 enum {
         BOX_NONE,
@@ -339,6 +340,20 @@ bmds_rect_t app_system_button(int i) {
         return rect(WIDTH - 158, 10 + i * 42, 146, 36);
 }
 
+deck_key_t app_key(void) {
+        deck_key_t key;
+        if (bmds_random(&key, sizeof(key)) < 0) {
+                /* Never expected (the pool doesn't fail); the clock rather than the same game each time. */
+                static uint32_t calls;
+                int64_t         ns = 0;
+                bmds_clock_get(BMDS_CLOCK_MONOTONIC, &ns);
+                key = deck_key((uint32_t)ns ^ (uint32_t)(ns >> 32));
+                key.w[1] = ++calls;
+                fprintf(stderr, "luckyduck: no random numbers: dealing from the clock\n");
+        }
+        return key;
+}
+
 int app_asking(void) {
         return m.box != BOX_NONE;
 }
@@ -639,7 +654,7 @@ int main(int argc, char **argv) {
         }
         int64_t ns = 0;
         bmds_clock_get(BMDS_CLOCK_MONOTONIC, &ns);
-        srand((unsigned)ns ^ (unsigned)(ns >> 32));
+        srand(app_key().w[0]); /* rand() moves only the picture (bounces, feathers, the bots' bets) */
         app.idle_ns = ns;
         m.start = start;
         m.start_argc = argc - first - 1;

@@ -155,6 +155,13 @@ until silicon v3; then test again.
   and ~39 Mpixel/s: 1.65 ms for 320×200. Its **bypass mode with only the background channel
   never completes**, and a 2D-DMA job that never completes stays in the pool: every later job
   times out until a restart. Keep the foreground channel (an invisible A8 plane).
+- **A stuck 2D-DMA job can be ended: `dma2d_force_end()`, but only once it has its channels**
+  (found 2026-10-15, `devplan/windows.md` §4k, after a display `BlitChain` job never finished
+  and froze the desktop). It decides "in flight" by whether `trans->rx_chan`'s channel is busy,
+  and `rx_chan` is only set when the job is picked. Before that it still names the previous job's
+  channel, which another job may now hold, and ending that would stop the wrong transfer. Note
+  in `on_job_picked` that the job was picked, and end only those. A job still queued can't be
+  withdrawn. `BlitChain` does this for any job older than 250 ms.
 - **What PSRAM takes, with the 720p scan reading 166 MB/s:** the 2D-DMA writes ~150 MB/s
   (RGB565 widened to RGB888: 50 Mpixel/s, a 1280×720 frame in 18.3 ms, over a 60 Hz frame's
   16.7 ms). The CPU reads it at only ~70-80 MB/s through the cache (doubling 640×360 RGB565

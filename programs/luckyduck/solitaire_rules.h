@@ -13,6 +13,7 @@
 #define SOLITAIRE_RULES_H
 
 #include <stdint.h>
+#include "deck.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -99,8 +100,8 @@ static inline int sol_red(uint8_t card) {
         return sol_suit(card) == SOL_DIAMONDS || sol_suit(card) == SOL_HEARTS;
 }
 
-/** @brief Deals a game from a deck shuffled by @p seed (not 0), drawing @p draw (1 or 3). */
-void sol_deal(solitaire_t *s, uint32_t draw, uint32_t scoring, uint32_t seed);
+/** @brief Deals a game from a deck shuffled from @p key (deck.h's), drawing @p draw (1 or 3). */
+void sol_deal(solitaire_t *s, uint32_t draw, uint32_t scoring, deck_key_t key);
 
 /**
  * @brief Deals a game already played out: every card face up, in four columns from King to Ace,

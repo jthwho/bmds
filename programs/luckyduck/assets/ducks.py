@@ -278,7 +278,43 @@ def frame(style, pose_, size):
 
 
 def lucky(name, size=128):
+    if name in CUP_POSES:
+        return lucky_cup(name, size)
     return frame("lucky", LUCKY_POSES[name], size)
+
+
+# Lucky with the dice cup (devplan/luckyduck.md §18): shaking it (two poses) and throwing. Each:
+# the duck's pose, and the cup's middle and turn in the duck's frame.
+CUP_POSES = {
+    "LUCKY_SHAKE0": (pose(wing=55, head=-6, beak=8), (100, 70), -18),
+    "LUCKY_SHAKE1": (pose(wing=30, head=4, bob=-2), (106, 78), 14),
+    "LUCKY_THROW": (pose(wing=70, beak=22, eyes="happy", head=-4), (100, 84), 105),
+}
+LEATHER = (0x8A, 0x4A, 0x1E)
+BRASS = (0xE0, 0xB0, 0x40)
+
+
+def draw_cup(p, cx, cy, turn):
+    """The dice cup: tapered leather with brass bands, its mouth up before it is turned."""
+    def t(s):
+        return s.at(turn=turn, cx=cx, cy=cy)
+
+    body = polygon([(cx - 14, cy - 18), (cx + 14, cy - 18), (cx + 11, cy + 18), (cx - 11, cy + 18)])
+    p.part(t(body), LEATHER, 1.8)
+    for y, w in ((cy - 15, 14), (cy + 14, 11.4)):
+        p.part(t(polygon([(cx - w, y - 2.4), (cx + w, y - 2.4), (cx + w - 0.4, y + 2.4), (cx - w + 0.4, y + 2.4)])),
+               BRASS, 1.0, glow=0.35)
+    p.part(t(ellipse(cx, cy - 18, 14, 4)), shade(LEATHER, 0.45), 1.4, shaded=False)  # the mouth
+    p.shine(t(polygon([(cx - 9, cy - 10), (cx - 6, cy - 10), (cx - 5, cy + 10), (cx - 7.5, cy + 10)])), LEATHER, 0.35)
+
+
+def lucky_cup(name, size):
+    pose_, (cx, cy), turn = CUP_POSES[name]
+    pic = Picture(size, size)
+    draw_duck(pic, 0, 0, size, "lucky", pose_)
+    p = Painter(pic, 0, pose_.get("bob", 0.0) * size / 128.0, size, False, pose_.get("lean", 0.0))
+    draw_cup(p, cx, cy, turn)
+    return pic
 
 
 def duckling(name, size=56):

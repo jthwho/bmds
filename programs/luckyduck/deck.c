@@ -14,17 +14,26 @@ static uint32_t rotl(uint32_t x, int k) {
         return (x << k) | (x >> (32 - k));
 }
 
-/* splitmix32: a seed's bits spread into the state (never all zero). */
-static uint32_t splitmix(uint32_t *x) {
-        uint32_t z = (*x += 0x9e3779b9u);
+/* splitmix32's finalizer: one word's bits spread across it. Each step can be undone, so no two
+   words give the same result and a key's 128 bits all reach the state. */
+static uint32_t mix(uint32_t z) {
         z = (z ^ (z >> 16)) * 0x85ebca6bu;
         z = (z ^ (z >> 13)) * 0xc2b2ae35u;
         return z ^ (z >> 16);
 }
 
-void deck_seed(deck_rng_t *rng, uint32_t seed) {
-        for (int i = 0; i < 4; ++i) rng->s[i] = splitmix(&seed);
+void deck_seed_key(deck_rng_t *rng, deck_key_t key) {
+        /* Each word offset first, so a key mostly of zeros (deck_key()) still starts well mixed. */
+        for (uint32_t i = 0; i < 4; ++i) rng->s[i] = mix(key.w[i] + 0x9e3779b9u * (i + 1));
         if ((rng->s[0] | rng->s[1] | rng->s[2] | rng->s[3]) == 0) rng->s[0] = 1;
+        /* xoshiro's first outputs come from one word of its state: a few steps (each reversible, so
+           nothing of the key is lost) stir every word into every other first. */
+        for (int i = 0; i < 8; ++i) (void)deck_next(rng);
+        return;
+}
+
+void deck_seed(deck_rng_t *rng, uint32_t seed) {
+        deck_seed_key(rng, deck_key(seed));
         return;
 }
 

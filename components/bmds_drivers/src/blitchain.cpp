@@ -17,7 +17,9 @@
 #include <hal/dma2d_types.h>
 #include <soc/dma2d_channel.h>
 #include <bmds/blitchain.h>
+#include <bmds/log.h>
 #include <bmds/memory.h>
+#include <bmds/system.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -81,6 +83,7 @@ struct BlitChainIsr {
                 static bool picked(uint32_t count, const dma2d_trans_channel_info_t *chans, void *arg) {
                         auto                  *self = static_cast<BlitChain *>(arg);
                         BlitChain::Hardware   &hw = *self->_hw;
+                        self->_picked.store(true, std::memory_order_release);
                         dma2d_channel_handle_t tx = nullptr, rx = nullptr;
                         for (uint32_t i = 0; i < count; ++i)
                                 (chans[i].dir == DMA2D_CHANNEL_DIRECTION_TX ? tx : rx) = chans[i].chan;
@@ -104,6 +107,7 @@ struct BlitChainIsr {
                         }
                         dma2d_rx_event_callbacks_t callbacks = {};
                         callbacks.on_recv_eof = done;
+                        callbacks.on_desc_empty = overrun;
                         (void)dma2d_register_rx_event_callbacks(rx, &callbacks, self);
                         (void)dma2d_set_desc_addr(tx, reinterpret_cast<intptr_t>(hw.tx));
                         (void)dma2d_set_desc_addr(rx, reinterpret_cast<intptr_t>(hw.rx));
@@ -116,6 +120,13 @@ struct BlitChainIsr {
                         static_cast<BlitChain *>(arg)->_done.releaseFromIsr();
                         return false;
                 }
+
+                // The data outran the receive descriptors: a job whose two sides don't match, which may
+                // never reach its end of frame. Kept for recover()'s message.
+                static bool overrun(dma2d_channel_handle_t, dma2d_event_data_t *, void *arg) {
+                        static_cast<BlitChain *>(arg)->_overrun.store(true, std::memory_order_relaxed);
+                        return false;
+                }
 };
 
 Error BlitChain::start(Conversion conversion, size_t maxPieces, size_t maxRows) {
@@ -124,6 +135,7 @@ Error BlitChain::start(Conversion conversion, size_t maxPieces, size_t maxRows) 
         // A completion left from a job of an earlier start, cleared.
         while (_done.tryAcquire().isOk()) {}
         _busy = false;
+        _stuck = 0;
         _txCount = 0;
         _rxCount = 0;
         _max = maxPieces;
@@ -162,7 +174,16 @@ Error BlitChain::start(Conversion conversion, size_t maxPieces, size_t maxRows) 
 
 void BlitChain::stop() {
         if (_hw == nullptr) return;
-        (void)wait(StopTimeoutMs); // a job under way finishes before its memory goes
+        // A job under way finishes, or is ended, before its memory goes. Up to a second: past
+        // StuckMs, so wait() ends a stuck job, and a job queued behind another chain's stuck one has
+        // its turn once that one is ended in turn.
+        for (int i = 0; _busy && i < 10; ++i) (void)wait(StopTimeoutMs);
+        if (_busy) {
+                // Still in the 2D-DMA's queue: when it is given channels its callback reads _hw and the
+                // descriptors, so everything stays allocated (a leak, said here) rather than freed under it.
+                bmdsWarn("2D-DMA: stopped with a job still queued after 1 s: its memory is left allocated");
+                return;
+        }
         Hardware &hw = *_hw;
         if (hw.pool != nullptr) (void)dma2d_release_pool(hw.pool);
         Memory::free(hw.tx);
@@ -254,20 +275,71 @@ Error BlitChain::submit() {
         (void)esp_cache_msync(hw.rx,
                               (_rxCount * DescriptorBytes + DescriptorAlign - 1) / DescriptorAlign * DescriptorAlign,
                               ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        _jobPieces = static_cast<uint16_t>(_rxCount);
+        _jobRows = static_cast<uint16_t>(_txCount);
         _txCount = 0;
         _rxCount = 0;
+        _picked.store(false, std::memory_order_relaxed);
+        _overrun.store(false, std::memory_order_relaxed);
+        _submittedUs = System::uptimeUs();
         const esp_err_t err = dma2d_enqueue(hw.pool, &hw.config, hw.job);
         if (err != ESP_OK) return Error::fromEspErr(err);
         _busy = true;
         return Error::Ok;
 }
 
-// Waits for the job under way, if any.
+// Waits for the job under way, if any; one stuck past StuckMs is ended (recover()).
 Error BlitChain::wait(unsigned int timeoutMs) {
         if (!_busy) return Error::Ok;
         const Error err = _done.acquire(timeoutMs);
-        if (err.isOk()) _busy = false;
-        return err;
+        if (err.isOk()) {
+                _busy = false;
+                return err;
+        }
+        if (System::uptimeUs() - _submittedUs >= uint64_t(StuckMs) * 1000u) return recover();
+        return err; // only the caller's time ran out: the job may yet finish
+}
+
+// The job under way has had far longer than any copy takes. If it has its channels, they are
+// stopped and given back (dma2d_force_end()); then the chain is free for the next job. A job never
+// given channels (another job holding them all) can't be taken back out of the 2D-DMA's queue: it
+// stays under way, and the log says whose fault it isn't.
+Error BlitChain::recover() {
+        if (_done.tryAcquire().isOk()) { // finished just now after all
+                _busy = false;
+                return Error::Ok;
+        }
+        const bool picked = _picked.load(std::memory_order_acquire);
+        const bool overrun = _overrun.load(std::memory_order_relaxed);
+        const auto ageMs = static_cast<unsigned>((System::uptimeUs() - _submittedUs) / 1000u);
+        ++_stuck;
+        const bool tell = _stuck <= 3 || (_stuck & (_stuck - 1)) == 0; // the first few, then sparser
+        if (!picked) {
+                if (tell)
+                        bmdsWarn("2D-DMA: a job of %u pieces (%u rows) waited %u ms for channels: others hold them "
+                                 "(%u times)",
+                                 unsigned(_jobPieces), unsigned(_jobRows), ageMs, unsigned(_stuck));
+                return Error::Timeout;
+        }
+        // In flight: stopped, its channels freed. If its end of frame came between the check above
+        // and now, the force finds it not in flight; the completion is collected below either way.
+        // (A narrow window remains in which a job finishing just then and another picking up its
+        // channels would be the one stopped; that job's own wait recovers it in turn.)
+        bool            yield = false;
+        const esp_err_t err = dma2d_force_end(_hw->job, &yield);
+        while (_done.tryAcquire().isOk()) {}
+        _busy = false;
+        if (tell) {
+                const dma2d_descriptor_t *first = _hw->rx;
+                bmdsWarn("2D-DMA: a job of %u pieces (%u rows) didn't finish in %u ms%s; ended (%s); first piece "
+                         "%ux%u at %u,%u of %ux%u (%u times)",
+                         unsigned(_jobPieces), unsigned(_jobRows), ageMs,
+                         overrun ? ", its data past its receive descriptors" : "",
+                         err == ESP_OK ? "stopped" : esp_err_to_name(err), unsigned(first->hb_length),
+                         unsigned(first->vb_size), unsigned(first->x), unsigned(first->y), unsigned(first->ha_length),
+                         unsigned(first->va_size), unsigned(_stuck));
+        }
+        return Error::Timeout;
 }
 
 BMDS_NAMESPACE_END

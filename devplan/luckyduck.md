@@ -585,3 +585,163 @@ event log that drives the picture).
 - Blackjack's band: BANK and BET side by side, a small label over each amount (stacked, the amounts
   ran into each other). The tray's discards are card backs lying in it, the pile a little higher
   as it grows (they were squashed upright cards).
+
+## 18. Step 3 design: Lucky Duck Dice (2026-10-15)
+
+§8c's game, built as §6 asks, with §9's conventions. Nothing in a die is hidden, so every seat's
+view is the whole table, but the shape is Blackjack's all the same (actions, a seed, a log the
+picture replays), so a network can take a seat later.
+
+- **`dice_rules.{c,h}`** (pure C, host-tested in `tests/host/luckyduck_dice.cpp`):
+  - Up to 4 seats (the player first, then the bots), 13 rounds, each seat's card of 13 boxes
+    (open, or the points written).
+  - A turn: `dice_roll()` rolls the dice not held (three rolls at most), `dice_hold()` holds or
+    frees a die (after the first roll), `dice_score()` writes the dice into an open box and ends
+    the turn. Each is refused when not allowed.
+  - **Scores** (`dice_box_score()`): the upper boxes their face's sum; three and four of a kind all
+    the dice; a full house 25, a small straight 30, a large 40, a Lucky Duck 50, chance the sum.
+    The upper bonus is 35 at 63 or more.
+  - **A second Lucky Duck** pays 100 more when the Lucky Duck box holds 50, and plays as a joker
+    (the official forced rule) whether the box holds 50 or 0:
+    - its upper box if that is open;
+    - otherwise any open lower box, at full value (a full house 25, the straights 30 and 40);
+    - otherwise a zero in an open upper box.
+  - **Events** (a ring of 256, read by a running count): the game's start, a turn, a hold, a roll
+    (the five values and the holds), a score, a bonus (upper or Lucky Duck), the game's end (the
+    winner).
+  - **Bots** by expected value, without searching the whole game:
+    - A box's worth is its score less what that box is worth on average (its par), plus credit
+      towards the upper bonus.
+    - The dice kept are chosen over the distinct multisets (462 of 0 to 5 dice), looking ahead
+      to the rolls left (two at most). That is about 100,000 table lookups a decision.
+    - Good but beatable: they don't plan across turns.
+- **The scene (`dice.c`):**
+  - **Layout:** the scorecard on the right, left of the system buttons. Lucky with the cup at
+    the top left, the bot ducks beside it with their names. The tray (a felt box in a wooden rail)
+    below them. A shelf of five slots under the tray, where held dice stand. Roll in the band.
+  - **The scorecard** is painted into the felt: the labels, the grid, the players' names. The
+    stage draws only the numbers. Written scores are white. What the dice would score in each
+    open box is shown in a new gold small style (`ART_FONT_HINT`) in the column of the player whose
+    turn it is. Hovering over a box lights its row, and a click writes it.
+  - **A roll:** the dice not held are scooped into the cup. Lucky shakes it (a new rattle sound,
+    three poses with the cup) and throws. The dice fly from the cup's mouth and tumble across the
+    tray:
+    - **Physics:** position, height and spin; bounces off the rail and each other; friction; a
+      shadow that drifts away from the die as it rises.
+    - **Frames:** in flight they show tumbling frames (the cube drawn at angles), turned in the
+      direction they travel. They land on the face the rules rolled (a click of a clack sound).
+    - The physics is the picture's, from its own random numbers: the rules decide only the values.
+  - **Holds:** a click on a die (or keys 1 to 5) holds it: it hops into its slot on the shelf,
+    and a second click hops it back to the tray.
+  - **Scoring:** the points fly from the dice to the box, and the box shows them when they land.
+    The upper bonus and a second Lucky Duck's 100 pop up beside the card.
+  - **A Lucky Duck rolled:** the five dice line up on the shelf, feathers fall as confetti,
+    ducklings march across the tray, and "LUCKY DUCK!" pops up with the fanfare.
+  - **Bots:** they think, hold dice one by one (each hop seen), roll, and write a box. They look
+    happy at a good score and sad at a zero. Options make them fast.
+  - **Buttons:**
+    - The system buttons (top right): Lobby, Rules, Options, New Game.
+    - In the band: Roll (R, Space, Enter) and Hint (T: Lucky whispers what the bots would do,
+      "PSST... HOLD 5 5 5" or "PSST... FULL HOUSE!").
+  - **The game's end:** a box with the final scores in order, the high scores (the top five; a
+    new one marked), and Play Again (Enter).
+  - **Under way** from the first roll to the game's end, so leaving asks (§9). Options (bot ducks
+    0 to 3, default 1; fast bots) apply to the next game.
+- **Kept:** the high scores in `scores` ("dice.0" to "dice.4" lines, the player's only), and
+  `dice.played` and `dice.won` (won: beating every bot) in the settings.
+- **Sounds:** `rattle.wav` (dice knocking in a leather cup) and `clack.wav` (a die landing).
+- **No ABI changes.**
+
+## 19. As built: step 3, Lucky Duck Dice (2026-10-15)
+
+- **`dice_rules.{c,h}`** as §18, host-tested (`tests/host/luckyduck_dice.cpp`, 6 cases):
+  - Every box's score; a turn's rolls and holds and what is refused; the upper bonus at 63.
+  - Second Lucky Ducks: the 100, the joker rule's three cases, and a scratched box (the joker
+    without the 100).
+  - Whole bot games: 13 rounds, the winner, the same game from the same seed, seats not starting
+    at 0.
+  - The bots' choices: they average over 190 in the test.
+- **The bots:** each box's worth is its score less its par, plus 0.6 a point above or below the
+  upper bonus's pace (while the bonus can still be made), plus a second Lucky Duck's 100.
+  - Measured on the host (300 solo games): 237 on average looking two rolls ahead, 233 looking
+    one. Well-played solitaire averages about 254.
+  - A decision takes 1.1 ms on the host at -O2. The work is about 9,000 lookups by binary search
+    over the 462 multisets.
+  - Woody looks one roll ahead; Pearl and Mallory look two.
+- **The scene (`dice.c`)** as §18 planned. Placed from the picture's size and the players:
+  - The scorecard: 190 for the labels, 108 a player.
+  - The tray takes what is left, and the bots spread over its width.
+  - The throw's speed scales with the tray's width (the dice piled against the far rail in the
+    four-player tray).
+  - Dice settle on any angle and are drawn turned; the stage redraws only what moved.
+  - A die at rest is knocked by one still rolling, and slides on face up.
+  - When a turn ends, its held dice go back to the tray, so the next player starts with nothing
+    on the shelf.
+  - The options box answers clicks as well as keys. Changing the bots between games deals a new
+    game at once, keeping the box open.
+- **Art:**
+  - The dice from above in two sizes: the one is a red pip with a gold duck, the others drilled
+    pips.
+  - Eight tumbling frames: a rounded cube drawn turned, its faces lit by angle.
+  - A die's shadow, two feathers.
+  - Lucky with a leather cup in three poses.
+  - `ART_FONT_HINT`: the small style in gold.
+- **Sounds:** `rattle.wav` (knocks through resonances, dulled) and `clack.wav`.
+- **Checked on the board:**
+  - Rolls and tumbles, holds, hints, the hint bubble, scoring by click with points flying.
+  - Pearl's turn with its holds.
+  - A whole game to its end panel and high score.
+  - Three bots' layout.
+  - A Lucky Duck's party, with a temporary build rolling only fours (not kept).
+  - Found and fixed there:
+    - Dice were too big in the air and their shadows too dark; dice overlapped at rest.
+    - A second key during a hop was dropped; the hint bubble covered Pearl.
+    - The label column and the players' columns were too narrow.
+    - The end panel's height now fits what is in it.
+
+## 20. Randomness (2026-10-15, the user's ask: "a solid source of randomness")
+
+- **Before:**
+  - Every game was seeded from the monotonic clock: nanoseconds since boot, folded to 32 bits.
+    That is guessable, and Blackjack's and the dice's 128-bit generator could only reach 2^32 of
+    its states (about 4 billion shoes or games). Harmless alone, but over a network a client could
+    recognise the shoe from a few cards.
+  - Solitaire shuffled with its own xorshift32 and `% n` (a small bias).
+  - `rand()` was seeded from the clock too.
+- **Now:**
+  - **`app_key()`** (main.c) gives each new game 128 bits from `bmds_random()`: the kernel's
+    ChaCha20 pool, seeded from the hardware's noise (`random.md`). If that ever failed it falls
+    back to the clock, saying so.
+  - **`deck_key_t`** carries the 128 bits. `bj_init()`, `dice_init()` and `sol_deal()` take one,
+    so a game is still the same from the same key (the tests use `deck_key(n)`; a network host
+    would keep the key).
+  - **`deck_seed_key()`** mixes each word reversibly (none of the key is lost). It then takes
+    eight generator steps, because xoshiro128**'s first outputs come from one state word: the new
+    test caught the first number ignoring three of the four.
+  - **Solitaire** shuffles with `deck_shuffle()` (Fisher-Yates over the unbiased `deck_below()`).
+  - **`rand()`**, seeded from `app_key()`, moves only the picture: bounces, feathers, the bots'
+    bet sizes.
+- **Tested:**
+  - One bit changed anywhere in the key changes the stream.
+  - An all-zero key isn't stuck.
+  - A card lands in each of the 52 places about equally often over 52,000 shuffles.
+
+### 20a. The dice game's last cleanups (2026-10-15, the user's)
+
+- **Scorecard rows:**
+  - Each row has a top and a height (`row_top()`, `row_h()`), and text is centred in its row by
+    its font's capital height.
+  - The header's gold line sits just above the ones row, which now has the same padding as the
+    others (the line used to cut into it).
+  - The total's row is 40 high for its bigger letters.
+  - The card ends 10 pixels above the band.
+- **Centring:** text was centred by how far the pen moves, which counts the letter spacing after
+  the last letter. Each font now records that spacing (`art_font_t::tail`, from `build.py`), and
+  `ui_text_ink_width()` centres buttons and centred stage text by the ink alone. "NEW GAME" was
+  2.5 pixels left; every button is now at its middle, Blackjack's and the lobby's too.
+- **The Lucky Bonus row** checked with a temporary build rolling only fours: a second Lucky Duck
+  in fours shows 100 there and 170 in the total.
+- **Dice leaving the shelf** (a turn's end, or a hold undone) look for a clear place
+  (`clear_spot()`): where they last lay if no die is lying, landing or rolling within two radii;
+  otherwise the nearest clear point on rings around it. They used to return to where they lay
+  before, which later rolls may have filled.

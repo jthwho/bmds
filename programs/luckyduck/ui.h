@@ -17,8 +17,11 @@
 /** @brief Draws @p text in headline font @p font from (@p x, @p y) (its capitals' top-left). @return Its width. */
 int32_t ui_text(bmds_canvas_t *c, int font, int32_t x, int32_t y, const char *text);
 
-/** @brief @p text's width in font @p font. */
+/** @brief @p text's width in font @p font: how far the pen moves (the spacing after it in). */
 int32_t ui_text_width(int font, const char *text);
+
+/** @brief @p text's inked width: ui_text_width() less the spacing after the last letter (centring by it). */
+int32_t ui_text_ink_width(int font, const char *text);
 
 /** @brief Draws @p text centred across @p cx. */
 void ui_text_centred(bmds_canvas_t *c, int font, int32_t cx, int32_t y, const char *text);

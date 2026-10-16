@@ -5,8 +5,8 @@
 # See LICENSE file in the project root folder for license information.
 #
 # Lucky Duck's sounds (devplan/luckyduck.md §3), synthesized: Solitaire's card sounds, quacks (a
-# buzzing source through a duck's two formants, its pitch falling), a click, a fanfare and a sad
-# trombone.
+# buzzing source through a duck's two formants, its pitch falling), a click, a fanfare, a sad
+# trombone, and dice: rattling in a leather cup, and one landing.
 
 import math
 import os
@@ -121,6 +121,43 @@ def trombone(notes, length):
     return out
 
 
+def knock(seconds, freq, level, seed, decay=90.0):
+    """A die's knock: a short noise burst through a resonance at @p freq (a hard, small body)."""
+    rnd = random.Random(seed)
+    bp = Bandpass(freq, 4)
+    bp2 = Bandpass(freq * 2.3, 6)
+    out = []
+    for i in range(int(RATE * seconds)):
+        t = i / RATE
+        n = (rnd.random() * 2 - 1) * math.exp(-t * 600)
+        out.append((bp(n) + 0.5 * bp2(n)) * level * math.exp(-t * decay) * 6)
+    return out
+
+
+def rattle():
+    """Dice shaken in a leather cup: knocks in bursts, each shake's muffled by the leather."""
+    rnd = random.Random(21)
+    out = []
+    for shake in range(4):
+        base = shake * 0.16
+        for k in range(7):
+            at = base + rnd.random() * 0.1
+            mix_at(out, knock(0.05, 1400 + 900 * rnd.random(), 0.3 + 0.4 * rnd.random(), 40 + shake * 7 + k), at)
+    low = 0.0
+    for i, v in enumerate(out):  # the leather: dulled
+        low += 0.35 * (v - low)
+        out[i] = low
+    return out
+
+
+def clack():
+    """A die landing on the felt and knocking another: two knocks."""
+    out = []
+    mix_at(out, knock(0.06, 2100, 0.9, 60), 0.0)
+    mix_at(out, knock(0.05, 2900, 0.45, 61), 0.035)
+    return out
+
+
 def write_all(out):
     write_wav(os.path.join(out, "place.wav"), snap(0.06, 0.9, 70, 0.55, 1))
     write_wav(os.path.join(out, "flip.wav"), snap(0.07, 0.6, 45, 0.85, 2, rise=0.01))
@@ -143,3 +180,5 @@ def write_all(out):
     write_wav(os.path.join(out, "quacks.wav"), two)
     write_wav(os.path.join(out, "click.wav"), snap(0.025, 0.7, 180, 0.9, 8))
     write_wav(os.path.join(out, "sad.wav"), trombone((55, 54, 53, 52), 0.32))
+    write_wav(os.path.join(out, "rattle.wav"), rattle())
+    write_wav(os.path.join(out, "clack.wav"), clack())

@@ -5,8 +5,9 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * Lucky Duck's kept state (devplan/luckyduck.md §2, §7): the settings and the bank, each a file
- * of "name value" lines in the data folder, read once and written whole when something changes.
+ * Lucky Duck's kept state (devplan/luckyduck.md §2, §7): the settings, the bank and the high
+ * scores, each a file of "name value" lines in the data folder, read once and written whole when
+ * something changes.
  */
 
 #include <stdio.h>
@@ -28,7 +29,7 @@ typedef struct {
                 int      loaded;
 } store_t;
 
-static store_t settings_store, bank_store;
+static store_t settings_store, bank_store, scores_store;
 
 static void load(store_t *s, const char *file) {
         if (s->loaded) return;
@@ -95,6 +96,15 @@ int64_t setting(const char *name, int64_t fallback) {
 
 void set_setting(const char *name, int64_t value) {
         put(&settings_store, "settings", name, value);
+        return;
+}
+
+int64_t kept_score(const char *name, int64_t fallback) {
+        return get(&scores_store, "scores", name, fallback);
+}
+
+void keep_score(const char *name, int64_t value) {
+        put(&scores_store, "scores", name, value);
         return;
 }
 

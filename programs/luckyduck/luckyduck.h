@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <bmds/game.h>
 #include "art.h"
+#include "deck.h"
 
 /* The picture: a maximized window's client area (the system's choice), at most 1280×720. */
 #define MAX_WIDTH 1280
@@ -43,7 +44,10 @@
 #define K_Y KEY(0x1c)
 #define K_Z KEY(0x1d)
 #define K_1 KEY(0x1e)
+#define K_2 KEY(0x1f)
 #define K_3 KEY(0x20)
+#define K_4 KEY(0x21)
+#define K_5 KEY(0x22)
 #define K_ENTER KEY(0x28)
 #define K_ESCAPE KEY(0x29)
 #define K_BACKSPACE KEY(0x2a)
@@ -86,6 +90,7 @@ typedef struct scene_t {
 extern const scene_t lobby_scene;
 extern const scene_t solitaire_scene;
 extern const scene_t blackjack_scene;
+extern const scene_t dice_scene;
 
 /** @brief The sounds (the folder's WAVs). */
 enum {
@@ -98,6 +103,8 @@ enum {
         SFX_QUACKS,
         SFX_CLICK,
         SFX_SAD,
+        SFX_RATTLE,
+        SFX_CLACK,
         SFX_COUNT
 };
 
@@ -114,6 +121,12 @@ typedef struct {
 } app_t;
 
 extern app_t app;
+
+/**
+ * @brief A new game's key: 128 bits from the system's random numbers (the kernel's pool, seeded
+ *        from the hardware's noise), so no deal or roll can be guessed (devplan/luckyduck.md §20).
+ */
+deck_key_t app_key(void);
 
 /** @brief Plays a sound (unless the sound is off). */
 void sfx(int which, float volume);
@@ -169,6 +182,11 @@ void dirty_add(bmds_rect_t *list, uint32_t *count, uint32_t max, bmds_rect_t r);
 
 int64_t setting(const char *name, int64_t fallback);
 void    set_setting(const char *name, int64_t value);
+
+/* ---- High scores: the same, in the data folder's `scores` */
+
+int64_t kept_score(const char *name, int64_t fallback);
+void    keep_score(const char *name, int64_t value);
 
 /* ---- The bank (devplan/luckyduck.md §7) */
 

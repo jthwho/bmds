@@ -93,23 +93,16 @@ uint32_t sol_home(const solitaire_t *s) {
 
 /* ---- The game */
 
-void sol_deal(solitaire_t *s, uint32_t draw, uint32_t scoring, uint32_t seed) {
+void sol_deal(solitaire_t *s, uint32_t draw, uint32_t scoring, deck_key_t key) {
         memset(s, 0, sizeof(*s));
         s->draw = draw == 3 ? 3 : 1;
         s->scoring = scoring < SOL_SCORINGS ? scoring : SOL_SCORE_STANDARD;
         s->score = s->scoring == SOL_SCORE_VEGAS ? -52 : 0;
-        uint8_t deck[SOL_CARDS];
-        for (uint32_t i = 0; i < SOL_CARDS; ++i) deck[i] = (uint8_t)i;
-        uint32_t r = seed != 0 ? seed : 1;
-        for (uint32_t i = SOL_CARDS - 1; i > 0; --i) { /* Fisher-Yates on xorshift32 */
-                r ^= r << 13;
-                r ^= r >> 17;
-                r ^= r << 5;
-                const uint32_t j = r % (i + 1);
-                const uint8_t  t = deck[i];
-                deck[i] = deck[j];
-                deck[j] = t;
-        }
+        uint8_t    deck[SOL_CARDS];
+        deck_rng_t rng;
+        deck_seed_key(&rng, key);
+        deck_fill(deck, 1); /* the same bytes as ours: suit × 13 + rank */
+        deck_shuffle(&rng, deck, SOL_CARDS);
         /* A row at a time across the columns, each column's last face up. */
         uint32_t next = 0;
         for (uint32_t row = 0; row < 7; ++row)
@@ -120,7 +113,7 @@ void sol_deal(solitaire_t *s, uint32_t draw, uint32_t scoring, uint32_t seed) {
 }
 
 void sol_deal_finished(solitaire_t *s, uint32_t draw, uint32_t scoring) {
-        sol_deal(s, draw, scoring, 1);
+        sol_deal(s, draw, scoring, deck_key(1));
         for (uint32_t p = 0; p < SOL_PILES; ++p) s->pile[p].count = 0;
         /* Spades and hearts alternating in two columns, opposite ways; clubs and diamonds the same. */
         static const uint8_t pairs[4][2] = {{SOL_SPADES, SOL_HEARTS},

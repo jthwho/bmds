@@ -463,8 +463,6 @@ static void send_up(state_t *s, int pile) {
 /* ---- Games */
 
 static void deal(state_t *s) {
-        int64_t ns = 0;
-        bmds_clock_get(BMDS_CLOCK_MONOTONIC, &ns);
         land_all(s);
         s->auto_play = 0;
         s->counted = !s->demo;
@@ -475,7 +473,7 @@ static void deal(state_t *s) {
                 s->demo = 0;
         } else {
                 if (s->scoring == SOL_SCORE_VEGAS && bank_ensure(52)) play(s, SFX_SAD, 0.5f); /* Lucky tops it up */
-                sol_deal(&s->game, s->draw, s->scoring, (uint32_t)ns ^ (uint32_t)(ns >> 32));
+                sol_deal(&s->game, s->draw, s->scoring, app_key());
         }
         s->vegas_synced = 0;
         vegas_sync(s);
