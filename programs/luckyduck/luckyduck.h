@@ -31,6 +31,7 @@
 #define K_C KEY(0x06)
 #define K_D KEY(0x07)
 #define K_F KEY(0x09)
+#define K_G KEY(0x0a)
 #define K_H KEY(0x0b)
 #define K_L KEY(0x0f)
 #define K_M KEY(0x10)
@@ -41,6 +42,7 @@
 #define K_S KEY(0x16)
 #define K_T KEY(0x17)
 #define K_U KEY(0x18)
+#define K_X KEY(0x1b)
 #define K_Y KEY(0x1c)
 #define K_Z KEY(0x1d)
 #define K_1 KEY(0x1e)
@@ -91,6 +93,7 @@ extern const scene_t lobby_scene;
 extern const scene_t solitaire_scene;
 extern const scene_t blackjack_scene;
 extern const scene_t dice_scene;
+extern const scene_t video_scene;
 
 /** @brief The sounds (the folder's WAVs). */
 enum {

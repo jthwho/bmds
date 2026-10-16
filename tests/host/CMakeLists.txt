@@ -87,6 +87,9 @@ add_executable(bmds_host_tests
         ${BMDS_ROOT}/programs/luckyduck/blackjack_rules.c
         luckyduck_dice.cpp
         ${BMDS_ROOT}/programs/luckyduck/dice_rules.c
+        luckyduck_video.cpp
+        ${BMDS_ROOT}/programs/luckyduck/video_rules.c
+        ${BMDS_ROOT}/programs/luckyduck/hand.c
         ${BMDS_ROOT}/programs/luckyduck/deck.c
         memspace.cpp
         midi.cpp

@@ -21,7 +21,7 @@
 
 app_t app;
 
-static const scene_t *const SCENES[] = {&lobby_scene, &solitaire_scene, &blackjack_scene, &dice_scene};
+static const scene_t *const SCENES[] = {&lobby_scene, &solitaire_scene, &blackjack_scene, &dice_scene, &video_scene};
 
 static const char *const SOUND_FILES[SFX_COUNT] = {"place.wav", "flip.wav",   "deal.wav",   "win.wav",
                                                    "quack.wav", "quack2.wav", "quacks.wav", "click.wav",

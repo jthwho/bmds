@@ -745,3 +745,134 @@ picture replays), so a network can take a seat later.
   (`clear_spot()`): where they last lay if no die is lying, landing or rolling within two radii;
   otherwise the nearest clear point on rings around it. They used to return to where they lay
   before, which later rolls may have filled.
+
+## 21. Step 4 design: Video Poker (2026-10-15)
+
+§8d's game, with §9's conventions. One player and nothing hidden from them, so it stays outside
+§6: no seats, no event log. The scene animates what changed in the machine.
+
+- **`hand.{c,h}`: the evaluator Poker will share.**
+  - `hand_value(cards, n)` gives the best five of 5 to 7 cards as one 32-bit number. A bigger
+    number is a better hand.
+    - The category is in bits 20 and up: high card, pair, two pair, three of a kind, straight,
+      flush, full house, four of a kind, straight flush.
+    - Five ranks follow, four bits each, in the order they count (Ace high): for four of a kind,
+      the four's rank and then the kicker; for a pair, the pair, then the kickers high to low.
+  - It works from four rank masks, one per suit, and builds "seen once" to "seen four times"
+    masks bit by bit. There are no tables beyond a 13-bit popcount.
+  - Also `hand_category()`, `hand_rank()` (the n-th rank) and `hand_name()` ("FULL HOUSE").
+  - **Host-tested:**
+    - Every five-card hand (2,598,960) counted by category against the known numbers (4 royal
+      flushes, 36 straight flushes, 624 fours and so on).
+    - Random seven-card hands against brute force over their 21 fives.
+    - Ties, kickers and the wheel (A-2-3-4-5, the lowest straight).
+- **`video_rules.{c,h}`: the machine.** Pure C, host-tested in
+  `tests/host/luckyduck_video.cpp`.
+  - **Its state:** the deck, shuffled from a `deck_key_t` each hand; the five cards; the holds;
+    the coins bet (1 to 5) and their value ($1 or $5); the stack in dollars; the phase (betting,
+    dealt, done); the result and the win.
+  - **Calls:** `vp_bet()` sets the coins, `vp_deal()` takes the bet and deals five, `vp_hold()`
+    toggles a card's hold, and `vp_draw()` replaces the cards not held and pays. Each refuses what
+    isn't allowed. Every hand gets a fresh shuffle with a new key, as real machines do.
+  - **Three machines,** each a pay table as data: rows of a name, what each row matches, and the
+    pay for one to five coins. A royal flush pays 800 a coin at five coins (4,000).
+    - **Jacks or Better 9/6** (99.5% with perfect play), the default.
+    - **Bonus Poker 8/5** (99.2%): fours pay more by rank (Aces 80; 2s, 3s or 4s 40).
+    - **Double Double Bonus 9/6** (99.0%): fours with the right kicker pay up to 400; two pair
+      pays 1.
+    - `vp_pay(machine, cards)` gives the matched row and its pay.
+  - **Perfect play** (`vp_ev_*`):
+    - It tries every one of the 32 holds against every draw. Over all holds that is every
+      five-card hand once (2,598,960 evaluations), so every hold's expected return is exact.
+    - It runs in slices (`vp_ev_step(ev, budget)`), so the scene spreads it over frames while
+      Lucky thinks.
+    - It answers the hint ("PSST... HOLD J J", "PSST... DRAW FIVE").
+- **The scene (`video.c`):** the machine is a cabinet painted on the felt, with a deep blue screen.
+  - **The pay table** fills the top of the screen in gold: the rows, and a column for each bet
+    of 1 to 5 coins.
+    - The column bet is lit.
+    - After the deal, the row of the hand already made is lit.
+    - After the draw, a winning row flashes.
+  - **Lucky** stands left of the screen with a face-down deck and deals:
+    - **The deal:** cards fly to their five places face down, then flip left to right in a
+      ripple.
+    - **Holds:** a click on a card (or keys 1 to 5) holds it. The card lifts and "HELD" shows on
+      it; a second click lets it down.
+    - **The draw:** the cards not held flip down and fly back to the deck. New ones fly in and
+      flip in a ripple.
+  - **Winning:**
+    - The cards that make the hand lift together with a glow, and the hand's name pops ("FULL
+      HOUSE").
+    - The win counts up coin by coin into the bank, coins flying from the screen to the bank
+      with a clink.
+    - Lucky cheers at three of a kind or better.
+  - **A royal flush:** gold flashes over the screen, feathers fall, ducklings march under the
+    cards, "ROYAL FLUSH!" pops big, and the fanfare plays.
+  - **Buttons:**
+    - System, at the top right: Lobby, Rules (F1), Options (O).
+    - In the band: Hint (T), Bet One (B), Bet Max (X, which also deals), and Deal or Draw (Enter
+      or Space).
+    - The band shows BANK, BET ("3 × $1") and WIN.
+  - **Under way:** from the deal to the draw (the bet is lost by leaving). Leaving or closing
+    asks (§9).
+  - **Options:** the machine and the coin's value, both kept. The coins bet are kept too.
+    Changes apply at the next deal.
+- **The bank:** the bet leaves it at the deal and the win returns to it. It is written when the
+  count-up ends (or on leaving). Below one coin, Lucky tops it up (§7).
+- **Kept:** in `settings`, `video.machine`, `video.coin`, `video.coins`, `video.played` and
+  `video.royals`.
+- **No new art:** cards, chips (as coins), Lucky's poses, feathers and ducklings exist.
+- **No new sounds.**
+- **No ABI changes.**
+- **Later:** double-up (§8d), and Deuces Wild, which needs wild cards in the evaluator.
+
+## 22. As built: step 4, Video Poker (2026-10-15)
+
+- **`hand.{c,h}`** as §21. Host-tested in `tests/host/luckyduck_video.cpp`:
+  - All 2,598,960 five-card hands counted by category.
+  - 20,000 random hands of five to seven cards against brute force over their fives.
+  - Ties, kickers, the wheel, and seven cards holding two threes or three pairs.
+- **`video_rules.{c,h}`** as §21, with the three machines.
+  - Host-tested: the deal, holds, the draw and what is refused; each pay table's rows (the
+    kickers of Double Double Bonus); the cards that count.
+  - **Perfect play** is tested against known answers: a pair of Jacks returns about 1.54 a coin;
+    a pat flush is broken for four to the royal; a low pair is given up for four to a flush; a pat
+    straight flush stands; nothing draws five. Its fast pays are checked against the pay tables
+    hold by hold.
+  - **Perfect play is fast:**
+    - Each hold's cards and the draw's cards but the last are kept as rank masks, so each of the
+      2,598,960 hands adds one card.
+    - The pays are looked up by what the masks show: a pair's rank, a four's and its kicker's.
+    - One-bit masks become ranks by a de Bruijn multiply, not by counting bits (the chip may have
+      no instruction for it).
+    - On the board it takes about 70 frames (1.2 s) at 8 ms a frame while Lucky says "HMM...".
+      The first version took several seconds.
+- **The scene (`video.c`)** as §21.
+  - The cabinet sits on the lobby's carpet: a gold frame, a black bezel, a coin slot, and a blue
+    screen shading darker downwards.
+  - The pay table is painted in the gold small letters. The column bet shows red; the hand made
+    shows gold, and its row flashes once it wins.
+  - Cards fly in from Lucky's deck with a turn, slowing to land flat, and flip left to right. At the
+    draw, the cards not held turn down, fly back, and new ones come.
+  - "HELD" sits under a lifted card. A win lifts the cards that make it, with a gold rim pulsing
+    behind them.
+  - The headline rises under the cards: "ROYAL FLUSH!" in the big letters, the rest in the middle
+    size.
+  - The win counts up in about 80 frames, coins flying to the bank. The bet's coins fly to the coin
+    slot at the deal.
+  - The hint bubble is two lines ("PSST..." over "HOLD 10 K 10 K"), so it fits left of the cards.
+  - Options: the machine, and coins of $1, $5 or $25.
+- **Checked on the board:**
+  - Deals, holds by key, the draw, the pay.
+  - The hint, its time, and its answer (it held two pair).
+  - The options' machine and coin, Double Double Bonus's 13 rows, and the leave box mid-hand.
+  - The lobby's table.
+  - A royal flush's party, with a temporary build drawing only royals (not kept).
+  - Found and fixed there:
+    - The glow was a grey box over the blue (now a solid gold rim).
+    - "HELD" was too big; the hint's bubble covered the first card.
+    - The royal flush's headline ran off the screen; the cards moved up into the gap under the
+      table.
+- **Seen on the board:** after many test runs and screenshots in `/tmp`, PSRAM's largest free block
+  fell to 2.4 MB. The screenshot's 2.8 MB copy failed then, until the test copy closed.
+- **Open:** Double Double Bonus's 13 rows are tight at 21 pixels; double-up; Deuces Wild.
