@@ -117,6 +117,21 @@ until silicon v3; then test again.
   - The ways out were touching fewer pixels (no felt under opaque cards; no copy where a frame
     repaints anyway) and not the instructions. A turned blit's 64-bit steps and per-pixel tests
     cost little next to its memory.
+  Then the 2D-DMA took the copies (`games.md` §25, 2026-10-16): a program's felt restore and its
+  double buffer's catch-up copy by `BMDS_SURFACE_BLIT`. Video Poker's busiest seconds went from
+  about 5 skipped ticks to one in 25 seconds.
+  - **The cache around a DMA write into a CPU-drawn buffer:** write back and invalidate each
+    piece's byte range before (unaligned is allowed for C2M), invalidate after, rounded out to
+    128-byte lines (M2C refuses unaligned ranges; buffers aligned and padded to lines keep that
+    safe).
+  - Nearby rows' ranges are merged into one operation, since each costs 4-5 µs.
+  - **The L1's lines are 64 bytes, the L2's 128: write back and invalidate the same whole L2
+    lines.** A write-back of an exact, unaligned range writes back the L1's 64-byte lines it
+    touches. An invalidate rounded out to 128 bytes then drops the other half of a line, dirty in
+    the L1 with the CPU's writes. Found by `blittest` (`games.md` §25g): a sprite lost 32 pixels
+    of a row now and then.
+  - **Internal RAM a DMA reads is cached too:** a fill's line written by the CPU must be written
+    back.
 - **A big table read from flash competes with every other flash read:** SVOX Pico synthesizing flat
   out (into a file) from its 1.4 MB voice mapped in `/rom` slowed the icon blend from the ROM
   296 → 380 µs an icon (28 %); with the voice copied into PSRAM, 322 µs (9 %). Speaking at real

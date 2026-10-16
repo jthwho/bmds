@@ -103,6 +103,8 @@ def sprite_job(name):
         return table.shoe()
     if name == "TRAY":
         return table.tray()
+    if name == "DEALER_BUTTON":
+        return table.dealer_button()
     if name.startswith("DIE_SMALL_"):
         return dice.face(int(name[10:]), dice.SMALL)
     if name.startswith("DIE_TUMBLE_"):
@@ -122,7 +124,7 @@ SPRITES = list(ducks.LUCKY_POSES) + list(ducks.DUCKLING_POSES) + [t for t, _ in 
     "SIGN_SOON", "BUBBLE_QUACK", "BUBBLE_QUACK_LEFT", "SLEEP_Z", "BULB_ON", "BULB_OFF", "SHADOW"] + [
     "BOT_%s_%s" % (kind.upper(), p) for kind, _ in ducks.BOTS for p in ducks.BOT_POSES] + [
     "CHIP_%d" % i for i in range(len(table.CHIPS))] + ["CHIP_BIG_%d" % i for i in range(len(table.CHIPS))] + [
-    "SHOE", "TRAY", "ARROW"] + list(ducks.CUP_POSES) + ["DIE_%d" % v for v in range(1, 7)] + [
+    "SHOE", "TRAY", "ARROW", "DEALER_BUTTON"] + list(ducks.CUP_POSES) + ["DIE_%d" % v for v in range(1, 7)] + [
     "DIE_SMALL_%d" % v for v in range(1, 7)] + ["DIE_TUMBLE_%d" % f for f in range(dice.TUMBLE_FRAMES)] + [
     "DIE_SHADOW", "FEATHER_0", "FEATHER_1"]
 

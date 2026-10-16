@@ -38,12 +38,19 @@ enum {
 #define HAND_ACE 12
 
 /**
- * @brief The best five of @p n cards (5 to 7, deck.h's bytes) as one value: its category in bits
+ * @brief The best five of @p n cards (1 to 7, deck.h's bytes; fewer than five make no straight or
+ *        flush, as stud's cards showing) as one value: its category in bits
  *        20 and up, then five ranks of 4 bits in the order they count (a four's rank, then its
  *        kicker; a full house's three, then its pair; a pair's, then the kickers high to low; a
  *        straight's top card, the wheel's the Five). A bigger value is a better hand; equal is a tie.
  */
 uint32_t hand_value(const uint8_t *cards, int n);
+
+/**
+ * @brief Which of @p n cards (5 to 7) make the hand hand_value() gives them: a mask of five (bit i
+ *        card i), the first such five found.
+ */
+uint32_t hand_best(const uint8_t *cards, int n);
 
 /** @brief A value's category (`HAND_...`). */
 static inline int hand_category(uint32_t value) {

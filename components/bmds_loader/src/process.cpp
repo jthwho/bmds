@@ -715,6 +715,16 @@ void *Process::memAlloc(uint32_t size, uint32_t align, uint32_t flags) {
         return user;
 }
 
+bool Process::owns(const void *ptr, size_t bytes) const {
+        const auto    from = reinterpret_cast<uintptr_t>(ptr);
+        Mutex::Locker locker(_lock, WaitForever);
+        for (const Block *b = _blocks; b != nullptr; b = b->next) {
+                const auto start = reinterpret_cast<uintptr_t>(b + 1);
+                if (from >= start && bytes <= b->size && from - start <= b->size - bytes) return true;
+        }
+        return false;
+}
+
 void Process::memFree(void *ptr) {
         if (ptr == nullptr) return;
         Block *b = static_cast<Block *>(ptr) - 1;

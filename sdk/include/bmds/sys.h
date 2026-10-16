@@ -1536,6 +1536,8 @@ typedef struct bmds_surface_present_t {
 #define BMDS_SURFACE_POINTER 3u /**< `const uint32_t *`: `BMDS_POINTER_...` over the surface. */
 #define BMDS_SURFACE_WAIT 4u    /**< `const bmds_surface_wait_t *`: waits until a frame has begun. */
 #define BMDS_SURFACE_INFO 5u    /**< `bmds_surface_info_t *`: its state. */
+#define BMDS_SURFACE_IMAGE 6u /**< `const bmds_surface_image_t *`: a picture BLIT copies from (appended 2026-10-16). */
+#define BMDS_SURFACE_BLIT 7u /**< `const bmds_surface_blit_t *`: copies or fills by the 2D-DMA (appended 2026-10-16). */
 
 /** @brief `BMDS_SURFACE_POINTER`'s modes. */
 #define BMDS_POINTER_NORMAL 0u   /**< The system's arrow. */
@@ -1575,6 +1577,58 @@ typedef struct bmds_surface_info_t {
                 uint32_t picture_width; /**< The surface's own size, its buffers' (appended 2026-10-15). */
                 uint32_t picture_height;
 } bmds_surface_info_t;
+
+/** @brief Image slots a surface has (`BMDS_SURFACE_IMAGE`). */
+#define BMDS_SURFACE_IMAGES 4u
+/** @brief Pieces a `BMDS_SURFACE_BLIT` takes at most. */
+#define BMDS_SURFACE_BLIT_MAX 64u
+
+/**
+ * @brief `BMDS_SURFACE_IMAGE`'s argument (appended 2026-10-16, `devplan/games.md` §25): a picture
+ *        of the program's, in the surface's format, that `BMDS_SURFACE_BLIT` may copy from. It is
+ *        checked and written back from the CPU's cache once, here: change it, and register it
+ *        again. Free it only after forgetting it (`pixels` NULL).
+ */
+typedef struct bmds_surface_image_t {
+                uint32_t    size;   /**< `sizeof(bmds_surface_image_t)`. */
+                uint32_t    slot;   /**< 0 to `BMDS_SURFACE_IMAGES - 1`. */
+                const void *pixels; /**< Inside one allocation of `bmds_mem_alloc()`; NULL: the slot forgotten. */
+                uint32_t    width;  /**< Pixels. */
+                uint32_t    height;
+                uint32_t    stride; /**< Bytes a row (at least `width` pixels). */
+} bmds_surface_image_t;
+
+/** @brief One rectangle of a `BMDS_SURFACE_BLIT`. */
+typedef struct bmds_surface_piece_t {
+                int32_t  x; /**< Where in the buffer written. */
+                int32_t  y;
+                uint32_t width; /**< Its size. */
+                uint32_t height;
+                int32_t  from_x; /**< Where in the source (a fill: unused). */
+                int32_t  from_y;
+} bmds_surface_piece_t;
+
+/** @brief `bmds_surface_blit_t::source`. */
+#define BMDS_BLIT_BUFFER 0u /**< Another of the surface's buffers: `from` its index. */
+#define BMDS_BLIT_IMAGE 1u  /**< A registered image: `from` its slot. */
+#define BMDS_BLIT_FILL 2u   /**< A fill: `from` the pixel (the format's value). */
+
+/**
+ * @brief `BMDS_SURFACE_BLIT`'s argument (appended 2026-10-16, `devplan/games.md` §25): pieces of a
+ *        buffer the program holds copied or filled by the 2D-DMA, in one job; the call returns
+ *        when they are written. Pieces are cut to the buffer and the source. The CPU's cache is
+ *        kept right (each piece's rows written back first), so what the program drew elsewhere in
+ *        those rows stays. While it runs, no other thread draws in those rows. `-BMDS_EINVAL`: a
+ *        buffer not held, a source that is the buffer, an empty slot, 0 or too many pieces.
+ */
+typedef struct bmds_surface_blit_t {
+                uint32_t                    size;   /**< `sizeof(bmds_surface_blit_t)`. */
+                uint32_t                    buffer; /**< Acquired and not yet presented. */
+                uint32_t                    source; /**< `BMDS_BLIT_...`. */
+                uint32_t                    from;   /**< The buffer's index, the image's slot or the fill's pixel. */
+                uint32_t                    count;  /**< 1 to `BMDS_SURFACE_BLIT_MAX`. */
+                const bmds_surface_piece_t *pieces;
+} bmds_surface_blit_t;
 
 /** @brief `bmds_surface_event_t::type`: a program skips types it doesn't know. */
 #define BMDS_EVENT_KEY 1u     /**< data: the HID extended usage ((page << 16) | usage), modifiers, character. */

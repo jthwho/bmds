@@ -44,6 +44,8 @@ struct bmds_game_t {
                 int32_t            drawing;                            /* the buffer being drawn, or -1 */
                 bmds_rect_t        repainted[BMDS_GAME_REPAINTED_MAX]; /* this frame's, BMDS_GAME_REPAINTS */
                 uint32_t           repainted_count;
+                bmds_game_image_t  images[BMDS_SURFACE_IMAGES]; /* registered (pixels NULL: none) */
+                int                no_dma;                      /* the kernel said no once: the CPU from then on */
 };
 
 static int64_t now_ns(void) {
@@ -86,6 +88,73 @@ uint32_t bmds_game_height(const bmds_game_t *game) {
 
 /* Buffer @p b brought up to the last present: what the presents since its own changed, copied from
    the newest buffer. */
+/* ---- The 2D-DMA (devplan/games.md §25): pieces gathered, one BLIT for each 64, the CPU when
+   the kernel has none */
+
+typedef struct {
+                bmds_game_t         *g;
+                int32_t              buffer; /* written */
+                uint32_t             source; /* BMDS_BLIT_... */
+                uint32_t             from;
+                bmds_surface_piece_t pieces[BMDS_SURFACE_BLIT_MAX];
+                uint32_t             count;
+                int                  damage; /* recorded on the canvas (a copy or fill the program asked for) */
+} batch_t;
+
+static void batch_cpu(batch_t *t) {
+        bmds_game_t   *g = t->g;
+        bmds_canvas_t *c = &g->canvas[t->buffer];
+        for (uint32_t i = 0; i < t->count; ++i) {
+                const bmds_surface_piece_t *p = &t->pieces[i];
+                const bmds_rect_t           r = {p->x, p->y, p->width, p->height};
+                if (t->source == BMDS_BLIT_BUFFER) {
+                        bmds_canvas_copy(c, &g->canvas[t->from], &r, 1);
+                } else if (t->source == BMDS_BLIT_IMAGE) {
+                        bmds_canvas_blit(c, r.x, r.y, &g->images[t->from], &r);
+                } else {
+                        bmds_canvas_fill(c, r.x, r.y, r.width, r.height, t->from);
+                }
+        }
+        return;
+}
+
+static void batch_flush(batch_t *t) {
+        if (t->count == 0) return;
+        bmds_game_t *g = t->g;
+        if (!g->no_dma) {
+                const bmds_surface_blit_t bl = {sizeof(bl), (uint32_t)t->buffer, t->source, t->from, t->count,
+                                                t->pieces};
+                if (bmds_surface_control(g->fd, BMDS_SURFACE_BLIT, (void *)&bl, sizeof(bl)) == 0) {
+                        if (t->damage)
+                                for (uint32_t i = 0; i < t->count; ++i) {
+                                        const bmds_rect_t r = {t->pieces[i].x, t->pieces[i].y, t->pieces[i].width,
+                                                               t->pieces[i].height};
+                                        bmds_game_damage_in_clip(&g->canvas[t->buffer], &r);
+                                }
+                        t->count = 0;
+                        return;
+                }
+                g->no_dma = 1; /* an older kernel, or none to be had: the CPU */
+        }
+        batch_cpu(t);
+        t->count = 0;
+        return;
+}
+
+static void batch_add(void *arg, const bmds_rect_t *r) {
+        batch_t *t = (batch_t *)arg;
+        if (r->width == 0 || r->height == 0) return;
+        bmds_surface_piece_t *p = &t->pieces[t->count++];
+        p->x = r->x;
+        p->y = r->y;
+        p->width = r->width;
+        p->height = r->height;
+        p->from_x = r->x;
+        p->from_y = r->y;
+        if (t->count == BMDS_SURFACE_BLIT_MAX) batch_flush(t);
+        return;
+}
+
 /* Copies into buffer @p b what the presents since its own changed (from the newest), but none of
    @p except (what this frame drew, when it repaints: `BMDS_GAME_REPAINTS`). */
 static void bring_up_to_date_except(bmds_game_t *g, int32_t b, const bmds_rect_t *except, uint32_t excepts) {
@@ -106,7 +175,16 @@ static void bring_up_to_date_except(bmds_game_t *g, int32_t b, const bmds_rect_t
                 rects[0] = all;
                 count = 1;
         }
-        bmds_game_copy_except(to, from, rects, count, except, excepts);
+        (void)from;
+        batch_t t;
+        t.g = g;
+        t.buffer = b;
+        t.source = BMDS_BLIT_BUFFER;
+        t.from = (uint32_t)g->newest;
+        t.count = 0;
+        t.damage = 0;
+        bmds_game_spans_except(to, rects, count, except, excepts, batch_add, &t);
+        batch_flush(&t);
         g->shown_as[b] = g->presents;
 }
 
@@ -116,6 +194,62 @@ static void bring_up_to_date(bmds_game_t *g, int32_t b) {
 
 void bmds_game_up_to_date(bmds_game_t *game) {
         if (game->drawing >= 0) bring_up_to_date_except(game, game->drawing, game->repainted, game->repainted_count);
+        return;
+}
+
+int32_t bmds_game_dma_image(bmds_game_t *game, uint32_t slot, const bmds_game_image_t *image) {
+        if (slot >= BMDS_SURFACE_IMAGES) return -BMDS_EINVAL;
+        bmds_game_image_t none;
+        memset(&none, 0, sizeof(none));
+        if (image != NULL && (image->format != game->config.format || (image->flags & BMDS_GAME_IMAGE_KEYED) != 0))
+                return -BMDS_EINVAL; /* the 2D-DMA copies; it has no key */
+        game->images[slot] = image != NULL ? *image : none;
+        if (game->no_dma) return 0;
+        const bmds_surface_image_t im = {sizeof(im),
+                                         slot,
+                                         image != NULL ? image->pixels : NULL,
+                                         image != NULL ? image->width : 0,
+                                         image != NULL ? image->height : 0,
+                                         image != NULL ? image->stride : 0};
+        if (bmds_surface_control(game->fd, BMDS_SURFACE_IMAGE, (void *)&im, sizeof(im)) != 0) game->no_dma = 1;
+        return 0;
+}
+
+/* A program's copy or fill of the canvas being drawn: cut to its clip, recorded as damage. */
+static void dma_pieces(bmds_game_t *game, uint32_t source, uint32_t from, const bmds_rect_t *rects, uint32_t count) {
+        if (game->drawing < 0) return;
+        bmds_canvas_t *c = &game->canvas[game->drawing];
+        batch_t        t;
+        t.g = game;
+        t.buffer = game->drawing;
+        t.source = source;
+        t.from = from;
+        t.count = 0;
+        t.damage = 1;
+        const int32_t kx1 = c->clip.x + (int32_t)c->clip.width, ky1 = c->clip.y + (int32_t)c->clip.height;
+        for (uint32_t i = 0; i < count; ++i) {
+                int32_t x0 = rects[i].x, y0 = rects[i].y;
+                int32_t x1 = rects[i].x + (int32_t)rects[i].width, y1 = rects[i].y + (int32_t)rects[i].height;
+                if (x0 < c->clip.x) x0 = c->clip.x;
+                if (y0 < c->clip.y) y0 = c->clip.y;
+                if (x1 > kx1) x1 = kx1;
+                if (y1 > ky1) y1 = ky1;
+                if (x1 <= x0 || y1 <= y0) continue;
+                const bmds_rect_t r = {x0, y0, (uint32_t)(x1 - x0), (uint32_t)(y1 - y0)};
+                batch_add(&t, &r);
+        }
+        batch_flush(&t);
+        return;
+}
+
+void bmds_game_dma_copy(bmds_game_t *game, uint32_t slot, const bmds_rect_t *rects, uint32_t count) {
+        if (slot >= BMDS_SURFACE_IMAGES || game->images[slot].pixels == NULL) return;
+        dma_pieces(game, BMDS_BLIT_IMAGE, slot, rects, count);
+        return;
+}
+
+void bmds_game_dma_fill(bmds_game_t *game, const bmds_rect_t *rects, uint32_t count, uint32_t pixel) {
+        dma_pieces(game, BMDS_BLIT_FILL, pixel, rects, count);
         return;
 }
 

@@ -917,3 +917,176 @@ picture replays), so a network can take a seat later.
 - **What is left:** what a frame touches in PSRAM sets its cost. The next step is the 2D-DMA
   doing a program's bulk copies (the felt restore and the catch-up copy). That would be a new
   surface call, an ABI addition, so it waits for the user.
+
+## 24. The felt by the 2D-DMA (2026-10-16, `games.md` §25)
+
+- **The felt** is a picture the 2D-DMA copies from (`FELT_IMAGE`, slot 0). It is given again after
+  every repaint (`app.felt_new`, at the next draw).
+- **A frame's felt in one job:** when a frame's dirty rectangles don't overlap, the stage collects
+  each one's uncovered felt pieces (`felt_pieces()`, as §23) and restores them all in one
+  `bmds_game_dma_copy()`. It then draws the items of each rectangle, clipped. When they overlap, it
+  goes one rectangle at a time, as before: a blend drawn over its own result would darken.
+- **The double buffer's catch-up copy** goes by the 2D-DMA too (`libbmdsgame`).
+- **Result:** Video Poker's deals and draws skipped one tick in the 25 busiest seconds. The worst
+  drawn frame went from about 20 to about 16 ms; the copies around a frame no longer take the CPU.
+
+## 25. Step 5 design: Poker (2026-10-16)
+
+§8e's games, built as §6 asks (rules from actions and a seed, seats, per-seat views, an event log
+the picture replays), with §9's conventions.
+
+- **`poker_rules.{c,h}`** (pure C, host-tested in `tests/host/luckyduck_poker.cpp`):
+  - **A table of 6 seats** round an oval: the player at seat 0 (the bottom), the rest clockwise,
+    which is the order of play. One deck, shuffled every hand from the table's random numbers.
+  - **Games:** Texas Hold'em, no-limit (the default) or fixed-limit; Five-Card Draw, Five-Card Stud
+    and Seven-Card Stud, fixed-limit. **Stakes from one number, the big blind** (`pk_stakes()`):
+    - Hold'em and Draw post blinds.
+    - Stud posts antes (a quarter of it, at least $1) and a bring-in (half), its small bet the big
+      blind.
+    - Fixed limit's big bet is twice the small one. It comes from the turn in Hold'em, after the
+      draw in Draw, and from the third betting round in both studs.
+  - **Betting:**
+    - `pk_act(table, seat, action, amount)`: fold, check, call, or raise (a bet with nothing bet),
+      `amount` the total raised to. Refused when not legal (`pk_can()`, `pk_to_call()`,
+      `pk_min_raise()`, `pk_max_raise()`).
+    - **No-limit:** a raise of at least the last one (the big blind at first), or all in for less.
+    - **Fixed limit:** the round's bet size, four bets a round at most (the big blind counts as the
+      first; stud's bring-in doesn't, and completing it to the small bet does).
+    - An all-in raise short of a full one doesn't reopen the betting for those who already acted:
+      they may call or fold.
+    - The big blind keeps its option; stud's bring-in doesn't (calls all round end the round).
+  - **Order:**
+    - Hold'em: from the big blind's left (heads-up the button is the small blind and acts first
+      before the flop, last after).
+    - Draw: the same before the draw, the button's left after it.
+    - Stud: the lowest up card brings in (deuce lowest, ties broken clubs, diamonds, hearts,
+      spades). Each later round starts with the best hand showing (ties: nearest the button's left).
+  - **The draw:** each seat in turn discards 0 to 5 cards (`pk_discard()`, a mask) and is dealt as
+    many. If the deck runs out, the discards are shuffled in.
+  - **Pots:**
+    - Each seat's chips for the hand are counted (`put`). An uncalled bet comes back when its round
+      ends.
+    - At the showdown, the pots are cut by the all-ins' levels. Each pot goes to the best hand among
+      those who covered it.
+    - A split pot's odd dollar goes to the first winner left of the button.
+    - When one seat is left, it takes everything without showing.
+  - **All in with nobody left to bet:** the hands are turned up and the rest is dealt out (Draw
+    still draws first).
+  - **Showdown:** every hand still in is shown, the last aggressor first, then clockwise.
+    `hand_best()` (new in `hand.c`) gives which five cards make each hand, for the glow.
+  - **Events** (a hand's log): hand start, post (blind, ante, bring-in), deal (a seat's card,
+    up or down), the board, a turn to act, an action, bets collected into the pot, an uncalled bet
+    back, discards, a card shown, a hand's value, a pot formed, a pot won, a seat out (with its
+    tournament place), the hand's end. `pk_event_for(seat)` hides another seat's down cards until
+    shown.
+  - **`pk_view(table, seat)`:** everything public (stacks, bets, the pot, up cards, the board,
+    folded seats' up cards) and the seat's own cards. The bots decide only from it.
+  - **Tournaments:** a seat with no chips after a hand is out, its place counted (two out in the
+    same hand: the one who started it with more finishes higher). The blinds are the scene's to
+    raise between hands (`pk_set_rules()`).
+- **`poker_bot.{c,h}`** (pure C, host-tested):
+  - **Equity:** a Monte Carlo estimate from the view. The unseen cards are dealt at random to the
+    seats still in and to the board or the streets to come, against the bot's own hand: 1,000
+    deals, stepped over ticks within a time slice (as Video Poker's perfect play, §22).
+    - In Draw before the draw, the bot's own planned draw (`pk_bot_discard()`: keep made hands,
+      four to a flush or an open straight, else high cards) is played out, and the opponents draw
+      by the same rule.
+  - **The decision** (`pk_bot_decide()`): the equity against the pot odds and the fair share (one
+    over the hands still in), shifted by the duck's personality. Each duck has a looseness, an
+    aggression and a bluffing rate. A no-limit bet is half the pot to the whole pot; a big edge or
+    a short stack goes all in. Every answer is checked legal (the host tests play thousands of
+    hands of bots).
+- **The scene (`poker.c`):**
+  - **The felt:** an oval table with a padded rail, a felt line round the board, the seats round it.
+    - Lucky stands at the top left with the deck and deals each card with a flick.
+    - Up to five bot ducks: Mallory, Pearl, Woody, Squeaky and a new one, Inky (the black duck the
+      art already has).
+    - Each duck has its name and stack, its cards at 62% and its bet in front. The dealer's button
+      is a puck that slides from seat to seat.
+  - **The player's cards** are full size at the bottom. In Draw, a click marks a discard (it drops
+    and dims); DRAW takes them, STAND PAT none.
+  - **The picture lags the rules**, as Blackjack's: the log replayed one event at a time, each
+    animation holding the next.
+    - Cards fly from the deck and spin; the flop flips in a ripple, the turn and river after a
+      pause.
+    - Chips slide to each bet, then into the pot when a round ends. Pots go to their winners at the
+      end (split pots split).
+    - A fold: the cards slide to the muck face down, the duck greyed.
+    - The showdown turns the hands over in order. The winning five lift and glow, and the hand's
+      name pops.
+    - A bot thinks with a wing on its chin while its equity works, then says what it did ("RAISE
+      $40") in a bubble.
+  - **The band:**
+    - The player's chips and the bank.
+    - FOLD (F), CHECK or CALL $n (C), and BET or RAISE TO $n (R).
+    - In no-limit, the size: minus and plus (a big blind a step), ½ POT, POT, ALL IN, and the
+      wheel.
+    - DEAL (Enter) between hands.
+  - **System buttons:** Lobby, Rules (each game's in `app_info()`), Options, and New Table (asks
+    while a hand is under way).
+  - **Options** (kept as settings): the game, cash or tournament, the ducks (1 to 5), the stakes.
+    A change starts a new table, after asking.
+  - **Cash:**
+    - The player buys in for 100 big blinds or the bank, if less. The chips are part of the bank,
+      written at each hand's end as Blackjack's.
+    - REBUY between hands tops up to the buy-in. A duck that goes broke rebuys.
+    - Leaving mid-hand loses what was put in.
+  - **Tournament (a sit-and-go):**
+    - A $100 fee from the bank for 1,500 chips; the ducks pay theirs into the prize pool.
+    - The blinds rise every 8 hands.
+    - The prizes go to the first three (50%, 30% and 20%) when 5 or 6 start, otherwise to the first
+      two (70% and 30%).
+    - When the player is out, the box says the place and the prize. Leaving forfeits the fee, after
+      asking.
+
+## 26. As built: step 5, Poker (2026-10-16)
+
+- **`poker_rules.{c,h}`** as §25 planned. Host-tested in `tests/host/luckyduck_poker.cpp`, 17
+  cases:
+  - `hand_best()` against `hand_value()`.
+  - Blinds and the order of play, heads-up included.
+  - No-limit's raises, and an all-in short of one that doesn't reopen the betting.
+  - Fixed limit's sizes and its cap.
+  - Uncalled bets, side pots, and a split pot's odd dollar.
+  - Stud's antes, bring-in and first to act.
+  - Draw's discards and its reshuffle, with six seats each throwing five.
+  - What each seat sees.
+  - A tournament's places.
+  - The ducks' draw and their equity: Aces against a random hand about 85%.
+  - 400 hands of ducks in each game, and whole tournaments of ducks to a winner, every action
+    legal and no chip made or lost.
+  - `pk_fix_deck()` puts fixed cards first, for the tests.
+- **`poker_bot.{c,h}`:** tuned in host simulations of 600 hands with the real equity.
+  - **The first version called too much.** The equity is against random cards, which flatters a
+    duck facing a bet. A bet into it now discounts its equity by the bet's size against the pot,
+    a looser duck believing less. The blinds and the bring-in are forced, so they don't count.
+  - **Stud's chances lie closer together**, so its first round asks more.
+  - **Result:** from about 15% of hands played (Inky) to about 50% (Squeaky); tight, aggressive
+    Mallory comes out ahead, Squeaky behind.
+- **`poker.c`:** the table as §25 planned, checked on the board:
+  - Hold'em, both no-limit and limit, with the sizes, the hint ("YOU WIN 87% OF THE TIME") and a
+    bet, a call and a fold. A showdown: the hands turned, the winning five lifted on gold, the
+    hand's name, the pot to the winner.
+  - Five-Card Draw: discards marked by key, the draw, the big bet after it.
+  - Seven-Card Stud with all five ducks: the player's down cards lower, the bring-in, a showdown
+    of seven cards.
+  - A tournament: the fee from the bank, chips without dollars, the level in the band. The player
+    goes out with the box and NEW TOURNAMENT.
+  - The lobby's Poker table open.
+- **Found and fixed on the board:**
+  - A bet still flying when its round's bets were collected landed back in front of its seat, or
+    was counted twice: those chips now go on to the pot, and only the landed ones are sent.
+  - The bet size carried over from the last round: each turn starts at the least.
+  - A duck's hand name covered its cards. It now sits under its stack, and a duck's two cards
+    spread wider.
+  - The side seats' bets hid under their cards. They now sit above or below them, the right
+    side's amounts on their left.
+  - The top seat's dealer button floated mid-table.
+  - The upper right duck's bubble ran into the system buttons.
+  - Folded ducks shaded nearly black.
+  - Stud's lower down cards dipped into the band.
+  - The band says BETS, not BLINDS, for fixed limit.
+- **Art:** Inky, the black duck, as the fifth bot in its four poses; the dealer's button.
+- **Not yet:**
+  - A tournament won by the player; host-tested only, where the places come out 1 to 6.
+  - The bot ducks' think time measured on the board: it looked brisk.

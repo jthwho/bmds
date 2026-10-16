@@ -257,6 +257,45 @@ int32_t bmds_k_surface_control(int32_t fd, uint32_t op, void *arg, uint32_t size
                         i.picture_height = k.height;
                         return bmds::detail::copyOut(i, static_cast<bmds_surface_info_t *>(arg));
                 }
+                case BMDS_SURFACE_IMAGE: { // devplan/games.md §25
+                        bmds_surface_image_t im;
+                        r = bmds::detail::copyIn(static_cast<const bmds_surface_image_t *>(arg), im);
+                        if (r < 0) return r;
+                        if (im.slot >= BMDS_SURFACE_IMAGES) return -BMDS_EINVAL;
+                        ProgramSurface::Image k;
+                        if (im.pixels != nullptr) {
+                                if (im.width == 0 || im.height == 0 || im.width > UINT16_MAX || im.height > UINT16_MAX)
+                                        return -BMDS_EINVAL;
+                                // The program's own memory: the 2D-DMA reads it from now on.
+                                const uint64_t bytes = uint64_t(im.stride) * im.height;
+                                if (bytes > UINT32_MAX || !call.owner()->owns(im.pixels, size_t(bytes)))
+                                        return -BMDS_EINVAL;
+                                k.pixels = static_cast<const uint8_t *>(im.pixels);
+                                k.width = uint16_t(im.width);
+                                k.height = uint16_t(im.height);
+                                k.stride = im.stride;
+                        }
+                        return surface->setImage(uint8_t(im.slot), k).isOk() ? 0 : -BMDS_EINVAL;
+                }
+                case BMDS_SURFACE_BLIT: {
+                        bmds_surface_blit_t bl;
+                        r = bmds::detail::copyIn(static_cast<const bmds_surface_blit_t *>(arg), bl);
+                        if (r < 0) return r;
+                        if (bl.count == 0 || bl.count > BMDS_SURFACE_BLIT_MAX || bl.source > BMDS_BLIT_FILL ||
+                            bl.buffer >= ProgramSurface::MaxBuffers)
+                                return -BMDS_EINVAL;
+                        if (bl.pieces == nullptr) return -BMDS_EFAULT;
+                        static_assert(sizeof(bmds_surface_piece_t) == sizeof(ProgramSurface::Piece) &&
+                                              offsetof(bmds_surface_piece_t, from_y) ==
+                                                      offsetof(ProgramSurface::Piece, fromY),
+                                      "a blit's pieces are the ABI's");
+                        const Error err = surface->blit(
+                                uint8_t(bl.buffer), ProgramSurface::BlitSource(bl.source), bl.from,
+                                bmds::Span<const ProgramSurface::Piece>(
+                                        reinterpret_cast<const ProgramSurface::Piece *>(bl.pieces), bl.count));
+                        if (err == Error::Invalid) return -BMDS_EINVAL;
+                        return err.isOk() ? 0 : bmds::Process::errnoFor(err);
+                }
                 default: return -BMDS_EINVAL;
         }
 }

@@ -189,6 +189,11 @@ class Process {
                 void   *memAlloc(uint32_t size, uint32_t align, uint32_t flags);
                 void    memFree(void *ptr);
                 void   *memRealloc(void *ptr, uint32_t size, uint32_t flags);
+                /**
+                 * @brief Returns true when @p bytes from @p ptr lie inside one allocation of
+                 *        `memAlloc()` (a walk of them: for a check made once, `BMDS_SURFACE_IMAGE`).
+                 */
+                bool    owns(const void *ptr, size_t bytes) const;
                 int32_t open(const char *path, uint32_t flags);
                 int32_t stat(const char *path, bmds_stat_t *info);
                 int32_t fstat(int32_t fd, bmds_stat_t *info);

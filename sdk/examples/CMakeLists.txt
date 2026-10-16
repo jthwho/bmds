@@ -25,3 +25,4 @@ bmds_add_app(appinfo PROGRAM appinfo DESKTOP appinfo/app.desktop)
 
 # Test programs (not examples): the loader's board tests use them.
 bmds_add_program(progtest SOURCES ../tests/progtest.c)
+bmds_add_program(blittest SOURCES ../tests/blittest.c)

@@ -319,12 +319,10 @@ static edges_t in_canvas(const bmds_canvas_t *c, edges_t e) {
         return e;
 }
 
-void bmds_game_copy_except(bmds_canvas_t *to, const bmds_canvas_t *from, const bmds_rect_t *rects, uint32_t count,
-                           const bmds_rect_t *except, uint32_t excepts) {
-        if (to->format != from->format || to->width != from->width || to->height != from->height) return;
-        const uint32_t bpp = bytes_per_pixel(to->format);
+void bmds_game_spans_except(const bmds_canvas_t *c, const bmds_rect_t *rects, uint32_t count, const bmds_rect_t *except,
+                            uint32_t excepts, void (*span)(void *arg, const bmds_rect_t *r), void *arg) {
         for (uint32_t i = 0; i < count; ++i) {
-                const edges_t r = in_canvas(to, edges_of(&rects[i]));
+                const edges_t r = in_canvas(c, edges_of(&rects[i]));
                 if (is_empty(r)) continue;
                 /* Bands of rows across which the same rectangles are left out: each band's rows are
                    the gaps between them. */
@@ -357,14 +355,36 @@ void bmds_game_copy_except(bmds_canvas_t *to, const bmds_canvas_t *from, const b
                         int32_t x = r.x0;
                         for (int k = 0; k <= n && x < r.x1; ++k) {
                                 const int32_t end = k < n ? (gx0[k] < r.x1 ? gx0[k] : r.x1) : r.x1;
-                                if (end > x)
-                                        for (int32_t row = y; row < next; ++row)
-                                                memcpy(at(to, x, row), at(from, x, row), (size_t)(end - x) * bpp);
+                                if (end > x) {
+                                        const bmds_rect_t piece = {x, y, (uint32_t)(end - x), (uint32_t)(next - y)};
+                                        span(arg, &piece);
+                                }
                                 if (k < n && gx1[k] > x) x = gx1[k];
                         }
                         y = next;
                 }
         }
+        return;
+}
+
+typedef struct {
+                bmds_canvas_t       *to;
+                const bmds_canvas_t *from;
+} copy_arg_t;
+
+static void copy_span(void *arg, const bmds_rect_t *r) {
+        const copy_arg_t *a = (const copy_arg_t *)arg;
+        const uint32_t    bpp = bytes_per_pixel(a->to->format);
+        for (int32_t row = r->y; row < r->y + (int32_t)r->height; ++row)
+                memcpy(at(a->to, r->x, row), at(a->from, r->x, row), (size_t)r->width * bpp);
+        return;
+}
+
+void bmds_game_copy_except(bmds_canvas_t *to, const bmds_canvas_t *from, const bmds_rect_t *rects, uint32_t count,
+                           const bmds_rect_t *except, uint32_t excepts) {
+        if (to->format != from->format || to->width != from->width || to->height != from->height) return;
+        copy_arg_t arg = {to, from};
+        bmds_game_spans_except(to, rects, count, except, excepts, copy_span, &arg);
         return;
 }
 

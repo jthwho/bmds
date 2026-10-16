@@ -14,6 +14,8 @@
 #include <cstring>
 #include <new>
 #include <esp_cache.h>
+#include <esp_memory_utils.h>
+#include <bmds/blitchain.h>
 #include <bmds/clock.h>
 #include <bmds/deadline.h>
 #include <bmds/desktopentry.h>
@@ -410,6 +412,245 @@ Error ProgramSurface::setTitle(StringView title) {
 
 // Hidden: no picture over the window's client area (none is drawn full screen). Relative: the
 // window manager's lock, while the window is focused.
+// ---- The 2D-DMA for programs (devplan/games.md §25)
+
+namespace {
+
+        constexpr size_t       CacheLine = 128;    // the L2's: what an invalidate drops whole
+        constexpr size_t       BlitFillRows = 256; // a job's fill rows (a transmit descriptor each)
+        constexpr uint16_t     BlitLinePixels = 1280;
+        constexpr size_t       BlitLineBytes = BlitLinePixels * 3; // a fill's line, the widest pixel
+        constexpr size_t       MergeGap = 16 * 1024;               // rows' ranges this close: one cache operation
+        constexpr unsigned int BlitTimeoutMs = 100;
+
+        // Every program surface's: one chain (its descriptors in internal DMA RAM) and a fill's
+        // line, made on the first blit and kept.
+        struct Blitter {
+                        Mutex     lock;
+                        BlitChain chain;
+                        uint8_t  *line = nullptr;
+                        uint32_t  linePixel = 0; // what the line holds
+                        uint8_t   lineBpp = 0;
+        };
+
+        std::atomic<Blitter *> sBlitter{nullptr};
+
+        Blitter *blitter() {
+                Blitter *b = sBlitter.load(std::memory_order_acquire);
+                if (b != nullptr) return b;
+                void *memory = Memory::alloc(MemSpace::Psram, sizeof(Blitter));
+                if (memory == nullptr) return nullptr;
+                b = new (memory) Blitter();
+                b->line = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, BlitLineBytes, 64));
+                if (b->line == nullptr ||
+                    b->chain.start(BlitChain::Conversion::None, ProgramSurface::MaxBlitPieces, BlitFillRows)
+                            .isError()) {
+                        Memory::free(b->line);
+                        b->~Blitter();
+                        Memory::free(memory);
+                        return nullptr;
+                }
+                Blitter *none = nullptr;
+                if (!sBlitter.compare_exchange_strong(none, b, std::memory_order_acq_rel)) {
+                        // Another thread made one first: ours goes.
+                        b->chain.stop();
+                        Memory::free(b->line);
+                        b->~Blitter();
+                        Memory::free(memory);
+                        return none;
+                }
+                return b;
+        }
+
+        // Bytes [start, end) of a picture: the cache operations' ranges.
+        struct Span2 {
+                        uintptr_t start, end;
+        };
+
+        // A buffer's ranges written back from the cache and invalidated (before a DMA writes them),
+        // or invalidated (after), in pieces: a cache operation runs with interrupts off. Both on
+        // the same whole L2 lines (buffers are aligned and padded to them). The L1's lines are half
+        // as long: a write-back of the exact bytes left the line's other half dirty in the L1, and
+        // the invalidate after, on whole lines, dropped what the CPU had drawn there (a 64-byte
+        // stretch of a row lost, games.md §25g).
+        void syncRanges(const Span2 *ranges, size_t count, bool after) {
+                for (size_t i = 0; i < count; ++i) {
+                        const uintptr_t a = ranges[i].start & ~uintptr_t(CacheLine - 1);
+                        const uintptr_t b = (ranges[i].end + CacheLine - 1) & ~uintptr_t(CacheLine - 1);
+                        for (uintptr_t at = a; at < b; at += WriteBackChunk) {
+                                const size_t n = b - at < WriteBackChunk ? b - at : WriteBackChunk;
+                                (void)esp_cache_msync(reinterpret_cast<void *>(at), n,
+                                                      after ? ESP_CACHE_MSYNC_FLAG_DIR_M2C
+                                                            : ESP_CACHE_MSYNC_FLAG_DIR_C2M |
+                                                                      ESP_CACHE_MSYNC_FLAG_INVALIDATE);
+                        }
+                }
+                return;
+        }
+
+        // Adds [start, end) to @p ranges (sorted by start), merged with those it is near.
+        void addRange(Span2 *ranges, size_t &count, Span2 r) {
+                size_t i = count;
+                while (i > 0 && ranges[i - 1].start > r.start) {
+                        ranges[i] = ranges[i - 1];
+                        --i;
+                }
+                ranges[i] = r;
+                ++count;
+                size_t out = 0;
+                for (size_t k = 1; k < count; ++k) {
+                        if (ranges[k].start <= ranges[out].end + MergeGap) {
+                                if (ranges[k].end > ranges[out].end) ranges[out].end = ranges[k].end;
+                        } else {
+                                ranges[++out] = ranges[k];
+                        }
+                }
+                count = out + 1;
+                return;
+        }
+
+} // namespace
+
+Error ProgramSurface::setImage(uint8_t slot, const Image &image) {
+        if (slot >= MaxImages) return Error::Invalid;
+        Image kept;
+        if (image.pixels != nullptr) {
+                const size_t bpp = bytesPerPixel(_config.format);
+                if (image.width == 0 || image.height == 0 || image.stride % bpp != 0 ||
+                    image.stride < image.width * bpp || image.stride / bpp > 0x3fff)
+                        return Error::Invalid;
+                const size_t   bytes = size_t(image.stride) * (image.height - 1u) + image.width * bpp;
+                const uint8_t *last = image.pixels + bytes - 1;
+                const bool     psram = esp_ptr_dma_ext_capable(image.pixels) && esp_ptr_dma_ext_capable(last);
+                const bool     internal = esp_ptr_dma_capable(image.pixels) && esp_ptr_dma_capable(last);
+                if (!psram && !internal) return Error::Invalid;
+                // Written back only: nothing invalidated, so the program's memory beside it is untouched.
+                for (size_t off = 0; off < bytes; off += WriteBackChunk)
+                        (void)esp_cache_msync(const_cast<uint8_t *>(image.pixels) + off,
+                                              bytes - off < WriteBackChunk ? bytes - off : WriteBackChunk,
+                                              ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+                kept = image;
+        }
+        Mutex::Locker locker(_lock, WaitForever);
+        _images[slot] = kept;
+        return Error::Ok;
+}
+
+Error ProgramSurface::blit(uint8_t index, BlitSource source, uint32_t from, Span<const Piece> pieces) {
+        if (index >= _config.buffers || pieces.size() == 0 || pieces.size() > MaxBlitPieces) return Error::Invalid;
+        const size_t             bpp = bytesPerPixel(_config.format);
+        const uint16_t           lineWidth = uint16_t(_stride / bpp);
+        const BlitChain::Picture to{_buffers[index], lineWidth, _config.height, uint8_t(bpp)};
+        BlitChain::Picture       src;
+        int32_t                  srcWidth = 0, srcHeight = 0;
+        bool                     srcHeld = false; // a buffer the program draws: its writes not yet written back
+        {
+                Mutex::Locker locker(_lock, WaitForever);
+                if (_states[index] != State::Program) return Error::Invalid;
+                if (source == BlitSource::Buffer) {
+                        if (from >= _config.buffers || from == index) return Error::Invalid;
+                        src = BlitChain::Picture{_buffers[from], lineWidth, _config.height, uint8_t(bpp)};
+                        srcWidth = _config.width;
+                        srcHeight = _config.height;
+                        srcHeld = _states[from] == State::Program;
+                } else if (source == BlitSource::Image) {
+                        if (from >= MaxImages || _images[from].pixels == nullptr) return Error::Invalid;
+                        const Image &im = _images[from];
+                        src = BlitChain::Picture{im.pixels, uint16_t(im.stride / bpp), im.height, uint8_t(bpp)};
+                        srcWidth = im.width;
+                        srcHeight = im.height;
+                }
+        }
+        Blitter *b = blitter();
+        if (b == nullptr) return Error::NoMem;
+        // The pieces cut to the buffer and the source; the cache's ranges of both.
+        Piece  cut[MaxBlitPieces];
+        size_t n = 0;
+        Span2  dst[MaxBlitPieces], srcRanges[MaxBlitPieces];
+        size_t dstCount = 0, srcCount = 0;
+        for (const Piece &p : pieces) {
+                int64_t x0 = p.x, y0 = p.y, x1 = int64_t(p.x) + p.width, y1 = int64_t(p.y) + p.height;
+                int64_t fx = p.fromX, fy = p.fromY;
+                // Cut to the buffer, the source moving with it.
+                if (x0 < 0) fx -= x0, x0 = 0;
+                if (y0 < 0) fy -= y0, y0 = 0;
+                if (x1 > _config.width) x1 = _config.width;
+                if (y1 > _config.height) y1 = _config.height;
+                if (source != BlitSource::Fill) { // and to the source
+                        if (fx < 0) x0 -= fx, fx = 0;
+                        if (fy < 0) y0 -= fy, fy = 0;
+                        if (fx + (x1 - x0) > srcWidth) x1 = x0 + (srcWidth - fx);
+                        if (fy + (y1 - y0) > srcHeight) y1 = y0 + (srcHeight - fy);
+                }
+                if (x1 <= x0 || y1 <= y0) continue;
+                Piece &c = cut[n++];
+                c.x = int32_t(x0);
+                c.y = int32_t(y0);
+                c.width = uint32_t(x1 - x0);
+                c.height = uint32_t(y1 - y0);
+                c.fromX = int32_t(fx);
+                c.fromY = int32_t(fy);
+                const uintptr_t base = reinterpret_cast<uintptr_t>(_buffers[index]);
+                addRange(dst, dstCount,
+                         Span2{base + size_t(c.y) * _stride + size_t(c.x) * bpp,
+                               base + size_t(c.y + c.height - 1) * _stride + size_t(c.x + c.width) * bpp});
+                if (srcHeld) {
+                        const uintptr_t sb = reinterpret_cast<uintptr_t>(src.data);
+                        addRange(
+                                srcRanges, srcCount,
+                                Span2{sb + size_t(c.fromY) * _stride + size_t(c.fromX) * bpp,
+                                      sb + size_t(c.fromY + c.height - 1) * _stride + size_t(c.fromX + c.width) * bpp});
+                }
+        }
+        if (n == 0) return Error::Ok;
+        Mutex::Locker locker(b->lock, WaitForever);
+        if (source == BlitSource::Fill && (b->linePixel != from || b->lineBpp != bpp)) {
+                for (size_t i = 0; i < BlitLinePixels; ++i)
+                        for (size_t k = 0; k < bpp; ++k) b->line[i * bpp + k] = uint8_t(from >> (8 * k));
+                b->linePixel = from;
+                b->lineBpp = uint8_t(bpp);
+                // Internal RAM is cached too: the 2D-DMA reads memory, not the cache.
+                (void)esp_cache_msync(b->line, BlitLineBytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        }
+        syncRanges(srcRanges, srcCount, false);
+        syncRanges(dst, dstCount, false);
+        Error err = Error::Ok;
+        for (size_t i = 0; i < n && err.isOk(); ++i) {
+                const Piece &c = cut[i];
+                // A fill as strips no wider than the line and no taller than a job's rows.
+                for (uint32_t y = 0; y < c.height && err.isOk();) {
+                        const uint32_t rows = source == BlitSource::Fill
+                                                      ? (c.height - y < BlitFillRows ? c.height - y : BlitFillRows)
+                                                      : c.height;
+                        for (uint32_t x = 0; x < c.width && err.isOk();) {
+                                const uint32_t cols =
+                                        source == BlitSource::Fill
+                                                ? (c.width - x < BlitLinePixels ? c.width - x : BlitLinePixels)
+                                                : c.width;
+                                for (int attempt = 0; attempt < 2; ++attempt) {
+                                        err = source == BlitSource::Fill
+                                                      ? b->chain.addFill(b->line, to, uint16_t(c.x + x),
+                                                                         uint16_t(c.y + y), uint16_t(cols),
+                                                                         uint16_t(rows))
+                                                      : b->chain.add(src, uint16_t(c.fromX), uint16_t(c.fromY), to,
+                                                                     uint16_t(c.x), uint16_t(c.y), uint16_t(c.width),
+                                                                     uint16_t(c.height));
+                                        if (err != Error::Full) break;
+                                        err = b->chain.run(BlitTimeoutMs); // full: this job first
+                                        if (err.isError()) break;
+                                }
+                                x += cols;
+                        }
+                        y += rows;
+                }
+        }
+        if (err.isOk()) err = b->chain.run(BlitTimeoutMs);
+        b->chain.clear();
+        // Lines the CPU may have fetched meanwhile hold the old pixels: dropped.
+        syncRanges(dst, dstCount, true);
+        return err;
+}
+
 Error ProgramSurface::setPointerMode(PointerMode mode) {
         if (mode != PointerMode::Normal && mode != PointerMode::Hidden && mode != PointerMode::Relative)
                 return Error::Invalid;

@@ -1093,3 +1093,183 @@ rules pure C and host-tested, the program on `libbmdsgame`, the art and sounds w
 - **What else holds internal RAM:** a program's thread stacks go there while the largest block
   keeps 64 KB to spare (`stackSpaceFor()`), and the games' 32 KB stacks use 2-8 KB; windowed Doom
   costs 37 KB this way, full screen 65 KB more (its strip and the screen).
+
+## 25. The 2D-DMA for programs (design, 2026-10-16; the ABI for the user's review)
+
+The user's "having a 2D-DMA access would be great", after `luckyduck.md` §23 showed what a frame
+touches in PSRAM sets its cost.
+- **The problem:** a program's CPU copies PSRAM at about 28 MB/s each way, 70 to 180 ns a pixel
+  with the scan and the window manager competing.
+- **What the 2D-DMA does:** it writes about 150 MB/s (`docs/platforms/esp32p4.md`) without the
+  CPU. The window manager already copies with it (`BlitChain`).
+- **What programs would use it for:** their bulk copies: a background put back under what moved,
+  and the double buffer's catch-up copy (`libbmdsgame`'s loop). Today those are half of a busy
+  frame.
+
+### 25a. The ABI: two surface controls (appended: ops 6 and 7)
+
+No new system call: `bmds_surface_control()` takes them, so a kernel without them answers
+`-BMDS_EINVAL` and `libbmdsgame` falls back to the CPU.
+
+```c
+#define BMDS_SURFACE_IMAGE 6u /**< `const bmds_surface_image_t *`: a picture BLIT may copy from. */
+#define BMDS_SURFACE_BLIT 7u  /**< `const bmds_surface_blit_t *`: copies or fills by the 2D-DMA. */
+
+#define BMDS_SURFACE_IMAGES 4u     /**< Image slots a surface has. */
+#define BMDS_SURFACE_BLIT_MAX 64u  /**< Pieces a BLIT takes. */
+
+/** @brief A picture of the program's, for BLIT: in the surface's format. */
+typedef struct {
+        uint32_t    size;
+        uint32_t    slot;   /**< 0 to BMDS_SURFACE_IMAGES - 1. */
+        const void *pixels; /**< Inside one allocation from bmds_mem_alloc(); NULL: the slot forgotten. */
+        uint32_t    width;  /**< Pixels. */
+        uint32_t    height;
+        uint32_t    stride; /**< Bytes a row. */
+} bmds_surface_image_t;
+
+/** @brief One rectangle of a BLIT. */
+typedef struct {
+        int32_t  x, y;           /**< In the buffer written. */
+        uint32_t width, height;
+        int32_t  from_x, from_y; /**< In the source (a fill: unused). */
+} bmds_surface_piece_t;
+
+#define BMDS_BLIT_BUFFER 0u /**< From another of the surface's buffers: `from` its index. */
+#define BMDS_BLIT_IMAGE 1u  /**< From an image: `from` its slot. */
+#define BMDS_BLIT_FILL 2u   /**< A fill: `from` the pixel (the format's value). */
+
+/** @brief Copies or fills pieces of a buffer the program holds. */
+typedef struct {
+        uint32_t                    size;
+        uint32_t                    buffer; /**< Acquired and not yet presented. */
+        uint32_t                    source; /**< BMDS_BLIT_... */
+        uint32_t                    from;
+        uint32_t                    count;  /**< 1 to BMDS_SURFACE_BLIT_MAX. */
+        const bmds_surface_piece_t *pieces;
+} bmds_surface_blit_t;
+```
+
+- **IMAGE** registers a picture.
+  - The kernel checks that it lies inside one of the program's own allocations, in memory the
+    2D-DMA can read (PSRAM, or internal RAM given `BMDS_MEM_DMA`), and that its row is at least
+    `width` pixels.
+  - It writes the picture back from the CPU's cache once. A program that changes the picture
+    afterwards registers it again.
+  - Freeing it while registered is the program's mistake: the 2D-DMA only reads it, into the
+    program's own buffer.
+- **BLIT** copies or fills the pieces in one 2D-DMA job and returns when they are written.
+  - The pieces are clipped to the buffer and the source.
+  - The cache is kept honest around the copy: each piece's rows in the buffer are written back
+    and invalidated before the copy, one cache operation a piece (4-5 µs each, so not one a row).
+    A copy from another buffer reads what its last present wrote back.
+  - It returns 0, or `-BMDS_EINVAL`: a buffer not held, a source that is the buffer itself, an
+    empty slot, a format without a pixel size the 2D-DMA takes, too many pieces.
+  - Thread safety: while it runs, no other thread of the program draws in the rows its pieces
+    cover.
+- **Why images are registered, not passed each time:** one check of the memory and one cache
+  write-back, instead of both on every frame.
+
+### 25b. The kernel (`bmds_ui`)
+
+- **One `BlitChain` for every program surface,** under a mutex. It starts on the first BLIT and
+  sizes its descriptors for 64 pieces and 256 fill rows (about 5 KB of internal DMA RAM). A bigger
+  fill becomes more jobs.
+- **`ProgramSurface`** keeps the four image slots and answers the two controls. The buffer written
+  must be in the program's state (acquired); the source buffer any of the others.
+- **`Process`** gains `owns(ptr, bytes)`, a walk of its allocations, for IMAGE.
+
+### 25c. `libbmdsgame` (a static library: no ABI)
+
+- `bmds_game_dma_image(game, slot, image)` registers an image.
+- `bmds_game_dma_copy(game, slot, rects, count)` copies the image into the canvas being drawn,
+  rectangle for rectangle at the same place (a background).
+- `bmds_game_dma_fill(game, rects, count, pixel)` fills.
+- Each cuts the rectangles to the canvas's clip, records them as damage, and goes by the CPU when
+  the kernel says no.
+- **The loop's catch-up copy** (`bring_up_to_date_except()`) goes by BLIT from the newest buffer,
+  its row bands as pieces (more than 64 make more calls).
+
+### 25d. Lucky Duck
+
+- **The felt** is registered as image 0 when a scene paints it, and again after a repaint.
+- **The stage** restores the felt for all of a frame's dirty rectangles in one BLIT (the felt's
+  pieces of every rectangle, not under cards), then draws the items rectangle by rectangle.
+  - Batching needs dirty rectangles that don't overlap: a blend drawn twice where two overlap
+    would darken. `stage_draw()` falls back to one rectangle at a time when they do.
+- **Expected:** the felt restore from 5-9 ms to well under 1 ms, and the catch-up copy off the
+  CPU, so no frame of a deal should skip a tick.
+- **Measured first on the board:** a BLIT's fixed cost (the cache operations, the job, the call).
+  If small rectangles cost more by DMA than by the CPU, `libbmdsgame` copies those by the CPU
+  (below a measured threshold).
+
+### 25e. Later, not now
+
+- The PPA (the pixel processing accelerator) can blend with a colour key and scale, which would
+  take keyed sprite and card blits too. That needs a design of its own.
+- An asynchronous BLIT (returns at once; the next call or present waits), so the CPU draws other
+  rectangles meanwhile.
+
+### 25f. As built (2026-10-16)
+
+- **The ABI** as §25a: `BMDS_SURFACE_IMAGE` (6), `BMDS_SURFACE_BLIT` (7), `bmds_surface_image_t`,
+  `bmds_surface_piece_t`, `bmds_surface_blit_t`, `BMDS_BLIT_BUFFER`/`_IMAGE`/`_FILL`,
+  `BMDS_SURFACE_IMAGES` (4), `BMDS_SURFACE_BLIT_MAX` (64).
+  - IMAGE checks the whole `stride × height` against the program's allocations
+    (`Process::owns()`).
+  - A fill's pixel is the format's value, its bytes low first.
+- **The kernel** (`ProgramSurface::setImage()`, `blit()`):
+  - One `BlitChain` (64 pieces, 256 fill rows) and a 3,840-byte fill line in internal DMA RAM,
+    made on the first blit, shared by every program surface under a mutex. It is created through an
+    atomic pointer, not as a global object.
+  - **The cache:** each piece's rows are a byte range, and ranges within 16 KB of each other are
+    merged. Before the copy, each range is written back and invalidated (`C2M | INVALIDATE |
+    UNALIGNED`); after it, invalidated again, rounded out to the L2's 128-byte lines. M2C refuses
+    unaligned ranges; the buffers are 128-aligned and padded, so rounding stays inside them.
+  - A source buffer the program holds is written back first too.
+  - **A full chain** runs and goes on. A fill is cut into strips of at most 256 rows and 1,280
+    pixels.
+- **`libbmdsgame`:**
+  - `bmds_game_dma_image()`, `bmds_game_dma_copy()`, `bmds_game_dma_fill()`.
+  - A batch of up to 64 pieces is one BLIT; the CPU takes over for good once the kernel says no.
+  - The loop's catch-up copy goes through the same batch: `bmds_game_spans_except()` gives the
+    row bands, and `bmds_game_copy_except()` is now its CPU user.
+- **Lucky Duck:**
+  - The felt is given to the 2D-DMA at the first draw after `felt_baize()` or `felt_carpet()`.
+  - `felt_restore()` goes by it.
+  - The stage restores a frame's felt in one batch when its dirty rectangles are disjoint
+    (`luckyduck.md` §24).
+- **Checked on the board:**
+  - **The old kernel** (ops 6 and 7 refused): everything drew by the CPU, correctly.
+  - **The new one**, Video Poker's five deals and draws: one skipped tick in the 25 busiest
+    seconds. That was about 5 a second with the CPU's copies, and 11 to 18 before §23.
+  - The window manager kept 0 errors.
+  - Every scene drew correctly: Video Poker, the transition, the lobby, Blackjack, the dice and
+    Solitaire.
+- **Not yet:** a BLIT's fixed cost wasn't measured on its own (the frames made it moot). Small
+  pieces go by the DMA too; a CPU threshold waits for a measurement that needs one.
+
+### 25g. A lost 64-byte stretch, and `blittest` (2026-10-16, the user's: "a single line sometimes looks garbled")
+
+- **Seen:** now and then, part of one row of an animated sprite garbled.
+- **Found with `blittest`** (`sdk/tests/blittest.c`, built with the SDK examples, kept as BLIT's
+  board test). It does random CPU fills, then BLITs of each kind (image, fill, another buffer)
+  with random pieces, among them narrow neighbours a few pixels apart. After every blit it checks
+  every pixel against a model and tells each bad run: where it is, its offset in its 128-byte
+  line, and the piece it falls in.
+  - **Image and buffer copies:** 60-80 bad runs every 300 rounds, nearly all 32 pixels (64 bytes)
+    at line offset 0 or 64, and mostly outside every piece: what the CPU had drawn just before was
+    lost.
+  - A full read of the buffer before each blit made them go: dirty lines were being dropped.
+- **The cause:** the P4's L1 lines are 64 bytes and its L2's 128.
+  - The write-back before a copy covered the pieces' exact bytes, so the L1 wrote back only the
+    64-byte halves they touch.
+  - The invalidate after rounded out to whole 128-byte lines (M2C takes only aligned ranges), so it
+    dropped the other half too, dirty in the L1 with the CPU's drawing.
+  - **Fixed:** both round out to the same whole 128-byte lines, so nothing is invalidated unless
+    it was written back first.
+  - IMAGE now only writes the picture back. It also invalidated, unaligned, which reached the
+    program's memory beside it.
+- **Also found:** fills read stale memory. Their line in internal RAM is cached too, and wasn't
+  written back after being filled. Fixed.
+- **After the fixes:** image, fill, buffer and mixed runs, 18,000 blits in all: 0 bad pixels.

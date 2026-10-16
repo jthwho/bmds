@@ -188,28 +188,46 @@ static uint32_t cut_out(bmds_rect_t *pieces, uint32_t count, uint32_t max, bmds_
         return n;
 }
 
-/* The felt inside @p clip but under no card's opaque middle (a card is opaque but for its
-   corners; turned ones aren't counted): what a card is drawn over needn't be restored first, and
-   restoring is half of what a redraw costs (PSRAM read and written: devplan/luckyduck.md §23). */
-static void restore_uncovered(const stage_item_t *items, const uint16_t *order, uint32_t n, bmds_canvas_t *c,
-                              bmds_rect_t clip) {
+/* The pieces of the felt inside @p clip under no card's opaque middle (a card is opaque but for
+   its corners; turned ones aren't counted), added to @p out (of @p count, at most @p max):
+   what a card is drawn over needn't be restored first (devplan/luckyduck.md §23). @return Whether
+   they fitted. */
+static int felt_pieces(const stage_item_t *items, const uint16_t *order, uint32_t n, bmds_rect_t clip, bmds_rect_t *out,
+                       uint32_t *count, uint32_t max) {
         bmds_rect_t pieces[16] = {clip};
-        uint32_t    count = 1;
-        for (uint32_t i = 0; i < n && count > 0; ++i) {
+        uint32_t    k = 1;
+        for (uint32_t i = 0; i < n && k > 0; ++i) {
                 const stage_item_t *it = &items[order[i]];
                 if (it->kind != STAGE_CARD || it->turn != 0 || it->scale != 0) continue;
                 if (it->tile >= ART_CARD_EMPTY && it->tile != ART_CARD_JOKER) continue; /* the places are hollow */
                 const bmds_rect_t b = stage_bounds(it);
                 if (b.width <= 2 * UI_CARD_RADIUS || b.height <= 2 * UI_CARD_RADIUS || !meets(&b, &clip)) continue;
-                count = cut_out(pieces, count, 16,
-                                rect(b.x + UI_CARD_RADIUS, b.y + UI_CARD_RADIUS, (int32_t)b.width - 2 * UI_CARD_RADIUS,
-                                     (int32_t)b.height - 2 * UI_CARD_RADIUS));
+                k = cut_out(pieces, k, 16,
+                            rect(b.x + UI_CARD_RADIUS, b.y + UI_CARD_RADIUS, (int32_t)b.width - 2 * UI_CARD_RADIUS,
+                                 (int32_t)b.height - 2 * UI_CARD_RADIUS));
         }
-        for (uint32_t i = 0; i < count; ++i) felt_restore(c, pieces[i]);
+        if (*count + k > max) return 0;
+        memcpy(out + *count, pieces, k * sizeof(pieces[0]));
+        *count += k;
+        return 1;
+}
+
+static void restore_uncovered(const stage_item_t *items, const uint16_t *order, uint32_t n, bmds_canvas_t *c,
+                              bmds_rect_t clip) {
+        bmds_rect_t pieces[16];
+        uint32_t    count = 0;
+        if (!felt_pieces(items, order, n, clip, pieces, &count, 16)) {
+                pieces[0] = clip;
+                count = 1;
+        }
+        (void)c;
+        bmds_game_dma_copy(app.game, FELT_IMAGE, pieces, count);
         return;
 }
 
-static void redraw(const stage_item_t *items, const uint16_t *order, uint32_t n, bmds_canvas_t *c, bmds_rect_t r) {
+/* Draws the items inside @p r from the felt up (@p felt: the felt restored first; else already). */
+static void redraw_items(const stage_item_t *items, const uint16_t *order, uint32_t n, bmds_canvas_t *c, bmds_rect_t r,
+                         int felt) {
         bmds_canvas_set_clip(c, &r);
         const bmds_rect_t clip = c->clip;
         if (clip.width == 0 || clip.height == 0) {
@@ -217,13 +235,18 @@ static void redraw(const stage_item_t *items, const uint16_t *order, uint32_t n,
                 return;
         }
         bmds_game_repainted(app.game, &clip); /* every pixel of it, from the felt up */
-        restore_uncovered(items, order, n, c, clip);
+        if (felt) restore_uncovered(items, order, n, c, clip);
         for (uint32_t i = 0; i < n; ++i) {
                 const stage_item_t *it = &items[order[i]];
                 const bmds_rect_t   b = stage_bounds(it);
                 if (meets(&b, &clip)) stage_draw_item(c, it);
         }
         bmds_canvas_set_clip(c, NULL);
+        return;
+}
+
+static void redraw(const stage_item_t *items, const uint16_t *order, uint32_t n, bmds_canvas_t *c, bmds_rect_t r) {
+        redraw_items(items, order, n, c, r, 1);
         return;
 }
 
@@ -244,7 +267,27 @@ void stage_draw(stage_t *s, bmds_canvas_t *c) {
         if (s->dirty_count > 0) {
                 uint16_t       order[STAGE_KEYS];
                 const uint32_t n = ordered(s->now, order);
-                for (uint32_t i = 0; i < s->dirty_count; ++i) redraw(s->now, order, n, c, s->dirty[i]);
+                /* The felt of every rectangle in one 2D-DMA job, then their items: only when no two
+                   overlap (a blend drawn twice over one would darken: luckyduck.md §24). */
+                int disjoint = 1;
+                for (uint32_t i = 0; i < s->dirty_count && disjoint; ++i)
+                        for (uint32_t k = i + 1; k < s->dirty_count && disjoint; ++k)
+                                disjoint = !meets(&s->dirty[i], &s->dirty[k]);
+                static bmds_rect_t felt[STAGE_DIRTY * 16];
+                uint32_t           pieces = 0;
+                const bmds_rect_t  all = rect(0, 0, c->width, c->height);
+                for (uint32_t i = 0; i < s->dirty_count && disjoint; ++i) {
+                        const bmds_rect_t r = intersection(s->dirty[i], all);
+                        if (r.width == 0 || r.height == 0) continue;
+                        bmds_game_repainted(app.game, &r);
+                        if (!felt_pieces(s->now, order, n, r, felt, &pieces, STAGE_DIRTY * 16)) disjoint = 0;
+                }
+                if (disjoint) {
+                        bmds_game_dma_copy(app.game, FELT_IMAGE, felt, pieces);
+                        for (uint32_t i = 0; i < s->dirty_count; ++i) redraw_items(s->now, order, n, c, s->dirty[i], 0);
+                } else {
+                        for (uint32_t i = 0; i < s->dirty_count; ++i) redraw(s->now, order, n, c, s->dirty[i]);
+                }
                 s->dirty_count = 0;
         }
         memcpy(s->shown, s->now, sizeof(s->now));

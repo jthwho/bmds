@@ -208,6 +208,50 @@ class ProgramSurface final : public Stream {
                  */
                 Error setIcons(ByteSpan small, ByteSpan large);
 
+                /** @brief A picture of the program's that `blit()` may copy from (`BMDS_SURFACE_IMAGE`). */
+                struct Image {
+                                const uint8_t *pixels = nullptr; ///< Null: none.
+                                uint16_t       width = 0;
+                                uint16_t       height = 0;
+                                uint32_t       stride = 0; ///< Bytes a row.
+                };
+
+                /** @brief Where a `blit()` takes its pixels. */
+                enum class BlitSource : uint8_t {
+                        Buffer, ///< Another of its buffers.
+                        Image,  ///< An image slot.
+                        Fill,   ///< One pixel value.
+                };
+
+                /** @brief A `blit()`'s rectangle: where in the buffer, and where in the source. */
+                struct Piece {
+                                int32_t  x = 0, y = 0;
+                                uint32_t width = 0, height = 0;
+                                int32_t  fromX = 0, fromY = 0;
+                };
+
+                static constexpr uint8_t MaxImages = 4;      ///< `BMDS_SURFACE_IMAGES`.
+                static constexpr size_t  MaxBlitPieces = 64; ///< `BMDS_SURFACE_BLIT_MAX`.
+
+                /**
+                 * @brief Puts @p image in slot @p slot (null pixels: empties it), in the surface's
+                 *        format, and writes it back from the CPU's cache. The caller has checked
+                 *        that it is the program's memory (`devplan/games.md` §25).
+                 * @return `Ok`, or `Invalid` (the slot, its size, its row, memory the 2D-DMA can't read).
+                 */
+                Error setImage(uint8_t slot, const Image &image);
+
+                /**
+                 * @brief Copies (or fills) @p pieces of buffer @p index, which the program holds,
+                 *        by the 2D-DMA in as few jobs as fit, and returns when they are written.
+                 *        The rows they cover are written back from the cache before and
+                 *        invalidated after, so what the program drew beside them stays.
+                 * @return `Ok`, `Invalid` (a buffer not held, the source the buffer itself, an empty
+                 *         slot, too many pieces), `NoMem`, `Timeout`, or the 2D-DMA's error.
+                 * @blocking
+                 */
+                Error blit(uint8_t index, BlitSource source, uint32_t from, Span<const Piece> pieces);
+
                 /**
                  * @brief Sets what the pointer does over it: the arrow, none, or none and held
                  *        still while the window is focused, motion coming as the events' deltas.
@@ -339,6 +383,7 @@ class ProgramSurface final : public Stream {
                 uint8_t                        _under[WindowManager::UnderBytes];
                 std::atomic<ProgramControls *> _controls{nullptr};
                 char                           _appId[ProgramControls::MaxId] = {}; // its program's application
+                Image                          _images[MaxImages];                  // blit()'s sources (under _lock)
                 uint8_t       *_buffers[MaxBuffers] = {};
                 size_t         _stride = 0;
                 size_t         _bufferBytes = 0;

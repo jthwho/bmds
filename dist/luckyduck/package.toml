@@ -2,7 +2,7 @@
 # application folder with its cards, ducks, letters and sounds (drawn by its assets/build.py).
 name = "luckyduck"
 version = "1"
-description = "Lucky Duck: a casino of card and dice games (Solitaire so far), with our own duck art"
+description = "Lucky Duck: a casino of card and dice games (Solitaire, Blackjack, dice, Video Poker, Poker), with our own duck art"
 license = "MIT"
 source_tree = "programs/luckyduck"
 license_files = ["../../LICENSE"]

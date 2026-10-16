@@ -21,7 +21,8 @@
 
 app_t app;
 
-static const scene_t *const SCENES[] = {&lobby_scene, &solitaire_scene, &blackjack_scene, &dice_scene, &video_scene};
+static const scene_t *const SCENES[] = {&lobby_scene, &solitaire_scene, &blackjack_scene,
+                                        &dice_scene,  &video_scene,     &poker_scene};
 
 static const char *const SOUND_FILES[SFX_COUNT] = {"place.wav", "flip.wav",   "deal.wav",   "win.wav",
                                                    "quack.wav", "quack2.wav", "quacks.wav", "click.wav",
@@ -172,7 +173,8 @@ void dirty_add(bmds_rect_t *list, uint32_t *count, uint32_t max, bmds_rect_t r) 
 /* ---- The felt */
 
 void felt_restore(bmds_canvas_t *c, bmds_rect_t r) {
-        bmds_canvas_blit(c, r.x, r.y, &app.felt, &r);
+        (void)c; /* the canvas being drawn: the 2D-DMA's copy goes to it (the CPU's without one) */
+        bmds_game_dma_copy(app.game, FELT_IMAGE, &r, 1);
         return;
 }
 
@@ -238,6 +240,7 @@ static void reach(uint8_t *across, uint8_t *down, int wide, int high) {
 static uint16_t look[4][SHADES][TEXELS]; /* the carpet's four colours; the baize uses the first */
 
 void felt_baize(uint32_t middle, uint32_t edge) {
+        app.felt_new = 1; /* given to the 2D-DMA again at the next draw */
         static uint8_t across[MAX_WIDTH], down[MAX_HEIGHT];
         make_texture();
         reach(across, down, 62, 72);
@@ -262,6 +265,7 @@ void felt_baize(uint32_t middle, uint32_t edge) {
 }
 
 void felt_carpet(void) {
+        app.felt_new = 1;
         static uint8_t        across[MAX_WIDTH], down[MAX_HEIGHT];
         static uint8_t        pattern[72][72];
         static const uint32_t colours[4] = {0x7a1420, 0xb08028, 0xd0a040, 0x5a0c16};
@@ -575,6 +579,10 @@ static void on_tick(bmds_game_t *game) {
 
 static void on_draw(bmds_game_t *game, bmds_canvas_t *c) {
         begin(game);
+        if (app.felt_new) { /* a scene painted it: the 2D-DMA copies it from now on */
+                app.felt_new = 0;
+                (void)bmds_game_dma_image(game, FELT_IMAGE, &app.felt);
+        }
         if (m.full_redraw) {
                 m.full_redraw = 0;
                 m.moving = 0;

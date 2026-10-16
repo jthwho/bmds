@@ -86,6 +86,19 @@ uint32_t hand_value(const uint8_t *cards, int n) {
         return pack(category(HAND_HIGH_CARD), c1, 0, 5);
 }
 
+uint32_t hand_best(const uint8_t *cards, int n) {
+        const uint32_t want = hand_value(cards, n), all = (1u << n) - 1u;
+        for (uint32_t mask = 0; mask <= all; ++mask) {
+                if (__builtin_popcount(mask) != 5) continue;
+                uint8_t five[5];
+                int     k = 0;
+                for (int i = 0; i < n; ++i)
+                        if (mask & (1u << i)) five[k++] = cards[i];
+                if (hand_value(five, 5) == want) return mask;
+        }
+        return all; /* five cards: all of them */
+}
+
 const char *hand_name(int c) {
         static const char *const names[HAND_CATEGORIES] = {
                 "HIGH CARD", "PAIR",       "TWO PAIR",       "THREE OF A KIND", "STRAIGHT",

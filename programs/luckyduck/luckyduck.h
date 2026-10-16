@@ -94,6 +94,7 @@ extern const scene_t solitaire_scene;
 extern const scene_t blackjack_scene;
 extern const scene_t dice_scene;
 extern const scene_t video_scene;
+extern const scene_t poker_scene;
 
 /** @brief The sounds (the folder's WAVs). */
 enum {
@@ -118,6 +119,7 @@ typedef struct {
                 bmds_game_image_t cards, sprites, font;
                 bmds_game_image_t felt; /**< The table under everything: the scene paints it. */
                 bmds_canvas_t     felt_canvas;
+                int               felt_new; /**< Painted since the 2D-DMA was given it (felt_baize(), felt_carpet()). */
                 int32_t           px, py; /**< The pointer. */
                 uint32_t          buttons;
                 int64_t           idle_ns; /**< When the last input came. */
@@ -160,7 +162,10 @@ void app_info(const char *title, const char *const *lines, int count);
 /** @brief System buttons' places: stacked at the top right, @p i from the top (gameplay's are in the band). */
 bmds_rect_t app_system_button(int i);
 
-/** @brief The felt inside @p r onto @p c (the background of every redraw). */
+/** @brief The felt's slot for the 2D-DMA (`bmds_game_dma_image()`). */
+#define FELT_IMAGE 0u
+
+/** @brief The felt inside @p r onto @p c, the canvas being drawn (by the 2D-DMA, else the CPU). */
 void felt_restore(bmds_canvas_t *c, bmds_rect_t r);
 
 /** @brief Paints the felt: green baize, @p glow its lighter middle (0xRRGGBB), darker at the edges. */

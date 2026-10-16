@@ -256,7 +256,7 @@ DUCKLING_POSES = {
 
 # The bot ducks at the Blackjack table (devplan/luckyduck.md §16): their kinds and names, and
 # the poses a player needs.
-BOTS = [("mallard", "MALLORY"), ("pekin", "PEARL"), ("wood", "WOODY"), ("rubber", "SQUEAKY")]
+BOTS = [("mallard", "MALLORY"), ("pekin", "PEARL"), ("wood", "WOODY"), ("rubber", "SQUEAKY"), ("black", "INKY")]
 BOT_POSES = {
     "IDLE": pose(),
     "THINK": pose(head=-10, wing=35, eyes="open"),

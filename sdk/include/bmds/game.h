@@ -282,6 +282,25 @@ void bmds_game_repainted(bmds_game_t *game, const bmds_rect_t *rect);
 
 #define BMDS_GAME_REPAINTED_MAX 32u
 
+/**
+ * @brief Gives the 2D-DMA @p image (in the game's format, unkeyed, its pixels from
+ *        bmds_mem_alloc()) as slot @p slot (0 to `BMDS_SURFACE_IMAGES - 1`) for
+ *        bmds_game_dma_copy(); NULL forgets it. Change its pixels, and give it again
+ *        (`devplan/games.md` §25). Without the 2D-DMA, copies go by the CPU.
+ * @return 0, or `-BMDS_EINVAL` (the slot, a key, another format).
+ */
+int32_t bmds_game_dma_image(bmds_game_t *game, uint32_t slot, const bmds_game_image_t *image);
+
+/**
+ * @brief From `draw`: copies slot @p slot's image into the canvas at the same places, @p count
+ *        rectangles cut to the canvas's clip, as damage: by the 2D-DMA in one job for each 64
+ *        (`BMDS_SURFACE_BLIT`), or by the CPU. Returns when they are written.
+ */
+void bmds_game_dma_copy(bmds_game_t *game, uint32_t slot, const bmds_rect_t *rects, uint32_t count);
+
+/** @brief From `draw`: fills @p count rectangles with @p pixel (the canvas's value), as bmds_game_dma_copy(). */
+void bmds_game_dma_fill(bmds_game_t *game, const bmds_rect_t *rects, uint32_t count, uint32_t pixel);
+
 /** @brief Returns the ticks run so far. */
 uint64_t bmds_game_ticks(const bmds_game_t *game);
 

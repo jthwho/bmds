@@ -25,6 +25,13 @@ void bmds_game_damage_in_clip(bmds_canvas_t *canvas, const bmds_rect_t *rect);
 void bmds_game_rects_add(bmds_rect_t *list, uint32_t *count, uint32_t max, const bmds_rect_t *rect);
 
 /**
+ * @brief Calls @p span for each piece of @p count rectangles (cut to @p c) outside all of
+ *        @p excepts (at most `BMDS_GAME_REPAINTED_MAX`): bands of rows, the gaps across each.
+ */
+void bmds_game_spans_except(const bmds_canvas_t *c, const bmds_rect_t *rects, uint32_t count, const bmds_rect_t *except,
+                            uint32_t excepts, void (*span)(void *arg, const bmds_rect_t *r), void *arg);
+
+/**
  * @brief Copies @p count rectangles from @p from to @p to (same size and format) but none of the
  *        @p excepts (at most `BMDS_GAME_REPAINTED_MAX`).
  */
