@@ -127,10 +127,21 @@ GuiWindow *Widget::window() const {
 void Widget::setGeometry(const Rect &rect) {
         if (rect == _rect) return;
         update(); // where it was
-        const bool sized = rect.width != _rect.width || rect.height != _rect.height;
+        const bool    sized = rect.width != _rect.width || rect.height != _rect.height;
+        const int32_t dx = int32_t(rect.x) - _rect.x, dy = int32_t(rect.y) - _rect.y;
         _rect = rect;
         update();
-        if (sized) resized();
+        if (sized) {
+                resized(); // laid out again, children and all
+        } else {
+                // Moved only: the children (in the window's coordinates, as it is) go with it, or a
+                // layout moved down a window's resize would leave its contents behind.
+                for (Widget *c = _first; c != nullptr; c = c->_next) {
+                        const Rect   &g = c->_rect;
+                        const int32_t x = int32_t(g.x) + dx, y = int32_t(g.y) + dy;
+                        c->setGeometry(Rect{uint16_t(x < 0 ? 0 : x), uint16_t(y < 0 ? 0 : y), g.width, g.height});
+                }
+        }
         return;
 }
 
