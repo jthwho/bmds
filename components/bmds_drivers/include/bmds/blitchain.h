@@ -80,6 +80,12 @@ class BlitChain {
                 /** @brief Returns the pieces added since the last run. */
                 size_t count() const { return _rxCount; }
 
+                /** @brief Returns the most pieces a job takes (`start()`'s). */
+                size_t capacity() const { return _max; }
+
+                /** @brief Returns the jobs started since `start()`. */
+                uint32_t jobs() const { return _jobs; }
+
                 /** @brief Forgets the pieces added. */
                 void clear() {
                         _txCount = 0;
@@ -118,6 +124,16 @@ class BlitChain {
                  */
                 Error addFill(const uint8_t *line, const Picture &to, uint16_t toX, uint16_t toY, uint16_t width,
                               uint16_t height);
+
+                /**
+                 * @brief As `addFill()`, from @p lineRows rows of the colour at @p line (@p width
+                 *        pixels each, one after the other): a transmit descriptor sends up to
+                 *        @p lineRows rows, so a tall fill takes that many times fewer.
+                 * @return As `add()`.
+                 * @nonblocking
+                 */
+                Error addFill(const uint8_t *line, uint16_t lineRows, const Picture &to, uint16_t toX, uint16_t toY,
+                              uint16_t width, uint16_t height);
 
                 /**
                  * @brief Runs the pieces added as one job, waits until they are
@@ -163,6 +179,7 @@ class BlitChain {
                 std::atomic<bool> _picked{false};               // the job under way has its channels (the ISR's)
                 std::atomic<bool> _overrun{false};              // its receive descriptors ran out (the ISR's)
                 uint32_t          _stuck = 0;                   // jobs ended by force
+                uint32_t          _jobs = 0;                    // jobs started
                 uint16_t          _jobPieces = 0, _jobRows = 0; // the job under way's receive and transmit descriptors
                 size_t     _txCount = 0;  // transmit descriptors written
                 size_t     _rxCount = 0;  // receive descriptors (pieces) written

@@ -247,7 +247,7 @@ Result<VideoTiming> Display::fitMode(const VideoTiming &mode, uint8_t lanes, uin
         return makeResult(fitted);
 }
 
-Error Display::start(const VideoTiming &mode, Surface::Buffering buffering) {
+Error Display::start(const VideoTiming &mode, Surface::Buffering buffering, uint32_t laneMbps) {
         stop();
         auto [timing, ferr] = fitMode(mode);
         if (ferr.isError()) return ferr;
@@ -259,6 +259,7 @@ Error Display::start(const VideoTiming &mode, Surface::Buffering buffering) {
         c.phyLdoMv = d.phyLdoMv;
         c.onRestart = onLinkRestart;
         c.onRestartArg = this;
+        c.laneMbps = laneMbps;
         _timing = timing;
         Error err = _surface.start(timing.hActive, timing.vActive, buffering);
         if (err.isOk()) err = _bridge.configure(timing, d.dsiLanes, true);

@@ -19,6 +19,7 @@
 
 BMDS_NAMESPACE_BEGIN
 
+
 namespace {
 
         constexpr size_t BufferAlign = 128;          // the L2 cache line; the 2D-DMA's PSRAM alignment
@@ -27,6 +28,8 @@ namespace {
         constexpr size_t MaxPieces = 32;             // a job's copies
         constexpr size_t MaxPrepareRects = 32;       // rectangles a drawing tells prepareFor()
         constexpr size_t MaxFillRows = 256;          // rows fills send in one job (24 B each, internal)
+        constexpr size_t MaxFillLineBytes = 1536;    // a batched fill's lines of its colour, at most
+        constexpr size_t MaxFillLineRows = 32;       // and their rows (a descriptor sends them all)
         constexpr size_t MaxWidenRows = 128;         // repeated RGB565 rows in one job (the same)
 
         // What's left of @p deadline, as a timeout (at least 1 ms).
@@ -106,6 +109,14 @@ void Surface::stop() {
         }
         Memory::free(_line);
         _line = nullptr;
+        Memory::free(_lines);
+        _lines = nullptr;
+        _linesBytes = 0;
+        _linesUsed = 0;
+        _fillLineCount = 0;
+        _edgeCount = 0;
+        _edgeRows = 0;
+        _batching = false;
         Memory::free(_damage);
         _damage = nullptr;
         _forward = nullptr;
@@ -258,7 +269,7 @@ Error Surface::copyForward(const uint32_t *tiles, const Deadline &deadline) {
                 const Rect     r{static_cast<uint16_t>(o.c0 * TileWidth), static_cast<uint16_t>(o.r0 * TileHeight),
                              static_cast<uint16_t>(right - o.c0 * TileWidth),
                              static_cast<uint16_t>(bottom - o.r0 * TileHeight)};
-                if (err.isOk() && _chain.count() == MaxPieces) err = _chain.run(remainingMs(deadline));
+                if (err.isOk() && _chain.count() == _chain.capacity()) err = runChain(deadline);
                 if (err.isOk()) err = _chain.add(from, r.x, r.y, to, r.x, r.y, r.width, r.height);
                 ++_stats.forwards;
                 _stats.forwardPixels += r.area();
@@ -300,7 +311,9 @@ Error Surface::copyForward(const uint32_t *tiles, const Deadline &deadline) {
                 std::memset(_forward, 0, size_t(_tileWords) * _tileRows * sizeof(uint32_t));
                 _forwardPending = false;
         }
-        if (err.isOk()) err = _chain.run(remainingMs(deadline));
+        // Batched, the copies go with the drawing after them (they read the shown buffer, which
+        // nothing in the job writes; the drawing lands after them in order).
+        if (err.isOk() && !_batching) err = runChain(deadline);
         const auto us = static_cast<uint32_t>(esp_timer_get_time() - started);
         _stats.forwardUs += us;
         if (us > _stats.forwardUsMax) _stats.forwardUsMax = us;
@@ -325,7 +338,40 @@ Error Surface::fill(Span<const Rect> rects, uint32_t rgb, unsigned int timeoutMs
         const Deadline deadline(timeoutMs);
         Error          err = prepareFor(deadline, rects, Span<const Rect>());
         if (err.isError()) return err;
-        if (widest > 0) {
+        if (widest > 0 && _batching) {
+                // Added to the batch, each middle from a line of the colour kept until the job runs.
+                const BlitChain::Picture to = picture(back());
+                for (const Rect &rect : rects) {
+                        const uint32_t left = (rect.x + Mask) & ~Mask, right = rect.right() & ~Mask;
+                        if (right <= left) continue;
+                        const auto x = static_cast<uint16_t>(left), w = static_cast<uint16_t>(right - left);
+                        // Pending edge rows under it: dropped (their writes would undo it).
+                        err = coverEdges(Rect{x, rect.y, w, rect.height}, deadline);
+                        if (err.isError()) return err;
+                        const FillLine *line = fillLine(rgb, w);
+                        if (line == nullptr) { // no room: the batch so far run, its lines free
+                                err = runChain(deadline);
+                                line = err.isOk() ? fillLine(rgb, w) : nullptr;
+                                if (err.isOk() && line == nullptr) err = Error::NoMem;
+                        }
+                        for (uint32_t y = rect.y; err.isOk() && y < rect.bottom(); y += MaxFillRows) {
+                                const uint16_t rows = static_cast<uint16_t>(
+                                        rect.bottom() - y < MaxFillRows ? rect.bottom() - y : MaxFillRows);
+                                err = _chain.addFill(line->line, line->rows, to, x, static_cast<uint16_t>(y), w, rows);
+                                if (err == Error::Full) {
+                                        err = runChain(deadline);
+                                        line = err.isOk() ? fillLine(rgb, w) : nullptr;
+                                        if (line != nullptr)
+                                                err = _chain.addFill(line->line, line->rows, to, x,
+                                                                     static_cast<uint16_t>(y), w, rows);
+                                }
+                        }
+                        if (err.isError()) {
+                                _chain.clear();
+                                return err;
+                        }
+                }
+        } else if (widest > 0) {
                 // One line of the color, the widest middle's length, sent once a row by each.
                 const uint8_t b = static_cast<uint8_t>(rgb), g = static_cast<uint8_t>(rgb >> 8),
                               r = static_cast<uint8_t>(rgb >> 16);
@@ -350,7 +396,7 @@ Error Surface::fill(Span<const Rect> rects, uint32_t rgb, unsigned int timeoutMs
                                         rect.bottom() - y < MaxFillRows ? rect.bottom() - y : MaxFillRows);
                                 err = _chain.addFill(_line, to, x, static_cast<uint16_t>(y), w, rows);
                                 if (err == Error::Full) {
-                                        err = _chain.run(remainingMs(deadline));
+                                        err = runChain(deadline);
                                         if (err.isOk())
                                                 err = _chain.addFill(_line, to, x, static_cast<uint16_t>(y), w, rows);
                                 }
@@ -360,9 +406,29 @@ Error Surface::fill(Span<const Rect> rects, uint32_t rgb, unsigned int timeoutMs
                                 }
                         }
                 }
-                err = _chain.run(remainingMs(deadline));
+                err = runChain(deadline);
         }
-        if (err.isOk() && edges) err = fillEdges(rects, rgb, deadline);
+        if (err.isOk() && edges && _batching) {
+                // The sides' groups pending in the batch, read and patched with others' later.
+                for (const Rect &rect : rects) {
+                        const uint32_t right = rect.right();
+                        const uint32_t leftGroup = rect.x & ~Mask, rightGroup = right & ~Mask;
+                        if (err.isOk() && (rect.x & Mask) != 0) {
+                                const uint32_t to = right < leftGroup + Align ? right : leftGroup + Align;
+                                err = addEdge(static_cast<uint16_t>(leftGroup), rect.y, rect.height,
+                                              static_cast<uint8_t>(rect.x - leftGroup),
+                                              static_cast<uint8_t>(to - leftGroup), rgb, deadline);
+                        }
+                        if (err.isOk() && (right & Mask) != 0 && !((rect.x & Mask) != 0 && rightGroup == leftGroup)) {
+                                const uint32_t from = rect.x > rightGroup ? rect.x : rightGroup;
+                                err = addEdge(static_cast<uint16_t>(rightGroup), rect.y, rect.height,
+                                              static_cast<uint8_t>(from - rightGroup),
+                                              static_cast<uint8_t>(right - rightGroup), rgb, deadline);
+                        }
+                }
+        } else if (err.isOk() && edges) {
+                err = fillEdges(rects, rgb, deadline);
+        }
         if (_buffering == Buffering::Double)
                 for (const Rect &rect : rects) markDamage(rect);
         return err;
@@ -394,7 +460,7 @@ Error Surface::fillEdges(Span<const Rect> rects, uint32_t rgb, const Deadline &d
                         const Edge &e = batch[i];
                         err = _chain.add(surface, e.x, e.y, buffer, 0, e.offset, Align, e.rows);
                 }
-                if (err.isOk()) err = _chain.run(remainingMs(deadline));
+                if (err.isOk()) err = runChain(deadline);
                 const size_t bytes = (used * GroupBytes + LineAlign - 1) / LineAlign * LineAlign;
                 if (err.isOk()) (void)esp_cache_msync(_line, bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
                 for (size_t i = 0; i < count && err.isOk(); ++i) {
@@ -414,7 +480,7 @@ Error Surface::fillEdges(Span<const Rect> rects, uint32_t rgb, const Deadline &d
                         const Edge &e = batch[i];
                         err = _chain.add(buffer, 0, e.offset, surface, e.x, e.y, Align, e.rows);
                 }
-                if (err.isOk()) err = _chain.run(remainingMs(deadline));
+                if (err.isOk()) err = runChain(deadline);
                 if (err.isError()) _chain.clear();
                 count = 0;
                 used = 0;
@@ -469,18 +535,19 @@ Error Surface::patch(const Rect &rect, Patcher patcher, void *arg, unsigned int 
         const Deadline deadline(timeoutMs);
         const Rect     group{left, rect.y, width, rect.height};
         Error          err = prepareFor(deadline, Span<const Rect>(), Span<const Rect>(&group, 1));
+        if (err.isOk() && _batching) err = flushBatch(deadline); // it reads what the batch writes
         if (err.isError()) return err;
         const BlitChain::Picture surface = picture(back());
         const BlitChain::Picture buffer{_line, width, rect.height, BytesPerPixel};
         err = _chain.add(surface, left, rect.y, buffer, 0, 0, width, rect.height);
-        if (err.isOk()) err = _chain.run(remainingMs(deadline));
+        if (err.isOk()) err = runChain(deadline);
         if (err.isOk()) {
                 (void)esp_cache_msync(_line, bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
                 patcher(arg, _line + size_t(rect.x - left) * BytesPerPixel, rowBytes);
                 (void)esp_cache_msync(_line, bytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
                 err = _chain.add(buffer, 0, 0, surface, left, rect.y, width, rect.height);
         }
-        if (err.isOk()) err = _chain.run(remainingMs(deadline));
+        if (err.isOk()) err = runChain(deadline);
         if (err.isError()) _chain.clear();
         if (err.isOk() && _buffering == Buffering::Double) markDamage(Rect{left, rect.y, width, rect.height});
         return err;
@@ -493,6 +560,7 @@ Error Surface::blit(const Rect &to, const uint8_t *src, size_t srcStride, unsign
                 return Error::Invalid;
         const Deadline deadline(timeoutMs);
         Error          err = prepareFor(deadline, Span<const Rect>(&to, 1), Span<const Rect>());
+        if (err.isOk() && _batching) err = coverEdges(to, deadline);
         if (err.isError()) return err;
         // The source out of the cache for the DMA, in pieces.
         const size_t bytes = srcStride * (to.height - 1) + size_t(to.width) * BytesPerPixel;
@@ -502,7 +570,11 @@ Error Surface::blit(const Rect &to, const uint8_t *src, size_t srcStride, unsign
                                       ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
         const BlitChain::Picture from{src, static_cast<uint16_t>(srcStride / BytesPerPixel), to.height, BytesPerPixel};
         err = _chain.add(from, 0, 0, picture(back()), to.x, to.y, to.width, to.height);
-        if (err.isOk()) err = _chain.run(remainingMs(deadline));
+        if (err == Error::Full) { // a full batch run first
+                err = runChain(deadline);
+                if (err.isOk()) err = _chain.add(from, 0, 0, picture(back()), to.x, to.y, to.width, to.height);
+        }
+        if (err.isOk()) err = runChain(deadline);
         if (err.isOk() && _buffering == Buffering::Double) markDamage(to);
         return err;
 }
@@ -537,8 +609,10 @@ Error Surface::startBlit(const Rect &to, const uint8_t *src, size_t srcStride, S
                 pieces[n++] = cut;
         }
         Error err = kept ? prepareFor(deadline, Span<const Rect>(pieces, n), Span<const Rect>()) : prepare(deadline);
-        // The source of a job under way may be ours; the other chain's job lands first.
-        if (err.isOk()) err = _chain.wait(remainingMs(deadline));
+        const bool batched = _batching && &chain == &_chain;
+        // The source of a job under way may be ours; the other chain's job lands first (a batch's
+        // too: the widening goes over what it drew).
+        if (err.isOk() && !batched) err = _batching ? flushBatch(deadline) : _chain.wait(remainingMs(deadline));
         if (err.isError()) return err;
         const size_t bytes = srcStride * (rows - 1) + size_t(to.width) * pixel;
         for (size_t off = 0; off < bytes; off += WriteBackChunk)
@@ -556,10 +630,12 @@ Error Surface::startBlit(const Rect &to, const uint8_t *src, size_t srcStride, S
                                                      repeat, uint16_t(down % repeat), into, cut.x, cut.y, cut.width,
                                                      cut.height);
                 };
-                if (chain.count() == MaxPieces) err = chain.run(remainingMs(deadline));
+                if (batched) err = coverEdges(cut, deadline);
+                if (err.isOk() && chain.count() == chain.capacity())
+                        err = batched ? runChain(deadline) : chain.run(remainingMs(deadline));
                 if (err.isOk()) err = add();
                 if (err == Error::Full) { // the rows' descriptors: the job so far sent first
-                        err = chain.run(remainingMs(deadline));
+                        err = batched ? runChain(deadline) : chain.run(remainingMs(deadline));
                         if (err.isOk()) err = add();
                 }
                 if (err.isError()) {
@@ -568,7 +644,7 @@ Error Surface::startBlit(const Rect &to, const uint8_t *src, size_t srcStride, S
                 }
                 if (_buffering == Buffering::Double) markDamage(cut);
         }
-        return chain.submit();
+        return batched ? Error::Ok : chain.submit();
 }
 
 Error Surface::willDraw(Span<const Rect> rects, unsigned int timeoutMs) {
@@ -582,7 +658,226 @@ Error Surface::willDraw(Span<const Rect> rects, unsigned int timeoutMs) {
 Error Surface::wait(unsigned int timeoutMs) {
         const Deadline deadline(timeoutMs);
         const Error    err = _widen.wait(remainingMs(deadline));
-        return err.isError() ? err : _chain.wait(remainingMs(deadline));
+        return err.isError() ? err : flushBatch(deadline); // a batch run too
+}
+
+Error Surface::flushBatch(const Deadline &deadline) {
+        const Error err = resolveEdges(deadline);
+        return err.isError() ? err : runChain(deadline);
+}
+
+// Pending edge i cut in two at @p row (inside it): false if there is no slot for the second part.
+bool Surface::splitEdge(size_t i, uint16_t row) {
+        PendingEdge &e = _edgesPending[i];
+        if (row <= e.y || row >= e.y + e.rows) return true;
+        if (_edgeCount == MaxPendingEdges) return false;
+        PendingEdge &rest = _edgesPending[_edgeCount++];
+        rest = e;
+        rest.y = row;
+        rest.rows = static_cast<uint16_t>(e.y + e.rows - row);
+        e.rows = static_cast<uint16_t>(row - e.y);
+        return true;
+}
+
+// @p rect, about to be written whole (4-pixel columns: every group it meets, whole), takes the
+// pending edges' rows it covers: their writes would undo it, and it sets those pixels anyway.
+// Out of slots to cut them, they are resolved instead.
+Error Surface::coverEdges(const Rect &rect, const Deadline &deadline) {
+        for (size_t i = 0; i < _edgeCount;) {
+                PendingEdge &e = _edgesPending[i];
+                if (!Rect{e.x, e.y, Align, e.rows}.intersects(rect)) {
+                        ++i;
+                        continue;
+                }
+                if (e.x < rect.x || e.x + Align > rect.right()) return resolveEdges(deadline); // not whole
+                if (!splitEdge(i, rect.y) || !splitEdge(i, rect.bottom())) return resolveEdges(deadline);
+                if (e.y >= rect.y && e.y + e.rows <= rect.bottom()) { // inside: dropped
+                        _edgeRows = static_cast<uint16_t>(_edgeRows - e.rows);
+                        e = _edgesPending[--_edgeCount];
+                        continue; // the one moved here is looked at next
+                }
+                ++i;
+        }
+        return Error::Ok;
+}
+
+// Pixels [@p from, @p to) of the group at column @p x, @p rows from @p y, to be @p rgb. Pending
+// groups of the same column are cut on its first and last rows; on the rows one already holds the
+// colours are merged into it (the later fill's win), the others get new ones. Out of slots or of
+// the line's rows, everything pending is resolved first.
+Error Surface::addEdge(uint16_t x, uint16_t y, uint16_t rows, uint8_t from, uint8_t to, uint32_t rgb,
+                       const Deadline &deadline) {
+        constexpr size_t GroupBytes = Align * BytesPerPixel;
+        const size_t     capacity = ((stride() + LineAlign - 1) / LineAlign * LineAlign) / GroupBytes; // rows
+        uint8_t          mask = 0;
+        for (uint8_t i = from; i < to; ++i) mask = static_cast<uint8_t>(mask | 1u << i);
+        const uint32_t end = uint32_t(y) + rows;
+        bool           cut = true;
+        for (size_t i = 0; i < _edgeCount && cut; ++i)
+                if (_edgesPending[i].x == x) cut = splitEdge(i, y) && splitEdge(i, static_cast<uint16_t>(end));
+        if (!cut) {
+                const Error err = resolveEdges(deadline);
+                if (err.isError()) return err;
+        }
+        uint32_t row = y;
+        while (row < end) {
+                // A pending part starting here: merged. Else new up to the next part's start.
+                uint32_t next = end;
+                bool     merged = false;
+                for (size_t i = 0; i < _edgeCount; ++i) {
+                        PendingEdge &e = _edgesPending[i];
+                        if (e.x != x || e.y + e.rows <= row || e.y >= end) continue;
+                        if (e.y == row) {
+                                for (uint8_t k = from; k < to; ++k) e.rgb[k] = rgb;
+                                e.mask = static_cast<uint8_t>(e.mask | mask);
+                                row += e.rows;
+                                merged = true;
+                                break;
+                        }
+                        if (e.y > row && e.y < next) next = e.y;
+                }
+                if (merged) continue;
+                if (_edgeCount == MaxPendingEdges || _edgeRows == capacity) {
+                        const Error err = resolveEdges(deadline); // everything pending written: none left
+                        if (err.isError()) return err;
+                        next = end;
+                }
+                const uint32_t room = capacity - _edgeRows;
+                const auto     n = static_cast<uint16_t>(next - row < room ? next - row : room);
+                PendingEdge   &e = _edgesPending[_edgeCount++];
+                e.x = x;
+                e.y = static_cast<uint16_t>(row);
+                e.rows = n;
+                e.mask = mask;
+                for (uint8_t k = from; k < to; ++k) e.rgb[k] = rgb;
+                _edgeRows = static_cast<uint16_t>(_edgeRows + n);
+                row += n;
+        }
+        return Error::Ok;
+}
+
+// The pending edge groups: what the batch wrote run, the groups read into the fill line (one
+// job), their pixels set, and their writes added to the batch (the line kept until it runs).
+Error Surface::resolveEdges(const Deadline &deadline) {
+        if (_edgeCount == 0) return Error::Ok;
+        constexpr size_t         GroupBytes = Align * BytesPerPixel;
+        const BlitChain::Picture surface = picture(back());
+        const BlitChain::Picture buffer{_line, Align, _edgeRows, BytesPerPixel};
+        Error                    err = runChain(deadline);
+        size_t                   offset = 0;
+        for (size_t i = 0; i < _edgeCount && err.isOk(); ++i) {
+                const PendingEdge &e = _edgesPending[i];
+                err = _chain.add(surface, e.x, e.y, buffer, 0, static_cast<uint16_t>(offset), Align, e.rows);
+                offset += e.rows;
+        }
+        if (err.isOk()) err = runChain(deadline);
+        const size_t bytes = (offset * GroupBytes + LineAlign - 1) / LineAlign * LineAlign;
+        if (err.isOk()) (void)esp_cache_msync(_line, bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+        offset = 0;
+        for (size_t i = 0; i < _edgeCount && err.isOk(); ++i) {
+                const PendingEdge &e = _edgesPending[i];
+                for (uint16_t r = 0; r < e.rows; ++r) {
+                        uint8_t *p = _line + (offset + r) * GroupBytes;
+                        for (uint8_t k = 0; k < Align; ++k, p += BytesPerPixel) {
+                                if ((e.mask & (1u << k)) == 0) continue;
+                                p[0] = static_cast<uint8_t>(e.rgb[k]);
+                                p[1] = static_cast<uint8_t>(e.rgb[k] >> 8);
+                                p[2] = static_cast<uint8_t>(e.rgb[k] >> 16);
+                        }
+                }
+                offset += e.rows;
+        }
+        if (err.isOk()) (void)esp_cache_msync(_line, bytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        offset = 0;
+        for (size_t i = 0; i < _edgeCount && err.isOk(); ++i) {
+                const PendingEdge &e = _edgesPending[i];
+                err = _chain.add(buffer, 0, static_cast<uint16_t>(offset), surface, e.x, e.y, Align, e.rows);
+                offset += e.rows;
+        }
+        if (err.isError()) _chain.clear();
+        _edgeCount = 0;
+        _edgeRows = 0;
+        return err;
+}
+
+Error Surface::endBatch(unsigned int timeoutMs) {
+        const Deadline deadline(timeoutMs);
+        const Error    err = flushBatch(deadline);
+        _batching = false;
+        return err;
+}
+
+// The job written run and waited for (none: the one under way waited for): every piece written,
+// the fills' lines free again.
+Error Surface::runChain(const Deadline &deadline) {
+        const Error err = _chain.run(remainingMs(deadline));
+        if (err.isOk()) {
+                _linesUsed = 0;
+                _fillLineCount = 0;
+        }
+        return err;
+}
+
+// Lines of @p width pixels of @p rgb for a batched fill: ones already made of the colour and at
+// least as long, or new ones from the lines' memory, as many rows of it as fit in MaxFillLineBytes
+// (up to MaxFillLineRows: a tall fill then takes that many times fewer descriptors); null when the
+// memory is full.
+const Surface::FillLine *Surface::fillLine(uint32_t rgb, uint16_t width) {
+        for (size_t i = 0; i < _fillLineCount; ++i)
+                if (_fillLines[i].rgb == rgb && _fillLines[i].width >= width) return &_fillLines[i];
+        const size_t rowBytes = size_t(width) * BytesPerPixel;
+        size_t       rows = MaxFillLineBytes / rowBytes;
+        rows = rows < 1 ? 1 : rows > MaxFillLineRows ? MaxFillLineRows : rows;
+        const size_t bytes = (rowBytes * rows + LineAlign - 1) / LineAlign * LineAlign;
+        if (_lines == nullptr || _linesUsed + bytes > _linesBytes) return nullptr;
+        uint8_t *line = _lines + _linesUsed;
+        _linesUsed += bytes;
+        const uint8_t b = static_cast<uint8_t>(rgb), g = static_cast<uint8_t>(rgb >> 8),
+                      r = static_cast<uint8_t>(rgb >> 16);
+        const uint32_t w0 = uint32_t(b) | uint32_t(g) << 8 | uint32_t(r) << 16 | uint32_t(b) << 24;
+        const uint32_t w1 = uint32_t(g) | uint32_t(r) << 8 | uint32_t(b) << 16 | uint32_t(g) << 24;
+        const uint32_t w2 = uint32_t(r) | uint32_t(b) << 8 | uint32_t(g) << 16 | uint32_t(r) << 24;
+        auto          *words = reinterpret_cast<uint32_t *>(line); // 4 pixels: 3 words; rows back to back
+        for (size_t i = 0; i < size_t(width) / Align * rows; ++i) {
+                words[3 * i] = w0;
+                words[3 * i + 1] = w1;
+                words[3 * i + 2] = w2;
+        }
+        (void)esp_cache_msync(line, bytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        size_t slot = _fillLineCount;
+        if (slot == MaxFillLines) { // all in use: one forgotten (its line stays until the job runs)
+                slot = _fillLineNext;
+                _fillLineNext = static_cast<uint8_t>((_fillLineNext + 1) % MaxFillLines);
+        } else {
+                ++_fillLineCount;
+        }
+        _fillLines[slot] = FillLine{rgb, width, static_cast<uint16_t>(rows), line};
+        return &_fillLines[slot];
+}
+
+Error Surface::enableBatching(size_t maxPieces, size_t maxRows, size_t lineBytes) {
+        if (!isStarted()) return Error::InvalidState;
+        if (maxPieces == 0 || lineBytes < stride()) return Error::Invalid;
+        if (_lines != nullptr) return Error::Ok;
+        const Deadline deadline(WaitForever);
+        Error          err = runChain(deadline);
+        if (err.isError()) return err;
+        const size_t bytes = (lineBytes + LineAlign - 1) / LineAlign * LineAlign;
+        auto        *lines = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, bytes, LineAlign));
+        if (lines == nullptr) return Error::NoMem;
+        _chain.stop();
+        err = _chain.start(BlitChain::Conversion::None, maxPieces, maxRows);
+        if (err.isError()) {
+                Memory::free(lines);
+                const Error back = _chain.start(BlitChain::Conversion::None, MaxPieces, MaxFillRows);
+                return back.isError() ? back : err;
+        }
+        _lines = lines;
+        _linesBytes = bytes;
+        _linesUsed = 0;
+        _fillLineCount = 0;
+        _fillLineNext = 0;
+        return Error::Ok;
 }
 
 Error Surface::copy(Span<const Copy> copies, unsigned int timeoutMs) {
@@ -603,10 +898,11 @@ Error Surface::copy(Span<const Copy> copies, unsigned int timeoutMs) {
         } else {
                 err = prepare(deadline);
         }
+        if (err.isOk() && _batching) err = flushBatch(deadline); // it reads what the batch writes
         if (err.isError()) return err;
         const BlitChain::Picture pic = picture(back());
         for (const Copy &c : copies) {
-                if (_chain.count() == MaxPieces) err = _chain.run(remainingMs(deadline));
+                if (_chain.count() == _chain.capacity()) err = runChain(deadline);
                 if (err.isOk())
                         err = _chain.add(pic, c.from.x, c.from.y, pic, c.toX, c.toY, c.from.width, c.from.height);
                 if (err.isError()) {
@@ -615,19 +911,23 @@ Error Surface::copy(Span<const Copy> copies, unsigned int timeoutMs) {
                 }
                 if (_buffering == Buffering::Double) markDamage(Rect{c.toX, c.toY, c.from.width, c.from.height});
         }
-        return _chain.run(remainingMs(deadline));
+        return runChain(deadline);
 }
 
 Result<uint32_t> Surface::present(unsigned int timeoutMs) {
         if (!isStarted()) return makeError<uint32_t>(Error::InvalidState);
         if (_buffering == Buffering::Single) {
-                // Shown as it was drawn.
+                // Shown as it was drawn (a batch's pieces once they are).
+                if (_batching) {
+                        const Error err = flushBatch(Deadline(timeoutMs));
+                        if (err.isError()) return makeError<uint32_t>(err);
+                }
                 _shown.store(++_presents, std::memory_order_release);
                 return makeResult(_presents);
         }
         const Deadline deadline(timeoutMs);
         Error          err = prepare(deadline);
-        if (err.isOk()) err = _chain.wait(remainingMs(deadline)); // a started copy, finished before the swap
+        if (err.isOk()) err = flushBatch(deadline); // a started copy or a batch, finished before the swap
         if (err.isError()) return makeError<uint32_t>(err);
         const size_t words = size_t(_tileWords) * _tileRows;
         std::memcpy(_forward, _damage, words * sizeof(uint32_t));

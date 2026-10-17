@@ -54,6 +54,13 @@ class TableModel final : public ItemModel {
                 /** @brief Returns the row whose key is @p key, or -1. */
                 int find(int64_t key) const;
 
+                /**
+                 * @brief Returns true if the rows differ from those when this was last called
+                 *        (their texts, emphasis and keys, by a hash): a view shown them already
+                 *        needn't be reset and drawn again.
+                 */
+                bool takeChanged();
+
                 size_t      count() const override { return _rows.size(); }
                 StringView  text(size_t row) const override { return cell(row, 0); }
                 const Icon *icon(size_t row, uint16_t size) const override {
@@ -81,6 +88,7 @@ class TableModel final : public ItemModel {
                 List<Row>  _rows{MemSpace::Psram};
                 List<char> _texts{MemSpace::Psram};
                 Column     _columns[MaxColumns] = {};
+                uint64_t   _shownHash = 0; // takeChanged()'s last
                 size_t     _columnCount = 0;
 };
 

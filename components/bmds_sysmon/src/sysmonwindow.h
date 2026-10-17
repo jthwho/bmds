@@ -106,7 +106,7 @@ class SysmonWindow final : public GuiWindow {
                 void     markTabs();
                 void     say(const char *text); // in the status bar for a few seconds
                 void     fillGraph(Graph *graph, StringView name, const char *label, bool percentOfCore = false);
-                void     reset(DetailsView *view, const TableModel &model, int64_t selectedKey);
+                void     reset(DetailsView *view, TableModel &model, int64_t selectedKey);
                 int64_t  selectedKey(DetailsView *view, const TableModel &model) const;
                 uint64_t shareSince(List<Seen> &seen, int64_t key, uint64_t cpuUs, int64_t elapsedUs) const;
 

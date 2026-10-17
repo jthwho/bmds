@@ -38,6 +38,33 @@ Error TableModel::add(Span<const StringView> texts, Emphasis emphasis, int64_t k
         return _rows.append(row);
 }
 
+bool TableModel::takeChanged() {
+        // FNV-1a over the rows: their keys, emphasis and texts (the empty table hashes to the basis).
+        uint64_t   h = 0xcbf29ce484222325ull;
+        const auto mix = [&h](uint64_t v) {
+                for (int i = 0; i < 8; ++i, v >>= 8) {
+                        h ^= v & 0xff;
+                        h *= 0x100000001b3ull;
+                }
+        };
+        mix(_rows.size());
+        for (size_t r = 0; r < _rows.size(); ++r) {
+                mix(uint64_t(_rows[r].key));
+                mix(uint64_t(_rows[r].emphasis));
+                for (size_t c = 0; c < MaxColumns; ++c) {
+                        const StringView t = cell(r, c);
+                        mix(t.size());
+                        for (const char ch : t) {
+                                h ^= uint8_t(ch);
+                                h *= 0x100000001b3ull;
+                        }
+                }
+        }
+        const bool changed = h != _shownHash;
+        _shownHash = h;
+        return changed;
+}
+
 int TableModel::find(int64_t key) const {
         for (size_t i = 0; i < _rows.size(); ++i)
                 if (_rows[i].key == key) return int(i);

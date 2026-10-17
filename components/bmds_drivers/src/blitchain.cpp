@@ -136,6 +136,7 @@ Error BlitChain::start(Conversion conversion, size_t maxPieces, size_t maxRows) 
         while (_done.tryAcquire().isOk()) {}
         _busy = false;
         _stuck = 0;
+        _jobs = 0;
         _txCount = 0;
         _rxCount = 0;
         _max = maxPieces;
@@ -241,16 +242,25 @@ Error BlitChain::addRepeated(const Picture &from, uint16_t fromX, uint16_t fromY
 
 Error BlitChain::addFill(const uint8_t *line, const Picture &to, uint16_t toX, uint16_t toY, uint16_t width,
                          uint16_t height) {
+        return addFill(line, 1, to, toX, toY, width, height);
+}
+
+Error BlitChain::addFill(const uint8_t *line, uint16_t lineRows, const Picture &to, uint16_t toX, uint16_t toY,
+                         uint16_t width, uint16_t height) {
         if (_hw == nullptr) return Error::InvalidState;
-        if (_rxCount == _max || _txCount + height > _maxTx) return Error::Full;
-        const Picture row{line, width, 1, to.bytesPerPixel};
+        if (lineRows == 0) return Error::Invalid;
+        const size_t descriptors = (size_t(height) + lineRows - 1) / lineRows;
+        if (_rxCount == _max || _txCount + descriptors > _maxTx) return Error::Full;
+        const Picture rows{line, width, lineRows, to.bytesPerPixel};
         if (_conversion != Conversion::None || width == 0 || height == 0 || line == nullptr ||
             !fits(to, toX, toY, width, height))
                 return Error::Invalid;
         if (_busy && wait(StopTimeoutMs).isError()) return Error::Timeout;
         Hardware &hw = *_hw;
-        for (uint16_t r = 0; r < height; ++r, ++_txCount)
-                describe(at(hw.tx, _txCount), row, 0, 0, width, 1, false, at(hw.tx, _txCount + 1));
+        for (uint32_t r = 0; r < height; r += lineRows, ++_txCount) {
+                const auto n = static_cast<uint16_t>(height - r < lineRows ? height - r : lineRows);
+                describe(at(hw.tx, _txCount), rows, 0, 0, width, n, false, at(hw.tx, _txCount + 1));
+        }
         describe(at(hw.rx, _rxCount), to, toX, toY, width, height, false, at(hw.rx, _rxCount + 1));
         ++_rxCount;
         return Error::Ok;
@@ -285,6 +295,7 @@ Error BlitChain::submit() {
         const esp_err_t err = dma2d_enqueue(hw.pool, &hw.config, hw.job);
         if (err != ESP_OK) return Error::fromEspErr(err);
         _busy = true;
+        ++_jobs;
         return Error::Ok;
 }
 

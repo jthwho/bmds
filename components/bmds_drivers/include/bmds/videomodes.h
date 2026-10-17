@@ -66,6 +66,25 @@ namespace VideoModes {
         Result<VideoTiming> fullScreen(uint16_t width, uint16_t height, uint32_t aspectX, uint32_t aspectY,
                                        const Edid &monitor);
 
+        /**
+         * @brief The least margin, in percent, of a DSI link's lanes over its pixels: sent
+         *        in burst mode with none, the HDMI bridge lost the picture now and then
+         *        (`devplan/display.md` §5e).
+         */
+        inline constexpr uint32_t LaneMarginPercent = 15;
+
+        /**
+         * @brief The lane rate in Mbps for sending @p timing as 24-bit pixels over @p lanes:
+         *        the slowest at least `LaneMarginPercent` over the pixels' rate that a PLL of
+         *        reference @p refMhz makes exactly (the DSI PHY's: M/N times the reference,
+         *        M even, the reference over N 5 to 40 MHz) and that makes a line a whole
+         *        number of lane byte clocks. Up to @p maxMbps; with no such rate, the margin
+         *        gives way first (the slowest rate both ways above the pixels'), then the line
+         *        (the slowest the PLL makes), then the PLL (the pixels' rate itself).
+         * @return The rate, or 0 (the pixels' rate is above @p maxMbps, or a zero argument).
+         */
+        uint32_t laneMbps(const VideoTiming &timing, uint8_t lanes, uint32_t refMhz, uint32_t maxMbps);
+
         /** @brief CVT reduced blanking (v1) for @p width × @p height at @p hz. */
         VideoTiming cvtReducedBlanking(uint16_t width, uint16_t height, uint16_t hz);
 

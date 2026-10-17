@@ -185,6 +185,17 @@ until silicon v3; then test again.
   channel, which another job may now hold, and ending that would stop the wrong transfer. Note
   in `on_job_picked` that the job was picked, and end only those. A job still queued can't be
   withdrawn. `BlitChain` does this for any job older than 250 ms.
+- **IDF's 2D-DMA job costs more than its pixels when they are few** (`devplan/windows.md` §4n):
+  the queue, the channels connected and set up in `on_job_picked`, the callbacks registered, the
+  cache syncs and the semaphore wait: ~150 µs a job measured, 44% of the window manager's CPU when
+  each GUI fill ran its own. Put many pieces in one job.
+- **A job can't keep its channels without an end of frame:** with the last transmit descriptor's
+  `suc_eof` clear, the receive channel raises `DESC_EMPTY` at the chain's end even when every byte
+  arrived, and IDF's interrupt handler frees the channels on it (it frees on SUC_EOF, ERR_EOF,
+  DESC_ERROR and DESC_EMPTY alike). `on_desc_done` doesn't help.
+- **In one 2D-DMA job, the transmit side can read ahead of the receive side's writes:** a piece that
+  reads what an earlier piece of the same job writes (a read-modify-write of an edge, a scroll)
+  may read the old pixels. Run the job before.
 - **What PSRAM takes, with the 720p scan reading 166 MB/s:** the 2D-DMA writes ~150 MB/s
   (RGB565 widened to RGB888: 50 Mpixel/s, a 1280×720 frame in 18.3 ms, over a 60 Hz frame's
   16.7 ms). The CPU reads it at only ~70-80 MB/s through the cache (doubling 640×360 RGB565
@@ -279,6 +290,27 @@ until silicon v3; then test again.
   clock's -7084 ppb (2026-10-13). So one clock following the other takes its rate as it is and
   corrects only the offset (`ptpservice.cpp`); a PI from scratch on reads a microsecond apart
   swung the follower's rate by 1-2 ppm.
+
+## 4a'. The MIPI-DSI link (`devplan/display.md` §5e)
+
+- **Give the lanes margin over the pixels.** The host sends video in burst mode (IDF's choice and
+  ours); with the lane rate exactly the pixels' (720p60 RGB888 on 2 lanes: 960 Mbps) the HDMI
+  monitor went black and resynced now and then, and showed banding, with no underrun counted.
+  Espressif's FAQ asks about 20% over. Ask for a rate the PHY's PLL makes exactly (on revision
+  1.x its reference is PLL_F20M: a multiple of 40 Mbps, or of 20 with another divider) and one that
+  makes the line a whole number of lane byte clocks (`laneMbps / 8 / pixelMHz × htotal`).
+- **`vid_hline_time` is the whole line**, in lane byte clocks: IDF's LL sums the four parts given
+  to it, so rounding each part separately can make the link's line longer or shorter than the
+  pixels'. Round the total and give the difference to the front porch.
+- **INT_ST0 and INT_ST1 of the DSI host clear when read.** Read them in one place (the scan reads
+  them once a frame) and hand the result on; a dump that reads them steals the flags.
+- **The DSI host's and bridge's registers fault with their clocks off**, like the DW-GDMA's.
+- **Don't disable the DW-GDMA in mid-block to restart the scan.** The bridge's FIFO keeps the old
+  frame's pixels (they come out first: an underrun), and with it drained the restarted stream
+  still stuck in 7 of 8 tries. Let the DMA halt itself at a frame's end (the first descriptor
+  made not valid while the last block is sent), drain the FIFO, turn the DPI output off in the
+  vertical blank, and turn it on again only once the FIFO is mostly full (§5f): the DSI link
+  stays up and the monitor keeps its picture.
 
 ## 4b. The crypto engines (`devplan/network.md` §26-27)
 

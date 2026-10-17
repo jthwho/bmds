@@ -149,6 +149,43 @@ Result<VideoTiming> VideoModes::fitToClock(const VideoTiming &timing, const uint
         return makeResult(t);
 }
 
+namespace {
+
+        // Whether the DSI PHY's PLL makes @p mbps exactly from @p refMhz (IDF's search:
+        // M = rate × N / reference, even; reference / N from 5 to 40 MHz).
+        bool pllMakes(uint32_t mbps, uint32_t refMhz) {
+                const uint32_t minN = refMhz / 40 > 1 ? refMhz / 40 : 1;
+                for (uint32_t n = minN; n <= refMhz / 5; ++n) {
+                        const uint32_t m = mbps * n / refMhz;
+                        if (m % 2 == 0 && m * refMhz == mbps * n) return true;
+                }
+                return false;
+        }
+
+        // Whether a line of @p t is a whole number of byte clocks at @p mbps a lane.
+        bool wholeLine(const VideoTiming &t, uint32_t mbps) {
+                return uint64_t(t.hTotal()) * mbps * 1000 % (uint64_t(t.pixelKhz) * 8) == 0;
+        }
+
+} // namespace
+
+uint32_t VideoModes::laneMbps(const VideoTiming &timing, uint8_t lanes, uint32_t refMhz, uint32_t maxMbps) {
+        if (lanes == 0 || refMhz == 0 || timing.pixelKhz == 0) return 0;
+        const uint32_t pixelMbps = (timing.pixelKhz * 24 / lanes + 999) / 1000;
+        if (pixelMbps > maxMbps) return 0;
+        const uint32_t marginMbps = (pixelMbps * (100 + LaneMarginPercent) + 99) / 100;
+        // Both ways with the margin, both ways without it, the PLL's alone; else the pixels'.
+        struct Pass {
+                        uint32_t from;
+                        bool     line;
+        };
+        const Pass passes[] = {{marginMbps, true}, {pixelMbps, true}, {pixelMbps, false}};
+        for (const Pass &p : passes)
+                for (uint32_t mbps = p.from; mbps <= maxMbps; ++mbps)
+                        if (pllMakes(mbps, refMhz) && (!p.line || wholeLine(timing, mbps))) return mbps;
+        return pixelMbps;
+}
+
 Result<VideoTiming> VideoModes::parse(StringView text) {
         uint32_t w = 0, h = 0, hz = 0;
         if (!parseNumber(text, 'x', w) || !parseNumber(text, '@', h) || !parseNumber(text, '\0', hz))

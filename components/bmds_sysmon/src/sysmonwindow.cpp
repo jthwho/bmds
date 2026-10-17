@@ -494,7 +494,9 @@ int64_t SysmonWindow::selectedKey(DetailsView *view, const TableModel &model) co
 }
 
 // The view shows the model filled again, the selected row (by key) kept.
-void SysmonWindow::reset(DetailsView *view, const TableModel &model, int64_t key) {
+void SysmonWindow::reset(DetailsView *view, TableModel &model, int64_t key) {
+        // The same rows as shown: nothing to draw again (the selection stays as it is).
+        if (!model.takeChanged()) return;
         const int row = key != INT64_MIN ? model.find(key) : -1;
         if (row >= 0) {
                 const size_t rows[] = {size_t(row)};

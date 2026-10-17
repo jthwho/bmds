@@ -298,9 +298,10 @@ The scan had no underruns through any of it.
 rebuilding the link so the picture stays in step; a surface that stalls in its first second is
 given up for the one before). On the board, 1280×360, ×240 and ×180 surfaces at 2×, 3× and 4×:
 120 frames in 2 s each, no underruns, stalls or restarts; a switch takes ~62 ms (the link's
-rebuild). The cost is the descriptors' re-validation: ~175,000 cycles a frame (~2.9% of a core)
-against ~4,200 in block mode, ~240 cycles a descriptor in uncached stores; to cut later (cached
-writes and a write-back of the range) if it matters. 46 KB of internal DMA RAM for the list.
+rebuild; since 2026-10-16 ~15 ms with the link kept up, `display.md` §5f). The cost is the
+descriptors' re-validation: ~175,000 cycles a frame (~2.9% of a core) against ~4,200 in block
+mode, ~240 cycles a descriptor in uncached stores; to cut later (cached writes and a write-back
+of the range) if it matters. 46 KB of internal DMA RAM for the list.
 
 ### 10b'''. A full-screen Blocks frame on the line-mode scan (2026-10-14, `display ppa path`)
 

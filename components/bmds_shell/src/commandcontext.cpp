@@ -10,6 +10,7 @@
 #include <bmds/clock.h>
 #include <bmds/console.h>
 #include <bmds/executor.h>
+#include <bmds/memory.h>
 #include <bmds/shell.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -91,11 +92,24 @@ void CommandContext::eprint(StringView text) {
 }
 
 void CommandContext::vwrite(int fd, const char *fmt, va_list args) {
-        char      buf[PrintBufferBytes];
+        char    buf[PrintBufferBytes];
+        va_list again;
+        va_copy(again, args);
         const int len = std::vsnprintf(buf, sizeof(buf), fmt, args);
-        if (len <= 0) return;
-        const size_t n = static_cast<size_t>(len) < sizeof(buf) ? static_cast<size_t>(len) : sizeof(buf) - 1;
-        (void)write(fd, ByteSpan(reinterpret_cast<const uint8_t *>(buf), n));
+        if (len > 0 && static_cast<size_t>(len) < sizeof(buf)) {
+                (void)write(fd, ByteSpan(reinterpret_cast<const uint8_t *>(buf), static_cast<size_t>(len)));
+        } else if (len > 0) {
+                // Longer than the stack's buffer (a long usage line): formatted again whole.
+                auto *big = static_cast<char *>(Memory::alloc(MemSpace::Psram, static_cast<size_t>(len) + 1));
+                if (big != nullptr) {
+                        std::vsnprintf(big, static_cast<size_t>(len) + 1, fmt, again);
+                        (void)write(fd, ByteSpan(reinterpret_cast<const uint8_t *>(big), static_cast<size_t>(len)));
+                        Memory::free(big);
+                } else {
+                        (void)write(fd, ByteSpan(reinterpret_cast<const uint8_t *>(buf), sizeof(buf) - 1));
+                }
+        }
+        va_end(again);
         return;
 }
 

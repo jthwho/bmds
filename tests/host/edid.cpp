@@ -257,6 +257,25 @@ TEST_CASE("VideoModes: fitting a mode to the clocks the PLLs make") {
         CHECK(fitToClock(parse("1920x1080@60").value(), Plls, 2, 0, 125'000).error() == Error::NotSupported);
 }
 
+TEST_CASE("VideoModes::laneMbps: a margin, a rate the PLL makes, whole lines") {
+        using namespace bmds::VideoModes;
+        // Espressif's 720p60 (80 MHz, 1800 a line) on 2 lanes: 960 for the pixels, 1120 with
+        // the margin (20 MHz × 56; 3150 byte clocks a line).
+        const VideoTiming hd = {80'000, 1280, 408, 32, 80, 720, 3, 5, 13, true, false, false};
+        CHECK(laneMbps(hd, 2, 20, 1500) == 1120);
+        // 1080p30 (70 MHz, 2080 a line): 840 for the pixels, 980 (a multiple of 70: whole lines).
+        const VideoTiming fhd = {70'000, 1920, 48, 32, 80, 1080, 3, 5, 8, true, false, false};
+        CHECK(laneMbps(fhd, 2, 20, 1500) == 980);
+        // No room for the margin: the slowest rate above the pixels' that is whole and exact.
+        const uint32_t tight = laneMbps(hd, 2, 20, 1000);
+        CHECK(tight >= 960);
+        CHECK(tight <= 1000);
+        CHECK(uint64_t(hd.hTotal()) * tight * 1000 % (uint64_t(hd.pixelKhz) * 8) == 0);
+        // The pixels beyond the link, or nonsense.
+        CHECK(laneMbps(hd, 1, 20, 1500) == 0);
+        CHECK(laneMbps(hd, 0, 20, 1500) == 0);
+}
+
 TEST_CASE("Edid::takes: a listed mode, or one inside the range limits") {
         Edid e;
         e.established = 1u << 23; // 720x400 at 70 Hz

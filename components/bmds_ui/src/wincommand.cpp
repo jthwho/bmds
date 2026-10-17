@@ -1023,6 +1023,7 @@ namespace {
                            static_cast<unsigned long>(s.roundUsMax), static_cast<unsigned long>(s.lastRoundUs));
                 ctx.printf("Deferred: %lu redraws (their windows' owners busy)\n",
                            static_cast<unsigned long>(s.deferred));
+                ctx.printf("Jobs:     %lu 2D-DMA jobs on the desktop's surface\n", static_cast<unsigned long>(s.jobs));
                 return Shell::ExitSuccess;
         }
 

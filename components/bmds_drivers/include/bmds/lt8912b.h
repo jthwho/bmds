@@ -108,6 +108,23 @@ class Lt8912b {
                  */
                 Error measured(uint16_t &first, uint16_t &lines);
 
+                /**
+                 * @brief Reads register @p reg of page @p page (0 main, 1 DSI, 2 AVI). A test aid
+                 *        (`display regs`).
+                 * @return The value, `Invalid` (the page), `InvalidState` (not attached), or the
+                 *         bus's error.
+                 * @blocking
+                 */
+                Result<uint8_t> readRegister(uint8_t page, uint8_t reg);
+
+                /**
+                 * @brief Writes @p value to register @p reg of page @p page. A test aid
+                 *        (`display chip set`): the next `configure()` writes its own again.
+                 * @return `Ok`, `Invalid`, `InvalidState`, or the bus's error.
+                 * @blocking
+                 */
+                Error writeRegister(uint8_t page, uint8_t reg, uint8_t value);
+
                 /** @brief Returns the bus. */
                 I2cBus &bus() { return _bus; }
 

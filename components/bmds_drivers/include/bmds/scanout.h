@@ -63,6 +63,10 @@ class Scanout {
                                 void (*onRestart)(void *arg) =
                                         nullptr;              ///< After a rebuild of the link: re-lock the bridge chip.
                                 void *onRestartArg = nullptr; ///< Its argument.
+                                uint32_t laneMbps =
+                                        0; ///< The lanes' rate, at least the pixels' (0: `VideoModes::laneMbps()`).
+                                bool continuousClock = false; ///< The clock lane always in high speed.
+                                bool frameAck = true;         ///< The host asks for an acknowledge after each frame.
                 };
 
                 /** @brief Counters since `start()`. */
@@ -83,6 +87,11 @@ class Scanout {
                                 uint32_t isrCycles = 0;      ///< The block interrupts' cycles in all (wraps).
                                 uint32_t fallbacks = 0;      ///< Surfaces given up for stalling (`show()`).
                                 uint32_t switches = 0;       ///< Surfaces (or modes) switched to (`show()`).
+                                uint32_t linkErrorFrames = 0; ///< Frames in which the DSI host flagged an error.
+                                uint32_t linkErrors0 = 0;     ///< The DSI host's INT_ST0 flags seen since `start()`.
+                                uint32_t linkErrors1 = 0;     ///< Its INT_ST1 flags seen since `start()`.
+                                uint32_t laneMbps = 0;        ///< The lanes' rate as set.
+                                uint32_t restarts = 0;        ///< Switches (`show()`) made with the link kept up.
                 };
 
                 /** @brief A scanout on DSI bus @p bus (0 on the ESP32-P4). */
@@ -110,7 +119,8 @@ class Scanout {
                  *        height) from the next restart of the stream, made now (the
                  *        picture skips a frame). The surface sent before goes on
                  *        being drawn; its presents swap at once from then on.
-                 * The link is rebuilt for it (the monitor may see a frame's gap). A
+                 * The stream restarts on it at a frame's top with the link kept up
+                 * (the link is rebuilt only if the DMA won't stop). A
                  * surface that stalls the stream in its first second is given up:
                  * the surface before comes back (`Stats::fallbacks`).
                  * @return `Ok`, `InvalidState` (not running), `Invalid` (the size),
@@ -122,7 +132,8 @@ class Scanout {
                 /**
                  * @brief As `show()`, at @p timing (fitted to the clocks already, the surface its
                  *        width and at most its height) over @p lanes data lanes (0: as now): the
-                 *        link rebuilt at its clock, the monitor resyncing. A surface that stalls
+                 *        link rebuilt at its clock, the monitor resyncing (at the timing and lanes
+                 *        sent now, as `show(surface, timeoutMs)`: the link kept up). A surface that stalls
                  *        falls back with the timing and lanes it had.
                  * @blocking
                  */
@@ -143,6 +154,40 @@ class Scanout {
                         _lineInterrupts = every;
                         return;
                 }
+
+                /**
+                 * @brief Sets the clock lane's mode and the frame acknowledge, at once and for
+                 *        rebuilds (a test aid: `display link`).
+                 * @par Thread Safety
+                 * Not with `start()` or `stop()`.
+                 */
+                void setLinkOptions(bool continuousClock, bool frameAck);
+
+                /**
+                 * @brief Sets the lanes' rate (`Config::laneMbps`), taken when the link is next
+                 *        built (`show()` with a timing builds it anew). A test aid (`display link`).
+                 * @par Thread Safety
+                 * Not with `start()` or `stop()`.
+                 */
+                void setLaneMbps(uint32_t mbps) {
+                        _config.laneMbps = mbps;
+                        return;
+                }
+
+                /**
+                 * @brief Returns the DSI host's register block while the link is up, else null
+                 *        (its clock is off: a read faults). A test aid (`display dsi`).
+                 * @par Thread Safety
+                 * Not with `start()` or `stop()`; a rebuild of the link (the supervisor's) can
+                 * take the block away under a reader.
+                 */
+                volatile uint32_t *hostRegisters() const;
+
+                /** @brief As `hostRegisters()`, the DSI bridge's (the DMA's side, to DPI). */
+                volatile uint32_t *bridgeRegisters() const;
+
+                /** @brief Returns the link options (`setLinkOptions()`). */
+                const Config &config() const { return _config; }
 
                 /** @brief Returns the surface being sent, or null. */
                 Surface *surface() const { return _surface; }
@@ -182,6 +227,9 @@ class Scanout {
                 Error       buildList();                    // the DMA's list for the plan, on the shown buffer
                 void        useList();                      // the channel pointed at it
                 void        switchSurface();                // show()'s request, on the supervisor's task
+                bool        haltAtFrameEnd(); // the DMA stopped by itself at the frame's end (false: it didn't)
+                bool        stopStream();     // the DPI output and the DMA stopped (false: the DMA won't)
+                void        startStream();    // and started again at the frame's top
                 void        resync();
                 Error       rebuild(bool recovery); // the link anew (@p recovery: a stuck one's, counted)
                 void        fallBack();
@@ -212,12 +260,18 @@ class Scanout {
                 std::atomic<uint32_t>  _stalls{0};
                 std::atomic<uint32_t>  _underruns{0};
                 std::atomic<bool>      _stalled{false};
+                std::atomic<bool>      _halt{false};     // haltAtFrameEnd() asks the interrupt
+                std::atomic<bool>      _halted{false};   // and the DMA stopped where asked
                 std::atomic<bool>      _underran{false}; // the bridge ran dry: the picture is out of step
                 uint32_t               _isrCyclesMax = 0;
                 uint32_t               _isrCycles = 0; // written by the interrupt alone
+                uint32_t               _linkErrorFrames = 0; // the DSI host's flags, read a frame (the interrupt's)
+                uint32_t               _linkErrors0 = 0;
+                uint32_t               _linkErrors1 = 0;
                 uint32_t               _resyncs = 0;
                 uint32_t               _rebuilds = 0;
                 uint32_t               _switches = 0;
+                uint32_t               _restarts = 0; // the switches made with the link up
                 uint32_t               _failures = 0;
                 uint32_t               _blocksBefore = 0; // blocks sent before the last restart
                 Semaphore              _wake{4, 0};

@@ -35,6 +35,7 @@
 #include <bmds/memory.h>
 #include <bmds/placement.h>
 #include <bmds/scanout.h>
+#include <bmds/videomodes.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -55,6 +56,9 @@ namespace {
         // 2026-10-05, a full-screen fill 16 ms (5 gave 8 ms, and underran the scan
         // when a shell started meanwhile).
         constexpr uint32_t Dma2dWriteLevel = 6;
+        // The bridge's FIFO (1024 64-bit words) at least this full before a restarted stream's
+        // DPI output goes on (startStream()): with 512, one restart in 20 still underran.
+        constexpr uint32_t StartFifoWords = 768;
 
         Error espError(esp_err_t err) {
                 return err == ESP_OK ? Error(Error::Ok) : Error::fromEspErr(err);
@@ -171,6 +175,7 @@ struct Scanout::Hardware {
                 // uncached memory, not three read-modify-writes of its bit fields.
                 uint32_t ctrlInterrupt = 0;
                 uint32_t ctrlQuiet = 0;
+                uint32_t ctrlInvalid = 0; // not valid: the DMA stops there (haltAtFrameEnd())
 };
 
 // The interrupts: a block sent, the DMA at an invalid descriptor, the DSI
@@ -245,6 +250,14 @@ struct ScanoutIsr {
                         const bool wrapped = s._primed && at < s._lastItem;
                         s._sent.fetch_add(s._primed ? (at + blocks - s._lastItem) % blocks : at,
                                           std::memory_order_relaxed);
+                        if (s._halt.load(std::memory_order_relaxed)) {
+                                // A switch stops the DMA at the frame's end: the first descriptor
+                                // not valid once the last is under way, and nothing made valid again.
+                                if (at == blocks - 1) item(s, 0)->ctrl_hi.val = hw.ctrlInvalid;
+                                s._lastItem = at;
+                                s._primed = true;
+                                return false;
+                        }
                         // The descriptors finished since the last interrupt valid again, from the
                         // one before it (a finished one's write-back, clearing it, can land after
                         // its interrupt: the next interrupt mends it, a frame before it is needed);
@@ -273,6 +286,13 @@ struct ScanoutIsr {
                                 s._swapPhase = 1;
                         }
                         if (wrapped) {
+                                // The DSI host's error flags (cleared by reading): what the link saw.
+                                const uint32_t st0 = hw.hal.host->int_st0.val, st1 = hw.hal.host->int_st1.val;
+                                if ((st0 | st1) != 0) {
+                                        ++s._linkErrorFrames;
+                                        s._linkErrors0 |= st0;
+                                        s._linkErrors1 |= st1;
+                                }
                                 s._frames.fetch_add(1, std::memory_order_relaxed);
                                 surface.frameFromIsr(notify);
                                 s._notifyPending = s._notifyPending || !notify;
@@ -288,6 +308,10 @@ struct ScanoutIsr {
                 BMDS_ISR_ATTR static bool invalidBlock(dw_gdma_channel_handle_t, const dw_gdma_break_event_data_t *,
                                                        void *arg) {
                         auto &s = *static_cast<Scanout *>(arg);
+                        if (s._halt.load(std::memory_order_relaxed)) {
+                                s._halted.store(true, std::memory_order_release); // asked for: no stall
+                                return false;
+                        }
                         s._stalls.fetch_add(1, std::memory_order_relaxed);
                         s._stalled.store(true, std::memory_order_release);
                         s._wake.releaseFromIsr();
@@ -323,6 +347,9 @@ Error Scanout::start(const Config &config, Surface &surface) {
         _swaps.store(0);
         _stalls.store(0);
         _underruns.store(0);
+        _linkErrorFrames = 0;
+        _linkErrors0 = 0;
+        _linkErrors1 = 0;
         _stalled.store(false);
         _underran.store(false);
         _stopping.store(false);
@@ -482,6 +509,8 @@ Error Scanout::buildList() {
         hw.ctrlInterrupt = word.ctrl_hi.val;
         dw_gdma_ll_lli_set_block_markers(&word, false, false, true);
         hw.ctrlQuiet = word.ctrl_hi.val;
+        dw_gdma_ll_lli_set_block_markers(&word, false, false, false);
+        hw.ctrlInvalid = word.ctrl_hi.val;
         _swapPhase = 0;
         _notifyPending = false;
         return Error::Ok;
@@ -519,8 +548,8 @@ Error Scanout::show(Surface &surface, const VideoTiming &timing, uint8_t lanes, 
 Error Scanout::startLink() {
         Hardware          &hw = *_hw;
         const VideoTiming &t = _config.timing;
-        const uint32_t     laneMbps = (t.pixelKhz * 24 / _config.lanes + 999) / 1000; // RGB888 on the link
-        if (laneMbps < MIPI_DSI_LL_MIN_PHY_MBPS || laneMbps > MIPI_DSI_LL_MAX_PHY_MBPS) return Error::Invalid;
+        const uint32_t     pixelMbps = (t.pixelKhz * 24 / _config.lanes + 999) / 1000; // RGB888 on the link
+        if (pixelMbps > MIPI_DSI_LL_MAX_PHY_MBPS) return Error::Invalid;
         if (_config.phyLdo >= 0) {
                 esp_ldo_channel_config_t ldo = {};
                 ldo.chan_id = _config.phyLdo;
@@ -542,7 +571,17 @@ Error Scanout::startLink() {
         if (err.isOk())
                 err = espError(
                         esp_clk_tree_enable_src(static_cast<soc_module_clk_t>(MIPI_DSI_PHY_CFG_CLK_SRC_DEFAULT), true));
+        uint32_t refHz = 0;
+        if (err.isOk())
+                err = espError(esp_clk_tree_src_get_freq_hz(static_cast<soc_module_clk_t>(pllRef),
+                                                            ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED, &refHz));
         if (err.isError()) return err;
+        // The lanes' rate: with a margin over the pixels', one the PLL makes, whole lines
+        // (devplan/display.md §5e); or what display/lanembps asks, if more than the pixels need.
+        const uint32_t laneMbps = _config.laneMbps != 0 ? (_config.laneMbps > pixelMbps ? _config.laneMbps : pixelMbps)
+                                                        : VideoModes::laneMbps(t, _config.lanes, refHz / 1'000'000,
+                                                                               MIPI_DSI_LL_MAX_PHY_MBPS);
+        if (laneMbps < MIPI_DSI_LL_MIN_PHY_MBPS || laneMbps > MIPI_DSI_LL_MAX_PHY_MBPS) return Error::Invalid;
         PERIPH_RCC_ATOMIC() {
                 mipi_dsi_ll_set_phy_config_clock_source(_bus, MIPI_DSI_PHY_CFG_CLK_SRC_DEFAULT);
                 mipi_dsi_ll_enable_phy_config_clock(_bus, true);
@@ -556,11 +595,8 @@ Error Scanout::startLink() {
         hw.laneMbps = laneMbps;
         hal.num_data_lanes = _config.lanes;
         mipi_dsi_hal_init(&hw.hal, &hal);
-        uint32_t refHz = 0;
-        err = espError(esp_clk_tree_src_get_freq_hz(static_cast<soc_module_clk_t>(pllRef),
-                                                    ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED, &refHz));
-        if (err.isError()) return err;
         mipi_dsi_hal_configure_phy_pll(&hw.hal, refHz, laneMbps);
+        hw.laneMbps = hw.hal.lane_bit_rate_mbps; // what the PLL makes
         for (int i = 0; !mipi_dsi_phy_ll_is_pll_locked(hw.hal.host); ++i) {
                 if (i == 100) return Error::Timeout;
                 Task::sleep(1);
@@ -653,7 +689,7 @@ Error Scanout::startDpi() {
         mipi_dsi_host_ll_dpi_enable_lp_horizontal_timing(host, false, false);
         mipi_dsi_host_ll_dpi_enable_lp_vertical_timing(host, false, false, false, false);
         mipi_dsi_host_ll_dpi_enable_lp_command(host, false);
-        mipi_dsi_host_ll_dpi_enable_frame_ack(host, true);
+        mipi_dsi_host_ll_dpi_enable_frame_ack(host, _config.frameAck);
         mipi_dsi_host_ll_dpi_set_video_burst_type(host, MIPI_DSI_LL_VIDEO_BURST_WITH_SYNC_PULSES);
         mipi_dsi_host_ll_dpi_set_video_packet_pixel_num(host, t.hActive);
         mipi_dsi_host_ll_dpi_set_trunks_num(host, 0);
@@ -664,8 +700,10 @@ Error Scanout::startDpi() {
         auto         bytes = [&](uint32_t pixels) {
                 return static_cast<uint32_t>(pixels * perPixel + 0.5);
         };
-        mipi_dsi_host_ll_dpi_set_horizontal_timing(host, bytes(t.hSync), bytes(t.hBack), bytes(t.hActive),
-                                                   bytes(t.hFront));
+        // The line's whole time exact (the front porch takes the rounding), or the link
+        // drifts against the pixels.
+        const uint32_t hsa = bytes(t.hSync), hbp = bytes(t.hBack), active = bytes(t.hActive);
+        mipi_dsi_host_ll_dpi_set_horizontal_timing(host, hsa, hbp, active, bytes(t.hTotal()) - hsa - hbp - active);
         mipi_dsi_host_ll_dpi_set_vertical_timing(host, t.vSync, t.vBack, t.vActive, t.vFront);
 
         dsi_brg_dev_t *bridge = hw.hal.bridge;
@@ -687,7 +725,8 @@ Error Scanout::startDpi() {
         err = espError(dw_gdma_channel_enable_ctrl(hw.dma, true));
         if (err.isError()) return err;
         mipi_dsi_host_ll_enable_video_mode(host, true);
-        mipi_dsi_host_ll_set_clock_lane_state(host, MIPI_DSI_LL_CLOCK_LANE_STATE_AUTO);
+        mipi_dsi_host_ll_set_clock_lane_state(host, _config.continuousClock ? MIPI_DSI_LL_CLOCK_LANE_STATE_HS
+                                                                            : MIPI_DSI_LL_CLOCK_LANE_STATE_AUTO);
         mipi_dsi_brg_ll_enable_dpi_output(bridge, true);
         mipi_dsi_brg_ll_update_dpi_config(bridge);
         return Error::Ok;
@@ -767,9 +806,12 @@ void Scanout::supervise() {
                 (void)_wake.acquire(CheckMs);
                 if (_stopping.load()) break;
                 if (_request.load(std::memory_order_acquire) != nullptr) {
+                        const uint32_t restarts = _restarts;
                         switchSurface();
-                        _underran.store(false, std::memory_order_relaxed);
-                        resyncUs = esp_timer_get_time();
+                        // What a rebuild of the link raised is no news; after a restart with the
+                        // link up (its own drain not counted) an underrun is one: resynced.
+                        if (_restarts == restarts) _underran.store(false, std::memory_order_relaxed);
+                        resyncUs = esp_timer_get_time() - ResyncGapUs;
                         last = 0;
                         progressUs = esp_timer_get_time();
                         continue;
@@ -814,29 +856,41 @@ void Scanout::supervise() {
         return;
 }
 
-// The stream restarted from the frame's first block: the DMA stopped, every
-// descriptor valid and on the shown buffer (a swap half made waits for the
-// next frame), the bridge's frame count started again.
-void Scanout::resync() {
+// The stream stopped for a restart: the DMA disabled and confirmed stopped, the bridge's FIFO
+// drained by the DPI side (what is left in it would come out first after the restart, the frame
+// out of step: a switch of surface stops the DMA mid-frame with it full), then the DPI output
+// off; the underrun the drain makes isn't counted. False if the DMA won't stop (a disable waits
+// for the burst under way, which a wedged bridge never takes): the link must be rebuilt.
+bool Scanout::stopStream() {
         Hardware      &hw = *_hw;
         dsi_brg_dev_t *bridge = hw.hal.bridge;
-        mipi_dsi_brg_ll_enable_dpi_output(bridge, false);
-        mipi_dsi_brg_ll_update_dpi_config(bridge);
-        // Stop the DMA before touching its registers (a write to a live
-        // channel's is a bus fault). A disable waits for the burst under way,
-        // which a wedged bridge never takes: then rebuild everything.
+        mipi_dsi_brg_ll_enable_interrupt(bridge, MIPI_DSI_BRG_LL_EVENT_UNDERRUN, false);
+        // Stop the DMA before touching its registers (a write to a live channel's is a bus fault).
         (void)dw_gdma_channel_enable_ctrl(hw.dma, false);
         bool stopped = false;
         for (int i = 0; i < 20 && !stopped; ++i) {
                 stopped = (DW_GDMA.chen0.val & (1u << hw.channel)) == 0;
                 if (!stopped) esp_rom_delay_us(100);
         }
-        if (!stopped) {
-                (void)rebuild(true);
-                return;
-        }
+        // A full FIFO (8 KB) drains in about 35 µs at 720p60.
+        for (int i = 0; i < 20 && mipi_dsi_brg_ll_get_fifo_depth(bridge) != 0; ++i) esp_rom_delay_us(50);
+        mipi_dsi_brg_ll_enable_dpi_output(bridge, false);
+        mipi_dsi_brg_ll_update_dpi_config(bridge);
+        mipi_dsi_brg_ll_clear_interrupt_status(bridge, MIPI_DSI_BRG_LL_EVENT_UNDERRUN);
+        mipi_dsi_brg_ll_enable_interrupt(bridge, MIPI_DSI_BRG_LL_EVENT_UNDERRUN, true);
+        if (!stopped) return false;
         dw_gdma_ll_channel_clear_intr(&DW_GDMA, hw.channel, UINT32_MAX);
         Task::sleep(1); // a block interrupt already raised lands before the counters restart
+        return true;
+}
+
+// The stream (stopped) started again from the frame's first block: every descriptor valid and
+// on the shown buffer (a swap half made waits for the next frame), the bridge's frame count
+// started again, and the DPI output on once the FIFO has filled (on an empty one the first line
+// underran).
+void Scanout::startStream() {
+        Hardware      &hw = *_hw;
+        dsi_brg_dev_t *bridge = hw.hal.bridge;
         _blocksBefore += _sent.load(std::memory_order_relaxed);
         _sent.store(0, std::memory_order_relaxed);
         _primed = false;
@@ -849,14 +903,40 @@ void Scanout::resync() {
         mipi_dsi_brg_ll_set_num_pixel_bits(bridge, uint32_t(t.hActive) * t.vActive * Surface::BytesPerPixel * 8);
         useList();
         (void)dw_gdma_channel_enable_ctrl(hw.dma, true);
+        for (int i = 0; i < 20 && mipi_dsi_brg_ll_get_fifo_depth(bridge) < StartFifoWords; ++i) esp_rom_delay_us(50);
         mipi_dsi_brg_ll_enable_dpi_output(bridge, true);
         mipi_dsi_brg_ll_update_dpi_config(bridge);
+        return;
+}
+
+// The DMA stopped at the end of a frame (the block interrupt makes the first descriptor not
+// valid while the last is sent), so the bridge has the whole frame and its DMA handshake ends
+// between blocks: a stop in mid-block left the restarted stream stuck. False if it didn't stop
+// within a few frames.
+bool Scanout::haltAtFrameEnd() {
+        _halted.store(false, std::memory_order_relaxed);
+        _halt.store(true, std::memory_order_release);
+        for (int i = 0; i < 50 && !_halted.load(std::memory_order_acquire); ++i) Task::sleep(1);
+        _halt.store(false, std::memory_order_release);
+        return _halted.load(std::memory_order_acquire);
+}
+
+// The stream restarted from the frame's first block (stalled, or the bridge ran dry); the link
+// rebuilt if the DMA won't stop.
+void Scanout::resync() {
+        if (!stopStream()) {
+                (void)rebuild(true);
+                return;
+        }
+        startStream();
         ++_resyncs;
         return;
 }
 
-// show()'s request: the whole DSI path rebuilt for the new surface (a resync alone left the
-// picture out of step with the frame once), the old surface back if that fails.
+// show()'s request. At the same timing and lanes the stream restarts on the new surface's list
+// at a frame's top with the link kept up (the monitor keeps its picture: devplan/display.md §5f);
+// otherwise, or if the DMA won't stop, the whole DSI path is rebuilt for it. The old surface
+// comes back if that fails.
 void Scanout::switchSurface() {
         Surface *next = _request.exchange(nullptr, std::memory_order_acq_rel);
         if (next == nullptr) return;
@@ -892,7 +972,30 @@ void Scanout::switchSurface() {
                 _prepared = list;
                 _nextSurface = next;
                 _nextPlan = plan;
-                err = rebuild(false);
+                if (timing == oldTiming && lanes == oldLanes && haltAtFrameEnd() && stopStream()) {
+                        // No interrupt runs now: the surface, its plan and its list taken.
+                        if (next != old) old->setScanning(false);
+                        _surface = next;
+                        apply(plan);
+                        _nextSurface = nullptr;
+                        err = buildList();
+                        if (err.isOk()) {
+                                startStream();
+                                ++_restarts;
+                        } else {
+                                // The list didn't take (it is freed): the old one again, rebuilt.
+                                _surface = old;
+                                (void)layOut(*old);
+                                err = rebuild(false);
+                                if (err.isOk()) old->setScanning(true);
+                                err = err.isOk() ? Error(Error::Invalid) : err;
+                                _switchResult = err;
+                                _switched.release();
+                                return;
+                        }
+                } else {
+                        err = rebuild(false);
+                }
                 if (err.isError()) {
                         if (_prepared != nullptr) { // not taken: the link failed before the list
                                 _prepared->release();
@@ -966,6 +1069,26 @@ Error Scanout::rebuild(bool recovery) {
         return err;
 }
 
+void Scanout::setLinkOptions(bool continuousClock, bool frameAck) {
+        _config.continuousClock = continuousClock;
+        _config.frameAck = frameAck;
+        if (_hw == nullptr || _hw->hal.host == nullptr) return;
+        mipi_dsi_host_ll_dpi_enable_frame_ack(_hw->hal.host, frameAck);
+        mipi_dsi_host_ll_set_clock_lane_state(_hw->hal.host, continuousClock ? MIPI_DSI_LL_CLOCK_LANE_STATE_HS
+                                                                             : MIPI_DSI_LL_CLOCK_LANE_STATE_AUTO);
+        return;
+}
+
+volatile uint32_t *Scanout::hostRegisters() const {
+        if (_hw == nullptr || !_hw->busClock || _hw->hal.host == nullptr) return nullptr;
+        return reinterpret_cast<volatile uint32_t *>(_hw->hal.host);
+}
+
+volatile uint32_t *Scanout::bridgeRegisters() const {
+        if (_hw == nullptr || !_hw->busClock || _hw->hal.bridge == nullptr) return nullptr;
+        return reinterpret_cast<volatile uint32_t *>(_hw->hal.bridge);
+}
+
 Scanout::Stats Scanout::stats() const {
         Stats s;
         s.frames = _frames.load(std::memory_order_relaxed);
@@ -982,8 +1105,13 @@ Scanout::Stats Scanout::stats() const {
         s.isrCycles = _isrCycles;
         s.dmaItem = _lastItem;
         s.fallbacks = _fallbacks;
+        s.restarts = _restarts;
+        s.linkErrorFrames = _linkErrorFrames;
+        s.linkErrors0 = _linkErrors0;
+        s.linkErrors1 = _linkErrors1;
         if (_hw != nullptr) {
                 s.pixelHz = _hw->pixelHz;
+                s.laneMbps = _hw->laneMbps;
                 s.bridgeFifo = _hw->hal.bridge != nullptr ? mipi_dsi_brg_ll_get_fifo_depth(_hw->hal.bridge) : 0;
         }
         return s;

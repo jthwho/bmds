@@ -59,13 +59,15 @@ class Display {
 
                 /**
                  * @brief Shows @p mode (fitted by `fitMode()`) from surface 0, made
-                 *        for it with @p buffering and black. Stops whatever ran
+                 *        for it with @p buffering and black, the DSI lanes at
+                 *        @p laneMbps (0: `VideoModes::laneMbps()`, a margin over
+                 *        the pixels' need; never under it). Stops whatever ran
                  *        before.
                  * @return `Ok`, `NotSupported`, `Invalid` (a size the scan can't
                  *         take), `NoMem`, or the bridge's or scanout's error.
                  * @blocking
                  */
-                Error start(const VideoTiming &mode, Surface::Buffering buffering);
+                Error start(const VideoTiming &mode, Surface::Buffering buffering, uint32_t laneMbps);
 
                 /**
                  * @brief Sends @p surface (started, @p mode's width, at most its height) in

@@ -85,7 +85,7 @@ struct Command {
  */
 class CommandContext {
         public:
-                /** @brief Size of the `printf()` buffer; longer output is truncated. */
+                /** @brief Size of the `printf()` buffer on the stack; longer output is formatted on the heap. */
                 static constexpr size_t PrintBufferBytes = 256;
 
                 /**
@@ -141,13 +141,13 @@ class CommandContext {
                 /** @brief Writes @p text to stdout. Errors show up in `isInterrupted()`. */
                 void print(StringView text);
 
-                /** @brief Writes formatted text (up to `PrintBufferBytes`) to stdout. */
+                /** @brief Writes formatted text to stdout (longer than `PrintBufferBytes`: from the heap). */
                 void printf(const char *fmt, ...) BMDS_PRINTF_FORMAT(2, 3);
 
                 /** @brief Writes @p text to stderr. */
                 void eprint(StringView text);
 
-                /** @brief Writes formatted text (up to `PrintBufferBytes`) to stderr. */
+                /** @brief Writes formatted text to stderr (longer than `PrintBufferBytes`: from the heap). */
                 void eprintf(const char *fmt, ...) BMDS_PRINTF_FORMAT(2, 3);
 
                 /**

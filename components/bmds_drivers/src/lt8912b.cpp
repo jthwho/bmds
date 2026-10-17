@@ -171,6 +171,20 @@ Error Lt8912b::measured(uint16_t &first, uint16_t &lines) {
         return Error::Ok;
 }
 
+Result<uint8_t> Lt8912b::readRegister(uint8_t page, uint8_t reg) {
+        if (page > 2) return makeError<uint8_t>(Error::Invalid);
+        I2cDevice *const d = page == 0 ? _main : page == 1 ? _dsi : _avi;
+        if (d == nullptr) return makeError<uint8_t>(Error::InvalidState);
+        return d->readRegister(reg, TimeoutMs);
+}
+
+Error Lt8912b::writeRegister(uint8_t page, uint8_t reg, uint8_t value) {
+        if (page > 2) return Error::Invalid;
+        I2cDevice *const d = page == 0 ? _main : page == 1 ? _dsi : _avi;
+        if (d == nullptr) return Error::InvalidState;
+        return d->writeRegister(reg, value, TimeoutMs);
+}
+
 Error Lt8912b::resetReceiver() {
         if (_main == nullptr) return Error::InvalidState;
         const RegValue steps[][2] = {{{0x03, 0x7f}, {0x03, 0xff}}, {{0x05, 0xfb}, {0x05, 0xff}}};

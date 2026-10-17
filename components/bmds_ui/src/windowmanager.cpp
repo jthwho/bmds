@@ -38,6 +38,11 @@ namespace {
         using Role = WindowPalette::Role;
 
         constexpr size_t   StripAlign = 64; // the L1 cache line
+        // A batched round's job (windows.md §4n): pieces, fill rows (16 bytes of internal DMA RAM
+        // each), and the fills' colour lines.
+        constexpr size_t   BatchPieces = 96;
+        constexpr size_t   BatchRows = 512;
+        constexpr size_t   BatchLineBytes = 12 * 1024;
         constexpr uint16_t Align = WindowStack::Align;
 
         constinit StaticObject<WindowManager> managers[WindowManager::MaxManagers];
@@ -198,7 +203,20 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
         _tools.height = Fonts::unscii16.height();
         _tools.renderer = &_renderer;
         _tools.palette = &_palette;
-        _tools.busyHalf = -1;
+        _tools.stripHalf = 0;
+        _tools.stripColumn = 0;
+        if (_snapshots == nullptr) { // kept for good: queries may read it while the window manager stops
+                void *memory = Memory::alloc(MemSpace::Psram, MaxIds * (sizeof(Snapshot) + 1));
+                if (memory != nullptr) {
+                        auto *snapshots = static_cast<Snapshot *>(memory);
+                        for (size_t i = 0; i < MaxIds; ++i) ::new (&snapshots[i]) Snapshot();
+                        _pointerWanted = reinterpret_cast<uint8_t *>(snapshots + MaxIds);
+                        _snapshots = snapshots;
+                }
+        }
+        // A round's fills and text as few 2D-DMA jobs (windows.md §4n); without the memory, one each.
+        if (surface.enableBatching(BatchPieces, BatchRows, BatchLineBytes).isError())
+                bmdsWarn("WindowManager: no memory to batch drawing: a 2D-DMA job a call");
         for (uint32_t &word : _updates) word = 0;
         _display = &display;
         _surface = &surface;
@@ -334,10 +352,16 @@ void WindowManager::run() {
                                 const uint32_t requests = _requests.load(std::memory_order_acquire);
                                 deliverKeys();
                                 deliverPads();
+                                applyPointersAsked();
                                 applyPointer();
                                 checks = startingTick();
-                                frame = surface->frames();
+                                snapshotLocked(); // what queries see while the round holds the lock
                                 round(requests);
+                                // The frame after the round's end: a round longer than what was
+                                // left of its frame still waits for the next one, the lock free
+                                // meanwhile (taken back at once, it starved every other caller:
+                                // windowed Doom's ~15 ms rounds held it for seconds at a time).
+                                frame = surface->frames();
                                 if (_listChanged) {
                                         _listChanged = false;
                                         for (const Client &c : _clients)
@@ -1086,7 +1110,7 @@ void WindowManager::restoreUnder() {
         if (_underRect.isEmpty()) return;
         UnderJob job{_under, _underRect.width, _underRect.height};
         ++_stats.calls;
-        if (_surface->patch(_underRect, restorePixels, &job, DrawTimeoutMs).isError()) ++_stats.errors;
+        drawError(_surface->patch(_underRect, restorePixels, &job, DrawTimeoutMs), "the pointer's under");
         _underRect = Rect();
         return;
 }
@@ -1107,8 +1131,9 @@ void WindowManager::drawCursor() {
         job.fill = _palette.color(Role::CursorFill);
         job.under = _under;
         ++_stats.calls;
-        if (_surface->patch(area, drawCursorPixels, &job, DrawTimeoutMs).isError()) {
-                ++_stats.errors;
+        const Error cursorErr = _surface->patch(area, drawCursorPixels, &job, DrawTimeoutMs);
+        if (cursorErr.isError()) {
+                drawError(cursorErr, "the pointer");
                 return;
         }
         _underRect = area;
@@ -1130,6 +1155,7 @@ void WindowManager::round(uint32_t requests) {
                 return;
         }
         const uint64_t start = System::uptimeUs();
+        _surface->beginBatch(); // the round's fills and text in few jobs (windows.md §4n)
         restoreUnder();
         restoreBand(); // under the pointer's: put back in the order they went on
         if (!damage.isEmpty()) {
@@ -1156,6 +1182,9 @@ void WindowManager::round(uint32_t requests) {
         if (_bandId != 0) drawBand(); // over what was just drawn under it
         _bandMoved = false;
         drawCursor();
+        drawError(_surface->endBatch(DrawTimeoutMs), "the round's batch");
+        _tools.stripHalf = 0; // everything drawn: the strip is free
+        _tools.stripColumn = 0;
         const auto us = static_cast<uint32_t>(System::uptimeUs() - start);
         ++_stats.rounds;
         _stats.roundUs += us;
@@ -1166,7 +1195,7 @@ void WindowManager::round(uint32_t requests) {
                 if (err.isOk()) {
                         _presented = number;
                 } else {
-                        ++_stats.errors;
+                        drawError(err, "the present");
                 }
         }
         _drawn.store(requests, std::memory_order_release);
@@ -1184,9 +1213,9 @@ void WindowManager::drawPieces(Span<const ComposePiece> pieces) {
                 if (z == windows) {
                         // The desktop's: aligned and disjoint already.
                         ++_stats.calls;
-                        if (_surface->fill(Span<const Rect>(_scratch, k), _palette.color(Role::Desktop), DrawTimeoutMs)
-                                    .isError())
-                                ++_stats.errors;
+                        drawError(_surface->fill(Span<const Rect>(_scratch, k), _palette.color(Role::Desktop),
+                                                 DrawTimeoutMs),
+                                  "the desktop");
                 } else {
                         drawLayer(z, Span<const Rect>(_scratch, k));
                 }
@@ -1330,7 +1359,7 @@ void WindowManager::drawUpdates() {
 // @p rect painted from the desktop up, each window over the one under it.
 void WindowManager::drawBottomUp(const Rect &rect) {
         ++_stats.calls;
-        if (_surface->fill(rect, _palette.color(Role::Desktop), DrawTimeoutMs).isError()) ++_stats.errors;
+        drawError(_surface->fill(rect, _palette.color(Role::Desktop), DrawTimeoutMs), "the desktop");
         for (size_t z = _stack.count(); z-- > 0;) {
                 const Rect cut = rect.intersected(_stack.rectAt(z));
                 if (!cut.isEmpty()) drawLayer(z, Span<const Rect>(&cut, 1));
@@ -1454,7 +1483,7 @@ void WindowManager::restoreBand() {
                 const BandPiece &piece = _bandPieces[i];
                 UnbandJob        job{_bandUnder.data() + piece.offset, piece.rect.width, piece.rect.height};
                 ++_stats.calls;
-                if (_surface->patch(piece.rect, unbandPixels, &job, DrawTimeoutMs).isError()) ++_stats.errors;
+                drawError(_surface->patch(piece.rect, unbandPixels, &job, DrawTimeoutMs), "the band's under");
         }
         _bandPieces.clear();
         return;
@@ -1519,8 +1548,9 @@ void WindowManager::drawBand() {
                             _palette.color(Role::FaceDark),
                             _palette.color(Role::Outline)};
                 ++_stats.calls;
-                if (_surface->patch(piece.rect, bandPixels, &job, DrawTimeoutMs).isError()) {
-                        ++_stats.errors;
+                const Error bandErr = _surface->patch(piece.rect, bandPixels, &job, DrawTimeoutMs);
+                if (bandErr.isError()) {
+                        drawError(bandErr, "the band");
                         _bandPieces.truncate(i); // those drawn are put back
                         return;
                 }
@@ -1530,7 +1560,17 @@ void WindowManager::drawBand() {
 
 void WindowManager::count(const Painter &painter) {
         _stats.calls += painter.calls();
-        if (painter.error().isError()) ++_stats.errors;
+        drawError(painter.error(), "a window's drawing");
+        return;
+}
+
+// A drawing call's failure counted (`Stats::errors`), and said in the log: the first few, then
+// sparser (a failing call would fill it every frame).
+void WindowManager::drawError(Error err, const char *what) {
+        if (err.isOk()) return;
+        const uint32_t n = ++_stats.errors;
+        if (n <= 4 || (n & (n - 1)) == 0)
+                bmdsWarn("WindowManager: drawing %s failed: %s (%u errors)", what, err.desc(), unsigned(n));
         return;
 }
 
@@ -2954,7 +2994,34 @@ Error WindowManager::setTitle(uint8_t id, StringView title) {
 }
 
 Error WindowManager::setPointer(uint8_t id, Pointer shape) {
-        Mutex::Locker lock(_lock, WaitForever);
+        if (id == 0 || id > MaxIds) return Error::NotFound;
+        if (_lock.tryLock().isError()) {
+                // A round draws: asked for the next one, not waited for.
+                if (_pointerWanted == nullptr) return Error::InvalidState;
+                _pointerWanted[id - 1] = static_cast<uint8_t>(shape);
+                _pointerAsked[(id - 1) / 32].fetch_or(1u << ((id - 1) % 32), std::memory_order_release);
+                _wake.release();
+                return Error::Ok;
+        }
+        const Error err = setPointerLocked(id, shape);
+        _lock.unlock();
+        return err;
+}
+
+void WindowManager::applyPointersAsked() {
+        for (size_t w = 0; w < UpdateWords; ++w) {
+                uint32_t bits = _pointerAsked[w].exchange(0, std::memory_order_acquire);
+                while (bits != 0) {
+                        const uint32_t b = uint32_t(__builtin_ctz(bits));
+                        bits &= bits - 1;
+                        const auto id = static_cast<uint8_t>(w * 32 + b + 1);
+                        (void)setPointerLocked(id, static_cast<Pointer>(_pointerWanted[id - 1]));
+                }
+        }
+        return;
+}
+
+Error WindowManager::setPointerLocked(uint8_t id, Pointer shape) {
         if (_surface == nullptr) return Error::InvalidState;
         if (_stack.rectOf(id).isError()) return Error::NotFound;
         _windows[id - 1].pointer = shape;
@@ -3302,10 +3369,16 @@ Result<List<WindowManager::Info>> WindowManager::windows() {
 }
 
 bool WindowManager::isMinimized(uint8_t id) {
-        Mutex::Locker lock(_lock, WaitForever);
-        for (size_t i = 0; i < _stack.hiddenCount(); ++i)
-                if (_stack.hiddenIdAt(i) == id) return true;
-        return false;
+        // A round draws: as at its start (nothing changes during one), if kept; else waited for.
+        if (_lock.tryLock().isError()) {
+                Snapshot snap;
+                if (readSnapshot(id, snap)) return snap.minimized != 0;
+                (void)_lock.lock(WaitForever);
+        }
+        bool minimized = false;
+        for (size_t i = 0; i < _stack.hiddenCount() && !minimized; ++i) minimized = _stack.hiddenIdAt(i) == id;
+        _lock.unlock();
+        return minimized;
 }
 
 Result<Rect> WindowManager::rect(uint8_t id) {
@@ -3314,10 +3387,51 @@ Result<Rect> WindowManager::rect(uint8_t id) {
 }
 
 Result<Rect> WindowManager::clientRect(uint8_t id) {
-        Mutex::Locker lock(_lock, WaitForever);
+        // A round draws: as at its start (nothing moves during one), if kept; else waited for.
+        if (_lock.tryLock().isError()) {
+                Snapshot snap;
+                if (readSnapshot(id, snap)) return makeResult(snap.client);
+                (void)_lock.lock(WaitForever);
+        }
         auto [at, err] = _stack.rectOf(id);
+        const Rect client = err.isOk() ? frame(id, at).client() : Rect();
+        _lock.unlock();
         if (err.isError()) return makeError<Rect>(err);
-        return makeResult(frame(id, at).client());
+        return makeResult(client);
+}
+
+// Every window's client area and whether it's minimized, for queries made while a round holds the
+// lock (the seqlock's count odd while written: a reader then tries again).
+void WindowManager::snapshotLocked() {
+        if (_snapshots == nullptr) return;
+        _snapshotSeq.fetch_add(1, std::memory_order_acq_rel);
+        std::atomic_thread_fence(std::memory_order_release);
+        for (size_t i = 0; i < MaxIds; ++i) _snapshots[i].valid = 0;
+        const size_t shown = _stack.count(), all = shown + _stack.hiddenCount();
+        for (size_t i = 0; i < all; ++i) {
+                const uint8_t id = i < shown ? _stack.idAt(i) : _stack.hiddenIdAt(i - shown);
+                auto [at, err] = _stack.rectOf(id);
+                if (err.isError() || id == 0 || id > MaxIds) continue;
+                Snapshot &snap = _snapshots[id - 1];
+                snap.client = frame(id, at).client();
+                snap.minimized = i >= shown ? 1 : 0;
+                snap.valid = 1;
+        }
+        std::atomic_thread_fence(std::memory_order_release);
+        _snapshotSeq.fetch_add(1, std::memory_order_acq_rel);
+        return;
+}
+
+bool WindowManager::readSnapshot(uint8_t id, Snapshot &out) const {
+        if (_snapshots == nullptr || id == 0 || id > MaxIds) return false;
+        for (int tries = 0; tries < 8; ++tries) {
+                const uint32_t before = _snapshotSeq.load(std::memory_order_acquire);
+                if ((before & 1u) != 0) continue;
+                out = _snapshots[id - 1];
+                std::atomic_thread_fence(std::memory_order_acquire);
+                if (_snapshotSeq.load(std::memory_order_acquire) == before) return out.valid != 0;
+        }
+        return false;
 }
 
 Error WindowManager::sync(unsigned int timeoutMs) {
@@ -3354,6 +3468,7 @@ WindowManager::Stats WindowManager::stats() {
         Mutex::Locker lock(_lock, WaitForever);
         Stats         s = _stats;
         s.windows = uint32_t(_stack.count() + _stack.hiddenCount());
+        s.jobs = _surface != nullptr ? _surface->jobs() : 0;
         return s;
 }
 

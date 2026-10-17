@@ -19,6 +19,7 @@ if(COMMAND idf_component_register)
                                     src/display.cpp
                                     src/displaycommand.cpp
                                     src/displayppa.cpp
+                                    src/displayregs.cpp
                                     src/i2cbus.cpp
                                     src/jpegcodec.cpp
                                     src/lt8912b.cpp
@@ -35,6 +36,28 @@ if(COMMAND idf_component_register)
         bmds_target_options(${COMPONENT_LIB})
         # The JPEG codec loads full-range YUV-to-RGB coefficients into the 2D-DMA (jpegcodec.cpp).
         target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=dma2d_configure_color_space_conversion")
+        # `display dsi`'s register tables, from the register headers IDF builds with (the
+        # chip revision picks them): tools/gen-regtable.py.
+        if(CONFIG_ESP32P4_SELECTS_REV_LESS_V3)
+                set(BMDS_DRIVERS_REGS ${IDF_PATH}/components/soc/esp32p4/register/hw_ver1/soc)
+        else()
+                set(BMDS_DRIVERS_REGS ${IDF_PATH}/components/soc/esp32p4/register/hw_ver3/soc)
+        endif()
+        set(BMDS_DRIVERS_REGTABLE ${CMAKE_CURRENT_LIST_DIR}/../../tools/gen-regtable.py)
+        idf_build_get_property(BMDS_DRIVERS_PYTHON PYTHON)
+        add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/dsihostregs.cpp
+                           COMMAND ${BMDS_DRIVERS_PYTHON} ${BMDS_DRIVERS_REGTABLE} ${CMAKE_CURRENT_BINARY_DIR}/dsihostregs.cpp
+                                   DsiHostRegs DSI_HOST_ ${BMDS_DRIVERS_REGS}/mipi_dsi_host_reg.h int_st0 int_st1 gen_pld_data
+                           DEPENDS ${BMDS_DRIVERS_REGTABLE} ${BMDS_DRIVERS_REGS}/mipi_dsi_host_reg.h
+                           VERBATIM)
+        add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/dsibrgregs.cpp
+                           COMMAND ${BMDS_DRIVERS_PYTHON} ${BMDS_DRIVERS_REGTABLE} ${CMAKE_CURRENT_BINARY_DIR}/dsibrgregs.cpp
+                                   DsiBrgRegs DSI_BRG_ ${BMDS_DRIVERS_REGS}/mipi_dsi_bridge_reg.h
+                           DEPENDS ${BMDS_DRIVERS_REGTABLE} ${BMDS_DRIVERS_REGS}/mipi_dsi_bridge_reg.h
+                           VERBATIM)
+        target_sources(${COMPONENT_LIB} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/dsihostregs.cpp
+                                                ${CMAKE_CURRENT_BINARY_DIR}/dsibrgregs.cpp)
+        target_include_directories(${COMPONENT_LIB} PRIVATE src)
 else()
         add_library(bmds_drivers STATIC ${BMDS_DRIVERS_PORTABLE_SRCS})
         target_include_directories(bmds_drivers PUBLIC include)

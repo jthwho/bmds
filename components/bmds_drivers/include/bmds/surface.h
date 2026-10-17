@@ -213,6 +213,39 @@ class Surface {
                 Error wait(unsigned int timeoutMs);
 
                 /**
+                 * @brief Lets this surface batch its drawing (`beginBatch()`): its 2D-DMA chain
+                 *        made for @p maxPieces pieces and @p maxRows fill rows a job, and
+                 *        @p lineBytes of internal DMA RAM for fills' colour lines (at least a
+                 *        row's bytes). For a surface drawn in many small pieces (the desktop's).
+                 * @return `Ok`, `Invalid`, `NoMem` (the surface as it was), or the chain's error.
+                 * @blocking A job under way.
+                 */
+                Error enableBatching(size_t maxPieces, size_t maxRows, size_t lineBytes);
+
+                /**
+                 * @brief From now on, fills and copies from pictures (`startBlit()`) are added to
+                 *        one 2D-DMA job instead of each running its own (`devplan/windows.md`
+                 *        §4n): the job runs when it is full, before anything that reads this
+                 *        surface or a picture of the caller's, at `present()`, `wait()` and
+                 *        `endBatch()`. A source given to `startBlit()` stays untouched until
+                 *        `wait()`. Without `enableBatching()`, nothing changes.
+                 */
+                void beginBatch() {
+                        if (_lines != nullptr) _batching = true;
+                        return;
+                }
+
+                /**
+                 * @brief Runs what the batch holds, waits for it, and ends batching.
+                 * @return `Ok`, `Timeout`, or the chain's error.
+                 * @blocking
+                 */
+                Error endBatch(unsigned int timeoutMs);
+
+                /** @brief Returns the 2D-DMA jobs run since `start()` (both chains). */
+                uint32_t jobs() const { return _chain.jobs() + _widen.jobs(); }
+
+                /**
                  * @brief Reads @p rect (any x and width) into internal RAM, lets
                  *        @p patcher change it there, and writes it back: two 2D-DMA
                  *        jobs, for something small drawn over what is there (the
@@ -305,6 +338,15 @@ class Surface {
                 Error fillEdges(Span<const Rect> rects, uint32_t rgb, const Deadline &deadline);
                 void  markDamage(const Rect &rect);
                 Error copyForward(const uint32_t *tiles, const Deadline &deadline);
+                Error runChain(const Deadline &deadline); // the job written run, waited for; fill lines free
+                struct FillLine;                          // below
+                const FillLine *fillLine(uint32_t rgb, uint16_t width); // a batched fill's lines, or null (no room)
+                Error           flushBatch(const Deadline &deadline);   // pending edges resolved, then runChain()
+                Error resolveEdges(const Deadline &deadline); // pending edges read, patched, their writes added
+                Error coverEdges(const Rect &rect, const Deadline &deadline); // pending edge rows under @p rect dropped
+                bool  splitEdge(size_t i, uint16_t row); // pending edge @p i cut at @p row (false: no slot)
+                Error addEdge(uint16_t x, uint16_t y, uint16_t rows, uint8_t from, uint8_t to, uint32_t rgb,
+                              const Deadline &deadline); // a batched fill's edge group, pending
                 template <typename Done> Error waitUntil(Done done, const Deadline &deadline);
 
                 uint8_t              *_buffers[2] = {};
@@ -329,6 +371,34 @@ class Surface {
                 BlitChain             _chain;
                 BlitChain             _widen; // RGB565 sources (started on first use)
                 Stats                 _stats;
+                // Batching (enableBatching()): fills' colour lines, kept until the job runs.
+                struct FillLine {
+                                uint32_t rgb;
+                                uint16_t width;
+                                uint16_t rows; // of the colour, one after the other
+                                uint8_t *line;
+                };
+                static constexpr size_t MaxFillLines = 8;
+                uint8_t                *_lines = nullptr; // internal DMA RAM
+                size_t                  _linesBytes = 0;
+                size_t                  _linesUsed = 0;
+                FillLine                _fillLines[MaxFillLines] = {};
+                uint8_t                 _fillLineCount = 0;
+                uint8_t                 _fillLineNext = 0; // the slot replaced next when all are used
+                bool                    _batching = false;
+                // A batch's edge groups (fills' sides off the 4-pixel columns), read and patched
+                // together when something meets them (resolveEdges()); a pixel's colour each.
+                struct PendingEdge {
+                                uint16_t x; // the group's first column
+                                uint16_t y;
+                                uint16_t rows;
+                                uint8_t  mask; // the group's pixels set (bit i: pixel i)
+                                uint32_t rgb[Align];
+                };
+                static constexpr size_t MaxPendingEdges = 64;
+                PendingEdge             _edgesPending[MaxPendingEdges] = {};
+                uint8_t                 _edgeCount = 0;
+                uint16_t                _edgeRows = 0; // the rows they take in _line
 };
 
 BMDS_NAMESPACE_END

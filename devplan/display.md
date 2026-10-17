@@ -218,6 +218,76 @@ command of its own in `bmds_ui` (it needs the window manager, which `bmds_driver
   filter's 193 ms is plain arithmetic (about 25 cycles a byte at `-O2`); a PIE scoring pass
   would cut most of it if screenshots ever need to be quick. The ROM's deflate is the floor.
 
+## 5e. The DSI link's margin, and the link's registers (2026-10-16)
+
+The user had seen, for a long time, the monitor going black and resyncing (often once shortly after
+a reset) and, now and then, colored banding, worse while Lucky Duck ran. `display stats` counted
+nothing: no underruns, stalls or resyncs.
+
+- **The lanes had no margin.** 720p60's 80 MHz of RGB888 over 2 lanes is 960 Mbps a lane, and the
+  link ran at exactly that (the pixel rate, rounded up). The host sends in burst mode, which wants
+  the link faster than the pixels; Espressif's FAQ asks about 20% over and blames "misaligned or
+  flashing" pictures on less. The PHY's PLL makes 960 exactly (20 MHz × 48, the same crystal as the
+  DPI clock), so nothing drifted: whether a line fit was left to jitter.
+- **The fix:** the scanout picks the lane rate (`VideoModes::laneMbps()`, host-tested): the
+  slowest at least 15% over the pixels' that the PHY's PLL makes exactly (from PLL_F20M on
+  revision 1.x) and that makes a line a whole number of lane byte clocks; with no room for the
+  margin, the slowest whole and exact rate above the pixels'. 720p60: **1120 Mbps** (20 MHz × 56,
+  3,150 byte clocks a line); 1080p30: 980. The rate recorded is the PLL's. The host's line time
+  (`vid_hline_time`, lane byte clocks) is now the whole line's, the front porch taking the
+  rounding, so a ratio that isn't 1.5 doesn't make the link run long or short against the pixels.
+  `display/lanembps` (sysconf, 0: the scanout's choice) overrides it for experiments, never below
+  the pixels' rate.
+- **Trial** (2026-10-16): 1120 set by hand for about an hour of the user's use, Lucky Duck and
+  reboots included: no glitch, no blackout; the bridge chip measured 741 lines a frame throughout.
+  Then made the default.
+- **Counting the link's errors:** the DSI host's INT_ST0/INT_ST1 flags (cleared by reading) are
+  read at each frame's start in the block interrupt; `display stats` shows the frames with any and
+  the flags seen (`Link:`). None so far, at 960 or 1120.
+- **`display link [clock=auto|hs] [ack=on|off] [mbps=N]`:** the clock lane's mode and the
+  per-frame acknowledge at once, the lane rate by rebuilding the link (the monitor resyncs).
+- **`display dsi [host|bridge] [PATTERN]`**, **`display dsi set host|bridge REG[.FIELD] VALUE`:**
+  every register of the DSI host and bridge, field by field, and writes (read-modify-write for a
+  field; read-only fields refused). The names come from IDF's register headers for the chip
+  revision built for (`tools/gen-regtable.py`, run by the build: 11 KB of rodata). `int_st0` and
+  `int_st1` show the flags the interrupt gathered; `gen_pld_data` (a FIFO) isn't read. Only while
+  the link is up: with its clocks off a read faults.
+- **`display chip`** (the LT8912B): the registers its driver uses by name, then its three pages raw;
+  `display chip main|dsi|avi`, `set PAGE REG VALUE`, `reset` (the receiver), `configure` (the whole
+  set-up again). Found reading it: DSI page 0x00-0x0e and main 0x99 change from read to read
+  (status; meaning unknown); **the AVI page (0x4A) reads all zeros**, though the infoframe is
+  written there; the DDS word the driver writes (0x4e-0x50) is 0x293e93 read low byte first (the
+  `dds=` test aid's comment calls it 0x3e2993).
+- **`printf` in commands lost what passed 255 bytes** (a stack buffer), the newline with it:
+  `display`'s usage line and `help display` ended mid-word. Longer text is now formatted again in
+  a buffer from the heap.
+
+## 5f. Switching surfaces with the link up (2026-10-16)
+
+Doom going full screen (rows repeated, the mode unchanged) made the monitor resync: every
+`Scanout::show()` rebuilt the whole DSI path (~62 ms, the link dropped). At the same timing and
+lanes a switch now restarts the stream on the new surface's list with the link kept up, a
+rebuild remaining for a new mode (`display/fullscreen-modes`) or a DMA that won't stop.
+
+- **The resync's steps alone weren't enough** (the first try): stopping the DMA in mid-frame left
+  the bridge's FIFO full of the old frame (it came out first after the restart: an underrun at
+  each switch) and, cleared of that, the restarted stream stuck in 7 of 8 switches (the watchdog's
+  rebuild: the link dropped anyway). A disable mid-block apparently leaves the DMA's hardware
+  handshake with the bridge where the bridge doesn't pick it up again; a stall's resync works
+  because that DMA stopped between blocks.
+- **The DMA stops by itself at the frame's end:** asked (`haltAtFrameEnd()`), the block interrupt
+  stops making descriptors valid and, while the frame's last block is under way, makes the first
+  one not valid; the DMA halts there (not counted as a stall), the bridge has the whole frame and
+  its FIFO drains the last lines. Then the DPI output goes off (in the vertical blank), the list,
+  plan and surface change, and the stream starts at the top: the DPI output on once the FIFO
+  holds 768 of its 1,024 words (with 512, one restart in 20 underran). The underrun interrupt is
+  masked while the FIFO drains.
+- **An underrun after such a restart is resynced** (a rebuild's are still ignored: its own
+  restart raises them).
+- **Measured** (`display rows N` back and forth, 2× to 4×): 30 switches, 13-20 ms each (mostly the
+  wait for the frame's end), 119-120 frames in each 2 s after, 0 underruns, stalls, resyncs or
+  rebuilds. `display stats` counts them: "N pictures switched to (M with the link up)".
+
 ## 6. Later steps (outline)
 
 Superseded for text by `windows.md` (2026-10-05): a desktop with windows, the terminal a program in one.

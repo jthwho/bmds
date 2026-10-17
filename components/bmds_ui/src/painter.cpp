@@ -19,6 +19,7 @@ namespace {
 
         constexpr uint32_t AlignMask = Surface::Align - 1u;
         constexpr size_t   MaxList = 32; // a scroll's working lists (on the window manager's stack; past them, redrawn)
+        constexpr int32_t  MinPiece = 160; // columns a piece is given at least in the strip (if it needs them)
 
         // @p from minus every rectangle of @p minus into @p out (disjoint).
         // Returns false if more than @p MaxList rectangles were needed.
@@ -178,13 +179,27 @@ Error Painter::run(int x, int y, uint16_t maxWidth, uint16_t height, Draw draw, 
         const size_t          halfBytes = size_t(_tools.halfWidth) * Surface::BytesPerPixel * _tools.height;
         int32_t      done = 0;
         while (done < width) {
-                const int  half = _tools.busyHalf == 0 ? 1 : 0; // not the one being copied
-                uint8_t   *strip = _tools.strip + size_t(half) * halfBytes;
-                const auto room =
-                        static_cast<uint16_t>(width - done < _tools.halfWidth ? width - done : _tools.halfWidth);
+                // The next free columns: past what earlier pieces use, which the 2D-DMA may not have
+                // read yet. Too few left in a half for the piece (a text's width isn't known before:
+                // at least MinPiece), the next half; both used, the surface waited for, from the start.
+                const int32_t wanted = width - done < MinPiece ? width - done : MinPiece;
+                if (_tools.stripHalf < 2 && int32_t(_tools.halfWidth) - _tools.stripColumn < wanted) {
+                        ++_tools.stripHalf;
+                        _tools.stripColumn = 0;
+                }
+                if (_tools.stripHalf >= 2) {
+                        note(_surface.wait(_timeoutMs));
+                        _tools.stripHalf = 0;
+                        _tools.stripColumn = 0;
+                }
+                uint8_t *strip =
+                        _tools.strip + size_t(_tools.stripHalf) * halfBytes + size_t(_tools.stripColumn) * pixel;
+                const int32_t  free = int32_t(_tools.halfWidth) - _tools.stripColumn;
+                const auto     room = static_cast<uint16_t>(width - done < free ? width - done : free);
                 bool           more = false;
                 const uint16_t w = draw(strip, stride, room, more);
                 if (w == 0) break;
+                _tools.stripColumn = static_cast<uint16_t>(_tools.stripColumn + ((w + AlignMask) & ~AlignMask));
                 // The chunk's part on the surface (columns cut on the left come in fours, as x).
                 const int32_t at = sx + done;
                 const int32_t cut = at < 0 ? -at : 0;
@@ -199,7 +214,6 @@ Error Painter::run(int x, int y, uint16_t maxWidth, uint16_t height, Draw draw, 
                                 const Error    err = _surface.startBlit(chunk, from, stride, _clip, source, repeat,
                                                                         uint16_t(skipY % repeat), _timeoutMs);
                                 note(err);
-                                if (err.isOk()) _tools.busyHalf = static_cast<int8_t>(half);
                         }
                 }
                 done += w;
@@ -284,7 +298,10 @@ Error Painter::copyPixels(int x, int y, const uint8_t *data, size_t stride, uint
         ++_calls;
         Error err = _surface.startBlit(to, from, stride, _clip, source, _timeoutMs);
         if (err.isOk()) err = _surface.wait(_timeoutMs); // the caller's picture is free to change after
-        _tools.busyHalf = -1;                            // the strip's last copy is done too
+        if (err.isOk()) {                                // the strip's copies are done too
+                _tools.stripHalf = 0;
+                _tools.stripColumn = 0;
+        }
         note(err);
         return _error;
 }

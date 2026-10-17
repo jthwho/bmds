@@ -381,6 +381,7 @@ class WindowManager {
                                 uint32_t lastRoundUs = 0;
                                 uint32_t deferred = 0; ///< Redraws put off (`Painter::defer()`).
                                 uint32_t windows = 0;  ///< Windows now, shown and hidden (not a count).
+                                uint32_t jobs = 0;     ///< 2D-DMA jobs run on the desktop's surface (not a count).
                 };
 
                 /** @brief Window managers: one per display. */
@@ -631,8 +632,10 @@ class WindowManager {
 
                 /**
                  * @brief Sets the pointer's shape over window @p id's client area
-                 *        (`WindowConfig::pointer` at first): a widget's under it.
-                 * @return `Ok`, `NotFound`, or `InvalidState` (not running).
+                 *        (`WindowConfig::pointer` at first): a widget's under it. Called
+                 *        while a round draws, it doesn't wait: the shape is taken at the next
+                 *        round (an application holding its own lock mustn't wait for ours).
+                 * @return `Ok`, `NotFound`, or `InvalidState` (not running); `Ok` when put off.
                  */
                 Error setPointer(uint8_t id, Pointer shape);
 
@@ -831,13 +834,19 @@ class WindowManager {
                  */
                 Result<List<Info>> windows();
 
-                /** @brief Returns true if window @p id is minimized (false: shown, or no such window). */
+                /**
+                 * @brief Returns true if window @p id is minimized (false: shown, or no such window).
+                 *        While a round draws, as at its start (it doesn't wait).
+                 */
                 bool isMinimized(uint8_t id);
 
                 /** @brief Returns window @p id's outer rectangle (screen coordinates; minimized too). */
                 Result<Rect> rect(uint8_t id);
 
-                /** @brief Returns window @p id's client area (screen coordinates; minimized too). */
+                /**
+                 * @brief Returns window @p id's client area (screen coordinates; minimized too).
+                 *        While a round draws, as at its start (it doesn't wait).
+                 */
                 Result<Rect> clientRect(uint8_t id);
 
                 /**
@@ -1038,6 +1047,11 @@ class WindowManager {
                 Error           dropLocked();
                 void            run();
                 void            round(uint32_t requests);
+                struct Snapshot;                  // below
+                void            snapshotLocked(); // every window's, for queries during a round
+                bool            readSnapshot(uint8_t id, Snapshot &out) const; // without the lock (false: none kept)
+                Error           setPointerLocked(uint8_t id, Pointer shape);
+                void            applyPointersAsked(); // setPointer()'s made during a round
                 void            drawPieces(Span<const ComposePiece> pieces);
                 void            drawLayer(size_t z, Span<const Rect> pieces);
                 void            drawUpdates(); // windows asking for an update and not drawn yet this round
@@ -1050,6 +1064,7 @@ class WindowManager {
                 void            changed(uint8_t oldFocus); // wakes the task; repaints titles if the focus moved
                 Rect            placed(const Rect &rect) const;
                 void            count(const Painter &painter);
+                void            drawError(Error err, const char *what); // counted, and logged (the first few)
 
                 Mutex         _lock;
                 Display      *_display = nullptr;
@@ -1164,6 +1179,19 @@ class WindowManager {
                 uint8_t               _unsnapId = 0;            // a snapped window grabbed: its size back when it moves
                 std::atomic<uint32_t> _requests{0};             // changes made
                 std::atomic<uint32_t> _asked[UpdateWords] = {}; // update() calls, taken by the next round
+                // Read without the lock while a round holds it (windows.md §4o): each window's client
+                // area and whether it is minimized, a seqlock's, refreshed at each round's end and when
+                // a query gets the lock; and pointer shapes asked meanwhile, applied by the next round.
+                struct Snapshot {
+                                Rect    client;
+                                uint8_t valid = 0;
+                                uint8_t minimized = 0;
+                };
+                static constexpr size_t MaxIds = UpdateWords * 32;
+                Snapshot               *_snapshots = nullptr;     // by number (PSRAM, kept once made)
+                uint8_t                *_pointerWanted = nullptr; // by number, with _pointerAsked's bit
+                std::atomic<uint32_t>   _snapshotSeq{0};          // odd while written
+                std::atomic<uint32_t>   _pointerAsked[UpdateWords] = {};
                 std::atomic<uint32_t> _drawn{0};                // changes drawn
                 uint32_t              _presented = 0;           // the last present's number
                 Stats                 _stats;

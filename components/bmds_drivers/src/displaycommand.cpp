@@ -35,6 +35,8 @@ BMDS_NAMESPACE_BEGIN
 namespace detail {
         int runDisplayPpa(CommandContext &ctx);  // displayppa.cpp
         int runDisplayRows(CommandContext &ctx); // displayppa.cpp
+        int runDisplayDsi(CommandContext &ctx, Span<char *const> args);  // displayregs.cpp
+        int runDisplayChip(CommandContext &ctx, Span<char *const> args); // displayregs.cpp
 } // namespace detail
 
 namespace {
@@ -71,6 +73,10 @@ namespace {
         BMDS_SYSCONF(displayBuffering, "display/buffering", Config::Type::Enum, "double",
                      "Surface 0's buffers: double (no tearing) or single (half the memory)", 0, 0, "single|double",
                      nullptr)
+        BMDS_SYSCONF(
+                displayLaneMbps, "display/lanembps", Config::Type::Int, "0",
+                "The DSI lanes' rate in Mbps for 'display start' (0: a margin over the mode's need; at least the need)",
+                0, 1500, nullptr, nullptr)
 
         // The board's bridge, attached on first use.
         Result<Lt8912b *> attachBridge() {
@@ -318,8 +324,10 @@ namespace {
                         SysConf::get(bmdsConf_displayBuffering.key, text).isOk() && text.view() == "single"
                                 ? Surface::Buffering::Single
                                 : Surface::Buffering::Double;
+                const Result<int32_t> laneMbps = SysConf::getInt(StringView(bmdsConf_displayLaneMbps.key));
                 stopAnim();
-                const Error err = d->start(mode, buffering);
+                const Error err =
+                        d->start(mode, buffering, laneMbps.isOk() ? static_cast<uint32_t>(laneMbps.value()) : 0);
                 if (err.isError()) {
                         ctx.eprintf("display: start: %s\n", err.desc());
                         return Shell::ExitFailure;
@@ -347,10 +355,11 @@ namespace {
                 if (d == nullptr) return Shell::ExitFailure;
                 const Scanout::Stats s = d->scanout().stats();
                 const Surface       &surface = d->surface();
-                ctx.printf("Scanout:  %u frames, %u blocks (%u a frame), %u swaps, %u pictures switched to\n",
+                ctx.printf("Scanout:  %u frames, %u blocks (%u a frame), %u swaps, %u pictures switched to (%u with "
+                           "the link up)\n",
                            static_cast<unsigned>(s.frames), static_cast<unsigned>(s.blocks),
                            static_cast<unsigned>(s.blocksPerFrame), static_cast<unsigned>(s.swaps),
-                           static_cast<unsigned>(s.switches));
+                           static_cast<unsigned>(s.switches), static_cast<unsigned>(s.restarts));
                 ctx.printf("Problems: %u underruns, %u stalls, %u resyncs, %u rebuilds (%u failed)\n",
                            static_cast<unsigned>(s.underruns), static_cast<unsigned>(s.stalls),
                            static_cast<unsigned>(s.resyncs), static_cast<unsigned>(s.rebuilds),
@@ -372,6 +381,54 @@ namespace {
                 ctx.printf("Detail:   block interrupt %u cycles at most; DMA on block %u; bridge FIFO %u\n",
                            static_cast<unsigned>(s.isrCyclesMax), static_cast<unsigned>(s.dmaItem),
                            static_cast<unsigned>(s.bridgeFifo));
+                const Scanout::Config &c = d->scanout().config();
+                ctx.printf("Link:     %u lanes at %u Mbps, clock %s, frame ack %s; errors in %u frames (INT_ST0 "
+                           "0x%08x, INT_ST1 0x%08x)\n",
+                           static_cast<unsigned>(d->scanout().lanes()), static_cast<unsigned>(s.laneMbps),
+                           c.continuousClock ? "hs" : "auto", c.frameAck ? "on" : "off",
+                           static_cast<unsigned>(s.linkErrorFrames), static_cast<unsigned>(s.linkErrors0),
+                           static_cast<unsigned>(s.linkErrors1));
+                return Shell::ExitSuccess;
+        }
+
+        // `display link [clock=auto|hs] [ack=on|off] [mbps=N]`: the DSI link's options, at once
+        // (the lane rate by building the link anew: the monitor resyncs).
+        int runLink(CommandContext &ctx, Args args) {
+                Display *d = running(ctx);
+                if (d == nullptr) return Shell::ExitFailure;
+                const Scanout::Config &c = d->scanout().config();
+                bool                   clock = c.continuousClock, ack = c.frameAck, rate = false;
+                uint32_t               mbps = c.laneMbps;
+                for (size_t i = 2; i < args.size(); ++i) {
+                        const StringView a(args[i]);
+                        if (a == "clock=auto" || a == "clock=hs") {
+                                clock = a == "clock=hs";
+                        } else if (a == "ack=on" || a == "ack=off") {
+                                ack = a == "ack=on";
+                        } else if (a.size() > 5 && std::strncmp(args[i], "mbps=", 5) == 0) {
+                                mbps = static_cast<uint32_t>(std::strtoul(args[i] + 5, nullptr, 0));
+                                rate = true;
+                                if (mbps > 1500) return ctx.usage();
+                        } else {
+                                return ctx.usage();
+                        }
+                }
+                d->scanout().setLinkOptions(clock, ack);
+                if (rate) {
+                        if (d->scanout().surface() != &d->surface()) {
+                                ctx.eprintf("display: another picture is shown (a full screen)\n");
+                                return Shell::ExitFailure;
+                        }
+                        d->scanout().setLaneMbps(mbps);
+                        const Error err = d->showDesktop(1000);
+                        if (err.isError()) {
+                                ctx.eprintf("display: link: %s\n", err.desc());
+                                return Shell::ExitFailure;
+                        }
+                }
+                ctx.printf("Link:     %u Mbps, clock %s, frame ack %s\n",
+                           static_cast<unsigned>(d->scanout().stats().laneMbps), clock ? "hs" : "auto",
+                           ack ? "on" : "off");
                 return Shell::ExitSuccess;
         }
 
@@ -868,6 +925,9 @@ namespace {
                 if (args.size() == 2 && std::strcmp(what, "off") == 0) return runOff(ctx);
                 if (args.size() == 2 && std::strcmp(what, "stats") == 0) return runStats(ctx);
                 if (args.size() == 2 && std::strcmp(what, "test") == 0) return runTestPicture(ctx);
+                if (std::strcmp(what, "link") == 0) return runLink(ctx, args);
+                if (std::strcmp(what, "dsi") == 0) return detail::runDisplayDsi(ctx, args);
+                if (std::strcmp(what, "chip") == 0) return detail::runDisplayChip(ctx, args);
                 if (std::strcmp(what, "try") == 0) return runTry(ctx, args);
                 if (std::strcmp(what, "fill") == 0) return runFill(ctx, args);
                 if (args.size() <= 3 && std::strcmp(what, "present") == 0)
@@ -881,14 +941,20 @@ namespace {
 
 } // namespace
 
-BMDS_SHELL_COMMAND(display, runDisplay,
-                   "[edid [raw]|scan|start|off|stats|test|try WxH@HZ [lanes=N seconds=N settle=N dds=N min=MHZ vsync=N "
-                   "hsync=N hback=N]|fill X Y W H RRGGBB|"
-                   "present [N]|anim [start [N]|stop]|stress psram|write|internal|ppa [soak SECONDS|path]|rows N "
-                   "[stripes] [irq K]]",
-                   "Show the HDMI bridge and the monitor; 'edid' decodes the monitor's EDID ('raw': its bytes), "
-                   "'scan' lists the bus, 'start' shows surface 0 (sysconf's display/mode and display/buffering), "
-                   "'test', 'fill' and 'anim' draw on it, 'try' shows a test picture in another mode for a while, "
-                   "'ppa' measures the PPA")
+BMDS_SHELL_COMMAND(
+        display, runDisplay,
+        "[edid [raw]|scan|start|off|stats|link [clock=auto|hs] [ack=on|off] [mbps=N]|dsi [host|bridge] [PATTERN]|dsi "
+        "set "
+        "host|bridge REG[.FIELD] VALUE|chip [main|dsi|avi]|chip set PAGE REG VALUE|chip reset|chip configure|"
+        "test|try "
+        "WxH@HZ [lanes=N seconds=N settle=N dds=N min=MHZ vsync=N "
+        "hsync=N hback=N]|fill X Y W H RRGGBB|"
+        "present [N]|anim [start [N]|stop]|stress psram|write|internal|ppa [soak SECONDS|path]|rows N "
+        "[stripes] [irq K]]",
+        "Show the HDMI bridge and the monitor; 'edid' decodes the monitor's EDID ('raw': its bytes), "
+        "'scan' lists the bus, 'start' shows surface 0 (sysconf's display/mode and display/buffering), "
+        "'test', 'fill' and 'anim' draw on it, 'try' shows a test picture in another mode for a while, "
+        "'ppa' measures the PPA; 'link' sets the DSI link's options, 'dsi' shows the DSI host's and "
+        "bridge's registers by field and sets them, 'chip' the HDMI bridge chip's (test aids)")
 
 BMDS_NAMESPACE_END

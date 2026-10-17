@@ -37,8 +37,8 @@ class Surface;
  *
  * Fills take any rectangle and go out as one 2D-DMA job per 32 pieces
  * (sides off the 4-pixel columns cost a read and a write of their groups).
- * Text is expanded into one half of a strip in internal RAM while the
- * 2D-DMA copies the other half into the surface; it starts on a 4-pixel
+ * Text is expanded into the next free columns of a strip in internal RAM
+ * while the 2D-DMA copies what was made before; it starts on a 4-pixel
  * column. Scrolling moves pixels inside the surface.
  *
  * The first error is kept (`error()`); drawing goes on regardless.
@@ -51,6 +51,10 @@ class Painter {
                 /**
                  * @brief What painters share: the strip (two halves of internal DMA
                  *        RAM, RGB888) and the glyph renderer, kept by the window manager.
+                 *        Pieces are made in the strip side by side, left to right, half
+                 *        after half; a piece's columns are reused only after a wait for
+                 *        the surface (a batch's pieces stay until it runs: windows.md §4n).
+                 *        Whoever waits for the surface may set the position back to 0.
                  */
                 struct Tools {
                                 uint8_t             *strip = nullptr; ///< Two halves, one after the other.
@@ -58,7 +62,8 @@ class Painter {
                                 uint16_t             height = 0;      ///< Rows: at least a font's height.
                                 GlyphRenderer       *renderer = nullptr;
                                 const WindowPalette *palette = nullptr; ///< The window manager's colors.
-                                int8_t               busyHalf = -1;     ///< The half a started copy reads, or -1.
+                                uint8_t              stripHalf = 0;   ///< The half the next piece goes in (2: used up).
+                                uint16_t             stripColumn = 0; ///< And its first free column there.
                 };
 
                 /**

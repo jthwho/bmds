@@ -628,6 +628,79 @@ program, pictures and sounds (several seconds from the card) before its window o
   The arrow then came back, and the program was its own session's leader as expected. The
   program-gone path (`sendSignal(pid, 0)`) and the timeout are untested on the board.
 
+## 4m. A window manager that starved its callers (2026-10-16, the user's report)
+
+Starting the system monitor with Doom in a window froze the desktop for many seconds, then left it
+laggy. Reproduced: with windowed Doom alone `win stats` (one lock of the window manager) took
+~660 ms; the system monitor's start stalled a shell loop 16 s, then 1-4 s at a time. CPU wasn't
+short (Doom ~23%, the monitor ~0%).
+
+- **The cause:** `run()` read the frame number before the round and then waited for the frame
+  after it. A round that ran past its frame's end (windowed Doom's grew to ~15 ms; the monitor's
+  first drawing more) found that frame already begun, didn't wait, and took the lock again at
+  once: a task woken by the unlock never ran before the lock was taken back. Every caller of the
+  window manager waited (programs' invalidates and presents, the shell's commands), and the
+  monitor, its own lock held meanwhile, deferred its redraws round after round.
+- **The fix:** the frame number is read after the round, so the window manager always waits for
+  the next frame's start with the lock free. A round shorter than a frame still runs every frame;
+  a longer one runs every other.
+- **Measured** (Doom windowed, the monitor open over it, seven minutes): `win stats` 4-40 ms
+  (30 in 0.1-1.2 s), the monitor's start one 0.24 s gap, ~33 rounds a second (Doom's rate), 5-9 ms
+  each.
+
+## 4n. Batched drawing: a round in few 2D-DMA jobs (2026-10-16, the user's report)
+
+The System Monitor felt laggy: slow to draw, its window's outline trailing when moved. Measured
+(`prof`, timing logs since removed): its once-a-second refresh took the window manager ~27 ms to
+draw, in ~95 2D-DMA jobs a round (~175 a refresh), each paying IDF's set-up (the queue, channel
+connects, callbacks, cache syncs: 44% of the window manager's CPU) and a wait.
+
+- **Holding the channels between jobs failed** (the first try): a job without an end of frame keeps
+  IDF from giving its channels back, but the receive channel then raises "descriptors empty" at the
+  chain's end and IDF frees them anyway (`docs/platforms/esp32p4.md` §4); every later job timed out.
+  Removed.
+- **`Surface::beginBatch()`/`endBatch()`** (after `enableBatching()`: a 96-piece, 512-row chain and
+  12 KB of colour lines in internal DMA RAM, the desktop's surface only): fills and copies from
+  pictures (`startBlit()`) are added to one job; it runs when full, at `present()`, `wait()`,
+  `endBatch()`, and before anything that reads the surface (`patch()`, `copy()`: a job's transmit
+  side can read ahead of its receive side's writes) or a widening copy (the other chain). The
+  window manager batches each round.
+- **Fills' colour lines** come from the 12 KB, one per colour and width (a line of the colour at
+  least as wide is reused), up to 32 rows of it (≤1.5 KB) so a tall fill takes a descriptor per 32
+  rows, not per row.
+- **Uneven edges** (a fill's sides off the 4-pixel columns: nearly every widget fill) were 2 jobs
+  each plus a flush. Now they wait in the batch (64 groups, a colour per pixel, neighbours on the
+  same rows merged, overlapping rows split and merged) and are read, patched and written for all at
+  once only when something must see them. A later write of whole groups over a pending one (text on
+  its background) takes those rows from it instead (`coverEdges()`): it sets those pixels anyway.
+- **The strip** (`Painter::Tools`) is a column allocator now: pieces side by side, half after half,
+  reused only after a wait (a batch keeps its sources until it runs); the window manager starts it
+  over after each round.
+- **The System Monitor's tables** were cleared and refilled every second and their views reset (a
+  whole repaint) even when nothing changed: `TableModel::takeChanged()` (a hash of the rows) skips
+  the reset then.
+- **Measured** (the System Monitor's overview, idle): jobs ~95 → ~5 a round; the refresh's drawing
+  27 → 7-8 ms (and 290,000 → ~100,000 pixels a second); the window manager's CPU while drawing
+  ~40% less. `win stats` gains `Jobs:` (2D-DMA jobs on the desktop's surface). `win check` 0 wrong.
+- **Left:** a drag's thin strips still cost ~5 ms each (every widget crossed draws its text whole,
+  then the strip's sliver is copied); edge resolves dominate drags.
+
+## 4o. Queries that don't wait for a round (2026-10-16)
+
+The outline's trail: a GUI application handles a pointer event holding its own lock and asks the
+window manager for its client area (`clientRect()`), which waited for the window manager's lock,
+held for a whole round; that round meanwhile found the application busy (`tryLock`) and put off
+its redraw, leaving the old outline's strip unrestored. The System Monitor's timer did the same
+through `isMinimized()`.
+
+- **A snapshot** (each window's client area and minimized state, under a seqlock) is taken before
+  each round; `clientRect()` and `isMinimized()` read it when the lock is held (nothing moves during
+  a round), and take the lock otherwise (or when no snapshot is kept: a window opened since).
+- **`setPointer()`** called during a round records the shape and wakes the window manager, which
+  applies it before the next round (`Ok` returned).
+- **Measured:** deferred redraws during a drag of the System Monitor 5 → 0; no event held the
+  application's lock past 5 ms.
+
 ## 6. ABI (later)
 
 The goal is GUI programs as separate executables. Not before the internal API has settled. Expected
