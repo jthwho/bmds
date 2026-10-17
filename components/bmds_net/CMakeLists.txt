@@ -77,6 +77,7 @@ if(COMMAND idf_component_register)
                                     src/socket.cpp
                                     src/socketfastpath.cpp
                                     src/sshservice.cpp
+                                    src/timesync.cpp
                                INCLUDE_DIRS include
                                PRIV_INCLUDE_DIRS ${BMDS_LWIP_INCLUDES}
                                REQUIRES bmds_core bmds_kernel

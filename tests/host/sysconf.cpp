@@ -227,6 +227,25 @@ TEST_CASE("SysConf: set, setdef, save, revert, and a reboot") {
         CHECK(std::string(info.stateName()) == "default");
         CHECK_FALSE(info.hasSaved);
 
+        // Several keys saved in one write (a color theme's), another changed key left unsaved.
+        CHECK(SysConf::set("wm/palette/desktop", "112233").isOk());
+        CHECK(SysConf::set("wm/palette/text", "445566").isOk());
+        CHECK(SysConf::set("panel/size", "40").isOk());
+        {
+                const SysConf::Id ids[] = {SysConf::find("wm/palette/desktop").value(),
+                                           SysConf::find("wm/palette/text").value()};
+                CHECK(SysConf::save(bmds::Span<const SysConf::Id>(ids)).isOk());
+                const SysConf::Id bad[] = {ids[0], SysConf::NoId};
+                CHECK(SysConf::save(bmds::Span<const SysConf::Id>(bad)) == Error::NotExist);
+                CHECK(SysConf::save(bmds::Span<const SysConf::Id>()).isOk());
+        }
+        CHECK(readFile("/flash/sysconf").find("wm/palette/desktop=112233\n") != std::string::npos);
+        CHECK(readFile("/flash/sysconf").find("wm/palette/text=445566\n") != std::string::npos);
+        CHECK(readFile("/flash/sysconf").find("panel/size") == std::string::npos);
+        REQUIRE(SysConf::info("panel/size", info).isOk());
+        CHECK(std::string(info.stateName()) == "changed");
+        CHECK(SysConf::setDefault("panel/size").isOk());
+
         // A saved line for a key nobody declared survives saves, and applies once declared.
         {
                 auto [h, err] = Vfs::open("/flash/sysconf", Vfs::Write | Vfs::Append, Root);

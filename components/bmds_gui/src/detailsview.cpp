@@ -40,6 +40,11 @@ DetailsView::DetailsView(Widget *parent) : ItemView(parent) {
         setLineSteps(16, RowHeight);
 }
 
+void DetailsView::setHeaderVisible(bool visible) {
+        setTopMargin(visible ? HeaderHeight : 0); // a header() of no height then: not drawn, never pressed
+        return;
+}
+
 uint32_t DetailsView::total() const {
         return HeaderLayout::total(Span<const uint16_t>(_widths, _columns));
 }

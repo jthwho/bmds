@@ -121,9 +121,16 @@ Error GuiWindow::move(uint16_t x, uint16_t y) {
 
 void GuiWindow::setFocusWidget(Widget *widget) {
         if (widget == _focus) return;
-        if (_focus != nullptr) _focus->update();
+        Widget *old = _focus;
+        if (old != nullptr) old->update();
         _focus = widget;
-        if (_focus != nullptr) _focus->update();
+        if (widget != nullptr) widget->update();
+        // The old one commits (which may move the focus again, or destroy the new one: then
+        // it is told nothing more).
+        if (old != nullptr) old->focusOut();
+        if (widget == nullptr || _focus != widget) return;
+        widget->focusIn();
+        for (Widget *p = widget->parent(); p != nullptr && _focus == widget; p = p->parent()) p->childFocused(*widget);
         return;
 }
 
@@ -291,7 +298,17 @@ void GuiWindow::paint(Painter &painter) {
 void GuiWindow::paintTree(Widget &widget, Painter &painter) {
         if (!widget.isVisible() || !painter.isVisible(widget.geometry())) return;
         widget.paint(painter);
-        for (Widget *c = widget.firstChild(); c != nullptr; c = c->next()) paintTree(*c, painter);
+        for (Widget *c = widget.firstChild(); c != nullptr; c = c->next()) {
+                Rect clip;
+                if (!widget.childClip(*c, clip)) {
+                        paintTree(*c, painter);
+                        continue;
+                }
+                // Kept inside its clip (a scrolled view's rows): through a painter of its own.
+                const Rect shown = c->geometry().intersected(clip);
+                if (!c->isVisible() || shown.isEmpty()) continue;
+                GuiStyle::drawClipped(painter, shown, [this, c](Painter &clipped) { paintTree(*c, clipped); });
+        }
         return;
 }
 

@@ -74,7 +74,6 @@ Error FileDialog::build() {
         lookLabel->setMinimumWidth(LabelWidth);
         lookLabel->setBuddy(_lookIn);
         _lookIn->setStretch(1);
-        _lookIn->setFocusable(true);
         _lookIn->setAccepted(lookInAccepted, this);
         _lookIn->setCancelled(lookInCancelled, this);
         _back->setClicked(backClicked, this);
@@ -118,7 +117,6 @@ Error FileDialog::build() {
         nameLabel->setMinimumWidth(LabelWidth);
         nameLabel->setBuddy(_name);
         _name->setStretch(1);
-        _name->setFocusable(true);
         _name->setAccepted(nameAccepted, this);
         _name->setCancelled(nameCancelled, this);
         BoxLayout *typeRow = row(c);

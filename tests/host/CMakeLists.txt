@@ -26,6 +26,7 @@ add_subdirectory(${BMDS_ROOT}/components/bmds_synth ${CMAKE_BINARY_DIR}/bmds_syn
 add_subdirectory(${BMDS_ROOT}/components/bmds_speech ${CMAKE_BINARY_DIR}/bmds_speech)
 add_subdirectory(${BMDS_ROOT}/components/bmds_mplayer ${CMAKE_BINARY_DIR}/bmds_mplayer)
 add_subdirectory(${BMDS_ROOT}/components/bmds_sysmon ${CMAKE_BINARY_DIR}/bmds_sysmon)
+add_subdirectory(${BMDS_ROOT}/components/bmds_settings ${CMAKE_BINARY_DIR}/bmds_settings)
 add_subdirectory(${BMDS_ROOT}/components/bmds_imageview ${CMAKE_BINARY_DIR}/bmds_imageview)
 add_subdirectory(${BMDS_ROOT}/components/bmds_panel ${CMAKE_BINARY_DIR}/bmds_panel)
 add_subdirectory(${BMDS_ROOT}/components/bmds_input ${CMAKE_BINARY_DIR}/bmds_input)
@@ -48,6 +49,7 @@ add_executable(bmds_host_tests
         edid.cpp
         futex.cpp
         gui.cpp
+        settings.cpp
         imagecache.cpp
         memtest.cpp
         error.cpp
@@ -218,7 +220,7 @@ if(Python3_Interpreter_FOUND)
                  ${BMDS_ROOT}/flash ${BMDS_ROOT}/dist ${BMDS_ROOT}/rom)
 endif()
 target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_audio bmds_midi bmds_synth bmds_speech bmds_input bmds_ui bmds_gui bmds_clipboard
-        bmds_sysconf bmds_files bmds_mplayer bmds_sysmon bmds_panel bmds_imageview bmds_net bmds_lwip)
+        bmds_sysconf bmds_files bmds_mplayer bmds_sysmon bmds_settings bmds_panel bmds_imageview bmds_net bmds_lwip)
 bmds_target_options(bmds_host_tests)
 
 # bmds-elfcheck: the loader's format check as a host tool (tools/elfcheck).

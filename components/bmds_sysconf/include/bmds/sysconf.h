@@ -204,6 +204,14 @@ namespace SysConf {
         /** @brief Saves every key whose current value differs from the store's. */
         Error saveAll();
 
+        /**
+         * @brief Saves the keys @p ids name, the store written once (a color theme's): others
+         *        changed but not saved stay so.
+         * @return `Ok`, `NotExist` (an id not known; nothing saved), or as `save()`.
+         * @blocking A write to `/cfg`.
+         */
+        Error save(Span<const Id> ids);
+
         /** @brief Fills @p out about @p key. @return `Ok`, `NotExist`, `NoMem`. */
         Error info(StringView key, Info &out);
 

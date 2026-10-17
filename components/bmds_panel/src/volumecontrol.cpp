@@ -34,6 +34,7 @@ namespace {
         enum Choice : int {
                 ChooseMute = 1,
                 ChooseMixer,
+                ChooseSettings,
         };
 
         GuiWindow::Config popupConfig() {
@@ -200,6 +201,7 @@ void VolumeControl::fillMenu() {
         (void)_menu.addItem("&Mute", ChooseMute, _muted ? MenuLayout::Checked : 0);
         (void)_menu.addSeparator();
         (void)_menu.addItem("Mi&xer...", ChooseMixer, MenuLayout::Disabled); // the mixer window, later
+        if (_openSettings != nullptr) (void)_menu.addItem("Sound &Settings...", ChooseSettings);
         return;
 }
 
@@ -278,6 +280,8 @@ void VolumeControl::scrolled(void *arg, TrayIcon &, int notches) {
 void VolumeControl::chosen(void *arg, int item) {
         auto *self = static_cast<VolumeControl *>(arg);
         if (item == ChooseMute) self->setMuted(!self->_muted);
+        if (item == ChooseSettings && self->_openSettings != nullptr)
+                self->_openSettings(self->_openSettingsArg, "sound");
         return;
 }
 

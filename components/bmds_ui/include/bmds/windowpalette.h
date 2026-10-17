@@ -108,7 +108,7 @@ class WindowPalette {
                         0x000000, // FaceDark
                         0x000080, // Highlight
                         0xffffff, // HighlightText
-                        0x808080, // DisabledText
+                        0x505050, // DisabledText (about 4.4:1 on the face: readable help)
                         0xffffff, // DesktopText
                         0xffffe1, // ToolTip
                         0x000000, // ToolTipText

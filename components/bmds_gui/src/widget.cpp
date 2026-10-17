@@ -176,14 +176,42 @@ void Widget::update() {
         return;
 }
 
+namespace {
+
+        bool hits(const Rect &r, int x, int y) {
+                return x >= r.x && y >= r.y && uint32_t(x) < r.right() && uint32_t(y) < r.bottom();
+        }
+
+} // namespace
+
 Widget *Widget::widgetAt(int x, int y) {
         for (Widget *c = _first; c != nullptr; c = c->_next) {
-                if (!c->_visible) continue;
-                const Rect &r = c->_rect;
-                if (x >= r.x && y >= r.y && uint32_t(x) < r.right() && uint32_t(y) < r.bottom())
-                        return c->widgetAt(x, y);
+                if (!c->_visible || !hits(c->_rect, x, y)) continue;
+                Rect clip;
+                if (childClip(*c, clip) && !hits(clip, x, y)) continue;
+                return c->widgetAt(x, y);
         }
         return this;
+}
+
+void Widget::fillOutsideChildren(Painter &painter, const Rect &area, uint32_t rgb) const {
+        Region gaps;
+        gaps.add(area);
+        for (Widget *c = _first; c != nullptr; c = c->_next) {
+                if (!c->_visible || !c->_rect.intersects(area)) continue;
+                Region rest;
+                for (const Rect &g : gaps.rects()) {
+                        Rect   out[4];
+                        size_t k = subtract(g, c->_rect, out);
+                        for (size_t i = 0; i < k; ++i) rest.add(out[i]);
+                }
+                gaps = rest;
+        }
+        Rect   pieces[Region::MaxRects];
+        size_t n = 0;
+        for (const Rect &g : gaps.rects()) pieces[n++] = g;
+        if (n > 0) (void)painter.fill(Span<const Rect>(pieces, n), rgb);
+        return;
 }
 
 // ---- Label
@@ -210,6 +238,13 @@ void Label::setAlign(Align align) {
 void Label::setFrame(Bevel::Style style) {
         _frame = style;
         _framed = true;
+        update();
+        return;
+}
+
+void Label::setHighlighted(bool highlighted) {
+        if (highlighted == _highlighted) return;
+        _highlighted = highlighted;
         update();
         return;
 }
@@ -252,8 +287,11 @@ GuiSize Label::sizeHint() const {
 void Label::paint(Painter &painter) {
         const Rect    &outer = geometry();
         const Rect     r = _framed ? Bevel::inside(outer, _frame) : outer;
-        const uint32_t bg = painter.palette().color(Role::Face);
-        const uint32_t fg = painter.palette().color(isEnabled() ? Role::FaceText : Role::DisabledText);
+        const uint32_t           face = painter.palette().color(Role::Face);
+        const uint32_t           bg = _highlighted ? painter.palette().color(Role::Highlight) : face;
+        const uint32_t           fg = painter.palette().color(_highlighted  ? Role::HighlightText
+                                                              : isEnabled() ? Role::FaceText
+                                                                            : Role::DisabledText);
         char                     shownText[MaxText + 1];
         const Mnemonic::Stripped m = shown(shownText);
         const StringView         text(shownText, m.length);
@@ -265,7 +303,14 @@ void Label::paint(Painter &painter) {
         x = column(x);
         if (x < r.x) x = columnUp(r.x);
         if (_framed) drawBevel(painter, outer, _frame);
-        (void)painter.fill(r, bg);
+        (void)painter.fill(r, face);
+        if (_highlighted && !text.isEmpty() && x >= r.x + 4) {
+                // Lit around the text only, as a selected label is.
+                const uint32_t right = x + width + 4 < r.right() ? x + width + 4 : r.right();
+                (void)painter.fill(Rect{uint16_t(x - 4), uint16_t(textTop(r, false) - 1), uint16_t(right - (x - 4)),
+                                        uint16_t(GuiStyle::TextHeight + 2)},
+                                   bg);
+        }
         if (!text.isEmpty() && x < r.right()) {
                 (void)painter.text(static_cast<uint16_t>(x), textTop(r, false), text, Fonts::unscii16, fg, bg,
                                    static_cast<uint16_t>(r.right() - x));
@@ -513,6 +558,13 @@ void CheckBox::setChecked(bool checked) {
         return;
 }
 
+void CheckBox::setHighlighted(bool highlighted) {
+        if (highlighted == _highlighted) return;
+        _highlighted = highlighted;
+        update();
+        return;
+}
+
 void CheckBox::toggle() {
         if (!isEnabled()) return;
         setChecked(!_checked);
@@ -553,8 +605,16 @@ void CheckBox::paint(Painter &painter) {
         const StringView text(_text);
         const uint32_t   width = Fonts::unscii16.textWidth(text);
         const uint16_t   room = uint16_t(r.right() - x);
-        (void)painter.text(x, top, text, Fonts::unscii16, fg, face, room);
-        Mnemonic::draw(painter, x, top, text, _underline, fg, r.right());
+        const uint32_t   textBg = _highlighted ? p.color(Role::Highlight) : face;
+        const uint32_t   textFg = _highlighted ? p.color(Role::HighlightText) : fg;
+        if (_highlighted && x >= r.x + 4) {
+                const uint32_t right = x + width + 4 < r.right() ? x + width + 4 : r.right();
+                (void)painter.fill(Rect{uint16_t(x - 4), uint16_t(top - 1), uint16_t(right - (x - 4)),
+                                        uint16_t(GuiStyle::TextHeight + 2)},
+                                   textBg);
+        }
+        (void)painter.text(x, top, text, Fonts::unscii16, textFg, textBg, room);
+        Mnemonic::draw(painter, x, top, text, _underline, textFg, r.right());
         GuiWindow *window = this->window();
         if (hasFocus() && window != nullptr && window->isActive() && top > r.y && x >= r.x + 2) {
                 // The focus: a ring around the text, outside its rows.
@@ -686,27 +746,9 @@ void BoxLayout::resized() {
 
 void BoxLayout::paint(Painter &painter) {
         // Its frame, in the margins; the gaps: what's inside it less its visible children's.
-        Region gaps;
-        if (_framed) {
-                drawBevel(painter, geometry(), _frame);
-                gaps.add(Bevel::inside(geometry(), _frame));
-        } else {
-                gaps.add(geometry());
-        }
-        Rect   pieces[Region::MaxRects];
-        size_t n = 0;
-        for (Widget *c = firstChild(); c != nullptr; c = c->next()) {
-                if (!c->isVisible() || c->geometry().isEmpty()) continue;
-                Region rest;
-                for (const Rect &g : gaps.rects()) {
-                        Rect   out[4];
-                        size_t k = subtract(g, c->geometry(), out);
-                        for (size_t i = 0; i < k; ++i) rest.add(out[i]);
-                }
-                gaps = rest;
-        }
-        for (const Rect &g : gaps.rects()) pieces[n++] = g;
-        if (n > 0) (void)painter.fill(Span<const Rect>(pieces, n), painter.palette().color(Role::Face));
+        if (_framed) drawBevel(painter, geometry(), _frame);
+        fillOutsideChildren(painter, _framed ? Bevel::inside(geometry(), _frame) : geometry(),
+                            painter.palette().color(Role::Face));
         return;
 }
 

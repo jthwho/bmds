@@ -53,6 +53,16 @@ class NetworkStatus {
                  */
                 Error start();
 
+                /** @brief Told to open Settings at a page (its Settings... item; the panel starts it). */
+                using OpenSettings = void (*)(void *arg, const char *page);
+
+                /** @brief Has @p fn told of its Settings... item (none without it). */
+                void setOpenSettings(OpenSettings fn, void *arg) {
+                        _openSettings = fn;
+                        _openSettingsArg = arg;
+                        return;
+                }
+
         private:
                 // The interfaces read at most (with lo).
                 static constexpr size_t MaxInterfaces = 4;
@@ -60,6 +70,7 @@ class NetworkStatus {
                 enum Choice : int {
                         ChooseCopy = 1,
                         ChooseRemove,
+                        ChooseSettings,
                         ChooseRenew, // + the interface's position
                 };
 
@@ -82,6 +93,8 @@ class NetworkStatus {
                 uint32_t           _pixels[NetworkView::Side * NetworkView::Side] = {};
                 char               _tip[TrayProtocol::MaxToolTip + 1] = {};
                 char               _address[24] = {}; // Copy Address's: the first connected one
+                OpenSettings       _openSettings = nullptr;
+                void              *_openSettingsArg = nullptr;
 };
 
 BMDS_NAMESPACE_END

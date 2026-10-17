@@ -37,6 +37,9 @@ class DetailsView : public ItemView {
 
                 explicit DetailsView(Widget *parent);
 
+                /** @brief Shows or hides the header (shown by default; a list of one column without one: a sidebar). */
+                void setHeaderVisible(bool visible);
+
                 /** @brief Shows the sort on column @p column (-1: none), down or up. */
                 void setSortIndicator(int column, bool descending);
 

@@ -17,6 +17,7 @@
 #include <bmds/error.h>
 #include <bmds/icon.h>
 #include <bmds/inputevent.h>
+#include <bmds/list.h>
 #include <bmds/memory.h>
 #include <bmds/mnemonic.h>
 #include <bmds/painter.h>
@@ -50,6 +51,31 @@ namespace GuiStyle {
          *        @p rect's middle, as scroll bars and sorted headers show.
          */
         void drawArrow(Painter &painter, const Rect &rect, Arrow way, uint32_t color);
+
+        /** @brief A clipped painter's pieces kept on the stack (`drawClipped()`). */
+        constexpr size_t LocalPieces = 64;
+
+        /**
+         * @brief Calls @p draw(painter) with a painter clipped to @p limit (window
+         *        coordinates): its storage on the stack for up to `LocalPieces`
+         *        pieces, in PSRAM past that (not drawn without it). Nothing is
+         *        drawn if none of @p limit shows.
+         */
+        template <typename Draw> void drawClipped(Painter &painter, const Rect &limit, Draw draw) {
+                if (limit.isEmpty() || !painter.isVisible(limit)) return;
+                const size_t need = painter.clippedStorage();
+                Rect         local[LocalPieces];
+                List<Rect>   more(MemSpace::Psram);
+                Span<Rect>   storage(local, LocalPieces);
+                if (need > LocalPieces) {
+                        if (more.reserve(need).isError()) return;
+                        for (size_t i = 0; i < need; ++i) (void)more.append(Rect());
+                        storage = more.span();
+                }
+                Painter clipped(painter, limit, storage);
+                draw(clipped);
+                return;
+        }
 } // namespace GuiStyle
 
 /** @brief A width and a height. */
@@ -132,6 +158,16 @@ class Widget {
                 /** @brief Returns the size it wants (a layout's hint). */
                 virtual GuiSize sizeHint() const { return GuiSize(); }
 
+                /**
+                 * @brief Returns the height it wants at @p width (wrapped text grows
+                 *        as it narrows): its hint's by default. A `ScrollView` asks
+                 *        its rows this.
+                 */
+                virtual uint16_t heightForWidth(uint16_t width) const {
+                        (void)width;
+                        return sizeHint().height;
+                }
+
                 /** @brief Returns its stretch factor in a layout (0: its hint). */
                 uint8_t stretch() const { return _stretch; }
 
@@ -144,8 +180,24 @@ class Widget {
                 /** @brief Sets the widest a layout makes it. */
                 void setMaximumWidth(uint16_t width) { _maxWidth = width; }
 
-                /** @brief Returns the deepest visible child at (@p x, @p y) (window coordinates), or itself. */
+                /**
+                 * @brief Returns the deepest visible child at (@p x, @p y) (window
+                 *        coordinates), or itself; a child is found only inside its
+                 *        clip (`childClip()`).
+                 */
                 Widget *widgetAt(int x, int y);
+
+                /**
+                 * @brief Returns true, and in @p clip (window coordinates) where
+                 *        @p child and what is in it are drawn and take the mouse, if
+                 *        @p child is kept inside a rectangle (a `ScrollView`'s rows, in
+                 *        its viewport); false (the default): drawn whole.
+                 */
+                virtual bool childClip(const Widget &child, Rect &clip) const {
+                        (void)child;
+                        (void)clip;
+                        return false;
+                }
 
                 /** @brief Draws it (and the window draws its children after). */
                 virtual void paint(Painter &painter) { (void)painter; }
@@ -210,6 +262,21 @@ class Widget {
                 /** @brief Makes it its window's focus widget. */
                 void setFocus();
 
+                /** @brief It became its window's focus widget. */
+                virtual void focusIn() {}
+
+                /**
+                 * @brief It stopped being its window's focus widget (another has it,
+                 *        or none): a field commits what was typed.
+                 */
+                virtual void focusOut() {}
+
+                /**
+                 * @brief @p widget, inside it, became the focus widget: told to each
+                 *        of its parents, innermost first (a `ScrollView` shows it).
+                 */
+                virtual void childFocused(Widget &widget) { (void)widget; }
+
                 /**
                  * @brief Returns its tooltip (`devplan/gui.md` §4s): shown when the
                  *        pointer rests on it; empty (the default) for none. Tell
@@ -232,6 +299,12 @@ class Widget {
 
                 /** @brief Its window was set (`GuiWindow`'s, for the root). */
                 void setWindow(GuiWindow *window) { _window = window; }
+
+                /**
+                 * @brief Fills what of @p area its visible children don't cover with
+                 *        @p rgb: a container's gaps, without drawing under them.
+                 */
+                void fillOutsideChildren(Painter &painter, const Rect &area, uint32_t rgb) const;
 
         private:
                 void add(Widget *child);
@@ -289,6 +362,9 @@ class Label : public Widget {
                 /** @brief Makes it at least @p width wide in a layout (labels before a column of fields). */
                 void setMinimumWidth(uint16_t width) { _minWidth = width; }
 
+                /** @brief Draws its text on the highlight's color, or not (a setting a search found). */
+                void setHighlighted(bool highlighted);
+
                 GuiSize  sizeHint() const override;
                 void     paint(Painter &painter) override;
                 uint32_t mnemonic() const override;
@@ -303,6 +379,7 @@ class Label : public Widget {
                 Align        _align = Align::Left;
                 Bevel::Style _frame = Bevel::Style::Raised;
                 bool         _framed = false;
+                bool         _highlighted = false;
 };
 
 /**
@@ -458,6 +535,9 @@ class CheckBox : public Widget {
                 /** @brief Returns true if ticked. */
                 bool isChecked() const { return _checked; }
 
+                /** @brief Draws its text on the highlight's color, or not (a setting a search found). */
+                void setHighlighted(bool highlighted);
+
                 /** @brief Has @p fn told when the user toggles it. */
                 void setToggled(Toggled fn, void *arg) {
                         _toggled = fn;
@@ -483,6 +563,7 @@ class CheckBox : public Widget {
                 void    *_toggledArg = nullptr;
                 bool     _checked = false;
                 bool     _down = false; // the left button pressed on it
+                bool     _highlighted = false;
 };
 
 /**

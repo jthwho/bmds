@@ -846,6 +846,106 @@ and the panel a menu for its settings (the start of a taskbar's Properties):
   Clock off, then on beside the tray; the panel moved to the bottom and back. Each setting put
   back to its default leaves nothing in the store.
 
+### 4u. Forms: scrolled rows, numbers, colors, lists (the control panel's step 1, 2026-10-16)
+
+The control panel (`controlpanel.md`) needs pages taller than the window, of labelled editors,
+and editors the toolkit lacked. All are ordinary public widgets, tried in `widgets`' Form tab.
+
+- **`ScrollView`:** a column of child widgets scrolled **by whole rows**, on `ScrollArea`.
+  - **Why rows:** a widget's rectangle is unsigned window coordinates, so a row can't begin
+    above the viewport. Some row is always at the top, never cut. Rows above it are kept whole
+    and parked below the viewport, out of sight, so no widget is ever squeezed to nothing.
+  - **Sizes:** each row is the viewport's width and as tall as it asks at that width
+    (`Widget::heightForWidth()`, new, defaulting to the hint's height).
+  - **Moving:** the wheel moves a row a notch. The bar's arrows, track and thumb go to the
+    nearest row, at least one the way they moved. The last row worth scrolling to is the first
+    that shows the rest. A widget in a row that takes the focus is scrolled to.
+  - The arithmetic is `RowScroll` (pure).
+- **Clipping children** (new in `Widget`): `childClip(child, clip)`.
+  - `GuiWindow::paintTree()` draws such a child and what is in it through a painter clipped to
+    the rectangle (`GuiStyle::drawClipped()`, moved out of `ScrollArea`).
+  - `widgetAt()` finds it only inside the rectangle.
+  - A `ScrollView` clips its rows, but not its bars, to the viewport.
+- **Focus told** (new in `Widget`):
+  - `focusIn()` and `focusOut()` on the widget itself;
+  - `childFocused()` on each of its parents, innermost first.
+  - `GuiWindow::setFocusWidget()` tells the old one first. If that destroys or moves the new
+    one, nothing more is told.
+  - `LineEdit::setFocusLost()` is how a field commits what was typed when Tab or a click leaves
+    it.
+- **`FormLayout`** (a `ScrollView`):
+  - `addSection()` adds a `FormSection`: a title and an etched line.
+  - `addRow(label, help)` adds a `FormRow`: a label, a field to make the editors in, and help
+    under the field (`TextBlock`, new: text wrapped at its width, up to 511 bytes).
+  - The label column is the widest label, at most two fifths of the width. A row without a label
+    starts its field in the same column.
+- **`NumberField`:** a field with up and down arrows.
+  - **Typed text** is taken at Enter or when the field loses the focus: kept at the range's end,
+    or put back if it isn't a number; Esc puts it back.
+  - **Stepping:** Up and Down step, Page Up and Page Down step a page, and the wheel steps only
+    while the field has the focus, so a page scrolls past it.
+  - **Arrows** repeat while held, as a scroll bar's do.
+  - **`Changed`** is told once per change: each key, each notch, the text taken, and a held
+    arrow at its release, so a setting isn't saved twenty times a second.
+  - The arithmetic is `NumberModel` (pure).
+- **`ListEditor`:** an ordered list of texts, kept as text with a separator (`ListText`, pure).
+  - **The window:** a one-column list beside Add, Edit, Remove, Up and Down.
+  - **Editing** happens in place (`PopupEdit`, as renaming does). An item edited to nothing
+    goes.
+  - **Add** edits a blank row in place, unless the owner adds its own way (`setAddAsked()`: a
+    folder dialog).
+  - **Keys:** Insert, Delete, F2, Alt+Up and Alt+Down.
+- **`ColorSwatch` and `ColorDialog`:**
+  - **The swatch:** a color in a sunken box that takes the focus. A click, Space or Enter is told
+    to its owner.
+  - **The dialog:**
+    - a hue and saturation square (at full value) and a value bar, each dragged or moved by the
+      arrows (Shift: ten);
+    - the new color over the old (a click takes the old back);
+    - a `#rrggbb` field;
+    - sixteen presets.
+  - **Telling the owner:** each change is told at once, so the owner shows it live, and Cancel
+    is the owner's cue to put the old color back.
+  - **Drawing:** the square and the bar are made a band at a time in the window manager's strip
+    (`Painter::rows()`), with no picture buffer.
+  - The conversions are `ColorModel` (pure, integer). Every color comes back within 3 a channel,
+    and the primaries and greys exactly.
+- **Two older faults found on the way:**
+  - A `LineEdit` drew its cursor whether or not it had the keys, so a form showed one in every
+    field. Now it draws it only while it is the focus widget of the active window.
+  - A `LineEdit` didn't take the focus, so a click on it gave it no keys, though Tab was meant
+    to stop on it (§4r). The file dialog had turned it on for its own fields. Now every
+    `LineEdit` takes it, the file browser's address bar included.
+- **Host-tested:**
+  - `RowScroll`: the last row, snapping both ways, revealing above, below and taller than the
+    page;
+  - `NumberModel`: range, steps, pages, parsing with signs and spaces, too many digits, junk;
+  - `ColorModel`: exact cases, a sweep of the color cube, hex in and out;
+  - `ListText`: empty items, insert, replace, remove and move at both ends.
+- **On the board** (`widgets`, Form tab):
+  - The wheel moved a row a notch. The bar's track paged to the nearest row.
+  - Tab from the color swatches to a check box below the view scrolled just far enough to show
+    it.
+  - A cut row at the bottom was clipped to the viewport.
+  - Narrowing the window rewrapped the help, and `win check` found no wrong pixels.
+  - The port field's arrow stepped 22 to 25, Down and Page Up gave 123. 99999 typed into the
+    interval field was kept at 10000.
+  - Dragging in the color dialog's square recolored the form's swatch live, and Cancel put it
+    back, the focus returning to the swatch.
+  - A hosts entry was added in place with Enter and moved up with Alt+Up.
+- **Size:** about 18.5 KB of code for the six new files, no RAM until used.
+- **Added with the application** (`controlpanel.md` §11.2):
+  - `DetailsView::setHeaderVisible()`: a list without a header (a sidebar; a list editor without
+    a title).
+  - `LineEdit::setEdited()`: told of each change the user makes to the text.
+  - `LineEdit::setMasked()`: a star a byte, so offsets and widths match the text; not copied.
+  - A `LineEdit` not told of Enter or Esc leaves them to the window, so a dialog's default
+    button and Esc work from its fields.
+  - `Label::setHighlighted()` and `CheckBox::setHighlighted()`: the text lit (a search's
+    match).
+  - `ScrollView`'s hint asks its rows' heights at its real width once it has one. Before, a
+    form holding wrapped help hinted as tall as its narrowest wrapping.
+
 ## 5. Budget (estimates)
 
 - **Firmware:** the toolkit 10 to 15 KB, the panel 5 KB, the window manager's additions 4 KB, the

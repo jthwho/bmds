@@ -25,7 +25,8 @@ BMDS_NAMESPACE_BEGIN
  * Home and End (Shift selects); Ctrl+A selects all; Ctrl+C, Ctrl+X, Ctrl+V
  * copy, cut and paste text (the application's clipboard); Enter accepts, Esc
  * cancels. A press puts the cursor, a drag selects, a double click selects
- * all. It scrolls a character at a time to keep the cursor shown; wrapped, it
+ * all; Enter and Esc go on to the window (a dialog's buttons) when nothing
+ * is told of them. It scrolls a character at a time to keep the cursor shown; wrapped, it
  * breaks its lines as `TextWrap` does, Up and Down move between them, and it
  * asks to be as tall as they are (`setLinesChanged()`) rather than scroll.
  * Make it the window's focus widget (`GuiWindow::setFocusWidget()`) for the
@@ -72,6 +73,9 @@ class LineEdit : public Widget {
                 /** @brief Sets its colors: the background's and the text's (a field's by default). */
                 void setColors(WindowPalette::Role background, WindowPalette::Role text);
 
+                /** @brief Shows a star for each byte instead of the text, and doesn't copy it (a password). */
+                void setMasked(bool masked);
+
                 /** @brief Centres each line (as a desktop icon's name), else from the left. */
                 void setCentered(bool centered);
 
@@ -102,12 +106,30 @@ class LineEdit : public Widget {
                         return;
                 }
 
+                /** @brief Has @p fn told after each change the user makes to the text (typed, deleted, pasted). */
+                void setEdited(Done fn, void *arg) {
+                        _edited = fn;
+                        _editedArg = arg;
+                        return;
+                }
+
+                /**
+                 * @brief Has @p fn told when it stops being the focus widget (a field
+                 *        commits what was typed then, as at Enter).
+                 */
+                void setFocusLost(Done fn, void *arg) {
+                        _focusLost = fn;
+                        _focusLostArg = arg;
+                        return;
+                }
+
                 GuiSize sizeHint() const override;
                 bool    keyPressed(const KeyEvent &event) override;
                 void    mousePressed(const WindowManager::MouseEvent &event) override;
                 void    mouseMoved(const WindowManager::MouseEvent &event) override;
                 void    mouseReleased(const WindowManager::MouseEvent &event) override;
                 void    paint(Painter &painter) override;
+                void    focusOut() override;
 
         protected:
                 void resized() override;
@@ -122,6 +144,7 @@ class LineEdit : public Widget {
                                 uint16_t x;
                 };
 
+                StringView drawn() const;          // the text as shown (stars when masked)
                 Rect   textArea() const;       // inside the bevel, less the padding
                 size_t lines(Line *out) const; // at least one, `MaxLines` at most
                 size_t lineOf(const Line *lines, size_t count, size_t offset) const;
@@ -141,6 +164,10 @@ class LineEdit : public Widget {
                 void         *_acceptedArg = nullptr;
                 Done          _cancelled = nullptr;
                 void         *_cancelledArg = nullptr;
+                Done                _edited = nullptr;
+                void               *_editedArg = nullptr;
+                Done                _focusLost = nullptr;
+                void               *_focusLostArg = nullptr;
                 LinesChanged        _linesChanged = nullptr;
                 void               *_linesChangedArg = nullptr;
                 size_t              _lineCount = 1;                                   // told last
@@ -149,6 +176,7 @@ class LineEdit : public Widget {
                 bool                _framed = true;
                 bool                _centered = false;
                 bool                _wrapping = false;
+                bool                _masked = false;
 };
 
 BMDS_NAMESPACE_END

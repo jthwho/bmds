@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Settings
+Comment=Every system setting in one place: time, network, display, sound and more
+Exec=settings
+Icon=preferences-system
+Terminal=false
+Categories=Settings;System;

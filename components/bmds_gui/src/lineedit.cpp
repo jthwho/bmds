@@ -30,6 +30,17 @@ namespace {
                 return static_cast<uint8_t>(A + (ch - 'a'));
         }
 
+        // A masked field's text as drawn: a star a byte (so offsets and widths match the text's).
+        constexpr size_t Stars = LineEditModel::MaxBytes;
+        constexpr auto   starText = [] {
+                struct Text {
+                                char c[Stars + 1];
+                };
+                Text t{};
+                for (size_t i = 0; i < Stars; ++i) t.c[i] = '*';
+                return t;
+        }();
+
         GuiClipboard *clipboardOf(const Widget &w) {
                 GuiWindow *window = w.window();
                 return window != nullptr ? window->application().clipboard() : nullptr;
@@ -37,7 +48,9 @@ namespace {
 
 } // namespace
 
-LineEdit::LineEdit(Widget *parent) : Widget(parent) {}
+LineEdit::LineEdit(Widget *parent) : Widget(parent) {
+        setFocusable(true); // a click or Tab gives it the keys (gui.md §4r)
+}
 
 LineEdit::~LineEdit() {
         // A paste still coming finds no one.
@@ -105,7 +118,7 @@ Rect LineEdit::textArea() const {
 // The lines shown: wrapped as `TextWrap` breaks them, else the one from the first byte shown.
 size_t LineEdit::lines(Line *out) const {
         const Font      &font = Fonts::unscii16;
-        const StringView text = _model.text();
+        const StringView text = drawn();
         const Rect       area = textArea();
         const auto       place = [&](size_t start, size_t end) {
                 const uint32_t w = font.textWidth(text.mid(start, end - start));
@@ -144,7 +157,7 @@ size_t LineEdit::lineOf(const Line *ls, size_t count, size_t offset) const {
 
 void LineEdit::reveal() {
         const Font      &font = Fonts::unscii16;
-        const StringView text = _model.text();
+        const StringView text = drawn();
         const size_t     cursor = _model.cursor();
         const uint16_t   width = textArea().width;
         if (_wrapping) {
@@ -183,7 +196,7 @@ void LineEdit::changed() {
 
 size_t LineEdit::offsetAt(const Line &line, int x) const {
         const Font      &font = Fonts::unscii16;
-        const StringView text = _model.text();
+        const StringView text = drawn();
         int              left = line.x;
         size_t           at = line.start;
         while (at < line.end) {
@@ -224,7 +237,7 @@ void LineEdit::moveLine(int by, bool select) {
                 return;
         }
         const Line &line = ls[at];
-        const int   x = int(line.x + font.textWidth(_model.text().mid(line.start, cursor - line.start)));
+        const int   x = int(line.x + font.textWidth(drawn().mid(line.start, cursor - line.start)));
         _model.setCursor(offsetAt(ls[to], x), select);
         return;
 }
@@ -232,6 +245,7 @@ void LineEdit::moveLine(int by, bool select) {
 bool LineEdit::keyPressed(const KeyEvent &event) {
         const bool shift = event.hasShift();
         const bool ctrl = event.hasCtrl() && !event.hasAlt();
+        bool       edited = false; // the text, not only the cursor or the selection
         switch (event.usage) {
                 case HidKey::Left: _model.left(shift); break;
                 case HidKey::Right: _model.right(shift); break;
@@ -242,23 +256,28 @@ bool LineEdit::keyPressed(const KeyEvent &event) {
                         if (!_wrapping) return false;
                         moveLine(event.usage == HidKey::Up ? -1 : 1, shift);
                         break;
-                case HidKey::Backspace: (void)_model.backspace(); break;
-                case HidKey::Delete: (void)_model.erase(); break;
+                case HidKey::Backspace: edited = _model.backspace(); break;
+                case HidKey::Delete: edited = _model.erase(); break;
                 case HidKey::Enter:
                 case HidKey::KeypadEnter:
-                        if (_accepted != nullptr) _accepted(_acceptedArg, *this);
+                        // Without its own use, the window's (a dialog's default button).
+                        if (_accepted == nullptr) return false;
+                        _accepted(_acceptedArg, *this);
                         return true; // this may be gone now
                 case HidKey::Escape:
-                        if (_cancelled != nullptr) _cancelled(_cancelledArg, *this);
+                        if (_cancelled == nullptr) return false; // a dialog's cancel
+                        _cancelled(_cancelledArg, *this);
                         return true;
                 default:
                         if (ctrl && event.usage == letter('a')) {
                                 _model.selectAll();
+                        } else if (ctrl && _masked && (event.usage == letter('c') || event.usage == letter('x'))) {
+                                return true; // a masked field's text isn't copied
                         } else if (ctrl && (event.usage == letter('c') || event.usage == letter('x'))) {
                                 GuiClipboard *clipboard = clipboardOf(*this);
                                 if (clipboard != nullptr && _model.hasSelection())
                                         (void)clipboard->copyText(Clipboard::Selection::Clipboard, _model.selected());
-                                if (event.usage == letter('x')) (void)_model.backspace();
+                                if (event.usage == letter('x')) edited = _model.backspace();
                         } else if (ctrl && event.usage == letter('v')) {
                                 GuiClipboard *clipboard = clipboardOf(*this);
                                 if (clipboard != nullptr)
@@ -268,13 +287,14 @@ bool LineEdit::keyPressed(const KeyEvent &event) {
                         } else if (!ctrl && event.codepoint >= 0x20 && event.codepoint != 0x7f) {
                                 char         utf8[4];
                                 const size_t n = Utf8::encode(event.codepoint, utf8);
-                                (void)_model.insert(StringView(utf8, n));
+                                edited = _model.insert(StringView(utf8, n));
                         } else {
                                 return false;
                         }
                         break;
         }
         changed();
+        if (edited && _edited != nullptr) _edited(_editedArg, *this); // last: it may destroy this
         return true;
 }
 
@@ -282,7 +302,9 @@ void LineEdit::pasted(void *arg, Error err, StringView type, StringView data) {
         (void)type;
         auto *self = static_cast<LineEdit *>(arg);
         if (err.isError()) return;
-        if (self->_model.insert(data)) self->changed();
+        if (!self->_model.insert(data)) return;
+        self->changed();
+        if (self->_edited != nullptr) self->_edited(self->_editedArg, *self);
         return;
 }
 
@@ -322,7 +344,7 @@ void LineEdit::paintRun(Painter &painter, const Line &line, uint16_t y, size_t f
         const Rect area = textArea();
         if (to <= from || x >= area.right()) return;
         const Font      &font = Fonts::unscii16;
-        const StringView piece = _model.text().mid(from, to - from);
+        const StringView piece = drawn().mid(from, to - from);
         const uint32_t   w = font.textWidth(piece);
         const uint16_t   room = static_cast<uint16_t>(area.right() - x);
         (void)painter.fill(Rect{uint16_t(x), y, uint16_t(w < room ? w : room), GuiStyle::TextHeight}, bg);
@@ -343,7 +365,7 @@ void LineEdit::paint(Painter &painter) {
         (void)painter.fill(in, bg);
         const Font      &font = Fonts::unscii16;
         const Rect       area = textArea();
-        const StringView text = _model.text();
+        const StringView text = drawn();
         Line             ls[MaxLines];
         const size_t     n = lines(ls);
         const size_t     selStart = _model.selectionStart(), selEnd = _model.selectionEnd();
@@ -374,7 +396,9 @@ void LineEdit::paint(Painter &painter) {
                 }
                 paintRun(painter, line, y, to, line.end, x, fg, bg);
         }
-        // The cursor: a line before the character it is at.
+        // The cursor: a line before the character it is at, while it has the keys.
+        const GuiWindow *window = this->window();
+        if (!hasFocus() || window == nullptr || !window->isActive()) return;
         const size_t cursor = _model.cursor();
         const size_t at = lineOf(ls, n, cursor);
         const Line  &line = ls[at];
@@ -384,6 +408,21 @@ void LineEdit::paint(Painter &painter) {
                 if (cx < area.right() + 1u && y < in.bottom())
                         (void)painter.fill(Rect{uint16_t(cx > 0 ? cx - 1 : 0), y, 1, GuiStyle::TextHeight}, fg);
         }
+        return;
+}
+
+StringView LineEdit::drawn() const {
+        return _masked ? StringView(starText.c, _model.text().size()) : _model.text();
+}
+
+void LineEdit::setMasked(bool masked) {
+        _masked = masked;
+        changed();
+        return;
+}
+
+void LineEdit::focusOut() {
+        if (_focusLost != nullptr) _focusLost(_focusLostArg, *this); // last: it may destroy this
         return;
 }
 

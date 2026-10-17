@@ -189,3 +189,11 @@ window-unshade                  bmds        window-unshade
 system-software-update          flat-color  synchronize
 application-x-bmds-update       flat-color  package
 window-fullscreen               bmds        window-fullscreen
+
+# --- Settings' groups (devplan/controlpanel.md §5)
+preferences-desktop-display     flat-color  display
+preferences-desktop-notification glyphs   bell
+preferences-system-time         flat-color  clock
+preferences-system-network      flat-color  share
+preferences-other               flat-color  list
+preferences-desktop-panel       flat-color  template

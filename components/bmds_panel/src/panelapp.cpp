@@ -172,6 +172,8 @@ namespace {
                 ChooseTop,
                 ChooseBottom,
                 ChooseNetwork,
+                ChooseTimeSettings,
+                ChoosePanelSettings,
         };
 
         // Told of a right press at (x, y) in the panel window where nothing else takes it.
@@ -397,6 +399,7 @@ namespace {
                         void        setVolumeControl(bool shown);
                         void        setNetworkStatus(bool shown);
                         static void startMonitor(void *arg);
+                        static void openSettings(void *arg, const char *page);
                         bool        boolSetting(const Config::Param &param);
                         void        saveSetting(const Config::Param &param, StringView value);
                         static void panelMenu(void *arg, int x, int y);
@@ -1521,6 +1524,7 @@ namespace {
                 if (_volume != nullptr) return;
                 void *mem = Memory::alloc(MemSpace::Psram, sizeof(VolumeControl));
                 if (mem != nullptr) _volume = ::new (mem) VolumeControl(_app);
+                if (_volume != nullptr) _volume->setOpenSettings(openSettings, this);
                 if (_volume == nullptr || _volume->start().isError()) say("panel: no volume control in the tray\n");
                 return;
         }
@@ -1537,6 +1541,7 @@ namespace {
                 if (_network != nullptr) return;
                 void *mem = Memory::alloc(MemSpace::Psram, sizeof(NetworkStatus));
                 if (mem != nullptr) _network = ::new (mem) NetworkStatus(_app);
+                if (_network != nullptr) _network->setOpenSettings(openSettings, this);
                 if (_network == nullptr || _network->start().isError()) say("panel: no network icon in the tray\n");
                 return;
         }
@@ -1592,6 +1597,9 @@ namespace {
                 (void)menu.addSeparator();
                 (void)menu.addItem("Panel at &Top", ChooseTop, checked(!self->_bottom));
                 (void)menu.addItem("Panel at &Bottom", ChooseBottom, checked(self->_bottom));
+                (void)menu.addSeparator();
+                (void)menu.addItem("&Date && Time Settings...", ChooseTimeSettings);
+                (void)menu.addItem("Panel &Settings...", ChoosePanelSettings);
                 const int top = self->_bottom ? self->_screen.height - Height : 0;
                 (void)menu.popup(Rect{uint16_t(x), uint16_t(top + y), 0, 0});
                 return;
@@ -1631,8 +1639,19 @@ namespace {
                         }
                         case ChooseTop: self->saveSetting(bmdsConf_panelEdge, "top"); break;
                         case ChooseBottom: self->saveSetting(bmdsConf_panelEdge, "bottom"); break;
+                        case ChooseTimeSettings: openSettings(self, "time"); break;
+                        case ChoosePanelSettings: openSettings(self, "desktop"); break;
                         default: break;
                 }
+                return;
+        }
+
+        // Settings at @p page (a tray icon's Settings..., the panel menu's): the launcher's entry, started
+        // (a running one is raised there: settings' own service).
+        void PanelApp::openSettings(void *arg, const char *page) {
+                auto *self = static_cast<PanelApp *>(arg);
+                if (!self->_actions.openWith("settings.desktop", StringView(page)))
+                        self->say("panel: there's no settings.desktop among the launcher's entries\n");
                 return;
         }
 

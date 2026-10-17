@@ -525,9 +525,9 @@ namespace SysConf {
 
         namespace {
 
-                // Saves the entries @p pick chooses (or every changed one), then writes the store;
-                // on a failed write, the saved values are as before.
-                Error saveSome(int only) {
+                // Saves the entries @p ids name (@p all: every changed one), then writes the store
+                // once; on a failed write, the saved values are as before.
+                Error saveSome(Span<const Id> ids, bool all) {
                         Mutex::Locker saving(*saveLock, WaitForever);
                         struct Before {
                                         uint16_t index;
@@ -544,7 +544,9 @@ namespace SysConf {
                                         Memory::alloc(MemSpace::Psram, state.count * sizeof(Before) + 1));
                                 if (before == nullptr) return Error::NoMem;
                                 for (size_t i = 0; i < state.count && err.isOk(); ++i) {
-                                        if (only >= 0 && int(i) != only) continue;
+                                        bool named = all;
+                                        for (const Id id : ids) named = named || size_t(id) == i;
+                                        if (!named) continue;
                                         Entry     &e = state.entries[i];
                                         const bool isDefault = e.current.view() == e.defaultValue.view();
                                         if (e.hasSaved ? e.saved.view() == e.current.view() && !isDefault : isDefault)
@@ -579,7 +581,7 @@ namespace SysConf {
 
         Error save(Id id) {
                 if (!isValid(id)) return Error::NotExist;
-                return saveSome(int(id));
+                return saveSome(Span<const Id>(&id, 1), false);
         }
 
         Error save(StringView key) {
@@ -589,7 +591,13 @@ namespace SysConf {
 
         Error saveAll() {
                 if (!isReady()) return Error::InvalidState;
-                return saveSome(-1);
+                return saveSome(Span<const Id>(), true);
+        }
+
+        Error save(Span<const Id> ids) {
+                for (const Id id : ids)
+                        if (!isValid(id)) return Error::NotExist;
+                return ids.isEmpty() ? Error::Ok : saveSome(ids, false);
         }
 
         namespace {

@@ -42,3 +42,9 @@ audio-volume-high           speaker
 audio-volume-medium         speaker
 audio-volume-low            speaker
 audio-volume-muted          speaker
+preferences-desktop-display      display
+preferences-desktop-notification comments
+preferences-system-time          clock
+preferences-system-network       share
+preferences-other                list
+preferences-desktop-panel        template

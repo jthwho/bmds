@@ -119,7 +119,11 @@ class GuiWindow : public Widget {
                 /** @brief Sets its large icon (null: none; 32 × 32), kept by the caller: Alt+Tab's. */
                 void setLargeIcon(const Icon *icon);
 
-                /** @brief Sets the widget keys go to (null: none); both are redrawn. */
+                /**
+                 * @brief Sets the widget keys go to (null: none); both are redrawn, the old one
+                 *        told `focusOut()`, then the new one `focusIn()` and its parents
+                 *        `childFocused()`.
+                 */
                 void setFocusWidget(Widget *widget);
 
                 /** @brief Returns the widget keys go to, or null. */

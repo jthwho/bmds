@@ -109,6 +109,16 @@ class VolumeControl {
                 /** @brief The popup closed. */
                 void popupClosed() {}
 
+                /** @brief Told to open Settings at a page (its Settings... item; the panel starts it). */
+                using OpenSettings = void (*)(void *arg, const char *page);
+
+                /** @brief Has @p fn told of its Settings... item (none without it). */
+                void setOpenSettings(OpenSettings fn, void *arg) {
+                        _openSettings = fn;
+                        _openSettingsArg = arg;
+                        return;
+                }
+
         private:
                 static constexpr uint32_t SaveDelayMs = 2000; // after the last change: /cfg once
 
@@ -128,6 +138,8 @@ class VolumeControl {
                 bool            _muted = false;
                 int             _saveTimer = -1;
                 char            _tip[32] = {};
+                OpenSettings    _openSettings = nullptr;
+                void           *_openSettingsArg = nullptr;
 };
 
 BMDS_NAMESPACE_END

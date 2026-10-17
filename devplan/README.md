@@ -30,6 +30,7 @@ Design notes and implementation plans for BMDS subsystems. Write a plan here **b
 - [`logging.md`](logging.md) — one log for the whole system: `syslog()` through `/dev/log`, `logger`, rotated files on the card.
 - [`apps.md`](apps.md) — application folders (`apps/NAME.app`): found by looking, every one a command in a virtual `/apps`, their data in the home.
 - [`controls.md`](controls.md) — gamepads, and actions with keyboard and pad bindings for every application, changed in one standard editor.
+- [`controlpanel.md`](controlpanel.md) — Settings, the control panel: every sysconf setting in grouped pages, like the Mac's System Settings (planned).
 - [`games.md`](games.md) — surfaces for programs (windowed or full screen, Alt+Enter), the SDK's game library, Blocks, Doom, Solitaire.
 
 ## Plan Document Template

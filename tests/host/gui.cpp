@@ -21,6 +21,7 @@
 #include <bmds/bevel.h>
 #include <bmds/desktopentry.h>
 #include <bmds/filenamelist.h>
+#include <bmds/formmodels.h>
 #include <bmds/font.h>
 #include <bmds/furniturelayout.h>
 #include <bmds/graphlayout.h>
@@ -1271,6 +1272,152 @@ TEST_CASE("SliderModel: a signed range, steps, and the handle's place both ways"
         // No room to travel, or no range: the minimum, at the start.
         CHECK(m.handleStart(10, 11) == 0);
         CHECK(m.valueAt(3, 10, 11) == -61);
+}
+
+TEST_CASE("RowScroll: the last row worth scrolling to, snapping a bar's value, revealing a row") {
+        using bmds::RowScroll::lastTop;
+        using bmds::RowScroll::reveal;
+        using bmds::RowScroll::snap;
+        // Five rows of 30 with 4 between, a margin of 8: tops 8, 42, 76, 110, 144; content 182.
+        const uint32_t             stops[] = {0, 34, 68, 102, 136};
+        const Span<const uint32_t> s(stops);
+        CHECK(lastTop(s, 182, 100) == 3); // 182 - 102 = 80 fits; 182 - 68 = 114 doesn't
+        CHECK(lastTop(s, 182, 500) == 0); // all shows
+        CHECK(lastTop(s, 182, 10) == 4);  // nothing fits: the last row
+        CHECK(lastTop(Span<const uint32_t>(), 0, 100) == 0);
+        // The nearest row, but a small step still moves one, and never past the last worth it.
+        CHECK(snap(s, 60, 0, 3) == 2);
+        CHECK(snap(s, 1, 0, 3) == 1);  // a pixel down: the next row
+        CHECK(snap(s, 33, 1, 3) == 0); // a pixel up: the row before
+        CHECK(snap(s, 34, 1, 3) == 1);
+        CHECK(snap(s, 500, 1, 3) == 3);
+        CHECK(snap(s, 140, 3, 3) == 3); // already the last: stays
+        // Revealing: a row above becomes the top; one below as little as shows it; one in view stays.
+        CHECK(reveal(s, 8, 38, 0, 2, 100) == 0);
+        CHECK(reveal(s, 76, 106, 2, 1, 100) == 1);  // 106 <= 34 + 100
+        CHECK(reveal(s, 144, 174, 4, 0, 100) == 3); // 174 <= 102 + 100
+        CHECK(reveal(s, 144, 400, 4, 0, 100) == 4); // taller than the page: its top
+}
+
+TEST_CASE("NumberModel: a range kept, steps and pages, typed text read") {
+        bmds::NumberModel m;
+        m.setRange(65535, 1); // backwards: swapped
+        CHECK(m.minimum() == 1);
+        CHECK(m.maximum() == 65535);
+        CHECK(m.value() == 1);
+        CHECK(m.setValue(22));
+        CHECK_FALSE(m.setValue(22));
+        m.setSteps(1, 100);
+        CHECK(m.step(3, false));
+        CHECK(m.value() == 25);
+        CHECK(m.step(-1, true));
+        CHECK(m.value() == 1);
+        CHECK(m.setValue(int64_t(1) << 40)); // past the range: the end
+        CHECK(m.value() == 65535);
+        CHECK(m.parse("42").value() == 42);
+        CHECK(m.parse("  -7 ").value() == -7);
+        CHECK(m.parse("+3").value() == 3);
+        CHECK(m.parse("99999999999999999999").value() > 2147483647); // too many digits: kept large
+        CHECK(m.parse("-99999999999999999999").value() < -2147483647);
+        CHECK(m.parse("").isError());
+        CHECK(m.parse("-").isError());
+        CHECK(m.parse("12a").isError());
+        CHECK(m.parse("1 2").isError());
+}
+
+TEST_CASE("ColorModel: hue, saturation and value both ways; hex read and written") {
+        using bmds::ColorModel::fromRgb;
+        using bmds::ColorModel::Hsv;
+        using bmds::ColorModel::toRgb;
+        const struct {
+                        uint32_t rgb;
+                        uint16_t hue;
+                        uint8_t  saturation;
+                        uint8_t  value;
+        } exact[] = {{0xff0000, 0, 255, 255},   {0x00ff00, 120, 255, 255}, {0x0000ff, 240, 255, 255},
+                     {0xffff00, 60, 255, 255},  {0x00ffff, 180, 255, 255}, {0xff00ff, 300, 255, 255},
+                     {0xffffff, 0, 0, 255},     {0x808080, 0, 0, 128},     {0x000000, 0, 0, 0},
+                     {0x3a6ea5, 211, 165, 165}, {0x123456, 210, 202, 86}};
+        for (const auto &e : exact) {
+                const Hsv h = fromRgb(e.rgb);
+                CHECK(h.hue == e.hue);
+                CHECK(h.saturation == e.saturation);
+                CHECK(h.value == e.value);
+                CHECK(toRgb(h) == e.rgb);
+        }
+        CHECK(toRgb(Hsv{30, 255, 255}) == 0xff8000);
+        CHECK(toRgb(Hsv{210, 128, 200}) == 0x6496c8);
+        CHECK(toRgb(Hsv{360 + 120, 255, 255}) == 0x00ff00); // past a turn: around
+        // Every color comes back within 3 a channel.
+        int worst = 0;
+        for (uint32_t c = 0; c < (1u << 24); c += 997) {
+                const uint32_t back = toRgb(fromRgb(c));
+                for (int k = 0; k < 24; k += 8) {
+                        const int d = int((back >> k) & 0xff) - int((c >> k) & 0xff);
+                        worst = std::max(worst, d < 0 ? -d : d);
+                }
+        }
+        CHECK(worst <= 3);
+
+        CHECK(bmds::ColorModel::parseHex("#3A6ea5").value() == 0x3a6ea5u);
+        CHECK(bmds::ColorModel::parseHex(" 00ff00 ").value() == 0x00ff00u);
+        CHECK(bmds::ColorModel::parseHex("#fff").isError());
+        CHECK(bmds::ColorModel::parseHex("12345g").isError());
+        CHECK(bmds::ColorModel::parseHex("").isError());
+        char text[8];
+        bmds::ColorModel::formatHex(0x0a0b0c, text);
+        CHECK(std::string(text) == "#0a0b0c");
+}
+
+TEST_CASE("ListText: items between separators, inserted, replaced, removed, moved") {
+        namespace L = bmds::ListText;
+        bmds::String out;
+        CHECK(L::count("", ';') == 0);
+        CHECK(L::count("a", ';') == 1);
+        CHECK(L::count("a;;b", ';') == 3);
+        CHECK(L::item("a;;b", ';', 0) == StringView("a"));
+        CHECK(L::item("a;;b", ';', 1).isEmpty());
+        CHECK(L::item("a;;b", ';', 2) == StringView("b"));
+        CHECK(L::item("a;;b", ';', 3).isEmpty());
+
+        REQUIRE(L::insert("", ';', 0, "x", out).isOk());
+        CHECK(out == StringView("x"));
+        REQUIRE(L::insert("a;b", ';', 0, "x", out).isOk());
+        CHECK(out == StringView("x;a;b"));
+        REQUIRE(L::insert("a;b", ';', 1, "x", out).isOk());
+        CHECK(out == StringView("a;x;b"));
+        REQUIRE(L::insert("a;b", ';', 9, "x", out).isOk());
+        CHECK(out == StringView("a;b;x"));
+        REQUIRE(L::insert("a", ';', 1, "x;y", out).isOk()); // several
+        CHECK(out == StringView("a;x;y"));
+
+        REQUIRE(L::replace("a;b;c", ';', 1, "B", out).isOk());
+        CHECK(out == StringView("a;B;c"));
+        REQUIRE(L::replace("a;b;c", ';', 2, "", out).isOk()); // an empty item stays
+        CHECK(out == StringView("a;b;"));
+        CHECK(L::replace("a;b", ';', 2, "x", out) == Error::Invalid);
+
+        REQUIRE(L::remove("a;b;c", ';', 0, out).isOk());
+        CHECK(out == StringView("b;c"));
+        REQUIRE(L::remove("a;b;c", ';', 1, out).isOk());
+        CHECK(out == StringView("a;c"));
+        REQUIRE(L::remove("a;b;c", ';', 2, out).isOk());
+        CHECK(out == StringView("a;b"));
+        REQUIRE(L::remove("a", ';', 0, out).isOk());
+        CHECK(out.isEmpty());
+        CHECK(L::remove("a", ';', 1, out) == Error::Invalid);
+
+        REQUIRE(L::move("a;b;c", ';', 0, 2, out).isOk());
+        CHECK(out == StringView("b;c;a"));
+        REQUIRE(L::move("a;b;c", ';', 2, 0, out).isOk());
+        CHECK(out == StringView("c;a;b"));
+        REQUIRE(L::move("a;b;c", ';', 1, 1, out).isOk());
+        CHECK(out == StringView("a;b;c"));
+        REQUIRE(L::move("a;", ';', 0, 1, out).isOk()); // the empty item kept
+        CHECK(out == StringView(";a"));
+        REQUIRE(L::move(";a", ';', 1, 0, out).isOk());
+        CHECK(out == StringView("a;"));
+        CHECK(L::move("a;b", ';', 0, 2, out) == Error::Invalid);
 }
 
 TEST_CASE("TabRow: tabs side by side on columns, found by x, stepped around the ends") {

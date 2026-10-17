@@ -165,29 +165,14 @@ class ScrollArea : public Widget {
                 /** @brief Keeps @p height pixels at the top out of the viewport (a header's), beside the bar. */
                 void setTopMargin(uint16_t height);
 
-                /**
-                 * @brief Calls @p draw(painter) with a painter clipped to @p limit
-                 *        (window coordinates): its storage on the stack for up to
-                 *        `LocalPieces` pieces, in PSRAM past that (not drawn without it).
-                 */
+                /** @brief `GuiStyle::drawClipped()`: @p draw with a painter clipped to @p limit. */
                 template <typename Draw> static void drawClipped(Painter &painter, const Rect &limit, Draw draw) {
-                        if (limit.isEmpty() || !painter.isVisible(limit)) return;
-                        const size_t need = painter.clippedStorage();
-                        Rect         local[LocalPieces];
-                        List<Rect>   more(MemSpace::Psram);
-                        Span<Rect>   storage(local, LocalPieces);
-                        if (need > LocalPieces) {
-                                if (more.reserve(need).isError()) return;
-                                for (size_t i = 0; i < need; ++i) (void)more.append(Rect());
-                                storage = more.span();
-                        }
-                        Painter clipped(painter, limit, storage);
-                        draw(clipped);
+                        GuiStyle::drawClipped(painter, limit, draw);
                         return;
                 }
 
-                /** @brief A clipped painter's pieces kept on the stack. */
-                static constexpr size_t LocalPieces = 64;
+                /** @brief Returns true if @p widget is one of its scroll bars (the rest are a subclass's). */
+                bool isBar(const Widget *widget) const { return widget == _vertical || widget == _horizontal; }
 
                 void resized() override;
 

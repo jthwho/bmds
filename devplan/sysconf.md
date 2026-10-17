@@ -619,3 +619,14 @@ the canonical text forms (§2), at most `BMDS_SYSCONF_VALUE_MAX` (1024) bytes; k
     succeeded at once.
 - **Not tried:** a boot without a card (the empty-slot case `waitmount` was changed for).
 - **Size:** the firmware is 907,920 bytes, 2.1 KB less than before.
+
+## 14. Saving several keys at once (2026-10-16, `controlpanel.md` §12)
+
+- **`SysConf::save(Span<const Id>)`:** saves the keys named, the store written once. It is how
+  Settings saves a color theme's 25 colors without 25 rewrites of `/cfg/sysconf`. Other keys
+  changed but not saved (a `home` set by `autoexec.sh`) stay unsaved, which `saveAll()` would
+  not leave them.
+- An id not known refuses the whole call, nothing saved. It is kernel API only: the SDK's
+  `OP_SAVE` is unchanged.
+- Host-tested in `SysConf: set, setdef, save, revert, and a reboot`.
+

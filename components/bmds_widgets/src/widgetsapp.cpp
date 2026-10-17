@@ -7,9 +7,10 @@
  *
  * /bin/widgets: a window with the toolkit's furniture and item views, to try them
  * (devplan/filebrowser.md §4e, §4g; devplan/mediaplayer.md §6d). A menu bar, a tool bar, tabs: a
- * splitter between a folder tree and the folder's files as icons or details (View), and controls (a
- * combo box, a seek bar told on release); a status bar; dialogs: a question, a progress bar with
- * Cancel, and the file dialog's four kinds.
+ * splitter between a folder tree and the folder's files as icons or details (View), controls (a
+ * combo box, a seek bar told on release), and a form (devplan/gui.md §4u: sections, labelled rows
+ * with help, number fields, color swatches and the color dialog, list editors, scrolled by rows); a
+ * status bar; dialogs: a question, a progress bar with Cancel, and the file dialog's four kinds.
  */
 
 #include <cstdio>
@@ -17,6 +18,7 @@
 #include <new>
 #include <atomic>
 #include <bmds/builtinprograms.h>
+#include <bmds/colordialog.h>
 #include <bmds/combobox.h>
 #include <bmds/detailsview.h>
 #include <bmds/dialog.h>
@@ -25,13 +27,17 @@
 #include <bmds/fileicons.h>
 #include <bmds/folderitemmodel.h>
 #include <bmds/foldermodel.h>
+#include <bmds/formlayout.h>
 #include <bmds/furniture.h>
 #include <bmds/guiapplication.h>
 #include <bmds/guiwindow.h>
 #include <bmds/iconview.h>
+#include <bmds/lineedit.h>
+#include <bmds/listeditor.h>
 #include <bmds/memory.h>
 #include <bmds/menu.h>
 #include <bmds/menubar.h>
+#include <bmds/numberfield.h>
 #include <bmds/slider.h>
 #include <bmds/tabwidget.h>
 #include <bmds/treeview.h>
@@ -83,7 +89,8 @@ namespace {
                               _openOne(app, FileDialog::Mode::Open, "Open"),
                               _openMany(app, FileDialog::Mode::OpenMany, "Open Several"),
                               _save(app, FileDialog::Mode::Save, "Save As"),
-                              _folder(app, FileDialog::Mode::Folder, "Choose a Folder"), _fileIcons(app.icons()) {
+                              _folder(app, FileDialog::Mode::Folder, "Choose a Folder"), _colors(app, "Color"),
+                              _fileIcons(app.icons()) {
                                 _fileIcons.setAsked(iconsAsked, this);
                         }
 
@@ -119,7 +126,15 @@ namespace {
                         static void seekMoved(void *arg, Slider &slider, int32_t value);
                         static void seekReleased(void *arg, Slider &slider, int32_t value);
                         static void tabChanged(void *arg, TabWidget &tabs, size_t index);
+                        static void numberChanged(void *arg, NumberField &field, int32_t value);
+                        static void volumeMoved(void *arg, Slider &slider, int32_t value);
+                        static void swatchClicked(void *arg, ColorSwatch &swatch);
+                        static void colorChanged(void *arg, ColorDialog &dialog, uint32_t rgb);
+                        static void colorFinished(void *arg, Dialog &dialog, int result);
+                        static void listChanged(void *arg, ListEditor &editor);
+                        static void folderAsked(void *arg, ListEditor &editor);
                         Error       buildControls(BoxLayout *page);
+                        Error       buildForm(FormLayout *form);
                         void        startCopy();
                         void        status(const char *text);
                         void        showFolder(StringView path);
@@ -136,10 +151,15 @@ namespace {
                         FileDialog        _openMany;
                         FileDialog        _save;
                         FileDialog        _folder;
+                        ColorDialog       _colors;
                         FileIcons         _fileIcons;
                         FolderItemModel   _files{_fileIcons};
                         TabWidget        *_tabs = nullptr;
                         Label            *_seekLabel = nullptr;
+                        Label            *_volumeLabel = nullptr;
+                        ColorSwatch      *_swatch = nullptr; // the one the color dialog changes
+                        ListEditor       *_folders = nullptr;
+                        bool              _folderForList = false;
                         std::atomic<bool> _iconsPosted{false};
                         StatusBar   *_status = nullptr;
                         ProgressBar *_progress = nullptr;
@@ -167,9 +187,11 @@ namespace {
                 _tabs->setStretch(1);
                 _split = Widget::create<Splitter>(_tabs, Splitter::Orientation::Horizontal);
                 auto *controls = Widget::create<BoxLayout>(_tabs, BoxLayout::Direction::Vertical);
-                if (_split == nullptr || controls == nullptr) return Error::NoMem;
+                auto *form = Widget::create<FormLayout>(_tabs);
+                if (_split == nullptr || controls == nullptr || form == nullptr) return Error::NoMem;
                 (void)_tabs->addTab(_split, "Files");
                 (void)_tabs->addTab(controls, "Controls");
+                (void)_tabs->addTab(form, "Form");
                 _tabs->setChanged(tabChanged, this);
 
                 IconTheme &theme = application().icons();
@@ -225,6 +247,7 @@ namespace {
                 _split->setPosition(200);
                 _split->setWidgets(_tree, right);
                 if (Error e = buildControls(controls); e.isError()) return e;
+                if (Error e = buildForm(form); e.isError()) return e;
 
                 // The file dialogs: media files as the player asks for them, or all.
                 for (FileDialog *d : {&_openOne, &_openMany, &_save}) {
@@ -236,6 +259,8 @@ namespace {
                 }
                 (void)_save.setFileName("playlist");
                 _folder.setFinished(fileChosen, this);
+                _colors.setChanged(colorChanged, this);
+                _colors.setFinished(colorFinished, this);
 
                 (void)_status->addField(0);
                 (void)_status->addField(160);
@@ -522,18 +547,194 @@ namespace {
                 return;
         }
 
+        // A form: sections, labelled rows with help, every editor, more rows than fit (scrolled by rows).
+        Error WidgetsWindow::buildForm(FormLayout *form) {
+                (void)form->addSection("General");
+                FormRow *name =
+                        form->addRow("&Name:", "The name the board goes by on the network: letters, digits "
+                                               "and '-', up to 63 (empty: bmds- and the serial number's last six)");
+                FormRow *hidden = form->addRow(StringView());
+                FormRow *edge = form->addRow("&Edge:");
+                if (name == nullptr || hidden == nullptr || edge == nullptr) return Error::NoMem;
+                auto *nameEdit = Widget::create<LineEdit>(name->field());
+                auto *hiddenBox = Widget::create<CheckBox>(hidden->field(), "Show &hidden files");
+                auto *edgeBox = Widget::create<ComboBox>(edge->field());
+                if (nameEdit == nullptr || hiddenBox == nullptr || edgeBox == nullptr) return Error::NoMem;
+                nameEdit->setText("bmds0");
+                nameEdit->setStretch(1);
+                name->label()->setBuddy(nameEdit);
+                edge->label()->setBuddy(edgeBox);
+                for (const char *e : {"Top", "Bottom", "Left", "Right"}) (void)edgeBox->addItem(e);
+                edgeBox->setCurrent(0);
+
+                (void)form->addSection("Numbers");
+                FormRow *port = form->addRow("&Port:", "The SSH server's port");
+                FormRow *volume = form->addRow("&Volume:");
+                FormRow *interval = form->addRow("&Interval:", "How often it samples: Up and Down step 100, Page Up "
+                                                               "and Page Down 1000; the wheel steps with the focus");
+                if (port == nullptr || volume == nullptr || interval == nullptr) return Error::NoMem;
+                auto *portField = Widget::create<NumberField>(port->field());
+                auto *volumeSlider = Widget::create<Slider>(volume->field(), Slider::Orientation::Horizontal);
+                _volumeLabel = Widget::create<Label>(volume->field(), "-9 dB");
+                auto *intervalField = Widget::create<NumberField>(interval->field());
+                auto *ms = Widget::create<Label>(interval->field(), "ms");
+                if (portField == nullptr || volumeSlider == nullptr || _volumeLabel == nullptr ||
+                    intervalField == nullptr || ms == nullptr)
+                        return Error::NoMem;
+                portField->setRange(1, 65535);
+                portField->setSteps(1, 100);
+                portField->setValue(22);
+                portField->setChanged(numberChanged, this);
+                port->label()->setBuddy(portField->edit());
+                volumeSlider->setRange(-60, 0);
+                volumeSlider->setSteps(1, 6);
+                volumeSlider->setValue(-9);
+                volumeSlider->setStretch(1);
+                volumeSlider->setChanged(volumeMoved, this);
+                volume->label()->setBuddy(volumeSlider);
+                _volumeLabel->setMinimumWidth(72);
+                intervalField->setRange(100, 10000);
+                intervalField->setSteps(100, 1000);
+                intervalField->setValue(1000);
+                intervalField->setChanged(numberChanged, this);
+                interval->label()->setBuddy(intervalField->edit());
+
+                (void)form->addSection("Colors");
+                const struct {
+                                const char *label;
+                                uint32_t    rgb;
+                } colors[] = {{"&Desktop:", 0x3a6ea5}, {"&Frame:", 0x000080}, {"&Text:", 0x000000}};
+                for (const auto &c : colors) {
+                        FormRow *row = form->addRow(c.label);
+                        if (row == nullptr) return Error::NoMem;
+                        auto *swatch = Widget::create<ColorSwatch>(row->field(), c.rgb);
+                        if (swatch == nullptr) return Error::NoMem;
+                        swatch->setClicked(swatchClicked, this);
+                        row->label()->setBuddy(swatch);
+                }
+
+                (void)form->addSection("Lists");
+                FormRow *folders =
+                        form->addRow("F&olders:", "Where applications are looked for, the first first: Add "
+                                                  "chooses a folder; Up and Down (Alt+Up, Alt+Down) order them");
+                FormRow *hosts = form->addRow("H&osts:", "Names known without DNS (name=address): Add and Edit (F2) "
+                                                         "edit in place; an item edited to nothing goes");
+                if (folders == nullptr || hosts == nullptr) return Error::NoMem;
+                _folders = Widget::create<ListEditor>(folders->field(), ';');
+                auto *hostList = Widget::create<ListEditor>(hosts->field(), ';');
+                if (_folders == nullptr || hostList == nullptr) return Error::NoMem;
+                folders->label()->setBuddy(_folders->view());
+                hosts->label()->setBuddy(hostList->view());
+                (void)_folders->setText("/sd0/p0/apps;/rom/apps");
+                _folders->setTitle("Folder");
+                _folders->setStretch(1);
+                _folders->setAddAsked(folderAsked, this);
+                _folders->setChanged(listChanged, this);
+                (void)hostList->setText("sartre=192.168.1.10;printer=192.168.1.20");
+                hostList->setTitle("Name=address");
+                hostList->setStretch(1);
+                hostList->setChanged(listChanged, this);
+
+                (void)form->addSection("More");
+                FormRow *longHelp = form->addRow(
+                        StringView(), "Show a full-screen picture in a mode of the monitor's it fills exactly "
+                                      "(Doom's 320x200 in 640x400 at 70 Hz), the monitor resyncing as it "
+                                      "starts and ends; off: scaled on the desktop's mode. Experimental: this "
+                                      "board's HDMI bridge glitches in those modes");
+                if (longHelp == nullptr) return Error::NoMem;
+                if (Widget::create<CheckBox>(longHelp->field(), "&Full-screen modes") == nullptr) return Error::NoMem;
+                for (int i = 1; i <= 8; ++i) {
+                        char text[24];
+                        std::snprintf(text, sizeof(text), "Option %d", i);
+                        FormRow *row = form->addRow(StringView());
+                        if (row == nullptr || Widget::create<CheckBox>(row->field(), StringView(text)) == nullptr)
+                                return Error::NoMem;
+                }
+                form->relayout();
+                return Error::Ok;
+        }
+
+        void WidgetsWindow::numberChanged(void *arg, NumberField &field, int32_t value) {
+                (void)field;
+                char text[48];
+                std::snprintf(text, sizeof(text), "Number: %ld", long(value));
+                static_cast<WidgetsWindow *>(arg)->status(text);
+                return;
+        }
+
+        void WidgetsWindow::volumeMoved(void *arg, Slider &slider, int32_t value) {
+                (void)slider;
+                char text[16];
+                std::snprintf(text, sizeof(text), "%ld dB", long(value));
+                static_cast<WidgetsWindow *>(arg)->_volumeLabel->setText(StringView(text));
+                return;
+        }
+
+        void WidgetsWindow::swatchClicked(void *arg, ColorSwatch &swatch) {
+                auto *self = static_cast<WidgetsWindow *>(arg);
+                self->_swatch = &swatch;
+                if (self->_colors.open(swatch.color()).isError()) self->_swatch = nullptr;
+                return;
+        }
+
+        // Live, as a setting would be.
+        void WidgetsWindow::colorChanged(void *arg, ColorDialog &dialog, uint32_t rgb) {
+                auto *self = static_cast<WidgetsWindow *>(arg);
+                (void)dialog;
+                if (self->_swatch != nullptr) self->_swatch->setColor(rgb);
+                char text[8], line[24];
+                ColorModel::formatHex(rgb, text);
+                std::snprintf(line, sizeof(line), "Color: %s", text);
+                self->status(line);
+                return;
+        }
+
+        void WidgetsWindow::colorFinished(void *arg, Dialog &dialog, int result) {
+                auto *self = static_cast<WidgetsWindow *>(arg);
+                (void)dialog;
+                if (self->_swatch != nullptr && result != ColorDialog::Accepted) {
+                        self->_swatch->setColor(self->_colors.originalColor()); // put back
+                        self->status("Color: put back");
+                }
+                if (self->_swatch != nullptr) self->_swatch->setFocus();
+                self->_swatch = nullptr;
+                return;
+        }
+
+        void WidgetsWindow::listChanged(void *arg, ListEditor &editor) {
+                char             text[160];
+                const StringView t = editor.text();
+                std::snprintf(text, sizeof(text), "List: %.*s", int(t.size()), t.data());
+                static_cast<WidgetsWindow *>(arg)->status(text);
+                return;
+        }
+
+        void WidgetsWindow::folderAsked(void *arg, ListEditor &editor) {
+                auto *self = static_cast<WidgetsWindow *>(arg);
+                (void)editor;
+                self->_folderForList = true;
+                if (self->_folder.open().isError()) self->_folderForList = false;
+                return;
+        }
+
         void WidgetsWindow::tabChanged(void *arg, TabWidget &tabs, size_t index) {
                 auto *self = static_cast<WidgetsWindow *>(arg);
                 (void)tabs;
-                self->status(index == 0 ? "Files" : "Controls");
+                self->status(index == 0 ? "Files" : index == 1 ? "Controls" : "Form");
                 return;
         }
 
         void WidgetsWindow::fileChosen(void *arg, FileDialog &dialog, int result) {
                 auto *self = static_cast<WidgetsWindow *>(arg);
                 char  text[160];
+                const bool forList = self->_folderForList;
+                self->_folderForList = false;
                 if (result != FileDialog::Accepted) {
                         self->status("Cancelled");
+                        return;
+                }
+                if (forList && self->_folders != nullptr) {
+                        (void)self->_folders->addItem(dialog.path(0));
                         return;
                 }
                 const StringView first = dialog.path(0);

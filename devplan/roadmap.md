@@ -166,6 +166,18 @@ Plan: [`input.md`](input.md).
   Step 6 done 2026-10-10: `top` (`-d`, `-n`, `-T`), `tasks` from the kernel's task list with a
   `cpu_ms` column, and `getrusage()`, `times()`, the CPU clocks and `sysinfo()` from the process's
   own time.
+- [x] Settings, the control panel (`controlpanel.md`, planned 2026-10-16, the user's request):
+  the one place to change every sysconf setting graphically, laid out like the Mac's System
+  Settings (groups with icons on the left, the group's page on the right). Changes apply and
+  save at once; ones that could cut the user off ask to be kept. Pages are laid out by hand, with
+  live status; All Settings lists every key. Step 1 done 2026-10-16 (`gui.md` §4u): the toolkit's
+  `ScrollView` (scrolled by whole rows), `FormLayout`, `TextBlock`, `NumberField`, `ListEditor`,
+  `ColorSwatch` and `ColorDialog`, child clipping and focus notices, in `widgets`' Form tab.
+  Steps 2-5 done 2026-10-16 (§11.2): `/bin/settings` with 13 pages and All Settings, every one of
+  the 139 keys placed (`settings -u`), search, live status, the Keep dialog, the zone and
+  password dialogs, and Settings... in the panel's menus. Then (§12): NTP, PTP and audio status
+  (`TimeSync`), rows hidden when they don't apply, system and terminal color themes with live
+  previews, darker help text.
 - [ ] System logging (`logging.md`, planned 2026-10-11, the user's request): one log for the
   kernel, built-in programs, programs (`syslog()` through `/dev/log`), scripts (`logger`) and
   services; kept in the history, on the console, and in rotated files in `log/dir`

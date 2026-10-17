@@ -109,6 +109,7 @@ void NetworkStatus::fillMenu() {
                 (void)_menu.addItem(StringView(text), ChooseRenew + int(i));
         }
         (void)_menu.addSeparator();
+        if (_openSettings != nullptr) (void)_menu.addItem("Network &Settings...", ChooseSettings);
         (void)_menu.addItem("&Remove from Panel", ChooseRemove);
         return;
 }
@@ -122,6 +123,8 @@ void NetworkStatus::chosen(void *arg, int item) {
         } else if (item == ChooseRemove) {
                 // After the menu's call returns: the panel destroys the icon (and this menu).
                 if (self->_app.post(removeDue, self).isError()) removeDue(self);
+        } else if (item == ChooseSettings) {
+                if (self->_openSettings != nullptr) self->_openSettings(self->_openSettingsArg, "network");
         } else if (item >= ChooseRenew) {
                 (void)NetStatus::renewLease(size_t(item - ChooseRenew)); // the watch tells what came of it
         }
