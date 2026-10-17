@@ -198,6 +198,12 @@ class FolderWindow final : public GuiWindow {
                 static void viewMenu(void *arg, ItemView &view, int row, uint16_t x, uint16_t y);
                 static void viewRename(void *arg, ItemView &view, size_t row);
                 static bool viewKey(void *arg, ItemView &view, const KeyEvent &event);
+                static bool       viewDragAsked(void *arg, ItemView &view, GuiDrag &drag);
+                static DropAction viewDropAsked(void *arg, ItemView &view, int &row, const GuiDropEvent &event);
+                static bool       viewDropped(void *arg, ItemView &view, int row, GuiDropEvent &event);
+                static DropAction treeDropAsked(void *arg, ItemView &view, int &row, const GuiDropEvent &event);
+                static bool       treeDropped(void *arg, ItemView &view, int row, GuiDropEvent &event);
+                bool              dropTarget(ItemView &view, int &row, const GuiDropEvent &event, String &out);
                 static void sortAsked(void *arg, DetailsView &view, size_t column);
                 static void treeExpanding(void *arg, TreeView &view, size_t row);
                 static void treeChosen(void *arg, ItemView &view);

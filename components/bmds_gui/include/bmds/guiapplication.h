@@ -229,6 +229,21 @@ class GuiApplication {
                 /** @brief @p widget is being destroyed (`GuiWindow::forget()`). */
                 void forgetToolTip(Widget *widget);
 
+                /**
+                 * @brief Notes that @p widget of @p window started drag @p drag
+                 *        (`GuiWindow::startDrag()`): its end is told to that window.
+                 */
+                void beginDrag(uint32_t drag, Widget *widget, GuiWindow &window);
+
+                /** @brief Returns the widget that started drag @p drag, if it is this application's and still here. */
+                Widget *dragSource(uint32_t drag) const { return drag != 0 && drag == _dragId ? _dragSource : nullptr; }
+
+                /** @brief @p widget is being destroyed, with what is in it: no longer a drag's source. */
+                void forgetDragSource(Widget *widget);
+
+                /** @brief The window manager's `DragEnded` (@p arg: the application): queued for the source's window. */
+                static void dragEndedEntry(void *arg, uint32_t drag, DropAction done);
+
                 /** @brief Returns the application's icons (found and kept on the loop's thread). */
                 IconTheme &icons() { return _icons; }
 
@@ -257,6 +272,8 @@ class GuiApplication {
                                         Post,
                                         Activated, ///< `width` 1: it has the keys now; 0: it lost them.
                                         Pad,       ///< A gamepad's, while it has the keys: `pad`.
+                                        Drop,      ///< A drag over it (`drop`).
+                                        DragEnded, ///< Its drag ended: `drop.drag`, `width` the `DropAction` done.
                                 };
                                 Type                      type = Type::Post;
                                 uint8_t                   slot = 0; ///< The window's (its generation in `generation`).
@@ -264,6 +281,7 @@ class GuiApplication {
                                 WindowManager::MouseEvent mouse;
                                 KeyEvent                  key;
                                 PadEvent                  pad;
+                                WindowManager::DropEvent  drop;
                                 int16_t                   wheel = 0;
                                 uint16_t                  width = 0;
                                 uint16_t                  height = 0;
@@ -353,6 +371,10 @@ class GuiApplication {
                 IconTheme         _icons;
                 KeyGrab           _grabs[MaxGrabs];
                 GuiClipboard     *_clipboard = nullptr; // PSRAM, the first time asked for
+                uint32_t          _dragId = 0;          // this application's drag under way
+                Widget           *_dragSource = nullptr; // and the widget that started it
+                uint8_t           _dragSlot = 0;         // and its window's slot and generation
+                uint8_t           _dragGeneration = 0;
                 ToolTip          *_toolTip = nullptr;   // PSRAM, the first time a widget has one
                 ConfigWatch      *_configWatches[MaxConfigWatches] = {};
                 Service          *_services[MaxServices] = {};

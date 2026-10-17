@@ -1027,6 +1027,25 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        // The drag and drop under way (devplan/clipboard.md §5c; a test aid).
+        int runDnd(CommandContext &ctx, WindowManager &wm) {
+                const WindowManager::DragInfo d = wm.dragInfo();
+                if (d.drag == 0) {
+                        ctx.printf("No drag\n");
+                        return Shell::ExitSuccess;
+                }
+                constexpr const char *Actions[] = {"none", "copy", "move", "link", "moved", "ask"};
+                const size_t          answer = size_t(d.answer);
+                ctx.printf("Drag %lu from window %u (offer %lu, allows%s%s%s): over %u, answer %s%s\n",
+                           static_cast<unsigned long>(d.drag), d.source, static_cast<unsigned long>(d.offer),
+                           (d.actions & DropActions::CanCopy) != 0 ? " copy" : "",
+                           (d.actions & DropActions::CanMove) != 0 ? " move" : "",
+                           (d.actions & DropActions::CanLink) != 0 ? " link" : "", d.target,
+                           answer < sizeof(Actions) / sizeof(Actions[0]) ? Actions[answer] : "?",
+                           d.dropped ? ", dropped: waiting for the target" : "");
+                return Shell::ExitSuccess;
+        }
+
         int runWin(CommandContext &ctx) {
                 const Args args = ctx.args();
                 if (args.size() == 2 && std::strcmp(args[1], "start") == 0) return runStart(ctx);
@@ -1047,6 +1066,7 @@ namespace {
                 if (std::strcmp(what, "new") == 0) return runNew(ctx, *wm, args);
                 if (args.size() == 2 && std::strcmp(what, "check") == 0) return runCheck(ctx, *wm);
                 if (args.size() == 2 && std::strcmp(what, "stats") == 0) return runStats(ctx, *wm);
+                if (args.size() == 2 && std::strcmp(what, "dnd") == 0) return runDnd(ctx, *wm);
                 if (args.size() == 3 && std::strcmp(what, "shuffle") == 0) {
                         long count = 0;
                         if (!parseNumber(args[2], 1'000'000, count)) return ctx.usage();
@@ -1193,12 +1213,13 @@ namespace {
 BMDS_SHELL_COMMAND(
         win, runWin,
         "[start|stop|list|new [X Y W H] [TITLE]|close N|raise N|move N X Y|drag N X Y|"
-        "term [N]|type N TEXT|dump N|scroll N DY|textbench N|check|stats|shuffle N|bench [CELLS]|bench icons|"
+        "term [N]|type N TEXT|dump N|scroll N DY|textbench N|check|stats|dnd|shuffle N|bench [CELLS]|bench icons|"
         "pointer DX DY [BUTTONS [WHEEL]]|decorate N [all|none|+NAME|-NAME...]|minimize N|maximize N|restore N|"
         "resize N W H|pointer on/off|key TEXT|title N [TEXT]|above N on/off|shade N on/off|hid press/release/repeat "
         "USAGE [MODS]]",
         "The desktop and its windows on display 0: 'new' opens a test window, 'drag' moves one "
-        "as an outline (the palette is sysconf's wm/palette), 'check' compares every pixel with the stack, "
+        "as an outline (the palette is sysconf's wm/palette), 'dnd' shows a drag and drop under way, 'check' compares "
+        "every pixel with the stack, "
         "'pointer' moves the pointer as a mouse would (BUTTONS: 1 left, 2 right, 4 middle; WHEEL: notches, "
         "positive away), "
         "'key' types TEXT as a keyboard would (escapes as 'type'), "

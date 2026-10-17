@@ -86,6 +86,10 @@ Error GuiClipboard::copyText(Selection selection, StringView text) {
         return Error::Ok;
 }
 
+uint32_t GuiClipboard::serial(Selection selection) const {
+        return owns(selection) ? _own[index(selection)].serial : 0;
+}
+
 Error GuiClipboard::copy(Selection selection, Span<const StringView> types, Provider fn, void *arg) {
         Clipboard *c = clipboard();
         if (c == nullptr) return Error::NotExist;
@@ -390,6 +394,11 @@ void GuiClipboard::keep() {
         for (size_t s = 0; s < Clipboard::Selections; ++s) {
                 Own &own = _own[s];
                 if (own.fn == nullptr || !owns(static_cast<Selection>(s))) {
+                        own = Own();
+                        continue;
+                }
+                if (static_cast<Selection>(s) == Selection::Drag) {
+                        (void)c->withdraw(Selection::Drag, own.serial); // a drag's: gone with the program
                         own = Own();
                         continue;
                 }

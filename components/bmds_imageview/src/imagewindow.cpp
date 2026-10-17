@@ -61,6 +61,42 @@ namespace {
 
 PictureView::PictureView(Widget *parent, ImageWindow &window) : Widget(parent), _window(window) {
         setStretch(1);
+        setAcceptsDrops(true);
+}
+
+// Files dropped on the picture open (devplan/clipboard.md §5e): one with its folder, several alone.
+void PictureView::dragMoved(GuiDropEvent &event) {
+        event.accept(event.hasType("text/uri-list") && DropActions::allows(event.actions(), DropAction::Copy)
+                             ? DropAction::Copy
+                             : DropAction::None);
+        return;
+}
+
+bool PictureView::dropped(GuiDropEvent &event) {
+        if (!event.hasType("text/uri-list") || !DropActions::allows(event.actions(), DropAction::Copy)) return false;
+        if (event.read(ClipboardType::Text, dropRead, this).isError()) return false; // the paths, a line each
+        _dropDrag = event.drag();
+        return true;
+}
+
+void PictureView::dropRead(void *arg, Error err, StringView type, StringView data) {
+        (void)type;
+        auto          *self = static_cast<PictureView *>(arg);
+        const uint32_t drag = self->_dropDrag;
+        self->_dropDrag = 0;
+        StringView paths[16];
+        size_t     n = 0;
+        for (StringView rest = err.isOk() ? data : StringView(); !rest.isEmpty() && n < 16;) {
+                const size_t     end = rest.indexOf('\n');
+                const StringView p = end == StringView::NPos ? rest : rest.left(end);
+                rest = end == StringView::NPos ? StringView() : rest.mid(end + 1);
+                if (!p.isEmpty()) paths[n++] = p;
+        }
+        GuiWindow *w = self->window();
+        if (w != nullptr)
+                (void)w->application().windowManager().finishDrop(drag, n > 0 ? DropAction::Copy : DropAction::None);
+        if (n > 0) self->_window.open(Span<const StringView>(paths, n));
+        return;
 }
 
 GuiSize PictureView::sizeHint() const {

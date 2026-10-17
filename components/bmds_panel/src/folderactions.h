@@ -18,6 +18,8 @@
 #include <bmds/error.h>
 #include <bmds/fileops.h>
 #include <bmds/guiapplication.h>
+#include <bmds/guidrag.h>
+#include <bmds/menu.h>
 #include <bmds/result.h>
 #include <bmds/span.h>
 #include <bmds/string.h>
@@ -41,6 +43,16 @@ class FolderHost {
                 /** @brief The files cut changed (cut, pasted, or the clipboard taken): their icons redrawn. */
                 virtual void cutChanged() = 0;
 
+                /**
+                 * @brief @p paths (a line each) are being dropped into folder @p directory
+                 *        (copied, moved or linked), before it is done: the desktop puts them
+                 *        where they were dropped.
+                 */
+                virtual void dropping(StringView directory, StringView paths) {
+                        (void)directory;
+                        (void)paths;
+                }
+
         protected:
                 ~FolderHost() = default;
 };
@@ -63,6 +75,9 @@ class FolderActions {
         public:
                 FolderActions(GuiApplication &app, const BuiltinProgram::Context &context, FolderHost &host)
                     : _app(app), _context(context), _host(host) {}
+                ~FolderActions();
+                FolderActions(const FolderActions &) = delete;
+                FolderActions &operator=(const FolderActions &) = delete;
 
                 /** @brief Sets the directories of launcher entries (a `;` list) that applications are looked for in. */
                 void setApplications(StringView directories);
@@ -81,6 +96,16 @@ class FolderActions {
 
                 /** @brief Starts launcher entry @p entry's command (on @p file if given), not waited for. */
                 void launch(const DesktopEntry &entry, StringView file = StringView());
+
+                /**
+                 * @brief Starts @p entry on @p files (a line each): once with them all if its
+                 *        command takes a list, else once a file, `MaxStartsPerDrop` at most
+                 *        (`devplan/clipboard.md` §5b D11).
+                 */
+                void launchFiles(const DesktopEntry &entry, StringView files);
+
+                /** @brief The most starts a drop of files on an application makes. */
+                static constexpr size_t MaxStartsPerDrop = 16;
 
                 /**
                  * @brief Opens @p path: a folder in a window (an application's `NAME.app`
@@ -120,6 +145,30 @@ class FolderActions {
                 /** @brief Returns true if the clipboard has files to paste. */
                 bool canPaste();
 
+                /**
+                 * @brief Fills @p drag to drag @p paths (a line each, kept until the drag
+                 *        ends): a URI list and their paths as text; Copy, Move and Link
+                 *        (`devplan/clipboard.md` §5e).
+                 * @return False if there is nothing to drag.
+                 */
+                bool dragFiles(StringView paths, GuiDrag &drag);
+
+                /**
+                 * @brief What a drop of @p event's drag on @p target does: into a folder,
+                 *        copied, moved (the same filesystem) or linked; on an application
+                 *        (a launcher, a `NAME.app` folder), started with them (`Copy`).
+                 *        `None` if it can't: no files, a folder into itself or where they are.
+                 */
+                DropAction dropAction(StringView target, const GuiDropEvent &event);
+
+                /**
+                 * @brief Takes a drop of @p event's drag on @p target (window @p window's,
+                 *        at screen @p screenX, @p screenY for a right drag's menu): read,
+                 *        then done, and finished.
+                 * @return False if refused (`dropAction()` is `None`).
+                 */
+                bool drop(StringView target, GuiDropEvent &event, uint16_t screenX, uint16_t screenY);
+
                 /** @brief Moves @p paths to their filesystems' trash. */
                 void trash(StringView paths);
 
@@ -147,6 +196,20 @@ class FolderActions {
                 static void  pasted(void *arg, Error err, StringView type, StringView data);
                 static Error render(void *arg, StringView type, String &out);
                 static void  lost(void *arg, Clipboard::Selection selection);
+                static Error renderDrag(void *arg, StringView type, String &out);
+                static void  dragEnded(void *arg, DropAction done);
+                static void  dropRead(void *arg, Error err, StringView type, StringView data);
+                static void  askChosen(void *arg, int item);
+                static void  askDismissed(void *arg, Menu &menu);
+                static void  askCheck(void *arg);
+                enum class Target : uint8_t {
+                        None,
+                        Folder,
+                        Application,
+                };
+                Target       targetOf(StringView path, DesktopEntry *entry) const;
+                void         dropDone(DropAction action); // _dropPaths into _dropTo, finished
+                void         link(StringView paths, StringView directory);
                 void         offer(StringView paths, bool cut);
                 bool         moveNow(StringView paths, StringView directory);
 
@@ -158,6 +221,16 @@ class FolderActions {
                 CopiedFiles                    _copied;                   // what this panel copied or cut
                 String                         _pasteTo{MemSpace::Psram}; // the folder a paste goes to
                 FileJobs                       _jobs{_app};
+                CopiedFiles                    _dragged;                    // a drag's files, until it ends
+                String                         _dropTo{MemSpace::Psram};    // a drop's target
+                String                         _dropPaths{MemSpace::Psram}; // and its files, once read
+                uint32_t                       _dropDrag = 0;
+                DropAction                     _dropAction = DropAction::None;
+                bool                           _dropAsk = false;
+                bool                           _askPending = false;
+                uint16_t                       _dropX = 0; // a right drag's menu, screen coordinates
+                uint16_t                       _dropY = 0;
+                Menu                          *_askMenu = nullptr; // Move Here, Copy Here... (PSRAM)
 };
 
 BMDS_NAMESPACE_END

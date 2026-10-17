@@ -15,6 +15,7 @@
 #include <bmds/bevel.h>
 #include <bmds/config.h>
 #include <bmds/error.h>
+#include <bmds/guidrag.h>
 #include <bmds/icon.h>
 #include <bmds/inputevent.h>
 #include <bmds/list.h>
@@ -202,6 +203,34 @@ class Widget {
                 /** @brief Draws it (and the window draws its children after). */
                 virtual void paint(Painter &painter) { (void)painter; }
 
+                /** @brief Makes it take drags (`dragMoved()`, `dropped()`), or not (the default). */
+                void setAcceptsDrops(bool on) { _acceptsDrops = on; }
+
+                /** @brief Returns true if it takes drags. */
+                bool acceptsDrops() const { return _acceptsDrops; }
+
+                /**
+                 * @brief A drag came over it (`devplan/clipboard.md` §5d): answer with
+                 *        `accept()` or `ignore()`. By default as `dragMoved()`.
+                 */
+                virtual void dragEntered(GuiDropEvent &event) { dragMoved(event); }
+
+                /** @brief A drag moved over it (or a key changed): answer again. Ignored by default. */
+                virtual void dragMoved(GuiDropEvent &event) { event.ignore(); }
+
+                /** @brief The drag left it (or ended). */
+                virtual void dragLeft() {}
+
+                /**
+                 * @brief A drag was let go over it: read the data (`GuiDropEvent::read()`),
+                 *        then `finish()`. @return True if it took the drop (it will finish
+                 *        it), false to refuse (finished as `None`).
+                 */
+                virtual bool dropped(GuiDropEvent &event) {
+                        (void)event;
+                        return false;
+                }
+
                 /** @brief A button went down over it. */
                 virtual void mousePressed(const WindowManager::MouseEvent &event) { (void)event; }
 
@@ -322,6 +351,7 @@ class Widget {
                 bool       _enabled = true;
                 bool       _owned = false;
                 bool       _focusable = false;
+                bool       _acceptsDrops = false;
 };
 
 /**

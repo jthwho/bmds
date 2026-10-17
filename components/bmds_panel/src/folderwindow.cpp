@@ -142,7 +142,10 @@ Error FolderWindow::build() {
                 v->setMenuAsked(viewMenu, this);
                 v->setRenameAsked(viewRename, this);
                 v->setKeyTyped(viewKey, this);
+                v->setDragAsked(viewDragAsked, this);
+                v->setDropHandlers(viewDropAsked, viewDropped, this);
         }
+        _tree->setDropHandlers(treeDropAsked, treeDropped, this);
         _details->setSortAsked(sortAsked, this);
         _details->setVisible(false);
         _tree->setExpanding(treeExpanding, this);
@@ -624,6 +627,61 @@ void FolderWindow::selectedPaths(String &out) const {
                 (void)out.append(one.view());
         }
         return;
+}
+
+// ---- Drag and drop (devplan/clipboard.md §5e)
+
+bool FolderWindow::viewDragAsked(void *arg, ItemView &, GuiDrag &drag) {
+        auto  *self = static_cast<FolderWindow *>(arg);
+        String paths(MemSpace::Psram);
+        self->selectedPaths(paths);
+        return self->_host.folderActions().dragFiles(paths.view(), drag);
+}
+
+// Where a drop on @p row of a view goes, into @p out: the row's item if it takes drops (a folder,
+// an application) and isn't one being dragged, else the folder shown (@p row -1 then).
+bool FolderWindow::dropTarget(ItemView &view, int &row, const GuiDropEvent &event, String &out) {
+        FolderActions &actions = _host.folderActions();
+        if (row >= 0 && !(event.isOwn() && event.source() == &view && view.selection().isSelected(size_t(row)))) {
+                itemPath(size_t(row), out);
+                if (actions.dropAction(out.view(), event) != DropAction::None) return true;
+        }
+        row = -1;
+        return out.assign(path()).isOk();
+}
+
+DropAction FolderWindow::viewDropAsked(void *arg, ItemView &view, int &row, const GuiDropEvent &event) {
+        auto  *self = static_cast<FolderWindow *>(arg);
+        String target(MemSpace::Psram);
+        if (!self->dropTarget(view, row, event, target)) return DropAction::None;
+        return self->_host.folderActions().dropAction(target.view(), event);
+}
+
+bool FolderWindow::viewDropped(void *arg, ItemView &view, int row, GuiDropEvent &event) {
+        auto  *self = static_cast<FolderWindow *>(arg);
+        String target(MemSpace::Psram);
+        if (!self->dropTarget(view, row, event, target)) return false;
+        const Rect s = self->screenRect();
+        return self->_host.folderActions().drop(target.view(), event, uint16_t(s.x + event.x()),
+                                                uint16_t(s.y + event.y()));
+}
+
+// The tree: a folder row takes the drop; between rows, nothing.
+DropAction FolderWindow::treeDropAsked(void *arg, ItemView &view, int &row, const GuiDropEvent &event) {
+        auto  *self = static_cast<FolderWindow *>(arg);
+        String target(MemSpace::Psram);
+        if (row < 0 || static_cast<TreeView &>(view).rows().pathOf(size_t(row), target).isError())
+                return DropAction::None;
+        return self->_host.folderActions().dropAction(target.view(), event);
+}
+
+bool FolderWindow::treeDropped(void *arg, ItemView &view, int row, GuiDropEvent &event) {
+        auto  *self = static_cast<FolderWindow *>(arg);
+        String target(MemSpace::Psram);
+        if (row < 0 || static_cast<TreeView &>(view).rows().pathOf(size_t(row), target).isError()) return false;
+        const Rect s = self->screenRect();
+        return self->_host.folderActions().drop(target.view(), event, uint16_t(s.x + event.x()),
+                                                uint16_t(s.y + event.y()));
 }
 
 bool FolderWindow::folderSelected() const {

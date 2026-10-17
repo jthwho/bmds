@@ -63,6 +63,7 @@ Error GuiWindow::show(const Rect &rect) {
         c.resized = resizedEntry;
         c.wheel = wheelEntry;
         c.mouse = mouseEntry;
+        c.drop = dropEntry;
         c.arg = this;
         c.decorations = _config.decorations;
         c.level = _config.level;
@@ -270,6 +271,7 @@ uint8_t GuiWindow::takeDirty(Region &out) {
 
 void GuiWindow::forget(Widget *widget) {
         _app.forgetToolTip(widget);
+        _app.forgetDragSource(widget);
         // Its children are being destroyed too: anything inside it.
         if (_default != nullptr) {
                 for (Widget *p = _default; p != nullptr; p = p->parent()) {
@@ -279,7 +281,7 @@ void GuiWindow::forget(Widget *widget) {
                         }
                 }
         }
-        for (Widget **w : {&_grab, &_hover, &_focus, &_central}) {
+        for (Widget **w : {&_grab, &_hover, &_focus, &_central, &_dropWidget}) {
                 for (Widget *p = *w; p != nullptr; p = p->parent()) {
                         if (p == widget) {
                                 *w = nullptr;
@@ -393,6 +395,93 @@ void GuiWindow::mouseEntry(void *arg, const WindowManager::MouseEvent &event) {
         return;
 }
 
+void GuiWindow::dropEntry(void *arg, const WindowManager::DropEvent &event) {
+        GuiApplication::Event e;
+        e.type = Type::Drop;
+        e.drop = event;
+        static_cast<GuiWindow *>(arg)->queue(e);
+        return;
+}
+
+// ---- Drag and drop (devplan/clipboard.md §5d)
+
+Result<uint32_t> GuiWindow::startDrag(const GuiDrag &drag, Widget *source) {
+        const uint8_t id = this->id();
+        if (id == 0) return makeError<uint32_t>(Error::InvalidState);
+        GuiClipboard *c = _app.clipboard();
+        if (c == nullptr) return makeError<uint32_t>(Error::NotExist);
+        const Error err = c->copy(Clipboard::Selection::Drag, drag.types, drag.provider, drag.providerArg);
+        if (err.isError()) return makeError<uint32_t>(err);
+        WindowManager::DragConfig dc;
+        dc.offer = c->serial(Clipboard::Selection::Drag);
+        dc.actions = drag.actions;
+        dc.preferred = drag.preferred;
+        dc.image = drag.image;
+        dc.width = drag.width;
+        dc.height = drag.height;
+        dc.hotX = drag.hotX;
+        dc.hotY = drag.hotY;
+        dc.ended = GuiApplication::dragEndedEntry;
+        dc.arg = &_app;
+        auto [number, serr] = _app.windowManager().startDrag(id, dc);
+        if (serr.isError()) {
+                (void)c->clear(Clipboard::Selection::Drag);
+                return makeError<uint32_t>(serr);
+        }
+        _dragId = number;
+        _dragEnded = drag.ended;
+        _dragEndedArg = drag.endedArg;
+        _app.beginDrag(number, source, *this);
+        return makeResult(number);
+}
+
+// This window's drag @p drag over: the offer withdrawn, the source told.
+void GuiWindow::dragEnded(uint32_t drag, DropAction done) {
+        if (drag == 0 || drag != _dragId) return;
+        _dragId = 0;
+        GuiClipboard *c = _app.clipboard();
+        if (c != nullptr) (void)c->clear(Clipboard::Selection::Drag);
+        const GuiDrag::Ended fn = _dragEnded;
+        void                *arg = _dragEndedArg;
+        _dragEnded = nullptr;
+        _app.beginDrag(0, nullptr, *this);
+        if (fn != nullptr) fn(arg, done);
+        return;
+}
+
+// A drag over the window: to the deepest widget under it that takes drags (entered, moved, left as
+// it changes); its answer to the window manager.
+void GuiWindow::dropEvent(const WindowManager::DropEvent &event) {
+        using DType = WindowManager::DropEvent::Type;
+        GuiDropEvent e(*this, event);
+        Widget      *target = nullptr;
+        if (event.type != DType::Leave)
+                for (Widget *p = widgetAt(event.x, event.y); p != nullptr && target == nullptr; p = p->parent())
+                        if (p->acceptsDrops() && p->isVisible() && p->isEnabled()) target = p;
+        if (target != _dropWidget && _dropWidget != nullptr) _dropWidget->dragLeft();
+        if (event.type == DType::Leave) {
+                _dropWidget = nullptr;
+                return;
+        }
+        if (event.type == DType::Drop) {
+                if (target != nullptr && target == _dropWidget) target->dragLeft(); // its marks gone first
+                _dropWidget = nullptr;
+                const bool taken = target != nullptr && target->dropped(e);
+                if (!taken) (void)_app.windowManager().finishDrop(event.drag, DropAction::None);
+                return;
+        }
+        if (target != nullptr) {
+                if (target == _dropWidget) {
+                        target->dragMoved(e);
+                } else {
+                        target->dragEntered(e);
+                }
+        }
+        _dropWidget = target;
+        (void)_app.windowManager().answerDrop(event.drag, id(), target != nullptr ? e.answer() : DropAction::None);
+        return;
+}
+
 void GuiWindow::referenceEntry(void *arg, uint8_t *pixels, size_t stride, uint16_t width, uint16_t height,
                                const WindowPalette &palette) {
         static_cast<GuiWindow *>(arg)->drawReference(pixels, stride, width, height, palette);
@@ -405,6 +494,8 @@ void GuiWindow::handle(const GuiApplication::Event &event) {
                 case Type::Key: key(event.key); break;
                 case Type::Pad: padEvent(event.pad); break;
                 case Type::Wheel: wheel(event.wheel); break;
+                case Type::Drop: dropEvent(event.drop); break;
+                case Type::DragEnded: dragEnded(event.drop.drag, static_cast<DropAction>(event.width)); break;
                 case Type::Activated: {
                         const bool active = event.width != 0 && isShown();
                         if (active == _active) break;
@@ -428,6 +519,8 @@ void GuiWindow::handle(const GuiApplication::Event &event) {
                                 if (event.width != 0) _lastRect = Rect{event.x, event.y, event.width, event.height};
                                 _screen = Rect();
                                 _grab = _hover = nullptr;
+                                if (_dropWidget != nullptr) _dropWidget->dragLeft();
+                                _dropWidget = nullptr;
                                 _active = false;
                                 _dirty.clear();
                                 closedByManager();

@@ -58,6 +58,29 @@ class ItemView : public ScrollArea {
                 /** @brief Told the selection or the current row changed. */
                 using Changed = void (*)(void *arg, ItemView &view);
 
+                /**
+                 * @brief Asked to drag the selection (`devplan/clipboard.md` §5d): fill @p drag's
+                 *        types, provider, actions and end (the view draws the image).
+                 *        @return False: no drag.
+                 */
+                using DragAsked = bool (*)(void *arg, ItemView &view, GuiDrag &drag);
+
+                /**
+                 * @brief Asked what a drop on row @p row (-1: the view's background) would do:
+                 *        the action, or `None`. The owner may set @p row to -1 (the drop goes to
+                 *        the view itself: a file's row in a folder). A row answered is framed.
+                 */
+                using DropAsked = DropAction (*)(void *arg, ItemView &view, int &row, const GuiDropEvent &event);
+
+                /** @brief Told of a drop on row @p row (as `DropAsked` set it). @return True if taken (finished later). */
+                using Dropped = bool (*)(void *arg, ItemView &view, int row, GuiDropEvent &event);
+
+                /** @brief A drag held over a row this long: `dropHeld()` (a tree's folder opens). */
+                static constexpr uint32_t DropHoldMs = 800;
+
+                /** @brief A drag this near the viewport's edge scrolls it. */
+                static constexpr int DropScrollZone = 16;
+
                 /** @brief A press held this long, still, renames. */
                 static constexpr uint32_t LongPressMs = 800;
 
@@ -155,6 +178,36 @@ class ItemView : public ScrollArea {
                         return;
                 }
 
+                void setDragAsked(DragAsked fn, void *arg) {
+                        _dragAsked = fn;
+                        _dragArg = arg;
+                        return;
+                }
+
+                /** @brief Makes it a drop target (null @p askedFn: not one). */
+                void setDropHandlers(DropAsked askedFn, Dropped droppedFn, void *arg) {
+                        _dropAsked = askedFn;
+                        _dropped = droppedFn;
+                        _dropArg = arg;
+                        setAcceptsDrops(askedFn != nullptr);
+                        return;
+                }
+
+                /** @brief Returns where the press that started this view's last drag was (window coordinates). */
+                void dragOrigin(int &x, int &y) const {
+                        x = _pressX;
+                        y = _pressY;
+                        return;
+                }
+
+                /** @brief Returns the row a drag over the view is framed on, or -1. */
+                int dropRow() const { return _dropRow; }
+
+                void dragEntered(GuiDropEvent &event) override;
+                void dragMoved(GuiDropEvent &event) override;
+                void dragLeft() override;
+                bool dropped(GuiDropEvent &event) override;
+
                 void mousePressed(const WindowManager::MouseEvent &event) override;
                 void mouseMoved(const WindowManager::MouseEvent &event) override;
                 void mouseReleased(const WindowManager::MouseEvent &event) override;
@@ -195,20 +248,16 @@ class ItemView : public ScrollArea {
                 virtual void relayout() = 0;
 
                 /**
-                 * @brief A press on a row moved past `DragDistance` by (@p dx, @p dy)
-                 *        (window pixels from the press), its button held; @p done on
-                 *        the release. @return True if the subclass moves it (the
-                 *        desktop's grid).
+                 * @brief Draws row @p row into a drag's image (window coordinates): its small
+                 *        icon and its name on the highlight, by default.
                  */
-                virtual bool dragged(int dx, int dy, bool done) {
-                        (void)dx;
-                        (void)dy;
-                        (void)done;
-                        return false;
-                }
+                virtual void drawDragRow(DragPicture &picture, size_t row, const WindowPalette &palette) const;
 
-                /** @brief The press's drag was cut off (a popup opened). */
-                virtual void dragCancelled() {}
+                /** @brief A drag was held over row @p row `DropHoldMs` (a tree opens a folder). */
+                virtual void dropHeld(size_t row) { (void)row; }
+
+                /** @brief Returns row @p row's rectangle in window coordinates (not cut to the viewport). */
+                DragImage::Box rowBox(size_t row) const;
 
                 /** @brief Row @p row was activated (a double click, Enter): told to `Activated`. */
                 virtual void activate(size_t row);
@@ -265,6 +314,13 @@ class ItemView : public ScrollArea {
                 void        startRename(int row, uint32_t ms);
                 void        stopRename();
                 static void renameDue(void *arg);
+                void        beginDrag();                   // the press moved past DragDistance
+                int         dropRowAt(int x, int y) const; // -1: the background (or outside the rows)
+                void        setDropRow(int row);
+                void        dropScroll(int x, int y); // near the edge: scrolled while it stays
+                void        stopDropTimers();
+                static void dropScrollDue(void *arg);
+                static void dropHoldDue(void *arg);
 
                 ItemModel    *_model = nullptr;
                 ItemSelection _selection;
@@ -297,6 +353,19 @@ class ItemView : public ScrollArea {
                 int            _bandTimer = -1; // scrolling while the pointer is past the edge
                 int           _renameTimer = -1;
                 int           _renameRow = -1;
+                bool           _rightPressed = false; // a right press: its menu at the release, unless dragged
+                int            _rightRow = -1;
+                DragAsked      _dragAsked = nullptr;
+                void          *_dragArg = nullptr;
+                DropAsked      _dropAsked = nullptr;
+                Dropped        _dropped = nullptr;
+                void          *_dropArg = nullptr;
+                int            _dropRow = -1; // framed
+                int            _dropX = 0;    // a drag's place over the view (window coordinates)
+                int            _dropY = 0;
+                int            _dropScrollTimer = -1;
+                int            _dropHoldTimer = -1;
+                int            _dropHoldRow = -1;
                 int           _editing = -1;
                 bool          _single = false;
                 List<uint32_t> _drawn{MemSpace::Psram}; // the selection as last drawn (its words)

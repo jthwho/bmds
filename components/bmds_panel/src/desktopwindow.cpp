@@ -32,6 +32,8 @@ DesktopWindow::DesktopWindow(GuiApplication &app, const Config &config) : GuiWin
         _view->setRenameAsked(renameAsked, this);
         _view->setKeyTyped(keyTyped, this);
         _view->setMoved(moved, this);
+        _view->setDragAsked(viewDragAsked, this);
+        _view->setDropHandlers(viewDropAsked, viewDropped, this);
         setFocusWidget(_view);
 }
 
@@ -144,6 +146,40 @@ void DesktopWindow::renameAsked(void *arg, ItemView &, size_t row) {
 bool DesktopWindow::keyTyped(void *arg, ItemView &, const KeyEvent &event) {
         auto *self = static_cast<DesktopWindow *>(arg);
         return self->_keyTyped != nullptr && self->_keyTyped(self->_keyArg, event, self->selected());
+}
+
+// ---- Drag and drop (devplan/clipboard.md §5e)
+
+bool DesktopWindow::viewDragAsked(void *arg, ItemView &, GuiDrag &drag) {
+        auto *self = static_cast<DesktopWindow *>(arg);
+        return self->_dragAsked != nullptr && self->_dragAsked(self->_dragArg, drag);
+}
+
+// Its own icons over the desktop itself or over one of them, without Ctrl: moved on the grid.
+bool DesktopWindow::ownOnGrid(int row, const GuiDropEvent &event) const {
+        if (!event.isOwn() || event.source() != _view || (event.modifiers() & KeyEvent::Ctrl) != 0) return false;
+        return row < 0 || _view->selection().isSelected(size_t(row));
+}
+
+DropAction DesktopWindow::viewDropAsked(void *arg, ItemView &, int &row, const GuiDropEvent &event) {
+        auto *self = static_cast<DesktopWindow *>(arg);
+        if (self->ownOnGrid(row, event)) {
+                row = -1;
+                return DropAction::Move;
+        }
+        return self->_dropAsked != nullptr ? self->_dropAsked(self->_dropArg, row, event) : DropAction::None;
+}
+
+bool DesktopWindow::viewDropped(void *arg, ItemView &, int row, GuiDropEvent &event) {
+        auto *self = static_cast<DesktopWindow *>(arg);
+        if (row < 0 && self->ownOnGrid(row, event) && !event.isAsk()) {
+                int x = 0, y = 0;
+                self->_view->dragOrigin(x, y);
+                (void)self->_view->moveSelected(event.x() - x, event.y() - y);
+                event.finish(DropAction::Moved);
+                return true;
+        }
+        return self->_dropped != nullptr && self->_dropped(self->_dropArg, row, event);
 }
 
 void DesktopWindow::moved(void *arg, IconView &) {

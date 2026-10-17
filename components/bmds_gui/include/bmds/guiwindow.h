@@ -14,6 +14,7 @@
 #include <bmds/config.h>
 #include <bmds/error.h>
 #include <bmds/guiapplication.h>
+#include <bmds/guidrag.h>
 #include <bmds/region.h>
 #include <bmds/widget.h>
 #include <bmds/windowmanager.h>
@@ -95,6 +96,12 @@ class GuiWindow : public Widget {
                 /** @brief Returns true while open. */
                 bool isShown() const { return _id.load(std::memory_order_acquire) != 0; }
 
+                /** @brief Returns its slot in its application (its events carry it). */
+                uint8_t slot() const { return _slot; }
+
+                /** @brief Returns its slot's generation (its events carry it). */
+                uint8_t slotGeneration() const { return _generation; }
+
                 /** @brief Returns its window manager's number (0: not open). */
                 uint8_t id() const { return _id.load(std::memory_order_acquire); }
 
@@ -171,6 +178,16 @@ class GuiWindow : public Widget {
                         _closedArg = arg;
                         return;
                 }
+
+                /**
+                 * @brief Starts a drag from @p source (`devplan/clipboard.md` §5d): its types
+                 *        offered on the `Drag` selection, then the window manager's drag. Call
+                 *        while a press in this window is held (a widget's motion past its
+                 *        drag distance); @p source gets `mouseLeft()` then.
+                 * @return The drag's number, or `InvalidState` (the press is over), `Busy`,
+                 *         `NotExist` (no clipboard), or the window manager's error.
+                 */
+                Result<uint32_t> startDrag(const GuiDrag &drag, Widget *source);
 
                 /** @brief Asks for @p rect (window coordinates) to be redrawn. */
                 void invalidate(const Rect &rect);
@@ -252,6 +269,10 @@ class GuiWindow : public Widget {
                 static void resizedEntry(void *arg, uint16_t width, uint16_t height);
                 static void wheelEntry(void *arg, int notches);
                 static void mouseEntry(void *arg, const WindowManager::MouseEvent &event);
+                static void dropEntry(void *arg, const WindowManager::DropEvent &event);
+                static void dragEndedEntry(void *arg, uint32_t drag, DropAction done);
+                void        dropEvent(const WindowManager::DropEvent &event);
+                void        dragEnded(uint32_t drag, DropAction done);
                 static void referenceEntry(void *arg, uint8_t *pixels, size_t stride, uint16_t width, uint16_t height,
                                            const WindowPalette &palette);
                 void        queue(GuiApplication::Event event);
@@ -275,6 +296,10 @@ class GuiWindow : public Widget {
                 Widget              *_focus = nullptr;
                 Widget              *_grab = nullptr;  // pressed: has the mouse until the release
                 Widget              *_hover = nullptr; // under the pointer
+                Widget                *_dropWidget = nullptr; // a drag over it: the widget that answered
+                uint32_t               _dragId = 0;           // this window's drag under way
+                GuiDrag::Ended         _dragEnded = nullptr;  // and whom to tell its end
+                void                  *_dragEndedArg = nullptr;
                 Region               _dirty;
                 Closed               _closed = nullptr;
                 void                *_closedArg = nullptr;

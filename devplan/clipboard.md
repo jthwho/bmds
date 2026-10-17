@@ -4,7 +4,8 @@ Status: **designed** (2026-10-06, the user's request: "full copy/paste support i
 with command line apps that allow us to copy/paste/inspect the clipboard). Ideally, this would
 work with vi (and other applications that support copy/paste). We should also plan for copy/paste
 of different data types (with application translation being possible). We should also add full
-drag/drop engine to the devplan (although that can come later)"). Built: steps 1 to 5 and 7 (§11).
+drag/drop engine to the devplan (although that can come later)"). Built: steps 1 to 5 and 7, and
+drag and drop (§5, §11).
 
 ## 1. Goal
 
@@ -23,8 +24,8 @@ drag/drop engine to the devplan (although that can come later)"). Built: steps 1
   includes BusyBox vi unchanged (`:r /dev/clip0`).
 - **The terminal:** select with the mouse, copy, paste, middle-click paste, bracketed paste, and
   OSC 52 so that programs in it can set the clipboard, even over a serial line.
-- **Drag and drop** (§5, built later): the same offers and transfers carried by the pointer from
-  one window to another, with copy, move and link actions.
+- **Drag and drop** (§5, designed 2026-10-17): the same offers and transfers carried by the
+  pointer from one window to another, with copy, move and link actions.
 
 ## 2. Facts that shape the design (checked 2026-10-06)
 
@@ -189,42 +190,175 @@ That thread posts the data to the loop as it arrives, so the application never b
 process. Text widgets don't exist yet; the panel's first use is copying a desktop icon as
 `text/uri-list` (and `text/plain`: its path).
 
-## 5. Drag and drop (designed now, built later)
+## 5. Drag and drop (designed and built 2026-10-17)
 
-- **The window manager carries it.** It owns the pointer and knows which window is under it. The
-  data moves through the clipboard's `Drag` selection, so dropping costs nothing new.
-- **Starting:** a source that sees a press and a move of more than 4 pixels (the desktop
-  icons' `DragDistance`) calls `startDrag(client, offerSerial, actions,
-  icon)`. The offer was made on `Drag` with its types; `actions` is a mask of Copy, Move and
-  Link. The window manager takes the pointer (an explicit grab until the release) and draws the
-  icon (32 × 32, or a small default) beside the cursor. It uses the cursor's save-under, grown to
-  cover both (about 3 KB more PSRAM), so dragging redraws nothing under it.
-- **Targets:** a window that wants drops sets `WindowConfig::drop`, a callback appended to the
-  config like `mouse`. It is told Enter (the types and actions offered), Motion (a position)
-  and Leave, and answers each with `acceptDrop(id, type, action)` or `rejectDrop(id)`. The
-  answers are asynchronous: the window manager uses the latest one. The cursor shows the action
-  (copy, move, link) or "no", so a busy target makes the pointer lag no more than now.
-  Applications' windows, the desktop and the panel are all targets the same way.
-- **Choosing the action:** the source's preferred one; Ctrl means copy, Shift means move,
-  Ctrl+Shift means link (Windows' keys). A drag with the right button opens a menu of the
-  allowed actions at the drop (Windows' convention).
-- **Dropping:** the target gets Drop with the chosen type and action. It reads through
-  `request(Drag, type)`, then calls `finishDrop(id, ok)`. The source is told the result (a move
-  makes it delete its own copy) and the offer is cleared. Esc, or a release over no target,
-  cancels the drag, and the source is told so.
-- **Spring-loading:** hovering 0.6 s over a panel's window-list button raises that window, so a
-  drop can reach a window that was behind. The panel asks for it as a target (its button
-  answers Enter with a raise timer).
-- **Within one application** (desktop icons rearranged), the source and target are the same
-  client. The toolkit short-circuits the transfer, but the window manager still draws the drag.
-  The desktop's own icon dragging (§4m of `gui.md`) moves to it then.
-- **First users:**
-  - Files from a future file manager or desktop icons dropped on the terminal paste their paths,
-    shell-quoted.
-  - Dropped on the desktop, they make a desktop entry or a copy (`/boot/desktop`).
-  - Dropped on a launcher icon, they start it with the files (`%f`, `%F` in `Exec`, now dropped:
-    `gui.md` G16).
-- **Without a mouse:** none (drag and drop is the pointer's; the clipboard covers keyboards).
+The first sketch (2026-10-06) is replaced by this design, which follows the file browser's
+FB15 (`filebrowser.md`). Built as designed, with the changes in §11 (Drag and drop).
+
+### 5a. Facts that shape it (checked 2026-10-17)
+
+- **Every GUI application is built in** and talks to the window manager through its C++ API
+  (`WindowManager`), not the SDK. The window manager's callbacks run on its task, locked, and
+  the toolkit only queues them (`GuiWindow::mouseEntry`). Calls back into the window manager
+  come later, from the application's loop. Programs built with the SDK have surfaces
+  (`games.md`), not toolkit windows.
+- **The mouse:** a press in a window that asks for the mouse grabs it until every button is up
+  (`_mouseId`). Motion with no button held goes to the window under the pointer (`hoverAt()`).
+  A full-screen window or a pointer lock captures every event (`capturedPointer()`).
+- **The pointer** is drawn over each round with its save-under (`UnderBytes`: 2.6 KB, PSRAM).
+  `restoreUnder()` puts the pixels back before anything is drawn, so whatever moves or redraws
+  under it (a view scrolling at its edge) needs nothing special. Its pictures are text rows of
+  edge and fill.
+- **The item views** already tell a drag apart from a click (`ItemView::DragDistance`, 4 pixels;
+  `dragged()`). The desktop's grid draws its dragged icons itself (`IconView`, redrawing only the
+  rows that move).
+- **The panel** holds the desktop and every folder window, so most drags start and end in one
+  process. `GuiClipboard` renders a paste of its own copy on the loop's thread, with no pipe.
+- **Files:** `FileWorker` copies and moves (across filesystems too), with its questions and
+  progress. The VFS has symbolic links (`Vfs::symlink`, emulated on FAT) and `realPath()`.
+  `Trash::mountOf()` finds a path's mount.
+- **Desktop Entries:** `DesktopEntry::splitExec()` fills in `%f`, `%F`, `%u` and `%U` with one
+  file (`filetypes.md` T7); several files have no way in yet.
+- **The terminal** is a raw window-manager client with a paste path on its own worker thread
+  (`termclip`): LF sent as CR, bracketed paste, paced by the program.
+
+### 5b. Decisions
+
+| # | Question | Choice | Alternatives |
+|---|---|---|---|
+| D1 | Who carries a drag | **The window manager.** It owns the pointer, knows the window under it and draws the drag over everything. The data goes through the clipboard's `Drag` selection (C2), so a drop reads as a paste does, across processes or within one | each application alone (then no drag leaves its window) |
+| D2 | Starting | **The source offers its types on `Drag`, then calls `startDrag()`** with the offer's serial, the actions it allows (a mask of Copy, Move and Link), the one it prefers, an image and a callback for the end. The window manager refuses (`InvalidState`) unless a button is still down and the press was in that window: the loop may see the motion after the release. From then on the pointer is the drag's: the source gets no more motion, nor the release | the window manager detecting drags itself (it doesn't know what is draggable) |
+| D3 | What is drawn | **An image the source renders, up to 128 × 128 ARGB, with a hot spot** (where the press was in it), drawn blended under the pointer. The views render the selected items' icons ghosted (alpha halved) at their places around the pressed one, with a count when not all fit. The window manager copies the image (PSRAM) and grows the save-under to cover image and pointer, both allocated at the start and freed at the end, so a drag redraws nothing under it | a fixed 32-pixel icon beside the pointer (the first sketch; the desktop's icons would no longer seem to move with it) |
+| D4 | The action shown | **New pointer shapes, appended:** `DragMove` (the arrow), `DragCopy` (a plus), `DragLink` (a bent arrow) and `DragNone` (a slashed circle). The shape is the target's latest answer | text beside the pointer |
+| D5 | Targets | **A window that takes drops sets `WindowConfig::drop`** (appended, as `mouse` was). It is told Enter, Motion and Leave with the position, the actions offered, the modifiers and the button. It answers when it likes with `answerDrop(drag, window, action)` (`None`: not here). The window manager keeps the latest answer, so a busy target slows only its own feedback, never the pointer. A window without `drop` (a game's, a frame, the Alt+Tab list) shows `DragNone` | synchronous answers (a stuck target would freeze the pointer) |
+| D6 | Choosing the action | **The target chooses, from the offered actions:** Ctrl copies, Shift moves, Ctrl+Shift links (Windows' keys, FB15). With none held, the target's default, then the source's preferred, then the first offered. Files: the same filesystem moves, another copies (FB15). A modifier pressed or let go during a drag re-sends Motion. A pure function (`DropAction::choose()`) does it for everyone | the source choosing (it doesn't know where the files land) |
+| D7 | The drop | **A release over a target always sends it Drop,** whatever its last answer, and the target decides again at that position: an answer still on its way can't lose a drop. The pointer is normal at once. The target reads with `request(Drag, type)` (the toolkit's `paste()`), then calls `finishDrop(drag, done)`, where done is `None`, `Copy`, `Move` (the source removes its copy), `Link` or `Moved` (the target did the move itself: files). The source is told done and clears its offer. A release over no target, Esc, the source's window closing, or no finish 10 s after the release ends it with `None` | Drop only after an accepting answer (loses fast drops) |
+| D8 | The right button | **A right drag asks at the drop** (Windows): the target gets Drop with `Ask` and opens a menu at the pointer with what is offered (Move Here, Copy Here, Create Link Here, then Cancel), its default first | none |
+| D9 | Feedback in the target | **The toolkit's:** a view frames the folder item or tree folder under the pointer, a view near its edge scrolls (the rubber band's timer), a tree folder held over for 0.8 s expands, and a window-list button held over for 0.6 s raises its window (restoring it if minimized), so a drop can reach a window that was behind | none (then a drop can't reach a covered window) |
+| D10 | Within one application | **The same path, short-circuited by what exists:** the toolkit's paste of its own offer renders on the loop's thread, and the target can ask whether a drag is its own (`DropEvent::source()`: the widget, else null). The desktop's grid becomes an ordinary target: a drop of its own icons on empty cells moves them there (the drag's offset from the press, as now), onto a folder or an application moves or opens them into it. `IconView`'s own drawing of dragged rows goes | the desktop keeping its own drag (two ways that look different) |
+| D11 | Multiple files to an application | **`splitExec()` takes a list:** `%F` and `%U` get every file, `%f` and `%u` one, and an application with only those is started once per file (the specification's rule), at most 16. An application dropped on gets the files, and so does a `.desktop` file shown in a folder or on the desktop | the first file only |
+| D12 | The terminal | **A drop is typed in as a paste:** `text/uri-list` as the paths, each shell-quoted (`'...'`, a `'` as `'\''`), separated by spaces with one after the last; plain text as it is. Copy only. It goes through the paste path (`termclip`), so bracketed paste and pacing apply | the URIs as written |
+| D13 | Not now | **Dragging text out of a field** (fields take drops: text, and a path for a file), **drops on SDK programs' surfaces** (needs the GUI ABI: `BMDS_EVENT_DROP`, brought to the user then), **spring-loaded folders** (held over, a folder opens in its window) | — |
+| D14 | The ABI | **None:** the window manager's and toolkit's APIs are internal (C14); `WindowConfig`, `Pointer` and the clipboard's selections only grow | — |
+
+### 5c. The window manager
+
+```cpp
+enum class DropAction : uint8_t { None, Copy, Move, Link, Moved, Ask };   // append only
+enum : uint8_t { CanCopy = 1, CanMove = 2, CanLink = 4 };
+
+struct DragConfig {
+        uint32_t offer = 0;               // the Drag selection's serial: passed to targets
+        uint8_t actions = CanCopy;        // what the source allows
+        DropAction preferred = DropAction::Copy;
+        const uint32_t *image = nullptr;  // ARGB, width × height; copied (null: the arrow alone)
+        uint8_t width = 0, height = 0;    // 128 at most
+        int8_t hotX = 0, hotY = 0;        // the pointer's place in the image (may be outside it)
+        Ended ended = nullptr;            // void (*)(void *arg, uint32_t drag, DropAction done)
+        void *arg = nullptr;
+};
+
+struct DropEvent {
+        enum class Type : uint8_t { Enter, Motion, Leave, Drop };
+        Type type;
+        uint32_t drag, offer;
+        int16_t x, y;                     // the client area's
+        uint8_t actions, modifiers, button;
+        bool ask;                         // Drop after a right drag
+};
+
+Result<uint32_t> startDrag(uint8_t window, const DragConfig &config);
+Error answerDrop(uint32_t drag, uint8_t window, DropAction action);   // the latest wins
+Error finishDrop(uint32_t drag, DropAction done);                     // InvalidState after the end
+Error cancelDrag(uint32_t drag);                                      // the source gives up
+```
+
+- **State** (`.bss`, about 40 bytes): the drag's number, the source window and its `Ended`, the
+  window under the pointer and its latest answer, the release time. One drag at a time: there is
+  one pointer.
+- **The pointer's round:** with a drag, `cursorArea()` is the union of the image's and the
+  picture's rectangles. `drawCursorPixels()` blends the image first (its alpha), then draws the
+  picture. The save-under is a drag-sized block taken at `startDrag()`; `UnderBytes` still
+  serves the plain pointer.
+- **Motion:** to the window under the pointer when it has `drop` (Enter when it changes, Leave to
+  the old one), with no motion to the source. Popups were closed by the press. The wheel goes on
+  scrolling the window under the pointer.
+- **Keys:** Esc cancels; Ctrl and Shift re-send Motion; everything else is dropped until the
+  drag ends, so Alt+Tab can't change the windows under it.
+- **The end:** a window closing tells the drag (the source's: cancelled; the target's: no
+  target). Each `Ended` call is made once, with the lock let go, like `MenuChosen`.
+- **Test aid:** `win dnd` prints the drag: source, offer, the window under it, its answer.
+  `win pointer` already drags with a button held.
+
+### 5d. The toolkit
+
+- **Source:** `GuiWindow::startDrag(const GuiDrag &)` offers the types on `Drag` (a `Provider`
+  as for copies), then calls the window manager. `GuiDrag` adds the provider and an `Ended` told
+  on the loop's thread. The application's offer is cleared when the drag ends, and `keep()`
+  never stores a `Drag` offer.
+- **Targets:** `Widget` gains `dragEntered(GuiDropEvent &)`, `dragMoved()`, `dragLeft()` and
+  `dropped()`. Every `GuiWindow` sets `drop`; the deepest widget under the pointer that takes
+  drags (`setAcceptsDrops()`) is told Enter and Motion, and Leave when another one is under it,
+  and its answer is the window's (one widget, not its parents in turn: a window-list button
+  that never accepts still needs to know it is held over). The event offers
+  `hasType(type)` (offered or converted: `canPaste(Drag, ...)`), `suggested()` (D6 with the
+  widget's default), `accept(action)`, `ignore()`, `read(type, Received)` and `finish(done)`.
+- **`ItemView`:** a drag past `DragDistance` asks its owner for the drag (`DragAsked`: the
+  types, the provider, the actions). The view renders the image (D3). As a target, it frames
+  the row under the pointer if its owner says that row takes drops (`DropAsked`), and scrolls
+  at its edges. `TreeView` expands a folder held over.
+- **`LineEdit`** takes text, and a file's path from `text/uri-list` (one path; several joined
+  by spaces), replacing its text, unless masked. That covers the address bar (Enter goes there)
+  and Settings' Folder and File rows.
+- **The right button:** an item view opens its menu at the release, not the press, so a right
+  press that moves is a right drag.
+
+### 5e. The panel and the first targets
+
+- **Folder windows, the tree and the desktop** (FB15): the selected items as `text/uri-list` and
+  text (their paths), Copy, Move and Link offered. A drop on a folder (a view's background, a
+  folder item, a tree folder) runs `FileWorker` (Move, or Copy) or makes links (`Vfs::symlink`,
+  a taken name made unique as Paste does) and finishes with `Moved`, `Copy` or `Link` once the
+  job is queued. A folder onto itself, or into its own descendant, is refused while hovering
+  (`DragNone`). Dropping into the folder it came from does nothing, except on the desktop's grid
+  (D10).
+- **Applications** (`.desktop` files on the desktop and in folders): a drop starts them with the
+  files (D11).
+- **The window list:** its buttons raise (D9) and never accept.
+- **The terminal** (D12). **The image viewer** opens the first image dropped on it.
+
+### 5f. Pure parts (`bmds_core`, host-tested)
+
+- `DropAction::choose(offered, modifiers, targetDefault, preferred)` (D6).
+- `ShellQuote::append()` (D12): quoting only when needed (`[A-Za-z0-9._/+-]` passes as is).
+- `DragImage`: where the selected items' icons go in the 128 × 128 image around the pressed one,
+  and the count.
+- `DesktopEntry::splitExec()` with several files (D11).
+
+### 5g. Budget
+
+- **Firmware:** the window manager 3 to 4 KB; the toolkit 4 to 5 KB; the views and the panel 3 to
+  4 KB; the terminal 1 KB; the pure parts 1 KB.
+- **`.bss`:** about 40 bytes (the window manager's drag).
+- **PSRAM, only during a drag:** the image (64 KB at most) and its save-under (about 57 KB at
+  most).
+- **CPU:** blending at most 16,384 pixels a round while the pointer moves; nothing while still.
+  To measure (`win stats`); PIE if it shows.
+
+### 5h. Steps
+
+1. **Pure parts** (§5f), host-tested.
+2. **The window manager** (§5c): `startDrag()` and the others, `drop`, the image, the shapes,
+   Esc, modifiers, the 10 s end; `win dnd`.
+3. **The toolkit** (§5d): sources, targets, the views' frames and scrolling, the tree's
+   expanding, `LineEdit`'s drops.
+4. **The panel** (§5e): folders, tree and desktop on it (the grid's own drag gone), the right
+   drag's menu, applications with files, the window list.
+5. **The terminal and the image viewer.**
+6. **On the board:** drags by `win pointer` between two folder windows on one filesystem and
+   across (`/sd0` and `/flash`), onto the desktop and back, rearranging the desktop, onto a
+   terminal (quoted paths), onto an application, a right drag, Esc, a slow target, the window
+   list raising a covered window; `win check` with a drag shown; `win stats` while dragging.
 
 ## 6. Budget (estimates)
 
@@ -235,7 +369,7 @@ process. Text widgets don't exist yet; the panel's first use is copying a deskto
   - the terminal's selection and paste: 3 to 4 KB;
   - OSC 52 with base64: 1 KB;
   - the toolkit's wrapper: 2 KB;
-  - drag and drop, later: 4 to 6 KB.
+  - drag and drop: §5g.
 - **`.bss`:** about 200 bytes per clipboard (three selections' headers, the lock, watchers).
 - **PSRAM:** only what is held (C7's limit), plus a pipe (4 KB) for each transfer in progress
   and the terminal's selection (a few KB while dragging).
@@ -288,7 +422,7 @@ process. Text widgets don't exist yet; the panel's first use is copying a deskto
 6. **Converter programs** (`[Convert]`, packages' `share/clipboard`).
 7. **The toolkit's API** and the panel's icon copy (done, §11).
 8. **On the board** (§8), measured.
-9. **Drag and drop** (§5), with its own steps when it comes up.
+9. **Drag and drop:** designed (§5), with its own steps (§5h).
 
 ## 10. Open questions
 
@@ -480,4 +614,46 @@ process. Text widgets don't exist yet; the panel's first use is copying a deskto
     - Not yet exercised: `paste()` and `canPaste()` (no application pastes yet), and the
       paste of a copy of its own.
   - **Size:** the image grew 5,680 bytes to 831,056.
-
+- **Drag and drop** (2026-10-17, §5; host-tested and on the board):
+  - **Pure parts** (`bmds_core/dragdrop.h`, `tests/host/dragdrop.cpp`, 50 checks):
+    `DropActions::choose()`, `ShellQuote` (plain words as they are, else single quotes),
+    `DragImage::around()` and `holds()`; `DesktopEntry::splitExec()` with a list of files and
+    `takesFileList()`.
+  - **The window manager:** `startDrag()`, `answerDrop()`, `finishDrop()`, `cancelDrag()`,
+    `dragInfo()`, `WindowConfig::drop`, and the four drag pointers. The image is blended under
+    the pointer, the save-under a block of the drag's size. Error codes: `InvalidState` where the
+    design said `Stale` (no new code). The test aid is `win dnd` (`win drag` already moved
+    windows).
+  - **A patch is a scanline at most:** `Surface::patch()` copies through the surface's line
+    buffer, one row of the screen's bytes, so a 68 × 50 drag area was refused (`Invalid`) at
+    every round. The pointer is now saved, drawn and put back in strips that fit
+    (`cursorStripRows()`); the plain pointer is still one strip.
+  - **The toolkit:** `GuiDrag`, `GuiDropEvent`, `DragPicture` (`guidrag.h`); one widget takes a
+    window's drag (the deepest that accepts, without walking its parents: §5d). `ItemView`
+    draws the selected rows ghosted (`drawDragRow()`, the icon view's with its 32-pixel icons)
+    with a red count badge, frames the target row, scrolls 16 pixels at a time within 16 pixels
+    of its edge, and tells `dropHeld()` after 0.8 s (the tree expands). Its menu now opens at the
+    right button's release. `IconView`'s own drag drawing went; `moveSelected()` does the cell
+    move for the desktop's own drops.
+  - **The panel:** `FolderActions::dragFiles()`, `dropAction()`, `drop()` (copy and move by the
+    worker or a rename, links with a copy's name if taken, the right drag's menu), and
+    `launchFiles()`. Files dropped on the desktop's folder go where they were dropped
+    (`FolderHost::dropping()`, placed when the desktop shows them). Window-list buttons raise
+    their window after 0.6 s.
+  - **On the board** (`win pointer` drags, `win dnd` mid-way):
+    - A file from one card folder to another moved; onto the tree's `tmp` copied (another
+      filesystem; the tree had scrolled a row in its edge zone, so it went into `tmp/dnd`, the row
+      under the pointer at the drop).
+    - The terminal typed `/sd0/p0/dndtest/b/one.txt '/sd0/p0/dndtest/a/two words.txt'`.
+    - The desktop's icon moved to another cell (its place saved); its own drag over the desktop
+      answered move. A drag left Ctrl "held" by an earlier `win type` of a control character
+      copied instead: end such tests with `win hid release 0xe0`.
+    - A right drag's menu made a link (`one.txt -> /sd0/p0/dndtest/a/one.txt`); Esc on the menu
+      ended the waiting drop at once, nothing done; Esc during a drag cancelled it.
+    - A drag held 0.6 s over a minimized window's button restored it, and the drop went in.
+    - Two files dropped on a launcher with `%F` started it once with both paths; dropped on the
+      Terminal launcher (no field code) they became its arguments.
+    - Files dropped on the desktop landed at the drop point, and dragged back into a folder.
+    - The address bar took a dropped file's path; the image viewer opened a dropped picture.
+    - `win check` with a drag shown: 0 pixels wrong. A drag's round: 3.3 ms; 0 drawing errors.
+  - **Size:** the image grew 21,216 bytes to 2,304,048.

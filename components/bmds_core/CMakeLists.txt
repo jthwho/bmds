@@ -17,6 +17,7 @@ set(BMDS_CORE_SRCS
         src/datetime.cpp
         src/ed25519.cpp
         src/desktopentry.cpp
+        src/dragdrop.cpp
         src/fft.cpp
         src/pngdecoder.cpp
         src/randompool.cpp

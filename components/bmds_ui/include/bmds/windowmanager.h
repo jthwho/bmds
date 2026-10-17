@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <bmds/compose.h>
 #include <bmds/config.h>
+#include <bmds/dragdrop.h>
 #include <bmds/error.h>
 #include <bmds/icon.h>
 #include <bmds/inputevent.h>
@@ -287,6 +288,10 @@ class WindowManager {
                         Text,         ///< An I-beam: text to select or type into.
                         None,         ///< None drawn (a game's own, or none).
                         Starting,     ///< The arrow with an hourglass: a program starting (`programStarting()`).
+                        DragMove,     ///< A drag that moves here (`startDrag()`): the arrow and a dotted box.
+                        DragCopy,     ///< A drag that copies here: the arrow and a plus.
+                        DragLink,     ///< A drag that links here: the arrow and a bent arrow.
+                        DragNone,     ///< A drag that can't drop here: a slashed circle.
                 };
 
                 /** @brief Programs shown starting at once (`programStarting()`): a newer replaces the oldest. */
@@ -318,6 +323,59 @@ class WindowManager {
 
                 /** @brief Two presses on a title bar this close together are a double click. */
                 static constexpr uint32_t DoubleClickMs = 400;
+
+                /**
+                 * @brief Told that drag @p drag ended (`startDrag()`): @p done is what the
+                 *        target did (`None`: refused or cancelled; `Move`: the source removes
+                 *        its own). On the window manager's task, its lock released.
+                 */
+                using DragEnded = void (*)(void *arg, uint32_t drag, DropAction done);
+
+                /** @brief A drag to start (`startDrag()`, `devplan/clipboard.md` §5c). */
+                struct DragConfig {
+                                uint32_t        offer = 0; ///< The `Drag` selection's serial: passed to targets.
+                                uint8_t         actions = DropActions::CanCopy; ///< What the source allows.
+                                DropAction      preferred = DropAction::Copy; ///< The source's choice, all else equal.
+                                const uint32_t *image =
+                                        nullptr;     ///< 0xAARRGGBB, `width` × `height`; copied (null: none).
+                                uint8_t   width = 0; ///< `DragImage::Max` at most.
+                                uint8_t   height = 0;
+                                uint8_t   hotX = 0; ///< The pointer's place in the image (kept inside it).
+                                uint8_t   hotY = 0;
+                                DragEnded ended = nullptr; ///< May be null.
+                                void     *arg = nullptr;
+                };
+
+                /** @brief What a drop target is told (`WindowConfig::drop`). */
+                struct DropEvent {
+                                /** @brief What happened. */
+                                enum class Type : uint8_t {
+                                        Enter,  ///< The drag came over the client area.
+                                        Motion, ///< It moved there, or a modifier changed.
+                                        Leave,  ///< It left (or ended there, cancelled).
+                                        Drop,   ///< It was let go there: read, then `finishDrop()`.
+                                };
+
+                                Type       type = Type::Motion;
+                                uint32_t   drag = 0;  ///< `startDrag()`'s number: for the answers.
+                                uint32_t   offer = 0; ///< The `Drag` selection's serial.
+                                int16_t    x = 0;     ///< From the client area's top-left corner.
+                                int16_t    y = 0;
+                                uint8_t    actions = 0;   ///< `DropActions` bits the source allows.
+                                uint8_t    modifiers = 0; ///< `KeyEvent::Modifier` bits down.
+                                bool       ask = false;   ///< A right drag's `Drop`: the target asks which action.
+                                bool       own = false;   ///< The source is this window's application.
+                                DropAction preferred = DropAction::Copy; ///< The source's choice.
+                };
+
+                /**
+                 * @brief Takes a drag over the window's client area (on the window manager's
+                 *        task, locked: it must not call it). Answers come later (`answerDrop()`).
+                 */
+                using Drop = void (*)(void *arg, const DropEvent &event);
+
+                /** @brief How long after a drop the target has to `finishDrop()`. */
+                static constexpr unsigned int DropTimeoutMs = 10000;
 
                 /** @brief A window to open. */
                 struct WindowConfig {
@@ -351,6 +409,7 @@ class WindowManager {
                                 ClosedAt   closedAt = nullptr;   ///< May be null; told instead of `closed`.
                                 FullScreen fullScreen = nullptr; ///< May be null: Alt+Enter does nothing to it.
                                 Pad        pad = nullptr;        ///< May be null: pads' events dropped.
+                                Drop       drop = nullptr;       ///< May be null: drags show they can't drop.
                 };
 
                 /** @brief A window, as `list()` reports it. */
@@ -696,6 +755,51 @@ class WindowManager {
                 void pointerPosition(uint16_t &x, uint16_t &y);
 
                 /**
+                 * @brief Starts a drag from window @p id (`devplan/clipboard.md` §5c): the
+                 *        pointer is the drag's until its button comes up. The source made its
+                 *        offer on the `Drag` selection first. The window gets a `Leave`, then no
+                 *        more of the mouse until the drag ends.
+                 * @return The drag's number, or `InvalidState` (no button down, or the press
+                 *         wasn't in @p id), `Busy` (another drag, or one waiting for its
+                 *         finish), `Invalid` (an image too big), `NoMem`.
+                 */
+                Result<uint32_t> startDrag(uint8_t id, const DragConfig &config);
+
+                /**
+                 * @brief Window @p id's answer to drag @p drag where it is now (`None`: it
+                 *        can't drop there): the pointer shows it. The latest answer counts.
+                 * @return `Ok`, or `InvalidState` (the drag ended, or isn't over @p id now).
+                 */
+                Error answerDrop(uint32_t drag, uint8_t id, DropAction action);
+
+                /**
+                 * @brief Says what the target did with drag @p drag's drop: the source is
+                 *        told @p done.
+                 * @return `Ok`, or `InvalidState` (not waiting for a finish: ended, or timed out).
+                 */
+                Error finishDrop(uint32_t drag, DropAction done);
+
+                /**
+                 * @brief Ends drag @p drag as cancelled (the source gives up).
+                 * @return `Ok`, or `InvalidState` (ended).
+                 */
+                Error cancelDrag(uint32_t drag);
+
+                /** @brief A drag's state, as `win drag` shows it. */
+                struct DragInfo {
+                                uint32_t   drag = 0; ///< 0: none.
+                                uint8_t    source = 0;
+                                uint32_t   offer = 0;
+                                uint8_t    actions = 0;
+                                uint8_t    target = 0; ///< The window under it that takes drops; 0: none.
+                                DropAction answer = DropAction::None;
+                                bool       dropped = false; ///< Let go: waiting for the target's finish.
+                };
+
+                /** @brief Returns the drag under way (`drag` 0: none). */
+                DragInfo dragInfo();
+
+                /**
                  * @brief Sets window @p id's large icon (null: none; 32 × 32 at
                  *        most), kept by the caller as `setIcon()`'s: Alt+Tab's list
                  *        shows it (the small one doubled without it).
@@ -897,6 +1001,7 @@ class WindowManager {
                                 Activated   activated = nullptr;
                                 ClosedAt    closedAt = nullptr;
                                 FullScreen  fullScreen = nullptr;
+                                Drop             drop = nullptr;
                 };
 
                 struct Client {
@@ -1003,6 +1108,17 @@ class WindowManager {
                 void            menuMnemonic(uint32_t key);
                 static void     menuClosed(void *arg);
                 void            applyPointer();
+                bool            dndShowing() const { return _dnd.drag != 0 && !_dnd.dropped; }
+                uint8_t         dropTargetAt(uint16_t x, uint16_t y) const; // 0: none
+                void            dndTell(uint8_t id, DropEvent::Type type, uint16_t x, uint16_t y);
+                void            dndMotion(uint16_t x, uint16_t y);  // the window under it told
+                void            dndRelease(uint16_t x, uint16_t y); // dropped there, or ended
+                bool            dndKey(const KeyEvent &event);      // Escape, modifiers; true: taken
+                void            dndEnd(DropAction done);            // the source told after the round
+                void            dndClosed(uint8_t id);              // a window gone
+                Pointer         dndShape() const;
+                void            dndRetire(); // the image and its under out of use
+                void            dndFree();   // and freed, once nothing drawn holds them
                 void            press(uint16_t x, uint16_t y, uint8_t button);
                 void            release(uint16_t x, uint16_t y);
                 void            pressedMoved(uint16_t x, uint16_t y); // a button's press shown while over it
@@ -1022,6 +1138,7 @@ class WindowManager {
                 void            drawCursor();
                 void            restoreUnder();     // what the pointer covered, put back
                 Rect            cursorArea() const; // where the pointer is drawn: on the screen, 4-pixel columns
+                uint16_t        cursorStripRows(uint16_t width) const;  // rows of it one patch takes
                 uint8_t         windowAt(uint16_t x, uint16_t y) const; // 0: the desktop
                 Error           closeLocked(uint8_t id);
                 Error           showDesktopMenuLocked(uint16_t x, uint16_t y);
@@ -1073,6 +1190,37 @@ class WindowManager {
                 List<Window>  _windows; // by number - 1, grown as numbers are used
                 WindowPalette _palette;
                 uint8_t      *_under = nullptr; // what the pointer covers (UnderBytes, Psram)
+                uint8_t      *_underIn = nullptr; // the buffer _underRect's pixels are in (_under, or a drag's)
+                // A drag and drop (devplan/clipboard.md §5c): one at a time.
+                struct Dnd {
+                                uint32_t   drag = 0; // 0: none
+                                uint8_t    source = 0;
+                                uint8_t    sourceClient = 0;
+                                uint32_t   offer = 0;
+                                uint8_t    actions = 0;
+                                DropAction preferred = DropAction::Copy;
+                                uint8_t    button = 0; // the one held
+                                uint8_t    target = 0; // told Enter; 0: none
+                                DropAction answer = DropAction::None;
+                                bool       dropped = false; // waiting for finishDrop()
+                                int64_t    deadlineUs = 0;
+                                DragEnded  ended = nullptr;
+                                void      *arg = nullptr;
+                                uint32_t  *image = nullptr; // PSRAM
+                                uint8_t    width = 0;
+                                uint8_t    height = 0;
+                                uint8_t    hotX = 0;
+                                uint8_t    hotY = 0;
+                                uint8_t   *under = nullptr; // PSRAM: the image and pointer's area
+                };
+                Dnd           _dnd;
+                uint32_t      _dndSerial = 0;
+                uint32_t     *_dndOldImage = nullptr; // an ended drag's, freed once not drawn
+                uint8_t      *_dndOldUnder = nullptr;
+                DragEnded     _dndEnded = nullptr; // told after the round, unlocked
+                void         *_dndEndedArg = nullptr;
+                uint32_t      _dndEndedDrag = 0;
+                DropAction    _dndEndedDone = DropAction::None;
                 Rect          _underRect;       // where; empty: nothing saved
                 uint8_t       _dragId = 0;
                 Rect          _outline;

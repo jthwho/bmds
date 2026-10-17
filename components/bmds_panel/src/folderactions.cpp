@@ -14,6 +14,7 @@
 #include <new>
 #include <bmds/apps.h>
 #include <bmds/clipboard.h>
+#include <bmds/filenames.h>
 #include <bmds/fdtable.h>
 #include <bmds/fileformat.h>
 #include <bmds/guiclipboard.h>
@@ -58,6 +59,13 @@ void FolderActions::setApplications(StringView directories) {
 void FolderActions::setMimeApps(StringView path) {
         std::snprintf(_mimeApps, sizeof(_mimeApps), "%.*s", int(path.size()), path.data());
         return;
+}
+
+FolderActions::~FolderActions() {
+        if (_askMenu != nullptr) {
+                _askMenu->~Menu();
+                Memory::free(_askMenu);
+        }
 }
 
 void FolderActions::say(const char *a, const char *b, const char *c, const char *d) {
@@ -129,6 +137,66 @@ void FolderActions::launch(const DesktopEntry &entry, StringView file) {
         }
         if (err.isError())
                 say("panel: ", entry.name, ": ", err == Error::NotExist ? "not found\n" : "can't start it\n");
+        return;
+}
+
+// @p entry on @p files (a line each): one start with them all if its command takes a list (%F,
+// %U, or no field code), else one a file (%f, %u), MaxStartsPerDrop at most.
+void FolderActions::launchFiles(const DesktopEntry &entry, StringView files) {
+        List<StringView> list(MemSpace::Psram);
+        size_t           bytes = 0;
+        for (StringView rest = files; !rest.isEmpty();) {
+                const size_t     end = rest.indexOf('\n');
+                const StringView f = end == StringView::NPos ? rest : rest.left(end);
+                rest = end == StringView::NPos ? StringView() : rest.mid(end + 1);
+                if (f.isEmpty() || list.append(f).isError()) continue;
+                bytes += f.size() + 1;
+        }
+        if (list.isEmpty()) return;
+        if (!DesktopEntry::takesFileList(StringView(entry.exec))) {
+                for (size_t i = 0; i < list.size() && i < MaxStartsPerDrop; ++i) launch(entry, list[i]);
+                return;
+        }
+        if (_context.launcher == nullptr) return;
+        const size_t size = DesktopEntry::MaxExec + bytes + 1;
+        char        *buffer = static_cast<char *>(Memory::alloc(MemSpace::Psram, size));
+        if (buffer == nullptr) return;
+        StringView   args[DesktopEntry::MaxArgs + 2];
+        const size_t front = entry.terminal ? 2 : 0;
+        auto [n, err] = DesktopEntry::splitExec(StringView(entry.exec), buffer, size,
+                                                Span<StringView>(args + front, DesktopEntry::MaxArgs), list.span());
+        if (err.isError()) {
+                say("panel: ", entry.name, ": too many files for its command\n");
+                Memory::free(buffer);
+                return;
+        }
+        if (entry.terminal) {
+                args[0] = "terminal";
+                args[1] = "-e";
+        }
+        String found;
+        err = programPath(args[0], found);
+        if (err.isOk()) {
+                ProgramLauncher::Request request;
+                request.path = found.view();
+                request.args = Span<const StringView>(args, n + front);
+                request.environment = _context.environment;
+                request.fds = _context.fds;
+                request.cwd = _context.cwd;
+                request.console = _context.console;
+                request.session = true;
+                auto [pid, serr] = _context.launcher->start(request);
+                err = serr;
+                if (err.isOk() && _context.process != nullptr) _context.process->disownChild(pid);
+                if (err.isOk()) {
+                        auto [wm, werr] = WindowManager::manager(0);
+                        if (werr.isOk() && wm != nullptr)
+                                wm->programStarting(pid, _context.launcher, WindowManager::StartingTimeoutMs);
+                }
+        }
+        if (err.isError())
+                say("panel: ", entry.name, ": ", err == Error::NotExist ? "not found\n" : "can't start it\n");
+        Memory::free(buffer);
         return;
 }
 
@@ -389,6 +457,233 @@ bool FolderActions::moveNow(StringView paths, StringView directory) {
                 tell("Move", StringView(message));
         }
         return true;
+}
+
+// ---- Drag and drop (devplan/clipboard.md §5e)
+
+bool FolderActions::dragFiles(StringView paths, GuiDrag &drag) {
+        if (paths.isEmpty() || _dragged.set(paths, false).isError()) return false;
+        static constexpr StringView Types[] = {CopiedFiles::UriList, ClipboardType::Text};
+        drag.types = Span<const StringView>(Types);
+        drag.provider = renderDrag;
+        drag.providerArg = this;
+        drag.actions = DropActions::CanCopy | DropActions::CanMove | DropActions::CanLink;
+        drag.preferred = DropAction::Copy;
+        drag.ended = dragEnded;
+        drag.endedArg = this;
+        return true;
+}
+
+Error FolderActions::renderDrag(void *arg, StringView type, String &out) {
+        return static_cast<FolderActions *>(arg)->_dragged.render(type, out);
+}
+
+// The drag over: the files forgotten (a target that moved them said so: the watches see it).
+void FolderActions::dragEnded(void *arg, DropAction done) {
+        (void)done;
+        static_cast<FolderActions *>(arg)->_dragged.clear();
+        return;
+}
+
+// What @p path is to a drop: a folder, an application (a launcher with a command, a NAME.app
+// folder: @p entry filled if given), or neither.
+FolderActions::Target FolderActions::targetOf(StringView path, DesktopEntry *entry) const {
+        const Vfs::Context vc{_context.cwd, nullptr};
+        auto [info, err] = Vfs::stat(path, vc);
+        if (err.isError()) return Target::None;
+        DesktopEntry e;
+        if (info.isDirectory()) {
+                if (!Apps::isFolderName(FileOps::baseName(path))) return Target::Folder;
+                if (!readAppFolder(path, vc, StringView(), e)) return Target::Folder;
+        } else {
+                if (!path.endsWith(DesktopSuffix)) return Target::None;
+                char         text[1024];
+                const size_t got = readFile(path, vc, text, sizeof(text));
+                auto [parsed, perr] = DesktopEntry::parse(StringView(text, got));
+                if (perr.isError() || parsed.exec[0] == '\0') return Target::None;
+                e = parsed;
+        }
+        if (entry != nullptr) *entry = e;
+        return Target::Application;
+}
+
+DropAction FolderActions::dropAction(StringView target, const GuiDropEvent &event) {
+        if (!event.hasType(CopiedFiles::UriList)) return DropAction::None;
+        const Target kind = targetOf(target, nullptr);
+        if (kind == Target::None) return DropAction::None;
+        if (kind == Target::Application)
+                return DropActions::allows(event.actions(), DropAction::Copy) ? DropAction::Copy : DropAction::None;
+        // A folder: this panel's own drag is known (its files): not into one of them, nor where all
+        // of them are; moved on their filesystem, else copied (Windows' rule). Another's: copied.
+        DropAction         fallback = DropAction::Copy;
+        const StringView   paths = event.isOwn() ? _dragged.paths() : StringView();
+        const Vfs::Context vc{_context.cwd, nullptr};
+        if (!paths.isEmpty()) {
+                auto [into, ierr] = Vfs::stat(target, vc);
+                bool allHere = true, sameDevice = false, first = true;
+                for (StringView rest = paths; !rest.isEmpty();) {
+                        const size_t     end = rest.indexOf('\n');
+                        const StringView p = end == StringView::NPos ? rest : rest.left(end);
+                        rest = end == StringView::NPos ? StringView() : rest.mid(end + 1);
+                        if (p.isEmpty()) continue;
+                        if (target == p ||
+                            (target.startsWith(p) && target.size() > p.size() && target[p.size()] == '/'))
+                                return DropAction::None; // into itself
+                        const size_t     slash = p.lastIndexOf('/');
+                        const StringView parent = p.left(slash > 0 ? slash : 1);
+                        const StringView to =
+                                target.size() > 1 && target.endsWith('/') ? target.left(target.size() - 1) : target;
+                        allHere = allHere && parent == to;
+                        if (first && ierr.isOk()) {
+                                auto [info, lerr] = Vfs::lstat(p, vc);
+                                sameDevice = lerr.isOk() && info.device == into.device;
+                        }
+                        first = false;
+                }
+                if (allHere) return DropAction::None;
+                if (sameDevice) fallback = DropAction::Move;
+        }
+        return event.suggested(fallback);
+}
+
+bool FolderActions::drop(StringView target, GuiDropEvent &event, uint16_t screenX, uint16_t screenY) {
+        const DropAction action = dropAction(target, event);
+        if (action == DropAction::None || _dropDrag != 0) return false; // one at a time
+        if (_dropTo.assign(target).isError()) return false;
+        if (event.read(CopiedFiles::UriList, dropRead, this).isError()) return false;
+        _dropDrag = event.drag();
+        _dropAction = action;
+        _dropAsk = event.isAsk() && targetOf(target, nullptr) == Target::Folder;
+        _dropX = screenX;
+        _dropY = screenY;
+        return true;
+}
+
+// The drop's files read: done at once, or asked first (a right drag's menu).
+void FolderActions::dropRead(void *arg, Error err, StringView type, StringView data) {
+        auto *self = static_cast<FolderActions *>(arg);
+        bool  cut = false;
+        if (err.isOk()) err = CopiedFiles::parse(type, data, cut, self->_dropPaths);
+        if (err.isError() || self->_dropPaths.isEmpty()) {
+                self->dropDone(DropAction::None);
+                return;
+        }
+        if (!self->_dropAsk) {
+                self->dropDone(self->_dropAction);
+                return;
+        }
+        if (self->_askMenu == nullptr) {
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(Menu));
+                if (mem == nullptr) {
+                        self->dropDone(DropAction::None);
+                        return;
+                }
+                self->_askMenu = ::new (mem) Menu(self->_app);
+                self->_askMenu->setTriggered(askChosen, self);
+                self->_askMenu->setDismissed(askDismissed, self);
+        }
+        // What the source allows, the choice by the keys first.
+        Menu &m = *self->_askMenu;
+        m.clear();
+        (void)m.addItem("&Move Here", int(DropAction::Move));
+        (void)m.addItem("&Copy Here", int(DropAction::Copy));
+        (void)m.addItem("Create &Link Here", int(DropAction::Link));
+        (void)m.addSeparator();
+        (void)m.addItem("Cancel", int(DropAction::None));
+        self->_askPending = true;
+        if (m.popup(Rect{self->_dropX, self->_dropY, 0, 0}).isError()) {
+                self->_askPending = false;
+                self->dropDone(DropAction::None);
+        }
+        return;
+}
+
+void FolderActions::askChosen(void *arg, int item) {
+        auto *self = static_cast<FolderActions *>(arg);
+        if (!self->_askPending) return;
+        self->_askPending = false;
+        self->dropDone(static_cast<DropAction>(item));
+        return;
+}
+
+// Closed: a choice comes right after, if one was made (the menu tells it after closing).
+void FolderActions::askDismissed(void *arg, Menu &) {
+        (void)static_cast<FolderActions *>(arg)->_app.post(askCheck, arg);
+        return;
+}
+
+void FolderActions::askCheck(void *arg) {
+        auto *self = static_cast<FolderActions *>(arg);
+        if (!self->_askPending) return;
+        self->_askPending = false;
+        self->dropDone(DropAction::None); // dismissed: cancelled
+        return;
+}
+
+// The drop done as @p action (None: cancelled), and finished.
+void FolderActions::dropDone(DropAction action) {
+        const uint32_t drag = _dropDrag;
+        _dropDrag = 0;
+        DropAction   done = DropAction::None;
+        DesktopEntry entry;
+        const Target kind = action != DropAction::None ? targetOf(_dropTo.view(), &entry) : Target::None;
+        if (kind == Target::Application) {
+                launchFiles(entry, _dropPaths.view());
+                done = DropAction::Copy;
+        } else if (kind == Target::Folder) {
+                const StringView directory = _dropTo.view();
+                _host.dropping(directory, _dropPaths.view());
+                if (action == DropAction::Copy) {
+                        _jobs.copy(_dropPaths.view(), directory);
+                        done = DropAction::Copy;
+                } else if (action == DropAction::Move) {
+                        if (!moveNow(_dropPaths.view(), directory)) _jobs.move(_dropPaths.view(), directory);
+                        done = DropAction::Moved; // here: the source has nothing to remove
+                } else if (action == DropAction::Link) {
+                        link(_dropPaths.view(), directory);
+                        done = DropAction::Link;
+                }
+        }
+        _dropPaths.clear();
+        (void)_app.windowManager().finishDrop(drag, done);
+        return;
+}
+
+// A symbolic link in @p directory to each of @p paths, named as it is (a copy's name if taken).
+void FolderActions::link(StringView paths, StringView directory) {
+        const Vfs::Context vc{_context.cwd, nullptr};
+        String             to(MemSpace::Psram);
+        Error              first;
+        for (StringView rest = paths; !rest.isEmpty();) {
+                const size_t     end = rest.indexOf('\n');
+                const StringView path = end == StringView::NPos ? rest : rest.left(end);
+                rest = end == StringView::NPos ? StringView() : rest.mid(end + 1);
+                if (path.isEmpty()) continue;
+                const StringView name = FileOps::baseName(path);
+                char             buffer[Vfs::MaxPath + 1];
+                Error            err = Error::Exists;
+                for (unsigned n = 0; n <= CopyName::MaxCopies && err == Error::Exists; ++n) {
+                        StringView use = name;
+                        if (n > 0) {
+                                auto [made, merr] = CopyName::make(name, n, Span<char>(buffer));
+                                if (merr.isError()) break;
+                                use = made;
+                        }
+                        if (to.assign(directory).isError() || (!directory.endsWith('/') && to.append('/').isError()) ||
+                            to.append(use).isError())
+                                break;
+                        err = Vfs::lstat(to.view(), vc).isOk() ? Error(Error::Exists)
+                                                               : Vfs::symlink(path, to.view(), vc);
+                }
+                if (err.isError() && first.isOk()) first = err;
+        }
+        _host.folderChanged(directory);
+        if (first.isError()) {
+                char message[160];
+                std::snprintf(message, sizeof(message), "Can't make a link: %s.", first.desc());
+                tell("Link", StringView(message));
+        }
+        return;
 }
 
 // ---- Files

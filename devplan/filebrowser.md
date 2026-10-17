@@ -833,7 +833,8 @@ A portable component (built for the host tests too) over `Vfs` and `Trash`, no G
      - **The missed desktop double click** (step 4) didn't happen again: a window closed by its close
        box, then a double click on a desktop folder, opened it.
      - **Size:** `bmds_panel` 50,082 bytes (+1,192), `bmds_gui` 67,118 (+446), `bmds_files` 20,966.
-7. **Drag and drop** (FB15): the window manager, the toolkit, the views, the terminal's drop.
+7. **Drag and drop** (FB15): the window manager, the toolkit, the views, the terminal's drop;
+   designed and built in `clipboard.md` §5 and §11 (2026-10-17).
 8. **Properties and a Trash window** (the trash of every filesystem in one view, Restore,
    Empty), and a Trash icon on the desktop.
 

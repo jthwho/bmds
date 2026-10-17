@@ -100,6 +100,9 @@ class GuiClipboard {
                 /** @brief Returns true if @p selection holds this application's copy. */
                 bool owns(Selection selection) const;
 
+                /** @brief Returns this application's copy's serial on @p selection (0: none). */
+                uint32_t serial(Selection selection) const;
+
                 /** @brief Returns true if @p selection can be read as @p type (offered, or converted). */
                 bool canPaste(Selection selection, StringView type) const;
 

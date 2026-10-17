@@ -25,7 +25,8 @@ BMDS_NAMESPACE_BEGIN
  *        (`devplan/filebrowser.md` §4g). A view: the panel gives it each item's
  *        name, icon and wanted cell, and is told when items are opened (a
  *        double click), moved (dragged to other cells), renamed, or the menu
- *        asked for (a right click).
+ *        asked for (a right click), and asked for drags and drops
+ *        (`devplan/clipboard.md` §5e): its own icons dropped on its grid move there.
  *
  * The icons are selected as any item view's: Ctrl, Shift, a rubber band.
  *
@@ -57,6 +58,18 @@ class DesktopWindow final : public GuiWindow {
                  *        with the current item if it is selected (-1: none). @return True if used.
                  */
                 using KeyTyped = bool (*)(void *arg, const KeyEvent &event, int selected);
+
+                /** @brief Asked to drag the selected items: fill @p drag (the image is the view's). */
+                using DragAsked = bool (*)(void *arg, GuiDrag &drag);
+
+                /**
+                 * @brief Asked what a drop on item @p item (-1: the desktop itself) does; the
+                 *        panel may set @p item to -1 (the drop goes to the desktop's folder).
+                 */
+                using DropAsked = DropAction (*)(void *arg, int &item, const GuiDropEvent &event);
+
+                /** @brief Told of a drop on item @p item (as `DropAsked` set it). @return True if taken. */
+                using Dropped = bool (*)(void *arg, int item, GuiDropEvent &event);
 
                 DesktopWindow(GuiApplication &app, const Config &config);
                 ~DesktopWindow() override;
@@ -94,6 +107,19 @@ class DesktopWindow final : public GuiWindow {
                 void setKeyTyped(KeyTyped fn, void *arg) {
                         _keyTyped = fn;
                         _keyArg = arg;
+                        return;
+                }
+
+                void setDragAsked(DragAsked fn, void *arg) {
+                        _dragAsked = fn;
+                        _dragArg = arg;
+                        return;
+                }
+
+                void setDropHandlers(DropAsked askedFn, Dropped droppedFn, void *arg) {
+                        _dropAsked = askedFn;
+                        _dropped = droppedFn;
+                        _dropArg = arg;
                         return;
                 }
 
@@ -179,6 +205,10 @@ class DesktopWindow final : public GuiWindow {
                 static void renameAsked(void *arg, ItemView &view, size_t row);
                 static bool keyTyped(void *arg, ItemView &view, const KeyEvent &event);
                 static void moved(void *arg, IconView &view);
+                static bool       viewDragAsked(void *arg, ItemView &view, GuiDrag &drag);
+                static DropAction viewDropAsked(void *arg, ItemView &view, int &row, const GuiDropEvent &event);
+                static bool       viewDropped(void *arg, ItemView &view, int row, GuiDropEvent &event);
+                bool              ownOnGrid(int row, const GuiDropEvent &event) const; // its icons moved, not sent
 
                 ListItemModel   _model;
                 IconView       *_view = nullptr; // its child, over the work area
@@ -195,6 +225,11 @@ class DesktopWindow final : public GuiWindow {
                 void           *_renameArg = nullptr;
                 KeyTyped        _keyTyped = nullptr;
                 void           *_keyArg = nullptr;
+                DragAsked       _dragAsked = nullptr;
+                void           *_dragArg = nullptr;
+                DropAsked       _dropAsked = nullptr;
+                Dropped         _dropped = nullptr;
+                void           *_dropArg = nullptr;
 };
 
 BMDS_NAMESPACE_END

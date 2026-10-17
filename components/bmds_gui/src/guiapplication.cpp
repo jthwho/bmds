@@ -247,6 +247,16 @@ void GuiApplication::queue(const Event &event) {
                                 return; // the loop is awake already
                         }
                 }
+                // A drag's motion over the same window, likewise.
+                if (_count > 0 && event.type == Event::Type::Drop &&
+                    event.drop.type == WindowManager::DropEvent::Type::Motion) {
+                        Event &last = _events[(_head + _count - 1) % QueueSize];
+                        if (last.type == Event::Type::Drop && last.slot == event.slot &&
+                            last.drop.type == WindowManager::DropEvent::Type::Motion) {
+                                last = event;
+                                return;
+                        }
+                }
                 if (_count == QueueSize) {
                         _overflowed = true;
                 } else {
@@ -483,6 +493,40 @@ void GuiApplication::toolTipChanged(Widget *widget) {
 
 void GuiApplication::forgetToolTip(Widget *widget) {
         if (_toolTip != nullptr) _toolTip->forget(widget);
+        return;
+}
+
+void GuiApplication::beginDrag(uint32_t drag, Widget *widget, GuiWindow &window) {
+        _dragId = drag;
+        _dragSource = widget;
+        _dragSlot = window.slot();
+        _dragGeneration = window.slotGeneration();
+        return;
+}
+
+void GuiApplication::forgetDragSource(Widget *widget) {
+        for (Widget *p = _dragSource; p != nullptr; p = p->parent()) {
+                if (p == widget) {
+                        _dragSource = nullptr;
+                        break;
+                }
+        }
+        return;
+}
+
+// On the window manager's task: the end, as an event for the source's window (dropped if it went).
+void GuiApplication::dragEndedEntry(void *arg, uint32_t drag, DropAction done) {
+        auto *self = static_cast<GuiApplication *>(arg);
+        Event e;
+        e.type = Event::Type::DragEnded;
+        e.drop.drag = drag;
+        e.width = uint16_t(done);
+        {
+                SpinLock::Locker lock(self->_queueLock);
+                e.slot = self->_dragSlot;
+                e.generation = self->_dragGeneration;
+        }
+        self->queue(e);
         return;
 }
 

@@ -8,6 +8,7 @@
  * The base of the item views: the selection, the mouse and the keys (devplan/filebrowser.md §4g).
  */
 
+#include <bmds/font.h>
 #include <bmds/guiwindow.h>
 #include <bmds/itemview.h>
 #include <bmds/mnemonic.h>
@@ -34,6 +35,7 @@ ItemView::ItemView(Widget *parent) : ScrollArea(parent) {
 ItemView::~ItemView() {
         stopRename();
         stopBandScroll();
+        stopDropTimers();
 }
 
 void ItemView::setModel(ItemModel *model) {
@@ -216,8 +218,13 @@ void ItemView::mousePressed(const WindowManager::MouseEvent &event) {
         const uint32_t cx = contentX(event.x), cy = contentY(event.y);
         const int      row = rowAt(cx, cy);
         if (event.button == PointerEvent::Right) {
+                // Its menu at the release, unless it drags first (a right drag asks at the drop).
                 if (row >= 0 && !_selection.isSelected(size_t(row))) selectOnly(row);
-                menuAt(row, event.x, event.y);
+                _rightPressed = true;
+                _rightRow = row;
+                _pressX = event.x;
+                _pressY = event.y;
+                _dragging = false;
                 return;
         }
         if (event.button != PointerEvent::Left) return;
@@ -272,6 +279,14 @@ void ItemView::mousePressed(const WindowManager::MouseEvent &event) {
 }
 
 void ItemView::mouseMoved(const WindowManager::MouseEvent &event) {
+        if (_rightPressed && (event.buttons & PointerEvent::Right) != 0 && !_dragging) {
+                const int dx = event.x - _pressX, dy = event.y - _pressY;
+                if (dx * dx + dy * dy > DragDistance * DragDistance && _rightRow >= 0) {
+                        _dragging = true;
+                        beginDrag();
+                }
+                return;
+        }
         if ((event.buttons & PointerEvent::Left) == 0) return;
         if (_banding) {
                 band(event.x, event.y);
@@ -285,12 +300,18 @@ void ItemView::mouseMoved(const WindowManager::MouseEvent &event) {
                 _dragging = true;
                 _pressUs = 0; // no double click after a drag
                 _onSelectedName = false;
+                beginDrag();
         }
-        (void)dragged(dx, dy, false);
         return;
 }
 
 void ItemView::mouseReleased(const WindowManager::MouseEvent &event) {
+        if (event.button == PointerEvent::Right && _rightPressed) {
+                _rightPressed = false;
+                if (!_dragging) menuAt(_rightRow, event.x, event.y);
+                _dragging = false;
+                return;
+        }
         if (event.button != PointerEvent::Left) return;
         if (_banding) {
                 _banding = false;
@@ -304,10 +325,7 @@ void ItemView::mouseReleased(const WindowManager::MouseEvent &event) {
         const bool wasDragging = _dragging;
         _pressed = -1;
         _dragging = false;
-        if (wasDragging) {
-                (void)dragged(event.x - _pressX, event.y - _pressY, true);
-                return;
-        }
+        if (wasDragging) return; // no drag started (none asked for): a release that does nothing
         stopRename(); // released before the long press
         if (_onlyOnRelease) {
                 _selection.selectOnly(pressed);
@@ -322,7 +340,7 @@ void ItemView::mouseReleased(const WindowManager::MouseEvent &event) {
 void ItemView::mouseLeft() {
         stopRename();
         stopBandScroll();
-        if (_dragging) dragCancelled();
+        _rightPressed = false;
         if (_banding) {
                 showBand(false);
                 changed();
@@ -577,6 +595,179 @@ void ItemView::focusRect(Painter &painter, const Rect &clip, int x, int y, int w
 
 void ItemView::paintContent(Painter &painter, const Rect &viewport) {
         paintRows(painter, viewport); // the band is the window manager's (showBand())
+        if (_dropRow >= 0 && size_t(_dropRow) < count()) {
+                // A drag's target row: framed in the highlight, two pixels.
+                const Rect     r = toWindow(rowRect(size_t(_dropRow)));
+                const uint32_t c = painter.palette().color(Role::Highlight);
+                if (r.width >= 4 && r.height >= 4) {
+                        const Rect edges[] = {
+                                Rect{r.x, r.y, r.width, 2}, Rect{r.x, uint16_t(r.bottom() - 2), r.width, 2},
+                                Rect{r.x, uint16_t(r.y + 2), 2, uint16_t(r.height - 4)},
+                                Rect{uint16_t(r.right() - 2), uint16_t(r.y + 2), 2, uint16_t(r.height - 4)}};
+                        for (const Rect &e : edges) (void)painter.fill(e.intersected(viewport), c);
+                }
+        }
+        return;
+}
+
+// ---- Drag and drop (devplan/clipboard.md §5d)
+
+DragImage::Box ItemView::rowBox(size_t row) const {
+        const Rect        v = viewport();
+        const ContentRect c = rowRect(row);
+        return DragImage::Box{int(v.x) + int(c.x) - int(scrollX()), int(v.y) + int(c.y) - int(scrollY()), int(c.width),
+                              int(c.height)};
+}
+
+void ItemView::drawDragRow(DragPicture &picture, size_t row, const WindowPalette &palette) const {
+        if (_model == nullptr) return;
+        const DragImage::Box b = rowBox(row);
+        const Icon          *icon = _model->icon(row, 16);
+        if (icon != nullptr && icon->isValid()) picture.icon(b.x + 2, b.y + 1, *icon);
+        const StringView name = _model->text(row);
+        const int        w = int(Fonts::unscii16.textWidth(name));
+        const int        room = b.width - 22 > 0 ? b.width - 22 : 0;
+        picture.fill(b.x + 20, b.y + 1, (w < room ? w : room) + 4, GuiStyle::TextHeight,
+                     palette.color(Role::Highlight));
+        picture.text(b.x + 22, b.y + 1, name, palette.color(Role::HighlightText), uint16_t(room));
+        return;
+}
+
+// The press moved past the drag distance: the owner's drag, with the selection's image.
+void ItemView::beginDrag() {
+        GuiWindow *w = window();
+        const int  row = _rightPressed ? _rightRow : _pressed;
+        if (w == nullptr || _dragAsked == nullptr || row < 0 || size_t(row) >= count()) return;
+        GuiDrag drag;
+        if (!_dragAsked(_dragArg, *this, drag)) return;
+        const WindowPalette  palette = w->application().windowManager().palette();
+        const DragImage::Box box = DragImage::around(rowBox(size_t(row)), _pressX, _pressY);
+        DragPicture          picture(box);
+        if (picture.isValid()) {
+                size_t total = 0;
+                for (int r = _selection.nextSelected(0); r >= 0; r = _selection.nextSelected(size_t(r) + 1)) {
+                        ++total;
+                        if (DragImage::holds(box, rowBox(size_t(r)))) drawDragRow(picture, size_t(r), palette);
+                }
+                if (total > 1) {
+                        const DragImage::Box p = rowBox(size_t(row));
+                        const int right = p.x + p.width < box.x + box.width ? p.x + p.width : box.x + box.width;
+                        picture.badge(right, p.y > box.y ? p.y : box.y, total);
+                }
+                if (picture.crop(_pressX, _pressY)) {
+                        drag.image = picture.pixels();
+                        drag.width = picture.width();
+                        drag.height = picture.height();
+                        drag.hotX = picture.hotX();
+                        drag.hotY = picture.hotY();
+                }
+        }
+        (void)w->startDrag(drag, this); // refused: the press was over already
+        return;
+}
+
+// The row under window point (@p x, @p y), or -1 (the background, or outside the viewport).
+int ItemView::dropRowAt(int x, int y) const {
+        const Rect v = viewport();
+        if (x < v.x || y < v.y || x >= v.right() || y >= v.bottom()) return -1;
+        return rowAt(contentX(x), contentY(y));
+}
+
+void ItemView::setDropRow(int row) {
+        if (row == _dropRow) return;
+        if (_dropRow >= 0 && size_t(_dropRow) < count()) updateRow(size_t(_dropRow));
+        _dropRow = row;
+        if (row >= 0 && size_t(row) < count()) updateRow(size_t(row));
+        return;
+}
+
+void ItemView::dragEntered(GuiDropEvent &event) {
+        dragMoved(event);
+        return;
+}
+
+void ItemView::dragMoved(GuiDropEvent &event) {
+        int              row = dropRowAt(event.x(), event.y());
+        const DropAction a = _dropAsked != nullptr ? _dropAsked(_dropArg, *this, row, event) : DropAction::None;
+        event.accept(a);
+        setDropRow(a != DropAction::None ? row : -1);
+        dropScroll(event.x(), event.y());
+        // Held over the same row: told after a while (a tree opens it).
+        GuiWindow *w = window();
+        const int  held = a != DropAction::None ? row : dropRowAt(event.x(), event.y());
+        if (held != _dropHoldRow && w != nullptr) {
+                if (_dropHoldTimer >= 0) w->application().stopTimer(_dropHoldTimer);
+                _dropHoldTimer = -1;
+                _dropHoldRow = held;
+                if (held >= 0) {
+                        auto [timer, err] = w->application().startTimer(DropHoldMs, false, dropHoldDue, this);
+                        if (err.isOk()) _dropHoldTimer = timer;
+                }
+        }
+        return;
+}
+
+void ItemView::dragLeft() {
+        stopDropTimers();
+        setDropRow(-1);
+        return;
+}
+
+bool ItemView::dropped(GuiDropEvent &event) {
+        stopDropTimers();
+        int              row = dropRowAt(event.x(), event.y());
+        const DropAction a = _dropAsked != nullptr ? _dropAsked(_dropArg, *this, row, event) : DropAction::None;
+        setDropRow(-1);
+        if (a == DropAction::None || _dropped == nullptr) return false;
+        return _dropped(_dropArg, *this, row, event);
+}
+
+// A drag near the viewport's edge: scrolled toward it while it stays (a timer, as the band's).
+void ItemView::dropScroll(int x, int y) {
+        _dropX = x;
+        _dropY = y;
+        const Rect v = viewport();
+        const bool near = x < v.x + DropScrollZone || x >= int(v.right()) - DropScrollZone ||
+                          y < v.y + DropScrollZone || y >= int(v.bottom()) - DropScrollZone;
+        GuiWindow *w = window();
+        if (!near) {
+                if (_dropScrollTimer >= 0 && w != nullptr) w->application().stopTimer(_dropScrollTimer);
+                _dropScrollTimer = -1;
+        } else if (_dropScrollTimer < 0 && w != nullptr) {
+                auto [timer, err] = w->application().startTimer(BandScrollMs, true, dropScrollDue, this);
+                if (err.isOk()) _dropScrollTimer = timer;
+        }
+        return;
+}
+
+void ItemView::dropScrollDue(void *arg) {
+        auto         *self = static_cast<ItemView *>(arg);
+        const Rect    v = self->viewport();
+        const int     x = self->_dropX, y = self->_dropY;
+        const int     dx = x < v.x + DropScrollZone ? -16 : x >= int(v.right()) - DropScrollZone ? 16 : 0;
+        const int     dy = y < v.y + DropScrollZone ? -16 : y >= int(v.bottom()) - DropScrollZone ? 16 : 0;
+        const int64_t sx = int64_t(self->scrollX()) + dx, sy = int64_t(self->scrollY()) + dy;
+        self->scrollTo(sx < 0 ? 0 : sx, sy < 0 ? 0 : sy);
+        return;
+}
+
+void ItemView::dropHoldDue(void *arg) {
+        auto     *self = static_cast<ItemView *>(arg);
+        const int row = self->_dropHoldRow;
+        self->_dropHoldTimer = -1; // fired: its number is free
+        if (row >= 0 && size_t(row) < self->count()) self->dropHeld(size_t(row));
+        return;
+}
+
+void ItemView::stopDropTimers() {
+        GuiWindow *w = window();
+        if (w != nullptr) {
+                if (_dropScrollTimer >= 0) w->application().stopTimer(_dropScrollTimer);
+                if (_dropHoldTimer >= 0) w->application().stopTimer(_dropHoldTimer);
+        }
+        _dropScrollTimer = -1;
+        _dropHoldTimer = -1;
+        _dropHoldRow = -1;
         return;
 }
 

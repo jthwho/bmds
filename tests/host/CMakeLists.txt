@@ -46,6 +46,7 @@ add_executable(bmds_host_tests
         intervaltimers.cpp
         clipboard.cpp
         decoder.cpp
+        dragdrop.cpp
         edid.cpp
         futex.cpp
         gui.cpp

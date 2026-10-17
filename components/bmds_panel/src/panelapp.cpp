@@ -245,8 +245,28 @@ namespace {
         // A window's button: they share the room equally.
         class WindowButton final : public Button {
                 public:
-                        using Button::Button;
+                        // A drag held over it raises its window (devplan/clipboard.md §5b D9): a drop
+                        // can reach a window that was behind. It never takes the drop itself.
+                        static constexpr uint32_t RaiseMs = 600;
+
+                        explicit WindowButton(Widget *parent) : Button(parent) { setAcceptsDrops(true); }
+                        ~WindowButton() override { stopRaise(); }
+
                         GuiSize sizeHint() const override { return GuiSize{32, GuiStyle::ButtonHeight}; }
+
+                        void dragEntered(GuiDropEvent &event) override {
+                                event.ignore();
+                                GuiWindow *w = window();
+                                if (w == nullptr || _raiseTimer >= 0) return;
+                                auto [timer, err] = w->application().startTimer(RaiseMs, false, raiseDue, this);
+                                if (err.isOk()) _raiseTimer = timer;
+                                return;
+                        }
+
+                        void dragLeft() override {
+                                stopRaise();
+                                return;
+                        }
 
                         // Window @p id's icon, copied (the window's owner keeps its own); none if it has none.
                         void takeIcon(WindowManager &wm, uint8_t id) {
@@ -270,9 +290,25 @@ namespace {
                         }
 
                 private:
+                        static void raiseDue(void *arg) {
+                                auto *self = static_cast<WindowButton *>(arg);
+                                self->_raiseTimer = -1; // fired: its number is free
+                                GuiWindow *w = self->window();
+                                if (w != nullptr) (void)w->application().windowManager().raise(uint8_t(self->data()));
+                                return;
+                        }
+
+                        void stopRaise() {
+                                GuiWindow *w = window();
+                                if (w != nullptr && _raiseTimer >= 0) w->application().stopTimer(_raiseTimer);
+                                _raiseTimer = -1;
+                                return;
+                        }
+
                         static constexpr uint16_t Side = GuiStyle::IconSize;
                         Icon                      _icon;
                         uint32_t                  _pixels[Side * Side] = {};
+                        int                       _raiseTimer = -1;
         };
 
         // The windows, a button each, in the order they opened.
@@ -322,6 +358,7 @@ namespace {
                         void                 openFolder(StringView path, StringView select) override;
                         void                 folderChanged(StringView folder) override;
                         void                 cutChanged() override;
+                        void                 dropping(StringView directory, StringView paths) override;
                         FolderActions       &folderActions() override { return _actions; }
                         FileIcons           &fileIcons() override { return _fileIcons; }
                         FolderWatches       &folderWatches() override { return _watches; }
@@ -354,6 +391,11 @@ namespace {
                         static void  renamed(void *arg, bool accepted, StringView text);
                         static void  renameRetry(void *arg, MessageBox::Answer answer);
                         static bool  desktopKey(void *arg, const KeyEvent &event, int selected);
+                        static bool       desktopDragAsked(void *arg, GuiDrag &drag);
+                        static DropAction desktopDropAsked(void *arg, int &item, const GuiDropEvent &event);
+                        static bool       desktopDropped(void *arg, int item, GuiDropEvent &event);
+                        bool              desktopDropTarget(int &item, const GuiDropEvent &event, String &out);
+                        bool              placeDropped(); // files dropped on the desktop, where they were
                         static void  desktopTabOut(void *arg, GuiWindow &window, bool forward);
                         static void  panelTabOut(void *arg, GuiWindow &window, bool forward);
                         static void  panelEscaped(void *arg);
@@ -424,6 +466,11 @@ namespace {
                         size_t                         _desktopCount = 0;
                         bool                           _desktopIncomplete = false;
                         int                            _saveTimer = -1; // places to write
+                        String                         _placeNames{MemSpace::Psram}; // dropped on the desktop
+                        uint16_t                       _placeX = 0;                  // where (screen coordinates)
+                        uint16_t                       _placeY = 0;
+                        uint16_t                       _dropX = 0; // the desktop's last drop
+                        uint16_t                       _dropY = 0;
                         BoxLayout                     *_row = nullptr;
                         WindowList                    *_windows = nullptr;
                         TrayService                    _tray{_app};       // while panel/items has a tray
@@ -991,6 +1038,13 @@ namespace {
                 // reload the desktop while it is open).
                 if (_nameEdit != nullptr && _nameEdit->isShown() && _renaming < _desktopCount)
                         _desktop->setEditing(int(_renaming));
+                if (placeDropped()) {
+                        if (_saveTimer >= 0) {
+                                _app.stopTimer(_saveTimer);
+                                _saveTimer = -1;
+                        }
+                        savePlaces(this);
+                }
                 return findDesktopIcons();
         }
 
@@ -1185,6 +1239,101 @@ namespace {
 
         // A key the desktop leaves (gui.md §4r): Delete trashes the selected icons (Shift+Delete
         // deletes them for good, asking), Ctrl+X cuts them, Ctrl+C copies them, Ctrl+V pastes.
+        // ---- Drag and drop on the desktop (devplan/clipboard.md §5e)
+
+        // The selected icons' files dragged.
+        bool PanelApp::desktopDragAsked(void *arg, GuiDrag &drag) {
+                auto  *self = static_cast<PanelApp *>(arg);
+                String paths(MemSpace::Psram);
+                for (int i = self->_desktop->nextSelected(0); i >= 0; i = self->_desktop->nextSelected(size_t(i) + 1)) {
+                        if (size_t(i) >= self->_desktopCount || self->_desktopEntries[i].path[0] == '\0') continue;
+                        if (!paths.isEmpty()) (void)paths.append('\n');
+                        (void)paths.append(StringView(self->_desktopEntries[i].path));
+                }
+                return self->_actions.dragFiles(paths.view(), drag);
+        }
+
+        // Where a drop on @p item goes: the item's file if it takes drops (a folder, an application),
+        // else the desktop's first folder (@p item -1 then).
+        bool PanelApp::desktopDropTarget(int &item, const GuiDropEvent &event, String &out) {
+                if (item >= 0 && size_t(item) < _desktopCount && _desktopEntries[item].path[0] != '\0') {
+                        if (out.assign(StringView(_desktopEntries[item].path)).isOk() &&
+                            _actions.dropAction(out.view(), event) != DropAction::None)
+                                return true;
+                }
+                item = -1;
+                StringView       dirs(_desktopDirs);
+                const StringView directory = IniReader::nextListItem(dirs);
+                if (directory.isEmpty()) return false;
+                (void)Vfs::mkdir(directory, Vfs::Context{_context.cwd, nullptr}); // there already, most likely
+                return out.assign(directory).isOk();
+        }
+
+        DropAction PanelApp::desktopDropAsked(void *arg, int &item, const GuiDropEvent &event) {
+                auto  *self = static_cast<PanelApp *>(arg);
+                String target(MemSpace::Psram);
+                if (!self->desktopDropTarget(item, event, target)) return DropAction::None;
+                return self->_actions.dropAction(target.view(), event);
+        }
+
+        bool PanelApp::desktopDropped(void *arg, int item, GuiDropEvent &event) {
+                auto  *self = static_cast<PanelApp *>(arg);
+                String target(MemSpace::Psram);
+                if (!self->desktopDropTarget(item, event, target)) return false;
+                const Rect s = self->_desktop->screenRect();
+                self->_dropX = uint16_t(s.x + event.x());
+                self->_dropY = uint16_t(s.y + event.y());
+                return self->_actions.drop(target.view(), event, self->_dropX, self->_dropY);
+        }
+
+        // Files about to be dropped into the desktop's folder: their names kept, to be put where they
+        // were dropped once the desktop shows them (placeDropped()).
+        void PanelApp::dropping(StringView directory, StringView paths) {
+                StringView       dirs(_desktopDirs);
+                const StringView desktop = IniReader::nextListItem(dirs);
+                if (directory != desktop) return;
+                _placeNames.clear();
+                for (StringView rest = paths; !rest.isEmpty();) {
+                        const size_t     end = rest.indexOf('\n');
+                        const StringView p = end == StringView::NPos ? rest : rest.left(end);
+                        rest = end == StringView::NPos ? StringView() : rest.mid(end + 1);
+                        if (p.isEmpty()) continue;
+                        if (!_placeNames.isEmpty()) (void)_placeNames.append('\n');
+                        (void)_placeNames.append(FileOps::baseName(p));
+                }
+                _placeX = _dropX;
+                _placeY = _dropY;
+                return;
+        }
+
+        // The dropped files the desktop shows now, in the cells from the drop point across (those
+        // taken left where the grid put them); the rest still waited for (a copy on the worker).
+        bool PanelApp::placeDropped() {
+                if (_placeNames.isEmpty() || _desktop == nullptr) return false;
+                String   left(MemSpace::Psram);
+                bool     moved = false;
+                unsigned k = 0;
+                for (StringView rest = _placeNames.view(); !rest.isEmpty();) {
+                        const size_t     end = rest.indexOf('\n');
+                        const StringView name = end == StringView::NPos ? rest : rest.left(end);
+                        rest = end == StringView::NPos ? StringView() : rest.mid(end + 1);
+                        bool found = false;
+                        for (size_t i = 0; i < _desktopCount && !found; ++i) {
+                                if (StringView(_desktopEntries[i].file) != name) continue;
+                                found = true;
+                                const unsigned x = _placeX + k * IconLayout::CellWidth;
+                                if (x < 0xffff) moved = _desktop->placeItem(i, uint16_t(x), _placeY) || moved;
+                                ++k;
+                        }
+                        if (!found) {
+                                if (!left.isEmpty()) (void)left.append('\n');
+                                (void)left.append(name);
+                        }
+                }
+                _placeNames = std::move(left);
+                return moved;
+        }
+
         bool PanelApp::desktopKey(void *arg, const KeyEvent &event, int selected) {
                 auto             *self = static_cast<PanelApp *>(arg);
                 constexpr uint8_t C = HidKey::A + ('c' - 'a'), V = HidKey::A + ('v' - 'a'), X = HidKey::A + ('x' - 'a');
@@ -1764,6 +1913,8 @@ namespace {
                                 _desktop->setItemMenuAsked(iconMenu, this);
                                 _desktop->setRenameAsked(renameAsked, this);
                                 _desktop->setKeyTyped(desktopKey, this);
+                                _desktop->setDragAsked(desktopDragAsked, this);
+                                _desktop->setDropHandlers(desktopDropAsked, desktopDropped, this);
                                 _desktop->setTabOut(desktopTabOut, this);
                                 if (_desktop->show().isError()) say("panel: no desktop window\n");
                         }

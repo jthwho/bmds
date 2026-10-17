@@ -40,6 +40,7 @@ if(COMMAND idf_component_register)
                                     src/graph.cpp
                                     src/guiapplication.cpp
                                     src/guiclipboard.cpp
+                                    src/guidrag.cpp
                                     src/guiwindow.cpp
                                     src/iconview.cpp
                                     src/icontheme.cpp

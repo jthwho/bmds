@@ -122,10 +122,26 @@ Result<DesktopEntry> DesktopEntry::parse(StringView text, Warn warn, void *warnA
 
 Result<size_t> DesktopEntry::splitExec(StringView exec, char *buffer, size_t bufferBytes, Span<StringView> args,
                                        StringView file) {
+        const StringView one[] = {file};
+        return splitExec(exec, buffer, bufferBytes, args,
+                         file.isEmpty() ? Span<const StringView>() : Span<const StringView>(one));
+}
+
+Result<size_t> DesktopEntry::splitExec(StringView exec, char *buffer, size_t bufferBytes, Span<StringView> args,
+                                       Span<const StringView> files) {
         size_t count = 0;
         size_t used = 0;
         size_t i = 0;
-        bool   placed = file.isEmpty(); // the file put in by a field code (or none to put)
+        bool   placed = files.isEmpty(); // the files put in by a field code (or none to put)
+        // A whole argument @p text, copied.
+        const auto add = [&](StringView text) -> Error {
+                if (count == args.size() || used + text.size() + 1 > bufferBytes) return Error::BufferTooSmall;
+                std::memcpy(buffer + used, text.data(), text.size());
+                args[count++] = StringView(buffer + used, text.size());
+                used += text.size();
+                buffer[used++] = '\0';
+                return Error::Ok;
+        };
         for (;;) {
                 while (i < exec.size() && (exec[i] == ' ' || exec[i] == '\t')) ++i;
                 if (i == exec.size()) break;
@@ -133,6 +149,7 @@ Result<size_t> DesktopEntry::splitExec(StringView exec, char *buffer, size_t buf
                 bool         fieldOnly = true; // an argument that was only field codes goes
                 bool         any = false;
                 bool         quoted = false;
+                bool         listed = false; // %F or %U alone: each file an argument of its own
                 while (i < exec.size() && (quoted || (exec[i] != ' ' && exec[i] != '\t'))) {
                         char ch = exec[i++];
                         if (ch == '"') {
@@ -145,18 +162,28 @@ Result<size_t> DesktopEntry::splitExec(StringView exec, char *buffer, size_t buf
                                 ch = exec[i++];
                         } else if (!quoted && ch == '%' && i < exec.size()) {
                                 const char code = exec[i++];
-                                if (code != '%' && !file.isEmpty() && StringView("fFuU").contains(code)) {
-                                        if (used + file.size() + 1 > bufferBytes)
-                                                return makeError<size_t>(Error::BufferTooSmall);
-                                        for (const char c : file) buffer[used++] = c;
+                                if (code != '%' && !files.isEmpty() && StringView("fFuU").contains(code)) {
                                         placed = true;
-                                        fieldOnly = false;
                                         any = true;
+                                        const bool alone = used == start && (code == 'F' || code == 'U') &&
+                                                           (i == exec.size() || exec[i] == ' ' || exec[i] == '\t');
+                                        if (alone) {
+                                                for (const StringView f : files) {
+                                                        const Error err = add(f);
+                                                        if (err.isError()) return makeError<size_t>(err);
+                                                }
+                                                listed = true;
+                                                continue;
+                                        }
+                                        if (used + files[0].size() + 1 > bufferBytes)
+                                                return makeError<size_t>(Error::BufferTooSmall);
+                                        for (const char c : files[0]) buffer[used++] = c;
+                                        fieldOnly = false;
                                         continue;
                                 }
                                 if (code != '%') {
                                         any = true;
-                                        continue; // a field code: nothing to pass yet
+                                        continue; // a field code: nothing to pass
                                 }
                         }
                         if (used + 1 >= bufferBytes) return makeError<size_t>(Error::BufferTooSmall);
@@ -165,6 +192,7 @@ Result<size_t> DesktopEntry::splitExec(StringView exec, char *buffer, size_t buf
                         any = true;
                 }
                 if (quoted) return makeError<size_t>(Error::Invalid);
+                if (listed) continue;
                 if (!any || fieldOnly) {
                         used = start;
                         continue;
@@ -175,14 +203,24 @@ Result<size_t> DesktopEntry::splitExec(StringView exec, char *buffer, size_t buf
         }
         if (count == 0) return makeError<size_t>(Error::Invalid);
         if (!placed) {
-                // No field code for it: the file last.
-                if (count == args.size() || used + file.size() + 1 > bufferBytes)
-                        return makeError<size_t>(Error::BufferTooSmall);
-                std::memcpy(buffer + used, file.data(), file.size());
-                args[count++] = StringView(buffer + used, file.size());
-                buffer[used + file.size()] = '\0';
+                // No field code for them: the files last.
+                for (const StringView f : files) {
+                        const Error err = add(f);
+                        if (err.isError()) return makeError<size_t>(err);
+                }
         }
         return makeResult(count);
+}
+
+bool DesktopEntry::takesFileList(StringView exec) {
+        bool single = false;
+        for (size_t i = 0; i + 1 < exec.size(); ++i) {
+                if (exec[i] != '%') continue;
+                const char code = exec[++i];
+                if (code == 'F' || code == 'U') return true;
+                if (code == 'f' || code == 'u') single = true;
+        }
+        return !single;
 }
 
 bool DesktopEntry::hasMimeType(StringView mimeTypes, StringView type) {

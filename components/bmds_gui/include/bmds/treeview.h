@@ -96,6 +96,7 @@ class TreeView : public ItemView {
                 void        relayout() override;
                 void        activate(size_t row) override;
                 void        paintRows(Painter &painter, const Rect &viewport) override;
+                void        dropHeld(size_t row) override { expand(row); } // a drag held over a folder opens it
 
         private:
                 // The rows as a model.

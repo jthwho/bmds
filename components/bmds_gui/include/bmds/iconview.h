@@ -21,7 +21,7 @@ BMDS_NAMESPACE_BEGIN
  * @brief Items as 32-pixel icons with their names under them in up to two
  *        lines (`devplan/filebrowser.md` §4g): flowing (rows left to right, as
  *        many columns as fit: a folder window), or in the cells of the
- *        desktop's grid, where they are dragged to other cells.
+ *        desktop's grid, where a drop of its own moves them (`moveSelected()`).
  *
  * A name longer than two lines ends in an ellipsis. The selection is drawn
  * filled while the view has the focus, outlined while not.
@@ -37,7 +37,7 @@ class IconView : public ItemView {
                         Grid, ///< In grid cells (`setCells()`), down then across: the desktop's.
                 };
 
-                /** @brief Told that rows were dragged to other cells (`cellOf()`). */
+                /** @brief Told that rows moved to other cells (`cellOf()`). */
                 using Moved = void (*)(void *arg, IconView &view);
 
                 static constexpr uint16_t IconSide = 32;
@@ -74,6 +74,14 @@ class IconView : public ItemView {
                  */
                 bool placeRow(size_t row, uint16_t screenX, uint16_t screenY);
 
+                /**
+                 * @brief On the grid: each selected row to the cell under its middle moved by
+                 *        (@p dx, @p dy) pixels, an unselected row in the way to a cell a mover
+                 *        left; nothing moves if two would share a cell. Told to `Moved`.
+                 * @return True if any moved.
+                 */
+                bool moveSelected(int dx, int dy);
+
                 void setMoved(Moved fn, void *arg) {
                         _moved = fn;
                         _movedArg = arg;
@@ -98,8 +106,7 @@ class IconView : public ItemView {
                 size_t      typingOrder(size_t k) const override;
                 bool        inRange(size_t row, size_t anchor, size_t to) const override;
                 void        relayout() override;
-                bool        dragged(int dx, int dy, bool done) override;
-                void        dragCancelled() override;
+                void        drawDragRow(DragPicture &picture, size_t row, const WindowPalette &palette) const override;
                 void        paintRows(Painter &painter, const Rect &viewport) override;
 
         public:
@@ -118,7 +125,6 @@ class IconView : public ItemView {
                 ContentRect hitRect(size_t row, uint8_t lineCount) const;
                 void        drawRow(Canvas &canvas, size_t row, int offsetX, int offsetY) const;
                 void        drawAll(Canvas &canvas, const Rect &viewport) const;
-                bool        isDragged(size_t row) const;
                 void        invalidateRow(size_t row, int dx, int dy);
 
                 Arrangement          _arrangement = Arrangement::Flow;
@@ -128,9 +134,6 @@ class IconView : public ItemView {
                 uint16_t             _gridRows = 1;
                 List<IconGrid::Cell> _cells{MemSpace::Psram};
                 List<uint32_t>       _order{MemSpace::Psram}; // on the grid: the rows down then across
-                int                  _dragX = 0;              // a drag's offset, while under way
-                int                  _dragY = 0;
-                bool                 _draggingCells = false;
                 Moved                _moved = nullptr;
                 void                *_movedArg = nullptr;
 };

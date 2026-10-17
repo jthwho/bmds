@@ -31,6 +31,8 @@
  * clipboard; Ctrl+Shift+V and Shift+Insert paste the clipboard, the middle
  * button the primary selection. Copies and pastes run on a thread of their own
  * (started at the first), so a long paste never holds up the window manager.
+ * A drag dropped on it is typed in as a paste: files as their paths, shell-quoted,
+ * a space after each; text as it is (devplan/clipboard.md §5b D12).
  * Programs set the clipboard with OSC 52, and read it only when
  * `terminal/clipboard/allow-read` is true (C11).
  */
@@ -46,6 +48,7 @@
 #include <bmds/builtinprograms.h>
 #include <bmds/clipboard.h>
 #include <bmds/clipboardreader.h>
+#include <bmds/dragdrop.h>
 #include <bmds/fdtable.h>
 #include <bmds/font.h>
 #include <bmds/glyphrenderer.h>
@@ -131,7 +134,7 @@ namespace {
         constexpr StringView  PasteEnd("\x1b[201~");
 
         // What the worker is asked to do (bits).
-        enum Job : uint8_t {
+        enum Job : uint16_t {
                 CopyPrimary = 1u << 0,
                 CopyClipboard = 1u << 1,
                 PasteClipboard = 1u << 2,
@@ -139,6 +142,8 @@ namespace {
                 ReplyClipboard = 1u << 4, // OSC 52 asked for it
                 ReplyPrimary = 1u << 5,
                 ShowMenu = 1u << 6, // a right press: the window manager's menu (devplan/files.md F9)
+                DropAnswer = 1u << 7, // a drag over it: answered (devplan/clipboard.md §5b D12)
+                DropTake = 1u << 8,   // a drop: read and typed in
         };
 
         // The right press menu's items, in order.
@@ -170,6 +175,7 @@ namespace {
                         static void resized(void *arg, uint16_t width, uint16_t height);
                         static void wheeled(void *arg, int notches);
                         static void mouse(void *arg, const WindowManager::MouseEvent &event);
+                        static void dropped(void *arg, const WindowManager::DropEvent &event);
                         static void dump(void *arg, Stream &out);
                         static void reference(void *arg, uint8_t *pixels, size_t stride, uint16_t width,
                                               uint16_t height, const WindowPalette &palette);
@@ -195,10 +201,13 @@ namespace {
                         void                     readColors();
                         void                     redrawAll();
                         bool                     clipboardKey(const KeyEvent &event);
-                        void                     queue(uint8_t jobs);
+                        void                     queue(uint16_t jobs);
                         void                     stopWorker();
                         void                     copySelection(Clipboard::Selection to);
                         void                     paste(Clipboard::Selection from);
+                        void                     answerDrop();
+                        void                     takeDrop();
+                        void                     typeIn(StringView text); // as a paste is
                         void                     replyClipboard(Clipboard::Selection from);
                         void                     showMenu();
                         void                     selectAll();
@@ -239,7 +248,9 @@ namespace {
                         TerminalSelection::Point _pressAt;
                         Thread                   _worker;
                         Semaphore                _work{1, 0};
-                        std::atomic<uint8_t>     _jobs{0};
+                        std::atomic<uint16_t>          _jobs{0};
+                        std::atomic<uint32_t>          _dropDrag{0};    // the drag over it, or dropped (0: none)
+                        std::atomic<uint8_t>           _dropActions{0}; // what it allows
                         std::atomic<bool>        _workerStarted{false};
                         std::atomic<bool>        _quit{false};
                         std::atomic<bool>        _pasteCancel{false};     // Ctrl-C typed
@@ -322,6 +333,7 @@ namespace {
                         config.hidePointerWhileTyping = true;
                         config.wheel = wheeled;
                         config.mouse = mouse;
+                        config.drop = dropped;
                         config.client = _client;
                         config.kind = "terminal";
                         config.cascade = positional == 1; // no X Y: placed by the window manager
@@ -846,7 +858,7 @@ namespace {
         }
 
         // Asks the worker for @p jobs, starting it the first time.
-        void TerminalApp::queue(uint8_t jobs) {
+        void TerminalApp::queue(uint16_t jobs) {
                 _jobs.fetch_or(jobs, std::memory_order_acq_rel);
                 if (!_workerStarted.exchange(true, std::memory_order_acq_rel)) {
                         Thread::Config config;
@@ -877,7 +889,7 @@ namespace {
                 for (;;) {
                         (void)self->_work.acquire(WaitForever);
                         if (self->_quit.load(std::memory_order_acquire)) return;
-                        const uint8_t jobs = self->_jobs.exchange(0, std::memory_order_acq_rel);
+                        const uint16_t jobs = self->_jobs.exchange(0, std::memory_order_acq_rel);
                         if ((jobs & CopyPrimary) != 0) self->copySelection(Clipboard::Selection::Primary);
                         if ((jobs & CopyClipboard) != 0) self->copySelection(Clipboard::Selection::Clipboard);
                         if ((jobs & PasteClipboard) != 0) self->paste(Clipboard::Selection::Clipboard);
@@ -885,7 +897,133 @@ namespace {
                         if ((jobs & ReplyClipboard) != 0) self->replyClipboard(Clipboard::Selection::Clipboard);
                         if ((jobs & ReplyPrimary) != 0) self->replyClipboard(Clipboard::Selection::Primary);
                         if ((jobs & ShowMenu) != 0) self->showMenu();
+                        if ((jobs & DropAnswer) != 0) self->answerDrop();
+                        if ((jobs & DropTake) != 0) self->takeDrop();
                 }
+        }
+
+        // ---- Drops (devplan/clipboard.md §5b D12): answered and read on the worker (the window
+        // manager's task can't call it back).
+
+        void TerminalApp::dropped(void *arg, const WindowManager::DropEvent &event) {
+                auto *self = static_cast<TerminalApp *>(arg);
+                using Type = WindowManager::DropEvent::Type;
+                if (event.type == Type::Leave) return;
+                self->_dropDrag.store(event.drag, std::memory_order_release);
+                self->_dropActions.store(event.actions, std::memory_order_release);
+                // Answered once on entering; a drop read, copied (it never moves anything).
+                if (event.type == Type::Enter) self->queue(DropAnswer);
+                if (event.type == Type::Drop) self->queue(DropTake);
+                return;
+        }
+
+        namespace {
+
+                // Whether @p d offers files (a URI list), or text at all.
+                void dropKinds(const Clipboard::Description &d, bool &files, bool &text) {
+                        files = text = false;
+                        for (size_t i = 0; i < d.count; ++i) {
+                                const StringView t(d.types[i].type);
+                                files = files || t == StringView("text/uri-list");
+                                text = text || t.startsWith(StringView("text/"));
+                        }
+                        return;
+                }
+
+        } // namespace
+
+        void TerminalApp::answerDrop() {
+                auto [clipboard, cerr] = Clipboard::clipboard(0);
+                const uint32_t drag = _dropDrag.load(std::memory_order_acquire);
+                if (cerr.isError() || drag == 0) return;
+                Clipboard::Description d;
+                clipboard->describe(Clipboard::Selection::Drag, d);
+                bool files = false, text = false;
+                dropKinds(d, files, text);
+                const bool ok =
+                        text && DropActions::allows(_dropActions.load(std::memory_order_acquire), DropAction::Copy);
+                (void)_wm->answerDrop(drag, _window.load(std::memory_order_acquire),
+                                      ok ? DropAction::Copy : DropAction::None);
+                return;
+        }
+
+        // The drop's text (files: their paths, quoted) typed in, then finished.
+        void TerminalApp::takeDrop() {
+                const uint32_t drag = _dropDrag.exchange(0, std::memory_order_acq_rel);
+                auto [clipboard, cerr] = Clipboard::clipboard(0);
+                if (drag == 0) return;
+                Clipboard::Description d;
+                if (cerr.isOk()) clipboard->describe(Clipboard::Selection::Drag, d);
+                bool files = false, text = false;
+                dropKinds(d, files, text);
+                String           got(MemSpace::Psram);
+                bool             ok = false;
+                ClipboardReader *reader = nullptr;
+                void            *mem = text ? Memory::alloc(MemSpace::Psram, sizeof(ClipboardReader)) : nullptr;
+                if (mem != nullptr) {
+                        reader = ::new (mem) ClipboardReader(*clipboard);
+                        // Text: a URI list comes as its paths, a line each.
+                        ok = reader->open(Clipboard::Selection::Drag, ClipboardType::Text).isOk();
+                        while (ok) {
+                                uint8_t in[256];
+                                auto [n, rerr] = reader->read(WritableByteSpan(in, sizeof(in)), PasteTimeoutMs);
+                                if (rerr.isError() || n == 0) break;
+                                if (got.size() + n > clipboard->limit() ||
+                                    got.append(StringView(reinterpret_cast<const char *>(in), n)).isError())
+                                        ok = false;
+                        }
+                        reader->~ClipboardReader();
+                        Memory::free(mem);
+                }
+                (void)_wm->finishDrop(drag, ok ? DropAction::Copy : DropAction::None);
+                if (!ok) return;
+                if (!files) {
+                        typeIn(got.view());
+                        return;
+                }
+                String line(MemSpace::Psram);
+                for (StringView rest = got.view(); !rest.isEmpty();) {
+                        const size_t     end = rest.indexOf('\n');
+                        const StringView path = end == StringView::NPos ? rest : rest.left(end);
+                        rest = end == StringView::NPos ? StringView() : rest.mid(end + 1);
+                        if (path.isEmpty()) continue;
+                        if (ShellQuote::append(line, path).isError() || line.append(' ').isError()) return;
+                }
+                typeIn(line.view());
+                return;
+        }
+
+        // @p text typed into the program as a paste is: LF as CR, bracketed for mode 2004.
+        void TerminalApp::typeIn(StringView text) {
+                bool bracketed = false;
+                {
+                        Mutex::Locker lock(_lock, WaitForever);
+                        bracketed = _screen.isBracketedPaste();
+                }
+                if (_offset.load(std::memory_order_relaxed) != 0) scrollBy(-int(HistoryLines));
+                auto put = [this](StringView s) {
+                        return s.isEmpty() ||
+                               _pty->input(ByteSpan(reinterpret_cast<const uint8_t *>(s.data()), s.size()),
+                                           PasteTimeoutMs)
+                                       .isOk();
+                };
+                bool   ok = !bracketed || put(PasteStart);
+                char   out[256];
+                size_t m = 0;
+                bool   cr = false;
+                for (size_t i = 0; i < text.size() && ok; ++i) {
+                        const char b = text[i];
+                        const bool lf = b == '\n';
+                        if (!(lf && cr) && !(bracketed && b == 0x1b)) out[m++] = lf ? '\r' : b;
+                        cr = b == '\r';
+                        if (m == sizeof(out)) {
+                                ok = put(StringView(out, m));
+                                m = 0;
+                        }
+                }
+                if (ok) ok = put(StringView(out, m));
+                if (bracketed && ok) (void)put(PasteEnd);
+                return;
         }
 
         // The selection's text onto @p to (none: nothing).

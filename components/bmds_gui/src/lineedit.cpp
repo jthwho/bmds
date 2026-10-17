@@ -50,6 +50,7 @@ namespace {
 
 LineEdit::LineEdit(Widget *parent) : Widget(parent) {
         setFocusable(true); // a click or Tab gives it the keys (gui.md §4r)
+        setAcceptsDrops(true);
 }
 
 LineEdit::~LineEdit() {
@@ -417,7 +418,48 @@ StringView LineEdit::drawn() const {
 
 void LineEdit::setMasked(bool masked) {
         _masked = masked;
+        setAcceptsDrops(!masked); // nothing dropped into a password
         changed();
+        return;
+}
+
+// ---- Drops (devplan/clipboard.md §5d): text, or files as their paths, replace the text.
+
+void LineEdit::dragMoved(GuiDropEvent &event) {
+        const bool text = event.hasType(ClipboardType::Text);
+        event.accept(text && DropActions::allows(event.actions(), DropAction::Copy) ? DropAction::Copy
+                                                                                    : DropAction::None);
+        return;
+}
+
+bool LineEdit::dropped(GuiDropEvent &event) {
+        if (!event.hasType(ClipboardType::Text) || !DropActions::allows(event.actions(), DropAction::Copy))
+                return false;
+        // Text: a URI list comes as its paths, a line each (the clipboard's converter).
+        if (event.read(ClipboardType::Text, dropRead, this).isError()) return false;
+        _dropDrag = event.drag();
+        return true;
+}
+
+void LineEdit::dropRead(void *arg, Error err, StringView type, StringView data) {
+        (void)type;
+        auto          *self = static_cast<LineEdit *>(arg);
+        GuiWindow     *w = self->window();
+        const uint32_t drag = self->_dropDrag;
+        self->_dropDrag = 0;
+        if (err.isOk()) {
+                // One line: line ends as spaces, none at the end.
+                char   buffer[LineEditModel::MaxBytes + 1];
+                size_t n = 0;
+                for (size_t i = 0; i < data.size() && n < LineEditModel::MaxBytes; ++i)
+                        buffer[n++] = data[i] == '\n' || data[i] == '\r' ? ' ' : data[i];
+                while (n > 0 && buffer[n - 1] == ' ') --n;
+                self->setText(StringView(buffer, n));
+        }
+        if (w != nullptr)
+                (void)w->application().windowManager().finishDrop(drag,
+                                                                  err.isOk() ? DropAction::Copy : DropAction::None);
+        if (err.isOk() && self->_edited != nullptr) self->_edited(self->_editedArg, *self); // last: it may destroy this
         return;
 }
 

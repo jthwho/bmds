@@ -47,12 +47,17 @@ class PictureView final : public Widget {
                 void    mouseReleased(const WindowManager::MouseEvent &event) override;
                 bool    wheelTurned(int notches) override;
                 GuiSize sizeHint() const override;
+                void    dragMoved(GuiDropEvent &event) override; // files dropped open (clipboard.md §5e)
+                bool    dropped(GuiDropEvent &event) override;
 
         protected:
                 void resized() override;
 
         private:
+                static void dropRead(void *arg, Error err, StringView type, StringView data);
+
                 ImageWindow &_window;
+                uint32_t     _dropDrag = 0; // a drop being read
                 int          _dragX = 0; // where a drag started, and its pan then
                 int          _dragY = 0;
                 int32_t      _dragPanX = 0;

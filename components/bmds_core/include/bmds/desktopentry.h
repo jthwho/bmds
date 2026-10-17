@@ -91,6 +91,23 @@ struct DesktopEntry {
                 static Result<size_t> splitExec(StringView exec, char *buffer, size_t bufferBytes,
                                                 Span<StringView> args, StringView file = StringView());
 
+                /**
+                 * @brief `splitExec()` with several @p files (`devplan/clipboard.md`
+                 *        §5b D11): `%F` or `%U` alone as an argument is each of them as
+                 *        an argument of its own; `%f`, `%u` (and `%F`, `%U` inside
+                 *        an argument) the first. Without a field code, all of them last.
+                 * @return As `splitExec()`.
+                 */
+                static Result<size_t> splitExec(StringView exec, char *buffer, size_t bufferBytes,
+                                                Span<StringView> args, Span<const StringView> files);
+
+                /**
+                 * @brief Returns true if one start of @p exec takes every file: it has
+                 *        `%F` or `%U`, or no file field code at all (they go last).
+                 *        Else (only `%f` or `%u`) each file is a start of its own.
+                 */
+                static bool takesFileList(StringView exec);
+
                 /** @brief Returns true if the `;` list @p categories holds @p category. */
                 static bool hasCategory(StringView categories, StringView category);
 

@@ -322,36 +322,14 @@ Rect IconView::nameRect(size_t row) const {
         return Rect{uint16_t(s.x + x), uint16_t(s.y + y + TextTop), W, LineHeight};
 }
 
-bool IconView::isDragged(size_t row) const {
-        return _draggingCells && selection().isSelected(row);
-}
-
-bool IconView::dragged(int dx, int dy, bool done) {
+bool IconView::moveSelected(int dx, int dy) {
         if (_arrangement != Arrangement::Grid) return false;
         GuiWindow *w = window();
-        if (!done) {
-                // Each dragged row where it was drawn and where it goes (not the whole view: it flickers).
-                for (int r = selection().nextSelected(0); r >= 0; r = selection().nextSelected(size_t(r) + 1)) {
-                        if (_draggingCells) invalidateRow(size_t(r), _dragX, _dragY);
-                        invalidateRow(size_t(r), int(unsigned(dx) & ~3u), dy);
-                }
-                _draggingCells = true;
-                _dragX = dx;
-                _dragY = dy;
-                _dragX = int(unsigned(_dragX) & ~3u); // text starts on a 4-pixel column
-                return true;
-        }
-        // Where the dragged rows were drawn, gone (they land below, or go back).
-        for (int r = selection().nextSelected(0); r >= 0; r = selection().nextSelected(size_t(r) + 1)) {
-                invalidateRow(size_t(r), _dragX, _dragY);
-                invalidateRow(size_t(r), 0, 0);
-        }
-        _draggingCells = false;
         // Each selected row to the cell under its middle, moved as far; a row there unselected goes
         // to the cell its mover left. Refused (all back) if two would share a cell.
         const size_t         n = _cells.size();
         List<IconGrid::Cell> to(MemSpace::Psram);
-        if (to.reserve(n).isError()) return true;
+        if (to.reserve(n).isError()) return false;
         bool any = false;
         for (size_t r = 0; r < n; ++r) {
                 IconGrid::Cell c = _cells[r];
@@ -400,15 +378,23 @@ bool IconView::dragged(int dx, int dy, bool done) {
         }
         (void)w;
         if (any && _moved != nullptr) _moved(_movedArg, *this);
-        return true;
+        return any;
 }
 
-void IconView::dragCancelled() {
-        for (int r = selection().nextSelected(0); r >= 0; r = selection().nextSelected(size_t(r) + 1)) {
-                invalidateRow(size_t(r), _dragX, _dragY);
-                invalidateRow(size_t(r), 0, 0);
+// A row in a drag's image: its icon and its name's lines, on the highlight.
+void IconView::drawDragRow(DragPicture &picture, size_t row, const WindowPalette &palette) const {
+        const DragImage::Box b = rowBox(row);
+        const Icon          *icon = model() != nullptr ? model()->icon(row, IconSide) : nullptr;
+        if (icon != nullptr && icon->isValid() && icon->width <= IconSide && icon->height <= IconSide)
+                picture.icon((b.x + (W - icon->width) / 2) & ~3, b.y + Pad + (IconSide - icon->height) / 2, *icon);
+        Lines l;
+        lines(row, l);
+        for (uint8_t i = 0; i < l.count; ++i) {
+                const int tw = int(Fonts::unscii16.textWidth(StringView(l.text[i])));
+                const int ly = b.y + TextTop + i * LineHeight;
+                picture.fill(b.x + l.x[i] - Pad, ly, tw + 2 * Pad, LineHeight, palette.color(Role::Highlight));
+                picture.text(b.x + l.x[i], ly, StringView(l.text[i]), palette.color(Role::HighlightText), LineWidth);
         }
-        _draggingCells = false;
         return;
 }
 
@@ -476,15 +462,8 @@ void IconView::drawAll(Canvas &canvas, const Rect &viewport) const {
                 end = size_t((seen.y + seen.height) / H + 1) * _columns;
                 if (end > count()) end = count();
         }
-        // Dragged rows last, over the others.
-        for (int pass = 0; pass < 2; ++pass) {
-                for (size_t r = first; r < end; ++r) {
-                        const bool moving = isDragged(r);
-                        if (moving != (pass == 1)) continue;
-                        if (!moving && !rowRect(r).intersects(seen)) continue;
-                        drawRow(canvas, r, moving ? _dragX : 0, moving ? _dragY : 0);
-                }
-        }
+        for (size_t r = first; r < end; ++r)
+                if (rowRect(r).intersects(seen)) drawRow(canvas, r, 0, 0);
         return;
 }
 

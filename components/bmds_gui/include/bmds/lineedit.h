@@ -26,7 +26,9 @@ BMDS_NAMESPACE_BEGIN
  * copy, cut and paste text (the application's clipboard); Enter accepts, Esc
  * cancels. A press puts the cursor, a drag selects, a double click selects
  * all; Enter and Esc go on to the window (a dialog's buttons) when nothing
- * is told of them. It scrolls a character at a time to keep the cursor shown; wrapped, it
+ * is told of them. A drag of text, or of files (their paths, spaces between), dropped on it
+ * replaces its text, unless masked (`devplan/clipboard.md` §5d). It scrolls a character at
+ * a time to keep the cursor shown; wrapped, it
  * breaks its lines as `TextWrap` does, Up and Down move between them, and it
  * asks to be as tall as they are (`setLinesChanged()`) rather than scroll.
  * Make it the window's focus widget (`GuiWindow::setFocusWidget()`) for the
@@ -130,12 +132,15 @@ class LineEdit : public Widget {
                 void    mouseReleased(const WindowManager::MouseEvent &event) override;
                 void    paint(Painter &painter) override;
                 void    focusOut() override;
+                void    dragMoved(GuiDropEvent &event) override;
+                bool    dropped(GuiDropEvent &event) override;
 
         protected:
                 void resized() override;
 
         private:
                 static void pasted(void *arg, Error err, StringView type, StringView data);
+                static void dropRead(void *arg, Error err, StringView type, StringView data);
 
                 // A line shown: its bytes [start, end) and where it is drawn from.
                 struct Line {
@@ -160,6 +165,7 @@ class LineEdit : public Widget {
                 size_t        _first = 0; // the first byte shown
                 uint64_t      _pressUs = 0;
                 bool          _dragging = false;
+                uint32_t            _dropDrag = 0; // a drop being read
                 Done          _accepted = nullptr;
                 void         *_acceptedArg = nullptr;
                 Done          _cancelled = nullptr;

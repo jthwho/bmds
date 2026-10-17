@@ -310,10 +310,19 @@ void WindowManager::stop() {
         Memory::free(_pieces);
         Memory::free(_scratch);
         Memory::free(_under);
+        Memory::free(_dnd.image);
+        Memory::free(_dnd.under);
+        Memory::free(_dndOldImage);
+        Memory::free(_dndOldUnder);
+        _dnd = Dnd();
+        _dndOldImage = nullptr;
+        _dndOldUnder = nullptr;
+        _dndEnded = nullptr;
         _tools = Painter::Tools();
         _pieces = nullptr;
         _scratch = nullptr;
         _under = nullptr;
+        _underIn = nullptr;
         _underRect = Rect();
         _stack.reset(0, 0);
         _dragId = 0;
@@ -331,7 +340,17 @@ void WindowManager::entry(void *arg) {
 void WindowManager::run() {
         bool starting = false; // a program starting: woken each frame of its pointer
         for (;;) {
-                (void)_wake.acquire(starting ? StartingFrameMs : WaitForever);
+                unsigned int wait = starting ? StartingFrameMs : WaitForever;
+                {
+                        // A drop waiting for its finish: woken at its deadline.
+                        Mutex::Locker lock(_lock, WaitForever);
+                        if (_dnd.drag != 0 && _dnd.dropped) {
+                                const int64_t      left = (_dnd.deadlineUs - int64_t(System::uptimeUs())) / 1000 + 1;
+                                const unsigned int ms = left < 1 ? 1u : unsigned(left);
+                                if (wait == WaitForever || ms < wait) wait = ms;
+                        }
+                }
+                (void)_wake.acquire(wait);
                 bool             checks = false;
                 Surface      *surface = nullptr;
                 uint32_t      frame = 0;
@@ -343,6 +362,10 @@ void WindowManager::run() {
                 void         *programArg = nullptr;
                 WindowItemChosen itemFn = nullptr;
                 void            *itemArg = nullptr;
+                DragEnded        dragEnded = nullptr;
+                void            *dragEndedArg = nullptr;
+                uint32_t         dragEndedDrag = 0;
+                DropAction       dragEndedDone = DropAction::None;
                 {
                         Mutex::Locker lock(_lock, WaitForever);
                         surface = _surface;
@@ -354,6 +377,8 @@ void WindowManager::run() {
                                 deliverPads();
                                 applyPointersAsked();
                                 applyPointer();
+                                if (_dnd.drag != 0 && _dnd.dropped && int64_t(System::uptimeUs()) >= _dnd.deadlineUs)
+                                        dndEnd(DropAction::None); // the target never finished
                                 checks = startingTick();
                                 snapshotLocked(); // what queries see while the round holds the lock
                                 round(requests);
@@ -379,6 +404,11 @@ void WindowManager::run() {
                                 itemArg = _itemArg;
                                 _itemPicked = nullptr;
                         }
+                        dragEnded = _dndEnded;
+                        dragEndedArg = _dndEndedArg;
+                        dragEndedDrag = _dndEndedDrag;
+                        dragEndedDone = _dndEndedDone;
+                        _dndEnded = nullptr;
                         starting = _startingCount > 0;
                 }
                 if (checks) startingChecks();
@@ -387,6 +417,7 @@ void WindowManager::run() {
                 if (picked >= 0 && chosen != nullptr) chosen(chosenArg, size_t(picked));
                 if (programPicked >= 0 && programFn != nullptr) programFn(programArg, size_t(programPicked));
                 if (itemFn != nullptr) itemFn(itemArg);
+                if (dragEnded != nullptr) dragEnded(dragEndedArg, dragEndedDrag, dragEndedDone);
                 _idle.notify();
                 // A round a frame at most: what comes meanwhile is drawn together. Not while another
                 // surface is scanned (a program's full screen): surface 0 counts no frames then.
@@ -440,7 +471,9 @@ void WindowManager::deliverKeys() {
                         _modifiers = static_cast<uint8_t>(event.action == KeyEvent::Action::Release ? _modifiers & ~bit
                                                                                                     : _modifiers | bit);
                 }
-                // The window manager's own keys first (not one sent to a chosen window: a test's).
+                // A drag takes every key (Escape, the modifiers); then the window manager's own keys
+                // (not one sent to a chosen window: a test's).
+                if (target == 0 && dndKey(event)) continue;
                 if (target == 0 && shortcut(event)) continue;
                 // To its window if it names one (still open), else an open popup, else the focus.
                 if (target != 0 && _stack.rectOf(target).isError()) continue;
@@ -574,6 +607,28 @@ void WindowManager::applyPointer() {
                 const uint8_t pressed = static_cast<uint8_t>(event.buttons & ~_buttons);
                 const uint8_t released = static_cast<uint8_t>(_buttons & ~event.buttons);
                 _buttons = event.buttons;
+                if (_dnd.drag != 0 && !_dnd.dropped) {
+                        // A drag has the pointer: motion to the window under it, presses go nowhere,
+                        // the held button's release drops.
+                        if (moved) dndMotion(nx, ny);
+                        // Other buttons' presses go nowhere, nor their releases (after the drag too).
+                        _swallowed = static_cast<uint8_t>((_swallowed | pressed) & ~released & ~_dnd.button);
+                        if ((released & _dnd.button) != 0) dndRelease(nx, ny);
+                        if (_buttons == 0) hoverAt(nx, ny);
+                        if (event.wheel != 0) {
+                                // The wheel still scrolls what is under it (a view to drop into).
+                                const uint8_t id = windowAt(nx, ny);
+                                if (id != 0 && _windows[id - 1].wheel != nullptr)
+                                        _windows[id - 1].wheel(_windows[id - 1].arg, event.wheel);
+                        }
+                        const Pointer shape = shapeAt(nx, ny);
+                        const bool    changed = moved || shape != _shape;
+                        _shape = shape;
+                        _cursorShown = true;
+                        const bool drawn = isCursorDrawn();
+                        if ((wasDrawn && (changed || !drawn)) || (drawn && (changed || !wasDrawn))) _cursorMoved = true;
+                        continue;
+                }
                 const bool freed = freedLockAt(nx, ny);
                 if (moved && !freed) {
                         if (_mouseId != 0) {
@@ -807,6 +862,7 @@ void WindowManager::sizeTo(uint16_t x, uint16_t y) {
 // The pointer's picture at (@p x, @p y): frameShapeAt()'s, its arrow the starting one while a
 // program starts.
 WindowManager::Pointer WindowManager::shapeAt(uint16_t x, uint16_t y) const {
+        if (dndShowing()) return dndShape();
         const Pointer shape = frameShapeAt(x, y);
         return shape == Pointer::Arrow && _startingCount > 0 ? Pointer::Starting : shape;
 }
@@ -935,6 +991,44 @@ namespace {
                 "XooXoXX........", "XoooXX.........", "XooooXX........", "XoooooX........", "XXXXXXX........",
         };
 
+        // A drag's (devplan/clipboard.md §5b D4): the arrow with the action's badge, and "no".
+        constexpr const char *DragMoveRows[] = {
+                "X....................", "XX...................", "XoX..................", "XooX.................",
+                "XoooX................", "XooooX...............", "XoooooX..............", "XooooooX.............",
+                "XoooooooX............", "XooooooooX...........", "XoooooooooX..........", "XooooooXXXXX.........",
+                "XoooXooX....XoXoXoXoX", "XooXXooX....o.......o", "XoX..XooX...X.......X", "XX...XooX...o.......o",
+                "X.....XooX..X.......X", "......XooX..o.......o", ".......XX...X.......X", "............o.......o",
+                "............XoXoXoXoX",
+        };
+        constexpr const char *DragCopyRows[] = {
+                "X....................", "XX...................", "XoX..................", "XooX.................",
+                "XoooX................", "XooooX...............", "XoooooX..............", "XooooooX.............",
+                "XoooooooX............", "XooooooooX...........", "XoooooooooX..........", "XooooooXXXXX.........",
+                "XoooXooX....XXXXXXXXX", "XooXXooX....XoooooooX", "XoX..XooX...XoooXoooX", "XX...XooX...XoooXoooX",
+                "X.....XooX..XoXXXXXoX", "......XooX..XoooXoooX", ".......XX...XoooXoooX", "............XoooooooX",
+                "............XXXXXXXXX",
+        };
+        constexpr const char *DragLinkRows[] = {
+                "X....................", "XX...................", "XoX..................", "XooX.................",
+                "XoooX................", "XooooX...............", "XoooooX..............", "XooooooX.............",
+                "XoooooooX............", "XooooooooX...........", "XoooooooooX..........", "XooooooXXXXX.........",
+                "XoooXooX....XXXXXXXXX", "XooXXooX....XoooooooX", "XoX..XooX...XooXXXXoX", "XX...XooX...XoooXXXoX",
+                "X.....XooX..XooXoXXoX", "......XooX..XoXoooXoX", ".......XX...XoXoooooX", "............XoooooooX",
+                "............XXXXXXXXX",
+        };
+        constexpr const char *DragNoneRows[] = {
+                ".....ooooo.....", "...ooXXXXXoo...", "..oXXXXXXXXXo..", ".oXXXo...oXXXo.", ".oXXoXo...oXXo.",
+                "oXXoXXXo...oXXo", "oXX.oXXXo...XXo", "oXX..oXXXo..XXo", "oXX...oXXXo.XXo", "oXXo...oXXXoXXo",
+                ".oXXo...oXoXXo.", ".oXXXo...oXXXo.", "..oXXXXXXXXXo..", "...ooXXXXXoo...", ".....ooooo.....",
+        };
+        // By WindowManager::Pointer, from DragMove.
+        constexpr Picture DragPictures[] = {
+                {21, 21, 0, 0, DragMoveRows},
+                {21, 21, 0, 0, DragCopyRows},
+                {21, 21, 0, 0, DragLinkRows},
+                {15, 15, 7, 7, DragNoneRows},
+        };
+
         // By WindowManager::Pointer.
         constexpr Picture Pictures[] = {
                 {12, 19, 0, 0, ArrowRows},        {19, 9, 9, 4, HorizontalRows},  {9, 19, 4, 9, VerticalRows},
@@ -987,6 +1081,8 @@ namespace {
         // Shape @p shape's picture (the starting one's frame @p frame); not None.
         const Picture &pictureOf(WindowManager::Pointer shape, uint8_t frame) {
                 if (shape == WindowManager::Pointer::Starting) return StartingPictures[frame % StartingFrames];
+                if (shape >= WindowManager::Pointer::DragMove)
+                        return DragPictures[size_t(shape) - size_t(WindowManager::Pointer::DragMove)];
                 return Pictures[static_cast<size_t>(shape)];
         }
 
@@ -999,6 +1095,11 @@ namespace {
                         uint32_t       edge;
                         uint32_t       fill;
                         uint8_t       *under; // what the area holds, saved there first
+                        const uint32_t *image = nullptr; // a drag's, blended under the picture (ARGB)
+                        int             imageColumn = 0; // its first column, from the area's
+                        int             imageRow = 0;
+                        uint16_t        imageWidth = 0;
+                        uint16_t        imageHeight = 0;
         };
 
         // What the pointer covers: its area's bytes, a row after another.
@@ -1017,21 +1118,41 @@ namespace {
                 for (const Picture &p : StartingPictures)
                         if ((p.width + 2u * 4u) * p.height * Surface::BytesPerPixel > WindowManager::UnderBytes)
                                 return false;
+                for (const Picture &p : DragPictures)
+                        if ((p.width + 2u * 4u) * p.height * Surface::BytesPerPixel > WindowManager::UnderBytes)
+                                return false;
                 return true;
         }());
 
+        // The drag pictures' widest and tallest reach from the tip: right and below, left and above.
+        constexpr int DragReachRight = 21, DragReachDown = 21, DragReachLeft = 7, DragReachUp = 7;
+
+        // A drag's save-under: its image (the tip inside it) and any drag picture, on 4-pixel columns.
+        constexpr size_t dragUnderBytes(uint8_t width, uint8_t height) {
+                return (size_t(width) + DragReachRight + DragReachLeft + 2 * 4) *
+                       (size_t(height) + DragReachDown + DragReachUp) * 3;
+        }
+
 } // namespace
 
-// The pointer's picture on the screen, widened to 4-pixel columns.
+// The pointer's picture on the screen, with a drag's image, widened to 4-pixel columns.
 Rect WindowManager::cursorArea() const {
         if (_shape == Pointer::None) return Rect();
         const Picture &p = pictureOf(_shape, _startingFrame);
         const Rect     screen = _stack.screen();
-        const int      x = int(_pointerX) - p.hotX, y = int(_pointerY) - p.hotY;
+        int            x = int(_pointerX) - p.hotX, y = int(_pointerY) - p.hotY;
+        int            x2 = x + p.width, y2 = y + p.height;
+        if (dndShowing() && _dnd.image != nullptr) {
+                const int ix = int(_pointerX) - _dnd.hotX, iy = int(_pointerY) - _dnd.hotY;
+                x = std::min(x, ix);
+                y = std::min(y, iy);
+                x2 = std::max(x2, ix + int(_dnd.width));
+                y2 = std::max(y2, iy + int(_dnd.height));
+        }
         const uint32_t left = uint32_t(x < 0 ? 0 : x) & ~(Align - 1u);
         const uint32_t top = uint32_t(y < 0 ? 0 : y);
-        uint32_t       right = (uint32_t(x + p.width) + Align - 1u) & ~(Align - 1u);
-        uint32_t       bottom = uint32_t(y + p.height);
+        uint32_t       right = (uint32_t(x2 < 0 ? 0 : x2) + Align - 1u) & ~(Align - 1u);
+        uint32_t       bottom = uint32_t(y2 < 0 ? 0 : y2);
         if (right > screen.width) right = screen.width;
         if (bottom > screen.height) bottom = screen.height;
         return Rect{static_cast<uint16_t>(left), static_cast<uint16_t>(top), static_cast<uint16_t>(right - left),
@@ -1071,6 +1192,275 @@ void WindowManager::pointerPosition(uint16_t &x, uint16_t &y) {
         return;
 }
 
+// ---- Drag and drop (devplan/clipboard.md §5c)
+
+Result<uint32_t> WindowManager::startDrag(uint8_t id, const DragConfig &config) {
+        if (config.image != nullptr && (config.width == 0 || config.height == 0 || config.width > DragImage::Max ||
+                                        config.height > DragImage::Max))
+                return makeError<uint32_t>(Error::Invalid);
+        // The memory first, outside the lock.
+        uint32_t *image = nullptr;
+        uint8_t  *under = nullptr;
+        if (config.image != nullptr) {
+                const size_t pixels = size_t(config.width) * config.height;
+                image = static_cast<uint32_t *>(Memory::alloc(MemSpace::Psram, pixels * sizeof(uint32_t)));
+                under = static_cast<uint8_t *>(
+                        Memory::alloc(MemSpace::Psram, dragUnderBytes(config.width, config.height)));
+                if (image == nullptr || under == nullptr) {
+                        Memory::free(image);
+                        Memory::free(under);
+                        return makeError<uint32_t>(Error::NoMem);
+                }
+                std::memcpy(image, config.image, pixels * sizeof(uint32_t));
+        }
+        Mutex::Locker lock(_lock, WaitForever);
+        Error         err;
+        if (_surface == nullptr || _stack.rectOf(id).isError()) {
+                err = Error::InvalidState;
+        } else if (_dnd.drag != 0) {
+                err = Error::Busy;
+        } else if (_mouseId != id || _buttons == 0) {
+                err = Error::InvalidState; // released before the loop saw the motion, or not its press
+        }
+        if (err.isError()) {
+                Memory::free(image);
+                Memory::free(under);
+                return makeError<uint32_t>(err);
+        }
+        if (++_dndSerial == 0) _dndSerial = 1;
+        Dnd &d = _dnd;
+        d = Dnd();
+        d.drag = _dndSerial;
+        d.source = id;
+        d.sourceClient = _windows[id - 1].client;
+        d.offer = config.offer;
+        d.actions = config.actions;
+        d.preferred = config.preferred;
+        for (const uint8_t b : {PointerEvent::Left, PointerEvent::Right, PointerEvent::Middle})
+                if ((_buttons & b) != 0 && d.button == 0) d.button = b;
+        d.ended = config.ended;
+        d.arg = config.arg;
+        d.image = image;
+        d.under = under;
+        d.width = config.width;
+        d.height = config.height;
+        d.hotX = config.hotX < config.width ? config.hotX : uint8_t(config.width ? config.width - 1 : 0);
+        d.hotY = config.hotY < config.height ? config.hotY : uint8_t(config.height ? config.height - 1 : 0);
+        // The source's press ends here: it gets no more of the mouse until the drag is over.
+        mouseTo(id, MouseEvent::Type::Leave, _pointerX, _pointerY, 0);
+        _mouseId = 0;
+        _hoverId = 0;
+        dndMotion(_pointerX, _pointerY);
+        _shape = dndShape();
+        _cursorMoved = true;
+        _requests.fetch_add(1, std::memory_order_acq_rel);
+        _wake.release();
+        return makeResult(d.drag);
+}
+
+Error WindowManager::answerDrop(uint32_t drag, uint8_t id, DropAction action) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (drag == 0 || _dnd.drag != drag || _dnd.dropped || _dnd.target != id) return Error::InvalidState;
+        if (_dnd.answer == action) return Error::Ok;
+        _dnd.answer = action;
+        const Pointer shape = dndShape();
+        if (shape != _shape) {
+                _shape = shape;
+                if (isCursorDrawn()) _cursorMoved = true;
+                _requests.fetch_add(1, std::memory_order_acq_rel);
+                _wake.release();
+        }
+        return Error::Ok;
+}
+
+Error WindowManager::finishDrop(uint32_t drag, DropAction done) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (drag == 0 || _dnd.drag != drag || !_dnd.dropped) return Error::InvalidState;
+        dndEnd(done);
+        _wake.release();
+        return Error::Ok;
+}
+
+Error WindowManager::cancelDrag(uint32_t drag) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (drag == 0 || _dnd.drag != drag) return Error::InvalidState;
+        if (_dnd.target != 0 && !_dnd.dropped) dndTell(_dnd.target, DropEvent::Type::Leave, _pointerX, _pointerY);
+        dndEnd(DropAction::None);
+        _wake.release();
+        return Error::Ok;
+}
+
+WindowManager::DragInfo WindowManager::dragInfo() {
+        Mutex::Locker lock(_lock, WaitForever);
+        DragInfo      info;
+        info.drag = _dnd.drag;
+        info.source = _dnd.source;
+        info.offer = _dnd.offer;
+        info.actions = _dnd.actions;
+        info.target = _dnd.target;
+        info.answer = _dnd.answer;
+        info.dropped = _dnd.dropped;
+        return info;
+}
+
+// The window at (@p x, @p y) whose client area takes drops there; 0: none.
+uint8_t WindowManager::dropTargetAt(uint16_t x, uint16_t y) const {
+        const uint8_t id = windowAt(x, y);
+        if (id == 0 || _windows[id - 1].drop == nullptr) return 0;
+        auto [z, err] = _stack.layerOf(id);
+        if (err.isError() || frame(id, _stack.rectAt(z)).partAt(x, y) != WindowFrame::Part::Client) return 0;
+        return id;
+}
+
+// Window @p id told @p type with the pointer at (@p x, @p y).
+void WindowManager::dndTell(uint8_t id, DropEvent::Type type, uint16_t x, uint16_t y) {
+        const Window &w = _windows[id - 1];
+        if (w.drop == nullptr) return;
+        auto [at, err] = _stack.rectOf(id);
+        if (err.isError()) return;
+        const Rect client = frame(id, at).client();
+        DropEvent  e;
+        e.type = type;
+        e.drag = _dnd.drag;
+        e.offer = _dnd.offer;
+        e.x = static_cast<int16_t>(int(x) - client.x);
+        e.y = static_cast<int16_t>(int(y) - client.y);
+        e.actions = _dnd.actions;
+        e.modifiers = _modifiers;
+        e.ask = type == DropEvent::Type::Drop && _dnd.button == PointerEvent::Right;
+        e.own = w.client != 0 && w.client == _dnd.sourceClient;
+        e.preferred = _dnd.preferred;
+        w.drop(w.arg, e);
+        return;
+}
+
+// The drag at (@p x, @p y): Enter and Leave as the window under it changes, else Motion.
+void WindowManager::dndMotion(uint16_t x, uint16_t y) {
+        const uint8_t target = dropTargetAt(x, y);
+        if (target != _dnd.target) {
+                if (_dnd.target != 0) dndTell(_dnd.target, DropEvent::Type::Leave, x, y);
+                _dnd.target = target;
+                _dnd.answer = DropAction::None;
+                if (target != 0) dndTell(target, DropEvent::Type::Enter, x, y);
+        } else if (target != 0) {
+                dndTell(target, DropEvent::Type::Motion, x, y);
+        }
+        return;
+}
+
+// The drag's button up at (@p x, @p y): over a target, a drop (it decides again there); else ended.
+void WindowManager::dndRelease(uint16_t x, uint16_t y) {
+        dndMotion(x, y);
+        if (_dnd.target == 0) {
+                dndEnd(DropAction::None);
+                return;
+        }
+        dndTell(_dnd.target, DropEvent::Type::Drop, x, y);
+        _dnd.dropped = true;
+        _dnd.deadlineUs = int64_t(System::uptimeUs()) + int64_t(DropTimeoutMs) * 1000;
+        dndRetire(); // not drawn any more
+        _cursorMoved = true;
+        return;
+}
+
+// A key during a drag: Escape cancels; a modifier tells the target again; the rest go nowhere.
+bool WindowManager::dndKey(const KeyEvent &event) {
+        if (!dndShowing()) return false;
+        if (event.usage == HidKey::Escape && event.action != KeyEvent::Action::Release) {
+                if (_dnd.target != 0) dndTell(_dnd.target, DropEvent::Type::Leave, _pointerX, _pointerY);
+                dndEnd(DropAction::None);
+        } else if (event.usage >= 0xe0 && event.usage <= 0xe7 && _dnd.target != 0) {
+                dndTell(_dnd.target, DropEvent::Type::Motion, _pointerX, _pointerY);
+        }
+        return true;
+}
+
+// The drag over: its source told @p done after the round, the pointer back.
+void WindowManager::dndEnd(DropAction done) {
+        if (_dnd.drag == 0) return;
+        _dndEnded = _dnd.ended;
+        _dndEndedArg = _dnd.arg;
+        _dndEndedDrag = _dnd.drag;
+        _dndEndedDone = done;
+        dndRetire();
+        _dnd = Dnd();
+        const Pointer shape = shapeAt(_pointerX, _pointerY);
+        _shape = shape;
+        _cursorMoved = true;
+        _requests.fetch_add(1, std::memory_order_acq_rel);
+        return;
+}
+
+// Window @p id closed: the drag cancelled if it was the source's (before the drop), no target if
+// it was the target.
+void WindowManager::dndClosed(uint8_t id) {
+        if (_dnd.drag == 0) return;
+        if (_dnd.target == id) {
+                _dnd.target = 0;
+                _dnd.answer = DropAction::None;
+                if (_dnd.dropped) {
+                        dndEnd(DropAction::None);
+                        return;
+                }
+        }
+        if (_dnd.source == id && !_dnd.dropped) {
+                if (_dnd.target != 0) dndTell(_dnd.target, DropEvent::Type::Leave, _pointerX, _pointerY);
+                _dnd.ended = nullptr; // nobody to tell
+                dndEnd(DropAction::None);
+        } else if (_dnd.target == 0 && dndShowing()) {
+                _shape = dndShape();
+                _cursorMoved = true;
+        }
+        return;
+}
+
+// The pointer's shape during a drag: the target's latest answer.
+WindowManager::Pointer WindowManager::dndShape() const {
+        if (_dnd.target == 0) return Pointer::DragNone;
+        switch (_dnd.answer) {
+                case DropAction::Copy: return Pointer::DragCopy;
+                case DropAction::Move:
+                case DropAction::Moved: return Pointer::DragMove;
+                case DropAction::Link: return Pointer::DragLink;
+                case DropAction::Ask: return Pointer::DragMove;
+                case DropAction::None: break;
+        }
+        return Pointer::DragNone;
+}
+
+// The drag's image and under out of use: freed after the next restoreUnder() (the pointer's
+// pixels may be saved in the under). Of two pairs waiting, one isn't where they are saved.
+void WindowManager::dndRetire() {
+        if (_dnd.image == nullptr && _dnd.under == nullptr) return;
+        if (_dndOldImage != nullptr || _dndOldUnder != nullptr) {
+                if (_underIn != _dndOldUnder) {
+                        Memory::free(_dndOldImage);
+                        Memory::free(_dndOldUnder);
+                } else {
+                        Memory::free(_dnd.image); // the older pair holds what is saved: this one goes now
+                        Memory::free(_dnd.under);
+                        _dnd.image = nullptr;
+                        _dnd.under = nullptr;
+                        return;
+                }
+        }
+        _dndOldImage = _dnd.image;
+        _dndOldUnder = _dnd.under;
+        _dnd.image = nullptr;
+        _dnd.under = nullptr;
+        return;
+}
+
+// An ended drag's image and under freed: called after restoreUnder(), so nothing saved is in them.
+void WindowManager::dndFree() {
+        if (_dndOldUnder != nullptr && _underIn == _dndOldUnder) _underIn = nullptr;
+        Memory::free(_dndOldImage);
+        Memory::free(_dndOldUnder);
+        _dndOldImage = nullptr;
+        _dndOldUnder = nullptr;
+        return;
+}
+
 // The picture over what @p pixels holds (the cursor area).
 void WindowManager::drawCursorPixels(void *arg, uint8_t *pixels, size_t stride) {
         const auto    *job = static_cast<const CursorJob *>(arg);
@@ -1078,6 +1468,26 @@ void WindowManager::drawCursorPixels(void *arg, uint8_t *pixels, size_t stride) 
         const size_t   bytes = size_t(job->width) * Surface::BytesPerPixel;
         for (uint16_t r = 0; r < job->rows; ++r)
                 std::memcpy(job->under + r * bytes, pixels + size_t(r) * stride, bytes);
+        if (job->image != nullptr) {
+                // A drag's image under the picture, blended by its alpha.
+                for (uint16_t r = 0; r < job->rows; ++r) {
+                        const int ir = int(r) - job->imageRow;
+                        if (ir < 0 || ir >= job->imageHeight) continue;
+                        const uint32_t *src = job->image + size_t(ir) * job->imageWidth;
+                        uint8_t        *row = pixels + size_t(r) * stride;
+                        const int       c0 = std::max(0, job->imageColumn);
+                        const int       c1 = std::min(int(job->width), job->imageColumn + int(job->imageWidth));
+                        for (int c = c0; c < c1; ++c) {
+                                const uint32_t argb = src[c - job->imageColumn];
+                                const uint32_t a = argb >> 24;
+                                if (a == 0) continue;
+                                uint8_t       *px = row + size_t(c) * Surface::BytesPerPixel;
+                                const uint32_t channels[3] = {argb & 0xff, (argb >> 8) & 0xff, (argb >> 16) & 0xff};
+                                for (int k = 0; k < 3; ++k)
+                                        px[k] = static_cast<uint8_t>((channels[k] * a + px[k] * (255 - a) + 127) / 255);
+                        }
+                }
+        }
         for (uint16_t r = 0; r < job->rows; ++r) {
                 const int sr = int(r) - job->row; // the picture's row
                 if (sr < 0 || sr >= p.height) continue;
@@ -1108,11 +1518,27 @@ void WindowManager::restorePixels(void *arg, uint8_t *pixels, size_t stride) {
 // to redraw, and nothing drawn copies the pointer's picture (a scroll).
 void WindowManager::restoreUnder() {
         if (_underRect.isEmpty()) return;
-        UnderJob job{_under, _underRect.width, _underRect.height};
-        ++_stats.calls;
-        drawError(_surface->patch(_underRect, restorePixels, &job, DrawTimeoutMs), "the pointer's under");
+        // In strips a patch takes (a scanline's bytes: a drag's image is taller).
+        uint8_t       *under = _underIn != nullptr ? _underIn : _under;
+        const size_t   rowBytes = size_t(_underRect.width) * Surface::BytesPerPixel;
+        const uint16_t strip = cursorStripRows(_underRect.width);
+        for (uint16_t y = 0; y < _underRect.height; y = uint16_t(y + strip)) {
+                const uint16_t rows = uint16_t(_underRect.height - y < strip ? _underRect.height - y : strip);
+                UnderJob       job{under + size_t(y) * rowBytes, _underRect.width, rows};
+                ++_stats.calls;
+                drawError(_surface->patch(Rect{_underRect.x, uint16_t(_underRect.y + y), _underRect.width, rows},
+                                          restorePixels, &job, DrawTimeoutMs),
+                          "the pointer's under");
+        }
         _underRect = Rect();
         return;
+}
+
+// The rows of a @p width-pixel pointer area one patch takes (its line buffer holds a scanline).
+uint16_t WindowManager::cursorStripRows(uint16_t width) const {
+        const size_t rowBytes = size_t(width ? width : 1) * Surface::BytesPerPixel;
+        const size_t rows = _surface->stride() / rowBytes;
+        return uint16_t(rows == 0 ? 1 : rows > UINT16_MAX ? UINT16_MAX : rows);
 }
 
 // The pointer over everything drawn this round, what it covers saved first (restoreUnder()).
@@ -1130,13 +1556,36 @@ void WindowManager::drawCursor() {
         job.edge = _palette.color(Role::CursorEdge);
         job.fill = _palette.color(Role::CursorFill);
         job.under = _under;
-        ++_stats.calls;
-        const Error cursorErr = _surface->patch(area, drawCursorPixels, &job, DrawTimeoutMs);
-        if (cursorErr.isError()) {
-                drawError(cursorErr, "the pointer");
-                return;
+        if (dndShowing() && _dnd.under != nullptr) {
+                job.under = _dnd.under;
+                job.image = _dnd.image;
+                job.imageColumn = int(_pointerX) - _dnd.hotX - area.x;
+                job.imageRow = int(_pointerY) - _dnd.hotY - area.y;
+                job.imageWidth = _dnd.width;
+                job.imageHeight = _dnd.height;
         }
-        _underRect = area;
+        _underIn = job.under;
+        // In strips a patch takes; the strips drawn are what restoreUnder() puts back.
+        const size_t    rowBytes = size_t(area.width) * Surface::BytesPerPixel;
+        const uint16_t  strip = cursorStripRows(area.width);
+        const CursorJob whole = job;
+        uint16_t        done = 0;
+        for (uint16_t y = 0; y < area.height; y = uint16_t(y + strip)) {
+                const uint16_t rows = uint16_t(area.height - y < strip ? area.height - y : strip);
+                job.rows = rows;
+                job.row = whole.row - int(y);
+                job.imageRow = whole.imageRow - int(y);
+                job.under = whole.under + size_t(y) * rowBytes;
+                ++_stats.calls;
+                const Error err = _surface->patch(Rect{area.x, uint16_t(area.y + y), area.width, rows},
+                                                  drawCursorPixels, &job, DrawTimeoutMs);
+                if (err.isError()) {
+                        drawError(err, "the pointer");
+                        break;
+                }
+                done = uint16_t(y + rows);
+        }
+        _underRect = done > 0 ? Rect{area.x, area.y, area.width, done} : Rect();
         return;
 }
 
@@ -1157,6 +1606,7 @@ void WindowManager::round(uint32_t requests) {
         const uint64_t start = System::uptimeUs();
         _surface->beginBatch(); // the round's fills and text in few jobs (windows.md §4n)
         restoreUnder();
+        dndFree();     // an ended drag's image and under: nothing drawn holds them now
         restoreBand(); // under the pointer's: put back in the order they went on
         if (!damage.isEmpty()) {
                 auto [n, err] = _stack.plan(damage, Span<ComposePiece>(_pieces, MaxPieces));
@@ -1689,6 +2139,7 @@ Result<uint8_t> WindowManager::openLocked(const WindowConfig &config) {
                 w.kind[MaxKind] = '\0';
         }
         w.mouse = config.mouse;
+        w.drop = config.drop;
         w.reserve = config.level == Level::Panel ? config.reserve : 0;
         // A desktop's or a panel's window takes the keys only when pressed or raised (§4r).
         const bool keysLevel = config.level == Level::Desktop || config.level == Level::Panel;
@@ -1746,6 +2197,7 @@ Error WindowManager::closeLocked(uint8_t id) {
         if (_mouseId == id) _mouseId = 0;
         if (_hoverId == id) _hoverId = 0;
         if (_unsnapId == id) _unsnapId = 0;
+        dndClosed(id);
         if (WindowStack::isApplication(level)) _listChanged = true;
         if (_menuFor == id && _menuId != 0) (void)closeLocked(_menuId); // its menu with it
         if (_switcher != nullptr && id != _switchId && WindowStack::isApplication(level))
