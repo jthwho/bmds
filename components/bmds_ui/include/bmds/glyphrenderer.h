@@ -76,6 +76,7 @@ class GlyphRenderer {
                 /**
                  * @brief Writes @p cells in @p font side by side from @p out, as
                  *        many as fit in @p maxWidth pixels; @p used gets how many.
+                 *        @p out null: measured only, nothing drawn.
                  * @return The pixels written (whole glyphs).
                  * @hotpath
                  */
@@ -85,7 +86,8 @@ class GlyphRenderer {
                 /**
                  * @brief Writes @p utf8 in @p font, @p fg on @p bg, side by side
                  *        from @p out, as much as fits in @p maxWidth pixels; @p used
-                 *        gets the bytes of @p utf8 written.
+                 *        gets the bytes of @p utf8 written. @p out null: measured only
+                 *        (what would be written, nothing drawn: a part off the clip).
                  * @return The pixels written.
                  * @hotpath
                  */

@@ -139,9 +139,21 @@ uint16_t GlyphRenderer::drawCells(Span<const TextCell> cells, const Font &font, 
         uint32_t       last = 0xffffffffu;
         Glyph          glyph;
         uint16_t       width = 0;
+        used = 0;
+        if (out == nullptr) { // measured only: the cells that fit, nothing drawn
+                for (const TextCell &cell : cells) {
+                        if (cell.codepoint != last) {
+                                glyph = font.glyph(cell.codepoint);
+                                last = cell.codepoint;
+                        }
+                        if (width + glyph.width > maxWidth) break;
+                        width = static_cast<uint16_t>(width + glyph.width);
+                        ++used;
+                }
+                return width;
+        }
         begin();
         bool loaded = false;
-        used = 0;
         for (const TextCell &cell : cells) {
                 if (cell.codepoint != last) {
                         glyph = font.glyph(cell.codepoint);
@@ -165,14 +177,16 @@ uint16_t GlyphRenderer::drawText(StringView utf8, const Font &font, uint32_t fg,
                                  size_t stride, uint16_t maxWidth, size_t &used) {
         const unsigned height = font.height() < MaxHeight ? font.height() : MaxHeight;
         uint16_t       width = 0;
-        setColors(fg, bg);
-        begin();
-        loadColors();
         used = 0;
+        if (out != nullptr) { // null: measured only
+                setColors(fg, bg);
+                begin();
+                loadColors();
+        }
         for (size_t i = 0; i < utf8.size();) {
                 const Glyph glyph = font.glyph(Utf8::decode(utf8, i));
                 if (width + glyph.width > maxWidth) break;
-                put(glyph.rows, glyph.width / 8u, height, out + size_t(width) * 3, stride);
+                if (out != nullptr) put(glyph.rows, glyph.width / 8u, height, out + size_t(width) * 3, stride);
                 width = static_cast<uint16_t>(width + glyph.width);
                 used = i;
         }

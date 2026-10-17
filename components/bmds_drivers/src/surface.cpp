@@ -269,8 +269,11 @@ Error Surface::copyForward(const uint32_t *tiles, const Deadline &deadline) {
                 const Rect     r{static_cast<uint16_t>(o.c0 * TileWidth), static_cast<uint16_t>(o.r0 * TileHeight),
                              static_cast<uint16_t>(right - o.c0 * TileWidth),
                              static_cast<uint16_t>(bottom - o.r0 * TileHeight)};
-                if (err.isOk() && _chain.count() == _chain.capacity()) err = runChain(deadline);
                 if (err.isOk()) err = _chain.add(from, r.x, r.y, to, r.x, r.y, r.width, r.height);
+                if (err == Error::Full) { // its pieces or rows (a batch's fills): the job so far run first
+                        err = runChain(deadline);
+                        if (err.isOk()) err = _chain.add(from, r.x, r.y, to, r.x, r.y, r.width, r.height);
+                }
                 ++_stats.forwards;
                 _stats.forwardPixels += r.area();
         };
@@ -902,9 +905,13 @@ Error Surface::copy(Span<const Copy> copies, unsigned int timeoutMs) {
         if (err.isError()) return err;
         const BlitChain::Picture pic = picture(back());
         for (const Copy &c : copies) {
-                if (_chain.count() == _chain.capacity()) err = runChain(deadline);
-                if (err.isOk())
-                        err = _chain.add(pic, c.from.x, c.from.y, pic, c.toX, c.toY, c.from.width, c.from.height);
+                err = _chain.add(pic, c.from.x, c.from.y, pic, c.toX, c.toY, c.from.width, c.from.height);
+                if (err == Error::Full) { // its pieces or rows: the job so far run first
+                        err = runChain(deadline);
+                        if (err.isOk())
+                                err = _chain.add(pic, c.from.x, c.from.y, pic, c.toX, c.toY, c.from.width,
+                                                 c.from.height);
+                }
                 if (err.isError()) {
                         _chain.clear();
                         return err;

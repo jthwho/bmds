@@ -805,6 +805,14 @@ TEST_CASE("GlyphRenderer: runs of cells and text match glyph by glyph, cut at th
                                               font, 0xffffff, 0, runOut, Stride, 28, bytes);
         CHECK(tw == 24); // a, b, the shade; 'c' would pass 28
         CHECK(bytes == 5);
+        // Measured only (no output): the same widths and counts, nothing written.
+        size_t mused = 0, mbytes = 0;
+        CHECK(renderer.drawCells(bmds::Span<const TextCell>(cells, 6), font, nullptr, Stride, 50, mused) == w);
+        CHECK(mused == used);
+        CHECK(renderer.drawText("ab\xe2\x96\x91"
+                                "cd",
+                                font, 0xffffff, 0, nullptr, Stride, 28, mbytes) == tw);
+        CHECK(mbytes == bytes);
 }
 
 TEST_CASE("TerminalView: cells with defaults, attributes, wide characters and the cursor") {

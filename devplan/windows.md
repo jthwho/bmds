@@ -682,8 +682,15 @@ connects, callbacks, cache syncs: 44% of the window manager's CPU) and a wait.
 - **Measured** (the System Monitor's overview, idle): jobs ~95 → ~5 a round; the refresh's drawing
   27 → 7-8 ms (and 290,000 → ~100,000 pixels a second); the window manager's CPU while drawing
   ~40% less. `win stats` gains `Jobs:` (2D-DMA jobs on the desktop's surface). `win check` 0 wrong.
-- **Left:** a drag's thin strips still cost ~5 ms each (every widget crossed draws its text whole,
-  then the strip's sliver is copied); edge resolves dominate drags.
+- **Thin strips** (2026-10-16, after): a text, cells, icon or row band is made only for the clip's
+  spans in its rows (`Painter::run()`); what lies before a span is passed over by measuring
+  (`GlyphRenderer` with no output: the widths, nothing drawn) and nothing is made past the last.
+  The window manager's CPU during a drag ~22% less again; the rounds no faster (~16 ms): they wait
+  for the 2D-DMA now, not the CPU (busy ~14% of a core).
+- **`Full` from a batch's rows:** a batch runs out of transmit descriptors (a fill's rows) before
+  its pieces, and `copyForward()` and `copy()` ran the job only at a full count of pieces: their
+  `add()` failed with `Full`, a window's drawing counted an error (`wm0.errors`, the user's report).
+  Both run the job and add again now; 0 errors in 28 drags since.
 
 ## 4o. Queries that don't wait for a round (2026-10-16)
 

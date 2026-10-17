@@ -20,6 +20,7 @@ namespace {
         constexpr uint32_t AlignMask = Surface::Align - 1u;
         constexpr size_t   MaxList = 32; // a scroll's working lists (on the window manager's stack; past them, redrawn)
         constexpr int32_t  MinPiece = 160; // columns a piece is given at least in the strip (if it needs them)
+        constexpr int32_t  MinRoom = 32;   // and at most past the clip's span: room for a glyph, wide ones too
 
         // @p from minus every rectangle of @p minus into @p out (disjoint).
         // Returns false if more than @p MaxList rectangles were needed.
@@ -171,18 +172,54 @@ Error Painter::run(int x, int y, uint16_t maxWidth, uint16_t height, Draw draw, 
         bool          visible = false;
         for (const Rect &piece : _clip) visible |= piece.intersects(whole);
         if (!visible) return _error;
+        // The clip's next span of these rows from column @p c: [first, end), first INT32_MAX if none.
+        // Pieces are made only for spans (a thin strip of a long label draws a glyph or two).
+        const auto span = [&](int32_t c, int32_t &first, int32_t &end) {
+                first = INT32_MAX;
+                end = 0;
+                for (const Rect &piece : _clip) {
+                        const Rect cut = piece.intersected(whole);
+                        if (cut.isEmpty() || int32_t(cut.right()) <= c) continue;
+                        const int32_t from = int32_t(cut.x) > c ? int32_t(cut.x) : c;
+                        if (from < first || (from == first && int32_t(cut.right()) > end)) {
+                                first = from;
+                                end = cut.right();
+                        }
+                }
+                return;
+        };
 
         // A half's size is the BGR one's; RGB565 rows are packed closer in it.
         const Surface::Source source = rgb565 ? Surface::Source::Rgb565 : Surface::Source::Bgr24;
         const size_t          pixel = rgb565 ? 2 : Surface::BytesPerPixel;
         const size_t          stride = size_t(_tools.halfWidth) * pixel;
         const size_t          halfBytes = size_t(_tools.halfWidth) * Surface::BytesPerPixel * _tools.height;
-        int32_t      done = 0;
+        int32_t               done = 0;
         while (done < width) {
+                const int32_t col = sx + done;
+                int32_t       first = 0, end = 0;
+                span(col < 0 ? 0 : col, first, end);
+                if (first == INT32_MAX) break; // nothing more of it shows
+                if (first >= col + int32_t(Surface::Align)) {
+                        // Up to the span: passed over, measured (no strip, nothing drawn).
+                        const int32_t  gap = (first - col) & ~int32_t(AlignMask);
+                        bool           more = false;
+                        const uint16_t w = draw(nullptr, 0, static_cast<uint16_t>(gap < 0xfff0 ? gap : 0xfff0), more);
+                        if (w != 0) {
+                                done += w;
+                                if (!more) break;
+                                continue;
+                        }
+                        // Not even a glyph's room: drawn from here.
+                }
+                // A piece no wider than the span (but a glyph or two at least).
+                const int32_t desired = width - done < (end - col > MinRoom ? end - col : MinRoom)
+                                                ? width - done
+                                                : (end - col > MinRoom ? end - col : MinRoom);
                 // The next free columns: past what earlier pieces use, which the 2D-DMA may not have
                 // read yet. Too few left in a half for the piece (a text's width isn't known before:
                 // at least MinPiece), the next half; both used, the surface waited for, from the start.
-                const int32_t wanted = width - done < MinPiece ? width - done : MinPiece;
+                const int32_t wanted = desired < MinPiece ? desired : MinPiece;
                 if (_tools.stripHalf < 2 && int32_t(_tools.halfWidth) - _tools.stripColumn < wanted) {
                         ++_tools.stripHalf;
                         _tools.stripColumn = 0;
@@ -195,7 +232,7 @@ Error Painter::run(int x, int y, uint16_t maxWidth, uint16_t height, Draw draw, 
                 uint8_t *strip =
                         _tools.strip + size_t(_tools.stripHalf) * halfBytes + size_t(_tools.stripColumn) * pixel;
                 const int32_t  free = int32_t(_tools.halfWidth) - _tools.stripColumn;
-                const auto     room = static_cast<uint16_t>(width - done < free ? width - done : free);
+                const auto     room = static_cast<uint16_t>(desired < free ? desired : free);
                 bool           more = false;
                 const uint16_t w = draw(strip, stride, room, more);
                 if (w == 0) break;
@@ -243,7 +280,9 @@ Error Painter::rows(int x, int y, uint16_t width, uint16_t height, uint16_t repe
         return run(
                 x, y, width, height,
                 [&](uint8_t *strip, size_t stride, uint16_t room, bool &more) {
-                        const uint16_t w = make(arg, strip, stride, column, room);
+                        const uint16_t w = strip != nullptr        ? make(arg, strip, stride, column, room)
+                                           : room < width - column ? static_cast<uint16_t>(room & ~AlignMask)
+                                                                   : static_cast<uint16_t>(width - column);
                         column = uint16_t(column + w);
                         more = column < width;
                         return w;
@@ -312,12 +351,15 @@ Error Painter::image(int x, int y, const Icon &icon, uint32_t bg) {
         for (uint16_t top = 0; top < icon.height && width != 0; top = static_cast<uint16_t>(top + _tools.height)) {
                 const uint16_t rows =
                         static_cast<uint16_t>(icon.height - top < _tools.height ? icon.height - top : _tools.height);
+                uint16_t column = 0; // the icon's, a piece's first
                 (void)run(x, y + top, width, rows, [&](uint8_t *strip, size_t stride, uint16_t room, bool &more) {
-                        const uint16_t w = room < width ? static_cast<uint16_t>(room & ~3u) : width;
-                        for (uint16_t r = 0; r < rows; ++r) // blendOver() a pixel, PIE's 16 at a time
-                                Pixels::fromArgb(icon.pixels + size_t(top + r) * icon.width, w,
+                        const uint16_t w =
+                                room < width - column ? static_cast<uint16_t>(room & ~3u) : uint16_t(width - column);
+                        for (uint16_t r = 0; strip != nullptr && r < rows; ++r) // blendOver(), PIE's 16 at a time
+                                Pixels::fromArgb(icon.pixels + size_t(top + r) * icon.width + column, w,
                                                  strip + size_t(r) * stride, PixelFormat::Bgr24, bg);
-                        more = false;
+                        column = static_cast<uint16_t>(column + w);
+                        more = column < width;
                         return w;
                 });
         }
