@@ -1,8 +1,9 @@
 # Bench: one system benchmark for all tuning
 
-Status: **steps 1 to 3 built** (2026-10-17, the user's request; decisions agreed the same day; §10-§12). Replaces the
-benchmarks spread across `sd`, `fsbench`, `simd`, `memtest`, `display`, `win` and `progtest`
-(§3). Comes before Quake (`games.md`), whose renderer and presentation need a baseline.
+Status: **steps 1 to 4 built** (2026-10-17, the user's request; decisions agreed the same day;
+§10-§13). Replaces the benchmarks spread across `sd`, `fsbench`, `simd`, `memtest`, `display`,
+`win` and `progtest` (§3). Comes before Quake (`games.md`), whose renderer and presentation
+need a baseline.
 
 ## 1. Goal
 
@@ -375,4 +376,140 @@ has not shipped.
   runner).
 - **Next:** step 4, `tools/bmds-bench`'s remaining work and a first full baseline; then step 5,
   new benchmarks (surfaces and games first, for Quake).
+
+## 13. As built: step 4, the host tool, and the first baseline (2026-10-17)
+
+- **The results file** records each parameter's default (`"defaults"`), so a run can be told
+  from what it was given.
+- **`tools/bmds-bench`:** runs are still matched by every parameter's value, but labelled with
+  only those not at their defaults (`fs.smallfiles dir=/flash`, not every parameter
+  `net.latency` has); `table [RUN]` prints a run as a Markdown table (the tables below), its
+  skipped benchmarks after; a RUN may be `last` or `previous` as well as a file or a name.
+- **The baseline** (below): `tools/bmds-bench run --no-peer @all`, about nine minutes, then
+  `fs.smallfiles dir=/flash`, on the user's board with the desktop running (nothing else open)
+  and this step's build (image 9827b5ec). Kept on the board in `/home/bench` and in the host's
+  store: the first runs later ones are compared with.
+  - Not measured: surface 0's four (the desktop has the display) and `net.latency` (no peer: a
+    wired host running `tools/netlat-reflector` gives it; this laptop is on Wi-Fi).
+  - `games.doom.timedemo` came out at 54.2 fps here against 57.6 in step 3's run: one run a
+    time, so its spread isn't known; Doom's switch to its own full screen and back showed as a
+    scan underrun, a resync and a rebuild in `meanwhile` (the rebuild expected; the underrun,
+    as at other mode switches, `games.md` §20a).
+  - Noisy figures are short loops in internal RAM beside the desktop (`simd.repeat16`,
+    `display.blitcost`, parts of `display.ppa.path`) and sleeps at the normal priority: their
+    medians stand.
+  - Leads for tuning: `kernel.syscall` (8.5 µs a call), `audio.synth.load` (48 notes take 93 %
+    of a block's time), `memory.traffic`'s PSRAM copy (32 MB/s beside the scan and composing),
+    `net.loopback` (26 MB/s).
+
+| Benchmark | Metric | Median | Unit | Spread | Runs |
+|---|---|---:|---|---:|---:|
+| `audio.synth.load` | notes_8_block_us | 490.4 | us | ±15.7% noisy | 5 |
+|  | notes_16_block_us | 919.5 | us | ±7.0% noisy | 5 |
+|  | notes_32_block_us | 1177 | us | ±0.6% | 5 |
+|  | notes_48_block_us | 1233 | us | ±0.6% | 5 |
+| `display.blitcost` | start_blit_640x8_888 | 132 | us | ±114.4% noisy | 20 |
+|  | start_blit_640x8_565 | 135 | us | ±45.6% noisy | 20 |
+|  | start_blit_1280x8_888 | 218 | us | ±7.6% noisy | 20 |
+|  | start_blit_1280x8_565 | 222 | us | ±138.1% noisy | 20 |
+|  | msync_20k_internal | 4 | us | ±12.5% noisy | 20 |
+| `display.ppa.path` | cpu_double_scalar | 10830 | us | ±5.7% noisy | 20 |
+|  | cpu_double_pie | 6861 | us | ±10.4% noisy | 20 |
+|  | cpu_double_cached | 1010 | us | ±49.7% noisy | 20 |
+|  | dma_x2 | 17806 | us | ±8.1% noisy | 20 |
+|  | pipelined_x2 | 18252 | us | ±3.5% | 20 |
+|  | dma_x1 | 8802 | us | ±0.3% | 20 |
+|  | pipelined_x1 | 11779 | us | ±16.9% noisy | 20 |
+|  | fetch_to_internal | 4054 | us | ±14.8% noisy | 20 |
+|  | fetched_pipelined_x1 | 11440 | us | ±1.8% | 20 |
+| `display.ppa.scale` | blocks_565_640x360_x2 | 30912 | us | ±0.3% | 20 |
+|  | doom_888_320x200_x3 | 20308 | us | ±1.3% | 20 |
+|  | integer_888_320x200_x3 | 17120 | us | ±0.1% | 20 |
+|  | solitaire_565_640x480_x1 | 18962 | us | ±2.6% | 20 |
+|  | copy_888_1280x720 | 62334 | us | ±0.4% | 20 |
+|  | expand_l8_320x200 | 1660 | us | ±20.4% noisy | 20 |
+|  | doom_expand_and_scale | 21961 | us | ±0.5% | 20 |
+| `display.ppa.soak` | frames_a_second | 32.33 | /s | ±0.0% | 1 |
+|  | written_mb_s | 89.39 | MB/s | ±0.0% | 1 |
+| `fs.smallfiles` | create_ms | 0.1043 | ms | ±0.2% | 5 |
+|  | create_max_ms | 0.113 | ms | ±2.2% | 5 |
+|  | rewrite_ms | 0.09905 | ms | ±0.3% | 5 |
+|  | rewrite_max_ms | 0.107 | ms | ±1.9% | 5 |
+|  | remove_ms | 0.04795 | ms | ±0.7% | 5 |
+|  | remove_max_ms | 0.052 | ms | ±3.8% | 5 |
+|  | all_ms | 5.446 | ms | ±0.1% | 5 |
+|  | stopped_ms | 0 | ms | ±0.0% | 1 |
+|  | stopped_percent | 0 | % | ±0.0% | 1 |
+| `fs.smallfiles dir=/flash` | create_ms | 16.23 | ms | ±75.1% noisy | 5 |
+|  | create_max_ms | 232.5 | ms | ±96.9% noisy | 5 |
+|  | rewrite_ms | 16.12 | ms | ±77.5% noisy | 5 |
+|  | rewrite_max_ms | 177.8 | ms | ±134.9% noisy | 5 |
+|  | remove_ms | 7.332 | ms | ±142.3% noisy | 5 |
+|  | remove_max_ms | 10.61 | ms | ±876.5% noisy | 5 |
+|  | all_ms | 1133 | ms | ±22.2% noisy | 5 |
+|  | stopped_ms | 1989 | ms | ±0.0% | 1 |
+|  | stopped_percent | 26.05 | % | ±0.0% | 1 |
+| `games.doom.timedemo` | fps | 54.19 | /s | ±0.0% | 1 |
+|  | gametic_ms | 18.45 | ms | ±0.0% | 1 |
+| `gui.drag` | drag_ms | 500.1 | ms | ±1.7% | 5 |
+|  | drop_ms | 33.36 | ms | ±0.0% | 5 |
+| `gui.glyphs` | scalar_cycles_a_cell | 808.3 | cycles | ±9.8% noisy | 5 |
+|  | pie_cycles_a_cell | 406.9 | cycles | ±3.2% | 5 |
+| `gui.icons` | rom_each | 107684 | cycles | ±0.9% | 5 |
+|  | psram_each | 48527 | cycles | ±0.5% | 5 |
+|  | rom_again | 26702 | cycles | ±2.0% | 5 |
+|  | psram_again | 26772 | cycles | ±0.4% | 5 |
+|  | internal_again | 26680 | cycles | ±0.1% | 5 |
+| `gui.scroll` | scroll_us | 15378 | us | ±0.8% | 5 |
+| `gui.shuffle` | change_us | 29339 | us | ±7.4% noisy | 5 |
+|  | change_max_us | 66612 | us | ±12.5% noisy | 5 |
+| `gui.text` | redraw_us | 27402 | us | ±0.3% | 5 |
+| `images.codecs` | png_encode_ms | 1437 | ms | ±0.2% | 5 |
+|  | png_decode_ms | 738.8 | ms | ±0.6% | 5 |
+|  | jpeg_encode_ms | 32.77 | ms | ±1.5% | 5 |
+|  | jpeg_decode_ms | 31.07 | ms | ±0.1% | 5 |
+|  | jpeg_software_decode_ms | 244.9 | ms | ±1.1% | 5 |
+| `kernel.sleep` | other_late_us | 851 | us | ±24.9% noisy | 5 |
+|  | fifo_late_us | 30 | us | ±5.0% | 5 |
+| `kernel.syscall` | getppid_ns | 8534 | ns | ±1.1% | 5 |
+| `memory.psram.cpu` | write_mb_s | 31.05 | MB/s | ±1.0% | 5 |
+|  | read_mb_s | 32.32 | MB/s | ±0.8% | 5 |
+| `memory.psram.dma` | copy_mb_s | 71.05 | MB/s | ±1.0% | 5 |
+| `memory.traffic` | psram_copy_mb_s | 31.6 | MB/s | ±1.7% | 5 |
+|  | psram_set_mb_s | 44.67 | MB/s | ±2.1% | 5 |
+|  | internal_copy_mb_s | 532.4 | MB/s | ±0.8% | 5 |
+| `midi.decode` | times_realtime | 18.94 | x | ±1.7% | 5 |
+| `net.loopback` | tcp_mb_s | 26.32 | MB/s | ±6.8% noisy | 5 |
+| `programs.launch` | start_and_exit_ms | 12.16 | ms | ±5.3% noisy | 5 |
+| `simd.blend` | psram_scalar_us | 361.9 | us | ±1.3% | 5 |
+|  | psram_pie_us | 156.7 | us | ±1.7% | 5 |
+|  | internal_scalar_us | 231.8 | us | ±0.2% | 5 |
+|  | internal_pie_us | 34.44 | us | ±4.9% | 5 |
+| `simd.glyphs` | scalar_us | 383.9 | us | ±2.0% | 5 |
+|  | pie_us | 180 | us | ±8.9% noisy | 5 |
+| `simd.orient` | quarter_right_ms | 281.3 | ms | ±1.3% | 5 |
+| `simd.pngfilter` | scalar_us | 596.8 | us | ±2.6% | 5 |
+|  | pie_us | 69.96 | us | ±0.0% | 5 |
+| `simd.repeat16` | scalar_us | 9220 | us | ±5.2% noisy | 5 |
+|  | pie_us | 1017 | us | ±13.5% noisy | 5 |
+| `simd.scale` | scalar_ms | 795.6 | ms | ±0.3% | 5 |
+|  | pie_ms | 298.9 | ms | ±1.6% | 5 |
+| `simd.softjpeg` | full_scalar_ms | 951 | ms | ±0.1% | 5 |
+|  | full_pie_ms | 719.8 | ms | ±0.6% | 5 |
+|  | quarter_scalar_ms | 663.8 | ms | ±0.4% | 5 |
+|  | quarter_pie_ms | 663.1 | ms | ±0.4% | 5 |
+| `simd.swap24` | scalar_ms | 224.3 | ms | ±3.0% | 5 |
+|  | pie_ms | 185.5 | ms | ±3.8% | 5 |
+| `storage.sd.read` | direct_65536 | 15.94 | MB/s | ±0.4% | 5 |
+|  | bounced_65536 | 5.653 | MB/s | ±0.5% | 5 |
+|  | direct_512 | 1.372 | MB/s | ±1.1% | 5 |
+|  | bounced_512 | 1.363 | MB/s | ±1.2% | 5 |
+
+Not measured: `display.anim`: skipped (Resource is busy); `display.draw`: skipped (Resource is
+busy); `display.fill`: skipped (Resource is busy); `display.present`: skipped (Resource is busy);
+`net.latency`: skipped (Operation not supported).
+
+- **Next:** step 5, new benchmarks: the surfaces and games first (a program's present at each
+  format and scale, `libbmdsgame`'s drawing, a renderer-like loop into internal RAM and PSRAM),
+  for Quake; then CPU, memory latency, kernel and storage throughput (§6).
 

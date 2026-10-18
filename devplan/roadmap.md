@@ -181,7 +181,9 @@ Plan: [`input.md`](input.md).
   done (§12): programs' benchmarks (`*.bench` descriptors in `bench/paths`, `@bench` lines,
   `libbmdsbench`), `benchprog` (system calls, launches, sleeps, loopback TCP, the synth, MIDI,
   images), `net.latency` (`netlat --bench`, the host tool starting the reflector), Doom's
-  timedemo (57.6 fps). Next: step 4 (a full baseline); then Quake.
+  timedemo (57.6 fps). Step 4 done (§13): parameters' defaults in the file, labels with only
+  what was changed, `tools/bmds-bench table`, and the first full baseline (31 benchmarks, kept
+  on the board). Next: step 5 (new benchmarks: surfaces and games first); then Quake.
 - [x] Settings, the control panel (`controlpanel.md`, planned 2026-10-16, the user's request):
   the one place to change every sysconf setting graphically, laid out like the Mac's System
   Settings (groups with icons on the left, the group's page on the right). Changes apply and

@@ -581,6 +581,15 @@ namespace {
                                 return;
                         }
 
+                        // A common parameter's default for the bench running: its own, else the common one.
+                        const char *defaultOf(const BenchParam &common) const {
+                                for (size_t i = 0; i < _bench->paramCount(); ++i) {
+                                        if (StringView(_bench->paramName(i)) == common.name)
+                                                return _bench->paramValue(i);
+                                }
+                                return common.defaultValue;
+                        }
+
                         // Runs @p bench; writes its record to @p json (when there is one).
                         Error run(const Entry &bench, JsonWriter *json) {
                                 _bench = &bench;
@@ -760,6 +769,15 @@ namespace {
                                 }
                                 for (const BenchParam &common : CommonParams)
                                         json.member(common.name, param(common.name));
+                                json.endObject();
+                                json.key("defaults"); // what the parameters are unless given
+                                json.beginObject();
+                                for (size_t i = 0; i < _bench->paramCount(); ++i) {
+                                        if (!isCommon(_bench->paramName(i)))
+                                                json.member(_bench->paramName(i), _bench->paramValue(i));
+                                }
+                                for (const BenchParam &common : CommonParams)
+                                        json.member(common.name, defaultOf(common));
                                 json.endObject();
                                 json.member("status", result.isOk()       ? "ok"
                                                       : isSkipped(result) ? "skipped"

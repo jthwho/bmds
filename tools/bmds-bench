@@ -18,7 +18,12 @@
 #   tools/bmds-bench history NAME [METRIC]
 #       one benchmark's metrics run by run, with each run's build.
 #   tools/bmds-bench compare RUN RUN
-#       two runs (files, or names in the store) side by side, with what differs in their systems.
+#       two runs side by side, with what differs in their systems.
+#   tools/bmds-bench table [RUN]
+#       one run's results as a Markdown table (the newest run by default), for the devplan.
+#
+# A RUN is a results file, a name in the store, `last` or `previous`. Runs are matched by every
+# parameter's value; labels show only those not at their defaults.
 #
 # The store is bench-results/ in the repository (git-ignored), or --store DIR. Python's standard
 # library only; ssh with a key (BatchMode).
@@ -75,18 +80,29 @@ def params_key(bench):
     return tuple(sorted(params.items()))
 
 
+def changed_params(bench):
+    """The parameters not at their defaults (all of them for a file without its defaults)."""
+    defaults = bench.get("defaults")
+    params = dict(params_key(bench))
+    if defaults is not None:
+        params = {k: v for k, v in params.items() if defaults.get(k) != v}
+    return tuple(sorted(params.items()))
+
+
+def bench_label(bench):
+    """A benchmark and its parameters not at their defaults: storage.sd.read mb=2."""
+    return " ".join([bench["name"]] + ["%s=%s" % kv for kv in changed_params(bench)])
+
+
 def results(data):
-    """(bench name, params, metric) -> result, for one run."""
+    """(bench name, params, metric) -> result (with its label as "_label"), for one run."""
     out = {}
     for bench in data.get("benches", []):
         for r in bench.get("results", []):
+            r = dict(r)
+            r["_label"] = bench_label(bench)
             out[(bench["name"], params_key(bench), r["metric"])] = r
     return out
-
-
-def label(name, params):
-    """A benchmark and the parameters it ran with: storage.sd.read mb=2."""
-    return " ".join([name] + ["%s=%s" % kv for kv in params])
 
 
 def fmt(value):
@@ -117,8 +133,8 @@ def show_against(data, earlier):
         for key, r in results(run).items():
             history.setdefault(key, []).append(r)
     for key, r in results(data).items():
-        name, params, metric = key
-        line = "%-36s %-24s %10s %-8s" % (label(name, params), metric, fmt(r["median"]), r["unit"])
+        metric = key[2]
+        line = "%-30s %-24s %10s %-8s" % (r["_label"], metric, fmt(r["median"]), r["unit"])
         past = history.get(key, [])
         if not past:
             print(line + "  (first run)")
@@ -261,6 +277,12 @@ def cmd_history(args):
 
 
 def find_run(store, name):
+    if name in ("last", "previous"):
+        runs = all_runs(store)
+        index = -1 if name == "last" else -2
+        if len(runs) < -index:
+            sys.exit("bmds-bench: no %s run in %s" % (name, store))
+        return runs[index]
     if os.path.exists(name):
         return name, load(name)
     for path in glob.glob(os.path.join(store, "*", name)) + glob.glob(os.path.join(store, "*", name + ".json")):
@@ -285,12 +307,12 @@ def cmd_compare(args):
     print("A: %s\nB: %s\n" % (pa, pb))
     ra, rb = results(a), results(b)
     for key in sorted(set(ra) | set(rb)):
-        name, params, metric = key
+        metric = key[2]
         va = ra.get(key, {}).get("median")
         vb = rb.get(key, {}).get("median")
-        unit = (ra.get(key) or rb.get(key))["unit"]
+        either = ra.get(key) or rb.get(key)
         delta = "%+.1f%%" % change(vb, va) if va is not None and vb is not None else ""
-        print("%-36s %-24s %10s %10s %-8s %s" % (label(name, params), metric, fmt(va), fmt(vb), unit, delta))
+        print("%-30s %-24s %10s %10s %-8s %s" % (either["_label"], metric, fmt(va), fmt(vb), either["unit"], delta))
     # What differs in the systems (tasks and uptime always do: left out).
     sa = flatten({k: v for k, v in a.get("system", {}).items() if k not in ("tasks", "uptime_us")})
     sb = flatten({k: v for k, v in b.get("system", {}).items() if k not in ("tasks", "uptime_us")})
@@ -299,6 +321,31 @@ def cmd_compare(args):
         print("\nThe systems differ:")
         for k in diffs:
             print("  %-36s %s -> %s" % (k, sa.get(k, "-"), sb.get(k, "-")))
+    return 0
+
+
+def cmd_table(args):
+    path, data = find_run(args.store, args.run)
+    sysinfo = data.get("system", {})
+    print("Run `%s` (%s, %s, image %s), %s:\n" % (data.get("command", "?"), sysinfo.get("serial", "?"),
+                                                  sysinfo.get("build", "?"), sysinfo.get("image_sha256", "?")[:8],
+                                                  data.get("start", "?")[:19]))
+    print("| Benchmark | Metric | Median | Unit | Spread | Runs |")
+    print("|---|---|---:|---|---:|---:|")
+    skipped = []
+    for bench in data.get("benches", []):
+        if bench.get("status") != "ok":
+            skipped.append("`%s`: %s%s" % (bench["name"], bench.get("status"),
+                                           " (%s)" % bench["reason"] if bench.get("reason") else ""))
+        first = True
+        for r in bench.get("results", []):
+            name = "`%s`" % bench_label(bench) if first else ""
+            first = False
+            print("| %s | %s | %s | %s | %s | %d |" % (name, r["metric"], fmt(r["median"]), r["unit"],
+                                                        "±%.1f%%%s" % (r.get("spread", 0), " noisy" if r.get("noisy") else ""),
+                                                        r.get("runs", 0)))
+    if skipped:
+        print("\nNot measured: " + "; ".join(skipped) + ".")
     return 0
 
 
@@ -322,6 +369,9 @@ def main():
     p.add_argument("a")
     p.add_argument("b")
     p.set_defaults(fn=cmd_compare)
+    p = sub.add_parser("table", help="one run's results as a Markdown table")
+    p.add_argument("run", nargs="?", default="last")
+    p.set_defaults(fn=cmd_table)
     args = parser.parse_args()
     sys.exit(args.fn(args))
 
