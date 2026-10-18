@@ -657,3 +657,7 @@ Error cancelDrag(uint32_t drag);                                      // the sou
     - The address bar took a dropped file's path; the image viewer opened a dropped picture.
     - `win check` with a drag shown: 0 pixels wrong. A drag's round: 3.3 ms; 0 drawing errors.
   - **Size:** the image grew 21,216 bytes to 2,304,048.
+  - **Fixed later (2026-10-17, `filebrowser.md` §4k):** a drag from the Details view showed no
+    image. Its rows span every column, wider than the 128-pixel image, so `DragImage::holds()`
+    took none. A drag now shows a row's icon and name (`ItemView::dragBox()`, the Details view's
+    first column).

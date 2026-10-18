@@ -246,10 +246,12 @@ namespace FileOps {
                 bool measureTree(Walk &w, StringView path, const FileInfo &info, Totals &totals, int depth) {
                         if (w.cancelled()) return false;
                         ++totals.items;
+                        w.progress.began(path, info.type == FileType::File ? info.size : 0);
                         if (!info.isDirectory()) {
                                 if (info.type == FileType::File) totals.bytes += info.size;
                                 return true;
                         }
+                        ++totals.folders;
                         if (depth >= MaxDepth) return w.fail(path, Error::OutOfRange);
                         List<FileInfo> entries(MemSpace::Psram);
                         const Error    err = entriesIn(path, w.context, entries);

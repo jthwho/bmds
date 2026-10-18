@@ -106,6 +106,16 @@ int DetailsView::rowAt(uint32_t x, uint32_t y) const {
         return row < count() && x < total() ? int(row) : -1;
 }
 
+// A drag shows the icon and the name, not the other columns (wider than its image).
+DragImage::Box DetailsView::dragBox(size_t row) const {
+        DragImage::Box b = rowBox(row);
+        if (model() == nullptr || _columns == 0) return b;
+        const int named = TextX + int(Fonts::unscii16.textWidth(model()->text(row))) + 4;
+        const int first = _widths[0];
+        b.width = named < first ? named : first;
+        return b;
+}
+
 bool DetailsView::onName(size_t row, uint32_t x, uint32_t y) const {
         (void)y;
         if (model() == nullptr || _columns == 0) return false;

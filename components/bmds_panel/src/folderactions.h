@@ -156,7 +156,8 @@ class FolderActions {
                 /**
                  * @brief What a drop of @p event's drag on @p target does: into a folder,
                  *        copied, moved (the same filesystem) or linked; on an application
-                 *        (a launcher, a `NAME.app` folder), started with them (`Copy`).
+                 *        (a launcher, a `NAME.app` folder), started with them (`Copy`); on
+                 *        the trash, trashed (`Move` only).
                  *        `None` if it can't: no files, a folder into itself or where they are.
                  */
                 DropAction dropAction(StringView target, const GuiDropEvent &event);
@@ -172,8 +173,20 @@ class FolderActions {
                 /** @brief Moves @p paths to their filesystems' trash. */
                 void trash(StringView paths);
 
-                /** @brief Deletes @p paths for good, once a message box naming them is answered Yes. */
+                /**
+                 * @brief Deletes @p paths for good, once a message box naming them is
+                 *        answered Yes (it says so when they are in the trash).
+                 */
                 void removeForGood(StringView paths);
+
+                /** @brief Puts @p paths (in `/trash`) back where they were (`devplan/filebrowser.md` §4k). */
+                void restore(StringView paths);
+
+                /** @brief Deletes everything in the trash for good, once asked. */
+                void emptyTrash();
+
+                /** @brief Returns true if @p path is `/trash`, or leads there (a link to it). */
+                static bool isTrash(StringView path);
 
                 /**
                  * @brief Makes a new item of @p kind in @p directory, under the first free
@@ -206,6 +219,7 @@ class FolderActions {
                         None,
                         Folder,
                         Application,
+                        Trash, // /trash, or a link to it: what is dropped is trashed (FB26)
                 };
                 Target       targetOf(StringView path, DesktopEntry *entry) const;
                 void         dropDone(DropAction action); // _dropPaths into _dropTo, finished

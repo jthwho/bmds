@@ -175,9 +175,19 @@ bool readEntryDirectory(StringView directory, const Vfs::Context &context, Panel
                 auto [info, nerr] = dir.next();
                 if (nerr.isError()) break;
                 const StringView name = info.name.view();
-                const bool       launcher = info.type == FileType::File && name.endsWith(StringView(".desktop"));
-                const bool       other = allFiles && !launcher && !name.startsWith('.') &&
-                                   (info.type == FileType::File || info.type == FileType::Directory);
+                // A link as what it leads to (the desktop's Trash: devplan/filebrowser.md §4k).
+                FileType kind = info.type;
+                if (kind == FileType::Link) {
+                        String target;
+                        if (target.append(directory).isOk() && target.append('/').isOk() &&
+                            target.append(name).isOk()) {
+                                auto [to, serr] = Vfs::stat(target.view(), context);
+                                if (serr.isOk()) kind = to.type;
+                        }
+                }
+                const bool launcher = kind == FileType::File && name.endsWith(StringView(".desktop"));
+                const bool other = allFiles && !launcher && !name.startsWith('.') &&
+                                   (kind == FileType::File || kind == FileType::Directory);
                 if ((!launcher && !other) || name.size() >= sizeof(PanelEntry::file)) continue;
                 // The first directory's file of a name wins (Hidden=true there hides it).
                 bool seen = false;

@@ -114,6 +114,11 @@ class FolderWindow final : public GuiWindow {
                         ChooseCut,
                         ChooseDeleteForGood,
                         ChooseShowContents, // an application's folder, as a folder
+                        ChooseRestore,      // /trash: put back where they were (devplan/filebrowser.md §4k)
+                        ChooseEmptyTrash,
+                        ChooseSortOrigin,
+                        ChooseSortDeleted,
+                        ChooseProperties, // the selection's, else the folder's (devplan/filebrowser.md §4k)
                 };
 
                 FolderWindow(GuiApplication &app, const Config &config, FolderWindowHost &host);
@@ -187,6 +192,9 @@ class FolderWindow final : public GuiWindow {
                 /** @brief Returns true if Up has somewhere to go. */
                 bool canGoUp() const { return path() != "/"; }
 
+                /** @brief Returns true if the folder shown is the trash (`/trash`). */
+                bool isTrash() const { return _items.folder().isTrash(); }
+
         protected:
                 void closedByManager() override;
                 bool keyUnused(const KeyEvent &event) override;
@@ -241,8 +249,12 @@ class FolderWindow final : public GuiWindow {
                 NavigationHistory    _history;
                 MenuBar             *_bar = nullptr;
                 ToolBar             *_tools = nullptr;
-                Button              *_toolButtons[10] = {}; // those with icons, with _toolIcons' ids
-                IconId               _toolIcons[10] = {};
+                Button              *_toolButtons[12] = {}; // those with icons, with _toolIcons' ids
+                IconId               _toolIcons[12] = {};
+                Button              *_copyTool = nullptr; // shown or not as the folder is the trash
+                Button              *_pasteTool = nullptr;
+                Button              *_restoreTool = nullptr;
+                Button              *_emptyTool = nullptr;
                 Button              *_back = nullptr;
                 Button              *_forward = nullptr;
                 Button              *_up = nullptr;

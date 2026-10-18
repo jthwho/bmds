@@ -100,6 +100,16 @@ class FileIcons {
                 /** @brief Forgets the icons not found (a theme on a card mounted since may have them). */
                 void forgetMissing();
 
+                /**
+                 * @brief Sets whether the trash has anything in it: `/trash` and links
+                 *        to it are drawn full or empty (`devplan/filebrowser.md` §4k). The
+                 *        owner follows it (a watch on `/trash`) and redraws.
+                 */
+                void setTrashFull(bool full) { _trashFull = full; }
+
+                /** @brief Returns `setTrashFull()`'s. */
+                bool isTrashFull() const { return _trashFull; }
+
         private:
                 static constexpr size_t MaxKey = 95; // IconTheme::MaxName: an application folder's path
 
@@ -137,6 +147,7 @@ class FileIcons {
                 List<Wanted> _wanted{MemSpace::Psram};
                 Asked        _asked = nullptr;
                 void        *_askedArg = nullptr;
+                bool         _trashFull = false;
 };
 
 BMDS_NAMESPACE_END

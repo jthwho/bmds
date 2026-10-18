@@ -16,6 +16,7 @@
 #include <thread>
 #include <bmds/blockdevices.h>
 #include <bmds/clock.h>
+#include <bmds/directorywatch.h>
 #include <bmds/filecommands.h>
 #include <bmds/filenames.h>
 #include <bmds/fscommands.h>
@@ -169,7 +170,7 @@ TEST_CASE("Files: ls") {
         CHECK(f.out("ls -1 /disk0/p0") == "A.txt\nb.txt\ndocs/\n");
         CHECK(f.out("ls -a1 /disk0/p0") == ".hidden\nA.txt\nb.txt\ndocs/\n");
         CHECK(f.out("cd /disk0/p0; ls b.txt docs") == "b.txt\n\ndocs:\n");
-        CHECK(f.out("ls /") == "apps/  dev/    disk1/  share/\nbin/   disk0/  etc/\n");
+        CHECK(f.out("ls /") == "apps/  dev/    disk1/  share/\nbin/   disk0/  etc/    trash/\n");
         CHECK(f.out("ls /dev") ==
               "clip0    disk0    disk1p0  tty\nclip0p   disk0p0  null     urandom\nconsole  disk1    random   zero\n");
         const std::string longList = f.out("ls -l /disk0/p0/b.txt /disk0/p0/A.txt");
@@ -436,6 +437,10 @@ namespace {
                 }
         }
 
+        bool exists(const char *path) {
+                return Vfs::lstat(path, Vfs::Context{"/", nullptr}).isOk();
+        }
+
 } // namespace
 
 TEST_CASE("Files: copies' names, paths in URIs, trash info files") {
@@ -478,7 +483,11 @@ TEST_CASE("Files: copies' names, paths in URIs, trash info files") {
         CHECK(bmds::TrashInfo::parse(info, bmds::Span<char>(path, sizeof(path)), date) == Error::Ok);
         CHECK(std::string(path) == "/boot/desktop/my file");
         CHECK(std::string(date) == "2026-10-07T09:05:03");
-        CHECK(bmds::TrashInfo::parse("[Trash Info]\nPath=relative\n", bmds::Span<char>(path, sizeof(path)), date) ==
+        // Relative to the trash's filesystem (freedesktop.org's rule for a volume's trash).
+        CHECK(bmds::TrashInfo::parse("[Trash Info]\nPath=dir/my%20file\n", bmds::Span<char>(path, sizeof(path)),
+                                     date) == Error::Ok);
+        CHECK(std::string(path) == "dir/my file");
+        CHECK(bmds::TrashInfo::parse("[Trash Info]\nPath=\n", bmds::Span<char>(path, sizeof(path)), date) ==
               Error::CorruptData);
         CHECK(bmds::TrashInfo::parse("[Other]\nPath=/x\n", bmds::Span<char>(path, sizeof(path)), date) ==
               Error::CorruptData);
@@ -510,8 +519,9 @@ TEST_CASE("Files: the trash") {
         REQUIRE(bmds::Trash::move("/disk0/p0/a.txt", root, &name) == Error::Ok);
         CHECK(name.view() == "a.txt");
         CHECK(read("/disk0/p0/a.txt") == "<" + std::string(Error(Error::NotExist).desc()) + ">");
-        CHECK(read("/disk0/p0/.trash/files/a.txt") == "first");
-        CHECK(read("/disk0/p0/.trash/info/a.txt.trashinfo").rfind("[Trash Info]\nPath=/disk0/p0/a.txt\n", 0) == 0);
+        CHECK(read("/disk0/p0/.bmds/trash/files/a.txt") == "first");
+        // The path relative to the filesystem's root.
+        CHECK(read("/disk0/p0/.bmds/trash/info/a.txt.trashinfo").rfind("[Trash Info]\nPath=a.txt\n", 0) == 0);
         // The same name again: " (2)".
         put("/disk0/p0/a.txt", "second");
         REQUIRE(bmds::Trash::move("/disk0/p0/a.txt", root, &name) == Error::Ok);
@@ -520,26 +530,63 @@ TEST_CASE("Files: the trash") {
         REQUIRE(Vfs::mkdir("/disk1/p0/dir", root) == Error::Ok);
         put("/disk1/p0/dir/inner", "x");
         REQUIRE(bmds::Trash::move("dir", Vfs::Context{"/disk1/p0", nullptr}, &name) == Error::Ok);
-        CHECK(read("/disk1/p0/.trash/files/dir/inner") == "x");
+        CHECK(read("/disk1/p0/.bmds/trash/files/dir/inner") == "x");
+        // A name free in its own trash but taken in /trash by the other's: " (2)" too.
+        put("/disk1/p0/a.txt", "third");
+        REQUIRE(bmds::Trash::move("/disk1/p0/a.txt", root, &name) == Error::Ok);
+        CHECK(name.view() == "a.txt (3)");
         // Not trashable.
         CHECK(bmds::Trash::move("/disk0/p0", root, nullptr) == Error::Invalid);
-        CHECK(bmds::Trash::move("/disk0/p0/.trash", root, nullptr) == Error::Invalid);
-        CHECK(bmds::Trash::move("/disk0/p0/.trash/files/a.txt", root, nullptr) == Error::Invalid);
+        CHECK(bmds::Trash::move("/disk0/p0/.bmds", root, nullptr) == Error::Invalid);
+        CHECK(bmds::Trash::move("/disk0/p0/.bmds/trash/files/a.txt", root, nullptr) == Error::Invalid);
+        CHECK(bmds::Trash::move("/trash/a.txt", root, nullptr) == Error::Invalid);
         CHECK(bmds::Trash::move("/disk0/p0/none", root, nullptr) == Error::NotExist);
         CHECK(bmds::Trash::move("/bin/ls", root, nullptr) == Error::NotSupported);
 
-        // trash -l, then -r: the first back; the second refused (its place is taken), then by path.
+        // find(): where it was and when.
+        bmds::Trash::Entry e;
+        REQUIRE(bmds::Trash::find("a.txt (2)", e) == Error::Ok);
+        CHECK(e.mount.view() == "/disk0/p0");
+        CHECK(e.real.view() == "a.txt (2)");
+        CHECK(e.path.view() == "/disk0/p0/a.txt");
+        CHECK(e.date.size() == bmds::TrashInfo::DateBytes);
+        CHECK(!e.isDirectory);
+        CHECK(bmds::Trash::find("nothing", e) == Error::NotExist);
+
+        // trash -l, then -r: the first back; the second refused (its place is taken).
         const std::string listed = f.out("trash -l");
         CHECK(listed.find("a.txt                     /disk0/p0/a.txt\n") != std::string::npos);
         CHECK(listed.find("a.txt (2)                 /disk0/p0/a.txt\n") != std::string::npos);
+        CHECK(listed.find("a.txt (3)                 /disk1/p0/a.txt\n") != std::string::npos);
         CHECK(listed.find("dir                       /disk1/p0/dir/\n") != std::string::npos);
         CHECK(f.out("trash -r a.txt") == "");
         CHECK(read("/disk0/p0/a.txt") == "first");
         CHECK(f.out("trash -r 'a.txt (2)'", Shell::ExitFailure) == "trash: a.txt (2): its place is taken\n");
         CHECK(f.out("trash -r nothing", Shell::ExitFailure) == "trash: nothing: No such file or directory\n");
+        // By its path in /trash.
+        CHECK(f.out("trash -r '/trash/a.txt (3)'") == "");
+        CHECK(read("/disk1/p0/a.txt") == "third");
         // An info file without its file (a cut-off delete) isn't listed.
-        put("/disk0/p0/.trash/info/ghost.trashinfo", "[Trash Info]\nPath=/disk0/p0/ghost\n");
+        put("/disk0/p0/.bmds/trash/info/ghost.trashinfo", "[Trash Info]\nPath=ghost\n");
         CHECK(f.out("trash -l").find("ghost") == std::string::npos);
+
+        // restore(): Keep Both, Replace, and the folders on the way made again.
+        bmds::String restored;
+        REQUIRE(bmds::Trash::restore("a.txt (2)", bmds::Trash::Conflict::KeepBoth, &restored) == Error::Ok);
+        CHECK(restored.view() == "/disk0/p0/a (copy).txt");
+        CHECK(read("/disk0/p0/a (copy).txt") == "second");
+        CHECK(!exists("/disk0/p0/.bmds/trash/info/a.txt (2).trashinfo"));
+        put("/disk0/p0/a.txt", "newest");
+        REQUIRE(bmds::Trash::move("/disk0/p0/a.txt", root, nullptr) == Error::Ok);
+        put("/disk0/p0/a.txt", "in the way");
+        REQUIRE(bmds::Trash::restore("a.txt", bmds::Trash::Conflict::Replace, nullptr) == Error::Ok);
+        CHECK(read("/disk0/p0/a.txt") == "newest");
+        REQUIRE(Vfs::mkdir("/disk0/p0/deep", root) == Error::Ok);
+        put("/disk0/p0/deep/file", "deep");
+        REQUIRE(bmds::Trash::move("/disk0/p0/deep/file", root, nullptr) == Error::Ok);
+        REQUIRE(Vfs::rmdir("/disk0/p0/deep", root) == Error::Ok);
+        REQUIRE(bmds::Trash::restore("file", bmds::Trash::Conflict::Refuse, nullptr) == Error::Ok);
+        CHECK(read("/disk0/p0/deep/file") == "deep");
 
         // trash PATH, then -e for one mount, then all.
         put("/disk0/p0/b.txt", "b");
@@ -552,10 +599,80 @@ TEST_CASE("Files: the trash") {
         CHECK(f.out("trash -l").find("b.txt") != std::string::npos);
         CHECK(f.out("trash -e") == "");
         CHECK(f.out("trash -l") == "");
-        CHECK(read("/disk0/p0/a.txt") == "first"); // restored ones stay
+        CHECK(read("/disk0/p0/a.txt") == "newest"); // restored ones stay
         CHECK(f.out("trash -e /nowhere", Shell::ExitFailure) == "trash: /nowhere: No such file or directory\n");
         CHECK(f.out("trash", Shell::ExitUsage).rfind("usage: trash", 0) == 0);
         CHECK(f.out("trash -x", Shell::ExitUsage).rfind("usage: trash", 0) == 0);
+}
+
+TEST_CASE("Files: /trash, every trash in one folder") {
+        Fixture              f;
+        const Vfs::Context   root;
+        bmds::DirectoryWatch watch;
+        REQUIRE(watch.watch("/trash", root) == Error::Ok);
+        CHECK(f.out("ls /trash") == "");
+        // The same name in both trashes: the first by mount path keeps it, the other labelled.
+        put("/disk0/p0/notes.txt", "zero");
+        REQUIRE(bmds::Trash::move("/disk0/p0/notes.txt", root, nullptr) == Error::Ok);
+        CHECK((watch.takeChanges() & bmds::DirectoryWatch::Entries) != 0);
+        REQUIRE(Vfs::mkdir("/disk1/p0/.bmds", root) == Error::Ok); // as a card from elsewhere would have it
+        REQUIRE(Vfs::mkdir("/disk1/p0/.bmds/trash", root) == Error::Ok);
+        REQUIRE(Vfs::mkdir("/disk1/p0/.bmds/trash/files", root) == Error::Ok);
+        REQUIRE(Vfs::mkdir("/disk1/p0/.bmds/trash/info", root) == Error::Ok);
+        // (Made there, not renamed: a rename into a trash's files is a trash.)
+        put("/disk1/p0/.bmds/trash/files/notes.txt", "one");
+        CHECK(f.out("ls /trash") == "notes.txt\n"); // no info yet: not listed
+        put("/disk1/p0/.bmds/trash/info/notes.txt.trashinfo", "[Trash Info]\nPath=notes.txt\n");
+        CHECK((watch.takeChanges() & bmds::DirectoryWatch::Entries) != 0);
+        CHECK(f.out("ls -1 /trash") == "notes (disk1p0).txt\nnotes.txt\n");
+        CHECK(read("/trash/notes.txt") == "zero");
+        CHECK(read("/trash/notes (disk1p0).txt") == "one");
+        CHECK(Vfs::stat("/trash/notes (disk1p0).txt", root).value().id ==
+              Vfs::stat("/disk1/p0/.bmds/trash/files/notes.txt", root).value().id);
+        bmds::Trash::Entry e;
+        REQUIRE(bmds::Trash::find("notes (disk1p0).txt", e) == Error::Ok);
+        CHECK(e.path.view() == "/disk1/p0/notes.txt");
+
+        // A trashed folder: listed and read through /trash.
+        REQUIRE(Vfs::mkdir("/disk0/p0/folder", root) == Error::Ok);
+        put("/disk0/p0/folder/inside", "in");
+        CHECK(f.out("mv /disk0/p0/folder /trash") == ""); // mv in: trashed
+        CHECK(!exists("/disk0/p0/folder"));
+        CHECK(exists("/disk0/p0/.bmds/trash/info/folder.trashinfo"));
+        CHECK(f.out("ls /trash/folder") == "inside\n");
+        CHECK(read("/trash/folder/inside") == "in");
+        REQUIRE(bmds::Trash::find("folder", e) == Error::Ok);
+        CHECK(e.isDirectory);
+        // mv in under another name, and over an entry's name: a free one picked.
+        put("/disk0/p0/x.txt", "x");
+        CHECK(f.out("mv /disk0/p0/x.txt /trash/notes.txt") == "");
+        CHECK(read("/trash/notes.txt (2)") == "x");
+
+        // Nothing new made there.
+        CHECK(Vfs::open("/trash/new", Vfs::Write | Vfs::Create, root).error() == Error::PermissionDenied);
+        CHECK(Vfs::mkdir("/trash/new", root) == Error::PermissionDenied);
+        CHECK(f.out("cp /disk1/p0/.bmds/trash/info/notes.txt.trashinfo /trash/copy", Shell::ExitFailure) != "");
+
+        // Rename out on its filesystem: the info goes. Across: refused (mv copies, then removes).
+        CHECK(Vfs::rename("/trash/notes.txt (2)", "/disk0/p0/back.txt", Vfs::RenameMode::NoReplace, root) == Error::Ok);
+        CHECK(read("/disk0/p0/back.txt") == "x");
+        CHECK(!exists("/disk0/p0/.bmds/trash/info/notes.txt (2).trashinfo"));
+        CHECK(Vfs::rename("/trash/notes (disk1p0).txt", "/disk0/p0/one.txt", Vfs::RenameMode::NoReplace, root) ==
+              Error::NotSupported);
+        CHECK(f.out("mv '/trash/notes (disk1p0).txt' /disk0/p0/one.txt") == "");
+        CHECK(read("/disk0/p0/one.txt") == "one");
+        CHECK(!exists("/disk1/p0/.bmds/trash/info/notes.txt.trashinfo"));
+        CHECK(f.out("ls -1 /trash") == "folder/\nnotes.txt\n");
+
+        // Removed: with its info. rm -r empties it.
+        CHECK(Vfs::remove("/trash/notes.txt", root) == Error::Ok);
+        CHECK(!exists("/disk0/p0/.bmds/trash/info/notes.txt.trashinfo"));
+        CHECK(f.out("rm -r /trash/folder") == "");
+        CHECK(!exists("/disk0/p0/.bmds/trash/files/folder"));
+        CHECK(!exists("/disk0/p0/.bmds/trash/info/folder.trashinfo"));
+        CHECK(f.out("ls /trash") == "");
+        CHECK((watch.takeChanges() & bmds::DirectoryWatch::Entries) != 0);
+        CHECK(Vfs::stat("/trash/gone", root).error() == Error::NotExist);
 }
 
 TEST_CASE("Vfs::identify: by name, by contents, the flags") {

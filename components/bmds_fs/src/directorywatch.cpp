@@ -11,6 +11,7 @@
 #include <bmds/directorywatch.h>
 
 #include "fslayer.h"
+#include "trashindex.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -85,15 +86,30 @@ uint64_t Fs::folderId(StringView storage) {
         return pathId(storage.left(slash));
 }
 
+namespace {
+
+        // A change in folder @p folder: if it is a trash's, its names go stale and /trash's
+        // watches are told (devplan/filebrowser.md §4k). Lock held.
+        void trashChangedLocked(uint64_t folder) {
+                if (TrashIndex::changedLocked(folder) && firstWatch != nullptr)
+                        DirectoryWatch::Access::tellLocked(Fs::pathId(Vfs::TrashPath), 0, DirectoryWatch::Entries);
+                return;
+        }
+
+} // namespace
+
 void Fs::writtenLocked(const FileIdentity &identity) {
         changedLocked(identity.device, identity.id);
+        trashChangedLocked(identity.folder);
         DirectoryWatch::Access::tellLocked(identity.folder, 0, DirectoryWatch::Contents);
         return;
 }
 
 void Fs::tellEntryLocked(StringView storage, uint8_t changes, bool itself) {
+        const uint64_t folder = folderId(storage);
+        trashChangedLocked(folder);
         if (firstWatch == nullptr) return; // nothing watches: not even the ids
-        DirectoryWatch::Access::tellLocked(folderId(storage), itself ? pathId(storage) : 0, changes);
+        DirectoryWatch::Access::tellLocked(folder, itself ? pathId(storage) : 0, changes);
         return;
 }
 

@@ -34,6 +34,21 @@ BMDS_NAMESPACE_BEGIN
 namespace {
 
         constexpr StringView DesktopSuffix(".desktop");
+
+        // True if every one of @p paths (a line each) is in /trash.
+        bool allTrashed(StringView paths) {
+                bool any = false;
+                for (StringView rest = paths; !rest.isEmpty();) {
+                        const size_t     end = rest.indexOf('\n');
+                        const StringView p = end == StringView::NPos ? rest : rest.left(end);
+                        rest = end == StringView::NPos ? StringView() : rest.mid(end + 1);
+                        if (p.isEmpty()) continue;
+                        const StringView t = Vfs::TrashPath;
+                        if (!(p.size() > t.size() + 1 && p.startsWith(t) && p[t.size()] == '/')) return false;
+                        any = true;
+                }
+                return any;
+        }
         constexpr size_t     MaxCandidates = 64; // launcher entries looked through for a MimeType
 
         // @p path's file, read whole up to @p max bytes into @p out (PSRAM). @return The bytes.
@@ -467,8 +482,11 @@ bool FolderActions::dragFiles(StringView paths, GuiDrag &drag) {
         drag.types = Span<const StringView>(Types);
         drag.provider = renderDrag;
         drag.providerArg = this;
-        drag.actions = DropActions::CanCopy | DropActions::CanMove | DropActions::CanLink;
-        drag.preferred = DropAction::Copy;
+        // Out of the trash: only moved (restored to where it is dropped, FB25).
+        const bool trashed = allTrashed(paths);
+        drag.actions =
+                trashed ? DropActions::CanMove : DropActions::CanCopy | DropActions::CanMove | DropActions::CanLink;
+        drag.preferred = trashed ? DropAction::Move : DropAction::Copy;
         drag.ended = dragEnded;
         drag.endedArg = this;
         return true;
@@ -487,10 +505,17 @@ void FolderActions::dragEnded(void *arg, DropAction done) {
 
 // What @p path is to a drop: a folder, an application (a launcher with a command, a NAME.app
 // folder: @p entry filled if given), or neither.
+bool FolderActions::isTrash(StringView path) {
+        if (path == Vfs::TrashPath) return true;
+        auto [real, err] = Vfs::realPath(path, Vfs::Context{"/", nullptr});
+        return err.isOk() && real.view() == Vfs::TrashPath;
+}
+
 FolderActions::Target FolderActions::targetOf(StringView path, DesktopEntry *entry) const {
         const Vfs::Context vc{_context.cwd, nullptr};
         auto [info, err] = Vfs::stat(path, vc);
         if (err.isError()) return Target::None;
+        if (info.isDirectory() && isTrash(path)) return Target::Trash;
         DesktopEntry e;
         if (info.isDirectory()) {
                 if (!Apps::isFolderName(FileOps::baseName(path))) return Target::Folder;
@@ -513,6 +538,11 @@ DropAction FolderActions::dropAction(StringView target, const GuiDropEvent &even
         if (kind == Target::None) return DropAction::None;
         if (kind == Target::Application)
                 return DropActions::allows(event.actions(), DropAction::Copy) ? DropAction::Copy : DropAction::None;
+        if (kind == Target::Trash) {
+                // Trashed: a move, whatever keys are held; not what is in the trash already.
+                if (event.isOwn() && allTrashed(_dragged.paths())) return DropAction::None;
+                return DropActions::allows(event.actions(), DropAction::Move) ? DropAction::Move : DropAction::None;
+        }
         // A folder: this panel's own drag is known (its files): not into one of them, nor where all
         // of them are; moved on their filesystem, else copied (Windows' rule). Another's: copied.
         DropAction         fallback = DropAction::Copy;
@@ -630,6 +660,10 @@ void FolderActions::dropDone(DropAction action) {
         if (kind == Target::Application) {
                 launchFiles(entry, _dropPaths.view());
                 done = DropAction::Copy;
+        } else if (kind == Target::Trash) {
+                trash(_dropPaths.view());
+                _host.folderChanged(Vfs::TrashPath);
+                done = DropAction::Moved; // here: the source has nothing to remove
         } else if (kind == Target::Folder) {
                 const StringView directory = _dropTo.view();
                 _host.dropping(directory, _dropPaths.view());
@@ -689,7 +723,32 @@ void FolderActions::link(StringView paths, StringView directory) {
 // ---- Files
 
 void FolderActions::removeForGood(StringView paths) {
-        _jobs.removeAsking(paths);
+        _jobs.removeAsking(paths, allTrashed(paths) ? FileJobs::Removing::FromTrash : FileJobs::Removing::Ordinary);
+        return;
+}
+
+void FolderActions::restore(StringView paths) {
+        if (!paths.trimmed().isEmpty()) _jobs.restore(paths);
+        return;
+}
+
+void FolderActions::emptyTrash() {
+        // Every entry of /trash, removed as a deletion for good is (a job, with progress).
+        String paths(MemSpace::Psram);
+        auto [dir, err] = Vfs::openDirectory(Vfs::TrashPath, Vfs::Context{"/", nullptr});
+        while (err.isOk()) {
+                auto [info, nerr] = dir.next();
+                if (nerr.isError()) break;
+                if (!paths.isEmpty()) err = paths.append('\n');
+                if (err.isOk()) err = paths.append(Vfs::TrashPath);
+                if (err.isOk()) err = paths.append('/');
+                if (err.isOk()) err = paths.append(info.name.view());
+        }
+        if (paths.isEmpty()) {
+                tell("Empty Trash", "The Trash is empty.", false);
+                return;
+        }
+        _jobs.removeAsking(paths.view(), FileJobs::Removing::Emptying);
         return;
 }
 

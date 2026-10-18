@@ -19,28 +19,37 @@ BMDS_NAMESPACE_BEGIN
 
 namespace {
 
-        constexpr StringView Titles[] = {"Name", "Size", "Type", "Modified"};
-        constexpr uint16_t   Widths[] = {200, 80, 144, 140};
+        using Field = FolderItemModel::Field;
+
+        constexpr Field      Plain[] = {Field::Name, Field::Size, Field::Type, Field::Modified};
+        constexpr Field      Trashed[] = {Field::Name, Field::Origin, Field::Deleted, Field::Size, Field::Type};
+        constexpr StringView Titles[] = {"Name", "Size", "Type", "Modified", "Original Location", "Date Deleted"};
+        constexpr uint16_t   Widths[] = {200, 80, 144, 140, 200, 140};
         constexpr StringView Executable("application/x-executable");
+
+        constexpr FolderModel::Sort Sorts[] = {FolderModel::Sort::Name,   FolderModel::Sort::Size,
+                                               FolderModel::Sort::Type,   FolderModel::Sort::Modified,
+                                               FolderModel::Sort::Origin, FolderModel::Sort::Deleted};
 
 } // namespace
 
-FolderModel::Sort FolderItemModel::sortOf(size_t column) {
-        switch (column) {
-                case SizeColumn: return FolderModel::Sort::Size;
-                case TypeColumn: return FolderModel::Sort::Type;
-                case ModifiedColumn: return FolderModel::Sort::Modified;
-                default: return FolderModel::Sort::Name;
-        }
+size_t FolderItemModel::columns() const {
+        return _folder.isTrash() ? sizeof(Trashed) / sizeof(Trashed[0]) : sizeof(Plain) / sizeof(Plain[0]);
 }
 
-size_t FolderItemModel::columnOf(FolderModel::Sort sort) {
-        switch (sort) {
-                case FolderModel::Sort::Size: return SizeColumn;
-                case FolderModel::Sort::Type: return TypeColumn;
-                case FolderModel::Sort::Modified: return ModifiedColumn;
-                default: return NameColumn;
-        }
+FolderItemModel::Field FolderItemModel::fieldOf(size_t column) const {
+        if (_folder.isTrash()) return column < sizeof(Trashed) / sizeof(Trashed[0]) ? Trashed[column] : Field::Name;
+        return column < sizeof(Plain) / sizeof(Plain[0]) ? Plain[column] : Field::Name;
+}
+
+FolderModel::Sort FolderItemModel::sortOf(size_t column) const {
+        return Sorts[size_t(fieldOf(column))];
+}
+
+size_t FolderItemModel::columnOf(FolderModel::Sort sort) const {
+        for (size_t c = 0; c < columns(); ++c)
+                if (Sorts[size_t(fieldOf(c))] == sort) return c;
+        return 0;
 }
 
 bool FolderItemModel::identifySome(size_t count) {
@@ -76,6 +85,10 @@ const Icon *FolderItemModel::icon(size_t row, uint16_t size) const {
                                              _folder.name(row).data());
                 if (n > 0 && size_t(n) < sizeof(path)) icon = _icons.loadedForApp(StringView(path, size_t(n)), side);
                 if (icon == nullptr) icon = _icons.loadedNamed("application-x-executable", side);
+        } else if (e.trash) {
+                // The trash, or a link to it: full or empty (devplan/filebrowser.md §4k, FB26).
+                icon = _icons.loadedNamed(_icons.isTrashFull() ? "user-trash-full" : "user-trash", side);
+                if (icon == nullptr) icon = _icons.loadedNamed("folder", side);
         } else if (e.isDirectory()) {
                 icon = _icons.loadedNamed("folder", side);
         } else if (e.builtin) {
@@ -90,28 +103,28 @@ const Icon *FolderItemModel::icon(size_t row, uint16_t size) const {
 }
 
 StringView FolderItemModel::columnTitle(size_t column) const {
-        return column < Columns ? Titles[column] : StringView();
+        return column < columns() ? Titles[size_t(fieldOf(column))] : StringView();
 }
 
 ItemModel::Align FolderItemModel::columnAlign(size_t column) const {
-        return column == SizeColumn ? Align::Right : Align::Left;
+        return fieldOf(column) == Field::Size ? Align::Right : Align::Left;
 }
 
 uint16_t FolderItemModel::columnWidth(size_t column) const {
-        return column < Columns ? Widths[column] : 100;
+        return column < columns() ? Widths[size_t(fieldOf(column))] : 100;
 }
 
 StringView FolderItemModel::columnText(size_t row, size_t column, Span<char> buffer) const {
         const FolderModel::Entry &e = _folder.entry(row);
         int                       n = 0;
-        switch (column) {
-                case NameColumn: return _folder.name(row);
-                case SizeColumn:
+        switch (fieldOf(column)) {
+                case Field::Name: return _folder.name(row);
+                case Field::Size:
                         if (e.isDirectory() || e.builtin || e.type != FileType::File) return StringView();
                         n = std::snprintf(buffer.data(), buffer.size(), "%llu KB",
                                           static_cast<unsigned long long>((e.size + 1023) / 1024));
                         break;
-                case TypeColumn: {
+                case Field::Type: {
                         // As the Type sort orders them: by the extension.
                         if (e.isDirectory()) return Apps::isFolderName(_folder.name(row)) ? "Application" : "Folder";
                         if (e.builtin || e.format == Executable) return e.builtin ? "Built-in program" : "Program";
@@ -124,14 +137,21 @@ StringView FolderItemModel::columnText(size_t row, size_t column, Span<char> buf
                                 if (k + 1 < buffer.size()) buffer[k++] = c;
                         return StringView(buffer.data(), k);
                 }
-                case ModifiedColumn: {
+                case Field::Modified: {
                         if (e.modified.ns == 0) return StringView();
                         const DateTime t = Clock::localTime(e.modified).local;
                         n = std::snprintf(buffer.data(), buffer.size(), "%04d-%02u-%02u %02u:%02u", int(t.year),
                                           unsigned(t.month), unsigned(t.day), unsigned(t.hour), unsigned(t.minute));
                         break;
                 }
-                default: return StringView();
+                case Field::Origin: return _folder.origin(row);
+                case Field::Deleted: {
+                        // YYYY-MM-DDThh:mm:ss as the Modified column shows a time.
+                        const StringView d = _folder.deleted(row);
+                        if (d.size() < 16) return d;
+                        n = std::snprintf(buffer.data(), buffer.size(), "%.10s %.5s", d.data(), d.data() + 11);
+                        break;
+                }
         }
         return StringView(buffer.data(), n > 0 && size_t(n) < buffer.size() ? size_t(n) : 0);
 }

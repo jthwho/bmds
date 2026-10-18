@@ -63,6 +63,7 @@ class DetailsView : public ItemView {
                 WindowManager::Pointer pointerAt(int x, int y) const override;
 
         protected:
+                DragImage::Box dragBox(size_t row) const override;
                 int         rowAt(uint32_t x, uint32_t y) const override;
                 bool        onName(size_t row, uint32_t x, uint32_t y) const override;
                 ContentRect rowRect(size_t row) const override;

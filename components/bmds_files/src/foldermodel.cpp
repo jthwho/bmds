@@ -12,6 +12,7 @@
 #include <bmds/fileformat.h>
 #include <bmds/foldermodel.h>
 #include <bmds/namefilter.h>
+#include <bmds/trash.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -39,6 +40,8 @@ Error FolderModel::open(StringView path, const Vfs::Context &context) {
         if (derr.isError()) return derr;
         _directory = std::move(dir);
         _context = Vfs::Context{"/", nullptr}; // the path is absolute now
+        auto [trash, terr] = Vfs::stat(Vfs::TrashPath, _context);
+        _trashId = terr.isOk() ? trash.id : 0;
         return Error::Ok;
 }
 
@@ -61,6 +64,7 @@ Result<size_t> FolderModel::fillSome(size_t count) {
                 e.nameLength = static_cast<uint16_t>(name.size());
                 e.type = info.type;
                 e.attributes = info.attributes;
+                e.trash = info.type == FileType::Directory && _trashId != 0 && info.id == _trashId;
                 if (info.type == FileType::File && info.size == 0) {
                         // An empty file may be a built-in program (/bin's): its code is the firmware's.
                         String path(MemSpace::Psram);
@@ -79,6 +83,7 @@ Result<size_t> FolderModel::fillSome(size_t count) {
                                         e.type = to.type;
                                         e.size = to.size;
                                         e.modified = to.modified;
+                                        e.trash = to.isDirectory() && _trashId != 0 && to.id == _trashId;
                                 }
                         }
                 }
@@ -91,19 +96,42 @@ Result<size_t> FolderModel::fillSome(size_t count) {
                         e.format = FileFormat::byName(name);
                         if (e.format.isEmpty() && e.size == 0) e.format = FileFormat::Empty;
                 }
-                Error stored = _names.reserve(_names.size() + name.size());
+                // In /trash: where it was and when, after its name (FB25).
+                Trash::Entry trashed;
+                StringView   origin, deleted;
+                if (isTrash() && Trash::find(name, trashed).isOk()) {
+                        const StringView was = trashed.path.view();
+                        const size_t     slash = was.lastIndexOf('/');
+                        origin = slash == 0 ? StringView("/") : was.left(slash);
+                        if (origin.size() > UINT16_MAX) origin = StringView();
+                        deleted = trashed.date.view().left(UINT8_MAX);
+                        e.originLength = static_cast<uint16_t>(origin.size());
+                        e.deletedLength = static_cast<uint8_t>(deleted.size());
+                }
+                Error stored = _names.reserve(_names.size() + name.size() + origin.size() + deleted.size());
                 if (stored.isOk()) stored = _entries.append(e);
                 if (stored.isError()) {
                         failed = stored;
                         _directory.close();
                         break;
                 }
-                for (const char c : name) (void)_names.append(c); // reserved
+                for (const StringView part : {name, origin, deleted})
+                        for (const char c : part) (void)_names.append(c); // reserved
         }
         const size_t read = _entries.size() - from;
         const Error  merged = merge(from);
         if (failed.isOk()) failed = merged;
         return Result<size_t>(read, failed);
+}
+
+StringView FolderModel::origin(size_t index) const {
+        const Entry &e = _entries[_order[index]];
+        return StringView(_names.data() + e.nameAt + e.nameLength, e.originLength);
+}
+
+StringView FolderModel::deleted(size_t index) const {
+        const Entry &e = _entries[_order[index]];
+        return StringView(_names.data() + e.nameAt + e.nameLength + e.originLength, e.deletedLength);
 }
 
 bool FolderModel::isHidden(const Entry &e) const {
@@ -165,6 +193,17 @@ bool FolderModel::before(uint32_t a, uint32_t b) const {
                 case Sort::Modified:
                         if (x.modified != y.modified) key = x.modified < y.modified ? -1 : 1;
                         break;
+                case Sort::Origin:
+                        key = compareNames(StringView(_names.data() + x.nameAt + x.nameLength, x.originLength),
+                                           StringView(_names.data() + y.nameAt + y.nameLength, y.originLength));
+                        break;
+                case Sort::Deleted: {
+                        // The dates' text sorts as the dates do.
+                        const StringView dx(_names.data() + x.nameAt + x.nameLength + x.originLength, x.deletedLength);
+                        const StringView dy(_names.data() + y.nameAt + y.nameLength + y.originLength, y.deletedLength);
+                        key = dx < dy ? -1 : dy < dx ? 1 : 0;
+                        break;
+                }
         }
         if (key == 0 && _sort == Sort::Name) key = compareNames(nx, ny);
         if (key != 0) return _descending ? key > 0 : key < 0;

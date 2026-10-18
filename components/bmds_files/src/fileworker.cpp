@@ -12,6 +12,7 @@
 #include <bmds/clock.h>
 #include <bmds/fileworker.h>
 #include <bmds/memory.h>
+#include <bmds/trash.h>
 #include <bmds/vfs.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -38,6 +39,71 @@ namespace {
                         std::atomic<bool> &_cancelled;
         };
 
+        // @p path's name in /trash (its path there, or the name alone).
+        StringView trashName(StringView path) {
+                const StringView t = Vfs::TrashPath;
+                if (path.size() > t.size() + 1 && path.startsWith(t) && path[t.size()] == '/')
+                        return path.mid(t.size() + 1);
+                return path;
+        }
+
+        // Folder @p from's contents moved into folder @p into (a name taken there asked as a move's),
+        // then @p from removed if all of it went: a restored folder merged into the one in its place.
+        Error mergeInto(StringView from, StringView into, FileOps::Progress &progress) {
+                List<String> names(MemSpace::Psram);
+                {
+                        auto [dir, err] = Vfs::openDirectory(from, Root);
+                        if (err.isError()) return err;
+                        for (;;) {
+                                auto [info, nerr] = dir.next();
+                                if (nerr == Error::EndOfFile) break;
+                                if (nerr.isError()) return nerr;
+                                err = names.append(std::move(info.name));
+                                if (err.isError()) return err;
+                        }
+                }
+                String child(MemSpace::Psram);
+                for (const String &name : names) {
+                        if (child.assign(from).isError() || child.append('/').isError() ||
+                            child.append(name.view()).isError())
+                                return Error::NoMem;
+                        const Error err = FileOps::move(child.view(), into, Root, progress);
+                        if (err == Error::Interrupted) return err;
+                        if (err.isError()) progress.failed(child.view(), err);
+                }
+                const Error err = Vfs::rmdir(from, Root);
+                return err == Error::NotEmpty ? Error(Error::Ok) : err; // something skipped stays in the trash
+        }
+
+        // A /trash entry put back where it was (devplan/filebrowser.md §4k, FB24); its place taken
+        // asked: Replace (a folder merged), Keep Both, Skip or Cancel.
+        Error restoreOne(StringView path, FileOps::Progress &progress) {
+                const StringView name = trashName(path);
+                Trash::Entry     e;
+                Error            err = Trash::find(name, e);
+                if (err.isError()) return err;
+                progress.began(path, 0);
+                err = Trash::restore(name, Trash::Conflict::Refuse, nullptr);
+                if (err != Error::Exists) return err;
+                auto [there, serr] = Vfs::lstat(e.path.view(), Root);
+                const bool folder = serr.isOk() && there.isDirectory();
+                switch (progress.conflict(path, e.path.view(), folder)) {
+                        case FileOps::Resolution::Replace: {
+                                if (!folder || !e.isDirectory)
+                                        return Trash::restore(name, Trash::Conflict::Replace, nullptr);
+                                String from(MemSpace::Psram);
+                                if (from.assign(Vfs::TrashPath).isError() || from.append('/').isError() ||
+                                    from.append(name).isError())
+                                        return Error::NoMem;
+                                return mergeInto(from.view(), e.path.view(), progress);
+                        }
+                        case FileOps::Resolution::KeepBoth:
+                                return Trash::restore(name, Trash::Conflict::KeepBoth, nullptr);
+                        case FileOps::Resolution::Skip: return Error::Ok;
+                        default: return Error::Interrupted;
+                }
+        }
+
 } // namespace
 
 // A job's view of FileOps: the status kept, questions asked of the owner.
@@ -48,10 +114,10 @@ class FileWorker::Progress final : public FileOps::Progress {
                 bool isCancelled() override { return _w._cancelled.load(std::memory_order_acquire); }
 
                 void began(StringView path, uint64_t bytes) override {
-                        (void)bytes;
                         {
                                 Mutex::Locker lock(_w._lock, WaitForever);
                                 ++_w._status.items;
+                                if (_job.kind == Kind::Measure) _w._status.bytes += bytes; // counted, not copied
                                 (void)_w._status.item.assign(path);
                         }
                         _w.tell(false);
@@ -237,6 +303,7 @@ bool FileWorker::takeDone(Done &out) {
         out.err = d->err;
         out.failures = d->failures;
         out.failed = std::move(d->failed);
+        out.totals = d->totals;
         d->~Done();
         Memory::free(d);
         return true;
@@ -284,7 +351,8 @@ void FileWorker::threadMain(void *arg) {
                         s.items = s.totalItems = s.bytes = s.totalBytes = 0;
                         s.waiting = self->_queue.size();
                         s.item.clear();
-                        (void)s.target.assign(job->kind == Kind::Remove ? StringView() : job->target.view());
+                        (void)s.target.assign(job->kind == Kind::Copy || job->kind == Kind::Move ? job->target.view()
+                                                                                                 : StringView());
                         s.asking = false;
                 }
                 self->tell(true);
@@ -328,19 +396,33 @@ void FileWorker::run(Job &job) {
                 err = counted.append(path);
         }
         Counting counting(_cancelled);
-        auto [totals, merr] = err.isOk() ? FileOps::measure(counted.span(), Root, counting)
-                                         : Result<FileOps::Totals>(FileOps::Totals(), err);
+        const bool counts = job.kind != Kind::Restore && job.kind != Kind::Measure; // counted first
+        auto [totals, merr] = err.isOk() && counts ? FileOps::measure(counted.span(), Root, counting)
+                                                   : Result<FileOps::Totals>(FileOps::Totals(), err);
+        if (job.kind == Kind::Restore) totals.items = paths.size(); // renames, an item each
+        FileOps::Totals measured;
+        if (job.kind == Kind::Measure && err.isOk()) {
+                // Counting is the job: told as it goes.
+                {
+                        Mutex::Locker lock(_lock, WaitForever);
+                        _status.counting = false;
+                }
+                auto [m, e] = FileOps::measure(paths.span(), Root, progress);
+                measured = m;
+                if (e == Error::Interrupted) err = e;
+        }
         {
                 Mutex::Locker lock(_lock, WaitForever);
                 _status.counting = false;
                 _status.totalItems = totals.items + renames;
-                _status.totalBytes = job.kind == Kind::Remove ? 0 : totals.bytes;
+                _status.totalBytes = job.kind == Kind::Copy || job.kind == Kind::Move ? totals.bytes : 0;
         }
         tell(true);
         // Each path; one failing whole (not there, into itself) is told as an item failed.
         Error first = err;
         bool  stopped = false; // Cancel answered, or cancel()
         for (const StringView path : paths) {
+                if (job.kind == Kind::Measure) break; // done above
                 if (err.isError() || _cancelled.load(std::memory_order_acquire)) break;
                 const size_t before = progress.failures;
                 Error        e;
@@ -348,6 +430,8 @@ void FileWorker::run(Job &job) {
                         case Kind::Copy: e = FileOps::copy(path, job.target.view(), Root, progress); break;
                         case Kind::Move: e = FileOps::move(path, job.target.view(), Root, progress); break;
                         case Kind::Remove: e = FileOps::remove(path, Root, progress); break;
+                        case Kind::Restore: e = restoreOne(path, progress); break;
+                        case Kind::Measure: break;
                 }
                 if (e == Error::Interrupted) {
                         stopped = true;
@@ -364,6 +448,7 @@ void FileWorker::run(Job &job) {
         d->err = stopped || _cancelled.load(std::memory_order_acquire) ? Error(Error::Interrupted) : first;
         d->failures = progress.failures;
         d->failed = std::move(progress.firstPath);
+        d->totals = measured;
         (void)merr; // counting cut short: the bar is only less exact
         Mutex::Locker lock(_lock, WaitForever);
         if (_done.append(d).isError()) {

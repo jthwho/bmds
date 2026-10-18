@@ -62,6 +62,7 @@
 #include "networkstatus.h"
 #include "notificationserver.h"
 #include "panelitems.h"
+#include "propertiesdialog.h"
 #include "screenshottaker.h"
 #include "volumecontrol.h"
 
@@ -430,6 +431,8 @@ namespace {
                         void        readPlaces(Span<IconGrid::Cell> wanted);
                         bool        findDesktopIcons();
                         const Icon *desktopIcon(const Entry &entry);
+                        void        updateTrash(); // full or empty: the trash's icons follow
+                        void        makeDesktop(StringView directory);
                         void        freeLauncher();
                         void        reloadLauncher();
                         void        watchLauncher(bool on); // its directories (/apps among them)
@@ -1092,18 +1095,23 @@ namespace {
                         if (mem == nullptr) return;
                         self->_iconMenu = ::new (mem) Menu(self->_app);
                         self->_iconMenu->setTriggered(iconChosen, self);
-                        IconTheme     &icons = self->_app.icons();
-                        const uint16_t side = GuiStyle::IconSize;
-                        (void)self->_iconMenu->addItem("&Open", 0, 0, StringView(),
-                                                       icons.find(IconId::DocumentOpen, side));
-                        (void)self->_iconMenu->addItem("Cu&t", 4, 0, StringView(), icons.find(IconId::EditCut, side));
-                        (void)self->_iconMenu->addItem("&Copy", 1, 0, StringView(), icons.find(IconId::EditCopy, side));
-                        (void)self->_iconMenu->addItem("Re&name", 3, 0, StringView(),
-                                                       icons.find(IconId::EditRename, side));
-                        (void)self->_iconMenu->addSeparator();
-                        (void)self->_iconMenu->addItem("&Delete", 2, 0, StringView(),
-                                                       icons.find(IconId::EditDelete, side));
                 }
+                // Made at each showing: the trash's adds Empty Trash (6).
+                Menu          &m = *self->_iconMenu;
+                IconTheme     &icons = self->_app.icons();
+                const uint16_t side = GuiStyle::IconSize;
+                const Entry   &e = self->_desktopEntries[item];
+                m.clear();
+                (void)m.addItem("&Open", 0, 0, StringView(), icons.find(IconId::DocumentOpen, side));
+                if (StringView(e.type) == FileFormat::Directory && FolderActions::isTrash(StringView(e.path)))
+                        (void)m.addItem("&Empty Trash", 6, 0, StringView(), icons.find(IconId::UserTrash, side));
+                (void)m.addItem("Cu&t", 4, 0, StringView(), icons.find(IconId::EditCut, side));
+                (void)m.addItem("&Copy", 1, 0, StringView(), icons.find(IconId::EditCopy, side));
+                (void)m.addItem("Re&name", 3, 0, StringView(), icons.find(IconId::EditRename, side));
+                (void)m.addSeparator();
+                (void)m.addItem("&Delete", 2, 0, StringView(), icons.find(IconId::EditDelete, side));
+                (void)m.addSeparator();
+                (void)m.addItem("P&roperties", 7, 0, StringView(), icons.find(IconId::DocumentProperties, side));
                 self->_iconItem = item;
                 (void)self->_iconMenu->popup(Rect{x, y, 0, 0});
                 return;
@@ -1117,6 +1125,10 @@ namespace {
                 if (self->_iconItem >= self->_desktopCount) return;
                 if (choice == 3) {
                         renameAsked(self, self->_iconItem);
+                        return;
+                }
+                if (choice == 6) {
+                        self->_actions.emptyTrash();
                         return;
                 }
                 // Open, Cut, Copy and Delete act on every icon selected (the one asked for is).
@@ -1144,6 +1156,8 @@ namespace {
                         self->_actions.cut(paths.view());
                 } else if (choice == 5) {
                         self->_actions.removeForGood(paths.view());
+                } else if (choice == 7) {
+                        (void)PropertiesDialog::show(self->_app, self->_actions, self->_fileIcons, paths.view());
                 }
                 return;
         }
@@ -1343,6 +1357,7 @@ namespace {
                         choice = event.hasShift() ? 5 : 2;
                 if (ctrl && event.usage == C) choice = 1;
                 if (ctrl && event.usage == X) choice = 4;
+                if (event.hasAlt() && !event.hasCtrl() && event.usage == HidKey::Enter) choice = 7;
                 if (choice >= 0) {
                         if (selected < 0) return true;
                         self->_iconItem = size_t(selected);
@@ -1455,11 +1470,53 @@ namespace {
 
         const Icon *PanelApp::desktopIcon(const Entry &entry) {
                 if (entry.isLauncher()) return entryIcon(entry, DesktopWindow::IconSide);
+                // The trash (a link to it: FB26), full or empty.
+                if (StringView(entry.type) == FileFormat::Directory && FolderActions::isTrash(StringView(entry.path))) {
+                        const Icon *icon =
+                                _app.icons().find(_fileIcons.isTrashFull() ? IconId::UserTrashFull : IconId::UserTrash,
+                                                  DesktopWindow::IconSide);
+                        if (icon != nullptr) return icon;
+                }
                 // An application's folder (devplan/apps.md §7): the application's own icon (its Icon=,
                 // else its program's), not a folder's.
                 if (StringView(entry.type) == FileFormat::Directory && Apps::isFolderName(StringView(entry.file)))
                         return _app.icons().forAppFolder(StringView(entry.path), DesktopWindow::IconSide);
                 return fileIcon(StringView(entry.type));
+        }
+
+        // The trash full or empty now: its icons drawn again where they show (the desktop's copied again).
+        void PanelApp::updateTrash() {
+                bool full = false;
+                {
+                        auto [dir, err] = Vfs::openDirectory(Vfs::TrashPath, Vfs::Context{"/", nullptr});
+                        full = err.isOk() && dir.next().isOk();
+                }
+                if (full == _fileIcons.isTrashFull()) return;
+                _fileIcons.setTrashFull(full);
+                for (FolderWindow *w : _folderWindows) w->settingsChanged();
+                if (_desktop == nullptr) return;
+                for (size_t i = 0; i < _desktop->itemCount() && i < _desktopCount; ++i) {
+                        const Entry &e = _desktopEntries[i];
+                        if (StringView(e.type) != FileFormat::Directory || !FolderActions::isTrash(StringView(e.path)))
+                                continue;
+                        const Icon *icon = desktopIcon(e);
+                        if (icon != nullptr)
+                                _desktop->setItemIcon(i, icon, _actions.copied().isCut(StringView(e.path)));
+                }
+                return;
+        }
+
+        // The desktop's folder made the first time (no card's yet, a new user), with a link to the
+        // trash in it (devplan/filebrowser.md §4k, FB26): never again, so a link deleted stays gone.
+        void PanelApp::makeDesktop(StringView directory) {
+                if (directory.isEmpty()) return;
+                const Vfs::Context vc{_context.cwd, nullptr};
+                if (Vfs::lstat(directory, vc).error() != Error::NotExist) return;
+                if (Vfs::mkdir(directory, vc).isError()) return; // its filesystem not there yet
+                String link(MemSpace::Psram);
+                if (link.assign(directory).isOk() && link.append("/Trash").isOk())
+                        (void)Vfs::symlink(Vfs::TrashPath, link.view(), vc);
+                return;
         }
 
         // The files cut changed: the windows redraw their icons; the desktop's are copied again,
@@ -1959,9 +2016,14 @@ namespace {
                 // changes from elsewhere read it again, and a card mounted later (devplan/filebrowser.md §4i).
                 if (err.isOk()) {
                         StringView dirs(_desktopDirs);
+                        makeDesktop(IniReader::nextListItem(dirs));
+                        dirs = StringView(_desktopDirs);
                         for (StringView d = IniReader::nextListItem(dirs); !d.isEmpty();
                              d = IniReader::nextListItem(dirs))
                                 (void)_watches.add(d);
+                        // The trash watched: its icons show it full or empty (devplan/filebrowser.md §4k).
+                        (void)_watches.add(Vfs::TrashPath);
+                        updateTrash();
                         (void)loadDesktop();
                 }
                 return err;
@@ -2198,6 +2260,7 @@ namespace {
                 auto *self = static_cast<PanelApp *>(arg);
                 if ((changes & DirectoryWatch::Mounts) != 0) self->_mountsTold = true;
                 if (self->isLauncherDirectory(path)) self->_launcherTold = true;
+                if (path == Vfs::TrashPath) self->updateTrash();
                 for (FolderWindow *w : self->_folderWindows) w->watchedChanged(path, changes);
                 if ((changes & DirectoryWatch::Mounts) != 0) return; // the desktop once, after them all
                 StringView dirs(self->_desktopDirs);

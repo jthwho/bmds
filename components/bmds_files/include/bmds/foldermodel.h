@@ -35,6 +35,9 @@ BMDS_NAMESPACE_BEGIN
  * A symbolic link is shown as what it leads to (a link to a folder is a
  * folder), marked as a link.
  *
+ * In `/trash` (`Vfs::TrashPath`), each entry also has where it was and when
+ * it was deleted (`origin()`, `deleted()`), read with it (`Trash::find()`).
+ *
  * Index `i` (0 to `count()`) is the `i`-th entry shown.
  *
  * @par Thread Safety
@@ -48,6 +51,8 @@ class FolderModel {
                         Size,
                         Type, ///< The extension, then the name.
                         Modified,
+                        Origin,  ///< In `/trash`: the folder it was in.
+                        Deleted, ///< In `/trash`: when it was deleted.
                 };
 
                 /** @brief An entry. */
@@ -61,6 +66,9 @@ class FolderModel {
                                 bool      link = false;          ///< A symbolic link (`/home`).
                                 bool      builtin =
                                         false; ///< A program built into the firmware (`/bin`: no size of its own).
+                                bool     trash = false;     ///< `/trash` itself, or a link to it.
+                                uint8_t  deletedLength = 0; ///< In `/trash`: `deleted()`'s length (after the origin).
+                                uint16_t originLength = 0;  ///< In `/trash`: `origin()`'s length (after the name).
                                 /**
                                  * @brief Its format, a MIME type (`FileFormat`'s, in rodata): by its name
                                  *        when read; empty if the name says nothing (`setFormat()`).
@@ -109,6 +117,15 @@ class FolderModel {
 
                 /** @brief Returns entry @p index's name. */
                 StringView name(size_t index) const { return nameOf(_entries[_order[index]]); }
+
+                /** @brief Returns true if the folder is `/trash`. */
+                bool isTrash() const { return _path.view() == Vfs::TrashPath; }
+
+                /** @brief In `/trash`: the folder entry @p index was in (empty if unknown). */
+                StringView origin(size_t index) const;
+
+                /** @brief In `/trash`: when entry @p index was deleted, `YYYY-MM-DDThh:mm:ss` local time (or empty). */
+                StringView deleted(size_t index) const;
 
                 /** @brief Returns the index of the entry named @p name (as the filesystem has it), or -1. */
                 int indexOf(StringView name) const;
@@ -174,6 +191,7 @@ class FolderModel {
                 bool           _descending = false;
                 String         _filter{MemSpace::Psram};
                 bool           _showHidden = false;
+                uint64_t       _trashId = 0; // /trash's FileInfo::id (0: none)
 };
 
 BMDS_NAMESPACE_END

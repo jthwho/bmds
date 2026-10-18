@@ -80,15 +80,16 @@ namespace TrashInfo {
         inline constexpr size_t DateBytes = 19;
 
         /**
-         * @brief Writes the info of @p path (absolute) deleted at @p when (local
-         *        time) into @p out.
+         * @brief Writes the info of @p path (relative to its filesystem's root,
+         *        freedesktop.org's rule for a volume's trash; or absolute) deleted
+         *        at @p when (local time) into @p out.
          * @return The text (a view of @p out), or `BufferTooSmall`.
          */
         Result<StringView> format(StringView path, const DateTime &when, Span<char> out);
 
         /**
-         * @brief Reads @p text: the original path, decoded, into @p path
-         *        (NUL-ended), and the date into @p date (`DateBytes` + 1, NUL-ended;
+         * @brief Reads @p text: the original path (absolute, or relative to the
+         *        trash's filesystem), decoded, into @p path (NUL-ended), and the date into @p date (`DateBytes` + 1, NUL-ended;
          *        empty when missing).
          * @return `Ok`, `CorruptData` (not a trash info, or no `Path`), or
          *         `BufferTooSmall`.

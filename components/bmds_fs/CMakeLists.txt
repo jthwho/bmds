@@ -29,6 +29,7 @@ set(BMDS_FS_SRCS
         src/sectorcache.cpp
         src/tmpvolume.cpp
         src/trash.cpp
+        src/trashindex.cpp
         src/vfs.cpp
         src/leapfile.cpp
         src/zoneinfo.cpp

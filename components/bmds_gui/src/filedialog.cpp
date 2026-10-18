@@ -637,10 +637,10 @@ bool FileDialog::viewKey(void *arg, ItemView &, const KeyEvent &event) {
 void FileDialog::sortAsked(void *arg, DetailsView &view, size_t column) {
         auto                   *self = static_cast<FileDialog *>(arg);
         FolderModel            &f = self->_items.folder();
-        const FolderModel::Sort sort = FolderItemModel::sortOf(column);
+        const FolderModel::Sort sort = self->_items.sortOf(column);
         const bool              down = f.sort() == sort && !f.isDescending();
         f.setSort(sort, down);
-        view.setSortIndicator(int(FolderItemModel::columnOf(sort)), down);
+        view.setSortIndicator(int(self->_items.columnOf(sort)), down);
         self->rowsChanged();
         return;
 }

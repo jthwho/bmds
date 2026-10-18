@@ -17,7 +17,7 @@ BMDS_NAMESPACE_BEGIN
 namespace {
 
         constexpr StringView ViewNames[] = {"icons", "details"};
-        constexpr StringView SortNames[] = {"name", "size", "type", "modified"};
+        constexpr StringView SortNames[] = {"name", "size", "type", "modified", "origin", "deleted"};
 
         // A width: digits only, 1 to 4000.
         bool parseWidth(StringView text, uint16_t &out) {
@@ -39,7 +39,7 @@ StringView FolderSettings::viewName(View view) {
 }
 
 StringView FolderSettings::sortName(FolderModel::Sort sort) {
-        return SortNames[size_t(sort) < 4 ? size_t(sort) : 0];
+        return SortNames[size_t(sort) < sizeof(SortNames) / sizeof(SortNames[0]) ? size_t(sort) : 0];
 }
 
 bool FolderSettings::parseView(StringView text, View &out) {
@@ -52,7 +52,7 @@ bool FolderSettings::parseView(StringView text, View &out) {
 }
 
 bool FolderSettings::parseSort(StringView text, FolderModel::Sort &out) {
-        for (size_t i = 0; i < 4; ++i) {
+        for (size_t i = 0; i < sizeof(SortNames) / sizeof(SortNames[0]); ++i) {
                 if (!text.equalsIgnoreCase(SortNames[i])) continue;
                 out = FolderModel::Sort(i);
                 return true;

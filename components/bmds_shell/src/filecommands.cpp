@@ -588,30 +588,15 @@ int FileCommands::rm(CommandContext &ctx) {
 
 namespace {
 
-        // `trash -l`'s lines: the date, the name in the trash, where it was.
+        // `trash -l`'s lines: the date, the name in /trash, where it was.
         void listed(void *arg, const Trash::Entry &e) {
                 auto            *ctx = static_cast<CommandContext *>(arg);
-                const StringView date = e.date.size() == TrashInfo::DateBytes ? e.date : StringView("-");
+                const StringView date = e.date.size() == TrashInfo::DateBytes ? e.date.view() : StringView("-");
                 char             when[24];
                 std::snprintf(when, sizeof(when), "%.*s", int(date.size()), date.data());
                 if (date.size() == TrashInfo::DateBytes) when[10] = ' '; // 2026-10-07 01:23:45
                 ctx->printf("%-19s  %-24.*s  %.*s%s\n", when, int(e.name.size()), e.name.data(), int(e.path.size()),
                             e.path.data(), e.isDirectory ? "/" : "");
-                return;
-        }
-
-        // `trash -r`'s argument: NAME, found in whichever trash has it (one only), or the trashed
-        // file's path (MOUNT/.trash/files/NAME), when several do.
-        struct Found {
-                        StringView name;
-                        String     mount;
-                        size_t     count = 0;
-        };
-
-        void find(void *arg, const Trash::Entry &e) {
-                auto *f = static_cast<Found *>(arg);
-                if (e.name != f->name) return;
-                if (f->count++ == 0) (void)f->mount.assign(e.mount);
                 return;
         }
 
@@ -637,29 +622,12 @@ int FileCommands::trash(CommandContext &ctx) {
                 if (args.size() < 3) return ctx.usage();
                 int status = Shell::ExitSuccess;
                 for (size_t i = 2; i < args.size(); ++i) {
-                        const StringView     arg(args[i]);
-                        constexpr StringView Files("/.trash/files/");
-                        String               mount;
-                        StringView           name = arg;
-                        const size_t         at = arg.indexOf(Files);
-                        Error                err;
-                        if (at != StringView::NPos) {
-                                name = arg.mid(at + Files.size());
-                                err = mount.assign(arg.left(at));
-                        } else {
-                                Found f;
-                                f.name = arg;
-                                err = Trash::list(find, &f);
-                                if (err.isOk() && f.count == 0) err = Error::NotExist;
-                                if (err.isOk() && f.count > 1) {
-                                        ctx.eprintf("trash: %s: in %zu trashes: name it as MOUNT/.trash/files/%s\n",
-                                                    args[i], f.count, args[i]);
-                                        status = Shell::ExitFailure;
-                                        continue;
-                                }
-                                mount = std::move(f.mount);
-                        }
-                        if (err.isOk()) err = Trash::restore(mount.view(), name, ctx.vfs());
+                        // Its name in /trash (`trash -l`'s), or its path there.
+                        StringView name(args[i]);
+                        if (name.startsWith(Vfs::TrashPath) && name.size() > Vfs::TrashPath.size() + 1 &&
+                            name[Vfs::TrashPath.size()] == '/')
+                                name = name.mid(Vfs::TrashPath.size() + 1);
+                        const Error err = Trash::restore(name, Trash::Conflict::Refuse, nullptr);
                         if (err == Error::Exists) {
                                 ctx.eprintf("trash: %s: its place is taken\n", args[i]);
                                 status = Shell::ExitFailure;

@@ -133,7 +133,7 @@ Error TrashInfo::parse(StringView text, Span<char> path, char (&date)[DateBytes 
                 if (item.key == "Path") {
                         auto [n, err] = Uri::decode(item.value, path);
                         if (err.isError()) return err;
-                        found = n > 0 && path[0] == '/';
+                        found = n > 0; // absolute, or relative to the trash's filesystem
                 } else if (item.key == "DeletionDate" && item.value.size() == DateBytes) {
                         std::memcpy(date, item.value.data(), DateBytes);
                         date[DateBytes] = '\0';

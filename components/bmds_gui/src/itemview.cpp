@@ -621,7 +621,7 @@ DragImage::Box ItemView::rowBox(size_t row) const {
 
 void ItemView::drawDragRow(DragPicture &picture, size_t row, const WindowPalette &palette) const {
         if (_model == nullptr) return;
-        const DragImage::Box b = rowBox(row);
+        const DragImage::Box b = dragBox(row);
         const Icon          *icon = _model->icon(row, 16);
         if (icon != nullptr && icon->isValid()) picture.icon(b.x + 2, b.y + 1, *icon);
         const StringView name = _model->text(row);
@@ -641,16 +641,16 @@ void ItemView::beginDrag() {
         GuiDrag drag;
         if (!_dragAsked(_dragArg, *this, drag)) return;
         const WindowPalette  palette = w->application().windowManager().palette();
-        const DragImage::Box box = DragImage::around(rowBox(size_t(row)), _pressX, _pressY);
+        const DragImage::Box box = DragImage::around(dragBox(size_t(row)), _pressX, _pressY);
         DragPicture          picture(box);
         if (picture.isValid()) {
                 size_t total = 0;
                 for (int r = _selection.nextSelected(0); r >= 0; r = _selection.nextSelected(size_t(r) + 1)) {
                         ++total;
-                        if (DragImage::holds(box, rowBox(size_t(r)))) drawDragRow(picture, size_t(r), palette);
+                        if (DragImage::holds(box, dragBox(size_t(r)))) drawDragRow(picture, size_t(r), palette);
                 }
                 if (total > 1) {
-                        const DragImage::Box p = rowBox(size_t(row));
+                        const DragImage::Box p = dragBox(size_t(row));
                         const int right = p.x + p.width < box.x + box.width ? p.x + p.width : box.x + box.width;
                         picture.badge(right, p.y > box.y ? p.y : box.y, total);
                 }

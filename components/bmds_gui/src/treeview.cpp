@@ -8,6 +8,7 @@
  * A tree of folders (devplan/filebrowser.md §4g).
  */
 
+#include <cstdio>
 #include <bmds/font.h>
 #include <bmds/guiwindow.h>
 #include <bmds/treeview.h>
@@ -42,6 +43,13 @@ void TreeView::setIcons(const Icon *root, const Icon *folder, const Icon *open) 
         _rootIcon = root;
         _folderIcon = folder;
         _openIcon = open;
+        update();
+        return;
+}
+
+void TreeView::setChildIcon(StringView name, const Icon *icon) {
+        std::snprintf(_childName, sizeof(_childName), "%.*s", int(name.size()), name.data());
+        _childIcon = icon;
         update();
         return;
 }
@@ -249,6 +257,8 @@ void TreeView::paintRows(Painter &painter, const Rect &viewport) {
                 const Icon *icon = r.depth == 0 && _rootIcon != nullptr ? _rootIcon
                                    : open && _openIcon != nullptr       ? _openIcon
                                                                         : _folderIcon;
+                if (r.depth == 1 && _childIcon != nullptr && _rows.name(row) == StringView(_childName))
+                        icon = _childIcon;
                 if (icon != nullptr && icon->isValid() && icon->height <= 16)
                         (void)painter.image(x + Indent, y + (RowHeight - icon->height) / 2, *icon, background);
                 if (int(row) == editing()) continue;

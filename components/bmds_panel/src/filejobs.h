@@ -61,11 +61,21 @@ class FileJobs {
                 /** @brief Moves @p paths (absolute, a line each) into folder @p target. */
                 void move(StringView paths, StringView target);
 
+                /** @brief Puts @p paths (in `/trash`, a line each) back where they were. */
+                void restore(StringView paths);
+
+                /** @brief What a removal's question says. */
+                enum class Removing : uint8_t {
+                        Ordinary,  ///< "... won't go to the trash."
+                        FromTrash, ///< Items in the trash: they can't come back.
+                        Emptying,  ///< Everything in the trash: "Empty the trash?"
+                };
+
                 /**
                  * @brief Deletes @p paths (absolute, a line each) for good, once a message
-                 *        box naming them is answered Yes.
+                 *        box naming them (as @p removing says) is answered Yes.
                  */
-                void removeAsking(StringView paths);
+                void removeAsking(StringView paths, Removing removing = Removing::Ordinary);
 
         private:
                 // A name taken: the answers (the dialog's results).

@@ -40,6 +40,11 @@ storage device?)").
 | F10 | New on the desktop (the user's, 2026-10-07) | **The desktop menu: Applications, New ▸ (Folder, Text Document, Empty File), Paste.** The new folder or file goes in the desktop's first directory as "New Folder", "New Text Document.txt" or "New File", or the first free "NAME (2).EXT", "(3)"... (Windows' form for new items). It is put in the cell where the menu was opened if that cell is free, selected, and its name edited at once (a file's extension left out of the selection) | templates from a directory (freedesktop.org's `Templates`), later |
 | F9 | The terminal's menu | **A right click on a terminal opens Copy (disabled without a selection), Paste (disabled when the clipboard has no text) and Select All**, with their keys shown. The terminal isn't on the toolkit, so the window manager draws it: `WindowManager::showMenu()` (§4c) | the toolkit in the terminal (a second event loop) |
 
+> **Changed (2026-10-17, `filebrowser.md` §4k):** the trash moves to `MOUNT/.bmds/trash` (FB18),
+> `Path=` becomes relative to the filesystem's root (FB19), and `/trash` shows every trash as one
+> folder (FB20-FB23). `trash -l` lists names as `/trash` shows them, and `trash -r` takes those
+> names (or `/trash/NAME`), so the `MOUNT/.trash/files/NAME` form is gone.
+
 ## 4. Design
 
 ### 4a. Copy names (`bmds_core`, pure)

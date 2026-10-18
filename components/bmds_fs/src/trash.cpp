@@ -5,13 +5,16 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * The trash (devplan/files.md F2, F3): freedesktop.org's layout under each mount's .trash.
+ * The trash (devplan/files.md F2, F3; devplan/filebrowser.md §4k): freedesktop.org's layout
+ * under each mount's .bmds/trash.
  */
 
 #include <cstring>
 #include <initializer_list>
 #include <bmds/clock.h>
 #include <bmds/trash.h>
+
+#include "fslayer.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -34,9 +37,24 @@ namespace {
                 return Vfs::lstat(path, Root).isOk();
         }
 
+        bool isAtOrBelow(StringView path, StringView dir) {
+                return path == dir || (path.size() > dir.size() && path.startsWith(dir) && path[dir.size()] == '/');
+        }
+
         Error makeDirectory(StringView path) {
                 const Error err = Vfs::mkdir(path, Root);
                 return err == Error::Exists ? Error(Error::Ok) : err;
+        }
+
+        // @p path's folders made, those that are missing (not @p path itself).
+        Error makeParents(StringView path) {
+                for (size_t at = path.indexOf('/', 1); at != StringView::NPos; at = path.indexOf('/', at + 1)) {
+                        const StringView folder = path.left(at);
+                        if (exists(folder)) continue;
+                        const Error err = Vfs::mkdir(folder, Root);
+                        if (err.isError() && err != Error::Exists) return err;
+                }
+                return Error::Ok;
         }
 
         Error readSmall(StringView path, String &out) {
@@ -93,7 +111,7 @@ namespace {
                 return Vfs::rmdir(path, Root);
         }
 
-        // The trash's directories of @p mount: .trash, .trash/files, .trash/info.
+        // The trash's directories of @p mount: .bmds/trash/files and .bmds/trash/info.
         Error trashPaths(StringView mount, String &files, String &info) {
                 String trash;
                 Error  err = join(mount, Trash::Directory, trash);
@@ -102,17 +120,50 @@ namespace {
                 return err;
         }
 
+        // The info file's path of @p real in @p mount's trash.
+        Error infoPathOf(StringView mount, StringView real, String &out) {
+                String files, info;
+                Error  err = trashPaths(mount, files, info);
+                if (err.isOk()) err = join(info.view(), real, out);
+                if (err.isOk()) err = out.append(InfoSuffix);
+                return err;
+        }
+
+        // Fills @p e from @p real's info in @p mount's trash (its path made absolute).
+        Error describe(StringView mount, StringView real, Trash::Entry &e) {
+                String files, info, filePath, infoPath, text;
+                Error  err = trashPaths(mount, files, info);
+                if (err.isOk()) err = join(files.view(), real, filePath);
+                if (err.isOk()) err = infoPathOf(mount, real, infoPath);
+                if (err.isError()) return err;
+                auto [what, serr] = Vfs::lstat(filePath.view(), Root);
+                if (serr.isError()) return serr;
+                err = readSmall(infoPath.view(), text);
+                if (err.isError()) return err;
+                char path[Vfs::MaxPath + 1];
+                char date[TrashInfo::DateBytes + 1];
+                err = TrashInfo::parse(text.view(), Span<char>(path, sizeof(path)), date);
+                if (err.isError()) return err;
+                // Relative to the filesystem's root (FB19), or absolute as before.
+                const StringView p(path);
+                err = p.startsWith('/') ? e.path.assign(p) : join(mount, p, e.path);
+                if (err.isOk()) err = e.mount.assign(mount);
+                if (err.isOk()) err = e.real.assign(real);
+                if (err.isOk()) err = e.date.assign(StringView(date));
+                e.isDirectory = what.isDirectory();
+                return err;
+        }
+
 } // namespace
 
 Error Trash::mountOf(StringView path, String &mount) {
-        Vfs::MountInfo mounts[8];
-        const size_t   n = Vfs::listMounts(Span<Vfs::MountInfo>(mounts, 8));
+        Vfs::MountInfo mounts[Vfs::MaxMounts];
+        const size_t   n = Vfs::listMounts(Span<Vfs::MountInfo>(mounts, Vfs::MaxMounts));
         size_t         best = 0;
         bool           found = false;
-        for (size_t i = 0; i < n && i < 8; ++i) {
+        for (size_t i = 0; i < n && i < Vfs::MaxMounts; ++i) {
                 const StringView m(mounts[i].path);
-                const bool under = path == m || (path.startsWith(m) && path.size() > m.size() && path[m.size()] == '/');
-                if (under && (!found || m.size() > best)) {
+                if (isAtOrBelow(path, m) && (!found || m.size() > best)) {
                         best = m.size();
                         found = true;
                         (void)mount.assign(m);
@@ -122,11 +173,16 @@ Error Trash::mountOf(StringView path, String &mount) {
 }
 
 Error Trash::move(StringView path, const Vfs::Context &context, String *name) {
+        return moveAs(path, StringView(), context, name);
+}
+
+Error Trash::moveAs(StringView path, StringView as, const Vfs::Context &context, String *name) {
         auto [normalized, nerr] = Vfs::normalize(path, context.cwd);
         if (nerr.isError()) return nerr;
         // Its folder's physical path (through links, as /home is), its own name kept: a link is
         // trashed itself, and the path recorded is where it really was.
         const StringView logical = normalized.view();
+        if (isAtOrBelow(logical, Vfs::TrashPath)) return Error::Invalid; // in the trash already
         const size_t     slash = logical.lastIndexOf('/');
         String           physical;
         if (slash != StringView::NPos && slash > 0) {
@@ -143,43 +199,45 @@ Error Trash::move(StringView path, const Vfs::Context &context, String *name) {
         String           mount;
         Error            err = mountOf(p, mount);
         if (err.isError()) return err;
-        String trash;
-        err = join(mount.view(), Directory, trash);
+        String meta;
+        err = join(mount.view(), Vfs::MetaDirectory, meta);
         if (err.isError()) return err;
-        // Not a mount's root, nor the trash or anything in it.
-        const StringView t = trash.view();
-        if (p == mount.view() || p == t || (p.size() > t.size() && p.startsWith(t) && p[t.size()] == '/'))
-                return Error::Invalid;
+        // Not a mount's root, nor .bmds (the trash) or anything in it.
+        if (p == mount.view() || isAtOrBelow(p, meta.view())) return Error::Invalid;
         if (!exists(p)) return Error::NotExist;
-        String files, info;
-        err = trashPaths(mount.view(), files, info);
-        if (err.isOk()) err = makeDirectory(t);
+        String trash, files, info;
+        err = join(mount.view(), Directory, trash);
+        if (err.isOk()) err = trashPaths(mount.view(), files, info);
+        if (err.isOk()) err = makeDirectory(meta.view());
+        if (err.isOk()) err = makeDirectory(trash.view());
         if (err.isOk()) err = makeDirectory(files.view());
         if (err.isOk()) err = makeDirectory(info.view());
         if (err.isError()) return err;
-        // A free name: its own, then " (2)", " (3)"...
-        const StringView base = p.mid(p.lastIndexOf('/') + 1);
-        String           chosen, target, infoPath;
+        // A free name: the one asked for (else its own), then " (2)", " (3)"... free in this trash
+        // and in /trash (so another trash's entry keeps its name there).
+        const StringView base =
+                !as.isEmpty() && as.indexOf('/') == StringView::NPos ? as : p.mid(p.lastIndexOf('/') + 1);
+        String           chosen, target, infoPath, shown;
         bool             free = false;
         for (unsigned k = 1; k <= CopyName::MaxCopies && !free; ++k) {
                 chosen.clear();
                 err = k == 1 ? chosen.assign(base) : chosen.appendf("%.*s (%u)", int(base.size()), base.data(), k);
                 if (err.isOk()) err = join(files.view(), chosen.view(), target);
-                if (err.isOk()) err = join(info.view(), chosen.view(), infoPath);
-                if (err.isOk()) err = infoPath.append(InfoSuffix);
+                if (err.isOk()) err = infoPathOf(mount.view(), chosen.view(), infoPath);
+                if (err.isOk()) err = join(Vfs::TrashPath, chosen.view(), shown);
                 if (err.isError()) return err;
-                free = !exists(target.view()) && !exists(infoPath.view());
+                free = !exists(target.view()) && !exists(infoPath.view()) && !exists(shown.view());
         }
         if (!free) return Error::Full;
         // The info first: a cut-off delete leaves an info without its file (skipped), never a
-        // file that can't be put back.
+        // file that can't be put back. Its path relative to the filesystem's root (FB19).
         char       text[MaxInfoBytes];
         const auto local = Clock::localTime(Clock::now());
-        auto [body, ferr] = TrashInfo::format(p, local.local, Span<char>(text, sizeof(text)));
+        auto [body, ferr] = TrashInfo::format(p.mid(mount.size() + 1), local.local, Span<char>(text, sizeof(text)));
         if (ferr.isError()) return ferr;
         err = writeNew(infoPath.view(), body);
         if (err.isError()) return err;
-        err = Vfs::rename(p, target.view(), Vfs::RenameMode::NoReplace, Root);
+        err = Fs::renameRaw(p, target.view(), Vfs::RenameMode::NoReplace, Root);
         if (err.isError()) {
                 (void)Vfs::remove(infoPath.view(), Root);
                 return err;
@@ -189,73 +247,79 @@ Error Trash::move(StringView path, const Vfs::Context &context, String *name) {
 }
 
 Error Trash::list(Listed fn, void *arg) {
-        Vfs::MountInfo mounts[8];
-        const size_t   n = Vfs::listMounts(Span<Vfs::MountInfo>(mounts, 8));
-        for (size_t i = 0; i < n && i < 8; ++i) {
-                String files, info;
-                Error  err = trashPaths(StringView(mounts[i].path), files, info);
-                if (err.isError()) return err;
-                auto [dir, derr] = Vfs::openDirectory(info.view(), Root);
-                if (derr == Error::NotExist) continue;
-                if (derr.isError()) return derr;
-                for (;;) {
-                        auto [entry, eerr] = dir.next();
-                        if (eerr == Error::EndOfFile) break;
-                        if (eerr.isError()) return eerr;
-                        const StringView infoName = entry.name.view();
-                        if (!infoName.endsWith(InfoSuffix) || infoName.size() == InfoSuffix.size()) continue;
-                        const StringView name = infoName.left(infoName.size() - InfoSuffix.size());
-                        String           infoPath, filePath, text;
-                        if (join(info.view(), infoName, infoPath).isError() ||
-                            join(files.view(), name, filePath).isError())
-                                return Error::NoMem;
-                        auto [what, serr] = Vfs::lstat(filePath.view(), Root);
-                        if (serr.isError() || readSmall(infoPath.view(), text).isError()) continue;
-                        char path[Vfs::MaxPath + 1];
-                        char date[TrashInfo::DateBytes + 1];
-                        if (TrashInfo::parse(text.view(), Span<char>(path, sizeof(path)), date).isError()) continue;
-                        Entry e;
-                        e.mount = StringView(mounts[i].path);
-                        e.name = name;
-                        e.path = StringView(path);
-                        e.date = StringView(date);
-                        e.isDirectory = what.isDirectory();
-                        fn(arg, e);
-                }
+        auto [dir, err] = Vfs::openDirectory(Vfs::TrashPath, Root);
+        if (err.isError()) return err;
+        Entry  e;
+        String mount, real;
+        for (;;) {
+                auto [info, nerr] = dir.next();
+                if (nerr == Error::EndOfFile) return Error::Ok;
+                if (nerr.isError()) return nerr;
+                if (Fs::locateTrashEntry(info.name.view(), mount, real).isError()) continue;
+                if (describe(mount.view(), real.view(), e).isError()) continue;
+                if (e.name.assign(info.name.view()).isError()) return Error::NoMem;
+                fn(arg, e);
         }
-        return Error::Ok;
 }
 
-Error Trash::restore(StringView mount, StringView name, const Vfs::Context &context) {
-        (void)context;
-        if (name.isEmpty() || name.contains('/')) return Error::NotExist;
-        String files, info, filePath, infoPath, text;
-        Error  err = trashPaths(mount, files, info);
-        if (err.isOk()) err = join(files.view(), name, filePath);
-        if (err.isOk()) err = join(info.view(), name, infoPath);
-        if (err.isOk()) err = infoPath.append(InfoSuffix);
+Error Trash::find(StringView name, Entry &entry) {
+        String      mount, real;
+        const Error err = Fs::locateTrashEntry(name, mount, real);
         if (err.isError()) return err;
-        if (!exists(filePath.view())) return Error::NotExist;
-        err = readSmall(infoPath.view(), text);
-        if (err.isError()) return err == Error::NotExist ? Error(Error::NotExist) : err;
-        char path[Vfs::MaxPath + 1];
-        char date[TrashInfo::DateBytes + 1];
-        err = TrashInfo::parse(text.view(), Span<char>(path, sizeof(path)), date);
+        const Error described = describe(mount.view(), real.view(), entry);
+        if (described.isError()) return described;
+        return entry.name.assign(name);
+}
+
+Error Trash::restore(StringView name, Conflict conflict, String *restoredTo) {
+        Entry e;
+        Error err = find(name, e);
         if (err.isError()) return err;
-        if (exists(StringView(path))) return Error::Exists;
-        err = Vfs::rename(filePath.view(), StringView(path), Vfs::RenameMode::NoReplace, Root);
+        String files, info, filePath, infoPath;
+        err = trashPaths(e.mount.view(), files, info);
+        if (err.isOk()) err = join(files.view(), e.real.view(), filePath);
+        if (err.isOk()) err = infoPathOf(e.mount.view(), e.real.view(), infoPath);
+        if (err.isError()) return err;
+        // Its place: as it was, or a copy's name beside it.
+        String place;
+        err = place.assign(e.path.view());
+        if (err.isError()) return err;
+        if (exists(place.view())) {
+                if (conflict == Conflict::Refuse) return Error::Exists;
+                if (conflict == Conflict::KeepBoth) {
+                        const StringView original = e.path.view();
+                        const size_t     cut = original.lastIndexOf('/');
+                        bool             free = false;
+                        for (unsigned n = 1; n <= CopyName::MaxCopies && !free; ++n) {
+                                char copy[256];
+                                auto [made, merr] =
+                                        CopyName::make(original.mid(cut + 1), n, Span<char>(copy, sizeof(copy)));
+                                if (merr.isError()) return merr;
+                                err = join(cut == 0 ? StringView("/") : original.left(cut), made, place);
+                                if (err.isError()) return err;
+                                free = !exists(place.view());
+                        }
+                        if (!free) return Error::Full;
+                }
+        }
+        err = makeParents(place.view());
+        if (err.isError()) return err;
+        const Vfs::RenameMode mode =
+                conflict == Conflict::Replace ? Vfs::RenameMode::Replace : Vfs::RenameMode::NoReplace;
+        err = Fs::renameRaw(filePath.view(), place.view(), mode, Root);
         if (err.isError()) return err;
         (void)Vfs::remove(infoPath.view(), Root);
+        if (restoredTo != nullptr) *restoredTo = std::move(place);
         return Error::Ok;
 }
 
 Error Trash::empty(StringView mount, size_t *removed) {
         if (removed != nullptr) *removed = 0;
-        Vfs::MountInfo mounts[8];
-        const size_t   n = Vfs::listMounts(Span<Vfs::MountInfo>(mounts, 8));
+        Vfs::MountInfo mounts[Vfs::MaxMounts];
+        const size_t   n = Vfs::listMounts(Span<Vfs::MountInfo>(mounts, Vfs::MaxMounts));
         bool           matched = mount.isEmpty();
         Error          first;
-        for (size_t i = 0; i < n && i < 8; ++i) {
+        for (size_t i = 0; i < n && i < Vfs::MaxMounts; ++i) {
                 const StringView m(mounts[i].path);
                 if (!mount.isEmpty() && m != mount) continue;
                 matched = true;

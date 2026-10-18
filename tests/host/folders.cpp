@@ -21,6 +21,7 @@
 #include <bmds/blockdevices.h>
 #include <bmds/clipboardtype.h>
 #include <bmds/copiedfiles.h>
+#include <bmds/filenames.h>
 #include <bmds/fileops.h>
 #include <bmds/fileworker.h>
 #include <bmds/foldermodel.h>
@@ -397,7 +398,7 @@ TEST_CASE_FIXTURE(Fixture, "FileOps: renames, new items, copy names, and the tim
         REQUIRE(Vfs::symlink(view(at("/real")), view(onB("/linked")), Root).isOk());
         REQUIRE(FileOps::trash(view(onB("/linked/doomed.txt")), Root).isOk());
         CHECK(!exists(at("/real/doomed.txt")));
-        CHECK(read(at("/.trash/files/doomed.txt")) == "d");
+        CHECK(read(at("/.bmds/trash/files/doomed.txt")) == "d");
         CHECK(exists(onB("/linked")));
         // The folder model shows a link as what it leads to.
         FolderModel lm;
@@ -815,6 +816,91 @@ TEST_CASE_FIXTURE(Fixture, "FileWorker: jobs in order, questions answered for al
         CHECK(d.job == removed);
         CHECK(d.err.isOk());
         CHECK(!exists(onB("/tree")));
+        CHECK(log.waitFor([&] { return !worker.isBusy(); }));
+        worker.reap();
+}
+
+TEST_CASE_FIXTURE(Fixture, "FileWorker and FolderModel: the trash's details, restored with questions, merged") {
+        using Kind = bmds::FileWorker::Kind;
+        using Resolution = FileOps::Resolution;
+        mkdir(at("/docs"));
+        put(at("/docs/a.txt"), "old a");
+        mkdir(at("/docs/sub"));
+        put(at("/docs/sub/in.txt"), "in");
+        REQUIRE(FileOps::trash(view(at("/docs/a.txt")), Root).isOk());
+        REQUIRE(FileOps::trash(view(at("/docs/sub")), Root).isOk());
+        put(at("/b.txt"), "b");
+        REQUIRE(FileOps::trash(view(at("/b.txt")), Root).isOk());
+
+        // The model of /trash: each entry's folder and date, sortable by them.
+        FolderModel m;
+        REQUIRE(m.open(Vfs::TrashPath, Root).isOk());
+        while (!m.isComplete()) (void)m.fillSome(2);
+        CHECK(m.isTrash());
+        CHECK(shown(m) == std::vector<std::string>{"sub", "a.txt", "b.txt"});
+        const int ai = m.indexOf("a.txt");
+        REQUIRE(ai >= 0);
+        CHECK(m.origin(size_t(ai)) == view(at("/docs")));
+        CHECK(m.deleted(size_t(ai)).size() == bmds::TrashInfo::DateBytes);
+        CHECK(m.origin(size_t(m.indexOf("b.txt"))) == view(a));
+        m.setSort(FolderModel::Sort::Origin, false);
+        CHECK(shown(m) == std::vector<std::string>{"sub", "b.txt", "a.txt"});
+        // The disk's root lists /trash, marked as the trash.
+        FolderModel root;
+        REQUIRE(root.open("/", Root).isOk());
+        while (!root.isComplete()) (void)root.fillSome(16);
+        const int ti = root.indexOf("trash");
+        REQUIRE(ti >= 0);
+        CHECK(root.entry(size_t(ti)).trash);
+        CHECK(!root.entry(size_t(root.indexOf("dev"))).trash);
+
+        // Restored: a.txt's place taken (Keep Both), the folder's (merged), b.txt free.
+        put(at("/docs/a.txt"), "new a");
+        mkdir(at("/docs/sub"));
+        put(at("/docs/sub/mine.txt"), "mine");
+        WorkerLog         log;
+        bmds::FileWorker  worker(WorkerLog::notified, &log);
+        const std::string all = "/trash/a.txt\n/trash/sub\n/trash/b.txt";
+        auto [job, err] = worker.add(Kind::Restore, view(all), StringView());
+        REQUIRE(err.isOk());
+        bmds::FileWorker::Status s = waitAsking(log, worker);
+        CHECK(!s.askIsDirectory);
+        CHECK(s.askTarget.view() == view(at("/docs/a.txt")));
+        worker.answer(Resolution::KeepBoth, false);
+        s = waitAsking(log, worker);
+        CHECK(s.askIsDirectory);
+        worker.answer(Resolution::Replace, false); // merged
+        bmds::FileWorker::Done d = waitDone(log, worker);
+        CHECK(d.job == job);
+        CHECK(d.err.isOk());
+        CHECK(read(at("/docs/a.txt")) == "new a");
+        CHECK(read(at("/docs/a (copy).txt")) == "old a");
+        CHECK(read(at("/docs/sub/in.txt")) == "in");
+        CHECK(read(at("/docs/sub/mine.txt")) == "mine");
+        CHECK(read(at("/b.txt")) == "b");
+        CHECK(entries("/trash") == 0);
+        CHECK(log.waitFor([&] { return !worker.isBusy(); }));
+        worker.reap();
+}
+
+TEST_CASE_FIXTURE(Fixture, "FileWorker: Measure counts as it goes, the totals when done") {
+        mkdir(at("/m"));
+        mkdir(at("/m/sub"));
+        put(at("/m/a"), "12345");
+        put(at("/m/sub/b"), "123");
+        put(at("/c"), "1");
+        WorkerLog         log;
+        bmds::FileWorker  worker(WorkerLog::notified, &log);
+        const std::string paths = at("/m") + "\n" + at("/c");
+        auto [job, err] = worker.add(bmds::FileWorker::Kind::Measure, view(paths), StringView());
+        REQUIRE(err.isOk());
+        bmds::FileWorker::Done d = waitDone(log, worker);
+        CHECK(d.job == job);
+        CHECK(d.err.isOk());
+        CHECK(d.totals.items == 5); // m, sub, a, b, c
+        CHECK(d.totals.folders == 2);
+        CHECK(d.totals.bytes == 9);
+        CHECK(exists(at("/m/sub/b"))); // nothing touched
         CHECK(log.waitFor([&] { return !worker.isBusy(); }));
         worker.reap();
 }

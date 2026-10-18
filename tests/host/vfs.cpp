@@ -265,7 +265,7 @@ TEST_CASE("Vfs: devices, partitions and mounts") {
         CHECK(Vfs::findDevice("/dev/null", Root) == nullptr);
         CHECK(mountList() == std::vector<std::string>{"ram0p0 /ram0/p0 fat32"});
 
-        CHECK(list("/") == std::vector<std::string>{"apps/", "bin/", "dev/", "etc/", "ram0/", "share/"});
+        CHECK(list("/") == std::vector<std::string>{"apps/", "bin/", "dev/", "etc/", "ram0/", "share/", "trash/"});
         CHECK(list("/ram0") == std::vector<std::string>{"p0/"});
         CHECK(list("/dev") == std::vector<std::string>{"clip0", "clip0p", "console", "null", "ram0", "ram0p0", "random",
                                                        "tty", "urandom", "zero"});
@@ -284,17 +284,19 @@ TEST_CASE("Vfs: devices, partitions and mounts") {
         SUBCASE("mounting by hand, and what is refused") {
                 CHECK(Vfs::unmount("/ram0/p0").isOk());
                 CHECK(Vfs::unmount("/ram0/p0") == Error::NotExist);
-                CHECK(list("/") == std::vector<std::string>{"apps/", "bin/", "dev/", "etc/", "share/"});
+                CHECK(list("/") == std::vector<std::string>{"apps/", "bin/", "dev/", "etc/", "share/", "trash/"});
                 CHECK(Vfs::stat("/ram0", Root).error() == Error::NotExist);
                 CHECK(Vfs::mount("/data/main", *p0).isOk());
                 CHECK(Vfs::stat("/data/../data/main/../main/.", Root).value().isDirectory());
-                CHECK(list("/") == std::vector<std::string>{"apps/", "bin/", "data/", "dev/", "etc/", "share/"});
+                CHECK(list("/") ==
+                      std::vector<std::string>{"apps/", "bin/", "data/", "dev/", "etc/", "share/", "trash/"});
                 CHECK(Vfs::mount("/data/main", *p0) == Error::Exists);
                 CHECK(Vfs::mount("/other", *p0) == Error::Busy);
                 CHECK(Vfs::mount("/other", ram) == Error::Busy); // the whole device under a mounted partition
                 CHECK(Vfs::mount("/data/main/inner", ram) == Error::Invalid);
                 CHECK(Vfs::mount("/data", ram) == Error::Invalid);
                 CHECK(Vfs::mount("/dev/x", ram) == Error::Invalid);
+                CHECK(Vfs::mount("/trash", ram) == Error::Invalid);
                 CHECK(Vfs::mount("/", ram) == Error::Invalid);
                 CHECK(Vfs::mount(std::string("/" + std::string(70, 'x')).c_str(), ram) == Error::Invalid);
                 CHECK(Vfs::format(ram, FsFormat::ExFat) == Error::Busy);

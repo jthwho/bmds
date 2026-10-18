@@ -146,6 +146,7 @@ class Directory {
  * /cfg           a link to the configuration: the card's or /flash's (setCfg(); devplan/cfg.md)
  * /apps/NAME     a link to an installed application's program (setAppLinks();
  *                devplan/apps.md §5); /apps is read-only
+ * /trash/NAME    every filesystem's trash in one folder (TrashPath; devplan/filebrowser.md §4k)
  * ```
  *
  * The mount table is run-time state: `mount()` puts a filesystem at any
@@ -310,6 +311,27 @@ namespace Vfs {
 
         /** @brief Where every installed application's command is (`devplan/apps.md` §5). */
         inline constexpr StringView AppsPath("/apps");
+
+        /**
+         * @brief Where BMDS keeps its own data on each filesystem, at its root
+         *        (`devplan/filebrowser.md` §4k, FB18): made when first needed.
+         */
+        inline constexpr StringView MetaDirectory(".bmds");
+
+        /**
+         * @brief Every mounted filesystem's trash as one flat folder
+         *        (`devplan/filebrowser.md` §4k, FB20-FB23).
+         *
+         * `/trash/NAME` stands for the trashed file in its filesystem's
+         * `MOUNT/.bmds/trash/files`: it is read, listed and watched as that
+         * file. A name two trashes share is shown once as it is and then as
+         * `NAME (LABEL).EXT`, the label its mount path without slashes. At the
+         * top of `/trash`, removing an entry also removes its info file, a
+         * rename out drops it, a rename in (`mv FILE /trash`) moves the file
+         * into its own filesystem's trash (`Trash::move()`), and nothing new
+         * can be made.
+         */
+        inline constexpr StringView TrashPath("/trash");
 
         /** @brief An entry of `/apps`: @p name a link to @p target (`setAppLinks()`). */
         struct AppLink {

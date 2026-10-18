@@ -89,8 +89,9 @@ namespace FileOps {
 
         /** @brief What `measure()` counts. */
         struct Totals {
-                        uint64_t items = 0; ///< Files, folders and links.
-                        uint64_t bytes = 0; ///< The files' bytes.
+                        uint64_t items = 0;   ///< Files, folders and links.
+                        uint64_t folders = 0; ///< The folders among them.
+                        uint64_t bytes = 0;   ///< The files' bytes.
         };
 
         /** @brief What `makeNew()` makes. */
@@ -104,7 +105,8 @@ namespace FileOps {
         inline constexpr int MaxDepth = 64;
 
         /**
-         * @brief Counts the items and bytes of @p paths and the trees under them.
+         * @brief Counts the items and bytes of @p paths and the trees under them,
+         *        each item told to `began()` as it is counted.
          * @return The totals, or the first error (`Interrupted` if cancelled).
          */
         Result<Totals> measure(Span<const StringView> paths, const Vfs::Context &context, Progress &progress);

@@ -26,7 +26,12 @@ namespace {
         using Kind = FileWorker::Kind;
 
         const char *verbOf(Kind kind) {
-                return kind == Kind::Copy ? "Copying" : kind == Kind::Move ? "Moving" : "Deleting";
+                switch (kind) {
+                        case Kind::Copy: return "Copying";
+                        case Kind::Move: return "Moving";
+                        case Kind::Restore: return "Restoring";
+                        default: return "Deleting";
+                }
         }
 
         // The folder @p path is in, by its name ("/" for the root).
@@ -73,6 +78,11 @@ void FileJobs::copy(StringView paths, StringView target) {
 
 void FileJobs::move(StringView paths, StringView target) {
         add(Kind::Move, paths, target);
+        return;
+}
+
+void FileJobs::restore(StringView paths) {
+        add(Kind::Restore, paths, StringView());
         return;
 }
 
@@ -180,6 +190,8 @@ void FileJobs::showProgress() {
         const StringView from = folderNameOf(s.item.view());
         if (s.item.isEmpty()) {
                 line[0] = '\0';
+        } else if (s.kind == Kind::Restore) {
+                std::snprintf(line, sizeof(line), "From the Trash");
         } else if (s.kind == Kind::Remove) {
                 std::snprintf(line, sizeof(line), "From %.*s", int(from.size()), from.data());
         } else {
@@ -270,7 +282,9 @@ void FileJobs::ask() {
         const bool       folder = s.askIsDirectory;
         const StringView name = FileOps::baseName(s.askTarget.view());
         const StringView in = folderNameOf(s.askTarget.view());
-        const char      *moved = s.kind == Kind::Move ? "moved" : "copied";
+        const char      *moved = s.kind == Kind::Move      ? "one being moved"
+                                 : s.kind == Kind::Restore ? "one from the Trash"
+                                                           : "one being copied";
         char             line[160]; // a label keeps what fits (Label::MaxText)
         _conflict->setTitle(folder ? "Confirm Folder Replace" : "Confirm File Replace");
         _lines[0]->setText(folder ? "There is already a folder named" : "There is already a file named");
@@ -278,9 +292,9 @@ void FileJobs::ask() {
                       in.data());
         _lines[1]->setText(StringView(line));
         if (folder) {
-                std::snprintf(line, sizeof(line), "Merge the one being %s into it?", moved);
+                std::snprintf(line, sizeof(line), "Merge the %s into it?", moved);
         } else {
-                std::snprintf(line, sizeof(line), "Replace it with the one being %s?", moved);
+                std::snprintf(line, sizeof(line), "Replace it with the %s?", moved);
         }
         _lines[2]->setText(StringView(line));
         _replace->setText(folder ? "&Merge" : "&Replace");
@@ -306,8 +320,14 @@ void FileJobs::conflictFinished(void *arg, Dialog &dialog, int result) {
 
 void FileJobs::tellDone(const FileWorker::Done &done) {
         if (done.err.isOk() || done.err == Error::Interrupted) return; // cancelled: asked for
-        const char      *verb = done.kind == Kind::Copy ? "copied" : done.kind == Kind::Move ? "moved" : "deleted";
-        const char      *title = done.kind == Kind::Copy ? "Copy" : done.kind == Kind::Move ? "Move" : "Delete";
+        const char      *verb = done.kind == Kind::Copy      ? "copied"
+                                : done.kind == Kind::Move    ? "moved"
+                                : done.kind == Kind::Restore ? "restored"
+                                                             : "deleted";
+        const char      *title = done.kind == Kind::Copy      ? "Copy"
+                                 : done.kind == Kind::Move    ? "Move"
+                                 : done.kind == Kind::Restore ? "Restore"
+                                                              : "Delete";
         const StringView path = done.failed.view();
         char             message[MessageBox::MaxText + 1];
         if (done.failures <= 1) {
@@ -324,7 +344,7 @@ void FileJobs::tellDone(const FileWorker::Done &done) {
 
 // ---- Deleting for good
 
-void FileJobs::removeAsking(StringView paths) {
+void FileJobs::removeAsking(StringView paths, Removing removing) {
         if (!_removing.isEmpty()) return; // one question at a time
         size_t     count = 0;
         StringView names[3];
@@ -340,6 +360,15 @@ void FileJobs::removeAsking(StringView paths) {
         if (count == 0 || _removing.assign(paths).isError()) return;
         char   message[MessageBox::MaxText + 1];
         size_t n = 0;
+        if (removing == Removing::Emptying) {
+                std::snprintf(message, sizeof(message), "Delete %s %zu item%s in the Trash for good?",
+                              count == 1 ? "the" : "all", count, count == 1 ? "" : "s");
+                if (MessageBox::show(_app, MessageBox::Kind::Warning, "Empty Trash", StringView(message),
+                                     MessageBox::Buttons::YesNo, confirmed, this)
+                            .isError())
+                        _removing.clear();
+                return;
+        }
         if (count == 1) {
                 n = size_t(std::snprintf(message, sizeof(message), "Delete \"%.*s\" for good?", int(names[0].size()),
                                          names[0].data()));
@@ -354,7 +383,9 @@ void FileJobs::removeAsking(StringView paths) {
                 if (n < sizeof(message)) n += size_t(std::snprintf(message + n, sizeof(message) - n, "."));
         }
         if (n < sizeof(message))
-                std::snprintf(message + n, sizeof(message) - n, "\n\n%s won't go to the trash.",
+                std::snprintf(message + n, sizeof(message) - n,
+                              removing == Removing::FromTrash ? "\n\n%s can't be restored after."
+                                                              : "\n\n%s won't go to the trash.",
                               count == 1 ? "It" : "They");
         if (MessageBox::show(_app, MessageBox::Kind::Warning, "Delete", StringView(message), MessageBox::Buttons::YesNo,
                              confirmed, this)

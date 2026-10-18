@@ -213,6 +213,19 @@ namespace Fs {
         Error openReaderLocked(StringView path, Volume *&volume, Volume::Reader *&reader,
                                Timestamp *modified = nullptr);
 
+        /**
+         * @brief `Vfs::rename()` without the trash's rules (FB23): `Trash` moves files in
+         *        and out of a trash's folders with it.
+         */
+        Error renameRaw(StringView from, StringView to, Vfs::RenameMode mode, const Vfs::Context &context);
+
+        /**
+         * @brief Finds `/trash` entry @p name: its filesystem's mount and its name
+         *        in that trash's `files` (devplan/filebrowser.md §4k).
+         * @return `Ok`, or `NotExist`.
+         */
+        Error locateTrashEntry(StringView name, String &mount, String &real);
+
         /** @brief The largest file that can be an emulated symbolic link. */
         constexpr size_t MaxLinkFile = 10 + 2 + 2 * 1024 + 2;
 

@@ -80,7 +80,7 @@ class FolderSettings {
                 /** @brief Returns @p view's name in the file (`icons`, `details`). */
                 static StringView viewName(View view);
 
-                /** @brief Returns @p sort's name in the file (`name`, `size`, `type`, `modified`). */
+                /** @brief Returns @p sort's name in the file (`name`, `size`, `type`, `modified`, `origin`, `deleted`). */
                 static StringView sortName(FolderModel::Sort sort);
 
                 /** @brief Reads a view's name (any case). @return False if it isn't one. */

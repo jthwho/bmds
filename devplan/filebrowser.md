@@ -564,6 +564,124 @@ A portable component (built for the host tests too) over `Vfs` and `Trash`, no G
   queue.
 - **Left for step 8:** emptying the trash, which will be a `Remove` job.
 
+### 4k. Step 8 design: `.bmds`, `/trash`, the Trash window, Properties (2026-10-17)
+
+The user's design (2026-10-17): "Each mounted filesystem should get a .bmds/ folder at the root
+of that filesystem ... to track bmds specific metadata, the trash files being one of them, in
+.bmds/trash ... a pseudo filesystem called /trash that unifies all the .bmds/trash metadata into a
+single filesystem ... The file browser on /trash provides the undelete options." Their choices:
+`/trash` is flat, with names made unique where needed; an entry's original place and date come
+from a call, not from files; `/trash` is a fixed VFS path; `mv myfile /trash` moves the file into
+its own filesystem's `.bmds/trash`; `.bmds` is made when needed, and not on `/rom` or `/bin`.
+
+**Facts (checked):**
+
+- **The trash is `MOUNT/.trash/{files,info}`** (`files.md` F2, F3), in `Trash` (bmds_fs, above
+  the VFS: it calls `Vfs::` like any program). `move()` writes the info first, then renames.
+  `list()`, `restore()` and `empty()` walk every mount (`listMounts()`, eight at most).
+- **The info's `Path=` is absolute** (`/sd0/p0/notes.txt`). A card mounted elsewhere later
+  restores to the wrong place. freedesktop.org's rule for a trash at a volume's top is a path
+  relative to that top.
+- **The VFS already rewrites paths before resolving them:** `homeRewriteLocked()` turns `/home`,
+  `/cfg` and `/apps/NAME` into where they lead, for every call. Virtual trees (`/etc`, `/bin`,
+  `/dev`) are `Kind`s in `resolveLocked()`, listed by `Directory::next()`.
+- **Every change passes two functions:** `Fs::tellEntryLocked()` (an entry made, removed or
+  renamed) and `Fs::writtenLocked()` (a file closed after writing), under the storage lock.
+  `tellEntryLocked()` returns at once when nothing watches.
+- **`rename()` across volumes is `NotSupported`**; BusyBox `mv` then copies and removes.
+- **The folder tree's root is `/`**, so a virtual `/trash` shows in it with no change.
+- **Icons:** the Flat Color theme has `user-trash` and `user-trash-full`.
+- **`FileWorker` has three kinds** (`Copy`, `Move`, `Remove`), one job at a time.
+
+**Decisions:**
+
+| # | Question | Choice | Alternatives |
+|---|---|---|---|
+| FB18 | Where the system keeps its data on a filesystem | **`MOUNT/.bmds/`** (the user's), one folder for everything BMDS keeps per filesystem: `trash/` now, perhaps `thumbs/` later. **Made when first needed** (the first trash there), so a card plugged in only to be read is never written. None on read-only filesystems (`/rom`) or virtual trees (`/bin`); added later if a need comes. Hidden by its dot. `Trash`'s refusals widen: nothing in `.bmds` can be trashed, nor `.bmds` itself | a folder made at every mount; `.trash` as now |
+| FB19 | The trash's layout | **`.bmds/trash/files/NAME` and `.bmds/trash/info/NAME.trashinfo`**, freedesktop.org's as before. **`Path=` is relative to the filesystem's root** (`notes.txt`, `Documents/a.txt`), freedesktop.org's rule for a volume's trash, so a card restores right wherever it is mounted. An absolute `Path=` is still read (the specification allows both). The `.trash` folders already on the card and `/flash` are moved by hand: nothing is released, so no code migrates them | absolute paths (as now: wrong once a card moves) |
+| FB20 | `/trash` | **A fixed virtual directory in the VFS** (the user's), one flat listing of every mounted filesystem's trash. An entry stands for its file in `.bmds/trash/files`: the VFS rewrites `/trash/NAME[/REST]` to `MOUNT/.bmds/trash/files/REAL[/REST]`, as it rewrites `/home`, so reading, `stat()`, listing a trashed folder, copying out and watching work unchanged | a mountable filesystem (a volume of volumes, more code); a folder per filesystem |
+| FB21 | Names in `/trash` | **Flat, unique where needed** (the user's). An entry's name is its name in its own trash. When two filesystems' trashes hold the same name, the first filesystem by its mount path keeps it and the others get ` (LABEL)` before the extension: `notes (flash).txt`, the label being the mount path without its slashes (`flash`, `sd0p0`, `tmp`). **`Trash::move()` also picks a name free in `/trash`**, so a suffix shows only for a card's trash brought in with a name already there | names prefixed by the filesystem always |
+| FB22 | Where it was and when | **A call** (the user's): `Trash::find(name)` gives an entry's original path (its mount joined to `Path=`), its deletion date, its filesystem and its real name. `Trash::list()` gives every entry with the same in one pass. No info files in `/trash` | `/trash/.info/NAME` files |
+| FB23 | Changes through `/trash` | **At the top of `/trash`:**<br>- **remove** (`rm`, `rmdir`, `rm -r`) deletes the entry and its info file: `rm -r /trash/*` empties the trash;<br>- **rename out** within the filesystem renames and drops the info; to another filesystem it is `NotSupported`, so `mv` and the worker copy then remove;<br>- **rename in** (`mv myfile /trash`, `mv myfile /trash/NAME`) is `Trash::move()` (the user's): the file goes into its own filesystem's trash, by a rename, named as asked if free;<br>- **making** anything new there (`cp`, `mkdir`, `>`) is `PermissionDenied`.<br>**Below an entry** (inside a trashed folder), everything is as in any folder | a read-only `/trash` (no `rm`, no `mv` in); copies in as trashing |
+| FB24 | Restore | **`Trash::restore(name, mode)`** puts an entry back at its original path by a rename (always the same filesystem). Folders on the way that are gone are made again (Windows' rule). A name taken there: `Exists` with `NoReplace`; `Replace`; or `KeepBoth` (a copy's name, `CopyName`). Elsewhere is a rename (or a move) out of `/trash` | refusing when the folder is gone (as now) |
+| FB25 | The Trash window | **A folder window on `/trash`** (the tree's Trash, the desktop's, `files /trash`):<br>- Details by default, with columns Name, Original Location, Date Deleted, Size, Type; sorting by each;<br>- an item's menu: **Restore**, Cut, Delete (for good, asking first), Properties;<br>- the background's: **Empty Trash** (asking first), View ▸, Sort By ▸, Properties;<br>- File ▸ Empty Trash; the toolbar's Paste and New disabled, a Restore button;<br>- a drag out **moves** (restores to where it is dropped), whatever the filesystem;<br>- Delete and Shift+Delete both delete for good (a `Remove` job); Empty Trash is a `Remove` job of every entry, with progress and Cancel | a dialog listing the trash (no drag, no views) |
+| FB26 | The Trash on the desktop | **A link `Trash` → `/trash` in `/home/Desktop`**, made by the panel when it makes the Desktop folder (first run), never again: the user may delete it and drag `/trash` back from the tree as a link (Ctrl+Shift). Its icon is `user-trash` or `user-trash-full` (`/trash` empty or not, from its listing, followed by a watch), wherever `/trash` is shown: the desktop, the tree, a view. A drop on it, or on `/trash` anywhere, **only moves** (it offers Move; the pointer says no with Ctrl), each item trashed at once on the loop. Its menu adds Empty Trash | a fixed item the desktop draws (special in the desktop's model; can't be removed) |
+| FB27 | Properties | **A dialog per selection** (Alt+Enter, an item's menu, the background's for the folder itself, the toolbar's button):<br>- **one item:** its icon and name (editable: a rename at OK), type, location, size (folders: files and folders in it, counted live), modified, and Read-only and Hidden shown; a link's target; a trashed item's original location and deletion date;<br>- **several:** "N items", their types if one, the total size and counts, the location if they share one;<br>- **a filesystem** (its root: a tree root, `/sd0/p0`): its type, capacity, used and free (`statfs`), with a bar.<br>Counting runs on a **second `FileWorker`** of the new kind `Measure`, so it never waits behind a long copy; the dialog shows the totals as they grow and stops counting when it closes. Only OK, Cancel and a rename; attributes are shown, not changed (the VFS has no call to change them) | Windows 95's tabs; editing attributes (a new VFS call first) |
+
+**Design:**
+
+- **`.bmds`** (bmds_fs): `Fs::MetaDirectory` (`.bmds`) and `Trash::Directory` becomes
+  `.bmds/trash`. `Trash::move()` makes `.bmds`, `trash`, `files` and `info` as needed.
+- **The trash index** (bmds_fs, `trashindex.cpp`, under the storage lock): what `/trash` needs
+  to name and find entries.
+  - **Per mount:** its trash's entry names (the info folder's, `.trashinfo` taken off), sorted,
+    in PSRAM, read straight from the volume. Each mount's list is read the first time `/trash`
+    is used after a mount, and again after it is marked stale.
+  - **Stale:** `tellEntryLocked()` and `writtenLocked()` mark a mount's list stale when the path
+    is in its `.bmds/trash` (before the early return for no watches); an unmount drops it. So
+    every change made through the VFS keeps it right; nothing polls.
+  - **The flat names (FB21)** come from the lists in mount-path order. Looking one up finds its
+    mount and real name. A `/trash` name never in any list is `NotExist`.
+  - **Memory:** about the names' bytes plus 8 per entry; nothing while `/trash` isn't used.
+- **The VFS:**
+  - `resolveLocked()`: `/trash` is `Kind::TrashDir`. The rewrite step turns `/trash/NAME...` into
+    the real path (FB20), so the rest is ordinary `Mounted` work.
+  - `Directory::next()` for `TrashDir`: each mount's `files` folder in turn, read from its
+    volume, entries without an info skipped, each named by its flat name, its id the real
+    path's (so watches on a trashed folder and the views' identities agree).
+  - `remove()` and `rmdir()` of a top entry also remove its info. `rename()` from a top entry
+    drops the info after; to `/trash` or `/trash/NAME` it calls `Trash::move()` without the lock.
+    `open()` with `Create`, and `mkdir()`, at the top: `PermissionDenied`.
+  - **Watches:** a change in a mount's `.bmds/trash/files` or `info` also tells watches on
+    `/trash` (`Entries`); a mount or unmount tells all, as now.
+- **`Trash`** (bmds_fs): `Entry` gains `real` (its name in its own trash); `name` is the flat
+  name. `find(name, Entry &)` reads one info file. `restore(name, mode, String *restoredTo)`
+  (FB24). `move(path, context, name)` writes a relative `Path=` and picks a name free in
+  `/trash`. `empty(mount)` stays (orphan info files go with it).
+- **`trash`** (the command, F5, not shipped): `-l` lists flat names; `-r NAME...` restores by
+  them (`Exists` an error, as now); `-e [MOUNT]` as now. `trash PATH...` is
+  `Trash::move()`. Plain `mv PATH /trash` now does the same.
+- **The panel:**
+  - **`FolderModel` on `/trash`** reads `Trash::list()` once per refresh, in the same batches, and
+    joins it by name: the items' original location and date. `FolderItemModel` adds the two
+    columns when the folder is `/trash`.
+  - **`FolderActions`:** Restore (with the worker's name-taken dialog: Replace, Keep Both, Skip,
+    each for all), Empty Trash, deletes for good in `/trash`, a drop's actions on `/trash`
+    (FB26), and Paste and New refused there.
+  - **`FileIcons`:** `/trash` and links to it get `user-trash` or `user-trash-full`; one watch on
+    `/trash` keeps which.
+  - **Properties:** a `PropertiesDialog` (bmds_panel) on the toolkit's `Dialog` and form layout,
+    and `FileWorker::Kind::Measure` (bmds_files): counts and bytes reported as a copy's are.
+- **Size:** about 6 KB of code (the index and VFS cases 2 KB, the panel 4 KB). No static RAM.
+
+**ABI:** no new system calls; programs get the trash through paths. Frozen once shipped: the
+layout on disk (`.bmds/trash`, FB19), `/trash`'s rules (FB20, FB21, FB23), and `trash`'s
+interface.
+
+**Tests:**
+
+- **Host** (RAM disks and a tmpfs):
+  - the index: names from two filesystems, a clash and its label, a name made free by
+    `move()`, staleness after changes made directly in `.bmds/trash`, an unmount;
+  - `/trash` through the VFS: list, `stat`, read, a trashed folder listed and watched, remove
+    with its info, rename out within a filesystem and refused across, `rename` in as a trash,
+    creating refused;
+  - `Trash`: relative `Path=` written, absolute read, `find`, restore with missing folders and
+    with each mode, a card's trash restored after mounting it elsewhere;
+  - `FileWorker`'s `Measure`.
+- **Board:**
+  - Delete in a window and on the desktop, then the Trash window: columns right, Restore puts
+    it back, a drag out restores elsewhere, Empty Trash with progress;
+  - `mv x /trash`, `ls /trash`, `rm -r /trash/*` in a shell; `/flash` and the card at once with
+    a clashing name;
+  - the desktop's Trash icon full and empty; a drop on it;
+  - Properties of a file, a folder of `share` (counting while a copy runs), several items, a
+    filesystem;
+  - `win check`, `win stats`, memory before and after.
+
+**Order:** 8a the VFS and `Trash` (host-tested; `trash` and the shell work alone), 8b the Trash
+window and the desktop's Trash, 8c Properties.
+
 ## 5. Steps
 
 1. **The window limit, then the toolkit's furniture:** 255 windows and connections in growing
@@ -836,7 +954,63 @@ A portable component (built for the host tests too) over `Vfs` and `Trash`, no G
 7. **Drag and drop** (FB15): the window manager, the toolkit, the views, the terminal's drop;
    designed and built in `clipboard.md` §5 and §11 (2026-10-17).
 8. **Properties and a Trash window** (the trash of every filesystem in one view, Restore,
-   Empty), and a Trash icon on the desktop.
+   Empty), and a Trash icon on the desktop. Designed (§4k, 2026-10-17): `.bmds` on each
+   filesystem, `/trash` in the VFS; 8a the VFS and `Trash`, 8b the Trash window, 8c Properties.
+   - *As built (2026-10-17):*
+     - **8a, the VFS and `Trash`:**
+       - The trash index (`trashindex.cpp`) holds each trash's info names and their flat names,
+         read when first needed. `tellEntryLocked()` and `writtenLocked()` mark it stale by the
+         trash folders' ids, which are worked out at each mount. An unwatched change still marks
+         it, since it is checked before the early return.
+       - The VFS rewrites `/trash/NAME` with `/home`'s rewrite. A rename to the top of a trash,
+         by `/trash` or by its real `files` path, is `Trash::moveAs()` taken outside the lock.
+         `Trash` itself renames with `Fs::renameRaw()`, which skips that rule.
+       - A labelled name only appears for a trash brought in from elsewhere: `move()` already
+         picks names free in `/trash`, and keeps its ` (2)` after the extension, as before.
+     - **8b, the Trash window:**
+       - `FolderModel` reads each `/trash` entry's info as it fills (`Trash::find()`), in its
+         batches, and stores the folder and date after the name. It marks `/trash`, and links to
+         it, by the `id` `stat()` gives them.
+       - `FolderItemModel` shows five columns in `/trash` (its sorts became members). The Details
+         view takes the change on its next `relayout()`.
+       - Restore is a worker job (`FileWorker::Kind::Restore`), so a taken place asks in the copy
+         dialog. Merge moves the trashed folder's contents into the folder there, then removes it.
+       - The toolbar shows Restore and Empty Trash in `/trash`, Copy and Paste elsewhere. Rename,
+         New and Paste do nothing there. The tree's `trash` row gets the trash icon
+         (`TreeView::setChildIcon()`).
+       - The panel watches `/trash` to show it full or empty (`FileIcons::setTrashFull()`). It
+         makes `Desktop/Trash` only when it makes the Desktop folder. The desktop now shows links
+         by what they lead to; it left them out before.
+       - Found on the way: the Details view's drag showed no image. Its rows are wider than the
+         128-pixel image, so none fit (`clipboard.md` §11). Now a drag shows the icon and the name
+         (`ItemView::dragBox()`).
+     - **8c, Properties:** `PropertiesDialog` (bmds_panel) counts on its own `FileWorker` with
+       the new `Measure` kind. `FileOps::measure()` now tells each item counted and counts
+       folders. The dialog's height is its lines at a label's height, with the column's spacing
+       set to none.
+     - **Host tests:** `/trash` through the VFS and the shell (flat names, a clash labelled
+       `notes (disk1p0).txt`, `mv` in and out, refused creation, removal with the info, watches);
+       `Trash` (relative `Path=`, `find`, restore Refuse, Replace and Keep Both, folders made
+       again); `FolderModel` on `/trash`; the worker's Restore (Keep Both, Merge) and Measure.
+     - **On the board** (the card's existing `.trash` moved to `.bmds/trash` by hand):
+       - **Shell:** `ls /trash` listed the six old entries, whose absolute `Path=` was still
+         read. `mv` into `/trash` from `/tmp` and from the card went to each one's own trash.
+         `mv` out across filesystems dropped the info, and `rm` removed the entry and its info.
+         Making a file or a folder in `/trash` was refused.
+       - **Trash window:** opened in Details with the right locations and dates. The watch
+         followed changes made elsewhere. Restore worked; a taken file asked and Keep Both made
+         `two (copy).txt`; a taken folder asked Merge and merged. Empty Trash asked and emptied.
+         Delete in the trash asked ("It can't be restored after.") and deleted. A drag out moved
+         the file back to the folder it was dropped on.
+       - **Desktop:** the Trash icon showed full or empty as the trash changed. A drop on it
+         trashed the file, and a double click opened the Trash window.
+       - **Properties:** shown for a file, a folder (2 files, counted), the card (2,776 files in
+         about 3 s, exFAT, 30 GB), 16 items, the trash and a trashed file. A rename at OK worked.
+       - **Checks:** `win check` 0 pixels wrong; `win stats` 0 errors. Internal RAM was the same
+         with a Properties dialog counting and after it closed.
+     - **Size:** 19,008 bytes of firmware (2,304,048 to 2,323,056), not the 6 KB estimated. The
+       panel's part was larger than guessed: the dialog, the window's trash cases, and the worker's
+       Restore and Measure.
 
 Board checks at each step; each step is usable alone.
 

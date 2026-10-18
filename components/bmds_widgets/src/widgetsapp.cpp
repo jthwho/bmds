@@ -439,10 +439,10 @@ namespace {
 
         void WidgetsWindow::sortAsked(void *arg, DetailsView &view, size_t column) {
                 auto                   *self = static_cast<WidgetsWindow *>(arg);
-                const FolderModel::Sort sort = FolderItemModel::sortOf(column);
+                const FolderModel::Sort sort = self->_files.sortOf(column);
                 const bool down = self->_files.folder().sort() == sort && !self->_files.folder().isDescending();
                 self->_files.folder().setSort(sort, down);
-                view.setSortIndicator(int(FolderItemModel::columnOf(sort)), down);
+                view.setSortIndicator(int(self->_files.columnOf(sort)), down);
                 self->filesChanged();
                 return;
         }

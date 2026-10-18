@@ -46,6 +46,12 @@ class TreeView : public ItemView {
                 /** @brief Sets the icons: a root's, a folder's, an expanded folder's (the caller's; null: none). */
                 void setIcons(const Icon *root, const Icon *folder, const Icon *open);
 
+                /**
+                 * @brief Draws a root's child named @p name with @p icon (the caller's; null:
+                 *        none) rather than a folder's: `/trash` in the file browser's tree.
+                 */
+                void setChildIcon(StringView name, const Icon *icon);
+
                 /** @brief Adds a root (its name a path, `/sd0/p0`). @return `Ok` or `NoMem`. */
                 Error addRoot(StringView path);
 
@@ -120,6 +126,8 @@ class TreeView : public ItemView {
                 const Icon *_rootIcon = nullptr;
                 const Icon *_folderIcon = nullptr;
                 const Icon *_openIcon = nullptr;
+                const Icon *_childIcon = nullptr; // setChildIcon()'s, for a root's child named _childName
+                char        _childName[32] = {};
                 void        tellRowsChanged() {
                         if (_rowsChanged != nullptr) _rowsChanged(_rowsChangedArg, *this);
                         return;

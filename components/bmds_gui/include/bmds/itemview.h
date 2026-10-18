@@ -259,6 +259,12 @@ class ItemView : public ScrollArea {
                 /** @brief Returns row @p row's rectangle in window coordinates (not cut to the viewport). */
                 DragImage::Box rowBox(size_t row) const;
 
+                /**
+                 * @brief Returns the part of row @p row a drag's image shows, in window
+                 *        coordinates: the whole row by default (a details row: its icon and name).
+                 */
+                virtual DragImage::Box dragBox(size_t row) const { return rowBox(row); }
+
                 /** @brief Row @p row was activated (a double click, Enter): told to `Activated`. */
                 virtual void activate(size_t row);
 

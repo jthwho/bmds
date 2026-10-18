@@ -29,7 +29,8 @@ BMDS_NAMESPACE_BEGIN
  *        time, the others queued (`devplan/filebrowser.md` §4j, FB13).
  *
  * A job copies or moves paths into a folder, or removes them, through
- * `FileOps`. It counts its items and bytes first. The thread starts with the
+ * `FileOps`, or restores them from the trash (a place taken asked as a
+ * copy's name taken is). It counts its items and bytes first. The thread starts with the
  * first job and ends when none is left; the owner's loop joins it when it
  * takes the news (`takeDone()`, `reap()`), so that never waits long.
  *
@@ -48,6 +49,8 @@ class FileWorker {
                         Copy,   ///< The paths copied into the target.
                         Move,   ///< The paths moved into the target.
                         Remove, ///< The paths removed, with everything in them.
+                        Restore, ///< The paths (in `/trash`) put back where they were (`Trash::restore()`).
+                        Measure, ///< The paths and their trees counted (`Status` as it goes, `Done` the totals).
                 };
 
                 /** @brief Something to take: called on the worker's thread. */
@@ -84,6 +87,7 @@ class FileWorker {
                                 Error    err;               ///< `Ok`, `Interrupted` (cancelled), or the first error.
                                 size_t   failures = 0;      ///< Items that failed.
                                 String   failed{MemSpace::Psram}; ///< The first one's path.
+                                FileOps::Totals totals;                  ///< `Measure`: what it counted.
                 };
 
                 /** @brief A worker telling @p fn(@p arg); nothing runs until `add()`. */
@@ -97,7 +101,7 @@ class FileWorker {
 
                 /**
                  * @brief Queues a job: @p paths (absolute, a line each) copied or moved
-                 *        into folder @p target, or removed (@p target unused).
+                 *        into folder @p target, or removed or restored (@p target unused).
                  * @return The job's number, or `Invalid` (no paths), `NoMem`, or the
                  *         thread's error.
                  */

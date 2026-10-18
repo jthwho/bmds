@@ -19,6 +19,7 @@
 #include <bmds/memorystream.h>
 #include <bmds/partitions.h>
 #include <bmds/romimage.h>
+#include <bmds/trash.h>
 
 #include "etc.h"
 #include "fatlayer.h"
@@ -26,6 +27,7 @@
 #include "lfsvolume.h"
 #include "romvolume.h"
 #include "tmpvolume.h"
+#include "trashindex.h"
 #include "zoneinfo.h"
 
 BMDS_NAMESPACE_BEGIN
@@ -147,6 +149,7 @@ namespace {
                 DevSubFile, // /dev/NAME/N, one of them
                 AppsDir,    // /apps (devplan/apps.md §5)
                 AppLink,    // /apps/NAME, a link setAppLinks() made
+                TrashDir,   // /trash, every filesystem's trash (devplan/filebrowser.md §4k)
         };
 
         // Where the programs built into the firmware are listed (read-only).
@@ -192,6 +195,30 @@ namespace {
                 for (size_t i = 0; i < appCountLocked(); ++i)
                         if (appNameLocked(i) == name) return StringView(appTable->text + appTable->entries[i].target);
                 return StringView();
+        }
+
+        // The mount table as the trash index takes it, by slot. Lock held.
+        Span<const TrashIndex::Mount> trashMountsLocked(TrashIndex::Mount (&out)[MaxMounts]) {
+                for (size_t i = 0; i < mountCount; ++i)
+                        out[i] = TrashIndex::Mount{StringView(mounts[i].path), mounts[i].volume};
+                return Span<const TrashIndex::Mount>(out, mountCount);
+        }
+
+        // The mounts changed: the trash index made again when next needed. Lock held.
+        void trashMountsChangedLocked() {
+                TrashIndex::Mount m[MaxMounts];
+                TrashIndex::mountsChangedLocked(trashMountsLocked(m));
+                return;
+        }
+
+        // True if @p rest (within a volume) is an entry at the top of its trash:
+        // `/.bmds/trash/files/NAME`; @p name set to NAME.
+        bool isTrashEntry(StringView rest, StringView &name) {
+                constexpr StringView Files = TrashIndex::FilesRest;
+                if (rest.size() <= Files.size() + 1 || !rest.startsWith(Files) || rest[Files.size()] != '/')
+                        return false;
+                name = rest.mid(Files.size() + 1);
+                return name.indexOf('/') == StringView::NPos;
         }
 
         // Where the time zone database's directory is (read-only).
@@ -247,6 +274,13 @@ namespace {
         // True if @p path is strictly below @p dir.
         bool isBelow(StringView path, StringView dir) {
                 return path.size() > dir.size() && isAtOrBelow(path, dir);
+        }
+
+        // True if normalized @p path names an entry at the top of /trash that no trash has
+        // (the rewrite turns the others into their files).
+        bool isNewTrashName(StringView path) {
+                return isBelow(path, Vfs::TrashPath) &&
+                       path.indexOf('/', Vfs::TrashPath.size() + 1) == StringView::NPos;
         }
 
         // True if normalized @p path is in a tree nothing can be written to:
@@ -320,6 +354,12 @@ namespace {
                         node.kind = Kind::EtcFile;
                         return makeResult(node);
                 }
+                if (isAtOrBelow(path, Vfs::TrashPath)) {
+                        // Its entries were rewritten to their files: what is left has no trash.
+                        if (path != Vfs::TrashPath) return makeError<Node>(Error::NotExist);
+                        node.kind = Kind::TrashDir;
+                        return makeResult(node);
+                }
                 if (isAtOrBelow(path, ZoneInfoPath)) {
                         Zones::Found found;
                         const Error  err = Zones::findLocked(
@@ -389,6 +429,26 @@ namespace {
         // Rewrites normalized @p storage at or below /home or /cfg to where it leads; the link
         // itself only with @p followHome (else the link is what is meant). Lock held.
         Error homeRewriteLocked(String &storage, bool followHome) {
+                // /trash/NAME: its file in its filesystem's trash (FB20).
+                if (isBelow(storage.view(), Vfs::TrashPath)) {
+                        const StringView  rest = storage.view().mid(Vfs::TrashPath.size() + 1);
+                        const size_t      slash = rest.indexOf('/');
+                        TrashIndex::Mount m[MaxMounts];
+                        size_t            slot = 0;
+                        StringView        real;
+                        if (TrashIndex::findLocked(trashMountsLocked(m),
+                                                   slash == StringView::NPos ? rest : rest.left(slash), slot, real)) {
+                                String out;
+                                Error  err = out.append(StringView(mounts[slot].path));
+                                if (err.isOk()) err = out.append(TrashIndex::FilesRest);
+                                if (err.isOk()) err = out.append('/');
+                                if (err.isOk()) err = out.append(real);
+                                if (err.isOk() && slash != StringView::NPos) err = out.append(rest.mid(slash));
+                                if (err.isError()) return err;
+                                storage = std::move(out);
+                        }
+                        return Error::Ok;
+                }
                 // /apps/NAME first: where it leads may be below /home.
                 if (isBelow(storage.view(), AppsPath)) {
                         const StringView rest = storage.view().mid(AppsPath.size() + 1);
@@ -455,6 +515,7 @@ namespace {
                         case Kind::EtcDir:
                         case Kind::DevSubDir:
                         case Kind::AppsDir:
+                        case Kind::TrashDir:
                         case Kind::DevDir: return makeResult(directoryInfo(node.name));
                         case Kind::AppLink:
                                 (void)info.name.assign(node.name);
@@ -725,7 +786,7 @@ namespace {
         // the next component of each mount below. Returns child @p index, or
         // an empty view past the end. Lock held.
         StringView virtualChild(StringView dir, size_t index) {
-                static constexpr StringView InRoot[] = {"apps", "bin", "cfg", "dev", "etc", "home", "share"};
+                static constexpr StringView InRoot[] = {"apps", "bin", "cfg", "dev", "etc", "home", "share", "trash"};
                 static constexpr StringView InShare[] = {"zoneinfo"};
                 StringView                  root[sizeof(InRoot) / sizeof(InRoot[0])];
                 size_t                      rootCount = 0;
@@ -760,6 +821,7 @@ namespace {
                 mounts[index].volume->release();
                 for (size_t j = index + 1; j < mountCount; ++j) mounts[j - 1] = mounts[j];
                 mounts[--mountCount] = Mount();
+                trashMountsChangedLocked();
                 // Every file: the slots after this one moved.
                 Fs::changedLocked(0, 0);
                 Fs::tellAllWatchesLocked();
@@ -829,7 +891,8 @@ Directory &Directory::operator=(Directory &&other) {
 
 void Directory::close() {
         if (_state == nullptr) return;
-        if (static_cast<Kind>(_state->kind) == Kind::Mounted) {
+        const Kind kind = static_cast<Kind>(_state->kind);
+        if (kind == Kind::Mounted || (kind == Kind::TrashDir && _state->cursor != nullptr)) {
                 Mutex::Locker lock(Fs::lock(), WaitForever);
                 // A stale directory (unmounted) is only freed.
                 _state->volume->closeDirectory(_state->cursor);
@@ -901,6 +964,47 @@ Result<FileInfo> Directory::next() {
                         info.modified = s.zoneModified;
                         info.id = idAppend(idAppend(s.idPrefix, "/"), name);
                         return makeResult(std::move(info));
+                }
+                case Kind::TrashDir: {
+                        // Each filesystem's trashed files in turn, those with an info file,
+                        // by their flat names; their ids their files' (FB20).
+                        TrashIndex::Mount                   m[MaxMounts];
+                        const Span<const TrashIndex::Mount> slots = trashMountsLocked(m);
+                        for (;;) {
+                                if (s.cursor == nullptr) {
+                                        if (s.index >= slots.size()) return makeError<FileInfo>(Error::EndOfFile);
+                                        bool noPath = false;
+                                        auto [cursor, err] =
+                                                slots[s.index].volume->openDirectory(TrashIndex::FilesRest, noPath);
+                                        if (err.isError()) {
+                                                ++s.index;
+                                                continue;
+                                        }
+                                        s.cursor = cursor;
+                                        s.volume = slots[s.index].volume;
+                                }
+                                const Error err = s.cursor->next(info);
+                                if (err.isError()) {
+                                        s.volume->closeDirectory(s.cursor);
+                                        s.cursor = nullptr;
+                                        ++s.index;
+                                        if (err != Error::EndOfFile) return makeError<FileInfo>(err);
+                                        continue;
+                                }
+                                const StringView flat = TrashIndex::flatNameLocked(slots, s.index, info.name.view());
+                                if (flat.isEmpty()) continue;
+                                if (linkCandidate(info.attributes, info.type, info.size) &&
+                                    (info.attributes & FileInfo::Hidden) == 0) {
+                                        info.type = FileType::Link;
+                                        info.size = (info.size - CookieBytes - 4) / 2;
+                                }
+                                info.id = idAppend(
+                                        idAppend(idAppend(pathId(slots[s.index].path), TrashIndex::FilesRest), "/"),
+                                        info.name.view());
+                                info.device = static_cast<uint32_t>(s.index + 1);
+                                (void)info.name.assign(flat);
+                                return makeResult(std::move(info));
+                        }
                 }
                 case Kind::DevSubDir: {
                         const Vfs::DeviceDirectory &d = *s.devDir;
@@ -1121,7 +1225,7 @@ namespace {
                 const StringView p = normalized.value().view();
                 if (p == "/" || isAtOrBelow(p, "/dev") || isAtOrBelow(p, BinPath) || isAtOrBelow(p, ZoneInfoPath) ||
                     isAtOrBelow(p, HomePath) || isAtOrBelow(p, CfgPath) || isAtOrBelow(p, EtcPath) ||
-                    isAtOrBelow(p, AppsPath) || p.size() > MaxMountPath)
+                    isAtOrBelow(p, AppsPath) || isAtOrBelow(p, TrashPath) || p.size() > MaxMountPath)
                         return Error::Invalid;
                 Mutex::Locker lock(Fs::lock(), WaitForever);
                 for (size_t i = 0; i < mountCount; ++i) {
@@ -1153,6 +1257,7 @@ namespace {
                 m.volume = volume;
                 m.device = device;
                 Zones::mountsChangedLocked();
+                trashMountsChangedLocked();
                 Fs::tellAllWatchesLocked();
                 logHomeLocked();
                 mountChanges.notify();
@@ -1513,6 +1618,7 @@ Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context 
                         case Kind::EtcDir:
                         case Kind::DevSubDir:
                         case Kind::AppsDir:
+                        case Kind::TrashDir:
                         case Kind::DevDir: return makeError<FileHandle::Ptr>(Error::IsDir);
                         case Kind::DevSubFile: return node.devDir->open(node.devDir->arg, node.devIndex, flags);
                         // Reached through a link (the name itself is opened above, unlocked):
@@ -1824,6 +1930,24 @@ namespace {
                 return Error::Ok;
         }
 
+        // If @p node (at normalized @p storage) is an entry at the top of its filesystem's
+        // trash, removes its info file: it was removed or moved out (FB23). Lock held.
+        void dropTrashInfoLocked(const Node &node, StringView storage) {
+                StringView name;
+                if (node.kind != Kind::Mounted || !isTrashEntry(node.rest, name)) return;
+                String info;
+                Error  err = info.append(TrashIndex::InfoRest);
+                if (err.isOk()) err = info.append('/');
+                if (err.isOk()) err = info.append(name);
+                if (err.isOk()) err = info.append(TrashIndex::InfoSuffix);
+                if (err.isError() || node.volume->remove(info.view()).isError()) return;
+                String path;
+                if (path.append(storage.left(storage.size() - node.rest.size())).isOk() &&
+                    path.append(info.view()).isOk())
+                        Fs::tellEntryLocked(path.view(), DirectoryWatch::Entries, false);
+                return;
+        }
+
         // The changes below act on the link /home itself, not where it leads (but setModified()).
         Error normalizeInto(StringView path, const Vfs::Context &context, String &storage, bool followHome = false) {
                 return normalizeLocked(path, context.cwd, storage, followHome);
@@ -1871,7 +1995,10 @@ Error Vfs::rmdir(StringView path, const Context &context) {
                 if (info.error().isError()) return info.error();
                 if (!info.value().isDirectory()) return Error::NotDir;
                 const Error removed = node.volume->rmdir(node.rest);
-                if (removed.isOk()) Fs::tellEntryLocked(storage.view(), DirectoryWatch::Entries, true);
+                if (removed.isOk()) {
+                        Fs::tellEntryLocked(storage.view(), DirectoryWatch::Entries, true);
+                        dropTrashInfoLocked(node, storage.view());
+                }
                 return removed;
         }
         return err;
@@ -1901,45 +2028,98 @@ Error Vfs::remove(StringView path, const Context &context) {
                 if (err.isOk()) {
                         Fs::changedLocked(node.mount, pathId(storage.view()));
                         Fs::tellEntryLocked(storage.view(), DirectoryWatch::Entries, false);
+                        dropTrashInfoLocked(node, storage.view());
                 }
                 return err;
         }
         return err;
 }
 
-Error Vfs::rename(StringView from, StringView to, RenameMode mode, const Context &context) {
-        Mutex::Locker lock(Fs::lock(), WaitForever);
-        String        fromStorage;
-        String        toStorage;
-        Error         err = normalizeInto(from, context, fromStorage);
-        if (err.isOk()) err = normalizeInto(to, context, toStorage);
-        if (err.isOk() && (isReadOnlyTree(fromStorage.view()) || isReadOnlyTree(toStorage.view())))
-                return Error::ReadOnly; // the built-ins
-        for (int hops = 0; err.isOk(); ++hops) {
-                if (hops > MaxLinks) return Error::TooManyLinks;
-                Node fromNode;
-                Node toNode;
-                err = targetLocked(fromStorage, Error::PermissionDenied, fromNode);
-                if (err.isOk()) {
-                        err = targetLocked(toStorage, Error::PermissionDenied, toNode);
-                        // Outside every filesystem: not something a rename can do.
-                        if (err == Error::NotExist || err == Error::PermissionDenied) err = Error::NotSupported;
+namespace {
+
+        // Vfs::rename() under the lock. With @p trashing, a rename to the top of a trash (by
+        // /trash or by its files) is left to Trash::move(): @p intoTrash set, the name asked
+        // for in @p as (FB23).
+        Error renameLocked(StringView from, StringView to, Vfs::RenameMode mode, const Vfs::Context &context,
+                           bool trashing, bool &intoTrash, String &as) {
+                intoTrash = false;
+                String fromStorage;
+                String toStorage;
+                Error  err = normalizeInto(from, context, fromStorage);
+                if (err.isOk()) err = normalizeInto(to, context, toStorage);
+                if (err.isOk() && (isReadOnlyTree(fromStorage.view()) || isReadOnlyTree(toStorage.view())))
+                        return Error::ReadOnly; // the built-ins
+                for (int hops = 0; err.isOk(); ++hops) {
+                        if (hops > MaxLinks) return Error::TooManyLinks;
+                        if (trashing && isNewTrashName(toStorage.view())) {
+                                intoTrash = true;
+                                return as.assign(toStorage.view().mid(Vfs::TrashPath.size() + 1));
+                        }
+                        Node fromNode;
+                        Node toNode;
+                        err = targetLocked(fromStorage, Error::PermissionDenied, fromNode);
+                        if (err.isOk()) {
+                                err = targetLocked(toStorage, Error::PermissionDenied, toNode);
+                                // Outside every filesystem: not something a rename can do.
+                                if (err == Error::NotExist || err == Error::PermissionDenied) err = Error::NotSupported;
+                        }
+                        if (err.isError()) return err;
+                        StringView name;
+                        if (trashing && isTrashEntry(toNode.rest, name)) {
+                                intoTrash = true;
+                                return as.assign(name);
+                        }
+                        if (fromNode.volume != toNode.volume) return Error::NotSupported;
+                        bool        noPath = false;
+                        const Error renamed = fromNode.volume->rename(fromNode.rest, toNode.rest, mode, noPath);
+                        if (noPath && (followPathLocked(fromStorage, false) || followPathLocked(toStorage, false)))
+                                continue;
+                        if (renamed.isOk()) {
+                                Fs::changedLocked(fromNode.mount, pathId(fromStorage.view()));
+                                // A file replaced there: its name holds another now.
+                                if (mode == Vfs::RenameMode::Replace)
+                                        Fs::changedLocked(toNode.mount, pathId(toStorage.view()));
+                                Fs::tellEntryLocked(fromStorage.view(), DirectoryWatch::Entries, true);
+                                Fs::tellEntryLocked(toStorage.view(), DirectoryWatch::Entries, false);
+                                if (trashing) dropTrashInfoLocked(fromNode, fromStorage.view());
+                        }
+                        return renamed;
                 }
-                if (err.isError()) return err;
-                if (fromNode.volume != toNode.volume) return Error::NotSupported;
-                bool        noPath = false;
-                const Error renamed = fromNode.volume->rename(fromNode.rest, toNode.rest, mode, noPath);
-                if (noPath && (followPathLocked(fromStorage, false) || followPathLocked(toStorage, false))) continue;
-                if (renamed.isOk()) {
-                        Fs::changedLocked(fromNode.mount, pathId(fromStorage.view()));
-                        // A file replaced there: its name holds another now.
-                        if (mode == RenameMode::Replace) Fs::changedLocked(toNode.mount, pathId(toStorage.view()));
-                        Fs::tellEntryLocked(fromStorage.view(), DirectoryWatch::Entries, true);
-                        Fs::tellEntryLocked(toStorage.view(), DirectoryWatch::Entries, false);
-                }
-                return renamed;
+                return err;
         }
+
+        Error renameAt(StringView from, StringView to, Vfs::RenameMode mode, const Vfs::Context &context,
+                       bool trashing) {
+                bool   intoTrash = false;
+                String as;
+                Error  err;
+                {
+                        Mutex::Locker lock(Fs::lock(), WaitForever);
+                        err = renameLocked(from, to, mode, context, trashing, intoTrash, as);
+                }
+                if (intoTrash && err.isOk()) return Trash::moveAs(from, as.view(), context, nullptr);
+                return err;
+        }
+
+} // namespace
+
+Error Fs::locateTrashEntry(StringView name, String &mount, String &real) {
+        Mutex::Locker     lock(Fs::lock(), WaitForever);
+        TrashIndex::Mount m[MaxMounts];
+        size_t            slot = 0;
+        StringView        found;
+        if (name.isEmpty() || !TrashIndex::findLocked(trashMountsLocked(m), name, slot, found)) return Error::NotExist;
+        Error err = mount.assign(StringView(mounts[slot].path));
+        if (err.isOk()) err = real.assign(found);
         return err;
+}
+
+Error Vfs::rename(StringView from, StringView to, RenameMode mode, const Context &context) {
+        return renameAt(from, to, mode, context, true);
+}
+
+Error Fs::renameRaw(StringView from, StringView to, Vfs::RenameMode mode, const Vfs::Context &context) {
+        return renameAt(from, to, mode, context, false);
 }
 
 Error Vfs::setModified(StringView path, Timestamp time, const Context &context) {

@@ -20,6 +20,7 @@
 #include <bmds/vfs.h>
 
 #include "folderwindow.h"
+#include "propertiesdialog.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -92,6 +93,8 @@ Error FolderWindow::build() {
                 {IconId::EditCopy, "Copy", ChooseCopy},
                 {IconId::EditPaste, "Paste", ChoosePaste},
                 {IconId::EditDelete, "Delete", ChooseDelete},
+                {IconId::EditUndo, "Restore", ChooseRestore},
+                {IconId::UserTrash, "Empty Trash", ChooseEmptyTrash},
                 {IconId::Folder, nullptr, ChooseOpen},
                 {IconId::ViewListIcons, "Icons", ChooseIcons},
                 {IconId::ViewListDetails, "Details", ChooseDetails},
@@ -112,6 +115,10 @@ Error FolderWindow::build() {
                 if (t.choice == ChooseBack) _back = b;
                 if (t.choice == ChooseForward) _forward = b;
                 if (t.choice == ChooseUp) _up = b;
+                if (t.choice == ChooseCopy) _copyTool = b;
+                if (t.choice == ChoosePaste) _pasteTool = b;
+                if (t.choice == ChooseRestore) _restoreTool = b;
+                if (t.choice == ChooseEmptyTrash) _emptyTool = b;
         }
 
         // The address.
@@ -173,8 +180,12 @@ void FolderWindow::setIcons() {
         FileIcons  &icons = _host.fileIcons();
         const Icon *folder = icons.named(IconId::Folder, 16);
         _tree->setIcons(icons.named(IconId::DriveHarddisk, 16), folder, icons.named(IconId::FolderOpen, 16));
-        setIcon(folder);
-        setLargeIcon(icons.named(IconId::Folder, 32));
+        // The trash's own (full or empty), else a folder; the tree's /trash too.
+        const IconId trash = icons.isTrashFull() ? IconId::UserTrashFull : IconId::UserTrash;
+        _tree->setChildIcon(Vfs::TrashPath.mid(1), icons.named(trash, 16));
+        const IconId own = isTrash() ? trash : IconId::Folder;
+        setIcon(icons.named(own, 16) != nullptr ? icons.named(own, 16) : folder);
+        setLargeIcon(icons.named(own, 32) != nullptr ? icons.named(own, 32) : icons.named(IconId::Folder, 32));
         for (size_t i = 0; i < sizeof(_toolButtons) / sizeof(_toolButtons[0]); ++i)
                 if (_toolButtons[i] != nullptr) _toolButtons[i]->setIcon(icons.named(_toolIcons[i], 16));
         return;
@@ -204,6 +215,10 @@ Error FolderWindow::go(StringView path, StringView select) {
                 _host.folderActions().tell("Files", StringView(message));
                 return err;
         }
+        if (type == FileType::Directory && abs.view() != Vfs::TrashPath && FolderActions::isTrash(abs.view())) {
+                // A link to the trash (the desktop's Trash): the trash itself, its own window.
+                return go(Vfs::TrashPath, select);
+        }
         if (type != FileType::Directory) {
                 // A file: its folder, the file selected.
                 const StringView p = abs.view();
@@ -218,7 +233,10 @@ Error FolderWindow::go(StringView path, StringView select) {
         stopReading();
         if (_nameEdit != nullptr && _nameEdit->isShown()) _nameEdit->close();
         FolderSettings::Values values;
-        if (!_host.folderSettings().find(abs.view(), values)) values.view = _host.defaultView();
+        if (!_host.folderSettings().find(abs.view(), values)) {
+                // The trash in Details (where it was and when), unless shown otherwise before.
+                values.view = abs.view() == Vfs::TrashPath ? FolderSettings::View::Details : _host.defaultView();
+        }
         FolderModel &folder = _items.folder();
         String       was(MemSpace::Psram);
         (void)was.assign(this->path());
@@ -244,14 +262,16 @@ Error FolderWindow::go(StringView path, StringView select) {
         _select.clear();
         _renameSelected = false;
         if (!select.isEmpty()) (void)_select.assign(select);
-        _details->setSortIndicator(int(FolderItemModel::columnOf(values.sort)), values.descending);
+        _details->setSortIndicator(int(_items.columnOf(values.sort)), values.descending);
         showView(values.view);
         _icons->resetTo(Span<const size_t>(), -1);
         _details->resetTo(Span<const size_t>(), -1);
-        // The title: the path, its end if it is long.
+        // The title: the path, its end if it is long ("Trash" for the trash).
         const StringView p = this->path();
         char             title[WindowManager::MaxTitle + 1];
-        if (p.size() <= WindowManager::MaxTitle) {
+        if (isTrash()) {
+                std::snprintf(title, sizeof(title), "Trash");
+        } else if (p.size() <= WindowManager::MaxTitle) {
                 std::snprintf(title, sizeof(title), "%.*s", int(p.size()), p.data());
         } else {
                 const StringView tail = p.mid(p.size() - (WindowManager::MaxTitle - 3));
@@ -264,6 +284,7 @@ Error FolderWindow::go(StringView path, StringView select) {
         _freeBytes = ferr.isOk() ? fs.freeBytes : 0;
         startReading();
         syncTree();
+        setIcons();
         updateTools();
         updateStatus();
         return Error::Ok;
@@ -514,7 +535,7 @@ void FolderWindow::showView(FolderSettings::View view) {
 void FolderWindow::setSort(FolderModel::Sort sort, bool descending) {
         keepSelection();
         _items.folder().setSort(sort, descending);
-        _details->setSortIndicator(int(FolderItemModel::columnOf(sort)), descending);
+        _details->setSortIndicator(int(_items.columnOf(sort)), descending);
         restoreSelection();
         remember();
         return;
@@ -741,6 +762,7 @@ void FolderWindow::viewMenu(void *arg, ItemView &view, int row, uint16_t x, uint
 void FolderWindow::viewRename(void *arg, ItemView &view, size_t row) {
         (void)view;
         auto *self = static_cast<FolderWindow *>(arg);
+        if (self->isTrash()) return; // a trashed item's name is its info's: restored, it gets its own back
         if (row < self->_items.folder().count()) self->startRename(row, self->_items.folder().name(row));
         return;
 }
@@ -764,6 +786,8 @@ bool FolderWindow::viewKey(void *arg, ItemView &view, const KeyEvent &event) {
                 self->choose(ChoosePaste);
         } else if (plain && event.usage == HidKey::Backspace) {
                 self->choose(ChooseUp);
+        } else if (event.hasAlt() && !event.hasCtrl() && !event.hasShift() && event.usage == HidKey::Enter) {
+                self->choose(ChooseProperties);
         } else {
                 return false;
         }
@@ -773,7 +797,7 @@ bool FolderWindow::viewKey(void *arg, ItemView &view, const KeyEvent &event) {
 void FolderWindow::sortAsked(void *arg, DetailsView &view, size_t column) {
         (void)view;
         auto                   *self = static_cast<FolderWindow *>(arg);
-        const FolderModel::Sort sort = FolderItemModel::sortOf(column);
+        const FolderModel::Sort sort = self->_items.sortOf(column);
         const FolderModel      &folder = self->_items.folder();
         self->setSort(sort, folder.sort() == sort && !folder.isDescending());
         return;
@@ -890,14 +914,38 @@ void FolderWindow::choose(int choice) {
                         (void)go(p.view());
                         break;
                 }
-                case ChooseNewFolder: createNew(FileOps::NewKind::Folder); break;
-                case ChooseNewText: createNew(FileOps::NewKind::TextDocument); break;
-                case ChooseNewFile: createNew(FileOps::NewKind::EmptyFile); break;
+                case ChooseNewFolder:
+                        if (!isTrash()) createNew(FileOps::NewKind::Folder);
+                        break;
+                case ChooseNewText:
+                        if (!isTrash()) createNew(FileOps::NewKind::TextDocument);
+                        break;
+                case ChooseNewFile:
+                        if (!isTrash()) createNew(FileOps::NewKind::EmptyFile);
+                        break;
                 case ChooseDelete:
+                        // In the trash: for good, asked first.
                         selectedPaths(paths);
-                        if (!paths.isEmpty()) actions.trash(paths.view());
+                        if (paths.isEmpty()) break;
+                        if (isTrash()) {
+                                actions.removeForGood(paths.view());
+                        } else {
+                                actions.trash(paths.view());
+                        }
+                        break;
+                case ChooseRestore:
+                        selectedPaths(paths);
+                        if (isTrash() && !paths.isEmpty()) actions.restore(paths.view());
+                        break;
+                case ChooseEmptyTrash: actions.emptyTrash(); break;
+                case ChooseProperties:
+                        selectedPaths(paths);
+                        if (paths.isEmpty()) (void)paths.assign(path()); // the background's: the folder
+                        if (!paths.isEmpty())
+                                (void)PropertiesDialog::show(application(), actions, _host.fileIcons(), paths.view());
                         break;
                 case ChooseRename:
+                        if (isTrash()) break;
                         if (v.current() >= 0 && v.selection().isSelected(size_t(v.current())))
                                 startRename(size_t(v.current()), _items.folder().name(size_t(v.current())));
                         break;
@@ -916,7 +964,9 @@ void FolderWindow::choose(int choice) {
                                 actions.copy(paths.view());
                         }
                         break;
-                case ChoosePaste: actions.paste(path()); break;
+                case ChoosePaste:
+                        if (!isTrash()) actions.paste(path());
+                        break;
                 case ChooseSelectAll:
                 case ChooseInvert: {
                         List<size_t> rows(MemSpace::Psram);
@@ -934,6 +984,8 @@ void FolderWindow::choose(int choice) {
                 case ChooseSortType: setSort(FolderModel::Sort::Type, false); break;
                 case ChooseSortSize: setSort(FolderModel::Sort::Size, false); break;
                 case ChooseSortModified: setSort(FolderModel::Sort::Modified, false); break;
+                case ChooseSortOrigin: setSort(FolderModel::Sort::Origin, false); break;
+                case ChooseSortDeleted: setSort(FolderModel::Sort::Deleted, false); break;
                 case ChooseFolders:
                         _treeShown = !_treeShown;
                         _tree->setVisible(_treeShown);
@@ -1063,6 +1115,18 @@ void FolderWindow::updateTools() {
         if (_back != nullptr) _back->setEnabled(canGoBack());
         if (_forward != nullptr) _forward->setEnabled(canGoForward());
         if (_up != nullptr) _up->setEnabled(canGoUp());
+        // The trash's own buttons in the trash, Copy and Paste elsewhere.
+        const bool trash = isTrash();
+        bool       changed = false;
+        for (Button *b : {_copyTool, _pasteTool, _restoreTool, _emptyTool}) {
+                if (b == nullptr) continue;
+                const bool shown = (b == _restoreTool || b == _emptyTool) == trash;
+                if (b->isVisible() != shown) {
+                        b->setVisible(shown);
+                        changed = true;
+                }
+        }
+        if (changed && _tools != nullptr) _tools->relayout();
         return;
 }
 
@@ -1141,15 +1205,60 @@ void FolderMenus::fill(Menu &menu, FolderWindow &w) {
         (void)_new.addItem("&Empty File", W::ChooseNewFile, 0, StringView(), icon(IconId::Unknown));
         _arrange.clear();
         const FolderModel::Sort sort = w.sort();
-        (void)_arrange.addItem("by &Name", W::ChooseSortName, checked(sort == FolderModel::Sort::Name));
-        (void)_arrange.addItem("by &Type", W::ChooseSortType, checked(sort == FolderModel::Sort::Type));
-        (void)_arrange.addItem("by &Size", W::ChooseSortSize, checked(sort == FolderModel::Sort::Size));
-        (void)_arrange.addItem("by &Modified", W::ChooseSortModified, checked(sort == FolderModel::Sort::Modified));
+        const bool              trash = w.isTrash();
+        if (trash) {
+                (void)_arrange.addItem("by &Name", W::ChooseSortName, checked(sort == FolderModel::Sort::Name));
+                (void)_arrange.addItem("by &Original Location", W::ChooseSortOrigin,
+                                       checked(sort == FolderModel::Sort::Origin));
+                (void)_arrange.addItem("by Date &Deleted", W::ChooseSortDeleted,
+                                       checked(sort == FolderModel::Sort::Deleted));
+                (void)_arrange.addItem("by &Size", W::ChooseSortSize, checked(sort == FolderModel::Sort::Size));
+                (void)_arrange.addItem("by &Type", W::ChooseSortType, checked(sort == FolderModel::Sort::Type));
+        }
+        if (!trash) {
+                (void)_arrange.addItem("by &Name", W::ChooseSortName, checked(sort == FolderModel::Sort::Name));
+                (void)_arrange.addItem("by &Type", W::ChooseSortType, checked(sort == FolderModel::Sort::Type));
+                (void)_arrange.addItem("by &Size", W::ChooseSortSize, checked(sort == FolderModel::Sort::Size));
+                (void)_arrange.addItem("by &Modified", W::ChooseSortModified,
+                                       checked(sort == FolderModel::Sort::Modified));
+        }
         _views.clear();
         (void)_views.addItem("Lar&ge Icons", W::ChooseIcons, checked(!w.showsDetails()));
         (void)_views.addItem("&Details", W::ChooseDetails, checked(w.showsDetails()));
         menu.clear();
-        if (&menu == &_file) {
+        if (trash && &menu == &_file) {
+                (void)menu.addItem("&Restore", W::ChooseRestore, needOne, StringView(), icon(IconId::EditUndo));
+                (void)menu.addItem("&Delete", W::ChooseDelete, needOne, "Del", icon(IconId::EditDelete));
+                (void)menu.addSeparator();
+                (void)menu.addItem("&Empty Trash", W::ChooseEmptyTrash, 0, StringView(), icon(IconId::UserTrash));
+                (void)menu.addSeparator();
+                (void)menu.addItem("P&roperties", W::ChooseProperties, 0, "Alt+Enter",
+                                   icon(IconId::DocumentProperties));
+                (void)menu.addSeparator();
+                (void)menu.addItem("&Close", W::ChooseClose, 0, "Ctrl+W", icon(IconId::WindowClose));
+        } else if (trash && &menu == &_edit) {
+                (void)menu.addItem("Cu&t", W::ChooseCut, needOne, "Ctrl+X", icon(IconId::EditCut));
+                (void)menu.addSeparator();
+                (void)menu.addItem("Select &All", W::ChooseSelectAll, 0, "Ctrl+A", icon(IconId::EditSelectAll));
+                (void)menu.addItem("&Invert Selection", W::ChooseInvert);
+        } else if (trash && &menu == &_item) {
+                (void)menu.addItem("&Restore", W::ChooseRestore, 0, StringView(), icon(IconId::EditUndo));
+                (void)menu.addSeparator();
+                (void)menu.addItem("Cu&t", W::ChooseCut, 0, StringView(), icon(IconId::EditCut));
+                (void)menu.addSeparator();
+                (void)menu.addItem("&Delete", W::ChooseDelete, 0, StringView(), icon(IconId::EditDelete));
+                (void)menu.addSeparator();
+                (void)menu.addItem("P&roperties", W::ChooseProperties, 0, StringView(),
+                                   icon(IconId::DocumentProperties));
+        } else if (trash && &menu == &_background) {
+                (void)menu.addSubmenu("&View", _views, icon(IconId::ViewListIcons));
+                (void)menu.addSubmenu("Arrange &Icons", _arrange, icon(IconId::ViewSortAscending));
+                (void)menu.addSeparator();
+                (void)menu.addItem("&Empty Trash", W::ChooseEmptyTrash, 0, StringView(), icon(IconId::UserTrash));
+                (void)menu.addSeparator();
+                (void)menu.addItem("P&roperties", W::ChooseProperties, 0, StringView(),
+                                   icon(IconId::DocumentProperties));
+        } else if (&menu == &_file) {
                 (void)menu.addItem("&Open", W::ChooseOpen, needOne, "Enter", icon(IconId::DocumentOpen));
                 if (w.applicationSelected())
                         (void)menu.addItem("Show Co&ntents", W::ChooseShowContents, 0, StringView(),
@@ -1161,6 +1270,8 @@ void FolderMenus::fill(Menu &menu, FolderWindow &w) {
                 (void)menu.addSeparator();
                 (void)menu.addItem("&Delete", W::ChooseDelete, needOne, "Del", icon(IconId::EditDelete));
                 (void)menu.addItem("Rena&me", W::ChooseRename, selected == 1 ? 0 : Off, "F2", icon(IconId::EditRename));
+                (void)menu.addItem("P&roperties", W::ChooseProperties, 0, "Alt+Enter",
+                                   icon(IconId::DocumentProperties));
                 (void)menu.addSeparator();
                 (void)menu.addItem("&Close", W::ChooseClose, 0, "Ctrl+W", icon(IconId::WindowClose));
         } else if (&menu == &_edit) {
@@ -1204,6 +1315,9 @@ void FolderMenus::fill(Menu &menu, FolderWindow &w) {
                 (void)menu.addItem("&Delete", W::ChooseDelete, 0, StringView(), icon(IconId::EditDelete));
                 (void)menu.addItem("Rena&me", W::ChooseRename, selected == 1 ? 0 : Off, StringView(),
                                    icon(IconId::EditRename));
+                (void)menu.addSeparator();
+                (void)menu.addItem("P&roperties", W::ChooseProperties, 0, StringView(),
+                                   icon(IconId::DocumentProperties));
         } else if (&menu == &_background) {
                 (void)menu.addSubmenu("&View", _views, icon(IconId::ViewListIcons));
                 (void)menu.addSubmenu("Arrange &Icons", _arrange, icon(IconId::ViewSortAscending));
@@ -1211,6 +1325,9 @@ void FolderMenus::fill(Menu &menu, FolderWindow &w) {
                 (void)menu.addItem("&Paste", W::ChoosePaste, paste, StringView(), icon(IconId::EditPaste));
                 (void)menu.addSeparator();
                 (void)menu.addSubmenu("Ne&w", _new, icon(IconId::DocumentNew));
+                (void)menu.addSeparator();
+                (void)menu.addItem("P&roperties", W::ChooseProperties, 0, StringView(),
+                                   icon(IconId::DocumentProperties));
         } else if (&menu == &_help) {
                 (void)menu.addItem("&About Files", W::ChooseAbout, 0, StringView(), icon(IconId::HelpAbout));
         }
