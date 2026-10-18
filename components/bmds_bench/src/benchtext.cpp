@@ -9,8 +9,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <bmds/bench.h>
 #include <bmds/benchtext.h>
+#include <bmds/inireader.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -142,6 +145,103 @@ Error BenchText::appendIso8601(const When &when, String &out) {
         const int offset = when.offsetMinutes < 0 ? -when.offsetMinutes : when.offsetMinutes;
         return out.appendf("%04d-%02d-%02dT%02d:%02d:%02d%c%02d:%02d", when.year, when.month, when.day, when.hour,
                            when.minute, when.second, when.offsetMinutes < 0 ? '-' : '+', offset / 60, offset % 60);
+}
+
+namespace {
+
+        void copyText(char *out, size_t outBytes, StringView text) {
+                const size_t n = text.size() < outBytes - 1 ? text.size() : outBytes - 1;
+                std::memcpy(out, text.data(), n);
+                out[n] = '\0';
+                return;
+        }
+
+} // namespace
+
+size_t BenchText::parseDescriptor(StringView text, void (*found)(void *arg, const ProgramBench &bench), void *arg) {
+        IniReader    reader(text);
+        ProgramBench bench;
+        bool         inBench = false;
+        size_t       count = 0;
+        const auto   flush = [&] {
+                if (inBench && bench.name[0] != '\0' && bench.exec[0] != '\0') {
+                        found(arg, bench);
+                        ++count;
+                }
+                bench = ProgramBench();
+                inBench = false;
+        };
+        for (IniReader::Item item = reader.next(); item.kind != IniReader::Kind::End; item = reader.next()) {
+                if (item.kind == IniReader::Kind::Group) {
+                        flush();
+                        if (item.name.startsWith("Bench ")) {
+                                inBench = true;
+                                copyText(bench.name, sizeof(bench.name), item.name.mid(6).trimmed());
+                                bench.tags = BenchProgram;
+                        }
+                        continue;
+                }
+                if (item.kind != IniReader::Kind::Entry || !inBench) continue;
+                if (item.key == "Exec") {
+                        copyText(bench.exec, sizeof(bench.exec), item.value);
+                } else if (item.key == "Help") {
+                        copyText(bench.help, sizeof(bench.help), item.value);
+                } else if (item.key == "Tags") {
+                        StringView rest = item.value;
+                        while (!rest.isEmpty()) {
+                                const size_t comma = rest.indexOf(',');
+                                bench.tags = uint16_t(bench.tags | tagNamed(rest.left(comma).trimmed()));
+                                rest = comma == StringView::NPos ? StringView() : rest.mid(comma + 1);
+                        }
+                } else if (item.key.startsWith("Param.") && bench.paramCount < ProgramBench::MaxParams) {
+                        ProgramBench::Param &p = bench.params[bench.paramCount++];
+                        const size_t         semi = item.value.indexOf(';');
+                        copyText(p.name, sizeof(p.name), item.key.mid(6));
+                        copyText(p.value, sizeof(p.value), item.value.left(semi).trimmed());
+                        if (semi != StringView::NPos)
+                                copyText(p.help, sizeof(p.help), item.value.mid(semi + 1).trimmed());
+                }
+        }
+        flush();
+        return count;
+}
+
+size_t BenchText::splitWords(StringView text, Span<StringView> out) {
+        size_t n = 0, i = 0;
+        while (n < out.size()) {
+                while (i < text.size() && text[i] == ' ') ++i;
+                if (i == text.size()) break;
+                if (text[i] == '"') {
+                        const size_t close = text.indexOf('"', i + 1);
+                        const size_t end = close == StringView::NPos ? text.size() : close;
+                        out[n++] = text.mid(i + 1, end - i - 1);
+                        i = close == StringView::NPos ? text.size() : close + 1;
+                } else {
+                        size_t end = text.indexOf(' ', i);
+                        if (end == StringView::NPos) end = text.size();
+                        out[n++] = text.mid(i, end - i);
+                        i = end;
+                }
+        }
+        return n;
+}
+
+bool BenchText::parseResultLine(StringView line, ResultLine &out) {
+        StringView words[5];
+        if (!line.startsWith("@bench ") || splitWords(line, Span<StringView>(words)) != 5) return false;
+        const StringView better = words[4].trimmed();
+        if (better != "higher" && better != "lower") return false;
+        char number[32];
+        if (words[2].isEmpty() || words[2].size() >= sizeof(number)) return false;
+        copyText(number, sizeof(number), words[2]);
+        char        *end = nullptr;
+        const double v = std::strtod(number, &end);
+        if (end != number + words[2].size()) return false;
+        out.metric = words[1];
+        out.value = v;
+        out.unit = words[3];
+        out.higher = better == "higher";
+        return true;
 }
 
 void BenchText::formatValue(double value, char *out, size_t outBytes) {

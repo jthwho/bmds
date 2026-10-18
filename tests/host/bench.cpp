@@ -12,6 +12,7 @@
 #include <doctest.h>
 
 #include <string>
+#include <vector>
 
 #include <bmds/bench.h>
 #include <bmds/benchtext.h>
@@ -159,4 +160,93 @@ TEST_CASE("Stopwatch: microseconds and cycles go forward") {
         CHECK(watch.cycles() > 0);
         watch.restart();
         CHECK(watch.elapsedUs() < 1000000);
+}
+
+TEST_CASE("BenchText: a program's descriptor") {
+        const char                          *text = "# benchprog's\n"
+                                                    "[Bench kernel.syscall]\n"
+                                                    "Exec=benchprog syscall\n"
+                                                    "Tags=quick\n"
+                                                    "Help=A system call\n"
+                                                    "\n"
+                                                    "[Bench midi.decode]\n"
+                                                    "Exec=benchprog midi\n"
+                                                    "Tags=quick, screen\n"
+                                                    "Param.file=/sd0/p0/share/bench/scale.mid;The MIDI file\n"
+                                                    "Param.runs=1\n"
+                                                    "[Bench no.exec]\n"
+                                                    "Help=skipped: no Exec\n"
+                                                    "[Other]\n"
+                                                    "Exec=not a bench\n";
+        std::vector<BenchText::ProgramBench> found;
+        const size_t                         n = BenchText::parseDescriptor(
+                text,
+                [](void *arg, const BenchText::ProgramBench &b) {
+                        static_cast<std::vector<BenchText::ProgramBench> *>(arg)->push_back(b);
+                },
+                &found);
+        REQUIRE(n == 2);
+        REQUIRE(found.size() == 2);
+        CHECK(std::string(found[0].name) == "kernel.syscall");
+        CHECK(std::string(found[0].exec) == "benchprog syscall");
+        CHECK(found[0].tags == (bmds::BenchQuick | bmds::BenchProgram));
+        CHECK(found[0].paramCount == 0);
+        CHECK(std::string(found[1].name) == "midi.decode");
+        CHECK(found[1].tags == (bmds::BenchQuick | bmds::BenchScreen | bmds::BenchProgram));
+        REQUIRE(found[1].paramCount == 2);
+        CHECK(std::string(found[1].params[0].name) == "file");
+        CHECK(std::string(found[1].params[0].value) == "/sd0/p0/share/bench/scale.mid");
+        CHECK(std::string(found[1].params[0].help) == "The MIDI file");
+        CHECK(std::string(found[1].params[1].name) == "runs");
+        CHECK(std::string(found[1].params[1].value) == "1");
+        CHECK(std::string(found[1].params[1].help).empty());
+}
+
+TEST_CASE("BenchText: words and result lines") {
+        StringView   words[8];
+        const size_t n = BenchText::splitWords("  doom -timedemo  \"demo one\" x", bmds::Span<StringView>(words));
+        REQUIRE(n == 4);
+        CHECK(words[0] == StringView("doom"));
+        CHECK(words[1] == StringView("-timedemo"));
+        CHECK(words[2] == StringView("demo one"));
+        CHECK(words[3] == StringView("x"));
+        CHECK(BenchText::splitWords("a b c", bmds::Span<StringView>(words, 2)) == 2);
+
+        BenchText::ResultLine line;
+        REQUIRE(BenchText::parseResultLine("@bench fps 57.61 /s higher", line));
+        CHECK(line.metric == StringView("fps"));
+        CHECK(line.value == doctest::Approx(57.61));
+        CHECK(line.unit == StringView("/s"));
+        CHECK(line.higher);
+        REQUIRE(BenchText::parseResultLine("@bench getppid_ns 8.5e3 ns lower", line));
+        CHECK(line.value == 8500);
+        CHECK_FALSE(line.higher);
+        CHECK_FALSE(BenchText::parseResultLine("bench fps 1 /s higher", line));
+        CHECK_FALSE(BenchText::parseResultLine("@bench fps 1x /s higher", line));
+        CHECK_FALSE(BenchText::parseResultLine("@bench fps 1 /s better", line));
+        CHECK_FALSE(BenchText::parseResultLine("@bench fps 1 /s", line));
+}
+
+extern "C" {
+#include <bmds/benchlib.h>
+}
+
+TEST_CASE("libbmdsbench: parameters and the runs") {
+        char name[] = "benchprog", what[] = "synth", runs[] = "runs=3", warm[] = "warmup=0", font[] = "font=a.sf2",
+             bad[] = "count=12x", again[] = "font=b.sf2";
+        char        *argv[] = {name, what, runs, warm, font, bad, again};
+        bmds_bench_t b;
+        bmds_bench_init(&b, 7, argv);
+        CHECK(b.runs == 3);
+        CHECK(b.warmup == 0);
+        CHECK(std::string(bmds_bench_param(&b, "font", "")) == "b.sf2"); // the last given
+        CHECK(std::string(bmds_bench_param(&b, "fon", "none")) == "none");
+        CHECK(bmds_bench_param_long(&b, "count", 7) == 7); // not a number
+        CHECK(bmds_bench_param_long(&b, "runs", 0) == 3);
+        char  big[] = "runs=5000";
+        char *argv2[] = {name, big};
+        bmds_bench_init(&b, 2, argv2);
+        CHECK(b.runs == 5); // past the most: the default
+        CHECK(b.warmup == 1);
+        CHECK(bmds_bench_now_ns() > 0);
 }

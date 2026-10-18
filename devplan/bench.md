@@ -1,6 +1,6 @@
 # Bench: one system benchmark for all tuning
 
-Status: **steps 1 and 2 built** (2026-10-17, the user's request; decisions agreed the same day; §10, §11). Replaces the
+Status: **steps 1 to 3 built** (2026-10-17, the user's request; decisions agreed the same day; §10-§12). Replaces the
 benchmarks spread across `sd`, `fsbench`, `simd`, `memtest`, `display`, `win` and `progtest`
 (§3). Comes before Quake (`games.md`), whose renderer and presentation need a baseline.
 
@@ -43,7 +43,7 @@ called directly in two places), and every command dispatches its subcommands by 
 | `display test`'s and `fill`'s times, `present`, `anim`, `ppa`'s timings (`path`, `soak`, hidden `blitcost`) | `display.draw`, `display.fill`, `display.present`, `display.anim`, `display.ppa.scale`, `display.ppa.path`, `display.ppa.soak`, `display.blitcost` | `display test` and `fill` still draw; `display ppa` keeps its checks; `stats`, `rows`, `try` stay |
 | `display stress psram`, `write`, `internal` | `memory.traffic` | memcpy and memset, PSRAM and internal |
 | `win bench [CELLS]`, `bench icons`, `textbench`, `shuffle`, `drag`'s and `scroll`'s times | `gui.glyphs`, `gui.icons`, `gui.text`, `gui.shuffle`, `gui.drag`, `gui.scroll` | on test windows of their own; `win drag` and `scroll` still move; `win stats` and `check` stay |
-| `progtest sched`, `rtnet`, `net`, `synthload`, `mididecode`, `image`'s time | `kernel.sleep`, `net.rt.roundtrip` (peer), `net.loopback`, `audio.synth.load`, `midi.decode`, `images.decode` | a program bench (`benchprog`, §4f); `progtest` keeps its correctness tests |
+| `progtest synthload`, and the times `sched`, `net`, `mididecode` and `image` printed | `audio.synth.load`, `kernel.sleep`, `net.loopback`, `midi.decode`, `images.codecs` | `benchprog`'s (§12); `progtest` keeps its correctness tests; `rtnet` stays a test (`net.latency` measures the path) |
 | `netlat` | `net.latency.*` (peer), a descriptor running `netlat --bench` | `netlat` stays as a tool |
 
 **Stays as it is** (monitors and tools, not benchmarks): `prof`, `stats`, `top`, `tasks`,
@@ -324,4 +324,55 @@ has not shipped.
   instantiation; the hand-written dispatch and printing went).
 - **Next:** step 3, programs' benchmarks (descriptors, `libbmdsbench`, `progtest`'s timings,
   `netlat --bench`, Doom's timedemo).
+
+## 12. As built: step 3, programs' benchmarks (2026-10-17)
+
+- **Descriptors** (§4f): `*.bench` files in the folders of the setting `bench/paths` (default
+  `/rom/share/bench;/sd0/p0/share/bench`; on the control panel's System page), read each time
+  `bench` runs. INI: a `[Bench NAME]` group a benchmark, with `Exec=` (the program, found on
+  `$PATH` without a `/`, and its first arguments), `Tags=`, `Help=`, `Param.NAME=DEFAULT;HELP`
+  (a common one, `runs` or `warmup`, sets the benchmark's default). Tagged `program`; listed,
+  described and run with the firmware's (a name declared twice: the first kept, the second
+  reported). Parsed by `BenchText::parseDescriptor()` (host-tested).
+- **Running one:** the program gets its `Exec`, then `KEY=VALUE` for each parameter, `runs` and
+  `warmup` among them; its standard output on a pipe, read as it comes: `@bench METRIC VALUE
+  UNIT higher|lower` lines are a run's figure each, gathered by metric (the program does the
+  runs), anything else a note. Exit 0 done, 77 skipped, any other or a signal failed (a note
+  says which). A child the shell's process waits for, in a group of its own: Ctrl-C reaches the
+  shell, which sends the program SIGINT and keeps reading until it ends (no program left
+  behind; the file says `Cancelled`). Needs the shell to be a process (ssh, the terminal); on
+  the serial console's shell, skipped. `stall` and the counters apply as to any benchmark.
+- **`libbmdsbench`** (`sdk/bench/bench.c`, `bmds/benchlib.h`, linked by `bmds_add_program` and
+  `bmds-cc`; host-tested): `bmds_bench_init()`, `bmds_bench_param()`/`_long()`,
+  `bmds_bench_now_ns()`, `bmds_bench_result()` (a line, flushed), `bmds_bench_measure()` (the
+  warm-up and runs), `BMDS_BENCH_SKIPPED`. Named `benchlib.h`: the firmware has a `bmds/bench.h`,
+  and the loader's include paths put both together.
+- **`benchprog`** (`programs/benchprog`, `dist/benchprog`: its descriptor and `scale.mid` in
+  `share/bench`): `kernel.syscall`, `kernel.sleep`, `programs.launch`, `net.loopback`,
+  `audio.synth.load`, `midi.decode`, `images.codecs`. `progtest` lost `synthload` and the times
+  `sched`, `net`, `mididecode` and `image` printed; their checks stay.
+- **`net.latency`** (`netlat --bench`, `dist/netlat`'s `netlat.bench`): one run of thousands of
+  datagrams by default (`runs=1`), each stage's p50, p99, p99.9 and largest, and the losses;
+  without `peer=` skipped. `tools/bmds-bench run` starts `tools/netlat-reflector` on the host and
+  adds `peer=` (its address towards the board) when a benchmark chosen is tagged `peer`
+  (`--no-peer` not).
+- **`games.doom.timedemo`** (`dist/doom`'s `doom.bench`; a fifth patch,
+  `0005-g_game-timedemo-report.patch`): `doom -timedemo demo1 -nosound`, the result in
+  milliseconds as `@bench fps` and `gametic_ms`, then a clean exit (Chocolate Doom ended a timed
+  demo with `I_Error`: stderr, a failure's status). Freedoom 2's demo1: 2,664 tics in 46.2 s,
+  **57.6 frames a second**, full screen with the desktop up. Doom's start-up lines become notes.
+- **On the board:** `kernel.syscall` **8.5 µs** for `getppid` (about 3,000 cycles: worth a look);
+  `kernel.sleep` 917 µs late at the normal priority (the tick), 30 µs in real time;
+  `programs.launch` 12 ms; `net.loopback` 26.5 MB/s; `audio.synth.load` 493, 918, 1182 and
+  1240 µs a 64-frame block with 8, 16, 32 and 48 notes (1333 µs is real time); `midi.decode`
+  19× real time; `images.codecs` PNG 1518 / 805 ms to encode / decode 1280×720, JPEG 33 / 31 ms
+  with the codec, 275 ms decoded in software. `net.latency` ran against this laptop, on Wi-Fi
+  (a 2.3 ms median round trip): the mechanism is shown, not the path; a wired peer is needed for
+  its figures. A skipped program (`midi.decode file=/nope.mid`) and Ctrl-C (`Cancelled`) behave.
+- **Installed on the card for this:** `benchprog` and the new `netlat` and Doom builds, with
+  their descriptors (by copying the packages' files; `tools/bmds-dist install` does the same).
+- **Cost:** the image grew 8,160 bytes over step 2 (the catalogue, descriptors, the program
+  runner).
+- **Next:** step 4, `tools/bmds-bench`'s remaining work and a first full baseline; then step 5,
+  new benchmarks (surfaces and games first, for Quake).
 

@@ -318,6 +318,7 @@ namespace SettingsTable {
                         {.key = "sysmon/interval", .label = "Sampled every", .unit = "ms"},
                         {.key = "sysmon/limits", .label = "Rules"},
                         {.key = "bench/folder", .label = "Benchmark results in", .editor = E::Folder},
+                        {.key = "bench/paths", .label = "Benchmarks from", .editor = E::List},
                         section("Updates"),
                         {.key = "update/dir", .label = "Packages in", .editor = E::Folder},
                 };

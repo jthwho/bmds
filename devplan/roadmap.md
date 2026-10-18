@@ -177,8 +177,11 @@ Plan: [`input.md`](input.md).
   counter's and task's change), `bench/folder`, `storage.sd.read` (was `sd bench`), and
   `tools/bmds-bench` (`run`, `pull`, `history`, `compare`). Step 2 done (§11): 27 benchmarks
   (storage, filesystems, SIMD, memory, display, GUI), the old forms removed, `probe=stall`,
-  skipped benchmarks; a latent cache error in the scanout's interrupt found and fixed. Next:
-  step 3 (programs' benchmarks); then Quake.
+  skipped benchmarks; a latent cache error in the scanout's interrupt found and fixed. Step 3
+  done (§12): programs' benchmarks (`*.bench` descriptors in `bench/paths`, `@bench` lines,
+  `libbmdsbench`), `benchprog` (system calls, launches, sleeps, loopback TCP, the synth, MIDI,
+  images), `net.latency` (`netlat --bench`, the host tool starting the reflector), Doom's
+  timedemo (57.6 fps). Next: step 4 (a full baseline); then Quake.
 - [x] Settings, the control panel (`controlpanel.md`, planned 2026-10-16, the user's request):
   the one place to change every sysconf setting graphically, laid out like the Mac's System
   Settings (groups with icons on the left, the group's page on the right). Changes apply and

@@ -1,0 +1,39 @@
+# benchprog's benchmarks (devplan/bench.md §4f, §12), installed in share/bench by dist/benchprog:
+# `bench` runs Exec with KEY=VALUE for each parameter and gathers the @bench lines.
+
+[Bench kernel.syscall]
+Exec=benchprog syscall
+Tags=quick
+Help=A system call's round trip from a program (getppid), in ns
+
+[Bench kernel.sleep]
+Exec=benchprog sleep
+Tags=quick
+Help=How late a 1 ms sleep ends, at the normal priority and in real time (FIFO 50)
+
+[Bench programs.launch]
+Exec=benchprog launch
+Tags=quick
+Help=A program started, run to its end and waited for (posix_spawn, waitpid)
+
+[Bench net.loopback]
+Exec=benchprog loopback
+Tags=quick
+Help=TCP over loopback: a megabyte a run, written by one thread and read by another
+
+[Bench audio.synth.load]
+Exec=benchprog synth
+Tags=quick
+Help=The synth rendering 64 frames with 8 to 48 notes held (us a block; 1333 us is real time)
+Param.font=;The SoundFont (empty: synth/font)
+
+[Bench midi.decode]
+Exec=benchprog midi
+Tags=quick
+Help=A MIDI file decoded whole by the synth (times faster than it plays)
+Param.file=/sd0/p0/share/bench/scale.mid;The MIDI file
+
+[Bench images.codecs]
+Exec=benchprog images
+Tags=quick
+Help=A 1280x720 picture encoded as PNG and JPEG and decoded (the JPEG codec, and in software)

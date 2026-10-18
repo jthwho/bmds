@@ -1,0 +1,8 @@
+# benchprog (programs/benchprog): the system as programs see it, measured for `bench`
+# (devplan/bench.md §4f, §12), with its descriptor and the MIDI file midi.decode plays.
+name = "benchprog"
+version = "1"
+description = "Benchmarks of the system as programs see it, run by the bench command"
+license = "MIT"
+source_tree = "programs/benchprog"
+license_files = ["../../LICENSE"]

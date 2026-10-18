@@ -1,0 +1,10 @@
+# Doom's benchmark (devplan/bench.md §12), installed in share/bench by dist/doom: the first demo of
+# the IWAD played as fast as it renders (Chocolate Doom's -timedemo), without sound, full screen.
+# One run a time: Doom plays the demo once.
+
+[Bench games.doom.timedemo]
+Exec=doom -timedemo demo1 -nosound
+Tags=screen,long
+Help=Doom's demo1 played as fast as it renders, without sound (frames a second)
+Param.runs=1;Runs (Doom plays the demo once a run)
+Param.warmup=0;Runs first, not kept

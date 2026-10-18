@@ -1903,56 +1903,6 @@ static int synth(const char *font) {
 
 /* The synth's cost with FONT (a GM font): N notes on piano, strings, guitar and violin, rendered
    in 64-frame reads for a second each; the CPU per period. */
-static int synthload(const char *font) {
-        bmds_synth_config_t c = {.size = sizeof(c), .format = BMDS_AUDIO_F32LE, .max_voices = 128, .font = font};
-        int64_t             t0 = mono_ns();
-        const int           fd = bmds_audio_synth(&c);
-        CHECK(fd >= 0);
-        printf("open %lld ms\n", (long long)((mono_ns() - t0) / 1000000));
-        static const uint8_t programs[] = {0, 48, 24, 40};
-        static float         out[64 * 2];
-        uint64_t             frame = 0;
-        for (int count = 1; count <= 48; count = count < 8 ? 8 : count * 2) {
-                bmds_synth_event_t off = {.frame = frame, .length = 3, .data = {0xb0, 123, 0}};
-                for (int ch = 0; ch < 4; ++ch) {
-                        off.data[0] = (uint8_t)(0xb0 | ch);
-                        CHECK(write(fd, &off, sizeof(off)) == (ssize_t)sizeof(off));
-                        bmds_synth_event_t p = {
-                                .frame = frame, .length = 2, .data = {(uint8_t)(0xc0 | ch), programs[ch]}};
-                        CHECK(write(fd, &p, sizeof(p)) == (ssize_t)sizeof(p));
-                }
-                for (int i = 0; i < count; ++i) {
-                        bmds_synth_event_t on =
-                                synth_event(frame + 4800, (uint8_t)(0x90 | (i % 4)), (uint8_t)(36 + i), 76);
-                        CHECK(write(fd, &on, sizeof(on)) == (ssize_t)sizeof(on));
-                }
-                /* A tenth of a second for the old notes to end, then a second measured. */
-                for (int i = 0; i < 75; ++i) CHECK(read(fd, out, sizeof(out)) == (ssize_t)sizeof(out));
-                /* The first read starts the notes (their note-ons): timed apart. */
-                uint64_t sum = 0, worst = 0, onset = 0;
-                for (int i = 0; i < 750; ++i) {
-                        const int64_t a = mono_ns();
-                        CHECK(read(fd, out, sizeof(out)) == (ssize_t)sizeof(out));
-                        const uint64_t d = (uint64_t)(mono_ns() - a);
-                        if (i == 0) {
-                                onset = d;
-                                continue;
-                        }
-                        sum += d;
-                        worst = d > worst ? d : worst;
-                }
-                frame += 825 * 64;
-                bmds_synth_info_t info = {.size = sizeof(info)};
-                CHECK(bmds_audio_synth_info(fd, &info) == 0);
-                printf("%2d notes, %3u voices: onset %4llu us, then %4llu us avg / %4llu us worst per 64 frames (1333 "
-                       "us)\n",
-                       count, (unsigned)info.voices, (unsigned long long)(onset / 1000),
-                       (unsigned long long)(sum / 749 / 1000), (unsigned long long)(worst / 1000));
-        }
-        close(fd);
-        return 0;
-}
-
 /* A MIDI file as a decoder (devplan/audio.md §22): FILE (tests/host/synth/scale.mid, 5 s and the
    release's 2) played by the synth on synth/font, decoded in full, then sought into. */
 static int mididecode(const char *path) {
@@ -1988,8 +1938,9 @@ static int mididecode(const char *path) {
         CHECK(lseek(pcm, 48000 * 4 * 2, SEEK_SET) == 48000 * 4 * 2);
         CHECK(read(pcm, buf, sizeof(buf)) == (ssize_t)sizeof(buf));
         CHECK(close(pcm) == 0 && close(file) == 0);
-        printf("mididecode: ok, opened in %lld ms, %llu frames, peak %d, the slowest read %lld us for 4096 frames\n",
-               (long long)(opened / 1000000), (unsigned long long)frames, peak, (long long)(worst / 1000));
+        printf("mididecode: ok, %llu frames, peak %d\n", (unsigned long long)frames, peak); /* its speed: bench */
+        (void)opened;
+        (void)worst;
         return 0;
 }
 
@@ -2490,12 +2441,7 @@ static int image_test(const char *file) {
                 d.stride = info.stride;
                 d.data = jpeg;
                 d.length = (uint32_t)n;
-                struct timespec t0, t1;
-                clock_gettime(CLOCK_MONOTONIC, &t0);
-                CHECK(bmds_image_decode(-1, &d, &info) == 0);
-                clock_gettime(CLOCK_MONOTONIC, &t1);
-                printf("image: decoded in %ld us\n",
-                       (long)((t1.tv_sec - t0.tv_sec) * 1000000 + (t1.tv_nsec - t0.tv_nsec) / 1000));
+                CHECK(bmds_image_decode(-1, &d, &info) == 0); /* its speed: `bench run images` */
                 /* Reduced for a box: a software decode at 1/2 or more for a big one, else whole. */
                 memset(&d, 0, sizeof(d));
                 d.size = sizeof(d);
@@ -2624,7 +2570,6 @@ static int net_test(void) {
                 }
         }
         CHECK(sent == sizeof(big) && got == sizeof(big));
-        printf("net: 64 KB over loopback in %d ms\n", (int)(ms_now() - start));
 
         /* Half close: the reader sees the end; the other way still works. */
         CHECK(shutdown(c, SHUT_WR) == 0);
@@ -3098,9 +3043,9 @@ static int sched_test(const char *self) {
         /* A real-time sleep ends at its time. */
         int64_t rt_median, rt_max;
         sleep_lateness(1000, 1000, &rt_median, &rt_max);
-        printf("sched: 1 ms sleeps late by median %lld us, max %lld (the tick's: %lld, %lld)\n", (long long)rt_median,
-               (long long)rt_max, (long long)tick_median, (long long)tick_max);
-        CHECK(rt_median < 100 && tick_median >= 100);
+        CHECK(rt_median < 100 && tick_median >= 100); /* the figures: `bench run kernel.sleep` */
+        (void)rt_max;
+        (void)tick_max;
         /* A thread inherits; set and read back from here; another thread's explicit policy. */
         pthread_t t;
         sched_go = 0;
@@ -3794,7 +3739,7 @@ int main(int argc, char **argv) {
                         "usage: progtest status|exit|leak|env|tty|float|files|time|sleep|term|lines|raw|mem|random|cwd|"
                         "spin|calls|posix|abort|spawn|scripts|signals|catch|ignore|fd|ppid|exec|orphan|tree|poll|"
                         "threads|"
-                        "threadspin|filetype|audio|decode|rt|midi|synth|speech|synthload|mididecode|hog|stats|tasks|"
+                        "threadspin|filetype|audio|decode|rt|midi|synth|speech|mididecode|hog|stats|tasks|"
                         "procs|"
                         "system|notify|expand|image|net|netwatch|rtnet|sched|ptp [arg]\n");
                 return 2;
@@ -3808,7 +3753,6 @@ int main(int argc, char **argv) {
         if (strcmp(what, "midi") == 0) return midi();
         if (strcmp(what, "synth") == 0) return synth(arg);
         if (strcmp(what, "speech") == 0) return speech(arg);
-        if (strcmp(what, "synthload") == 0) return synthload(arg);
         if (strcmp(what, "mididecode") == 0) return mididecode(arg);
         if (strcmp(what, "stats") == 0) return stats(arg);
         if (strcmp(what, "statswatch") == 0) return stats_watch(argc > 2 ? arg : NULL);

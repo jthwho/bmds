@@ -8,9 +8,11 @@
 # The bench's analysis (devplan/bench.md §4g): the board runs `bench run` and writes a JSON file a
 # run in its bench/folder; this keeps copies of them, a folder per board serial, and compares.
 #
-#   tools/bmds-bench run [--board root@bmds0] PATTERN|@TAG... [KEY=VALUE...]
+#   tools/bmds-bench run [--board root@bmds0] [--no-peer] PATTERN|@TAG... [KEY=VALUE...]
 #       runs `bench run` on the board over ssh, fetches the new file, and shows each metric
 #       against the earlier runs of the same benchmark, metric and parameters on that board.
+#       When a benchmark chosen needs a peer (tagged `peer`) and no peer= is given, it starts
+#       tools/netlat-reflector here and gives the board peer= this host's address.
 #   tools/bmds-bench pull [--board root@bmds0]
 #       copies the board's results files that the store doesn't have yet.
 #   tools/bmds-bench history NAME [METRIC]
@@ -26,8 +28,10 @@ import glob
 import json
 import os
 import shlex
+import socket
 import subprocess
 import sys
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_STORE = os.path.join(ROOT, "bench-results")
@@ -135,8 +139,48 @@ def show_against(data, earlier):
               (line, fmt(prev["median"]), delta, fmt(best), fmt(worst), fmt(mean), len(past), "" if len(past) == 1 else "s", mark))
 
 
+def chosen_tags(board, names):
+    """The tags of the benchmarks `names` picks, as `bench list` shows them."""
+    patterns = [n for n in names if "=" not in n or n.startswith("@")]
+    got = ssh(board, "bench list " + " ".join(shlex.quote(p) for p in patterns))
+    tags = set()
+    for line in got.stdout.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) >= 2:
+            tags.update(parts[1].split(","))
+    return tags
+
+
+def address_towards(board):
+    """This host's address on the route to the board."""
+    host = board.split("@")[-1]
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect((socket.gethostbyname(host), 9))
+        return s.getsockname()[0]
+    finally:
+        s.close()
+
+
 def cmd_run(args):
-    words = " ".join(shlex.quote(w) for w in args.names)
+    names = list(args.names)
+    reflector = None
+    if not args.no_peer and not any(n.startswith("peer=") for n in names) and "peer" in chosen_tags(args.board, names):
+        names.append("peer=" + address_towards(args.board))
+        reflector = subprocess.Popen([sys.executable, os.path.join(ROOT, "tools", "netlat-reflector")],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.5)  # listening before the board sends
+        print("reflector here; %s" % names[-1])
+    try:
+        return run_on_board(args, names)
+    finally:
+        if reflector is not None:
+            reflector.terminate()
+            reflector.wait()
+
+
+def run_on_board(args, names):
+    words = " ".join(shlex.quote(w) for w in names)
     proc = subprocess.Popen(["ssh", "-o", "BatchMode=yes", args.board, "bench run " + words],
                             stdout=subprocess.PIPE, text=True)
     saved = None
@@ -264,6 +308,7 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("run", help="run benchmarks on the board and compare")
     p.add_argument("--board", default=DEFAULT_BOARD)
+    p.add_argument("--no-peer", action="store_true", help="don't start a reflector for peer benchmarks")
     p.add_argument("names", nargs="+", help="PATTERN, @TAG or KEY=VALUE, as bench run takes them")
     p.set_defaults(fn=cmd_run)
     p = sub.add_parser("pull", help="copy the board's new results files")

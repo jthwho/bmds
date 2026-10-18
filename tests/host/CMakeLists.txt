@@ -43,6 +43,7 @@ add_executable(bmds_host_tests
         arena.cpp
         audio.cpp
         bench.cpp
+        ${BMDS_ROOT}/sdk/bench/bench.c
         blockdevice.cpp
         bytering.cpp
         intervaltimers.cpp

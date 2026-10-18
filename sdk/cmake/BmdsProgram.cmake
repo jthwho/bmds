@@ -43,7 +43,12 @@ if(NOT TARGET bmds_crt)
         set_target_properties(bmds_game PROPERTIES OUTPUT_NAME bmdsgame ARCHIVE_OUTPUT_DIRECTORY "${BMDS_LIBC_LIB}")
         target_link_libraries(bmds_game PUBLIC bmds_headers)
         target_compile_options(bmds_game PRIVATE -O2 -Wall -Wextra -Werror)
-        add_custom_target(bmds_libs DEPENDS bmds_libc bmds_crt bmds_game)
+        # libbmdsbench.a (bmds/benchlib.h, devplan/bench.md §4f): a program's side of `bench`.
+        add_library(bmds_benchlib STATIC ${BMDS_SDK_DIR}/bench/bench.c)
+        set_target_properties(bmds_benchlib PROPERTIES OUTPUT_NAME bmdsbench ARCHIVE_OUTPUT_DIRECTORY "${BMDS_LIBC_LIB}")
+        target_link_libraries(bmds_benchlib PUBLIC bmds_headers)
+        target_compile_options(bmds_benchlib PRIVATE -Os -Wall -Wextra -Werror)
+        add_custom_target(bmds_libs DEPENDS bmds_libc bmds_crt bmds_game bmds_benchlib)
         # bmds-cc: the same compiler and link for other build systems
         # (CC=.../bmds-cc make), once bmds_libs is built.
         configure_file(${CMAKE_CURRENT_LIST_DIR}/bmds-cc.in ${CMAKE_BINARY_DIR}/bmds-cc
@@ -102,7 +107,7 @@ function(bmds_add_program name)
                 set_source_files_properties(${icons} PROPERTIES OBJECT_DEPENDS "${pngs}")
         endif()
         add_executable(${name} ${ARG_SOURCES} ${icons})
-        target_link_libraries(${name} PRIVATE bmds_headers -Wl,--start-group bmds_game bmds_crt bmds_libc
+        target_link_libraries(${name} PRIVATE bmds_headers -Wl,--start-group bmds_game bmds_benchlib bmds_crt bmds_libc
                                       ${BMDS_LIBGCC} -Wl,--end-group)
         target_link_options(${name} PRIVATE
                 # Linked at 0 with its relocations kept: the kernel moves it.

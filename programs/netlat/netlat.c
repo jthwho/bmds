@@ -15,6 +15,9 @@
  *
  * Only public interfaces: musl's sockets with SO_TIMESTAMPING and the error
  * queue, BMDS_SO_FASTPATH, and pthreads' scheduling.
+ *
+ * `netlat --bench KEY=VALUE...` is `bench`'s net.latency (devplan/bench.md §12, netlat.bench):
+ * the same run, its stages' percentiles as `@bench` lines (bmds/benchlib.h); no peer, skipped.
  */
 
 #include <errno.h>
@@ -31,6 +34,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <bmds/benchlib.h>
 #include <bmds/sys.h>
 
 /* Linux's SOF_TIMESTAMPING_* (musl has no <linux/net_tstamp.h>). */
@@ -204,8 +208,12 @@ static int compare(const void *a, const void *b) {
         return x < y ? -1 : x > y;
 }
 
-/* min, the percentiles, max (µs) of @p n values in @p v (sorted here). */
-static void report(const char *what, int64_t *v, size_t n) {
+/* `--bench`: each stage's figures as @bench lines too. */
+static int bench_mode;
+
+/* min, the percentiles, max (µs) of @p n values in @p v (sorted here); as @p metric's
+ * `_p50_us` and the rest under `--bench`. */
+static void report(const char *what, const char *metric, int64_t *v, size_t n) {
         if (n == 0) {
                 printf("  %-26s none\n", what);
                 return;
@@ -217,6 +225,19 @@ static void report(const char *what, int64_t *v, size_t n) {
 #define AT(q) ((double)v[(size_t)((double)(n - 1) * (q))] / 1000.0)
         printf("  %-26s %8.1f %8.1f %8.1f %8.1f %8.1f %8.1f\n", what, (double)v[0] / 1000.0, mean / 1000.0, AT(0.5),
                AT(0.99), AT(0.999), (double)v[n - 1] / 1000.0);
+        if (bench_mode) {
+                static const struct {
+                                const char *suffix;
+                                double      q;
+                } at[] = {{"p50", 0.5}, {"p99", 0.99}, {"p999", 0.999}};
+                char name[64];
+                for (size_t i = 0; i < sizeof(at) / sizeof(at[0]); ++i) {
+                        snprintf(name, sizeof(name), "%s_%s_us", metric, at[i].suffix);
+                        bmds_bench_result(name, AT(at[i].q), "us", BMDS_BENCH_LOWER);
+                }
+                snprintf(name, sizeof(name), "%s_max_us", metric);
+                bmds_bench_result(name, (double)v[n - 1] / 1000.0, "us", BMDS_BENCH_LOWER);
+        }
 #undef AT
         return;
 }
@@ -262,9 +283,35 @@ static int usage(void) {
         return 2;
 }
 
+/* `--bench KEY=VALUE...`: the options from `bench`'s parameters. */
+static int bench_options(int argc, char **argv) {
+        bmds_bench_t b;
+        bmds_bench_init(&b, argc, argv);
+        bench_mode = 1;
+        opt.peer = bmds_bench_param(&b, "peer", "");
+        if (*opt.peer == '\0') {
+                printf("no peer: give peer=ADDRESS, a wired host running tools/netlat-reflector\n");
+                return BMDS_BENCH_SKIPPED;
+        }
+        opt.seconds = (int)bmds_bench_param_long(&b, "seconds", 5);
+        opt.interval_us = (int)bmds_bench_param_long(&b, "interval", 1000);
+        opt.size = (int)bmds_bench_param_long(&b, "size", 300);
+        opt.port = (int)bmds_bench_param_long(&b, "port", 5004);
+        opt.fast = bmds_bench_param_long(&b, "fast", 1) != 0;
+        opt.load = bmds_bench_param_long(&b, "load", 0) != 0;
+        opt.rt_priority = (int)bmds_bench_param_long(&b, "rt", 0);
+        return 0;
+}
+
 int main(int argc, char **argv) {
         int c;
-        while ((c = getopt(argc, argv, "i:s:t:p:d:r:nl")) != -1) {
+        if (argc > 1 && strcmp(argv[1], "--bench") == 0) {
+                const int err = bench_options(argc, argv);
+                if (err != 0) return err;
+                optind = argc - 1; /* the peer, below */
+                argv[optind] = (char *)opt.peer;
+        }
+        while (!bench_mode && (c = getopt(argc, argv, "i:s:t:p:d:r:nl")) != -1) {
                 switch (c) {
                         case 'i': opt.interval_us = atoi(optarg); break;
                         case 's': opt.size = atoi(optarg); break;
@@ -400,22 +447,27 @@ int main(int argc, char **argv) {
         printf("  %-26s %8s %8s %8s %8s %8s %8s  (us)\n", "", "min", "mean", "50%", "99%", "99.9%", "max");
         size_t n = 0;
         for (uint32_t i = 0; i < count; ++i) values[n++] = records[i].woke_ns - records[i].intended_ns;
-        report("sender's wake, late by", values, n);
+        report("sender's wake, late by", "wake_late", values, n);
         n = departures(values);
-        report("departure off the grid", values, n);
+        report("departure off the grid", "departure", values, n);
         n = 0;
         for (uint32_t i = 0; i < count; ++i) {
                 if (records[i].departed_ns != 0 && records[i].back_ns != 0)
                         values[n++] = records[i].back_ns - records[i].departed_ns;
         }
-        report("round trip (hardware)", values, n);
+        report("round trip (hardware)", "round_trip", values, n);
         n = 0;
         for (uint32_t i = 0; i < count; ++i) {
                 if (records[i].driver_ns != 0) values[n++] = records[i].taken_ns - records[i].driver_ns;
         }
-        report("driver to program", values, n);
+        report("driver to program", "delivery", values, n);
         free(values);
         free(sequence_of);
         free(records);
+        if (bench_mode) {
+                bmds_bench_result("lost", (double)(sent - back), "datagrams", BMDS_BENCH_LOWER);
+                bmds_bench_result("failed", (double)failed, "datagrams", BMDS_BENCH_LOWER);
+                return 0; /* losses are a figure, not a failure */
+        }
         return sent == back && failed == 0 ? 0 : 1;
 }

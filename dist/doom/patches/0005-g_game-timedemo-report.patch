@@ -1,0 +1,51 @@
+g_game: a timed demo reports on stdout and exits cleanly
+
+For bench (devplan/bench.md): the result in milliseconds as @bench lines, then I_Quit; it was
+I_Error, whose message goes to stderr and whose exit status is a failure's.
+
+--- a/doomgeneric/g_game.c	2026-10-17 21:32:29.665175653 -0700
++++ b/doomgeneric/g_game.c	2026-10-17 21:32:46.819423985 -0700
+@@ -71,6 +71,7 @@
+ 
+ 
+ #include "g_game.h"
++#include "doomgeneric.h" // BMDS: DG_GetTicksMs, a timed demo's ms
+ 
+ 
+ #define SAVEGAMESIZE	0x2c000
+@@ -112,6 +113,7 @@
+ boolean         timingdemo;             // if true, exit with report on completion 
+ boolean         nodrawers;              // for comparative timing purposes 
+ int             starttime;          	// for comparative timing purposes  	 
++static int      startticks;             // the same, in ms (a timed demo's report)
+  
+ boolean         viewactive; 
+  
+@@ -2209,6 +2211,7 @@
+     G_InitNew (skill, episode, map); 
+     precache = true; 
+     starttime = I_GetTime (); 
++    startticks = DG_GetTicksMs ();
+ 
+     usergame = false; 
+     demoplayback = true; 
+@@ -2262,8 +2265,17 @@
+         timingdemo = false;
+         demoplayback = false;
+ 
+-	I_Error ("timed %i gametics in %i realtics (%f fps)",
+-                 gametic, realtics, fps);
++        // BMDS: the report on stdout, in ms and as bench's result lines (devplan/bench.md), and a
++        // clean exit (I_Error's status is a failure's).
++        {
++            const int ms = DG_GetTicksMs () - startticks;
++            const double msfps = ms > 0 ? gametic * 1000.0 / ms : 0;
++            printf ("timed %i gametics in %i realtics (%f fps), %i ms\n", gametic, realtics, fps, ms);
++            printf ("@bench fps %.3f /s higher\n", msfps);
++            printf ("@bench gametic_ms %.4f ms lower\n", gametic > 0 ? (double) ms / gametic : 0);
++            fflush (stdout);
++            I_Quit ();
++        }
+     } 
+ 	 
+     if (demoplayback) 

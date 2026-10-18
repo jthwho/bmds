@@ -25,4 +25,4 @@ if [ $link = r ]; then exec "$GCC" $ARCH -nostdlib "$@"; fi
 exec "$GCC" $ARCH $INC -static -nostdlib -L@BMDS_LIBC_LIB@ -u _start -T @BMDS_SDK_DIR@/ld/bmds.ld \
         -Wl,--emit-relocs -Wl,--no-relax -Wl,--gc-sections -Wl,-z,max-page-size=512 -Wl,-z,common-page-size=512 \
         -Wl,--no-warn-rwx-segments -Wl,--defsym=__bmds_stack_size=${BMDS_STACK:-0} \
-        -lbmds "$@" -Wl,--start-group -lbmdsgame -lbmds -lc @BMDS_LIBGCC@ -Wl,--end-group
+        -lbmds "$@" -Wl,--start-group -lbmdsgame -lbmdsbench -lbmds -lc @BMDS_LIBGCC@ -Wl,--end-group

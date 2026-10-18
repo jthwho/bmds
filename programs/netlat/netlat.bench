@@ -1,0 +1,16 @@
+# netlat's benchmark (devplan/bench.md §12), installed in share/bench by dist/netlat. It needs a
+# wired host running tools/netlat-reflector; tools/bmds-bench starts one and gives peer= itself.
+
+[Bench net.latency]
+Exec=netlat --bench
+Tags=peer
+Help=Real-time UDP to a reflector and back, stamped in hardware: each stage's percentiles
+Param.peer=;The reflector's IPv4 address (none: skipped)
+Param.seconds=5;How long a run sends
+Param.interval=1000;Microseconds between datagrams
+Param.size=300;A datagram's payload, bytes
+Param.fast=1;1: the real-time fast path; 0: through lwIP
+Param.load=0;1: TCP both ways through the reflector meanwhile
+Param.rt=0;The sender and receiver SCHED_FIFO at this priority (0: not real-time)
+Param.runs=1;Runs (each one thousands of datagrams)
+Param.warmup=0;Runs first, not kept

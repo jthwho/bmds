@@ -9,3 +9,6 @@ mkdir -p "$app"
 cp doom "$app/doom"
 cp "$ROOT/programs/doom/app.desktop" "$app/app.desktop"
 cp "$ROOT/programs/doom/controls.conf" "$app/controls.conf"
+# Its benchmark for `bench` (devplan/bench.md §12): demo1 timed.
+mkdir -p "$DESTDIR/share/bench"
+cp "$ROOT/programs/doom/doom.bench" "$DESTDIR/share/bench/doom.bench"

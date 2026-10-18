@@ -12,6 +12,7 @@
  * userspace interface once shipped: append only.
  */
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -34,6 +35,8 @@
 #include <bmds/version.h>
 #include <bmds/vfs.h>
 
+#include "benchprograms.h"
+
 // The table: the linker fragment collects every `.bmds_bench.*` section here, sorted by name.
 extern "C" const bmds::Bench _bmds_bench_start[];
 extern "C" const bmds::Bench _bmds_bench_end[];
@@ -52,6 +55,7 @@ namespace {
         constexpr size_t   MaxMetrics = 32;
         constexpr size_t   MaxTasks = 96;
         constexpr size_t   MaxNotesBytes = 4096;
+        constexpr int      BenchProgramSkipped = 77; // a program's exit status: can't run here (bmds/benchlib.h)
 
         // Every benchmark's parameters (one may set its own defaults for them).
         constexpr BenchParam CommonParams[] = {
@@ -71,12 +75,94 @@ namespace {
                 return Span<const Bench>(_bmds_bench_start, static_cast<size_t>(_bmds_bench_end - _bmds_bench_start));
         }
 
-        const Bench *findBench(StringView name) {
-                for (const Bench &b : benches()) {
-                        if (name == StringView(b.name)) return &b;
-                }
-                return nullptr;
-        }
+        // A benchmark to list or run: the firmware's (a `Bench`) or a program's (its descriptor's).
+        struct Entry {
+                        const Bench                   *builtin = nullptr;
+                        const BenchText::ProgramBench *program = nullptr;
+
+                        const char *name() const { return builtin != nullptr ? builtin->name : program->name; }
+                        const char *help() const { return builtin != nullptr ? builtin->help : program->help; }
+                        uint16_t    tags() const { return builtin != nullptr ? builtin->tags : program->tags; }
+                        size_t      paramCount() const {
+                                return builtin != nullptr ? builtin->paramCount : program->paramCount;
+                        }
+                        const char *paramName(size_t i) const {
+                                return builtin != nullptr ? builtin->params[i].name : program->params[i].name;
+                        }
+                        const char *paramValue(size_t i) const {
+                                return builtin != nullptr ? builtin->params[i].defaultValue : program->params[i].value;
+                        }
+                        const char *paramHelp(size_t i) const {
+                                return builtin != nullptr ? builtin->params[i].help : program->params[i].help;
+                        }
+        };
+
+        // Every benchmark: the firmware's, and the programs' found now (`bench/paths`), sorted by name.
+        class Catalog {
+                public:
+                        static constexpr size_t MaxPrograms = 48;
+
+                        ~Catalog() {
+                                Memory::free(_programs);
+                                Memory::free(_entries);
+                        }
+
+                        Error load(CommandContext &ctx) {
+                                _programs = static_cast<BenchText::ProgramBench *>(
+                                        Memory::alloc(MemSpace::Psram, MaxPrograms * sizeof(BenchText::ProgramBench)));
+                                _entries = static_cast<Entry *>(Memory::alloc(
+                                        MemSpace::Psram, (benches().size() + MaxPrograms) * sizeof(Entry)));
+                                if (_programs == nullptr || _entries == nullptr) return Error::NoMem;
+                                for (const Bench &b : benches()) _entries[_count++] = Entry{&b, nullptr};
+                                struct Found {
+                                                Catalog        *self;
+                                                CommandContext *ctx;
+                                } found{this, &ctx};
+                                BenchPrograms::find(
+                                        ctx,
+                                        [](void *arg, const BenchText::ProgramBench &bench) {
+                                                auto &f = *static_cast<Found *>(arg);
+                                                f.self->add(*f.ctx, bench);
+                                                return;
+                                        },
+                                        &found);
+                                std::sort(_entries, _entries + _count, [](const Entry &a, const Entry &b) {
+                                        return std::strcmp(a.name(), b.name()) < 0;
+                                });
+                                return Error::Ok;
+                        }
+
+                        Span<const Entry> entries() const { return Span<const Entry>(_entries, _count); }
+
+                        const Entry *find(StringView name) const {
+                                for (const Entry &e : entries()) {
+                                        if (name == StringView(e.name())) return &e;
+                                }
+                                return nullptr;
+                        }
+
+                private:
+                        void add(CommandContext &ctx, const BenchText::ProgramBench &bench) {
+                                if (find(bench.name) != nullptr) {
+                                        ctx.eprintf("bench: %s: declared twice (the first kept)\n", bench.name);
+                                        return;
+                                }
+                                if (_programCount == MaxPrograms) {
+                                        ctx.eprintf("bench: %s: more than %u programs' benchmarks\n", bench.name,
+                                                    unsigned(MaxPrograms));
+                                        return;
+                                }
+                                BenchText::ProgramBench &p = _programs[_programCount++];
+                                p = bench;
+                                _entries[_count++] = Entry{nullptr, &p};
+                                return;
+                        }
+
+                        BenchText::ProgramBench *_programs = nullptr;
+                        size_t                   _programCount = 0;
+                        Entry                   *_entries = nullptr;
+                        size_t                   _count = 0;
+        };
 
         // A benchmark that can't run here and now (the display the desktop's, no card): skipped, not failed.
         bool isSkipped(Error err) {
@@ -90,16 +176,16 @@ namespace {
 
         // ---- Listing ----
 
-        int list(CommandContext &ctx, Args patterns) {
+        int list(CommandContext &ctx, const Catalog &catalog, Args patterns) {
                 String tags(MemSpace::Psram);
                 size_t shown = 0;
-                for (const Bench &b : benches()) {
+                for (const Entry &b : catalog.entries()) {
                         bool picked = patterns.size() == 0;
-                        for (char *p : patterns) picked = picked || BenchText::matches(p, b.name, b.tags);
+                        for (char *p : patterns) picked = picked || BenchText::matches(p, b.name(), b.tags());
                         if (!picked) continue;
                         tags.clear();
-                        (void)BenchText::appendTags(b.tags, tags);
-                        ctx.printf("%-24s %-14s %s\n", b.name, tags.cStr(), b.help);
+                        (void)BenchText::appendTags(b.tags(), tags);
+                        ctx.printf("%-24s %-14s %s\n", b.name(), tags.cStr(), b.help());
                         ++shown;
                 }
                 if (shown == 0 && patterns.size() > 0) {
@@ -109,25 +195,26 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
-        int info(CommandContext &ctx, StringView name) {
-                const Bench *b = findBench(name);
+        int info(CommandContext &ctx, const Catalog &catalog, StringView name) {
+                const Entry *b = catalog.find(name);
                 if (b == nullptr) {
                         ctx.eprintf("bench: %.*s: no such benchmark\n", int(name.size()), name.data());
                         return Shell::ExitFailure;
                 }
                 String tags(MemSpace::Psram);
-                (void)BenchText::appendTags(b->tags, tags);
-                ctx.printf("%s: %s\n", b->name, b->help);
+                (void)BenchText::appendTags(b->tags(), tags);
+                ctx.printf("%s: %s\n", b->name(), b->help());
                 ctx.printf("Tags:       %s\n", tags.isEmpty() ? "-" : tags.cStr());
+                if (b->program != nullptr) ctx.printf("Runs:       %s\n", b->program->exec);
                 ctx.printf("Parameters:\n");
-                for (size_t i = 0; i < b->paramCount; ++i) {
-                        const BenchParam &p = b->params[i];
-                        if (!isCommon(p.name)) ctx.printf("  %-10s %-8s %s\n", p.name, p.defaultValue, p.help);
+                for (size_t i = 0; i < b->paramCount(); ++i) {
+                        if (!isCommon(b->paramName(i)))
+                                ctx.printf("  %-10s %-8s %s\n", b->paramName(i), b->paramValue(i), b->paramHelp(i));
                 }
                 for (const BenchParam &common : CommonParams) {
                         const char *value = common.defaultValue; // the bench's own default, if it sets one
-                        for (size_t i = 0; i < b->paramCount; ++i) {
-                                if (StringView(b->params[i].name) == common.name) value = b->params[i].defaultValue;
+                        for (size_t i = 0; i < b->paramCount(); ++i) {
+                                if (StringView(b->paramName(i)) == common.name) value = b->paramValue(i);
                         }
                         ctx.printf("  %-10s %-8s %s\n", common.name, value, common.help);
                 }
@@ -443,9 +530,9 @@ namespace {
                                 }
                                 if (given) return found;
                                 if (_bench != nullptr) { // a bench may set its own default for a common one
-                                        for (size_t i = 0; i < _bench->paramCount; ++i) {
-                                                if (name == StringView(_bench->params[i].name))
-                                                        return _bench->params[i].defaultValue;
+                                        for (size_t i = 0; i < _bench->paramCount(); ++i) {
+                                                if (name == StringView(_bench->paramName(i)))
+                                                        return _bench->paramValue(i);
                                         }
                                 }
                                 if (name == "runs") return "5";
@@ -495,17 +582,18 @@ namespace {
                         }
 
                         // Runs @p bench; writes its record to @p json (when there is one).
-                        Error run(const Bench &bench, JsonWriter *json) {
+                        Error run(const Entry &bench, JsonWriter *json) {
                                 _bench = &bench;
                                 _metricCount = 0;
                                 _notes.clear();
-                                _ctx.printf("%s\n", bench.name);
+                                _ctx.printf("%s\n", bench.name());
                                 const bool stall = param("probe") == "stall";
                                 if (stall) _stall.start();
                                 _counters.start();
                                 _tasks.start();
                                 Stopwatch     watch;
-                                const Error   result = bench.run(*this);
+                                const Error   result = bench.builtin != nullptr ? bench.builtin->run(*this)
+                                                                                : runProgram(*bench.program);
                                 const int64_t elapsedUs = watch.elapsedUs();
                                 _counters.stop();
                                 _tasks.stop();
@@ -530,6 +618,105 @@ namespace {
                         }
 
                 private:
+                        // A metric's samples, from a program's result lines.
+                        struct ProgramMetric {
+                                        char    name[BenchContext::MaxMetricName + 1];
+                                        char    unit[BenchContext::MaxUnit + 1];
+                                        bool    higher;
+                                        size_t  count;
+                                        double *samples; // MaxRuns + MaxWarmup, PSRAM
+                        };
+
+                        struct ProgramRun {
+                                        Runner        *self;
+                                        ProgramMetric *metrics;
+                                        size_t         count;
+                                        bool           full; // a metric or a sample past the most: dropped
+                        };
+
+                        static void programLine(void *arg, StringView text) {
+                                auto                 &r = *static_cast<ProgramRun *>(arg);
+                                BenchText::ResultLine line;
+                                if (!BenchText::parseResultLine(text, line)) {
+                                        r.self->note("%.*s", int(text.size()), text.data());
+                                        return;
+                                }
+                                ProgramMetric *m = nullptr;
+                                for (size_t i = 0; i < r.count && m == nullptr; ++i) {
+                                        if (line.metric == StringView(r.metrics[i].name)) m = &r.metrics[i];
+                                }
+                                if (m == nullptr && r.count < MaxMetrics) {
+                                        m = &r.metrics[r.count];
+                                        m->samples = static_cast<double *>(
+                                                Memory::alloc(MemSpace::Psram, (MaxRuns + MaxWarmup) * sizeof(double)));
+                                        if (m->samples == nullptr) m = nullptr;
+                                }
+                                if (m == nullptr || m->count == MaxRuns + MaxWarmup) {
+                                        r.full = true;
+                                        return;
+                                }
+                                if (m == &r.metrics[r.count]) {
+                                        copyText(m->name, sizeof(m->name), line.metric);
+                                        copyText(m->unit, sizeof(m->unit), line.unit);
+                                        m->higher = line.higher;
+                                        m->count = 0;
+                                        ++r.count;
+                                }
+                                m->samples[m->count++] = line.value;
+                                return;
+                        }
+
+                        // A program's benchmark: its descriptor's `Exec`, then `KEY=VALUE` for each of
+                        // its parameters (`runs` and `warmup` among them); its result lines gathered.
+                        Error runProgram(const BenchText::ProgramBench &bench) {
+                                StringView words[24];
+                                size_t     n = BenchText::splitWords(bench.exec, Span<StringView>(words, 16));
+                                char       args[BenchText::ProgramBench::MaxParams + 2][96];
+                                size_t     a = 0;
+                                const auto pass = [&](const char *name) {
+                                        const StringView v = param(name);
+                                        std::snprintf(args[a], sizeof(args[a]), "%s=%.*s", name, int(v.size()),
+                                                      v.data());
+                                        words[n++] = args[a++];
+                                };
+                                for (size_t i = 0; i < bench.paramCount; ++i) {
+                                        if (!isCommon(bench.params[i].name)) pass(bench.params[i].name);
+                                }
+                                pass("runs");
+                                pass("warmup");
+                                auto *metrics = static_cast<ProgramMetric *>(
+                                        Memory::alloc(MemSpace::Psram, MaxMetrics * sizeof(ProgramMetric)));
+                                if (metrics == nullptr) return Error::NoMem;
+                                ProgramRun            r{this, metrics, 0, false};
+                                BenchPrograms::Ending ending;
+                                Error err = BenchPrograms::run(_ctx, Span<const StringView>(words, n), programLine, &r,
+                                                               ending);
+                                if (err.isOk()) {
+                                        if (ending.exited && ending.status == BenchProgramSkipped) {
+                                                err = Error::NotSupported;
+                                        } else if (_ctx.isInterrupted()) {
+                                                err = Error::Cancelled;
+                                        } else if (!ending.exited || ending.status != 0) {
+                                                note("%s %d", ending.exited ? "it exited with" : "a signal ended it:",
+                                                     ending.status);
+                                                err = Error::IoError;
+                                        }
+                                }
+                                if (r.full)
+                                        note("results past %u metrics or %u runs were dropped", unsigned(MaxMetrics),
+                                             unsigned(MaxRuns + MaxWarmup));
+                                for (size_t i = 0; i < r.count; ++i) {
+                                        const ProgramMetric &m = metrics[i];
+                                        if (err.isOk())
+                                                reportSamples(m.name, m.unit,
+                                                              m.higher ? BenchBetter::Higher : BenchBetter::Lower,
+                                                              Span<double>(m.samples, m.count));
+                                        Memory::free(m.samples);
+                                }
+                                Memory::free(metrics);
+                                return err;
+                        }
+
                         void add(StringView metric, StringView unit, BenchBetter better, const BenchStats &stats) {
                                 if (_metricCount == MaxMetrics) return;
                                 Metric &m = _metrics[_metricCount++];
@@ -563,12 +750,13 @@ namespace {
 
                         void write(JsonWriter &json, Error result, int64_t elapsedUs) {
                                 json.beginObject();
-                                json.member("name", _bench->name);
+                                json.member("name", _bench->name());
+                                if (_bench->program != nullptr) json.member("exec", _bench->program->exec);
                                 json.key("params");
                                 json.beginObject();
-                                for (size_t i = 0; i < _bench->paramCount; ++i) {
-                                        if (!isCommon(_bench->params[i].name))
-                                                json.member(_bench->params[i].name, param(_bench->params[i].name));
+                                for (size_t i = 0; i < _bench->paramCount(); ++i) {
+                                        if (!isCommon(_bench->paramName(i)))
+                                                json.member(_bench->paramName(i), param(_bench->paramName(i)));
                                 }
                                 for (const BenchParam &common : CommonParams)
                                         json.member(common.name, param(common.name));
@@ -663,7 +851,7 @@ namespace {
                         CommandContext &_ctx;
                         Args            _assignments;
                         bool            _quiet;
-                        const Bench    *_bench = nullptr;
+                        const Entry    *_bench = nullptr;
                         double         *_samples = nullptr;
                         Metric         *_metrics = nullptr;
                         size_t          _metricCount = 0;
@@ -717,7 +905,7 @@ namespace {
                 return Error::Ok;
         }
 
-        int run(CommandContext &ctx, Args args) {
+        int run(CommandContext &ctx, const Catalog &catalog, Args args) {
                 const char *outPath = nullptr;
                 bool        save = true;
                 bool        quiet = false;
@@ -752,11 +940,11 @@ namespace {
                 const Span<char *const> sets(assignments, assignmentCount);
 
                 // What runs, and whether every KEY is somebody's.
-                const Bench *chosen[64];
+                const Entry *chosen[64];
                 size_t       chosenCount = 0;
-                for (const Bench &b : benches()) {
+                for (const Entry &b : catalog.entries()) {
                         bool picked = false;
-                        for (char *p : picks) picked = picked || BenchText::matches(p, b.name, b.tags);
+                        for (char *p : picks) picked = picked || BenchText::matches(p, b.name(), b.tags());
                         if (picked && chosenCount < 64) chosen[chosenCount++] = &b;
                 }
                 if (chosenCount == 0) {
@@ -769,8 +957,8 @@ namespace {
                         const StringView value = text.mid(text.indexOf('=') + 1);
                         bool             known = isCommon(key);
                         for (size_t c = 0; c < chosenCount && !known; ++c) {
-                                for (size_t p = 0; p < chosen[c]->paramCount; ++p)
-                                        known = known || key == StringView(chosen[c]->params[p].name);
+                                for (size_t p = 0; p < chosen[c]->paramCount(); ++p)
+                                        known = known || key == StringView(chosen[c]->paramName(p));
                         }
                         if (!known) {
                                 ctx.eprintf("bench: %.*s: no benchmark chosen takes it\n", int(key.size()), key.data());
@@ -856,13 +1044,17 @@ namespace {
         }
 
         int runBench(CommandContext &ctx) {
-                const Args args = ctx.args();
-                if (args.size() == 1) return list(ctx, Args());
-                const StringView verb(args[1]);
-                if (verb == "list") return list(ctx, args.mid(2));
-                if (verb == "info" && args.size() == 3) return info(ctx, args[2]);
-                if (verb == "run") return run(ctx, args);
-                return ctx.usage();
+                const Args       args = ctx.args();
+                const StringView verb(args.size() > 1 ? args[1] : "list");
+                if (verb != "list" && verb != "run" && !(verb == "info" && args.size() == 3)) return ctx.usage();
+                Catalog catalog;
+                if (Error err = catalog.load(ctx); err.isError()) {
+                        ctx.eprintf("bench: %s\n", err.desc());
+                        return Shell::ExitFailure;
+                }
+                if (verb == "list") return list(ctx, catalog, args.mid(args.size() > 1 ? 2 : 1));
+                if (verb == "info") return info(ctx, catalog, args[2]);
+                return run(ctx, catalog, args);
         }
 
 } // namespace
