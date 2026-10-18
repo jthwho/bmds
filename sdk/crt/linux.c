@@ -111,10 +111,28 @@ static int64_t ts_read(const void *ts) {
         return t[0] * 1000000000 + (int32_t)t[1];
 }
 
+/* The high 64 bits of @p a times @p b: four 32 x 32 products (RV32 has no 128-bit type). */
+static uint64_t mul_high64(uint64_t a, uint64_t b) {
+        const uint64_t a_lo = (uint32_t)a, a_hi = a >> 32, b_lo = (uint32_t)b, b_hi = b >> 32;
+        const uint64_t lo_lo = a_lo * b_lo, hi_lo = a_hi * b_lo, lo_hi = a_lo * b_hi;
+        const uint64_t t = hi_lo + (lo_lo >> 32);
+        const uint64_t w = (uint32_t)t + lo_hi;
+        return a_hi * b_hi + (t >> 32) + (w >> 32);
+}
+
+/* Seconds and nanoseconds of @p ns. A 64-bit division is libgcc's software routine on RV32,
+   most of a clock read (devplan/bench.md §15): by 10^9 through its reciprocal instead, exact
+   for every unsigned 64-bit value (as compilers do it on 64-bit machines). */
 static void ts_write(void *ts, int64_t ns) {
         int64_t *t = ts;
-        t[0] = ns / 1000000000;
-        t[1] = ns % 1000000000;
+        if (ns < 0) {
+                t[0] = ns / 1000000000;
+                t[1] = ns % 1000000000;
+                return;
+        }
+        const uint64_t sec = mul_high64((uint64_t)ns >> 9, 0x44B82FA09B5A53ull) >> 11;
+        t[0] = (int64_t)sec;
+        t[1] = (int64_t)((uint64_t)ns - sec * 1000000000u);
         return;
 }
 

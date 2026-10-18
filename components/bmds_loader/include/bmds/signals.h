@@ -199,13 +199,23 @@ class Signals {
                 uint32_t pending() const { return _pending.load(); }
 
                 /** @brief Returns what is pending for @p thread: the process's and its own. */
-                uint32_t pending(const Thread &thread) const { return _pending.load() | thread.pending.load(); }
+                uint32_t pending(const Thread &thread) const {
+                        // Acquire: what the sender wrote before is seen. A waiter's ordering against
+                        // its interrupt is prepare()'s fence.
+                        return _pending.load(std::memory_order_acquire) |
+                               thread.pending.load(std::memory_order_acquire);
+                }
 
                 /** @brief Returns true if a signal is due for the main thread. */
                 bool isDue() const { return isDue(_main); }
 
                 /** @brief Returns true if a signal is due for @p thread. */
                 bool isDue(const Thread &thread) const { return dueCaught(thread) != 0 || terminateSignal() != 0; }
+
+                /** @brief `isDue()`, with `terminateSignal()` already known (@p terminate). */
+                bool isDue(const Thread &thread, int terminate) const {
+                        return terminate != 0 || dueCaught(thread) != 0;
+                }
 
                 /** @brief Returns the signal that ends the process now (due, not caught), or 0. */
                 int terminateSignal() const;
@@ -269,9 +279,14 @@ class Signals {
                 static constexpr uint32_t StopSignals = signalBit(19) | signalBit(20) | signalBit(21) | signalBit(22);
                 static constexpr uint32_t Unblockable = signalBit(9) | signalBit(19); // SIGKILL, SIGSTOP
 
+                // Every system call asks these on its way in and out (devplan/bench.md §15): the
+                // pending sets first, and nothing more when they are empty, as they nearly always are
+                // (the same values read, fewer of them: each load is a fence on each side).
                 uint32_t dueCaught(const Thread &thread) const {
-                        if (_stopped.load()) return 0;
-                        return pending(thread) & ~thread.blocked.load() & _caught.load();
+                        const uint32_t p = pending(thread);
+                        if (p == 0 || _stopped.load(std::memory_order_acquire)) return 0;
+                        return p & ~thread.blocked.load(std::memory_order_acquire) &
+                               _caught.load(std::memory_order_acquire);
                 }
                 uint32_t ending() const;                           // pending, not blocked everywhere, ending it
                 uint32_t fatal() const;                            // what ends the process if not caught

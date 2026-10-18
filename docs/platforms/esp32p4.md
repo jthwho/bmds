@@ -364,6 +364,11 @@ until silicon v3; then test again.
   task (21) ran on, under 45 µs on the other. An interrupt is allocated on the core that
   allocates it; the EMAC task is pinned to it, real-time senders to the other
   (`devplan/network.md` §30c).
+- **A sequentially consistent atomic load is a fence:** `std::atomic`'s default order compiles to
+  `fence rw,rw` around each load on RV32. The signal checks every system call makes read several
+  of these. Acquire loads and an early return when nothing is pending took `getpid()` from 4.2 to
+  2.5 µs (`devplan/bench.md` §15). Keep the default only where a store must be ordered before a
+  later load (one explicit `std::atomic_thread_fence`).
 - **Seeing it:** the profiler samples at the tick, which can't interrupt a critical section, so
   time inside one is charged to `vPortExitCriticalMultiCore` with the caller (`xQueueGenericSend`:
   a give or unlock; `xQueueSemaphoreTake`: a take or lock) as its return address.
@@ -421,6 +426,11 @@ until silicon v3; then test again.
   "-Wl,--wrap=fn")`, then `__wrap_fn` calls `__real_fn` and adjusts (`jpegcodec.cpp`).
 - **Read the driver before trusting it with a DMA:** what it syncs, when, and what it reports at
   a buffer's end (the JPEG encoder above, the USB-Serial/JTAG FIFO in `docs/HARDWARE.md`).
+- **`esp_timer_get_time()` divides in software:** it reads the systimer, then converts its 16 MHz
+  ticks to µs with the ROM's `systimer_ticks_to_us()`, a 64-bit division with no hardware help.
+  BMDS wraps it (`__wrap_esp_timer_get_time` in `platform.cpp`) with a shift by 4: 794 → 672 ns.
+  The rest is the systimer itself. The snapshot and the wait for a valid value take ~650 ns, so a
+  clock read is never cheap here (`devplan/bench.md` §15).
 - **Revision macros:** some of ESP-IDF's workarounds depend on `CONFIG_ESP32P4_SELECTS_REV_LESS_V3`
   and on chip-revision macros; check which branch a workaround is in before relying on it.
 - **Anything that writes the flash or turns the caches off needs an internal stack:** called from

@@ -150,8 +150,10 @@ int32_t bmds_k_dup2(int32_t fd, int32_t to) {
 }
 
 int32_t bmds_k_clock_get(uint32_t clock, int64_t *ns) {
-        KernelCall call;
-        return call->clockGet(clock, ns);
+        // No KernelCall (devplan/bench.md §15): the clocks are read without a lock or a wait, as
+        // Linux's vDSO reads them, so a kill meanwhile may end the thread here as in its own code,
+        // and no signal is delivered on the way out. It was most of clock_gettime()'s time.
+        return bmds::Process::clockGet(clock, ns);
 }
 
 int32_t bmds_k_sleep(int64_t ns) {

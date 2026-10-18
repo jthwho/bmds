@@ -142,8 +142,65 @@ namespace {
                 return err;
         }
 
+
+        constexpr BenchParam SequentialParams[] = {
+                {"dir", "/tmp", "Where the file goes (DIR/.fsbench.seq, removed after)"},
+                {"mb", "4", "Megabytes written and read a run"},
+                {"chunk", "65536", "Bytes a write or read"},
+        };
+
+        // A file written in chunks (synced, so the card's writes are counted), then read back.
+        Error runSequential(BenchContext &ctx) {
+                uint64_t         mb = 0, chunk = 0;
+                const StringView dir = ctx.param("dir");
+                if (ctx.paramUnsigned("mb", mb).isError() || mb == 0 || mb > 256 ||
+                    ctx.paramUnsigned("chunk", chunk).isError() || chunk < 512 || chunk > 1024 * 1024 ||
+                    dir.isEmpty() || dir.size() > Vfs::MaxMountPath)
+                        return Error::Invalid;
+                char path[Vfs::MaxMountPath + 24];
+                std::snprintf(path, sizeof(path), "%.*s/.fsbench.seq", int(dir.size()), dir.data());
+                auto *buf = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, size_t(chunk)));
+                if (buf == nullptr) return Error::NoMem;
+                for (size_t i = 0; i < chunk; ++i) buf[i] = uint8_t(i * 7);
+                const uint64_t total = mb * 1024 * 1024;
+                Error          err = ctx.measure("write_mb_s", "MB/s", BenchBetter::Higher, [&](double &out) {
+                        Stopwatch watch;
+                        auto [file, oerr] = Vfs::open(path, Vfs::Write | Vfs::Create | Vfs::Truncate, Vfs::Context());
+                        if (oerr.isError()) return oerr;
+                        for (uint64_t done = 0; done < total; done += chunk) {
+                                auto [n, werr] = file->write(ByteSpan(buf, size_t(chunk)), WaitForever);
+                                if (werr.isError()) return werr;
+                        }
+                        file.reset();
+                        if (Error serr = Vfs::sync(); serr.isError()) return serr;
+                        out = double(total) / double(watch.elapsedUs()) * 1e6 / (1024 * 1024);
+                        return Error(Error::Ok);
+                });
+                if (err.isOk())
+                        err = ctx.measure("read_mb_s", "MB/s", BenchBetter::Higher, [&](double &out) {
+                                Stopwatch watch;
+                                auto [file, oerr] = Vfs::open(path, Vfs::Read, Vfs::Context());
+                                if (oerr.isError()) return oerr;
+                                uint64_t got = 0;
+                                for (;;) {
+                                        auto [n, rerr] = file->read(WritableByteSpan(buf, size_t(chunk)), WaitForever);
+                                        if (rerr == Error::EndOfFile) break;
+                                        if (rerr.isError()) return rerr;
+                                        got += n;
+                                }
+                                if (got != total) return Error(Error::IoError);
+                                out = double(total) / double(watch.elapsedUs()) * 1e6 / (1024 * 1024);
+                                return Error(Error::Ok);
+                        });
+                (void)Vfs::remove(path, Vfs::Context());
+                Memory::free(buf);
+                return err;
+        }
+
 } // namespace
 
+BMDS_BENCH_WITH(fsSequential, "fs.sequential", runSequential, BenchQuick | BenchWrites, SequentialParams,
+                "A file written in 64 KB chunks and synced, then read back, through the VFS (MB/s)")
 BMDS_BENCH_WITH(fsSmallFiles, "fs.smallfiles", runSmallFiles, BenchWrites, SmallFilesParams,
                 "Small files made, rewritten and removed through the VFS (ms a file), and the system's pause")
 

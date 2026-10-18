@@ -37,3 +37,26 @@ Param.file=/sd0/p0/share/bench/scale.mid;The MIDI file
 Exec=benchprog images
 Tags=quick
 Help=A 1280x720 picture encoded as PNG and JPEG and decoded (the JPEG codec, and in software)
+
+[Bench surface.present]
+Exec=benchprog surface
+Tags=screen
+Help=Presents at the games' sizes: frames shown a second, the call's time, the system's CPU a frame
+Param.case=;Only the cases whose names hold this
+Param.ms=1000;Milliseconds a run presents
+Param.runs=3;Runs of each case
+
+[Bench game.draw]
+Exec=benchprog draw
+Tags=quick
+Help=libbmdsgame drawing into a 640x360 canvas in PSRAM, each format (Mpixel/s; text: chars a ms)
+
+[Bench render.spans]
+Exec=benchprog render
+Tags=quick
+Help=Doom's columns and spans for a 320x200 frame, drawn into PSRAM and into internal RAM
+
+[Bench kernel.pipe]
+Exec=benchprog pipe
+Tags=quick
+Help=A pipe between two threads of a program: 4 MB a run in 4 KB writes (MB/s)

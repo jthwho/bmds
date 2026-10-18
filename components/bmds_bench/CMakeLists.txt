@@ -16,6 +16,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_BENCH_PURE_SRCS}
                                     src/benchcommand.cpp
+                                    src/benchkernel.cpp
                                     src/benchprograms.cpp
                                INCLUDE_DIRS include
                                REQUIRES bmds_core

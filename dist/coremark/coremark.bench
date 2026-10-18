@@ -1,0 +1,9 @@
+# CoreMark's benchmark (devplan/bench.md §15), installed in share/bench by dist/coremark. Through
+# sh: CoreMark reads its arguments as seeds, so bench's KEY=VALUE go to sh's positional parameters.
+# It times itself to at least 10 s (EEMBC's rule for a valid score): one run.
+
+[Bench cpu.coremark]
+Exec=sh -c coremark
+Help=CoreMark, EEMBC's CPU benchmark: a core's iterations a second, and CoreMark/MHz
+Param.runs=1;Runs (CoreMark times itself to 10 s a run)
+Param.warmup=0;Runs first, not kept

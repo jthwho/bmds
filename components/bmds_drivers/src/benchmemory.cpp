@@ -11,6 +11,7 @@
  */
 
 #include <cstring>
+#include <sdkconfig.h>
 #include <esp_async_memcpy.h>
 #include <esp_cache.h>
 #include <bmds/bench.h>
@@ -164,12 +165,66 @@ namespace {
                 return Error::Ok;
         }
 
+
+        // A dependent chain of loads through @p bytes of @p space: each line's first word the next
+        // line's address, in a random cycle (no prefetch helps); nanoseconds a load.
+        Error chase(BenchContext &ctx, const char *metric, MemSpace space, size_t bytes) {
+                constexpr size_t Line = 128; // the L2's line
+                const size_t     lines = bytes / Line;
+                Block            block(space, bytes);
+                if (block.p == nullptr) return Error::NoMem;
+                auto *order = static_cast<uint32_t *>(Memory::alloc(MemSpace::Psram, lines * sizeof(uint32_t)));
+                if (order == nullptr) return Error::NoMem;
+                for (size_t i = 0; i < lines; ++i) order[i] = uint32_t(i);
+                uint32_t seed = 12345;
+                for (size_t i = lines - 1; i > 0; --i) { // Fisher-Yates
+                        seed = seed * 1103515245u + 12345u;
+                        const size_t   j = (seed >> 8) % (i + 1);
+                        const uint32_t t = order[i];
+                        order[i] = order[j];
+                        order[j] = t;
+                }
+                for (size_t i = 0; i < lines; ++i)
+                        *reinterpret_cast<uint8_t **>(block.p + order[i] * Line) =
+                                block.p + order[(i + 1) % lines] * Line;
+                Memory::free(order);
+                constexpr uint32_t Loads = 200000;
+                return ctx.measure(metric, "ns", BenchBetter::Lower, [&](double &out) {
+                        uint8_t  *p = block.p;
+                        Stopwatch watch;
+                        for (uint32_t i = 0; i < Loads; ++i) p = *reinterpret_cast<uint8_t *volatile *>(p);
+                        out = double(watch.cycles()) * 1000.0 / CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ / Loads;
+                        return p != nullptr ? Error(Error::Ok) : Error(Error::Invalid);
+                });
+        }
+
+        Error runLatency(BenchContext &ctx) {
+                struct Case {
+                                const char *metric;
+                                MemSpace    space;
+                                size_t      bytes;
+                };
+                const Case cases[] = {
+                        {"internal_16k_ns", MemSpace::Internal, 16 * 1024},
+                        {"internal_64k_ns", MemSpace::Internal, 64 * 1024},
+                        {"psram_64k_ns", MemSpace::Psram, 64 * 1024},
+                        {"psram_256k_ns", MemSpace::Psram, 256 * 1024},
+                        {"psram_4m_ns", MemSpace::Psram, 4 * 1024 * 1024},
+                };
+                for (const Case &c : cases) {
+                        if (Error err = chase(ctx, c.metric, c.space, c.bytes); err.isError()) return err;
+                }
+                return Error::Ok;
+        }
+
 } // namespace
 
 BMDS_BENCH_WITH(memoryPsramCpu, "memory.psram.cpu", runPsramCpu, BenchQuick, PsramParams,
                 "PSRAM through the CPU, the caches written back and invalidated: writing, then reading")
 BMDS_BENCH_WITH(memoryPsramDma, "memory.psram.dma", runPsramDma, BenchQuick, PsramParams,
                 "PSRAM copied to PSRAM by the AXI GDMA")
+BMDS_BENCH(memoryLatency, "memory.latency", runLatency, BenchQuick,
+           "A chain of dependent loads in a random cycle: internal RAM and PSRAM by size (ns a load)")
 BMDS_BENCH(memoryTraffic, "memory.traffic", runTraffic, BenchQuick,
            "memcpy and memset through the caches: PSRAM and internal RAM")
 

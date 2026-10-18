@@ -183,7 +183,14 @@ Plan: [`input.md`](input.md).
   images), `net.latency` (`netlat --bench`, the host tool starting the reflector), Doom's
   timedemo (57.6 fps). Step 4 done (§13): parameters' defaults in the file, labels with only
   what was changed, `tools/bmds-bench table`, and the first full baseline (31 benchmarks, kept
-  on the board). Next: step 5 (new benchmarks: surfaces and games first); then Quake.
+  on the board). Step 5 part 1 done (§14): `surface.present`, `game.draw`, `render.spans`,
+  `kernel.pipe`, `memory.latency`, `kernel.switch`, `fs.sequential` (43 benchmarks); leads: a
+  full-screen L8 frame costs the system 10-12 ms, keyed L8/BGR24 blits a quarter of RGB565's rate,
+  PSRAM past the cache ~800 ns a load, a same-core task switch 21 µs. Tuning round 1 done (§15):
+  system calls (`getpid` 4.2 → 2.5 µs, `clock_gettime` 5.9 → 1.8 µs: the signal checks' fast
+  path, no `KernelCall` for a clock, a reciprocal in the CRT, `esp_timer_get_time()` without the
+  ROM's division), `kernel.locks`, `kernel.clock`, `cpu.coremark` (2.95 CoreMark/MHz). Next: the
+  task switch and lock costs, the full-screen L8 conversion, keyed blits; then Quake.
 - [x] Settings, the control panel (`controlpanel.md`, planned 2026-10-16, the user's request):
   the one place to change every sysconf setting graphically, laid out like the Mac's System
   Settings (groups with icons on the left, the group's page on the right). Changes apply and

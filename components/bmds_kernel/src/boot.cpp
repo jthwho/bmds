@@ -16,6 +16,7 @@
 #include <bmds/assert.h>
 #include <bmds/boot.h>
 #include <bmds/clock.h>
+#include <bmds/detail/platform.h>
 #include <bmds/random.h>
 #include <bmds/error.h>
 #include <bmds/log.h>
@@ -28,6 +29,10 @@
 #include <bmds/system.h>
 
 BMDS_DEBUG(Boot)
+
+// esp_timer's own read (private in IDF): the boot's check against Detail::monotonicUs(), whose
+// esp_timer_get_time() is ours (--wrap).
+extern "C" int64_t esp_timer_impl_get_time(void);
 
 BMDS_NAMESPACE_BEGIN
 
@@ -99,6 +104,12 @@ namespace {
                 bmdsInfo("Chip: ESP32-P4 rev v%u.%u, %u cores @ %u MHz", info.chipRevMajor, info.chipRevMinor,
                          info.cores, info.cpuMhz);
                 bmdsInfo("Reset: %s", resetReasonName(esp_reset_reason()));
+                // Detail::monotonicUs() reads esp_timer's counter itself, converted by a shift: say so
+                // if IDF's own reading ever disagrees (another tick rate, another counter).
+                const int64_t ours = Detail::monotonicUs(), idf = esp_timer_impl_get_time(); // IDF's own
+                if (idf - ours > 2 || idf - ours < -2)
+                        bmdsWarn("Clock: the system timer reads %lld us, esp_timer %lld", static_cast<long long>(ours),
+                                 static_cast<long long>(idf));
                 return;
         }
 

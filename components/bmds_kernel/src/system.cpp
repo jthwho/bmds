@@ -14,6 +14,7 @@
 #include <esp_timer.h>
 #include <sdkconfig.h>
 #include <bmds/board.h>
+#include <bmds/detail/platform.h>
 #include <bmds/system.h>
 #include <bmds/thread.h>
 #include <bmds/version.h>
@@ -54,7 +55,7 @@ const char *System::serial() {
 }
 
 uint64_t System::uptimeUs() {
-        return static_cast<uint64_t>(esp_timer_get_time());
+        return static_cast<uint64_t>(Detail::monotonicUs()); // esp_timer's counter, without the ROM's division
 }
 
 void System::restart() {

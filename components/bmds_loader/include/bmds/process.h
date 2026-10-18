@@ -208,7 +208,8 @@ class Process {
                 int32_t chdir(const char *path);
                 int32_t dup(int32_t fd, int32_t minFd);
                 int32_t dup2(int32_t fd, int32_t to);
-                int32_t clockGet(uint32_t clock, int64_t *ns);
+                /** @brief A clock's time: no lock, no wait, nothing of the process's (a system call without `KernelCall`). */
+                static int32_t clockGet(uint32_t clock, int64_t *ns);
                 int32_t sleep(int64_t ns);
                 /** @brief `sleep()` for a real-time thread: woken by `WakeTimer`, not the tick. */
                 int32_t sleepPrecise(int64_t ns);

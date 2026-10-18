@@ -1,9 +1,9 @@
 # Bench: one system benchmark for all tuning
 
-Status: **steps 1 to 4 built** (2026-10-17, the user's request; decisions agreed the same day;
-§10-§13). Replaces the benchmarks spread across `sd`, `fsbench`, `simd`, `memtest`, `display`,
-`win` and `progtest` (§3). Comes before Quake (`games.md`), whose renderer and presentation
-need a baseline.
+Status: **steps 1 to 4 built, step 5 begun** (2026-10-17, the user's request; decisions agreed
+the same day; §10-§14). Replaces the benchmarks spread across `sd`, `fsbench`, `simd`,
+`memtest`, `display`, `win` and `progtest` (§3). Comes before Quake (`games.md`), whose renderer
+and presentation need a baseline.
 
 ## 1. Goal
 
@@ -513,3 +513,137 @@ busy); `display.fill`: skipped (Resource is busy); `display.present`: skipped (R
   format and scale, `libbmdsgame`'s drawing, a renderer-like loop into internal RAM and PSRAM),
   for Quake; then CPU, memory latency, kernel and storage throughput (§6).
 
+## 14. As built: step 5, part 1: surfaces, games and the system's basics (2026-10-17)
+
+43 benchmarks now (30 in the firmware, 13 from programs). New:
+
+- **`surface.present`** (`benchprog surface`, tagged `screen`: it opens windows and goes full
+  screen): six cases, a run presenting flat out for `ms=` (1000) with a 64×64 square moved each
+  frame; each case's frames shown a second, the `present` call's time, and the rest of the
+  system's CPU a frame shown (both cores' busy time from the counters, less the program's own).
+  `case=` picks cases by name.
+- **`game.draw`** (`benchprog draw`): `libbmdsgame` into a 640×360 canvas in PSRAM, in L8,
+  RGB565 and BGR24: a fill, opaque, keyed, scaled (2×) and turned blits of a 64×64 sprite, a
+  translucent fill (not L8), text.
+- **`render.spans`** (`benchprog render`): Doom's inner loops, `R_DrawColumn` (a wall's column
+  scaled through a colormap) and `R_DrawSpan` (a flat sampled along a row), for a 320×200 frame
+  drawn into PSRAM and into internal RAM (`BMDS_MEM_FAST`), the textures in PSRAM.
+- **`kernel.pipe`** (`benchprog pipe`): 4 MB through a pipe between two threads.
+- **`memory.latency`** (`bmds_drivers`): a chain of dependent loads in a random cycle of 128-byte
+  lines, in internal RAM and PSRAM by size.
+- **`kernel.switch`** (`bmds_bench`): a task woken by a semaphore and answering by another,
+  on the bench's core and on the other.
+- **`fs.sequential`** (`bmds_storage`): a file written in 64 KB chunks and synced, then read
+  back, through the VFS (`dir=` /tmp, `mb=` 4).
+
+**On the board** (the desktop running):
+
+| | |
+|---|---|
+| Doom-sized L8 320×200, full screen | 60 fps; `present` 101 µs; the system **10.4 ms** a frame (62 % of a core at 60) |
+| Quake-sized L8 320×240, full screen | 60 fps; 114 µs; **12.2 ms** a frame (73 %) |
+| L8 320×200 in a window | 60 fps; 332 µs; 5.1 ms a frame |
+| Blocks' RGB565 640×360, full screen, all of it changed | **30 fps**: 22.9 ms a frame, more than a frame's time |
+| BGR24 maximized, all of it changed | 30 fps; `present` **2.4 ms** (the cache written back); 2.2 ms a frame |
+| BGR24 maximized, a square changed | 60 fps; 703 µs; 2.1 ms a frame |
+| `game.draw` L8 / RGB565 / BGR24 | fill 45 / 23 / 15 Mpx/s; blit 56 / 23 / 17; **keyed 5.9 / 21.3 / 4.1**; scaled 4.6 / 17.6 / 3.5; turned 3.7 / 7.7 / 2.9; text 11-12 characters a ms |
+| `render.spans`, a 320×200 frame | columns 2.6 ms into PSRAM, 2.1 ms into internal RAM; spans 2.9 ms either way |
+| `memory.latency` | internal RAM 8.4 ns; PSRAM in the cache (64 KB) 8.5 ns, beyond it (256 KB, 4 MB) **806 ns** a load |
+| `kernel.switch` | **21 µs** there and back on one core, 15.6 µs across cores |
+| `kernel.pipe` | 151 MB/s |
+| `fs.sequential` | /tmp 30 MB/s writing, 56 MB/s reading; the card (`dir=/sd0/p0 mb=8`) 2.6 and **4.9 MB/s** (raw 64 KB reads: 16 MB/s); `/flash` (512 KB) too small for 1 MB: refused, the partial file removed |
+
+**What they say, for tuning (not done here):**
+
+- **Full-screen L8 is affordable but not cheap:** Quake's frame costs 12.2 ms of the system's
+  CPU on top of its own rendering; a whole-frame RGB565 picture at 640×360 can't reach 60.
+- **Keyed blits in L8 and BGR24** run at a quarter of RGB565's rate: their fast path is missing.
+- **PSRAM past the cache costs ~800 ns a dependent load** with the scan and the desktop reading
+  it: a renderer's random reads (textures, a z-buffer) should stay within the cache or internal
+  RAM. Doom's loops themselves are cheap (5 ms for a frame's walls and floors).
+- **A task switch on one core costs more than across cores** (21 against 15.6 µs), and a system
+  call 8.5 µs: the context's save and restore (stacks in PSRAM, PIE's and the FPU's registers) is
+  the first thing to look at.
+- **Reading the card through the VFS** gets a third of the raw rate.
+- Doom's and Blocks' switches to full screen show as an underrun, a resync and a rebuild.
+
+**Cost:** the image grew 3,056 bytes (the three firmware benchmarks).
+
+**Still to come (§6):** CPU (CoreMark: its licence to check first), the memory's bandwidth by
+block size, a mutex handoff and a queue's round trip, TCP to a peer, directory listing.
+
+
+## 15. Tuning round 1: system calls and the clock; CoreMark (2026-10-17)
+
+The first leads from §14 that `bench` itself measures: what a system call costs, and what the
+system's clock costs underneath it. New benchmarks to see them:
+
+- **`kernel.syscall`** (`benchprog`) reports `getpid_ns`, `getppid_ns` and `clock_gettime_ns`:
+  the cheapest call, one that takes the process table's lock, and the clock.
+- **`kernel.clock`** (firmware) compares `monotonic_read_ns` (ours) with `esp_timer_read_ns`, which
+  is IDF's `esp_timer_impl_get_time()`.
+- **`kernel.locks`** (firmware) times an uncontended `Mutex` lock and unlock, with the mutex in
+  internal RAM and in PSRAM, and a semaphore given and taken.
+- **`cpu.coremark`** (`dist/coremark`) is EEMBC's CoreMark at commit 1f483d5, Apache-2.0. Its core
+  files and POSIX port are used as they are. Ours is `ee_printf.c`, which passes the output through
+  and adds the score as `@bench` lines: `iterations_s` and `coremark_mhz`, using the clock from
+  `bmds_system_info`. `ITERATIONS=0` makes it time itself to the 10 s a valid score needs, so its
+  descriptor sets `runs=1 warmup=0`.
+
+**What was changed:**
+
+- **The signal checks every system call makes** on its way in and out (`KernelCall`) read whole
+  sets with sequentially consistent atomics, and each of those loads is a fence on RISC-V.
+  - `Signals::ending()`, `stopSignal()` and `dueCaught()` now read the pending sets first, with
+    acquire loads, and return when nothing is pending, which is the usual case.
+  - `ProgramThread::leave()` reads the terminating signal once and passes it to a new
+    `isDue(thread, terminate)` rather than reading it again.
+  - `prepare()` keeps the one ordering it needs: a sequentially consistent fence between clearing
+    the interrupt and looking again.
+- **`clock_gettime` makes no `KernelCall`:** reading a clock can't block, be interrupted or touch
+  a process. `bmds_k_clock_get` calls `Process::clockGet()` directly.
+- **The CRT's `ts_write` divided 64-bit nanoseconds by 10⁹** in software.
+  - It now multiplies by a reciprocal, `mul_high64(ns >> 9, 0x44B82FA09B5A53) >> 11`, for
+    non-negative values.
+  - This was checked exact against the division on 2.2 million values: edges, powers of two and
+    random values.
+- **`esp_timer_get_time()` is ours across the firmware** (`-Wl,--wrap`, `bmds_kernel`).
+  - IDF's version reads the systimer and then converts its 16 MHz ticks to µs with the ROM's
+    `systimer_ticks_to_us()`, which is a software 64-bit division.
+  - `Detail::monotonicUs()` reads the same counter (a snapshot, then lo/hi/lo) and shifts by 4, in
+    IRAM.
+  - FreeRTOS's run-time statistics read this clock at every context switch.
+  - The boot banner warns if the two clocks ever differ by more than 2 µs; neither the bench runs
+    nor the boot banner check showed a difference.
+
+**On the board** (same image apart from the change):
+
+| | before | after |
+|---|---|---|
+| `getpid()` | 4.2 µs | **2.5 µs** |
+| `getppid()` (process table lock) | 9.0 µs | **7.4 µs** |
+| `clock_gettime()` | 5.9 µs | **1.8 µs** |
+| a clock read in the firmware | 794 ns (IDF's) | **672 ns** |
+| `kernel.switch` same core / across | 21.0 / 15.6 µs | 20.4 / 14.6 µs |
+| `kernel.pipe` | 151 MB/s | 162 MB/s |
+| `cpu.coremark` | | **1062 iterations/s, 2.95 CoreMark/MHz** (-O2, GCC 15.2, code in PSRAM) |
+
+**What's left in those numbers:**
+
+- **The systimer read itself is ~650 ns:** the snapshot, then waiting for the value to be valid.
+  This is most of what remains of a clock read. A cheaper clock would mean `mcycle`, which is per
+  core and stops in WFI. That is not worth it yet.
+- **`getppid()`'s extra 5 µs is the process table's mutex.** An uncontended `Mutex` pair costs
+  4.1 µs (`kernel.locks`), a semaphore pair 2.5 µs. Where a mutex's memory is makes no
+  difference. The time is inside FreeRTOS's critical sections, which the tick profiler can't
+  sample (`docs/platforms/esp32p4.md` §4c).
+- **Tried and not kept:** `CONFIG_FREERTOS_IN_IRAM`. It bought 8 % on a switch and a lock, not
+  worth its IRAM.
+- **Next leads:**
+  - The task switch and lock costs, which need cycle counts inside the port's critical sections.
+  - The full-screen L8 conversion: 10-12 ms of the system's time a frame.
+  - Keyed blits in L8 and BGR24.
+  - Reading the card through the VFS.
+
+**ABI:** none changed. The CRT's `ts_write` is inside the program, and `bmds_k_clock_get` keeps its
+meaning.

@@ -260,14 +260,20 @@ uint32_t Signals::fatal() const {
 }
 
 uint32_t Signals::ending() const {
+        // None pending: nothing more to read (every system call asks).
+        const uint32_t pending = _pending.load(std::memory_order_acquire);
+        if (pending == 0) return 0;
         // Nothing ends a stopped process but SIGKILL, which continues it first.
         if (_stopped.load()) return 0;
-        return _pending.load() & ~_allBlocked.load() & fatal();
+        return pending & ~_allBlocked.load() & fatal();
 }
 
 int Signals::stopSignal(const Thread &thread) const {
-        const uint32_t live =
-                (_pending.load() & ~_allBlocked.load()) | (thread.pending.load() & ~thread.blocked.load());
+        // Every system call asks on its way out: the pending sets first, the rest only for a stop signal.
+        const uint32_t shared = _pending.load(std::memory_order_acquire),
+                       own = thread.pending.load(std::memory_order_acquire);
+        if (((shared | own) & StopSignals) == 0) return 0;
+        const uint32_t live = (shared & ~_allBlocked.load()) | (own & ~thread.blocked.load());
         return lowest(live & StopSignals & ~_caught.load() & ~_ignored.load() & ~_interrupting.load());
 }
 
@@ -307,9 +313,12 @@ Signals::Taken Signals::take(Thread &thread) {
 }
 
 void Signals::prepare(Thread &thread) {
-        if (thread.wake.load() || isDue(thread)) return;
+        if (thread.wake.load(std::memory_order_acquire) || isDue(thread)) return;
         thread.interrupt.clear();
-        if (thread.wake.load() || isDue(thread)) thread.interrupt.raise();
+        // The clear before the second look (a store, then loads): a signal posted meanwhile is
+        // either seen here or raises the interrupt after the clear. The looks' loads are acquire.
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        if (thread.wake.load(std::memory_order_acquire) || isDue(thread)) thread.interrupt.raise();
         return;
 }
 

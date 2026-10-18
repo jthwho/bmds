@@ -12,7 +12,9 @@
 #include <esp_cpu.h>
 #include <esp_random.h>
 #include <esp_rtc_time.h>
+#include <esp_private/systimer.h>
 #include <esp_timer.h>
+#include <hal/systimer_ll.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <bmds/detail/platform.h>
@@ -48,8 +50,29 @@ namespace {
 
 } // namespace
 
-int64_t Detail::monotonicUs() {
-        return esp_timer_get_time();
+IRAM_ATTR int64_t Detail::monotonicUs() { // IRAM: esp_timer_get_time() is this (below), from IRAM interrupts too
+        // esp_timer_get_time()'s counter, read as its HAL reads it (systimer_hal_get_counter_value),
+        // and its 16 MHz ticks made µs by a shift: IDF's own conversion is the ROM's
+        // systimer_ticks_to_us(), a software 64-bit division, a third of every clock read
+        // (devplan/bench.md §15).
+        systimer_dev_t *const dev = &SYSTIMER;
+        systimer_ll_counter_snapshot(dev, SYSTIMER_COUNTER_ESPTIMER);
+        while (!systimer_ll_is_counter_value_valid(dev, SYSTIMER_COUNTER_ESPTIMER)) {}
+        uint32_t lo = systimer_ll_get_counter_value_low(dev, SYSTIMER_COUNTER_ESPTIMER), hi;
+        for (;;) { // LO, HI, LO again: an interrupt between them can't tear the value
+                hi = systimer_ll_get_counter_value_high(dev, SYSTIMER_COUNTER_ESPTIMER);
+                const uint32_t again = systimer_ll_get_counter_value_low(dev, SYSTIMER_COUNTER_ESPTIMER);
+                if (again == lo) break;
+                lo = again;
+        }
+        return static_cast<int64_t>((uint64_t(hi) << 32 | lo) >> 4); // 16 ticks a µs (esp32p4/systimer.c)
+}
+
+// esp_timer_get_time(), everywhere in the firmware (-Wl,--wrap, CMakeLists.txt): IDF's reads the same
+// counter but converts it in the ROM by a software division. FreeRTOS's run-time statistics read
+// it at every context switch (devplan/bench.md §15).
+extern "C" IRAM_ATTR int64_t __wrap_esp_timer_get_time(void) {
+        return Detail::monotonicUs();
 }
 
 uint32_t Detail::cycles() {

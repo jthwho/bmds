@@ -1099,10 +1099,9 @@ void ProgramThread::leave() {
                         recordChange(currentPid, sig);
                 mine.interrupt.park();
                 // A vfork child is ended by the SDK (the hint); its parent once it is back.
-                if (depth == 0) {
-                        if (const int sig = s.terminateSignal(); sig != 0) endProcess(ProcessTable::killedStatus(sig));
-                }
-                if (hint != nullptr) *hint = s.isDue(mine) ? 1 : 0;
+                const int terminate = s.terminateSignal();
+                if (depth == 0 && terminate != 0) endProcess(ProcessTable::killedStatus(terminate));
+                if (hint != nullptr) *hint = s.isDue(mine, terminate) ? 1 : 0;
                 Signals::clearWake(mine);
                 inKernel.store(false);
                 // Killed, or (running a vfork child meanwhile) its process ended while it was away.

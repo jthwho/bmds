@@ -1,0 +1,12 @@
+# CoreMark (EEMBC): the CPU's score for bench's cpu.coremark (devplan/bench.md §15), built with
+# its POSIX port and a report of BMDS's own (ee_printf.c: the score also as @bench lines). Its
+# core files are unchanged, as EEMBC's rules require for the name; the port's are adjusted.
+# CoreMark has no releases since v1.01 (2018): pinned to a commit.
+name = "coremark"
+version = "2024.06.04-1f483d5"
+description = "CoreMark, EEMBC's CPU benchmark (bench run cpu.coremark)"
+license = "Apache-2.0"
+source = "https://github.com/eembc/coremark/archive/1f483d5b8316753a742cbf5590caf5bd0a4e4777.tar.gz"
+sha256 = "4067e7f260218df13f2875d8f821a8ff32a84153c6e0759d7c89f96c0a8bf987"
+source_dir = "coremark-1f483d5b8316753a742cbf5590caf5bd0a4e4777"
+license_files = ["LICENSE.md"]
