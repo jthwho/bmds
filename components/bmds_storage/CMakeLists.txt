@@ -11,7 +11,8 @@
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
-idf_component_register(SRCS src/cfg.cpp
+idf_component_register(SRCS src/benchsd.cpp
+                            src/cfg.cpp
                             src/flashdisk.cpp
                             src/flashpartition.cpp
                             src/fsbench.cpp
@@ -23,7 +24,7 @@ idf_component_register(SRCS src/cfg.cpp
                             src/tmpfs.cpp
                        INCLUDE_DIRS include
                        REQUIRES bmds_core bmds_kernel bmds_fs
-                       PRIV_REQUIRES app_update bmds_board bmds_shell bmds_sysconf esp_driver_gpio esp_driver_sdmmc esp_hw_support esp_system
+                       PRIV_REQUIRES app_update bmds_bench bmds_board bmds_shell bmds_sysconf esp_driver_gpio esp_driver_sdmmc esp_hw_support esp_system
                                      esp_mm esp_partition sdmmc
                        WHOLE_ARCHIVE)
 bmds_target_options(${COMPONENT_LIB})

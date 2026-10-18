@@ -9,6 +9,7 @@
 #include <sys/time.h>
 #include <bootloader_random.h>
 #include <esp_attr.h>
+#include <esp_cpu.h>
 #include <esp_random.h>
 #include <esp_rtc_time.h>
 #include <esp_timer.h>
@@ -49,6 +50,10 @@ namespace {
 
 int64_t Detail::monotonicUs() {
         return esp_timer_get_time();
+}
+
+uint32_t Detail::cycles() {
+        return static_cast<uint32_t>(esp_cpu_get_cycle_count());
 }
 
 void Detail::suspendScheduler() {

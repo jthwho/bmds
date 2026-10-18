@@ -80,7 +80,7 @@ Measured on the exFAT card:
 
 | What | Time |
 |---|---|
-| A one-sector read (`sd bench`, 256 of them) | 390 µs each |
+| A one-sector read (`sd bench`, 256 of them; now `bench run storage.sd.read`) | 390 µs each |
 | A sector in 64 KB reads | 32 µs |
 | `du -s` of the icon theme's `32x32` (361 entries, about 85 sectors of directory) | 3.81 s, 10.5 ms a lookup |
 | `ls -l` of it | 3.36 s |

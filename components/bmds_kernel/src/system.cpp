@@ -27,6 +27,7 @@ SystemInfo System::info() {
         SystemInfo info;
         info.bmdsVersion = VersionString;
         info.buildVersion = app->version;
+        info.imageSha256 = app->app_elf_sha256;
         info.idfVersion = app->idf_ver;
         info.boardName = board().name;
         info.chipRevMajor = chip.revision / 100;

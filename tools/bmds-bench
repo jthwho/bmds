@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+# @file      bmds-bench
+# @copyright Jason Howard. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+# See LICENSE file in the project root folder for license information.
+#
+# The bench's analysis (devplan/bench.md §4g): the board runs `bench run` and writes a JSON file a
+# run in its bench/folder; this keeps copies of them, a folder per board serial, and compares.
+#
+#   tools/bmds-bench run [--board root@bmds0] PATTERN|@TAG... [KEY=VALUE...]
+#       runs `bench run` on the board over ssh, fetches the new file, and shows each metric
+#       against the earlier runs of the same benchmark, metric and parameters on that board.
+#   tools/bmds-bench pull [--board root@bmds0]
+#       copies the board's results files that the store doesn't have yet.
+#   tools/bmds-bench history NAME [METRIC]
+#       one benchmark's metrics run by run, with each run's build.
+#   tools/bmds-bench compare RUN RUN
+#       two runs (files, or names in the store) side by side, with what differs in their systems.
+#
+# The store is bench-results/ in the repository (git-ignored), or --store DIR. Python's standard
+# library only; ssh with a key (BatchMode).
+
+import argparse
+import glob
+import json
+import os
+import shlex
+import subprocess
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_STORE = os.path.join(ROOT, "bench-results")
+DEFAULT_BOARD = "root@bmds0"
+THRESHOLD = 3.0  # percent: a smaller change is never marked
+
+
+def ssh(board, command, capture=True, timeout=None):
+    args = ["ssh", "-o", "BatchMode=yes", board, command]
+    if capture:
+        return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(args, timeout=timeout)
+
+
+def load(path):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def runs_in(store, serial):
+    """Every stored run of board `serial`, oldest first, as (path, data)."""
+    found = []
+    for path in glob.glob(os.path.join(store, serial, "*.json")):
+        try:
+            data = load(path)
+        except (OSError, ValueError) as e:
+            print("bmds-bench: %s: %s (skipped)" % (path, e), file=sys.stderr)
+            continue
+        found.append((path, data))
+    found.sort(key=lambda r: r[1].get("start", ""))
+    return found
+
+
+def params_key(bench):
+    """The parameters that change what is measured (not how often)."""
+    params = dict(bench.get("params", {}))
+    params.pop("runs", None)
+    params.pop("warmup", None)
+    return tuple(sorted(params.items()))
+
+
+def results(data):
+    """(bench name, params, metric) -> result, for one run."""
+    out = {}
+    for bench in data.get("benches", []):
+        for r in bench.get("results", []):
+            out[(bench["name"], params_key(bench), r["metric"])] = r
+    return out
+
+
+def label(name, params):
+    """A benchmark and the parameters it ran with: storage.sd.read mb=2."""
+    return " ".join([name] + ["%s=%s" % kv for kv in params])
+
+
+def fmt(value):
+    if value is None:
+        return "-"
+    if abs(value) >= 1000:
+        return "%.0f" % value
+    return "%.4g" % value
+
+
+def change(new, old):
+    if not old:
+        return 0.0
+    return (new - old) / abs(old) * 100
+
+
+def store_folder(store, data):
+    serial = data["system"]["serial"] or "unknown"
+    folder = os.path.join(store, serial)
+    os.makedirs(folder, exist_ok=True)
+    return folder
+
+
+def show_against(data, earlier):
+    """Each metric of `data` against the earlier runs' results for the same key."""
+    history = {}
+    for _, run in earlier:
+        for key, r in results(run).items():
+            history.setdefault(key, []).append(r)
+    for key, r in results(data).items():
+        name, params, metric = key
+        line = "%-30s %-20s %10s %-8s" % (label(name, params), metric, fmt(r["median"]), r["unit"])
+        past = history.get(key, [])
+        if not past:
+            print(line + "  (first run)")
+            continue
+        prev = past[-1]
+        medians = [p["median"] for p in past]
+        higher = r.get("better", "higher") == "higher"
+        best = max(medians) if higher else min(medians)
+        worst = min(medians) if higher else max(medians)
+        mean = sum(medians) / len(medians)
+        delta = change(r["median"], prev["median"])
+        noise = max(THRESHOLD, r.get("spread", 0) + prev.get("spread", 0))
+        mark = ""
+        if abs(delta) > noise:
+            better = (delta > 0) == higher
+            mark = "  BETTER" if better else "  WORSE"
+        print("%s  was %s (%+.1f%%), best %s, worst %s, mean %s (%d run%s)%s" %
+              (line, fmt(prev["median"]), delta, fmt(best), fmt(worst), fmt(mean), len(past), "" if len(past) == 1 else "s", mark))
+
+
+def cmd_run(args):
+    words = " ".join(shlex.quote(w) for w in args.names)
+    proc = subprocess.Popen(["ssh", "-o", "BatchMode=yes", args.board, "bench run " + words],
+                            stdout=subprocess.PIPE, text=True)
+    saved = None
+    for line in proc.stdout:
+        sys.stdout.write(line)
+        if line.startswith("saved "):
+            saved = line[len("saved "):].strip()
+    status = proc.wait()
+    if saved is None:
+        return status or 1
+    got = ssh(args.board, "cat " + shlex.quote(saved))
+    if got.returncode != 0:
+        sys.exit("bmds-bench: couldn't fetch %s: %s" % (saved, got.stderr.strip()))
+    data = json.loads(got.stdout)
+    folder = store_folder(args.store, data)
+    path = os.path.join(folder, os.path.basename(saved))
+    earlier = [r for r in runs_in(args.store, data["system"]["serial"] or "unknown")
+               if os.path.basename(r[0]) != os.path.basename(saved)]
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(got.stdout)
+    print()
+    print("Against the earlier runs on %s (%s):" % (data["system"]["serial"], data["system"]["build"]))
+    show_against(data, earlier)
+    return status
+
+
+def cmd_pull(args):
+    folder = ssh(args.board, "sysconf get bench/folder")
+    if folder.returncode != 0:
+        sys.exit("bmds-bench: %s" % folder.stderr.strip())
+    where = folder.stdout.strip()
+    listing = ssh(args.board, "ls -1 " + shlex.quote(where))
+    if listing.returncode != 0:
+        sys.exit("bmds-bench: %s: %s" % (where, listing.stderr.strip()))
+    fetched = 0
+    for name in listing.stdout.split():
+        if not name.endswith(".json"):
+            continue
+        serial = name.split("-", 1)[0]
+        path = os.path.join(args.store, serial, name)
+        if os.path.exists(path):
+            continue
+        got = ssh(args.board, "cat " + shlex.quote(where + "/" + name))
+        if got.returncode != 0:
+            print("bmds-bench: %s: %s" % (name, got.stderr.strip()), file=sys.stderr)
+            continue
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(got.stdout)
+        fetched += 1
+    print("%d new" % fetched)
+    return 0
+
+
+def all_runs(store):
+    found = []
+    for serial in sorted(os.listdir(store)) if os.path.isdir(store) else []:
+        found += runs_in(store, serial)
+    found.sort(key=lambda r: r[1].get("start", ""))
+    return found
+
+
+def cmd_history(args):
+    for path, data in all_runs(args.store):
+        sysinfo = data.get("system", {})
+        for bench in data.get("benches", []):
+            if bench["name"] != args.name:
+                continue
+            params = " ".join("%s=%s" % kv for kv in params_key(bench))
+            for r in bench.get("results", []):
+                if args.metric and r["metric"] != args.metric:
+                    continue
+                print("%s  %-12s %-20s %-8s %-8s %-20s %10s %-8s ±%.1f%%" %
+                      (data.get("start", "?")[:19], sysinfo.get("serial", "?"), sysinfo.get("build", "?"),
+                       sysinfo.get("image_sha256", "?")[:8], params, r["metric"], fmt(r["median"]), r["unit"],
+                       r.get("spread", 0)))
+    return 0
+
+
+def find_run(store, name):
+    if os.path.exists(name):
+        return name, load(name)
+    for path in glob.glob(os.path.join(store, "*", name)) + glob.glob(os.path.join(store, "*", name + ".json")):
+        return path, load(path)
+    sys.exit("bmds-bench: %s: no such run" % name)
+
+
+def flatten(value, prefix=""):
+    out = {}
+    if isinstance(value, dict):
+        for k, v in value.items():
+            out.update(flatten(v, prefix + k + "."))
+    elif isinstance(value, list):
+        out[prefix[:-1]] = json.dumps(value, sort_keys=True)
+    else:
+        out[prefix[:-1]] = value
+    return out
+
+
+def cmd_compare(args):
+    (pa, a), (pb, b) = find_run(args.store, args.a), find_run(args.store, args.b)
+    print("A: %s\nB: %s\n" % (pa, pb))
+    ra, rb = results(a), results(b)
+    for key in sorted(set(ra) | set(rb)):
+        name, params, metric = key
+        va = ra.get(key, {}).get("median")
+        vb = rb.get(key, {}).get("median")
+        unit = (ra.get(key) or rb.get(key))["unit"]
+        delta = "%+.1f%%" % change(vb, va) if va is not None and vb is not None else ""
+        print("%-30s %-20s %10s %10s %-8s %s" % (label(name, params), metric, fmt(va), fmt(vb), unit, delta))
+    # What differs in the systems (tasks and uptime always do: left out).
+    sa = flatten({k: v for k, v in a.get("system", {}).items() if k not in ("tasks", "uptime_us")})
+    sb = flatten({k: v for k, v in b.get("system", {}).items() if k not in ("tasks", "uptime_us")})
+    diffs = [k for k in sorted(set(sa) | set(sb)) if sa.get(k) != sb.get(k)]
+    if diffs:
+        print("\nThe systems differ:")
+        for k in diffs:
+            print("  %-36s %s -> %s" % (k, sa.get(k, "-"), sb.get(k, "-")))
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description="The bench's analysis (devplan/bench.md)")
+    parser.add_argument("--store", default=DEFAULT_STORE, help="where runs are kept (bench-results/)")
+    sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("run", help="run benchmarks on the board and compare")
+    p.add_argument("--board", default=DEFAULT_BOARD)
+    p.add_argument("names", nargs="+", help="PATTERN, @TAG or KEY=VALUE, as bench run takes them")
+    p.set_defaults(fn=cmd_run)
+    p = sub.add_parser("pull", help="copy the board's new results files")
+    p.add_argument("--board", default=DEFAULT_BOARD)
+    p.set_defaults(fn=cmd_pull)
+    p = sub.add_parser("history", help="one benchmark's metrics run by run")
+    p.add_argument("name")
+    p.add_argument("metric", nargs="?")
+    p.set_defaults(fn=cmd_history)
+    p = sub.add_parser("compare", help="two runs side by side")
+    p.add_argument("a")
+    p.add_argument("b")
+    p.set_defaults(fn=cmd_compare)
+    args = parser.parse_args()
+    sys.exit(args.fn(args))
+
+
+if __name__ == "__main__":
+    main()

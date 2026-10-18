@@ -79,6 +79,11 @@ int64_t Detail::monotonicUs() {
         return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
+uint32_t Detail::cycles() {
+        using namespace std::chrono;
+        return static_cast<uint32_t>(duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count());
+}
+
 void Detail::suspendScheduler() {
         return;
 }

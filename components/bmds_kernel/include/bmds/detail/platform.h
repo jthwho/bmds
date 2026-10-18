@@ -37,6 +37,15 @@ namespace Detail {
         int64_t monotonicUs();
 
         /**
+         * @brief Returns the calling core's cycle counter (the target's CPU
+         *        cycles; nanoseconds on the host). Wraps: only a difference of
+         *        two readings on one core means anything, and only across less
+         *        than 2^32 cycles (about 11.9 s at 360 MHz).
+         * @isrsafe
+         */
+        uint32_t cycles();
+
+        /**
          * @brief Suspends task switching on this core (ISRs still run).
          *
          * For short sections that call into FreeRTOS, which a critical

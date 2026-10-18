@@ -166,6 +166,17 @@ Plan: [`input.md`](input.md).
   Step 6 done 2026-10-10: `top` (`-d`, `-n`, `-T`), `tasks` from the kernel's task list with a
   `cpu_ms` column, and `getrusage()`, `times()`, the CPU clocks and `sysinfo()` from the process's
   own time.
+- [ ] System bench (`bench.md`, planned 2026-10-17, the user's request): every benchmark in one
+  extensible place, `bench list|info|run`, registered next to the code it measures or by a
+  program's descriptor; one JSON file a run in `/home/bench` (the full version, the system's
+  facts, every sysmon counter's change); the analysis on the host (`tools/bmds-bench`); the old
+  forms (`sd bench`, `fsbench`, `simd bench`, `display` and `win` timings, `progtest`'s) removed.
+  Step 1 done (2026-10-17, §10): native JSON (`json.md`: `JsonReader`, a pull parser in constant
+  memory, and `JsonWriter`, streaming; JSONTestSuite passes), `Stopwatch`, `bmds_bench`
+  (`BMDS_BENCH`, `bench list|info|run`, the results file with the system's facts and every
+  counter's and task's change), `bench/folder`, `storage.sd.read` (was `sd bench`), and
+  `tools/bmds-bench` (`run`, `pull`, `history`, `compare`). Next: step 2 (the firmware's other
+  benchmarks moved in); then Quake.
 - [x] Settings, the control panel (`controlpanel.md`, planned 2026-10-16, the user's request):
   the one place to change every sysconf setting graphically, laid out like the Mac's System
   Settings (groups with icons on the left, the group's page on the right). Changes apply and

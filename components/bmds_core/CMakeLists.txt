@@ -48,6 +48,8 @@ set(BMDS_CORE_SRCS
         src/tjpgd.c
         src/inflate.cpp
         src/inireader.cpp
+        src/jsonreader.cpp
+        src/jsonwriter.cpp
         src/logtext.cpp
         src/string.cpp
         src/timezone.cpp

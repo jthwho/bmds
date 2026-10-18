@@ -13,6 +13,7 @@ set(CMAKE_CXX_EXTENSIONS ON)
 set(BMDS_ROOT ${CMAKE_CURRENT_LIST_DIR}/../..)
 
 add_subdirectory(${BMDS_ROOT}/components/bmds_core ${CMAKE_BINARY_DIR}/bmds_core)
+add_subdirectory(${BMDS_ROOT}/components/bmds_bench ${CMAKE_BINARY_DIR}/bmds_bench)
 add_subdirectory(${BMDS_ROOT}/components/bmds_kernel ${CMAKE_BINARY_DIR}/bmds_kernel)
 add_subdirectory(${BMDS_ROOT}/components/bmds_console ${CMAKE_BINARY_DIR}/bmds_console)
 add_subdirectory(${BMDS_ROOT}/components/bmds_shell ${CMAKE_BINARY_DIR}/bmds_shell)
@@ -41,6 +42,7 @@ add_executable(bmds_host_tests
         hostmemory.cpp
         arena.cpp
         audio.cpp
+        bench.cpp
         blockdevice.cpp
         bytering.cpp
         intervaltimers.cpp
@@ -62,6 +64,7 @@ add_executable(bmds_host_tests
         input.cpp
         interactive.cpp
         interrupt.cpp
+        json.cpp
         language.cpp
         launch.cpp
         lineeditor.cpp
@@ -220,7 +223,7 @@ if(Python3_Interpreter_FOUND)
         add_test(NAME rom_icon_names COMMAND ${Python3_EXECUTABLE} ${BMDS_MKROM} check ${BMDS_ICONS_LIST}
                  ${BMDS_ROOT}/flash ${BMDS_ROOT}/dist ${BMDS_ROOT}/rom)
 endif()
-target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_audio bmds_midi bmds_synth bmds_speech bmds_input bmds_ui bmds_gui bmds_clipboard
+target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_bench bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_audio bmds_midi bmds_synth bmds_speech bmds_input bmds_ui bmds_gui bmds_clipboard
         bmds_sysconf bmds_files bmds_mplayer bmds_sysmon bmds_settings bmds_panel bmds_imageview bmds_net bmds_lwip)
 bmds_target_options(bmds_host_tests)
 

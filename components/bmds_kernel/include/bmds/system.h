@@ -18,7 +18,8 @@ BMDS_NAMESPACE_BEGIN
 /** @brief Static facts about the running system. Strings live in flash. */
 struct SystemInfo {
                 const char *bmdsVersion;  ///< BMDS version, e.g. "0.1.0".
-                const char *buildVersion; ///< Application build version (git describe).
+                const char    *buildVersion; ///< Application build version (`PROJECT_VER`: "0.1.0+72cba49a[-dirty]").
+                const uint8_t *imageSha256;  ///< The running image's ELF SHA-256 (32 bytes): which build exactly.
                 const char *idfVersion;   ///< ESP-IDF version.
                 const char *boardName;    ///< Board name from the board definition.
                 unsigned    chipRevMajor; ///< Chip revision, major.

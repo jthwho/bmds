@@ -1,0 +1,18 @@
+# The benchmarks' table (devplan/bench.md §4a): BMDS_BENCH places each Bench in its own input
+# section, .bmds_bench.<name>. They are collected sorted by section name -- and so by the
+# benchmark's name -- into one contiguous array in flash rodata, bounded by
+# _bmds_bench_start / _bmds_bench_end.
+
+[sections:bmds_bench]
+entries:
+    .bmds_bench+
+
+[scheme:bmds_bench_default]
+entries:
+    bmds_bench -> flash_rodata
+
+[mapping:bmds_bench]
+archive: *
+entries:
+    * (bmds_bench_default);
+        bmds_bench -> flash_rodata KEEP() SORT(name) SURROUND(bmds_bench)

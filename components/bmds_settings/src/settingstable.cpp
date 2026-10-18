@@ -317,6 +317,7 @@ namespace SettingsTable {
                         {.key = "sysmon/enable", .label = "CPU time", .flags = AtBoot},
                         {.key = "sysmon/interval", .label = "Sampled every", .unit = "ms"},
                         {.key = "sysmon/limits", .label = "Rules"},
+                        {.key = "bench/folder", .label = "Benchmark results in", .editor = E::Folder},
                         section("Updates"),
                         {.key = "update/dir", .label = "Packages in", .editor = E::Folder},
                 };

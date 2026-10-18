@@ -16,6 +16,8 @@ Design notes and implementation plans for BMDS subsystems. Write a plan here **b
 - [`input.md`](input.md) — Phase 5: USB host (TinyUSB, split transactions through the board's hub), HID boot keyboards and mice, the pointer.
 - [`hotkeys.md`](hotkeys.md) — Special keys (volume, mute, media) and global hotkeys: named actions, bindings with defaults, user-configurable later (planned).
 - [`sysmon.md`](sysmon.md) — The system monitor: CPU per core, task and process, memory, subsystem counters; `top`, system calls, a tray meter and a window (planned).
+- [`json.md`](json.md) — JSON in `bmds_core`: a pull reader in constant memory and a streaming writer.
+- [`bench.md`](bench.md) — one system benchmark: every benchmark registered by its component or a program's descriptor, `bench`, a JSON file a run, analysis on the host (step 1 built).
 - [`random.md`](random.md) — the kernel's random pool: boot noise, `/boot/random-seed`, ChaCha20 for `/dev/urandom` and `getrandom`.
 - [`pty.md`](pty.md) — pseudo-terminals: a terminal emulator as an ordinary program (with `/bin`, `programs.md` §17).
 - [`filetypes.md`](filetypes.md) — what a file is (`file_type()`, by name then contents), opening files by `mimeapps.list`, every file on the desktop.
